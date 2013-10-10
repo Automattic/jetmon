@@ -30,8 +30,11 @@ void HTTP_Checker::check( string p_host_name, int p_port ) {
 			m_tend.tv_sec -= m_tstart.tv_sec;
 			m_triptime = m_tend.tv_sec * 1000000 + ( m_tend.tv_usec );
 			if ( response.find_first_of( ' ' ) == 8 ) {
-				response = response.substr( 9, 3 );
-				m_str_desc = response;					// this will be the status code, 200, 301, 302, 403, 404, etc.
+				string code = response.substr( 9, 3 );
+				std::size_t found = response.find("Jetpack: 1");
+                if ( found != std::string::npos )
+                    m_str_desc = 1;
+				m_str_desc = code;					// this will be the status code, 200, 301, 302, 403, 404, etc.
 			} else {
 				m_str_desc = "Status code unknown";
 			}
@@ -48,7 +51,7 @@ string HTTP_Checker::send_http_get() {
     time( &current );
     strftime( rfc_2822, sizeof( rfc_2822 ), "%a, %d %b %Y %T %z", localtime( &current ) );
     */
-	string s_tmp = "HEAD / HTTP/1.1\r\nHost: " + m_host_name + "\r\nConnection: Close\r\n\r\n";
+	string s_tmp = "HEAD / HTTP/1.1\r\nHost: " + m_host_name + "\r\nuser-agent: Jetpack\r\nConnection: Close\r\n\r\n";
 
 	strcpy( m_buf, s_tmp.c_str() );
 
