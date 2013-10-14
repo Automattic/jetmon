@@ -15,4 +15,14 @@ config.TIME_BETWEEN_CHECKS = 20; //seconds
 
 config.HTTP_PORT           = 80;
 
+config.sendmails           = false;
+
+config.mailer = {};
+config.mailer.from = '';
+config.mailer.host = '';
+config.mailer.port = '';
+config.mailer.user = '';
+config.mailer.password = '';
+
+
 module.exports = config;

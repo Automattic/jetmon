@@ -51,7 +51,7 @@ string HTTP_Checker::send_http_get() {
     time( &current );
     strftime( rfc_2822, sizeof( rfc_2822 ), "%a, %d %b %Y %T %z", localtime( &current ) );
     */
-	string s_tmp = "HEAD / HTTP/1.1\r\nHost: " + m_host_name + "\r\nuser-agent: Jetpack\r\nConnection: Close\r\n\r\n";
+	string s_tmp = "HEAD / HTTP/1.1\r\nHost: " + m_host_name + "\r\nuser-agent: jetmon\r\nConnection: Close\r\n\r\n";
 
 	strcpy( m_buf, s_tmp.c_str() );
 
