@@ -1,4 +1,3 @@
-
 jetmon.js
 =========
 
@@ -13,6 +12,7 @@ Installation
 ------------
 
 1) Install node.js
+2) Install mysql and nodemailer npm modules
 2) Run "node-gyp rebuild" in the application root directory.
 
 Running
