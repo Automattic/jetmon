@@ -1,5 +1,6 @@
 
 #include "http_checker.h"
+#include <stdlib.h>
 
 using namespace std;
 
@@ -31,9 +32,9 @@ void HTTP_Checker::check( string p_host_name, int p_port ) {
 			m_triptime = m_tend.tv_sec * 1000000 + ( m_tend.tv_usec );
 			if ( response.find_first_of( ' ' ) == 8 ) {
 				string code = response.substr( 9, 3 );
-				std::size_t found = response.find("Jetpack: 1");
-                if ( found != std::string::npos )
-                    m_str_desc = 1;
+                if ( response.find( "Jetpack:" ) != std::string::npos && 400 > atoi( code.c_str() ) ) {
+                    code = string( "SITE OK" );
+                }
 				m_str_desc = code;					// this will be the status code, 200, 301, 302, 403, 404, etc.
 			} else {
 				m_str_desc = "Status code unknown";
