@@ -2,6 +2,7 @@
 #ifndef __HTTP_CHECKER_H__
 #define __HTTP_CHECKER_H__
 
+#include <cstdlib>
 #include <string>
 #include <string.h>
 #include <strings.h>
@@ -34,6 +35,7 @@ public:
 	void check( std::string p_host_name, int p_port = HTTP_DEFAULT_PORT );
 	time_t get_rtt() { return m_triptime; }
 	std::string get_str_desc() { return m_str_desc; }
+	int get_response_code() { return m_response_code; }
 
 private:
 	char m_buf[MAX_TCP_BUFFER];
@@ -43,6 +45,7 @@ private:
 	int m_port;
 	struct timezone m_tzone;
 	time_t m_triptime;
+	int m_response_code;
 
 	bool init_socket();
 	bool connect();

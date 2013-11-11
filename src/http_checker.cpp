@@ -1,10 +1,9 @@
 
 #include "http_checker.h"
-#include <stdlib.h>
 
 using namespace std;
 
-HTTP_Checker::HTTP_Checker() : m_sock( -1 ), m_host_name( "" ), m_str_desc( "" ), m_port( 0 ), m_triptime( 0 ) {
+HTTP_Checker::HTTP_Checker() : m_sock( -1 ), m_host_name( "" ), m_str_desc( "" ), m_port( 0 ), m_triptime( 0 ), m_response_code( 0 ) {
 	;
 }
 
@@ -21,9 +20,9 @@ void HTTP_Checker::check( string p_host_name, int p_port ) {
 
 	if ( init_socket() && connect() ) {
 		gettimeofday( &m_tstart, &m_tzone );
-        string response = send_http_get();
-        if ( response.size() > 0 ) {
-        	gettimeofday( &m_tend, &m_tzone );
+		string response = send_http_get();
+		if ( response.size() > 0 ) {
+			gettimeofday( &m_tend, &m_tzone );
 			if ( (m_tend.tv_usec -= m_tstart.tv_usec) < 0 )   {
 				m_tend.tv_sec--;
 				m_tend.tv_usec += 1000000;
@@ -31,13 +30,12 @@ void HTTP_Checker::check( string p_host_name, int p_port ) {
 			m_tend.tv_sec -= m_tstart.tv_sec;
 			m_triptime = m_tend.tv_sec * 1000000 + ( m_tend.tv_usec );
 			if ( response.find_first_of( ' ' ) == 8 ) {
-				string code = response.substr( 9, 3 );
-                if ( response.find( "Jetpack:" ) != std::string::npos && 400 > atoi( code.c_str() ) ) {
-                    code = string( "SITE OK" );
-                }
-				m_str_desc = code;					// this will be the status code, 200, 301, 302, 403, 404, etc.
+				response = response.substr( 9, 3 );
+				m_str_desc = response;					// this will be the status code, 200, 301, 302, 403, 404, etc.
+				m_response_code = atoi( response.c_str() );
 			} else {
 				m_str_desc = "Status code unknown";
+				m_response_code = 404;
 			}
 		} else {
 			m_str_desc = "no response - timed out";
@@ -46,12 +44,6 @@ void HTTP_Checker::check( string p_host_name, int p_port ) {
 }
 
 string HTTP_Checker::send_http_get() {
-	/*
-	time_t current;
-    char rfc_2822[40];
-    time( &current );
-    strftime( rfc_2822, sizeof( rfc_2822 ), "%a, %d %b %Y %T %z", localtime( &current ) );
-    */
 	string s_tmp = "HEAD / HTTP/1.1\r\nHost: " + m_host_name + "\r\nuser-agent: jetmon\r\nConnection: Close\r\n\r\n";
 
 	strcpy( m_buf, s_tmp.c_str() );
@@ -67,9 +59,9 @@ string HTTP_Checker::send_http_get() {
 
 std::string HTTP_Checker::get_response() {
 	size_t received;
-    fd_set read_fds;
-    struct timeval tv;
-    time_t time_end = time(NULL);
+	fd_set read_fds;
+	struct timeval tv;
+	time_t time_end = time( NULL );
 	time_end += NET_COMMS_TIMEOUT;
 	string ret_val = "";
 
@@ -88,7 +80,7 @@ std::string HTTP_Checker::get_response() {
 
 		while ( received > 0 ) {
 			m_buf[received] = '\0';
-            ret_val += m_buf;
+			ret_val += m_buf;
 			time_end = time(NULL);
 			time_end += NET_COMMS_TIMEOUT;
 
@@ -109,11 +101,11 @@ std::string HTTP_Checker::get_response() {
 				received = 0;
 		}
 	}
-    return ret_val;
+	return ret_val;
 }
 
 bool HTTP_Checker::init_socket() {
-    m_sock = ::socket( AF_INET, SOCK_STREAM, IPPROTO_TCP );
+	m_sock = ::socket( AF_INET, SOCK_STREAM, IPPROTO_TCP );
 
 	if ( -1 == m_sock ) {
 		errno = 0;
@@ -134,7 +126,7 @@ bool HTTP_Checker::init_socket() {
 
 	struct timeval time_out;
 	time_out.tv_sec = NET_COMMS_TIMEOUT;
-    time_out.tv_usec = 0;
+	time_out.tv_usec = 0;
 
 	ret_val = ::setsockopt( m_sock, SOL_SOCKET, SO_SNDTIMEO, &time_out, sizeof( time_out ) );
 
@@ -156,16 +148,16 @@ bool HTTP_Checker::init_socket() {
 		return false;
 	}
 
-    long flags = fcntl( m_sock, F_GETFL );
-    ret_val = fcntl( m_sock, F_SETFL, flags | O_NONBLOCK );
+	long flags = fcntl( m_sock, F_GETFL );
+	ret_val = fcntl( m_sock, F_SETFL, flags | O_NONBLOCK );
 
-    if ( -1 == ret_val ) {
-        close( m_sock );
-        m_sock = -1;
-        errno = 0;
-        m_str_desc = "unable to set socket option O_NONBLOCK";
-        return false;
-    } else {
+	if ( -1 == ret_val ) {
+		close( m_sock );
+		m_sock = -1;
+		errno = 0;
+		m_str_desc = "unable to set socket option O_NONBLOCK";
+		return false;
+	} else {
 		return true;
 	}
 }
@@ -187,41 +179,41 @@ bool HTTP_Checker::connect() {
 
 		int ret_val = ::connect( m_sock, (struct sockaddr *)&m_addr, sizeof( struct sockaddr ) );
 
-        fd_set write_fds;
-        struct timeval tv;
+		fd_set write_fds;
+		struct timeval tv;
 
-        FD_ZERO( &write_fds );
-        FD_SET( m_sock, &write_fds );
+		FD_ZERO( &write_fds );
+		FD_SET( m_sock, &write_fds );
 
-        tv.tv_sec = NET_COMMS_TIMEOUT;
-        tv.tv_usec = 0;
+		tv.tv_sec = NET_COMMS_TIMEOUT;
+		tv.tv_usec = 0;
 
-        ret_val = select(m_sock + 1, NULL, &write_fds, NULL, &tv);
+		ret_val = select(m_sock + 1, NULL, &write_fds, NULL, &tv);
 
-        switch ( ret_val ) {
-            case 0:
-                m_str_desc = "connect timeout";
-                return false;
-            case -1:
-                m_str_desc = "error performing connect";
-                return false;
-            default:
-                int so_error;
-                socklen_t len = sizeof so_error;
+		switch ( ret_val ) {
+			case 0:
+				m_str_desc = "connect timeout";
+				return false;
+			case -1:
+				m_str_desc = "error performing connect";
+				return false;
+			default:
+				int so_error;
+				socklen_t len = sizeof so_error;
 
-                ::getsockopt(m_sock, SOL_SOCKET, SO_ERROR, &so_error, &len);
+				::getsockopt(m_sock, SOL_SOCKET, SO_ERROR, &so_error, &len);
 
-                if ( 0 != so_error ) {
-                    m_str_desc = "socket connect error: ";
-                    m_str_desc += strerror( so_error );
-                    close( m_sock );
-                    m_sock = -1;
-                    errno = 0;
-                    return false;
-                }
-                break;
-        }
-        return true;
+				if ( 0 != so_error ) {
+					m_str_desc = "socket connect error: ";
+					m_str_desc += strerror( so_error );
+					close( m_sock );
+					m_sock = -1;
+					errno = 0;
+					return false;
+				}
+				break;
+		}
+		return true;
 	}
 	catch( exception& ex ) {
 		m_str_desc = "exception in HTTP_Checker::connect()";
@@ -263,8 +255,6 @@ bool HTTP_Checker::send_bytes( char* p_packet, size_t p_packet_length )
 		bytes_sent = ::send(this->m_sock, (const char *)p_packet, (int)bytes_to_send, 0);
 
 		if ( bytes_sent != bytes_to_send ) {
-			//cerr << "data send failed (sent " << bytes_sent <<  ") retries left " << send_attempts << ") - (" << errno <<  ") " << endl;
-
 			switch ( errno ) {
 				case ENOTSOCK: {
 					m_str_desc = "ERROR: socket operation on non-socket irrecoverable; aborting";

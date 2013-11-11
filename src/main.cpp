@@ -35,11 +35,11 @@ struct HTTP_Check_Baton {
 void http_check_async_fin( uv_work_t *req, int status ) {
 	HTTP_Check_Baton *baton = static_cast<HTTP_Check_Baton*>(req->data);
 	Handle<Value> argv[3] = { Number::New( baton->server_id ),  Number::New( baton->http_checker->get_rtt() ),
-								String::New( baton->http_checker->get_str_desc().c_str() ) };
+								Number::New( baton->http_checker->get_response_code() ) };
 	TryCatch try_catch;
-	MakeCallback( Context::GetCurrent()->Global(), baton->callback, 3, argv);
+	MakeCallback( Context::GetCurrent()->Global(), baton->callback, 3, argv );
 	if ( try_catch.HasCaught() )
-        FatalException( try_catch );
+		FatalException( try_catch );
 
 	baton->callback.Dispose();
 	delete baton->http_checker;
@@ -47,7 +47,7 @@ void http_check_async_fin( uv_work_t *req, int status ) {
 }
 
 void http_check_async( uv_work_t *req ) {
-	HTTP_Check_Baton *baton = static_cast<HTTP_Check_Baton*>(req->data);
+	HTTP_Check_Baton *baton = static_cast<HTTP_Check_Baton*>( req->data );
 	baton->http_checker->check( baton->server, baton->port );
 }
 
@@ -89,19 +89,19 @@ static Handle<Value> http_check( const Arguments &args ) {
 	uv_work_t *req = new uv_work_t();
 	req->data = baton;
 
-	uv_queue_work( uv_default_loop(), req, http_check_async, (uv_after_work_cb)http_check_async_fin);
+	uv_queue_work( uv_default_loop(), req, http_check_async, (uv_after_work_cb)http_check_async_fin );
 
 	return scope.Close( Undefined() );
 }
 
 void ping_check_async_fin( uv_work_t *req, int status ) {
-	Ping_Check_Baton *baton = static_cast<Ping_Check_Baton*>(req->data);
+	Ping_Check_Baton *baton = static_cast<Ping_Check_Baton*>( req->data );
 	Handle<Value> argv[2] = { Number::New( baton->server_id ),  Number::New( baton->ping_checker->get_avg_usec() ) };
 
 	TryCatch try_catch;
 	MakeCallback( Context::GetCurrent()->Global(), baton->callback, 2, argv);
 	if ( try_catch.HasCaught() )
-        FatalException( try_catch );
+		FatalException( try_catch );
 
 	baton->callback.Dispose();
 	delete baton->ping_checker;
@@ -109,7 +109,7 @@ void ping_check_async_fin( uv_work_t *req, int status ) {
 }
 
 void ping_check_async( uv_work_t *req ) {
-	Ping_Check_Baton *baton = static_cast<Ping_Check_Baton*>(req->data);
+	Ping_Check_Baton *baton = static_cast<Ping_Check_Baton*>( req->data );
 	baton->ping_checker->ping( baton->server, baton->num_check, baton->num_pass );
 }
 
@@ -152,7 +152,7 @@ Handle<Value> ping_check( const Arguments& args ) {
 	uv_work_t *req = new uv_work_t();
 	req->data = baton;
 
-	uv_queue_work( uv_default_loop(), req, ping_check_async, (uv_after_work_cb)ping_check_async_fin);
+	uv_queue_work( uv_default_loop(), req, ping_check_async, (uv_after_work_cb)ping_check_async_fin );
 
 	return scope.Close( Undefined() );
 }
@@ -162,5 +162,5 @@ void Initialise( Handle<Object> exports) {
 	exports->Set( String::NewSymbol( "http_check" ), FunctionTemplate::New( http_check )->GetFunction() );
 }
 
-NODE_MODULE(watcher, Initialise)
+NODE_MODULE( jetmon, Initialise )
 

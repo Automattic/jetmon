@@ -86,10 +86,10 @@ bool Pinger::ping( string hostname, int p_num_packets, const int& p_min_packets 
 			read_packet( (char *)m_packet, rec_size, (struct sockaddr_in *)&from );
 		}
 	}
-    
-    ::close( m_sock );
-    m_sock = -1;
-    
+
+	::close( m_sock );
+	m_sock = -1;
+
 	return ( m_received >= p_min_packets );
 }
 
