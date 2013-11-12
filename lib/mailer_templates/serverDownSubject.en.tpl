@@ -1,0 +1,1 @@
+We noticed that your site %url% was down!

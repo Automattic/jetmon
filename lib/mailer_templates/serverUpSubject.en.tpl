@@ -1,0 +1,1 @@
+Good news — your site %url% is back up!
