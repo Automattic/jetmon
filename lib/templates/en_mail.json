@@ -26,10 +26,12 @@
     "serverStillDownHTML": 
     [  
     "Hi there,",
+    "",
+    "We’e following up on the recent Jetpack Monitor alert we sent. It appears that your site is still down, and has been for %downtime%.",
+    "",
+    "At this point, you’ll probably want to reach out to your hosting provider to determine the cause of the outage. Feel free to contact us as well; if there’s something we can to do help, we’re happy to lend a hand.",
 	"",
-	"Jetpack Monitor is on the job, keeping tabs on %url%. During our last check on %date_and_time%, we noticed that your site was down.",
-	"",
-	"If you’re concerned about your site’s status, you might want to get in touch with your hosting provider. We’ll continue keeping track, and will let you know when your site is up and running again and the total downtime.",
+	"We’ll continue monitoring your site, and will let you know when it’s up again.",
 	"",
 	"Cheers,",
 	"The Jetpack Team"
