@@ -1,6 +1,6 @@
 {
 	'targets':[ {
-		'target_name':'watcher',
+		'target_name':'jetmon',
 		'cflags_cc': [ '-fexceptions','-O3' ],
 		'sources':[
 			'./src/main.cpp',
