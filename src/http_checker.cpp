@@ -44,7 +44,10 @@ void HTTP_Checker::check( string p_host_name, int p_port ) {
 }
 
 string HTTP_Checker::send_http_get() {
-	string s_tmp = "HEAD / HTTP/1.1\r\nHost: " + m_host_name + "\r\nuser-agent: jetmon\r\nConnection: Close\r\n\r\n";
+	string s_tmp = "HEAD / HTTP/1.1\r\n";
+			s_tmp += "Host: " + m_host_name + "\r\n";
+			s_tmp += "User-Agent: jetmon/1.0 (Jetpack Site Uptime Monitor by WordPress.com)\r\n";
+			s_tmp += "Connection: Close\r\n\r\n";
 
 	strcpy( m_buf, s_tmp.c_str() );
 
