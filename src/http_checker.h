@@ -9,6 +9,7 @@
 #include <cerrno>
 #include <exception>
 #include <iostream>
+#include <algorithm>
 #include <fcntl.h>
 #include <arpa/inet.h>
 #include <sys/time.h>
@@ -42,6 +43,7 @@ private:
 	int m_sock;
 	std::string m_host_name;
 	std::string m_str_desc;
+	std::string m_host_dir;
 	int m_port;
 	struct timezone m_tzone;
 	time_t m_triptime;

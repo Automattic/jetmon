@@ -3,7 +3,7 @@
 
 using namespace std;
 
-HTTP_Checker::HTTP_Checker() : m_sock( -1 ), m_host_name( "" ), m_str_desc( "" ), m_port( 0 ), m_triptime( 0 ), m_response_code( 0 ) {
+HTTP_Checker::HTTP_Checker() : m_sock( -1 ), m_host_name( "" ), m_str_desc( "" ), m_host_dir( "" ), m_port( 0 ), m_triptime( 0 ), m_response_code( 0 ) {
 	;
 }
 
@@ -16,7 +16,23 @@ void HTTP_Checker::check( string p_host_name, int p_port ) {
 	struct timeval m_tend;
 
 	m_host_name = p_host_name;
+
+	if ( string::npos != m_host_name.find( "http://" ) ) {
+		m_host_name.erase( m_host_name.find( "http://" ), 7 );
+	}
+
+	if ( string::npos != m_host_name.find_first_of( ':' ) ) {
+		p_port = atoi( m_host_name.substr( m_host_name.find_first_of( ':' ) + 1, min( m_host_name.find_first_of( '/' ), m_host_name.length() ) ).c_str() );
+		m_host_name.erase( m_host_name.find_first_of( ':' ), min( m_host_name.find_first_of( '/' ), m_host_name.length() ) - m_host_name.find_first_of( ':' ) );
+	}
+
 	m_port = p_port;
+	m_host_dir = '/';
+
+	if ( string::npos != m_host_name.find_first_of( '/' ) ) {
+		m_host_dir = m_host_name.substr( m_host_name.find_first_of( '/' ), m_host_name.length() - m_host_name.find_first_of( '/' ) );
+		m_host_name.erase( m_host_name.find_first_of( '/' ), m_host_name.length() - m_host_name.find_first_of( '/' ) );
+	}
 
 	if ( init_socket() && connect() ) {
 		gettimeofday( &m_tstart, &m_tzone );
@@ -44,7 +60,7 @@ void HTTP_Checker::check( string p_host_name, int p_port ) {
 }
 
 string HTTP_Checker::send_http_get() {
-	string s_tmp = "HEAD / HTTP/1.1\r\n";
+	string s_tmp = "HEAD " + m_host_dir + " HTTP/1.1\r\n";
 			s_tmp += "Host: " + m_host_name + "\r\n";
 			s_tmp += "User-Agent: jetmon/1.0 (Jetpack Site Uptime Monitor by WordPress.com)\r\n";
 			s_tmp += "Connection: Close\r\n\r\n";
