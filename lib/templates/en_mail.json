@@ -1,7 +1,7 @@
 {
-    "serverDownSubject": "We noticed that your site %url% was down!",
+    "serverDownSubject": "[Jetpack Monitor] We noticed that your site %url% was down!",
 
-	"serverDownHTML": 
+	"serverDownText": 
 	[
 	"Hi there,",
 	"",
@@ -13,6 +13,14 @@
 	"The Jetpack Team"
 	],
 
+	"serverDownHtmlTitle": "Hi %username%,",
+
+	"serverDownHtmlContent": 
+	[
+	"<p>Jetpack Monitor is on the job, keeping tabs on %url%. During our last check on %date_and_time%, we noticed that your site was down.</p>",
+	"<p>If you’re concerned about your site’s status, you might want to get in touch with your hosting provider. We’ll continue keeping track, and will let you know when your site is up and running again and the total downtime.</p>",
+	"<p>Cheers,<br />The Jetpack Team"
+	],
 
 
 
@@ -21,9 +29,10 @@
 
 
 
-    "serverStillDownSubject": "Bad news — your site %url% is still down!",
 
-    "serverStillDownHTML": 
+    "serverStillDownSubject": "[Jetpack Monitor] Bad news — your site %url% is still down!",
+
+    "serverStillDownText": 
     [  
     "Hi there,",
     "",
@@ -37,6 +46,17 @@
 	"The Jetpack Team"
 	],
 
+    "serverStillDownHtmlTitle": "Hi %username%,",
+
+    "serverStillDownHtmlContent": 
+    [  
+    "<p>We’re following up on the recent Jetpack Monitor alert we sent. It appears that your site is still down, and has been for %downtime%.</p>",
+    "<p>At this point, you’ll probably want to reach out to your hosting provider to determine the cause of the outage. Feel free to contact us as well; if there’s something we can to do help, we’re happy to lend a hand.</p>",
+	"<p>We’ll continue monitoring your site, and will let you know when it’s up again.</p>",
+	"<p>Cheers,<br />The Jetpack Team</p>"
+	],
+
+
 
 
 
@@ -44,9 +64,9 @@
 	
 	
 	
-    "serverUpSubject": "Good news — your site %url% is back up!",
+    "serverUpSubject": "[Jetpack Monitor] Good news — your site %url% is back up!",
 
-    "serverUpHTML":
+    "serverUpText":
     [
 	"Hi there,",
 	"",
@@ -58,7 +78,36 @@
 	"",
 	"Cheers,",
 	"The Jetpack Team"
-	]
+	],
+	
+    "serverUpText":
+    [
+	"Hi there,",
+	"",
+	"Good news — your site %url% is back up!",
+	"",
+	"Your total downtime was %downtime%, but your site was up again as of %date_and_time%.",
+	"",
+	"If it goes down again at some point (we hope it doesn’t!), we’ll be in touch.",
+	"",
+	"Cheers,",
+	"The Jetpack Team"
+	],
+
+    "serverUpHtmlTitle": "Hi there,",
+    
+    "serverUpHtmlContent":
+    [
+	"<p>Good news — your site %url% is back up!</p>",
+	"<p>Your total downtime was %downtime%, but your site was up again as of %date_and_time%.</p>",
+	"<p>If it goes down again at some point (we hope it doesn’t!), we’ll be in touch.</p>",
+	"<p>Cheers,<br /> The Jetpack Team</p>"
+	],
+
+	"HtmlFooter": "Powered by <a href=\"http://jetpack.me\">Jetpack</a>",
+	
+	"HtmlFooterNotice": "You are receiving this email because you have activated Jetpack Monitor on your site. <a href=\"%admin_url%\">Click here to change your settings</a>."
+	
 
 }
 
