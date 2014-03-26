@@ -1,0 +1,23 @@
+{
+	"veriflier_name"     : "Veriflier 1",
+	"auth_token"         : "<some token auth string>",
+
+	"thread_pool_max"    : 300,
+	"max_redirects"      : 2,
+	"net_comms_timeout"  : 20000,
+	"debug"              : true,
+
+	"listen_port"        : 7801,
+	"jetmon_server_port" : 7800,
+
+	"privatekey_file"    : "./certs/veriflier.key",
+	"privatecert_file"   : "./certs/veriflier.crt",
+
+	"monitors" : [
+		{
+			"name"       : "<Friendly Name>",
+			"host"       : "<host name",
+			"auth_token" : "<some token auth string>"
+		}
+	]
+}
