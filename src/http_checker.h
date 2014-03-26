@@ -4,8 +4,6 @@
 
 #include <cstdlib>
 #include <string>
-#include <string.h>
-#include <strings.h>
 #include <cerrno>
 #include <exception>
 #include <iostream>
@@ -23,9 +21,15 @@
 #include <netinet/ip_icmp.h>
 #include <netdb.h>
 
+#include <openssl/crypto.h>
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+
 #define HTTP_DEFAULT_PORT	80
+#define HTTPS_DEFAULT_PORT  443
 #define MAX_TCP_BUFFER		1024
-#define NET_COMMS_TIMEOUT   10
+#define NET_COMMS_TIMEOUT   20
+#define MAX_REDIRECTS       2
 
 class HTTP_Checker {
 
@@ -49,13 +53,20 @@ private:
 	time_t m_triptime;
 	int m_response_code;
 
+	SSL_CTX *m_ctx;
+	SSL *m_ssl;
+	BIO *m_sbio;
+
 	bool init_socket();
+	bool init_ssl();
 	bool connect();
 	bool disconnect();
 	std::string send_http_get();
 	bool send_bytes( char* p_packet, size_t p_packet_length );
 	std::string get_response();
-
+	void set_host_response( int redirects );
+	bool set_redirect_host_values( std::string p_content );
+	void parse_host_values();
 };
 
 #endif	//__HTTP_H__
