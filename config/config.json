@@ -1,35 +1,38 @@
 {
 	"DEBUG"          : true,
-	"NUM_WORKERS"    : 1,
-	"NUM_TO_PROCESS" : 20,
+	"NUM_WORKERS"    : 60,
+	"NUM_TO_PROCESS" : 40,
 	"DATASET_SIZE"   : 100,
 
 	"BUCKET_NO_MIN"  : 0,
 	"BUCKET_NO_MAX"  : 512,
 	"BATCH_SIZE"     : 32,
-	"HTTP_PORT"      : 80,
+	"AUTH_TOKEN"     : "<some token auth string>",
 
-	"SQL_UPDATE_BATCH"      : 5,
-	"INSTALLED_DATACENTER"  : "iad",
-	"LOCAL_CACHE_TTL_MIN"   : 300,
-	"LOCAL_CACHE_PURGE_SEC" : 60,
+	"SQL_UPDATE_BATCH"      : 1,
+	"INSTALLED_DATACENTER"  : "<data center>",
 	"DB_CONFIG_UPDATES_MIN" : 10,
 
-	"NUM_OF_CHECKS"               : 2,
-	"TIME_BETWEEN_CHECKS_SEC"     : 20,
-	"STATS_UPDATE_INTERVAL_MS"    : 1000,
-	"TIME_BETWEEN_NOTICES_MIN"    : 5,
-	"MIN_TIME_BETWEEN_ROUNDS_SEC" : 300,
+	"NUM_OF_CHECKS"               : 3,
+	"TIME_BETWEEN_CHECKS_SEC"     : 30,
 
-	"sendmails" : true,
-	"mailer"    : {
-			"FROM": "Jetpack Support <support@jetpack.me>",
-			"HOST": "127.0.0.1",
-			"PORT": "25",
-			"USER": "",
-			"PASSWORD": ""
-	},
-	"templates" : {
-				"TEMPLATES_DIR": "./lib/templates/"
-	}
+	"STATS_UPDATE_INTERVAL_MS"    : 5000,
+	"TIME_BETWEEN_NOTICES_MIN"    : 59,
+	"MIN_TIME_BETWEEN_ROUNDS_SEC" : 300,
+	"TIMEOUT_FOR_REQUESTS_SEC"    : 60,
+
+	"VERIFIERS": [
+		{
+			"name"       : "Veriflier 1",
+			"host"       : "<ip / host name>",
+			"port"       : "7801",
+			"auth_token" : "<some token auth string>"
+		},
+		{
+			"name"       : "Veriflier 2",
+			"host"       : "<ip / host name>",
+			"port"       : "7801",
+			"auth_token" : "<some token auth string>"
+		}
+	]
 }
