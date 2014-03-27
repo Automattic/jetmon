@@ -38,13 +38,14 @@ Database
 
 Main Table Schema:
 
-CREATE TABLE `jetpack_monitor_subscription` (
-  `blog_id` bigint(20) unsigned NOT NULL,
-  `bucket_no` smallint(2) unsigned NOT NULL DEFAULT 1,
-  `monitor_url` varchar(300) NOT NULL,
-  `monitor_active` tinyint(1) unsigned NOT NULL DEFAULT 1,
-  `site_status` tinyint(1) unsigned NOT NULL DEFAULT 1,
-  `last_status_change` timestamp NULL DEFAULT NULL,
-  PRIMARY KEY (`blog_id`)
-);
-CREATE INDEX `bucket_no_monitor_active` ON `jetpack_monitor_subscription` (`bucket_no`, `monitor_active`);
+	CREATE TABLE `jetpack_monitor_subscription` (
+		`blog_id` bigint(20) unsigned NOT NULL,
+		`bucket_no` smallint(2) unsigned NOT NULL DEFAULT 1,
+		`monitor_url` varchar(300) NOT NULL,
+		`monitor_active` tinyint(1) unsigned NOT NULL DEFAULT 1,
+		`site_status` tinyint(1) unsigned NOT NULL DEFAULT 1,
+		`last_status_change` timestamp NULL DEFAULT NULL,
+		PRIMARY KEY (`blog_id`)
+	);
+	CREATE INDEX `bucket_no_monitor_active` ON `jetpack_monitor_subscription` (`bucket_no`, `monitor_active`);
+
