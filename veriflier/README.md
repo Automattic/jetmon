@@ -4,7 +4,7 @@ veriflier service
 Overview
 --------
 
-The veriflier services check whether sites are reachable from thier location, using the same HEAD request as jetmon. This allows deployment to be done in geographically disparate datacenters, providing a true global status of the site being verified.
+The veriflier services check whether sites are reachable from their location, using the same HEAD request as jetmon. This allows deployment to be done in geographically disparate datacenters, providing a true global status of the site being verified.
 
 Building
 --------
