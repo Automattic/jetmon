@@ -21,6 +21,13 @@ Installation
 
 5) You will need to follow the instruction in the veriflier directory to build the verification servers.
 
+Configuration
+-------------
+
+The service support multi datacenter config, therefore to first step to get the service up and running is to set the datacenter in the config file. Whatever the configured datacenter name is, it will need to have matching entries in the db-config.conf file (see column definitions of the config array in dbpools.js). Only read servers are required by the jetmon service.
+
+The setup of the verification servers is straight forward, just be sure to specify tokens for each service and ensure they each have the others token setup on them. For example, the "Veriflier 1" 'auth_token', which you set in the jetmon config, must match the 'auth_token' in the 'veriflier.json' file on "Veriflier 1".
+
 Running
 -------
 
