@@ -19,7 +19,7 @@ Installation
 
 4) Run "node-gyp rebuild" in the application root directory.
 
-4) You will need to follow the instruction in the veriflier directory to build the verification servers.
+5) You will need to follow the instruction in the veriflier directory to build the verification servers.
 
 Running
 -------
@@ -38,6 +38,5 @@ CREATE TABLE `main_table` (
   `url` varchar(300) NOT NULL DEFAULT '',
   `site_status` tinyint(1) unsigned NOT NULL DEFAULT '1',
   `last_status_change_time` timestamp NULL DEFAULT NULL,
-  `email_addresses` text,
   PRIMARY KEY (`blog_id`,`bucket_no`)
 )
