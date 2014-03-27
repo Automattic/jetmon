@@ -11,9 +11,14 @@ The service relies on confirmation from external servers to verify that sites ar
 Installation
 ------------
 
-1) Install node.js
-2) Install mysql npm modules
-3) Run "node-gyp rebuild" in the application root directory.
+1) Install node.js.
+
+2) Install the mysql npm module with 'npm install mysql'.
+
+3) Ensure you have node-gyp, if not 'npm install -g node-gyp'.
+
+4) Run "node-gyp rebuild" in the application root directory.
+
 4) You will need to follow the instruction in the veriflier directory to build the verification servers.
 
 Running
