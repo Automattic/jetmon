@@ -6,14 +6,15 @@ Overview
 
 Parallel HTTP health monitoring using HEAD requests for large scale website monitoring.
 
-Takes a file with domains, each on a new line, as input and displays summary sites per second output.
+The service relies on confirmation from external servers to verify that sites are indeed offline. This mitigates the Internet weather issue sometimes giving false positives. The code for these servers can be found in the verifliers directory.
 
 Installation
 ------------
 
 1) Install node.js
-2) Install mysql and nodemailer npm modules
-2) Run "node-gyp rebuild" in the application root directory.
+2) Install mysql npm modules
+3) Run "node-gyp rebuild" in the application root directory.
+4) You will need to follow the instruction in the veriflier directory to build the verification servers.
 
 Running
 -------
