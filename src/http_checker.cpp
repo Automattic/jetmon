@@ -6,7 +6,7 @@ using namespace std;
 HTTP_Checker::HTTP_Checker() : m_sock( -1 ), m_host_name( "" ), m_str_desc( "" ), m_host_dir( "" ),
 								m_port( HTTP_DEFAULT_PORT ), m_triptime( 0 ), m_response_code( 0 ),
 								m_ctx( NULL ), m_ssl( NULL ), m_sbio( NULL ) {
-	;
+	memset( m_buf, 0, MAX_TCP_BUFFER );
 }
 
 HTTP_Checker::~HTTP_Checker() {
@@ -21,7 +21,7 @@ void HTTP_Checker::check( string p_host_name, int p_port ) {
 
 		this->parse_host_values();
 
-		if ( init_socket() && connect() )
+		if ( connect() )
 			this->set_host_response( 0 );
 	}
 	catch( exception &ex ) {
@@ -53,7 +53,7 @@ void HTTP_Checker::set_host_response( int redirects ) {
 				if ( ( 300 < m_response_code ) && ( 400 > m_response_code ) ) {
 					if ( set_redirect_host_values( response ) ) {
 						this->disconnect();
-						if ( init_socket() && connect() ) {
+						if ( connect() ) {
 							redirects++;
 							if ( MAX_REDIRECTS >= redirects )
 								this->set_host_response( redirects );
@@ -81,7 +81,7 @@ void HTTP_Checker::set_host_response( int redirects ) {
 
 bool HTTP_Checker::set_redirect_host_values( string p_content ) {
 	try {
-        string p_lcase_search = p_content;
+		string p_lcase_search = p_content;
 
 		std::transform( p_lcase_search.begin(), p_lcase_search.end(), p_lcase_search.begin(), ::tolower );
 
@@ -169,14 +169,16 @@ std::string HTTP_Checker::get_response() {
 
 		if ( FD_ISSET( m_sock, &read_fds) ) {
 			if ( HTTPS_DEFAULT_PORT == m_port )
-				received = SSL_read( m_ssl, m_buf, MAX_TCP_BUFFER );
+				received = SSL_read( m_ssl, m_buf, MAX_TCP_BUFFER - 1 );
 			else
-				received = ::recv( m_sock, m_buf, MAX_TCP_BUFFER, 0 );
+				received = ::recv( m_sock, m_buf, MAX_TCP_BUFFER - 1, 0 );
 
 			while ( received > 0 ) {
 				if ( received < MAX_TCP_BUFFER )
 					m_buf[ received ] = '\0';
-				ret_val += m_buf;
+				if ( ( (size_t)-1 ) != received )
+					ret_val += m_buf;
+
 				time_end = time( NULL );
 				time_end += NET_COMMS_TIMEOUT;
 
@@ -192,7 +194,10 @@ std::string HTTP_Checker::get_response() {
 				}while( (FD_ISSET( m_sock, &read_fds ) == 0) && ( time_end > time( NULL ) ) );
 
 				if( FD_ISSET( m_sock, &read_fds) )
-					received = ::recv(m_sock, (char*)m_buf, MAX_TCP_BUFFER, 0);
+					if ( HTTPS_DEFAULT_PORT == m_port )
+						received = SSL_read( m_ssl, m_buf, MAX_TCP_BUFFER - 1 );
+					else
+						received = ::recv( m_sock, m_buf, MAX_TCP_BUFFER - 1, 0 );
 				else
 					received = 0;
 			}
@@ -206,8 +211,8 @@ std::string HTTP_Checker::get_response() {
 	}
 }
 
-bool HTTP_Checker::init_socket() {
-	m_sock = ::socket( AF_INET, SOCK_STREAM, IPPROTO_TCP );
+bool HTTP_Checker::init_socket( addrinfo *addr ) {
+	m_sock = ::socket( addr->ai_family, addr->ai_socktype, addr->ai_protocol );
 
 	if ( -1 == m_sock ) {
 		errno = 0;
@@ -282,29 +287,54 @@ bool HTTP_Checker::init_ssl() {
 
 bool HTTP_Checker::connect() {
 	try {
-		struct sockaddr_in m_addr;
+        addrinfo *res = 0;
+		struct addrinfo hints;
+		memset( &hints, 0, sizeof( hints ) );
+		hints.ai_family = AF_UNSPEC;
+		hints.ai_flags = AI_ADDRCONFIG;
+		hints.ai_socktype = SOCK_STREAM;
+		int con_ret = -1;
+		int result = -1;
 
-		struct hostent *hp = gethostbyname( m_host_name.c_str() );
-		if ( hp ) {
-			m_addr.sin_port = htons( m_port );
-			m_addr.sin_family = hp->h_addrtype;
-			bcopy( hp->h_addr, (caddr_t)&m_addr.sin_addr, hp->h_length );
-		} else {
-			m_str_desc = "unknown host:" + m_host_name;
-			return false;
+		if ( HTTPS_DEFAULT_PORT == m_port )
+			result = getaddrinfo( m_host_name.c_str(), "https", &hints, &res );
+		else
+			result = getaddrinfo( m_host_name.c_str(), "http", &hints, &res );
+
+		if ( EAI_BADFLAGS == result ) {
+			hints.ai_flags = 0;
+			if ( HTTPS_DEFAULT_PORT == m_port )
+				result = getaddrinfo( m_host_name.c_str(), "https", &hints, &res );
+			else
+				result = getaddrinfo( m_host_name.c_str(), "http", &hints, &res );
 		}
 
-		int ret_val = ::connect( m_sock, (struct sockaddr *)&m_addr, sizeof( struct sockaddr ) );
+		if ( 0 == result ) {
+			addrinfo *node = res;
+			while ( node ) {
+				if ( ( AF_INET == node->ai_family ) || ( AF_INET6 == node->ai_family ) ) {
+					if ( init_socket( node ) )
+						con_ret = ::connect( m_sock, node->ai_addr, node->ai_addrlen );
 
-		if ( 0 != ret_val ) {
-			int so_error;
-			socklen_t len = sizeof so_error;
+					if ( con_ret == 0 ) {
+						break;
+					} else {
+						close( m_sock );
+						m_sock = -1;
+					}
+				}
+				node = node->ai_next;
+			}
+			freeaddrinfo( res );
+		}/* else if ( EAI_NONAME == result || EAI_FAIL == result ) {
+			std::cerr << "host not found: " << m_host_name.c_str() << std::endl;
+		}*/
 
-			::getsockopt(m_sock, SOL_SOCKET, SO_ERROR, &so_error, &len);
-			m_str_desc = "socket connect error: ";
-			m_str_desc += strerror( so_error );
-			close( m_sock );
-			m_sock = -1;
+		if ( 0 != con_ret ) {
+			if ( -1 != m_sock ) {
+				close( m_sock );
+				m_sock = -1;
+			}
 			errno = 0;
 			return false;
 		}

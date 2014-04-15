@@ -57,7 +57,7 @@ private:
 	SSL *m_ssl;
 	BIO *m_sbio;
 
-	bool init_socket();
+	bool init_socket( addrinfo *addr );
 	bool init_ssl();
 	bool connect();
 	bool disconnect();
