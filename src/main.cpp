@@ -83,7 +83,7 @@ Handle<Value> http_check( const Arguments &args ) {
 
 	uv_queue_work( uv_default_loop(), req, http_check_async, (uv_after_work_cb)http_check_async_fin );
 
-	return Undefined();
+	return scope.Close( Undefined() );
 }
 
 void Initialise( Handle<Object> exports) {
