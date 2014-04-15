@@ -95,11 +95,17 @@ bool HTTP_Checker::set_redirect_host_values( string p_content ) {
 
 		p_content.erase( p_content.find_first_of( "\r\n" ), p_content.length() - p_content.find_first_of( "\r\n" ) );
 
+		// keep a copy for relative location redirects
+		string hostname_backup = m_host_name;
 		m_host_name = p_content;
 		m_port = HTTP_DEFAULT_PORT;
 		m_host_dir = '/';
 
 		this->parse_host_values();
+
+		// this is a relative location redirect, reinstate hostname
+		if ( 0 == m_host_name.size() )
+			m_host_name = hostname_backup;
 
 		return true;
 	}
