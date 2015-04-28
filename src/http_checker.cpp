@@ -435,12 +435,10 @@ bool HTTP_Checker::send_bytes( char* p_packet, size_t p_packet_length ) {
 					case ENOTSOCK: {
 						m_str_desc = "ERROR: socket operation on non-socket irrecoverable; aborting";
 						return false;
-						break;
 					}
 					case EBADF: {
 						m_str_desc = "ERROR: bad file descriptor is irrecoverable; aborting";
 						return false;
-						break;
 					}
 					case EPIPE: {
 						m_str_desc = "ERROR: broken pipe is irrecoverable; aborting";
@@ -452,9 +450,6 @@ bool HTTP_Checker::send_bytes( char* p_packet, size_t p_packet_length ) {
 						return false;
 					}
 				}
-
-				errno = 0;
-				usleep( 1000 );
 			}
 			if ( bytes_sent > 0 ) {
 				bytes_left -= bytes_sent;
