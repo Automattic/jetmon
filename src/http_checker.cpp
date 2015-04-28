@@ -156,7 +156,7 @@ string HTTP_Checker::send_http_get() {
 
 std::string HTTP_Checker::get_response() {
 	try {
-		size_t received;
+		ssize_t received;
 		fd_set read_fds;
 		struct timeval tv;
 		time_t time_end = time( NULL );
@@ -180,10 +180,10 @@ std::string HTTP_Checker::get_response() {
 				received = ::recv( m_sock, m_buf, MAX_TCP_BUFFER - 1, 0 );
 
 			while ( received > 0 ) {
-				if ( received < MAX_TCP_BUFFER )
+				if ( received < MAX_TCP_BUFFER ) {
 					m_buf[ received ] = '\0';
-				if ( ( (size_t)-1 ) != received )
 					ret_val += m_buf;
+				}
 
 				time_end = time( NULL );
 				time_end += NET_COMMS_TIMEOUT;
@@ -413,10 +413,10 @@ bool HTTP_Checker::disconnect() {
 
 bool HTTP_Checker::send_bytes( char* p_packet, size_t p_packet_length ) {
 	try {
-		size_t bytes_left = p_packet_length;
-		size_t bytes_sent = 0;
+		ssize_t bytes_left = p_packet_length;
+		ssize_t bytes_sent = 0;
 		int send_attempts = 5;
-		size_t bytes_to_send = 0;
+		ssize_t bytes_to_send = 0;
 
 		do
 		{
@@ -456,7 +456,7 @@ bool HTTP_Checker::send_bytes( char* p_packet, size_t p_packet_length ) {
 				errno = 0;
 				usleep( 1000 );
 			}
-			if ( bytes_sent != (unsigned)-1 ) {
+			if ( bytes_sent > 0 ) {
 				bytes_left -= bytes_sent;
 				p_packet += bytes_sent;
 			}
