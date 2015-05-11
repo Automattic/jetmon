@@ -31,6 +31,8 @@
 #define NET_COMMS_TIMEOUT   20
 #define MAX_REDIRECTS       2
 
+//#define DEBUG_MODE          1
+
 class HTTP_Checker {
 
 public:
@@ -44,6 +46,9 @@ public:
 
 private:
 	char m_buf[MAX_TCP_BUFFER];
+#ifdef DEBUG_MODE
+	char m_ip[INET_ADDRSTRLEN];
+#endif
 	int m_sock;
 	std::string m_host_name;
 	std::string m_str_desc;

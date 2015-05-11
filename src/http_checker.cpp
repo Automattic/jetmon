@@ -7,6 +7,9 @@ HTTP_Checker::HTTP_Checker() : m_sock( -1 ), m_host_name( "" ), m_str_desc( "" )
 								m_port( HTTP_DEFAULT_PORT ), m_triptime( 0 ), m_response_code( 0 ),
 								m_ctx( NULL ), m_ssl( NULL ), m_sbio( NULL ) {
 	memset( m_buf, 0, MAX_TCP_BUFFER );
+	#ifdef DEBUG_MODE
+	memset( m_ip, 0, INET_ADDRSTRLEN );
+	#endif
 }
 
 HTTP_Checker::~HTTP_Checker() {
@@ -48,6 +51,10 @@ void HTTP_Checker::set_host_response( int redirects ) {
 			if ( response.find_first_of( ' ' ) == 8 ) {
 				m_str_desc = response.substr( 9, 3 );
 				m_response_code = atoi( m_str_desc.c_str() );
+
+				#ifdef DEBUG_MODE
+					cerr << m_ip << " - " << "response code: " << m_str_desc << endl;
+				#endif
 
 				// if we have been redirected, get the details and make a recursive call
 				if ( ( 300 < m_response_code ) && ( 400 > m_response_code ) ) {
@@ -165,7 +172,7 @@ std::string HTTP_Checker::get_response() {
 
 		do {
 			tv.tv_sec = 0;
-			tv.tv_usec = 50000;
+			tv.tv_usec = 250000;
 
 			FD_ZERO( &read_fds );
 			FD_SET( m_sock, &read_fds );
@@ -179,6 +186,10 @@ std::string HTTP_Checker::get_response() {
 			else
 				received = ::recv( m_sock, m_buf, MAX_TCP_BUFFER - 1, 0 );
 
+			#ifdef DEBUG_MODE
+			cerr << m_ip << " - " << received << " bytes received" << endl;
+			#endif
+
 			while ( received > 0 ) {
 				if ( received < MAX_TCP_BUFFER ) {
 					m_buf[ received ] = '\0';
@@ -191,7 +202,7 @@ std::string HTTP_Checker::get_response() {
 				do
 				{
 					tv.tv_sec = 0;
-					tv.tv_usec = 50000;
+					tv.tv_usec = 250000;
 
 					FD_ZERO( &read_fds );
 					FD_SET( m_sock, &read_fds );
@@ -293,7 +304,7 @@ bool HTTP_Checker::init_ssl() {
 
 bool HTTP_Checker::connect() {
 	try {
-        addrinfo *res = 0;
+		addrinfo *res = 0;
 		struct addrinfo hints;
 		memset( &hints, 0, sizeof( hints ) );
 		hints.ai_family = AF_UNSPEC;
@@ -302,38 +313,81 @@ bool HTTP_Checker::connect() {
 		int con_ret = -1;
 		int result = -1;
 
-		if ( HTTPS_DEFAULT_PORT == m_port )
+		#ifdef DEBUG_MODE
+		cerr << "looking up " << m_host_name.c_str() << endl;
+		#endif
+
+		if ( HTTPS_DEFAULT_PORT == m_port ) {
 			result = getaddrinfo( m_host_name.c_str(), "https", &hints, &res );
-		else
+		} else {
 			result = getaddrinfo( m_host_name.c_str(), "http", &hints, &res );
+		}
 
 		if ( EAI_BADFLAGS == result ) {
 			hints.ai_flags = 0;
-			if ( HTTPS_DEFAULT_PORT == m_port )
+			if ( HTTPS_DEFAULT_PORT == m_port ) {
 				result = getaddrinfo( m_host_name.c_str(), "https", &hints, &res );
-			else
+			} else {
 				result = getaddrinfo( m_host_name.c_str(), "http", &hints, &res );
+			}
 		}
 
 		if ( 0 == result ) {
 			addrinfo *node = res;
-			while ( node ) {
+			int tried_recs = 0;
+			while ( node && 2 > tried_recs ) {
 				if ( ( AF_INET == node->ai_family ) || ( AF_INET6 == node->ai_family ) ) {
+					tried_recs++;
+					char tmp[ INET_ADDRSTRLEN ];
+
+					if ( AF_INET == node->ai_family ) {
+						inet_ntop( AF_INET, &( ( ( struct sockaddr_in * ) node->ai_addr )->sin_addr ), tmp, node->ai_addrlen );
+					} else {
+						inet_ntop( AF_INET6, &( ( (struct sockaddr_in6 * ) node->ai_addr )->sin6_addr ), tmp, node->ai_addrlen );
+					}
+
+					#ifdef DEBUG_MODE
+					if ( strlen( tmp ) > 0 ) {
+						strncpy( m_ip, tmp, INET_ADDRSTRLEN );
+						m_ip[ INET_ADDRSTRLEN - 1 ] = '\0';
+						cerr << "trying " << m_host_name.c_str() << " on IP: " << m_ip << endl;
+					}
+					#endif
+
 					if ( init_socket( node ) )
 						con_ret = ::connect( m_sock, node->ai_addr, node->ai_addrlen );
 
 					if ( con_ret == 0 ) {
+						#ifdef DEBUG_MODE
+						cerr << m_ip << " - " << "connected!" << endl;
+						#endif
 						break;
 					} else {
+						#ifdef DEBUG_MODE
+						cerr << "failed to connect to " << m_host_name.c_str() << " on IP: " << m_ip << endl;
+						memset( m_ip, 0, INET_ADDRSTRLEN );
+						#endif
+
 						close( m_sock );
 						m_sock = -1;
 					}
 				}
 				node = node->ai_next;
 			}
+
+			#ifdef DEBUG_MODE
+			if ( ( 0 == tried_recs ) && ( 0 == node ) ) {
+				cerr <<  "unknown address types for: " << m_host_name.c_str() << std::endl;
+			}
+			#endif
+
 			freeaddrinfo( res );
-		}/* else if ( EAI_NONAME == result || EAI_FAIL == result ) {
-			std::cerr << "host not found: " << m_host_name.c_str() << std::endl;
+		} else if ( EAI_NONAME == result || EAI_FAIL == result ) {
+			#ifdef DEBUG_MODE
+			strncpy( m_ip, "NXDOMAIN", INET_ADDRSTRLEN );
+			#endif
+		}/* else {
+			std::cerr << "unknown error for host: " << m_host_name.c_str() << std::endl;
 		}*/
 
 		if ( 0 != con_ret ) {
@@ -429,6 +483,10 @@ bool HTTP_Checker::send_bytes( char* p_packet, size_t p_packet_length ) {
 				bytes_sent = SSL_write( m_ssl, (const char *)p_packet, (int)bytes_to_send );
 			else
 				bytes_sent = ::send( this->m_sock, (const char *)p_packet, (int)bytes_to_send, 0 );
+
+			#ifdef DEBUG_MODE
+				cerr << m_ip << " - " << bytes_sent << " bytes sent" << endl;
+			#endif
 
 			if ( bytes_sent != bytes_to_send ) {
 				switch ( errno ) {
