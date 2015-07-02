@@ -430,6 +430,7 @@ bool HTTP_Checker::connect() {
 			}
 
 			SSL_set_bio( m_ssl, m_sbio, m_sbio );
+			SSL_set_tlsext_host_name( m_ssl, m_host_name.c_str() );
 			int ssl_val = SSL_connect( m_ssl );
 
 			if ( 1 != ssl_val ) {
