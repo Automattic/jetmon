@@ -287,6 +287,21 @@ bool HTTP_Checker::init_ssl() {
 		return false;
 	}
 
+	SSL_CTX_set_verify( m_ctx, SSL_VERIFY_PEER, NULL );
+
+#ifdef SSL_MODE_RELEASE_BUFFERS
+	SSL_CTX_set_mode( m_ctx, SSL_MODE_RELEASE_BUFFERS );
+#endif
+
+	if ( ! SSL_CTX_load_verify_locations( m_ctx, NULL, "/etc/ssl/certs" ) ) {
+		close( m_sock );
+		m_sock = -1;
+		errno = 0;
+		m_str_desc = "unable to load the cert location";
+		cerr << "unable to load the cert location" << endl;
+		return false;
+	}
+
 	m_ssl = SSL_new( m_ctx );
 
 	if ( NULL == m_ssl ) {

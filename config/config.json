@@ -9,6 +9,7 @@
 	"BATCH_SIZE"     : 32,
 	"AUTH_TOKEN"     : "<some token auth string>",
 
+	"VERIFLIER_BATCH_SIZE"  : 200,
 	"SQL_UPDATE_BATCH"      : 1,
 	"INSTALLED_DATACENTER"  : "<data center>",
 	"DB_CONFIG_UPDATES_MIN" : 10,
