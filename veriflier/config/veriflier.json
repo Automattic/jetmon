@@ -2,7 +2,9 @@
 	"veriflier_name"     : "Veriflier 1",
 	"auth_token"         : "<some token auth string>",
 
-	"thread_pool_max"    : 300,
+	"thread_pool_max"    : 30,
+	"max_pending_conns"  : 256,
+	"max_checks"         : 500,
 	"max_redirects"      : 2,
 	"net_comms_timeout"  : 20000,
 	"debug"              : true,
