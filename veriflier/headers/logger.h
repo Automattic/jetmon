@@ -9,7 +9,8 @@
 
 #include <iostream>
 
-#define MAX_LOG_FILESIZE 1024 * 1024 * 10 // 10 MB
+#define MAX_LOG_FILESIZE 1024 * 1024 * 50 // 50 MB
+#define LOGS_TO_KEEP 20
 
 const QString LOG_FILE_NAME = QDir::currentPath() + "/logs/veriflier.log";
 #define LOG( content ) Logger::write( content )

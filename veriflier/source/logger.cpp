@@ -36,7 +36,7 @@ void Logger::write( QString s_data ) {
 }
 
 void Logger::do_log_rotation() {
-	for ( int del_loop = 9; del_loop > 0; del_loop-- ) {
+	for ( int del_loop = ( LOGS_TO_KEEP - 1 ); del_loop > 0; del_loop-- ) {
 		if ( QFile( LOG_FILE_NAME + "." + QString::number( del_loop ) ).exists() ) {
 			if ( QFile( LOG_FILE_NAME +"." + QString::number( del_loop + 1 ) ).exists() )
 				QFile( LOG_FILE_NAME + "." + QString::number( del_loop + 1 ) ).remove();
@@ -49,5 +49,4 @@ void Logger::do_log_rotation() {
 	QFile( LOG_FILE_NAME ).copy( LOG_FILE_NAME + ".1" );
 	QFile( LOG_FILE_NAME ).remove();
 }
-
 
