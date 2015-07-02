@@ -4,9 +4,9 @@
 
 using namespace std;
 
-HTTP_Checker::HTTP_Checker( const int p_net_comms_timeout ) : m_sock( NULL ), m_ssl( NULL ),
+HTTP_Checker::HTTP_Checker( const int p_net_timeout ) : m_sock( NULL ), m_ssl( NULL ),
 						m_host_name( "" ), m_host_dir( "" ), m_port( DEFAULT_HTTP_PORT ),
-						m_triptime( 0 ), m_response_code( 0 ), m_net_comms_timeout( p_net_comms_timeout ) {
+						m_triptime( 0 ), m_response_code( 0 ), m_net_timeout( p_net_timeout ) {
 }
 
 HTTP_Checker::~HTTP_Checker() {
@@ -83,11 +83,17 @@ bool HTTP_Checker::set_redirect_host_values( QString p_content ) {
 
 		p_content.remove( p_content.indexOf( "\r\n" ), p_content.length() - p_content.indexOf( "\r\n" ) );
 
+		// keep a copy for relative location redirects
+		QString hostname_backup = m_host_name;
 		m_host_name = p_content;
 		m_port = DEFAULT_HTTP_PORT;
 		m_host_dir = '/';
 
 		this->parse_host_values();
+
+		// this is a relative location redirect, reinstate hostname
+		if ( 0 == m_host_name.size() )
+			m_host_name = hostname_backup;
 
 		return true;
 	}
@@ -136,13 +142,13 @@ QString HTTP_Checker::send_http_get() {
 QString HTTP_Checker::get_response() {
 	QString ret_val = "";
 	if ( DEFAULT_HTTPS_PORT == m_port ) {
-		bool data = m_ssl->waitForReadyRead( m_net_comms_timeout );
+		bool data = m_ssl->waitForReadyRead( m_net_timeout );
 		if ( data ) {
 			QByteArray a_data = m_ssl->readAll();
 			ret_val = a_data.data();
 		}
 	} else {
-		bool data = m_sock->waitForReadyRead( m_net_comms_timeout );
+		bool data = m_sock->waitForReadyRead( m_net_timeout );
 		if ( data ) {
 			QByteArray a_data = m_sock->readAll();
 			ret_val = a_data.data();
@@ -157,7 +163,7 @@ bool HTTP_Checker::connect() {
 		m_ssl = new QSslSocket();
 		m_ssl->connectToHostEncrypted( QString( m_host_name.toStdString().c_str() ), m_port );
 
-		if ( ! m_ssl->waitForEncrypted( m_net_comms_timeout ) ) {
+		if ( ! m_ssl->waitForEncrypted( m_net_timeout ) ) {
 			//LOG( "The SSL handshake failed: ", m_host_name.toStdString().c_str() );
 			return false;
 		}
@@ -165,7 +171,7 @@ bool HTTP_Checker::connect() {
 		m_sock = new QTcpSocket();
 		m_sock->connectToHost( m_host_name, m_port );
 
-		if ( ! m_sock->waitForConnected( m_net_comms_timeout ) ) {
+		if ( ! m_sock->waitForConnected( m_net_timeout ) ) {
 			//LOG( "Failed to connect to : ", m_host_name.toStdString().c_str() );
 			return false;
 		}
@@ -196,11 +202,11 @@ bool HTTP_Checker::send_bytes( QString s_data ) {
 	if ( DEFAULT_HTTPS_PORT == m_port ) {
 		bytes_sent = m_ssl->write( s_data.toStdString().c_str(), s_data.length() );
 		m_ssl->flush();
-		m_ssl->waitForBytesWritten( m_net_comms_timeout );
+		m_ssl->waitForBytesWritten( m_net_timeout );
 	} else {
 		bytes_sent = m_sock->write( s_data.toStdString().c_str(), s_data.length() );
 		m_sock->flush();
-		m_sock->waitForBytesWritten( m_net_comms_timeout );
+		m_sock->waitForBytesWritten( m_net_timeout );
 	}
 
 	return ( bytes_sent == s_data.length() );

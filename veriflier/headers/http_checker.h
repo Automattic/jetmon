@@ -17,7 +17,7 @@
 class HTTP_Checker: QObject {
 	Q_OBJECT
 public:
-	HTTP_Checker( const int p_net_comms_timeout );
+	HTTP_Checker( const int p_net_timeout );
 	~HTTP_Checker();
 
 	void check( QString p_host_name );
@@ -34,7 +34,7 @@ private:
 	struct timezone m_tzone;
 	time_t m_triptime;
 	int m_response_code;
-	int m_net_comms_timeout;
+	int m_net_timeout;
 
 	bool connect();
 	bool closeConnection();
