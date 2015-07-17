@@ -28,12 +28,12 @@ public:
 	void setMonitorUrl( QString monitor_url ) { m_monitor_url = monitor_url; }
 	void setBlogID( qint64 blog_id ) { m_blog_id = blog_id; }
 	void setTimer( const QDateTime &requested ) { m_timer = requested; }
+
+protected:
 	void run() Q_DECL_OVERRIDE;
 
 signals:
 	void resultReady( qint64 blog_id, int status );
-
-public slots:
 
 private:
 	QSslSocket *m_socket;
