@@ -1,6 +1,5 @@
 
 #include "headers/check_controller.h"
-#include "headers/check_thread.h"
 #include "headers/logger.h"
 
 #include <QMutexLocker>
@@ -34,8 +33,8 @@ void CheckController::finishedChecking( qint64 blog_id, int status ) {
 	m_check_lock.lock();
 	for ( int loop = 0; loop < m_checks.size(); loop++ ) {
 		if ( m_checks[loop]->blog_id == blog_id ) {
-			if ( false == m_checks[loop]->checking ) {
-				LOG( "deleting a blog_id that was not set as 'checking'?: " + QString::number( blog_id ) );
+			if ( NULL == m_checks[loop]->ct ) {
+				LOG( "deleting a blog_id that does not have a check thread assigned?: " + QString::number( blog_id ) );
 			}
 
 			arr_result.insert( "blog_id", QJsonValue( blog_id ) );
@@ -51,6 +50,8 @@ void CheckController::finishedChecking( qint64 blog_id, int status ) {
 			json_doc.setObject( json_obj );
 			m_check_results.insert( m_checks[loop]->jetmon_server, json_doc );
 
+			m_checks[loop]->ct->quit();
+			m_checks[loop]->ct->deleteLater();
 			HealthCheck *ptr = m_checks[loop];
 			m_checks.remove( loop );
 			delete ptr;
@@ -60,7 +61,7 @@ void CheckController::finishedChecking( qint64 blog_id, int status ) {
 	}
 	if ( m_checking < m_max_checks ) {
 		for ( int loop = 0; loop < m_checks.size(); loop++ ) {
-			if ( false == m_checks[loop]->checking ) {
+			if ( NULL == m_checks[loop]->ct ) {
 				startChecking( m_checks[loop] );
 				m_check_lock.unlock();
 				return;
@@ -81,9 +82,9 @@ inline bool CheckController::haveCheck( qint64 blog_id ) {
 
 void CheckController::startChecking( HealthCheck* hc ) {
 	m_checking++;
-	hc->checking = true;
 	CheckThread *ct = new CheckThread( m_ssl_config, m_net_timeout, m_debug );
 	connect( ct, SIGNAL( resultReady(qint64, int) ), this, SLOT( finishedChecking(qint64, int) ) );
+	hc->ct = ct;
 	ct->setMonitorUrl( hc->monitor_url );
 	ct->setBlogID( hc->blog_id );
 	ct->setTimer( hc->received );

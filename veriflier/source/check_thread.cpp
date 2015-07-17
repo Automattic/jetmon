@@ -4,10 +4,10 @@
 
 CheckThread::CheckThread( const QSslConfiguration *ssl_config,
 						const int net_timeout, const bool debug )
-	: m_socket( NULL ), m_ssl_config( ssl_config ),
+	: QThread( 0 ), m_socket( NULL ), m_ssl_config( ssl_config ),
 	m_net_timeout( net_timeout ), m_debug( debug )
 {
-	connect( this, SIGNAL( finished() ), this, SLOT( deleteLater() ) );
+	;
 }
 
 void CheckThread::run() {

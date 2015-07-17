@@ -10,12 +10,14 @@
 #include <QSslSocket>
 #include <QSslConfiguration>
 
+#include "headers/check_thread.h"
+
 struct HealthCheck {
 	int blog_id;
 	QString monitor_url;
 	QString jetmon_server;
 	QDateTime received;
-	bool checking;
+	CheckThread *ct;
 };
 
 class CheckController : public QObject
