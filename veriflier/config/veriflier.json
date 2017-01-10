@@ -2,11 +2,13 @@
 	"veriflier_name"     : "Veriflier 1",
 	"auth_token"         : "<some token auth string>",
 
-	"thread_pool_max"    : 30,
+	"thread_pool_max"    : 4,
 	"max_pending_conns"  : 256,
-	"max_checks"         : 500,
 	"max_redirects"      : 2,
-	"net_comms_timeout"  : 20000,
+	"max_checkers"       : 10,
+	"max_checks"         : 1000,
+
+	"net_comms_timeout"  : 30000,
 	"debug"              : true,
 
 	"listen_port"        : 7801,
