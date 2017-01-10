@@ -13,8 +13,11 @@
 #include <sys/time.h>
 #include <sys/socket.h>
 #include <sys/select.h>
+#include <sys/epoll.h>
+#include <sys/types.h>
 #include <unistd.h>
 
+#include <netinet/tcp.h>
 #include <netinet/in_systm.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
@@ -24,14 +27,27 @@
 #include <openssl/crypto.h>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
+#if (SSLEAY_VERSION_NUMBER >= 0x0907000L)
+# include <openssl/conf.h>
+#endif
 
 #define HTTP_DEFAULT_PORT	80
 #define HTTPS_DEFAULT_PORT  443
 #define MAX_TCP_BUFFER		1024
 #define NET_COMMS_TIMEOUT   20
 #define MAX_REDIRECTS       2
+#define MAX_EPOLL_EVENTS    10
 
-//#define DEBUG_MODE          1
+// Enables the printing of debug messages to stderr
+#define DEBUG_MODE          0
+
+// getaddrinfo is much slower than gethostbyname and, although
+// it is technically the best way to lookup hosts, only enable
+// this on hosts with more than enough CPU compute headroom.
+#define USE_GETADDRINFO     0
+
+// Sets whether we compile and use non-blocking socket IO
+#define NON_BLOCKING_IO     0
 
 class HTTP_Checker {
 
@@ -40,22 +56,20 @@ public:
 	~HTTP_Checker();
 
 	void check( std::string p_host_name, int p_port = HTTP_DEFAULT_PORT );
-	time_t get_rtt() { return m_triptime; }
-	std::string get_str_desc() { return m_str_desc; }
+	time_t get_rtt();
 	int get_response_code() { return m_response_code; }
 
 private:
 	char m_buf[MAX_TCP_BUFFER];
-#ifdef DEBUG_MODE
-	char m_ip[INET_ADDRSTRLEN];
-#endif
 	int m_sock;
 	std::string m_host_name;
-	std::string m_str_desc;
 	std::string m_host_dir;
 	int m_port;
+	bool m_is_ssl;
 	struct timezone m_tzone;
+	struct timeval m_tstart;
 	time_t m_triptime;
+	time_t m_cutofftime;
 	int m_response_code;
 
 	SSL_CTX *m_ctx;
@@ -65,7 +79,15 @@ private:
 	bool init_socket( addrinfo *addr );
 	bool init_ssl();
 	bool connect();
+#if USE_GETADDRINFO
+	bool connect_getaddrinfo();
+#else
+	bool connect_gethostbyname();
+#endif
 	bool disconnect();
+#if NON_BLOCKING_IO
+	void disconnect_ssl();
+#endif
 	std::string send_http_get();
 	bool send_bytes( char* p_packet, size_t p_packet_length );
 	std::string get_response();
@@ -75,3 +97,4 @@ private:
 };
 
 #endif	//__HTTP_H__
+
