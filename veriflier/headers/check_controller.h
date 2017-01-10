@@ -18,6 +18,8 @@ struct HealthCheck {
 	QString jetmon_server;
 	QDateTime received;
 	CheckThread *ct;
+#define NOT_ASSIGNED -1
+#define PRE_ASSIGNED -2
 };
 
 class CheckController : public QObject

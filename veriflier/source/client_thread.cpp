@@ -263,7 +263,7 @@ bool ClientThread::parse_requests( QueryType type, QJsonDocument json_doc ) {
 		}
 
 		HealthCheck *hc = new HealthCheck();
-		hc->ct = NULL;
+		hc->thread_index = NOT_ASSIGNED;
 		hc->received = QDateTime::currentDateTime();
 		hc->jetmon_server = m_jetmon_server;
 		hc->monitor_url = monitor_url.toString();
@@ -292,7 +292,7 @@ bool ClientThread::parse_requests( QueryType type, QJsonDocument json_doc ) {
 			}
 
 			HealthCheck *hc = new HealthCheck();
-			hc->ct = NULL;
+			hc->thread_index = NOT_ASSIGNED;
 			hc->received = QDateTime::currentDateTime();
 			hc->jetmon_server = m_jetmon_server;
 			hc->monitor_url = monitor_url.toString();
