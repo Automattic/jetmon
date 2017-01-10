@@ -21,28 +21,25 @@ class CheckThread : public QThread
 {
 	Q_OBJECT
 public:
-	CheckThread( const QSslConfiguration *m_ssl_config,
-				const int net_timeout,
-				const bool debug );
+	CheckThread( const int net_timeout, const bool debug,
+				const int thread_index );
 
-	void setMonitorUrl( QString monitor_url ) { m_monitor_url = monitor_url; }
-	void setBlogID( qint64 blog_id ) { m_blog_id = blog_id; }
-	void setTimer( const QDateTime &requested ) { m_timer = requested; }
+	void performCheck( HealthCheck* hc );
 
 protected:
-	void run() Q_DECL_OVERRIDE;
+	void run();
 
 signals:
-	void resultReady( qint64 blog_id, int status );
+	void resultReady( int thread_index, qint64 blog_id, int status, int http_code, int rtt );
+
+public slots:
+	void finishedCheck( HTTP_Checker *checker, HealthCheck* hc );
 
 private:
-	QSslSocket *m_socket;
-	const QSslConfiguration *m_ssl_config;
+	QVector<HealthCheck*> m_checkers;
 
-	QString m_monitor_url;
-	int m_blog_id;
-	int m_status;
 	int m_net_timeout;
+	int m_thread_index;
 
 	QDateTime m_timer;
 	bool m_debug;
