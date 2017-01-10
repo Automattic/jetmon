@@ -10,7 +10,7 @@ Config::Config() {
 
 void Config::load_config_file() {
 	QFile file;
-	file.setFileName( "./config/veriflier.json" );
+	file.setFileName( QDir::currentPath() + "/config/veriflier.json" );
 	file.open( QIODevice::ReadOnly | QIODevice::Text );
 	QString val = file.readAll();
 	file.close();
