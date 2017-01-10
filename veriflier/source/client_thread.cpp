@@ -234,8 +234,8 @@ void ClientThread::readRequest() {
 		return;
 	}
 
-	QJsonValue client_auth_token = json_doc.object().value( "auth_token" );
-	if ( client_auth_token.isNull() ) {
+	QString client_auth_token = json_doc.object().value( "auth_token" ).toString("");
+	if ( "" == client_auth_token ) {
 		LOG( "Missing 'auth_token' JSON value." );
 		this->sendError( "Missing 'auth_token' JSON value." );
 		return;
