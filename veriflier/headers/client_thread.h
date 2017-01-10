@@ -61,6 +61,9 @@ private:
 	QJsonDocument parse_json_request( QByteArray &raw_data );
 	QJsonDocument parse_json_request_post( QByteArray &raw_data );
 
+	int parse_json_request_post_length( QByteArray &raw_data );
+	int get_content_length( QByteArray &raw_data );
+
 	bool parse_requests( QueryType type, QJsonDocument json_doc );
 
 	QString get_http_reply_header( const QString &http_code, const QString &p_data);

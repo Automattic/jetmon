@@ -12,7 +12,8 @@
 #include "headers/client_thread.h"
 #include "headers/check_controller.h"
 
-#define DEFAULT_MAX_CHECKS 500
+#define DEFAULT_MAX_CHECKERS 4
+#define DEFAULT_MAX_CHECKS   500
 
 class SSL_Server : public QTcpServer
 {

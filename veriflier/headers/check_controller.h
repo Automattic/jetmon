@@ -11,13 +11,14 @@
 #include <QSslConfiguration>
 
 #include "headers/check_thread.h"
+#include "headers/jetmon_server.h"
 
-struct HealthCheck {
-	int blog_id;
-	QString monitor_url;
-	QString jetmon_server;
-	QDateTime received;
-	CheckThread *ct;
+#define NOT_ASSIGNED -1
+#define PRE_ASSIGNED -2
+
+struct Runner {
+	CheckThread* ct;
+	int checking;
 };
 
 class CheckController : public QObject
@@ -26,6 +27,7 @@ class CheckController : public QObject
 public:
 	explicit CheckController( const QSslConfiguration *m_ssl_config,
 							const int jetmon_server_port,
+							const int max_runners = 20,
 							const int max_checks = 50,
 							const QString &veriflier_name = "",
 							const QString &auth_token = "",
@@ -37,11 +39,18 @@ public:
 	void addChecks( QVector<HealthCheck*> hcs );
 
 public slots:
-	void finishedChecking( qint64 blog_id, int status );
+	void startChecking( HealthCheck* hc );
+	void finishedChecking( int thread_index, qint64 blog_id, int status, int http_code, int rtt );
+	void finishedSending( JetmonServer* js, int status, int rtt );
 	void ticked();
+
+signals:
+	void startCheck( HealthCheck* hc );
 
 private:
 	QVector<HealthCheck*> m_checks;
+	QVector<Runner*> m_runners;
+
 	QMap<QString, QJsonDocument> m_check_results;
 
 	const QSslConfiguration *m_ssl_config;
@@ -50,6 +59,7 @@ private:
 	QMutex m_check_lock;
 	QTimer *m_ticker;
 
+	int m_max_checkers;
 	int m_max_checks;
 	int m_checking;
 	int m_checked;
@@ -60,10 +70,10 @@ private:
 	bool m_debug;
 
 	inline bool haveCheck( qint64 blog_id );
-	void startChecking( HealthCheck* hc );
+	int selectRunner();
 	void sendResults();
 	QString post_http_header( QString jetmon_server, int content_size );
-	bool sendToHost( QString jetmon_server, QByteArray status_data );
+	void sendToJetmonServer( QString jetmon_server, QByteArray status_data );
 	QJsonDocument parse_json_response( QByteArray &raw_data );
 	int readResponse();
 };
