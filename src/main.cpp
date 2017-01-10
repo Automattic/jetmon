@@ -97,6 +97,9 @@ void Initialise( Handle<Object> exports) {
 	SSL_load_error_strings();
 	SSL_library_init();
 	OpenSSL_add_all_algorithms();
+#if (SSLEAY_VERSION_NUMBER >= 0x0907000L)
+	OPENSSL_config( NULL );
+#endif
 
 	NODE_SET_METHOD( exports, "http_check", http_check );
 }
