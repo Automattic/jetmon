@@ -15,7 +15,8 @@ SOURCES += \
     source/config.cpp \
     source/logger.cpp \
     source/check_thread.cpp \
-    source/check_controller.cpp
+    source/check_controller.cpp \
+    source/jetmon_server.cpp
 
 HEADERS += \
     headers/client_thread.h \
@@ -24,4 +25,5 @@ HEADERS += \
     headers/config.h \
     headers/logger.h \
     headers/check_thread.h \
-    headers/check_controller.h
+    headers/check_controller.h \
+    headers/jetmon_server.h
