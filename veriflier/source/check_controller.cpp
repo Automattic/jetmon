@@ -203,45 +203,5 @@ bool CheckController::sendToHost( QString jetmon_server, QByteArray status_data 
 	return ( 1 == response );
 }
 
-QJsonDocument CheckController::parse_json_response( QByteArray &raw_data ) {
-	QJsonDocument ret_val;
-	QString s_data = raw_data.data();
-
-	if ( ( -1 == s_data.indexOf( "{" ) ) || ( -1 == s_data.lastIndexOf( "}" ) ) ) {
-		LOG( "Invalid JSON response format." );
-		return ret_val;
 	}
-
-	s_data = s_data.mid( s_data.indexOf( "{" ), s_data.lastIndexOf( "}" ) - s_data.indexOf( "{" ) + 1 );
-	ret_val = QJsonDocument::fromJson( s_data.toUtf8() );
-	return ret_val;
 }
-
-int CheckController::readResponse() {
-	QByteArray a_data = m_socket->readAll();
-
-	if ( 0 == a_data.length() ) {
-		LOG( "NO data returned when reading jetmon response." );
-		return 0;
-	}
-
-	QJsonDocument json_doc = parse_json_response( a_data );
-
-	if ( json_doc.isEmpty() || json_doc.isNull() ) {
-		LOG( "Invalid JSON document format." );
-		return 0;
-	}
-
-	QJsonValue response = json_doc.object().value( "response" );
-	if ( response.isNull() ) {
-		LOG( "Missing 'response' JSON value." );
-		return 0;
-	}
-
-	if ( 1 != response.toInt() ) {
-		LOG( QString( "Jetmon server FAILED to received the response: " ) + json_doc.toJson() );
-	}
-
-	return response.toInt();
-}
-

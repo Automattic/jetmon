@@ -136,6 +136,57 @@ QJsonDocument ClientThread::parse_json_request_post( QByteArray &raw_data ) {
 	return ret_val;
 }
 
+int ClientThread::parse_json_request_post_length( QByteArray &raw_data ) {
+	QString s_data = raw_data.data();
+	int pos = s_data.indexOf( " HTTP/" );
+
+	if ( -1 == pos ) {
+		LOG( "Invalid HTTP request format." );
+		this->sendError( "Invalid HTTP request format." );
+		return -1;
+	}
+
+	pos = s_data.indexOf( "\r\n\r\n" );
+
+	if ( -1 == pos ) {
+		LOG( "Invalid HTTP request format." );
+		this->sendError( "Invalid HTTP request format." );
+		return -1;
+	}
+
+	return ( s_data.length() - pos - 4 );
+}
+
+int ClientThread::get_content_length( QByteArray &raw_data ) {
+	QString s_data = raw_data.data();
+	int pos = s_data.indexOf( " HTTP/" );
+
+	if ( -1 == pos ) {
+		LOG( "Invalid HTTP request format." );
+		return -1;
+	}
+
+	pos = s_data.indexOf( "Content-Length: " );
+	if ( -1 == pos ) {
+		pos = s_data.indexOf( "GET /" );
+		if ( 0 == pos )
+			return 0;
+		LOG( "Unable to get 'Content-Length'." );
+		return -1;
+	}
+
+	pos += 16;
+	s_data = s_data.right( s_data.length() - pos );
+	pos = s_data.indexOf( "\r\n" );
+	if ( -1 == pos ) {
+		LOG( "Unable to get 'Content-Length' termination characters." );
+		return -1;
+	}
+
+	s_data = s_data.left( pos );
+	return s_data.toInt();
+}
+
 void ClientThread::readRequest() {
 	QByteArray a_data = m_socket->readAll();
 
@@ -157,7 +208,26 @@ void ClientThread::readRequest() {
 		return;
 	}
 
-	QJsonDocument json_doc = ( type == ClientThread::SiteStatusPostCheck ? parse_json_request_post( a_data ) : parse_json_request( a_data ) );
+	int content_len = get_content_length( a_data );
+	if ( -1 == content_len )    // Failed
+		return;
+
+	QJsonDocument json_doc;
+	int current_len = 0;
+
+	if ( 0 == content_len ) {   // GET request
+		json_doc = parse_json_request( a_data );
+	} else {
+		current_len = parse_json_request_post_length( a_data );
+		while ( current_len < content_len && m_socket->waitForReadyRead( m_net_timeout ) ) {
+			if ( m_socket->bytesAvailable() ) {
+				a_data += m_socket->readAll();
+				current_len = parse_json_request_post_length( a_data );
+			}
+		}
+		json_doc = ( type == ClientThread::SiteStatusPostCheck ? parse_json_request_post( a_data ) : parse_json_request( a_data ) );
+	}
+
 	if ( json_doc.isEmpty() || json_doc.isNull() ) {
 		LOG( "Invalid JSON document format." );
 		this->sendError( "Invalid JSON document format." );
