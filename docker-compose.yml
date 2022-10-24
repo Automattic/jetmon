@@ -27,6 +27,8 @@ services:
           - DB_PASSWORD=$MYSQLDB_ROOT_PASSWORD
           - DB_NAME=$MYSQLDB_DATABASE
           - DB_PORT=$MYSQLDB_DOCKER_PORT
+        depends_on:
+          - mysqldb
 
 volumes: 
   db:
