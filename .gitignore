@@ -2,7 +2,5 @@
 build/
 node_modules/
 .DS_Store
-logs/
-stats/
 certs/jetmon.crt
 certs/jetmon.key
