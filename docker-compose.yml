@@ -1,6 +1,6 @@
 version: '3.8'
 
-services: 
+services:
     mysqldb:
         image: mysql:5.7
         restart: unless-stopped
@@ -19,6 +19,8 @@ services:
           - .env
         volumes:
           - .:/jetmon
+          - ./logs:/jetmon/logs
+          - ./stats:/jetmon/stats
           # Don't sync the node_modules directory back to the client.
           - "/jetmon/node_modules"
         environment:
@@ -30,5 +32,5 @@ services:
         depends_on:
           - mysqldb
 
-volumes: 
+volumes:
   db:
