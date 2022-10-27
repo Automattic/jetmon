@@ -22,6 +22,11 @@ function startservice {
 		pid="`cat /var/run/veriflier.pid`"
 		if [ -z "$pid" ]; then
 			pid=0
+		else
+			if ! ps -p $pid >/dev/null; then
+				rm -f /var/run/veriflier.pid
+				pid=0
+			fi
 		fi
 		if [ $pid -gt 0 ] ; then
 			echo "veriflier service is already running"
@@ -78,7 +83,7 @@ stop )
 	;;
 restart )
 	stopservice
-	sleep 1
+	sleep 2
 	startservice
 	;;
 reload )

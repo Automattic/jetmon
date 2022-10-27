@@ -28,12 +28,12 @@ static void http_check_async_fin( uv_work_t *req, int status ) {
 	HandleScope scope( isolate );
 
 	HTTP_Check_Baton *baton = static_cast<HTTP_Check_Baton*>(req->data);
-	Handle<Value> argv[3] = { Number::New( isolate, baton->server_id ),
+	Local<Value> argv[3] = { Number::New( isolate, baton->server_id ),
 								Number::New( isolate, baton->http_checker->get_rtt() ),
 								Number::New( isolate, baton->http_checker->get_response_code() ) };
 
 	Local<Function> cb_func = Local<Function>::New( isolate, baton->callback );
-	cb_func->Call( isolate->GetCurrentContext()->Global(), 3, argv );
+	cb_func->Call( isolate->GetCurrentContext(), isolate->GetCurrentContext()->Global(), 3, argv );
 	baton->callback.Reset();
 	delete baton->http_checker;
 	delete baton;
@@ -52,25 +52,25 @@ void http_check( const FunctionCallbackInfo<Value>& args ) {
 
 	if ( args.Length() < 4 ) {
 		isolate->ThrowException( Exception::TypeError(
-			String::NewFromUtf8( isolate, "Wrong number of arguments" ) ) );
+			String::NewFromUtf8( isolate, "Wrong number of arguments" ).ToLocalChecked() ) );
 		return;
 	}
 
 	if ( ! args[1]->IsNumber() ) {
 		isolate->ThrowException( Exception::TypeError(
-			String::NewFromUtf8( isolate, "The port number argument is not valid" ) ) );
+			String::NewFromUtf8( isolate, "The port number argument is not valid" ).ToLocalChecked() ) );
 		return;
 	}
 
 	if ( ! args[2]->IsNumber() ) {
 		isolate->ThrowException( Exception::TypeError(
-			String::NewFromUtf8( isolate, "The server id argument is not valid" ) ) );
+			String::NewFromUtf8( isolate, "The server id argument is not valid" ).ToLocalChecked() ) );
 		return;
 	}
 
 	if ( ! args[3]->IsFunction() ) {
 		isolate->ThrowException( Exception::TypeError(
-			String::NewFromUtf8( isolate, "You have not provided a callback function as the 4th parameter" ) ) );
+			String::NewFromUtf8( isolate, "You have not provided a callback function as the 4th parameter" ).ToLocalChecked() ) );
 		return;
 	}
 
@@ -78,11 +78,11 @@ void http_check( const FunctionCallbackInfo<Value>& args ) {
 	HTTP_Checker *checker = new HTTP_Checker();
 	baton->http_checker = checker;
 
-	String::Utf8Value sHost( args[0]->ToString() );
+	String::Utf8Value sHost( isolate, args[0] );
 	baton->server = *sHost;
 
-	baton->port = args[1]->NumberValue();
-	baton->server_id = args[2]->NumberValue();
+	baton->port = args[1]->ToInteger( isolate->GetCurrentContext() ).ToLocalChecked()->Value();
+	baton->server_id = (int) args[2]->ToInteger( isolate->GetCurrentContext() ).ToLocalChecked()->Value();
 
 	CopyablePersistentTraits<Function>::CopyablePersistent percy( isolate, args[3].As<Function>() );
 	baton->callback.Reset( isolate, percy );
@@ -93,7 +93,7 @@ void http_check( const FunctionCallbackInfo<Value>& args ) {
 	uv_queue_work( uv_default_loop(), req, http_check_async, (uv_after_work_cb)http_check_async_fin );
 }
 
-void Initialise( Handle<Object> exports) {
+void Initialise( Local<Object> exports) {
 	SSL_load_error_strings();
 	SSL_library_init();
 	OpenSSL_add_all_algorithms();
