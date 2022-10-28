@@ -2,11 +2,13 @@
 #include "http_checker.h"
 #include <cstring>
 
+using namespace std::chrono;
 using namespace std;
+
 
 HTTP_Checker::HTTP_Checker() : m_sock( -1 ), m_host_name( "" ), m_host_dir( "" ), m_port( HTTP_DEFAULT_PORT ),
 		m_is_ssl( false ), m_triptime( 0 ), m_response_code( 0 ), m_ctx( NULL ), m_ssl( NULL ), m_sbio( NULL ) {
-	gettimeofday( &m_tstart, &m_tzone );
+	m_tstart = high_resolution_clock::now();
 	memset( m_buf, 0, MAX_TCP_BUFFER );
 	m_cutofftime = time( NULL );
 	m_cutofftime += NET_COMMS_TIMEOUT;
@@ -16,16 +18,8 @@ HTTP_Checker::~HTTP_Checker() {
 	this->disconnect();
 }
 
-time_t HTTP_Checker::get_rtt() {
-	struct timeval m_tend;
-	gettimeofday( &m_tend, &m_tzone );
-
-	if ( (m_tend.tv_usec -= m_tstart.tv_usec) < 0 ) {
-		m_tend.tv_sec--;
-		m_tend.tv_usec += 1000000;
-	}
-	m_tend.tv_sec -= m_tstart.tv_sec;
-	return m_tend.tv_sec * 1000000 + ( m_tend.tv_usec );
+int HTTP_Checker::get_rtt() {
+	return duration_cast<microseconds>(high_resolution_clock::now() - m_tstart).count();
 }
 
 void HTTP_Checker::check( string p_host_name, int p_port ) {
@@ -188,6 +182,7 @@ string HTTP_Checker::send_http_get() {
 	strcpy( m_buf, s_tmp.c_str() );
 
 	if ( send_bytes( m_buf, s_tmp.length() ) ) {
+		m_tstart_ttfb = high_resolution_clock::now();
 		s_tmp = get_response();
 	} else {
 		s_tmp = "";
@@ -215,6 +210,7 @@ string HTTP_Checker::get_response() {
 		} while ( ( FD_ISSET( m_sock, &read_fds ) == 0) && ( m_cutofftime > time( NULL ) ) );
 
 		if ( FD_ISSET( m_sock, &read_fds) ) {
+			m_ttfb = duration_cast<microseconds>(high_resolution_clock::now() - m_tstart_ttfb).count();
 			if ( m_is_ssl )
 				received = SSL_read( m_ssl, m_buf, MAX_TCP_BUFFER - 1 );
 			else

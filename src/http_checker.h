@@ -56,7 +56,8 @@ public:
 	~HTTP_Checker();
 
 	void check( std::string p_host_name, int p_port = HTTP_DEFAULT_PORT );
-	time_t get_rtt();
+	int get_rtt();
+	int get_ttfb() { return m_ttfb; };
 	int get_response_code() { return m_response_code; }
 
 private:
@@ -66,11 +67,12 @@ private:
 	std::string m_host_dir;
 	int m_port;
 	bool m_is_ssl;
-	struct timezone m_tzone;
-	struct timeval m_tstart;
+	std::chrono::_V2::system_clock::time_point m_tstart;
 	time_t m_triptime;
 	time_t m_cutofftime;
 	int m_response_code;
+	std::chrono::_V2::system_clock::time_point m_tstart_ttfb;
+	int m_ttfb;
 
 	SSL_CTX *m_ctx;
 	SSL *m_ssl;
