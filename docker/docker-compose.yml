@@ -36,7 +36,7 @@ services:
           context: ../
           dockerfile: docker/Dockerfile_veriflier
         volumes:
-          - ../:/opt/veriflier
+          - ../:/opt
         ports:
           - 7801:7801
 

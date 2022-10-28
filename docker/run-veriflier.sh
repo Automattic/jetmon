@@ -1,6 +1,6 @@
 #!/bin/bash
 
-cd /opt/veriflier/veriflier
+cd /opt/veriflier
 
 qmake
 make

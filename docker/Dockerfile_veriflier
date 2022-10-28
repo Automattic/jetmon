@@ -23,7 +23,7 @@ RUN cd /usr/src/gtest/ && \
 RUN rm -rf /var/lib/apt/lists/*
 
 
-WORKDIR /opt/veriflier
+WORKDIR /opt
 
 COPY . .
 
