@@ -27,4 +27,4 @@ WORKDIR /opt
 
 COPY . .
 
-ENTRYPOINT [ "bash", "docker/run-veriflier.sh" ]
+CMD [ "bash", "docker/run-veriflier.sh" ]
