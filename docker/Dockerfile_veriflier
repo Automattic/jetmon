@@ -1,0 +1,30 @@
+FROM ubuntu:18.04
+# Sourced from https://github.com/MatiMoreyra/qt5-docker/blob/master/Dockerfile
+
+# Install dependencies.
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    git \
+    build-essential \
+    cmake \
+    qt5-default  \
+    libfontconfig1 \
+    mesa-common-dev  \
+    libglu1-mesa-dev \
+    libgtest-dev
+
+# Build GTest
+RUN cd /usr/src/gtest/ && \
+    cmake -DBUILD_SHARED_LIBS=ON && \
+    make && \
+    cp -a include/gtest /usr/include && \
+    cp -a libgtest_main.so libgtest.so /usr/lib/
+
+# Cleanup
+RUN rm -rf /var/lib/apt/lists/*
+
+
+WORKDIR /opt/veriflier
+
+COPY . .
+
+CMD [ "bash", "docker/run-veriflier.sh" ]

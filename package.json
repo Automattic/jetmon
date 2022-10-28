@@ -1,0 +1,12 @@
+{
+  "name": "jetmon",
+  "version": "0.0.1",
+  "description": "Parallel HTTP health monitoring using HEAD requests for large scale website monitoring.",
+  "scripts": {
+    "rebuild-run": "node-gyp rebuild && node lib/jetmon.js"
+  },
+  "dependencies": {
+    "log4js": "0.6.38",
+    "mysql": "2.11.1"
+  }
+}

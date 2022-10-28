@@ -1,0 +1,17 @@
+FROM node:16
+
+WORKDIR /jetmon
+
+# RUN apk add --no-cache python3 make g++
+
+RUN npm config set unsafe-perm true
+RUN npm install -g node-gyp
+
+# Get the dependencies loaded first - this makes rebuilds faster
+COPY package.json .
+RUN npm install
+
+COPY . .
+
+
+CMD [ "bash", "docker/run-jetmon.sh" ]
