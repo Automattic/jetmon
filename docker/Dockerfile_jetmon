@@ -13,5 +13,4 @@ RUN npm install
 
 COPY . .
 
-
 CMD [ "bash", "docker/run-jetmon.sh" ]
