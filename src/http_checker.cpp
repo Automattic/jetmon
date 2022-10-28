@@ -1,5 +1,6 @@
 
 #include "http_checker.h"
+#include <cstring>
 
 using namespace std;
 
