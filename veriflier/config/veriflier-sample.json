@@ -11,8 +11,8 @@
 	"net_comms_timeout"  : 30000,
 	"debug"              : true,
 
-	"listen_port"        : "<VERIFLIER_PORT>",
-	"jetmon_server_port" : "<JETMON_PORT>",
+	"listen_port"        : <VERIFLIER_PORT>,
+	"jetmon_server_port" : <JETMON_PORT>,
 
 	"privatekey_file"    : "./certs/veriflier.key",
 	"privatecert_file"   : "./certs/veriflier.crt",
