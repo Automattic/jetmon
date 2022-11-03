@@ -14,6 +14,7 @@ services:
         volumes:
           - db:/var/lib/mysql
     jetmon:
+        hostname: docker.jetmon.dev.com
         build: 
           context: ../
           dockerfile: docker/Dockerfile_jetmon
@@ -29,6 +30,11 @@ services:
           - DB_PASSWORD=$MYSQLDB_ROOT_PASSWORD
           - DB_NAME=$MYSQLDB_DATABASE
           - DB_PORT=$MYSQLDB_DOCKER_PORT
+          - VERIFLIER_AUTH_TOKEN=$VERIFLIER_AUTH_TOKEN
+          - VERIFLIER_PORT=$VERIFLIER_DOCKER_PORT
+          - WPCOM_JETMON_AUTH_TOKEN=$WPCOM_JETMON_AUTH_TOKEN
+        ports:
+          - $JETMON_LOCAL_PORT:$JETMON_DOCKER_PORT
         depends_on:
           - mysqldb
     veriflier:
@@ -38,7 +44,11 @@ services:
         volumes:
           - ../:/opt
         ports:
-          - 7801:7801
+          - $VERIFLIER_LOCAL_PORT:$VERIFLIER_DOCKER_PORT
+        environment:
+          - VERIFLIER_AUTH_TOKEN=$VERIFLIER_AUTH_TOKEN
+          - VERIFLIER_PORT=$VERIFLIER_DOCKER_PORT
+          - JETMON_PORT=$JETMON_DOCKER_PORT
 
 volumes: 
   db:
