@@ -11,15 +11,15 @@ The service relies on confirmation from external servers to verify that sites ar
 Installation
 ------------
 
-1) Install node.js.
+1) Make sure you have installed [Docker](https://docs.docker.com/get-docker/) and [docker-compose](https://docs.docker.com/compose/install/)
 
-2) Install the mysql npm module with 'npm install mysql'.
+2) Clone the Jetmon monorepo
 
-3) Ensure you have node-gyp, if not 'npm install -g node-gyp'.
+3) Copy the environment variables file from within the `docker` folder: `cp jetmon/docker/.env-sample jetmon/docker/.env`
 
-4) Run "node-gyp rebuild" in the application root directory.
+4) Open `jetmon/docker/.env` and make any modifications you'd like.
 
-5) You will need to follow the instruction in the veriflier directory to build the verification servers.
+5) Run `docker compose build` from within the `docker` folder
 
 Configuration
 -------------
@@ -31,7 +31,7 @@ The setup of the verification servers is straight forward, just be sure to speci
 Running
 -------
 
-Run jetmon with "node lib/jetmon.js" in the application root directory.
+Run `docker compose up -d` from within the `docker` folder.
 
 Database
 -------
