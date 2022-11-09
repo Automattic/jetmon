@@ -1,5 +1,5 @@
+
 build/
 node_modules/
 .DS_Store
-lib/jetmon.node
 .env

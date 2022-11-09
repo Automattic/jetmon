@@ -1,0 +1,5 @@
+# Ignore everything in this directory
+*
+# Exceptions
+!you_need_to_create_certs
+!.gitignore

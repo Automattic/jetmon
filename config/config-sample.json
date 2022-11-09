@@ -7,7 +7,7 @@
 	"BUCKET_NO_MIN"  : 0,
 	"BUCKET_NO_MAX"  : 512,
 	"BATCH_SIZE"     : 32,
-	"AUTH_TOKEN"     : "<some token auth string>",
+	"AUTH_TOKEN"     : "<AUTH_TOKEN>",
 
 	"VERIFLIER_BATCH_SIZE"  : 200,
 	"SQL_UPDATE_BATCH"      : 1,
@@ -24,15 +24,9 @@
 	"VERIFIERS": [
 		{
 			"name"       : "Veriflier 1",
-			"host"       : "<ip / host name>",
-			"port"       : "7801",
-			"auth_token" : "<some token auth string>"
-		},
-		{
-			"name"       : "Veriflier 2",
-			"host"       : "<ip / host name>",
-			"port"       : "7801",
-			"auth_token" : "<some token auth string>"
+			"host"       : "veriflier",
+			"port"       : "<VERIFLIER_PORT>",
+			"auth_token" : "<VERIFLIER_AUTH_TOKEN>"
 		}
 	]
 }
