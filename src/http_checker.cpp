@@ -182,7 +182,6 @@ string HTTP_Checker::send_http_get() {
 	strcpy( m_buf, s_tmp.c_str() );
 
 	if ( send_bytes( m_buf, s_tmp.length() ) ) {
-		m_tstart_ttfb = high_resolution_clock::now();
 		s_tmp = get_response();
 	} else {
 		s_tmp = "";
@@ -210,7 +209,7 @@ string HTTP_Checker::get_response() {
 		} while ( ( FD_ISSET( m_sock, &read_fds ) == 0) && ( m_cutofftime > time( NULL ) ) );
 
 		if ( FD_ISSET( m_sock, &read_fds) ) {
-			m_ttfb = duration_cast<microseconds>(high_resolution_clock::now() - m_tstart_ttfb).count();
+			m_ttfb = duration_cast<microseconds>(high_resolution_clock::now() - m_tstart).count();
 			if ( m_is_ssl )
 				received = SSL_read( m_ssl, m_buf, MAX_TCP_BUFFER - 1 );
 			else

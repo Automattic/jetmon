@@ -74,7 +74,6 @@ private:
 	time_t m_triptime;
 	time_t m_cutofftime;
 	int m_response_code;
-	std::chrono::_V2::system_clock::time_point m_tstart_ttfb;
 	int m_ttfb;
 
 	SSL_CTX *m_ctx;
