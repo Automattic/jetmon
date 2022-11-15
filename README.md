@@ -28,7 +28,7 @@ Here are the possible flows, depending on the status change:
 
 The Jetmon master service is responsible for communicating with the database in order to fetch a list of sites to check. It will spawn and re-allocate workers every five seconds and update stats repeatedly based on `STATS_UPDATE_INTERVAL_MS`.
 
-The jetmon-workers internally use an Node Addon written in c++ to check the connection by sending a HEAD request to the server. 
+The jetmon-workers internally use an Node Addon written in C++ to check the connection by sending a HEAD request to the server. 
 
 
 ### Verifliers
@@ -69,7 +69,7 @@ Configuration
 The Jetmon configuration lives under `config/config.json`. This file is generated on the fly, if not present, each time you run the Jetmon service, using the `config-sample.json` and the corresponding environment variables defined in `docker/.env`.
 Feel free to modify your local config file as needed.
 
-The Veiflier configuration lives under `veriflier/config/veriflier.json`. This file is generated on the fly, if not present, each time you run the Veriflier service, using the `veriflier-sample.json` and the corresponding environment variables defined in `docker/.env`. 
+The Veriflier configuration lives under `veriflier/config/veriflier.json`. This file is generated on the fly, if not present, each time you run the Veriflier service, using the `veriflier-sample.json` and the corresponding environment variables defined in `docker/.env`. 
 
 Running
 -------
