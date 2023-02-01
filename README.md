@@ -81,14 +81,16 @@ Database
 
 Main Table Schema:
 
-	CREATE TABLE `jetpack_monitor_subscription` (
-		`blog_id` bigint(20) unsigned NOT NULL,
-		`bucket_no` smallint(2) unsigned NOT NULL DEFAULT 1,
-		`monitor_url` varchar(300) NOT NULL,
-		`monitor_active` tinyint(1) unsigned NOT NULL DEFAULT 1,
-		`site_status` tinyint(1) unsigned NOT NULL DEFAULT 1,
-		`last_status_change` timestamp NULL DEFAULT NULL,
-		PRIMARY KEY (`blog_id`)
+	CREATE TABLE `jetpack_monitor_sites` (
+	    `jetpack_monitor_site_id` bigint(20) unsigned NOT NULL AUTO_INCREMENT PRIMARY KEY,
+	    `blog_id` bigint(20) unsigned NOT NULL,
+	    `bucket_no` smallint(2) unsigned NOT NULL,
+	    `monitor_url` varchar(300) NOT NULL,
+	    `monitor_active` tinyint(1) unsigned NOT NULL DEFAULT 1,
+	    `site_status` tinyint(1) unsigned NOT NULL DEFAULT 1,
+	    `last_status_change` timestamp NULL DEFAULT current_timestamp(),
+	    `check_interval` tinyint(1) unsigned NOT NULL DEFAULT 5,
+	    INDEX `blog_id_monitor_url` (`blog_id`, `monitor_url`),
+	    INDEX `bucket_no_monitor_active_check_interval` (`bucket_no`, `monitor_active`, `check_interval`)
 	);
-	CREATE INDEX `bucket_no_monitor_active` ON `jetpack_monitor_subscription` (`bucket_no`, `monitor_active`);
 
