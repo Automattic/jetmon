@@ -39,7 +39,7 @@ The Veriflier service, which is written in C++ and uses the QT Framework, does s
 
 Here are the current notification data, Jetmon sends to WPCOM upon detecting a site status change:
 - `blog_id`: The site's WPCOM ID
-- `monitor_url`: The status change URL
+- `monitor_url`: The URL Jetmon checked
 - `status_id`: The site's current status. Enum: `0` is status down, `1` is status running and `2` status confirmed down.
 - `last_check`: The datetime of the last check
 - `last_status_change`: The datetime of the last status change
