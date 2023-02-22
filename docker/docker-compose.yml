@@ -1,6 +1,6 @@
 version: '3.8'
 
-services: 
+services:
     mysqldb:
         image: mysql:5.7
         restart: unless-stopped
@@ -15,7 +15,7 @@ services:
           - db:/var/lib/mysql
     jetmon:
         hostname: docker.jetmon.dev.com
-        build: 
+        build:
           context: ../
           dockerfile: docker/Dockerfile_jetmon
         env_file:
@@ -23,7 +23,7 @@ services:
         volumes:
           - ../:/jetmon
           # Don't sync the node_modules directory back to the client.
-          - "/jetmon/node_modules"
+          #- "/jetmon/node_modules"
         environment:
           - DB_HOST=mysqldb
           - DB_USER=$MYSQLDB_USER
@@ -37,8 +37,10 @@ services:
           - $JETMON_LOCAL_PORT:$JETMON_DOCKER_PORT
         depends_on:
           - mysqldb
+        cap_add:
+          - SYS_PTRACE
     veriflier:
-        build: 
+        build:
           context: ../
           dockerfile: docker/Dockerfile_veriflier
         volumes:
@@ -49,6 +51,19 @@ services:
           - VERIFLIER_AUTH_TOKEN=$VERIFLIER_AUTH_TOKEN
           - VERIFLIER_PORT=$VERIFLIER_DOCKER_PORT
           - JETMON_PORT=$JETMON_DOCKER_PORT
+    statsd:
+        image: graphiteapp/graphite-statsd
+        restart: unless-stopped
+        ports:
+          - 8088:80
+          - 8126:8126
+          - 8125:8125
+          - 8125:8125/udp
+        volumes:
+          - ./volumes/statsd/graphite/conf:/opt/graphite/conf
+          - ./volumes/statsd/graphite/storage:/opt/graphite/storage
+          - ./volumes/statsd/statsd/config:/opt/statsd/config
+          - ./volumes/statsd/logs:/var/log
 
-volumes: 
+volumes:
   db:
