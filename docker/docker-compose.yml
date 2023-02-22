@@ -23,7 +23,7 @@ services:
         volumes:
           - ../:/jetmon
           # Don't sync the node_modules directory back to the client.
-          - "/jetmon/node_modules"
+          #- "/jetmon/node_modules"
         environment:
           - DB_HOST=mysqldb
           - DB_USER=$MYSQLDB_USER
@@ -37,6 +37,8 @@ services:
           - $JETMON_LOCAL_PORT:$JETMON_DOCKER_PORT
         depends_on:
           - mysqldb
+        cap_add:
+          - SYS_PTRACE
     veriflier:
         build:
           context: ../
