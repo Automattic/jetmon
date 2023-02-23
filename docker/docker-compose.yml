@@ -1,6 +1,6 @@
 version: '3.8'
 
-services: 
+services:
     mysqldb:
         image: mysql:5.7
         restart: unless-stopped
@@ -15,7 +15,7 @@ services:
           - db:/var/lib/mysql
     jetmon:
         hostname: docker.jetmon.dev.com
-        build: 
+        build:
           context: ../
           dockerfile: docker/Dockerfile_jetmon
         env_file:
@@ -35,10 +35,11 @@ services:
           - WPCOM_JETMON_AUTH_TOKEN=$WPCOM_JETMON_AUTH_TOKEN
         ports:
           - $JETMON_LOCAL_PORT:$JETMON_DOCKER_PORT
+          - $JETMON_STATUS_LOCAL_PORT:$JETMON_STATUS_DOCKER_PORT
         depends_on:
           - mysqldb
     veriflier:
-        build: 
+        build:
           context: ../
           dockerfile: docker/Dockerfile_veriflier
         volumes:
@@ -49,6 +50,14 @@ services:
           - VERIFLIER_AUTH_TOKEN=$VERIFLIER_AUTH_TOKEN
           - VERIFLIER_PORT=$VERIFLIER_DOCKER_PORT
           - JETMON_PORT=$JETMON_DOCKER_PORT
+    php-apache:
+        image: php:apache
+        hostname: test.local
+        volumes:
+          - ./php-apache/html:/var/www/html
+        command: >
+          bash -c "a2enmod rewrite
+          && apache2-foreground"
 
-volumes: 
+volumes:
   db:
