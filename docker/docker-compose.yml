@@ -35,6 +35,7 @@ services:
           - WPCOM_JETMON_AUTH_TOKEN=$WPCOM_JETMON_AUTH_TOKEN
         ports:
           - $JETMON_LOCAL_PORT:$JETMON_DOCKER_PORT
+          - $JETMON_STATUS_LOCAL_PORT:$JETMON_STATUS_DOCKER_PORT
         depends_on:
           - mysqldb
     veriflier:
