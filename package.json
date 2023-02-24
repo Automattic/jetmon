@@ -6,6 +6,7 @@
     "rebuild-run": "node-gyp rebuild && cp build/Release/jetmon.node lib && node lib/jetmon.js"
   },
   "dependencies": {
+    "hot-shots": "^10.0.0",
     "log4js": "0.6.38",
     "mysql": "2.11.1"
   }
