@@ -19,5 +19,4 @@ if [ ! -f config/db-config.conf ]; then
 	sed -e "s/<MYSQLDB_USER>/${MYSQLDB_USER}/g" -e "s/<MYSQLDB_ROOT_PASSWORD>/${MYSQLDB_ROOT_PASSWORD}/g" -e "s/<MYSQLDB_PORT>/${MYSQLDB_DOCKER_PORT}/g" -e "s/<MYSQLDB_DATABASE>/${MYSQLDB_DATABASE}/g" config/db-config-sample.conf > config/db-config.conf
 fi
 
-npm install
 exec npm run rebuild-run
