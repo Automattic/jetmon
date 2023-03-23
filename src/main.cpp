@@ -1,7 +1,24 @@
-
 #ifndef BUILDING_NODE_EXTENSION
 #define BUILDING_NODE_EXTENSION
 #endif
+
+/**
+ * Try to fix a warning in the build process that complains about a function cast.
+ *
+ * Inspired by: https://github.com/nodejs/nan/issues/807#issuecomment-581536991
+ */
+
+#if defined(__GNUC__) && __GNUC__ >= 8
+#define DISABLE_WCAST_FUNCTION_TYPE _Pragma("GCC diagnostic push") _Pragma("GCC diagnostic ignored \"-Wcast-function-type\"")
+#define DISABLE_WCAST_FUNCTION_TYPE_END _Pragma("GCC diagnostic pop")
+#else
+#define DISABLE_WCAST_FUNCTION_TYPE
+#define DISABLE_WCAST_FUNCTION_TYPE_END
+#endif
+
+/**
+ * End of cast warning suppression.
+ */
 
 #include <iostream>
 #include <string>
@@ -104,5 +121,8 @@ void Initialise( Local<Object> exports) {
 	NODE_SET_METHOD( exports, "http_check", http_check );
 }
 
+DISABLE_WCAST_FUNCTION_TYPE
+
 NODE_MODULE( jetmon, Initialise )
 
+DISABLE_WCAST_FUNCTION_TYPE_END
