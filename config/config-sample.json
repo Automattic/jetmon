@@ -4,6 +4,8 @@
 	"NUM_TO_PROCESS" : 40,
 	"DATASET_SIZE"   : 100,
 
+	"DB_UPDATES_ENABLE" : false,
+
 	"BUCKET_NO_MIN"  : 0,
 	"BUCKET_NO_MAX"  : 512,
 	"BATCH_SIZE"     : 32,
