@@ -20,7 +20,7 @@ CheckController::CheckController( const QSslConfiguration *ssl_config, const int
 
 	for ( int thread_index = 0; thread_index < m_max_checkers; thread_index++ ) {
 		CheckThread *ct = new CheckThread( m_net_timeout, m_debug, thread_index );
-		connect( ct, SIGNAL( resultReady(int, qint64, int, int, int) ), this, SLOT( finishedChecking(int, qint64, int, int, int) ) );
+		connect( ct, SIGNAL( resultReady(int, qint64, QString, int, int, int) ), this, SLOT( finishedChecking(int, qint64, QString, int, int, int) ) );
 		Runner* run = new Runner();
 		run->ct = ct;
 		run->checking = 0;
@@ -41,7 +41,7 @@ CheckController::~CheckController() {
 	qDeleteAll(m_runners);
 }
 
-void CheckController::finishedChecking( int thread_index, qint64 blog_id, int status, int http_code, int rtt ) {
+void CheckController::finishedChecking( int thread_index, qint64 blog_id, QString monitor_url, int status, int http_code, int rtt ) {
 	QJsonDocument json_doc;
 	QJsonObject json_obj, arr_result;
 	QJsonArray checkArray;
@@ -57,6 +57,7 @@ void CheckController::finishedChecking( int thread_index, qint64 blog_id, int st
 					 QString::number( m_checks[loop]->thread_index  )  + " != " + QString::number( thread_index ) );
 			}
 			arr_result.insert( "blog_id", QJsonValue( blog_id ) );
+			arr_result.insert( "monitor_url", QJsonValue( monitor_url ) );
 			arr_result.insert( "status", QJsonValue( status ) );
 			arr_result.insert( "code", QJsonValue( http_code ) );
 			arr_result.insert( "rtt", QJsonValue( rtt ) );

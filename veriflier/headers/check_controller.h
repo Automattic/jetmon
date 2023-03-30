@@ -40,7 +40,7 @@ public:
 
 public slots:
 	void startChecking( HealthCheck* hc );
-	void finishedChecking( int thread_index, qint64 blog_id, int status, int http_code, int rtt );
+	void finishedChecking( int thread_index, qint64 blog_id, QString monitor_url, int status, int http_code, int rtt );
 	void finishedSending( JetmonServer* js, int status, int rtt );
 	void ticked();
 
