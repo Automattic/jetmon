@@ -3,6 +3,7 @@
 	"NUM_WORKERS"    : 60,
 	"NUM_TO_PROCESS" : 40,
 	"DATASET_SIZE"   : 100,
+	"STATSD_ENABLE"  : true,
 
 	"BUCKET_NO_MIN"  : 0,
 	"BUCKET_NO_MAX"  : 512,
