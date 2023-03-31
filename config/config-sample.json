@@ -4,6 +4,8 @@
 	"NUM_TO_PROCESS" : 40,
 	"DATASET_SIZE"   : 100,
 
+	"DB_UPDATES_ENABLE" : false,
+
 	"BUCKET_NO_MIN"  : 0,
 	"BUCKET_NO_MAX"  : 512,
 	"BATCH_SIZE"     : 32,
@@ -12,6 +14,7 @@
 	"VERIFLIER_BATCH_SIZE"  : 200,
 	"SQL_UPDATE_BATCH"      : 1,
 	"DB_CONFIG_UPDATES_MIN" : 10,
+	"PEER_OFFLINE_LIMIT"    : 3,
 
 	"NUM_OF_CHECKS"               : 3,
 	"TIME_BETWEEN_CHECKS_SEC"     : 30,
