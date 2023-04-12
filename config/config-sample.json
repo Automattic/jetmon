@@ -1,8 +1,10 @@
 {
-	"DEBUG"          : true,
-	"NUM_WORKERS"    : 60,
-	"NUM_TO_PROCESS" : 40,
-	"DATASET_SIZE"   : 100,
+	"DEBUG"             : true,
+	"NUM_WORKERS"       : 60,
+	"NUM_TO_PROCESS"    : 40,
+	"DATASET_SIZE"      : 100,
+	"WORKER_MAX_CHECKS" : 10000,
+	"WORKER_MAX_MEM_MB" : 53,
 
 	"DB_UPDATES_ENABLE" : false,
 
