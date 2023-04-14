@@ -17,7 +17,7 @@ Set to 0 or a negative value to disable recycling workers based on the number of
 WORKER_MAX_MEM_MB
 The maximum MB of memory that a worker can consume before it stops accepting work and is scheduled to recycle.
 Set to 0 or a negative value to disable recycling workers based on memory usage.
-The following comment was in the worker source code from an early dev on why they chose 45MB as the original value:
+The following comment was in the worker source code from an early dev on why they chose 45MB as the original value. Since then, we moved to a value of 53MB.
 	Empirically ended up with 45MB per worker.
 	They don't get killed off all the time, and on a system with 16GB RAM
 	we end up having ~1.6GB free.
