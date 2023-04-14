@@ -45,10 +45,10 @@ void HTTP_Checker::check( string p_host_name, int p_port ) {
 			this->set_host_response( 0 );
 		} else {
 #if DEBUG_MODE
-				cerr << "Unable to connect to host" << endl;
+			cerr << "Unable to connect to host" << endl;
 #endif
-				m_response_code = ERROR_CONNECT_HOST;
-			}
+			m_response_code = ERROR_CONNECT_HOST;
+		}
 	}
 	catch( exception &ex ) {
 		cerr << "exception in HTTP_Checker::check(): for host '" << p_host_name.c_str() << "'" << endl;
