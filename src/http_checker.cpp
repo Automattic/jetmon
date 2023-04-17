@@ -4,6 +4,12 @@
 
 using namespace std;
 
+const int ERROR_STATUS_CODE_UNKNOWN = 999;
+const int ERROR_TIMEOUT = 998;
+const int ERROR_REDIRECT_LOCATION = 997;
+const int ERROR_CONNECT_REDIRECT_HOST = 996;
+const int ERROR_CONNECT_HOST = 995;
+
 HTTP_Checker::HTTP_Checker() : m_sock( -1 ), m_host_name( "" ), m_host_dir( "" ), m_port( HTTP_DEFAULT_PORT ),
 		m_is_ssl( false ), m_triptime( 0 ), m_response_code( 0 ), m_ctx( NULL ), m_ssl( NULL ), m_sbio( NULL ) {
 	gettimeofday( &m_tstart, &m_tzone );
@@ -37,6 +43,11 @@ void HTTP_Checker::check( string p_host_name, int p_port ) {
 		this->parse_host_values();
 		if ( connect() ) {
 			this->set_host_response( 0 );
+		} else {
+#if DEBUG_MODE
+			cerr << "Unable to connect to host" << endl;
+#endif
+			m_response_code = ERROR_CONNECT_HOST;
 		}
 	}
 	catch( exception &ex ) {
@@ -51,7 +62,7 @@ void HTTP_Checker::set_host_response( int redirects ) {
 #if DEBUG_MODE
 			cerr << "no response - timed out" << endl;
 #endif
-			m_response_code = 0;
+			m_response_code = ERROR_TIMEOUT;
 			return;
 		}
 
@@ -59,7 +70,7 @@ void HTTP_Checker::set_host_response( int redirects ) {
 #if DEBUG_MODE
 			cerr << "Status code unknown" << endl;
 #endif
-			m_response_code = 999;
+			m_response_code = ERROR_STATUS_CODE_UNKNOWN;
 			return;
 		}
 
@@ -80,7 +91,7 @@ void HTTP_Checker::set_host_response( int redirects ) {
 #if DEBUG_MODE
 				cerr << "Unable to parse redirect location" << endl;
 #endif
-				m_response_code = 0;
+				m_response_code = ERROR_REDIRECT_LOCATION;
 				return;
 			}
 			this->disconnect();
@@ -90,7 +101,7 @@ void HTTP_Checker::set_host_response( int redirects ) {
 #if DEBUG_MODE
 				cerr << "Unable to connect to redirect host" << endl;
 #endif
-				m_response_code = 0;
+				m_response_code = ERROR_CONNECT_REDIRECT_HOST;
 			}
 		}
 
