@@ -28,12 +28,13 @@ static void http_check_async_fin( uv_work_t *req, int status ) {
 	HandleScope scope( isolate );
 
 	HTTP_Check_Baton *baton = static_cast<HTTP_Check_Baton*>(req->data);
-	Local<Value> argv[3] = { Number::New( isolate, baton->server_id ),
+	Local<Value> argv[4] = { Number::New( isolate, baton->server_id ),
 								Number::New( isolate, baton->http_checker->get_rtt() ),
-								Number::New( isolate, baton->http_checker->get_response_code() ) };
+								Number::New( isolate, baton->http_checker->get_response_code() ),
+								Number::New( isolate, baton->http_checker->get_error_code() ) };
 
 	Local<Function> cb_func = Local<Function>::New( isolate, baton->callback );
-	cb_func->Call( isolate->GetCurrentContext(), isolate->GetCurrentContext()->Global(), 3, argv );
+	cb_func->Call( isolate->GetCurrentContext(), isolate->GetCurrentContext()->Global(), 4, argv );
 	baton->callback.Reset();
 	delete baton->http_checker;
 	delete baton;
