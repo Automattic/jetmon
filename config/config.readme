@@ -10,6 +10,18 @@ The number of sites that a worker should process in parallel.
 DATASET_SIZE
 The maximum number of sites to send to a worker's queue in a single batch.
 
+WORKER_MAX_CHECKS
+The maximum number of checks that a worker can process before it stops accepting work and is scheduled to recycle.
+Set to 0 or a negative value to disable recycling workers based on the number of checks.
+
+WORKER_MAX_MEM_MB
+The maximum MB of memory that a worker can consume before it stops accepting work and is scheduled to recycle.
+Set to 0 or a negative value to disable recycling workers based on memory usage.
+The following comment was in the worker source code from an early dev on why they chose 45MB as the original value. Since then, we moved to a value of 53MB.
+	Empirically ended up with 45MB per worker.
+	They don't get killed off all the time, and on a system with 16GB RAM
+	we end up having ~1.6GB free.
+
 DB_UPDATES_ENABLE
 WARNING: Do not enabled this on production hosts. This should only be enabled on local docker test environments and never in production.
 Set to true to allow Jetmon to update the jetpack_monitor_sites table. Without this, it is difficult to test how effective the code is working when in a local docker test environment.
