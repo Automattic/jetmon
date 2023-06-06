@@ -48,9 +48,9 @@ void CheckController::finishedChecking( int thread_index, qint64 blog_id, QStrin
 	m_checked++;
 	m_check_lock.lock();
 	for ( int loop = 0; loop < m_checks.size(); loop++ ) {
-		if ( m_checks[loop]->blog_id == blog_id ) {
+		if ( m_checks[loop]->blog_id == blog_id && m_checks[loop]->monitor_url == monitor_url ) {
 			if ( 0 > m_checks[loop]->thread_index ) {
-				LOG( "deleting a blog_id that does not have a check thread assigned?: " + QString::number( blog_id ) );
+				LOG( "deleting a blog_id that does not have a check thread assigned?: " + QString::number( blog_id ) + " " + monitor_url );
 			}
 			if ( thread_index != m_checks[loop]->thread_index ) {
 				LOG( "deleting a blog_id that has a different thread_index linked: " +
@@ -93,9 +93,9 @@ void CheckController::finishedChecking( int thread_index, qint64 blog_id, QStrin
 	m_check_lock.unlock();
 }
 
-inline bool CheckController::haveCheck( qint64 blog_id ) {
+inline bool CheckController::haveCheck( qint64 blog_id, QString monitor_url ) {
 	for ( int loop = 0; loop < m_checks.size(); loop++ ) {
-		if ( m_checks[loop]->blog_id == blog_id ) {
+		if ( m_checks[loop]->blog_id == blog_id && m_checks[loop]->monitor_url == monitor_url ) {
 			return true;
 		}
 	}
@@ -123,8 +123,8 @@ int CheckController::selectRunner() {
 }
 
 void CheckController::addCheck( HealthCheck* hc ) {
-	if ( haveCheck( hc->blog_id ) ) {
-		LOG( "ERROR:\t: already have this blog in the check list: " + QString::number( hc->blog_id ) );
+	if ( haveCheck( hc->blog_id, hc->monitor_url ) ) {
+		LOG( "ERROR:\t: already have this blog in the check list: " + QString::number( hc->blog_id ) + " " + hc->monitor_url );
 		return;
 	}
 
