@@ -40,7 +40,7 @@ public:
 
 public slots:
 	void startChecking( HealthCheck* hc );
-	void finishedChecking( int thread_index, qint64 blog_id, int status, int http_code, int rtt );
+	void finishedChecking( int thread_index, qint64 blog_id, QString monitor_url, int status, int http_code, int rtt );
 	void finishedSending( JetmonServer* js, int status, int rtt );
 	void ticked();
 
@@ -69,7 +69,7 @@ private:
 	int m_net_timeout;
 	bool m_debug;
 
-	inline bool haveCheck( qint64 blog_id );
+	inline bool haveCheck( qint64 blog_id, QString monitor_url );
 	int selectRunner();
 	void sendResults();
 	QString post_http_header( QString jetmon_server, int content_size );

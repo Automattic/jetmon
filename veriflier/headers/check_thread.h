@@ -30,7 +30,7 @@ protected:
 	void run();
 
 signals:
-	void resultReady( int thread_index, qint64 blog_id, int status, int http_code, int rtt );
+	void resultReady( int thread_index, qint64 blog_id, QString monitor_url, int status, int http_code, int rtt );
 
 public slots:
 	void finishedCheck( HTTP_Checker *checker, HealthCheck* hc );

@@ -26,7 +26,7 @@ void CheckThread::finishedCheck( HTTP_Checker *checker, HealthCheck *hc ) {
 			QString( " status :" ) + QString::number( status ) );
 	}
 
-	emit resultReady( hc->thread_index, hc->blog_id, status, checker->get_response_code(), checker->get_rtt() );
+	emit resultReady( hc->thread_index, hc->blog_id, hc->monitor_url, status, checker->get_response_code(), checker->get_rtt() );
 	checker->deleteLater();
 }
 
