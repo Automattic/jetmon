@@ -45,13 +45,15 @@ void HTTP_Checker::check( string p_host_name, int p_port ) {
 			this->set_host_response( 0 );
 		} else {
 #if DEBUG_MODE
-			cerr << "Unable to connect to host" << endl;
+			cerr << "RTT: " << get_rtt() << " Unable to connect to host" << endl;
 #endif
 			m_error_code = ERROR_CONNECT_HOST;
 		}
+
+		cerr << "RTT: " << get_rtt() << " error code: " << m_error_code << endl;
 	}
 	catch( exception &ex ) {
-		cerr << "exception in HTTP_Checker::check(): for host '" << p_host_name.c_str() << "'" << endl;
+		cerr << "RTT: " << get_rtt() << " exception in HTTP_Checker::check(): for host '" << p_host_name.c_str() << "'" << endl;
 	}
 }
 
@@ -60,7 +62,7 @@ void HTTP_Checker::set_host_response( int redirects ) {
 		string response = this->send_http_get();
 		if ( 0 >= response.size() ) {
 #if DEBUG_MODE
-			cerr << "no response - timed out" << endl;
+			cerr << "RTT: " << get_rtt() << " no response - timed out" << endl;
 #endif
 			m_response_code = 0;
 			m_error_code = ERROR_TIMEOUT;
@@ -69,7 +71,7 @@ void HTTP_Checker::set_host_response( int redirects ) {
 
 		if ( 8 != response.find_first_of( ' ' ) ) {
 #if DEBUG_MODE
-			cerr << "Status code unknown" << endl;
+			cerr << "RTT: " << get_rtt() << " Status code unknown" << endl;
 #endif
 			m_response_code = 999;
 			m_error_code = ERROR_STATUS_CODE_UNKNOWN;
@@ -84,14 +86,14 @@ void HTTP_Checker::set_host_response( int redirects ) {
 			redirects++;
 			if ( MAX_REDIRECTS < redirects ) {
 #if DEBUG_MODE
-				cerr << "Hit max on the redirects" << endl;
+				cerr << "RTT: " << get_rtt() << " Hit max on the redirects" << endl;
 #endif
 				// Note we leave the 3xx response code so this site is marked as up
 				return;
 			}
 			if ( ! set_redirect_host_values( response ) ) {
 #if DEBUG_MODE
-				cerr << "Unable to parse redirect location" << endl;
+				cerr << "RTT: " << get_rtt() << " Unable to parse redirect location" << endl;
 #endif
 				m_response_code = 0;
 				m_error_code = ERROR_REDIRECT_LOCATION;
@@ -102,7 +104,7 @@ void HTTP_Checker::set_host_response( int redirects ) {
 				this->set_host_response( redirects );
 			} else {
 #if DEBUG_MODE
-				cerr << "Unable to connect to redirect host" << endl;
+				cerr << "RTT: " << get_rtt() << " Unable to connect to redirect host" << endl;
 #endif
 				m_response_code = 0;
 				m_error_code = ERROR_CONNECT_REDIRECT_HOST;
@@ -115,7 +117,7 @@ void HTTP_Checker::set_host_response( int redirects ) {
 
 	}
 	catch( exception &ex ) {
-		cerr << "exception in HTTP_Checker::set_host_responses(): for host '" << m_host_name.c_str() << "'" << endl;
+		cerr << "RTT: " << get_rtt() << " exception in HTTP_Checker::set_host_responses(): for host '" << m_host_name.c_str() << "'" << endl;
 	}
 }
 
@@ -151,7 +153,7 @@ bool HTTP_Checker::set_redirect_host_values( string p_content ) {
 		return true;
 	}
 	catch( exception &ex ) {
-		cerr << "exception in HTTP_Checker::set_redirect_host_values()" << endl;
+		cerr << "RTT: " << get_rtt() << " exception in HTTP_Checker::set_redirect_host_values()" << endl;
 		return false;
 	}
 }
@@ -207,7 +209,7 @@ string HTTP_Checker::send_http_get() {
 	} else {
 		s_tmp = "";
 #if DEBUG_MODE
-		cerr << "failed to send_bytes()" << endl;
+		cerr << "RTT: " << get_rtt() << " failed to send_bytes()" << endl;
 #endif
 	}
 	return s_tmp;
@@ -262,7 +264,7 @@ string HTTP_Checker::get_response() {
 		return ret_val;
 	}
 	catch( exception& ex ) {
-		cerr << "exception in HTTP_Checker::get_response(): for host '" << m_host_name.c_str() << "'" << endl;
+		cerr << "RTT: " << get_rtt() << " exception in HTTP_Checker::get_response(): for host '" << m_host_name.c_str() << "'" << endl;
 		return "";
 	}
 }
@@ -276,7 +278,7 @@ bool HTTP_Checker::init_socket( addrinfo *addr ) {
 	if ( -1 == m_sock ) {
 		errno = 0;
 #if DEBUG_MODE
-		cerr << "unable to create socket" << endl;
+		cerr << "RTT: " << get_rtt() << " unable to create socket" << endl;
 #endif
 		return false;
 	}
@@ -288,7 +290,7 @@ bool HTTP_Checker::init_socket( addrinfo *addr ) {
 		m_sock = -1;
 		errno = 0;
 #if DEBUG_MODE
-		cerr << "unable to set socket option SO_REUSEADDR" << endl;
+		cerr << "RTT: " << get_rtt() << " unable to set socket option SO_REUSEADDR" << endl;
 #endif
 		return false;
 	}
@@ -300,7 +302,7 @@ bool HTTP_Checker::init_socket( addrinfo *addr ) {
 		m_sock = -1;
 		errno = 0;
 #if DEBUG_MODE
-		cerr << "could not fcntl" << endl;
+		cerr << "RTT: " << get_rtt() << " could not fcntl" << endl;
 #endif
 		return false;
 	}
@@ -316,7 +318,7 @@ bool HTTP_Checker::init_socket( addrinfo *addr ) {
 		m_sock = -1;
 		errno = 0;
 #if DEBUG_MODE
-		cerr << "unable to set socket option SO_SNDTIMEO" << endl;
+		cerr << "RTT: " << get_rtt() << " unable to set socket option SO_SNDTIMEO" << endl;
 #endif
 		return false;
 	}
@@ -327,7 +329,7 @@ bool HTTP_Checker::init_socket( addrinfo *addr ) {
 		m_sock = -1;
 		errno = 0;
 #if DEBUG_MODE
-		cerr << "unable to set socket option SO_RCVTIMEO" << endl;
+		cerr << "RTT: " << get_rtt() << " unable to set socket option SO_RCVTIMEO" << endl;
 #endif
 		return false;
 	}
@@ -343,7 +345,7 @@ bool HTTP_Checker::init_ssl() {
 		m_sock = -1;
 		errno = 0;
 #if DEBUG_MODE
-		cerr << "unable to set SSL context" << endl;
+		cerr << "RTT: " << get_rtt() << " unable to set SSL context" << endl;
 #endif
 		return false;
 	}
@@ -357,7 +359,7 @@ bool HTTP_Checker::init_ssl() {
 		m_sock = -1;
 		errno = 0;
 #if DEBUG_MODE
-		cerr << "unable to load the cert location" << endl;
+		cerr << "RTT: " << get_rtt() << " unable to load the cert location" << endl;
 #endif
 		return false;
 	}
@@ -369,7 +371,7 @@ bool HTTP_Checker::init_ssl() {
 		m_sock = -1;
 		errno = 0;
 #if DEBUG_MODE
-		cerr << "unable to set init SSL" << endl;
+		cerr << "RTT: " << get_rtt() << " unable to set init SSL" << endl;
 #endif
 		return false;
 	}
@@ -391,7 +393,7 @@ bool HTTP_Checker::connect_getaddrinfo() {
 		int result = -1;
 
 #if DEBUG_MODE
-		cerr << "getaddrinfo: looking up " << m_host_name.c_str() << endl;
+		cerr << "RTT: " << get_rtt() << " getaddrinfo: looking up " << m_host_name.c_str() << endl;
 #endif
 		string s_lookup_type = "http";
 		if ( m_is_ssl ) {
@@ -406,13 +408,13 @@ bool HTTP_Checker::connect_getaddrinfo() {
 
 		if ( EAI_NONAME == result ) {
 #if DEBUG_MODE
-			cerr << "NXDOMAIN: " << m_host_name.c_str() << endl;
+			cerr << "RTT: " << get_rtt() << " NXDOMAIN: " << m_host_name.c_str() << endl;
 #endif
 			return false;
 		}
 		if ( 0 != result || EAI_FAIL == result ) {
 #if DEBUG_MODE
-			cerr << "Error looking up host: " << m_host_name.c_str() << endl;
+			cerr << "RTT: " << get_rtt() << " Error looking up host: " << m_host_name.c_str() << endl;
 #endif
 			return false;
 		}
@@ -427,7 +429,7 @@ bool HTTP_Checker::connect_getaddrinfo() {
 			tried_recs++;
 			if ( ! init_socket( node ) ) {
 #if DEBUG_MODE
-				cerr << "socket init failed" << endl;
+				cerr << "RTT: " << get_rtt() << " socket init failed" << endl;
 #endif
 				node = node->ai_next;
 				continue;
@@ -440,7 +442,7 @@ bool HTTP_Checker::connect_getaddrinfo() {
 			int e_fd = epoll_create1( 0 );
 			if ( -1 == e_fd ) {
 #if DEBUG_MODE
-				cerr << "epoll_create failed" << endl;
+				cerr << "RTT: " << get_rtt() << " epoll_create failed" << endl;
 #endif
 				close( m_sock );
 				m_sock = -1;
@@ -454,7 +456,7 @@ bool HTTP_Checker::connect_getaddrinfo() {
 			int c_fd = epoll_ctl( e_fd, EPOLL_CTL_ADD, m_sock, &ev );
 			if ( 0 != c_fd ) {
 #if DEBUG_MODE
-				cerr << "epoll_ctl failed" << endl;
+				cerr << "RTT: " << get_rtt() << " epoll_ctl failed" << endl;
 #endif
 				close( e_fd );
 				close( m_sock );
@@ -466,13 +468,17 @@ bool HTTP_Checker::connect_getaddrinfo() {
 
 #endif // NON_BLOCKING_IO
 
+            cerr << "RTT: " << get_rtt() << " before ::connect()" << endl;
+
 			con_ret = ::connect( m_sock, node->ai_addr, node->ai_addrlen );
+
+			cerr << "RTT: " << get_rtt() << " after ::connect(), conn_ret " << con_ret << " Error " << errno << endl;
 
 #if NON_BLOCKING_IO // NON_BLOCKING_IO
 
 			if ( con_ret < 0 && errno != EINPROGRESS ) {
 #if DEBUG_MODE
-				cerr << "socket connect failed" << endl;
+				cerr << "RTT: " << get_rtt() << " socket connect failed" << endl;
 #endif
 				close( e_fd );
 				close( m_sock );
@@ -491,7 +497,7 @@ bool HTTP_Checker::connect_getaddrinfo() {
 			int timeout = m_cutofftime - time( NULL );
 			if ( timeout < 0 ) {
 #if DEBUG_MODE
-				cerr << "timed out for " << m_host_name.c_str() << endl;
+				cerr << "RTT: " << get_rtt() << " timed out for " << m_host_name.c_str() << endl;
 #endif
 				errno = 0;
 				con_ret = -1;
@@ -502,7 +508,7 @@ bool HTTP_Checker::connect_getaddrinfo() {
 			for ( int i = 0; i < num_events; i++ ) {
 				if ( events[i].events & EPOLLERR || events[i].events & EPOLLHUP ) {
 #if DEBUG_MODE
-					cerr << "epoll error or HUP" << endl;
+					cerr << "RTT: " << get_rtt() << " epoll error or HUP" << endl;
 #endif
 					con_ret = -1;
 					break;
@@ -518,7 +524,7 @@ bool HTTP_Checker::connect_getaddrinfo() {
 				break;
 			}
 #if DEBUG_MODE
-			cerr << "failed to connect to " << m_host_name.c_str() << endl;
+			cerr << "RTT: " << get_rtt() << " failed to connect to " << m_host_name.c_str() << endl;
 #endif
 			close( m_sock );
 			m_sock = -1;
@@ -528,14 +534,14 @@ bool HTTP_Checker::connect_getaddrinfo() {
 		}
 #if DEBUG_MODE
 		if ( 0 == tried_recs && 0 == node ) {
-			cerr <<  "unknown address types for: " << m_host_name.c_str() << endl;
+			cerr << "RTT: " << get_rtt() << " unknown address types for: " << m_host_name.c_str() << endl;
 		}
 #endif
 		freeaddrinfo( res );
 		return ( 0 == con_ret );
 	}
 	catch( exception& ex ) {
-		cerr << "exception in HTTP_Checker::connect(): for host '" << m_host_name.c_str() << "'" << endl;
+		cerr << "RTT: " << get_rtt() << " exception in HTTP_Checker::connect(): for host '" << m_host_name.c_str() << "'" << endl;
 		return false;
 	}
 }
@@ -551,17 +557,17 @@ bool HTTP_Checker::connect_gethostbyname() {
 		int herr, hres;
 
 #if DEBUG_MODE
-		cerr << "gethostbyname: looking up " << m_host_name.c_str() << endl;
+		cerr << "RTT: " << get_rtt() << " gethostbyname: looking up " << m_host_name.c_str() << endl;
 #endif
 		hres = gethostbyname_r( m_host_name.c_str(), &hostbuf, tmp, MAX_TCP_BUFFER, &hp, &herr );
 		if ( ERANGE == hres ) {
 #if DEBUG_MODE
-			cerr << "realloc for DNS results" << endl;
+			cerr << "RTT: " << get_rtt() << " realloc for DNS results" << endl;
 #endif
 			tmp = (char *)realloc( tmp, ( MAX_TCP_BUFFER * 2 ) );
 			if ( NULL == tmp ) {
 #if DEBUG_MODE
-				cerr << "realloc error!" << endl;
+				cerr << "RTT: " << get_rtt() << " realloc error!" << endl;
 #endif
 				return false;
 			}
@@ -574,7 +580,7 @@ bool HTTP_Checker::connect_gethostbyname() {
 			bcopy( hp->h_addr, (caddr_t)&m_addr.sin_addr, hp->h_length );
 		} else {
 #if DEBUG_MODE
-			cerr << "NXDOMAIN: " << m_host_name.c_str() << endl;
+			cerr << "RTT: " << get_rtt() << " NXDOMAIN: " << m_host_name.c_str() << endl;
 #endif
 			free( tmp );
 			return false;
@@ -582,7 +588,7 @@ bool HTTP_Checker::connect_gethostbyname() {
 
 		if ( ! init_socket( NULL ) ) {
 #if DEBUG_MODE
-			cerr << "socket init failed" << endl;
+			cerr << "RTT: " << get_rtt() << " socket init failed" << endl;
 #endif
 			free( tmp );
 			return false;
@@ -592,7 +598,7 @@ bool HTTP_Checker::connect_gethostbyname() {
 		int e_fd = epoll_create1( 0 );
 		if ( -1 == e_fd ) {
 #if DEBUG_MODE
-			cerr << "epoll_create failed" << endl;
+			cerr << "RTT: " << get_rtt() << " epoll_create failed" << endl;
 #endif
 			close( m_sock );
 			m_sock = -1;
@@ -609,7 +615,7 @@ bool HTTP_Checker::connect_gethostbyname() {
 		int c_fd = epoll_ctl( e_fd, EPOLL_CTL_ADD, m_sock, &ev );
 		if ( 0 != c_fd ) {
 #if DEBUG_MODE
-			cerr << "epoll_ctl failed" << endl;
+			cerr << "RTT: " << get_rtt() << " epoll_ctl failed" << endl;
 #endif
 			close( e_fd );
 			close( m_sock );
@@ -621,13 +627,18 @@ bool HTTP_Checker::connect_gethostbyname() {
 
 #endif // NON_BLOCKING_IO
 
+        cerr << "RTT: " << get_rtt() << " before ::connect()" << endl;
+
 		int con_ret = ::connect( m_sock, (struct sockaddr *)&m_addr, sizeof( struct sockaddr ) );
+
+		cerr << "RTT: " << get_rtt() << " after ::connect(), conn_ret " << con_ret << " Error " << errno << endl;
+
 		free( tmp );
 
 #if NON_BLOCKING_IO
 		if ( con_ret < 0 && errno != EINPROGRESS ) {
 #if DEBUG_MODE
-			cerr << "failed to connect to " << m_host_name.c_str() << endl;
+			cerr << "RTT: " << get_rtt() << " failed to connect to " << m_host_name.c_str() << endl;
 #endif
 			close( e_fd );
 			close( m_sock );
@@ -637,7 +648,7 @@ bool HTTP_Checker::connect_gethostbyname() {
 			int timeout = m_cutofftime - time( NULL );
 			if ( timeout < 0 ) {
 #if DEBUG_MODE
-				cerr << "timed out for " << m_host_name.c_str() << endl;
+				cerr << "RTT: " << get_rtt() << " timed out for " << m_host_name.c_str() << endl;
 #endif
 				errno = 0;
 				close( e_fd );
@@ -650,7 +661,7 @@ bool HTTP_Checker::connect_gethostbyname() {
 			for ( int i = 0; i < num_events; i++ ) {
 				if ( events[i].events & EPOLLERR || events[i].events & EPOLLHUP ) {
 #if DEBUG_MODE
-					cerr << "epoll error or HUP for " << m_host_name.c_str() << endl;
+					cerr << "RTT: " << get_rtt() << " epoll error or HUP for " << m_host_name.c_str() << endl;
 #endif
 					con_ret = -1;
 					break;
@@ -667,7 +678,7 @@ bool HTTP_Checker::connect_gethostbyname() {
 		return ( 0 == con_ret );
 	}
 	catch( exception& ex ) {
-		cerr << "exception in HTTP_Checker::connect(): for host '" << m_host_name.c_str() << "'" << endl;
+		cerr << "RTT: " << get_rtt() << " exception in HTTP_Checker::connect(): for host '" << m_host_name.c_str() << "'" << endl;
 		return false;
 	}
 }
@@ -686,7 +697,7 @@ bool HTTP_Checker::connect() {
 			socklen_t len = sizeof so_error;
 			::getsockopt( m_sock, SOL_SOCKET, SO_ERROR, &so_error, &len );
 			if ( 0 != so_error ) {
-				cerr << "socket connect error: " << m_host_name.c_str() << " : " << strerror( so_error ) << endl;
+				cerr << "RTT: " << get_rtt() << " socket connect error: " << m_host_name.c_str() << " : " << strerror( so_error ) << endl;
 			}
 #endif
 			if ( -1 != m_sock ) {
@@ -694,25 +705,29 @@ bool HTTP_Checker::connect() {
 				m_sock = -1;
 			}
 			errno = 0;
+			cerr << "RTT: " << get_rtt() << " return 1" << endl;
 			return false;
 		}
 
 #if DEBUG_MODE
-		cerr << "connected!" << endl;
+		cerr << "RTT: " << get_rtt() << " connected!" << endl;
 #endif
 
 		if ( m_is_ssl ) {
-			if ( ! this->init_ssl() )
+			if ( ! this->init_ssl() ) {
+			    cerr << "RTT: " << get_rtt() << " return 2" << endl;
 				return false;
+            }
 
 			m_sbio = BIO_new_socket( m_sock, BIO_NOCLOSE );
 			if ( NULL == m_sbio ) {
 #if DEBUG_MODE
-				cerr << "The SSL socket alloc failed" << endl;
+				cerr << "RTT: " << get_rtt() << " The SSL socket alloc failed" << endl;
 #endif
 				close( m_sock );
 				m_sock = -1;
 				errno = 0;
+				cerr << "RTT: " << get_rtt() << " return 3" << endl;
 				return false;
 			}
 
@@ -767,8 +782,9 @@ bool HTTP_Checker::connect() {
 				if ( 1 == status ) {
 					if ( ! want_read && ! want_write ) {
 #if DEBUG_MODE
-						cerr << "The SSL connect failed for " << m_host_name.c_str() << endl;
+						cerr << "RTT: " << get_rtt() << " The SSL connect failed for " << m_host_name.c_str() << endl;
 #endif
+                        cerr << "RTT: " << get_rtt() << " return 4" << endl;
 						return false;
 					}
 
@@ -798,9 +814,10 @@ bool HTTP_Checker::connect() {
 
 			if ( 0 != status || ! SSL_is_init_finished( m_ssl ) ) {
 #if DEBUG_MODE
-				cerr << "The SSL handshake failed for " << m_host_name.c_str()
+				cerr << "RTT: " << get_rtt() << " The SSL handshake failed for " << m_host_name.c_str()
 					<< ERR_error_string( ERR_get_error(), NULL ) << endl;
 #endif
+                cerr << "RTT: " << get_rtt() << " return 5" << endl;
 				return false;
 			}
 
@@ -809,22 +826,25 @@ bool HTTP_Checker::connect() {
 
 			if ( 1 != status ) {
 #if DEBUG_MODE
-				cerr << "The SSL handshake failed for " << m_host_name.c_str()
+				cerr << "RTT: " << get_rtt() << " The SSL handshake failed for " << m_host_name.c_str()
 					<< ERR_error_string( ERR_get_error(), NULL ) << endl;
 #endif
+                cerr << "RTT: " << get_rtt() << " return 6" << endl;
 				return false;
 			}
 #endif // NON_BLOCKING_IO
 
 			X509* cert = SSL_get_peer_certificate( m_ssl );
 			if ( cert ) {
+				cerr << "RTT: " << get_rtt() << " return 6 1/2" << endl;
 				X509_free( cert );
 			}
 		}
 		return true;
 	}
 	catch( exception& ex ) {
-		cerr << "exception in HTTP_Checker::connect(): for host '" << m_host_name.c_str() << "'" << endl;
+		cerr << "RTT: " << get_rtt() << " exception in HTTP_Checker::connect(): for host '" << m_host_name.c_str() << "'" << endl;
+		cerr << "RTT: " << get_rtt() << " return 7" << endl;
 		return false;
 	}
 }
@@ -839,24 +859,24 @@ void HTTP_Checker::disconnect_ssl() {
 	}
 	do {
 #if DEBUG_MODE
-		cerr << "SSL shutdown handshake for " << m_host_name.c_str() << endl;
+		cerr << "RTT: " << get_rtt() << " SSL shutdown handshake for " << m_host_name.c_str() << endl;
 #endif
 		status = SSL_shutdown( m_ssl );
 		switch ( status ) {
 			case 1:
 #if DEBUG_MODE
-				cerr << "clean shutdown : " << m_host_name.c_str() << endl;
+				cerr << "RTT: " << get_rtt() << " clean shutdown : " << m_host_name.c_str() << endl;
 #endif
 				return;
 			case -1:
 #if DEBUG_MODE
-				cerr << "shutdown failed: " << m_host_name.c_str() << endl;
+				cerr << "RTT: " << get_rtt() << " shutdown failed: " << m_host_name.c_str() << endl;
 #endif
 				ERR_print_errors_fp( stderr );
 				return;
 			default:
 #if DEBUG_MODE
-				cerr << "shutdown not yet finished : " << m_host_name.c_str() << endl;
+				cerr << "RTT: " << get_rtt() << " shutdown not yet finished : " << m_host_name.c_str() << endl;
 #endif
 				break;
 		}
@@ -864,7 +884,7 @@ void HTTP_Checker::disconnect_ssl() {
 			case SSL_ERROR_WANT_WRITE:
 			case SSL_ERROR_WANT_READ:
 #if DEBUG_MODE
-				cerr << "want read/write : " << m_host_name.c_str() << endl;
+				cerr << "RTT: " << get_rtt() << " want read/write : " << m_host_name.c_str() << endl;
 #endif
 				fd_set read_fds, write_fds;
 				FD_ZERO( &read_fds );
@@ -876,11 +896,11 @@ void HTTP_Checker::disconnect_ssl() {
 				tv.tv_sec = waittime - time( NULL );
 				tv.tv_usec = 0;
 #if DEBUG_MODE
-				cerr << "selecting : " << m_host_name.c_str() << endl;
+				cerr << "RTT: " << get_rtt() << " selecting : " << m_host_name.c_str() << endl;
 #endif
 				status = ::select( m_sock + 1, &read_fds, &write_fds, NULL, &tv );
 #if DEBUG_MODE
-				cerr << "select result : " << status << endl;
+				cerr << "RTT: " << get_rtt() << " select result : " << status << endl;
 #endif
 				if ( status >= 1 ) {
 					status = 1;
@@ -894,7 +914,7 @@ void HTTP_Checker::disconnect_ssl() {
 				break;
 			default:
 #if DEBUG_MODE
-				cerr << "generic error for : " << m_host_name.c_str() << endl;
+				cerr << "RTT: " << get_rtt() << " generic error for : " << m_host_name.c_str() << endl;
 #endif
 				status = 1;
 				break;
@@ -922,9 +942,9 @@ bool HTTP_Checker::disconnect() {
 				}
 #if DEBUG_MODE
 				if ( 1 == res ) {
-					cerr << "client exited gracefully: " << m_host_name.c_str() << endl;
+					cerr << "RTT: " << get_rtt() << " client exited gracefully: " << m_host_name.c_str() << endl;
 				} else {
-					cerr << "error in shutdown for " <<  m_host_name.c_str() << endl;
+					cerr << "RTT: " << get_rtt() << " error in shutdown for " <<  m_host_name.c_str() << endl;
 					ERR_print_errors_fp( stderr );
 				}
 #endif // DEBUG_MODE
@@ -947,7 +967,7 @@ bool HTTP_Checker::disconnect() {
 		return true;
 	}
 	catch( exception &ex ) {
-		cerr << "exception in HTTP_Checker::disconnect(): for host '" << m_host_name.c_str() << "'" << endl;
+		cerr << "RTT: " << get_rtt() << " exception in HTTP_Checker::disconnect(): for host '" << m_host_name.c_str() << "'" << endl;
 		return false;
 	}
 }
@@ -975,25 +995,25 @@ bool HTTP_Checker::send_bytes( char* p_packet, size_t p_packet_length ) {
 				switch ( errno ) {
 					case ENOTSOCK: {
 #if DEBUG_MODE
-						cerr << "ERROR: socket operation on non-socket irrecoverable; aborting" << endl;
+						cerr << "RTT: " << get_rtt() << " ERROR: socket operation on non-socket irrecoverable; aborting" << endl;
 #endif
 						return false;
 					}
 					case EBADF: {
 #if DEBUG_MODE
-						cerr << "ERROR: bad file descriptor is irrecoverable; aborting" << endl;
+						cerr << "RTT: " << get_rtt() << " ERROR: bad file descriptor is irrecoverable; aborting" << endl;
 #endif
 						return false;
 					}
 					case EPIPE: {
 #if DEBUG_MODE
-						cerr << "ERROR: broken pipe is irrecoverable; aborting" << endl;
+						cerr << "RTT: " << get_rtt() << " ERROR: broken pipe is irrecoverable; aborting" << endl;
 #endif
 						return false;
 					}
 					default: {
 #if DEBUG_MODE
-						cerr << "ERROR: unknown error (" << errno << "); aborting" << endl;
+						cerr << "RTT: " << get_rtt() << " ERROR: unknown error (" << errno << "); aborting" << endl;
 #endif
 						return false;
 					}
@@ -1008,7 +1028,7 @@ bool HTTP_Checker::send_bytes( char* p_packet, size_t p_packet_length ) {
 		return ( bytes_left == 0 );
 	}
 	catch( exception & ex ) {
-		cerr << "exception in HTTP_Checker::send_bytes(): for host '" << m_host_name.c_str() << "'" << endl;
+		cerr << "RTT: " << get_rtt() << " exception in HTTP_Checker::send_bytes(): for host '" << m_host_name.c_str() << "'" << endl;
 		return false;
 	}
 }

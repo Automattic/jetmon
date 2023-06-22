@@ -39,7 +39,7 @@
 #define MAX_EPOLL_EVENTS    10
 
 // Enables the printing of debug messages to stderr
-#define DEBUG_MODE          0
+#define DEBUG_MODE          1
 
 // getaddrinfo is much slower than gethostbyname and, although
 // it is technically the best way to lookup hosts, only enable
