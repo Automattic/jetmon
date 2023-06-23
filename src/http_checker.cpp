@@ -406,6 +406,8 @@ bool HTTP_Checker::connect_getaddrinfo() {
 			result = getaddrinfo( m_host_name.c_str(), s_lookup_type.c_str(), &hints, &res );
 		}
 
+		cerr << "RTT: " << get_rtt() << " getaddrinfo: after looking up " << m_host_name.c_str() << endl;
+
 		if ( EAI_NONAME == result ) {
 #if DEBUG_MODE
 			cerr << "RTT: " << get_rtt() << " NXDOMAIN: " << m_host_name.c_str() << endl;
@@ -560,6 +562,7 @@ bool HTTP_Checker::connect_gethostbyname() {
 		cerr << "RTT: " << get_rtt() << " gethostbyname: looking up " << m_host_name.c_str() << endl;
 #endif
 		hres = gethostbyname_r( m_host_name.c_str(), &hostbuf, tmp, MAX_TCP_BUFFER, &hp, &herr );
+        cerr << "RTT: " << get_rtt() << " gethostbyname: after looking up " << m_host_name.c_str() << endl;
 		if ( ERANGE == hres ) {
 #if DEBUG_MODE
 			cerr << "RTT: " << get_rtt() << " realloc for DNS results" << endl;
