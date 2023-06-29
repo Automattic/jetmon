@@ -44,7 +44,7 @@
 // getaddrinfo is much slower than gethostbyname and, although
 // it is technically the best way to lookup hosts, only enable
 // this on hosts with more than enough CPU compute headroom.
-#define USE_GETADDRINFO     0
+#define USE_GETADDRINFO     1
 
 // Sets whether we compile and use non-blocking socket IO
 #define NON_BLOCKING_IO     0
