@@ -7,7 +7,7 @@
 	"WORKER_MAX_MEM_MB" : 53,
 
 	"DB_UPDATES_ENABLE" : false,
-	"STATSD_ENABLE"  : true,
+	"STATSD_ENABLE"     : true,
 
 	"BUCKET_NO_MIN"  : 0,
 	"BUCKET_NO_MAX"  : 512,
