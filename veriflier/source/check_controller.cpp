@@ -20,7 +20,7 @@ CheckController::CheckController( const QSslConfiguration *ssl_config, const int
 
 	for ( int thread_index = 0; thread_index < m_max_checkers; thread_index++ ) {
 		CheckThread *ct = new CheckThread( m_net_timeout, m_debug, thread_index );
-		connect( ct, SIGNAL( resultReady(int, qint64, int, int, int) ), this, SLOT( finishedChecking(int, qint64, int, int, int) ) );
+		connect( ct, SIGNAL( resultReady(int, qint64, QString, int, int, int) ), this, SLOT( finishedChecking(int, qint64, QString, int, int, int) ) );
 		Runner* run = new Runner();
 		run->ct = ct;
 		run->checking = 0;
@@ -41,22 +41,23 @@ CheckController::~CheckController() {
 	qDeleteAll(m_runners);
 }
 
-void CheckController::finishedChecking( int thread_index, qint64 blog_id, int status, int http_code, int rtt ) {
+void CheckController::finishedChecking( int thread_index, qint64 blog_id, QString monitor_url, int status, int http_code, int rtt ) {
 	QJsonDocument json_doc;
 	QJsonObject json_obj, arr_result;
 	QJsonArray checkArray;
 	m_checked++;
 	m_check_lock.lock();
 	for ( int loop = 0; loop < m_checks.size(); loop++ ) {
-		if ( m_checks[loop]->blog_id == blog_id ) {
+		if ( m_checks[loop]->blog_id == blog_id && m_checks[loop]->monitor_url == monitor_url ) {
 			if ( 0 > m_checks[loop]->thread_index ) {
-				LOG( "deleting a blog_id that does not have a check thread assigned?: " + QString::number( blog_id ) );
+				LOG( "deleting a blog_id that does not have a check thread assigned?: " + QString::number( blog_id ) + " " + monitor_url );
 			}
 			if ( thread_index != m_checks[loop]->thread_index ) {
 				LOG( "deleting a blog_id that has a different thread_index linked: " +
 					 QString::number( m_checks[loop]->thread_index  )  + " != " + QString::number( thread_index ) );
 			}
 			arr_result.insert( "blog_id", QJsonValue( blog_id ) );
+			arr_result.insert( "monitor_url", QJsonValue( monitor_url ) );
 			arr_result.insert( "status", QJsonValue( status ) );
 			arr_result.insert( "code", QJsonValue( http_code ) );
 			arr_result.insert( "rtt", QJsonValue( rtt ) );
@@ -92,9 +93,9 @@ void CheckController::finishedChecking( int thread_index, qint64 blog_id, int st
 	m_check_lock.unlock();
 }
 
-inline bool CheckController::haveCheck( qint64 blog_id ) {
+inline bool CheckController::haveCheck( qint64 blog_id, QString monitor_url ) {
 	for ( int loop = 0; loop < m_checks.size(); loop++ ) {
-		if ( m_checks[loop]->blog_id == blog_id ) {
+		if ( m_checks[loop]->blog_id == blog_id && m_checks[loop]->monitor_url == monitor_url ) {
 			return true;
 		}
 	}
@@ -122,8 +123,8 @@ int CheckController::selectRunner() {
 }
 
 void CheckController::addCheck( HealthCheck* hc ) {
-	if ( haveCheck( hc->blog_id ) ) {
-		LOG( "ERROR:\t: already have this blog in the check list: " + QString::number( hc->blog_id ) );
+	if ( haveCheck( hc->blog_id, hc->monitor_url ) ) {
+		LOG( "ERROR:\t: already have this blog in the check list: " + QString::number( hc->blog_id ) + " " + hc->monitor_url );
 		return;
 	}
 

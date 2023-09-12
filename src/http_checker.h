@@ -44,7 +44,7 @@
 // getaddrinfo is much slower than gethostbyname and, although
 // it is technically the best way to lookup hosts, only enable
 // this on hosts with more than enough CPU compute headroom.
-#define USE_GETADDRINFO     0
+#define USE_GETADDRINFO     1
 
 // Sets whether we compile and use non-blocking socket IO
 #define NON_BLOCKING_IO     0
@@ -58,6 +58,7 @@ public:
 	void check( std::string p_host_name, int p_port = HTTP_DEFAULT_PORT );
 	time_t get_rtt();
 	int get_response_code() { return m_response_code; }
+	int get_error_code() { return m_error_code; }
 
 private:
 	char m_buf[MAX_TCP_BUFFER];
@@ -71,6 +72,7 @@ private:
 	time_t m_triptime;
 	time_t m_cutofftime;
 	int m_response_code;
+	int m_error_code;
 
 	SSL_CTX *m_ctx;
 	SSL *m_ssl;
