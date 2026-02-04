@@ -3,10 +3,10 @@
   "version": "0.0.1",
   "description": "Parallel HTTP health monitoring using HEAD requests for large scale website monitoring.",
   "scripts": {
-    "rebuild-run": "node-gyp rebuild && cp build/Release/jetmon.node lib && node lib/jetmon.js"
+    "rebuild-run": "npm install && node-gyp rebuild && cp build/Release/jetmon.node lib && node lib/jetmon.js"
   },
   "dependencies": {
     "mysql2": "^3.0.0",
-    "log4js": "^6.0.0"
+    "log4js": "^6.9.1"
   }
 }
