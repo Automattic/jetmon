@@ -16,26 +16,31 @@ using namespace node;
 #include "http_checker.h"
 
 struct HTTP_Check_Baton {
-	CopyablePersistentTraits<Function>::CopyablePersistent callback;
+	Global<Function> callback;
 	HTTP_Checker *http_checker;
 	std::string server;
 	int port;
 	int server_id;
+	Isolate* isolate;
 };
 
 static void http_check_async_fin( uv_work_t *req, int status ) {
-	Isolate* isolate = Isolate::GetCurrent();
-	HandleScope scope( isolate );
-
 	HTTP_Check_Baton *baton = static_cast<HTTP_Check_Baton*>(req->data);
-	Local<Value> argv[4] = { Number::New( isolate, baton->server_id ),
-								Number::New( isolate, baton->http_checker->get_rtt() ),
-								Number::New( isolate, baton->http_checker->get_response_code() ),
-								Number::New( isolate, baton->http_checker->get_error_code() ) };
 
-	Local<Function> cb_func = Local<Function>::New( isolate, baton->callback );
-	cb_func->Call( isolate->GetCurrentContext(), isolate->GetCurrentContext()->Global(), 4, argv );
+	Isolate* isolate = baton->isolate;
+	HandleScope scope( isolate );
+	Local<Context> ctx = isolate->GetCurrentContext();
+	Local<Value> argv[4] = {
+		Number::New(isolate, baton->server_id),
+		Number::New(isolate, baton->http_checker->get_rtt()),
+		Number::New(isolate, baton->http_checker->get_response_code()),
+		Number::New(isolate, baton->http_checker->get_error_code())
+	};
+
+	Local<Function> cb_func = baton->callback.Get( isolate );
+	(void) cb_func->Call( ctx, ctx->Global(), 4, argv );
 	baton->callback.Reset();
+
 	delete baton->http_checker;
 	delete baton;
 	delete req;
@@ -85,8 +90,8 @@ void http_check( const FunctionCallbackInfo<Value>& args ) {
 	baton->port = args[1]->ToInteger( isolate->GetCurrentContext() ).ToLocalChecked()->Value();
 	baton->server_id = (int) args[2]->ToInteger( isolate->GetCurrentContext() ).ToLocalChecked()->Value();
 
-	CopyablePersistentTraits<Function>::CopyablePersistent percy( isolate, args[3].As<Function>() );
-	baton->callback.Reset( isolate, percy );
+	baton->isolate = isolate;
+	baton->callback.Reset( isolate, args[3].As<Function>() );
 
 	uv_work_t *req = new uv_work_t();
 	req->data = baton;
