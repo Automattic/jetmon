@@ -1,6 +1,6 @@
 # Running Tests
 
-Jetmon does not have a formal automated test suite. Testing is performed manually using the Docker development environment. This guide covers how to test the various components of the system.
+Jetmon does not have a formal automated test suite. Testing is performed manually using the Docker development environment.
 
 ## Prerequisites
 
@@ -10,95 +10,42 @@ Jetmon does not have a formal automated test suite. Testing is performed manuall
    ```bash
    cd docker
    cp .env-sample .env
-   # Edit .env if needed
    ```
 
-## Starting the Test Environment
+## Docker Environment
 
-### Start All Services
+### Start/Stop Services
 ```bash
 cd docker
-docker compose up -d
+docker compose up -d                  # Start all services
+docker compose down                   # Stop all services
+docker compose down -v                # Stop and remove volumes (fresh start)
 ```
 
-This starts:
-- `mysqldb` - MySQL 5.7 database
-- `jetmon` - Main monitoring service (master + workers)
-- `veriflier` - Geographic verification service
-- `statsd` - Graphite/StatsD for metrics
+Services started: `mysqldb` (MySQL 5.7), `jetmon` (master + workers), `veriflier`, `statsd` (Graphite)
 
-### Start Individual Services
+### View Logs
 ```bash
-docker compose up -d mysqldb      # Database only
-docker compose up -d jetmon       # Jetmon (requires mysqldb)
-docker compose up -d veriflier    # Veriflier only
-docker compose up -d statsd       # Metrics only
-```
-
-### View Service Logs
-```bash
-docker compose logs -f jetmon      # Follow Jetmon logs
-docker compose logs -f veriflier   # Follow Veriflier logs
-docker compose logs mysqldb        # View database logs
-```
-
-### Stop All Services
-```bash
-docker compose down
-```
-
-## Testing Jetmon
-
-### Verify Jetmon Is Running
-```bash
-docker compose ps
-# Should show jetmon container as "Up"
-```
-
-### Check Jetmon Logs
-```bash
-# Real-time logs from Docker
-docker compose logs -f jetmon
-
-# Log files inside container
+docker compose logs -f jetmon         # Follow Jetmon logs
+docker compose logs -f veriflier      # Follow Veriflier logs
 docker compose exec jetmon cat logs/jetmon.log
 docker compose exec jetmon cat logs/status-change.log
 ```
 
-### Monitor Worker Activity
+### Monitor Activity
 ```bash
-# View stats files
 docker compose exec jetmon cat stats/sitespersec
 docker compose exec jetmon cat stats/sitesqueue
-docker compose exec jetmon cat stats/totals
+docker compose exec jetmon ps auxf    # Process tree: master, workers, server
 ```
 
-### Test Configuration Reload
-```bash
-# Find the master process PID
-docker compose exec jetmon ps aux | grep jetmon-master
+## Test Database Setup
 
-# Send SIGHUP to reload config
-docker compose exec jetmon kill -HUP <pid>
-```
-
-### Test Graceful Shutdown
-```bash
-# Send SIGINT to test graceful shutdown
-docker compose exec jetmon kill -INT <pid>
-
-# Or restart the container
-docker compose restart jetmon
-```
-
-## Testing with Test Data
-
-### Create Test Database Table
+### Create Table
 ```bash
 docker compose exec mysqldb mysql -u root -p123456 jetmon_db
 ```
 
-Then run:
 ```sql
 CREATE TABLE IF NOT EXISTS `jetpack_monitor_sites` (
     `jetpack_monitor_site_id` bigint(20) unsigned NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -116,119 +63,65 @@ CREATE TABLE IF NOT EXISTS `jetpack_monitor_sites` (
 
 ### Insert Test Sites
 ```sql
--- Insert test sites to monitor
 INSERT INTO jetpack_monitor_sites (blog_id, bucket_no, monitor_url, monitor_active, site_status)
 VALUES
     (1, 0, 'https://wordpress.com', 1, 1),
     (2, 0, 'https://jetpack.com', 1, 1),
-    (3, 1, 'https://example.com', 1, 1),
-    (4, 1, 'https://httpstat.us/500', 1, 1),  -- Returns 500 error
-    (5, 2, 'https://httpstat.us/200', 1, 1);  -- Returns 200 OK
+    (3, 1, 'https://httpstat.us/500', 1, 1),   -- Returns 500 error
+    (4, 1, 'https://httpstat.us/200', 1, 1),   -- Returns 200 OK
+    (5, 0, 'https://httpstat.us/503', 1, 1),   -- Service unavailable
+    (6, 0, 'https://httpstat.us/200?sleep=15000', 1, 1),  -- Slow response (timeout test)
+    (7, 0, 'https://httpstat.us/301', 1, 1);   -- Redirect test
 ```
 
-### Enable Database Updates for Testing
-Edit `config/config.json` inside the container or on your host:
+### Enable Database Updates
+Edit `config/config.json`:
 ```json
 {
     "DB_UPDATES_ENABLE": true
 }
 ```
 
-**WARNING**: Only enable `DB_UPDATES_ENABLE` in local test environments. Never enable in production.
+**WARNING**: Only enable `DB_UPDATES_ENABLE` in local test environments. Never in production.
 
-### Verify Site Checks
+## Testing Scenarios
+
+### Configuration Reload
 ```bash
-# Watch for status changes
-docker compose exec jetmon tail -f logs/status-change.log
+docker compose exec jetmon ps aux | grep jetmon-master  # Find PID
+docker compose exec jetmon kill -HUP <pid>              # Reload config
 ```
 
-## Testing the Veriflier
-
-### Verify Veriflier Is Running
+### Graceful Shutdown
 ```bash
-docker compose ps
-# Should show veriflier container as "Up"
-
-# Check veriflier logs
-docker compose logs -f veriflier
+docker compose exec jetmon kill -INT <pid>    # Or: docker compose restart jetmon
 ```
 
-### Test Veriflier Connectivity
+### Veriflier Connectivity
 ```bash
-# From the jetmon container, test connection to veriflier
 docker compose exec jetmon curl -k https://veriflier:7801/get/status
 # Should return: OK
 ```
 
-### Veriflier Logs
-```bash
-docker compose exec veriflier cat /opt/veriflier/logs/veriflier.log
-```
-
-## Testing StatsD Metrics
-
-### Access Graphite Dashboard
-Open http://localhost:8088 in your browser to view the Graphite web interface.
-
-### Verify Metrics Are Being Sent
-Navigate to: `Metrics > stats > com > jetpack > jetmon > docker > jetmon`
-
-Key metrics to check:
-- `stats.workers.free.count` - Number of free workers
-- `stats.workers.working.count` - Number of active workers
-- `stats.sites.total.count` - Total sites processed
-- `round.complete.time` - Time to complete a check round
-
-### Test StatsD Manually
-```bash
-# Send a test metric from the jetmon container
-docker compose exec jetmon bash -c 'echo "test.metric:1|c" | nc -u -w1 statsd 8125'
-```
-
-## Testing the Native Addon
-
-### Rebuild After C++ Changes
+### Native Addon Rebuild
 ```bash
 docker compose exec jetmon npm run rebuild-run
-```
-
-Or manually:
-```bash
-docker compose exec jetmon bash
-cd /jetmon
-node-gyp rebuild
-cp build/Release/jetmon.node lib/
-node lib/jetmon.js
+# Or manually:
+docker compose exec jetmon bash -c "node-gyp rebuild && cp build/Release/jetmon.node lib/ && node lib/jetmon.js"
 ```
 
 ### Test HTTP Checker Directly
-Create a test script `lib/test-addon.js`:
+Create `lib/test-addon.js`:
 ```javascript
 var checker = require( './jetmon.node' );
-
 checker.http_check( 'https://wordpress.com', 80, 0, function( index, rtt, http_code, error_code ) {
-    console.log( 'Index:', index );
-    console.log( 'RTT (microseconds):', rtt );
-    console.log( 'HTTP Code:', http_code );
-    console.log( 'Error Code:', error_code );
+    console.log( 'RTT:', rtt, 'HTTP:', http_code, 'Error:', error_code );
     process.exit( 0 );
 });
 ```
+Run: `docker compose exec jetmon node lib/test-addon.js`
 
-Run it:
-```bash
-docker compose exec jetmon node lib/test-addon.js
-```
-
-## Testing Memory Behavior
-
-### Monitor Memory Usage
-```bash
-# Watch process memory over time
-docker compose exec jetmon bash -c 'while true; do ps aux --sort=-%mem | head -20; sleep 5; done'
-```
-
-### Test Worker Recycling
+### Worker Recycling
 Set low limits in `config/config.json`:
 ```json
 {
@@ -236,99 +129,44 @@ Set low limits in `config/config.json`:
     "WORKER_MAX_MEM_MB": 30
 }
 ```
+Watch: `docker compose logs -f jetmon | grep -E "(spawn|die|recycle|limit)"`
 
-Watch workers recycle:
+### Memory Monitoring
 ```bash
-docker compose logs -f jetmon | grep -E "(spawn|die|recycle|limit)"
+docker compose exec jetmon bash -c 'while true; do ps aux --sort=-%mem | head -10; sleep 5; done'
 ```
 
-## Testing Specific Scenarios
+### StatsD Metrics
+- Dashboard: http://localhost:8088
+- Path: `Metrics > stats > com > jetpack > jetmon > docker > jetmon`
+- Test: `docker compose exec jetmon bash -c 'echo "test.metric:1|c" | nc -u -w1 statsd 8125'`
 
-### Test Site Down Detection
-1. Add a test site that returns errors:
-   ```sql
-   INSERT INTO jetpack_monitor_sites (blog_id, bucket_no, monitor_url, monitor_active)
-   VALUES (999, 0, 'https://httpstat.us/503', 1);
-   ```
+## Debugging
 
-2. Watch for status changes:
-   ```bash
-   docker compose exec jetmon tail -f logs/status-change.log
-   ```
-
-### Test Timeout Handling
-Add a slow-responding site:
-```sql
-INSERT INTO jetpack_monitor_sites (blog_id, bucket_no, monitor_url, monitor_active)
-VALUES (998, 0, 'https://httpstat.us/200?sleep=15000', 1);
-```
-
-### Test Redirect Handling
-```sql
-INSERT INTO jetpack_monitor_sites (blog_id, bucket_no, monitor_url, monitor_active)
-VALUES (997, 0, 'https://httpstat.us/301', 1);
-```
-
-## Debugging Tips
-
-### Enable Debug Mode
-Ensure `config/config.json` has:
+Enable debug mode in `config/config.json`:
 ```json
 {
     "DEBUG": true
 }
 ```
 
-### Attach to Running Container
-```bash
-docker compose exec jetmon bash
-```
+Attach to container: `docker compose exec jetmon bash`
 
-### Check Process Tree
-```bash
-docker compose exec jetmon ps auxf
-# Should show: jetmon-master, jetmon-worker (multiple), jetmon-server
-```
-
-### Database Query Testing
-```bash
-docker compose exec mysqldb mysql -u root -p123456 jetmon_db -e "SELECT COUNT(*) FROM jetpack_monitor_sites WHERE monitor_active = 1;"
-```
+Query database: `docker compose exec mysqldb mysql -u root -p123456 jetmon_db -e "SELECT COUNT(*) FROM jetpack_monitor_sites WHERE monitor_active = 1;"`
 
 ## Common Issues
 
-### Jetmon Not Starting
-- Check database is running: `docker compose ps mysqldb`
-- Verify database config: `docker compose exec jetmon cat config/db-config.conf`
-- Check for port conflicts on 7800, 7801, 7802
-
-### No Sites Being Checked
-- Verify sites exist in database
-- Check bucket range in config matches data: `BUCKET_NO_MIN`, `BUCKET_NO_MAX`
-- Ensure `monitor_active = 1` for test sites
-
-### Veriflier Connection Failures
-- Check veriflier is running: `docker compose ps veriflier`
-- Verify auth tokens match between jetmon and veriflier configs
-- Check SSL certificates exist in `veriflier/certs/`
-
-### StatsD Not Receiving Metrics
-- Verify statsd container is running
-- Check network connectivity: `docker compose exec jetmon ping statsd`
-- Look for UDP errors in jetmon logs
+| Problem | Check |
+|---------|-------|
+| Jetmon not starting | `docker compose ps mysqldb`, verify `config/db-config.conf` |
+| No sites being checked | Verify `BUCKET_NO_MIN/MAX` matches data, `monitor_active = 1` |
+| Veriflier connection fails | `docker compose ps veriflier`, check auth tokens match, SSL certs exist |
+| StatsD not receiving | `docker compose exec jetmon ping statsd`, check for UDP errors |
 
 ## Cleanup
 
-### Reset Test Environment
 ```bash
-docker compose down -v  # Removes volumes (database data)
-docker compose up -d    # Fresh start
-```
-
-### Remove Generated Files
-```bash
-rm -f config/config.json
-rm -f config/db-config.conf
-rm -rf logs/*.log
-rm -rf stats/*
+docker compose down -v                # Remove volumes
+rm -f config/config.json config/db-config.conf
+rm -rf logs/*.log stats/*
 ```

@@ -11,7 +11,7 @@ Check the start of any user message for the following short codes and act approp
 ## Key Principles
 
 - Write concise, technical code with accurate JavaScript and C++ examples.
-- Follow the established code style conventions (see `code-style.md`).
+- Follow the established code style conventions (see `coding-standards.md`).
 - Use callback-based asynchronous patterns (not Promises/async-await) in JavaScript.
 - Prefer modularization over duplication.
 - Use descriptive function, variable, and file names following existing conventions:

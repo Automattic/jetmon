@@ -64,6 +64,8 @@ See `config/config.readme` for detailed documentation of all options.
 | `lib/database.js` | MySQL queries and connection |
 | `lib/comms.js` | HTTPS communication with Verifliers |
 | `lib/wpcom.js` | WordPress.com API notifications |
+| `lib/server.js` | SSL server for Veriflier responses |
+| `lib/statsd.js` | StatsD metrics client |
 | `src/http_checker.cpp` | C++ native addon for HTTP checks |
 | `binding.gyp` | Node-gyp build configuration |
 
