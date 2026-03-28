@@ -55,6 +55,7 @@ Before responding to any request, follow these steps:
    - Plan for graceful error handling and logging
    - Ensure metrics are emitted for observability
    - Verify changes work in Docker development environment
+   - After proposing any code change, always provide specific manual testing steps the user should follow. Jetmon has no automated test suite — manual verification is mandatory for every change. Reference `running-tests.md` for the Docker testing environment.
 
 ## Architecture Awareness
 
