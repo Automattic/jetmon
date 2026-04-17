@@ -143,7 +143,7 @@ void HTTP_Checker::parse_response_code( QByteArray a_data ) {
 	}
 }
 
-bool HTTP_Checker::send_http_get() {
+bool HTTP_Checker::send_http_request() {
 	QString m_buf = "HEAD " + m_host_dir + " HTTP/1.1\r\n";
 			m_buf += "Host: " + m_host_name + "\r\n";
 			m_buf += "User-Agent: jetmon/1.0 (Jetpack Site Uptime Monitor by WordPress.com)\r\n";
@@ -177,7 +177,7 @@ void HTTP_Checker::connected() {
 			finish_request();
 			return;
 		}
-		send_http_get();
+		send_http_request();
 	}
 	catch( exception &ex ) {
 		LOG( QString( "exception in HTTP_Checker::connected(): for host '" ) + m_host_name + "' : " + ex.what() );
@@ -228,4 +228,3 @@ void HTTP_Checker::finish_request() {
 		emit finished( this, m_hc );
 	}
 }
-
