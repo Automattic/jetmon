@@ -11,7 +11,8 @@ const int ERROR_CONNECT_REDIRECT_HOST = 996;
 const int ERROR_CONNECT_HOST = 995;
 
 HTTP_Checker::HTTP_Checker() : m_sock( -1 ), m_host_name( "" ), m_host_dir( "" ), m_port( HTTP_DEFAULT_PORT ),
-		m_is_ssl( false ), m_triptime( 0 ), m_response_code( 0 ), m_ctx( NULL ), m_ssl( NULL ), m_sbio( NULL ), m_error_code( 0 ) {
+		m_is_ssl( false ), m_use_get( false ), m_raw_response( "" ), m_tzone(), m_tstart(), m_triptime( 0 ),
+		m_cutofftime( 0 ), m_response_code( 0 ), m_error_code( 0 ), m_ctx( NULL ), m_ssl( NULL ), m_sbio( NULL ) {
 	gettimeofday( &m_tstart, &m_tzone );
 	memset( m_buf, 0, MAX_TCP_BUFFER );
 	m_cutofftime = time( NULL );
@@ -34,11 +35,12 @@ time_t HTTP_Checker::get_rtt() {
 	return m_tend.tv_sec * 1000000 + ( m_tend.tv_usec );
 }
 
-void HTTP_Checker::check( string p_host_name, int p_port ) {
+void HTTP_Checker::check( string p_host_name, int p_port, bool p_use_get ) {
 	try {
 		m_host_name = p_host_name;
 		m_port = p_port;
 		m_host_dir = '/';
+		m_use_get = p_use_get;
 
 		this->parse_host_values();
 		if ( connect() ) {
@@ -57,7 +59,8 @@ void HTTP_Checker::check( string p_host_name, int p_port ) {
 
 void HTTP_Checker::set_host_response( int redirects ) {
 	try {
-		string response = this->send_http_get();
+		string response = this->send_http_request();
+		m_raw_response = response.substr( 0, 512 );
 		if ( 0 >= response.size() ) {
 #if DEBUG_MODE
 			cerr << "no response - timed out" << endl;
@@ -194,15 +197,13 @@ void HTTP_Checker::parse_host_values() {
 	}
 }
 
-string HTTP_Checker::send_http_get() {
-	string s_tmp = "HEAD " + m_host_dir + " HTTP/1.1\r\n";
+string HTTP_Checker::send_http_request() {
+	string s_tmp = ( m_use_get ? "GET" : "HEAD" ) + ( " " + m_host_dir + " HTTP/1.1\r\n" );
 			s_tmp += "Host: " + m_host_name + "\r\n";
 			s_tmp += "User-Agent: jetmon/1.0 (Jetpack Site Uptime Monitor by WordPress.com)\r\n";
 			s_tmp += "Connection: close\r\n\r\n";
 
-	strcpy( m_buf, s_tmp.c_str() );
-
-	if ( send_bytes( m_buf, s_tmp.length() ) ) {
+	if ( send_bytes( s_tmp.c_str(), s_tmp.length() ) ) {
 		s_tmp = get_response();
 	} else {
 		s_tmp = "";
@@ -239,6 +240,9 @@ string HTTP_Checker::get_response() {
 				if ( received < MAX_TCP_BUFFER ) {
 					m_buf[ received ] = '\0';
 					ret_val += m_buf;
+					// We only need headers for status/redirect parsing, not the body.
+					if ( string::npos != ret_val.find( "\r\n\r\n" ) )
+						break;
 				}
 				do
 				{
@@ -917,8 +921,16 @@ bool HTTP_Checker::disconnect() {
 				}
 				int res = SSL_shutdown( m_ssl );
 				while ( 1 != res && waittime > time( NULL ) ) {
+					fd_set read_fds;
+					FD_ZERO( &read_fds );
+					FD_SET( m_sock, &read_fds );
+					struct timeval tv;
+					tv.tv_sec = waittime - time( NULL );
+					tv.tv_usec = 0;
+					if ( tv.tv_sec <= 0 )
+						break;
+					::select( m_sock + 1, &read_fds, NULL, NULL, &tv );
 					res = SSL_shutdown( m_ssl );
-					sleep( 1 );
 				}
 #if DEBUG_MODE
 				if ( 1 == res ) {
@@ -952,7 +964,7 @@ bool HTTP_Checker::disconnect() {
 	}
 }
 
-bool HTTP_Checker::send_bytes( char* p_packet, size_t p_packet_length ) {
+bool HTTP_Checker::send_bytes( const char* p_packet, size_t p_packet_length ) {
 	try {
 		ssize_t bytes_left = p_packet_length;
 		ssize_t bytes_sent = 0;
@@ -1012,4 +1024,3 @@ bool HTTP_Checker::send_bytes( char* p_packet, size_t p_packet_length ) {
 		return false;
 	}
 }
-

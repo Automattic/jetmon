@@ -61,7 +61,7 @@ private:
 
 	void connect();
 	void closeConnection();
-	bool send_http_get();
+	bool send_http_request();
 	void process_response();
 	void finish_request();
 	bool set_redirect_host_values( QString p_content );
