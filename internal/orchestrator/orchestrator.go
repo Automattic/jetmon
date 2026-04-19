@@ -4,6 +4,7 @@ import (
 	stdctx "context"
 	"fmt"
 	"log"
+	runtimemetrics "runtime/metrics"
 	"sync"
 	"time"
 
@@ -223,6 +224,7 @@ process:
 		metrics.WriteStatsFiles(sps, o.pool.QueueDepth(), o.totalChecked)
 	}
 
+	o.applyMemoryPressure(cfg)
 }
 
 func (o *Orchestrator) processResults(results map[int64]checker.Result, sites map[int64]db.Site) {
@@ -585,4 +587,50 @@ func stringPtrValue(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+func (o *Orchestrator) applyMemoryPressure(cfg *config.Config) {
+	if cfg.WorkerMaxMemMB <= 0 {
+		return
+	}
+
+	rssMB := currentMemoryMB()
+	if rssMB <= 0 || rssMB <= cfg.WorkerMaxMemMB {
+		return
+	}
+
+	current := o.pool.WorkerCount()
+	toDrain := current / 10
+	if toDrain < 1 {
+		toDrain = 1
+	}
+	drained := o.pool.DrainWorkers(toDrain)
+	if drained == 0 {
+		return
+	}
+
+	// Lower the autoscaler ceiling for the rest of this round to avoid
+	// immediately respawning the workers we just drained.
+	o.pool.SetMaxSize(max(1, current-drained))
+	log.Printf(
+		"orchestrator: memory pressure %dMB > %dMB, draining %d workers",
+		rssMB,
+		cfg.WorkerMaxMemMB,
+		drained,
+	)
+}
+
+func currentMemoryMB() int {
+	samples := []runtimemetrics.Sample{
+		{Name: "/memory/classes/total:bytes"},
+		{Name: "/memory/classes/heap/released:bytes"},
+	}
+	runtimemetrics.Read(samples)
+
+	total := samples[0].Value.Uint64()
+	released := samples[1].Value.Uint64()
+	if total <= released {
+		return 0
+	}
+	return int((total - released) / 1024 / 1024)
 }

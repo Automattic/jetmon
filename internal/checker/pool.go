@@ -11,6 +11,7 @@ import (
 type Pool struct {
 	work    chan Request
 	results chan Result
+	retire  chan struct{}
 	cancel  context.CancelFunc
 	ctx     context.Context
 	closed  atomic.Bool
@@ -31,6 +32,7 @@ func NewPool(initial, min, max int) *Pool {
 	p := &Pool{
 		work:    make(chan Request, max*2),
 		results: make(chan Result, max*2),
+		retire:  make(chan struct{}, max),
 		cancel:  cancel,
 		ctx:     ctx,
 		minSize: min,
@@ -100,6 +102,8 @@ func (p *Pool) spawnWorker() {
 			select {
 			case <-p.ctx.Done():
 				return
+			case <-p.retire:
+				return
 			case req, ok := <-p.work:
 				if !ok {
 					return
@@ -156,9 +160,14 @@ func (p *Pool) scale() {
 		return
 	}
 
-	// Scale down: no workers exit individually — they exit naturally when
-	// the work channel is closed during drain. Scale-down is not implemented
-	// yet; keeping existing workers is preferable to dropping checks.
+	// Scale down gradually when demand is low or the max size has been lowered.
+	if current > p.maxSize {
+		p.retireWorkers(current - p.maxSize)
+		return
+	}
+	if queue == 0 && current > p.minSize {
+		p.retireWorkers(1)
+	}
 }
 
 // SetMaxSize updates the autoscaler ceiling after config reload.
@@ -168,5 +177,43 @@ func (p *Pool) SetMaxSize(max int) {
 	}
 	p.mu.Lock()
 	p.maxSize = max
+	current := int(p.size.Load())
+	if current > p.maxSize {
+		p.retireWorkers(current - p.maxSize)
+	}
 	p.mu.Unlock()
+}
+
+// DrainWorkers gracefully reduces the pool size by up to n idle workers.
+func (p *Pool) DrainWorkers(n int) int {
+	if n < 1 {
+		return 0
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.retireWorkers(n)
+}
+
+func (p *Pool) retireWorkers(n int) int {
+	if n < 1 {
+		return 0
+	}
+	current := int(p.size.Load())
+	available := current - p.minSize
+	if available < 1 {
+		return 0
+	}
+	if n > available {
+		n = available
+	}
+	retired := 0
+	for range n {
+		select {
+		case p.retire <- struct{}{}:
+			retired++
+		default:
+			return retired
+		}
+	}
+	return retired
 }

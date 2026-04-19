@@ -6,6 +6,7 @@ import (
 
 	"github.com/Automattic/jetmon/internal/config"
 	"github.com/Automattic/jetmon/internal/db"
+	"github.com/Automattic/jetmon/internal/veriflier"
 )
 
 func TestIsAlertSuppressedUsesLastAlertSent(t *testing.T) {
@@ -42,5 +43,48 @@ func TestTimeoutForSite(t *testing.T) {
 	override := 3
 	if got := timeoutForSite(cfg, db.Site{TimeoutSeconds: &override}); got != 3 {
 		t.Fatalf("timeoutForSite() with override = %d, want 3", got)
+	}
+}
+
+func TestRefreshVeriflierClientsReusesUnchangedClients(t *testing.T) {
+	cfg := &config.Config{
+		Verifiers: []config.VerifierConfig{
+			{Name: "a", Host: "host1", GRPCPort: "7803", AuthToken: "token1"},
+			{Name: "b", Host: "host2", GRPCPort: "7804", AuthToken: "token2"},
+		},
+	}
+
+	o := New(cfg, nil)
+	before := append([]*veriflier.VeriflierClient(nil), o.veriflierClients...)
+
+	o.refreshVeriflierClients(cfg)
+
+	for i := range before {
+		if before[i] != o.veriflierClients[i] {
+			t.Fatalf("client %d was rebuilt for unchanged config", i)
+		}
+	}
+}
+
+func TestRefreshVeriflierClientsRebuildsChangedClients(t *testing.T) {
+	cfg := &config.Config{
+		Verifiers: []config.VerifierConfig{
+			{Name: "a", Host: "host1", GRPCPort: "7803", AuthToken: "token1"},
+		},
+	}
+
+	o := New(cfg, nil)
+	before := o.veriflierClients[0]
+
+	updated := &config.Config{
+		Verifiers: []config.VerifierConfig{
+			{Name: "a", Host: "host1", GRPCPort: "7803", AuthToken: "token2"},
+		},
+	}
+
+	o.refreshVeriflierClients(updated)
+
+	if before == o.veriflierClients[0] {
+		t.Fatalf("client was reused after config changed")
 	}
 }
