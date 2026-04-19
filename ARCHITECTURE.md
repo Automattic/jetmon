@@ -13,16 +13,16 @@ each owning a non-overlapping range of site buckets claimed from MySQL.
 
 ```
                           ┌─────────────────────────────────────────┐
-                          │            jetmon2 (single binary)       │
-                          │                                          │
+                          │            jetmon2 (single binary)      │
+                          │                                         │
   ┌──────────┐  sites     │  ┌─────────────┐    ┌─────────────────┐ │
   │  MySQL   │──────────► │  │ Orchestrator│───►│  Checker Pool   │ │
   │ (bucket) │◄────────── │  │  (1 gorout.)│◄───│  (N goroutines) │ │
   └──────────┘  updates   │  └──────┬──────┘    └─────────────────┘ │
-                          │         │                                 │
-  ┌──────────┐  confirm?  │         │ escalate                       │
+                          │         │                               │
+  ┌──────────┐  confirm?  │         │ escalate                      │
   │Veriflier │◄───────────│─────────┘                               │
-  │ (remote) │──────────► │                                          │
+  │ (remote) │──────────► │                                         │
   └──────────┘  result    │  ┌───────────┐  ┌──────────┐            │
                           │  │   WPCOM   │  │Dashboard │            │
   ┌──────────┐  notify    │  │  Client   │  │  (SSE)   │            │
@@ -71,9 +71,9 @@ This is the end-to-end path from database query to WPCOM notification.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│ PHASE 1 — Fetch                                                       │
-│                                                                       │
-│  orchestrator.runRound()                                              │
+│ PHASE 1 — Fetch                                                      │
+│                                                                      │
+│  orchestrator.runRound()                                             │
 │    dbHeartbeat()          ── UPDATE jetmon_hosts SET last_heartbeat  │
 │    ClaimBuckets()         ── rebalance bucket ranges (each round)    │
 │    dbGetSitesForBucket()  ── SELECT sites WHERE bucket IN [min,max]  │
@@ -82,28 +82,28 @@ This is the end-to-end path from database query to WPCOM notification.
                   │  []db.Site
                   ▼
 ┌──────────────────────────────────────────────────────────────────────┐
-│ PHASE 2 — Check (parallel)                                            │
-│                                                                       │
-│  for each site:                                                       │
-│    pool.Submit(checker.Request)                                       │
-│         │                                                             │
-│         ▼   (goroutine worker)                                        │
-│    checker.Check(ctx, req)                                            │
+│ PHASE 2 — Check (parallel)                                           │
+│                                                                      │
+│  for each site:                                                      │
+│    pool.Submit(checker.Request)                                      │
+│         │                                                            │
+│         ▼   (goroutine worker)                                       │
+│    checker.Check(ctx, req)                                           │
 │      • HTTP GET with httptrace timing (DNS/TCP/TLS/TTFB)             │
 │      • Keyword match (reads up to 1 MB of body)                      │
-│      • Redirect policy (follow / alert / fail)                        │
-│      • SSL expiry extraction from peer certificate                    │
+│      • Redirect policy (follow / alert / fail)                       │
+│      • SSL expiry extraction from peer certificate                   │
 │      • Error classification → ErrorCode (8 codes)                    │
-│      • Success = HTTPCode in [1, 399]                                 │
-│         │                                                             │
-│         ▼                                                             │
+│      • Success = HTTPCode in [1, 399]                                │
+│         │                                                            │
+│         ▼                                                            │
 │    checker.Result  ──►  pool.results channel                         │
 └──────────────────────────────────────────────────────────────────────┘
                   │  map[blogID]Result
                   ▼
 ┌──────────────────────────────────────────────────────────────────────┐
 │ PHASE 3 — Collect (deadline: NetCommsTimeout + 5 s)                  │
-│                                                                       │
+│                                                                      │
 │  Drain pool.Results() until all dispatched results arrive or         │
 │  deadline fires (partial results processed, rest logged as dropped)  │
 └──────────────────────────────────────────────────────────────────────┘
@@ -115,25 +115,25 @@ This is the end-to-end path from database query to WPCOM notification.
           ▼               ▼
 ┌─────────────┐   ┌─────────────────────────────────────────────────┐
 │  RECOVERY   │   │ PHASE 4 — Failure Escalation                    │
-│             │   │                                                  │
+│             │   │                                                 │
 │ retries     │   │ Stage 1 — Local retry                           │
 │  .clear()   │   │   retries.record(res) → failCount++             │
 │             │   │   if failCount < NumOfChecks (default 3):       │
 │ if site was │   │     auditLog("retry_dispatched")                │
 │ previously  │   │     ← return; retry next round                  │
-│ down:       │   │                                                  │
+│ down:       │   │                                                 │
 │  dbUpdate   │   │ Stage 2 — Veriflier escalation                  │
 │  Status()   │   │   if failCount >= NumOfChecks:                  │
 │  Notify()   │   │     escalateToVerifliers()                      │
 │             │   │       ← see Veriflier Quorum section            │
-└─────────────┘   │                                                  │
-                  │ Stage 3 — Confirm down                           │
-                  │   confirmDown(site, entry, vResults)             │
-                  │     if DB_UPDATES_ENABLE:                        │
-                  │       dbUpdateSiteStatus(→ confirmed_down)       │
-                  │     if inMaintenance(): suppress + audit         │
-                  │     else if !isAlertSuppressed(): Notify()       │
-                  │     retries.clear(blogID)                        │
+└─────────────┘   │                                                 │
+                  │ Stage 3 — Confirm down                          │
+                  │   confirmDown(site, entry, vResults)            │
+                  │     if DB_UPDATES_ENABLE:                       │
+                  │       dbUpdateSiteStatus(→ confirmed_down)      │
+                  │     if inMaintenance(): suppress + audit        │
+                  │     else if !isAlertSuppressed(): Notify()      │
+                  │     retries.clear(blogID)                       │
                   └─────────────────────────────────────────────────┘
 ```
 
@@ -273,7 +273,7 @@ WPCOM Circuit Breaker
                             │ time.Since(circuitOpenAt) > 60 s
                             ▼
          ┌─────────────────────────────────────────────┐
-         │            Resetting (half-open)             │
+         │            Resetting (half-open)            │
          │  • failures reset to 0                      │
          │  • circuitOpen = false                      │
          │  • queued notifications flushed             │
