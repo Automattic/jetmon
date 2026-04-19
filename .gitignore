@@ -4,3 +4,4 @@ node_modules/
 lib/jetmon.node
 .env
 .idea
+.codex
