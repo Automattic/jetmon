@@ -371,3 +371,146 @@ func checkerResultFailure(blogID int64) checker.Result {
 		Timestamp: time.Now().UTC(),
 	}
 }
+
+func TestHandleRecoverySendsNotificationWhenSiteWasDown(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig()
+
+	var notifiedStatus int
+	wpcomNotifyFunc = func(_ *wpcom.Client, n wpcom.Notification) error {
+		notifiedStatus = n.StatusID
+		return nil
+	}
+	dbUpdateLastAlertSent = func(context.Context, int64, time.Time) error { return nil }
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local",
+		ctx:      context.Background(),
+	}
+
+	o.handleRecovery(db.Site{BlogID: 1, SiteStatus: statusConfirmedDown}, checkerResultSuccess(1))
+
+	if notifiedStatus != statusRunning {
+		t.Fatalf("notification StatusID = %d, want %d (statusRunning)", notifiedStatus, statusRunning)
+	}
+	if o.retries.get(1) != nil {
+		t.Fatal("retry entry should be cleared after recovery")
+	}
+}
+
+func TestHandleRecoveryIsNoopWhenSiteAlreadyRunning(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig()
+
+	var notifyCalls int
+	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error {
+		notifyCalls++
+		return nil
+	}
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local",
+		ctx:      context.Background(),
+	}
+
+	// No retry entry, site already running — should be a complete no-op.
+	o.handleRecovery(db.Site{BlogID: 1, SiteStatus: statusRunning}, checkerResultSuccess(1))
+
+	if notifyCalls != 0 {
+		t.Fatalf("notify calls = %d, want 0", notifyCalls)
+	}
+}
+
+func TestHandleRecoveryClearsRetryEntryEvenWhenAlreadyRunning(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig()
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local",
+		ctx:      context.Background(),
+	}
+
+	// Site has a stale retry entry (e.g. from a previous partial failure) but
+	// is now reported as running. The entry must be cleared.
+	o.retries.record(checkerResultFailure(1))
+	o.handleRecovery(db.Site{BlogID: 1, SiteStatus: statusRunning}, checkerResultSuccess(1))
+
+	if o.retries.get(1) != nil {
+		t.Fatal("stale retry entry should be cleared on recovery even when status was already running")
+	}
+}
+
+func TestHandleFailureBelowThresholdDoesNotEscalate(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig()
+	config.Get().NumOfChecks = 3
+
+	var escalated bool
+	veriflierCheckFunc = func(_ *veriflier.VeriflierClient, _ context.Context, _ veriflier.CheckRequest) (*veriflier.CheckResult, error) {
+		escalated = true
+		return &veriflier.CheckResult{Success: false}, nil
+	}
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local",
+		ctx:      context.Background(),
+	}
+
+	// First failure only — failCount (1) < NumOfChecks (3).
+	o.handleFailure(db.Site{BlogID: 1}, checkerResultFailure(1))
+
+	if escalated {
+		t.Fatal("escalated to verifliers after only 1 failure, want NumOfChecks (3) failures first")
+	}
+	if o.retries.get(1) == nil {
+		t.Fatal("retry entry should exist after first failure")
+	}
+}
+
+func TestHandleFailureEscalatesAfterThreshold(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig()
+	cfg := config.Get()
+	cfg.NumOfChecks = 2
+	cfg.PeerOfflineLimit = 1
+
+	var escalated bool
+	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error { return nil }
+	dbUpdateLastAlertSent = func(context.Context, int64, time.Time) error { return nil }
+	veriflierCheckFunc = func(_ *veriflier.VeriflierClient, _ context.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
+		escalated = true
+		return &veriflier.CheckResult{BlogID: req.BlogID, Success: false, HTTPCode: 500}, nil
+	}
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local",
+		ctx:      context.Background(),
+		veriflierClients: []*veriflier.VeriflierClient{
+			veriflier.NewVeriflierClient("v1", ""),
+		},
+	}
+
+	// Two failures reaches NumOfChecks (2) and triggers escalation.
+	for range cfg.NumOfChecks {
+		o.handleFailure(db.Site{BlogID: 1, SiteStatus: statusRunning}, checkerResultFailure(1))
+	}
+
+	if !escalated {
+		t.Fatal("expected escalation to verifliers after NumOfChecks failures")
+	}
+}

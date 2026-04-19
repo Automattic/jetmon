@@ -40,15 +40,16 @@ type Notification struct {
 
 // Client sends notifications to the WPCOM API with circuit breaker protection.
 type Client struct {
-	authToken string
+	authToken  string
+	notifyURL  string // overrides notifyEndpoint when set (used in tests)
 	httpClient *http.Client
 	hostname   string
 
-	mu           sync.Mutex
-	failures     int
-	circuitOpen  bool
+	mu            sync.Mutex
+	failures      int
+	circuitOpen   bool
 	circuitOpenAt time.Time
-	queue        []queuedNotification
+	queue         []queuedNotification
 }
 
 type queuedNotification struct {
@@ -116,7 +117,11 @@ func (c *Client) send(n Notification) error {
 		return fmt.Errorf("marshal notification: %w", err)
 	}
 
-	req, err := http.NewRequest(http.MethodPost, notifyEndpoint, bytes.NewReader(body))
+	url := c.notifyURL
+	if url == "" {
+		url = notifyEndpoint
+	}
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)
 	}

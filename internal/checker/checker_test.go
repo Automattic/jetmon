@@ -2,6 +2,8 @@ package checker
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -151,5 +153,149 @@ func TestPoolDrainWaitsForInflightCheck(t *testing.T) {
 	case <-drained:
 	case <-time.After(2 * time.Second):
 		t.Fatal("Drain did not return after in-flight check completed")
+	}
+}
+
+func TestSubmitReturnsFalseAfterDrain(t *testing.T) {
+	p := NewPool(1, 1, 1)
+	p.Drain()
+	if p.Submit(Request{BlogID: 1, URL: "https://example.com"}) {
+		t.Fatal("Submit() returned true after Drain, want false")
+	}
+}
+
+func TestSetMaxSizeRetireExcessWorkers(t *testing.T) {
+	p := NewPool(5, 1, 5)
+	t.Cleanup(p.Drain)
+
+	p.SetMaxSize(2)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if p.WorkerCount() <= 2 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("worker count = %d after SetMaxSize(2), want <= 2", p.WorkerCount())
+}
+
+// --- checker.Check() ---
+
+func TestCheckHTTP200(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{BlogID: 1, URL: srv.URL, TimeoutSeconds: 5})
+	if !res.Success {
+		t.Fatalf("Success = false, want true")
+	}
+	if res.HTTPCode != 200 {
+		t.Fatalf("HTTPCode = %d, want 200", res.HTTPCode)
+	}
+	if res.ErrorCode != ErrorNone {
+		t.Fatalf("ErrorCode = %d, want ErrorNone", res.ErrorCode)
+	}
+}
+
+func TestCheckHTTP500(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{BlogID: 1, URL: srv.URL, TimeoutSeconds: 5})
+	if res.Success {
+		t.Fatal("Success = true for 500 response, want false")
+	}
+	if res.HTTPCode != 500 {
+		t.Fatalf("HTTPCode = %d, want 500", res.HTTPCode)
+	}
+}
+
+func TestCheckTimeout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(5 * time.Second):
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{BlogID: 1, URL: srv.URL, TimeoutSeconds: 1})
+	if res.ErrorCode != ErrorTimeout {
+		t.Fatalf("ErrorCode = %d, want ErrorTimeout", res.ErrorCode)
+	}
+}
+
+func TestCheckKeywordMatch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("hello jetpack world"))
+	}))
+	defer srv.Close()
+
+	kw := "jetpack"
+	res := Check(context.Background(), Request{BlogID: 1, URL: srv.URL, TimeoutSeconds: 5, Keyword: &kw})
+	if !res.Success {
+		t.Fatalf("Success = false for keyword match, want true")
+	}
+	if res.ErrorCode != ErrorNone {
+		t.Fatalf("ErrorCode = %d for keyword match, want ErrorNone", res.ErrorCode)
+	}
+}
+
+func TestCheckKeywordMiss(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("hello world"))
+	}))
+	defer srv.Close()
+
+	kw := "jetpack"
+	res := Check(context.Background(), Request{BlogID: 1, URL: srv.URL, TimeoutSeconds: 5, Keyword: &kw})
+	if res.ErrorCode != ErrorKeyword {
+		t.Fatalf("ErrorCode = %d, want ErrorKeyword", res.ErrorCode)
+	}
+}
+
+func TestCheckRedirectFail(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			http.Redirect(w, r, "/final", http.StatusMovedPermanently)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{BlogID: 1, URL: srv.URL, TimeoutSeconds: 5, RedirectPolicy: RedirectFail})
+	if res.ErrorCode != ErrorRedirect {
+		t.Fatalf("ErrorCode = %d, want ErrorRedirect", res.ErrorCode)
+	}
+}
+
+func TestCheckCustomHeadersForwarded(t *testing.T) {
+	var receivedHeader string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedHeader = r.Header.Get("X-Custom-Test")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{
+		BlogID:         1,
+		URL:            srv.URL,
+		TimeoutSeconds: 5,
+		CustomHeaders:  map[string]string{"X-Custom-Test": "hello"},
+	})
+	if !res.Success {
+		t.Fatalf("Success = false, want true")
+	}
+	if receivedHeader != "hello" {
+		t.Fatalf("X-Custom-Test = %q, want hello", receivedHeader)
 	}
 }
