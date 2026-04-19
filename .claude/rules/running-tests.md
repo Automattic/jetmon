@@ -1,6 +1,14 @@
 # Running Tests
 
-Jetmon does not have a formal automated test suite. Testing is performed manually using the Docker development environment.
+Jetmon 2 has a Go test suite (`go test ./...`) and a Docker development environment for integration testing.
+
+## Automated Tests
+
+```bash
+make test          # go test ./...
+make test-race     # go test -race ./...
+make lint          # go vet ./...
+```
 
 ## Prerequisites
 
@@ -22,43 +30,27 @@ docker compose down                   # Stop all services
 docker compose down -v                # Stop and remove volumes (fresh start)
 ```
 
-Services started: `mysqldb` (MySQL 5.7), `jetmon` (master + workers), `veriflier`, `statsd` (Graphite)
+Services started: `mysqldb` (MySQL 8.0), `jetmon` (single binary), `veriflier`, `statsd` (Graphite)
 
 ### View Logs
 ```bash
 docker compose logs -f jetmon         # Follow Jetmon logs
 docker compose logs -f veriflier      # Follow Veriflier logs
-docker compose exec jetmon cat logs/jetmon.log
-docker compose exec jetmon cat logs/status-change.log
 ```
 
 ### Monitor Activity
 ```bash
 docker compose exec jetmon cat stats/sitespersec
 docker compose exec jetmon cat stats/sitesqueue
-docker compose exec jetmon ps auxf    # Process tree: master, workers, server
+docker compose exec jetmon ps aux     # Single process — no worker tree
 ```
 
 ## Test Database Setup
 
-### Create Table
+The Docker entrypoint automatically runs `./jetmon2 migrate` on startup. For manual testing, connect to MySQL:
+
 ```bash
 docker compose exec mysqldb mysql -u root -p123456 jetmon_db
-```
-
-```sql
-CREATE TABLE IF NOT EXISTS `jetpack_monitor_sites` (
-    `jetpack_monitor_site_id` bigint(20) unsigned NOT NULL AUTO_INCREMENT PRIMARY KEY,
-    `blog_id` bigint(20) unsigned NOT NULL,
-    `bucket_no` smallint(2) unsigned NOT NULL,
-    `monitor_url` varchar(300) NOT NULL,
-    `monitor_active` tinyint(1) unsigned NOT NULL DEFAULT 1,
-    `site_status` tinyint(1) unsigned NOT NULL DEFAULT 1,
-    `last_status_change` timestamp NULL DEFAULT current_timestamp(),
-    `check_interval` tinyint(1) unsigned NOT NULL DEFAULT 5,
-    INDEX `blog_id_monitor_url` (`blog_id`, `monitor_url`),
-    INDEX `bucket_no_monitor_active_check_interval` (`bucket_no`, `monitor_active`, `check_interval`)
-);
 ```
 
 ### Insert Test Sites
@@ -88,52 +80,39 @@ Edit `config/config.json`:
 
 ### Configuration Reload
 ```bash
-docker compose exec jetmon ps aux | grep jetmon-master  # Find PID
-docker compose exec jetmon kill -HUP <pid>              # Reload config
+docker compose exec jetmon ./jetmon2 reload   # Sends SIGHUP via PID file
+# Or manually:
+docker compose exec jetmon kill -HUP <pid>
 ```
 
-### Graceful Shutdown
+### Graceful Shutdown / Drain
 ```bash
-docker compose exec jetmon kill -INT <pid>    # Or: docker compose restart jetmon
+docker compose exec jetmon ./jetmon2 drain    # Sends SIGINT via PID file
+# Or: docker compose stop jetmon
+```
+
+### Validate Config
+```bash
+docker compose exec jetmon ./jetmon2 validate-config
 ```
 
 ### Veriflier Connectivity
 ```bash
-docker compose exec jetmon curl -k https://veriflier:7801/get/status
-# Should return: OK
+docker compose exec jetmon curl http://veriflier:7803/status
+# Should return: {"hostname":"...","version":"...","status":"ok"}
 ```
 
-### Native Addon Rebuild
+### Operator Dashboard
+- Open http://localhost:8080 in a browser after starting Docker services.
+
+### Audit Log
 ```bash
-docker compose exec jetmon npm run rebuild-run
-# Or manually:
-docker compose exec jetmon bash -c "node-gyp rebuild && cp build/Release/jetmon.node lib/ && node lib/jetmon.js"
+docker compose exec jetmon ./jetmon2 audit --blog-id 1 --since 1h
 ```
-
-### Test HTTP Checker Directly
-Create `lib/test-addon.js`:
-```javascript
-var checker = require( './jetmon.node' );
-checker.http_check( 'https://wordpress.com', 80, 0, function( index, rtt, http_code, error_code ) {
-    console.log( 'RTT:', rtt, 'HTTP:', http_code, 'Error:', error_code );
-    process.exit( 0 );
-});
-```
-Run: `docker compose exec jetmon node lib/test-addon.js`
-
-### Worker Recycling
-Set low limits in `config/config.json`:
-```json
-{
-    "WORKER_MAX_CHECKS": 100,
-    "WORKER_MAX_MEM_MB": 30
-}
-```
-Watch: `docker compose logs -f jetmon | grep -E "(spawn|die|recycle|limit)"`
 
 ### Memory Monitoring
 ```bash
-docker compose exec jetmon bash -c 'while true; do ps aux --sort=-%mem | head -10; sleep 5; done'
+docker compose exec jetmon bash -c 'while true; do ps aux --sort=-%mem | head -5; sleep 5; done'
 ```
 
 ### StatsD Metrics
@@ -159,9 +138,10 @@ Query database: `docker compose exec mysqldb mysql -u root -p123456 jetmon_db -e
 | Problem | Check |
 |---------|-------|
 | Jetmon not starting | `docker compose ps mysqldb`, verify `config/db-config.conf` |
-| No sites being checked | Verify `BUCKET_NO_MIN/MAX` matches data, `monitor_active = 1` |
-| Veriflier connection fails | `docker compose ps veriflier`, check auth tokens match, SSL certs exist |
+| No sites being checked | Verify `BUCKET_TOTAL/TARGET` and that `monitor_active = 1` in DB |
+| Veriflier connection fails | `docker compose ps veriflier`, check auth tokens match |
 | StatsD not receiving | `docker compose exec jetmon ping statsd`, check for UDP errors |
+| Migration fails | Check MySQL is up: `docker compose ps mysqldb` |
 
 ## Cleanup
 

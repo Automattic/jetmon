@@ -1,6 +1,0 @@
-*.o
-*.cpp
-*.h
-.qmake.stash
-Makefile
-veriflier

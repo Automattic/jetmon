@@ -1,12 +1,12 @@
 ---
 name: docker-test
-description: Run, debug, and test Jetmon using the Docker development environment
+description: Run, debug, and test Jetmon 2 using the Docker development environment
 allowed-tools: Bash(docker*), Bash(cd docker*), Read, Glob, Grep
 ---
 
 # Docker Testing Skill
 
-Use this skill for running, debugging, and testing Jetmon in the Docker development environment.
+Use this skill for running, debugging, and testing Jetmon 2 in the Docker development environment.
 
 ## Usage
 
@@ -22,9 +22,9 @@ The docker-compose environment includes:
 
 | Service | Port | Purpose |
 |---------|------|---------|
-| `mysqldb` | 3306 | MySQL 5.7 database |
-| `jetmon` | 7800 | Main monitoring service |
-| `veriflier` | 7801 | Geographic verification |
+| `mysqldb` | 3306 | MySQL 8.0 database |
+| `jetmon` | 8080 | Jetmon 2 + operator dashboard |
+| `veriflier` | 7803 | Geographic verification (gRPC) |
 | `statsd` | 8125/8088 | Metrics (Graphite UI on 8088) |
 
 ## Common Commands
@@ -49,7 +49,8 @@ docker compose logs --tail=100 jetmon       # Last 100 lines
 
 ```bash
 docker compose ps                           # Service status
-docker compose exec jetmon ps auxf          # Process tree inside container
+docker compose exec jetmon ps aux           # Single process inside container
+docker compose exec jetmon ./jetmon2 status # Internal status via API
 ```
 
 ### Stopping Services
@@ -69,43 +70,44 @@ docker compose exec jetmon cat stats/totals
 docker compose exec jetmon cat stats/sitespersec
 ```
 
-### 2. Check Worker Activity
+### 2. Open Operator Dashboard
 
-```bash
-# View worker stats
-docker compose exec jetmon cat stats/sitesqueue
-
-# Monitor worker memory
-docker compose exec jetmon bash -c 'ps aux --sort=-%mem | head -10'
-```
+Navigate to http://localhost:8080 in a browser. The dashboard shows:
+- Worker/goroutine count
+- Retry queue size
+- WPCOM circuit breaker state
+- Bucket range owned by this host
 
 ### 3. Test Configuration Reload
 
 ```bash
-# Find master process PID
-docker compose exec jetmon ps aux | grep jetmon-master
-
-# Send SIGHUP to reload config
-docker compose exec jetmon kill -HUP <pid>
+docker compose exec jetmon ./jetmon2 reload  # Sends SIGHUP via PID file
+# Watch logs for "config reloaded"
+docker compose logs -f jetmon
 ```
 
-### 4. Test Graceful Shutdown
+### 4. Test Graceful Drain/Shutdown
 
 ```bash
-# Send SIGINT for graceful shutdown
-docker compose exec jetmon kill -INT <pid>
-
-# Or restart the container
-docker compose restart jetmon
+docker compose exec jetmon ./jetmon2 drain   # Sends SIGINT via PID file
+# Or:
+docker compose stop jetmon
 ```
 
-### 5. View Status Changes
+### 5. View Audit Log
 
 ```bash
-docker compose exec jetmon tail -f logs/status-change.log
+docker compose exec jetmon ./jetmon2 audit --blog-id 1 --since 1h
 ```
 
-### 6. Check Database
+### 6. Test Veriflier Connectivity
+
+```bash
+docker compose exec jetmon curl http://veriflier:7803/status
+# Should return: {"hostname":"...","version":"...","status":"ok"}
+```
+
+### 7. Check Database
 
 ```bash
 docker compose exec mysqldb mysql -u root -p123456 jetmon_db -e "SELECT COUNT(*) FROM jetpack_monitor_sites;"
@@ -150,27 +152,29 @@ Ensure `config/config.json` has:
 }
 ```
 
+### Validate Config Before Restart
+
+```bash
+docker compose exec jetmon ./jetmon2 validate-config
+```
+
 ### Attach to Container
 
 ```bash
 docker compose exec jetmon bash
 ```
 
-### Test Native Addon Directly
+### Profile Goroutines / Memory (pprof)
 
-Create `lib/test-addon.js`:
-```javascript
-var checker = require( './jetmon.node' );
+The dashboard exposes pprof at http://localhost:8080/debug/pprof/
 
-checker.http_check( 'https://wordpress.com', 80, 0, function( index, rtt, http_code, error_code ) {
-    console.log( 'RTT:', rtt, 'HTTP:', http_code, 'Error:', error_code );
-    process.exit( 0 );
-});
-```
-
-Run it:
 ```bash
-docker compose exec jetmon node lib/test-addon.js
+# Goroutine dump
+curl http://localhost:8080/debug/pprof/goroutine?debug=1
+
+# Heap profile
+curl http://localhost:8080/debug/pprof/heap > heap.prof
+go tool pprof heap.prof
 ```
 
 ### Check Metrics
@@ -183,26 +187,25 @@ Open http://localhost:8088 for Graphite UI. Navigate to:
 ### Jetmon Not Starting
 
 - Check database: `docker compose ps mysqldb`
-- Verify config: `docker compose exec jetmon cat config/db-config.conf`
-- Check for port conflicts on 7800, 7801, 7802
+- Validate config: `docker compose exec jetmon ./jetmon2 validate-config`
+- Check migration output: `docker compose logs jetmon | head -30`
 
 ### No Sites Being Checked
 
-- Verify sites exist in database
-- Check bucket range matches data: `BUCKET_NO_MIN`, `BUCKET_NO_MAX`
-- Ensure `monitor_active = 1` for test sites
+- Verify sites exist in database with `monitor_active = 1`
+- Check bucket ownership: `docker compose exec jetmon ./jetmon2 status`
 
 ### Veriflier Connection Failures
 
 - Check veriflier is running: `docker compose ps veriflier`
-- Test connectivity: `docker compose exec jetmon curl -k https://veriflier:7801/get/status`
-- Verify SSL certificates exist in `veriflier/certs/`
+- Test connectivity: `docker compose exec jetmon curl http://veriflier:7803/status`
+- Verify `VERIFLIER_AUTH_TOKEN` matches in both containers
 
 ### Memory Issues
 
 ```bash
-# Monitor memory over time
-docker compose exec jetmon bash -c 'while true; do ps aux --sort=-%mem | head -10; sleep 5; done'
+# Monitor goroutine count and memory via pprof
+curl http://localhost:8080/debug/pprof/goroutine?debug=1 | head -20
 ```
 
 ## Cleanup

@@ -1,151 +1,235 @@
 # Jetmon Development Guidelines
 
-You are an expert Node.js/C++ developer with extensive knowledge about WordPress and enterprise-level web services.
+You are an expert Go developer with extensive knowledge about WordPress, enterprise-level web services, and high-performance network programming.
 
 ## Project Overview
 
-Jetmon is a parallel HTTP health monitoring service that monitors Jetpack website uptime at scale. It performs HEAD requests against sites, uses geographically distributed Veriflier services to confirm downtime, and notifies WordPress.com of status changes.
+Jetmon is a parallel HTTP uptime monitoring service that checks Jetpack websites at scale. Jetmon 2 is a complete rewrite of the original Node.js + C++ native addon service into a single Go binary. It retains full drop-in compatibility with all external interfaces — MySQL schema, WPCOM API payload, StatsD metric names, and log file format — while dramatically increasing concurrency, reducing memory usage, and eliminating the native addon compilation dependency.
+
+The Veriflier is rewritten in Go as well, replacing the Qt C++ dependency. The protocol between Monitor and Verifliers is upgraded from custom HTTPS to gRPC.
+
+See `PROJECT.md` for the full project description, feature list, and performance benefit estimates.
 
 ## Architecture
 
 ```
-Database → Master Process → Worker Pool → C++ HTTP Checks
-                 ↓
-         Veriflier Services (geo-distributed)
-                 ↓
-         WordPress.com API ← Status Notifications
+┌───────────────────────────────────────────────────────┐
+│                  jetmon2 (single binary)              │
+│                                                       │
+│  ┌─────────────┐  ┌─────────────┐  ┌──────────────┐   │
+│  │ Orchestrator│  │ Check Pool  │  │  gRPC Server │   │
+│  │  goroutine  │  │ (goroutines)│  │  (Veriflier) │   │
+│  └──────┬──────┘  └──────┬──────┘  └──────┬───────┘   │
+│         │                │                │           │
+│  ┌──────┴────────────────┴────────────────┴───────┐   │
+│  │                 Internal channels              │   │
+│  └────────────────────────────────────────────────┘   │
+└────────────┬──────────────────────────┬───────────────┘
+             │                          │
+          MySQL                    WPCOM API
+          StatsD                   (unchanged)
+          Log files
+          (all unchanged)
 ```
 
-**Master Process** (`lib/jetmon.js`): Spawns workers, fetches site batches from database every 5 seconds, distributes work, and notifies WordPress.com of status changes.
+**Orchestrator goroutine** (`internal/orchestrator/`): Fetches site batches from MySQL, dispatches work to the check pool via channels, processes results, manages the local retry queue, coordinates Veriflier confirmation requests, and sends WPCOM status-change notifications. Owns all DB access and all outbound WPCOM calls.
 
-**Worker Processes** (`lib/httpcheck.js`): Forked child processes that perform HTTP checks via C++ native addon. Workers recycle when reaching memory limit (53MB) or check count (10,000).
+**Check Pool** (`internal/checker/`): A bounded goroutine pool that performs HTTP checks using Go's `net/http` and `net/http/httptrace`. Records DNS, TCP connect, TLS handshake, and TTFB timings for every check. Pool size auto-scales against queue depth within configured min/max bounds. No process spawning — adding a worker is a channel send.
 
-**C++ Native Addon** (`src/http_checker.cpp`): High-performance HTTP checking with HEAD requests, 60-second timeout, OpenSSL support, and redirect handling.
+**Veriflier transport** (`internal/veriflier/`): JSON-over-HTTP client/server for Monitor↔Veriflier communication. Replaces the previous SSL server and custom HTTPS protocol. Run `make generate` to swap in generated gRPC stubs once protoc is set up.
 
-**Veriflier Services** (`veriflier/`): C++/Qt applications deployed globally to verify downtime before status changes are reported.
+**Veriflier** (`veriflier2/`): Standalone Go binary deployed at remote locations. Receives check batches from the Monitor via gRPC, performs HTTP checks, and returns results. Replaces the Qt C++ Veriflier.
 
-## Build and Run Commands
+## Key Files
+
+| Path | Purpose |
+|------|---------|
+| `cmd/jetmon2/main.go` | Binary entry point, signal handling, startup |
+| `internal/orchestrator/` | Round scheduling, DB fetch, work dispatch, WPCOM notifications |
+| `internal/checker/` | Goroutine pool, HTTP checks, httptrace timing |
+| `internal/veriflier/` | JSON-over-HTTP client/server for Veriflier communication |
+| `internal/db/` | MySQL access, `jetmon_hosts` heartbeat, connection pooling |
+| `internal/config/` | Config loading, SIGHUP hot-reload |
+| `internal/metrics/` | StatsD client, stats file writer |
+| `internal/wpcom/` | WPCOM API client, circuit breaker |
+| `internal/audit/` | Audit log writes to `jetmon_audit_log` |
+| `internal/dashboard/` | Operator dashboard, SSE handler |
+| `veriflier2/` | Go Veriflier binary |
+| `PROJECT.md` | Full project description and feature specification |
+
+## Build and Run
 
 ```bash
 # Docker development (recommended)
-cd docker && docker compose up -d      # Start all services
-docker compose down                     # Stop services
+cd docker && docker compose up -d         # Start all services
+docker compose up --build                 # Rebuild binary and start
+docker compose down                       # Stop services
+docker compose down -v                    # Stop and remove volumes (fresh start)
 
-# Manual build and run
-npm install
-node-gyp rebuild
-cp build/Release/jetmon.node lib/
-node lib/jetmon.js
+# Build binary directly
+go build ./cmd/jetmon2/
 
-# Rebuild and run (npm script)
-npm run rebuild-run
+# Run tests
+go test ./...
+go test -race ./...
+
+# Run with race detector
+go run -race ./cmd/jetmon2/
+
+# Validate config
+./jetmon2 validate-config
+
+# CLI subcommands
+./jetmon2 version
+./jetmon2 migrate
+./jetmon2 status
+./jetmon2 audit --blog-id 12345 --since 2h
+./jetmon2 drain
+./jetmon2 reload
 ```
 
 ## Configuration
 
-Copy `config/config-sample.json` to `config/config.json`. Key settings:
+Copy `config/config-sample.json` to `config/config.json`. All keys from the original Jetmon are honoured; new keys are additive. Send SIGHUP to hot-reload config without restarting.
 
-- `NUM_WORKERS`: Worker process count (default 60)
-- `NUM_TO_PROCESS`: Parallel checks per worker (default 40)
-- `BUCKET_NO_MIN/MAX`: Database bucket range for horizontal scaling (0-511 total)
-- `MIN_TIME_BETWEEN_ROUNDS_SEC`: Check interval (300 seconds default)
-- `PEER_OFFLINE_LIMIT`: Verifliers required to confirm downtime (3)
+**Existing keys (unchanged behaviour):**
+- `NUM_WORKERS`: Goroutine pool size (replaces worker process count)
+- `NUM_TO_PROCESS`: Parallel checks per pool slot
+- `MIN_TIME_BETWEEN_ROUNDS_SEC`: Minimum interval between check rounds
+- `NET_COMMS_TIMEOUT`: Default per-check HTTP timeout in seconds
+- `PEER_OFFLINE_LIMIT`: Veriflier agreements required to confirm downtime
+- `WORKER_MAX_MEM_MB`: RSS threshold that triggers pool drain (replaces worker recycling)
 
-**Variable Check Intervals:** Sites can be configured for 1-5 minute check intervals via the `check_interval` database field. The default is 5 minutes. One-minute intervals require sufficient host capacity.
+**New keys:**
+- `BUCKET_TOTAL`: Total bucket range (e.g. 1000); replaces static `BUCKET_NO_MIN/MAX`
+- `BUCKET_TARGET`: Maximum buckets this host should own
+- `BUCKET_HEARTBEAT_GRACE_SEC`: Seconds before an unresponsive host's buckets are reclaimed (suggested: 2× round time)
+- `ALERT_COOLDOWN_MINUTES`: Default cooldown between repeated alerts for the same site
+- `LOG_FORMAT`: `text` (default, drop-in compatible) or `json` (structured logging)
+- `DASHBOARD_PORT`: Internal port for the operator dashboard (0 to disable)
+- `DEBUG_PORT`: localhost-only pprof port, default 6060 (0 to disable; never exposed remotely)
 
-See `config/config.readme` for detailed documentation of all options.
+See `config/config.readme` for the full option reference.
 
-## Key Files
+## Drop-in Compatibility Requirements
 
-| File | Purpose |
-|------|---------|
-| `lib/jetmon.js` | Master process orchestration |
-| `lib/httpcheck.js` | Worker process HTTP checking |
-| `lib/database.js` | MySQL queries and connection |
-| `lib/comms.js` | HTTPS communication with Verifliers |
-| `lib/wpcom.js` | WordPress.com API notifications |
-| `lib/server.js` | SSL server for Veriflier responses |
-| `lib/statsd.js` | StatsD metrics client |
-| `src/http_checker.cpp` | C++ native addon for HTTP checks |
-| `binding.gyp` | Node-gyp build configuration |
+These interfaces must remain identical to the original Jetmon. Do not change them without explicit discussion:
+
+| Interface | Constraint |
+|-----------|-----------|
+| MySQL schema | Read same columns; additive migrations only |
+| WPCOM notification payload | Same JSON structure and field names |
+| StatsD metric names | Same dotted paths; new metrics may be added |
+| Log file paths and format | `logs/jetmon.log`, `logs/status-change.log` |
+| `stats/` file outputs | `sitespersec`, `sitesqueue`, `totals` — same format |
+| `config/config.json` keys | All existing keys honoured |
+| SIGHUP config reload | Same behaviour |
+| SIGINT graceful shutdown | Same behaviour |
 
 ## Site Status Values
 
-- `0` SITE_DOWN: Local checks failed
+- `0` SITE_DOWN: Local checks failed, retry/verification in progress
 - `1` SITE_RUNNING: Confirmed online
-- `2` SITE_CONFIRMED_DOWN: Verified down by Verifliers
+- `2` SITE_CONFIRMED_DOWN: Verified down by Verifliers, WPCOM notified
 
-## Monitoring Behavior
+## Monitoring Behaviour
 
 **Check Process:**
-- Initial timeout: 10 seconds
-- Verification timeout: 20 seconds (on retry from different locations)
-- Max redirects: 3 (beyond this triggers "redirect" error)
-- HTTP response code < 400 is considered success
-- User Agent: `jetmon/1.0 (Jetpack Site Uptime Monitor by WordPress.com)`
+- Default timeout: `NET_COMMS_TIMEOUT` seconds (configurable per-site via `timeout_seconds` column)
+- HTTP response code < 400 is success
+- Redirect policy configurable per site: `follow` (default), `alert` (warn on chain change), `fail`
+- Max redirects when following: 10
+- Keyword check: if `check_keyword` is set, GET the body and confirm the string is present
+- User-Agent: `jetmon/2.0 (Jetpack Site Uptime Monitor by WordPress.com)`
+- Per-site custom headers merged from `custom_headers` JSON column
+
+**Timing Breakdown (via `net/http/httptrace`):**
+Every check records: DNS lookup, TCP connect, TLS handshake, request sent, first response byte (TTFB). All six timings are stored in the audit log and emitted as StatsD metrics. The composite RTT is retained for backwards compatibility.
+
+**SSL Monitoring:**
+Every HTTPS check inspects `tls.ConnectionState` for:
+- Certificate `NotAfter` — alerts at 30, 14, and 7 days before expiry
+- TLS version — flags TLS 1.0/1.1 as deprecated
+- Cipher suite — recorded in audit log
 
 **Downtime Verification:**
-When a site appears down, Jetmon retries from the same location twice, then verifies from 2 other locations on different continents via Verifliers before confirming downtime.
+1. Local check fails → enter local retry queue
+2. After `NUM_OF_CHECKS` local failures → dispatch to Verifliers
+3. `PEER_OFFLINE_LIMIT` Veriflier agreements required to confirm
+4. Confirmed down → WPCOM notification via same payload as original
 
-**Status Change Email Types:**
-- `server`: 5xx response (internal/fatal error)
-- `blocked`: 403 response (monitoring blocked)
-- `client`: 4xx response other than 403 (auth/DNS issues)
-- `https`: SSL certificate problems
-- `intermittent`: Request timeout (>10 seconds but site may load)
-- `redirect`: Too many redirects (>3)
-- `success`: Normal response (used in "site is back up" emails)
+**Alert Deduplication:**
+After an alert fires, subsequent alerts for the same site are suppressed for `alert_cooldown_minutes`. Suppression is recorded in the audit log.
+
+**Status Change Types (unchanged):**
+- `server`: 5xx response
+- `blocked`: 403 response
+- `client`: 4xx other than 403
+- `https`: SSL/TLS problems
+- `intermittent`: Request timeout
+- `redirect`: Redirect policy failure
+- `success`: Site recovered
 
 ## Database Schema
 
-Sites are stored in `jetpack_monitor_sites` with bucket-based sharding. The `bucket_no` field (0-511) enables horizontal scaling across multiple Jetmon instances.
+Sites are stored in `jetpack_monitor_sites` with bucket-based sharding. The `bucket_no` field enables horizontal scaling. New additive columns introduced by Jetmon 2:
+
+| Column | Type | Purpose |
+|--------|------|---------|
+| `ssl_expiry_date` | DATE NULL | Updated each HTTPS check |
+| `check_keyword` | VARCHAR(500) NULL | String to verify in response body |
+| `maintenance_start` | DATETIME NULL | Maintenance window start |
+| `maintenance_end` | DATETIME NULL | Maintenance window end |
+| `custom_headers` | JSON NULL | Per-site request headers |
+| `timeout_seconds` | TINYINT NULL | Per-site timeout override |
+| `redirect_policy` | ENUM NULL | `follow`, `alert`, `fail` |
+| `alert_cooldown_minutes` | SMALLINT NULL | Per-site cooldown override |
+
+New tables introduced by Jetmon 2:
+
+| Table | Purpose |
+|-------|---------|
+| `jetmon_hosts` | MySQL-coordinated bucket ownership and heartbeat |
+| `jetmon_audit_log` | Full event history per site |
+| `jetmon_check_history` | RTT and timing samples for trending |
+| `jetmon_false_positives` | Veriflier non-confirmation events |
+
+## Multi-Host Bucket Coordination
+
+Jetmon 2 replaces static `BUCKET_NO_MIN/MAX` config with runtime bucket ownership via the `jetmon_hosts` table. On startup, each instance claims unclaimed or expired bucket ranges using `SELECT ... FOR UPDATE` transactions. A heartbeat query runs each round; hosts with stale heartbeats (older than `BUCKET_HEARTBEAT_GRACE_SEC`) have their buckets absorbed by surviving peers. On SIGINT, the instance releases its buckets immediately.
+
+This enables zero-config horizontal scaling (spin up a host, it claims buckets) and self-healing coverage (a failed host's buckets are absorbed within one grace period) without a cluster orchestrator.
 
 ## Metrics
 
-StatsD metrics are sent with prefix `com.jetpack.jetmon.<hostname>`. Key metrics include worker lifecycle events, queue sizes, database timing, and memory usage.
+StatsD metrics retain the same prefix and dotted path format as Jetmon 1: `com.jetpack.jetmon.<hostname>`. New metrics added by Jetmon 2 follow the same naming convention and are additive.
 
-**Grafana Dashboard:** Production metrics are visualized in the Jetmon Health Dashboard using Graphite as the StatsD backend. The dashboard tracks free/active workers, sites processed, round times, and memory usage.
-
-**StatsD Configuration Notes:**
-- Flush interval: 5 seconds (`STATS_UPDATE_INTERVAL_MS`)
-- Graphite retention: 10s:6h, 1m:7d, 10m:5y
-- Counter metrics use `sum` aggregation; gauges use `average`
+StatsD is the primary metrics transport. No Prometheus endpoint is provided.
 
 ## WPCOM Integration
 
-**Jetmon Endpoint:** WPCOM receives status change notifications from Jetmon and triggers the `jetpack_monitor_site_status_change` hook for consumers (notifications, Activity Log, etc.).
-
-**Email Notification Options (stored on WPCOM):**
-- `jetpack_monitor_notifications_users_ids`: WPCOM user IDs to notify
-- `jetpack_monitor_notify_email_addresses`: Additional email addresses
-
-**REST API Endpoints:**
-- `GET /sites/{site}/jetpack-monitor-status`: Current monitoring status
-- `GET /sites/{site}/jetpack-monitor-incidents`: Historical incidents
-- `GET/POST /sites/{site}/jetpack-monitor-settings`: Monitor configuration
+Jetmon notifies WPCOM of status changes via the same JSON payload format as Jetmon 1. The `jetpack_monitor_site_status_change` hook on WPCOM is triggered for consumers (notifications, Activity Log, etc.). A circuit breaker protects against WPCOM API failures: after N consecutive failures the circuit opens, pending notifications are queued in memory, and retries are attempted on a backoff schedule.
 
 ## Production Deployment
 
-Jetmon runs on 6 production hosts managed by the Systems team. To deploy changes:
-1. Test changes locally using Docker environment
-2. Create a Systems Request with PR links for review
-3. Systems team deploys to production hosts
+Jetmon runs on production hosts managed by the Systems team. To deploy changes:
+1. Test locally using the Docker environment (`go test ./...`, manual Docker verification)
+2. Create a PR and request a Systems Request with PR links
+3. Systems team performs a rolling update: one host at a time, SIGINT → drain → deploy binary → restart
+4. Surviving hosts absorb the draining host's buckets during each update window
 
-## Worker Lifecycle
-
-Workers exit and are respawned when:
-- Memory exceeds `WORKER_MAX_MEM_MB` (53MB default)
-- Check count exceeds `WORKER_MAX_CHECKS` (10,000 default)
-- Process receives termination signal
-
-The master process tracks worker states and gracefully handles recycling.
+Rolling updates require no simultaneous restart of all hosts and leave no sites unchecked during the update.
 
 ## Known Pitfalls
 
-**Retry Queue Persistence:** Retry queues must persist between rounds. Flushing queues at round start prevents sites from being confirmed as down, since the 1-minute recheck cannot complete before the next round.
+**Retry Queue Persistence:** The local retry queue must persist between rounds. Do not flush it at round start — a site must accumulate `NUM_OF_CHECKS` failures before Veriflier escalation, and flushing resets that counter, preventing downtime confirmation.
 
-**Bucket Configuration:** The `BUCKET_NO_MIN/MAX` configuration must not overlap between hosts. A past misconfiguration caused hosts to process only half their intended sites, masking performance issues.
+**Bucket Claiming Races:** The `SELECT ... FOR UPDATE` transaction on `jetmon_hosts` is the only safe way to claim buckets. Do not claim buckets outside a transaction — two hosts starting simultaneously will both see the same unclaimed range and must not both write it.
 
-**Node Version Sensitivity:** RTT (round-trip time) calculations can vary between Node.js versions. Version changes should be tested thoroughly as they can affect timeout behaviors.
+**Circuit Breaker Floor:** The WPCOM API circuit breaker queue is bounded. If the queue fills, the oldest pending notifications are dropped with an error log. Monitor the circuit breaker state in the operator dashboard during any WPCOM API incident.
 
-**Memory Pressure:** When checking more sites (due to shorter intervals or configuration fixes), memory usage increases. Monitor memory metrics and consider scaling hosts horizontally if workers frequently hit memory limits.
+**Veriflier Quorum Floor:** When Verifliers are marked unhealthy and excluded, `PEER_OFFLINE_LIMIT` adjusts dynamically, but there is a configured floor to prevent a single healthy Veriflier from confirming downtime alone. Ensure the floor is set appropriately for the number of deployed Verifliers.
+
+**Maintenance Windows:** Checks continue during a maintenance window and data is recorded in the audit log, but no alerts fire. Verify that `maintenance_end` is correctly set — an open-ended maintenance window silently suppresses all alerts for that site indefinitely.
+
+**Memory Pressure Drain:** If RSS exceeds the configured threshold, the goroutine pool shrinks by 10% via graceful drain. This reduces throughput temporarily. If memory pressure is sustained, investigate for goroutine leaks using the pprof endpoint at `http://localhost:<DEBUG_PORT>/debug/pprof/` (localhost only) before increasing `WORKER_MAX_MEM_MB`.

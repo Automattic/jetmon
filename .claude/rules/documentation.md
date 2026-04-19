@@ -97,7 +97,7 @@ For main README, use this structure with `====` underlines (not `#` headers):
 6. Running
 7. Database (schema if applicable)
 
-For component READMEs (e.g., `veriflier/README.md`), use minimal format:
+For component READMEs (e.g., a future `veriflier2/README.md`), use minimal format:
 ```markdown
 component name
 ==============

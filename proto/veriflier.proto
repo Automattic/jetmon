@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+package veriflier;
+
+option go_package = "github.com/Automattic/jetmon/internal/grpc/proto";
+
+// Veriflier is the service implemented by veriflier2 instances.
+// The Monitor sends check batches; the Veriflier returns results.
+service Veriflier {
+    rpc CheckSites(CheckBatch) returns (CheckBatchResult);
+    rpc GetStatus(StatusRequest) returns (StatusResponse);
+}
+
+message CheckRequest {
+    int64  blog_id          = 1;
+    string url              = 2;
+    int32  timeout_seconds  = 3;
+}
+
+message CheckBatch {
+    repeated CheckRequest sites      = 1;
+    string                auth_token = 2;
+}
+
+message CheckResult {
+    int64  blog_id    = 1;
+    string url        = 2;
+    string host       = 3;
+    bool   success    = 4;
+    int32  http_code  = 5;
+    int32  error_code = 6;
+    int64  rtt_ms     = 7;
+}
+
+message CheckBatchResult {
+    repeated CheckResult results = 1;
+}
+
+message StatusRequest {}
+
+message StatusResponse {
+    string status  = 1;
+    string version = 2;
+}
