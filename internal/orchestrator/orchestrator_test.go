@@ -46,6 +46,46 @@ func TestTimeoutForSite(t *testing.T) {
 	}
 }
 
+func TestInMaintenance(t *testing.T) {
+	now := time.Now()
+	past := now.Add(-1 * time.Hour)
+	future := now.Add(1 * time.Hour)
+
+	if inMaintenance(db.Site{}) {
+		t.Fatal("nil window should not be in maintenance")
+	}
+	if inMaintenance(db.Site{MaintenanceStart: &past}) {
+		t.Fatal("nil end should not be in maintenance")
+	}
+	if inMaintenance(db.Site{MaintenanceEnd: &future}) {
+		t.Fatal("nil start should not be in maintenance")
+	}
+	if !inMaintenance(db.Site{MaintenanceStart: &past, MaintenanceEnd: &future}) {
+		t.Fatal("active window should be in maintenance")
+	}
+	if inMaintenance(db.Site{MaintenanceStart: &past, MaintenanceEnd: &past}) {
+		t.Fatal("expired window should not be in maintenance")
+	}
+	if inMaintenance(db.Site{MaintenanceStart: &future, MaintenanceEnd: &future}) {
+		t.Fatal("future window should not be in maintenance")
+	}
+}
+
+func TestSlicesEqual(t *testing.T) {
+	if !slicesEqual(nil, nil) {
+		t.Fatal("nil slices should be equal")
+	}
+	if !slicesEqual([]string{"a", "b"}, []string{"a", "b"}) {
+		t.Fatal("identical slices should be equal")
+	}
+	if slicesEqual([]string{"a"}, []string{"b"}) {
+		t.Fatal("different content should not be equal")
+	}
+	if slicesEqual([]string{"a"}, []string{"a", "b"}) {
+		t.Fatal("different lengths should not be equal")
+	}
+}
+
 func TestRefreshVeriflierClientsReusesUnchangedClients(t *testing.T) {
 	cfg := &config.Config{
 		Verifiers: []config.VerifierConfig{
