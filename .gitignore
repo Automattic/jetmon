@@ -28,6 +28,10 @@ stats/*
 !logs/.gitkeep
 !stats/.gitkeep
 
+# Go test coverage output
+coverage.out
+coverage.html
+
 # AI tool directories
 .codex
 
