@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -148,21 +149,27 @@ func TestHandleSSESendsInitialStateAndCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request error: %v", err)
 	}
+	defer resp.Body.Close()
 
-	// Read until we see the initial state event.
-	buf := make([]byte, 512)
-	n, _ := resp.Body.Read(buf)
-	if n == 0 {
-		t.Fatal("expected initial SSE data, got none")
+	reader := bufio.NewReader(resp.Body)
+	var event strings.Builder
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read SSE line: %v", err)
+		}
+		event.WriteString(line)
+		if line == "\n" {
+			break
+		}
 	}
-	data := string(buf[:n])
+	data := event.String()
 	if !strings.Contains(data, "data:") {
 		t.Fatalf("initial SSE response = %q, want data: prefix", data)
 	}
 
 	// Disconnect the client — handleSSE should return via r.Context().Done().
 	cancel()
-	resp.Body.Close()
 }
 
 func TestBroadcastDropsOnSlowClient(t *testing.T) {

@@ -1,8 +1,10 @@
 package wpcom
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 )
@@ -100,8 +102,14 @@ func TestNotifyQueuesAndReturnsErrorWhenCircuitOpen(t *testing.T) {
 }
 
 func TestNotifyResetsCircuitAfterTimeout(t *testing.T) {
-	flushed := make([]int64, 0)
+	var flushed []int64
 	c, close := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		var n Notification
+		if err := json.NewDecoder(r.Body).Decode(&n); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		flushed = append(flushed, n.BlogID)
 		w.WriteHeader(http.StatusOK)
 	})
 	defer close()
@@ -123,6 +131,9 @@ func TestNotifyResetsCircuitAfterTimeout(t *testing.T) {
 	}
 	if c.QueueDepth() != 0 {
 		t.Fatalf("QueueDepth() = %d, want 0 after flush", c.QueueDepth())
+	}
+	if !slices.Equal(flushed, []int64{99, 1}) {
+		t.Fatalf("flushed notifications = %v, want [99 1]", flushed)
 	}
 }
 

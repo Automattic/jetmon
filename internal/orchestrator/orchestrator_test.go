@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,16 +14,14 @@ import (
 	"github.com/Automattic/jetmon/internal/wpcom"
 )
 
+var orchestratorConfigTestMu sync.Mutex
+
 func TestIsAlertSuppressedUsesLastAlertSent(t *testing.T) {
 	now := time.Now().UTC()
 	recent := now.Add(-5 * time.Minute)
 	old := now.Add(-31 * time.Minute)
 
-	if err := config.Load("../../config/config-sample.json"); err != nil {
-		t.Fatalf("config load: %v", err)
-	}
-	cfg := config.Get()
-	cfg.AlertCooldownMinutes = 30
+	setTestConfig(t)
 
 	o := &Orchestrator{}
 
@@ -137,7 +136,7 @@ func TestSendNotificationRetriesAndUpdatesAlertTimestamp(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
 
-	setTestConfig()
+	setTestConfig(t)
 
 	var notifyCalls int
 	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error {
@@ -175,7 +174,7 @@ func TestConfirmDownSuppressedDuringCooldown(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
 
-	setTestConfig()
+	setTestConfig(t)
 
 	recent := time.Now().UTC().Add(-5 * time.Minute)
 	var notifyCalls int
@@ -211,8 +210,7 @@ func TestEscalateToVerifliersConfirmsWhenQuorumReached(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
 
-	setTestConfig()
-	cfg := config.Get()
+	cfg := setTestConfig(t)
 	cfg.PeerOfflineLimit = 2
 
 	var notifyCalls int
@@ -259,8 +257,7 @@ func TestEscalateToVerifliersRecordsFalsePositiveWhenQuorumMissed(t *testing.T) 
 	restore := stubOrchestratorDeps()
 	defer restore()
 
-	setTestConfig()
-	cfg := config.Get()
+	cfg := setTestConfig(t)
 	cfg.PeerOfflineLimit = 2
 
 	var falsePositiveBlogID int64
@@ -344,13 +341,22 @@ func stubOrchestratorDeps() func() {
 	}
 }
 
-func setTestConfig() {
-	_ = config.Load("../../config/config-sample.json")
+func setTestConfig(t *testing.T) *config.Config {
+	t.Helper()
+	orchestratorConfigTestMu.Lock()
+	t.Cleanup(func() {
+		_ = config.Load("../../config/config-sample.json")
+		orchestratorConfigTestMu.Unlock()
+	})
+	if err := config.Load("../../config/config-sample.json"); err != nil {
+		t.Fatalf("config.Load() error = %v", err)
+	}
 	cfg := config.Get()
 	cfg.AlertCooldownMinutes = 30
 	cfg.NumOfChecks = 3
 	cfg.PeerOfflineLimit = 2
 	cfg.DBUpdatesEnable = false
+	return cfg
 }
 
 func checkerResultSuccess(blogID int64) checker.Result {
@@ -375,7 +381,7 @@ func checkerResultFailure(blogID int64) checker.Result {
 func TestHandleRecoverySendsNotificationWhenSiteWasDown(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
-	setTestConfig()
+	setTestConfig(t)
 
 	var notifiedStatus int
 	wpcomNotifyFunc = func(_ *wpcom.Client, n wpcom.Notification) error {
@@ -404,7 +410,7 @@ func TestHandleRecoverySendsNotificationWhenSiteWasDown(t *testing.T) {
 func TestHandleRecoveryIsNoopWhenSiteAlreadyRunning(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
-	setTestConfig()
+	setTestConfig(t)
 
 	var notifyCalls int
 	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error {
@@ -430,7 +436,7 @@ func TestHandleRecoveryIsNoopWhenSiteAlreadyRunning(t *testing.T) {
 func TestHandleRecoveryClearsRetryEntryEvenWhenAlreadyRunning(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
-	setTestConfig()
+	setTestConfig(t)
 
 	o := &Orchestrator{
 		retries:  newRetryQueue(),
@@ -452,7 +458,7 @@ func TestHandleRecoveryClearsRetryEntryEvenWhenAlreadyRunning(t *testing.T) {
 func TestHandleFailureBelowThresholdDoesNotEscalate(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
-	setTestConfig()
+	setTestConfig(t)
 	config.Get().NumOfChecks = 3
 
 	var escalated bool
@@ -482,7 +488,7 @@ func TestHandleFailureBelowThresholdDoesNotEscalate(t *testing.T) {
 func TestProcessResultsMarksChecked(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
-	setTestConfig()
+	setTestConfig(t)
 
 	var markedBlogID int64
 	dbMarkSiteChecked = func(_ context.Context, blogID int64, _ time.Time) error {
@@ -509,7 +515,7 @@ func TestProcessResultsMarksChecked(t *testing.T) {
 func TestProcessResultsSkipsUnknownSite(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
-	setTestConfig()
+	setTestConfig(t)
 
 	var markCalled bool
 	dbMarkSiteChecked = func(_ context.Context, _ int64, _ time.Time) error {
@@ -535,7 +541,7 @@ func TestProcessResultsSkipsUnknownSite(t *testing.T) {
 func TestProcessResultsUpdatesSSLExpiry(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
-	setTestConfig()
+	setTestConfig(t)
 
 	var updatedExpiry time.Time
 	dbUpdateSSLExpiry = func(_ context.Context, _ int64, expiry time.Time) error {
@@ -578,7 +584,7 @@ func TestCheckSSLAlertsAtThresholds(t *testing.T) {
 func TestApplyMemoryPressureNoActionBelowLimit(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
-	setTestConfig()
+	setTestConfig(t)
 
 	origFn := currentMemoryMBFunc
 	currentMemoryMBFunc = func() int { return 10 }
@@ -601,7 +607,7 @@ func TestApplyMemoryPressureNoActionBelowLimit(t *testing.T) {
 func TestApplyMemoryPressureNoActionWhenDisabled(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
-	setTestConfig()
+	setTestConfig(t)
 
 	origFn := currentMemoryMBFunc
 	currentMemoryMBFunc = func() int { return 9999 }
@@ -624,7 +630,7 @@ func TestApplyMemoryPressureNoActionWhenDisabled(t *testing.T) {
 func TestApplyMemoryPressureDrainsWorkersOverLimit(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
-	setTestConfig()
+	setTestConfig(t)
 
 	origFn := currentMemoryMBFunc
 	currentMemoryMBFunc = func() int { return 500 }
@@ -712,7 +718,7 @@ func TestStatusFromBool(t *testing.T) {
 }
 
 func TestIsAlertSuppressedCustomCooldown(t *testing.T) {
-	setTestConfig()
+	setTestConfig(t)
 
 	recent := time.Now().UTC().Add(-2 * time.Minute)
 	customCooldown := 60
@@ -732,7 +738,7 @@ func TestIsAlertSuppressedCustomCooldown(t *testing.T) {
 func TestSendNotificationBothRetriesFail(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
-	setTestConfig()
+	setTestConfig(t)
 
 	calls := 0
 	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error {
@@ -764,7 +770,7 @@ func TestSendNotificationBothRetriesFail(t *testing.T) {
 func TestEscalateToVerifliersNoClients(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
-	setTestConfig()
+	setTestConfig(t)
 
 	var confirmed bool
 	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error {
@@ -793,7 +799,7 @@ func TestEscalateToVerifliersNoClients(t *testing.T) {
 func TestConfirmDownInMaintenance(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
-	setTestConfig()
+	setTestConfig(t)
 
 	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error {
 		t.Fatal("notification should not be sent during maintenance")
@@ -829,7 +835,7 @@ func TestConfirmDownInMaintenance(t *testing.T) {
 func TestHandleRecoveryInMaintenance(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
-	setTestConfig()
+	setTestConfig(t)
 
 	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error {
 		t.Fatal("notification should not be sent during maintenance")
@@ -858,7 +864,7 @@ func TestHandleRecoveryInMaintenance(t *testing.T) {
 func TestProcessResultsLogsErrorsFromDB(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
-	setTestConfig()
+	setTestConfig(t)
 
 	// Make all DB calls return errors to exercise the log.Printf branches in processResults.
 	dbMarkSiteChecked = func(context.Context, int64, time.Time) error {
@@ -890,7 +896,7 @@ func TestProcessResultsLogsErrorsFromDB(t *testing.T) {
 func TestHandleFailureEscalatesAfterThreshold(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
-	setTestConfig()
+	setTestConfig(t)
 	cfg := config.Get()
 	cfg.NumOfChecks = 2
 	cfg.PeerOfflineLimit = 1
