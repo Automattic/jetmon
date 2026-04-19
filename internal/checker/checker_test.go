@@ -180,6 +180,49 @@ func TestSetMaxSizeRetireExcessWorkers(t *testing.T) {
 	t.Fatalf("worker count = %d after SetMaxSize(2), want <= 2", p.WorkerCount())
 }
 
+func TestDrainCalledTwice(t *testing.T) {
+	p := NewPool(1, 1, 1)
+	p.Drain()
+	p.Drain() // second Drain must be a no-op, not block or panic
+}
+
+func TestSubmitDropsWhenQueueFull(t *testing.T) {
+	// Zero workers means nothing drains the channel. Channel capacity = max*2 = 4.
+	p := NewPool(0, 0, 2)
+	t.Cleanup(p.Drain)
+
+	const cap = 4 // max*2
+	for i := range cap {
+		if !p.Submit(Request{BlogID: int64(i), URL: "x"}) {
+			t.Fatalf("Submit %d returned false on non-full queue", i)
+		}
+	}
+	if p.Submit(Request{BlogID: 99, URL: "overflow"}) {
+		t.Fatal("Submit returned true on full queue, want false")
+	}
+}
+
+func TestDrainWorkersAtMinimum(t *testing.T) {
+	p := NewPool(1, 1, 1) // size == minSize
+	t.Cleanup(p.Drain)
+
+	// Nothing above minSize to retire.
+	if drained := p.DrainWorkers(5); drained != 0 {
+		t.Fatalf("DrainWorkers(5) at minSize = %d, want 0", drained)
+	}
+}
+
+func TestDrainWorkersExceedsAvailable(t *testing.T) {
+	p := NewPool(3, 1, 3)
+	t.Cleanup(p.Drain)
+
+	// 2 workers above minSize (3-1=2), requesting 10 — should cap at 2.
+	drained := p.DrainWorkers(10)
+	if drained != 2 {
+		t.Fatalf("DrainWorkers(10) = %d, want 2 (capped at available)", drained)
+	}
+}
+
 // --- checker.Check() ---
 
 func TestCheckHTTP200(t *testing.T) {
@@ -297,5 +340,183 @@ func TestCheckCustomHeadersForwarded(t *testing.T) {
 	}
 	if receivedHeader != "hello" {
 		t.Fatalf("X-Custom-Test = %q, want hello", receivedHeader)
+	}
+}
+
+func TestCheckRedirectAlert(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			http.Redirect(w, r, "/final", http.StatusMovedPermanently)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{
+		BlogID:         1,
+		URL:            srv.URL,
+		TimeoutSeconds: 5,
+		RedirectPolicy: RedirectAlert,
+	})
+	if !res.RedirectChanged {
+		t.Fatal("RedirectChanged = false for redirect-alert policy, want true")
+	}
+}
+
+func TestCheckInvalidURL(t *testing.T) {
+	res := Check(context.Background(), Request{BlogID: 1, URL: "://invalid-url", TimeoutSeconds: 5})
+	if res.ErrorCode != ErrorConnect {
+		t.Fatalf("ErrorCode = %d, want ErrorConnect for invalid URL", res.ErrorCode)
+	}
+}
+
+func TestCheckConnectionRefused(t *testing.T) {
+	// Start a server to get a free port, then stop it so connections are refused.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
+	url := srv.URL
+	srv.Close()
+
+	res := Check(context.Background(), Request{BlogID: 1, URL: url, TimeoutSeconds: 5})
+	if res.ErrorCode != ErrorConnect {
+		t.Fatalf("ErrorCode = %d, want ErrorConnect", res.ErrorCode)
+	}
+}
+
+// --- Pool scale(), Results(), QueueDepth(), ActiveCount() ---
+
+func TestScaleUpWhenQueueDeep(t *testing.T) {
+	orig := poolCheckFunc
+	block := make(chan struct{})
+	poolCheckFunc = func(_ context.Context, req Request) Result {
+		<-block
+		return Result{BlogID: req.BlogID}
+	}
+
+	p := NewPool(1, 1, 5)
+	// Register Drain first so it runs second (LIFO): close(block) unblocks workers, then Drain completes.
+	t.Cleanup(p.Drain)
+	t.Cleanup(func() {
+		poolCheckFunc = orig
+		close(block)
+	})
+
+	// Submit enough work to ensure queue > current worker count.
+	for range 4 {
+		p.Submit(Request{BlogID: 1, URL: "x"})
+	}
+	time.Sleep(10 * time.Millisecond)
+
+	p.scale()
+
+	if p.WorkerCount() <= 1 {
+		t.Fatalf("WorkerCount = %d after scale-up, want > 1", p.WorkerCount())
+	}
+}
+
+func TestScaleDownGraduallyWhenIdle(t *testing.T) {
+	p := NewPool(3, 1, 3)
+	t.Cleanup(p.Drain)
+
+	p.scale()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if p.WorkerCount() < 3 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("WorkerCount = %d after idle scale-down, want < 3", p.WorkerCount())
+}
+
+func TestScaleDownExcessAboveMax(t *testing.T) {
+	p := NewPool(5, 1, 5)
+	t.Cleanup(p.Drain)
+
+	p.mu.Lock()
+	p.maxSize = 3
+	p.mu.Unlock()
+
+	p.scale()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if p.WorkerCount() <= 3 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("WorkerCount = %d after maxSize reduction, want <= 3", p.WorkerCount())
+}
+
+func TestResults(t *testing.T) {
+	orig := poolCheckFunc
+	poolCheckFunc = func(_ context.Context, req Request) Result {
+		return Result{BlogID: req.BlogID, Success: true, HTTPCode: 200}
+	}
+	t.Cleanup(func() { poolCheckFunc = orig })
+
+	p := NewPool(1, 1, 1)
+	t.Cleanup(p.Drain)
+
+	p.Submit(Request{BlogID: 42, URL: "https://example.com"})
+
+	select {
+	case res := <-p.Results():
+		if res.BlogID != 42 {
+			t.Fatalf("result BlogID = %d, want 42", res.BlogID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for result")
+	}
+}
+
+func TestQueueDepth(t *testing.T) {
+	orig := poolCheckFunc
+	release := make(chan struct{})
+	poolCheckFunc = func(_ context.Context, req Request) Result {
+		<-release
+		return Result{BlogID: req.BlogID}
+	}
+
+	p := NewPool(1, 1, 1)
+	t.Cleanup(p.Drain)
+	t.Cleanup(func() {
+		poolCheckFunc = orig
+		close(release)
+	})
+
+	p.Submit(Request{BlogID: 1, URL: "a"})
+	time.Sleep(10 * time.Millisecond) // let worker pick up first request
+	p.Submit(Request{BlogID: 2, URL: "b"})
+
+	if d := p.QueueDepth(); d != 1 {
+		t.Fatalf("QueueDepth() = %d, want 1", d)
+	}
+}
+
+func TestActiveCount(t *testing.T) {
+	orig := poolCheckFunc
+	started := make(chan struct{})
+	release := make(chan struct{})
+	poolCheckFunc = func(_ context.Context, req Request) Result {
+		close(started)
+		<-release
+		return Result{BlogID: req.BlogID}
+	}
+
+	p := NewPool(1, 1, 1)
+	t.Cleanup(p.Drain)
+	t.Cleanup(func() {
+		poolCheckFunc = orig
+		close(release)
+	})
+
+	p.Submit(Request{BlogID: 1, URL: "x"})
+	<-started
+
+	if p.ActiveCount() != 1 {
+		t.Fatalf("ActiveCount() = %d, want 1", p.ActiveCount())
 	}
 }

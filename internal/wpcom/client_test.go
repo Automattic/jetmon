@@ -126,6 +126,73 @@ func TestNotifyResetsCircuitAfterTimeout(t *testing.T) {
 	}
 }
 
+func TestNew(t *testing.T) {
+	c := New("my-token", "my-host")
+	if c == nil {
+		t.Fatal("New() = nil")
+	}
+	if c.authToken != "my-token" {
+		t.Fatalf("authToken = %q, want my-token", c.authToken)
+	}
+	if c.hostname != "my-host" {
+		t.Fatalf("hostname = %q, want my-host", c.hostname)
+	}
+}
+
+func TestSendFlushContinuesAfterError(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		if calls == 1 {
+			w.WriteHeader(http.StatusBadGateway)
+		} else {
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer srv.Close()
+
+	c := &Client{
+		authToken:  "test-token",
+		notifyURL:  srv.URL,
+		httpClient: &http.Client{Timeout: 5 * time.Second},
+	}
+
+	c.sendFlush([]queuedNotification{
+		{n: testNotification(1)},
+		{n: testNotification(2)},
+	})
+
+	if calls != 2 {
+		t.Fatalf("send calls = %d, want 2 (flush should continue after first error)", calls)
+	}
+}
+
+func TestSendFlushEmptyIsNoop(t *testing.T) {
+	c := &Client{}
+	c.sendFlush(nil)
+	c.sendFlush([]queuedNotification{})
+}
+
+func TestNotifySendNetworkError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
+	url := srv.URL
+	srv.Close() // close before sending — forces a connection error
+
+	c := &Client{
+		authToken:  "token",
+		notifyURL:  url,
+		httpClient: &http.Client{Timeout: time.Second},
+	}
+
+	err := c.Notify(testNotification(1))
+	if err == nil {
+		t.Fatal("Notify() expected error for closed server")
+	}
+	if c.failures != 1 {
+		t.Fatalf("failures = %d after network error, want 1", c.failures)
+	}
+}
+
 func TestEnqueueDropsOldestWhenFull(t *testing.T) {
 	c := &Client{}
 	for i := range queueMaxSize {

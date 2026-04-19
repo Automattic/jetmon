@@ -479,6 +479,414 @@ func TestHandleFailureBelowThresholdDoesNotEscalate(t *testing.T) {
 	}
 }
 
+func TestProcessResultsMarksChecked(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig()
+
+	var markedBlogID int64
+	dbMarkSiteChecked = func(_ context.Context, blogID int64, _ time.Time) error {
+		markedBlogID = blogID
+		return nil
+	}
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local",
+		ctx:      context.Background(),
+	}
+
+	res := checkerResultSuccess(42)
+	sites := map[int64]db.Site{42: {BlogID: 42, SiteStatus: statusRunning}}
+	o.processResults(map[int64]checker.Result{42: res}, sites)
+
+	if markedBlogID != 42 {
+		t.Fatalf("MarkSiteChecked blog_id = %d, want 42", markedBlogID)
+	}
+}
+
+func TestProcessResultsSkipsUnknownSite(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig()
+
+	var markCalled bool
+	dbMarkSiteChecked = func(_ context.Context, _ int64, _ time.Time) error {
+		markCalled = true
+		return nil
+	}
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local",
+		ctx:      context.Background(),
+	}
+
+	res := checkerResultSuccess(99)
+	o.processResults(map[int64]checker.Result{99: res}, map[int64]db.Site{})
+
+	if markCalled {
+		t.Fatal("MarkSiteChecked called for unknown blog_id, want skipped")
+	}
+}
+
+func TestProcessResultsUpdatesSSLExpiry(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig()
+
+	var updatedExpiry time.Time
+	dbUpdateSSLExpiry = func(_ context.Context, _ int64, expiry time.Time) error {
+		updatedExpiry = expiry
+		return nil
+	}
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local",
+		ctx:      context.Background(),
+	}
+
+	expiry := time.Now().Add(30 * 24 * time.Hour)
+	res := checkerResultSuccess(1)
+	res.SSLExpiry = &expiry
+
+	sites := map[int64]db.Site{1: {BlogID: 1, SiteStatus: statusRunning}}
+	o.processResults(map[int64]checker.Result{1: res}, sites)
+
+	if updatedExpiry.IsZero() {
+		t.Fatal("UpdateSSLExpiry not called")
+	}
+}
+
+func TestCheckSSLAlertsAtThresholds(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+
+	o := &Orchestrator{hostname: "local"}
+
+	// Test each threshold and a non-threshold day; verify no panic.
+	for _, days := range []int{30, 14, 7, 31, 15} {
+		expiry := time.Now().Add(time.Duration(days)*24*time.Hour + 30*time.Minute)
+		o.checkSSLAlerts(db.Site{BlogID: 1}, expiry)
+	}
+}
+
+func TestApplyMemoryPressureNoActionBelowLimit(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig()
+
+	origFn := currentMemoryMBFunc
+	currentMemoryMBFunc = func() int { return 10 }
+	defer func() { currentMemoryMBFunc = origFn }()
+
+	p := checker.NewPool(5, 1, 5)
+	t.Cleanup(p.Drain)
+
+	o := &Orchestrator{pool: p, ctx: context.Background()}
+	cfg := config.Get()
+	cfg.WorkerMaxMemMB = 100
+
+	o.applyMemoryPressure(cfg)
+
+	if p.WorkerCount() != 5 {
+		t.Fatalf("WorkerCount = %d under limit, want 5", p.WorkerCount())
+	}
+}
+
+func TestApplyMemoryPressureNoActionWhenDisabled(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig()
+
+	origFn := currentMemoryMBFunc
+	currentMemoryMBFunc = func() int { return 9999 }
+	defer func() { currentMemoryMBFunc = origFn }()
+
+	p := checker.NewPool(5, 1, 5)
+	t.Cleanup(p.Drain)
+
+	o := &Orchestrator{pool: p, ctx: context.Background()}
+	cfg := config.Get()
+	cfg.WorkerMaxMemMB = 0
+
+	o.applyMemoryPressure(cfg)
+
+	if p.WorkerCount() != 5 {
+		t.Fatalf("WorkerCount = %d when disabled, want 5", p.WorkerCount())
+	}
+}
+
+func TestApplyMemoryPressureDrainsWorkersOverLimit(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig()
+
+	origFn := currentMemoryMBFunc
+	currentMemoryMBFunc = func() int { return 500 }
+	defer func() { currentMemoryMBFunc = origFn }()
+
+	p := checker.NewPool(10, 1, 10)
+	t.Cleanup(p.Drain)
+
+	o := &Orchestrator{pool: p, ctx: context.Background()}
+	cfg := config.Get()
+	cfg.WorkerMaxMemMB = 50
+
+	initial := p.WorkerCount()
+	o.applyMemoryPressure(cfg)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if p.WorkerCount() < initial {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("WorkerCount = %d after memory pressure, want < %d", p.WorkerCount(), initial)
+}
+
+func TestOrchestratorAccessors(t *testing.T) {
+	p := checker.NewPool(3, 1, 3)
+	defer p.Drain()
+
+	o := &Orchestrator{
+		retries:   newRetryQueue(),
+		bucketMin: 10,
+		bucketMax: 99,
+		pool:      p,
+	}
+	o.retries.record(checkerResultFailure(1))
+
+	if o.RetryQueueSize() != 1 {
+		t.Fatalf("RetryQueueSize() = %d, want 1", o.RetryQueueSize())
+	}
+	min, max := o.BucketRange()
+	if min != 10 || max != 99 {
+		t.Fatalf("BucketRange() = %d-%d, want 10-99", min, max)
+	}
+	if o.WorkerCount() != 3 {
+		t.Fatalf("WorkerCount() = %d, want 3", o.WorkerCount())
+	}
+	if o.ActiveChecks() != 0 {
+		t.Fatalf("ActiveChecks() = %d, want 0", o.ActiveChecks())
+	}
+	if o.QueueDepth() != 0 {
+		t.Fatalf("QueueDepth() = %d, want 0", o.QueueDepth())
+	}
+}
+
+func TestRetryQueueAllBlogIDs(t *testing.T) {
+	q := newRetryQueue()
+	q.record(checkerResultFailure(1))
+	q.record(checkerResultFailure(2))
+	q.record(checkerResultFailure(3))
+
+	ids := q.allBlogIDs()
+	if len(ids) != 3 {
+		t.Fatalf("allBlogIDs() len = %d, want 3", len(ids))
+	}
+}
+
+func TestStringPtrValue(t *testing.T) {
+	if got := stringPtrValue(nil); got != "" {
+		t.Fatalf("stringPtrValue(nil) = %q, want empty", got)
+	}
+	s := "hello"
+	if got := stringPtrValue(&s); got != "hello" {
+		t.Fatalf("stringPtrValue(&\"hello\") = %q, want hello", got)
+	}
+}
+
+func TestStatusFromBool(t *testing.T) {
+	if got := statusFromBool(true); got != statusRunning {
+		t.Fatalf("statusFromBool(true) = %d, want %d", got, statusRunning)
+	}
+	if got := statusFromBool(false); got != 0 {
+		t.Fatalf("statusFromBool(false) = %d, want 0", got)
+	}
+}
+
+func TestIsAlertSuppressedCustomCooldown(t *testing.T) {
+	setTestConfig()
+
+	recent := time.Now().UTC().Add(-2 * time.Minute)
+	customCooldown := 60
+
+	o := &Orchestrator{}
+	// Custom per-site cooldown of 60 min, last alert 2 min ago → suppressed.
+	if !o.isAlertSuppressed(db.Site{LastAlertSentAt: &recent, AlertCooldownMinutes: &customCooldown}) {
+		t.Fatal("expected suppressed with custom 60-min cooldown and 2-min-old alert")
+	}
+	// Custom cooldown of 0 → never suppressed.
+	zeroCooldown := 0
+	if o.isAlertSuppressed(db.Site{LastAlertSentAt: &recent, AlertCooldownMinutes: &zeroCooldown}) {
+		t.Fatal("expected not suppressed when custom cooldown = 0")
+	}
+}
+
+func TestSendNotificationBothRetriesFail(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig()
+
+	calls := 0
+	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error {
+		calls++
+		return fmt.Errorf("always fails")
+	}
+
+	var updateAlertCalled bool
+	dbUpdateLastAlertSent = func(context.Context, int64, time.Time) error {
+		updateAlertCalled = true
+		return nil
+	}
+
+	o := &Orchestrator{
+		wpcom:    &wpcom.Client{},
+		hostname: "local",
+		ctx:      context.Background(),
+	}
+	o.sendNotification(db.Site{BlogID: 1, MonitorURL: "https://example.com"}, checkerResultFailure(1), statusConfirmedDown, time.Now(), nil)
+
+	if calls != 2 {
+		t.Fatalf("notify calls = %d, want 2 (initial + retry)", calls)
+	}
+	if updateAlertCalled {
+		t.Fatal("dbUpdateLastAlertSent should not be called when both retries fail")
+	}
+}
+
+func TestEscalateToVerifliersNoClients(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig()
+
+	var confirmed bool
+	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error {
+		confirmed = true
+		return nil
+	}
+	dbUpdateLastAlertSent = func(context.Context, int64, time.Time) error { return nil }
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		ctx:      context.Background(),
+		hostname: "local",
+		// veriflierClients is empty
+	}
+	fail := checkerResultFailure(55)
+	o.retries.record(fail)
+	entry := o.retries.get(55)
+	o.escalateToVerifliers(db.Site{BlogID: 55, MonitorURL: "https://example.com", SiteStatus: statusRunning}, entry)
+
+	if !confirmed {
+		t.Fatal("expected confirmDown (and notification) when no verifliers are configured")
+	}
+}
+
+func TestConfirmDownInMaintenance(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig()
+
+	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error {
+		t.Fatal("notification should not be sent during maintenance")
+		return nil
+	}
+
+	now := time.Now()
+	past := now.Add(-1 * time.Hour)
+	future := now.Add(1 * time.Hour)
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		ctx:      context.Background(),
+		hostname: "local",
+	}
+	fail := checkerResultFailure(77)
+	o.retries.record(fail)
+	entry := o.retries.get(77)
+
+	o.confirmDown(db.Site{
+		BlogID:           77,
+		SiteStatus:       statusRunning,
+		MaintenanceStart: &past,
+		MaintenanceEnd:   &future,
+	}, entry, nil)
+
+	if o.retries.get(77) != nil {
+		t.Fatal("retry entry should be cleared after confirmDown in maintenance")
+	}
+}
+
+func TestHandleRecoveryInMaintenance(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig()
+
+	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error {
+		t.Fatal("notification should not be sent during maintenance")
+		return nil
+	}
+
+	now := time.Now()
+	past := now.Add(-1 * time.Hour)
+	future := now.Add(1 * time.Hour)
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		ctx:      context.Background(),
+		hostname: "local",
+	}
+
+	o.handleRecovery(db.Site{
+		BlogID:           1,
+		SiteStatus:       statusConfirmedDown,
+		MaintenanceStart: &past,
+		MaintenanceEnd:   &future,
+	}, checkerResultSuccess(1))
+}
+
+func TestProcessResultsLogsErrorsFromDB(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig()
+
+	// Make all DB calls return errors to exercise the log.Printf branches in processResults.
+	dbMarkSiteChecked = func(context.Context, int64, time.Time) error {
+		return fmt.Errorf("mark checked error")
+	}
+	dbRecordCheckHistory = func(int64, int, int, int64, int64, int64, int64, int64) error {
+		return fmt.Errorf("history error")
+	}
+	dbUpdateSSLExpiry = func(context.Context, int64, time.Time) error {
+		return fmt.Errorf("ssl expiry error")
+	}
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local",
+		ctx:      context.Background(),
+	}
+
+	expiry := time.Now().Add(30 * 24 * time.Hour)
+	res := checkerResultSuccess(1)
+	res.SSLExpiry = &expiry
+	sites := map[int64]db.Site{1: {BlogID: 1, SiteStatus: statusRunning}}
+
+	// Should not panic despite all DB calls failing.
+	o.processResults(map[int64]checker.Result{1: res}, sites)
+}
+
 func TestHandleFailureEscalatesAfterThreshold(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()

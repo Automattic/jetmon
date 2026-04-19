@@ -155,6 +155,46 @@ func TestClientServerRoundTrip(t *testing.T) {
 	}
 }
 
+func TestClientAddr(t *testing.T) {
+	client := NewVeriflierClient("host1:7803", "token")
+	if client.Addr() != "host1:7803" {
+		t.Fatalf("Addr() = %q, want host1:7803", client.Addr())
+	}
+}
+
+func TestClientPing(t *testing.T) {
+	_, ts := newTestServer(func(req CheckRequest) CheckResult { return CheckResult{} })
+	defer ts.Close()
+
+	client := NewVeriflierClient(ts.Listener.Addr().String(), "secret")
+	version, err := client.Ping(context.Background())
+	if err != nil {
+		t.Fatalf("Ping() error = %v", err)
+	}
+	if version != "1.0" {
+		t.Fatalf("version = %q, want 1.0", version)
+	}
+}
+
+func TestClientBatchRoundTrip(t *testing.T) {
+	_, ts := newTestServer(func(req CheckRequest) CheckResult {
+		return CheckResult{BlogID: req.BlogID, Success: true, HTTPCode: 200}
+	})
+	defer ts.Close()
+
+	client := NewVeriflierClient(ts.Listener.Addr().String(), "secret")
+	res, err := client.CheckBatch(context.Background(), []CheckRequest{
+		{BlogID: 10, URL: "https://example.com"},
+		{BlogID: 20, URL: "https://example.org"},
+	})
+	if err != nil {
+		t.Fatalf("CheckBatch() error = %v", err)
+	}
+	if len(res) != 2 {
+		t.Fatalf("CheckBatch() len = %d, want 2", len(res))
+	}
+}
+
 func TestClientRejectsUnauthorized(t *testing.T) {
 	_, ts := newTestServer(func(req CheckRequest) CheckResult { return CheckResult{} })
 	defer ts.Close()
