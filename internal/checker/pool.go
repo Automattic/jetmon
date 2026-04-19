@@ -7,6 +7,8 @@ import (
 	"time"
 )
 
+var poolCheckFunc = Check
+
 // Pool is an auto-scaling goroutine pool for HTTP checks.
 type Pool struct {
 	work    chan Request
@@ -109,7 +111,7 @@ func (p *Pool) spawnWorker() {
 					return
 				}
 				p.active.Add(1)
-				res := Check(context.Background(), req)
+				res := poolCheckFunc(context.Background(), req)
 				p.active.Add(-1)
 				if p.closed.Load() {
 					continue

@@ -1,6 +1,7 @@
 package checker
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -112,4 +113,43 @@ func TestPoolDrainWorkers(t *testing.T) {
 	}
 
 	t.Fatalf("worker count = %d, want 1 after retirement", p.WorkerCount())
+}
+
+func TestPoolDrainWaitsForInflightCheck(t *testing.T) {
+	orig := poolCheckFunc
+	started := make(chan struct{})
+	release := make(chan struct{})
+	poolCheckFunc = func(_ context.Context, req Request) Result {
+		close(started)
+		<-release
+		return Result{BlogID: req.BlogID}
+	}
+	t.Cleanup(func() { poolCheckFunc = orig })
+
+	p := NewPool(1, 1, 1)
+	if !p.Submit(Request{BlogID: 1}) {
+		t.Fatal("Submit() returned false")
+	}
+
+	<-started
+
+	drained := make(chan struct{})
+	go func() {
+		p.Drain()
+		close(drained)
+	}()
+
+	select {
+	case <-drained:
+		t.Fatal("Drain returned before in-flight check completed")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+
+	select {
+	case <-drained:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Drain did not return after in-flight check completed")
+	}
 }

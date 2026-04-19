@@ -134,6 +134,27 @@ func ClaimBuckets(hostID string, bucketTotal, bucketTarget int, graceSec int) (i
 	}
 	sort.Strings(hostIDs)
 
+	assignments := assignBucketRanges(hostIDs, bucketTotal, bucketTarget)
+
+	for _, id := range hostIDs {
+		rng := assignments[id]
+		_, err = tx.Exec(
+			`INSERT INTO jetmon_hosts (host_id, bucket_min, bucket_max, last_heartbeat, status)
+			 VALUES (?, ?, ?, NOW(), 'active')
+			 ON DUPLICATE KEY UPDATE bucket_min = VALUES(bucket_min), bucket_max = VALUES(bucket_max),
+			 last_heartbeat = NOW(), status = 'active'`,
+			id, rng[0], rng[1],
+		)
+		if err != nil {
+			return 0, 0, fmt.Errorf("upsert host %s: %w", id, err)
+		}
+	}
+
+	rng := assignments[hostID]
+	return rng[0], rng[1], tx.Commit()
+}
+
+func assignBucketRanges(hostIDs []string, bucketTotal, bucketTarget int) map[string][2]int {
 	assignments := make(map[string][2]int, len(hostIDs))
 	nextBucket := 0
 	for i, id := range hostIDs {
@@ -156,23 +177,7 @@ func ClaimBuckets(hostID string, bucketTotal, bucketTarget int, graceSec int) (i
 		assignments[id] = [2]int{nextBucket, nextBucket + size - 1}
 		nextBucket += size
 	}
-
-	for _, id := range hostIDs {
-		rng := assignments[id]
-		_, err = tx.Exec(
-			`INSERT INTO jetmon_hosts (host_id, bucket_min, bucket_max, last_heartbeat, status)
-			 VALUES (?, ?, ?, NOW(), 'active')
-			 ON DUPLICATE KEY UPDATE bucket_min = VALUES(bucket_min), bucket_max = VALUES(bucket_max),
-			 last_heartbeat = NOW(), status = 'active'`,
-			id, rng[0], rng[1],
-		)
-		if err != nil {
-			return 0, 0, fmt.Errorf("upsert host %s: %w", id, err)
-		}
-	}
-
-	rng := assignments[hostID]
-	return rng[0], rng[1], tx.Commit()
+	return assignments
 }
 
 // Heartbeat updates last_heartbeat for this host.

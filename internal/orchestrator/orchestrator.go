@@ -22,6 +22,26 @@ const (
 	statusConfirmedDown = 2
 )
 
+var (
+	nowFunc               = time.Now
+	dbClaimBuckets        = db.ClaimBuckets
+	dbHeartbeat           = db.Heartbeat
+	dbReleaseHost         = db.ReleaseHost
+	dbMarkHostDraining    = db.MarkHostDraining
+	dbGetSitesForBucket   = db.GetSitesForBucket
+	dbMarkSiteChecked     = db.MarkSiteChecked
+	dbRecordCheckHistory  = db.RecordCheckHistory
+	dbUpdateSSLExpiry     = db.UpdateSSLExpiry
+	dbUpdateSiteStatus    = db.UpdateSiteStatus
+	dbRecordFalsePositive = db.RecordFalsePositive
+	dbUpdateLastAlertSent = db.UpdateLastAlertSent
+	veriflierCheckFunc    = func(c *veriflier.VeriflierClient, ctx stdctx.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
+		return c.Check(ctx, req)
+	}
+	wpcomNotifyFunc     = func(c *wpcom.Client, n wpcom.Notification) error { return c.Notify(n) }
+	currentMemoryMBFunc = currentMemoryMB
+)
+
 // Orchestrator drives the main check loop.
 type Orchestrator struct {
 	pool             *checker.Pool
@@ -66,7 +86,7 @@ func New(cfg *config.Config, wp *wpcom.Client) *Orchestrator {
 // ClaimBuckets registers this host in jetmon_hosts and sets the bucket range.
 func (o *Orchestrator) ClaimBuckets() error {
 	cfg := config.Get()
-	min, max, err := db.ClaimBuckets(
+	min, max, err := dbClaimBuckets(
 		o.hostname,
 		cfg.BucketTotal,
 		cfg.BucketTarget,
@@ -88,11 +108,11 @@ func (o *Orchestrator) Run() {
 		select {
 		case <-o.ctx.Done():
 			log.Println("orchestrator: shutting down")
-			if err := db.MarkHostDraining(stdctx.Background(), o.hostname); err != nil {
+			if err := dbMarkHostDraining(stdctx.Background(), o.hostname); err != nil {
 				log.Printf("orchestrator: mark draining: %v", err)
 			}
 			o.pool.Drain()
-			if err := db.ReleaseHost(stdctx.Background(), o.hostname); err != nil {
+			if err := dbReleaseHost(stdctx.Background(), o.hostname); err != nil {
 				log.Printf("orchestrator: release host: %v", err)
 			}
 			return
@@ -126,7 +146,7 @@ func (o *Orchestrator) runRound() {
 	cfg := config.Get()
 
 	// Update heartbeat.
-	if err := db.Heartbeat(o.ctx, o.hostname); err != nil {
+	if err := dbHeartbeat(o.ctx, o.hostname); err != nil {
 		log.Printf("orchestrator: heartbeat failed: %v", err)
 	}
 	// Re-claim every round so bucket ranges rebalance automatically when hosts
@@ -136,7 +156,7 @@ func (o *Orchestrator) runRound() {
 	}
 
 	// Fetch sites.
-	sites, err := db.GetSitesForBucket(o.ctx, o.bucketMin, o.bucketMax, cfg.DatasetSize, cfg.UseVariableCheckIntervals)
+	sites, err := dbGetSitesForBucket(o.ctx, o.bucketMin, o.bucketMax, cfg.DatasetSize, cfg.UseVariableCheckIntervals)
 	if err != nil {
 		log.Printf("orchestrator: fetch sites failed: %v", err)
 		return
@@ -233,12 +253,12 @@ func (o *Orchestrator) processResults(results map[int64]checker.Result, sites ma
 		if !ok {
 			continue
 		}
-		if err := db.MarkSiteChecked(o.ctx, blogID, res.Timestamp); err != nil {
+		if err := dbMarkSiteChecked(o.ctx, blogID, res.Timestamp); err != nil {
 			log.Printf("orchestrator: mark checked blog_id=%d: %v", blogID, err)
 		}
 
 		// Log timing data.
-		if err := db.RecordCheckHistory(
+		if err := dbRecordCheckHistory(
 			blogID,
 			res.HTTPCode, res.ErrorCode,
 			res.RTT.Milliseconds(),
@@ -252,7 +272,7 @@ func (o *Orchestrator) processResults(results map[int64]checker.Result, sites ma
 
 		// Update SSL expiry if available.
 		if res.SSLExpiry != nil {
-			if err := db.UpdateSSLExpiry(o.ctx, blogID, *res.SSLExpiry); err != nil {
+			if err := dbUpdateSSLExpiry(o.ctx, blogID, *res.SSLExpiry); err != nil {
 				log.Printf("orchestrator: update ssl expiry blog_id=%d: %v", blogID, err)
 			}
 			o.checkSSLAlerts(site, *res.SSLExpiry)
@@ -278,12 +298,12 @@ func (o *Orchestrator) handleRecovery(site db.Site, res checker.Result) {
 	o.retries.clear(site.BlogID)
 
 	if site.SiteStatus != statusRunning {
-		changeTime := time.Now().UTC()
+		changeTime := nowFunc().UTC()
 		log.Printf("orchestrator: blog_id=%d recovered", site.BlogID)
 		o.auditTransition(site.BlogID, site.SiteStatus, statusRunning, "site recovered")
 
 		if config.Get().DBUpdatesEnable {
-			_ = db.UpdateSiteStatus(o.ctx, site.BlogID, statusRunning, changeTime)
+			_ = dbUpdateSiteStatus(o.ctx, site.BlogID, statusRunning, changeTime)
 		}
 
 		if inMaintenance(site) {
@@ -337,7 +357,7 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 	for _, client := range clients {
 		c := client
 		go func() {
-			res, err := c.Check(o.ctx, req)
+			res, err := veriflierCheckFunc(c, o.ctx, req)
 			ch <- vResult{host: c.Addr(), res: res, err: err}
 		}()
 	}
@@ -375,7 +395,7 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 	} else {
 		// Verifliers did not confirm — false positive.
 		log.Printf("orchestrator: blog_id=%d verifliers did not confirm down (%d/%d)", site.BlogID, confirmations, quorum)
-		_ = db.RecordFalsePositive(site.BlogID, entry.lastResult.HTTPCode, entry.lastResult.ErrorCode,
+		_ = dbRecordFalsePositive(site.BlogID, entry.lastResult.HTTPCode, entry.lastResult.ErrorCode,
 			entry.lastResult.RTT.Milliseconds())
 		o.retries.clear(site.BlogID)
 	}
@@ -383,13 +403,13 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 
 func (o *Orchestrator) confirmDown(site db.Site, entry *retryEntry, vResults []veriflier.CheckResult) {
 	newStatus := statusConfirmedDown
-	changeTime := time.Now().UTC()
+	changeTime := nowFunc().UTC()
 
 	log.Printf("orchestrator: blog_id=%d confirmed down", site.BlogID)
 	o.auditTransition(site.BlogID, site.SiteStatus, newStatus, "confirmed down")
 
 	if config.Get().DBUpdatesEnable {
-		_ = db.UpdateSiteStatus(o.ctx, site.BlogID, newStatus, changeTime)
+		_ = dbUpdateSiteStatus(o.ctx, site.BlogID, newStatus, changeTime)
 	}
 
 	if inMaintenance(site) {
@@ -436,17 +456,17 @@ func (o *Orchestrator) sendNotification(site db.Site, res checker.Result, status
 	o.auditLog(site.BlogID, audit.EventWPCOMSent, "local", 0, 0, 0,
 		fmt.Sprintf("status=%d type=%s", status, n.StatusType))
 
-	if err := o.wpcom.Notify(n); err != nil {
+	if err := wpcomNotifyFunc(o.wpcom, n); err != nil {
 		log.Printf("orchestrator: wpcom notify failed for blog_id=%d: %v", site.BlogID, err)
 		o.auditLog(site.BlogID, audit.EventWPCOMRetry, "local", 0, 0, 0, err.Error())
 
 		// Single retry.
-		if retryErr := o.wpcom.Notify(n); retryErr != nil {
+		if retryErr := wpcomNotifyFunc(o.wpcom, n); retryErr != nil {
 			log.Printf("orchestrator: wpcom notify retry failed for blog_id=%d: %v", site.BlogID, retryErr)
 			return
 		}
 	}
-	if err := db.UpdateLastAlertSent(o.ctx, site.BlogID, time.Now().UTC()); err != nil {
+	if err := dbUpdateLastAlertSent(o.ctx, site.BlogID, nowFunc().UTC()); err != nil {
 		log.Printf("orchestrator: update last alert sent blog_id=%d: %v", site.BlogID, err)
 	}
 }
@@ -594,7 +614,7 @@ func (o *Orchestrator) applyMemoryPressure(cfg *config.Config) {
 		return
 	}
 
-	rssMB := currentMemoryMB()
+	rssMB := currentMemoryMBFunc()
 	if rssMB <= 0 || rssMB <= cfg.WorkerMaxMemMB {
 		return
 	}
