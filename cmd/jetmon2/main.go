@@ -4,7 +4,9 @@ import (
 	"database/sql"
 	"flag"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -120,12 +122,15 @@ func runServe() {
 			for range ticker.C {
 				bMin, bMax := orch.BucketRange()
 				dash.Update(dashboard.State{
-					WorkerCount:    0, // populated by pool — wire up as needed
-					RetryQueueSize: orch.RetryQueueSize(),
+					WorkerCount:      orch.WorkerCount(),
+					ActiveChecks:     orch.ActiveChecks(),
+					QueueDepth:       orch.QueueDepth(),
+					RetryQueueSize:   orch.RetryQueueSize(),
+					SitesPerSec:      0,
 					WPCOMCircuitOpen: wp.IsCircuitOpen(),
-					WPCOMQueueDepth: wp.QueueDepth(),
-					BucketMin:      bMin,
-					BucketMax:      bMax,
+					WPCOMQueueDepth:  wp.QueueDepth(),
+					BucketMin:        bMin,
+					BucketMax:        bMax,
 				})
 			}
 		}()
@@ -326,8 +331,19 @@ func envOrDefault(key, def string) string {
 }
 
 func httpGet(url string) (string, error) {
-	_ = url
-	return "", fmt.Errorf("not implemented: use curl http://localhost:8080/api/state")
+	resp, err := http.Get(url)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("http %d: %s", resp.StatusCode, string(body))
+	}
+	return string(body), nil
 }
 
 func resolveSince(s string) string {

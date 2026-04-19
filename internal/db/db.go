@@ -24,6 +24,7 @@ type Site struct {
 	SiteStatus       int
 	LastStatusChange time.Time
 	CheckInterval    int
+	LastCheckedAt    *time.Time
 
 	SSLExpiryDate        *time.Time
 	CheckKeyword         *string
@@ -33,6 +34,7 @@ type Site struct {
 	TimeoutSeconds       *int
 	RedirectPolicy       string
 	AlertCooldownMinutes *int
+	LastAlertSentAt      *time.Time
 }
 
 // Connect opens the MySQL connection pool using the loaded DBConfig.

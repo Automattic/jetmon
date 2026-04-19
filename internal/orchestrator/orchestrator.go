@@ -5,14 +5,15 @@ import (
 	"fmt"
 	"log"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/Automattic/jetmon/internal/audit"
 	"github.com/Automattic/jetmon/internal/checker"
 	"github.com/Automattic/jetmon/internal/config"
 	"github.com/Automattic/jetmon/internal/db"
-	"github.com/Automattic/jetmon/internal/veriflier"
 	"github.com/Automattic/jetmon/internal/metrics"
+	"github.com/Automattic/jetmon/internal/veriflier"
 	"github.com/Automattic/jetmon/internal/wpcom"
 )
 
@@ -24,14 +25,14 @@ const (
 
 // Orchestrator drives the main check loop.
 type Orchestrator struct {
-	cfg         *config.Config
-	pool        *checker.Pool
-	retries     *retryQueue
-	wpcom       *wpcom.Client
+	pool             *checker.Pool
+	retries          *retryQueue
+	wpcom            *wpcom.Client
 	veriflierClients []*veriflier.VeriflierClient
-	hostname    string
-	bucketMin   int
-	bucketMax   int
+	veriflierMu      sync.RWMutex
+	hostname         string
+	bucketMin        int
+	bucketMax        int
 
 	totalChecked int
 	roundStart   time.Time
@@ -46,19 +47,15 @@ func New(cfg *config.Config, wp *wpcom.Client) *Orchestrator {
 	pool := checker.NewPool(cfg.NumWorkers/2, 1, cfg.NumWorkers)
 
 	o := &Orchestrator{
-		cfg:     cfg,
-		pool:    pool,
-		retries: newRetryQueue(),
-		wpcom:   wp,
+		pool:     pool,
+		retries:  newRetryQueue(),
+		wpcom:    wp,
 		hostname: db.Hostname(),
-		ctx:     ctx,
-		cancel:  cancel,
+		ctx:      ctx,
+		cancel:   cancel,
 	}
 
-	for _, v := range cfg.Verifiers {
-		addr := fmt.Sprintf("%s:%s", v.Host, v.GRPCPort)
-		o.veriflierClients = append(o.veriflierClients, veriflier.NewVeriflierClient(addr, v.AuthToken))
-	}
+	o.refreshVeriflierClients(cfg)
 	if len(o.veriflierClients) == 0 {
 		log.Println("orchestrator: warning: no verifliers configured — down confirmations rely on local checks only")
 	}
@@ -68,11 +65,12 @@ func New(cfg *config.Config, wp *wpcom.Client) *Orchestrator {
 
 // ClaimBuckets registers this host in jetmon_hosts and sets the bucket range.
 func (o *Orchestrator) ClaimBuckets() error {
+	cfg := config.Get()
 	min, max, err := db.ClaimBuckets(
 		o.hostname,
-		o.cfg.BucketTotal,
-		o.cfg.BucketTarget,
-		o.cfg.BucketHeartbeatGraceSec,
+		cfg.BucketTotal,
+		cfg.BucketTarget,
+		cfg.BucketHeartbeatGraceSec,
 	)
 	if err != nil {
 		return err
@@ -90,19 +88,26 @@ func (o *Orchestrator) Run() {
 		select {
 		case <-o.ctx.Done():
 			log.Println("orchestrator: shutting down")
+			if err := db.MarkHostDraining(stdctx.Background(), o.hostname); err != nil {
+				log.Printf("orchestrator: mark draining: %v", err)
+			}
 			o.pool.Drain()
 			if err := db.ReleaseHost(stdctx.Background(), o.hostname); err != nil {
-			log.Printf("orchestrator: release host: %v", err)
-		}
+				log.Printf("orchestrator: release host: %v", err)
+			}
 			return
 		default:
 		}
+
+		cfg := config.Get()
+		o.pool.SetMaxSize(cfg.NumWorkers)
+		o.refreshVeriflierClients(cfg)
 
 		o.roundStart = time.Now()
 		o.runRound()
 
 		elapsed := time.Since(o.roundStart)
-		minInterval := time.Duration(o.cfg.MinTimeBetweenRoundsSec) * time.Second
+		minInterval := time.Duration(cfg.MinTimeBetweenRoundsSec) * time.Second
 		if elapsed < minInterval {
 			select {
 			case <-time.After(minInterval - elapsed):
@@ -118,15 +123,18 @@ func (o *Orchestrator) Stop() {
 }
 
 func (o *Orchestrator) runRound() {
-	cfg := o.cfg
+	cfg := config.Get()
 
 	// Update heartbeat.
 	if err := db.Heartbeat(o.ctx, o.hostname); err != nil {
 		log.Printf("orchestrator: heartbeat failed: %v", err)
 	}
+	if err := o.ClaimBuckets(); err != nil {
+		log.Printf("orchestrator: bucket rebalance failed: %v", err)
+	}
 
 	// Fetch sites.
-	sites, err := db.GetSitesForBucket(o.ctx, o.bucketMin, o.bucketMax, cfg.DatasetSize)
+	sites, err := db.GetSitesForBucket(o.ctx, o.bucketMin, o.bucketMax, cfg.DatasetSize, cfg.UseVariableCheckIntervals)
 	if err != nil {
 		log.Printf("orchestrator: fetch sites failed: %v", err)
 		return
@@ -141,11 +149,6 @@ func (o *Orchestrator) runRound() {
 	// Dispatch checks.
 	dispatched := 0
 	for _, site := range sites {
-		if inMaintenance(site) {
-			o.auditLog(site.BlogID, audit.EventMaintenanceActive, "local", 0, 0, 0, "")
-			continue
-		}
-
 		timeout := cfg.NetCommsTimeout
 		if site.TimeoutSeconds != nil {
 			timeout = *site.TimeoutSeconds
@@ -165,6 +168,8 @@ func (o *Orchestrator) runRound() {
 
 		if o.pool.Submit(req) {
 			dispatched++
+		} else {
+			log.Printf("orchestrator: dropped check blog_id=%d queue_depth=%d", site.BlogID, o.pool.QueueDepth())
 		}
 	}
 
@@ -233,6 +238,9 @@ func (o *Orchestrator) processResults(results map[int64]checker.Result, sites ma
 		if !ok {
 			continue
 		}
+		if err := db.MarkSiteChecked(o.ctx, blogID, res.Timestamp); err != nil {
+			log.Printf("orchestrator: mark checked blog_id=%d: %v", blogID, err)
+		}
 
 		// Log timing data.
 		if err := db.RecordCheckHistory(
@@ -258,7 +266,7 @@ func (o *Orchestrator) processResults(results map[int64]checker.Result, sites ma
 		o.auditLog(blogID, audit.EventCheck, o.hostname,
 			res.HTTPCode, res.ErrorCode, res.RTT.Milliseconds(), "")
 
-		if res.Success && res.ErrorCode == 0 {
+		if !res.IsFailure() {
 			o.handleRecovery(site, res)
 		} else {
 			o.handleFailure(site, res)
@@ -275,15 +283,18 @@ func (o *Orchestrator) handleRecovery(site db.Site, res checker.Result) {
 	o.retries.clear(site.BlogID)
 
 	if site.SiteStatus != statusRunning {
+		changeTime := time.Now().UTC()
 		log.Printf("orchestrator: blog_id=%d recovered", site.BlogID)
 		o.auditTransition(site.BlogID, site.SiteStatus, statusRunning, "site recovered")
 
-		if o.cfg.DBUpdatesEnable {
-			_ = db.UpdateSiteStatus(o.ctx, site.BlogID, statusRunning)
+		if config.Get().DBUpdatesEnable {
+			_ = db.UpdateSiteStatus(o.ctx, site.BlogID, statusRunning, changeTime)
 		}
 
-		if !o.isAlertSuppressed(site) {
-			o.sendNotification(site, res, statusRunning, nil)
+		if inMaintenance(site) {
+			o.auditLog(site.BlogID, audit.EventMaintenanceActive, "local", 0, 0, 0, "recovery suppressed during maintenance")
+		} else if !o.isAlertSuppressed(site) {
+			o.sendNotification(site, res, statusRunning, changeTime, nil)
 		}
 	}
 }
@@ -291,10 +302,10 @@ func (o *Orchestrator) handleRecovery(site db.Site, res checker.Result) {
 func (o *Orchestrator) handleFailure(site db.Site, res checker.Result) {
 	entry := o.retries.record(res)
 
-	if entry.failCount < o.cfg.NumOfChecks {
+	if entry.failCount < config.Get().NumOfChecks {
 		o.auditLog(site.BlogID, audit.EventRetryDispatched, o.hostname,
 			res.HTTPCode, res.ErrorCode, res.RTT.Milliseconds(),
-			fmt.Sprintf("retry %d of %d", entry.failCount, o.cfg.NumOfChecks))
+			fmt.Sprintf("retry %d of %d", entry.failCount, config.Get().NumOfChecks))
 		return
 	}
 
@@ -303,18 +314,22 @@ func (o *Orchestrator) handleFailure(site db.Site, res checker.Result) {
 }
 
 func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
-	if len(o.veriflierClients) == 0 {
+	clients := o.veriflierSnapshot()
+	if len(clients) == 0 {
 		o.confirmDown(site, entry, nil)
 		return
 	}
 
 	o.auditLog(site.BlogID, audit.EventVeriflierSent, o.hostname, 0, 0, 0,
-		fmt.Sprintf("escalating to %d verifliers", len(o.veriflierClients)))
+		fmt.Sprintf("escalating to %d verifliers", len(clients)))
 
 	req := veriflier.CheckRequest{
 		BlogID:         site.BlogID,
 		URL:            site.MonitorURL,
-		TimeoutSeconds: int32(o.cfg.NetCommsTimeout),
+		TimeoutSeconds: int32(timeoutForSite(config.Get(), site)),
+		Keyword:        stringPtrValue(site.CheckKeyword),
+		CustomHeaders:  checker.ParseCustomHeaders(site.CustomHeaders),
+		RedirectPolicy: site.RedirectPolicy,
 	}
 
 	type vResult struct {
@@ -322,9 +337,9 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 		res  *veriflier.CheckResult
 		err  error
 	}
-	ch := make(chan vResult, len(o.veriflierClients))
+	ch := make(chan vResult, len(clients))
 
-	for _, client := range o.veriflierClients {
+	for _, client := range clients {
 		c := client
 		go func() {
 			res, err := c.Check(o.ctx, req)
@@ -336,7 +351,7 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 	healthyVerifliers := 0
 	confirmations := 0
 
-	for range o.veriflierClients {
+	for range clients {
 		vr := <-ch
 		if vr.err != nil {
 			log.Printf("orchestrator: veriflier %s error: %v", vr.host, vr.err)
@@ -352,7 +367,7 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 	}
 
 	// Adjust quorum floor to healthy verifliers, but minimum 1.
-	quorum := o.cfg.PeerOfflineLimit
+	quorum := config.Get().PeerOfflineLimit
 	if healthyVerifliers < quorum {
 		quorum = healthyVerifliers
 	}
@@ -373,16 +388,19 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 
 func (o *Orchestrator) confirmDown(site db.Site, entry *retryEntry, vResults []veriflier.CheckResult) {
 	newStatus := statusConfirmedDown
+	changeTime := time.Now().UTC()
 
 	log.Printf("orchestrator: blog_id=%d confirmed down", site.BlogID)
 	o.auditTransition(site.BlogID, site.SiteStatus, newStatus, "confirmed down")
 
-	if o.cfg.DBUpdatesEnable {
-		_ = db.UpdateSiteStatus(o.ctx, site.BlogID, newStatus)
+	if config.Get().DBUpdatesEnable {
+		_ = db.UpdateSiteStatus(o.ctx, site.BlogID, newStatus, changeTime)
 	}
 
-	if !o.isAlertSuppressed(site) {
-		o.sendNotification(site, entry.lastResult, newStatus, vResults)
+	if inMaintenance(site) {
+		o.auditLog(site.BlogID, audit.EventMaintenanceActive, "local", 0, 0, 0, "downtime suppressed during maintenance")
+	} else if !o.isAlertSuppressed(site) {
+		o.sendNotification(site, entry.lastResult, newStatus, changeTime, vResults)
 	} else {
 		o.auditLog(site.BlogID, audit.EventAlertSuppressed, "local", 0, 0, 0, "cooldown active")
 	}
@@ -390,7 +408,7 @@ func (o *Orchestrator) confirmDown(site db.Site, entry *retryEntry, vResults []v
 	o.retries.clear(site.BlogID)
 }
 
-func (o *Orchestrator) sendNotification(site db.Site, res checker.Result, status int, vResults []veriflier.CheckResult) {
+func (o *Orchestrator) sendNotification(site db.Site, res checker.Result, status int, changeTime time.Time, vResults []veriflier.CheckResult) {
 	checks := []wpcom.CheckEntry{
 		{
 			Type:   1,
@@ -415,7 +433,7 @@ func (o *Orchestrator) sendNotification(site db.Site, res checker.Result, status
 		MonitorURL:       site.MonitorURL,
 		StatusID:         status,
 		LastCheck:        res.Timestamp.UTC().Format(time.RFC3339),
-		LastStatusChange: site.LastStatusChange.UTC().Format(time.RFC3339),
+		LastStatusChange: changeTime.UTC().Format(time.RFC3339),
 		StatusType:       res.StatusType(),
 		Checks:           checks,
 	}
@@ -430,7 +448,11 @@ func (o *Orchestrator) sendNotification(site db.Site, res checker.Result, status
 		// Single retry.
 		if retryErr := o.wpcom.Notify(n); retryErr != nil {
 			log.Printf("orchestrator: wpcom notify retry failed for blog_id=%d: %v", site.BlogID, retryErr)
+			return
 		}
+	}
+	if err := db.UpdateLastAlertSent(o.ctx, site.BlogID, time.Now().UTC()); err != nil {
+		log.Printf("orchestrator: update last alert sent blog_id=%d: %v", site.BlogID, err)
 	}
 }
 
@@ -440,23 +462,25 @@ func (o *Orchestrator) checkSSLAlerts(site db.Site, expiry time.Time) {
 	for _, t := range thresholds {
 		if daysUntil == t {
 			log.Printf("orchestrator: blog_id=%d SSL cert expires in %d days", site.BlogID, daysUntil)
-			// Send SSL expiry notification via WPCOM.
+			o.auditLog(site.BlogID, audit.EventCheck, "local", 0, checker.ErrorTLSExpired, 0,
+				fmt.Sprintf("ssl certificate expires in %d days", daysUntil))
 		}
 	}
 }
 
 func (o *Orchestrator) isAlertSuppressed(site db.Site) bool {
-	cooldown := o.cfg.AlertCooldownMinutes
+	cfg := config.Get()
+	cooldown := cfg.AlertCooldownMinutes
 	if site.AlertCooldownMinutes != nil {
 		cooldown = *site.AlertCooldownMinutes
 	}
 	if cooldown <= 0 {
 		return false
 	}
-	if site.LastStatusChange.IsZero() {
+	if site.LastAlertSentAt == nil || site.LastAlertSentAt.IsZero() {
 		return false
 	}
-	return time.Since(site.LastStatusChange) < time.Duration(cooldown)*time.Minute
+	return time.Since(*site.LastAlertSentAt) < time.Duration(cooldown)*time.Minute
 }
 
 // RetryQueueSize returns the number of sites currently in local retry.
@@ -467,6 +491,21 @@ func (o *Orchestrator) RetryQueueSize() int {
 // BucketRange returns the current bucket min/max for this host.
 func (o *Orchestrator) BucketRange() (int, int) {
 	return o.bucketMin, o.bucketMax
+}
+
+// WorkerCount returns the live worker count.
+func (o *Orchestrator) WorkerCount() int {
+	return o.pool.WorkerCount()
+}
+
+// ActiveChecks returns the active-check count.
+func (o *Orchestrator) ActiveChecks() int {
+	return o.pool.ActiveCount()
+}
+
+// QueueDepth returns the work queue depth.
+func (o *Orchestrator) QueueDepth() int {
+	return o.pool.QueueDepth()
 }
 
 func (o *Orchestrator) auditLog(blogID int64, event, source string, httpCode, errorCode int, rttMs int64, detail string) {
@@ -496,3 +535,36 @@ func statusFromBool(success bool) int {
 	return statusDown
 }
 
+func (o *Orchestrator) refreshVeriflierClients(cfg *config.Config) {
+	clients := make([]*veriflier.VeriflierClient, 0, len(cfg.Verifiers))
+	for _, v := range cfg.Verifiers {
+		addr := fmt.Sprintf("%s:%s", v.Host, v.GRPCPort)
+		clients = append(clients, veriflier.NewVeriflierClient(addr, v.AuthToken))
+	}
+	o.veriflierMu.Lock()
+	o.veriflierClients = clients
+	o.veriflierMu.Unlock()
+}
+
+func (o *Orchestrator) veriflierSnapshot() []*veriflier.VeriflierClient {
+	o.veriflierMu.RLock()
+	defer o.veriflierMu.RUnlock()
+	out := make([]*veriflier.VeriflierClient, len(o.veriflierClients))
+	copy(out, o.veriflierClients)
+	return out
+}
+
+func timeoutForSite(cfg *config.Config, site db.Site) int {
+	timeout := cfg.NetCommsTimeout
+	if site.TimeoutSeconds != nil {
+		timeout = *site.TimeoutSeconds
+	}
+	return timeout
+}
+
+func stringPtrValue(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}

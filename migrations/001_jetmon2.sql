@@ -16,7 +16,10 @@ ALTER TABLE jetpack_monitor_sites
     ADD COLUMN IF NOT EXISTS custom_headers         JSON NULL,
     ADD COLUMN IF NOT EXISTS timeout_seconds        TINYINT UNSIGNED NULL,
     ADD COLUMN IF NOT EXISTS redirect_policy        ENUM('follow','alert','fail') NULL DEFAULT 'follow',
-    ADD COLUMN IF NOT EXISTS alert_cooldown_minutes SMALLINT UNSIGNED NULL;
+    ADD COLUMN IF NOT EXISTS alert_cooldown_minutes SMALLINT UNSIGNED NULL,
+    ADD COLUMN IF NOT EXISTS last_checked_at        DATETIME NULL,
+    ADD COLUMN IF NOT EXISTS last_alert_sent_at     DATETIME NULL,
+    ADD INDEX IF NOT EXISTS idx_bucket_monitor_last_checked (bucket_no, monitor_active, last_checked_at);
 
 -- MySQL-coordinated bucket ownership.
 CREATE TABLE IF NOT EXISTS jetmon_hosts (

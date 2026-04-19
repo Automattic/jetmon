@@ -9,6 +9,9 @@ type CheckRequest struct {
 	BlogID         int64
 	URL            string
 	TimeoutSeconds int32
+	Keyword        string
+	CustomHeaders  map[string]string
+	RedirectPolicy string
 }
 
 // CheckResult is a single check outcome returned by the Veriflier.

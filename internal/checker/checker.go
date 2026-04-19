@@ -14,13 +14,13 @@ import (
 
 // ErrorCode mirrors the status change email types from the original Jetmon.
 const (
-	ErrorNone        = 0
-	ErrorTimeout     = 1
-	ErrorConnect     = 2
-	ErrorSSL         = 3
-	ErrorRedirect    = 4
-	ErrorKeyword     = 5
-	ErrorTLSExpired  = 6
+	ErrorNone          = 0
+	ErrorTimeout       = 1
+	ErrorConnect       = 2
+	ErrorSSL           = 3
+	ErrorRedirect      = 4
+	ErrorKeyword       = 5
+	ErrorTLSExpired    = 6
 	ErrorTLSDeprecated = 7
 )
 
@@ -57,8 +57,8 @@ type Result struct {
 	TLS  time.Duration
 	TTFB time.Duration
 
-	SSLExpiry      *time.Time
-	TLSVersion     uint16
+	SSLExpiry       *time.Time
+	TLSVersion      uint16
 	RedirectChanged bool
 
 	Timestamp time.Time
@@ -86,6 +86,19 @@ func (r *Result) StatusType() string {
 	}
 }
 
+// IsFailure reports whether the result should enter the downtime pipeline.
+func (r *Result) IsFailure() bool {
+	if !r.Success {
+		return true
+	}
+	switch r.ErrorCode {
+	case ErrorNone, ErrorTLSDeprecated:
+		return false
+	default:
+		return true
+	}
+}
+
 // Check performs an HTTP check and returns the result.
 func Check(ctx context.Context, req Request) Result {
 	res := Result{
@@ -104,7 +117,7 @@ func Check(ctx context.Context, req Request) Result {
 
 	var (
 		dnsStart, tcpStart, tlsStart, reqStart time.Time
-		dnsEnd, tcpEnd, tlsEnd               time.Time
+		dnsEnd, tcpEnd, tlsEnd                 time.Time
 	)
 
 	trace := &httptrace.ClientTrace{

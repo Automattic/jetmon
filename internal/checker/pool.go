@@ -13,11 +13,14 @@ type Pool struct {
 	results chan Result
 	cancel  context.CancelFunc
 	ctx     context.Context
+	closed  atomic.Bool
 
-	size    atomic.Int64
-	active  atomic.Int64
+	size   atomic.Int64
+	active atomic.Int64
 
 	mu      sync.Mutex
+	workMu  sync.RWMutex
+	wg      sync.WaitGroup
 	minSize int
 	maxSize int
 }
@@ -42,6 +45,11 @@ func NewPool(initial, min, max int) *Pool {
 
 // Submit enqueues a check request. Non-blocking; drops if queue is full.
 func (p *Pool) Submit(req Request) bool {
+	p.workMu.RLock()
+	defer p.workMu.RUnlock()
+	if p.closed.Load() {
+		return false
+	}
 	select {
 	case p.work <- req:
 		return true
@@ -72,12 +80,21 @@ func (p *Pool) WorkerCount() int {
 
 // Drain stops accepting new work and waits for in-flight checks to complete.
 func (p *Pool) Drain() {
+	if !p.closed.CompareAndSwap(false, true) {
+		return
+	}
+	p.workMu.Lock()
+	close(p.work)
+	p.workMu.Unlock()
+	p.wg.Wait()
 	p.cancel()
 }
 
 func (p *Pool) spawnWorker() {
 	p.size.Add(1)
+	p.wg.Add(1)
 	go func() {
+		defer p.wg.Done()
 		defer p.size.Add(-1)
 		for {
 			select {
@@ -88,12 +105,17 @@ func (p *Pool) spawnWorker() {
 					return
 				}
 				p.active.Add(1)
-				res := Check(p.ctx, req)
+				res := Check(context.Background(), req)
 				p.active.Add(-1)
+				if p.closed.Load() {
+					continue
+				}
 				select {
 				case p.results <- res:
 				case <-p.ctx.Done():
 					return
+				default:
+					// Avoid deadlocking shutdown if the result consumer has stopped.
 				}
 			}
 		}
@@ -118,6 +140,9 @@ func (p *Pool) autoScale() {
 func (p *Pool) scale() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.closed.Load() {
+		return
+	}
 
 	current := int(p.size.Load())
 	queue := len(p.work)
@@ -132,7 +157,16 @@ func (p *Pool) scale() {
 	}
 
 	// Scale down: no workers exit individually — they exit naturally when
-	// the pool context is cancelled (Drain). Scale-down under memory pressure
-	// is handled by the orchestrator based on WorkerMaxMemMB config.
+	// the work channel is closed during drain. Scale-down is not implemented
+	// yet; keeping existing workers is preferable to dropping checks.
 }
 
+// SetMaxSize updates the autoscaler ceiling after config reload.
+func (p *Pool) SetMaxSize(max int) {
+	if max < 1 {
+		max = 1
+	}
+	p.mu.Lock()
+	p.maxSize = max
+	p.mu.Unlock()
+}

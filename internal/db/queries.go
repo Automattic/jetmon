@@ -4,23 +4,35 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"time"
 )
 
 // GetSitesForBucket fetches active sites within the given bucket range.
-func GetSitesForBucket(ctx context.Context, bucketMin, bucketMax, batchSize int) ([]Site, error) {
-	rows, err := db.QueryContext(ctx, `
+func GetSitesForBucket(ctx context.Context, bucketMin, bucketMax, batchSize int, useVariableIntervals bool) ([]Site, error) {
+	query := `
 		SELECT
 			jetpack_monitor_site_id, blog_id, bucket_no, monitor_url,
-			monitor_active, site_status, last_status_change, check_interval,
+			monitor_active, site_status, last_status_change, check_interval, last_checked_at,
 			ssl_expiry_date, check_keyword, maintenance_start, maintenance_end,
-			custom_headers, timeout_seconds, redirect_policy, alert_cooldown_minutes
+			custom_headers, timeout_seconds, redirect_policy, alert_cooldown_minutes, last_alert_sent_at
 		FROM jetpack_monitor_sites
 		WHERE monitor_active = 1
-		  AND bucket_no BETWEEN ? AND ?
-		LIMIT ?`,
-		bucketMin, bucketMax, batchSize,
-	)
+		  AND bucket_no BETWEEN ? AND ?`
+	if useVariableIntervals {
+		query += `
+		  AND (
+			last_checked_at IS NULL
+			OR DATE_ADD(last_checked_at, INTERVAL GREATEST(check_interval, 1) MINUTE) <= NOW()
+		  )`
+	}
+	query += `
+		ORDER BY
+			COALESCE(last_checked_at, TIMESTAMP('1970-01-01 00:00:00')) ASC,
+			blog_id ASC
+		LIMIT ?`
+
+	rows, err := db.QueryContext(ctx, query, bucketMin, bucketMax, batchSize)
 	if err != nil {
 		return nil, fmt.Errorf("query sites: %w", err)
 	}
@@ -32,9 +44,9 @@ func GetSitesForBucket(ctx context.Context, bucketMin, bucketMax, batchSize int)
 		var redirectPolicy sql.NullString
 		err := rows.Scan(
 			&s.ID, &s.BlogID, &s.BucketNo, &s.MonitorURL,
-			&s.MonitorActive, &s.SiteStatus, &s.LastStatusChange, &s.CheckInterval,
+			&s.MonitorActive, &s.SiteStatus, &s.LastStatusChange, &s.CheckInterval, &s.LastCheckedAt,
 			&s.SSLExpiryDate, &s.CheckKeyword, &s.MaintenanceStart, &s.MaintenanceEnd,
-			&s.CustomHeaders, &s.TimeoutSeconds, &redirectPolicy, &s.AlertCooldownMinutes,
+			&s.CustomHeaders, &s.TimeoutSeconds, &redirectPolicy, &s.AlertCooldownMinutes, &s.LastAlertSentAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan site: %w", err)
@@ -50,10 +62,28 @@ func GetSitesForBucket(ctx context.Context, bucketMin, bucketMax, batchSize int)
 }
 
 // UpdateSiteStatus updates site_status and last_status_change for a site.
-func UpdateSiteStatus(ctx context.Context, blogID int64, status int) error {
+func UpdateSiteStatus(ctx context.Context, blogID int64, status int, changedAt time.Time) error {
 	_, err := db.ExecContext(ctx,
-		`UPDATE jetpack_monitor_sites SET site_status = ?, last_status_change = NOW() WHERE blog_id = ?`,
-		status, blogID,
+		`UPDATE jetpack_monitor_sites SET site_status = ?, last_status_change = ? WHERE blog_id = ?`,
+		status, changedAt.UTC(), blogID,
+	)
+	return err
+}
+
+// MarkSiteChecked records when a site was last checked.
+func MarkSiteChecked(ctx context.Context, blogID int64, checkedAt time.Time) error {
+	_, err := db.ExecContext(ctx,
+		`UPDATE jetpack_monitor_sites SET last_checked_at = ? WHERE blog_id = ?`,
+		checkedAt.UTC(), blogID,
+	)
+	return err
+}
+
+// UpdateLastAlertSent records when an alert was last sent for a site.
+func UpdateLastAlertSent(ctx context.Context, blogID int64, sentAt time.Time) error {
+	_, err := db.ExecContext(ctx,
+		`UPDATE jetpack_monitor_sites SET last_alert_sent_at = ? WHERE blog_id = ?`,
+		sentAt.UTC(), blogID,
 	)
 	return err
 }
@@ -85,67 +115,79 @@ func ClaimBuckets(hostID string, bucketTotal, bucketTarget int, graceSec int) (i
 		return 0, 0, fmt.Errorf("delete expired hosts: %w", err)
 	}
 
-	// Find covered ranges.
-	rows, err := tx.Query(`SELECT bucket_min, bucket_max FROM jetmon_hosts WHERE host_id != ? FOR UPDATE`, hostID)
+	rows, err := tx.Query(`SELECT host_id FROM jetmon_hosts WHERE host_id != ? AND status = 'active' FOR UPDATE`, hostID)
 	if err != nil {
 		return 0, 0, fmt.Errorf("query hosts: %w", err)
 	}
-	covered := make([]bool, bucketTotal)
+	hostIDs := []string{hostID}
 	for rows.Next() {
-		var bMin, bMax int
-		if err := rows.Scan(&bMin, &bMax); err != nil {
+		var id string
+		if err := rows.Scan(&id); err != nil {
 			rows.Close()
 			return 0, 0, err
 		}
-		for i := bMin; i <= bMax && i < bucketTotal; i++ {
-			covered[i] = true
-		}
+		hostIDs = append(hostIDs, id)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return 0, 0, err
 	}
+	sort.Strings(hostIDs)
 
-	// Find first unclaimed range up to bucketTarget in size.
-	claimMin := -1
-	claimMax := -1
-	count := 0
-	for i := 0; i < bucketTotal; i++ {
-		if !covered[i] {
-			if claimMin == -1 {
-				claimMin = i
-			}
-			claimMax = i
-			count++
-			if count >= bucketTarget {
-				break
-			}
+	assignments := make(map[string][2]int, len(hostIDs))
+	nextBucket := 0
+	for i, id := range hostIDs {
+		if nextBucket >= bucketTotal {
+			assignments[id] = [2]int{0, -1}
+			continue
+		}
+
+		remainingBuckets := bucketTotal - nextBucket
+		remainingHosts := len(hostIDs) - i
+		size := (remainingBuckets + remainingHosts - 1) / remainingHosts
+		if size > bucketTarget {
+			size = bucketTarget
+		}
+		if size < 1 {
+			assignments[id] = [2]int{0, -1}
+			continue
+		}
+
+		assignments[id] = [2]int{nextBucket, nextBucket + size - 1}
+		nextBucket += size
+	}
+
+	for _, id := range hostIDs {
+		rng := assignments[id]
+		_, err = tx.Exec(
+			`INSERT INTO jetmon_hosts (host_id, bucket_min, bucket_max, last_heartbeat, status)
+			 VALUES (?, ?, ?, NOW(), 'active')
+			 ON DUPLICATE KEY UPDATE bucket_min = VALUES(bucket_min), bucket_max = VALUES(bucket_max),
+			 last_heartbeat = NOW(), status = 'active'`,
+			id, rng[0], rng[1],
+		)
+		if err != nil {
+			return 0, 0, fmt.Errorf("upsert host %s: %w", id, err)
 		}
 	}
 
-	if claimMin == -1 {
-		// All buckets covered; upsert with zero range so heartbeat works.
-		claimMin, claimMax = 0, -1
-	}
-
-	_, err = tx.Exec(
-		`INSERT INTO jetmon_hosts (host_id, bucket_min, bucket_max, last_heartbeat, status)
-		 VALUES (?, ?, ?, NOW(), 'active')
-		 ON DUPLICATE KEY UPDATE bucket_min = VALUES(bucket_min), bucket_max = VALUES(bucket_max),
-		 last_heartbeat = NOW(), status = 'active'`,
-		hostID, claimMin, claimMax,
-	)
-	if err != nil {
-		return 0, 0, fmt.Errorf("upsert host: %w", err)
-	}
-
-	return claimMin, claimMax, tx.Commit()
+	rng := assignments[hostID]
+	return rng[0], rng[1], tx.Commit()
 }
 
 // Heartbeat updates last_heartbeat for this host.
 func Heartbeat(ctx context.Context, hostID string) error {
 	_, err := db.ExecContext(ctx,
-		`UPDATE jetmon_hosts SET last_heartbeat = NOW() WHERE host_id = ?`,
+		`UPDATE jetmon_hosts SET last_heartbeat = NOW(), status = 'active' WHERE host_id = ?`,
+		hostID,
+	)
+	return err
+}
+
+// MarkHostDraining marks a host as draining before it releases its buckets.
+func MarkHostDraining(ctx context.Context, hostID string) error {
+	_, err := db.ExecContext(ctx,
+		`UPDATE jetmon_hosts SET status = 'draining', last_heartbeat = NOW() WHERE host_id = ?`,
 		hostID,
 	)
 	return err

@@ -65,6 +65,9 @@ func performCheck(req veriflier.CheckRequest) veriflier.CheckResult {
 		BlogID:         req.BlogID,
 		URL:            req.URL,
 		TimeoutSeconds: int(req.TimeoutSeconds),
+		Keyword:        stringPtr(req.Keyword),
+		CustomHeaders:  req.CustomHeaders,
+		RedirectPolicy: checker.RedirectPolicy(req.RedirectPolicy),
 	})
 
 	return veriflier.CheckResult{
@@ -75,6 +78,13 @@ func performCheck(req veriflier.CheckRequest) veriflier.CheckResult {
 		ErrorCode: int32(res.ErrorCode),
 		RTTMs:     res.RTT.Milliseconds(),
 	}
+}
+
+func stringPtr(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 func loadConfig(path string) (*veriflierConfig, error) {

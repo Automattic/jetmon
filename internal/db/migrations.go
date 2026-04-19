@@ -73,6 +73,11 @@ var migrations = []migration{
 		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		INDEX idx_blog_id (blog_id)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
+
+	{7, `ALTER TABLE jetpack_monitor_sites
+		ADD COLUMN IF NOT EXISTS last_checked_at DATETIME NULL,
+		ADD COLUMN IF NOT EXISTS last_alert_sent_at DATETIME NULL,
+		ADD INDEX IF NOT EXISTS idx_bucket_monitor_last_checked (bucket_no, monitor_active, last_checked_at)`},
 }
 
 // Migrate applies all pending migrations idempotently.
