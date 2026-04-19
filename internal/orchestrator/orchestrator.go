@@ -4,7 +4,6 @@ import (
 	stdctx "context"
 	"fmt"
 	"log"
-	"runtime"
 	"sync"
 	"time"
 
@@ -19,7 +18,6 @@ import (
 
 const (
 	statusRunning       = 1
-	statusDown          = 0
 	statusConfirmedDown = 2
 )
 
@@ -29,6 +27,7 @@ type Orchestrator struct {
 	retries          *retryQueue
 	wpcom            *wpcom.Client
 	veriflierClients []*veriflier.VeriflierClient
+	veriflierAddrs   []string // parallel slice of "addr|token" for change detection
 	veriflierMu      sync.RWMutex
 	hostname         string
 	bucketMin        int
@@ -129,6 +128,8 @@ func (o *Orchestrator) runRound() {
 	if err := db.Heartbeat(o.ctx, o.hostname); err != nil {
 		log.Printf("orchestrator: heartbeat failed: %v", err)
 	}
+	// Re-claim every round so bucket ranges rebalance automatically when hosts
+	// join or leave the cluster.
 	if err := o.ClaimBuckets(); err != nil {
 		log.Printf("orchestrator: bucket rebalance failed: %v", err)
 	}
@@ -222,14 +223,6 @@ process:
 		metrics.WriteStatsFiles(sps, o.pool.QueueDepth(), o.totalChecked)
 	}
 
-	// Memory pressure check.
-	var ms runtime.MemStats
-	runtime.ReadMemStats(&ms)
-	rssMB := int(ms.Sys / 1024 / 1024)
-	if rssMB > cfg.WorkerMaxMemMB {
-		log.Printf("orchestrator: memory pressure %dMB > %dMB, draining 10%% of pool", rssMB, cfg.WorkerMaxMemMB)
-		// Pool auto-scaling handles this; log is sufficient for now.
-	}
 }
 
 func (o *Orchestrator) processResults(results map[int64]checker.Result, sites map[int64]db.Site) {
@@ -532,10 +525,22 @@ func statusFromBool(success bool) int {
 	if success {
 		return statusRunning
 	}
-	return statusDown
+	return 0
 }
 
 func (o *Orchestrator) refreshVeriflierClients(cfg *config.Config) {
+	newAddrs := make([]string, 0, len(cfg.Verifiers))
+	for _, v := range cfg.Verifiers {
+		newAddrs = append(newAddrs, fmt.Sprintf("%s:%s|%s", v.Host, v.GRPCPort, v.AuthToken))
+	}
+
+	o.veriflierMu.RLock()
+	unchanged := slicesEqual(o.veriflierAddrs, newAddrs)
+	o.veriflierMu.RUnlock()
+	if unchanged {
+		return
+	}
+
 	clients := make([]*veriflier.VeriflierClient, 0, len(cfg.Verifiers))
 	for _, v := range cfg.Verifiers {
 		addr := fmt.Sprintf("%s:%s", v.Host, v.GRPCPort)
@@ -543,7 +548,20 @@ func (o *Orchestrator) refreshVeriflierClients(cfg *config.Config) {
 	}
 	o.veriflierMu.Lock()
 	o.veriflierClients = clients
+	o.veriflierAddrs = newAddrs
 	o.veriflierMu.Unlock()
+}
+
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (o *Orchestrator) veriflierSnapshot() []*veriflier.VeriflierClient {
