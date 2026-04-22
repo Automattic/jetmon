@@ -1,12 +1,12 @@
 ---
 name: debug-memory
-description: Debug memory issues in Jetmon workers and identify leaks
-allowed-tools: Bash(docker*), Bash(ps*), Bash(top*), Bash(node*), Read, Glob, Grep
+description: Debug memory and goroutine issues in Jetmon 2
+allowed-tools: Bash(docker*), Bash(ps*), Bash(curl*), Bash(go*), Read, Glob, Grep
 ---
 
 # Debug Memory Issues
 
-Use this skill to investigate memory problems in Jetmon workers, identify leaks, and optimize memory usage.
+Use this skill to investigate memory growth and goroutine leaks in the Jetmon 2 Go binary.
 
 ## Usage
 
@@ -16,224 +16,122 @@ Use this skill to investigate memory problems in Jetmon workers, identify leaks,
 
 ## Memory Architecture
 
-### Worker Memory Limits
+Jetmon 2 is a single binary with an auto-scaling goroutine pool. Memory pressure does
+not cause crashes; the orchestrator drains the pool when memory exceeds `WORKER_MAX_MEM_MB`.
 
-| Setting | Default | Purpose |
-|---------|---------|---------|
-| `WORKER_MAX_MEM_MB` | 53 | Memory limit before worker recycles |
-| `WORKER_MAX_CHECKS` | 10,000 | Check count before worker recycles |
-
-Workers are designed to be disposable. When hitting limits, they stop accepting work and exit gracefully.
-
-### Memory Flow
-
-```
-Worker Process
-├── Node.js Heap (V8)
-│   ├── HTTP check callbacks
-│   ├── Retry queues (arrToRetry)
-│   └── Active checks (arrCheck)
-├── Native Addon (C++)
-│   └── HTTP_Checker instances
-└── Buffers (TCP/SSL)
-```
+Key memory consumers:
+- Goroutine pool (each goroutine ~8KB stack, grows on demand)
+- Retry queue (in-memory map, bounded by number of monitored sites)
+- WPCOM notification queue (bounded at 1000 entries)
+- HTTP response bodies (read up to 1MB for keyword checks)
 
 ## Monitoring Commands
 
 ### Docker Environment
 
 ```bash
-# Real-time memory monitoring
-docker compose exec jetmon bash -c 'while true; do ps aux --sort=-%mem | head -15; sleep 5; done'
+# Real-time process memory (single Go process)
+docker compose exec jetmon bash -c 'while true; do ps -o pid,rss,vsz,comm -p $(pgrep jetmon2); sleep 5; done'
 
-# Memory usage by process
-docker compose exec jetmon ps aux --sort=-%mem
-
-# Specific worker memory
-docker compose exec jetmon bash -c 'ps -o pid,rss,vsz,comm | grep jetmon'
+# Goroutine count and heap via pprof
+curl http://localhost:8080/debug/pprof/goroutine?debug=1 | head -30
 ```
 
-### Process Details
+### pprof Profiles (via Operator Dashboard)
+
+The dashboard exposes `/debug/pprof/` endpoints:
 
 ```bash
-# View process tree
-docker compose exec jetmon ps auxf
+# Heap profile — shows allocations
+curl http://localhost:8080/debug/pprof/heap > heap.prof
+go tool pprof heap.prof
 
-# Memory maps (detailed)
-docker compose exec jetmon bash -c 'cat /proc/$(pgrep -f jetmon-master)/status | grep -E "Vm|Rss"'
+# Goroutine profile — detect leaks
+curl http://localhost:8080/debug/pprof/goroutine > goroutine.prof
+go tool pprof goroutine.prof
+
+# CPU profile (30s)
+curl "http://localhost:8080/debug/pprof/profile?seconds=30" > cpu.prof
+go tool pprof cpu.prof
 ```
 
-### StatsD Metrics
+### Metrics
 
-Check Graphite (http://localhost:8088) for:
-- `stats.workers.*.memory` - Per-worker memory usage
-- `stats.workers.recycle.count` - Worker recycling frequency
-- `stats.workers.free.count` - Available workers
+Check Graphite (http://localhost:8088):
+- `stats.goroutines.*` — goroutine count over time
+- `stats.memory.*` — heap and RSS metrics (requires `STATSD_SEND_MEM_USAGE: true`)
 
 ## Common Memory Issues
 
-### 1. Retry Queue Growth
+### 1. Goroutine Leak
 
-**Symptom:** Memory grows steadily, especially during site outages.
-
-**Diagnosis:**
-```bash
-docker compose exec jetmon cat stats/sitesqueue
-```
-
-**Cause:** Large numbers of sites in retry queue (`arrToRetry`).
-
-**Solution:** Check retry queue flush logic. Ensure retries are processed, not accumulated.
-
-### 2. Native Addon Leak
-
-**Symptom:** Memory grows even with low check counts.
+**Symptom:** Goroutine count grows unboundedly.
 
 **Diagnosis:**
 ```bash
-# Enable debug mode in http_checker.cpp
-#define DEBUG_MODE 1
+curl http://localhost:8080/debug/pprof/goroutine?debug=1 | grep -c "^goroutine"
 ```
 
-Watch for:
-- Unfreed buffers
-- Socket descriptor leaks
-- SSL context accumulation
+**Cause:** A goroutine is blocked on a channel that is never read, or a context is never cancelled.
 
-**Solution:** Review C++ destructor cleanup in `HTTP_Checker::~HTTP_Checker()`.
+**Solution:** Check that all goroutines started in `orchestrator.go` and `pool.go` exit
+when `ctx.Done()` fires. Ensure `orch.Stop()` is called on shutdown.
 
-### 3. Event Loop Blocking
+### 2. Retry Queue Growth
 
-**Symptom:** Workers become unresponsive, memory spikes.
+**Symptom:** Memory grows during extended site outages.
 
 **Diagnosis:**
 ```bash
-docker compose exec jetmon node --trace-warnings lib/jetmon.js
+docker compose exec jetmon ./jetmon2 status
+# Check RetryQueueSize in API response
+curl http://localhost:8080/api/state | python3 -m json.tool
 ```
 
-**Solution:** Ensure async operations complete and callbacks fire.
+**Cause:** Retry queue entries accumulate when verifliers are unreachable.
 
-### 4. DNS Resolution Caching
+**Solution:** Check veriflier connectivity. Retry queue is expected to hold state for down
+sites — it is not a leak, but a design feature. If it grows without bound with no site
+outages, check `retryQueue.clear()` is being called in `handleRecovery`.
 
-**Symptom:** Memory grows with unique domains checked.
+### 3. HTTP Response Body Accumulation
 
-**Diagnosis:** Check if `USE_GETADDRINFO` is enabled in http_checker.cpp.
+**Symptom:** Memory spikes correlate with keyword-check sites.
 
-**Solution:** `getaddrinfo` uses more memory than `gethostbyname`. Consider trade-offs.
+**Cause:** Keyword checks read up to 1MB of response body per check. With many such sites
+and a large pool, this can total significant memory.
 
-## Memory Profiling
+**Solution:** Reduce `NUM_WORKERS` if memory is constrained. The 1MB cap is hard-coded in
+`internal/checker/checker.go`.
 
-### Node.js Heap Snapshot
-
-```javascript
-// Add to lib/httpcheck.js for debugging
-const v8 = require('v8');
-const fs = require('fs');
-
-// Trigger heap snapshot
-function dumpHeap() {
-    const filename = `/tmp/heap-${process.pid}-${Date.now()}.heapsnapshot`;
-    const stream = fs.createWriteStream(filename);
-    v8.writeHeapSnapshot(filename);
-    console.log('Heap snapshot written to:', filename);
-}
-
-// Call when memory is high
-if (process.memoryUsage().rss > 50 * 1024 * 1024) {
-    dumpHeap();
-}
-```
-
-### Memory Usage Logging
-
-Add to worker process:
-
-```javascript
-setInterval(function() {
-    const mem = process.memoryUsage();
-    logger.debug('Memory: RSS=' + Math.round(mem.rss / 1024 / 1024) + 'MB, ' +
-                 'Heap=' + Math.round(mem.heapUsed / 1024 / 1024) + 'MB');
-}, 30000);
-```
-
-## Reducing Memory Usage
-
-### Configuration Tuning
+## Configuration Tuning
 
 ```json
 {
-    "NUM_WORKERS": 40,          // Reduce from 60 if memory constrained
-    "NUM_TO_PROCESS": 30,       // Reduce parallel checks per worker
-    "WORKER_MAX_MEM_MB": 40,    // Lower threshold for faster recycling
-    "WORKER_MAX_CHECKS": 5000   // Recycle more frequently
+    "NUM_WORKERS": 40,
+    "WORKER_MAX_MEM_MB": 200,
+    "STATSD_SEND_MEM_USAGE": true
 }
 ```
 
-### Code Patterns
+- `NUM_WORKERS`: Upper bound on pool goroutines
+- `WORKER_MAX_MEM_MB`: Triggers pool drain when Go RSS exceeds this (MB)
+- `STATSD_SEND_MEM_USAGE`: Emit `runtime.MemStats` to StatsD each interval
 
-**DO:**
-```javascript
-// Release references when done
-arrCheck.splice(index, 1);  // Remove processed items
-
-// Use callbacks, don't hold references
-checker.http_check(url, port, index, function(result) {
-    // Process result immediately
-    sendResult(result);
-    // Callback goes out of scope
-});
-```
-
-**DON'T:**
-```javascript
-// Accumulate data without bounds
-allResults.push(result);  // Unbounded growth
-
-// Hold references longer than needed
-var savedChecker = checker;  // Prevents GC
-```
-
-## Testing Memory Fixes
-
-### Set Low Limits
-
-```json
-{
-    "WORKER_MAX_MEM_MB": 30,
-    "WORKER_MAX_CHECKS": 100
-}
-```
-
-### Monitor Recycling
-
-```bash
-docker compose logs -f jetmon | grep -E "(spawn|die|recycle|memory)"
-```
-
-### Extended Run Test
-
-```bash
-# Run for extended period, monitor memory growth
-docker compose up -d jetmon
-watch -n 5 'docker compose exec jetmon ps aux --sort=-%mem | head -10'
-```
-
-## Key Files for Memory Investigation
+## Key Files for Investigation
 
 | File | Memory-Related Code |
 |------|---------------------|
-| `lib/httpcheck.js` | Worker arrays: `arrCheck`, `arrToRetry` |
-| `lib/jetmon.js` | Master arrays: `arrWorkers`, `gCountSuccess` |
-| `src/http_checker.cpp` | Buffer allocation, SSL contexts |
-| `lib/config.js` | Memory limit settings |
+| `internal/checker/pool.go` | Pool scaling, goroutine lifecycle |
+| `internal/orchestrator/orchestrator.go` | Round loop, retry queue, pool drain |
+| `internal/orchestrator/retry.go` | Retry queue implementation |
+| `internal/wpcom/client.go` | Notification queue (bounded at 1000) |
 
 ## Checklist for Memory Issues
 
-- [ ] Check worker recycling frequency in metrics
-- [ ] Monitor retry queue size (`stats/sitesqueue`)
-- [ ] Review recent code changes affecting arrays
-- [ ] Verify C++ cleanup in destructor
-- [ ] Test with reduced memory limits
-- [ ] Check for unclosed connections/sockets
-- [ ] Review setTimeout/setInterval cleanup
-- [ ] Confirm process.send() callbacks complete
+- [ ] Check goroutine count via pprof (is it growing?)
+- [ ] Check retry queue size via `/api/state`
+- [ ] Enable `STATSD_SEND_MEM_USAGE` and observe Graphite
+- [ ] Capture heap profile before and after a round
+- [ ] Verify `orch.Stop()` fully drains the pool on shutdown
+- [ ] Check for unbounded channel accumulation in pool.go

@@ -1,15 +1,16 @@
 {
-	"DEBUG"             : true,
+	"DEBUG"             : false,
 	"NUM_WORKERS"       : 60,
 	"NUM_TO_PROCESS"    : 40,
 	"DATASET_SIZE"      : 100,
-	"WORKER_MAX_CHECKS" : 10000,
 	"WORKER_MAX_MEM_MB" : 53,
 
 	"DB_UPDATES_ENABLE" : false,
 
-	"BUCKET_NO_MIN"  : 0,
-	"BUCKET_NO_MAX"  : 512,
+	"BUCKET_TOTAL"               : 1000,
+	"BUCKET_TARGET"              : 500,
+	"BUCKET_HEARTBEAT_GRACE_SEC" : 600,
+
 	"BATCH_SIZE"     : 32,
 	"AUTH_TOKEN"     : "<AUTH_TOKEN>",
 
@@ -18,21 +19,27 @@
 	"DB_CONFIG_UPDATES_MIN" : 10,
 	"PEER_OFFLINE_LIMIT"    : 3,
 
-	"NUM_OF_CHECKS"               : 3,
-	"TIME_BETWEEN_CHECKS_SEC"     : 30,
+	"NUM_OF_CHECKS"           : 3,
+	"TIME_BETWEEN_CHECKS_SEC" : 30,
+
+	"ALERT_COOLDOWN_MINUTES" : 30,
 
 	"STATS_UPDATE_INTERVAL_MS"     : 10000,
 	"STATSD_SEND_MEM_USAGE"        : false,
 	"TIME_BETWEEN_NOTICES_MIN"     : 59,
 	"MIN_TIME_BETWEEN_ROUNDS_SEC"  : 300,
-	"TIMEOUT_FOR_REQUESTS_SEC"     : 60,
+	"NET_COMMS_TIMEOUT"            : 10,
 	"USE_VARIABLE_CHECK_INTERVALS" : false,
+
+	"LOG_FORMAT"     : "text",
+	"DASHBOARD_PORT" : 8080,
+	"DEBUG_PORT"     : 6060,
 
 	"VERIFIERS": [
 		{
 			"name"       : "Veriflier 1",
 			"host"       : "veriflier",
-			"port"       : "<VERIFLIER_PORT>",
+			"grpc_port"  : "<VERIFLIER_GRPC_PORT>",
 			"auth_token" : "<VERIFLIER_AUTH_TOKEN>"
 		}
 	]
