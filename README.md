@@ -1,6 +1,9 @@
 jetmon2
 =======
 
+Start here: `docs/local-development.md` for a fast local setup and day-to-day dev workflow.
+For script-first agentic loops, see `docs/agentic-local-testing.md`.
+
 Overview
 --------
 
@@ -19,8 +22,8 @@ Architecture
 │                  jetmon2 (single binary)             │
 │                                                      │
 │  ┌─────────────┐  ┌─────────────┐  ┌──────────────┐  │
-│  │ Orchestrator│  │ Check Pool  │  │  gRPC Server │  │
-│  │  goroutine  │  │ (goroutines)│  │  (Veriflier) │  │
+│  │ Orchestrator│  │ Check Pool  │  │ Veriflier    │  │
+│  │  goroutine  │  │ (goroutines)│  │ transport API│  │
 │  └──────┬──────┘  └──────┬──────┘  └──────┬───────┘  │
 │         │                │                │          │
 │  ┌──────┴────────────────┴────────────────┴───────┐  │
@@ -38,9 +41,9 @@ The **Orchestrator goroutine** fetches site batches from MySQL, dispatches work 
 
 The **Check Pool** is a bounded goroutine pool that performs HTTP checks using Go's `net/http` and `net/http/httptrace`. It records DNS, TCP, TLS, and TTFB timings on every check and auto-scales against queue depth without spawning new processes.
 
-The **gRPC Server** receives confirmation results from remote Veriflier instances, replacing the previous custom HTTPS protocol.
+The **Veriflier transport API** currently uses a JSON-over-HTTP placeholder for Monitor<->Veriflier communication. gRPC proto generation and transport swap are planned.
 
-The **Veriflier** is a standalone Go binary deployed at remote locations. It replaces the Qt C++ Veriflier, communicating with the Monitor via gRPC.
+The **Veriflier** is a standalone Go binary deployed at remote locations. It replaces the Qt C++ Veriflier and currently communicates with the Monitor over JSON-over-HTTP.
 
 Status change flows:
 
@@ -67,6 +70,10 @@ Installation
 5) Build and start all services:
 
 		docker compose up --build -d
+
+6) Verify services are healthy:
+
+		docker compose ps
 
 
 Configuration
@@ -107,6 +114,13 @@ Running
 To rebuild the binary after code changes:
 
 	docker compose up --build -d
+
+For a clean-ish restart of the full stack:
+
+	docker compose down
+	docker compose up --build -d
+
+Jetmon now waits for both MySQL and Veriflier to be healthy before starting, so startup order is deterministic during local development.
 
 To follow logs:
 
