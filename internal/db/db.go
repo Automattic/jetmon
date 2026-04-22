@@ -22,7 +22,7 @@ type Site struct {
 	MonitorURL       string
 	MonitorActive    bool
 	SiteStatus       int
-	LastStatusChange time.Time
+	LastStatusChange *time.Time
 	CheckInterval    int
 	LastCheckedAt    *time.Time
 
