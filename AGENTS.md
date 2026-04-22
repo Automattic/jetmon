@@ -220,6 +220,31 @@ Jetmon runs on production hosts managed by the Systems team. To deploy changes:
 
 Rolling updates require no simultaneous restart of all hosts and leave no sites unchecked during the update.
 
+## Architectural Decisions — Event and State Model
+
+These decisions govern how Jetmon models site state. They must be maintained consistently across all changes. Full design rationale is in [`TAXONOMY.md`](TAXONOMY.md) (Parts 2–3) and [`EVENTS.md`](EVENTS.md).
+
+**Events are the source of truth.** Site status is event-sourced. The event log is canonical; the site row stores a denormalized projection for read performance. Update both in the same transaction — they must not drift. If the projection is ever suspect, rebuild it from the log.
+
+**Severity and state are separate fields.** Severity is numeric — use it for ordering, thresholds, and rollup. State is a human-readable label — use it for display and lifecycle transitions. A live event's severity can be updated in place without changing its state (a worsening degradation is not a new kind of problem).
+
+**"Seems Down" is a first-class lifecycle state.** Between first probe failure and verifier confirmation, a site is Seems Down. It is not an implementation detail — dashboards show it, alert rules can key off it. The lifecycle is:
+```
+Up → Seems Down → Down → Resolved
+         ↓
+         Up (false alarm)
+```
+
+**Events update in place on severity change.** When a Seems Down event is verifier-confirmed to Down, update the same event row — do not close and open a new one. The event's `started_at` stays at first-failure time. Incident duration is honest: it starts from first failure, not from confirmation.
+
+**Event identity is idempotent.** The same underlying failure must not produce duplicate events. Deduplication lives in the shared probe runner, not in individual check types. Key events by `(site_id, endpoint_id, check_type, [discriminator])` so repeated detection of the same condition updates the existing open event.
+
+**Resolution reason is required on close.** When an event closes, record why: `verifier_cleared`, `false_alarm`, `manual_override`, `auto_timeout`. Don't just set `end_timestamp` — capture the cause. This affects uptime calculations and report accuracy.
+
+**Causal links are separate from hierarchical rollup.** An endpoint event rolling up to site level is a hierarchy relationship. A Layer-3 event caused by a Layer-1 failure is a causal relationship. Store these in separate structures. Conflating them creates bugs where dismissing a cause accidentally dismisses a rollup.
+
+**Unknown is not downtime.** If the probe crashes, a region loses network, or the Jetpack agent stops reporting, the result is Unknown — not Down. Monitor-side failures must never be reported as customer-site downtime.
+
 ## Known Pitfalls
 
 **Retry Queue Persistence:** The local retry queue must persist between rounds. Do not flush it at round start — a site must accumulate `NUM_OF_CHECKS` failures before Veriflier escalation, and flushing resets that counter, preventing downtime confirmation.
