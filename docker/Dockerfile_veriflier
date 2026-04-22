@@ -6,7 +6,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o veriflier2 ./veriflier2/cmd/
+RUN CGO_ENABLED=0 GOOS=linux go build -o veriflier2-bin ./veriflier2/cmd/
 
 FROM debian:bookworm-slim
 
@@ -18,7 +18,7 @@ RUN groupadd -r veriflier && useradd --no-log-init -r -g veriflier veriflier
 
 WORKDIR /opt/veriflier
 
-COPY --from=builder /src/veriflier2 .
+COPY --from=builder /src/veriflier2-bin ./veriflier2
 COPY veriflier2/config/ config/
 COPY docker/run-veriflier.sh entrypoint.sh
 RUN chmod +x entrypoint.sh \
