@@ -2,6 +2,8 @@
 
 This guide is the fastest way to get Jetmon running locally for development.
 
+For script-first agentic testing, see `docs/agentic-local-testing.md`.
+
 ## Prerequisites
 
 - Go 1.22+
