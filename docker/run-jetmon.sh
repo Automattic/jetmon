@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 cd /jetmon
+export JETMON_PID_FILE=/jetmon/jetmon2.pid
 
 touch logs/jetmon.log logs/status-change.log
 touch stats/sitespersec stats/sitesqueue stats/totals

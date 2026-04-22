@@ -27,8 +27,6 @@ services:
           - .env
         volumes:
           - ../config:/jetmon/config
-          - ../logs:/jetmon/logs
-          - ../stats:/jetmon/stats
         environment:
           - DB_HOST=mysqldb
           - DB_USER=$MYSQLDB_USER

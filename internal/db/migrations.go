@@ -18,14 +18,14 @@ var migrations = []migration{
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
 
 	{2, `ALTER TABLE jetpack_monitor_sites
-		ADD COLUMN IF NOT EXISTS ssl_expiry_date        DATE NULL,
-		ADD COLUMN IF NOT EXISTS check_keyword          VARCHAR(500) NULL,
-		ADD COLUMN IF NOT EXISTS maintenance_start      DATETIME NULL,
-		ADD COLUMN IF NOT EXISTS maintenance_end        DATETIME NULL,
-		ADD COLUMN IF NOT EXISTS custom_headers         JSON NULL,
-		ADD COLUMN IF NOT EXISTS timeout_seconds        TINYINT UNSIGNED NULL,
-		ADD COLUMN IF NOT EXISTS redirect_policy        ENUM('follow','alert','fail') NULL DEFAULT 'follow',
-		ADD COLUMN IF NOT EXISTS alert_cooldown_minutes SMALLINT UNSIGNED NULL`},
+		ADD COLUMN ssl_expiry_date        DATE NULL,
+		ADD COLUMN check_keyword          VARCHAR(500) NULL,
+		ADD COLUMN maintenance_start      DATETIME NULL,
+		ADD COLUMN maintenance_end        DATETIME NULL,
+		ADD COLUMN custom_headers         JSON NULL,
+		ADD COLUMN timeout_seconds        TINYINT UNSIGNED NULL,
+		ADD COLUMN redirect_policy        ENUM('follow','alert','fail') NULL DEFAULT 'follow',
+		ADD COLUMN alert_cooldown_minutes SMALLINT UNSIGNED NULL`},
 
 	{3, `CREATE TABLE IF NOT EXISTS jetmon_hosts (
 		host_id        VARCHAR(255) NOT NULL PRIMARY KEY,
@@ -75,9 +75,9 @@ var migrations = []migration{
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
 
 	{7, `ALTER TABLE jetpack_monitor_sites
-		ADD COLUMN IF NOT EXISTS last_checked_at DATETIME NULL,
-		ADD COLUMN IF NOT EXISTS last_alert_sent_at DATETIME NULL,
-		ADD INDEX IF NOT EXISTS idx_bucket_monitor_last_checked (bucket_no, monitor_active, last_checked_at)`},
+		ADD COLUMN last_checked_at DATETIME NULL,
+		ADD COLUMN last_alert_sent_at DATETIME NULL,
+		ADD INDEX idx_bucket_monitor_last_checked (bucket_no, monitor_active, last_checked_at)`},
 }
 
 // Migrate applies all pending migrations idempotently.
