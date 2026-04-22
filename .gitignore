@@ -20,6 +20,14 @@ certs/*.key
 # Generated veriflier runtime config (veriflier-sample.json is tracked)
 veriflier2/config/veriflier.json
 
+# Legacy C++ veriflier build/runtime artifacts
+veriflier/*.o
+veriflier/moc_*.cpp
+veriflier/moc_predefs.h
+veriflier/.qmake.stash
+veriflier/veriflier
+veriflier/logs/*.log
+
 # Generated protobuf Go stubs (produced by `make generate`)
 *.pb.go
 
@@ -38,3 +46,7 @@ coverage.html
 
 # Local Claude settings (project settings.json is tracked)
 .claude/settings.local.json
+
+# Local Docker development overrides
+docker/.env
+docker/docker-compose.override.yml
