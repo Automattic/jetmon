@@ -517,7 +517,7 @@ kill -HUP <jetmon-master-pid>
 
 ## Related Documentation
 
-- Documentation standards: `.claude/rules/documentation.md`
+- Documentation standards: `.agents/rules/documentation.md`
 - Configuration options: `config/config.readme`
 - Docker setup: `docker/` directory
 - Veriflier binary: `veriflier2/cmd/main.go`
