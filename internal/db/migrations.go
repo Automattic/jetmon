@@ -17,7 +17,19 @@ var migrations = []migration{
 		applied_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
 
-	{2, `ALTER TABLE jetpack_monitor_sites
+	{2, `CREATE TABLE IF NOT EXISTS jetpack_monitor_sites (
+		jetpack_monitor_site_id  BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+		blog_id                  BIGINT UNSIGNED NOT NULL,
+		bucket_no                SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+		monitor_url              VARCHAR(2083) NOT NULL DEFAULT '',
+		monitor_active           TINYINT UNSIGNED NOT NULL DEFAULT 0,
+		site_status              TINYINT NOT NULL DEFAULT 1,
+		last_status_change       DATETIME NULL,
+		check_interval           SMALLINT UNSIGNED NOT NULL DEFAULT 5,
+		INDEX idx_bucket_active (bucket_no, monitor_active)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
+
+	{3, `ALTER TABLE jetpack_monitor_sites
 		ADD COLUMN ssl_expiry_date        DATE NULL,
 		ADD COLUMN check_keyword          VARCHAR(500) NULL,
 		ADD COLUMN maintenance_start      DATETIME NULL,
@@ -27,7 +39,7 @@ var migrations = []migration{
 		ADD COLUMN redirect_policy        ENUM('follow','alert','fail') NULL DEFAULT 'follow',
 		ADD COLUMN alert_cooldown_minutes SMALLINT UNSIGNED NULL`},
 
-	{3, `CREATE TABLE IF NOT EXISTS jetmon_hosts (
+	{4, `CREATE TABLE IF NOT EXISTS jetmon_hosts (
 		host_id        VARCHAR(255) NOT NULL PRIMARY KEY,
 		bucket_min     SMALLINT UNSIGNED NOT NULL,
 		bucket_max     SMALLINT UNSIGNED NOT NULL,
@@ -35,7 +47,7 @@ var migrations = []migration{
 		status         ENUM('active','draining') NOT NULL DEFAULT 'active'
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
 
-	{4, `CREATE TABLE IF NOT EXISTS jetmon_audit_log (
+	{5, `CREATE TABLE IF NOT EXISTS jetmon_audit_log (
 		id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
 		blog_id      BIGINT UNSIGNED NOT NULL,
 		event_type   VARCHAR(64) NOT NULL,
@@ -50,7 +62,7 @@ var migrations = []migration{
 		INDEX idx_blog_id_created (blog_id, created_at)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
 
-	{5, `CREATE TABLE IF NOT EXISTS jetmon_check_history (
+	{6, `CREATE TABLE IF NOT EXISTS jetmon_check_history (
 		id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
 		blog_id    BIGINT UNSIGNED NOT NULL,
 		http_code  SMALLINT NULL,
@@ -64,7 +76,7 @@ var migrations = []migration{
 		INDEX idx_blog_id_checked (blog_id, checked_at)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
 
-	{6, `CREATE TABLE IF NOT EXISTS jetmon_false_positives (
+	{7, `CREATE TABLE IF NOT EXISTS jetmon_false_positives (
 		id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
 		blog_id    BIGINT UNSIGNED NOT NULL,
 		http_code  SMALLINT NULL,
@@ -74,7 +86,7 @@ var migrations = []migration{
 		INDEX idx_blog_id (blog_id)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
 
-	{7, `ALTER TABLE jetpack_monitor_sites
+	{8, `ALTER TABLE jetpack_monitor_sites
 		ADD COLUMN last_checked_at DATETIME NULL,
 		ADD COLUMN last_alert_sent_at DATETIME NULL,
 		ADD INDEX idx_bucket_monitor_last_checked (bucket_no, monitor_active, last_checked_at)`},
