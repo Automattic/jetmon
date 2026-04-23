@@ -11,17 +11,24 @@ services:
           - $MYSQLDB_LOCAL_PORT:$MYSQLDB_DOCKER_PORT
         volumes:
           - db:/var/lib/mysql
+        healthcheck:
+            test: ["CMD-SHELL", "MYSQL_PWD=$$MYSQLDB_ROOT_PASSWORD mysqladmin ping -h localhost -u root --silent"]
+            interval: 5s
+            timeout: 5s
+            retries: 10
+            start_period: 10s
     jetmon:
         hostname: docker.jetmon.dev.com
         build:
           context: ../
           dockerfile: docker/Dockerfile_jetmon
+        restart: unless-stopped
         env_file:
           - .env
         volumes:
-          - ../:/jetmon
-          # Don't sync the node_modules directory back to the client.
-          - "/jetmon/node_modules"
+          - ../config:/jetmon/config
+          - ../logs:/jetmon/logs
+          - ../stats:/jetmon/stats
         environment:
           - DB_HOST=mysqldb
           - DB_USER=$MYSQLDB_USER
@@ -29,31 +36,31 @@ services:
           - DB_NAME=$MYSQLDB_DATABASE
           - DB_PORT=$MYSQLDB_DOCKER_PORT
           - VERIFLIER_AUTH_TOKEN=$VERIFLIER_AUTH_TOKEN
-          - VERIFLIER_PORT=$VERIFLIER_DOCKER_PORT
+          - VERIFLIER_GRPC_PORT=$VERIFLIER_GRPC_DOCKER_PORT
           - WPCOM_JETMON_AUTH_TOKEN=$WPCOM_JETMON_AUTH_TOKEN
+          - DASHBOARD_PORT=$DASHBOARD_DOCKER_PORT
         ports:
-          - $JETMON_LOCAL_PORT:$JETMON_DOCKER_PORT
-          - $JETMON_STATUS_LOCAL_PORT:$JETMON_STATUS_DOCKER_PORT
+          - $DASHBOARD_LOCAL_PORT:$DASHBOARD_DOCKER_PORT
         depends_on:
-          - mysqldb
+            mysqldb:
+                condition: service_healthy
     veriflier:
         build:
           context: ../
           dockerfile: docker/Dockerfile_veriflier
+        restart: unless-stopped
         volumes:
-          - ../:/opt
+          - ../veriflier2/config:/opt/veriflier/config
         ports:
-          - $VERIFLIER_LOCAL_PORT:$VERIFLIER_DOCKER_PORT
+          - $VERIFLIER_GRPC_LOCAL_PORT:$VERIFLIER_GRPC_DOCKER_PORT
         environment:
           - VERIFLIER_AUTH_TOKEN=$VERIFLIER_AUTH_TOKEN
-          - VERIFLIER_PORT=$VERIFLIER_DOCKER_PORT
-          - JETMON_PORT=$JETMON_DOCKER_PORT
+          - VERIFLIER_GRPC_PORT=$VERIFLIER_GRPC_DOCKER_PORT
     statsd:
         image: graphiteapp/graphite-statsd
         restart: unless-stopped
         ports:
           - 8088:80
-          - 8126:8126
           - 8125:8125
           - 8125:8125/udp
         volumes:

@@ -1,15 +1,32 @@
-FROM node:24
+FROM golang:1.22 AS builder
+
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -o jetmon2 ./cmd/jetmon2/
+
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd -r jetmon && useradd --no-log-init -r -g jetmon jetmon
 
 WORKDIR /jetmon
 
-# RUN apk add --no-cache python3 make g++
+COPY --from=builder /src/jetmon2 .
+COPY config/ config/
+COPY docker/run-jetmon.sh entrypoint.sh
+RUN chmod +x entrypoint.sh \
+    && mkdir -p logs stats certs \
+    && chown -R jetmon:jetmon /jetmon
 
-RUN npm install -g node-gyp
+EXPOSE 8080/tcp
 
-# Get the dependencies loaded first - this makes rebuilds faster
-COPY package.json .
-RUN npm install
+USER jetmon
 
-COPY . .
-
-CMD [ "bash", "docker/run-jetmon.sh" ]
+ENTRYPOINT ["./entrypoint.sh"]

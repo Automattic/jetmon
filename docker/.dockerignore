@@ -1,5 +1,32 @@
+# Version control
+.git/
+.gitignore
 
-build/
-node_modules/
+# Secrets and generated runtime files
+config/config.json
+config/db-config.conf
+certs/
+
+# Runtime output dirs
+logs/
+stats/
+
+# Build artifacts
+bin/
+jetmon2
+veriflier2
+
+# Dev and editor files
 .DS_Store
 .env
+.idea/
+*.swp
+*.swo
+
+# Documentation (not needed in build context)
+*.md
+PROJECT.md
+LICENSE
+
+# Deployment configs not needed in image
+systemd/

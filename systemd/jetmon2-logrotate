@@ -1,0 +1,12 @@
+/opt/jetmon2/logs/*.log {
+    daily
+    missingok
+    rotate 14
+    compress
+    delaycompress
+    notifempty
+    sharedscripts
+    postrotate
+        /bin/kill -HUP $(cat /run/jetmon2/jetmon2.pid 2>/dev/null) 2>/dev/null || true
+    endscript
+}
