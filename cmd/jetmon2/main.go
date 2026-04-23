@@ -95,7 +95,7 @@ func runServe() {
 
 	var dash *dashboard.Server
 	if cfg.DashboardPort > 0 {
-		dash = dashboard.New(db.Hostname())
+		dash = dashboard.NewWithConfig(db.Hostname(), cfg)
 		go func() {
 			addr := fmt.Sprintf(":%d", cfg.DashboardPort)
 			if err := dash.Listen(addr); err != nil {

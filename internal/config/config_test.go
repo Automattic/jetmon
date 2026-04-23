@@ -12,12 +12,14 @@ import (
 func TestValidate(t *testing.T) {
 	base := func() *Config {
 		return &Config{
-			AuthToken:       "token",
-			NumWorkers:      10,
-			BucketTotal:     100,
-			BucketTarget:    50,
-			NetCommsTimeout: 10,
-			LogFormat:       "text",
+			AuthToken:         "token",
+			NumWorkers:        10,
+			BucketTotal:       100,
+			BucketTarget:      50,
+			NetCommsTimeout:   10,
+			LogFormat:         "text",
+			APIRateLimitRPS:   20,
+			APIRateLimitBurst: 40,
 		}
 	}
 
@@ -83,6 +85,16 @@ func TestValidate(t *testing.T) {
 		{
 			name:   "json log format is valid",
 			mutate: func(c *Config) { c.LogFormat = "json" },
+		},
+		{
+			name:    "api rate limit rps must be positive",
+			mutate:  func(c *Config) { c.APIRateLimitRPS = 0 },
+			wantErr: true,
+		},
+		{
+			name:    "api rate limit burst must be positive",
+			mutate:  func(c *Config) { c.APIRateLimitBurst = 0 },
+			wantErr: true,
 		},
 	}
 

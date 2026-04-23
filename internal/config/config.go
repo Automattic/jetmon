@@ -18,7 +18,7 @@ type VerifierConfig struct {
 
 // Config holds all runtime configuration for Jetmon 2.
 type Config struct {
-	Debug   bool `json:"DEBUG"`
+	Debug bool `json:"DEBUG"`
 
 	NumWorkers     int `json:"NUM_WORKERS"`
 	NumToProcess   int `json:"NUM_TO_PROCESS"`
@@ -34,10 +34,10 @@ type Config struct {
 	BatchSize int    `json:"BATCH_SIZE"`
 	AuthToken string `json:"AUTH_TOKEN"`
 
-	VeriflierBatchSize  int `json:"VERIFLIER_BATCH_SIZE"`
-	SQLUpdateBatch      int `json:"SQL_UPDATE_BATCH"`
-	DBConfigUpdatesMin  int `json:"DB_CONFIG_UPDATES_MIN"`
-	PeerOfflineLimit    int `json:"PEER_OFFLINE_LIMIT"`
+	VeriflierBatchSize int `json:"VERIFLIER_BATCH_SIZE"`
+	SQLUpdateBatch     int `json:"SQL_UPDATE_BATCH"`
+	DBConfigUpdatesMin int `json:"DB_CONFIG_UPDATES_MIN"`
+	PeerOfflineLimit   int `json:"PEER_OFFLINE_LIMIT"`
 
 	NumOfChecks          int `json:"NUM_OF_CHECKS"`
 	TimeBetweenChecksSec int `json:"TIME_BETWEEN_CHECKS_SEC"`
@@ -54,6 +54,10 @@ type Config struct {
 	LogFormat     string `json:"LOG_FORMAT"`
 	DashboardPort int    `json:"DASHBOARD_PORT"`
 	DebugPort     int    `json:"DEBUG_PORT"`
+
+	APITokens         []string `json:"API_TOKENS"`
+	APIRateLimitRPS   int      `json:"API_RATE_LIMIT_RPS"`
+	APIRateLimitBurst int      `json:"API_RATE_LIMIT_BURST"`
 
 	Verifiers []VerifierConfig `json:"VERIFIERS"`
 }
@@ -161,6 +165,8 @@ func defaults() *Config {
 		LogFormat:               "text",
 		DashboardPort:           8080,
 		DebugPort:               6060,
+		APIRateLimitRPS:         20,
+		APIRateLimitBurst:       40,
 	}
 }
 
@@ -182,6 +188,12 @@ func validate(cfg *Config) error {
 	}
 	if cfg.LogFormat != "text" && cfg.LogFormat != "json" {
 		return fmt.Errorf("LOG_FORMAT must be 'text' or 'json'")
+	}
+	if cfg.APIRateLimitRPS <= 0 {
+		return fmt.Errorf("API_RATE_LIMIT_RPS must be > 0")
+	}
+	if cfg.APIRateLimitBurst <= 0 {
+		return fmt.Errorf("API_RATE_LIMIT_BURST must be > 0")
 	}
 	return nil
 }
