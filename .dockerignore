@@ -14,7 +14,7 @@ stats/
 # Build artifacts
 bin/
 jetmon2
-veriflier2
+veriflier2-bin
 
 # Dev and editor files
 .DS_Store
