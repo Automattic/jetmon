@@ -2,6 +2,7 @@ services:
     mysqldb:
         image: mysql:8.0
         restart: unless-stopped
+        container_name: mysql
         env_file:
           - .env
         environment:
@@ -19,6 +20,7 @@ services:
             start_period: 10s
     jetmon:
         hostname: docker.jetmon.dev.com
+        container_name: jetmon
         build:
           context: ../
           dockerfile: docker/Dockerfile_jetmon
@@ -47,6 +49,7 @@ services:
         build:
           context: ../
           dockerfile: docker/Dockerfile_veriflier
+        container_name: veriflier
         restart: unless-stopped
         volumes:
           - ../veriflier2/config:/opt/veriflier/config
@@ -58,6 +61,7 @@ services:
     statsd:
         image: graphiteapp/graphite-statsd
         restart: unless-stopped
+        container_name: statsd
         ports:
           - 8088:80
           - 8125:8125
