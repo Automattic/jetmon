@@ -55,10 +55,11 @@ public:
 	HTTP_Checker();
 	~HTTP_Checker();
 
-	void check( std::string p_host_name, int p_port = HTTP_DEFAULT_PORT );
+	void check( std::string p_host_name, int p_port = HTTP_DEFAULT_PORT, bool p_use_get = false );
 	time_t get_rtt();
 	int get_response_code() { return m_response_code; }
 	int get_error_code() { return m_error_code; }
+	std::string get_raw_response() { return m_raw_response; }
 
 private:
 	char m_buf[MAX_TCP_BUFFER];
@@ -67,6 +68,8 @@ private:
 	std::string m_host_dir;
 	int m_port;
 	bool m_is_ssl;
+	bool m_use_get;
+	std::string m_raw_response;
 	struct timezone m_tzone;
 	struct timeval m_tstart;
 	time_t m_triptime;
@@ -90,8 +93,8 @@ private:
 #if NON_BLOCKING_IO
 	void disconnect_ssl();
 #endif
-	std::string send_http_get();
-	bool send_bytes( char* p_packet, size_t p_packet_length );
+	std::string send_http_request();
+	bool send_bytes( const char* p_packet, size_t p_packet_length );
 	std::string get_response();
 	void set_host_response( int redirects );
 	bool set_redirect_host_values( std::string p_content );

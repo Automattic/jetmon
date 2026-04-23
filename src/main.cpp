@@ -21,6 +21,7 @@ struct HTTP_Check_Baton {
 	std::string server;
 	int port;
 	int server_id;
+	bool use_get;
 	Isolate* isolate;
 };
 
@@ -30,15 +31,16 @@ static void http_check_async_fin( uv_work_t *req, int status ) {
 	Isolate* isolate = baton->isolate;
 	HandleScope scope( isolate );
 	Local<Context> ctx = isolate->GetCurrentContext();
-	Local<Value> argv[4] = {
+	Local<Value> argv[5] = {
 		Number::New(isolate, baton->server_id),
 		Number::New(isolate, baton->http_checker->get_rtt()),
 		Number::New(isolate, baton->http_checker->get_response_code()),
-		Number::New(isolate, baton->http_checker->get_error_code())
+		Number::New(isolate, baton->http_checker->get_error_code()),
+		String::NewFromUtf8( isolate, baton->http_checker->get_raw_response().c_str() ).ToLocalChecked()
 	};
 
 	Local<Function> cb_func = baton->callback.Get( isolate );
-	(void) cb_func->Call( ctx, ctx->Global(), 4, argv );
+	(void) cb_func->Call( ctx, ctx->Global(), 5, argv );
 	baton->callback.Reset();
 
 	delete baton->http_checker;
@@ -48,7 +50,7 @@ static void http_check_async_fin( uv_work_t *req, int status ) {
 
 void http_check_async( uv_work_t *req ) {
 	HTTP_Check_Baton *baton = static_cast<HTTP_Check_Baton*>( req->data );
-	baton->http_checker->check( baton->server, baton->port );
+	baton->http_checker->check( baton->server, baton->port, baton->use_get );
 }
 
 void http_check( const FunctionCallbackInfo<Value>& args ) {
@@ -56,7 +58,7 @@ void http_check( const FunctionCallbackInfo<Value>& args ) {
 	Isolate* isolate = args.GetIsolate();
 	HandleScope scope( isolate );
 
-	if ( args.Length() < 4 ) {
+	if ( args.Length() < 4 || args.Length() > 5 ) {
 		isolate->ThrowException( Exception::TypeError(
 			String::NewFromUtf8( isolate, "Wrong number of arguments" ).ToLocalChecked() ) );
 		return;
@@ -90,6 +92,7 @@ void http_check( const FunctionCallbackInfo<Value>& args ) {
 	baton->port = args[1]->ToInteger( isolate->GetCurrentContext() ).ToLocalChecked()->Value();
 	baton->server_id = (int) args[2]->ToInteger( isolate->GetCurrentContext() ).ToLocalChecked()->Value();
 
+	baton->use_get = ( args.Length() == 5 ) ? args[4]->BooleanValue( isolate ) : false;
 	baton->isolate = isolate;
 	baton->callback.Reset( isolate, args[3].As<Function>() );
 
