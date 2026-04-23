@@ -26,6 +26,9 @@ DB_UPDATES_ENABLE
 WARNING: Do not enabled this on production hosts. This should only be enabled on local docker test environments and never in production.
 Set to true to allow Jetmon to update the jetpack_monitor_sites table. Without this, it is difficult to test how effective the code is working when in a local docker test environment.
 
+STATSD_ENABLE
+When set to true, metrics will be sent to StatsD. Set to false to disable these metrics. This config was added in order to test how enabling and disabling StatsD metrics affect overall server load and performance.
+
 BUCKET_NO_MIN
 The first bucket in the range of jetpack_monitor_sites buckets that this host should process when checking sites. Each host should be configured to have a unique set of buckets that it is responsible for.
 The buckets currently range from 0 to 511.
