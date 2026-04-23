@@ -90,6 +90,23 @@ var migrations = []migration{
 		ADD COLUMN last_checked_at DATETIME NULL,
 		ADD COLUMN last_alert_sent_at DATETIME NULL,
 		ADD INDEX idx_bucket_monitor_last_checked (bucket_no, monitor_active, last_checked_at)`},
+
+	{9, `CREATE TABLE IF NOT EXISTS jetmon_site_events (
+		id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+		jetpack_monitor_site_id BIGINT UNSIGNED NOT NULL,
+		event_type TINYINT UNSIGNED NOT NULL,
+		severity TINYINT UNSIGNED NOT NULL,
+		started_at DATETIME NOT NULL,
+		ended_at DATETIME NULL,
+		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+		INDEX idx_site_event_type (jetpack_monitor_site_id, event_type),
+		INDEX idx_event_type_started (event_type, started_at),
+		CONSTRAINT fk_jetmon_site_events_site
+			FOREIGN KEY (jetpack_monitor_site_id)
+			REFERENCES jetpack_monitor_sites (jetpack_monitor_site_id)
+			ON DELETE CASCADE
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
 }
 
 // Migrate applies all pending migrations idempotently.

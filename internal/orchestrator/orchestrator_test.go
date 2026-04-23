@@ -313,6 +313,9 @@ func stubOrchestratorDeps() func() {
 	origDBMarkSiteChecked := dbMarkSiteChecked
 	origDBRecordCheckHistory := dbRecordCheckHistory
 	origDBUpdateSSLExpiry := dbUpdateSSLExpiry
+	origDBOpenSiteEvent := dbOpenSiteEvent
+	origDBUpgradeOpenSiteEvent := dbUpgradeOpenSiteEvent
+	origDBCloseOpenSiteEvent := dbCloseOpenSiteEvent
 	origNotify := wpcomNotifyFunc
 	origVeriflierCheck := veriflierCheckFunc
 
@@ -323,6 +326,9 @@ func stubOrchestratorDeps() func() {
 	dbMarkSiteChecked = func(context.Context, int64, time.Time) error { return nil }
 	dbRecordCheckHistory = func(int64, int, int, int64, int64, int64, int64, int64) error { return nil }
 	dbUpdateSSLExpiry = func(context.Context, int64, time.Time) error { return nil }
+	dbOpenSiteEvent = func(context.Context, int64, uint8, uint8, time.Time) error { return nil }
+	dbUpgradeOpenSiteEvent = func(context.Context, int64, uint8, uint8) error { return nil }
+	dbCloseOpenSiteEvent = func(context.Context, int64, time.Time) error { return nil }
 	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error { return nil }
 	veriflierCheckFunc = func(c *veriflier.VeriflierClient, ctx context.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
 		return c.Check(ctx, req)
@@ -336,6 +342,9 @@ func stubOrchestratorDeps() func() {
 		dbMarkSiteChecked = origDBMarkSiteChecked
 		dbRecordCheckHistory = origDBRecordCheckHistory
 		dbUpdateSSLExpiry = origDBUpdateSSLExpiry
+		dbOpenSiteEvent = origDBOpenSiteEvent
+		dbUpgradeOpenSiteEvent = origDBUpgradeOpenSiteEvent
+		dbCloseOpenSiteEvent = origDBCloseOpenSiteEvent
 		wpcomNotifyFunc = origNotify
 		veriflierCheckFunc = origVeriflierCheck
 	}
@@ -482,6 +491,200 @@ func TestHandleFailureBelowThresholdDoesNotEscalate(t *testing.T) {
 	}
 	if o.retries.get(1) == nil {
 		t.Fatal("retry entry should exist after first failure")
+	}
+}
+
+func TestHandleFailureFirstFailureOpensSeemsDownEvent(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig(t)
+	config.Get().NumOfChecks = 3
+
+	failAt := time.Date(2026, time.April, 23, 12, 0, 0, 0, time.UTC)
+
+	var gotSiteID int64
+	var gotEventType uint8
+	var gotSeverity uint8
+	var gotStartedAt time.Time
+	var openCalls int
+	dbOpenSiteEvent = func(_ context.Context, siteID int64, eventType, severity uint8, startedAt time.Time) error {
+		openCalls++
+		gotSiteID = siteID
+		gotEventType = eventType
+		gotSeverity = severity
+		gotStartedAt = startedAt
+		return nil
+	}
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local",
+		ctx:      context.Background(),
+	}
+
+	o.handleFailure(db.Site{ID: 99, BlogID: 1}, checker.Result{
+		BlogID:    1,
+		Success:   false,
+		HTTPCode:  500,
+		ErrorCode: checker.ErrorConnect,
+		RTT:       100 * time.Millisecond,
+		Timestamp: failAt,
+	})
+
+	if openCalls != 1 {
+		t.Fatalf("OpenSiteEvent calls = %d, want 1", openCalls)
+	}
+	if gotSiteID != 99 {
+		t.Fatalf("OpenSiteEvent site_id = %d, want 99", gotSiteID)
+	}
+	if gotEventType != db.EventTypeSeemsDown {
+		t.Fatalf("OpenSiteEvent event_type = %d, want %d", gotEventType, db.EventTypeSeemsDown)
+	}
+	if gotSeverity != db.EventSeverityLow {
+		t.Fatalf("OpenSiteEvent severity = %d, want %d", gotSeverity, db.EventSeverityLow)
+	}
+	if !gotStartedAt.Equal(failAt) {
+		t.Fatalf("OpenSiteEvent started_at = %v, want %v", gotStartedAt, failAt)
+	}
+}
+
+func TestConfirmDownUpgradesOpenEvent(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig(t)
+
+	var gotSiteID int64
+	var gotEventType uint8
+	var gotSeverity uint8
+	var upgradeCalls int
+	dbUpgradeOpenSiteEvent = func(_ context.Context, siteID int64, eventType, severity uint8) error {
+		upgradeCalls++
+		gotSiteID = siteID
+		gotEventType = eventType
+		gotSeverity = severity
+		return nil
+	}
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local",
+		ctx:      context.Background(),
+	}
+	fail := checkerResultFailure(123)
+	o.retries.record(fail)
+	entry := o.retries.get(123)
+
+	o.confirmDown(db.Site{ID: 77, BlogID: 123, SiteStatus: statusRunning}, entry, nil)
+
+	if upgradeCalls != 1 {
+		t.Fatalf("UpgradeOpenSiteEvent calls = %d, want 1", upgradeCalls)
+	}
+	if gotSiteID != 77 {
+		t.Fatalf("UpgradeOpenSiteEvent site_id = %d, want 77", gotSiteID)
+	}
+	if gotEventType != db.EventTypeConfirmedDown {
+		t.Fatalf("UpgradeOpenSiteEvent event_type = %d, want %d", gotEventType, db.EventTypeConfirmedDown)
+	}
+	if gotSeverity != db.EventSeverityHigh {
+		t.Fatalf("UpgradeOpenSiteEvent severity = %d, want %d", gotSeverity, db.EventSeverityHigh)
+	}
+}
+
+func TestEscalateToVerifliersFalsePositiveClosesOpenEvent(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+
+	cfg := setTestConfig(t)
+	cfg.PeerOfflineLimit = 2
+
+	fixedNow := time.Date(2026, time.April, 23, 12, 34, 56, 0, time.UTC)
+	nowFunc = func() time.Time { return fixedNow }
+
+	var gotSiteID int64
+	var gotEndedAt time.Time
+	var closeCalls int
+	dbCloseOpenSiteEvent = func(_ context.Context, siteID int64, endedAt time.Time) error {
+		closeCalls++
+		gotSiteID = siteID
+		gotEndedAt = endedAt
+		return nil
+	}
+
+	call := 0
+	veriflierCheckFunc = func(c *veriflier.VeriflierClient, _ context.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
+		call++
+		return &veriflier.CheckResult{
+			BlogID:   req.BlogID,
+			Host:     c.Addr(),
+			Success:  call != 1,
+			HTTPCode: 200,
+		}, nil
+	}
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		ctx:      context.Background(),
+		hostname: "local-host",
+		veriflierClients: []*veriflier.VeriflierClient{
+			veriflier.NewVeriflierClient("v1", ""),
+			veriflier.NewVeriflierClient("v2", ""),
+		},
+	}
+
+	fail := checkerResultFailure(654)
+	o.retries.record(fail)
+	entry := o.retries.get(654)
+	o.escalateToVerifliers(db.Site{ID: 44, BlogID: 654, MonitorURL: "https://example.com", SiteStatus: statusRunning}, entry)
+
+	if closeCalls != 1 {
+		t.Fatalf("CloseOpenSiteEvent calls = %d, want 1", closeCalls)
+	}
+	if gotSiteID != 44 {
+		t.Fatalf("CloseOpenSiteEvent site_id = %d, want 44", gotSiteID)
+	}
+	if !gotEndedAt.Equal(fixedNow) {
+		t.Fatalf("CloseOpenSiteEvent ended_at = %v, want %v", gotEndedAt, fixedNow)
+	}
+}
+
+func TestHandleRecoveryClosesOpenEvent(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig(t)
+
+	fixedNow := time.Date(2026, time.April, 23, 14, 0, 0, 0, time.UTC)
+	nowFunc = func() time.Time { return fixedNow }
+
+	var gotSiteID int64
+	var gotEndedAt time.Time
+	var closeCalls int
+	dbCloseOpenSiteEvent = func(_ context.Context, siteID int64, endedAt time.Time) error {
+		closeCalls++
+		gotSiteID = siteID
+		gotEndedAt = endedAt
+		return nil
+	}
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local",
+		ctx:      context.Background(),
+	}
+
+	o.handleRecovery(db.Site{ID: 12, BlogID: 1, SiteStatus: statusConfirmedDown}, checkerResultSuccess(1))
+
+	if closeCalls != 1 {
+		t.Fatalf("CloseOpenSiteEvent calls = %d, want 1", closeCalls)
+	}
+	if gotSiteID != 12 {
+		t.Fatalf("CloseOpenSiteEvent site_id = %d, want 12", gotSiteID)
+	}
+	if !gotEndedAt.Equal(fixedNow) {
+		t.Fatalf("CloseOpenSiteEvent ended_at = %v, want %v", gotEndedAt, fixedNow)
 	}
 }
 

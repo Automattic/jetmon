@@ -97,6 +97,45 @@ func UpdateSSLExpiry(ctx context.Context, blogID int64, expiry time.Time) error 
 	return err
 }
 
+// OpenSiteEvent inserts a new open event for the site if none is currently open.
+func OpenSiteEvent(ctx context.Context, siteID int64, eventType, severity uint8, startedAt time.Time) error {
+	_, err := db.ExecContext(ctx,
+		`INSERT INTO jetmon_site_events
+			(jetpack_monitor_site_id, event_type, severity, started_at)
+		 SELECT ?, ?, ?, ?
+		 WHERE NOT EXISTS (
+			SELECT 1
+			FROM jetmon_site_events
+			WHERE jetpack_monitor_site_id = ?
+			  AND ended_at IS NULL
+		 )`,
+		siteID, eventType, severity, startedAt.UTC(), siteID,
+	)
+	return err
+}
+
+// UpgradeOpenSiteEvent updates type/severity on the currently open event for a site.
+func UpgradeOpenSiteEvent(ctx context.Context, siteID int64, eventType, severity uint8) error {
+	_, err := db.ExecContext(ctx,
+		`UPDATE jetmon_site_events
+		 SET event_type = ?, severity = ?
+		 WHERE jetpack_monitor_site_id = ? AND ended_at IS NULL`,
+		eventType, severity, siteID,
+	)
+	return err
+}
+
+// CloseOpenSiteEvent sets ended_at on the currently open event for a site.
+func CloseOpenSiteEvent(ctx context.Context, siteID int64, endedAt time.Time) error {
+	_, err := db.ExecContext(ctx,
+		`UPDATE jetmon_site_events
+		 SET ended_at = ?
+		 WHERE jetpack_monitor_site_id = ? AND ended_at IS NULL`,
+		endedAt.UTC(), siteID,
+	)
+	return err
+}
+
 // ClaimBuckets registers this host in jetmon_hosts, claiming uncovered bucket
 // ranges from expired peers. Returns the claimed min/max bucket numbers.
 func ClaimBuckets(hostID string, bucketTotal, bucketTarget int, graceSec int) (int, int, error) {
