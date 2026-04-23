@@ -1,76 +1,81 @@
 DEBUG
-Set to true to enable more verbose log messages in logs/jetmon.log.
+Set to true to enable more verbose log messages. Default: false.
 
 NUM_WORKERS
-The number of forked worker processes to create and maintain.
+Initial number of goroutines in the check pool. The pool auto-scales between 1 and NUM_WORKERS based on queue depth. Default: 60.
 
 NUM_TO_PROCESS
-The number of sites that a worker should process in parallel.
+Number of sites to dispatch per round. Default: 40.
 
 DATASET_SIZE
-The maximum number of sites to send to a worker's queue in a single batch.
-
-WORKER_MAX_CHECKS
-The maximum number of checks that a worker can process before it stops accepting work and is scheduled to recycle.
-Set to 0 or a negative value to disable recycling workers based on the number of checks.
-
-WORKER_MAX_MEM_MB
-The maximum MB of memory that a worker can consume before it stops accepting work and is scheduled to recycle.
-Set to 0 or a negative value to disable recycling workers based on memory usage.
-The following comment was in the worker source code from an early dev on why they chose 45MB as the original value. Since then, we moved to a value of 53MB.
-	Empirically ended up with 45MB per worker.
-	They don't get killed off all the time, and on a system with 16GB RAM
-	we end up having ~1.6GB free.
+Maximum number of sites to fetch from the database per batch. Default: 100.
 
 DB_UPDATES_ENABLE
-WARNING: Do not enabled this on production hosts. This should only be enabled on local docker test environments and never in production.
-Set to true to allow Jetmon to update the jetpack_monitor_sites table. Without this, it is difficult to test how effective the code is working when in a local docker test environment.
+WARNING: Do not enable on production hosts.
+Set to true to allow Jetmon to update the jetpack_monitor_sites table. Only useful in local Docker test environments to observe status-change behaviour.
+Enabling this also requires the environment variable JETMON_UNSAFE_DB_UPDATES=1 to be set, as a second confirmation gate against accidental production use.
 
-BUCKET_NO_MIN
-The first bucket in the range of jetpack_monitor_sites buckets that this host should process when checking sites. Each host should be configured to have a unique set of buckets that it is responsible for.
-The buckets currently range from 0 to 511.
+BUCKET_TOTAL
+Total number of buckets in the system across all hosts. Must match the range of bucket_no values in the jetpack_monitor_sites table. Default: 1000.
 
-BUCKET_NO_MAX
-The last bucket in the range of jetpack_monitor_sites buckets that this host should process when checking sites. Each host should be configured to have a unique set of buckets that it is responsible for.
-The buckets currently range from 0 to 511.
+BUCKET_TARGET
+Number of buckets this host should claim on startup. Used for initial distribution across hosts. Default: 500.
+
+BUCKET_HEARTBEAT_GRACE_SEC
+Seconds after a host's last heartbeat before its buckets are considered available for reclaiming by another host. Default: 600.
 
 BATCH_SIZE
-The number of buckets returned in each batch when running checks.
+Number of buckets fetched per database query when loading sites. Default: 32.
 
 AUTH_TOKEN
-A string used to validate communications between different systems over HTTPS.
+Shared secret used to authenticate outbound WPCOM API calls. Required.
 
 VERIFLIER_BATCH_SIZE
-The maximum number of sites to send to verifliers in a single batch.
-
-SQL_UPDATE_BATCH
-Unknown. Likely not used currently.
-
-DB_CONFIG_UPDATES_MIN
-How frequently in minutes the database library should check for DB config changes in order to reload.
+Maximum number of sites sent to each veriflier per verification request. Default: 200.
 
 PEER_OFFLINE_LIMIT
-The minimum number of verifliers that must confirm that a site is down before changing the site status to down.
+Minimum number of verifliers that must confirm a site is down before it is declared confirmed-down. Default: 3.
 
 NUM_OF_CHECKS
-The number of local checks that must fail before a site is checked by the verifliers.
+Number of consecutive local check failures required before escalating to verifliers. Default: 3.
 
 TIME_BETWEEN_CHECKS_SEC
-The minimum amount of time that must elapse between local checks for a specific site.
+Minimum seconds between checks for a given site. Default: 30.
+
+ALERT_COOLDOWN_MINUTES
+Minimum minutes between repeated down-alerts for the same site. Prevents alert storms during flapping. Default: 30. Can be overridden per-site via alert_cooldown_minutes column.
 
 STATS_UPDATE_INTERVAL_MS
-The minimum delay, in milliseconds, between stats updates to both statsd and stats log files.
+Milliseconds between StatsD metric flushes and stats file updates. Default: 10000.
+
+STATSD_SEND_MEM_USAGE
+Set to true to emit Go runtime memory stats to StatsD each interval. Default: false.
 
 TIME_BETWEEN_NOTICES_MIN
-The minimum delay, in minutes, that must pass before a site can transition from SITE_DOWN to SITE_CONFIRMED_DOWN.
+Minimum minutes between a site going down and a confirmed-down notification being sent. Default: 59.
 
 MIN_TIME_BETWEEN_ROUNDS_SEC
-The minimum delay, in seconds, between check rounds.
-Note: This value has no effect if USE_VARIABLE_CHECK_INTERVALS is set to true.
+Minimum seconds between check rounds. Has no effect when USE_VARIABLE_CHECK_INTERVALS is true. Default: 300.
 
-TIMEOUT_FOR_REQUESTS_SEC
-The amount of time, in seconds, that a site can remain in the queuedRetries array (the queue that holds sites being checked by verifliers) before being purged out of the queue.
+NET_COMMS_TIMEOUT
+Default HTTP request timeout in seconds. Can be overridden per-site via timeout_seconds column. Default: 10.
 
 USE_VARIABLE_CHECK_INTERVALS
-Set to true to enable the variable check intervals as set for each site in the jetpack_monitor_sites table.
-Note: Enabling this disables use of the MIN_TIME_BETWEEN_ROUNDS_SEC config, sets the round loop to execute every minute, and checks each site on the interval as set in the database.
+Set to true to respect the check_interval column per site instead of running all sites every round. Default: false.
+
+LOG_FORMAT
+Log output format. Set to "json" for structured logging (e.g. for log aggregators), or "text" for human-readable output. Default: "text".
+
+DASHBOARD_PORT
+Port for the operator dashboard and internal API. Set to 0 to disable. Default: 8080.
+
+DEBUG_PORT
+Port for the pprof debug server. Only binds to 127.0.0.1 (localhost) — never accessible remotely. Set to 0 to disable. Default: 6060.
+Access via: curl http://localhost:6060/debug/pprof/
+
+VERIFIERS
+Array of veriflier configuration objects. Each entry requires:
+  name       - display name
+  host       - hostname or IP of the veriflier
+  grpc_port  - gRPC/HTTP port (default 7803)
+  auth_token - shared secret for veriflier authentication
