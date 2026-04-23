@@ -1,3 +1,5 @@
+For full setup steps and API auth examples, see `GETTING_STARTED.md`.
+
 DEBUG
 Set to true to enable more verbose log messages. Default: false.
 
