@@ -5,8 +5,52 @@
 Follow coding standards in this order:
 1. Existing patterns in the codebase
 2. Conventions documented in this file
-3. Node.js best practices (for JavaScript)
-4. Google C++ Style Guide (for C++, with local modifications)
+3. Effective Go (https://go.dev/doc/effective_go) for Go code
+
+---
+
+## Go
+
+### Formatting
+- Run `gofmt` / `goimports` — all Go code must be formatted
+- Tabs for indentation (enforced by gofmt)
+- Line length: no hard limit; prefer readability over brevity
+
+### Naming Conventions
+- **Packages**: lowercase, single word (e.g., `checker`, `wpcom`, `audit`)
+- **Exported identifiers**: `PascalCase`
+- **Unexported identifiers**: `camelCase`
+- **Acronyms**: all-caps when exported (`HTTPCode`, `RTTMs`, `URL`), lowercase otherwise (`httpCode`)
+- **Error variables**: `ErrFoo` for sentinel errors
+- **Interfaces**: noun or `-er` suffix (`Checker`, `Client`)
+- **Constants**: `PascalCase` for Go constants; config key strings use `SCREAMING_SNAKE_CASE` to match existing JSON keys
+
+### Error Handling
+- Return errors; do not panic in library code
+- Wrap with context: `fmt.Errorf("connect: %w", err)`
+- Log and continue for non-fatal errors; `log.Fatalf` only at startup
+
+### Concurrency
+- Pass `context.Context` as the first argument to any function that blocks or does I/O
+- Use `sync/atomic` for hot-path counters; `sync.Mutex` for struct guards
+- Never share mutable state across goroutines without synchronisation
+- Prefer buffered channels sized to the expected burst; document the rationale
+
+### Imports
+- Standard library first, then external, then internal — separated by blank lines
+- Alias internal `grpc` package as `vgrpc` to avoid collision with `google.golang.org/grpc`
+- Alias `"context"` as `stdctx` only when the local scope shadows the package name
+
+### Comments
+- Package comment on every package (`// Package foo ...`)
+- Exported symbol comments are required (`// Foo does ...`)
+- Inline comments explain *why*, not *what*
+
+---
+
+## Legacy (JavaScript / C++)
+
+The codebase was previously Node.js + C++. Those conventions are no longer relevant — the Go section above takes full precedence. The sections below are retained only as historical reference and should not be followed for new work.
 
 ---
 
@@ -473,7 +517,7 @@ kill -HUP <jetmon-master-pid>
 
 ## Related Documentation
 
-- Documentation standards: `.claude/rules/documentation.md`
+- Documentation standards: `.agents/rules/documentation.md`
 - Configuration options: `config/config.readme`
 - Docker setup: `docker/` directory
-- Veriflier build: `veriflier/README.md`
+- Veriflier binary: `veriflier2/cmd/main.go`

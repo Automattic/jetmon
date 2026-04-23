@@ -27,7 +27,7 @@
 				"hooks": [
 					{
 						"type": "command",
-						"command": "node ./.claude/hooks/read_hook.js"
+						"command": "node ./.agents/hooks/read_hook.js"
 					}
 				]
 			}

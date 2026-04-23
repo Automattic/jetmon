@@ -66,14 +66,17 @@ Brief description of the issue or need. Include error messages, logs, or metrics
 
 ## Affected Component(s)
 
-- [ ] Master Process (`lib/jetmon.js`)
-- [ ] Worker Process (`lib/httpcheck.js`)
-- [ ] C++ Native Addon (`src/http_checker.cpp`)
-- [ ] Veriflier (`veriflier/`)
-- [ ] Database (`lib/database.js`)
-- [ ] Configuration
+- [ ] CLI / Entry Point (`cmd/jetmon2/main.go`)
+- [ ] Orchestrator (`internal/orchestrator/`)
+- [ ] HTTP Checker (`internal/checker/`)
+- [ ] Goroutine Pool (`internal/checker/pool.go`)
+- [ ] Database / Migrations (`internal/db/`)
+- [ ] Configuration (`internal/config/`)
+- [ ] gRPC / Veriflier Transport (`internal/grpc/`)
+- [ ] WPCOM Client (`internal/wpcom/`)
+- [ ] Operator Dashboard (`internal/dashboard/`)
+- [ ] Veriflier Binary (`veriflier2/`)
 - [ ] Docker/Infrastructure
-- [ ] WPCOM Integration
 
 ## Steps to Reproduce (if applicable)
 
@@ -116,12 +119,12 @@ Workers are hitting memory limits more frequently than expected...
 
 ## Affected Component(s)
 
-- [x] Worker Process (`lib/httpcheck.js`)
+- [x] Goroutine Pool (`internal/checker/pool.go`)
 
 ## Acceptance Criteria
 
-- [ ] Workers stay under 53MB memory limit
-- [ ] No increase in worker recycling frequency
+- [ ] Goroutine count stays bounded under sustained load
+- [ ] No goroutine leak after pool drain
 EOF
 )"
 ```

@@ -37,21 +37,26 @@ Create a PR for the current branch, targeting `master`.
 
 | Component | Key Files |
 |-----------|-----------|
-| Master Process | `lib/jetmon.js` |
-| Worker Process | `lib/httpcheck.js` |
-| C++ Native Addon | `src/http_checker.cpp`, `src/http_checker.h`, `binding.gyp` |
-| Veriflier | `veriflier/*.cpp`, `veriflier/*.h` |
-| Database | `lib/database.js`, `lib/dbpools.js` |
-| Configuration | `config/config.json`, `config/config.readme` |
+| CLI / Entry Point | `cmd/jetmon2/main.go` |
+| Orchestrator | `internal/orchestrator/` |
+| HTTP Checker | `internal/checker/checker.go` |
+| Goroutine Pool | `internal/checker/pool.go` |
+| Database | `internal/db/` |
+| Config | `internal/config/config.go`, `config/config.readme` |
+| gRPC / Veriflier Transport | `internal/grpc/` |
+| WPCOM Client | `internal/wpcom/client.go` |
+| Audit Log | `internal/audit/audit.go` |
+| Metrics | `internal/metrics/metrics.go` |
+| Operator Dashboard | `internal/dashboard/dashboard.go` |
+| Veriflier Binary | `veriflier2/cmd/main.go` |
 | Docker | `docker/docker-compose.yml`, `docker/Dockerfile*` |
-| StatsD/Metrics | Look for `statsdClient` calls |
-| WPCOM Integration | `lib/wpcom.js`, `lib/comms.js` |
+| Migrations | `internal/db/migrations.go`, `migrations/001_jetmon2.sql` |
 
 6. **Determine testing requirements**:
-   - C++ changes require `npm run rebuild-run`
-   - Config changes should be tested with Docker environment
-   - Worker changes should be tested with memory monitoring
-   - Database changes need schema verification
+   - Config changes: test with `./jetmon2 validate-config`
+   - DB/schema changes: test migration with `./jetmon2 migrate`
+   - All changes: test with Docker environment (`docker compose up --build`)
+   - Run `make test` to verify unit tests pass
 
 7. **Create the PR** using `gh pr create --draft --assignee @me` with this format:
 
@@ -72,10 +77,11 @@ Brief description of what this PR accomplishes and why.
 
 ## Testing
 
-- [ ] Tested locally with Docker environment
-- [ ] Ran `npm run rebuild-run` (if C++ changes)
-- [ ] Verified memory usage is within limits (if worker changes)
-- [ ] Tested configuration reload via SIGHUP (if config changes)
+- [ ] Tested locally with Docker environment (`docker compose up --build`)
+- [ ] `make test` passes
+- [ ] `./jetmon2 validate-config` passes (if config changes)
+- [ ] Migration tested with `./jetmon2 migrate` (if schema changes)
+- [ ] Tested configuration reload via `./jetmon2 reload` (if config changes)
 
 ## Deployment Notes
 
