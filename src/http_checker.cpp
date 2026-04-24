@@ -197,7 +197,7 @@ void HTTP_Checker::parse_host_values() {
 string HTTP_Checker::send_http_get() {
 	string s_tmp = "HEAD " + m_host_dir + " HTTP/1.1\r\n";
 			s_tmp += "Host: " + m_host_name + "\r\n";
-			s_tmp += "User-Agent: jetmon/1.0 (Jetpack Site Uptime Monitor by WordPress.com)\r\n";
+			s_tmp += "User-Agent: jetmon/1.1 (Jetpack Site Uptime Monitor by WordPress.com)\r\n";
 			s_tmp += "Connection: close\r\n\r\n";
 
 	strcpy( m_buf, s_tmp.c_str() );
