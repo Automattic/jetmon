@@ -284,7 +284,7 @@ func (s *Server) handleSiteEvents(w http.ResponseWriter, r *http.Request, siteID
 			"started_at":              ev.StartedAt,
 			"ended_at":                ev.EndedAt,
 			"created_at":              ev.CreatedAt,
-			"updated_at":              ev.UpdatedAt,
+			"is_recovered":            ev.EventType == db.EventTypeConfirmedDown && ev.EndedAt != nil,
 		})
 	}
 	writeAPISuccess(w, http.StatusOK, resp)

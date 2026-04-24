@@ -298,6 +298,7 @@ func TestAPIV1GetEventsIncludesLabels(t *testing.T) {
 		return db.Site{ID: id}, nil
 	}
 	now := time.Now()
+	endedAt := now.Add(5 * time.Minute)
 	srv.listSiteEvents = func(r *http.Request, siteID int64, limit, offset int) ([]db.SiteEvent, error) {
 		return []db.SiteEvent{{
 			ID:                   10,
@@ -305,6 +306,7 @@ func TestAPIV1GetEventsIncludesLabels(t *testing.T) {
 			EventType:            db.EventTypeConfirmedDown,
 			Severity:             db.EventSeverityHigh,
 			StartedAt:            now,
+			EndedAt:              &endedAt,
 			CreatedAt:            now,
 			UpdatedAt:            now,
 		}}, nil
@@ -318,7 +320,25 @@ func TestAPIV1GetEventsIncludesLabels(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
-	if !strings.Contains(w.Body.String(), "event_type_label") || !strings.Contains(w.Body.String(), "severity_label") {
-		t.Fatalf("body = %q, want event and severity labels", w.Body.String())
+
+	var resp struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Data) != 1 {
+		t.Fatalf("events len = %d, want 1", len(resp.Data))
+	}
+	event := resp.Data[0]
+	if event["event_type_label"] == nil || event["severity_label"] == nil {
+		t.Fatalf("event = %#v, want event and severity labels", event)
+	}
+	isRecovered, ok := event["is_recovered"].(bool)
+	if !ok || !isRecovered {
+		t.Fatalf("event[\"is_recovered\"] = %#v, want true", event["is_recovered"])
+	}
+	if _, ok := event["updated_at"]; ok {
+		t.Fatalf("event = %#v, did not expect updated_at", event)
 	}
 }
