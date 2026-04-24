@@ -222,6 +222,8 @@ curl -s -H "Authorization: Bearer ${TOKEN}" \
   "${BASE_URL}/api/v1/sites/1/events?limit=50&offset=0" | jq .
 ```
 
+Recovery semantics: a recovered incident is returned as a `confirmed_down` event with `ended_at` set (non-null).
+
 ## 7. Troubleshooting
 
 - `API` returns `401 unauthorized`: verify `Authorization: Bearer <token>` and ensure the token is in `API_TOKENS`.

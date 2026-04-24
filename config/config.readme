@@ -34,6 +34,7 @@ Shared secret for outbound WPCOM status-change calls only. Not used for dashboar
 
 API_TOKENS
 Bearer tokens accepted by the dashboard REST API (`/api/v1/*`). Example: ["token-a", "token-b"].
+API event recovery semantics use `ended_at` for recovered incidents (not `updated_at`).
 When empty, API auth is disabled (requests are allowed without Authorization).
 
 API_RATE_LIMIT_RPS
