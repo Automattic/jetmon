@@ -8,6 +8,8 @@ import (
 	"time"
 )
 
+const statusConfirmedDown = 2
+
 // GetSitesForBucket fetches active sites within the given bucket range.
 func GetSitesForBucket(ctx context.Context, bucketMin, bucketMax, batchSize int, useVariableIntervals bool) ([]Site, error) {
 	query := `
@@ -95,6 +97,122 @@ func UpdateSSLExpiry(ctx context.Context, blogID int64, expiry time.Time) error 
 		expiry, blogID,
 	)
 	return err
+}
+
+// OpenSiteEvent inserts a new open event for the site if none is currently open.
+func OpenSiteEvent(ctx context.Context, siteID int64, endpointID *int64, checkType CheckType, eventType EventType, severity EventSeverity, startedAt time.Time) (bool, error) {
+	res, err := db.ExecContext(ctx,
+		`INSERT INTO jetmon_site_events
+			(jetpack_monitor_site_id, endpoint_id, check_type, event_type, severity, started_at)
+		 SELECT ?, ?, ?, ?, ?, ?
+		 WHERE NOT EXISTS (
+			SELECT 1
+			FROM jetmon_site_events
+			WHERE jetpack_monitor_site_id = ?
+			  AND endpoint_id <=> ?
+			  AND check_type = ?
+			  AND ended_at IS NULL
+		 )`,
+		siteID, endpointID, checkType, eventType, severity, startedAt.UTC(),
+		siteID, endpointID, checkType,
+	)
+	if err != nil {
+		return false, err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows > 0, nil
+}
+
+// UpgradeOpenSiteEvent updates type/severity on the currently open event for a site.
+func UpgradeOpenSiteEvent(ctx context.Context, siteID int64, endpointID *int64, checkType CheckType, eventType EventType, severity EventSeverity) (bool, error) {
+	res, err := db.ExecContext(ctx,
+		`UPDATE jetmon_site_events
+		 SET event_type = ?, severity = ?
+		 WHERE jetpack_monitor_site_id = ?
+		   AND endpoint_id <=> ?
+		   AND check_type = ?
+		   AND ended_at IS NULL`,
+		eventType, severity, siteID, endpointID, checkType,
+	)
+	if err != nil {
+		return false, err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows > 0, nil
+}
+
+// CloseOpenSiteEvent sets ended_at on the currently open event for a site.
+func CloseOpenSiteEvent(ctx context.Context, siteID int64, endpointID *int64, checkType CheckType, endedAt time.Time, reason ResolutionReason) (bool, error) {
+	res, err := db.ExecContext(ctx,
+		`UPDATE jetmon_site_events
+		 SET ended_at = ?, resolution_reason = ?
+		 WHERE jetpack_monitor_site_id = ?
+		   AND endpoint_id <=> ?
+		   AND check_type = ?
+		   AND ended_at IS NULL`,
+		endedAt.UTC(), reason, siteID, endpointID, checkType,
+	)
+	if err != nil {
+		return false, err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows > 0, nil
+}
+
+// ConfirmDownTx upgrades the open event and updates site status atomically.
+func ConfirmDownTx(ctx context.Context, siteID, blogID int64, endpointID *int64, checkType CheckType, eventType EventType, severity EventSeverity, changedAt time.Time, dbUpdatesEnabled bool) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin confirm-down tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := upgradeOpenSiteEventTx(ctx, tx, siteID, endpointID, checkType, eventType, severity); err != nil {
+		return fmt.Errorf("upgrade site event in tx: %w", err)
+	}
+
+	if dbUpdatesEnabled {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE jetpack_monitor_sites SET site_status = ?, last_status_change = ? WHERE blog_id = ?`,
+			statusConfirmedDown, changedAt.UTC(), blogID,
+		); err != nil {
+			return fmt.Errorf("update site status in tx: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit confirm-down tx: %w", err)
+	}
+	return nil
+}
+
+func upgradeOpenSiteEventTx(ctx context.Context, tx *sql.Tx, siteID int64, endpointID *int64, checkType CheckType, eventType EventType, severity EventSeverity) (bool, error) {
+	res, err := tx.ExecContext(ctx,
+		`UPDATE jetmon_site_events
+		 SET event_type = ?, severity = ?
+		 WHERE jetpack_monitor_site_id = ?
+		   AND endpoint_id <=> ?
+		   AND check_type = ?
+		   AND ended_at IS NULL`,
+		eventType, severity, siteID, endpointID, checkType,
+	)
+	if err != nil {
+		return false, err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows > 0, nil
 }
 
 // ClaimBuckets registers this host in jetmon_hosts, claiming uncovered bucket

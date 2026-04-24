@@ -23,19 +23,23 @@ const (
 )
 
 var (
-	nowFunc               = time.Now
-	dbClaimBuckets        = db.ClaimBuckets
-	dbHeartbeat           = db.Heartbeat
-	dbReleaseHost         = db.ReleaseHost
-	dbMarkHostDraining    = db.MarkHostDraining
-	dbGetSitesForBucket   = db.GetSitesForBucket
-	dbMarkSiteChecked     = db.MarkSiteChecked
-	dbRecordCheckHistory  = db.RecordCheckHistory
-	dbUpdateSSLExpiry     = db.UpdateSSLExpiry
-	dbUpdateSiteStatus    = db.UpdateSiteStatus
-	dbRecordFalsePositive = db.RecordFalsePositive
-	dbUpdateLastAlertSent = db.UpdateLastAlertSent
-	veriflierCheckFunc    = func(c *veriflier.VeriflierClient, ctx stdctx.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
+	nowFunc                = time.Now
+	dbClaimBuckets         = db.ClaimBuckets
+	dbHeartbeat            = db.Heartbeat
+	dbReleaseHost          = db.ReleaseHost
+	dbMarkHostDraining     = db.MarkHostDraining
+	dbGetSitesForBucket    = db.GetSitesForBucket
+	dbMarkSiteChecked      = db.MarkSiteChecked
+	dbRecordCheckHistory   = db.RecordCheckHistory
+	dbUpdateSSLExpiry      = db.UpdateSSLExpiry
+	dbUpdateSiteStatus     = db.UpdateSiteStatus
+	dbRecordFalsePositive  = db.RecordFalsePositive
+	dbUpdateLastAlertSent  = db.UpdateLastAlertSent
+	dbOpenSiteEvent        = db.OpenSiteEvent
+	dbUpgradeOpenSiteEvent = db.UpgradeOpenSiteEvent
+	dbCloseOpenSiteEvent   = db.CloseOpenSiteEvent
+	dbConfirmDownTx        = db.ConfirmDownTx
+	veriflierCheckFunc     = func(c *veriflier.VeriflierClient, ctx stdctx.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
 		return c.Check(ctx, req)
 	}
 	wpcomNotifyFunc     = func(c *wpcom.Client, n wpcom.Notification) error { return c.Notify(n) }
@@ -296,9 +300,13 @@ func (o *Orchestrator) handleRecovery(site db.Site, res checker.Result) {
 	}
 
 	o.retries.clear(site.BlogID)
+	recoveryTime := nowFunc().UTC()
+	if !inMaintenance(site) {
+		o.closeOpenSiteEvent(site, nil, db.CheckTypeHTTP, recoveryTime, db.ResolutionReasonVerifierCleared)
+	}
 
 	if site.SiteStatus != statusRunning {
-		changeTime := nowFunc().UTC()
+		changeTime := recoveryTime
 		log.Printf("orchestrator: blog_id=%d recovered", site.BlogID)
 		o.auditTransition(site.BlogID, site.SiteStatus, statusRunning, "site recovered")
 
@@ -316,6 +324,9 @@ func (o *Orchestrator) handleRecovery(site db.Site, res checker.Result) {
 
 func (o *Orchestrator) handleFailure(site db.Site, res checker.Result) {
 	entry := o.retries.record(res)
+	if entry.failCount == 1 && !inMaintenance(site) {
+		o.openSiteEvent(site, nil, db.CheckTypeHTTP, db.EventTypeSeemsDown, db.EventSeverityLow, entry.firstFailAt)
+	}
 
 	if entry.failCount < config.Get().NumOfChecks {
 		o.auditLog(site.BlogID, audit.EventRetryDispatched, o.hostname,
@@ -397,6 +408,9 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 		log.Printf("orchestrator: blog_id=%d verifliers did not confirm down (%d/%d)", site.BlogID, confirmations, quorum)
 		_ = dbRecordFalsePositive(site.BlogID, entry.lastResult.HTTPCode, entry.lastResult.ErrorCode,
 			entry.lastResult.RTT.Milliseconds())
+		if !inMaintenance(site) {
+			o.closeOpenSiteEvent(site, nil, db.CheckTypeHTTP, nowFunc().UTC(), db.ResolutionReasonFalseAlarm)
+		}
 		o.retries.clear(site.BlogID)
 	}
 }
@@ -408,19 +422,73 @@ func (o *Orchestrator) confirmDown(site db.Site, entry *retryEntry, vResults []v
 	log.Printf("orchestrator: blog_id=%d confirmed down", site.BlogID)
 	o.auditTransition(site.BlogID, site.SiteStatus, newStatus, "confirmed down")
 
-	if config.Get().DBUpdatesEnable {
-		_ = dbUpdateSiteStatus(o.ctx, site.BlogID, newStatus, changeTime)
+	if inMaintenance(site) {
+		if config.Get().DBUpdatesEnable {
+			_ = dbUpdateSiteStatus(o.ctx, site.BlogID, newStatus, changeTime)
+		}
+		o.auditLog(site.BlogID, audit.EventMaintenanceActive, "local", 0, 0, 0, "downtime suppressed during maintenance")
+		o.retries.clear(site.BlogID)
+		return
 	}
 
-	if inMaintenance(site) {
-		o.auditLog(site.BlogID, audit.EventMaintenanceActive, "local", 0, 0, 0, "downtime suppressed during maintenance")
-	} else if !o.isAlertSuppressed(site) {
+	if site.ID <= 0 {
+		log.Printf("orchestrator: warning: blog_id=%d missing site ID, skipping upgrade site-event write", site.BlogID)
+		if config.Get().DBUpdatesEnable {
+			_ = dbUpdateSiteStatus(o.ctx, site.BlogID, newStatus, changeTime)
+		}
+	} else {
+		if err := dbConfirmDownTx(
+			o.ctx,
+			site.ID,
+			site.BlogID,
+			nil,
+			db.CheckTypeHTTP,
+			db.EventTypeConfirmedDown,
+			db.EventSeverityHigh,
+			changeTime,
+			config.Get().DBUpdatesEnable,
+		); err != nil {
+			log.Printf("orchestrator: confirm-down tx site_id=%d blog_id=%d: %v", site.ID, site.BlogID, err)
+		}
+	}
+
+	if !o.isAlertSuppressed(site) {
 		o.sendNotification(site, entry.lastResult, newStatus, changeTime, vResults)
 	} else {
 		o.auditLog(site.BlogID, audit.EventAlertSuppressed, "local", 0, 0, 0, "cooldown active")
 	}
 
 	o.retries.clear(site.BlogID)
+}
+
+func (o *Orchestrator) openSiteEvent(site db.Site, endpointID *int64, checkType db.CheckType, eventType db.EventType, severity db.EventSeverity, startedAt time.Time) {
+	if site.ID <= 0 {
+		log.Printf("orchestrator: warning: blog_id=%d missing site ID, skipping open site-event write", site.BlogID)
+		return
+	}
+	if _, err := dbOpenSiteEvent(o.ctx, site.ID, endpointID, checkType, eventType, severity, startedAt); err != nil {
+		log.Printf("orchestrator: open site event site_id=%d blog_id=%d: %v", site.ID, site.BlogID, err)
+	}
+}
+
+func (o *Orchestrator) upgradeOpenSiteEvent(site db.Site, endpointID *int64, checkType db.CheckType, eventType db.EventType, severity db.EventSeverity) {
+	if site.ID <= 0 {
+		log.Printf("orchestrator: warning: blog_id=%d missing site ID, skipping upgrade site-event write", site.BlogID)
+		return
+	}
+	if _, err := dbUpgradeOpenSiteEvent(o.ctx, site.ID, endpointID, checkType, eventType, severity); err != nil {
+		log.Printf("orchestrator: upgrade site event site_id=%d blog_id=%d: %v", site.ID, site.BlogID, err)
+	}
+}
+
+func (o *Orchestrator) closeOpenSiteEvent(site db.Site, endpointID *int64, checkType db.CheckType, endedAt time.Time, reason db.ResolutionReason) {
+	if site.ID <= 0 {
+		log.Printf("orchestrator: warning: blog_id=%d missing site ID, skipping close site-event write", site.BlogID)
+		return
+	}
+	if _, err := dbCloseOpenSiteEvent(o.ctx, site.ID, endpointID, checkType, endedAt, reason); err != nil {
+		log.Printf("orchestrator: close site event site_id=%d blog_id=%d: %v", site.ID, site.BlogID, err)
+	}
 }
 
 func (o *Orchestrator) sendNotification(site db.Site, res checker.Result, status int, changeTime time.Time, vResults []veriflier.CheckResult) {
