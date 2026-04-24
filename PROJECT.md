@@ -4,6 +4,8 @@
 
 Jetmon 2 is a complete rewrite of the Jetmon uptime monitoring service, replacing the Node.js + C++ native addon architecture with a single Go binary. The rewrite retains full compatibility with existing external interfaces — MySQL schema, WPCOM API notification format, StatsD metric names, and log file structure — making it a genuine drop-in replacement on production infrastructure. Internally, the process-per-worker model is replaced by a goroutine pool, eliminating the overhead of forked processes and native addon compilation while dramatically increasing the number of concurrent checks per host. The rewrite is accompanied by a comprehensive tooling suite designed to make the system easier to test, deploy, operate, and interrogate.
 
+Operational setup and run instructions are documented in `GETTING_STARTED.md` and `README.md`.
+
 ---
 
 ## Why Go
@@ -344,4 +346,3 @@ Within-Jetpack on-call scheduling: route alerts to different contacts at differe
 
 **Distributed Tracing**
 Instrument the full check pipeline with OpenTelemetry spans: DB fetch → work dispatch → HTTP check (with DNS/TCP/TLS sub-spans) → Veriflier request → WPCOM notification. Export to Jaeger or any OTLP-compatible backend. Makes debugging latency anomalies and check delays straightforward without relying on log correlation.
-

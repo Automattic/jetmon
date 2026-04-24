@@ -12,12 +12,14 @@ import (
 func TestValidate(t *testing.T) {
 	base := func() *Config {
 		return &Config{
-			AuthToken:       "token",
-			NumWorkers:      10,
-			BucketTotal:     100,
-			BucketTarget:    50,
-			NetCommsTimeout: 10,
-			LogFormat:       "text",
+			AuthToken:         "token",
+			NumWorkers:        10,
+			BucketTotal:       100,
+			BucketTarget:      50,
+			NetCommsTimeout:   10,
+			LogFormat:         "text",
+			APIRateLimitRPS:   20,
+			APIRateLimitBurst: 40,
 		}
 	}
 
@@ -31,9 +33,9 @@ func TestValidate(t *testing.T) {
 			mutate: func(_ *Config) {},
 		},
 		{
-			name:    "missing auth token",
+			name:    "missing auth token is allowed",
 			mutate:  func(c *Config) { c.AuthToken = "" },
-			wantErr: true,
+			wantErr: false,
 		},
 		{
 			name:    "num workers zero",
@@ -83,6 +85,16 @@ func TestValidate(t *testing.T) {
 		{
 			name:   "json log format is valid",
 			mutate: func(c *Config) { c.LogFormat = "json" },
+		},
+		{
+			name:    "api rate limit rps must be positive",
+			mutate:  func(c *Config) { c.APIRateLimitRPS = 0 },
+			wantErr: true,
+		},
+		{
+			name:    "api rate limit burst must be positive",
+			mutate:  func(c *Config) { c.APIRateLimitBurst = 0 },
+			wantErr: true,
 		},
 	}
 
@@ -158,10 +170,10 @@ func TestLoadAndGet(t *testing.T) {
 func TestLoadInvalidConfigReturnsError(t *testing.T) {
 	saveConfigState(t)
 
-	p := writeConfigFile(t, `{"AUTH_TOKEN": "", "NUM_WORKERS": 5, "BUCKET_TOTAL": 100, "BUCKET_TARGET": 50, "NET_COMMS_TIMEOUT": 10, "LOG_FORMAT": "text"}`)
+	p := writeConfigFile(t, `{"NUM_WORKERS": 0, "BUCKET_TOTAL": 100, "BUCKET_TARGET": 50, "NET_COMMS_TIMEOUT": 10, "LOG_FORMAT": "text"}`)
 
 	if err := Load(p); err == nil {
-		t.Fatal("Load() expected error for invalid config (empty AUTH_TOKEN)")
+		t.Fatal("Load() expected error for invalid config (NUM_WORKERS=0)")
 	}
 }
 

@@ -10,6 +10,8 @@ Jetmon periodically loops over a list of Jetpack sites and performs HTTP checks.
 
 Jetmon 2 is a drop-in replacement: the MySQL schema, WPCOM notification payload, StatsD metric names, log file format, and config file keys are all backwards-compatible. See `PROJECT.md` for the full feature specification and performance estimates.
 
+Start here: for step-by-step setup and run instructions, see `GETTING_STARTED.md`.
+
 
 Architecture
 ------------

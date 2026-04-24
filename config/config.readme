@@ -1,3 +1,5 @@
+For full setup steps and API auth examples, see `GETTING_STARTED.md`.
+
 DEBUG
 Set to true to enable more verbose log messages. Default: false.
 
@@ -28,7 +30,18 @@ BATCH_SIZE
 Number of buckets fetched per database query when loading sites. Default: 32.
 
 AUTH_TOKEN
-Shared secret used to authenticate outbound WPCOM API calls. Required.
+Shared secret for outbound WPCOM status-change calls only. Not used for dashboard REST API auth. Required.
+
+API_TOKENS
+Bearer tokens accepted by the dashboard REST API (`/api/v1/*`). Example: ["token-a", "token-b"].
+API event recovery semantics use `ended_at` for recovered incidents (not `updated_at`).
+When empty, API auth is disabled (requests are allowed without Authorization).
+
+API_RATE_LIMIT_RPS
+Per-client dashboard REST API refill rate in requests per second. Default: 20.
+
+API_RATE_LIMIT_BURST
+Per-client dashboard REST API burst capacity (maximum immediate requests). Default: 40.
 
 VERIFLIER_BATCH_SIZE
 Maximum number of sites sent to each veriflier per verification request. Default: 200.

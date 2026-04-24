@@ -49,6 +49,7 @@ Read-only endpoints for event timelines and raw check results.
 | `GET /api/v1/sites/{blog_id}/audit` | Audit log entries with time range and event type filters |
 
 Event response schema follows `EVENTS.md`: `started_at`, `ended_at`, `severity`, `state`, `resolution_reason`, `check_type`, `cause_event_id`, `metadata`.
+Incident closure/recovery is determined by `ended_at` being set; do not use `updated_at` to infer recovery.
 
 ### Capability 3: Statistics and SLA reporting
 

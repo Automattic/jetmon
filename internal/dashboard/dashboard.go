@@ -9,6 +9,9 @@ import (
 	"runtime"
 	"sync"
 	"time"
+
+	"github.com/Automattic/jetmon/internal/config"
+	"github.com/Automattic/jetmon/internal/db"
 )
 
 // State holds the real-time metrics snapshot served by the dashboard.
@@ -39,19 +42,87 @@ type HealthEntry struct {
 
 // Server is the operator dashboard HTTP server.
 type Server struct {
-	mu       sync.RWMutex
-	state    State
-	health   []HealthEntry
+	mu         sync.RWMutex
+	state      State
+	health     []HealthEntry
 	sseClients map[string]chan string
-	sseMu    sync.Mutex
-	hostname string
+	sseMu      sync.Mutex
+	hostname   string
+
+	apiTokens           map[string]struct{}
+	apiRateLimitRPS     float64
+	apiRateLimitBurst   float64
+	apiRateStates       map[string]*clientRateState
+	apiRateMu           sync.Mutex
+	maxRequestBodyBytes int64
+
+	listSites      func(r *http.Request) ([]db.Site, error)
+	getSiteByID    func(r *http.Request, id int64) (db.Site, error)
+	createSite     func(r *http.Request, input db.CreateSiteInput) (int64, error)
+	patchSite      func(r *http.Request, id int64, input db.PatchSiteInput) (bool, error)
+	deleteSite     func(r *http.Request, id int64) (bool, error)
+	listSiteEvents func(r *http.Request, siteID int64, limit, offset int) ([]db.SiteEvent, error)
+	bucketTotal    int
 }
 
 // New creates a new dashboard Server.
 func New(hostname string) *Server {
+	return NewWithConfig(hostname, nil)
+}
+
+// NewWithConfig creates a new dashboard Server with API config.
+func NewWithConfig(hostname string, cfg *config.Config) *Server {
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+	tokens := cfg.APITokens
+	tokenSet := make(map[string]struct{}, len(tokens))
+	for _, t := range tokens {
+		if t == "" {
+			continue
+		}
+		tokenSet[t] = struct{}{}
+	}
+	rps := cfg.APIRateLimitRPS
+	if rps <= 0 {
+		rps = 20
+	}
+	burst := cfg.APIRateLimitBurst
+	if burst <= 0 {
+		burst = 40
+	}
+	bucketTotal := cfg.BucketTotal
+	if bucketTotal <= 0 {
+		bucketTotal = 1000
+	}
+
 	return &Server{
-		hostname:   hostname,
-		sseClients: make(map[string]chan string),
+		hostname:            hostname,
+		sseClients:          make(map[string]chan string),
+		apiTokens:           tokenSet,
+		apiRateLimitRPS:     float64(rps),
+		apiRateLimitBurst:   float64(burst),
+		apiRateStates:       make(map[string]*clientRateState),
+		maxRequestBodyBytes: 1 << 20,
+		bucketTotal:         bucketTotal,
+		listSites: func(r *http.Request) ([]db.Site, error) {
+			return db.ListSites(r.Context(), parseListSitesParams(r))
+		},
+		getSiteByID: func(r *http.Request, id int64) (db.Site, error) {
+			return db.GetSiteByID(r.Context(), id)
+		},
+		createSite: func(r *http.Request, input db.CreateSiteInput) (int64, error) {
+			return db.CreateSite(r.Context(), input)
+		},
+		patchSite: func(r *http.Request, id int64, input db.PatchSiteInput) (bool, error) {
+			return db.PatchSite(r.Context(), id, input)
+		},
+		deleteSite: func(r *http.Request, id int64) (bool, error) {
+			return db.DeleteSite(r.Context(), id)
+		},
+		listSiteEvents: func(r *http.Request, siteID int64, limit, offset int) ([]db.SiteEvent, error) {
+			return db.ListSiteEvents(r.Context(), siteID, db.ListSiteEventsParams{Limit: limit, Offset: offset})
+		},
 	}
 }
 
@@ -85,6 +156,8 @@ func (s *Server) Listen(addr string) error {
 	mux.HandleFunc("/events", s.handleSSE)
 	mux.HandleFunc("/api/state", s.handleState)
 	mux.HandleFunc("/api/health", s.handleHealth)
+	mux.Handle("/api/v1", s.apiMiddleware(http.HandlerFunc(s.handleAPIV1)))
+	mux.Handle("/api/v1/", s.apiMiddleware(http.HandlerFunc(s.handleAPIV1)))
 
 	log.Printf("dashboard: listening on %s", addr)
 	return http.ListenAndServe(addr, mux)
