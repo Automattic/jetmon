@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-RUN groupadd -r jetmon && useradd --no-log-init -r -g jetmon jetmon
+RUN groupadd -g 1000 jetmon && useradd --no-log-init -u 1000 -g jetmon jetmon
 
 WORKDIR /jetmon
 
