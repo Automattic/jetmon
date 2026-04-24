@@ -148,8 +148,8 @@ Authenticated API base:
 
 Token source behavior:
 
-1. Preferred: `API_TOKENS` (array of allowed bearer tokens)
-2. Fallback: `AUTH_TOKEN` only when `API_TOKENS` is empty
+- `API_TOKENS` is the only source of allowed bearer tokens for `/api/v1`.
+- If `API_TOKENS` is empty, `/api/v1` auth is disabled (local dev convenience).
 
 Rate limit config (token bucket, per client IP):
 
@@ -167,8 +167,6 @@ Rate limit config (token bucket, per client IP):
   "DASHBOARD_PORT": 8080
 }
 ```
-
-If you leave `API_TOKENS` empty, requests authenticated with `Bearer <AUTH_TOKEN>` are accepted.
 
 ## 6. Common API Calls
 
@@ -226,8 +224,8 @@ curl -s -H "Authorization: Bearer ${TOKEN}" \
 
 ## 7. Troubleshooting
 
-- `load config: invalid config: AUTH_TOKEN is required`: set `AUTH_TOKEN` in `config/config.json`.
-- `API` returns `401 unauthorized`: verify `Authorization: Bearer <token>` and token exists in `API_TOKENS` (or `AUTH_TOKEN` if `API_TOKENS` empty).
+- `API` returns `401 unauthorized`: verify `Authorization: Bearer <token>` and ensure the token is in `API_TOKENS`.
+- `/api/v1` unexpectedly allows requests without auth: this happens when `API_TOKENS` is empty.
 - `429 rate_limited`: increase `API_RATE_LIMIT_RPS`/`API_RATE_LIMIT_BURST` for local testing.
 - `db connect` errors: verify `DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME` env vars and MySQL availability.
 - `DB_UPDATES_ENABLE is true but JETMON_UNSAFE_DB_UPDATES=1 is not set`: either disable `DB_UPDATES_ENABLE` or export `JETMON_UNSAFE_DB_UPDATES=1` for local-only testing.

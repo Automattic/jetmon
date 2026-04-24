@@ -171,9 +171,6 @@ func defaults() *Config {
 }
 
 func validate(cfg *Config) error {
-	if cfg.AuthToken == "" {
-		return fmt.Errorf("AUTH_TOKEN is required")
-	}
 	if cfg.NumWorkers <= 0 {
 		return fmt.Errorf("NUM_WORKERS must be > 0")
 	}

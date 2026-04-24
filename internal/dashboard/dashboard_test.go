@@ -191,7 +191,7 @@ func TestBroadcastDropsOnSlowClient(t *testing.T) {
 }
 
 func TestAPIV1RequiresBearerAuth(t *testing.T) {
-	srv := NewWithConfig("test-host", &config.Config{AuthToken: "secret", APIRateLimitRPS: 20, APIRateLimitBurst: 40})
+	srv := NewWithConfig("test-host", &config.Config{APITokens: []string{"secret"}, APIRateLimitRPS: 20, APIRateLimitBurst: 40})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/sites", nil)
 	w := httptest.NewRecorder()
@@ -202,8 +202,23 @@ func TestAPIV1RequiresBearerAuth(t *testing.T) {
 	}
 }
 
+func TestAPIV1AllowsRequestsWhenAPITokensEmptyEvenWithAuthTokenSet(t *testing.T) {
+	srv := NewWithConfig("test-host", &config.Config{AuthToken: "wpcom-only-token", APIRateLimitRPS: 20, APIRateLimitBurst: 40})
+	srv.listSites = func(r *http.Request) ([]db.Site, error) {
+		return []db.Site{}, nil
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sites", nil)
+	w := httptest.NewRecorder()
+	srv.apiMiddleware(http.HandlerFunc(srv.handleAPIV1)).ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+}
+
 func TestAPIV1ListSitesAuthorized(t *testing.T) {
-	srv := NewWithConfig("test-host", &config.Config{AuthToken: "secret", APIRateLimitRPS: 20, APIRateLimitBurst: 40})
+	srv := NewWithConfig("test-host", &config.Config{APITokens: []string{"secret"}, APIRateLimitRPS: 20, APIRateLimitBurst: 40})
 	srv.listSites = func(r *http.Request) ([]db.Site, error) {
 		return []db.Site{{ID: 101, BlogID: 55, MonitorURL: "https://example.com", MonitorActive: true, SiteStatus: 1, BucketNo: 5, RedirectPolicy: "follow"}}, nil
 	}
@@ -222,7 +237,7 @@ func TestAPIV1ListSitesAuthorized(t *testing.T) {
 }
 
 func TestAPIV1PatchRejectsMonitorURL(t *testing.T) {
-	srv := NewWithConfig("test-host", &config.Config{AuthToken: "secret", APIRateLimitRPS: 20, APIRateLimitBurst: 40})
+	srv := NewWithConfig("test-host", &config.Config{APITokens: []string{"secret"}, APIRateLimitRPS: 20, APIRateLimitBurst: 40})
 	body := bytes.NewBufferString(`{"monitor_url":"https://evil.example"}`)
 	req := httptest.NewRequest(http.MethodPatch, "/api/v1/sites/10", body)
 	req.Header.Set("Authorization", "Bearer secret")
@@ -239,7 +254,7 @@ func TestAPIV1PatchRejectsMonitorURL(t *testing.T) {
 }
 
 func TestAPIV1DeleteSiteBehavior(t *testing.T) {
-	srv := NewWithConfig("test-host", &config.Config{AuthToken: "secret", APIRateLimitRPS: 20, APIRateLimitBurst: 40})
+	srv := NewWithConfig("test-host", &config.Config{APITokens: []string{"secret"}, APIRateLimitRPS: 20, APIRateLimitBurst: 40})
 	srv.deleteSite = func(r *http.Request, id int64) (bool, error) {
 		if id == 1 {
 			return true, nil
@@ -265,7 +280,7 @@ func TestAPIV1DeleteSiteBehavior(t *testing.T) {
 }
 
 func TestAPIV1EventsReadOnly(t *testing.T) {
-	srv := NewWithConfig("test-host", &config.Config{AuthToken: "secret", APIRateLimitRPS: 20, APIRateLimitBurst: 40})
+	srv := NewWithConfig("test-host", &config.Config{APITokens: []string{"secret"}, APIRateLimitRPS: 20, APIRateLimitBurst: 40})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sites/5/events", bytes.NewBufferString(`{}`))
 	req.Header.Set("Authorization", "Bearer secret")
 	w := httptest.NewRecorder()
@@ -278,7 +293,7 @@ func TestAPIV1EventsReadOnly(t *testing.T) {
 }
 
 func TestAPIV1GetEventsIncludesLabels(t *testing.T) {
-	srv := NewWithConfig("test-host", &config.Config{AuthToken: "secret", APIRateLimitRPS: 20, APIRateLimitBurst: 40})
+	srv := NewWithConfig("test-host", &config.Config{APITokens: []string{"secret"}, APIRateLimitRPS: 20, APIRateLimitBurst: 40})
 	srv.getSiteByID = func(r *http.Request, id int64) (db.Site, error) {
 		return db.Site{ID: id}, nil
 	}

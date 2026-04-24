@@ -76,9 +76,6 @@ func NewWithConfig(hostname string, cfg *config.Config) *Server {
 		cfg = &config.Config{}
 	}
 	tokens := cfg.APITokens
-	if len(tokens) == 0 && cfg.AuthToken != "" {
-		tokens = []string{cfg.AuthToken}
-	}
 	tokenSet := make(map[string]struct{}, len(tokens))
 	for _, t := range tokens {
 		if t == "" {

@@ -6,9 +6,15 @@ touch logs/jetmon.log logs/status-change.log
 touch stats/sitespersec stats/sitesqueue stats/totals
 
 if [ ! -f config/config.json ]; then
+	JETMON_API_TOKENS_JSON=${JETMON_API_TOKENS:-[]}
+	JETMON_API_RATE_LIMIT_RPS_VALUE=${JETMON_API_RATE_LIMIT_RPS:-20}
+	JETMON_API_RATE_LIMIT_BURST_VALUE=${JETMON_API_RATE_LIMIT_BURST:-40}
 	if [ -w config/ ]; then
 		sed \
 			-e "s/<AUTH_TOKEN>/${WPCOM_JETMON_AUTH_TOKEN}/g" \
+			-e "s|<API_TOKENS>|${JETMON_API_TOKENS_JSON}|g" \
+			-e "s|<API_RATE_LIMIT_RPS>|${JETMON_API_RATE_LIMIT_RPS_VALUE}|g" \
+			-e "s|<API_RATE_LIMIT_BURST>|${JETMON_API_RATE_LIMIT_BURST_VALUE}|g" \
 			-e "s/<VERIFLIER_GRPC_PORT>/${VERIFLIER_GRPC_PORT}/g" \
 			-e "s/<VERIFLIER_AUTH_TOKEN>/${VERIFLIER_AUTH_TOKEN}/g" \
 			config/config-sample.json > config/config.json
@@ -16,6 +22,9 @@ if [ ! -f config/config.json ]; then
 		export JETMON_CONFIG=/tmp/config.json
 		sed \
 			-e "s/<AUTH_TOKEN>/${WPCOM_JETMON_AUTH_TOKEN}/g" \
+			-e "s|<API_TOKENS>|${JETMON_API_TOKENS_JSON}|g" \
+			-e "s|<API_RATE_LIMIT_RPS>|${JETMON_API_RATE_LIMIT_RPS_VALUE}|g" \
+			-e "s|<API_RATE_LIMIT_BURST>|${JETMON_API_RATE_LIMIT_BURST_VALUE}|g" \
 			-e "s/<VERIFLIER_GRPC_PORT>/${VERIFLIER_GRPC_PORT}/g" \
 			-e "s/<VERIFLIER_AUTH_TOKEN>/${VERIFLIER_AUTH_TOKEN}/g" \
 			config/config-sample.json > "${JETMON_CONFIG}"

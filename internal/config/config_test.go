@@ -33,9 +33,9 @@ func TestValidate(t *testing.T) {
 			mutate: func(_ *Config) {},
 		},
 		{
-			name:    "missing auth token",
+			name:    "missing auth token is allowed",
 			mutate:  func(c *Config) { c.AuthToken = "" },
-			wantErr: true,
+			wantErr: false,
 		},
 		{
 			name:    "num workers zero",
@@ -170,10 +170,10 @@ func TestLoadAndGet(t *testing.T) {
 func TestLoadInvalidConfigReturnsError(t *testing.T) {
 	saveConfigState(t)
 
-	p := writeConfigFile(t, `{"AUTH_TOKEN": "", "NUM_WORKERS": 5, "BUCKET_TOTAL": 100, "BUCKET_TARGET": 50, "NET_COMMS_TIMEOUT": 10, "LOG_FORMAT": "text"}`)
+	p := writeConfigFile(t, `{"NUM_WORKERS": 0, "BUCKET_TOTAL": 100, "BUCKET_TARGET": 50, "NET_COMMS_TIMEOUT": 10, "LOG_FORMAT": "text"}`)
 
 	if err := Load(p); err == nil {
-		t.Fatal("Load() expected error for invalid config (empty AUTH_TOKEN)")
+		t.Fatal("Load() expected error for invalid config (NUM_WORKERS=0)")
 	}
 }
 

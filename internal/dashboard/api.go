@@ -425,6 +425,10 @@ func parseBoolQuery(v string) (bool, bool) {
 }
 
 func (s *Server) isAuthorized(r *http.Request) bool {
+	if len(s.apiTokens) == 0 {
+		return true
+	}
+
 	auth := strings.TrimSpace(r.Header.Get("Authorization"))
 	if !strings.HasPrefix(auth, "Bearer ") {
 		return false
