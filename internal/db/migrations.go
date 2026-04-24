@@ -3,14 +3,12 @@ package db
 import (
 	"fmt"
 	"log"
-	"strings"
 )
 
 // migration holds a single idempotent schema change.
 type migration struct {
-	id    int
-	sql   string
-	apply func() error
+	id  int
+	sql string
 }
 
 var migrations = []migration{
@@ -96,21 +94,26 @@ var migrations = []migration{
 	{id: 9, sql: `CREATE TABLE IF NOT EXISTS jetmon_site_events (
 		id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
 		jetpack_monitor_site_id BIGINT UNSIGNED NOT NULL,
+		endpoint_id BIGINT UNSIGNED NULL,
+		check_type TINYINT UNSIGNED NULL,
 		event_type TINYINT UNSIGNED NOT NULL,
 		severity TINYINT UNSIGNED NOT NULL,
 		started_at DATETIME NOT NULL,
 		ended_at DATETIME NULL,
+		cause_event_id BIGINT UNSIGNED NULL,
+		resolution_reason TINYINT UNSIGNED NULL,
+		metadata JSON NULL,
 		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+		updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		INDEX idx_site_event_type (jetpack_monitor_site_id, event_type),
 		INDEX idx_event_type_started (event_type, started_at),
+		INDEX idx_site_event_open (jetpack_monitor_site_id, check_type, ended_at),
+		INDEX idx_endpoint_check_open (endpoint_id, check_type, ended_at),
 		CONSTRAINT fk_jetmon_site_events_site
 			FOREIGN KEY (jetpack_monitor_site_id)
 			REFERENCES jetpack_monitor_sites (jetpack_monitor_site_id)
 			ON DELETE CASCADE
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
-
-	{id: 10, apply: migrateSiteEventsSchema},
 }
 
 // Migrate applies all pending migrations idempotently.
@@ -132,14 +135,8 @@ func Migrate() error {
 			continue
 		}
 		log.Printf("applying migration %d", m.id)
-		if m.apply != nil {
-			if err := m.apply(); err != nil {
-				return fmt.Errorf("migration %d: %w", m.id, err)
-			}
-		} else {
-			if _, err := db.Exec(m.sql); err != nil {
-				return fmt.Errorf("migration %d: %w", m.id, err)
-			}
+		if _, err := db.Exec(m.sql); err != nil {
+			return fmt.Errorf("migration %d: %w", m.id, err)
 		}
 		if err := markApplied(m.id); err != nil {
 			return err
@@ -159,124 +156,4 @@ func markApplied(id int) error {
 		`INSERT IGNORE INTO jetmon_schema_migrations (id) VALUES (?)`, id,
 	)
 	return err
-}
-
-func migrateSiteEventsSchema() error {
-	const table = "jetmon_site_events"
-
-	if err := ensureColumnExists(table, "endpoint_id", "BIGINT UNSIGNED NULL"); err != nil {
-		return err
-	}
-	if err := ensureColumnExists(table, "check_type", "TINYINT UNSIGNED NULL"); err != nil {
-		return err
-	}
-	if err := ensureColumnExists(table, "cause_event_id", "BIGINT UNSIGNED NULL"); err != nil {
-		return err
-	}
-	if err := ensureColumnExists(table, "resolution_reason", "TINYINT UNSIGNED NULL"); err != nil {
-		return err
-	}
-	if err := ensureColumnExists(table, "metadata", "JSON NULL"); err != nil {
-		return err
-	}
-
-	if err := ensureIndexExists(table, "idx_site_event_open", "(jetpack_monitor_site_id, check_type, ended_at)"); err != nil {
-		return err
-	}
-	if err := ensureIndexExists(table, "idx_event_type_started", "(event_type, started_at)"); err != nil {
-		return err
-	}
-	if err := ensureIndexExists(table, "idx_endpoint_check_open", "(endpoint_id, check_type, ended_at)"); err != nil {
-		return err
-	}
-
-	onUpdate, err := columnHasOnUpdate(table, "updated_at")
-	if err != nil {
-		return err
-	}
-	if onUpdate {
-		if _, err := db.Exec(`ALTER TABLE jetmon_site_events MODIFY COLUMN updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP`); err != nil {
-			return fmt.Errorf("modify jetmon_site_events.updated_at: %w", err)
-		}
-	}
-
-	return nil
-}
-
-func ensureColumnExists(table, column, definition string) error {
-	exists, err := columnExists(table, column)
-	if err != nil {
-		return err
-	}
-	if exists {
-		return nil
-	}
-	stmt := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, definition)
-	if _, err := db.Exec(stmt); err != nil {
-		return fmt.Errorf("add column %s.%s: %w", table, column, err)
-	}
-	return nil
-}
-
-func ensureIndexExists(table, index, definition string) error {
-	exists, err := indexExists(table, index)
-	if err != nil {
-		return err
-	}
-	if exists {
-		return nil
-	}
-	stmt := fmt.Sprintf("ALTER TABLE %s ADD INDEX %s %s", table, index, definition)
-	if _, err := db.Exec(stmt); err != nil {
-		return fmt.Errorf("add index %s.%s: %w", table, index, err)
-	}
-	return nil
-}
-
-func columnExists(table, column string) (bool, error) {
-	var count int
-	err := db.QueryRow(
-		`SELECT COUNT(*)
-		 FROM information_schema.COLUMNS
-		 WHERE TABLE_SCHEMA = DATABASE()
-		   AND TABLE_NAME = ?
-		   AND COLUMN_NAME = ?`,
-		table, column,
-	).Scan(&count)
-	if err != nil {
-		return false, fmt.Errorf("check column %s.%s: %w", table, column, err)
-	}
-	return count > 0, nil
-}
-
-func indexExists(table, index string) (bool, error) {
-	var count int
-	err := db.QueryRow(
-		`SELECT COUNT(*)
-		 FROM information_schema.STATISTICS
-		 WHERE TABLE_SCHEMA = DATABASE()
-		   AND TABLE_NAME = ?
-		   AND INDEX_NAME = ?`,
-		table, index,
-	).Scan(&count)
-	if err != nil {
-		return false, fmt.Errorf("check index %s.%s: %w", table, index, err)
-	}
-	return count > 0, nil
-}
-
-func columnHasOnUpdate(table, column string) (bool, error) {
-	var extra string
-	err := db.QueryRow(
-		`SELECT EXTRA
-		 FROM information_schema.COLUMNS
-		 WHERE TABLE_SCHEMA = DATABASE()
-		   AND TABLE_NAME = ?
-		   AND COLUMN_NAME = ?`,
-		table, column,
-	).Scan(&extra)
-	if err != nil {
-		return false, fmt.Errorf("check on update for %s.%s: %w", table, column, err)
-	}
-	return strings.Contains(strings.ToLower(extra), "on update"), nil
 }
