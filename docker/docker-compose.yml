@@ -23,6 +23,7 @@ services:
           context: ../
           dockerfile: docker/Dockerfile_jetmon
         restart: unless-stopped
+        user: "${JETMON_UID:-1000}:${JETMON_GID:-1000}"
         env_file:
           - .env
         volumes:
