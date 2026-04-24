@@ -6,7 +6,8 @@
 	"WORKER_MAX_CHECKS" : 10000,
 	"WORKER_MAX_MEM_MB" : 53,
 
-	"DB_UPDATES_ENABLE" : false,
+	"DB_UPDATES_ENABLE"    : false,
+	"WPCOM_NOTIFY_ENABLE"  : true,
 
 	"BUCKET_NO_MIN"  : 0,
 	"BUCKET_NO_MAX"  : 512,

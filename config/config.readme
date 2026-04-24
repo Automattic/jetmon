@@ -26,6 +26,10 @@ DB_UPDATES_ENABLE
 WARNING: Do not enabled this on production hosts. This should only be enabled on local docker test environments and never in production.
 Set to true to allow Jetmon to update the jetpack_monitor_sites table. Without this, it is difficult to test how effective the code is working when in a local docker test environment.
 
+WPCOM_NOTIFY_ENABLE
+Set to false to suppress all outbound HTTPS notifications to the WordPress.com Jetmon endpoint. Database updates (DB_UPDATES_ENABLE) are unaffected by this setting and will continue to run independently.
+Useful in local test environments where you want DB updates without making real calls to the WPCOM endpoint.
+
 BUCKET_NO_MIN
 The first bucket in the range of jetpack_monitor_sites buckets that this host should process when checking sites. Each host should be configured to have a unique set of buckets that it is responsible for.
 The buckets currently range from 0 to 511.
