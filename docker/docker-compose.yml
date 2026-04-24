@@ -11,6 +11,9 @@ services:
           - $MYSQLDB_LOCAL_PORT:$MYSQLDB_DOCKER_PORT
         volumes:
           - db:/var/lib/mysql
+        networks:
+          - default
+          - jetmon-shared
     jetmon:
         hostname: docker.jetmon.dev.com
         build:
@@ -36,6 +39,9 @@ services:
           - $JETMON_STATUS_LOCAL_PORT:$JETMON_STATUS_DOCKER_PORT
         depends_on:
           - mysqldb
+        networks:
+          - default
+          - jetmon-shared
     veriflier:
         build:
           context: ../
@@ -61,6 +67,10 @@ services:
           - ./volumes/statsd/graphite/storage:/opt/graphite/storage
           - ./volumes/statsd/statsd/config:/opt/statsd/config
           - ./volumes/statsd/logs:/var/log
+
+networks:
+  jetmon-shared:
+    external: true
 
 volumes:
   db:
