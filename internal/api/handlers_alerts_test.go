@@ -215,6 +215,49 @@ func TestUpdateAlertContactHappyPath(t *testing.T) {
 	}
 }
 
+// TestUpdateAlertContactRejectsEmptyLabel verifies an empty label
+// PATCH gets rejected at the package's input-validation layer
+// without hitting the DB. Mirrors Create's "label is required" rule.
+func TestUpdateAlertContactRejectsEmptyLabel(t *testing.T) {
+	s, _, key, cleanup := newTestServer(t)
+	defer cleanup()
+	// No DB expectations — validation should fail before any query.
+
+	body := []byte(`{"label": ""}`)
+	req := newPATCHWithBody("/api/v1/alert-contacts/11", body)
+	req.SetPathValue("id", "11")
+	req = setAuthCtx(req, key)
+	rec := invokeAuthed(s, req, s.handleUpdateAlertContact)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
+	}
+	if got := readErrorBody(t, rec.Body).Code; got != "invalid_alert_contact" {
+		t.Errorf("code = %q, want invalid_alert_contact", got)
+	}
+}
+
+// TestUpdateAlertContactRejectsNegativeMaxPerHour verifies that PATCH
+// catches max_per_hour < 0 at input-validation time rather than letting
+// MySQL reject the negative value as a generic 500.
+func TestUpdateAlertContactRejectsNegativeMaxPerHour(t *testing.T) {
+	s, _, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	body := []byte(`{"max_per_hour": -10}`)
+	req := newPATCHWithBody("/api/v1/alert-contacts/11", body)
+	req.SetPathValue("id", "11")
+	req = setAuthCtx(req, key)
+	rec := invokeAuthed(s, req, s.handleUpdateAlertContact)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
+	}
+	if got := readErrorBody(t, rec.Body).Code; got != "invalid_alert_contact" {
+		t.Errorf("code = %q, want invalid_alert_contact", got)
+	}
+}
+
 func TestUpdateAlertContactNotFound(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()

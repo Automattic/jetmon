@@ -163,6 +163,51 @@ func TestEmailDispatcherRejectsBadDestination(t *testing.T) {
 	}
 }
 
+// TestRenderEmailSubjectStripsCRLF verifies that CRLF in untrusted
+// fields (site URL is operator-controlled but the DB column doesn't
+// enforce CRLF-free) doesn't leak into the Subject header. Defense-
+// in-depth against MIME header injection.
+func TestRenderEmailSubjectStripsCRLF(t *testing.T) {
+	n := makeTestNotification()
+	n.SiteURL = "https://example.com\r\nBcc: attacker@evil.com"
+	got := renderEmailSubject(n)
+	if strings.ContainsAny(got, "\r\n") {
+		t.Errorf("subject contains CRLF: %q", got)
+	}
+	if !strings.Contains(got, "https://example.com") {
+		t.Errorf("subject lost the legitimate URL portion: %q", got)
+	}
+}
+
+func TestBuildMIMEMessageStripsHeaderCRLF(t *testing.T) {
+	mime := buildMIMEMessage(EmailMessage{
+		From:      "from@example.com\r\nX-Injected: yes",
+		To:        "to@example.com\r\nBcc: attacker@evil.com",
+		Subject:   "test\r\nX-Header: malicious",
+		PlainBody: "plain\r\nwith\r\nnewlines\r\nis fine in body",
+		HTMLBody:  "<b>html</b>",
+	})
+	// Split headers from body and assert no injected header lines.
+	parts := strings.SplitN(mime, "\r\n\r\n", 2)
+	if len(parts) != 2 {
+		t.Fatalf("MIME missing header/body separator:\n%s", mime)
+	}
+	headers := parts[0]
+	// A successful injection would put the bad token at the start of a
+	// header line (preceded by \r\n). The strip merges the malicious
+	// content into the legitimate header value, but no new header line
+	// should be created.
+	for _, bad := range []string{"\r\nX-Injected:", "\r\nBcc:", "\r\nX-Header:"} {
+		if strings.Contains(headers, bad) {
+			t.Errorf("header injection succeeded with token %q:\n%s", bad, headers)
+		}
+	}
+	// The legitimate body CRLFs should pass through unchanged.
+	if !strings.Contains(parts[1], "plain\r\nwith\r\nnewlines") {
+		t.Errorf("body CRLF was incorrectly stripped:\n%s", parts[1])
+	}
+}
+
 func TestBuildMIMEMessageHasBothParts(t *testing.T) {
 	mime := buildMIMEMessage(EmailMessage{
 		From:      "from@example.com",

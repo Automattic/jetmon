@@ -179,7 +179,7 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("DELETE /api/v1/alert-contacts/{id}",
 		s.requireScope(scopeWrite, s.handleDeleteAlertContact))
 	mux.HandleFunc("POST /api/v1/alert-contacts/{id}/test",
-		s.requireScope(scopeWrite, s.handleAlertContactTest))
+		s.requireScope(scopeWrite, s.withIdempotency(s.handleAlertContactTest)))
 
 	// Alert deliveries — read history, manually retry abandoned rows.
 	mux.HandleFunc("GET /api/v1/alert-contacts/{id}/deliveries",

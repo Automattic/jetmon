@@ -92,16 +92,28 @@ func (d *emailDispatcher) Send(ctx context.Context, destination json.RawMessage,
 
 // renderEmailSubject is short enough to fit in mobile notification
 // previews. Severity name and site URL are the most-relevant info at
-// a glance; recovery and test prefixes are explicit.
+// a glance; recovery and test prefixes are explicit. Strips CRLF
+// from the URL to prevent MIME header injection — the URL is
+// operator-controlled (jetpack_monitor_sites.monitor_url) but the
+// column doesn't enforce CRLF-free, so defense-in-depth lives here.
 func renderEmailSubject(n Notification) string {
+	url := stripCRLF(n.SiteURL)
 	switch {
 	case n.IsTest:
-		return fmt.Sprintf("[Jetmon test] %s", n.SiteURL)
+		return fmt.Sprintf("[Jetmon test] %s", url)
 	case n.Recovery:
-		return fmt.Sprintf("[Recovered] %s", n.SiteURL)
+		return fmt.Sprintf("[Recovered] %s", url)
 	default:
-		return fmt.Sprintf("[%s] %s", n.SeverityName, n.SiteURL)
+		return fmt.Sprintf("[%s] %s", stripCRLF(n.SeverityName), url)
 	}
+}
+
+// stripCRLF removes carriage return and newline characters. Used on
+// any field that becomes part of a MIME header (Subject, From, To)
+// to prevent header injection via untrusted strings.
+func stripCRLF(s string) string {
+	r := strings.NewReplacer("\r", "", "\n", "")
+	return r.Replace(s)
 }
 
 // renderEmailPlain is the plain-text body. Same fields as the HTML
@@ -242,12 +254,16 @@ func (s *SMTPSender) Send(_ context.Context, m EmailMessage) error {
 // buildMIMEMessage produces a multipart/alternative MIME body with
 // both plain-text and HTML parts. Boundary is fixed; the message is
 // short and self-contained, so collisions are not a concern.
+//
+// CRLF is stripped from From/To/Subject to prevent header injection.
+// The body parts are content, not headers — CRLF inside them is
+// expected and handled by the MIME boundary structure.
 func buildMIMEMessage(m EmailMessage) string {
 	const boundary = "JetmonAlertBoundary_4d8f31a2"
 	var b strings.Builder
-	fmt.Fprintf(&b, "From: %s\r\n", m.From)
-	fmt.Fprintf(&b, "To: %s\r\n", m.To)
-	fmt.Fprintf(&b, "Subject: %s\r\n", m.Subject)
+	fmt.Fprintf(&b, "From: %s\r\n", stripCRLF(m.From))
+	fmt.Fprintf(&b, "To: %s\r\n", stripCRLF(m.To))
+	fmt.Fprintf(&b, "Subject: %s\r\n", stripCRLF(m.Subject))
 	b.WriteString("MIME-Version: 1.0\r\n")
 	fmt.Fprintf(&b, "Content-Type: multipart/alternative; boundary=%q\r\n\r\n", boundary)
 

@@ -108,20 +108,28 @@ func ListActive(ctx context.Context, db *sql.DB) ([]AlertContact, error) {
 // is transport-specific and validating cross-transport changes is
 // brittle); callers who want to switch transport delete and re-create.
 func Update(ctx context.Context, db *sql.DB, id int64, in UpdateInput) (*AlertContact, error) {
-	// Need the current row to validate destination patches against the
-	// existing transport (the only place we know what shape destination
-	// should have).
+	// Validate input fields that don't depend on the existing row first
+	// (fail fast — no DB hit on obviously bad PATCH bodies).
+	if in.Label != nil && *in.Label == "" {
+		return nil, errors.New("alerting: label must not be empty")
+	}
+	if in.MinSeverity != nil {
+		if err := validateSeverity(*in.MinSeverity); err != nil {
+			return nil, err
+		}
+	}
+	if in.MaxPerHour != nil && *in.MaxPerHour < 0 {
+		return nil, errors.New("alerting: max_per_hour must be >= 0")
+	}
+
+	// The destination shape is transport-specific, so we need the
+	// existing row to know what to validate against.
 	current, err := Get(ctx, db, id)
 	if err != nil {
 		return nil, err
 	}
 	if in.Destination != nil {
 		if err := validateDestination(current.Transport, in.Destination); err != nil {
-			return nil, err
-		}
-	}
-	if in.MinSeverity != nil {
-		if err := validateSeverity(*in.MinSeverity); err != nil {
 			return nil, err
 		}
 	}
