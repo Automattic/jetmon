@@ -181,6 +181,12 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("POST /api/v1/alert-contacts/{id}/test",
 		s.requireScope(scopeWrite, s.handleAlertContactTest))
 
+	// Alert deliveries — read history, manually retry abandoned rows.
+	mux.HandleFunc("GET /api/v1/alert-contacts/{id}/deliveries",
+		s.requireScope(scopeRead, s.handleListAlertDeliveries))
+	mux.HandleFunc("POST /api/v1/alert-contacts/{id}/deliveries/{delivery_id}/retry",
+		s.requireScope(scopeWrite, s.withIdempotency(s.handleRetryAlertDelivery)))
+
 	// Catch-all → 404 with a useful message rather than the default empty body.
 	mux.HandleFunc("/", s.handleNotFound)
 
