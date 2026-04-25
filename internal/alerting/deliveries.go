@@ -65,9 +65,32 @@ func Enqueue(ctx context.Context, db *sql.DB, in EnqueueInput) (int64, error) {
 	return id, nil
 }
 
+// claimLockDuration is how far ClaimReady pushes next_attempt_at out
+// when it claims a row. Must outlast the worker's per-delivery wall
+// clock so an in-flight goroutine has time to write its real result
+// before the soft lock would expire. The default DispatchTimeout is
+// 30s with a 5s buffer; 60s gives comfortable headroom. A crashed
+// goroutine that never updates the row recovers naturally when the
+// lock expires.
+const claimLockDuration = 60 * time.Second
+
 // ClaimReady returns up to limit pending deliveries whose
-// next_attempt_at is in the past. Same multi-instance caveat as the
-// webhooks claim — see internal/webhooks/deliveries.go for context.
+// next_attempt_at is in the past. Each claimed row is soft-locked by
+// pushing next_attempt_at to NOW + claimLockDuration so subsequent
+// ticks don't re-claim a row whose dispatch is still in-flight. The
+// dispatch goroutine overwrites next_attempt_at with its real value
+// when it finishes.
+//
+// Without the soft lock, the deliver loop's 1-second tick re-claims
+// any in-flight row up to the per-contact cap, producing concurrent
+// dispatches that inflate the attempt counter and effectively skip
+// retry-schedule steps. The soft lock prevents that.
+//
+// Multi-instance caveat: same as webhooks — two instances polling
+// simultaneously could both pick up a row in the SELECT phase, with
+// only the UPDATE differentiating winners. For multi-instance the
+// claim should move to SELECT ... FOR UPDATE SKIP LOCKED in a
+// transaction. Tracked alongside the deliverer-binary extraction.
 func ClaimReady(ctx context.Context, db *sql.DB, limit int) ([]Delivery, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, alert_contact_id, transition_id, event_id, event_type, severity, payload,
@@ -81,16 +104,36 @@ func ClaimReady(ctx context.Context, db *sql.DB, limit int) ([]Delivery, error) 
 	if err != nil {
 		return nil, fmt.Errorf("alerting: claim ready: %w", err)
 	}
-	defer rows.Close()
-	var out []Delivery
+	var candidates []Delivery
 	for rows.Next() {
 		d, err := scanDeliveryRow(rows)
 		if err != nil {
+			rows.Close()
 			return nil, err
 		}
-		out = append(out, *d)
+		candidates = append(candidates, *d)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+
+	lockUntil := time.Now().Add(claimLockDuration).UTC()
+	for i := range candidates {
+		if _, err := db.ExecContext(ctx, `
+			UPDATE jetmon_alert_deliveries
+			   SET next_attempt_at = ?
+			 WHERE id = ? AND status = 'pending'`,
+			lockUntil, candidates[i].ID); err != nil {
+			return nil, fmt.Errorf("alerting: soft-lock row %d: %w", candidates[i].ID, err)
+		}
+	}
+	return candidates, nil
 }
 
 // MarkDelivered records a successful delivery.

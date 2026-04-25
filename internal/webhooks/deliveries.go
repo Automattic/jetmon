@@ -75,17 +75,42 @@ func Enqueue(ctx context.Context, db *sql.DB, in EnqueueInput) (int64, error) {
 	return id, nil
 }
 
-// ClaimReady returns up to limit pending deliveries whose next_attempt_at
-// is in the past, ordered by next_attempt_at ASC (oldest first). The
-// worker should claim, attempt, and update each row.
+// claimLockDuration is how far ClaimReady pushes next_attempt_at out
+// when it claims a row. It must outlast the worker's per-delivery wall
+// clock so the in-flight goroutine has time to write its real result
+// (delivered → next_attempt_at NULL, failed → next_attempt_at = retry
+// time) before this soft lock would expire. The default worker
+// HTTPTimeout is 30s with a 5s buffer; 60s gives comfortable headroom.
 //
-// Multi-instance safety: this implementation does NOT lock claimed rows.
-// Two instances polling simultaneously could pick up the same row and
-// fire duplicate deliveries. For single-instance deployment that's fine;
-// for multi-instance we add row-level claim via SELECT … FOR UPDATE SKIP
-// LOCKED in a transaction. Tracked in ROADMAP.md notes — see Architectural
-// roadmap "multi-repo split" (the deliverer process is the natural place
-// to add the locking when we extract it).
+// If a goroutine crashes without updating the row (panic without
+// recovery, OOM kill, etc.), the soft lock expires naturally and the
+// row becomes claimable again — natural recovery without operator
+// intervention.
+const claimLockDuration = 60 * time.Second
+
+// ClaimReady returns up to limit pending deliveries whose next_attempt_at
+// is in the past, ordered by next_attempt_at ASC (oldest first). Each
+// claimed row is soft-locked by pushing next_attempt_at to NOW +
+// claimLockDuration so subsequent ticks don't re-claim a row whose
+// dispatch is still in-flight. The dispatch goroutine overwrites
+// next_attempt_at with its real value (NULL on success, retry time on
+// failure) when it finishes.
+//
+// Without the soft lock, the deliver loop's 1-second tick re-claims
+// any in-flight row up to the per-contact in-flight cap, producing
+// concurrent dispatches and inflating the attempt counter — three
+// concurrent claims followed by three failures end up at attempt=3
+// after a single round. The soft lock prevents that.
+//
+// Multi-instance safety: this implementation does NOT use row-level
+// locks (SELECT ... FOR UPDATE SKIP LOCKED). Two instances polling
+// simultaneously could pick up the same row in the SELECT phase. The
+// UPDATE that follows is per-row, so only one of them will actually
+// transition next_attempt_at — but both still see the original
+// pre-claim row in their result set. For single-instance deployment
+// that's fine; for multi-instance the claim-and-lock should move to
+// SELECT ... FOR UPDATE SKIP LOCKED within a transaction. Tracked
+// alongside the deliverer-binary extraction in ROADMAP.md.
 func ClaimReady(ctx context.Context, db *sql.DB, limit int) ([]Delivery, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, webhook_id, transition_id, event_id, event_type, payload,
@@ -99,16 +124,37 @@ func ClaimReady(ctx context.Context, db *sql.DB, limit int) ([]Delivery, error) 
 	if err != nil {
 		return nil, fmt.Errorf("webhooks: claim ready: %w", err)
 	}
-	defer rows.Close()
-	var out []Delivery
+	var candidates []Delivery
 	for rows.Next() {
 		d, err := scanDeliveryRow(rows)
 		if err != nil {
+			rows.Close()
 			return nil, err
 		}
-		out = append(out, *d)
+		candidates = append(candidates, *d)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+
+	// Soft-lock each claimed row so the next tick won't re-pick it.
+	lockUntil := time.Now().Add(claimLockDuration).UTC()
+	for i := range candidates {
+		if _, err := db.ExecContext(ctx, `
+			UPDATE jetmon_webhook_deliveries
+			   SET next_attempt_at = ?
+			 WHERE id = ? AND status = 'pending'`,
+			lockUntil, candidates[i].ID); err != nil {
+			return nil, fmt.Errorf("webhooks: soft-lock row %d: %w", candidates[i].ID, err)
+		}
+	}
+	return candidates, nil
 }
 
 // MarkDelivered records a successful delivery with the response status.
