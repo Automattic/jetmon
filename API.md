@@ -758,7 +758,7 @@ Standard CRUD. An alert contact is:
   "transport": "pagerduty",
   "destination": { "integration_key": "***" },
   "site_filter": { "site_ids": [12345, 67890] },
-  "min_severity": "Critical",
+  "min_severity": "Down",
   "max_per_hour": 60,
   "secret_preview": "abcd",
   "created_by": "alerts-admin",
@@ -773,7 +773,7 @@ Standard CRUD. An alert contact is:
 | Transport | `destination` shape | Notes |
 |-----------|---------------------|-------|
 | `email` | `{ "address": "ops@example.com" }` | Rendered as a plain-text + HTML email. Sent via the configured email transport (see "Email delivery" below). |
-| `pagerduty` | `{ "integration_key": "<events-v2 routing key>" }` | Posts to PagerDuty Events API v2. `min_severity` maps to PagerDuty severity (Down → critical, Slow → warning, etc.). |
+| `pagerduty` | `{ "integration_key": "<events-v2 routing key>" }` | Posts to PagerDuty Events API v2. Jetmon severity maps to PagerDuty severity: `Down`/`SeemsDown` → `critical`, `Degraded` → `warning`, `Warning` → `info`, `Up` → resolves the alert. |
 | `slack` | `{ "webhook_url": "https://hooks.slack.com/..." }` | Posts to a Slack incoming-webhook URL. Renders a Block Kit message with site, state, severity, and an event link. |
 | `teams` | `{ "webhook_url": "https://outlook.office.com/webhook/..." }` | Posts to a Microsoft Teams incoming-webhook URL. Renders an Adaptive Card with the same fields as Slack. |
 
@@ -785,18 +785,20 @@ Alert contacts use a simpler filter model than webhooks: **site list + severity 
 
 ```
 site_id ∈ site_filter.site_ids   (or site_filter == {} → all sites)
-AND new_severity >= min_severity (Info < Notice < Warning < Critical)
+AND new_severity >= min_severity (Up=0 < Warning=1 < Degraded=2 < SeemsDown=3 < Down=4)
 ```
 
-Empty `site_filter` means "all sites." `min_severity` is required and defaults to `Critical` on create — this is the most common case (page me only on real outages) and avoids accidental noise from new contacts.
+Empty `site_filter` means "all sites." `min_severity` is required and defaults to `Down` on create — this is the most common case (page me only on real outages) and avoids accidental noise from new contacts.
+
+The severity values match `internal/eventstore.Severity*` constants directly; the API exposes them by string name in JSON (`"Down"`, `"SeemsDown"`, etc.) and stores them as the underlying `uint8` in the database.
 
 The simpler filter model is intentional. Most alert contact configs are "this person, these sites, only when something serious happens"; event-type and state filters (which webhooks support) are rarely useful for human pagers — if you got the open page you almost always want the close page too. Customers who need finer-grained filtering register a webhook instead.
 
 #### Severity gate
 
-Severity ordering: `Info < Notice < Warning < Critical`. The gate matches `new_severity >= min_severity` on each transition; events that *increase* in severity through `min_severity` send a page, events that *resolve below* `min_severity` send a recovery notification, events that move between two severities both below the gate are silently dropped.
+Severity ordering: `Up < Warning < Degraded < SeemsDown < Down`. The gate matches `new_severity >= min_severity` on each transition; events that *increase* into the gated band send a page, events that *resolve back to `Up`* send a recovery notification, events that move between two severities both below the gate are silently dropped.
 
-This lets agencies and VIPs configure low-severity contacts that catch every flicker while still letting normal users configure `Critical`-only contacts that only fire on real outages — both from the same plumbing.
+This lets agencies and VIPs configure low-severity contacts (e.g. `min_severity: "Warning"`) that catch every flicker while still letting normal users configure `Down`-only contacts that only fire on real outages — both from the same plumbing.
 
 #### Per-contact rate cap
 
@@ -860,7 +862,7 @@ jetmon_alert_contacts (
   destination JSON NOT NULL,          -- transport-specific, secret in plaintext (outbound dispatch needs raw value)
   destination_preview VARCHAR(8) NOT NULL,
   site_filter JSON NOT NULL,          -- {"site_ids":[...]} or {} for all
-  min_severity ENUM('Info','Notice','Warning','Critical') NOT NULL DEFAULT 'Critical',
+  min_severity TINYINT UNSIGNED NOT NULL DEFAULT 4,  -- matches eventstore.Severity* (0=Up..4=Down); default 4=Down
   max_per_hour INT NOT NULL DEFAULT 60,
   created_by VARCHAR(80) NOT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
