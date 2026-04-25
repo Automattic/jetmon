@@ -22,6 +22,7 @@ import (
 	"github.com/Automattic/jetmon/internal/db"
 	"github.com/Automattic/jetmon/internal/metrics"
 	"github.com/Automattic/jetmon/internal/orchestrator"
+	"github.com/Automattic/jetmon/internal/webhooks"
 	"github.com/Automattic/jetmon/internal/wpcom"
 )
 
@@ -131,6 +132,20 @@ func runServe() {
 		}()
 	}
 
+	// Webhook delivery worker. Polls jetmon_event_transitions for new rows,
+	// matches against active webhooks, fans out signed POSTs with retry.
+	// Disabled when API_PORT is 0 (no consumers to fire to without the
+	// API to manage webhooks).
+	var hookWorker *webhooks.Worker
+	if cfg.APIPort > 0 {
+		hookWorker = webhooks.NewWorker(webhooks.WorkerConfig{
+			DB:         db.DB(),
+			InstanceID: db.Hostname(),
+		})
+		hookWorker.Start()
+		log.Println("webhooks: delivery worker started")
+	}
+
 	// Push dashboard state every stats interval.
 	if dash != nil {
 		go func() {
@@ -175,6 +190,10 @@ func runServe() {
 						log.Printf("api: shutdown error: %v", err)
 					}
 					cancel()
+				}
+				if hookWorker != nil {
+					hookWorker.Stop()
+					log.Println("webhooks: delivery worker stopped")
 				}
 				orch.Stop()
 				// Hard kill if drain takes too long (e.g. a stalled HTTP check).

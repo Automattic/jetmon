@@ -125,6 +125,29 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/v1/sites/{id}/response-time", s.requireScope(scopeRead, s.handleSiteResponseTime))
 	mux.HandleFunc("GET /api/v1/sites/{id}/timing-breakdown", s.requireScope(scopeRead, s.handleSiteTimingBreakdown))
 
+	// Webhooks — read.
+	mux.HandleFunc("GET /api/v1/webhooks",
+		s.requireScope(scopeRead, s.handleListWebhooks))
+	mux.HandleFunc("GET /api/v1/webhooks/{id}",
+		s.requireScope(scopeRead, s.handleGetWebhook))
+
+	// Webhooks — write. POST endpoints route through idempotency middleware
+	// so a retry after a network blip doesn't double-create a webhook.
+	mux.HandleFunc("POST /api/v1/webhooks",
+		s.requireScope(scopeWrite, s.withIdempotency(s.handleCreateWebhook)))
+	mux.HandleFunc("PATCH /api/v1/webhooks/{id}",
+		s.requireScope(scopeWrite, s.handleUpdateWebhook))
+	mux.HandleFunc("DELETE /api/v1/webhooks/{id}",
+		s.requireScope(scopeWrite, s.handleDeleteWebhook))
+	mux.HandleFunc("POST /api/v1/webhooks/{id}/rotate-secret",
+		s.requireScope(scopeWrite, s.withIdempotency(s.handleRotateWebhookSecret)))
+
+	// Deliveries — read history, manually retry abandoned rows.
+	mux.HandleFunc("GET /api/v1/webhooks/{id}/deliveries",
+		s.requireScope(scopeRead, s.handleListDeliveries))
+	mux.HandleFunc("POST /api/v1/webhooks/{id}/deliveries/{delivery_id}/retry",
+		s.requireScope(scopeWrite, s.withIdempotency(s.handleRetryDelivery)))
+
 	// Catch-all → 404 with a useful message rather than the default empty body.
 	mux.HandleFunc("/", s.handleNotFound)
 

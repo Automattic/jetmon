@@ -176,6 +176,83 @@ var migrations = []migration{
 		UNIQUE KEY uk_key_hash (key_hash),
 		INDEX idx_consumer (consumer_name)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
+
+	// Migration 13 creates the webhook registry. secret_hash is sha256 of the
+	// raw secret (which is shown once at creation, mirrors jetmon_api_keys).
+	// events / site_filter / state_filter are JSON to allow flexible filter
+	// shapes without per-filter columns; semantics: empty = match all, AND
+	// across dimensions, whitelist within each. See API.md "Family 4".
+	// secret stores the raw HMAC signing key in plaintext. Unlike
+	// jetmon_api_keys (sha256-hashed at rest, used for inbound auth where
+	// hash is sufficient), webhook secrets are used to SIGN outbound
+	// deliveries — HMAC needs the actual key material in memory, not its
+	// hash. We never verify inbound signatures with this secret, so
+	// hash-at-rest would buy us no verification benefit while making
+	// signing impossible.
+	//
+	// Threat model: anyone with read access to jetmon_webhooks can mint
+	// valid deliveries. For the internal API behind a gateway, that's
+	// equivalent to the existing access-to-events threat. Encryption at
+	// rest with a master key (KMS-style) is in ROADMAP.md as a future
+	// hardening step.
+	{13, `CREATE TABLE IF NOT EXISTS jetmon_webhooks (
+		id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+		url             VARCHAR(2083) NOT NULL,
+		active          TINYINT UNSIGNED NOT NULL DEFAULT 1,
+		events          JSON NULL,
+		site_filter     JSON NULL,
+		state_filter    JSON NULL,
+		secret          VARCHAR(80) NOT NULL,
+		secret_preview  VARCHAR(8) NOT NULL DEFAULT '',
+		created_by      VARCHAR(128) NOT NULL DEFAULT '',
+		created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+		INDEX idx_active (active)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
+
+	// Migration 14 creates the per-fire delivery records. One row per
+	// (webhook, transition) match — transition_id is the fan-in point: a
+	// single jetmon_event_transitions row can produce many deliveries (one
+	// per matching webhook), but a webhook gets at most one delivery per
+	// transition (enforced by uk_webhook_transition).
+	//
+	// payload is frozen at row creation: consumer sees the event as it was
+	// when the webhook fired, not as it is now (closed-and-amended events
+	// don't retroactively change delivery contents — that's the contract).
+	//
+	// status lifecycle: pending → (delivered | abandoned). "failed" is reserved
+	// for permanent client/server errors that we wouldn't retry (currently
+	// unused; pending captures the in-retry case).
+	{14, `CREATE TABLE IF NOT EXISTS jetmon_webhook_deliveries (
+		id               BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+		webhook_id       BIGINT UNSIGNED NOT NULL,
+		transition_id    BIGINT UNSIGNED NOT NULL,
+		event_id         BIGINT UNSIGNED NOT NULL,
+		event_type       VARCHAR(64) NOT NULL,
+		payload          JSON NOT NULL,
+		status           ENUM('pending','delivered','failed','abandoned') NOT NULL DEFAULT 'pending',
+		attempt          INT UNSIGNED NOT NULL DEFAULT 0,
+		next_attempt_at  TIMESTAMP NULL,
+		last_status_code INT NULL,
+		last_response    VARCHAR(2048) NULL,
+		last_attempt_at  TIMESTAMP NULL,
+		delivered_at     TIMESTAMP NULL,
+		created_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE KEY uk_webhook_transition (webhook_id, transition_id),
+		INDEX idx_status_next_attempt (status, next_attempt_at),
+		INDEX idx_webhook_id_created (webhook_id, created_at),
+		INDEX idx_event_id (event_id)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
+
+	// Migration 15 records the webhook dispatcher's progress. One row per
+	// jetmon2 instance keeps last_transition_id high-water mark so the
+	// dispatcher polls only new transitions. The UNIQUE KEY on instance_id
+	// makes upsert (INSERT … ON DUPLICATE KEY UPDATE) trivial.
+	{15, `CREATE TABLE IF NOT EXISTS jetmon_webhook_dispatch_progress (
+		instance_id          VARCHAR(255) NOT NULL PRIMARY KEY,
+		last_transition_id   BIGINT UNSIGNED NOT NULL DEFAULT 0,
+		updated_at           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
 }
 
 // Migrate applies all pending migrations idempotently.
