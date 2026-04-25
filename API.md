@@ -677,9 +677,63 @@ A delivery succeeds when any attempt returns 2xx. After 6 failed attempts, the r
 
 Signature: HMAC-SHA256 of `{timestamp}.{body}` with the webhook's secret, sent as `X-Jetmon-Signature: t=<unix_ts>,v1=<hex>`. The timestamp prevents replay; consumers should reject deliveries older than 5 minutes.
 
+Format chosen for: wide library support across consumer languages, explicit version (`v1=`) to allow future algorithm rotation without breaking consumers, replay protection via timestamp baked into the signature input, and the ability to coexist with multiple `v1=` values during a grace-period rotation (deferred). Alternatives considered and not chosen: GitHub-style (no replay protection), Slack-style (functionally equivalent, two-header form), JWT-based (wrong abstraction for "POST JSON + signature header"), HTTP Message Signatures / RFC 9421 (over-engineered for our scope), asymmetric / Ed25519 (compelling for public APIs without a gateway in front; not warranted while a gateway re-signs for end customers).
+
+When to revisit: a public-API-without-gateway requirement (then asymmetric becomes attractive — no per-consumer secret distribution), or a standards-driven third-party integration that requires RFC 9421. Migration path in either case is "add a `v2=` signature alongside `v1=` for a transition window, switch consumers, deprecate `v1=`" — same shape as algorithm rotation we already designed for.
+
 Secret rotation in v1: **immediate revocation only**. `POST /api/v1/webhooks/{id}/rotate-secret` returns a new secret once, replaces the stored hash, and the old secret stops working immediately. Failed deliveries during the consumer's deploy window go into the retry queue.
 
 **Deferred:** grace-period rotation (server signs with both old and new secrets for a configurable window so consumers can roll over without coordinated downtime) is in ROADMAP.md. The signature header format already supports multiple `v1=...,v1=...` values per Stripe convention, so adding grace-period rotation later is non-breaking.
+
+#### Backpressure
+
+Delivery uses a **shared worker pool** (default 50 goroutines, configurable) with a **per-webhook in-flight cap** (default 3 concurrent). The shared pool bounds total goroutine count; the per-webhook cap prevents a slow or hung webhook URL from monopolizing the pool and starving other webhooks' deliveries.
+
+Implementation: at dispatch time, the worker checks a `map[webhook_id]int` counter under a mutex. If a webhook is already at its cap, the row stays `pending` and is picked up on the next poll tick. The counter decrements when a delivery attempt completes (success or failure).
+
+#### Schema
+
+```
+jetmon_webhooks:
+  id, url, active, events JSON, site_filter JSON, state_filter JSON,
+  secret_hash CHAR(64), secret_preview VARCHAR(8),
+  created_by VARCHAR(128), created_at, updated_at
+
+jetmon_webhook_deliveries:
+  id, webhook_id, event_id (FK to jetmon_events), event_type,
+  payload JSON,                       -- frozen at fire time, never updated
+  status ENUM('pending','delivered','failed','abandoned'),
+  attempt INT,
+  next_attempt_at TIMESTAMP NULL,     -- when the worker should pick up
+  last_status_code INT NULL,
+  last_response VARCHAR(2048) NULL,   -- truncated body, debugging aid
+  last_attempt_at TIMESTAMP NULL,
+  delivered_at TIMESTAMP NULL,
+  created_at
+```
+
+Indexes:
+- `(status, next_attempt_at)` on deliveries — the worker's "what's ready?" query
+- `(webhook_id, created_at)` on deliveries — the deliveries-list endpoint
+- `(active)` on webhooks — the dispatcher's filter for live webhooks
+
+`payload` is **frozen at delivery creation**: the consumer sees the event as it was when the webhook fired, not as it is now. A closed-and-amended event would not change a delivery's payload — that's the contract consumers expect ("this is what I was told happened, not whatever it became").
+
+#### Webhook ownership and scope
+
+Webhooks are managed by any `write`-scope token. `created_by` records the consumer name from the API key for audit purposes only — there is no per-consumer ownership boundary, and any `write`-scope token can read/edit/delete any webhook.
+
+This is appropriate **only** because Jetmon is internal-only with all consumers trusted. Per-consumer ownership doesn't add value at this scale; the gateway in front of Jetmon handles tenant isolation for any customer-facing webhooks.
+
+**Ramifications if Jetmon ever becomes a public API:**
+
+- This model would need to change. Customer-facing consumers cannot be allowed to read or modify each other's webhooks.
+- Migration path: add `owner_consumer_id` (or `owner_account_id`) column to `jetmon_webhooks`; require it on create; filter list/get/update/delete by it; introduce a `webhooks` scope or formal account/tenant boundary.
+- The `created_by` field is forward-compatible — it's already capturing the consumer identity, just not enforcing it.
+- Existing webhooks would need a backfill migration to populate the new ownership column with their original `created_by` value.
+- Webhook secrets would need stronger isolation (currently any write-scope can rotate any secret; in a public API this would be a privilege escalation).
+
+The decision to defer ownership today should be reread before any public-API conversation actually starts.
 
 ### Family 5: Alert contacts (legacy bridge)
 
