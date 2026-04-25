@@ -41,6 +41,7 @@ services:
           - JETMON_PID_FILE=/jetmon/stats/jetmon2.pid
         ports:
           - $DASHBOARD_LOCAL_PORT:$DASHBOARD_DOCKER_PORT
+          - "8090:8090"
         depends_on:
             mysqldb:
                 condition: service_healthy

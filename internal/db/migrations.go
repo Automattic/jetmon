@@ -157,6 +157,25 @@ var migrations = []migration{
 		INDEX idx_changed_at (changed_at)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
 
+	// Migration 12 creates the API key registry. Keys are sha256-hashed at rest;
+	// the raw token is shown only once at creation time via the CLI. Per-key rate
+	// limit, scope, expiry, and revocation are all stored here. consumer_name is
+	// the audit-log key — every authenticated API request logs against it so we
+	// can track and revoke specific internal systems. See API.md "Authentication".
+	{12, `CREATE TABLE IF NOT EXISTS jetmon_api_keys (
+		id                    BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+		key_hash              CHAR(64) NOT NULL,
+		consumer_name         VARCHAR(128) NOT NULL,
+		scope                 ENUM('read','write','admin') NOT NULL DEFAULT 'read',
+		rate_limit_per_minute INT NOT NULL DEFAULT 60,
+		expires_at            TIMESTAMP NULL,
+		revoked_at            TIMESTAMP NULL,
+		last_used_at          TIMESTAMP NULL,
+		created_at            TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		created_by            VARCHAR(128) NOT NULL DEFAULT 'cli',
+		UNIQUE KEY uk_key_hash (key_hash),
+		INDEX idx_consumer (consumer_name)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
 }
 
 // Migrate applies all pending migrations idempotently.

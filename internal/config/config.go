@@ -54,6 +54,7 @@ type Config struct {
 	LogFormat     string `json:"LOG_FORMAT"`
 	DashboardPort int    `json:"DASHBOARD_PORT"`
 	DebugPort     int    `json:"DEBUG_PORT"`
+	APIPort       int    `json:"API_PORT"` // 0 = API server disabled
 
 	Verifiers []VerifierConfig `json:"VERIFIERS"`
 }

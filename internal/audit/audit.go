@@ -26,6 +26,7 @@ const (
 	EventMaintenanceActive = "maintenance_active"
 	EventAlertSuppressed   = "alert_suppressed"
 	EventConfigChange      = "config_change"
+	EventAPIAccess         = "api_access"
 )
 
 var db *sql.DB
