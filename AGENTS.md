@@ -13,32 +13,60 @@ See `PROJECT.md` for the full project description, feature list, and performance
 ## Architecture
 
 ```
-┌───────────────────────────────────────────────────────┐
-│                  jetmon2 (single binary)              │
-│                                                       │
-│  ┌─────────────┐  ┌─────────────┐  ┌──────────────┐   │
-│  │ Orchestrator│  │ Check Pool  │  │  gRPC Server │   │
-│  │  goroutine  │  │ (goroutines)│  │  (Veriflier) │   │
-│  └──────┬──────┘  └──────┬──────┘  └──────┬───────┘   │
-│         │                │                │           │
-│  ┌──────┴────────────────┴────────────────┴───────┐   │
-│  │                 Internal channels              │   │
-│  └────────────────────────────────────────────────┘   │
-└────────────┬──────────────────────────┬───────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                       jetmon2 (single binary)                        │
+│                                                                      │
+│  ┌─────────────┐  ┌─────────────┐  ┌──────────────┐                  │
+│  │ Orchestrator│  │ Check Pool  │  │  Veriflier   │                  │
+│  │  goroutine  │  │ (goroutines)│  │  transport   │                  │
+│  └──────┬──────┘  └──────┬──────┘  └──────┬───────┘                  │
+│         │                │                │                          │
+│  ┌──────┴────────────────┴────────────────┴───────┐                  │
+│  │                 Internal channels              │                  │
+│  └─────────────────────┬──────────────────────────┘                  │
+│                        │                                             │
+│   ┌────────────────────┴────────────────────┐                        │
+│   │   eventstore (jetmon_events +           │                        │
+│   │    jetmon_event_transitions writes)     │                        │
+│   └────────────────────┬────────────────────┘                        │
+│                        │                                             │
+│   ┌────────────┐  ┌────┴────────────┐  ┌──────────────────────┐      │
+│   │  REST API  │  │  Webhook        │  │  Alerting            │      │
+│   │  /api/v1/  │  │  delivery       │  │  delivery            │      │
+│   │  + auth +  │  │  worker         │  │  worker              │      │
+│   │  ratelimit │  │  (HMAC POST)    │  │  (email/PD/Slack/Tm) │      │
+│   └─────┬──────┘  └────────┬────────┘  └──────────┬───────────┘      │
+│         │                  │                      │                  │
+│   ┌─────┴──────┐    ┌──────┴──────────┐  ┌────────┴──────────────┐   │
+│   │  Operator  │    │  Webhook        │  │  Alert contact        │   │
+│   │  dashboard │    │  receivers      │  │  destinations         │   │
+│   │  (SSE)     │    │  (HTTPS)        │  │  (HTTPS / SMTP / API) │   │
+│   └────────────┘    └─────────────────┘  └───────────────────────┘   │
+└────────────┬──────────────────────────┬──────────────────────────────┘
              │                          │
           MySQL                    WPCOM API
-          StatsD                   (unchanged)
-          Log files
-          (all unchanged)
+          StatsD                   (legacy notification path,
+          Log files                 still active alongside
+                                    alert contacts)
 ```
 
-**Orchestrator goroutine** (`internal/orchestrator/`): Fetches site batches from MySQL, dispatches work to the check pool via channels, processes results, manages the local retry queue, coordinates Veriflier confirmation requests, and sends WPCOM status-change notifications. Owns all DB access and all outbound WPCOM calls.
+**Orchestrator goroutine** (`internal/orchestrator/`): Fetches site batches from MySQL, dispatches work to the check pool via channels, processes results, manages the local retry queue, coordinates Veriflier confirmation requests, and emits WPCOM legacy notifications. Owns all DB access for site state and writes events through `eventstore`.
 
-**Check Pool** (`internal/checker/`): A bounded goroutine pool that performs HTTP checks using Go's `net/http` and `net/http/httptrace`. Records DNS, TCP connect, TLS handshake, and TTFB timings for every check. Pool size auto-scales against queue depth within configured min/max bounds. No process spawning — adding a worker is a channel send.
+**Check Pool** (`internal/checker/`): A bounded goroutine pool that performs HTTP checks using Go's `net/http` and `net/http/httptrace`. Records DNS, TCP connect, TLS handshake, and TTFB timings for every check. Pool size auto-scales against queue depth within configured min/max bounds.
+
+**Eventstore** (`internal/eventstore/`): The single writer for `jetmon_events` and `jetmon_event_transitions`. Every status / severity / state change is written transactionally so the event row's projection and the transition log can never disagree. Both downstream workers (webhooks, alerting) consume `jetmon_event_transitions` via a high-water mark.
+
+**REST API** (`internal/api/`): The internal API surface (`/api/v1/...`) used by the gateway, alerting workers, dashboards, and CI tooling. Per-consumer Bearer-token auth (`internal/apikeys/`), per-key rate limiting, Stripe-style idempotency keys on POSTs. Sites CRUD, events list / single / transitions, SLA stats, webhooks CRUD, alert-contacts CRUD, manual delivery retry.
+
+**Webhook delivery worker** (`internal/webhooks/`): Polls `jetmon_event_transitions`, matches each new transition against active webhooks (event-type + site + state filters), and POSTs HMAC-signed payloads to consumer URLs. Retry ladder 1m / 5m / 30m / 1h / 6h then abandon. Per-webhook in-flight cap and shared dispatch pool.
+
+**Alerting delivery worker** (`internal/alerting/`): Same shape as the webhook worker but for managed channels — email (via `wpcom`/`smtp`/`stub` senders), PagerDuty Events API v2, Slack incoming webhooks, Microsoft Teams. Filter is simpler (`site_filter` + `min_severity`); per-contact `max_per_hour` rate cap absorbs pager storms. Send-test endpoint exercises the same dispatch path without requiring a real event.
 
 **Veriflier transport** (`internal/veriflier/`): JSON-over-HTTP client/server for Monitor↔Veriflier communication. Replaces the previous SSL server and custom HTTPS protocol. Run `make generate` to swap in generated gRPC stubs once protoc is set up.
 
-**Veriflier** (`veriflier2/`): Standalone Go binary deployed at remote locations. Receives check batches from the Monitor via gRPC, performs HTTP checks, and returns results. Replaces the Qt C++ Veriflier.
+**Veriflier** (`veriflier2/`): Standalone Go binary deployed at remote locations. Receives check batches from the Monitor, performs HTTP checks, and returns results. Replaces the Qt C++ Veriflier.
+
+**Future shape:** the API server, webhook worker, and alerting worker are independently scalable concerns and the natural target for the multi-binary split tracked in `ROADMAP.md`. Today they coexist in `jetmon2` and the MySQL schema is the bus between them; tomorrow the deliverer becomes its own binary handling all outbound dispatch (webhooks + alerting + WPCOM legacy migrated behind it).
 
 ## Key Files
 
@@ -52,9 +80,17 @@ See `PROJECT.md` for the full project description, feature list, and performance
 | `internal/config/` | Config loading, SIGHUP hot-reload |
 | `internal/metrics/` | StatsD client, stats file writer |
 | `internal/wpcom/` | WPCOM API client, circuit breaker |
-| `internal/audit/` | Audit log writes to `jetmon_audit_log` |
+| `internal/audit/` | Operational log writes to `jetmon_audit_log` (WPCOM, retries, verifier RPCs, config reloads) |
+| `internal/eventstore/` | Event-sourced site state — manages `jetmon_events` + `jetmon_event_transitions` writes in single transactions |
+| `internal/api/` | Internal REST API server (`/api/v1/...`) — auth, rate limiting, idempotency, sites/events/SLA/webhooks/alert-contacts handlers |
+| `internal/apikeys/` | API key registry, sha256-hashed at rest; `./jetmon2 keys` CLI |
+| `internal/webhooks/` | Webhook registry + delivery worker — outbound HMAC-signed POSTs of event transitions, retry ladder 1m/5m/30m/1h/6h |
+| `internal/alerting/` | Alert contact registry + delivery worker — managed channels (email/PagerDuty/Slack/Teams) with site_filter + severity gate + per-hour rate cap |
 | `internal/dashboard/` | Operator dashboard, SSE handler |
 | `veriflier2/` | Go Veriflier binary |
+| `API.md` | Internal REST API reference (auth, all endpoints, payload shapes) |
+| `ROADMAP.md` | Deferred features and architectural roadmap (multi-binary split, public-API path) |
+| `docs/adr/` | Architecture Decision Records — load-bearing decisions ("why is X like this") with context, decision, and consequences |
 | `PROJECT.md` | Full project description and feature specification |
 
 ## Build and Run
@@ -153,10 +189,17 @@ Every HTTPS check inspects `tls.ConnectionState` for:
 - Cipher suite — recorded in audit log
 
 **Downtime Verification:**
-1. Local check fails → enter local retry queue
-2. After `NUM_OF_CHECKS` local failures → dispatch to Verifliers
+1. Local check fails → open a `Seems Down` event (severity 3) and enter the local retry queue. The event opens on the **first** failure so `started_at` reflects the actual incident start. Subsequent failures during retry are no-ops on the events table (idempotent dedup).
+2. After `NUM_OF_CHECKS` local failures → dispatch to Verifliers (event stays Seems Down)
 3. `PEER_OFFLINE_LIMIT` Veriflier agreements required to confirm
-4. Confirmed down → WPCOM notification via same payload as original
+4. Verifier outcomes:
+   - **Confirms** → Promote event to `Down` (severity 4) with `reason = verifier_confirmed`. WPCOM notification via same payload as original.
+   - **Disagrees** → Close event with `resolution_reason = false_alarm`.
+5. Recovery (any successful probe while an event is open):
+   - From `Seems Down` → close with `resolution_reason = probe_cleared`.
+   - From `Down` → close with `resolution_reason = verifier_cleared` and send recovery notification.
+
+The `jetpack_monitor_sites.site_status` projection is updated in the same transaction as every event mutation (no drift). v1 mapping: open Seems Down → `site_status = SITE_DOWN (0)`; promoted to Down → `site_status = SITE_CONFIRMED_DOWN (2)`; closed → `site_status = SITE_RUNNING (1)`.
 
 **Alert Deduplication:**
 After an alert fires, subsequent alerts for the same site are suppressed for `alert_cooldown_minutes`. Suppression is recorded in the audit log.
@@ -190,7 +233,9 @@ New tables introduced by Jetmon 2:
 | Table | Purpose |
 |-------|---------|
 | `jetmon_hosts` | MySQL-coordinated bucket ownership and heartbeat |
-| `jetmon_audit_log` | Full event history per site |
+| `jetmon_events` | Current state of every incident — one row per `(blog_id, endpoint_id, check_type, discriminator)` while open; mutable until `ended_at` is set, then frozen |
+| `jetmon_event_transitions` | Append-only history of every mutation to `jetmon_events` (open, severity change, state change, cause link, close) |
+| `jetmon_audit_log` | Operational trail — WPCOM notifications, retry dispatch, verifier RPCs, alert/maintenance suppression, config reloads. Site-state changes do **not** flow through here |
 | `jetmon_check_history` | RTT and timing samples for trending |
 | `jetmon_false_positives` | Veriflier non-confirmation events |
 
@@ -224,7 +269,9 @@ Rolling updates require no simultaneous restart of all hosts and leave no sites 
 
 These decisions govern how Jetmon models site state. They must be maintained consistently across all changes. Full design rationale is in [`TAXONOMY.md`](TAXONOMY.md) (Parts 2–3) and [`EVENTS.md`](EVENTS.md).
 
-**Events are the source of truth.** Site status is event-sourced. The event log is canonical; the site row stores a denormalized projection for read performance. Update both in the same transaction — they must not drift. If the projection is ever suspect, rebuild it from the log.
+**Events are the source of truth.** Site status is event-sourced across two tables: `jetmon_events` (one row per incident, holding the current severity/state/metadata) and `jetmon_event_transitions` (append-only history of every mutation). The site row stores a denormalized projection for read performance. Update events, transitions, and the projection in the same transaction — they must not drift. If the projection is ever suspect, rebuild it from the events tables.
+
+**Every event mutation writes a transition row in the same transaction.** Open, severity bump, state change, cause-link change, close — no carve-outs. The `eventstore` package is the only writer for `jetmon_events` and `jetmon_event_transitions`; external callers must go through it. This keeps the invariant testable with one integration test surface.
 
 **Severity and state are separate fields.** Severity is numeric — use it for ordering, thresholds, and rollup. State is a human-readable label — use it for display and lifecycle transitions. A live event's severity can be updated in place without changing its state (a worsening degradation is not a new kind of problem).
 

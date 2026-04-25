@@ -38,8 +38,10 @@ services:
           - VERIFLIER_GRPC_PORT=$VERIFLIER_GRPC_DOCKER_PORT
           - WPCOM_JETMON_AUTH_TOKEN=$WPCOM_JETMON_AUTH_TOKEN
           - DASHBOARD_PORT=$DASHBOARD_DOCKER_PORT
+          - JETMON_PID_FILE=/jetmon/stats/jetmon2.pid
         ports:
           - $DASHBOARD_LOCAL_PORT:$DASHBOARD_DOCKER_PORT
+          - "8090:8090"
         depends_on:
             mysqldb:
                 condition: service_healthy
@@ -55,6 +57,7 @@ services:
         environment:
           - VERIFLIER_AUTH_TOKEN=$VERIFLIER_AUTH_TOKEN
           - VERIFLIER_GRPC_PORT=$VERIFLIER_GRPC_DOCKER_PORT
+          - STATSD_ADDR=statsd:8125
     statsd:
         image: graphiteapp/graphite-statsd
         restart: unless-stopped

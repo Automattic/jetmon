@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"flag"
 	"fmt"
@@ -13,12 +14,16 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Automattic/jetmon/internal/alerting"
+	"github.com/Automattic/jetmon/internal/api"
+	"github.com/Automattic/jetmon/internal/apikeys"
 	"github.com/Automattic/jetmon/internal/audit"
 	"github.com/Automattic/jetmon/internal/config"
 	"github.com/Automattic/jetmon/internal/dashboard"
 	"github.com/Automattic/jetmon/internal/db"
 	"github.com/Automattic/jetmon/internal/metrics"
 	"github.com/Automattic/jetmon/internal/orchestrator"
+	"github.com/Automattic/jetmon/internal/webhooks"
 	"github.com/Automattic/jetmon/internal/wpcom"
 )
 
@@ -50,6 +55,8 @@ func main() {
 		cmdDrain()
 	case "reload":
 		cmdReload()
+	case "keys":
+		cmdKeys(os.Args[2:])
 	default:
 		runServe()
 	}
@@ -114,6 +121,52 @@ func runServe() {
 		}()
 	}
 
+	// Internal API server. Disabled when API_PORT is 0. Bears auth via
+	// jetmon_api_keys; key management is CLI-only (`./jetmon2 keys`).
+	var apiSrv *api.Server
+	if cfg.APIPort > 0 {
+		apiSrv = api.New(fmt.Sprintf(":%d", cfg.APIPort), db.DB(), db.Hostname())
+		go func() {
+			if err := apiSrv.Listen(); err != nil && !api.IsServerClosed(err) {
+				log.Printf("api: %v", err)
+			}
+		}()
+	}
+
+	// Webhook delivery worker. Polls jetmon_event_transitions for new rows,
+	// matches against active webhooks, fans out signed POSTs with retry.
+	// Disabled when API_PORT is 0 (no consumers to fire to without the
+	// API to manage webhooks).
+	var hookWorker *webhooks.Worker
+	if cfg.APIPort > 0 {
+		hookWorker = webhooks.NewWorker(webhooks.WorkerConfig{
+			DB:         db.DB(),
+			InstanceID: db.Hostname(),
+		})
+		hookWorker.Start()
+		log.Println("webhooks: delivery worker started")
+	}
+
+	// Alert contact delivery worker. Same shape as webhooks but a
+	// separate package so the two can evolve independently — the future
+	// "deliverer binary" extraction is the moment to factor out a
+	// shared abstraction. Disabled when API_PORT is 0 (no contacts to
+	// fire to without the API to manage them).
+	var alertWorker *alerting.Worker
+	if cfg.APIPort > 0 {
+		dispatchers := buildAlertDispatchers(cfg)
+		alertWorker = alerting.NewWorker(alerting.WorkerConfig{
+			DB:          db.DB(),
+			InstanceID:  db.Hostname(),
+			Dispatchers: dispatchers,
+		})
+		alertWorker.Start()
+		if apiSrv != nil {
+			apiSrv.SetAlertDispatchers(dispatchers)
+		}
+		log.Printf("alerting: delivery worker started (transports=%d)", len(dispatchers))
+	}
+
 	// Push dashboard state every stats interval.
 	if dash != nil {
 		go func() {
@@ -152,6 +205,21 @@ func runServe() {
 				}
 			case syscall.SIGINT, syscall.SIGTERM:
 				log.Println("received shutdown signal, draining")
+				if apiSrv != nil {
+					ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+					if err := apiSrv.Shutdown(ctx); err != nil {
+						log.Printf("api: shutdown error: %v", err)
+					}
+					cancel()
+				}
+				if hookWorker != nil {
+					hookWorker.Stop()
+					log.Println("webhooks: delivery worker stopped")
+				}
+				if alertWorker != nil {
+					alertWorker.Stop()
+					log.Println("alerting: delivery worker stopped")
+				}
 				orch.Stop()
 				// Hard kill if drain takes too long (e.g. a stalled HTTP check).
 				time.AfterFunc(30*time.Second, func() {
@@ -243,19 +311,16 @@ func cmdAudit() {
 	for rows.Next() {
 		var (
 			id        int64
-			bid       int64
+			bid       sql.NullInt64
+			eventID   sql.NullInt64
 			eventType string
 			source    string
-			httpCode  sql.NullInt64
-			errorCode sql.NullInt64
-			rttMs     sql.NullInt64
-			oldStatus sql.NullInt64
-			newStatus sql.NullInt64
 			detail    sql.NullString
+			metadata  sql.NullString
 			createdAt time.Time
 		)
-		if err := rows.Scan(&id, &bid, &eventType, &source, &httpCode, &errorCode,
-			&rttMs, &oldStatus, &newStatus, &detail, &createdAt); err != nil {
+		if err := rows.Scan(&id, &bid, &eventID, &eventType, &source,
+			&detail, &metadata, &createdAt); err != nil {
 			log.Printf("scan: %v", err)
 			continue
 		}
@@ -263,11 +328,11 @@ func cmdAudit() {
 		if detail.Valid {
 			det = detail.String
 		}
-		if httpCode.Valid {
-			det = fmt.Sprintf("http=%d err=%d rtt=%dms %s", httpCode.Int64, errorCode.Int64, rttMs.Int64, det)
+		if eventID.Valid {
+			det = fmt.Sprintf("event=%d %s", eventID.Int64, det)
 		}
-		if oldStatus.Valid {
-			det = fmt.Sprintf("status %d→%d %s", oldStatus.Int64, newStatus.Int64, det)
+		if metadata.Valid && metadata.String != "" {
+			det = fmt.Sprintf("%s meta=%s", det, metadata.String)
 		}
 		fmt.Printf("%-25s %-22s %-15s %s\n",
 			createdAt.Format("2006-01-02 15:04:05.000"),
@@ -297,6 +362,175 @@ func cmdReload() {
 		log.Fatalf("signal: %v", err)
 	}
 	fmt.Printf("SIGHUP sent to pid %d\n", pid)
+}
+
+// cmdKeys is the entrypoint for `./jetmon2 keys ...` ops commands. Key
+// management is intentionally CLI-only — the public API has no /keys
+// endpoints. See API.md "Authentication".
+func cmdKeys(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: jetmon2 keys <create|list|revoke|rotate> [args]")
+		os.Exit(1)
+	}
+	config.LoadDB()
+	if err := db.ConnectWithRetry(3); err != nil {
+		log.Fatalf("db: %v", err)
+	}
+	ctx := context.Background()
+
+	sub := args[0]
+	rest := args[1:]
+	switch sub {
+	case "create":
+		cmdKeysCreate(ctx, rest)
+	case "list":
+		cmdKeysList(ctx, rest)
+	case "revoke":
+		cmdKeysRevoke(ctx, rest)
+	case "rotate":
+		cmdKeysRotate(ctx, rest)
+	default:
+		fmt.Fprintf(os.Stderr, "unknown keys subcommand %q (want: create, list, revoke, rotate)\n", sub)
+		os.Exit(1)
+	}
+}
+
+func cmdKeysCreate(ctx context.Context, args []string) {
+	fs := flag.NewFlagSet("keys create", flag.ExitOnError)
+	consumer := fs.String("consumer", "", "consumer name (e.g. 'gateway', 'alerts-worker') — required")
+	scopeStr := fs.String("scope", "read", "permission scope: read | write | admin")
+	rateLimit := fs.Int("rate-limit", 0, "requests per minute (0 = scope default)")
+	ttl := fs.Duration("ttl", 0, "key lifetime (e.g. 90d, 720h); 0 = never expires")
+	createdBy := fs.String("created-by", currentOperator(), "operator identity for audit")
+	_ = fs.Parse(args)
+
+	if *consumer == "" {
+		fmt.Fprintln(os.Stderr, "--consumer is required")
+		os.Exit(1)
+	}
+
+	raw, k, err := apikeys.Create(ctx, db.DB(), apikeys.CreateInput{
+		ConsumerName:       *consumer,
+		Scope:              apikeys.Scope(*scopeStr),
+		RateLimitPerMinute: *rateLimit,
+		TTL:                *ttl,
+		CreatedBy:          *createdBy,
+	})
+	if err != nil {
+		log.Fatalf("create: %v", err)
+	}
+
+	fmt.Printf("Created key id=%d for consumer=%q scope=%s rate=%d/min\n",
+		k.ID, k.ConsumerName, k.Scope, k.RateLimitPerMinute)
+	if k.ExpiresAt != nil {
+		fmt.Printf("Expires: %s\n", k.ExpiresAt.UTC().Format(time.RFC3339))
+	} else {
+		fmt.Println("Expires: never")
+	}
+	fmt.Println()
+	fmt.Println("Token (shown ONCE — save it now):")
+	fmt.Println(raw)
+}
+
+func cmdKeysList(ctx context.Context, args []string) {
+	fs := flag.NewFlagSet("keys list", flag.ExitOnError)
+	includeRevoked := fs.Bool("include-revoked", false, "show revoked keys too")
+	_ = fs.Parse(args)
+
+	keys, err := apikeys.List(ctx, db.DB())
+	if err != nil {
+		log.Fatalf("list: %v", err)
+	}
+
+	fmt.Printf("%-5s %-24s %-7s %-9s %-21s %-21s %s\n",
+		"ID", "CONSUMER", "SCOPE", "RATE/MIN", "EXPIRES", "LAST USED", "STATUS")
+	fmt.Println(repeat("-", 110))
+	for _, k := range keys {
+		status := "active"
+		if k.RevokedAt != nil {
+			if !*includeRevoked && k.RevokedAt.Before(time.Now().UTC()) {
+				continue
+			}
+			if k.RevokedAt.After(time.Now().UTC()) {
+				status = "revokes-at " + k.RevokedAt.UTC().Format("2006-01-02T15:04:05Z")
+			} else {
+				status = "revoked"
+			}
+		} else if k.ExpiresAt != nil && k.ExpiresAt.Before(time.Now().UTC()) {
+			status = "expired"
+		}
+		expires := "never"
+		if k.ExpiresAt != nil {
+			expires = k.ExpiresAt.UTC().Format("2006-01-02T15:04:05Z")
+		}
+		lastUsed := "never"
+		if k.LastUsedAt != nil {
+			lastUsed = k.LastUsedAt.UTC().Format("2006-01-02T15:04:05Z")
+		}
+		fmt.Printf("%-5d %-24s %-7s %-9d %-21s %-21s %s\n",
+			k.ID, k.ConsumerName, k.Scope, k.RateLimitPerMinute, expires, lastUsed, status)
+	}
+}
+
+func cmdKeysRevoke(ctx context.Context, args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: jetmon2 keys revoke <id>")
+		os.Exit(1)
+	}
+	id, err := parseInt64(args[0])
+	if err != nil {
+		log.Fatalf("invalid id %q: %v", args[0], err)
+	}
+	if err := apikeys.Revoke(ctx, db.DB(), id); err != nil {
+		log.Fatalf("revoke: %v", err)
+	}
+	fmt.Printf("Revoked key id=%d\n", id)
+}
+
+func cmdKeysRotate(ctx context.Context, args []string) {
+	fs := flag.NewFlagSet("keys rotate", flag.ExitOnError)
+	grace := fs.Duration("grace", 5*time.Minute, "grace period before old key is revoked (0 = revoke immediately)")
+	createdBy := fs.String("created-by", currentOperator(), "operator identity for audit")
+	_ = fs.Parse(args)
+
+	if fs.NArg() < 1 {
+		fmt.Fprintln(os.Stderr, "usage: jetmon2 keys rotate [--grace=DURATION] <id>")
+		os.Exit(1)
+	}
+	id, err := parseInt64(fs.Arg(0))
+	if err != nil {
+		log.Fatalf("invalid id %q: %v", fs.Arg(0), err)
+	}
+
+	raw, k, err := apikeys.Rotate(ctx, db.DB(), id, *grace, *createdBy)
+	if err != nil {
+		log.Fatalf("rotate: %v", err)
+	}
+	fmt.Printf("Rotated key id=%d → new key id=%d for consumer=%q\n", id, k.ID, k.ConsumerName)
+	if *grace > 0 {
+		fmt.Printf("Old key id=%d will be revoked at %s\n", id, time.Now().UTC().Add(*grace).Format(time.RFC3339))
+	} else {
+		fmt.Printf("Old key id=%d revoked immediately\n", id)
+	}
+	fmt.Println()
+	fmt.Println("New token (shown ONCE — save it now):")
+	fmt.Println(raw)
+}
+
+func currentOperator() string {
+	if u := os.Getenv("USER"); u != "" {
+		return u
+	}
+	if u := os.Getenv("LOGNAME"); u != "" {
+		return u
+	}
+	return "cli"
+}
+
+func parseInt64(s string) (int64, error) {
+	var v int64
+	_, err := fmt.Sscan(s, &v)
+	return v, err
 }
 
 func readPIDFile() int {
@@ -362,5 +596,45 @@ func repeat(s string, n int) string {
 	for range n {
 		out += s
 	}
+	return out
+}
+
+
+// buildAlertDispatchers constructs the per-transport Dispatcher map
+// from runtime config. Always returns the three webhook-shaped
+// transports (PagerDuty, Slack, Teams) — they have no per-instance
+// config beyond the destination credential which lives on each
+// alert contact row. Email is conditionally included based on
+// EMAIL_TRANSPORT: "wpcom"/"smtp" wire the corresponding sender,
+// "stub" or empty falls back to log-only.
+func buildAlertDispatchers(cfg *config.Config) map[alerting.Transport]alerting.Dispatcher {
+	out := map[alerting.Transport]alerting.Dispatcher{
+		alerting.TransportPagerDuty: &alerting.PagerDutyDispatcher{},
+		alerting.TransportSlack:     &alerting.SlackDispatcher{},
+		alerting.TransportTeams:     &alerting.TeamsDispatcher{},
+	}
+
+	var sender alerting.Sender
+	switch cfg.EmailTransport {
+	case "wpcom":
+		sender = &alerting.WPCOMSender{
+			Endpoint:  cfg.WPCOMEmailEndpoint,
+			AuthToken: cfg.WPCOMEmailAuthToken,
+		}
+		log.Printf("alerting/email: using wpcom sender (endpoint=%s)", cfg.WPCOMEmailEndpoint)
+	case "smtp":
+		sender = &alerting.SMTPSender{
+			Host:     cfg.SMTPHost,
+			Port:     cfg.SMTPPort,
+			Username: cfg.SMTPUsername,
+			Password: cfg.SMTPPassword,
+			UseTLS:   cfg.SMTPUseTLS,
+		}
+		log.Printf("alerting/email: using smtp sender (%s:%d)", cfg.SMTPHost, cfg.SMTPPort)
+	default:
+		sender = &alerting.StubSender{}
+		log.Println("alerting/email: using stub sender (set EMAIL_TRANSPORT to enable real delivery)")
+	}
+	out[alerting.TransportEmail] = alerting.NewEmailDispatcher(sender, cfg.EmailFrom)
 	return out
 }

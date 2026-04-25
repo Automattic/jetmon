@@ -5,6 +5,11 @@
 package veriflier
 
 // CheckRequest is a single site to check, sent from Monitor to Veriflier.
+//
+// RequestID is a client-generated correlation id (16-byte hex). The verifier
+// echoes it back in the response and stamps it on its server-side log line so
+// that "the orchestrator escalated → this verifier observed → this audit row
+// in the monitor DB" can be reconstructed without timestamp matching.
 type CheckRequest struct {
 	BlogID         int64
 	URL            string
@@ -12,6 +17,7 @@ type CheckRequest struct {
 	Keyword        string
 	CustomHeaders  map[string]string
 	RedirectPolicy string
+	RequestID      string
 }
 
 // CheckResult is a single check outcome returned by the Veriflier.
@@ -23,4 +29,5 @@ type CheckResult struct {
 	HTTPCode  int32
 	ErrorCode int32
 	RTTMs     int64
+	RequestID string // echoed from CheckRequest.RequestID
 }

@@ -126,3 +126,179 @@ Programmatic management of where alerts go. Competitors that omit this force use
 - Trigger handler: enqueue immediate check; return `request_id` for polling.
 - Rate limiting middleware: per-key token bucket, separate buckets for read/write/trigger, rate-limit headers.
 - Integration tests in the Docker Compose environment covering auth, pagination, state consistency, and webhook delivery.
+
+---
+
+## Deferred from Phase 3 (webhooks)
+
+These were considered during Phase 3 design and intentionally left out of v1 with clean upgrade paths.
+
+### `site.state_changed` webhook events
+
+Phase 3 v1 ships only `event.*` webhooks (one per `jetmon_event_transitions` row). A `site.state_changed` rollup webhook — fires when the site row's `current_state` projection flips — was punted because:
+
+- Detecting site-level transitions cleanly without races requires changes to the orchestrator (it currently writes `site_status` but doesn't compute deltas)
+- Event-level webhooks already give consumers everything they need to compute site-level rollup themselves
+- The schema for site state is downstream of the events tables; we'd be adding a second source of truth for "the site is now Down"
+
+**When to revisit:** a real consumer asks for site-level rollup webhooks specifically. Likely shape: orchestrator emits a "previous_state → new_state" signal alongside the projection write; a delivery worker translates that into `site.state_changed` deliveries. Same retry/filter/signature plumbing as `event.*` webhooks — the only new piece is the orchestrator-side delta computation.
+
+### Grace-period webhook secret rotation
+
+Phase 3 v1 ships immediate-revocation only: rotating a webhook secret invalidates the old secret immediately. Brief signature-verification failures during the consumer's deploy window go into the retry queue and resolve once the consumer rolls.
+
+A future Phase 3.x extension is **grace-period rotation**: server signs with both old and new secrets for a configurable window (24h default), consumer verifies whichever they support, then the old secret expires. This matches Stripe's webhook signing roll model and lets consumers deploy at their own pace.
+
+**Why this is a clean future addition:**
+- Schema extension only: add `previous_secret_hash` and `previous_secret_expires_at` columns to `jetmon_webhooks`
+- Header format already supports multiple `v1=` values (Stripe-compatible)
+- New endpoint shape: `POST /webhooks/{id}/rotate-secret?grace=24h`
+- No migration of existing webhooks needed; immediate-revocation is the default if `?grace` is absent
+
+**When to revisit:** a customer-managing consumer (not the gateway, not internal alerting) registers webhooks and asks for graceful rotation, or a compliance requirement forces routine secret rotation.
+
+---
+
+## Deferred from Phase 3.x (alert contacts)
+
+These were considered during Phase 3.x design and intentionally left out of v1. Each has a clean addition path that doesn't disturb the v1 schema or worker shape.
+
+### Generic outbound webhook as an alert-contact transport
+
+Phase 3.x ships four managed transports: email, PagerDuty, Slack, Teams. A "generic webhook" alert-contact transport (POST a Jetmon-formatted JSON payload to any URL) was considered and rejected because the webhooks API (Family 4) already covers it — and covers it better, with HMAC signing, configurable filters across more dimensions, and a fully programmable payload shape.
+
+**The boundary:** alert contacts deliver Jetmon-rendered notifications through Jetmon-owned transports. Webhooks deliver the raw signed event stream for the consumer to render. A customer who wants "POST to my URL when sites change" should register a webhook; we shouldn't ship a duplicate surface that does the same thing worse.
+
+**When to revisit:** never, unless the boundary itself shifts (e.g. webhooks API gets removed, or alert contacts grows into a fundamentally different abstraction).
+
+### SMS notifications
+
+Skipped in v1. WPCOM SMS infrastructure availability is unclear, and a third-party SMS provider integration (Twilio/MessageBird/etc.) is a non-trivial credentialing and billing addition. PagerDuty already offers SMS as a downstream config — the dominant SMS use case is "page me," and that's already covered.
+
+**When to revisit:** a customer asks specifically for direct SMS without going through PagerDuty, AND a stable SMS sending channel (WPCOM-owned or vendor-procured) is available.
+
+### OpsGenie transport
+
+Skipped in v1. Same shape as PagerDuty but a different vendor; PagerDuty covers the dominant slice of customers who want incident-management routing. Adding OpsGenie is mechanical (new transport implementation, ~100 LoC) once a customer asks.
+
+**When to revisit:** a customer running OpsGenie asks for direct integration. Until then, they can route via webhook to OpsGenie's events API themselves.
+
+### Quiet hours / on-call schedules
+
+Per-contact "don't page me between 11pm and 7am" or "route to alternate contact during my vacation" was considered and deferred. Reasons:
+
+- PagerDuty already handles this on its end with full schedule support; customers using PagerDuty don't need it from Jetmon.
+- For Slack/email/Teams contacts, channel-level mute or auto-responders work as a workaround.
+- Building scheduling into Jetmon is a rabbit hole — timezone handling, recurring patterns, escalation overrides, holiday lists. Each of those is a feature in itself.
+
+**When to revisit:** strong customer demand specifically for non-PagerDuty contacts AND a clear scope for what "scheduling" means in v1 (probably starts with a single per-contact `quiet_hours: {start, end, tz}` field, not full PagerDuty parity).
+
+### Alert acknowledgements
+
+"Operator acks an alert from PagerDuty/Slack and Jetmon stops re-paging" was considered and deferred because it's bidirectional — Jetmon would need to receive callbacks from each transport, store ack state, and gate further deliveries against it. That's a significant new surface (inbound webhooks from PagerDuty, Slack interactivity API, etc.) for a feature most customers handle within their incident-management tool.
+
+**When to revisit:** a customer specifically asks for cross-channel ack state (e.g. "I acked in PagerDuty, don't keep posting to Slack"). Probably ships as a per-contact `respect_external_ack: bool` flag plus per-transport ack-receiver implementations.
+
+### Alert grouping / digest mode
+
+When a regional outage flips 50 sites at once, v1 sends 50 separate notifications per matching contact (modulo the per-hour rate cap, which kicks in but only as a brake, not a grouping mechanism). A real grouping/digest feature — "send one email containing all transitions in the last 5 minutes" — was deferred.
+
+**Why deferred:** per-event delivery matches webhook semantics, is the simplest semantic to reason about, and is what most monitoring tools start with. Grouping introduces real questions (window size, group boundary criteria, what happens if a transition arrives mid-group) that benefit from real customer feedback.
+
+**When to revisit:** real users complain about pager noise during regional outages even with `max_per_hour` set. Likely shape: per-contact `digest_window_seconds` field; transitions within the window batch into one notification at window end.
+
+### Migrate WPCOM notifications behind alert contacts
+
+Phase 3.x ships alert contacts alongside the existing WPCOM notification flow rather than migrating the WPCOM flow to be a transport behind alert contacts. The two paths coexist; same human can be in both and receive duplicate notifications.
+
+**Why deferred:** drop-in compatibility with the existing v1 deployment shape is more important than architectural unification. Migrating WPCOM-flow consumers to alert contacts requires:
+- Inventorying all current WPCOM notification recipients and their subscription patterns
+- Building a `wpcom` transport (or reusing an existing one) that delivers through the same channel
+- Migrating the per-recipient subscription data into `jetmon_alert_contacts`
+- Verifying nothing regresses for the existing recipients during cutover
+
+This is a coordinated migration, not a code change — and it's safer to do once alert contacts has proven out in production with real customers.
+
+**Why this is a clean future addition:**
+- The transport interface is already pluggable; adding a `wpcom` transport is the same shape as `email`/`pagerduty`/`slack`/`teams`.
+- The orchestrator's existing WPCOM notification call site becomes a simple "delete this code path" once parity is verified.
+- The deliverer-binary extraction (see Architectural roadmap below) becomes meaningfully cleaner with WPCOM unified — it's the third transport that justifies the split.
+
+**When to revisit:** alert contacts has been in production for 1–3 months without major issues, AND the deliverer-binary extraction is being actively planned. The two are the same conversation.
+
+---
+
+## Architectural roadmap
+
+### Multi-repo / multi-binary split
+
+Today everything lives in one repo and the `jetmon2` binary contains the orchestrator, the API server, the operator dashboard, and (after Phase 3) the webhook delivery worker. The `veriflier2` binary is already separate but in the same repo.
+
+This is fine for now but won't scale operationally. Different concerns have very different deployment shapes:
+
+| Concern | Scaling axis | Deployment shape |
+|---------|--------------|------------------|
+| Orchestrator | bucket count, check rate | stateful (claims buckets in `jetmon_hosts`); horizontal via bucket coordination |
+| API server | request rate | stateless; horizontal behind a load balancer |
+| Outbound delivery | event volume + slow third parties | stateless; horizontal via row-claim on per-transport delivery tables |
+| Operator dashboard | one-off operator sessions | one per ops region |
+| Veriflier | geo-distributed vantage points | one per region |
+
+Putting everything in one binary means scaling the most expensive concern scales the cheap ones with it (CPU and memory headroom that's only used for one purpose). It also concentrates failure modes — a panic in the API server takes down the orchestrator.
+
+**Plausible split:**
+- `jetmon-orchestrator` — round loop, check pool, DB writes
+- `jetmon-api` — REST API server, auth, rate limiting (read/write surface)
+- `jetmon-deliverer` — all outbound dispatch: webhooks (Phase 3), alert contacts, WPCOM notifications
+- `jetmon-dashboard` — operator UI / SSE state stream
+- `jetmon-verifier` — standalone HTTP check executor (today: `veriflier2`; rename TBD)
+
+**Why `jetmon-deliverer` is one binary, not three.** Webhooks, alert contacts, and WPCOM notifications all share the same plumbing: poll `jetmon_event_transitions` (or a similar source), build a frozen-at-fire-time payload, dispatch with a per-destination in-flight cap, retry on failure with exponential backoff, mark abandoned after N attempts. Only the transport differs (HTTPS POST + HMAC for webhooks, transport-specific protocols for PagerDuty/Slack/email/SMS, internal RPC for WPCOM). Splitting them into separate binaries would triple the operational surface (three deploy units, three retry queues, three sets of metrics) for what is fundamentally one job — outbound dispatch — with pluggable transports. Keeping them in one process also means a single circuit-breaker registry across destinations, which is the natural place to enforce shared-resource caps (e.g. "don't open 5,000 outbound connections during a regional outage").
+
+What this means concretely:
+- The Phase 3 webhook worker (`internal/webhooks/worker.go`) is the seed. Its `dispatchTick` / `deliverTick` shape generalizes — the matching, claiming, retry, and abandon logic is transport-agnostic.
+- A future refactor abstracts the transport behind a `Dispatcher` interface (`Send(ctx, dest, payload) (status, error)`), with concrete implementations per channel.
+- Per-channel state (webhook subscriptions, alert contacts, WPCOM circuit breaker counters) stays in its own table; the worker loops over each.
+
+**Revisit point: unify `internal/alerting/` and `internal/webhooks/`.** Phase 3.x ships alert contacts as a separate package (`internal/alerting/`) parallel to webhooks, deliberately *not* extending the webhook worker. The reasoning at the time was: alerting hadn't been built yet, we didn't know what shape it would actually take (fan-out? escalation? digest mode?), and forcing a shared abstraction with one known user (webhooks) and one guessed-at user (alerting) risked an abstraction that fits neither well. Better to build alerting concretely, see where the duplication actually lands, and factor with two real implementations in hand.
+
+The deliverer-binary extraction is the natural moment to revisit. By then we'll have:
+- Two concrete dispatch workers in production with known operational profiles.
+- A clear picture of what alerting actually grew into vs. what webhooks needed.
+- A real third transport on the way (WPCOM migration), which validates the abstraction against three users instead of two.
+
+At that point, factor a `Dispatcher` interface against the three known shapes — not before. The duplication cost between `internal/webhooks/` and `internal/alerting/` is bounded (~300 lines); the cost of a wrong abstraction is unbounded.
+
+**Trigger that justifies the split.** A single outbound transport doesn't justify its own binary — webhooks alone could stay co-located with the orchestrator. The argument gets compelling once there are *multiple* transports to dispatch and a shared retry/circuit-breaker substrate to amortize. Adding alert contacts is the moment the abstraction earns its keep; pulling WPCOM notifications out of the orchestrator at the same time is the cleanup that pays off the extraction.
+
+The MySQL schema is already the implicit bus between these — each service reads/writes specific tables. Splitting would mostly be:
+1. Extract each concern into its own `cmd/<name>/` directory with a thin main
+2. Move shared types into `pkg/` (currently `internal/`) so the binaries can depend on them across repos
+3. Decide on repo boundaries (one monorepo with multiple binaries, vs. multiple repos sharing a `pkg/` module)
+
+**Naming opportunity:** "veriflier" is a long-standing typo of "verifier" that has stuck around through the rewrite. A split is a natural moment to rename. Candidates: `verifier`, `witness`, `probe-worker`, `vantage`. Worth deciding before the split happens, not during.
+
+**When to revisit:** when a single binary's resource needs (CPU, memory, restart blast radius) starts working against the operational sweet spot for one of the concerns. The deliverer split specifically becomes worthwhile when alert contacts ship — that's the second outbound transport, and a third (WPCOM notifications) follows for free since they already exist as code that wants to live next to the others.
+
+### Path to a public API
+
+Today's API is internal-only — every caller is a known service (gateway, alerting workers, dashboard) and tenant isolation lives at the gateway. Several Phase 1–3 design decisions take advantage of that and would have to change if Jetmon ever exposes its API directly to end customers without a gateway in front.
+
+The decisions affected:
+
+| Decision | Internal-API form | Public-API form |
+|----------|-------------------|-----------------|
+| Auth scopes | Three coarse: `read` / `write` / `admin` | Granular per-resource (e.g. `sites:read`, `events:read`, `webhooks:write`) so customer keys can be scoped tightly |
+| Error semantics | Honest 401/403/404 (no info-leak hiding) | 404-on-unauthorized (don't leak existence of resources owned by other tenants) |
+| Error message verbosity | Verbose (DB error class, query stage) for incident response | Sanitized — internal detail belongs in server logs only |
+| Webhook ownership | Any `write`-scope token can manage any webhook (`created_by` audit only) | Per-tenant ownership column; reads/writes filtered by owner |
+| Webhook signing | HMAC-SHA256 with shared secret per webhook | Asymmetric (Ed25519) becomes more attractive — public key at a well-known URL, no per-customer secret to leak |
+| Rate limiting | Per-key bucket sized for service protection | Per-tenant bucket sized for commerce/abuse |
+| Idempotency keys | Scoped by `(api_key_id, key)` | Scoped by `(tenant_id, api_key_id, key)` to prevent cross-tenant collisions |
+| Site `id` (= `blog_id`) | Numeric, canonical from WPCOM | Probably still numeric, but tenant-scoped on lookup |
+
+The migrations are individually clean (each is "add a column, filter on it, deprecate the unscoped version") but they touch most of the API surface. A public-API exposure would be a significant project, not a flag flip.
+
+**When to revisit:** if a stakeholder asks "can a customer integration call Jetmon directly?" — the answer should be "let's design that" rather than "yes, here's the URL."
+
+The Q9 (webhook ownership) section in API.md captures the most concrete piece of this; the rest is captured here for visibility when the conversation comes up.

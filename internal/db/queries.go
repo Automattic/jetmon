@@ -70,6 +70,16 @@ func UpdateSiteStatus(ctx context.Context, blogID int64, status int, changedAt t
 	return err
 }
 
+// UpdateSiteStatusTx is the transaction-aware variant of UpdateSiteStatus, used
+// when the projection write must commit atomically with an event mutation.
+func UpdateSiteStatusTx(ctx context.Context, tx *sql.Tx, blogID int64, status int, changedAt time.Time) error {
+	_, err := tx.ExecContext(ctx,
+		`UPDATE jetpack_monitor_sites SET site_status = ?, last_status_change = ? WHERE blog_id = ?`,
+		status, changedAt.UTC(), blogID,
+	)
+	return err
+}
+
 // MarkSiteChecked records when a site was last checked.
 func MarkSiteChecked(ctx context.Context, blogID int64, checkedAt time.Time) error {
 	_, err := db.ExecContext(ctx,
