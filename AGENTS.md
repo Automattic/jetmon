@@ -13,32 +13,60 @@ See `PROJECT.md` for the full project description, feature list, and performance
 ## Architecture
 
 ```
-┌───────────────────────────────────────────────────────┐
-│                  jetmon2 (single binary)              │
-│                                                       │
-│  ┌─────────────┐  ┌─────────────┐  ┌──────────────┐   │
-│  │ Orchestrator│  │ Check Pool  │  │  gRPC Server │   │
-│  │  goroutine  │  │ (goroutines)│  │  (Veriflier) │   │
-│  └──────┬──────┘  └──────┬──────┘  └──────┬───────┘   │
-│         │                │                │           │
-│  ┌──────┴────────────────┴────────────────┴───────┐   │
-│  │                 Internal channels              │   │
-│  └────────────────────────────────────────────────┘   │
-└────────────┬──────────────────────────┬───────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                       jetmon2 (single binary)                        │
+│                                                                      │
+│  ┌─────────────┐  ┌─────────────┐  ┌──────────────┐                  │
+│  │ Orchestrator│  │ Check Pool  │  │  Veriflier   │                  │
+│  │  goroutine  │  │ (goroutines)│  │  transport   │                  │
+│  └──────┬──────┘  └──────┬──────┘  └──────┬───────┘                  │
+│         │                │                │                          │
+│  ┌──────┴────────────────┴────────────────┴───────┐                  │
+│  │                 Internal channels              │                  │
+│  └─────────────────────┬──────────────────────────┘                  │
+│                        │                                             │
+│   ┌────────────────────┴────────────────────┐                        │
+│   │   eventstore (jetmon_events +           │                        │
+│   │    jetmon_event_transitions writes)     │                        │
+│   └────────────────────┬────────────────────┘                        │
+│                        │                                             │
+│   ┌────────────┐  ┌────┴────────────┐  ┌──────────────────────┐      │
+│   │  REST API  │  │  Webhook        │  │  Alerting            │      │
+│   │  /api/v1/  │  │  delivery       │  │  delivery            │      │
+│   │  + auth +  │  │  worker         │  │  worker              │      │
+│   │  ratelimit │  │  (HMAC POST)    │  │  (email/PD/Slack/Tm) │      │
+│   └─────┬──────┘  └────────┬────────┘  └──────────┬───────────┘      │
+│         │                  │                      │                  │
+│   ┌─────┴──────┐    ┌──────┴──────────┐  ┌────────┴──────────────┐   │
+│   │  Operator  │    │  Webhook        │  │  Alert contact        │   │
+│   │  dashboard │    │  receivers      │  │  destinations         │   │
+│   │  (SSE)     │    │  (HTTPS)        │  │  (HTTPS / SMTP / API) │   │
+│   └────────────┘    └─────────────────┘  └───────────────────────┘   │
+└────────────┬──────────────────────────┬──────────────────────────────┘
              │                          │
           MySQL                    WPCOM API
-          StatsD                   (unchanged)
-          Log files
-          (all unchanged)
+          StatsD                   (legacy notification path,
+          Log files                 still active alongside
+                                    alert contacts)
 ```
 
-**Orchestrator goroutine** (`internal/orchestrator/`): Fetches site batches from MySQL, dispatches work to the check pool via channels, processes results, manages the local retry queue, coordinates Veriflier confirmation requests, and sends WPCOM status-change notifications. Owns all DB access and all outbound WPCOM calls.
+**Orchestrator goroutine** (`internal/orchestrator/`): Fetches site batches from MySQL, dispatches work to the check pool via channels, processes results, manages the local retry queue, coordinates Veriflier confirmation requests, and emits WPCOM legacy notifications. Owns all DB access for site state and writes events through `eventstore`.
 
-**Check Pool** (`internal/checker/`): A bounded goroutine pool that performs HTTP checks using Go's `net/http` and `net/http/httptrace`. Records DNS, TCP connect, TLS handshake, and TTFB timings for every check. Pool size auto-scales against queue depth within configured min/max bounds. No process spawning — adding a worker is a channel send.
+**Check Pool** (`internal/checker/`): A bounded goroutine pool that performs HTTP checks using Go's `net/http` and `net/http/httptrace`. Records DNS, TCP connect, TLS handshake, and TTFB timings for every check. Pool size auto-scales against queue depth within configured min/max bounds.
+
+**Eventstore** (`internal/eventstore/`): The single writer for `jetmon_events` and `jetmon_event_transitions`. Every status / severity / state change is written transactionally so the event row's projection and the transition log can never disagree. Both downstream workers (webhooks, alerting) consume `jetmon_event_transitions` via a high-water mark.
+
+**REST API** (`internal/api/`): The internal API surface (`/api/v1/...`) used by the gateway, alerting workers, dashboards, and CI tooling. Per-consumer Bearer-token auth (`internal/apikeys/`), per-key rate limiting, Stripe-style idempotency keys on POSTs. Sites CRUD, events list / single / transitions, SLA stats, webhooks CRUD, alert-contacts CRUD, manual delivery retry.
+
+**Webhook delivery worker** (`internal/webhooks/`): Polls `jetmon_event_transitions`, matches each new transition against active webhooks (event-type + site + state filters), and POSTs HMAC-signed payloads to consumer URLs. Retry ladder 1m / 5m / 30m / 1h / 6h then abandon. Per-webhook in-flight cap and shared dispatch pool.
+
+**Alerting delivery worker** (`internal/alerting/`): Same shape as the webhook worker but for managed channels — email (via `wpcom`/`smtp`/`stub` senders), PagerDuty Events API v2, Slack incoming webhooks, Microsoft Teams. Filter is simpler (`site_filter` + `min_severity`); per-contact `max_per_hour` rate cap absorbs pager storms. Send-test endpoint exercises the same dispatch path without requiring a real event.
 
 **Veriflier transport** (`internal/veriflier/`): JSON-over-HTTP client/server for Monitor↔Veriflier communication. Replaces the previous SSL server and custom HTTPS protocol. Run `make generate` to swap in generated gRPC stubs once protoc is set up.
 
-**Veriflier** (`veriflier2/`): Standalone Go binary deployed at remote locations. Receives check batches from the Monitor via gRPC, performs HTTP checks, and returns results. Replaces the Qt C++ Veriflier.
+**Veriflier** (`veriflier2/`): Standalone Go binary deployed at remote locations. Receives check batches from the Monitor, performs HTTP checks, and returns results. Replaces the Qt C++ Veriflier.
+
+**Future shape:** the API server, webhook worker, and alerting worker are independently scalable concerns and the natural target for the multi-binary split tracked in `ROADMAP.md`. Today they coexist in `jetmon2` and the MySQL schema is the bus between them; tomorrow the deliverer becomes its own binary handling all outbound dispatch (webhooks + alerting + WPCOM legacy migrated behind it).
 
 ## Key Files
 
