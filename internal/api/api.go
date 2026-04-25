@@ -32,21 +32,23 @@ const (
 // Server hosts the API on a single addr. Lifecycle mirrors the verifier:
 // Listen blocks; Shutdown drains gracefully up to the caller's deadline.
 type Server struct {
-	db       *sql.DB
-	addr     string
-	hostname string
-	httpSrv  *http.Server
-	limiter  *rateLimiter
+	db          *sql.DB
+	addr        string
+	hostname    string
+	httpSrv     *http.Server
+	limiter     *rateLimiter
+	idempotency *idempotencyStore
 }
 
 // New constructs a Server. Caller is responsible for ensuring db is connected
 // and migrated before Listen is called.
 func New(addr string, db *sql.DB, hostname string) *Server {
 	return &Server{
-		db:       db,
-		addr:     addr,
-		hostname: hostname,
-		limiter:  newRateLimiter(),
+		db:          db,
+		addr:        addr,
+		hostname:    hostname,
+		limiter:     newRateLimiter(),
+		idempotency: newIdempotencyStore(),
 	}
 }
 
@@ -88,15 +90,35 @@ func (s *Server) routes() *http.ServeMux {
 	// Identity — any valid key.
 	mux.HandleFunc("GET /api/v1/me", s.requireScope(scopeRead, s.handleMe))
 
-	// Sites.
+	// Sites — read.
 	mux.HandleFunc("GET /api/v1/sites", s.requireScope(scopeRead, s.handleListSites))
 	mux.HandleFunc("GET /api/v1/sites/{id}", s.requireScope(scopeRead, s.handleGetSite))
+
+	// Sites — write. POST endpoints route through the idempotency middleware
+	// so retries with the same Idempotency-Key are safe; PATCH/DELETE skip
+	// it because they're inherently idempotent on this schema.
+	mux.HandleFunc("POST /api/v1/sites",
+		s.requireScope(scopeWrite, s.withIdempotency(s.handleCreateSite)))
+	mux.HandleFunc("PATCH /api/v1/sites/{id}",
+		s.requireScope(scopeWrite, s.handleUpdateSite))
+	mux.HandleFunc("DELETE /api/v1/sites/{id}",
+		s.requireScope(scopeWrite, s.handleDeleteSite))
+	mux.HandleFunc("POST /api/v1/sites/{id}/pause",
+		s.requireScope(scopeWrite, s.withIdempotency(s.handlePauseSite)))
+	mux.HandleFunc("POST /api/v1/sites/{id}/resume",
+		s.requireScope(scopeWrite, s.withIdempotency(s.handleResumeSite)))
+	mux.HandleFunc("POST /api/v1/sites/{id}/trigger-now",
+		s.requireScope(scopeWrite, s.withIdempotency(s.handleTriggerNow)))
 
 	// Events — both site-scoped and direct lookup.
 	mux.HandleFunc("GET /api/v1/sites/{id}/events", s.requireScope(scopeRead, s.handleListSiteEvents))
 	mux.HandleFunc("GET /api/v1/sites/{id}/events/{event_id}", s.requireScope(scopeRead, s.handleGetEventBySite))
 	mux.HandleFunc("GET /api/v1/sites/{id}/events/{event_id}/transitions", s.requireScope(scopeRead, s.handleListTransitions))
 	mux.HandleFunc("GET /api/v1/events/{event_id}", s.requireScope(scopeRead, s.handleGetEvent))
+
+	// Events — write (manual close).
+	mux.HandleFunc("POST /api/v1/sites/{id}/events/{event_id}/close",
+		s.requireScope(scopeWrite, s.withIdempotency(s.handleCloseEvent)))
 
 	// SLA / statistics.
 	mux.HandleFunc("GET /api/v1/sites/{id}/uptime", s.requireScope(scopeRead, s.handleSiteUptime))

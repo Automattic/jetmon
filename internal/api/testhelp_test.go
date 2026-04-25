@@ -60,6 +60,15 @@ func requestWithKey(method, target string, key *apikeys.Key) *http.Request {
 	return req.WithContext(ctx)
 }
 
+// setAuthCtx attaches an authenticated key + request id to an existing
+// request, preserving its body and path values. Used for handler tests
+// that need to send a JSON body alongside an authenticated context.
+func setAuthCtx(req *http.Request, key *apikeys.Key) *http.Request {
+	ctx := context.WithValue(req.Context(), ctxKeyAPIKey, key)
+	ctx = context.WithValue(ctx, ctxKeyRequestID, "test-request-id")
+	return req.WithContext(ctx)
+}
+
 // readJSON decodes the response body into the target struct.
 func readJSON(t *testing.T, body io.Reader, target any) {
 	t.Helper()
