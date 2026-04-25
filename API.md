@@ -600,6 +600,18 @@ Standard CRUD. A webhook is:
 
 `secret` is the only string-prefixed identifier in the API surface — it's a shared secret, not a resource id, and the `whsec_` prefix is a Stripe-style hint to anyone scanning logs/leaks ("this is a webhook signing secret, treat as sensitive"). It is shown only on creation; afterward only `secret_preview` is returned (last 4 chars).
 
+#### Filter semantics
+
+Filters compose **AND across dimensions, whitelist within each, empty = match all**. A delivery fires when:
+
+```
+event_type ∈ events (or events == [])
+AND site_id  ∈ site_filter.site_ids (or site_filter == {})
+AND state    ∈ state_filter.states (or state_filter == {})
+```
+
+Empty fields mean "no restriction on this dimension," matching the everyday English meaning of an empty filter. Same convention as Stripe, GitHub, and Slack webhooks — consumers can omit dimensions they don't care about and progressively narrow as needed. Blacklist/exclude fields are not supported in v1.
+
 #### Webhook delivery format
 
 When an event fires, Jetmon POSTs to the webhook URL:
@@ -632,13 +644,42 @@ The signature is HMAC-SHA256 of `{timestamp}.{body}` with the webhook's `secret`
 - `event.state_changed` — state changed (e.g. Seems Down → Down)
 - `event.cause_linked` / `event.cause_unlinked`
 - `event.closed` — event resolved (any reason)
-- `site.state_changed` — derived projection changed (rolled up from events)
 
-`event.*` types fire once per transition; `site.*` types fire when the site row's `current_state` flips. The two are intentionally separable — most consumers care about site-level state for paging and event-level detail for reports.
+`event.*` types fire once per transition row written to `jetmon_event_transitions` — i.e., once per actual mutation. The 1:1 invariant the eventstore maintains is what makes detection reliable.
+
+**Deferred:** `site.state_changed` (rollup from events to the site-row projection) is **not** in v1. Rolling up cleanly without races requires changes to the orchestrator, and event-level webhooks already give consumers everything they need. Tracked in ROADMAP.md.
+
+#### Detection mechanism
+
+Webhook delivery uses **pull-based detection**: a worker polls `jetmon_event_transitions WHERE id > last_seen` on a 1s interval and creates one delivery row per matching transition. This is the long-term answer for Jetmon's architecture — the orchestrator's flap suppression already adds 10s+ between detection and confirmed events, so 1s poll latency is invisible in the practical budget. Pull also handles multi-instance deployment cleanly (any jetmon2 instance can claim work via row lock; no pub/sub layer needed).
+
+Push-based or hybrid detection is not on the roadmap. If a future consumer demands sub-second webhook latency, that's the trigger to introduce a pub/sub layer — not before.
 
 #### Retry policy
 
-Webhooks are retried with exponential backoff (1m, 5m, 30m, 1h, 6h, 24h) for non-2xx responses, then dropped. A `GET /api/v1/webhooks/{id}/deliveries` endpoint surfaces delivery history with status code, response body, and retry count.
+Each `jetmon_webhook_deliveries` row is one webhook firing. Each delivery has up to 6 attempts on this exponential schedule:
+
+| Attempt | Delay from previous |
+|---------|---------------------|
+| 1       | immediate           |
+| 2       | 1m                  |
+| 3       | 5m                  |
+| 4       | 30m                 |
+| 5       | 1h                  |
+| 6       | 6h                  |
+| (drop)  | 24h after attempt 6 |
+
+A delivery succeeds when any attempt returns 2xx. After 6 failed attempts, the row is marked `status = 'abandoned'`. Abandoned rows stay in the table — `GET /api/v1/webhooks/{id}/deliveries?status=abandoned` lists them, and `POST /api/v1/webhooks/{id}/deliveries/{delivery_id}/retry` lets a consumer re-fire after fixing their endpoint.
+
+`GET /api/v1/webhooks/{id}/deliveries` returns the full delivery history with `status` (`pending` / `delivered` / `failed` / `abandoned`), `attempt`, `last_status_code`, and a truncated `last_response` body for debugging.
+
+#### Signing and secret rotation
+
+Signature: HMAC-SHA256 of `{timestamp}.{body}` with the webhook's secret, sent as `X-Jetmon-Signature: t=<unix_ts>,v1=<hex>`. The timestamp prevents replay; consumers should reject deliveries older than 5 minutes.
+
+Secret rotation in v1: **immediate revocation only**. `POST /api/v1/webhooks/{id}/rotate-secret` returns a new secret once, replaces the stored hash, and the old secret stops working immediately. Failed deliveries during the consumer's deploy window go into the retry queue.
+
+**Deferred:** grace-period rotation (server signs with both old and new secrets for a configurable window so consumers can roll over without coordinated downtime) is in ROADMAP.md. The signature header format already supports multiple `v1=...,v1=...` values per Stripe convention, so adding grace-period rotation later is non-breaking.
 
 ### Family 5: Alert contacts (legacy bridge)
 
