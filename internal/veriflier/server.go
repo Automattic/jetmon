@@ -41,7 +41,20 @@ const (
 	idleTimeout       = 120 * time.Second
 )
 
+// maxRequestBodyBytes caps an inbound POST /check body. A typical batch is
+// ~200 sites × ~250 bytes/site ≈ 50KB, so 10MB is generous headroom and
+// closes a trivial DoS vector (an attacker that has the auth token can't
+// stream gigabytes through the JSON decoder before we notice).
+const maxRequestBodyBytes = 10 * 1024 * 1024
+
 // NewServer creates a Server that calls checkFn for each check request.
+//
+// authToken must be non-empty in production. An empty token would create a
+// dangerous edge case where any request with `Authorization: Bearer ` (with
+// a trailing space and nothing else) would be accepted; callers that
+// receive an empty token from config should reject it before reaching here.
+// We don't validate at construct time because tests exercise the empty-token
+// path via httptest, but veriflier2/cmd/main.go does check at startup.
 func NewServer(addr, authToken, hostname, version string, checkFn func(CheckRequest) CheckResult) *Server {
 	return &Server{
 		addr:      addr,
@@ -104,8 +117,20 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 		Results []CheckResult `json:"results"`
 	}
 
+	// Cap the body before decoding. An overlong body produces a clear 413
+	// rather than streaming through the JSON decoder until something else
+	// times out.
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+
 	var req batchReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		// MaxBytesReader's "http: request body too large" error is the
+		// signal we want to surface as 413; everything else is a malformed
+		// JSON payload (400).
+		if err.Error() == "http: request body too large" {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, fmt.Sprintf("decode: %v", err), http.StatusBadRequest)
 		return
 	}

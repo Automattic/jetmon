@@ -47,6 +47,13 @@ func main() {
 	if cfg.GRPCPort == "" {
 		log.Fatalf("VERIFLIER_GRPC_PORT is not set")
 	}
+	// Reject empty auth tokens at startup. The verifier's Bearer comparison
+	// would otherwise accept any request with the literal "Bearer " header
+	// (no token after the space) — a subtle auth bypass if a misconfigured
+	// deploy leaves the token blank. Better to fail loud at startup.
+	if cfg.AuthToken == "" {
+		log.Fatalf("VERIFLIER_AUTH_TOKEN is not set; refusing to start with no authentication")
+	}
 	addr := fmt.Sprintf(":%s", cfg.GRPCPort)
 
 	// Optional StatsD metrics. STATSD_ADDR is unset in standalone deploys,

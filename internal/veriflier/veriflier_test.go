@@ -264,6 +264,43 @@ func TestRequestIDPreservedWhenCallerSets(t *testing.T) {
 	}
 }
 
+func TestServerRejectsOversizedBody(t *testing.T) {
+	// The body cap is the only DoS mitigation between an authorized caller
+	// and the JSON decoder. A body over the 10MB cap should be rejected
+	// with 413 — and crucially, the checkFn should never be invoked.
+	_, ts := newTestServer(func(req CheckRequest) CheckResult {
+		t.Fatal("checkFn should not be called for oversized body")
+		return CheckResult{}
+	})
+	defer ts.Close()
+
+	// Build a body just over the 10MB cap. Padding lives in a custom_headers
+	// value so the JSON shape is still valid (we want to confirm the cap
+	// fires, not that the JSON is malformed).
+	pad := make([]byte, 11*1024*1024)
+	for i := range pad {
+		pad[i] = 'x'
+	}
+	body := bytes.NewBuffer(nil)
+	body.WriteString(`{"sites":[{"BlogID":1,"URL":"https://example.com","CustomHeaders":{"X-Pad":"`)
+	body.Write(pad)
+	body.WriteString(`"}}]}`)
+
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/check", body)
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413", resp.StatusCode)
+	}
+}
+
 func TestServerShutdownDrains(t *testing.T) {
 	// Shutdown should drain in-flight requests up to the context deadline,
 	// not yank the connection mid-response.
