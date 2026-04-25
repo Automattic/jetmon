@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -270,13 +271,17 @@ func TestEscalateToVerifliersRecordsFalsePositiveWhenQuorumMissed(t *testing.T) 
 		return nil
 	}
 
-	call := 0
+	// escalateToVerifliers fans the verifier RPC out across goroutines, so
+	// `call` is read+written concurrently. Use atomic so `go test -race`
+	// stays clean. The semantics — first verifier returns Success=false,
+	// subsequent ones return true — are unchanged.
+	var call atomic.Int64
 	veriflierCheckFunc = func(c *veriflier.VeriflierClient, _ context.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
-		call++
+		n := call.Add(1)
 		return &veriflier.CheckResult{
 			BlogID:   req.BlogID,
 			Host:     c.Addr(),
-			Success:  call != 1,
+			Success:  n != 1,
 			HTTPCode: 200,
 		}, nil
 	}

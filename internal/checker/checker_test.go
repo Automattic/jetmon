@@ -394,11 +394,14 @@ func TestScaleUpWhenQueueDeep(t *testing.T) {
 	}
 
 	p := NewPool(1, 1, 5)
-	// Register Drain first so it runs second (LIFO): close(block) unblocks workers, then Drain completes.
-	t.Cleanup(p.Drain)
+	// Single Cleanup so the order is explicit: unblock workers, drain the
+	// pool to completion, then restore poolCheckFunc. The previous LIFO
+	// ordering left a race where workers could still read poolCheckFunc as
+	// it was reassigned.
 	t.Cleanup(func() {
-		poolCheckFunc = orig
 		close(block)
+		p.Drain()
+		poolCheckFunc = orig
 	})
 
 	// Submit enough work to ensure queue > current worker count.
@@ -481,10 +484,15 @@ func TestQueueDepth(t *testing.T) {
 	}
 
 	p := NewPool(1, 1, 1)
-	t.Cleanup(p.Drain)
+	// Cleanup order matters: close(release) unblocks workers so Drain can
+	// complete, Drain ensures all worker goroutines have exited before we
+	// restore poolCheckFunc. Doing this as one Cleanup keeps the ordering
+	// explicit; LIFO ordering of multiple Cleanups previously left a race
+	// where workers could still read poolCheckFunc as it was reassigned.
 	t.Cleanup(func() {
-		poolCheckFunc = orig
 		close(release)
+		p.Drain()
+		poolCheckFunc = orig
 	})
 
 	p.Submit(Request{BlogID: 1, URL: "a"})
@@ -507,10 +515,11 @@ func TestActiveCount(t *testing.T) {
 	}
 
 	p := NewPool(1, 1, 1)
-	t.Cleanup(p.Drain)
+	// Same single-Cleanup ordering as TestQueueDepth — see comment there.
 	t.Cleanup(func() {
-		poolCheckFunc = orig
 		close(release)
+		p.Drain()
+		poolCheckFunc = orig
 	})
 
 	p.Submit(Request{BlogID: 1, URL: "x"})
