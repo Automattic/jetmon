@@ -814,6 +814,8 @@ POST /api/v1/alert-contacts/{id}/test
 
 Sends a synthetic notification through the contact's transport — same rendering, same dispatch path, but with payload `{"test": true, "message": "Jetmon test notification", ...}`. Used by operators to verify a newly-created contact actually reaches its destination. Test sends are exempt from `max_per_hour`, are logged in `jetmon_audit_log` under `event_type=alert_test`, and bypass the severity gate (always delivered).
 
+Honors `Idempotency-Key` like the other write POSTs — a retried request with the same key returns the original response without re-firing the test, so a network blip during the operator's "click to test" doesn't double-page the destination.
+
 Returns `200 OK` with the test delivery row, or surfaces the transport error (e.g. invalid Slack webhook URL) directly so operators can debug without spelunking through worker logs.
 
 #### Email delivery

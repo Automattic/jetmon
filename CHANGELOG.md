@@ -83,6 +83,23 @@ because it is intentionally **not** drop-in with the Jetmon 1 wire format
   caveat (SELECT ... FOR UPDATE SKIP LOCKED) still tracked alongside the
   deliverer-binary extraction in ROADMAP.md.
 
+**Polish:**
+- `alerting.Update` now validates `label` (must be non-empty) and
+  `max_per_hour` (must be ≥ 0) at input time, surfacing 422
+  `invalid_alert_contact` instead of letting an empty label silently
+  persist or a negative `max_per_hour` surface as a generic 500 from
+  MySQL's `INT UNSIGNED` constraint. Validations that don't depend on
+  the existing row run before the DB lookup so obviously bad PATCH
+  bodies don't pay for a round-trip.
+- Email transport strips CR and LF from MIME header values
+  (`From` / `To` / `Subject`) as defense-in-depth against header
+  injection via untrusted strings (`monitor_url` is operator-controlled
+  but the column doesn't enforce CRLF-free). Body content with newlines
+  is unaffected.
+- `POST /api/v1/alert-contacts/{id}/test` now honors `Idempotency-Key`
+  like the other write POSTs, so a retried "click to test" during a
+  network blip doesn't double-page the destination.
+
 ### Jetmon 2 — initial Go rewrite
 
 Complete rewrite of the Node.js + C++ uptime monitor as a single static Go binary.
