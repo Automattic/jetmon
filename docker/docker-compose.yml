@@ -38,6 +38,7 @@ services:
           - VERIFLIER_GRPC_PORT=$VERIFLIER_GRPC_DOCKER_PORT
           - WPCOM_JETMON_AUTH_TOKEN=$WPCOM_JETMON_AUTH_TOKEN
           - DASHBOARD_PORT=$DASHBOARD_DOCKER_PORT
+          - JETMON_PID_FILE=/jetmon/stats/jetmon2.pid
         ports:
           - $DASHBOARD_LOCAL_PORT:$DASHBOARD_DOCKER_PORT
         depends_on:
