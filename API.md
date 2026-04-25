@@ -735,13 +735,152 @@ This is appropriate **only** because Jetmon is internal-only with all consumers 
 
 The decision to defer ownership today should be reread before any public-API conversation actually starts.
 
-### Family 5: Alert contacts (legacy bridge)
+### Family 5: Alert contacts
 
-For drop-in compatibility with the existing WPCOM notification flow, alert contacts are first-class but optional. Most modern integrations use webhooks. Documented here for completeness:
+Managed notification channels for human destinations: email, PagerDuty, Slack, Microsoft Teams. Where webhooks (Family 4) deliver a raw signed event stream that the consumer renders, alert contacts deliver a Jetmon-rendered notification through a transport Jetmon owns end-to-end (subject lines, message formatting, transport-specific quirks).
 
-- `GET /api/v1/contacts` / `POST` / `PATCH` / `DELETE`
-- Contact types: `email`, `sms`, `webhook` (delegates to webhook system above), `slack`
-- Per-site contact assignment via `POST /api/v1/sites/{id}/contacts/{contact_id}`
+#### When to use which
+
+- **Alert contact** — you want a person notified through a managed channel (their email, your team's PagerDuty service, your team's Slack channel). You don't want to operate a receiver, you want Jetmon to handle rendering and retries.
+- **Webhook** — you want a *system* notified, you control the receiver, and you want the raw signed event payload to render or route however you want. Use this for custom Slack bots that aren't a vanilla incoming-webhook URL, internal SIEM ingestion, custom alerting middleware, or anything that wants the structured event rather than a pre-formatted message.
+
+The two surfaces share the same event source (`jetmon_event_transitions`); a customer can use both simultaneously without dedup concerns at the source.
+
+#### `GET /api/v1/alert-contacts` / `POST` / `PATCH` / `DELETE`
+
+Standard CRUD. An alert contact is:
+
+```json
+{
+  "id": 17,
+  "label": "platform-oncall",
+  "active": true,
+  "transport": "pagerduty",
+  "destination": { "integration_key": "***" },
+  "site_filter": { "site_ids": [12345, 67890] },
+  "min_severity": "Critical",
+  "max_per_hour": 60,
+  "secret_preview": "abcd",
+  "created_by": "alerts-admin",
+  "created_at": "2026-04-25T00:00:00Z"
+}
+```
+
+`destination` shape varies by transport (see below); credential fields are write-only and only `secret_preview` (last 4 chars of the credential) is returned on subsequent reads.
+
+#### Transports
+
+| Transport | `destination` shape | Notes |
+|-----------|---------------------|-------|
+| `email` | `{ "address": "ops@example.com" }` | Rendered as a plain-text + HTML email. Sent via the configured email transport (see "Email delivery" below). |
+| `pagerduty` | `{ "integration_key": "<events-v2 routing key>" }` | Posts to PagerDuty Events API v2. `min_severity` maps to PagerDuty severity (Down → critical, Slow → warning, etc.). |
+| `slack` | `{ "webhook_url": "https://hooks.slack.com/..." }` | Posts to a Slack incoming-webhook URL. Renders a Block Kit message with site, state, severity, and an event link. |
+| `teams` | `{ "webhook_url": "https://outlook.office.com/webhook/..." }` | Posts to a Microsoft Teams incoming-webhook URL. Renders an Adaptive Card with the same fields as Slack. |
+
+Custom transports (Slack via OAuth bot, OpsGenie, internal SIEM, etc.) go through the webhooks API instead — register a webhook, render however you want.
+
+#### Filter semantics
+
+Alert contacts use a simpler filter model than webhooks: **site list + severity gate**. A contact fires when:
+
+```
+site_id ∈ site_filter.site_ids   (or site_filter == {} → all sites)
+AND new_severity >= min_severity (Info < Notice < Warning < Critical)
+```
+
+Empty `site_filter` means "all sites." `min_severity` is required and defaults to `Critical` on create — this is the most common case (page me only on real outages) and avoids accidental noise from new contacts.
+
+The simpler filter model is intentional. Most alert contact configs are "this person, these sites, only when something serious happens"; event-type and state filters (which webhooks support) are rarely useful for human pagers — if you got the open page you almost always want the close page too. Customers who need finer-grained filtering register a webhook instead.
+
+#### Severity gate
+
+Severity ordering: `Info < Notice < Warning < Critical`. The gate matches `new_severity >= min_severity` on each transition; events that *increase* in severity through `min_severity` send a page, events that *resolve below* `min_severity` send a recovery notification, events that move between two severities both below the gate are silently dropped.
+
+This lets agencies and VIPs configure low-severity contacts that catch every flicker while still letting normal users configure `Critical`-only contacts that only fire on real outages — both from the same plumbing.
+
+#### Per-contact rate cap
+
+`max_per_hour` (default 60, set to `0` for unlimited) caps how many notifications a single contact can receive per rolling hour. Designed against the pager-storm scenario where a regional outage flips 200 sites at once; without a cap, on-call gets paged 200 times in 30 seconds. When the cap is hit, further transitions for that contact are recorded but not dispatched, and a single "rate-limit hit, N notifications suppressed in the last hour" digest is sent at the next tick under the cap.
+
+This is a per-contact field, not global — different contacts have different tolerance (a Slack channel can take far more than a PagerDuty oncall can).
+
+#### Send-test
+
+```
+POST /api/v1/alert-contacts/{id}/test
+```
+
+Sends a synthetic notification through the contact's transport — same rendering, same dispatch path, but with payload `{"test": true, "message": "Jetmon test notification", ...}`. Used by operators to verify a newly-created contact actually reaches its destination. Test sends are exempt from `max_per_hour`, are logged in `jetmon_audit_log` under `event_type=alert_test`, and bypass the severity gate (always delivered).
+
+Returns `200 OK` with the test delivery row, or surfaces the transport error (e.g. invalid Slack webhook URL) directly so operators can debug without spelunking through worker logs.
+
+#### Email delivery
+
+Email is unique among the transports in that there is no equivalent of "post to this URL" — it requires a sender. Three implementations selectable at startup via `EMAIL_TRANSPORT` config:
+
+| `EMAIL_TRANSPORT` | Use case | Behavior |
+|-------------------|----------|----------|
+| `wpcom` | Production | Calls existing WPCOM email infrastructure. Default in production deploys. |
+| `smtp` | Local dev / staging | Connects to an SMTP server (e.g. MailHog/Mailpit in docker compose). Configurable host/port/auth. |
+| `stub` | Unit testing | Logs the rendered email to stdout; no actual send. |
+
+The `Sender` interface is internal to the alerting package, so swapping transports is a config change — no code path differences. SMTP support specifically exists so docker-based integration tests can verify rendering and addressing end-to-end without depending on WPCOM infrastructure.
+
+#### Subscription assignment
+
+Site assignment is via `site_filter.site_ids` on the contact row itself, not a separate join table. Mirrors the webhooks API. Empty list = all sites. Setting `site_filter: {"site_ids": []}` is "subscribe to all sites"; setting `site_filter: null` (or omitting it) is "subscribe to none and don't fire" — consistent with webhooks' empty=match-all convention.
+
+#### Detection mechanism
+
+Same as webhooks — pull-only, polling `jetmon_event_transitions` on a high-water mark. Different worker (`internal/alerting/`) with the same dispatch shape: claim → match contacts → enqueue per-contact deliveries in `jetmon_alert_deliveries` → dispatch with retry. Worker placement is intentionally parallel to webhooks rather than unified; see ROADMAP for the rationale and the future revisit point.
+
+#### Retry policy
+
+Same schedule as webhooks: 1m, 5m, 30m, 1h, 6h, then abandon. Different transports have different idempotency stories — PagerDuty Events API is idempotent on `dedup_key`, Slack webhooks are not — so each transport implementation owns its retry-safety guarantee. Worker-level retry is conservative; if the transport library returns success, we never re-send.
+
+#### Relationship to legacy WPCOM notifications
+
+The existing WPCOM notification flow (orchestrator-side, hard-coded recipients) **continues to operate independently** in v1. Alert contacts are a parallel programmable path; they don't replace WPCOM notifications, they coexist.
+
+This means:
+- An incident may notify the same human twice if they're configured in both paths. Document this on the operator side and avoid duplicate configuration.
+- The two paths have separate retry state, separate metrics, separate audit trails.
+- Migrating WPCOM notifications behind alert contacts is a future cleanup tracked in the roadmap, gated on alert contacts proving out in production.
+
+The boundary is: WPCOM = built-in path for existing internal Jetpack notifications; alert contacts = customer-managed destinations through the API. Anything new should go through alert contacts.
+
+#### Schema
+
+```sql
+jetmon_alert_contacts (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  label VARCHAR(80) NOT NULL,
+  active TINYINT(1) NOT NULL DEFAULT 1,
+  transport ENUM('email','pagerduty','slack','teams') NOT NULL,
+  destination JSON NOT NULL,          -- transport-specific, secret in plaintext (outbound dispatch needs raw value)
+  destination_preview VARCHAR(8) NOT NULL,
+  site_filter JSON NOT NULL,          -- {"site_ids":[...]} or {} for all
+  min_severity ENUM('Info','Notice','Warning','Critical') NOT NULL DEFAULT 'Critical',
+  max_per_hour INT NOT NULL DEFAULT 60,
+  created_by VARCHAR(80) NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+)
+
+jetmon_alert_deliveries (
+  -- mirrors jetmon_webhook_deliveries; dedup on (alert_contact_id, transition_id)
+)
+
+jetmon_alert_dispatch_progress (
+  -- mirrors jetmon_webhook_dispatch_progress; high-water mark for the worker
+)
+```
+
+`destination` stores the credential in plaintext. Same rationale as `jetmon_webhooks.secret`: outbound dispatch needs the raw value (PagerDuty integration key, Slack webhook URL, SMTP password) at every send — a hash is useless because we'd have to recover the original to call the transport. The threat model is the database itself; encryption-at-rest on the storage layer is the correct mitigation, not application-level hashing.
+
+#### Alert contact ownership
+
+Same model as webhooks: any `write`-scope token can manage any alert contact, `created_by` is audit-only. The "Webhook ownership and scope" section above applies verbatim — the gateway handles tenant isolation; if Jetmon ever exposes the API directly to customers, ownership columns get added then.
 
 ### Family 6: Identity and utility
 
@@ -795,9 +934,16 @@ Phase 2 (write surface):
 - Family 2 manual close
 - Idempotency keys + tighter rate limit on triggers
 
-Phase 3 (delivery):
+Phase 3 (webhook delivery):
 - Family 4 webhooks (CRUD + delivery infrastructure with HMAC signing + retry backoff)
-- Family 5 alert contacts (bridge to existing WPCOM flow)
+
+Phase 3.x (alert contacts):
+- Family 5 alert contacts: managed channels (email, PagerDuty, Slack, Teams)
+- `internal/alerting/` package — parallel to `internal/webhooks/`, same dispatch shape
+- Email transport interface with `wpcom` / `smtp` / `stub` implementations
+- Per-contact severity gate + per-hour rate cap
+- `POST /alert-contacts/{id}/test` send-test endpoint
+- Legacy WPCOM notification flow continues to operate in parallel; future migration tracked in ROADMAP
 
 Phase 4 (polish):
 - OpenAPI spec generation

@@ -159,6 +159,75 @@ A future Phase 3.x extension is **grace-period rotation**: server signs with bot
 
 ---
 
+## Deferred from Phase 3.x (alert contacts)
+
+These were considered during Phase 3.x design and intentionally left out of v1. Each has a clean addition path that doesn't disturb the v1 schema or worker shape.
+
+### Generic outbound webhook as an alert-contact transport
+
+Phase 3.x ships four managed transports: email, PagerDuty, Slack, Teams. A "generic webhook" alert-contact transport (POST a Jetmon-formatted JSON payload to any URL) was considered and rejected because the webhooks API (Family 4) already covers it — and covers it better, with HMAC signing, configurable filters across more dimensions, and a fully programmable payload shape.
+
+**The boundary:** alert contacts deliver Jetmon-rendered notifications through Jetmon-owned transports. Webhooks deliver the raw signed event stream for the consumer to render. A customer who wants "POST to my URL when sites change" should register a webhook; we shouldn't ship a duplicate surface that does the same thing worse.
+
+**When to revisit:** never, unless the boundary itself shifts (e.g. webhooks API gets removed, or alert contacts grows into a fundamentally different abstraction).
+
+### SMS notifications
+
+Skipped in v1. WPCOM SMS infrastructure availability is unclear, and a third-party SMS provider integration (Twilio/MessageBird/etc.) is a non-trivial credentialing and billing addition. PagerDuty already offers SMS as a downstream config — the dominant SMS use case is "page me," and that's already covered.
+
+**When to revisit:** a customer asks specifically for direct SMS without going through PagerDuty, AND a stable SMS sending channel (WPCOM-owned or vendor-procured) is available.
+
+### OpsGenie transport
+
+Skipped in v1. Same shape as PagerDuty but a different vendor; PagerDuty covers the dominant slice of customers who want incident-management routing. Adding OpsGenie is mechanical (new transport implementation, ~100 LoC) once a customer asks.
+
+**When to revisit:** a customer running OpsGenie asks for direct integration. Until then, they can route via webhook to OpsGenie's events API themselves.
+
+### Quiet hours / on-call schedules
+
+Per-contact "don't page me between 11pm and 7am" or "route to alternate contact during my vacation" was considered and deferred. Reasons:
+
+- PagerDuty already handles this on its end with full schedule support; customers using PagerDuty don't need it from Jetmon.
+- For Slack/email/Teams contacts, channel-level mute or auto-responders work as a workaround.
+- Building scheduling into Jetmon is a rabbit hole — timezone handling, recurring patterns, escalation overrides, holiday lists. Each of those is a feature in itself.
+
+**When to revisit:** strong customer demand specifically for non-PagerDuty contacts AND a clear scope for what "scheduling" means in v1 (probably starts with a single per-contact `quiet_hours: {start, end, tz}` field, not full PagerDuty parity).
+
+### Alert acknowledgements
+
+"Operator acks an alert from PagerDuty/Slack and Jetmon stops re-paging" was considered and deferred because it's bidirectional — Jetmon would need to receive callbacks from each transport, store ack state, and gate further deliveries against it. That's a significant new surface (inbound webhooks from PagerDuty, Slack interactivity API, etc.) for a feature most customers handle within their incident-management tool.
+
+**When to revisit:** a customer specifically asks for cross-channel ack state (e.g. "I acked in PagerDuty, don't keep posting to Slack"). Probably ships as a per-contact `respect_external_ack: bool` flag plus per-transport ack-receiver implementations.
+
+### Alert grouping / digest mode
+
+When a regional outage flips 50 sites at once, v1 sends 50 separate notifications per matching contact (modulo the per-hour rate cap, which kicks in but only as a brake, not a grouping mechanism). A real grouping/digest feature — "send one email containing all transitions in the last 5 minutes" — was deferred.
+
+**Why deferred:** per-event delivery matches webhook semantics, is the simplest semantic to reason about, and is what most monitoring tools start with. Grouping introduces real questions (window size, group boundary criteria, what happens if a transition arrives mid-group) that benefit from real customer feedback.
+
+**When to revisit:** real users complain about pager noise during regional outages even with `max_per_hour` set. Likely shape: per-contact `digest_window_seconds` field; transitions within the window batch into one notification at window end.
+
+### Migrate WPCOM notifications behind alert contacts
+
+Phase 3.x ships alert contacts alongside the existing WPCOM notification flow rather than migrating the WPCOM flow to be a transport behind alert contacts. The two paths coexist; same human can be in both and receive duplicate notifications.
+
+**Why deferred:** drop-in compatibility with the existing v1 deployment shape is more important than architectural unification. Migrating WPCOM-flow consumers to alert contacts requires:
+- Inventorying all current WPCOM notification recipients and their subscription patterns
+- Building a `wpcom` transport (or reusing an existing one) that delivers through the same channel
+- Migrating the per-recipient subscription data into `jetmon_alert_contacts`
+- Verifying nothing regresses for the existing recipients during cutover
+
+This is a coordinated migration, not a code change — and it's safer to do once alert contacts has proven out in production with real customers.
+
+**Why this is a clean future addition:**
+- The transport interface is already pluggable; adding a `wpcom` transport is the same shape as `email`/`pagerduty`/`slack`/`teams`.
+- The orchestrator's existing WPCOM notification call site becomes a simple "delete this code path" once parity is verified.
+- The deliverer-binary extraction (see Architectural roadmap below) becomes meaningfully cleaner with WPCOM unified — it's the third transport that justifies the split.
+
+**When to revisit:** alert contacts has been in production for 1–3 months without major issues, AND the deliverer-binary extraction is being actively planned. The two are the same conversation.
+
+---
+
 ## Architectural roadmap
 
 ### Multi-repo / multi-binary split
@@ -190,6 +259,15 @@ What this means concretely:
 - The Phase 3 webhook worker (`internal/webhooks/worker.go`) is the seed. Its `dispatchTick` / `deliverTick` shape generalizes — the matching, claiming, retry, and abandon logic is transport-agnostic.
 - A future refactor abstracts the transport behind a `Dispatcher` interface (`Send(ctx, dest, payload) (status, error)`), with concrete implementations per channel.
 - Per-channel state (webhook subscriptions, alert contacts, WPCOM circuit breaker counters) stays in its own table; the worker loops over each.
+
+**Revisit point: unify `internal/alerting/` and `internal/webhooks/`.** Phase 3.x ships alert contacts as a separate package (`internal/alerting/`) parallel to webhooks, deliberately *not* extending the webhook worker. The reasoning at the time was: alerting hadn't been built yet, we didn't know what shape it would actually take (fan-out? escalation? digest mode?), and forcing a shared abstraction with one known user (webhooks) and one guessed-at user (alerting) risked an abstraction that fits neither well. Better to build alerting concretely, see where the duplication actually lands, and factor with two real implementations in hand.
+
+The deliverer-binary extraction is the natural moment to revisit. By then we'll have:
+- Two concrete dispatch workers in production with known operational profiles.
+- A clear picture of what alerting actually grew into vs. what webhooks needed.
+- A real third transport on the way (WPCOM migration), which validates the abstraction against three users instead of two.
+
+At that point, factor a `Dispatcher` interface against the three known shapes — not before. The duplication cost between `internal/webhooks/` and `internal/alerting/` is bounded (~300 lines); the cost of a wrong abstraction is unbounded.
 
 **Trigger that justifies the split.** A single outbound transport doesn't justify its own binary — webhooks alone could stay co-located with the orchestrator. The argument gets compelling once there are *multiple* transports to dispatch and a shared retry/circuit-breaker substrate to amortize. Adding alert contacts is the moment the abstraction earns its keep; pulling WPCOM notifications out of the orchestrator at the same time is the cleanup that pays off the extraction.
 
