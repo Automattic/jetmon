@@ -90,6 +90,7 @@ See `PROJECT.md` for the full project description, feature list, and performance
 | `veriflier2/` | Go Veriflier binary |
 | `API.md` | Internal REST API reference (auth, all endpoints, payload shapes) |
 | `ROADMAP.md` | Deferred features and architectural roadmap (multi-binary split, public-API path) |
+| `docs/adr/` | Architecture Decision Records — load-bearing decisions ("why is X like this") with context, decision, and consequences |
 | `PROJECT.md` | Full project description and feature specification |
 
 ## Build and Run
