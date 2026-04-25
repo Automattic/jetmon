@@ -171,18 +171,27 @@ This is fine for now but won't scale operationally. Different concerns have very
 |---------|--------------|------------------|
 | Orchestrator | bucket count, check rate | stateful (claims buckets in `jetmon_hosts`); horizontal via bucket coordination |
 | API server | request rate | stateless; horizontal behind a load balancer |
-| Webhook delivery | event volume + slow consumers | stateless; horizontal via row-claim on `jetmon_webhook_deliveries` |
+| Outbound delivery | event volume + slow third parties | stateless; horizontal via row-claim on per-transport delivery tables |
 | Operator dashboard | one-off operator sessions | one per ops region |
 | Veriflier | geo-distributed vantage points | one per region |
 
 Putting everything in one binary means scaling the most expensive concern scales the cheap ones with it (CPU and memory headroom that's only used for one purpose). It also concentrates failure modes — a panic in the API server takes down the orchestrator.
 
 **Plausible split:**
-- `jetmon-orchestrator` — round loop, check pool, WPCOM notifications, DB writes
+- `jetmon-orchestrator` — round loop, check pool, DB writes
 - `jetmon-api` — REST API server, auth, rate limiting (read/write surface)
-- `jetmon-deliverer` — webhook delivery worker (Phase 3)
+- `jetmon-deliverer` — all outbound dispatch: webhooks (Phase 3), alert contacts, WPCOM notifications
 - `jetmon-dashboard` — operator UI / SSE state stream
 - `jetmon-verifier` — standalone HTTP check executor (today: `veriflier2`; rename TBD)
+
+**Why `jetmon-deliverer` is one binary, not three.** Webhooks, alert contacts, and WPCOM notifications all share the same plumbing: poll `jetmon_event_transitions` (or a similar source), build a frozen-at-fire-time payload, dispatch with a per-destination in-flight cap, retry on failure with exponential backoff, mark abandoned after N attempts. Only the transport differs (HTTPS POST + HMAC for webhooks, transport-specific protocols for PagerDuty/Slack/email/SMS, internal RPC for WPCOM). Splitting them into separate binaries would triple the operational surface (three deploy units, three retry queues, three sets of metrics) for what is fundamentally one job — outbound dispatch — with pluggable transports. Keeping them in one process also means a single circuit-breaker registry across destinations, which is the natural place to enforce shared-resource caps (e.g. "don't open 5,000 outbound connections during a regional outage").
+
+What this means concretely:
+- The Phase 3 webhook worker (`internal/webhooks/worker.go`) is the seed. Its `dispatchTick` / `deliverTick` shape generalizes — the matching, claiming, retry, and abandon logic is transport-agnostic.
+- A future refactor abstracts the transport behind a `Dispatcher` interface (`Send(ctx, dest, payload) (status, error)`), with concrete implementations per channel.
+- Per-channel state (webhook subscriptions, alert contacts, WPCOM circuit breaker counters) stays in its own table; the worker loops over each.
+
+**Trigger that justifies the split.** A single outbound transport doesn't justify its own binary — webhooks alone could stay co-located with the orchestrator. The argument gets compelling once there are *multiple* transports to dispatch and a shared retry/circuit-breaker substrate to amortize. Adding alert contacts is the moment the abstraction earns its keep; pulling WPCOM notifications out of the orchestrator at the same time is the cleanup that pays off the extraction.
 
 The MySQL schema is already the implicit bus between these — each service reads/writes specific tables. Splitting would mostly be:
 1. Extract each concern into its own `cmd/<name>/` directory with a thin main
@@ -191,7 +200,7 @@ The MySQL schema is already the implicit bus between these — each service read
 
 **Naming opportunity:** "veriflier" is a long-standing typo of "verifier" that has stuck around through the rewrite. A split is a natural moment to rename. Candidates: `verifier`, `witness`, `probe-worker`, `vantage`. Worth deciding before the split happens, not during.
 
-**When to revisit:** when a single binary's resource needs (CPU, memory, restart blast radius) starts working against the operational sweet spot for one of the concerns. Likely first trigger: the webhook deliverer's I/O profile (lots of slow outbound HTTP) wanting different sizing than the orchestrator's tight check loop.
+**When to revisit:** when a single binary's resource needs (CPU, memory, restart blast radius) starts working against the operational sweet spot for one of the concerns. The deliverer split specifically becomes worthwhile when alert contacts ship — that's the second outbound transport, and a third (WPCOM notifications) follows for free since they already exist as code that wants to live next to the others.
 
 ### Path to a public API
 
