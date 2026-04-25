@@ -38,6 +38,13 @@ const (
 	checkTypeTLSExpiry = "tls_expiry"
 )
 
+// verifierRPCHeadroom is added to the per-site check timeout when computing
+// the RPC deadline for a verifier call. The verifier needs enough budget to
+// run its own HTTP check (matches site timeout) plus serialization, queueing,
+// and network round-trip — 5s covers a comfortable steady-state and forces
+// failure on a truly wedged verifier rather than letting the call hang.
+const verifierRPCHeadroom = 5 * time.Second
+
 var (
 	nowFunc               = time.Now
 	dbClaimBuckets        = db.ClaimBuckets
@@ -402,13 +409,6 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 		return
 	}
 
-	o.auditLog(audit.Entry{
-		BlogID:    site.BlogID,
-		EventType: audit.EventVeriflierSent,
-		Source:    o.hostname,
-		Detail:    fmt.Sprintf("escalating to %d verifliers", len(clients)),
-	})
-
 	req := veriflier.CheckRequest{
 		BlogID:         site.BlogID,
 		URL:            site.MonitorURL,
@@ -416,7 +416,29 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 		Keyword:        stringPtrValue(site.CheckKeyword),
 		CustomHeaders:  checker.ParseCustomHeaders(site.CustomHeaders),
 		RedirectPolicy: site.RedirectPolicy,
+		RequestID:      veriflier.NewRequestID(),
 	}
+
+	escalateMeta, _ := json.Marshal(map[string]any{
+		"verifier_count": len(clients),
+		"request_id":     req.RequestID,
+	})
+	o.auditLog(audit.Entry{
+		BlogID:    site.BlogID,
+		EventType: audit.EventVeriflierSent,
+		Source:    o.hostname,
+		Detail:    fmt.Sprintf("escalating to %d verifliers", len(clients)),
+		Metadata:  escalateMeta,
+	})
+
+	// Per-RPC deadline: site's check budget plus headroom for the verifier's
+	// own HTTP work, server queueing, and network. Without this the dial /
+	// read can hang for o.ctx's lifetime (effectively forever) on a wedged
+	// verifier — the old hardcoded 30s client.Timeout was the only bound and
+	// has been removed in favor of this caller-controlled deadline.
+	rpcDeadline := time.Duration(timeoutForSite(config.Get(), site))*time.Second + verifierRPCHeadroom
+	rpcCtx, rpcCancel := stdctx.WithTimeout(o.ctx, rpcDeadline)
+	defer rpcCancel()
 
 	type vResult struct {
 		host string
@@ -428,7 +450,7 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 	for _, client := range clients {
 		c := client
 		go func() {
-			res, err := veriflierCheckFunc(c, o.ctx, req)
+			res, err := veriflierCheckFunc(c, rpcCtx, req)
 			ch <- vResult{host: c.Addr(), res: res, err: err}
 		}()
 	}
@@ -453,6 +475,7 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 			"error_code": vr.res.ErrorCode,
 			"rtt_ms":     vr.res.RTTMs,
 			"success":    vr.res.Success,
+			"request_id": vr.res.RequestID,
 		})
 		o.auditLog(audit.Entry{
 			BlogID:    site.BlogID,

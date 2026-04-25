@@ -3,17 +3,23 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/Automattic/jetmon/internal/checker"
+	"github.com/Automattic/jetmon/internal/metrics"
 	"github.com/Automattic/jetmon/internal/veriflier"
 )
 
 var version = "dev"
+
+const shutdownGracePeriod = 30 * time.Second
 
 type veriflierConfig struct {
 	AuthToken string `json:"auth_token"`
@@ -43,20 +49,38 @@ func main() {
 	}
 	addr := fmt.Sprintf(":%s", cfg.GRPCPort)
 
+	// Optional StatsD metrics. STATSD_ADDR is unset in standalone deploys,
+	// "statsd:8125" in the docker compose stack. metrics.Init failure logs and
+	// continues — the verifier should still run with metrics disabled.
+	if statsdAddr := os.Getenv("STATSD_ADDR"); statsdAddr != "" {
+		if err := metrics.Init(statsdAddr, hostname); err != nil {
+			log.Printf("metrics: init failed (%v) — running without metrics", err)
+		} else {
+			log.Printf("metrics: sending to %s", statsdAddr)
+		}
+	}
+
 	srv := veriflier.NewServer(addr, cfg.AuthToken, hostname, version, performCheck)
 
+	// Graceful shutdown: SIGINT/SIGTERM triggers Shutdown(ctx) with a drain
+	// budget so in-flight checks can complete before the listener closes.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
-		<-sigCh
-		log.Println("veriflier2: shutting down")
-		os.Exit(0)
+		sig := <-sigCh
+		log.Printf("veriflier2: %s received, draining (up to %s)", sig, shutdownGracePeriod)
+		ctx, cancel := context.WithTimeout(context.Background(), shutdownGracePeriod)
+		defer cancel()
+		if err := srv.Shutdown(ctx); err != nil {
+			log.Printf("veriflier2: shutdown error: %v", err)
+		}
 	}()
 
 	log.Printf("veriflier2 %s starting on %s", version, addr)
-	if err := srv.Listen(); err != nil {
+	if err := srv.Listen(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("listen: %v", err)
 	}
+	log.Println("veriflier2: shutdown complete")
 }
 
 // performCheck runs a single HTTP check and returns the result for the server.

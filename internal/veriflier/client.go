@@ -1,11 +1,14 @@
 package veriflier
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
-	"strings"
 	"time"
 )
 
@@ -15,17 +18,42 @@ import (
 // functional without a protoc dependency. Swap in the generated gRPC client
 // by replacing the send() method after running `make generate`.
 type VeriflierClient struct {
-	addr      string
-	authToken string
+	addr       string
+	authToken  string
 	httpClient *http.Client
 }
 
 // NewVeriflierClient creates a client targeting the given address (host:port).
+//
+// The HTTP transport is tuned for the orchestrator's hot-path use: many
+// short-lived RPCs to the same verifier host during outage waves. Default
+// MaxIdleConnsPerHost=2 forces frequent reconnects under any concurrency above
+// 2; we raise it so the orchestrator's per-verifier escalation goroutines
+// reuse a small pool of warm connections.
+//
+// No client-level Timeout is set. Per-call deadlines come from the caller's
+// context (the orchestrator wraps each escalation with NET_COMMS_TIMEOUT +
+// headroom). A blanket client.Timeout would override that — see Go's
+// http.Client docs: client.Timeout is enforced regardless of ctx, so leaving
+// it unset means ctx is the only deadline and is honored exactly.
 func NewVeriflierClient(addr, authToken string) *VeriflierClient {
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   5 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   20,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   5 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		ForceAttemptHTTP2:     true,
+	}
 	return &VeriflierClient{
-		addr:      addr,
-		authToken: authToken,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		addr:       addr,
+		authToken:  authToken,
+		httpClient: &http.Client{Transport: transport},
 	}
 }
 
@@ -36,6 +64,9 @@ func (c *VeriflierClient) Addr() string {
 
 // Check sends a single site check request to the Veriflier and returns the result.
 func (c *VeriflierClient) Check(ctx context.Context, req CheckRequest) (*CheckResult, error) {
+	if req.RequestID == "" {
+		req.RequestID = NewRequestID()
+	}
 	results, err := c.CheckBatch(ctx, []CheckRequest{req})
 	if err != nil {
 		return nil, err
@@ -46,7 +77,8 @@ func (c *VeriflierClient) Check(ctx context.Context, req CheckRequest) (*CheckRe
 	return &results[0], nil
 }
 
-// CheckBatch sends multiple check requests to the Veriflier.
+// CheckBatch sends multiple check requests to the Veriflier. Each request
+// without a RequestID is given a fresh one; existing RequestIDs are preserved.
 func (c *VeriflierClient) CheckBatch(ctx context.Context, reqs []CheckRequest) ([]CheckResult, error) {
 	type batchReq struct {
 		Sites []CheckRequest `json:"sites"`
@@ -55,13 +87,19 @@ func (c *VeriflierClient) CheckBatch(ctx context.Context, reqs []CheckRequest) (
 		Results []CheckResult `json:"results"`
 	}
 
+	for i := range reqs {
+		if reqs[i].RequestID == "" {
+			reqs[i].RequestID = NewRequestID()
+		}
+	}
+
 	body, err := json.Marshal(batchReq{Sites: reqs})
 	if err != nil {
 		return nil, err
 	}
 
 	url := fmt.Sprintf("http://%s/check", c.addr)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(body)))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -104,4 +142,17 @@ func (c *VeriflierClient) Ping(ctx context.Context) (string, error) {
 	}
 	_ = json.NewDecoder(resp.Body).Decode(&s)
 	return s.Version, nil
+}
+
+// NewRequestID returns a 16-byte random id, hex-encoded (32 chars). Used as
+// the RPC correlation id between Monitor and Verifier. Crypto/rand backed so
+// IDs are unpredictable; this isn't a security primitive but it's free.
+func NewRequestID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// Fall back to a timestamp-based id; collisions are vanishingly
+		// unlikely at our request rates and the id is correlation-only.
+		return fmt.Sprintf("ts-%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b[:])
 }

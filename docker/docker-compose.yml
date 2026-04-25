@@ -55,6 +55,7 @@ services:
         environment:
           - VERIFLIER_AUTH_TOKEN=$VERIFLIER_AUTH_TOKEN
           - VERIFLIER_GRPC_PORT=$VERIFLIER_GRPC_DOCKER_PORT
+          - STATSD_ADDR=statsd:8125
     statsd:
         image: graphiteapp/graphite-statsd
         restart: unless-stopped
