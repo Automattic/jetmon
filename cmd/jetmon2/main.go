@@ -243,19 +243,16 @@ func cmdAudit() {
 	for rows.Next() {
 		var (
 			id        int64
-			bid       int64
+			bid       sql.NullInt64
+			eventID   sql.NullInt64
 			eventType string
 			source    string
-			httpCode  sql.NullInt64
-			errorCode sql.NullInt64
-			rttMs     sql.NullInt64
-			oldStatus sql.NullInt64
-			newStatus sql.NullInt64
 			detail    sql.NullString
+			metadata  sql.NullString
 			createdAt time.Time
 		)
-		if err := rows.Scan(&id, &bid, &eventType, &source, &httpCode, &errorCode,
-			&rttMs, &oldStatus, &newStatus, &detail, &createdAt); err != nil {
+		if err := rows.Scan(&id, &bid, &eventID, &eventType, &source,
+			&detail, &metadata, &createdAt); err != nil {
 			log.Printf("scan: %v", err)
 			continue
 		}
@@ -263,11 +260,11 @@ func cmdAudit() {
 		if detail.Valid {
 			det = detail.String
 		}
-		if httpCode.Valid {
-			det = fmt.Sprintf("http=%d err=%d rtt=%dms %s", httpCode.Int64, errorCode.Int64, rttMs.Int64, det)
+		if eventID.Valid {
+			det = fmt.Sprintf("event=%d %s", eventID.Int64, det)
 		}
-		if oldStatus.Valid {
-			det = fmt.Sprintf("status %d→%d %s", oldStatus.Int64, newStatus.Int64, det)
+		if metadata.Valid && metadata.String != "" {
+			det = fmt.Sprintf("%s meta=%s", det, metadata.String)
 		}
 		fmt.Printf("%-25s %-22s %-15s %s\n",
 			createdAt.Format("2006-01-02 15:04:05.000"),
