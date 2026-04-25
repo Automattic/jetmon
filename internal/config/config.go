@@ -56,6 +56,21 @@ type Config struct {
 	DebugPort     int    `json:"DEBUG_PORT"`
 	APIPort       int    `json:"API_PORT"` // 0 = API server disabled
 
+	// Email transport selection for alert contacts. "stub" = log only
+	// (default; safe for environments where email is not configured),
+	// "smtp" = direct SMTP send (dev / staging with MailHog or similar),
+	// "wpcom" = POST to a WPCOM-owned email API endpoint (production).
+	// See API.md "Family 5 → Email delivery".
+	EmailTransport      string `json:"EMAIL_TRANSPORT"`
+	EmailFrom           string `json:"EMAIL_FROM"`
+	WPCOMEmailEndpoint  string `json:"WPCOM_EMAIL_ENDPOINT"`
+	WPCOMEmailAuthToken string `json:"WPCOM_EMAIL_AUTH_TOKEN"`
+	SMTPHost            string `json:"SMTP_HOST"`
+	SMTPPort            int    `json:"SMTP_PORT"`
+	SMTPUsername        string `json:"SMTP_USERNAME"`
+	SMTPPassword        string `json:"SMTP_PASSWORD"`
+	SMTPUseTLS          bool   `json:"SMTP_USE_TLS"`
+
 	Verifiers []VerifierConfig `json:"VERIFIERS"`
 }
 
@@ -162,6 +177,8 @@ func defaults() *Config {
 		LogFormat:               "text",
 		DashboardPort:           8080,
 		DebugPort:               6060,
+		EmailTransport:          "stub",
+		EmailFrom:               "jetmon@noreply.invalid",
 	}
 }
 
