@@ -4,6 +4,88 @@ Deferred features that are intentionally out of scope for the current implementa
 
 ---
 
+## Prioritized TODO
+
+This is the current implementation/refinement queue. Lower-priority items are
+not abandoned; they are intentionally sequenced behind the v2 production
+migration and the operating data needed to make larger architecture decisions.
+
+### P0 - v2 production hardening
+
+- **Keep the v2 deployment target conservative.** Ship and stabilize the
+  current main-server-plus-Veriflier design before moving toward a v3
+  probe-agent architecture. The v2 event tables remain authoritative while
+  `LEGACY_STATUS_PROJECTION_ENABLE` keeps legacy `site_status` /
+  `last_status_change` consumers working during migration.
+- **Operationally enforce single-owner delivery until row claiming lands.**
+  In the single-binary deployment, `API_PORT > 0` also starts webhook and
+  alert-contact delivery workers. Run that on only one active `jetmon2`
+  instance per database cluster until delivery claiming moves to transactional
+  `SELECT ... FOR UPDATE SKIP LOCKED` or the deliverer binary is extracted.
+- **Instrument the data needed for the v3 decision.** During v2 production,
+  measure first-failure-to-`Seems Down`, `Seems Down`-to-`Down`, false alarm
+  rate by failure class, Veriflier agreement/disagreement by region, Veriflier
+  latency/timeout rates, mixed-region outcomes, monitor-side `Unknown` cases,
+  primary-check vs confirmation cost, operator explanation gaps, and WPCOM
+  notification parity.
+- **Watch projection drift as a production bug.** While the legacy projection
+  is enabled, event mutations, transition rows, and the site-row projection
+  must remain transactionally consistent.
+- **Reconcile roadmap/API documentation drift.** `API.md` is the source for
+  the implemented internal `/api/v1` route surface. This roadmap should track
+  only the remaining public/customer API work, production hardening, and
+  deferred architecture choices.
+
+### P1 - post-v2 platform refinement
+
+- **Extract `jetmon-deliverer` when delivery scale or blast radius warrants
+  it.** Move webhook delivery, alert-contact delivery, and eventually WPCOM
+  notification dispatch behind one outbound-delivery binary.
+- **Replace soft delivery locks with transactional row claims.** As part of
+  the deliverer extraction, update the webhook and alert-contact `ClaimReady`
+  paths to use `SELECT ... FOR UPDATE SKIP LOCKED` so active-active delivery
+  workers are safe.
+- **Unify webhook and alerting dispatch plumbing after production evidence.**
+  Keep the packages separate until there are two proven implementations and a
+  third transport path via WPCOM migration, then factor the shared retry,
+  claim, dispatch, and circuit-breaker shape behind a transport interface.
+- **Migrate WPCOM notifications behind alert contacts/deliverer.** Do this
+  only after alert contacts have proven stable in production and recipient
+  parity has been verified.
+- **Decide the Veriflier transport endpoint.** Either wire the generated gRPC
+  stubs once the protoc toolchain is ready, or explicitly bless
+  JSON-over-HTTP as the v2 production transport and update the docs/naming to
+  match.
+- **Generate an OpenAPI 3.1 contract for the internal API.** The spec should
+  be generated from the route/handler contract so client codegen matches the
+  running server.
+- **Plan encryption-at-rest for outbound credentials before public/customer
+  secret management.** Plaintext webhook secrets and alert-contact
+  destination credentials are acceptable for the current internal threat
+  model, but KMS-style encryption should be revisited before exposing
+  customer-managed secrets more broadly.
+
+### P2 - v3 and product-driven extensions
+
+- **Revisit Candidate 3 after v2 has production data.** The current leading
+  v3 option is a central scheduler plus regional probe agents. The migration
+  should start with richer v2 probe metadata, then durable confirmation jobs,
+  generic probe agents, shadow-mode primary jobs, and gradual cutover.
+- **Add regional/per-vantage status only when the support story is ready.**
+  Regional classifications, per-vantage SLA, and richer `Unknown` handling
+  depend on probe-agent data and taxonomy work; they should not leak to
+  customers prematurely.
+- **Treat alert/webhook polish as demand-driven.** Grace-period webhook secret
+  rotation, `site.state_changed` webhooks, alert digest mode, quiet hours,
+  external acknowledgements, SMS, and OpsGenie are clean additions, but should
+  wait for customer demand or compliance pressure.
+- **Retire the legacy status projection after consumers migrate.** Once
+  downstream readers use the v2 API/event tables, disable
+  `LEGACY_STATUS_PROJECTION_ENABLE` and stop treating stale legacy status
+  values as meaningful.
+
+---
+
 ## v3 Probe-Agent Architecture
 
 **Status:** Parked until v2 has been deployed to production and stabilized.
@@ -29,7 +111,7 @@ safely.
 
 A versioned, authenticated customer-facing REST API on competitive parity with established uptime monitoring services (Pingdom, UptimeRobot, Better Uptime, Datadog Synthetics). Users and integrations interact with Jetmon entirely through this API — reading current health state, pulling event history and SLA statistics, managing what gets monitored, configuring alerts, and triggering on-demand checks.
 
-Currently, Jetmon's API is internal-only: callers are known services, tenant isolation lives at the gateway, errors are intentionally verbose, and ownership checks are coarse. What is missing is a stable public contract with customer-scoped auth, tenant ownership, sanitized error semantics, public rate limits, and payloads safe to expose directly to customer tooling.
+Currently, Jetmon's API is internal-only: callers are known services, tenant isolation lives at the gateway, errors are intentionally verbose, and ownership checks are coarse. What is missing is a stable public contract with customer-scoped auth, tenant ownership, sanitized error semantics, public rate limits, and payloads safe to expose directly to customer tooling. The capability list below describes the public/customer contract target; many internal equivalents already exist and are documented in `API.md`.
 
 ### Why it matters
 
@@ -111,38 +193,60 @@ Programmatic management of where alerts go. Competitors that omit this force use
 | `GET /api/v1/sites/{blog_id}/alert-contacts` | List which contacts are subscribed to a site |
 | `PUT /api/v1/sites/{blog_id}/alert-contacts` | Set the alert contact list for a site |
 
-**Alert contact types (v1):** email, webhook (generic HTTP POST with configurable payload template). Later: Slack, PagerDuty, OpsGenie, SMS.
+**Alert contact types:** the internal API currently supports email, PagerDuty, Slack, and Teams. Generic customer-owned HTTP POSTs should use the HMAC-signed webhooks API instead of duplicating that surface as an alert-contact transport. Later, direct SMS or OpsGenie can be added if customer demand justifies them.
 
 **Webhook contract.** Outbound webhook POSTs carry a standard envelope: `event_type`, `site_id`, `blog_id`, `timestamp`, `event` (the full event object). `event_type` values: `site.seems_down`, `site.down`, `site.recovered`, `site.degraded`, `maintenance.started`, `maintenance.ended`. The payload structure is versioned and must not break existing webhook consumers when new fields are added.
 
-### Design decisions to make before building
+### Public API decisions before direct exposure
 
-**Authentication.** API keys stored in a `jetmon_api_keys` table (hashed, scoped, with optional expiry). The `Authorization: Bearer <token>` pattern from the Veriflier transport is the reference. Scopes: `read` (Capabilities 1–3), `write` (Capabilities 4–5), `admin` (key management). OAuth is overkill for an internal service; API keys are sufficient and match what competitors use for programmatic access.
+The internal API decisions are implemented in `internal/api/` and documented in
+`API.md`. A public/customer API is a different contract and needs these
+decisions before direct exposure:
 
-**Key lifecycle CLI.** `jetmon2 apikey create [--scope read|write|admin] [--expires 90d] [--label "CI deploy script"]`, `jetmon2 apikey revoke <key-id>`, `jetmon2 apikey list`. Keys are never returned after creation; only the ID and label are stored.
+**Tenant and ownership model.** Decide whether the gateway remains the sole
+tenant boundary or Jetmon stores tenant ownership directly on sites, webhooks,
+alert contacts, idempotency keys, and audit rows. Direct customer exposure
+requires every read/write to be tenant-scoped.
 
-**Hosting.** API runs within the `jetmon2` binary on a dedicated port (separate from the operator dashboard port). Embedding keeps deployment to one artifact. The operator dashboard's existing HTTP server in `internal/dashboard/` is the starting point — the API mounts alongside it or on a configurable separate port.
+**Auth scopes.** The internal API uses coarse `read` / `write` / `admin`
+scopes. Public keys likely need granular scopes such as `sites:read`,
+`events:read`, `webhooks:write`, and `alerts:write` so customer integrations can
+be least-privilege.
 
-**Pagination.** Cursor-based pagination for all list endpoints, using `event_id` or `timestamp` as the cursor. Offset-based pagination is rejected for append-only log tables. `limit` defaults to 100, max 1000. Response includes `next_cursor` when more results exist.
+**Error and metadata redaction.** Internal responses can expose query stages,
+DB error classes, verifier names, and operational metadata. Public responses
+need sanitized errors and customer-safe event metadata, with detailed context
+remaining in server logs and operator-only surfaces.
 
-**Rate limiting.** Per API key. Default limits: 60 requests/minute for read, 20 requests/minute for write, 5 requests/minute for trigger. Configurable per key in the DB. The `trigger` endpoint has its own bucket separate from read/write to prevent it from being used as a DoS vector against the check pipeline. Rate limit headers (`X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`) returned on every response.
+**Public rate limits and abuse controls.** Internal limits are service
+protection. Public limits need commerce/abuse semantics, likely per tenant plus
+per key, with separate controls for expensive operations such as trigger-now.
 
-**Schema versioning.** `/api/v1/`. Breaking changes require a new version prefix. Additive changes (new fields, new endpoints) are backwards-compatible within v1. The version prefix is in the URL, not a header, to make it unambiguous in logs.
+**Webhook ownership and signing posture.** Internal HMAC signing is acceptable
+today. Public customer-managed webhooks may need per-tenant ownership columns,
+public-key/asymmetric signing, or stronger secret storage before direct
+exposure.
 
-**Trigger-now semantics.** The trigger endpoint enqueues an immediate check for the endpoint; it does not wait for the result. The response returns a `request_id`. The caller polls `GET /api/v1/sites/{blog_id}/history?request_id=<id>` or waits for the event stream to observe the result. This avoids holding HTTP connections open for the duration of a check.
+**OpenAPI and compatibility policy.** The customer contract needs a generated
+OpenAPI 3.1 spec, client-codegen validation, explicit deprecation rules, and
+tests that fail when handler behavior drifts from the published schema.
 
-**Relationship to SLA Reporting.** The statistics capability (Capability 3) is a superset of the "Incident History and SLA Reporting" stretch goal from `PROJECT.md`. Building Capability 3 makes that stretch goal a subset of what's already available.
+### Public API work still to do
 
-### What needs to be built
-
-- API key management: `jetmon_api_keys` table, key generation/revocation CLI, request authentication middleware with scope enforcement.
-- Alert contacts: `jetmon_alert_contacts` table, `jetmon_site_alert_contacts` join table, outbound webhook dispatcher with retry queue.
-- Query handlers: thin layer over existing DB functions in `internal/db/`, with response serialisation and cursor pagination.
-- Statistics handlers: uptime/response-time aggregation queries; must be pre-aggregated or cached to avoid slow queries on large history tables.
-- Manage handlers: validated writes to endpoint and check tables, triggering orchestrator pickup.
-- Trigger handler: enqueue immediate check; return `request_id` for polling.
-- Rate limiting middleware: per-key token bucket, separate buckets for read/write/trigger, rate-limit headers.
-- Integration tests in the Docker Compose environment covering auth, pagination, state consistency, and webhook delivery.
+- Define the gateway-to-Jetmon tenant contract and decide which tenant checks
+  live in the gateway versus Jetmon itself.
+- Add tenant ownership fields and filtered queries where Jetmon must enforce
+  ownership directly.
+- Add customer-safe error and metadata redaction paths for every public route.
+- Generate and publish `GET /api/v1/openapi.json` from the running route
+  contract.
+- Add public-contract integration tests for auth, tenant isolation,
+  pagination, idempotency, redaction, webhook ownership, and trigger-now abuse
+  controls.
+- Revisit response-time/SLA pre-aggregation before exposing high-volume public
+  reporting queries.
+- Document the migration path for consumers that currently use direct MySQL or
+  bespoke internal integrations.
 
 ---
 
