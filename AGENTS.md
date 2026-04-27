@@ -6,7 +6,7 @@ You are an expert Go developer with extensive knowledge about WordPress, enterpr
 
 Jetmon is a parallel HTTP uptime monitoring service that checks Jetpack websites at scale. Jetmon 2 is a complete rewrite of the original Node.js + C++ native addon service into a single Go binary. It retains full drop-in compatibility with all external interfaces — MySQL schema, WPCOM API payload, StatsD metric names, and log file format — while dramatically increasing concurrency, reducing memory usage, and eliminating the native addon compilation dependency.
 
-The Veriflier is rewritten in Go as well, replacing the Qt C++ dependency. The protocol between Monitor and Verifliers is upgraded from custom HTTPS to gRPC.
+The Veriflier is rewritten in Go as well, replacing the Qt C++ dependency. The current protocol between Monitor and Verifliers is JSON-over-HTTP on the configured Veriflier port, with the proto contract retained for a future generated gRPC transport.
 
 See `PROJECT.md` for the full project description, feature list, and performance benefit estimates.
 
