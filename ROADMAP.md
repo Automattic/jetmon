@@ -20,13 +20,16 @@ recommendation.
 
 ## Public REST API
 
-**Status:** Not started. No existing API surface covers this scope.
+**Status:** Not started as a customer-facing surface. The v2 branch has an
+internal `/api/v1` behind a gateway (see ADR-0002); this item is about the
+public/customer contract and the gateway-facing semantics needed to expose it
+safely.
 
 ### What it is
 
-A versioned, authenticated REST API (`/api/v1/`) on competitive parity with established uptime monitoring services (Pingdom, UptimeRobot, Better Uptime, Datadog Synthetics). Users and integrations interact with Jetmon entirely through this API — reading current health state, pulling event history and SLA statistics, managing what gets monitored, configuring alerts, and triggering on-demand checks.
+A versioned, authenticated customer-facing REST API on competitive parity with established uptime monitoring services (Pingdom, UptimeRobot, Better Uptime, Datadog Synthetics). Users and integrations interact with Jetmon entirely through this API — reading current health state, pulling event history and SLA statistics, managing what gets monitored, configuring alerts, and triggering on-demand checks.
 
-Currently, Jetmon has no public API. The operator dashboard exposes real-time state via SSE for human consumption. Check configuration requires direct writes to `jetpack_monitor_sites`. Event and audit data requires direct DB queries or use of the `jetmon2 audit` CLI. There is no programmatic interface for users or external tooling to interact with Jetmon.
+Currently, Jetmon's API is internal-only: callers are known services, tenant isolation lives at the gateway, errors are intentionally verbose, and ownership checks are coarse. What is missing is a stable public contract with customer-scoped auth, tenant ownership, sanitized error semantics, public rate limits, and payloads safe to expose directly to customer tooling.
 
 ### Why it matters
 
