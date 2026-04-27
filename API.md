@@ -867,9 +867,11 @@ Email is unique among the transports in that there is no equivalent of "post to 
 |-------------------|----------|----------|
 | `wpcom` | Production | Calls existing WPCOM email infrastructure. Default in production deploys. |
 | `smtp` | Local dev / staging | Connects to an SMTP server (e.g. MailHog/Mailpit in docker compose). Configurable host/port/auth. |
-| `stub` | Unit testing | Logs the rendered email to stdout; no actual send. |
+| `stub` | Local dev / unit testing / disabled email | Logs the rendered email; no actual send. |
 
 The `Sender` interface is internal to the alerting package, so swapping transports is a config change — no code path differences. SMTP support specifically exists so docker-based integration tests can verify rendering and addressing end-to-end without depending on WPCOM infrastructure.
+
+`stub` is the default and the empty-string compatibility alias. Startup and `jetmon2 validate-config` both warn when the resolved transport is `stub` so operators know any alert contact with `transport="email"` will be logged but not delivered.
 
 #### Subscription assignment
 

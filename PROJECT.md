@@ -198,10 +198,11 @@ All tests run with `go test ./...` and are included in CI.
 A standalone binary (`jetmon2 validate-config`) that:
 
 - Parses `config.json` and checks all required keys are present
-- Validates value ranges (e.g., `PEER_OFFLINE_LIMIT` must be <= number of configured Verifliers)
-- Attempts a test connection to MySQL and verifies the expected tables exist
-- Attempts a test connection to each configured Veriflier
-- Verifies the WPCOM API certificate is valid and not near expiry
+- Validates value ranges and required per-mode settings
+- Attempts a test connection to MySQL
+- Reports legacy projection and email transport modes
+- Warns when the email transport resolves to the log-only `stub` sender
+- Lists configured Verifliers as best-effort operator context
 - Outputs a pass/fail summary with specific error messages
 
 Intended to run as a pre-deployment check in CI and as an operator tool when diagnosing connectivity issues.

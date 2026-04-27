@@ -78,7 +78,7 @@ Port for the pprof debug server. Only binds to 127.0.0.1 (localhost) — never a
 Access via: curl http://localhost:6060/debug/pprof/
 
 EMAIL_TRANSPORT
-Email sender used by alert contacts with transport "email". Set to "stub" to log rendered email without sending, "smtp" to send directly through SMTP, or "wpcom" to POST to a WPCOM-owned email API endpoint. Empty is treated like "stub" for compatibility. Default: "stub".
+Email sender used by alert contacts with transport "email". Set to "stub" to log rendered email without sending, "smtp" to send directly through SMTP, or "wpcom" to POST to a WPCOM-owned email API endpoint. Empty is treated like "stub" for compatibility. Startup and validate-config warn when this resolves to "stub" because email alert contacts will not deliver mail in that mode. Default: "stub".
 
 EMAIL_FROM
 From address used when rendering alert-contact emails. Default: "jetmon@noreply.invalid".

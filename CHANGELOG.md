@@ -62,7 +62,8 @@ because it is intentionally **not** drop-in with the Jetmon 1 wire format
 - POST `/alert-contacts/{id}/test` for synthetic send-tests through the
   same dispatch path
 - Email transport pluggable via `EMAIL_TRANSPORT` config: `wpcom`
-  (production), `smtp` (dev / staging with MailHog), `stub` (unit tests)
+  (production), `smtp` (dev / staging with MailHog), `stub` (default
+  log-only / tests, with startup and validate-config warnings)
 - PagerDuty Events API v2 with severity mapping and event_action
   trigger/resolve based on the recovery flag
 - Slack Block Kit + Microsoft Teams Adaptive Card rendering
@@ -82,9 +83,13 @@ because it is intentionally **not** drop-in with the Jetmon 1 wire format
   still-in-flight row. Without this, the per-contact in-flight cap (3)
   was producing concurrent dispatches that inflated the attempt counter
   and effectively skipped retry-schedule steps; the documented 7h36m
-  retry window was being collapsed to ~1h. Multi-instance row-claim
-  caveat (SELECT ... FOR UPDATE SKIP LOCKED) still tracked alongside the
-  deliverer-binary extraction in ROADMAP.md.
+  retry window was being collapsed to ~1h.
+- `ClaimReady` now repeats the readiness predicate during the soft-lock
+  update and returns only rows whose update affected a row, so overlapping
+  claim attempts skip stale SELECT results instead of doing duplicate
+  dispatch work. Multi-instance row-claim caveat (SELECT ... FOR UPDATE
+  SKIP LOCKED) still tracked alongside the deliverer-binary extraction in
+  ROADMAP.md.
 
 **Polish:**
 - `alerting.Update` now validates `label` (must be non-empty) and

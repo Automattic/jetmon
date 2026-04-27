@@ -95,7 +95,7 @@ Key settings:
 | `DASHBOARD_PORT` | 8080 | Internal port for the operator dashboard (0 to disable) |
 | `API_PORT` | 0 | Internal REST API port (0 to disable). In the current single-binary v2 shape, this also starts webhook and alert-contact delivery workers; enable it on only one active instance per database cluster. |
 | `DEBUG_PORT` | 6060 | localhost-only pprof port (`127.0.0.1:PORT`); 0 to disable |
-| `EMAIL_TRANSPORT` | `stub` | Alert-contact email sender: `stub`, `smtp`, or `wpcom` |
+| `EMAIL_TRANSPORT` | `stub` | Alert-contact email sender: `stub` (log only), `smtp`, or `wpcom` |
 
 See `config/config.readme` for the full option reference.
 
@@ -253,7 +253,10 @@ The Docker Compose environment includes a simulated site server. Toggle site sta
 
 	./jetmon2 validate-config
 
-Checks all required keys, validates value ranges, tests MySQL connectivity, tests Veriflier connectivity, and verifies the WPCOM API certificate.
+Checks all required keys, validates value ranges, tests MySQL connectivity,
+reports legacy projection and email transport modes, warns when alert-contact
+email uses the log-only `stub` sender, and lists configured Verifliers.
+Veriflier reachability is informational here rather than a validation failure.
 
 ### Debugging
 
