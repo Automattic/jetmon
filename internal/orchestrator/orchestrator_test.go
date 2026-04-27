@@ -75,6 +75,23 @@ func TestInMaintenance(t *testing.T) {
 	}
 }
 
+func TestSummarizeVerifierResults(t *testing.T) {
+	got := summarizeVerifierResults([]veriflier.CheckResult{
+		{Host: "us-west", Success: false, HTTPCode: 500, RTTMs: 123},
+		{Host: "eu", Success: true, HTTPCode: 200, RTTMs: 45},
+	})
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2", len(got))
+	}
+	if got[0]["host"] != "us-west" || got[0]["success"] != false ||
+		got[0]["http_code"] != int32(500) || got[0]["rtt_ms"] != int64(123) {
+		t.Fatalf("first summary = %+v", got[0])
+	}
+	if got[1]["host"] != "eu" || got[1]["success"] != true {
+		t.Fatalf("second summary = %+v", got[1])
+	}
+}
+
 func TestSlicesEqual(t *testing.T) {
 	if !slicesEqual(nil, nil) {
 		t.Fatal("nil slices should be equal")

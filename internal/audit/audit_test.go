@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 )
@@ -94,5 +95,35 @@ func TestInit(t *testing.T) {
 	Init(nil)
 	if db != nil {
 		t.Fatal("Init(nil) should set db to nil")
+	}
+}
+
+func TestQueryBuildsTimeRange(t *testing.T) {
+	conn, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer conn.Close()
+
+	now := time.Now().UTC()
+	mock.ExpectQuery("SELECT id, blog_id, event_id, event_type").
+		WithArgs(int64(42), "2026-04-27 00:00:00", "2026-04-28 00:00:00").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "blog_id", "event_id", "event_type", "source", "detail", "metadata", "created_at",
+		}).AddRow(int64(1), int64(42), nil, EventAPIAccess, "api", "ok", nil, now))
+
+	rows, err := Query(conn, 42, "2026-04-27 00:00:00", "2026-04-28 00:00:00")
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		t.Fatal("expected one audit row")
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
 	}
 }

@@ -171,6 +171,79 @@ func TestEmailTransportLabelAndDelivery(t *testing.T) {
 	}
 }
 
+func TestEnabledLabel(t *testing.T) {
+	if got := enabledLabel(true); got != "enabled" {
+		t.Fatalf("enabledLabel(true) = %q, want enabled", got)
+	}
+	if got := enabledLabel(false); got != "disabled" {
+		t.Fatalf("enabledLabel(false) = %q, want disabled", got)
+	}
+}
+
+func TestParseInt64(t *testing.T) {
+	got, err := parseInt64("12345")
+	if err != nil {
+		t.Fatalf("parseInt64(valid) error = %v", err)
+	}
+	if got != 12345 {
+		t.Fatalf("parseInt64(valid) = %d, want 12345", got)
+	}
+	if _, err := parseInt64("not-an-id"); err == nil {
+		t.Fatal("parseInt64(invalid) returned nil error")
+	}
+}
+
+func TestCurrentOperatorPrefersUserThenLogname(t *testing.T) {
+	t.Setenv("USER", "alice")
+	t.Setenv("LOGNAME", "bob")
+	if got := currentOperator(); got != "alice" {
+		t.Fatalf("currentOperator() = %q, want USER", got)
+	}
+
+	t.Setenv("USER", "")
+	if got := currentOperator(); got != "bob" {
+		t.Fatalf("currentOperator() = %q, want LOGNAME", got)
+	}
+
+	t.Setenv("LOGNAME", "")
+	if got := currentOperator(); got != "cli" {
+		t.Fatalf("currentOperator() = %q, want cli", got)
+	}
+}
+
+func TestReadPIDFileRejectsInvalidContent(t *testing.T) {
+	dir := t.TempDir()
+	pidPath := filepath.Join(dir, "test.pid")
+	if err := os.WriteFile(pidPath, []byte("0\n"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	t.Setenv("JETMON_PID_FILE", pidPath)
+
+	if os.Getenv("JETMON_TEST_READ_PID_INVALID") == "1" {
+		_ = readPIDFile()
+		return
+	}
+
+	cmd := os.Args[0]
+	proc, err := os.StartProcess(cmd, []string{cmd, "-test.run=TestReadPIDFileRejectsInvalidContent"}, &os.ProcAttr{
+		Env: append(os.Environ(),
+			"JETMON_TEST_READ_PID_INVALID=1",
+			"JETMON_PID_FILE="+pidPath,
+		),
+		Files: []*os.File{os.Stdin, os.Stdout, os.Stderr},
+	})
+	if err != nil {
+		t.Fatalf("StartProcess: %v", err)
+	}
+	state, err := proc.Wait()
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if state.Success() {
+		t.Fatal("readPIDFile accepted invalid PID content")
+	}
+}
+
 func TestBuildAlertDispatchersIncludesStubEmail(t *testing.T) {
 	dispatchers := buildAlertDispatchers(&config.Config{
 		EmailTransport: "stub",
@@ -216,5 +289,32 @@ func TestBuildAlertDispatchersIncludesStubEmail(t *testing.T) {
 	}
 	if response != "delivered" {
 		t.Fatalf("stub email dispatcher response = %q, want delivered", response)
+	}
+}
+
+func TestBuildAlertDispatchersSelectsConfiguredEmailSenders(t *testing.T) {
+	tests := []struct {
+		name      string
+		transport string
+		wantType  string
+	}{
+		{name: "smtp", transport: "smtp", wantType: "*alerting.emailDispatcher"},
+		{name: "wpcom", transport: "wpcom", wantType: "*alerting.emailDispatcher"},
+		{name: "unknown falls back", transport: "sendmail", wantType: "*alerting.emailDispatcher"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dispatchers := buildAlertDispatchers(&config.Config{
+				EmailTransport:     tt.transport,
+				EmailFrom:          "jetmon@example.com",
+				WPCOMEmailEndpoint: "https://wpcom.example/send",
+				SMTPHost:           "smtp.example",
+				SMTPPort:           25,
+			})
+			got := fmt.Sprintf("%T", dispatchers[alerting.TransportEmail])
+			if got != tt.wantType {
+				t.Fatalf("email dispatcher type = %s, want %s", got, tt.wantType)
+			}
+		})
 	}
 }

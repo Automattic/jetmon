@@ -270,6 +270,15 @@ func TestLegacyStatusProjectionConfig(t *testing.T) {
 	}
 }
 
+func TestDisplayName(t *testing.T) {
+	if got := displayName(VerifierConfig{Name: "us-west"}, 2); got != "us-west" {
+		t.Fatalf("displayName(named) = %q, want us-west", got)
+	}
+	if got := displayName(VerifierConfig{}, 2); got != "verifier #2" {
+		t.Fatalf("displayName(unnamed) = %q, want verifier #2", got)
+	}
+}
+
 func TestLoadInvalidConfigReturnsError(t *testing.T) {
 	saveConfigState(t)
 
