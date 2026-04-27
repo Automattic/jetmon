@@ -107,16 +107,18 @@ func TestParseLimit(t *testing.T) {
 }
 
 func TestHandleHealthWithoutDB(t *testing.T) {
-	// nil db → ping should fail; handler returns 503.
 	s := New(":0", nil, "test")
 	req := httptest.NewRequest("GET", "/api/v1/health", nil)
 	rec := httptest.NewRecorder()
-	// Calling handleHealth directly will panic on s.db.PingContext if we
-	// don't guard, so check that the handler fails predictably with a real
-	// (closed) db pool. For this test we just verify the route compiles.
-	_ = s
-	_ = req
-	_ = rec
+	s.handleHealth(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body=%s", rec.Code, rec.Body.String())
+	}
+	body := readErrorBody(t, rec.Body)
+	if body.Code != "db_unavailable" {
+		t.Errorf("error code = %q, want db_unavailable", body.Code)
+	}
 }
 
 func TestRoutesRegisterAllPaths(t *testing.T) {

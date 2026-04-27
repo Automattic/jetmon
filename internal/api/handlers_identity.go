@@ -9,6 +9,12 @@ import (
 // handleHealth is unauthenticated and used by load balancers / external
 // monitors. Returns 200 if the API can ping the database within 1s, else 503.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if s.db == nil {
+		writeError(w, r, http.StatusServiceUnavailable, "db_unavailable",
+			"database handle is not configured")
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 1*time.Second)
 	defer cancel()
 	if err := s.db.PingContext(ctx); err != nil {
