@@ -109,38 +109,104 @@ func TestRequireScopeMissingToken(t *testing.T) {
 }
 
 func TestRequireScopeAuditsRejectedRequestWithRequestID(t *testing.T) {
-	s, mock, _, cleanup := newTestServer(t)
-	defer cleanup()
-	audit.Init(s.db)
-	t.Cleanup(func() { audit.Init(nil) })
-
-	mock.ExpectExec(auditInsertSQL).WithArgs(
-		nil,
-		nil,
-		audit.EventAPIAccess,
-		"unknown",
-		"GET /api/v1/anything",
-		apiAuditMetadataWithRequestID{
-			t:          t,
-			wantStatus: float64(http.StatusUnauthorized),
+	tests := []struct {
+		name       string
+		scope      apikeys.Scope
+		setupMock  func(sqlmock.Sqlmock)
+		setHeader  func(*http.Request)
+		wantStatus int
+		wantNote   string
+	}{
+		{
+			name:       "missing_token",
+			scope:      scopeRead,
+			setupMock:  func(_ sqlmock.Sqlmock) {},
+			setHeader:  func(_ *http.Request) {},
+			wantStatus: http.StatusUnauthorized,
 			wantNote:   "missing token",
 		},
-	).WillReturnResult(sqlmock.NewResult(0, 1))
-
-	wrapped := s.requireScope(scopeRead, func(w http.ResponseWriter, r *http.Request) {})
-
-	req := httptest.NewRequest("GET", "/api/v1/anything", nil)
-	rec := httptest.NewRecorder()
-	wrapped(rec, req)
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401; body=%s", rec.Code, rec.Body.String())
+		{
+			name:  "invalid_token",
+			scope: scopeRead,
+			setupMock: func(m sqlmock.Sqlmock) {
+				m.ExpectQuery(keyLookupSQL).WillReturnRows(sqlmock.NewRows(columnsKey))
+			},
+			setHeader: func(r *http.Request) {
+				r.Header.Set("Authorization", "Bearer jm_INVALID-LOOKING-TOKEN-XXXXX")
+			},
+			wantStatus: http.StatusUnauthorized,
+			wantNote:   "invalid_token",
+		},
+		{
+			name:  "token_revoked",
+			scope: scopeRead,
+			setupMock: func(m sqlmock.Sqlmock) {
+				revokedAt := time.Now().UTC().Add(-time.Hour)
+				m.ExpectQuery(keyLookupSQL).WillReturnRows(makeKeyRow(1, "read", 60, &revokedAt, nil))
+			},
+			setHeader: func(r *http.Request) {
+				r.Header.Set("Authorization", "Bearer jm_ANYTOKENWILLDOFORTHISTESTXX")
+			},
+			wantStatus: http.StatusUnauthorized,
+			wantNote:   "token_revoked",
+		},
+		{
+			name:  "insufficient_scope",
+			scope: scopeWrite,
+			setupMock: func(m sqlmock.Sqlmock) {
+				m.ExpectQuery(keyLookupSQL).WillReturnRows(makeKeyRow(1, "read", 60, nil, nil))
+				m.ExpectExec(keyTouchSQL).WithArgs(int64(1)).WillReturnResult(sqlmock.NewResult(0, 1))
+			},
+			setHeader: func(r *http.Request) {
+				r.Header.Set("Authorization", "Bearer jm_ANYTOKENWILLDOFORTHISTESTXX")
+			},
+			wantStatus: http.StatusForbidden,
+			wantNote:   "insufficient scope",
+		},
 	}
-	if rec.Header().Get("X-Request-ID") == "" {
-		t.Fatal("X-Request-ID header should be set")
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("expectations: %v", err)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, mock, _, cleanup := newTestServer(t)
+			defer cleanup()
+			audit.Init(s.db)
+			t.Cleanup(func() { audit.Init(nil) })
+
+			tt.setupMock(mock)
+
+			// consumer name varies (unknown vs test-consumer) and is also
+			// reflected in the metadata's consumer field, but the matcher
+			// only asserts request_id/status/note, so AnyArg is enough.
+			mock.ExpectExec(auditInsertSQL).WithArgs(
+				nil,
+				nil,
+				audit.EventAPIAccess,
+				sqlmock.AnyArg(),
+				"GET /api/v1/anything",
+				apiAuditMetadataWithRequestID{
+					t:          t,
+					wantStatus: float64(tt.wantStatus),
+					wantNote:   tt.wantNote,
+				},
+			).WillReturnResult(sqlmock.NewResult(0, 1))
+
+			wrapped := s.requireScope(tt.scope, func(w http.ResponseWriter, r *http.Request) {})
+
+			req := httptest.NewRequest("GET", "/api/v1/anything", nil)
+			tt.setHeader(req)
+			rec := httptest.NewRecorder()
+			wrapped(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body=%s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			if rec.Header().Get("X-Request-ID") == "" {
+				t.Fatal("X-Request-ID header should be set")
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Errorf("expectations: %v", err)
+			}
+		})
 	}
 }
 

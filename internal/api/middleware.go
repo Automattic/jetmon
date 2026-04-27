@@ -67,7 +67,7 @@ func (s *Server) requireScope(required apikeys.Scope, h http.HandlerFunc) http.H
 		if token == "" {
 			writeError(w, req, http.StatusUnauthorized, "missing_token",
 				"Authorization header with Bearer token is required")
-			s.audit(nil, req, http.StatusUnauthorized, time.Time{}, "missing token")
+			s.audit(reqID, nil, req, http.StatusUnauthorized, time.Time{}, "missing token")
 			return
 		}
 
@@ -75,7 +75,7 @@ func (s *Server) requireScope(required apikeys.Scope, h http.HandlerFunc) http.H
 		if err != nil {
 			status, code, msg := mapAuthError(err)
 			writeError(w, req, status, code, msg)
-			s.audit(nil, req, status, time.Time{}, code)
+			s.audit(reqID, nil, req, status, time.Time{}, code)
 			return
 		}
 
@@ -83,7 +83,7 @@ func (s *Server) requireScope(required apikeys.Scope, h http.HandlerFunc) http.H
 			writeError(w, req, http.StatusForbidden, "insufficient_scope",
 				"this endpoint requires scope "+string(required)+
 					"; your key has scope "+string(key.Scope))
-			s.audit(key, req, http.StatusForbidden, time.Time{}, "insufficient scope")
+			s.audit(reqID, key, req, http.StatusForbidden, time.Time{}, "insufficient scope")
 			return
 		}
 
@@ -92,7 +92,7 @@ func (s *Server) requireScope(required apikeys.Scope, h http.HandlerFunc) http.H
 		writeRateLimitHeaders(w, key.RateLimitPerMinute, remaining, resetAt)
 		if !allowed {
 			writeRateLimited(w, req, key.RateLimitPerMinute, remaining, resetAt)
-			s.audit(key, req, http.StatusTooManyRequests, time.Time{}, "rate limited")
+			s.audit(reqID, key, req, http.StatusTooManyRequests, time.Time{}, "rate limited")
 			return
 		}
 
@@ -106,7 +106,7 @@ func (s *Server) requireScope(required apikeys.Scope, h http.HandlerFunc) http.H
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		h(rec, r.WithContext(ctx))
 
-		s.audit(key, r, rec.status, started, "")
+		s.audit(reqID, key, req, rec.status, started, "")
 	}
 }
 
@@ -164,7 +164,11 @@ func mapAuthError(err error) (status int, code, msg string) {
 // could be moved to a buffered channel if write latency becomes a concern.
 // Errors are logged but never returned to the consumer — audit is observability,
 // not gate.
-func (s *Server) audit(key *apikeys.Key, r *http.Request, status int, started time.Time, note string) {
+//
+// reqID is passed explicitly rather than pulled from r's context so callers
+// can't accidentally drop it by handing in a request whose context wasn't
+// extended with the middleware's request id.
+func (s *Server) audit(reqID string, key *apikeys.Key, r *http.Request, status int, started time.Time, note string) {
 	consumerName := "unknown"
 	var keyID int64
 	if key != nil {
@@ -184,7 +188,7 @@ func (s *Server) audit(key *apikeys.Key, r *http.Request, status int, started ti
 		"path":        r.URL.Path,
 		"status":      status,
 		"duration_ms": durationMs,
-		"request_id":  requestIDFromRequest(r),
+		"request_id":  reqID,
 		"remote_addr": r.RemoteAddr,
 		"note":        note,
 	})
