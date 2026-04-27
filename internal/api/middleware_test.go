@@ -450,6 +450,24 @@ func TestStatusRecorderCapturesCode(t *testing.T) {
 	}
 }
 
+type flushRecorder struct {
+	*httptest.ResponseRecorder
+	flushed bool
+}
+
+func (r *flushRecorder) Flush() {
+	r.flushed = true
+}
+
+func TestStatusRecorderFlushPassThrough(t *testing.T) {
+	rec := &flushRecorder{ResponseRecorder: httptest.NewRecorder()}
+	sr := &statusRecorder{ResponseWriter: rec, status: http.StatusOK}
+	sr.Flush()
+	if !rec.flushed {
+		t.Fatal("Flush did not pass through to the wrapped writer")
+	}
+}
+
 func TestMapAuthError(t *testing.T) {
 	cases := []struct {
 		err        error

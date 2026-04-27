@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -15,6 +16,8 @@ import (
 const insertAlertContactSQL = ` INSERT INTO jetmon_alert_contacts (label, active, transport, destination, destination_preview, site_filter, min_severity, max_per_hour, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 const selectAlertContactOneSQL = ` SELECT id, label, active, transport, destination_preview, site_filter, min_severity, max_per_hour, created_by, created_at, updated_at FROM jetmon_alert_contacts WHERE id = ?`
+
+const selectAlertContactListSQL = ` SELECT id, label, active, transport, destination_preview, site_filter, min_severity, max_per_hour, created_by, created_at, updated_at FROM jetmon_alert_contacts ORDER BY id ASC`
 
 const loadAlertDestinationSQL = `SELECT destination FROM jetmon_alert_contacts WHERE id = ?`
 
@@ -186,6 +189,62 @@ func TestGetAlertContactNotFound(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestListAlertContactsHappyPath(t *testing.T) {
+	s, mock, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	now := time.Now().UTC()
+	rows := sqlmock.NewRows(columnsAlertContact).
+		AddRow(int64(1), "primary", uint8(1), "email", "mple",
+			[]byte(`{"site_ids":[42]}`), uint8(4), 60, "test-consumer", now, now).
+		AddRow(int64(2), "secondary", uint8(0), "slack", "hook",
+			nil, uint8(2), 0, "test-consumer", now, now)
+	mock.ExpectQuery(selectAlertContactListSQL).WillReturnRows(rows)
+
+	req := httptest.NewRequest("GET", "/api/v1/alert-contacts", nil)
+	req = setAuthCtx(req, key)
+	rec := invokeAuthed(s, req, s.handleListAlertContacts)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var env struct {
+		Data []alertContactResponse `json:"data"`
+		Page Page                   `json:"page"`
+	}
+	readJSON(t, rec.Body, &env)
+	if len(env.Data) != 2 {
+		t.Fatalf("len(data) = %d, want 2", len(env.Data))
+	}
+	if env.Page.Limit != 2 || env.Page.Next != nil {
+		t.Fatalf("page = %+v, want limit=2 next=nil", env.Page)
+	}
+	if env.Data[0].MinSeverity != "Down" || env.Data[0].SiteFilter.SiteIDs[0] != 42 {
+		t.Fatalf("first contact response = %+v", env.Data[0])
+	}
+	if env.Data[1].MinSeverity != "Degraded" {
+		t.Fatalf("second MinSeverity = %q, want Degraded", env.Data[1].MinSeverity)
+	}
+}
+
+func TestListAlertContactsDBError(t *testing.T) {
+	s, mock, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	mock.ExpectQuery(selectAlertContactListSQL).WillReturnError(errors.New("query failed"))
+
+	req := httptest.NewRequest("GET", "/api/v1/alert-contacts", nil)
+	req = setAuthCtx(req, key)
+	rec := invokeAuthed(s, req, s.handleListAlertContacts)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	if got := readErrorBody(t, rec.Body).Code; got != "db_error" {
+		t.Fatalf("code = %q, want db_error", got)
 	}
 }
 

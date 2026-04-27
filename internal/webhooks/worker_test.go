@@ -192,6 +192,12 @@ func TestNewWorkerInitializesRuntimeState(t *testing.T) {
 	}
 }
 
+func TestWorkerStartStop(t *testing.T) {
+	w := NewWorker(WorkerConfig{PollInterval: time.Hour})
+	w.Start()
+	w.Stop()
+}
+
 func TestDeliverTickNoReadyDeliveries(t *testing.T) {
 	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
 	if err != nil {

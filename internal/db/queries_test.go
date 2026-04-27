@@ -205,6 +205,32 @@ func TestSimpleMutationQueries(t *testing.T) {
 	}
 }
 
+func TestUpdateSiteStatusTx(t *testing.T) {
+	mock, cleanup := withMockDB(t)
+	defer cleanup()
+
+	now := time.Now().UTC()
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE jetpack_monitor_sites SET site_status").
+		WithArgs(2, now, int64(42)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if err := UpdateSiteStatusTx(context.Background(), tx, 42, 2, now); err != nil {
+		t.Fatalf("UpdateSiteStatusTx: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestGetAllHostsScansRows(t *testing.T) {
 	mock, cleanup := withMockDB(t)
 	defer cleanup()
