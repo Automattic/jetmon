@@ -270,7 +270,7 @@ func cmdValidateConfig() {
 	}
 	for _, v := range cfg.Verifiers {
 		addr := fmt.Sprintf("%s:%s", v.Host, v.GRPCPort)
-		// Ping check is best-effort; don't fail validation on veriflier unavailability.
+		// Listing configured Verifliers is operator context, not a reachability check.
 		fmt.Printf("INFO veriflier %q at %s\n", v.Name, addr)
 	}
 

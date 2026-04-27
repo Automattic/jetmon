@@ -356,7 +356,7 @@ Simulate a host failure by manually expiring a row in `jetmon_hosts`. Verify the
 
 ### Operator Dashboard
 
-The dashboard is available at http://localhost:8080 (configurable via `DASHBOARD_PORT`). It shows goroutine counts, check queue depth, sites per second, Veriflier status, WPCOM API health, slowest sites, and most frequently down sites.
+The dashboard is available at http://localhost:8080 (configurable via `DASHBOARD_PORT`). It shows worker count, active checks, queue depth, retry queue depth, sites per second, round time, owned buckets, RSS, and WPCOM circuit-breaker state.
 
 ### Internal API and Delivery Workers
 
@@ -425,7 +425,7 @@ The service releases its buckets to the pool before exiting. Surviving hosts rec
 
 	./jetmon2 status
 
-Or check the operator dashboard at the configured `DASHBOARD_PORT`. The System Health Map view shows the status of MySQL, each Veriflier, WPCOM API, StatsD, and disk in a single grid.
+Or check the operator dashboard at the configured `DASHBOARD_PORT` for check-pool, throughput, bucket, memory, and WPCOM circuit-breaker state.
 
 ### Config Reload Without Restart
 
@@ -467,7 +467,7 @@ StatsD is the primary metrics transport. For integration with external systems, 
 
 ### Veriflier Health
 
-Verifliers that fail to respond are automatically excluded from confirmation requests. The System Health Map shows each Veriflier's reachability and last response time. If the number of healthy Verifliers drops below `PEER_OFFLINE_LIMIT`, no further downtime confirmations can be issued — monitor Veriflier health closely.
+Verifliers that fail to respond are automatically excluded from confirmation requests. If the number of healthy Verifliers drops below `PEER_OFFLINE_LIMIT`, no further downtime confirmations can be issued — monitor Veriflier health closely.
 
 Verify Veriflier connectivity manually:
 

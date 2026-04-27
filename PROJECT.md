@@ -210,22 +210,19 @@ Intended to run as a pre-deployment check in CI and as an operator tool when dia
 **Operator Dashboard**
 A lightweight web UI served by the binary itself (no separate process) on a configurable internal port. Displays in real time:
 
-- Worker goroutine count, active checks, idle goroutines
-- Per-worker memory allocation and GC pressure
+- Worker goroutine count and active checks
 - Check queue depth and drain rate
-- Sites per second (current and 5-minute rolling average)
-- Round completion time and time to next round
+- Sites per second
+- Round completion time
 - Local retry queue depth
-- Veriflier queue depth and per-Veriflier response times
-- DB connection pool utilisation
-- WPCOM API success/failure rate (last 100 calls)
-- Top 20 slowest sites by RTT (rolling 5-minute window)
-- Top 20 most frequently down sites (rolling 24-hour window)
+- Owned bucket range
+- RSS memory usage
+- WPCOM circuit-breaker state and queued notification depth
 
 Updates via server-sent events — no WebSocket library needed, no JavaScript framework. A plain HTML page with `<EventSource>` is sufficient and has no build toolchain dependency.
 
-**System Health Map**
-A separate view on the operator dashboard that shows all external dependencies as a live status grid:
+**Future System Health Map**
+A broader operator-dashboard health grid is still a natural follow-up:
 
 - MySQL (primary + replicas): connection state, query latency, last successful batch
 - Each configured Veriflier: reachability, last response time, last batch sent/received
@@ -233,7 +230,8 @@ A separate view on the operator dashboard that shows all external dependencies a
 - StatsD: last successful flush
 - Disk (log and stats files): free space, last write time
 
-Each cell is green/amber/red with a hover tooltip showing the last error message if applicable. Intended to give an operator an instant answer to "is everything healthy?" without reading logs.
+The current dashboard has an `/api/health` shape for this data, but the live
+publisher for those entries has not been wired yet.
 
 **False Positive Tracker**
 Every time the system escalates a site to Veriflier confirmation and the Verifliers do NOT confirm it as down (i.e., the queue entry times out or all Verifliers report the site as up), the event is recorded in a `jetmon_false_positives` table with timestamp, site, HTTP code, error code, and RTT from the local check. A view in the operator dashboard surfaces sites with high false positive rates, helping operators tune per-site `NUM_OF_CHECKS` or `TIME_BETWEEN_CHECKS_SEC` settings.
