@@ -1,12 +1,15 @@
 package api
 
 import (
+	"database/sql/driver"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/Automattic/jetmon/internal/apikeys"
+	"github.com/Automattic/jetmon/internal/audit"
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
@@ -15,10 +18,53 @@ const keyLookupSQL = ` SELECT id, consumer_name, scope, rate_limit_per_minute, e
 
 const keyTouchSQL = `UPDATE jetmon_api_keys SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?`
 
+const auditInsertSQL = `
+		INSERT INTO jetmon_audit_log
+			(blog_id, event_id, event_type, source, detail, metadata)
+		VALUES (?, ?, ?, ?, ?, ?)`
+
 // columnsKey is the column set returned by getByHash.
 var columnsKey = []string{
 	"id", "consumer_name", "scope", "rate_limit_per_minute",
 	"expires_at", "revoked_at", "last_used_at", "created_at", "created_by",
+}
+
+type apiAuditMetadataWithRequestID struct {
+	t          *testing.T
+	wantStatus float64
+	wantNote   string
+}
+
+func (m apiAuditMetadataWithRequestID) Match(v driver.Value) bool {
+	m.t.Helper()
+	var raw []byte
+	switch got := v.(type) {
+	case []byte:
+		raw = got
+	case string:
+		raw = []byte(got)
+	default:
+		m.t.Errorf("metadata type = %T, want []byte or string", v)
+		return false
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		m.t.Errorf("metadata is not JSON: %v", err)
+		return false
+	}
+	if meta["request_id"] == "" {
+		m.t.Errorf("metadata request_id is empty: %s", raw)
+		return false
+	}
+	if meta["status"] != m.wantStatus {
+		m.t.Errorf("metadata status = %v, want %.0f", meta["status"], m.wantStatus)
+		return false
+	}
+	if meta["note"] != m.wantNote {
+		m.t.Errorf("metadata note = %v, want %q", meta["note"], m.wantNote)
+		return false
+	}
+	return true
 }
 
 func makeKeyRow(id int64, scope string, rateLimit int, revokedAt, expiresAt *time.Time) *sqlmock.Rows {
@@ -59,6 +105,42 @@ func TestRequireScopeMissingToken(t *testing.T) {
 	}
 	if rec.Header().Get("X-Request-ID") == "" {
 		t.Error("X-Request-ID header should be set")
+	}
+}
+
+func TestRequireScopeAuditsRejectedRequestWithRequestID(t *testing.T) {
+	s, mock, _, cleanup := newTestServer(t)
+	defer cleanup()
+	audit.Init(s.db)
+	t.Cleanup(func() { audit.Init(nil) })
+
+	mock.ExpectExec(auditInsertSQL).WithArgs(
+		nil,
+		nil,
+		audit.EventAPIAccess,
+		"unknown",
+		"GET /api/v1/anything",
+		apiAuditMetadataWithRequestID{
+			t:          t,
+			wantStatus: float64(http.StatusUnauthorized),
+			wantNote:   "missing token",
+		},
+	).WillReturnResult(sqlmock.NewResult(0, 1))
+
+	wrapped := s.requireScope(scopeRead, func(w http.ResponseWriter, r *http.Request) {})
+
+	req := httptest.NewRequest("GET", "/api/v1/anything", nil)
+	rec := httptest.NewRecorder()
+	wrapped(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401; body=%s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("X-Request-ID") == "" {
+		t.Fatal("X-Request-ID header should be set")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
 	}
 }
 

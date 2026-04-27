@@ -60,29 +60,30 @@ func (s *Server) requireScope(required apikeys.Scope, h http.HandlerFunc) http.H
 	return func(w http.ResponseWriter, r *http.Request) {
 		reqID := newRequestID()
 		ctx := context.WithValue(r.Context(), ctxKeyRequestID, reqID)
+		req := r.WithContext(ctx)
 		w.Header().Set("X-Request-ID", reqID)
 
 		token := bearerToken(r)
 		if token == "" {
-			writeError(w, r.WithContext(ctx), http.StatusUnauthorized, "missing_token",
+			writeError(w, req, http.StatusUnauthorized, "missing_token",
 				"Authorization header with Bearer token is required")
-			s.audit(nil, r, http.StatusUnauthorized, time.Time{}, "missing token")
+			s.audit(nil, req, http.StatusUnauthorized, time.Time{}, "missing token")
 			return
 		}
 
 		key, err := apikeys.Lookup(ctx, s.db, token)
 		if err != nil {
 			status, code, msg := mapAuthError(err)
-			writeError(w, r.WithContext(ctx), status, code, msg)
-			s.audit(nil, r, status, time.Time{}, code)
+			writeError(w, req, status, code, msg)
+			s.audit(nil, req, status, time.Time{}, code)
 			return
 		}
 
 		if !key.Scope.Includes(required) {
-			writeError(w, r.WithContext(ctx), http.StatusForbidden, "insufficient_scope",
+			writeError(w, req, http.StatusForbidden, "insufficient_scope",
 				"this endpoint requires scope "+string(required)+
 					"; your key has scope "+string(key.Scope))
-			s.audit(key, r, http.StatusForbidden, time.Time{}, "insufficient scope")
+			s.audit(key, req, http.StatusForbidden, time.Time{}, "insufficient scope")
 			return
 		}
 
@@ -90,8 +91,8 @@ func (s *Server) requireScope(required apikeys.Scope, h http.HandlerFunc) http.H
 		allowed, remaining, resetAt := s.limiter.allow(key.ID, key.RateLimitPerMinute)
 		writeRateLimitHeaders(w, key.RateLimitPerMinute, remaining, resetAt)
 		if !allowed {
-			writeRateLimited(w, r.WithContext(ctx), key.RateLimitPerMinute, remaining, resetAt)
-			s.audit(key, r, http.StatusTooManyRequests, time.Time{}, "rate limited")
+			writeRateLimited(w, req, key.RateLimitPerMinute, remaining, resetAt)
+			s.audit(key, req, http.StatusTooManyRequests, time.Time{}, "rate limited")
 			return
 		}
 
