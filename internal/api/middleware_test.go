@@ -314,9 +314,23 @@ func TestRequireScopeInsufficientScope(t *testing.T) {
 func TestRequireScopeAllowsValidToken(t *testing.T) {
 	s, mock, _, cleanup := newTestServer(t)
 	defer cleanup()
+	audit.Init(s.db)
+	t.Cleanup(func() { audit.Init(nil) })
 
 	mock.ExpectQuery(keyLookupSQL).WillReturnRows(makeKeyRow(1, "read", 60, nil, nil))
 	mock.ExpectExec(keyTouchSQL).WithArgs(int64(1)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(auditInsertSQL).WithArgs(
+		nil,
+		nil,
+		audit.EventAPIAccess,
+		"test-consumer",
+		"GET /",
+		apiAuditMetadataWithRequestID{
+			t:          t,
+			wantStatus: float64(http.StatusOK),
+			wantNote:   "",
+		},
+	).WillReturnResult(sqlmock.NewResult(0, 1))
 
 	called := false
 	wrapped := s.requireScope(scopeRead, func(w http.ResponseWriter, r *http.Request) {
@@ -345,11 +359,16 @@ func TestRequireScopeAllowsValidToken(t *testing.T) {
 	if got := rec.Header().Get("X-RateLimit-Remaining"); got == "" {
 		t.Errorf("X-RateLimit-Remaining missing")
 	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
 }
 
 func TestRequireScopeRateLimit429(t *testing.T) {
 	s, mock, _, cleanup := newTestServer(t)
 	defer cleanup()
+	audit.Init(s.db)
+	t.Cleanup(func() { audit.Init(nil) })
 
 	// Limit = 1/min — second request should 429. We have to set up two
 	// lookup expectations because the limiter check runs after auth.
@@ -358,6 +377,30 @@ func TestRequireScopeRateLimit429(t *testing.T) {
 	mock.ExpectExec(keyTouchSQL).WithArgs(int64(2)).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(keyLookupSQL).WillReturnRows(makeKeyRow(2, "read", 1, nil, nil))
 	mock.ExpectExec(keyTouchSQL).WithArgs(int64(2)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(auditInsertSQL).WithArgs(
+		nil,
+		nil,
+		audit.EventAPIAccess,
+		"test-consumer",
+		"GET /",
+		apiAuditMetadataWithRequestID{
+			t:          t,
+			wantStatus: float64(http.StatusOK),
+			wantNote:   "",
+		},
+	).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(auditInsertSQL).WithArgs(
+		nil,
+		nil,
+		audit.EventAPIAccess,
+		"test-consumer",
+		"GET /",
+		apiAuditMetadataWithRequestID{
+			t:          t,
+			wantStatus: float64(http.StatusTooManyRequests),
+			wantNote:   "rate limited",
+		},
+	).WillReturnResult(sqlmock.NewResult(0, 1))
 
 	wrapped := s.requireScope(scopeRead, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -387,6 +430,9 @@ func TestRequireScopeRateLimit429(t *testing.T) {
 	body := readErrorBody(t, rec2.Body)
 	if body.Code != "rate_limited" {
 		t.Errorf("error code = %q, want rate_limited", body.Code)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
 	}
 }
 
