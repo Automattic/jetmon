@@ -6,7 +6,7 @@ BUILD_FLAGS := -ldflags "-X main.version=$(shell git describe --tags --always --
 
 .PHONY: all build build-veriflier generate test test-race lint clean
 
-all: generate build build-veriflier
+all: build build-veriflier
 
 build:
 	mkdir -p bin
