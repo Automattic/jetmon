@@ -193,7 +193,12 @@ func (s *Server) audit(reqID string, key *apikeys.Key, r *http.Request, status i
 		"note":        note,
 	})
 
-	if err := audit.Log(audit.Entry{
+	// Derive the audit context from Background, not r.Context(): a client
+	// disconnect must not silence the audit row, since audit is for the
+	// operator, not the caller. The timeout caps any wedged-DB hang.
+	ctx, cancel := context.WithTimeout(context.Background(), auditWriteTimeout)
+	defer cancel()
+	if err := audit.Log(ctx, audit.Entry{
 		EventType: audit.EventAPIAccess,
 		Source:    consumerName,
 		Detail:    r.Method + " " + r.URL.Path,
@@ -202,6 +207,11 @@ func (s *Server) audit(reqID string, key *apikeys.Key, r *http.Request, status i
 		log.Printf("api: audit log failed: %v", err)
 	}
 }
+
+// auditWriteTimeout caps a single audit insert so a wedged DB cannot block
+// the request goroutine indefinitely. Audit is observability, not gate; if
+// the write times out we log and move on.
+const auditWriteTimeout = 5 * time.Second
 
 // newRequestID returns a 16-byte random hex id (32 chars). Same shape as the
 // verifier's NewRequestID for consistency in operator log-greppage.

@@ -1,6 +1,12 @@
 package audit
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/DATA-DOG/go-sqlmock"
+)
 
 func TestNullableInt64(t *testing.T) {
 	if nullableInt64(0) != nil {
@@ -35,7 +41,7 @@ func TestNullableJSON(t *testing.T) {
 
 func TestLogWithNilDB(t *testing.T) {
 	// db is nil in tests — Log must return nil, not panic.
-	if err := Log(Entry{
+	if err := Log(context.Background(), Entry{
 		BlogID:    1,
 		EventType: EventVeriflierSent,
 		Source:    "test",
@@ -48,11 +54,37 @@ func TestLogWithNilDB(t *testing.T) {
 func TestLogRequiresEventType(t *testing.T) {
 	// Set a non-nil db so the validation runs (we won't actually hit it because
 	// the validation is before the db.Exec call).
-	if err := Log(Entry{BlogID: 1}); err != nil {
+	if err := Log(context.Background(), Entry{BlogID: 1}); err != nil {
 		// nil db short-circuits before validation. That's fine — the
 		// production code path requires a real db, which the integration
 		// tests cover. Here we just confirm the call doesn't panic with an
 		// empty Entry.
+	}
+}
+
+func TestLogHonorsCanceledContext(t *testing.T) {
+	conn, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer conn.Close()
+
+	orig := db
+	t.Cleanup(func() { db = orig })
+	db = conn
+
+	mock.ExpectExec(`INSERT INTO jetmon_audit_log`).WillReturnError(context.Canceled)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err = Log(ctx, Entry{
+		EventType: EventConfigChange,
+		Source:    "test",
+		Detail:    "ctx canceled",
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Log() with canceled ctx = %v, want context.Canceled", err)
 	}
 }
 
