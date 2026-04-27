@@ -62,12 +62,6 @@ func (s *Server) handleListSiteEvents(w http.ResponseWriter, r *http.Request) {
 	s.listEvents(w, r, &siteID)
 }
 
-// handleListSiteEventsAll lists events without a site filter — used by future
-// admin tooling. Not currently routed; keep here for completeness.
-func (s *Server) handleListAllEvents(w http.ResponseWriter, r *http.Request) {
-	s.listEvents(w, r, nil)
-}
-
 func (s *Server) listEvents(w http.ResponseWriter, r *http.Request, siteID *int64) {
 	q := r.URL.Query()
 

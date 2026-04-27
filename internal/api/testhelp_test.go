@@ -85,15 +85,6 @@ func readErrorBody(t *testing.T, body io.Reader) errorBody {
 	return env.Error
 }
 
-// invokeWithMux runs the request against the server's full mux so the route
-// matcher fires (path-value extraction etc.). Used for end-to-end handler
-// tests that need r.PathValue to work.
-func invokeWithMux(s *Server, req *http.Request) *httptest.ResponseRecorder {
-	rec := httptest.NewRecorder()
-	s.routes().ServeHTTP(rec, req)
-	return rec
-}
-
 // invokeAuthed runs an authenticated request through the mux by injecting
 // the key into the request context first. The mux's requireScope wrapper
 // will still fire — but bearerToken returns "" so we'd hit "missing token".
@@ -103,7 +94,7 @@ func invokeWithMux(s *Server, req *http.Request) *httptest.ResponseRecorder {
 //
 // This indirection exists because requireScope tightly couples auth, scope,
 // rate limiting, and audit — and we test those independently.
-func invokeAuthed(s *Server, req *http.Request, h http.HandlerFunc) *httptest.ResponseRecorder {
+func invokeAuthed(_ *Server, req *http.Request, h http.HandlerFunc) *httptest.ResponseRecorder {
 	rec := httptest.NewRecorder()
 	h(rec, req)
 	return rec

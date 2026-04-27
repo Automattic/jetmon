@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -311,7 +312,7 @@ func cmdAudit() {
 
 	fmt.Printf("Audit log for blog_id=%d\n", *blogID)
 	fmt.Printf("%-25s %-22s %-15s %s\n", "TIMESTAMP", "EVENT", "SOURCE", "DETAIL")
-	fmt.Println(repeat("-", 90))
+	fmt.Println(strings.Repeat("-", 90))
 
 	for rows.Next() {
 		var (
@@ -449,7 +450,7 @@ func cmdKeysList(ctx context.Context, args []string) {
 
 	fmt.Printf("%-5s %-24s %-7s %-9s %-21s %-21s %s\n",
 		"ID", "CONSUMER", "SCOPE", "RATE/MIN", "EXPIRES", "LAST USED", "STATUS")
-	fmt.Println(repeat("-", 110))
+	fmt.Println(strings.Repeat("-", 110))
 	for _, k := range keys {
 		status := "active"
 		if k.RevokedAt != nil {
@@ -555,7 +556,7 @@ func writePIDFile(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0644)
+	return os.WriteFile(path, fmt.Appendf(nil, "%d\n", os.Getpid()), 0644)
 }
 
 func removePIDFile(path string) {
@@ -594,14 +595,6 @@ func resolveSince(s string) string {
 		return time.Now().Add(-d).Format("2006-01-02 15:04:05")
 	}
 	return s
-}
-
-func repeat(s string, n int) string {
-	out := ""
-	for range n {
-		out += s
-	}
-	return out
 }
 
 // buildAlertDispatchers constructs the per-transport Dispatcher map

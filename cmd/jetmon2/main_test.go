@@ -55,18 +55,6 @@ func TestEnvOrDefault(t *testing.T) {
 	}
 }
 
-func TestRepeat(t *testing.T) {
-	if got := repeat("-", 5); got != "-----" {
-		t.Fatalf("repeat(\"-\", 5) = %q, want -----", got)
-	}
-	if got := repeat("ab", 3); got != "ababab" {
-		t.Fatalf("repeat(\"ab\", 3) = %q, want ababab", got)
-	}
-	if got := repeat("x", 0); got != "" {
-		t.Fatalf("repeat(\"x\", 0) = %q, want empty", got)
-	}
-}
-
 func TestReadPIDFile(t *testing.T) {
 	dir := t.TempDir()
 	pidPath := filepath.Join(dir, "test.pid")

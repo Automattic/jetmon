@@ -401,11 +401,6 @@ func TestGetSiteInvalidID(t *testing.T) {
 	}
 }
 
-// trimSQL is a shorthand for tests; sqlmock with QueryMatcherEqual matches
-// strings byte-for-byte, so we have to assemble queries the same way the
-// handler does.
-func trimSQL(s string) string { return s }
-
 func contains(s, sub string) bool {
 	for i := 0; i+len(sub) <= len(s); i++ {
 		if s[i:i+len(sub)] == sub {
