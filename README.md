@@ -4,34 +4,68 @@ jetmon2
 Overview
 --------
 
-Jetmon is a parallel HTTP uptime monitoring service that checks Jetpack websites at scale. Jetmon 2 is a complete rewrite of the original Node.js + C++ service as a single Go binary, delivering a large reduction in memory usage, a significant increase in concurrent checks per host, and a simpler deployment model with no native addon compilation.
+Jetmon is the parallel HTTP health monitoring service for Jetpack-connected sites at scale. Jetmon 2 turns it from a binary up/down status flipper into a full event-sourced health platform — the same low-false-positive Veriflier-confirmed detection core, now with a five-layer severity model, an internal REST API, HMAC-signed webhooks, managed alert contacts (email, PagerDuty, Slack, Teams), and a complete operational audit trail.
 
-Jetmon periodically loops over a list of Jetpack sites and performs HTTP checks. When a site appears down, local retries are attempted before geographically distributed Veriflier services are asked to confirm the outage. WPCOM is notified only after confirmation, keeping false positive rates low.
+The whole thing ships as a single static Go binary with embedded migrations. No `node_modules`, no native addons, no worker process tree. Every check, retry, Veriflier confirmation, and notification lands in `jetmon_audit_log`; every status transition lands in `jetmon_event_transitions`. An operator can replay any incident, end-to-end, from the database alone.
 
-Jetmon 2 is a drop-in replacement: the MySQL schema, WPCOM notification payload, StatsD metric names, log file format, and config file keys are all backwards-compatible. See `PROJECT.md` for the full feature specification and performance estimates.
+The Jetmon 1 detection pipeline is preserved verbatim — periodic check rounds, local retries before escalation, geo-distributed Veriflier confirmation before WPCOM is notified. v2 keeps WPCOM compatibility through a shadow-state migration: the v2 event tables are authoritative, and `jetpack_monitor_sites.site_status` / `last_status_change` continue to be projected transactionally for legacy consumers until they cut over (`LEGACY_STATUS_PROJECTION_ENABLE`).
+
+
+What's new in v2
+----------------
+
+v2 keeps the Jetmon 1 detection pipeline (local retries → geo-distributed Veriflier confirmation → notify) and rebuilds everything around it.
+
+| Capability | Jetmon 1 | Jetmon 2 |
+|---|---|---|
+| Status model | Binary `up` / `down` (`confirmed_down` for re-detections) | Five-layer severity ladder: `Up < Warning < Degraded < SeemsDown < Down`, paired with separate state vocabulary |
+| State storage | Single mutable `site_status` column | Event-sourced — `jetmon_events` (current authoritative state) + append-only `jetmon_event_transitions` (every mutation) |
+| Failure classifications | `down` | `server`, `client`, `blocked`, `https`, `intermittent`, `redirect`, `ssl_expiry`, `tls_deprecated`, `keyword_missing`, `success` |
+| Notification channels | WPCOM only | WPCOM + HMAC-signed webhooks + managed alert contacts (email, PagerDuty, Slack, Teams) |
+| API surface | None | Internal REST API at `/api/v1`: Bearer auth, three coarse scopes, per-key rate limit, Stripe-style idempotency, cursor pagination, full audit logging |
+| Per-site config | Bucket + check interval | + custom headers, timeout override, redirect policy, alert cooldown, maintenance windows, keyword content check, SSL-expiry alerts at 30 / 14 / 7 days |
+| Operational audit | Basic logging | Full audit trail (`jetmon_audit_log`) over every check, retry, Veriflier dispatch, alert suppression, API call, and config reload |
+| Process model | Node master + Node workers + C++ native addon + Qt C++ Veriflier | Single Go binary (`jetmon2`) + Go Veriflier (`veriflier2`) |
+| Worker scaling | Spawn / kill child processes | In-process goroutine pool that auto-scales by queue depth |
+| Deployment friction | `npm` + `node-gyp` + Qt | Static binary + `./jetmon2 migrate` + `./jetmon2 validate-config` |
+| Multi-host coordination | Manual `bucket_min` / `bucket_max` per host | MySQL-coordinated `jetmon_hosts` table with heartbeat-and-reclaim |
+| Observability | StatsD | StatsD + structured logs + audit trail + operator dashboard (SSE) + localhost pprof |
+| Hot reload | Restart | `SIGHUP` for config; `SIGINT` for graceful drain |
+
+A few specifics worth bragging about:
+
+- **Webhooks with Stripe-style HMAC signatures.** `t=<unix>,v1=<hex>` over `{ts}.{body}`, per-webhook in-flight cap, retry ladder 1m → 5m → 30m → 1h → 6h before abandon. Frozen-at-fire-time payload contract — consumers see the event as it was when the webhook fired, not as it is now.
+- **Idempotent write endpoints.** POSTs accept `Idempotency-Key`; replays return the original response, so a retried "click to test" through a network blip won't double-page the destination.
+- **Rotation grace windows on API keys.** `revoked_at` and `expires_at` are half-open cutoffs; setting `revoked_at` in the future keeps the old key valid until consumers deploy the replacement.
+- **Migrations embedded in the binary.** `./jetmon2 migrate` walks the schema forward; `./jetmon2 validate-config` checks config + DB connectivity + email transport mode + verifier list before deploy, and warns loudly when alert-contact email is set to the log-only stub.
+- **MySQL 5.7+ compatible.** No window functions, no JSON-path expressions in SELECT — the v2 schema and queries land cleanly on the legacy production database.
 
 
 Architecture
 ------------
 
 ```
-┌──────────────────────────────────────────────────────┐
-│                  jetmon2 (single binary)             │
-│                                                      │
-│  ┌─────────────┐  ┌─────────────┐  ┌──────────────┐  │
-│  │ Orchestrator│  │ Check Pool  │  │  Veriflier   │  │
-│  │  goroutine  │  │ (goroutines)│  │  transport   │  │
-│  └──────┬──────┘  └──────┬──────┘  └──────┬───────┘  │
-│         │                │                │          │
-│  ┌──────┴────────────────┴────────────────┴───────┐  │
-│  │                 Internal channels              │  │
-│  └────────────────────────────────────────────────┘  │
-└────────────┬──────────────────────────┬──────────────┘
-             │                          │
-          MySQL                    WPCOM API
-          StatsD                   (unchanged)
-          Log files
-          (all unchanged)
+┌──────────────────────────────────────────────────────────────┐
+│                 jetmon2 (single binary)                      │
+│                                                              │
+│  ┌────────────┐  ┌────────────┐  ┌────────────────────┐      │
+│  │Orchestrator│  │ Check pool │  │ Veriflier          │      │
+│  │ goroutine  │  │(goroutines)│  │ transport          │      │
+│  └─────┬──────┘  └─────┬──────┘  └────────┬───────────┘      │
+│        │               │                  │                  │
+│  ┌─────┴───────────────┴──────────────────┴────────────┐     │
+│  │  Eventstore + Audit log                             │     │
+│  └─────┬─────────────────┬──────────────────┬──────────┘     │
+│        │                 │                  │                │
+│  ┌─────┴──────┐  ┌───────┴────────┐  ┌──────┴──────────┐     │
+│  │  REST API  │  │ Webhook worker │  │  Alert-contact  │     │
+│  │  /api/v1/  │  │ (HMAC-signed)  │  │     worker      │     │
+│  └────────────┘  └────────────────┘  └─────────────────┘     │
+└────────┬─────────────────────────────────────────┬───────────┘
+         │                                         │
+       MySQL                              WPCOM · custom webhooks
+       StatsD                             · email · PagerDuty
+       Log files                          · Slack · Teams
 ```
 
 The **Orchestrator goroutine** fetches site batches from MySQL, dispatches work to the check pool, manages the local retry queue, coordinates Veriflier confirmation, and sends WPCOM notifications. It owns all database access and all outbound WPCOM calls.
@@ -42,13 +76,22 @@ The **Veriflier transport** sends confirmation batches to remote Veriflier insta
 
 The **Veriflier** is a standalone Go binary deployed at remote locations. It replaces the Qt C++ Veriflier, using the same JSON-over-HTTP transport as the Monitor-side client until the generated gRPC stubs are wired in.
 
-Status change flows:
+The v2 platform layer sits below the detection pipeline:
 
-| Previous Status | Current Status    | Action                                            |
-|-----------------|-------------------|---------------------------------------------------|
+- **Eventstore** is the sole writer for `jetmon_events` and `jetmon_event_transitions`. Every state change — open, escalate, close, recover, manual override — is an atomic transition with full history. Audit log writes share the same MySQL handle.
+- **REST API** exposes the v2 surface at `/api/v1/` (enable with `API_PORT`). Bearer-token auth, three coarse scopes (`read` / `write` / `admin`), per-key token-bucket rate limiting, Stripe-style idempotency keys on POSTs. Every authenticated request lands in `jetmon_audit_log` with the consumer name, status, latency, and request id.
+- **Webhook worker** delivers HMAC-signed `event.*` posts to registered consumers. Per-webhook in-flight cap, retry ladder 1m → 5m → 30m → 1h → 6h, frozen-at-fire-time payload.
+- **Alert-contact worker** delivers Jetmon-rendered notifications through Jetmon-owned transports (email, PagerDuty Events API v2, Slack Block Kit, Teams Adaptive Cards). Per-contact `max_per_hour` rate cap as pager-storm insurance.
+
+WPCOM notification flow (preserved from Jetmon 1, used during shadow-state migration):
+
+| Previous Status | Current Status    | Action                                                |
+|-----------------|-------------------|-------------------------------------------------------|
 | UP              | DOWN              | Local retries → Veriflier confirmation → notify WPCOM |
-| DOWN            | UP                | Notify WPCOM site recovered                       |
-| DOWN            | DOWN (confirmed)  | Notify WPCOM confirmed down                       |
+| DOWN            | UP                | Notify WPCOM site recovered                           |
+| DOWN            | DOWN (confirmed)  | Notify WPCOM confirmed down                           |
+
+v2 emits richer events to webhook and alert-contact subscribers (full event lifecycle including escalations and severity transitions) — the WPCOM table above describes only the legacy notification path.
 
 
 Installation
