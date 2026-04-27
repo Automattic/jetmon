@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/Automattic/jetmon/internal/apikeys"
+	"github.com/DATA-DOG/go-sqlmock"
 )
 
 // keyLookupSQL matches the query used by apikeys.Lookup to resolve a token.
@@ -258,9 +258,9 @@ func TestStatusRecorderCapturesCode(t *testing.T) {
 
 func TestMapAuthError(t *testing.T) {
 	cases := []struct {
-		err          error
-		wantStatus   int
-		wantCode     string
+		err        error
+		wantStatus int
+		wantCode   string
 	}{
 		{apikeys.ErrInvalidToken, http.StatusUnauthorized, "invalid_token"},
 		{apikeys.ErrKeyRevoked, http.StatusUnauthorized, "token_revoked"},

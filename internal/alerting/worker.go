@@ -36,13 +36,13 @@ func nextRetryDelay(currentAttempt int) (delay time.Duration, abandoned bool) {
 
 // WorkerConfig configures the delivery worker.
 type WorkerConfig struct {
-	DB             *sql.DB
-	InstanceID     string
-	Dispatchers    map[Transport]Dispatcher
-	PollInterval   time.Duration
-	MaxConcurrent  int           // shared deliverer pool size
-	PerContactCap  int           // per-contact in-flight cap
-	BatchSize      int           // dispatch + claim batch size
+	DB              *sql.DB
+	InstanceID      string
+	Dispatchers     map[Transport]Dispatcher
+	PollInterval    time.Duration
+	MaxConcurrent   int           // shared deliverer pool size
+	PerContactCap   int           // per-contact in-flight cap
+	BatchSize       int           // dispatch + claim batch size
 	DispatchTimeout time.Duration // per-delivery wall-clock limit
 }
 

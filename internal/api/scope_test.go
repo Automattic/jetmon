@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/Automattic/jetmon/internal/apikeys"
+	"github.com/DATA-DOG/go-sqlmock"
 )
 
 // scopeProbeKey returns the key-lookup row a token check should yield for

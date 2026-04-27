@@ -234,11 +234,11 @@ func TestBuildMIMEMessageHasBothParts(t *testing.T) {
 
 func TestWPCOMSenderPostsCorrectly(t *testing.T) {
 	var (
-		gotAuth    string
-		gotCT      string
-		gotBody    wpcomEmailRequest
-		decodeErr  error
-		hits       int
+		gotAuth   string
+		gotCT     string
+		gotBody   wpcomEmailRequest
+		decodeErr error
+		hits      int
 	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits++

@@ -15,16 +15,16 @@ import (
 // secret is omitted by default — only the create and rotate-secret endpoints
 // return it (one-time view). secret_preview is the safe permanent view.
 type webhookResponse struct {
-	ID            int64               `json:"id"`
-	URL           string              `json:"url"`
-	Active        bool                `json:"active"`
-	Events        []string            `json:"events"`
-	SiteFilter    webhooks.SiteFilter `json:"site_filter"`
+	ID            int64                `json:"id"`
+	URL           string               `json:"url"`
+	Active        bool                 `json:"active"`
+	Events        []string             `json:"events"`
+	SiteFilter    webhooks.SiteFilter  `json:"site_filter"`
 	StateFilter   webhooks.StateFilter `json:"state_filter"`
-	SecretPreview string              `json:"secret_preview"`
-	CreatedBy     string              `json:"created_by"`
-	CreatedAt     string              `json:"created_at"`
-	UpdatedAt     string              `json:"updated_at"`
+	SecretPreview string               `json:"secret_preview"`
+	CreatedBy     string               `json:"created_by"`
+	CreatedAt     string               `json:"created_at"`
+	UpdatedAt     string               `json:"updated_at"`
 }
 
 // createWebhookResponse extends webhookResponse with the raw secret. Used
@@ -55,22 +55,22 @@ func toWebhookResponse(w *webhooks.Webhook) webhookResponse {
 
 // createWebhookRequest is the body shape for POST /api/v1/webhooks.
 type createWebhookRequest struct {
-	URL         string                `json:"url"`
-	Active      *bool                 `json:"active"`
-	Events      []string              `json:"events"`
-	SiteFilter  webhooks.SiteFilter   `json:"site_filter"`
-	StateFilter webhooks.StateFilter  `json:"state_filter"`
+	URL         string               `json:"url"`
+	Active      *bool                `json:"active"`
+	Events      []string             `json:"events"`
+	SiteFilter  webhooks.SiteFilter  `json:"site_filter"`
+	StateFilter webhooks.StateFilter `json:"state_filter"`
 }
 
 // updateWebhookRequest is the body shape for PATCH /api/v1/webhooks/{id}.
 // Pointer fields distinguish "absent" from "explicitly empty"; an explicit
 // empty list/object clears the filter to "match all" semantics.
 type updateWebhookRequest struct {
-	URL         *string                `json:"url"`
-	Active      *bool                  `json:"active"`
-	Events      *[]string              `json:"events"`
-	SiteFilter  *webhooks.SiteFilter   `json:"site_filter"`
-	StateFilter *webhooks.StateFilter  `json:"state_filter"`
+	URL         *string               `json:"url"`
+	Active      *bool                 `json:"active"`
+	Events      *[]string             `json:"events"`
+	SiteFilter  *webhooks.SiteFilter  `json:"site_filter"`
+	StateFilter *webhooks.StateFilter `json:"state_filter"`
 }
 
 // handleCreateWebhook implements POST /api/v1/webhooks. Returns 201 with

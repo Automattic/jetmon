@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/Automattic/jetmon/internal/apikeys"
+	"github.com/DATA-DOG/go-sqlmock"
 )
 
 // newTestServer builds a Server backed by sqlmock plus a stub key the tests

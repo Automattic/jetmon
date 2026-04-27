@@ -39,12 +39,12 @@ type HealthEntry struct {
 
 // Server is the operator dashboard HTTP server.
 type Server struct {
-	mu       sync.RWMutex
-	state    State
-	health   []HealthEntry
+	mu         sync.RWMutex
+	state      State
+	health     []HealthEntry
 	sseClients map[string]chan string
-	sseMu    sync.Mutex
-	hostname string
+	sseMu      sync.Mutex
+	hostname   string
 }
 
 // New creates a new dashboard Server.

@@ -177,15 +177,15 @@ func (s *Server) audit(key *apikeys.Key, r *http.Request, status int, started ti
 	}
 
 	meta, _ := json.Marshal(map[string]any{
-		"key_id":         keyID,
-		"consumer":       consumerName,
-		"method":         r.Method,
-		"path":           r.URL.Path,
-		"status":         status,
-		"duration_ms":    durationMs,
-		"request_id":     requestIDFromRequest(r),
-		"remote_addr":    r.RemoteAddr,
-		"note":           note,
+		"key_id":      keyID,
+		"consumer":    consumerName,
+		"method":      r.Method,
+		"path":        r.URL.Path,
+		"status":      status,
+		"duration_ms": durationMs,
+		"request_id":  requestIDFromRequest(r),
+		"remote_addr": r.RemoteAddr,
+		"note":        note,
 	})
 
 	if err := audit.Log(audit.Entry{

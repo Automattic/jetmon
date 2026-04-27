@@ -308,14 +308,14 @@ func RetryDelivery(ctx context.Context, db *sql.DB, id int64) error {
 
 func scanDeliveryRow(s rowScanner) (*Delivery, error) {
 	var (
-		d                Delivery
-		payload          sql.NullString
-		nextAttemptAt    sql.NullTime
-		lastStatusCode   sql.NullInt64
-		lastResponse     sql.NullString
-		lastAttemptAt    sql.NullTime
-		deliveredAt      sql.NullTime
-		statusStr        string
+		d              Delivery
+		payload        sql.NullString
+		nextAttemptAt  sql.NullTime
+		lastStatusCode sql.NullInt64
+		lastResponse   sql.NullString
+		lastAttemptAt  sql.NullTime
+		deliveredAt    sql.NullTime
+		statusStr      string
 	)
 	if err := s.Scan(
 		&d.ID, &d.WebhookID, &d.TransitionID, &d.EventID, &d.EventType, &payload,

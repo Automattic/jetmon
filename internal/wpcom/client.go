@@ -20,7 +20,7 @@ const (
 
 // CheckEntry represents a single check result included in a notification.
 type CheckEntry struct {
-	Type   int    `json:"type"`   // 1=local, 2=veriflier
+	Type   int    `json:"type"` // 1=local, 2=veriflier
 	Host   string `json:"host"`
 	Status int    `json:"status"`
 	RTT    int64  `json:"rtt"`
@@ -53,7 +53,7 @@ type Client struct {
 }
 
 type queuedNotification struct {
-	n       Notification
+	n        Notification
 	queuedAt time.Time
 }
 

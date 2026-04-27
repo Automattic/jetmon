@@ -183,9 +183,9 @@ type slackMessage struct {
 }
 
 type slackBlock struct {
-	Type string                 `json:"type"`
-	Text *slackText             `json:"text,omitempty"`
-	Fields []slackText          `json:"fields,omitempty"`
+	Type   string      `json:"type"`
+	Text   *slackText  `json:"text,omitempty"`
+	Fields []slackText `json:"fields,omitempty"`
 }
 
 type slackText struct {
@@ -273,13 +273,13 @@ type teamsDestination struct {
 }
 
 type teamsMessage struct {
-	Type        string             `json:"type"`        // always "message"
-	Attachments []teamsAttachment  `json:"attachments"`
+	Type        string            `json:"type"` // always "message"
+	Attachments []teamsAttachment `json:"attachments"`
 }
 
 type teamsAttachment struct {
-	ContentType string         `json:"contentType"`
-	Content     teamsCardBody  `json:"content"`
+	ContentType string        `json:"contentType"`
+	Content     teamsCardBody `json:"content"`
 }
 
 type teamsCardBody struct {
