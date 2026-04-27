@@ -20,6 +20,9 @@ because it is intentionally **not** drop-in with the Jetmon 1 wire format
 - `jetmon_events` (current authoritative state per incident) and
   `jetmon_event_transitions` (every status/severity change, append-only)
   tables; `internal/eventstore` writes both in a single transaction
+- Shadow-v2-state migration: while `LEGACY_STATUS_PROJECTION_ENABLE` is
+  true, event mutations also maintain the v1 `site_status` /
+  `last_status_change` projection for legacy consumers
 - Five-layer severity ladder: `Up < Warning < Degraded < SeemsDown < Down`
   matching `internal/eventstore.Severity*` constants
 
@@ -114,7 +117,9 @@ Drop-in replacement for Jetmon 1; all existing MySQL schema columns are preserve
 - `jetmon2 audit` — query per-site audit log from CLI
 - Operator dashboard on configurable port with SSE state stream
 - pprof debug server on localhost-only `DEBUG_PORT` (default 6060)
-- `DB_UPDATES_ENABLE` double-gate: requires both config flag and `JETMON_UNSAFE_DB_UPDATES=1` env var
+- `LEGACY_STATUS_PROJECTION_ENABLE` controls v1 `site_status` /
+  `last_status_change` compatibility writes; `DB_UPDATES_ENABLE` remains
+  as a deprecated alias
 - Graceful shutdown with 30-second hard-exit backstop
 - Non-root Docker images (`jetmon` / `veriflier` system users)
 - Healthcheck-gated MySQL dependency in docker-compose

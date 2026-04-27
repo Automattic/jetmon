@@ -90,8 +90,10 @@ Key settings:
 | `BUCKET_TARGET` | 500 | Maximum buckets this host should own |
 | `BUCKET_HEARTBEAT_GRACE_SEC` | 600 | Seconds before a silent host's buckets are reclaimed |
 | `ALERT_COOLDOWN_MINUTES` | 30 | Default cooldown between repeated alerts per site |
+| `LEGACY_STATUS_PROJECTION_ENABLE` | true | Keep `jetpack_monitor_sites.site_status` / `last_status_change` updated for v1 consumers during migration |
 | `LOG_FORMAT` | `text` | `text` for plain-text logs or `json` for structured logs |
 | `DASHBOARD_PORT` | 8080 | Internal port for the operator dashboard (0 to disable) |
+| `API_PORT` | 0 | Internal REST API port (0 to disable). In the current single-binary v2 shape, this also starts webhook and alert-contact delivery workers; enable it on only one active instance per database cluster. |
 | `DEBUG_PORT` | 6060 | localhost-only pprof port (`127.0.0.1:PORT`); 0 to disable |
 
 See `config/config.readme` for the full option reference.
@@ -147,6 +149,13 @@ New columns added by Jetmon 2 (applied via `jetmon2 migrate`):
 | `timeout_seconds` | TINYINT NULL | Per-site timeout override |
 | `redirect_policy` | ENUM NULL | `follow`, `alert`, or `fail` |
 | `alert_cooldown_minutes` | SMALLINT NULL | Per-site cooldown override |
+
+Jetmon 2 uses a shadow-v2-state migration model. Incident state is authoritative
+in the v2 event tables, while `jetpack_monitor_sites` remains the legacy site
+configuration table and compatibility projection during migration. With
+`LEGACY_STATUS_PROJECTION_ENABLE: true`, every v2 incident mutation also updates
+the v1 `site_status` / `last_status_change` fields in the same transaction. Once
+legacy readers have moved to the v2 API/event tables, disable that projection.
 
 New tables added by Jetmon 2:
 
@@ -205,19 +214,17 @@ Insert sites to check:
 	    (3, 0, 'https://httpstat.us/500', 1, 1),
 	    (4, 0, 'https://httpstat.us/200?sleep=15000', 1, 1);
 
-### Enabling Database Updates
+### Legacy Status Projection
 
-Edit `config/config.json`:
+During migration, keep the legacy v1 status fields updated:
 
-	{ "DB_UPDATES_ENABLE": true }
+	{ "LEGACY_STATUS_PROJECTION_ENABLE": true }
 
-Then set the guard environment variable in `docker/.env`:
-
-	JETMON_UNSAFE_DB_UPDATES=1
-
-Both must be set together. The binary refuses to start with `DB_UPDATES_ENABLE: true` unless `JETMON_UNSAFE_DB_UPDATES=1` is also present in the environment.
-
-**WARNING:** Never enable in production.
+This does not make the legacy row the source of truth. Jetmon v2 writes
+`jetmon_events` and `jetmon_event_transitions` first, then projects
+`site_status` and `last_status_change` back to `jetpack_monitor_sites` for
+legacy consumers. After all consumers read from the v2 API/event tables, set
+`LEGACY_STATUS_PROJECTION_ENABLE` to `false`.
 
 ### Simulated Site Server
 
@@ -293,7 +300,7 @@ Check the StatsD dashboard at http://localhost:8088 under:
 ### Key Test Scenarios
 
 **Downtime detection and confirmation:**
-Insert a site pointing to `https://httpstat.us/500`. With `DB_UPDATES_ENABLE: true`, Jetmon should detect the failure, retry locally, escalate to the Veriflier, confirm down, and update `site_status` to `2`.
+Insert a site pointing to `https://httpstat.us/500`. With `LEGACY_STATUS_PROJECTION_ENABLE: true`, Jetmon should detect the failure, retry locally, escalate to the Veriflier, confirm down, write the v2 event transition, and project `site_status` to `2`.
 
 **SSL certificate expiry:**
 Insert an HTTPS site. After a check round, verify `ssl_expiry_date` is populated in the database.
@@ -332,6 +339,12 @@ Simulate a host failure by manually expiring a row in `jetmon_hosts`. Verify the
 ### Operator Dashboard
 
 The dashboard is available at http://localhost:8080 (configurable via `DASHBOARD_PORT`). It shows goroutine counts, check queue depth, sites per second, Veriflier status, WPCOM API health, slowest sites, and most frequently down sites.
+
+### Internal API and Delivery Workers
+
+The internal API is disabled by default. Set `API_PORT` to a non-zero port to enable `/api/v1/...`.
+
+In the current single-binary v2 deployment, enabling `API_PORT` also starts the webhook and alert-contact delivery workers. Run `API_PORT` on only one active `jetmon2` instance per database cluster; leave it at `0` on additional monitor hosts. The future deliverer split will replace this operational constraint with transactional row claiming for active-active delivery workers.
 
 ### Cleanup
 

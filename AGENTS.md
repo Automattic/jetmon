@@ -62,6 +62,8 @@ See `PROJECT.md` for the full project description, feature list, and performance
 
 **Alerting delivery worker** (`internal/alerting/`): Same shape as the webhook worker but for managed channels — email (via `wpcom`/`smtp`/`stub` senders), PagerDuty Events API v2, Slack incoming webhooks, Microsoft Teams. Filter is simpler (`site_filter` + `min_severity`); per-contact `max_per_hour` rate cap absorbs pager storms. Send-test endpoint exercises the same dispatch path without requiring a real event.
 
+**Current delivery-owner constraint:** In the single-binary v2 deployment, `API_PORT > 0` starts the API server plus webhook and alert-contact delivery workers. Run that on only one active `jetmon2` instance per database cluster; additional monitor hosts should leave `API_PORT = 0` until delivery claiming moves to transactional row locks or the deliverer binary is split out.
+
 **Veriflier transport** (`internal/veriflier/`): JSON-over-HTTP client/server for Monitor↔Veriflier communication. Replaces the previous SSL server and custom HTTPS protocol. Run `make generate` to swap in generated gRPC stubs once protoc is set up.
 
 **Veriflier** (`veriflier2/`): Standalone Go binary deployed at remote locations. Receives check batches from the Monitor, performs HTTP checks, and returns results. Replaces the Qt C++ Veriflier.
@@ -141,6 +143,7 @@ Copy `config/config-sample.json` to `config/config.json`. All keys from the orig
 - `BUCKET_TARGET`: Maximum buckets this host should own
 - `BUCKET_HEARTBEAT_GRACE_SEC`: Seconds before an unresponsive host's buckets are reclaimed (suggested: 2× round time)
 - `ALERT_COOLDOWN_MINUTES`: Default cooldown between repeated alerts for the same site
+- `LEGACY_STATUS_PROJECTION_ENABLE`: Keep v1 `site_status` / `last_status_change` projection updated during shadow-v2-state migration
 - `LOG_FORMAT`: `text` (default, drop-in compatible) or `json` (structured logging)
 - `DASHBOARD_PORT`: Internal port for the operator dashboard (0 to disable)
 - `DEBUG_PORT`: localhost-only pprof port, default 6060 (0 to disable; never exposed remotely)
@@ -199,7 +202,7 @@ Every HTTPS check inspects `tls.ConnectionState` for:
    - From `Seems Down` → close with `resolution_reason = probe_cleared`.
    - From `Down` → close with `resolution_reason = verifier_cleared` and send recovery notification.
 
-The `jetpack_monitor_sites.site_status` projection is updated in the same transaction as every event mutation (no drift). v1 mapping: open Seems Down → `site_status = SITE_DOWN (0)`; promoted to Down → `site_status = SITE_CONFIRMED_DOWN (2)`; closed → `site_status = SITE_RUNNING (1)`.
+Shadow-v2-state migration keeps incidents authoritative in `jetmon_events` + `jetmon_event_transitions` while `jetpack_monitor_sites` remains the legacy site/config table. When `LEGACY_STATUS_PROJECTION_ENABLE` is true, the `jetpack_monitor_sites.site_status` / `last_status_change` projection is updated in the same transaction as every event mutation (no drift). v1 mapping: open Seems Down → `site_status = SITE_DOWN (0)`; promoted to Down → `site_status = SITE_CONFIRMED_DOWN (2)`; closed → `site_status = SITE_RUNNING (1)`. After legacy readers move to the v2 API/event tables, this projection can be disabled.
 
 **Alert Deduplication:**
 After an alert fires, subsequent alerts for the same site are suppressed for `alert_cooldown_minutes`. Suppression is recorded in the audit log.
@@ -301,6 +304,8 @@ Up → Seems Down → Down → Resolved
 **Circuit Breaker Floor:** The WPCOM API circuit breaker queue is bounded. If the queue fills, the oldest pending notifications are dropped with an error log. Monitor the circuit breaker state in the operator dashboard during any WPCOM API incident.
 
 **Veriflier Quorum Floor:** When Verifliers are marked unhealthy and excluded, `PEER_OFFLINE_LIMIT` adjusts dynamically, but there is a configured floor to prevent a single healthy Veriflier from confirming downtime alone. Ensure the floor is set appropriately for the number of deployed Verifliers.
+
+**Single Active Delivery Owner:** Webhook and alert-contact workers currently soft-lock delivery rows inside one process. Do not run multiple active API/delivery owners against the same database unless `ClaimReady` has been upgraded to transactional `SELECT ... FOR UPDATE SKIP LOCKED`; otherwise duplicate outbound deliveries are possible.
 
 **Maintenance Windows:** Checks continue during a maintenance window and data is recorded in the audit log, but no alerts fire. Verify that `maintenance_end` is correctly set — an open-ended maintenance window silently suppresses all alerts for that site indefinitely.
 

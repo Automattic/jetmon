@@ -5,7 +5,7 @@
 	"DATASET_SIZE"      : 100,
 	"WORKER_MAX_MEM_MB" : 53,
 
-	"DB_UPDATES_ENABLE" : false,
+	"LEGACY_STATUS_PROJECTION_ENABLE" : true,
 
 	"BUCKET_TOTAL"               : 1000,
 	"BUCKET_TARGET"              : 500,
@@ -33,6 +33,7 @@
 
 	"LOG_FORMAT"     : "text",
 	"DASHBOARD_PORT" : 8080,
+	"API_PORT"       : 0,
 	"DEBUG_PORT"     : 6060,
 
 	"VERIFIERS": [

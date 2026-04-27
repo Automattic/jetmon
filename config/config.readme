@@ -10,10 +10,11 @@ Number of sites to dispatch per round. Default: 40.
 DATASET_SIZE
 Maximum number of sites to fetch from the database per batch. Default: 100.
 
+LEGACY_STATUS_PROJECTION_ENABLE
+Set to true while Jetmon v2 is running in shadow-v2-state migration mode. When enabled, v2 writes its authoritative incident state to jetmon_events / jetmon_event_transitions and also projects v1-compatible site_status + last_status_change values back into jetpack_monitor_sites for legacy consumers. Set to false only after downstream readers have moved to the v2 event/API surface. Default: true.
+
 DB_UPDATES_ENABLE
-WARNING: Do not enable on production hosts.
-Set to true to allow Jetmon to update the jetpack_monitor_sites table. Only useful in local Docker test environments to observe status-change behaviour.
-Enabling this also requires the environment variable JETMON_UNSAFE_DB_UPDATES=1 to be set, as a second confirmation gate against accidental production use.
+Deprecated alias for LEGACY_STATUS_PROJECTION_ENABLE. If both keys are present, LEGACY_STATUS_PROJECTION_ENABLE wins.
 
 BUCKET_TOTAL
 Total number of buckets in the system across all hosts. Must match the range of bucket_no values in the jetpack_monitor_sites table. Default: 1000.
@@ -67,7 +68,10 @@ LOG_FORMAT
 Log output format. Set to "json" for structured logging (e.g. for log aggregators), or "text" for human-readable output. Default: "text".
 
 DASHBOARD_PORT
-Port for the operator dashboard and internal API. Set to 0 to disable. Default: 8080.
+Port for the operator dashboard. Set to 0 to disable. Default: 8080.
+
+API_PORT
+Port for the internal REST API. Set to 0 to disable. In the current single-binary v2 deployment, enabling API_PORT also starts the webhook and alert-contact delivery workers. Run API_PORT on only one active jetmon2 instance per database cluster; leave it at 0 on additional monitor instances until multi-instance delivery claiming is implemented. Default: 0.
 
 DEBUG_PORT
 Port for the pprof debug server. Only binds to 127.0.0.1 (localhost) — never accessible remotely. Set to 0 to disable. Default: 6060.

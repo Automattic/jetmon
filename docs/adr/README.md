@@ -48,3 +48,4 @@ options carry useful information for a future revisit.
 | [0005](0005-pull-only-delivery-via-event-transitions.md) | Pull-only webhook and alerting delivery | Accepted |
 | [0006](0006-separate-alerting-and-webhooks-packages.md) | Separate `internal/alerting` and `internal/webhooks` packages | Accepted |
 | [0007](0007-soft-lock-vs-row-claim.md) | Soft-lock claim vs `SELECT … FOR UPDATE SKIP LOCKED` | Accepted |
+| [0008](0008-shadow-v2-state-migration.md) | Shadow-v2-state migration with legacy status projection | Accepted |

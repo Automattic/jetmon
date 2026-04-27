@@ -42,7 +42,7 @@ jetmon_api_keys:
   scope           ENUM('read','write','admin')
   rate_limit_per_minute INT
   expires_at      TIMESTAMP NULL   -- NULL = never
-  revoked_at      TIMESTAMP NULL   -- soft-revoke for audit trail
+  revoked_at      TIMESTAMP NULL   -- revoke time; future value = rotation grace window
   last_used_at    TIMESTAMP NULL
   created_at      TIMESTAMP
   created_by      VARCHAR(128)     -- ops user / automation that created the key
@@ -68,6 +68,8 @@ We deliberately did not split into `sites:read` / `events:read` / `webhooks:read
 ```
 
 The CLI talks to the database directly (via `jetmon_api_keys`), prints the new token once, and never exposes hashes. There's no self-service surface because there are no end customers — keys are infrastructure config, not user-managed credentials.
+
+`revoked_at` is terminal only once its timestamp has passed. During key rotation, the CLI may set `revoked_at` in the future so the old key remains valid for the grace window while consumers deploy the replacement. Immediate revocation sets `revoked_at` to the current time.
 
 **Single key format.** No live/test split. The token format is `jm_<base32 of 32 random bytes>`. The gateway is responsible for any environment separation (dev/staging/prod) at its own layer.
 
@@ -303,6 +305,13 @@ List sites visible to this token.
 ```
 
 `id` and `blog_id` are the same value for now; `id` is the public field name (`blog_id` is the historical column name). Consumers should rely on `id`.
+
+`current_state`, `current_severity`, and `active_event_id` are derived from
+open rows in `jetmon_events`. During shadow-v2-state migration the legacy
+`site_status` column is only a fallback for sites with no active v2 event while
+`LEGACY_STATUS_PROJECTION_ENABLE` is true; once the projection is disabled, a
+site with no active v2 event is reported as `Up` regardless of stale legacy
+status values.
 
 #### `GET /api/v1/sites/{id}`
 
@@ -651,7 +660,9 @@ The signature is HMAC-SHA256 of `{timestamp}.{body}` with the webhook's `secret`
 
 #### Detection mechanism
 
-Webhook delivery uses **pull-based detection**: a worker polls `jetmon_event_transitions WHERE id > last_seen` on a 1s interval and creates one delivery row per matching transition. This is the long-term answer for Jetmon's architecture — the orchestrator's flap suppression already adds 10s+ between detection and confirmed events, so 1s poll latency is invisible in the practical budget. Pull also handles multi-instance deployment cleanly (any jetmon2 instance can claim work via row lock; no pub/sub layer needed).
+Webhook delivery uses **pull-based detection**: a worker polls `jetmon_event_transitions WHERE id > last_seen` on a 1s interval and creates one delivery row per matching transition. This is the long-term answer for Jetmon's architecture — the orchestrator's flap suppression already adds 10s+ between detection and confirmed events, so 1s poll latency is invisible in the practical budget.
+
+Current v2 deployment constraint: run the API/webhook/alert delivery worker on a single active `jetmon2` instance per database cluster. In the single-binary shape, those workers are enabled by setting `API_PORT`; additional monitor instances should leave `API_PORT` at `0` until delivery claiming moves to transactional row locks. Multi-instance delivery via `SELECT ... FOR UPDATE SKIP LOCKED` is the planned path for the future deliverer-binary split, but it is not the current worker contract.
 
 Push-based or hybrid detection is not on the roadmap. If a future consumer demands sub-second webhook latency, that's the trigger to introduce a pub/sub layer — not before.
 

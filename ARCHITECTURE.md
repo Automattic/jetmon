@@ -40,6 +40,18 @@ Multiple jetmon2 instances coordinate through MySQL bucket leases:
   Host C  ──────  (takes over Host B's range if B goes offline)
 ```
 
+Shadow-v2-state migration model:
+
+- `jetmon_events` and `jetmon_event_transitions` are the authoritative incident
+  state for Jetmon v2.
+- `jetpack_monitor_sites` remains the legacy site/config table during migration.
+- While `LEGACY_STATUS_PROJECTION_ENABLE` is true, every v2 incident mutation
+  also projects the v1-compatible `site_status` / `last_status_change` fields
+  back to `jetpack_monitor_sites` in the same transaction.
+- Once legacy readers have moved to the v2 API/event tables, disable
+  `LEGACY_STATUS_PROJECTION_ENABLE`; v2 incident state continues to be written
+  to the event tables.
+
 
 Package Map
 -----------
@@ -129,8 +141,8 @@ This is the end-to-end path from database query to WPCOM notification.
 └─────────────┘   │                                                 │
                   │ Stage 3 — Confirm down                          │
                   │   confirmDown(site, entry, vResults)            │
-                  │     if DB_UPDATES_ENABLE:                       │
-                  │       dbUpdateSiteStatus(→ confirmed_down)      │
+                  │     if LEGACY_STATUS_PROJECTION_ENABLE:         │
+                  │       project site_status(→ confirmed_down)     │
                   │     if inMaintenance(): suppress + audit        │
                   │     else if !isAlertSuppressed(): Notify()      │
                   │     retries.clear(blogID)                       │
@@ -366,11 +378,12 @@ Database Tables
 ----------------
 
 ```
-  jetpack_monitor_sites   Core site list (pre-existing, extended by Jetmon 2)
+  jetpack_monitor_sites   Legacy site/config table plus compatibility projection
     blog_id               WordPress site identifier
     bucket_no             Determines which monitor instance owns this site
     monitor_url           URL to check
-    site_status           1=running, 2=confirmed_down
+    site_status           Legacy v1 projection; derived from v2 events
+    last_status_change    Legacy v1 projection; derived from v2 transitions
     last_checked_at       Used to order fetch by least-recently-checked
     ssl_expiry_date       Updated after each TLS handshake
     check_keyword         Optional body text to require
@@ -386,6 +399,20 @@ Database Tables
     bucket_min/max        Owned bucket range
     last_heartbeat        Updated every round; expiry triggers rebalance
     status                active / draining
+
+  jetmon_events           Authoritative v2 incident current state
+    id                    Incident identifier
+    blog_id               Site identifier
+    check_type            Probe family (http, tls_expiry, ...)
+    severity/state        Current incident projection
+    started_at/ended_at   Incident window
+    resolution_reason     Required close reason
+
+  jetmon_event_transitions Append-only mutation history for jetmon_events
+    event_id              Incident row being mutated
+    severity/state before/after
+    reason/source         Why and who caused the mutation
+    changed_at            Transition time
 
   jetmon_audit_log        Immutable event record for compliance/debugging
     event_type            check | status_transition | wpcom_sent |
