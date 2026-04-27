@@ -196,14 +196,19 @@ For Developers
 	make build            # Build only bin/jetmon2
 	make build-veriflier  # Build only bin/veriflier2
 
+If `go` is not on `PATH`, the Makefile falls back to
+`/usr/local/go/bin/go` when present. Override with `make GO=/path/to/go ...`
+for other local layouts.
+
 `make generate` is intentionally separate from `make all`. It requires
 `protoc` and the Go protobuf plugins, and is only needed when replacing the
 current JSON-over-HTTP Veriflier transport with generated gRPC stubs.
 
 ### Running Tests
 
-	go test ./...
-	go test -race ./...
+	make test
+	make test-race
+	make lint
 
 The current `go test ./...` suite runs standalone. Use the Docker Compose environment for manual end-to-end checks against MySQL, StatsD, and Veriflier services.
 

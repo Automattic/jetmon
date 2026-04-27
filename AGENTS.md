@@ -107,9 +107,13 @@ docker compose down -v                    # Stop and remove volumes (fresh start
 # Build binaries directly
 make all
 
+# Use a non-default Go binary when needed
+make GO=/path/to/go all
+
 # Run tests
-go test ./...
-go test -race ./...
+make test
+make test-race
+make lint
 
 # Run with race detector
 go run -race ./cmd/jetmon2/
