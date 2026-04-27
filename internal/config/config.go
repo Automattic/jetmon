@@ -18,13 +18,22 @@ type VerifierConfig struct {
 
 // Config holds all runtime configuration for Jetmon 2.
 type Config struct {
-	Debug   bool `json:"DEBUG"`
+	Debug bool `json:"DEBUG"`
 
 	NumWorkers     int `json:"NUM_WORKERS"`
 	NumToProcess   int `json:"NUM_TO_PROCESS"`
 	DatasetSize    int `json:"DATASET_SIZE"`
 	WorkerMaxMemMB int `json:"WORKER_MAX_MEM_MB"`
 
+	// LegacyStatusProjectionEnable controls compatibility writes to the
+	// v1 status projection on jetpack_monitor_sites (site_status +
+	// last_status_change). Jetmon v2 event/check/delivery tables remain
+	// authoritative and are written independently of this switch.
+	LegacyStatusProjectionEnable bool `json:"LEGACY_STATUS_PROJECTION_ENABLE"`
+
+	// DBUpdatesEnable is the deprecated name for LegacyStatusProjectionEnable.
+	// It remains as a config alias so older configs keep their behavior until
+	// they can be rewritten.
 	DBUpdatesEnable bool `json:"DB_UPDATES_ENABLE"`
 
 	BucketTotal             int `json:"BUCKET_TOTAL"`
@@ -34,10 +43,10 @@ type Config struct {
 	BatchSize int    `json:"BATCH_SIZE"`
 	AuthToken string `json:"AUTH_TOKEN"`
 
-	VeriflierBatchSize  int `json:"VERIFLIER_BATCH_SIZE"`
-	SQLUpdateBatch      int `json:"SQL_UPDATE_BATCH"`
-	DBConfigUpdatesMin  int `json:"DB_CONFIG_UPDATES_MIN"`
-	PeerOfflineLimit    int `json:"PEER_OFFLINE_LIMIT"`
+	VeriflierBatchSize int `json:"VERIFLIER_BATCH_SIZE"`
+	SQLUpdateBatch     int `json:"SQL_UPDATE_BATCH"`
+	DBConfigUpdatesMin int `json:"DB_CONFIG_UPDATES_MIN"`
+	PeerOfflineLimit   int `json:"PEER_OFFLINE_LIMIT"`
 
 	NumOfChecks          int `json:"NUM_OF_CHECKS"`
 	TimeBetweenChecksSec int `json:"TIME_BETWEEN_CHECKS_SEC"`
@@ -102,16 +111,16 @@ func Reload() error {
 }
 
 func reload() error {
-	f, err := os.Open(path)
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("open config: %w", err)
 	}
-	defer f.Close()
 
 	cfg := defaults()
-	if err := json.NewDecoder(f).Decode(cfg); err != nil {
+	if err := json.Unmarshal(raw, cfg); err != nil {
 		return fmt.Errorf("parse config: %w", err)
 	}
+	applyDeprecatedAliases(raw, cfg)
 
 	if err := validate(cfg); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
@@ -155,31 +164,56 @@ func GetDB() *DBConfig {
 
 func defaults() *Config {
 	return &Config{
-		NumWorkers:              60,
-		NumToProcess:            40,
-		DatasetSize:             100,
-		WorkerMaxMemMB:          53,
-		BucketTotal:             1000,
-		BucketTarget:            500,
-		BucketHeartbeatGraceSec: 600,
-		BatchSize:               32,
-		VeriflierBatchSize:      200,
-		SQLUpdateBatch:          1,
-		DBConfigUpdatesMin:      10,
-		PeerOfflineLimit:        3,
-		NumOfChecks:             3,
-		TimeBetweenChecksSec:    30,
-		AlertCooldownMinutes:    30,
-		StatsUpdateIntervalMS:   10000,
-		TimeBetweenNoticesMin:   59,
-		MinTimeBetweenRoundsSec: 300,
-		NetCommsTimeout:         10,
-		LogFormat:               "text",
-		DashboardPort:           8080,
-		DebugPort:               6060,
-		EmailTransport:          "stub",
-		EmailFrom:               "jetmon@noreply.invalid",
+		NumWorkers:                   60,
+		NumToProcess:                 40,
+		DatasetSize:                  100,
+		WorkerMaxMemMB:               53,
+		LegacyStatusProjectionEnable: true,
+		BucketTotal:                  1000,
+		BucketTarget:                 500,
+		BucketHeartbeatGraceSec:      600,
+		BatchSize:                    32,
+		VeriflierBatchSize:           200,
+		SQLUpdateBatch:               1,
+		DBConfigUpdatesMin:           10,
+		PeerOfflineLimit:             3,
+		NumOfChecks:                  3,
+		TimeBetweenChecksSec:         30,
+		AlertCooldownMinutes:         30,
+		StatsUpdateIntervalMS:        10000,
+		TimeBetweenNoticesMin:        59,
+		MinTimeBetweenRoundsSec:      300,
+		NetCommsTimeout:              10,
+		LogFormat:                    "text",
+		DashboardPort:                8080,
+		DebugPort:                    6060,
+		EmailTransport:               "stub",
+		EmailFrom:                    "jetmon@noreply.invalid",
 	}
+}
+
+func applyDeprecatedAliases(raw []byte, cfg *Config) {
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &keys); err != nil {
+		return
+	}
+	if _, hasNew := keys["LEGACY_STATUS_PROJECTION_ENABLE"]; hasNew {
+		return
+	}
+	if _, hasOld := keys["DB_UPDATES_ENABLE"]; hasOld {
+		cfg.LegacyStatusProjectionEnable = cfg.DBUpdatesEnable
+	}
+}
+
+// LegacyStatusProjectionEnabled reports whether v2 should maintain the legacy
+// v1 status projection on jetpack_monitor_sites. It defaults to true so a
+// loaded-but-minimal config remains migration-compatible.
+func LegacyStatusProjectionEnabled() bool {
+	cfg := Get()
+	if cfg == nil {
+		return true
+	}
+	return cfg.LegacyStatusProjectionEnable
 }
 
 func validate(cfg *Config) error {

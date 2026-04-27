@@ -360,7 +360,7 @@ func setTestConfig(t *testing.T) *config.Config {
 	cfg.AlertCooldownMinutes = 30
 	cfg.NumOfChecks = 3
 	cfg.PeerOfflineLimit = 2
-	cfg.DBUpdatesEnable = false
+	cfg.LegacyStatusProjectionEnable = false
 	return cfg
 }
 

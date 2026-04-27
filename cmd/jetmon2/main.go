@@ -71,10 +71,6 @@ func runServe() {
 	}
 	cfg := config.Get()
 
-	if cfg.DBUpdatesEnable && os.Getenv("JETMON_UNSAFE_DB_UPDATES") != "1" {
-		log.Fatalf("DB_UPDATES_ENABLE is true but JETMON_UNSAFE_DB_UPDATES=1 is not set — refusing to start. This setting must only be used in local test environments.")
-	}
-
 	config.LoadDB()
 	if err := db.ConnectWithRetry(10); err != nil {
 		log.Fatalf("db connect: %v", err)
@@ -598,7 +594,6 @@ func repeat(s string, n int) string {
 	}
 	return out
 }
-
 
 // buildAlertDispatchers constructs the per-transport Dispatcher map
 // from runtime config. Always returns the three webhook-shaped

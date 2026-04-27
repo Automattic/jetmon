@@ -153,6 +153,55 @@ func TestLoadAndGet(t *testing.T) {
 	if cfg.LogFormat != "json" {
 		t.Fatalf("LogFormat = %q, want json", cfg.LogFormat)
 	}
+	if !cfg.LegacyStatusProjectionEnable {
+		t.Fatal("LegacyStatusProjectionEnable default should be true")
+	}
+}
+
+func TestLegacyStatusProjectionConfig(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{
+			name: "new key disables projection",
+			body: `"LEGACY_STATUS_PROJECTION_ENABLE": false`,
+			want: false,
+		},
+		{
+			name: "old key remains alias when new key absent",
+			body: `"DB_UPDATES_ENABLE": false`,
+			want: false,
+		},
+		{
+			name: "new key wins over old key",
+			body: `"DB_UPDATES_ENABLE": false, "LEGACY_STATUS_PROJECTION_ENABLE": true`,
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			saveConfigState(t)
+			p := writeConfigFile(t, `{
+				"AUTH_TOKEN": "token",
+				"NUM_WORKERS": 7,
+				"BUCKET_TOTAL": 100,
+				"BUCKET_TARGET": 50,
+				"NET_COMMS_TIMEOUT": 10,
+				"LOG_FORMAT": "text",
+				`+tt.body+`
+			}`)
+
+			if err := Load(p); err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if got := LegacyStatusProjectionEnabled(); got != tt.want {
+				t.Fatalf("LegacyStatusProjectionEnabled() = %v, want %v", got, tt.want)
+			}
+		})
+	}
 }
 
 func TestLoadInvalidConfigReturnsError(t *testing.T) {
