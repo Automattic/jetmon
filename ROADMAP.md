@@ -4,6 +4,20 @@ Deferred features that are intentionally out of scope for the current implementa
 
 ---
 
+## v3 Probe-Agent Architecture
+
+**Status:** Parked until v2 has been deployed to production and stabilized.
+
+The current v2 production target keeps the main-server-plus-Veriflier
+confirmation model. After v2 has enough production data, revisit whether Jetmon
+should evolve into a central scheduler plus regional probe-agent architecture.
+
+See [`docs/v3-probe-agent-architecture-options.md`](docs/v3-probe-agent-architecture-options.md)
+for the candidate architectures, data to gather during v2, and the current
+recommendation.
+
+---
+
 ## Public REST API
 
 **Status:** Not started. No existing API surface covers this scope.
