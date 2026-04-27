@@ -102,6 +102,18 @@ because it is intentionally **not** drop-in with the Jetmon 1 wire format
 - `POST /api/v1/alert-contacts/{id}/test` now honors `Idempotency-Key`
   like the other write POSTs, so a retried "click to test" during a
   network blip doesn't double-page the destination.
+- API list-site rollup of the worst open event no longer relies on
+  `ROW_NUMBER()` window functions, so the query is compatible with
+  MySQL 5.7. Pagination caps the IN list and a site rarely has more
+  than one open event, so reducing in Go is cheap.
+- API key cutoffs (`revoked_at` and `expires_at`) now share half-open
+  semantics: a key is valid for times strictly before the cutoff and
+  rejected at or after it. Future `revoked_at` continues to act as a
+  rotation grace window. See API.md.
+- `LEGACY_STATUS_PROJECTION_ENABLE` is announced at startup
+  (`config: legacy_status_projection=enabled|disabled`) and surfaced by
+  `./jetmon2 validate-config`, so operators can confirm projection
+  state without reading the running config file.
 
 ### Jetmon 2 — initial Go rewrite
 

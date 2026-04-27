@@ -69,7 +69,7 @@ We deliberately did not split into `sites:read` / `events:read` / `webhooks:read
 
 The CLI talks to the database directly (via `jetmon_api_keys`), prints the new token once, and never exposes hashes. There's no self-service surface because there are no end customers — keys are infrastructure config, not user-managed credentials.
 
-`revoked_at` is terminal only once its timestamp has passed. During key rotation, the CLI may set `revoked_at` in the future so the old key remains valid for the grace window while consumers deploy the replacement. Immediate revocation sets `revoked_at` to the current time.
+`revoked_at` and `expires_at` are both half-open cutoffs: a key is valid for times strictly before the cutoff and rejected at or after it. During key rotation, the CLI may set `revoked_at` in the future so the old key remains valid for the grace window while consumers deploy the replacement. Immediate revocation sets `revoked_at` to the current time.
 
 **Single key format.** No live/test split. The token format is `jm_<base32 of 32 random bytes>`. The gateway is responsible for any environment separation (dev/staging/prod) at its own layer.
 

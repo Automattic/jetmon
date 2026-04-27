@@ -18,8 +18,10 @@ const singleSiteSQL = ` SELECT blog_id, blog_id AS public_id, monitor_url, monit
 const activeEventsSQL = ` SELECT id, check_type, severity, state, started_at FROM jetmon_events WHERE blog_id = ? AND ended_at IS NULL ORDER BY severity DESC, started_at ASC`
 
 func activeEventRollupsSQL(placeholders string) string {
-	return ` SELECT id, blog_id, severity, state FROM ( SELECT id, blog_id, severity, state, ROW_NUMBER() OVER (PARTITION BY blog_id ORDER BY severity DESC, started_at ASC) AS rn FROM jetmon_events WHERE ended_at IS NULL AND blog_id IN (` + placeholders + `) ) ranked WHERE rn = 1`
+	return ` SELECT id, blog_id, severity, state, started_at FROM jetmon_events WHERE ended_at IS NULL AND blog_id IN (` + placeholders + `)`
 }
+
+var activeEventRollupColumns = []string{"id", "blog_id", "severity", "state", "started_at"}
 
 // makeSiteRow returns a row builder pre-loaded with sane defaults the tests
 // can override. blog_id is the only required field.
@@ -71,8 +73,8 @@ func TestListSitesReturnsRows(t *testing.T) {
 		WillReturnRows(rows)
 	mock.ExpectQuery(activeEventRollupsSQL("?,?")).
 		WithArgs(int64(101), int64(102)).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "blog_id", "severity", "state"}).
-			AddRow(int64(9), int64(102), uint8(4), "Down"))
+		WillReturnRows(sqlmock.NewRows(activeEventRollupColumns).
+			AddRow(int64(9), int64(102), uint8(4), "Down", time.Now().UTC()))
 
 	req := requestWithKey("GET", "/api/v1/sites", key)
 	rec := invokeAuthed(s, req, s.handleListSites)
@@ -102,6 +104,91 @@ func TestListSitesReturnsRows(t *testing.T) {
 	}
 }
 
+func TestListSitesPicksWorstOpenEventPerSite(t *testing.T) {
+	s, mock, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	rows := makeSiteRow(201, "https://multi.example", 1)
+	mock.ExpectQuery(sitesListSQL).
+		WithArgs(int64(0), 51).
+		WillReturnRows(rows)
+
+	earlier := time.Now().UTC().Add(-2 * time.Hour)
+	later := time.Now().UTC().Add(-1 * time.Hour)
+	// Two open events for the same site:
+	//   - id=11: severity 2 ("Degraded"), opened earlier
+	//   - id=12: severity 4 ("Down"), opened later
+	// Highest severity wins, so the rollup should report id=12.
+	mock.ExpectQuery(activeEventRollupsSQL("?")).
+		WithArgs(int64(201)).
+		WillReturnRows(sqlmock.NewRows(activeEventRollupColumns).
+			AddRow(int64(11), int64(201), uint8(2), "Degraded", earlier).
+			AddRow(int64(12), int64(201), uint8(4), "Down", later))
+
+	req := requestWithKey("GET", "/api/v1/sites", key)
+	rec := invokeAuthed(s, req, s.handleListSites)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Data []siteResponse `json:"data"`
+	}
+	readJSON(t, rec.Body, &resp)
+	if len(resp.Data) != 1 {
+		t.Fatalf("data len = %d, want 1", len(resp.Data))
+	}
+	got := resp.Data[0]
+	if got.CurrentState != "Down" || got.CurrentSeverity != 4 {
+		t.Errorf("rollup state/severity = (%q, %d), want (Down, 4)", got.CurrentState, got.CurrentSeverity)
+	}
+	if got.ActiveEventID == nil || *got.ActiveEventID != 12 {
+		t.Errorf("active_event_id = %v, want 12", got.ActiveEventID)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+func TestListSitesPicksEarliestOnSeverityTie(t *testing.T) {
+	s, mock, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	rows := makeSiteRow(202, "https://tie.example", 1)
+	mock.ExpectQuery(sitesListSQL).
+		WithArgs(int64(0), 51).
+		WillReturnRows(rows)
+
+	earlier := time.Now().UTC().Add(-3 * time.Hour)
+	later := time.Now().UTC().Add(-1 * time.Hour)
+	// Same severity on both events: tie-break goes to the earlier started_at.
+	mock.ExpectQuery(activeEventRollupsSQL("?")).
+		WithArgs(int64(202)).
+		WillReturnRows(sqlmock.NewRows(activeEventRollupColumns).
+			AddRow(int64(22), int64(202), uint8(3), "SeemsDown", later).
+			AddRow(int64(21), int64(202), uint8(3), "SeemsDown", earlier))
+
+	req := requestWithKey("GET", "/api/v1/sites", key)
+	rec := invokeAuthed(s, req, s.handleListSites)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Data []siteResponse `json:"data"`
+	}
+	readJSON(t, rec.Body, &resp)
+	if len(resp.Data) != 1 {
+		t.Fatalf("data len = %d, want 1", len(resp.Data))
+	}
+	if resp.Data[0].ActiveEventID == nil || *resp.Data[0].ActiveEventID != 21 {
+		t.Errorf("active_event_id = %v, want 21", resp.Data[0].ActiveEventID)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
 func TestListSitesAppliesPaginationCursor(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
@@ -116,7 +203,7 @@ func TestListSitesAppliesPaginationCursor(t *testing.T) {
 		WillReturnRows(rows)
 	mock.ExpectQuery(activeEventRollupsSQL("?,?,?")).
 		WithArgs(int64(10), int64(20), int64(30)).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "blog_id", "severity", "state"}))
+		WillReturnRows(sqlmock.NewRows(activeEventRollupColumns))
 
 	req := requestWithKey("GET", "/api/v1/sites?limit=2", key)
 	rec := invokeAuthed(s, req, s.handleListSites)

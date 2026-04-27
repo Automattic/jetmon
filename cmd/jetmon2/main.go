@@ -70,6 +70,7 @@ func runServe() {
 		log.Fatalf("load config: %v", err)
 	}
 	cfg := config.Get()
+	log.Printf("config: legacy_status_projection=%s", enabledLabel(cfg.LegacyStatusProjectionEnable))
 
 	config.LoadDB()
 	if err := db.ConnectWithRetry(10); err != nil {
@@ -257,6 +258,7 @@ func cmdValidateConfig() {
 	fmt.Println("PASS db connect")
 
 	cfg := config.Get()
+	fmt.Printf("INFO legacy_status_projection=%s\n", enabledLabel(cfg.LegacyStatusProjectionEnable))
 	for _, v := range cfg.Verifiers {
 		addr := fmt.Sprintf("%s:%s", v.Host, v.GRPCPort)
 		// Ping check is best-effort; don't fail validation on veriflier unavailability.
@@ -264,6 +266,13 @@ func cmdValidateConfig() {
 	}
 
 	fmt.Println("\nvalidation passed")
+}
+
+func enabledLabel(b bool) string {
+	if b {
+		return "enabled"
+	}
+	return "disabled"
 }
 
 func cmdStatus() {

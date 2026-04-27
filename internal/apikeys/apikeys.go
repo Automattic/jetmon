@@ -174,12 +174,14 @@ func Lookup(ctx context.Context, db *sql.DB, raw string) (*Key, error) {
 		return nil, fmt.Errorf("apikeys: lookup: %w", err)
 	}
 
-	// revoked_at may be in the future when a key rotation uses a grace
-	// period. Treat the key as valid until that timestamp is reached.
-	if k.RevokedAt != nil && !time.Now().UTC().Before(*k.RevokedAt) {
+	// revoked_at and expires_at are half-open cutoffs: the key is valid for
+	// times strictly before the cutoff, and rejected at or after it. A future
+	// revoked_at therefore acts as a rotation grace window.
+	now := time.Now().UTC()
+	if k.RevokedAt != nil && !now.Before(*k.RevokedAt) {
 		return nil, ErrKeyRevoked
 	}
-	if k.ExpiresAt != nil && time.Now().UTC().After(*k.ExpiresAt) {
+	if k.ExpiresAt != nil && !now.Before(*k.ExpiresAt) {
 		return nil, ErrKeyExpired
 	}
 

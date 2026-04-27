@@ -250,15 +250,20 @@ func (s *Server) queryActiveEvents(ctx context.Context, blogID int64) ([]activeE
 }
 
 type activeEventRollup struct {
-	id       int64
-	severity uint8
-	state    string
+	id        int64
+	severity  uint8
+	state     string
+	startedAt time.Time
 }
 
 // applyActiveEventRollups reflects each site's worst open event into list
 // responses. List queries still page through jetpack_monitor_sites because that
 // remains the site/config table during migration, but current state comes from
 // v2 events when an event is open.
+//
+// The query intentionally avoids window functions so it stays compatible with
+// MySQL 5.7. Pagination caps the IN list at the API's max page size, and a
+// site rarely has more than one open event, so reducing in Go is cheap.
 func (s *Server) applyActiveEventRollups(ctx context.Context, sites []siteResponse) error {
 	if len(sites) == 0 {
 		return nil
@@ -271,15 +276,10 @@ func (s *Server) applyActiveEventRollups(ctx context.Context, sites []siteRespon
 	}
 
 	q := fmt.Sprintf(`
-		SELECT id, blog_id, severity, state
-		  FROM (
-			SELECT id, blog_id, severity, state,
-			       ROW_NUMBER() OVER (PARTITION BY blog_id ORDER BY severity DESC, started_at ASC) AS rn
-			  FROM jetmon_events
-			 WHERE ended_at IS NULL
-			   AND blog_id IN (%s)
-		  ) ranked
-		 WHERE rn = 1`, strings.Join(placeholders, ","))
+		SELECT id, blog_id, severity, state, started_at
+		  FROM jetmon_events
+		 WHERE ended_at IS NULL
+		   AND blog_id IN (%s)`, strings.Join(placeholders, ","))
 
 	rows, err := s.db.QueryContext(ctx, q, ids...)
 	if err != nil {
@@ -291,10 +291,15 @@ func (s *Server) applyActiveEventRollups(ctx context.Context, sites []siteRespon
 	for rows.Next() {
 		var blogID int64
 		var r activeEventRollup
-		if err := rows.Scan(&r.id, &blogID, &r.severity, &r.state); err != nil {
+		if err := rows.Scan(&r.id, &blogID, &r.severity, &r.state, &r.startedAt); err != nil {
 			return err
 		}
-		rollups[blogID] = r
+		existing, ok := rollups[blogID]
+		if !ok ||
+			r.severity > existing.severity ||
+			(r.severity == existing.severity && r.startedAt.Before(existing.startedAt)) {
+			rollups[blogID] = r
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return err
