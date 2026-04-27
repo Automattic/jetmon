@@ -22,7 +22,7 @@ The goal is to expose Jetmon's distinctive data model — the five-layer test ta
 
 6. **Errors carry a stable code, a human message, and (when relevant) a reference id.** Consumers branch on the `code` field, not on parsing the message.
 
-7. **Bulk operations are explicit.** No "list 10,000 sites and then loop one update at a time" anti-pattern — `PATCH /api/v1/sites` accepts a body of changes and returns per-site results. Avoids client-side rate-limit workarounds.
+7. **Bulk operations must be explicit when added.** v1 currently exposes single-resource write endpoints only. If bulk updates are added later, they should have dedicated request and response shapes instead of encouraging "list 10,000 sites and then loop one update at a time" client behavior.
 
 ## Authentication
 
@@ -51,7 +51,7 @@ jetmon_api_keys:
 **Scopes — three coarse buckets:**
 
 - `read` — every GET endpoint.
-- `write` — every POST/PATCH/DELETE on sites, endpoints, events, webhooks.
+- `write` — every POST/PATCH/DELETE on sites, events, webhooks, and alert contacts.
 - `admin` — write + ability to force operations like "recompute SLA from event log" or "close all events in maintenance mode." Reserved for ops tooling, not regular consumers.
 
 We deliberately did not split into `sites:read` / `events:read` / `webhooks:read` etc. Internal consumers tend to need the whole read surface — the gateway needs to read everything to mediate it; an alerts worker reads sites, events, *and* webhooks. Granular scopes would create more configuration burden than they solve.
@@ -186,7 +186,7 @@ Error messages are verbose by design — for an internal API, "table 'jetmon_eve
 
 ### Rate limiting
 
-Per-key bucket, configurable per consumer at key-creation time. Default 60 req/min for `read`, 10 req/min for `write`, 1 req/min for `trigger-now`. Internal consumers usually need higher limits than this — the gateway and dashboard might be set to 600 req/min, while a daily batch job stays at 60.
+Per-key bucket, configurable per consumer at key-creation time. The current implementation uses one in-memory bucket per key, sized by that key's `rate_limit_per_minute`. Defaults are 60 req/min for `read` and `admin`, and 30 req/min for `write`. Internal consumers usually need higher limits than the default — the gateway and dashboard might be set to 600 req/min, while a daily batch job stays at 60.
 
 Standard headers on every response:
 
@@ -198,11 +198,11 @@ X-RateLimit-Reset: 1714685400
 
 `429` responses include `Retry-After` in seconds.
 
-The trigger-now bucket is separate so a runaway "force-check every site" loop in one consumer can't starve the read API for others. This is service-protection rate limiting, not customer-fairness rate limiting — the gateway handles the latter.
+This is service-protection rate limiting, not customer-fairness rate limiting — the gateway handles the latter. If trigger-now traffic needs a separate bucket later, add it as a route-specific extension rather than overloading the base per-key limit.
 
 ### Idempotency
 
-POST/PATCH endpoints accept an `Idempotency-Key` header. The server stores `(token_id, idempotency_key) → response` for 24 hours. Replays with the same body return the cached response; replays with a different body return `409 idempotency_conflict`.
+POST endpoints that create, trigger, test, retry, rotate, or manually close resources accept an `Idempotency-Key` header. PATCH and DELETE endpoints are already idempotent on this schema and do not use the idempotency cache. The server stores `(token_id, idempotency_key) → response` for 24 hours. Replays with the same body return the cached response; replays with a different body return `409 idempotency_conflict`.
 
 This is the same pattern Stripe uses; it's the right call for monitor management where retries are common.
 
@@ -296,8 +296,7 @@ List sites visible to this token.
       "redirect_policy": "follow",
       "maintenance_start": null,
       "maintenance_end": null,
-      "alert_cooldown_minutes": null,
-      "endpoints_count": 3
+      "alert_cooldown_minutes": null
     }
   ],
   "page": { "next": "eyJ...", "limit": 50 }
@@ -352,13 +351,16 @@ Create a site.
 
 ```json
 {
+  "blog_id": 12345,
   "monitor_url": "https://example.com",
   "monitor_active": true,
+  "bucket_no": 0,
   "check_keyword": null,
   "redirect_policy": "follow",
   "timeout_seconds": null,
   "custom_headers": {},
-  "alert_cooldown_minutes": null
+  "alert_cooldown_minutes": null,
+  "check_interval": 5
 }
 ```
 
@@ -368,9 +370,11 @@ Create a site.
 
 | Code | Meaning |
 |------|---------|
+| `invalid_blog_id` | `blog_id` is missing or not a positive integer |
 | `invalid_url` | `monitor_url` doesn't parse |
-| `duplicate_site` | A site with this URL already exists for this owner |
-| `quota_exceeded` | The owner has hit their site quota |
+| `invalid_redirect_policy` | `redirect_policy` is not `follow`, `alert`, or `fail` |
+| `invalid_custom_headers` | `custom_headers` is not a valid string map |
+| `site_exists` | A site with this `blog_id` already exists |
 
 #### `PATCH /api/v1/sites/{id}`
 
@@ -386,19 +390,31 @@ Convenience verbs for the common pause/resume flow. Pause closes any active even
 
 #### `POST /api/v1/sites/{id}/trigger-now`
 
-Force an immediate check, returning the result inline (subject to a tighter rate limit). Useful for "I just deployed a fix, is it back up?"
+Force an immediate check, returning the result inline under the caller's normal per-key rate limit. Useful for "I just deployed a fix, is it back up?"
 
 ```json
 {
   "result": {
     "http_code": 200,
+    "error_code": 0,
+    "success": true,
     "rtt_ms": 412,
+    "dns_ms": 8,
+    "tcp_ms": 22,
+    "tls_ms": 35,
+    "ttfb_ms": 142,
     "ssl_expires_at": "2026-08-12T00:00:00.000Z"
   },
   "current_state": "Up",
   "active_events_closed": [487291]
 }
 ```
+
+Trigger-now runs one synchronous check with a 30-second server-side timeout.
+On success it closes any open events with `resolution_reason=probe_cleared`.
+On failure it returns the failed check result but does not open a new event;
+the orchestrator remains the single owner of failure detection and event
+opening on its regular round.
 
 ### Family 2: Events and history
 
@@ -519,9 +535,8 @@ Uptime and downtime stats over a rolling window.
 
 | Param | Type | Description |
 |-------|------|-------------|
-| `window` | enum | `1h`, `24h`, `7d`, `30d`, `90d` |
+| `window` | enum | `1h`, `24h` / `1d`, `7d`, `30d`, `90d` |
 | `from` / `to` | ISO timestamp | Custom range; overrides `window` |
-| `exclude_states` | csv | Default `Maintenance,Paused` (these don't count against uptime) |
 
 **Response:**
 
@@ -541,7 +556,7 @@ Uptime and downtime stats over a rolling window.
 }
 ```
 
-**How uptime is computed:** sum of `(ended_at or now) - started_at` for events with `state in (Down, Seems Down)` within the window, divided by total window duration. Configurable via `exclude_states`. The math is event-driven, not check-driven, which means SLA reports stay accurate even if check frequency changes.
+**How uptime is computed:** sum of `(ended_at or now) - started_at` for events with `state in (Down, Seems Down)` within the window, divided by total window duration. Degraded, Warning, Maintenance, and Unknown durations are returned separately but are not subtracted from the denominator in the current implementation. The math is event-driven, not check-driven, which means SLA reports stay accurate even if check frequency changes.
 
 #### `GET /api/v1/sites/{id}/response-time`
 
@@ -558,14 +573,11 @@ Response time percentiles over a window, sourced from `jetmon_check_history`.
   "p99_ms": 891,
   "max_ms": 4200,
   "mean_ms": 215,
-  "buckets": [
-    { "ts": "2026-04-24T00:00:00Z", "p50_ms": 180, "p95_ms": 401, "p99_ms": 850 },
-    { "ts": "2026-04-24T01:00:00Z", "p50_ms": 184, "p95_ms": 395, "p99_ms": 820 }
-  ]
+  "truncated": false
 }
 ```
 
-The `buckets` array is hourly for `window <= 7d`, daily for longer windows. Bucket size isn't tunable — supporting arbitrary granularity would require pre-aggregation we don't have yet.
+Percentiles are computed from raw `jetmon_check_history` samples in the window. The handler caps the in-memory sample set at 100,000 rows; `truncated: true` means the response used the most recent capped subset.
 
 #### `GET /api/v1/sites/{id}/timing-breakdown`
 
@@ -577,20 +589,28 @@ DNS / TCP / TLS / TTFB breakdown — one of Jetmon's distinctive features (most 
 {
   "window": { "from": "2026-04-24T00:00:00Z", "to": "2026-04-25T00:00:00Z" },
   "samples": 17280,
-  "dns_p50_ms": 8,
-  "dns_p95_ms": 45,
-  "tcp_p50_ms": 22,
-  "tcp_p95_ms": 78,
-  "tls_p50_ms": 35,
-  "tls_p95_ms": 110,
-  "ttfb_p50_ms": 142,
-  "ttfb_p95_ms": 391
+  "truncated": false,
+  "dns": { "p50_ms": 8, "p95_ms": 45, "p99_ms": 80, "max_ms": 120 },
+  "tcp": { "p50_ms": 22, "p95_ms": 78, "p99_ms": 140, "max_ms": 220 },
+  "tls": { "p50_ms": 35, "p95_ms": 110, "p99_ms": 180, "max_ms": 260 },
+  "ttfb": { "p50_ms": 142, "p95_ms": 391, "p99_ms": 760, "max_ms": 1200 }
 }
 ```
 
 ### Family 4: Alert contacts and webhooks
 
-#### `GET /api/v1/webhooks` / `POST /api/v1/webhooks` / `PATCH /api/v1/webhooks/{id}` / `DELETE /api/v1/webhooks/{id}`
+#### Webhook management endpoints
+
+Implemented routes:
+
+- `GET /api/v1/webhooks`
+- `POST /api/v1/webhooks`
+- `GET /api/v1/webhooks/{id}`
+- `PATCH /api/v1/webhooks/{id}`
+- `DELETE /api/v1/webhooks/{id}`
+- `POST /api/v1/webhooks/{id}/rotate-secret`
+- `GET /api/v1/webhooks/{id}/deliveries`
+- `POST /api/v1/webhooks/{id}/deliveries/{delivery_id}/retry`
 
 Standard CRUD. A webhook is:
 
@@ -599,7 +619,7 @@ Standard CRUD. A webhook is:
   "id": 42,
   "url": "https://hooks.slack.com/...",
   "active": true,
-  "events": ["event.opened", "event.promoted", "event.closed"],
+  "events": ["event.opened", "event.severity_changed", "event.closed"],
   "site_filter": { "site_ids": [12345, 67890] },
   "state_filter": { "states": ["Down", "Seems Down"] },
   "secret": "whsec_a1b2c3...",
@@ -678,7 +698,6 @@ Each `jetmon_webhook_deliveries` row is one webhook firing. Each delivery has up
 | 4       | 30m                 |
 | 5       | 1h                  |
 | 6       | 6h                  |
-| (drop)  | 24h after attempt 6 |
 
 A delivery succeeds when any attempt returns 2xx. After 6 failed attempts, the row is marked `status = 'abandoned'`. Abandoned rows stay in the table — `GET /api/v1/webhooks/{id}/deliveries?status=abandoned` lists them, and `POST /api/v1/webhooks/{id}/deliveries/{delivery_id}/retry` lets a consumer re-fire after fixing their endpoint.
 
@@ -707,11 +726,11 @@ Implementation: at dispatch time, the worker checks a `map[webhook_id]int` count
 ```
 jetmon_webhooks:
   id, url, active, events JSON, site_filter JSON, state_filter JSON,
-  secret_hash CHAR(64), secret_preview VARCHAR(8),
+  secret VARCHAR(80), secret_preview VARCHAR(8),
   created_by VARCHAR(128), created_at, updated_at
 
 jetmon_webhook_deliveries:
-  id, webhook_id, event_id (FK to jetmon_events), event_type,
+  id, webhook_id, transition_id, event_id, event_type,
   payload JSON,                       -- frozen at fire time, never updated
   status ENUM('pending','delivered','failed','abandoned'),
   attempt INT,
@@ -757,7 +776,18 @@ Managed notification channels for human destinations: email, PagerDuty, Slack, M
 
 The two surfaces share the same event source (`jetmon_event_transitions`); a customer can use both simultaneously without dedup concerns at the source.
 
-#### `GET /api/v1/alert-contacts` / `POST` / `PATCH` / `DELETE`
+#### Alert contact management endpoints
+
+Implemented routes:
+
+- `GET /api/v1/alert-contacts`
+- `POST /api/v1/alert-contacts`
+- `GET /api/v1/alert-contacts/{id}`
+- `PATCH /api/v1/alert-contacts/{id}`
+- `DELETE /api/v1/alert-contacts/{id}`
+- `POST /api/v1/alert-contacts/{id}/test`
+- `GET /api/v1/alert-contacts/{id}/deliveries`
+- `POST /api/v1/alert-contacts/{id}/deliveries/{delivery_id}/retry`
 
 Standard CRUD. An alert contact is:
 
@@ -771,13 +801,13 @@ Standard CRUD. An alert contact is:
   "site_filter": { "site_ids": [12345, 67890] },
   "min_severity": "Down",
   "max_per_hour": 60,
-  "secret_preview": "abcd",
+  "destination_preview": "abcd",
   "created_by": "alerts-admin",
   "created_at": "2026-04-25T00:00:00Z"
 }
 ```
 
-`destination` shape varies by transport (see below); credential fields are write-only and only `secret_preview` (last 4 chars of the credential) is returned on subsequent reads.
+`destination` shape varies by transport (see below); credential fields are write-only and only `destination_preview` (last 4 chars of the credential) is returned on subsequent reads.
 
 #### Transports
 
@@ -813,7 +843,7 @@ This lets agencies and VIPs configure low-severity contacts (e.g. `min_severity:
 
 #### Per-contact rate cap
 
-`max_per_hour` (default 60, set to `0` for unlimited) caps how many notifications a single contact can receive per rolling hour. Designed against the pager-storm scenario where a regional outage flips 200 sites at once; without a cap, on-call gets paged 200 times in 30 seconds. When the cap is hit, further transitions for that contact are recorded but not dispatched, and a single "rate-limit hit, N notifications suppressed in the last hour" digest is sent at the next tick under the cap.
+`max_per_hour` (default 60, set to `0` for unlimited) caps how many notifications a single contact can receive per rolling hour. Designed against the pager-storm scenario where a regional outage flips 200 sites at once; without a cap, on-call gets paged 200 times in 30 seconds. When the cap is hit, further transitions for that contact are marked `abandoned` with a rate-limit note and are not dispatched. Digest notifications are deferred.
 
 This is a per-contact field, not global — different contacts have different tolerance (a Slack channel can take far more than a PagerDuty oncall can).
 
@@ -843,7 +873,7 @@ The `Sender` interface is internal to the alerting package, so swapping transpor
 
 #### Subscription assignment
 
-Site assignment is via `site_filter.site_ids` on the contact row itself, not a separate join table. Mirrors the webhooks API. Empty list = all sites. Setting `site_filter: {"site_ids": []}` is "subscribe to all sites"; setting `site_filter: null` (or omitting it) is "subscribe to none and don't fire" — consistent with webhooks' empty=match-all convention.
+Site assignment is via `site_filter.site_ids` on the contact row itself, not a separate join table. Mirrors the webhooks API. Empty list = all sites. Setting `site_filter: {"site_ids": []}` or `{}` is "subscribe to all sites." On create, omitting `site_filter` also produces the empty match-all filter; on PATCH, omitting `site_filter` leaves the existing filter unchanged.
 
 #### Detection mechanism
 
@@ -918,9 +948,9 @@ This is the only API surface for keys. **Creation, listing, and revocation are C
 
 Unauthenticated. Returns `{ "status": "ok" }` if the API can talk to the database. For load balancers and external uptime monitors (yes, including external monitors monitoring the monitor).
 
-#### `GET /api/v1/openapi.json`
+#### Planned: `GET /api/v1/openapi.json`
 
-OpenAPI 3.1 spec for client codegen. Updated on every deploy; matches what the running server actually accepts. Internal consumers can regenerate clients automatically — particularly useful for the gateway, which will likely re-export a sanitized subset of this surface.
+OpenAPI 3.1 spec for client codegen. This is not routed by the current server; it is tracked as Phase 4 polish below. When added, it should be generated from the route/handler contract so it matches what the running server actually accepts.
 
 ---
 
@@ -947,7 +977,7 @@ Phase 1 (read-only foundation, implemented):
 Phase 2 (write surface, implemented):
 - Family 1 write endpoints (POST/PATCH/DELETE sites, pause/resume, trigger-now)
 - Family 2 manual close
-- Idempotency keys + tighter rate limit on triggers
+- Idempotency keys on POST routes
 
 Phase 3 (webhook delivery, implemented):
 - Family 4 webhooks (CRUD + delivery infrastructure with HMAC signing + retry backoff)
