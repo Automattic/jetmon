@@ -10,6 +10,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Automattic/jetmon/internal/config"
+	"github.com/Automattic/jetmon/internal/eventstore"
 )
 
 // siteResponse is the JSON shape for a site in list and single-site responses.
@@ -37,11 +40,11 @@ type siteResponse struct {
 // responses under "active_events". Full event detail comes from
 // GET /api/v1/sites/{id}/events/{event_id}.
 type activeEventSummary struct {
-	ID         int64   `json:"id"`
-	CheckType  string  `json:"check_type"`
-	Severity   uint8   `json:"severity"`
-	State      string  `json:"state"`
-	StartedAt  string  `json:"started_at"`
+	ID        int64  `json:"id"`
+	CheckType string `json:"check_type"`
+	Severity  uint8  `json:"severity"`
+	State     string `json:"state"`
+	StartedAt string `json:"started_at"`
 }
 
 // singleSiteResponse extends siteResponse with the active_events array.
@@ -139,7 +142,15 @@ func (s *Server) handleListSites(w http.ResponseWriter, r *http.Request) {
 		lastID = s.ID
 	}
 
-	// Apply post-derivation filters.
+	if err := s.applyActiveEventRollups(ctx, results); err != nil {
+		writeError(w, r, http.StatusInternalServerError, "db_error",
+			"active event rollup query failed: "+err.Error())
+		return
+	}
+
+	// Apply post-derivation filters after active events have been reflected
+	// into the response. This keeps the API correct after legacy projection
+	// writes are disabled.
 	results = filterByState(results, stateFilter, severityGTE)
 
 	// Trim to the requested limit and decide on next-cursor.
@@ -238,27 +249,91 @@ func (s *Server) queryActiveEvents(ctx context.Context, blogID int64) ([]activeE
 	return out, rows.Err()
 }
 
+type activeEventRollup struct {
+	id       int64
+	severity uint8
+	state    string
+}
+
+// applyActiveEventRollups reflects each site's worst open event into list
+// responses. List queries still page through jetpack_monitor_sites because that
+// remains the site/config table during migration, but current state comes from
+// v2 events when an event is open.
+func (s *Server) applyActiveEventRollups(ctx context.Context, sites []siteResponse) error {
+	if len(sites) == 0 {
+		return nil
+	}
+	ids := make([]any, 0, len(sites))
+	placeholders := make([]string, 0, len(sites))
+	for _, site := range sites {
+		ids = append(ids, site.BlogID)
+		placeholders = append(placeholders, "?")
+	}
+
+	q := fmt.Sprintf(`
+		SELECT id, blog_id, severity, state
+		  FROM (
+			SELECT id, blog_id, severity, state,
+			       ROW_NUMBER() OVER (PARTITION BY blog_id ORDER BY severity DESC, started_at ASC) AS rn
+			  FROM jetmon_events
+			 WHERE ended_at IS NULL
+			   AND blog_id IN (%s)
+		  ) ranked
+		 WHERE rn = 1`, strings.Join(placeholders, ","))
+
+	rows, err := s.db.QueryContext(ctx, q, ids...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	rollups := make(map[int64]activeEventRollup)
+	for rows.Next() {
+		var blogID int64
+		var r activeEventRollup
+		if err := rows.Scan(&r.id, &blogID, &r.severity, &r.state); err != nil {
+			return err
+		}
+		rollups[blogID] = r
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for i := range sites {
+		r, ok := rollups[sites[i].BlogID]
+		if !ok {
+			continue
+		}
+		sites[i].CurrentSeverity = r.severity
+		sites[i].CurrentState = r.state
+		eventID := r.id
+		sites[i].ActiveEventID = &eventID
+	}
+	return nil
+}
+
 // rowScanner accepts both *sql.Row and *sql.Rows.
 type rowScanner interface {
 	Scan(dest ...any) error
 }
 
 // scanSiteRow scans the columns selected by the site queries into a
-// siteResponse. SiteStatus is not exposed directly — it's translated into
-// (current_state, current_severity) via deriveStateFromSiteStatus.
+// siteResponse. SiteStatus is not exposed directly; it is used only as a
+// fallback for sites with no active v2 event during the shadow migration.
 func scanSiteRow(s rowScanner) (siteResponse, error) {
 	var (
-		out             siteResponse
-		monitorActive   uint8
-		siteStatus      int
-		lastCheckedAt   sql.NullTime
-		lastStatusChg   sql.NullTime
-		sslExpiry       sql.NullTime
-		checkKeyword    sql.NullString
-		redirectPolicy  sql.NullString
-		maintStart      sql.NullTime
-		maintEnd        sql.NullTime
-		alertCooldown   sql.NullInt64
+		out            siteResponse
+		monitorActive  uint8
+		siteStatus     int
+		lastCheckedAt  sql.NullTime
+		lastStatusChg  sql.NullTime
+		sslExpiry      sql.NullTime
+		checkKeyword   sql.NullString
+		redirectPolicy sql.NullString
+		maintStart     sql.NullTime
+		maintEnd       sql.NullTime
+		alertCooldown  sql.NullInt64
 	)
 	if err := s.Scan(
 		&out.ID, &out.BlogID, &out.MonitorURL, &monitorActive, &siteStatus,
@@ -268,7 +343,11 @@ func scanSiteRow(s rowScanner) (siteResponse, error) {
 		return out, err
 	}
 	out.MonitorActive = monitorActive == 1
-	out.CurrentState, out.CurrentSeverity = deriveStateFromSiteStatus(siteStatus)
+	if config.LegacyStatusProjectionEnabled() {
+		out.CurrentState, out.CurrentSeverity = deriveStateFromSiteStatus(siteStatus)
+	} else {
+		out.CurrentState, out.CurrentSeverity = eventstore.StateUp, eventstore.SeverityUp
+	}
 	if lastCheckedAt.Valid {
 		v := lastCheckedAt.Time.UTC().Format(time.RFC3339)
 		out.LastCheckedAt = &v
@@ -305,9 +384,9 @@ func scanSiteRow(s rowScanner) (siteResponse, error) {
 }
 
 // deriveStateFromSiteStatus maps the v1 site_status integer to the v2
-// (current_state, current_severity) tuple. This is a bridge while the
-// orchestrator still maintains site_status as the projection — once
-// active_event lookup is wired into list queries, this function disappears.
+// (current_state, current_severity) tuple. It is only a fallback when there is
+// no active v2 event for the site (fresh sites, or legacy-only rows during
+// migration).
 //
 // Mapping (matches AGENTS.md):
 //   - 0 (SITE_DOWN) → Seems Down, severity 3

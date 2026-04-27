@@ -90,12 +90,6 @@ func TestTriggerNowSuccessClosesActiveEvent(t *testing.T) {
 
 	expectCloseEventTx(mock, 7, 42, 4, "Down", "probe_cleared")
 
-	mock.ExpectQuery(countActiveEventsSQL).WithArgs(int64(42)).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
-	mock.ExpectExec(projectRunningSQL).
-		WithArgs(sqlmock.AnyArg(), int64(42)).
-		WillReturnResult(sqlmock.NewResult(0, 1))
-
 	req := httptest.NewRequest("POST", "/api/v1/sites/42/trigger-now", nil)
 	req.SetPathValue("id", "42")
 	req = setAuthCtx(req, key)

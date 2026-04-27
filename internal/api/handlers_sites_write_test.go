@@ -237,6 +237,11 @@ func TestPauseSiteClosesActiveEvents(t *testing.T) {
 	mock.ExpectExec(` INSERT INTO jetmon_event_transitions (event_id, blog_id, severity_before, severity_after, state_before, state_after, reason, source, metadata) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)`).
 		WithArgs(int64(7), int64(42), uint8(4), "Down", "Resolved", "manual_override", "api", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(countActiveEventsSQL).WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectExec(projectRunningSQL).
+		WithArgs(sqlmock.AnyArg(), int64(42)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
 	mock.ExpectExec(`UPDATE jetpack_monitor_sites SET monitor_active = ?, last_status_change = ? WHERE blog_id = ?`).
@@ -371,4 +376,3 @@ func TestBuildUpdateSetClauseHandlesAllFields(t *testing.T) {
 		t.Errorf("expected 9 clauses, got clauses=%d args=%d", len(clauses), len(args))
 	}
 }
-
