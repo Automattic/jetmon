@@ -72,6 +72,10 @@ func runServe() {
 	}
 	cfg := config.Get()
 	log.Printf("config: legacy_status_projection=%s", enabledLabel(cfg.LegacyStatusProjectionEnable))
+	log.Printf("config: email_transport=%s", emailTransportLabel(cfg))
+	if !emailTransportDelivers(cfg) {
+		log.Printf("WARN: email_transport=%s — alert-contact emails will be logged but not delivered", emailTransportLabel(cfg))
+	}
 
 	config.LoadDB()
 	if err := db.ConnectWithRetry(10); err != nil {
@@ -260,6 +264,10 @@ func cmdValidateConfig() {
 
 	cfg := config.Get()
 	fmt.Printf("INFO legacy_status_projection=%s\n", enabledLabel(cfg.LegacyStatusProjectionEnable))
+	fmt.Printf("INFO email_transport=%s\n", emailTransportLabel(cfg))
+	if !emailTransportDelivers(cfg) {
+		fmt.Printf("WARN email_transport=%s — alert-contact emails will be logged but not delivered\n", emailTransportLabel(cfg))
+	}
 	for _, v := range cfg.Verifiers {
 		addr := fmt.Sprintf("%s:%s", v.Host, v.GRPCPort)
 		// Ping check is best-effort; don't fail validation on veriflier unavailability.
@@ -274,6 +282,24 @@ func enabledLabel(b bool) string {
 		return "enabled"
 	}
 	return "disabled"
+}
+
+// emailTransportLabel collapses an empty EMAIL_TRANSPORT to its compatibility
+// alias ("stub") so startup output and validate-config show a single canonical
+// name regardless of which form an operator wrote in config.
+func emailTransportLabel(cfg *config.Config) string {
+	if cfg.EmailTransport == "" {
+		return "stub"
+	}
+	return cfg.EmailTransport
+}
+
+// emailTransportDelivers reports whether the configured email transport
+// actually delivers mail. The stub transport (and the empty-string alias for
+// it) only logs, so any alert-contact configured with transport="email" will
+// silently disappear into the logs in that mode.
+func emailTransportDelivers(cfg *config.Config) bool {
+	return cfg.EmailTransport == "smtp" || cfg.EmailTransport == "wpcom"
 }
 
 func cmdStatus() {
