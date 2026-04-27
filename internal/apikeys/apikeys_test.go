@@ -1,8 +1,13 @@
 package apikeys
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/DATA-DOG/go-sqlmock"
 )
 
 func TestGenerateTokenFormat(t *testing.T) {
@@ -79,5 +84,71 @@ func TestHashTokenStability(t *testing.T) {
 	b := HashToken("jm_some-fixed-token")
 	if a != b {
 		t.Fatal("HashToken is not deterministic")
+	}
+}
+
+func TestLookupAllowsFutureRevokedAtDuringRotationGrace(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	raw := TokenPrefix + strings.Repeat("A", 52)
+	hash := HashToken(raw)
+	now := time.Now().UTC()
+	futureRevocation := now.Add(time.Hour)
+
+	rows := sqlmock.NewRows([]string{
+		"id", "consumer_name", "scope", "rate_limit_per_minute",
+		"expires_at", "revoked_at", "last_used_at", "created_at", "created_by",
+	}).AddRow(int64(42), "gateway", string(ScopeRead), 60, nil, futureRevocation, nil, now, "test")
+
+	mock.ExpectQuery("SELECT id, consumer_name, scope, rate_limit_per_minute").
+		WithArgs(hash).
+		WillReturnRows(rows)
+	mock.ExpectExec("UPDATE jetmon_api_keys SET last_used_at").
+		WithArgs(int64(42)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	key, err := Lookup(context.Background(), db, raw)
+	if err != nil {
+		t.Fatalf("Lookup returned error for grace-period key: %v", err)
+	}
+	if key.ID != 42 {
+		t.Fatalf("key.ID = %d, want 42", key.ID)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestLookupRejectsPastRevokedAt(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	raw := TokenPrefix + strings.Repeat("B", 52)
+	hash := HashToken(raw)
+	now := time.Now().UTC()
+	pastRevocation := now.Add(-time.Minute)
+
+	rows := sqlmock.NewRows([]string{
+		"id", "consumer_name", "scope", "rate_limit_per_minute",
+		"expires_at", "revoked_at", "last_used_at", "created_at", "created_by",
+	}).AddRow(int64(43), "gateway", string(ScopeRead), 60, nil, pastRevocation, nil, now, "test")
+
+	mock.ExpectQuery("SELECT id, consumer_name, scope, rate_limit_per_minute").
+		WithArgs(hash).
+		WillReturnRows(rows)
+
+	_, err = Lookup(context.Background(), db, raw)
+	if !errors.Is(err, ErrKeyRevoked) {
+		t.Fatalf("Lookup error = %v, want ErrKeyRevoked", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
 	}
 }
