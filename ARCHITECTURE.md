@@ -70,6 +70,10 @@ jetmon/
 │   ├── veriflier/        Veriflier client (JSON-over-HTTP) and server
 │   ├── wpcom/            WPCOM notification client with circuit breaker
 │   ├── audit/            Structured audit log (read + write)
+│   ├── eventstore/       Authoritative incident event + transition writer
+│   ├── api/              Internal REST API, auth, rate limits, idempotency
+│   ├── webhooks/         Webhook registry + HMAC-signed delivery worker
+│   ├── alerting/         Managed alert-contact registry + delivery worker
 │   ├── metrics/          StatsD UDP client, stats file writer
 │   └── dashboard/        HTTP + SSE operator dashboard
 └── veriflier2/cmd/       Standalone veriflier binary
@@ -414,19 +418,32 @@ Database Tables
     reason/source         Why and who caused the mutation
     changed_at            Transition time
 
-  jetmon_audit_log        Immutable event record for compliance/debugging
-    event_type            check | status_transition | wpcom_sent |
-                          wpcom_retry | retry_dispatched | veriflier_sent |
+  jetmon_audit_log        Operational trail for compliance/debugging
+    event_type            check | wpcom_sent | wpcom_retry |
+                          retry_dispatched | veriflier_sent |
                           veriflier_result | maintenance_active |
-                          alert_suppressed
+                          alert_suppressed | api_access | config_reload
     blog_id, source, http_code, error_code, rtt_ms
-    old_status, new_status (for transition events)
 
   jetmon_check_history    Per-check timing samples
     rtt_ms, dns_ms, tcp_ms, tls_ms, ttfb_ms
 
   jetmon_false_positives  Checks local failed but verifliers passed
     blog_id, http_code, error_code, rtt_ms
+
+  jetmon_api_keys         Internal API Bearer-token registry
+    key_hash, consumer_name, scope, rate_limit_per_minute
+
+  jetmon_webhooks         Registered webhook receivers and filters
+  jetmon_webhook_deliveries
+                           Per-transition webhook delivery attempts
+  jetmon_webhook_dispatch_progress
+                           Webhook worker transition high-water marks
+
+  jetmon_alert_contacts   Managed notification destinations
+  jetmon_alert_deliveries Per-transition alert delivery attempts
+  jetmon_alert_dispatch_progress
+                           Alert worker transition high-water marks
 
   jetmon_schema_migrations  Idempotent migration tracking
 ```

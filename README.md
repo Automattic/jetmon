@@ -19,8 +19,8 @@ Architecture
 │                  jetmon2 (single binary)             │
 │                                                      │
 │  ┌─────────────┐  ┌─────────────┐  ┌──────────────┐  │
-│  │ Orchestrator│  │ Check Pool  │  │  gRPC Server │  │
-│  │  goroutine  │  │ (goroutines)│  │  (Veriflier) │  │
+│  │ Orchestrator│  │ Check Pool  │  │  Veriflier   │  │
+│  │  goroutine  │  │ (goroutines)│  │  transport   │  │
 │  └──────┬──────┘  └──────┬──────┘  └──────┬───────┘  │
 │         │                │                │          │
 │  ┌──────┴────────────────┴────────────────┴───────┐  │
@@ -38,9 +38,9 @@ The **Orchestrator goroutine** fetches site batches from MySQL, dispatches work 
 
 The **Check Pool** is a bounded goroutine pool that performs HTTP checks using Go's `net/http` and `net/http/httptrace`. It records DNS, TCP, TLS, and TTFB timings on every check and auto-scales against queue depth without spawning new processes.
 
-The **gRPC Server** receives confirmation results from remote Veriflier instances, replacing the previous custom HTTPS protocol.
+The **Veriflier transport** sends confirmation batches to remote Veriflier instances. It currently uses JSON-over-HTTP on the configured Veriflier port; the proto definition is kept in `proto/` for the planned generated gRPC transport.
 
-The **Veriflier** is a standalone Go binary deployed at remote locations. It replaces the Qt C++ Veriflier, communicating with the Monitor via gRPC.
+The **Veriflier** is a standalone Go binary deployed at remote locations. It replaces the Qt C++ Veriflier, using the same JSON-over-HTTP transport as the Monitor-side client until the generated gRPC stubs are wired in.
 
 Status change flows:
 
@@ -162,9 +162,18 @@ New tables added by Jetmon 2:
 | Table | Purpose |
 |-------|---------|
 | `jetmon_hosts` | MySQL-coordinated bucket ownership and heartbeat |
-| `jetmon_audit_log` | Full event history per site |
+| `jetmon_events` | Authoritative current state of each v2 incident |
+| `jetmon_event_transitions` | Append-only history of every mutation to `jetmon_events` |
+| `jetmon_audit_log` | Operational trail for checks, retries, WPCOM calls, suppression, API access, and config reloads |
 | `jetmon_check_history` | RTT and timing samples for trending |
 | `jetmon_false_positives` | Veriflier non-confirmation events |
+| `jetmon_api_keys` | Internal REST API Bearer-token registry |
+| `jetmon_webhooks` | Webhook registrations and HMAC signing secrets |
+| `jetmon_webhook_deliveries` | Outbound webhook delivery attempts and retry state |
+| `jetmon_webhook_dispatch_progress` | Webhook worker high-water marks over event transitions |
+| `jetmon_alert_contacts` | Managed alert destinations such as email, PagerDuty, Slack, and Teams |
+| `jetmon_alert_deliveries` | Outbound alert-contact delivery attempts and retry state |
+| `jetmon_alert_dispatch_progress` | Alert worker high-water marks over event transitions |
 
 Apply migrations before starting for the first time:
 
@@ -182,15 +191,16 @@ For Developers
 
 ### Building
 
-	go build ./cmd/jetmon2/
-	go build ./veriflier2/
+	mkdir -p bin
+	go build -o bin/jetmon2 ./cmd/jetmon2/
+	go build -o bin/veriflier2 ./veriflier2/cmd/
 
 ### Running Tests
 
 	go test ./...
 	go test -race ./...
 
-Tests require the Docker Compose environment to be running for integration tests. Unit tests run standalone.
+The current `go test ./...` suite runs standalone. Use the Docker Compose environment for manual end-to-end checks against MySQL, StatsD, and Veriflier services.
 
 ### Docker Development Loop
 
@@ -273,6 +283,10 @@ The debug port is configurable via `DEBUG_PORT` (default 6060). Set to 0 to disa
 | `internal/metrics/` | StatsD client, stats file writer |
 | `internal/wpcom/` | WPCOM API client and circuit breaker |
 | `internal/audit/` | Audit log |
+| `internal/eventstore/` | Authoritative event and transition writer |
+| `internal/api/` | Internal REST API server |
+| `internal/webhooks/` | HMAC-signed webhook registry and delivery worker |
+| `internal/alerting/` | Managed alert-contact registry and delivery worker |
 | `internal/dashboard/` | Operator dashboard and SSE handler |
 | `veriflier2/` | Go Veriflier binary |
 

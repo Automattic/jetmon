@@ -1,6 +1,6 @@
-# Jetmon Internal API — Design Document
+# Jetmon Internal API — Reference and Design Notes
 
-This is a **design proposal**, not yet implemented. It describes the REST API that Jetmon 2 will expose for status reads, incident history, SLA reports, monitor management, and alert delivery.
+This document is the reference for Jetmon 2's internal REST API and the design notes behind it. The API server, Bearer-token auth, site/event/SLA endpoints, webhooks, alert contacts, idempotency handling, and delivery retry surfaces are implemented in `internal/api/`, `internal/apikeys/`, `internal/webhooks/`, and `internal/alerting/`. Sections that describe future expansion or deferred behavior call that out explicitly.
 
 **Audience: internal systems only.** Jetmon does not expose this API to end customers directly. A separate gateway service handles all customer-facing access — authentication, tenant isolation, customer rate limiting, plan-based feature gating, public error vocabulary, etc. — and calls Jetmon over this internal interface. Other internal services (operator dashboard, alerting workers, batch reporting jobs, the gateway itself) are the only direct callers.
 
@@ -254,7 +254,7 @@ Higher severity = worse. Severity climbs independently of state — a worsening 
 
 ## Endpoints
 
-The full surface is grouped into five capability families, matching `ROADMAP.md`. All endpoints listed below are part of the proposed v1; build order is suggested but not prescriptive.
+The full surface is grouped into five capability families, matching `ROADMAP.md`. The implemented route table lives in `internal/api/api.go`; design-only additions and deferred behavior are called out where they appear.
 
 ### Family 1: Sites and current state
 
@@ -262,7 +262,7 @@ The full surface is grouped into five capability families, matching `ROADMAP.md`
 
 List sites visible to this token.
 
-**Scopes:** `sites:read`
+**Scopes:** `read`
 
 **Query parameters:**
 
@@ -346,7 +346,7 @@ Single site, same shape as a list entry plus an `active_events` array for any op
 
 Create a site.
 
-**Scopes:** `sites:write`
+**Scopes:** `write`
 
 **Request body:**
 
@@ -496,7 +496,7 @@ Direct event lookup without site context. Useful for webhook payloads that link 
 
 Manually close an open event (for the operator dashboard or for handling false alarms the verifier missed).
 
-**Scopes:** `sites:write`
+**Scopes:** `write`
 
 **Request body:**
 
@@ -932,9 +932,9 @@ OpenAPI 3.1 spec for client codegen. Updated on every deploy; matches what the r
 - **No per-region SLA breakdown.** All sites are checked from the orchestrator's bucket assignment, not a multi-region fleet (yet — see `TAXONOMY.md` v2/v3 vantage-point work). When that ships, the SLA endpoint gains a `?vantage_point=us-west-1` filter.
 - **No streaming.** Webhooks cover event-driven needs; long-poll/SSE/WebSocket support is overkill for the current consumer set. Could be added on `/api/v1/sites/{id}/events/stream` if a consumer asks.
 
-## Build order recommendation
+## Implementation Phase Map
 
-Phase 1 (read-only foundation):
+Phase 1 (read-only foundation, implemented):
 - `jetmon_api_keys` migration + sha256 hashing helpers
 - `./jetmon2 keys create/list/revoke/rotate` CLI
 - Auth middleware (Bearer token validation, scope enforcement, audit logging via `jetmon_audit_log`)
@@ -944,15 +944,15 @@ Phase 1 (read-only foundation):
 - Family 3 (uptime, response-time, timing-breakdown)
 - Per-key rate limiting + standard headers
 
-Phase 2 (write surface):
+Phase 2 (write surface, implemented):
 - Family 1 write endpoints (POST/PATCH/DELETE sites, pause/resume, trigger-now)
 - Family 2 manual close
 - Idempotency keys + tighter rate limit on triggers
 
-Phase 3 (webhook delivery):
+Phase 3 (webhook delivery, implemented):
 - Family 4 webhooks (CRUD + delivery infrastructure with HMAC signing + retry backoff)
 
-Phase 3.x (alert contacts):
+Phase 3.x (alert contacts, implemented):
 - Family 5 alert contacts: managed channels (email, PagerDuty, Slack, Teams)
 - `internal/alerting/` package — parallel to `internal/webhooks/`, same dispatch shape
 - Email transport interface with `wpcom` / `smtp` / `stub` implementations
@@ -960,7 +960,7 @@ Phase 3.x (alert contacts):
 - `POST /alert-contacts/{id}/test` send-test endpoint
 - Legacy WPCOM notification flow continues to operate in parallel; future migration tracked in ROADMAP
 
-Phase 4 (polish):
+Phase 4 (polish, future):
 - OpenAPI spec generation
 - Bulk endpoints if real consumers need them
 - Per-region filters when vantage-point work ships
