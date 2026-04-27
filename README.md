@@ -192,9 +192,13 @@ For Developers
 
 ### Building
 
-	mkdir -p bin
-	go build -o bin/jetmon2 ./cmd/jetmon2/
-	go build -o bin/veriflier2 ./veriflier2/cmd/
+	make all              # Build bin/jetmon2 and bin/veriflier2
+	make build            # Build only bin/jetmon2
+	make build-veriflier  # Build only bin/veriflier2
+
+`make generate` is intentionally separate from `make all`. It requires
+`protoc` and the Go protobuf plugins, and is only needed when replacing the
+current JSON-over-HTTP Veriflier transport with generated gRPC stubs.
 
 ### Running Tests
 

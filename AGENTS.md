@@ -104,8 +104,8 @@ docker compose up --build                 # Rebuild binary and start
 docker compose down                       # Stop services
 docker compose down -v                    # Stop and remove volumes (fresh start)
 
-# Build binary directly
-go build ./cmd/jetmon2/
+# Build binaries directly
+make all
 
 # Run tests
 go test ./...
