@@ -232,6 +232,54 @@ func TestListSitesAppliesPaginationCursor(t *testing.T) {
 	}
 }
 
+func TestListSitesKeepsCursorWhenFilteredPageHasMoreRows(t *testing.T) {
+	s, mock, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	// Three raw rows; limit=2 means the third row is the sentinel proving
+	// there may be another page. The first two rows are filtered out, so
+	// pagination must advance past the sentinel row instead of reporting
+	// page.next=null.
+	rows := makeSiteRow(10, "a", 1)
+	rows.AddRow(20, 20, "b", 1, 1, nil, nil, nil, nil, "follow", nil, nil, nil)
+	rows.AddRow(30, 30, "c", 1, 2, nil, nil, nil, nil, "follow", nil, nil, nil)
+
+	mock.ExpectQuery(sitesListSQL).
+		WithArgs(int64(0), 3).
+		WillReturnRows(rows)
+	mock.ExpectQuery(activeEventRollupsSQL("?,?,?")).
+		WithArgs(int64(10), int64(20), int64(30)).
+		WillReturnRows(sqlmock.NewRows(activeEventRollupColumns))
+
+	req := requestWithKey("GET", "/api/v1/sites?limit=2&state=Down", key)
+	rec := invokeAuthed(s, req, s.handleListSites)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Data []siteResponse `json:"data"`
+		Page Page           `json:"page"`
+	}
+	readJSON(t, rec.Body, &resp)
+	if len(resp.Data) != 1 || resp.Data[0].ID != 30 {
+		t.Fatalf("data = %+v, want only site 30", resp.Data)
+	}
+	if resp.Page.Next == nil {
+		t.Fatal("expected a next cursor")
+	}
+	id, err := decodeIDCursor(*resp.Page.Next)
+	if err != nil {
+		t.Fatalf("decode cursor: %v", err)
+	}
+	if id != 30 {
+		t.Errorf("next cursor id = %d, want 30", id)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
 func TestListSitesFiltersByMonitorActive(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
