@@ -208,6 +208,9 @@ func TestBuildAlertDispatchersIncludesStubEmail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stub email dispatcher Send() error = %v", err)
 	}
+	// 250 mirrors the SMTP "Requested mail action okay, completed" reply
+	// code so the audit row reads the same shape regardless of which email
+	// transport actually fired.
 	if status != 250 {
 		t.Fatalf("stub email dispatcher status = %d, want 250", status)
 	}
