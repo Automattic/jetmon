@@ -77,6 +77,33 @@ DEBUG_PORT
 Port for the pprof debug server. Only binds to 127.0.0.1 (localhost) — never accessible remotely. Set to 0 to disable. Default: 6060.
 Access via: curl http://localhost:6060/debug/pprof/
 
+EMAIL_TRANSPORT
+Email sender used by alert contacts with transport "email". Set to "stub" to log rendered email without sending, "smtp" to send directly through SMTP, or "wpcom" to POST to a WPCOM-owned email API endpoint. Empty is treated like "stub" for compatibility. Default: "stub".
+
+EMAIL_FROM
+From address used when rendering alert-contact emails. Default: "jetmon@noreply.invalid".
+
+WPCOM_EMAIL_ENDPOINT
+Required when EMAIL_TRANSPORT is "wpcom". HTTP endpoint that receives rendered email payloads.
+
+WPCOM_EMAIL_AUTH_TOKEN
+Optional Bearer token sent to WPCOM_EMAIL_ENDPOINT when EMAIL_TRANSPORT is "wpcom".
+
+SMTP_HOST
+Required when EMAIL_TRANSPORT is "smtp". SMTP server hostname.
+
+SMTP_PORT
+Required when EMAIL_TRANSPORT is "smtp". SMTP server port.
+
+SMTP_USERNAME
+Optional SMTP username used when EMAIL_TRANSPORT is "smtp".
+
+SMTP_PASSWORD
+Optional SMTP password used when EMAIL_TRANSPORT is "smtp".
+
+SMTP_USE_TLS
+Set to true to connect to SMTP_HOST with TLS from the start. Default: false.
+
 VERIFIERS
 Array of veriflier configuration objects. Each entry requires:
   name       - display name

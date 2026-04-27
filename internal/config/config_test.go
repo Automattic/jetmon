@@ -84,6 +84,57 @@ func TestValidate(t *testing.T) {
 			name:   "json log format is valid",
 			mutate: func(c *Config) { c.LogFormat = "json" },
 		},
+		{
+			name:   "stub email transport is valid",
+			mutate: func(c *Config) { c.EmailTransport = "stub" },
+		},
+		{
+			name:   "empty email transport uses default stub behavior",
+			mutate: func(c *Config) { c.EmailTransport = "" },
+		},
+		{
+			name:    "invalid email transport",
+			mutate:  func(c *Config) { c.EmailTransport = "sendmail" },
+			wantErr: true,
+		},
+		{
+			name: "smtp email transport requires host",
+			mutate: func(c *Config) {
+				c.EmailTransport = "smtp"
+				c.SMTPPort = 1025
+			},
+			wantErr: true,
+		},
+		{
+			name: "smtp email transport requires port",
+			mutate: func(c *Config) {
+				c.EmailTransport = "smtp"
+				c.SMTPHost = "mailhog"
+			},
+			wantErr: true,
+		},
+		{
+			name: "smtp email transport with host and port is valid",
+			mutate: func(c *Config) {
+				c.EmailTransport = "smtp"
+				c.SMTPHost = "mailhog"
+				c.SMTPPort = 1025
+			},
+		},
+		{
+			name: "wpcom email transport requires endpoint",
+			mutate: func(c *Config) {
+				c.EmailTransport = "wpcom"
+			},
+			wantErr: true,
+		},
+		{
+			name: "wpcom email transport with endpoint is valid",
+			mutate: func(c *Config) {
+				c.EmailTransport = "wpcom"
+				c.WPCOMEmailEndpoint = "https://example.test/email"
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -155,6 +206,21 @@ func TestLoadAndGet(t *testing.T) {
 	}
 	if !cfg.LegacyStatusProjectionEnable {
 		t.Fatal("LegacyStatusProjectionEnable default should be true")
+	}
+}
+
+func TestSampleConfigLoads(t *testing.T) {
+	saveConfigState(t)
+
+	if err := Load("../../config/config-sample.json"); err != nil {
+		t.Fatalf("config-sample.json should load: %v", err)
+	}
+	cfg := Get()
+	if cfg == nil {
+		t.Fatal("Get() = nil after loading sample config")
+	}
+	if cfg.EmailTransport != "stub" {
+		t.Fatalf("EmailTransport = %q, want stub", cfg.EmailTransport)
 	}
 }
 

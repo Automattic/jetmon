@@ -95,6 +95,7 @@ Key settings:
 | `DASHBOARD_PORT` | 8080 | Internal port for the operator dashboard (0 to disable) |
 | `API_PORT` | 0 | Internal REST API port (0 to disable). In the current single-binary v2 shape, this also starts webhook and alert-contact delivery workers; enable it on only one active instance per database cluster. |
 | `DEBUG_PORT` | 6060 | localhost-only pprof port (`127.0.0.1:PORT`); 0 to disable |
+| `EMAIL_TRANSPORT` | `stub` | Alert-contact email sender: `stub`, `smtp`, or `wpcom` |
 
 See `config/config.readme` for the full option reference.
 

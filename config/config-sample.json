@@ -36,6 +36,16 @@
 	"API_PORT"       : 0,
 	"DEBUG_PORT"     : 6060,
 
+	"EMAIL_TRANSPORT"       : "stub",
+	"EMAIL_FROM"            : "jetmon@noreply.invalid",
+	"WPCOM_EMAIL_ENDPOINT"  : "",
+	"WPCOM_EMAIL_AUTH_TOKEN": "",
+	"SMTP_HOST"             : "",
+	"SMTP_PORT"             : 0,
+	"SMTP_USERNAME"         : "",
+	"SMTP_PASSWORD"         : "",
+	"SMTP_USE_TLS"          : false,
+
 	"VERIFIERS": [
 		{
 			"name"       : "Veriflier 1",

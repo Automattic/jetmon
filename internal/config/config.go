@@ -235,6 +235,23 @@ func validate(cfg *Config) error {
 	if cfg.LogFormat != "text" && cfg.LogFormat != "json" {
 		return fmt.Errorf("LOG_FORMAT must be 'text' or 'json'")
 	}
+	switch cfg.EmailTransport {
+	case "", "stub":
+		// Empty remains a compatibility alias for the safe default.
+	case "smtp":
+		if cfg.SMTPHost == "" {
+			return fmt.Errorf("SMTP_HOST is required when EMAIL_TRANSPORT is 'smtp'")
+		}
+		if cfg.SMTPPort <= 0 {
+			return fmt.Errorf("SMTP_PORT must be > 0 when EMAIL_TRANSPORT is 'smtp'")
+		}
+	case "wpcom":
+		if cfg.WPCOMEmailEndpoint == "" {
+			return fmt.Errorf("WPCOM_EMAIL_ENDPOINT is required when EMAIL_TRANSPORT is 'wpcom'")
+		}
+	default:
+		return fmt.Errorf("EMAIL_TRANSPORT must be one of: stub, smtp, wpcom")
+	}
 	for i, v := range cfg.Verifiers {
 		// host and grpc_port are required. Empty values silently parse to ""
 		// then the orchestrator dials "host:" which resolves to port 80 — the
