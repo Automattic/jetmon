@@ -97,7 +97,9 @@ because it is intentionally **not** drop-in with the Jetmon 1 wire format
   gRPC stubs remain an explicit `make generate` step for the future
   transport swap.
 - Makefile targets now share a configurable `GO` command and fall back to
-  `/usr/local/go/bin/go` when `go` is not on `PATH`.
+  `/usr/local/go/bin/go` when `go` is not on `PATH`; they also use an
+  overrideable `/tmp` Go build cache so checks do not depend on a
+  writable home-directory cache.
 - Developer docs now point at the Makefile build path and document why
   code generation is separate from the default build.
 - Added a top-level docs index and a post-v2 probe-agent architecture

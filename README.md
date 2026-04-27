@@ -198,7 +198,9 @@ For Developers
 
 If `go` is not on `PATH`, the Makefile falls back to
 `/usr/local/go/bin/go` when present. Override with `make GO=/path/to/go ...`
-for other local layouts.
+for other local layouts. Make targets use `GOCACHE=/tmp/jetmon-go-cache` by
+default so builds do not depend on a writable home-directory cache; override
+with `make GOCACHE=/path/to/cache ...` when needed.
 
 `make generate` is intentionally separate from `make all`. It requires
 `protoc` and the Go protobuf plugins, and is only needed when replacing the
