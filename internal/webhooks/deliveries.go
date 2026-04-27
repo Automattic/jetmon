@@ -145,6 +145,9 @@ func ClaimReady(ctx context.Context, db *sql.DB, limit int) ([]Delivery, error) 
 	// rows whose lock update won; stale SELECT results can happen if another
 	// claimant already moved next_attempt_at between our SELECT and UPDATE.
 	lockUntil := time.Now().Add(claimLockDuration).UTC()
+	// claimed reuses candidates' backing array — safe because the write index
+	// is always ≤ the read index and candidates is not returned in its
+	// original form.
 	claimed := candidates[:0]
 	for i := range candidates {
 		res, err := db.ExecContext(ctx, `
