@@ -59,10 +59,10 @@ func (s *Server) handleListSiteEvents(w http.ResponseWriter, r *http.Request) {
 			"site id must be a positive integer")
 		return
 	}
-	s.listEvents(w, r, &siteID)
+	s.listEvents(w, r, siteID)
 }
 
-func (s *Server) listEvents(w http.ResponseWriter, r *http.Request, siteID *int64) {
+func (s *Server) listEvents(w http.ResponseWriter, r *http.Request, siteID int64) {
 	q := r.URL.Query()
 
 	limit, err := parseLimit(q.Get("limit"), 50, 200)
@@ -114,19 +114,15 @@ func (s *Server) listEvents(w http.ResponseWriter, r *http.Request, siteID *int6
 	// Build the query. Events list walks backwards on id (id desc) — id is
 	// monotonically increasing because it's an auto-increment PK, so id desc
 	// matches started_at desc within the resolution we care about.
-	args := []any{}
+	args := []any{siteID}
 	sb := strings.Builder{}
 	sb.WriteString(`
 		SELECT id, blog_id, endpoint_id, check_type, discriminator,
 		       severity, state, started_at, ended_at, resolution_reason,
 		       cause_event_id, metadata
 		  FROM jetmon_events
-		 WHERE 1=1`)
+		 WHERE blog_id = ?`)
 
-	if siteID != nil {
-		sb.WriteString(" AND blog_id = ?")
-		args = append(args, *siteID)
-	}
 	if cursor > 0 {
 		sb.WriteString(" AND id < ?")
 		args = append(args, cursor)
