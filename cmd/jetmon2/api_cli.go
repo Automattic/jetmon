@@ -13,6 +13,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"text/tabwriter"
 	"time"
 )
 
@@ -23,6 +24,7 @@ type apiCLIOptions struct {
 	token          string
 	verbose        bool
 	pretty         bool
+	output         string
 	timeout        time.Duration
 	body           string
 	bodyFile       string
@@ -160,6 +162,7 @@ func newAPIFlagSet(name string, opts *apiCLIOptions) *flag.FlagSet {
 	fs.BoolVar(&opts.verbose, "v", false, "print request and response headers to stderr")
 	fs.BoolVar(&opts.verbose, "verbose", false, "print request and response headers to stderr")
 	fs.BoolVar(&opts.pretty, "pretty", false, "pretty-print JSON response bodies")
+	fs.StringVar(&opts.output, "output", "json", "response output format: json or table")
 	fs.DurationVar(&opts.timeout, "timeout", opts.timeout, "request timeout")
 	fs.Var(&opts.headers, "header", "additional request header in Name: Value form (repeatable)")
 	return fs
@@ -185,11 +188,14 @@ func executeAPIRequest(ctx context.Context, client *http.Client, opts apiCLIOpti
 	if opts.out == nil {
 		opts.out = io.Discard
 	}
+	if err := validateAPIOutputFormat(opts.output); err != nil {
+		return err
+	}
 	resp, err := doAPIRequest(ctx, client, opts, method, target, body)
 	if err != nil {
 		return err
 	}
-	if err := writeAPIResponseBody(opts.out, resp.Body, opts.pretty); err != nil {
+	if err := writeAPIOutput(opts.out, resp.Body, opts); err != nil {
 		return err
 	}
 	if resp.StatusCode >= 400 {
@@ -344,6 +350,177 @@ func writeAPIResponseBody(w io.Writer, body []byte, pretty bool) error {
 		return err
 	}
 	return nil
+}
+
+func writeAPIValueOutput(w io.Writer, value any, opts apiCLIOptions) error {
+	if w == nil {
+		w = io.Discard
+	}
+	body, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	return writeAPIOutput(w, body, opts)
+}
+
+func writeAPIOutput(w io.Writer, body []byte, opts apiCLIOptions) error {
+	if err := validateAPIOutputFormat(opts.output); err != nil {
+		return err
+	}
+	switch opts.output {
+	case "", "json":
+		return writeAPIResponseBody(w, body, opts.pretty)
+	case "table":
+		return writeAPIResponseTable(w, body)
+	}
+	return nil
+}
+
+func validateAPIOutputFormat(output string) error {
+	switch output {
+	case "", "json", "table":
+		return nil
+	default:
+		return fmt.Errorf("output must be one of: json, table")
+	}
+}
+
+func writeAPIResponseTable(w io.Writer, body []byte) error {
+	body = bytes.TrimSpace(body)
+	if len(body) == 0 {
+		return nil
+	}
+	var value any
+	if err := json.Unmarshal(body, &value); err != nil {
+		return err
+	}
+	rows := apiTableRows(value)
+	if len(rows) == 0 {
+		_, err := fmt.Fprintln(w, "no rows")
+		return err
+	}
+	columns := apiTableColumns(rows)
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	for i, col := range columns {
+		if i > 0 {
+			fmt.Fprint(tw, "\t")
+		}
+		fmt.Fprint(tw, col)
+	}
+	fmt.Fprintln(tw)
+	for _, row := range rows {
+		for i, col := range columns {
+			if i > 0 {
+				fmt.Fprint(tw, "\t")
+			}
+			fmt.Fprint(tw, apiTableValue(row[col]))
+		}
+		fmt.Fprintln(tw)
+	}
+	return tw.Flush()
+}
+
+func apiTableRows(value any) []map[string]any {
+	switch v := value.(type) {
+	case map[string]any:
+		for _, key := range []string{"data", "created", "sites", "steps"} {
+			if data, ok := v[key].([]any); ok {
+				return apiRowsFromArray(data)
+			}
+		}
+		return []map[string]any{v}
+	case []any:
+		return apiRowsFromArray(v)
+	default:
+		return nil
+	}
+}
+
+func apiRowsFromArray(data []any) []map[string]any {
+	rows := make([]map[string]any, 0, len(data))
+	for _, item := range data {
+		row, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+func apiTableColumns(rows []map[string]any) []string {
+	best := []string{}
+	for _, cols := range [][]string{
+		{"id", "blog_id", "monitor_url", "monitor_active", "current_state", "current_severity", "active_event_id"},
+		{"blog_id", "monitor_url", "monitor_active", "check_keyword", "redirect_policy", "timeout_seconds"},
+		{"id", "site_id", "check_type", "state", "severity", "started_at", "ended_at"},
+		{"id", "url", "active", "events", "secret_preview", "created_at"},
+		{"id", "label", "active", "transport", "min_severity", "max_per_hour", "destination_preview"},
+		{"id", "status", "attempt", "event_id", "event_type", "last_status_code", "created_at"},
+		{"site_id", "action", "note", "error"},
+		{"name", "status", "detail"},
+	} {
+		present := apiColumnsPresent(rows, cols)
+		if len(present) > len(best) {
+			best = present
+		}
+	}
+	if len(best) > 0 {
+		return best
+	}
+	seen := map[string]struct{}{}
+	for _, row := range rows {
+		for k := range row {
+			seen[k] = struct{}{}
+		}
+	}
+	cols := make([]string, 0, len(seen))
+	for k := range seen {
+		cols = append(cols, k)
+	}
+	sort.Strings(cols)
+	return cols
+}
+
+func apiColumnsPresent(rows []map[string]any, cols []string) []string {
+	out := []string{}
+	for _, col := range cols {
+		for _, row := range rows {
+			if _, ok := row[col]; ok {
+				out = append(out, col)
+				break
+			}
+		}
+	}
+	return out
+}
+
+func apiTableValue(v any) string {
+	switch value := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return value
+	case bool:
+		return fmt.Sprintf("%t", value)
+	case float64:
+		if value == float64(int64(value)) {
+			return fmt.Sprintf("%d", int64(value))
+		}
+		return fmt.Sprintf("%g", value)
+	case []any:
+		parts := make([]string, 0, len(value))
+		for _, item := range value {
+			parts = append(parts, apiTableValue(item))
+		}
+		return strings.Join(parts, ",")
+	default:
+		b, err := json.Marshal(value)
+		if err != nil {
+			return fmt.Sprint(value)
+		}
+		return string(b)
+	}
 }
 
 func logAPIErrorAndExit(err error) {

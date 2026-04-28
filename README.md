@@ -288,6 +288,25 @@ internal `mailpit:1025` address; that SMTP port is not published to the host.
 Existing `config/config.json` files are not rewritten automatically, so remove
 or update a stale local config if you want it to use Mailpit.
 
+For local API checks, build `bin/jetmon2`, create a Docker-local API key, then
+point the API CLI at the exposed API port:
+
+	make build
+	cd docker
+	docker compose exec jetmon ./jetmon2 keys create --consumer api-cli --scope admin --created-by docker-local
+	cd ..
+	export JETMON_API_URL=http://localhost:${API_HOST_PORT:-8090}
+	export JETMON_API_TOKEN=jm_replace_with_the_printed_token
+	./bin/jetmon2 api health --pretty
+	./bin/jetmon2 api me --pretty
+	./bin/jetmon2 api sites list --output table
+
+The same CLI can create bounded test batches and run a Docker-local smoke pass:
+
+	./bin/jetmon2 api sites bulk-add --count 3 --batch local-smoke --dry-run --pretty
+	./bin/jetmon2 api smoke --batch local-smoke --pretty
+	./bin/jetmon2 api sites simulate-failure --batch local-smoke --mode http-500 --wait 15s --pretty
+
 ### Adding Test Sites
 
 Connect to the test database:

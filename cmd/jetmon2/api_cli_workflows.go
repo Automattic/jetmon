@@ -157,7 +157,7 @@ func runAPISmoke(ctx context.Context, client *http.Client, opts apiCLIOptions, s
 		if err := fn(); err != nil {
 			summary.Steps = append(summary.Steps, apiSmokeStep{Name: name, Status: "failed", Detail: err.Error()})
 			cleanup()
-			_ = writeAPIJSON(opts.out, summary, opts.pretty)
+			_ = writeAPIValueOutput(opts.out, summary, opts)
 			return fmt.Errorf("smoke %s failed: %w", name, err)
 		}
 		summary.Steps = append(summary.Steps, apiSmokeStep{Name: name, Status: "ok"})
@@ -252,7 +252,7 @@ func runAPISmoke(ctx context.Context, client *http.Client, opts apiCLIOptions, s
 	}
 
 	cleanup()
-	return writeAPIJSON(opts.out, summary, opts.pretty)
+	return writeAPIValueOutput(opts.out, summary, opts)
 }
 
 func apiWorkflowRequestJSON(ctx context.Context, client *http.Client, opts apiCLIOptions, method, target string, body any, idempotencyKey string) (json.RawMessage, error) {

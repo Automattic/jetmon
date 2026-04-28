@@ -61,6 +61,42 @@ While pinned:
 7. Verify Veriflier endpoints, WPCOM auth, StatsD, log paths, and config reload
    behavior in staging.
 
+## API CLI Rehearsal
+
+Use this only in staging, Docker, or a dedicated rehearsal database with
+disposable sites. The initial production pinned rollout should still keep
+`API_PORT=0` on monitor hosts unless the API and delivery owner plan has been
+approved.
+
+1. Enable `API_PORT=8090` on the rehearsal host and use `DELIVERY_OWNER_HOST`
+   if the rehearsal environment has more than one API-enabled process.
+2. Create an API key with write permissions:
+
+   ```bash
+   ./jetmon2 keys create --consumer api-cli-rehearsal --scope admin --created-by rollout-rehearsal
+   ```
+
+3. From the operator workstation, point the API CLI at the rehearsal host:
+
+   ```bash
+   export JETMON_API_URL=http://<rehearsal-host>:8090
+   export JETMON_API_TOKEN=jm_replace_with_the_printed_token
+   ./bin/jetmon2 api health --pretty
+   ./bin/jetmon2 api me --pretty
+   ./bin/jetmon2 api sites list --output table
+   ```
+
+4. Exercise a disposable batch and a known failure mode:
+
+   ```bash
+   ./bin/jetmon2 api smoke --batch rollout-rehearsal --pretty
+   ./bin/jetmon2 api sites simulate-failure --batch rollout-rehearsal --mode http-500 --wait 15s --pretty
+   ```
+
+5. Confirm the smoke output, event IDs, transitions, API audit rows, and any
+   cleanup results match the rehearsal plan before carrying the monitor binary
+   into the per-host cutover.
+
 ## Per-Host Cutover
 
 For each v1 host:

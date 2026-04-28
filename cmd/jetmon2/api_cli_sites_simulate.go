@@ -116,11 +116,11 @@ func runAPISitesSimulateFailure(ctx context.Context, client *http.Client, opts a
 		summary.Sites = append(summary.Sites, result)
 		if err != nil {
 			summary.Sites[len(summary.Sites)-1].Error = err.Error()
-			_ = writeAPIJSON(opts.out, summary, opts.pretty)
+			_ = writeAPIValueOutput(opts.out, summary, opts)
 			return fmt.Errorf("simulate failure for site %d: %w", siteID, err)
 		}
 	}
-	return writeAPIJSON(opts.out, summary, opts.pretty)
+	return writeAPIValueOutput(opts.out, summary, opts)
 }
 
 func runAPISiteSimulation(ctx context.Context, client *http.Client, opts apiCLIOptions, sim apiSitesSimulateFailureOptions, def apiFailureModeDefinition, siteID int64, index int) (apiSimulatedSiteResult, error) {

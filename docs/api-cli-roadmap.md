@@ -81,10 +81,10 @@ but it should not become a generic `curl` clone.
 
 ## P3 - Output Ergonomics
 
-- [ ] Add stable table output for list commands while keeping JSON as the default
+- [x] Add stable table output for list commands while keeping JSON as the default
   automation-friendly format.
 - [x] Add `--pretty` for formatted JSON and preserve raw JSON for scripts.
-- [ ] Add examples to `API.md`, Docker docs, and the v1-to-v2 rollout rehearsal
+- [x] Add examples to `API.md`, Docker docs, and the v1-to-v2 rollout rehearsal
   docs once the command shape has stabilized.
 
 ## Completed
@@ -140,3 +140,8 @@ but it should not become a generic `curl` clone.
 - [x] 2026-04-28: Added CLI batch tracking through deterministic blog ID ranges
   and the `X-Jetmon-CLI-Batch` custom-header marker for smoke-created sites,
   bulk-added sites, and simulated failure targets.
+- [x] 2026-04-28: Added `--output table` with stable resource-oriented columns
+  for API list responses and CLI workflow summaries while keeping JSON as the
+  default script-friendly output.
+- [x] 2026-04-28: Documented API CLI setup and examples in `API.md`, the Docker
+  development loop, and the pinned v1-to-v2 rollout rehearsal runbook.

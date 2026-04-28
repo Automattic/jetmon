@@ -71,7 +71,7 @@ We deliberately did not split into `sites:read` / `events:read` / `webhooks:read
 **Key management is ops-only.** No `/api/v1/keys` endpoints. Keys are created and revoked via the `./jetmon2` CLI:
 
 ```
-./jetmon2 keys create --consumer gateway --scope read [--expires 90d]
+./jetmon2 keys create --consumer gateway --scope read [--ttl 2160h]
 ./jetmon2 keys list
 ./jetmon2 keys revoke <key_id>
 ./jetmon2 keys rotate <key_id>     # creates a new key for the same consumer; revokes old after grace
@@ -86,6 +86,37 @@ The CLI talks to the database directly (via `jetmon_api_keys`), prints the new t
 **Why not mTLS / IP allowlists alone?** Either could replace Bearer tokens for service-to-service auth, but tokens make per-consumer identity trivial to log and revoke. mTLS rotation is heavier; IP allowlists don't survive containerized deployments cleanly. Bearer tokens are the lowest-friction option that gives us per-consumer accountability.
 
 **Why not OAuth?** Same reasoning as before, now stronger: there are no user delegations to model. Every caller is a server.
+
+## API CLI helper
+
+`jetmon2 api` is the local developer/operator helper for this API. It defaults
+to the Docker-local API listener and reads the Bearer token from the
+environment:
+
+```bash
+export JETMON_API_URL=http://localhost:8090
+export JETMON_API_TOKEN=jm_replace_with_a_local_key
+
+./bin/jetmon2 api health --pretty
+./bin/jetmon2 api me --pretty
+./bin/jetmon2 api sites list --output table
+./bin/jetmon2 api sites get --pretty 12345
+```
+
+Typed commands cover sites, events, webhooks, alert contacts, local smoke runs,
+and failure simulation. Use `api request` as the escape hatch for new API routes
+before a typed command exists:
+
+```bash
+./bin/jetmon2 api request --output table GET '/api/v1/sites?limit=5'
+./bin/jetmon2 api sites bulk-add --count 3 --batch local-smoke --dry-run --pretty
+./bin/jetmon2 api smoke --batch local-smoke --pretty
+./bin/jetmon2 api sites simulate-failure --batch local-smoke --mode http-500 --wait 15s --pretty
+```
+
+JSON is the default output for scripts. Add `--pretty` for readable JSON or
+`--output table` for stable human-readable tables on list and workflow summary
+commands.
 
 ## Common patterns
 

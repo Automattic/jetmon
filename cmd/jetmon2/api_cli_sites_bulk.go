@@ -89,11 +89,11 @@ func runAPISitesBulkAdd(ctx context.Context, client *http.Client, opts apiCLIOpt
 		if err != nil {
 			return err
 		}
-		return writeAPIJSON(opts.out, apiSitesBulkAddOutput{
+		return writeAPIValueOutput(opts.out, apiSitesBulkAddOutput{
 			DryRun: true,
 			Count:  len(sites),
 			Sites:  sites,
-		}, opts.pretty)
+		}, opts)
 	}
 
 	created := make([]json.RawMessage, 0, len(planned))
@@ -117,10 +117,10 @@ func runAPISitesBulkAdd(ctx context.Context, client *http.Client, opts apiCLIOpt
 		created = append(created, json.RawMessage(bytes.TrimSpace(response.Bytes())))
 	}
 
-	return writeAPIJSON(opts.out, apiSitesBulkAddOutput{
+	return writeAPIValueOutput(opts.out, apiSitesBulkAddOutput{
 		Count:   len(created),
 		Created: created,
-	}, opts.pretty)
+	}, opts)
 }
 
 func loadAPIBulkSiteEntries(opts apiSitesBulkAddOptions, in io.Reader) ([]apiBulkSiteEntry, error) {
@@ -342,26 +342,6 @@ func marshalAPIBulkSiteRequests(requests []apiSiteCreateRequest) ([]json.RawMess
 		out = append(out, json.RawMessage(b))
 	}
 	return out, nil
-}
-
-func writeAPIJSON(w io.Writer, v any, pretty bool) error {
-	if w == nil {
-		w = io.Discard
-	}
-	var (
-		b   []byte
-		err error
-	)
-	if pretty {
-		b, err = json.MarshalIndent(v, "", "  ")
-	} else {
-		b, err = json.Marshal(v)
-	}
-	if err != nil {
-		return err
-	}
-	_, err = fmt.Fprintln(w, string(b))
-	return err
 }
 
 func (e *apiBulkSiteEntry) UnmarshalJSON(data []byte) error {
