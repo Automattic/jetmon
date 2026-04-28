@@ -283,6 +283,64 @@ func TestWriteAPIResponseTableUsesNestedWorkflowRows(t *testing.T) {
 	}
 }
 
+func TestWriteAPIResponseTableIncludesSimulationSummaryColumns(t *testing.T) {
+	body := []byte(`{
+		"mode": "http-500",
+		"sites": [
+			{
+				"site_id": 42,
+				"action": "updated",
+				"trigger_status": "failed_http_500",
+				"event_ids": [99],
+				"event_states": ["Seems Down"],
+				"event_severities": [3],
+				"transition_count": 1
+			}
+		]
+	}`)
+	var out bytes.Buffer
+	if err := writeAPIResponseTable(&out, body); err != nil {
+		t.Fatalf("writeAPIResponseTable() error = %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"site_id  action   trigger_status   event_ids  event_states  event_severities  transition_count",
+		"42       updated  failed_http_500  99         Seems Down    3                 1",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("table missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestWriteAPIResponseTableIncludesSmokeCleanupRows(t *testing.T) {
+	body := []byte(`{
+		"steps": [
+			{"name": "health", "status": "ok"},
+			{"name": "me", "status": "ok"}
+		],
+		"cleanup_results": [
+			{"resource": "alert_contact", "id": 77, "status": "deleted"},
+			{"resource": "site", "id": 910, "status": "failed", "error": "not found"}
+		]
+	}`)
+	var out bytes.Buffer
+	if err := writeAPIResponseTable(&out, body); err != nil {
+		t.Fatalf("writeAPIResponseTable() error = %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"kind     name           id   status   detail",
+		"step     health              ok",
+		"cleanup  alert_contact  77   deleted",
+		"cleanup  site           910  failed   not found",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("table missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestWriteAPIResponseTableFallsBackToSortedColumns(t *testing.T) {
 	body := []byte(`{"zeta":"last","alpha":"first"}`)
 	var out bytes.Buffer

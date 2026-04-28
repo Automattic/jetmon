@@ -532,6 +532,9 @@ func writeAPIResponseTable(w io.Writer, body []byte) error {
 func apiTableRows(value any) []map[string]any {
 	switch v := value.(type) {
 	case map[string]any:
+		if rows := apiWorkflowTableRows(v); len(rows) > 0 {
+			return rows
+		}
 		for _, key := range []string{"data", "created", "sites", "steps"} {
 			if data, ok := v[key].([]any); ok {
 				return apiRowsFromArray(data)
@@ -543,6 +546,43 @@ func apiTableRows(value any) []map[string]any {
 	default:
 		return nil
 	}
+}
+
+func apiWorkflowTableRows(value map[string]any) []map[string]any {
+	steps, ok := value["steps"].([]any)
+	if !ok {
+		return nil
+	}
+	rows := make([]map[string]any, 0, len(steps))
+	for _, item := range steps {
+		step, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		row := map[string]any{"kind": "step"}
+		for k, v := range step {
+			row[k] = v
+		}
+		rows = append(rows, row)
+	}
+	cleanupResults, _ := value["cleanup_results"].([]any)
+	for _, item := range cleanupResults {
+		cleanup, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		row := map[string]any{
+			"kind":   "cleanup",
+			"name":   cleanup["resource"],
+			"id":     cleanup["id"],
+			"status": cleanup["status"],
+		}
+		if errText, ok := cleanup["error"]; ok {
+			row["detail"] = errText
+		}
+		rows = append(rows, row)
+	}
+	return rows
 }
 
 func apiRowsFromArray(data []any) []map[string]any {
@@ -567,7 +607,9 @@ func apiTableColumns(rows []map[string]any) []string {
 		{"id", "label", "active", "transport", "min_severity", "max_per_hour", "destination_preview"},
 		{"id", "status", "attempt", "event_id", "event_type", "last_status_code", "created_at"},
 		{"site_id", "status", "error"},
+		{"site_id", "action", "trigger_status", "event_ids", "event_states", "event_severities", "transition_count", "note", "error"},
 		{"site_id", "action", "note", "error"},
+		{"kind", "name", "id", "status", "detail"},
 		{"name", "status", "detail"},
 	} {
 		present := apiColumnsPresent(rows, cols)

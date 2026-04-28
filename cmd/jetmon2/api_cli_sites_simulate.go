@@ -60,14 +60,19 @@ type apiSimulateFailureSummary struct {
 }
 
 type apiSimulatedSiteResult struct {
-	SiteID      int64                    `json:"site_id"`
-	Action      string                   `json:"action"`
-	Site        json.RawMessage          `json:"site,omitempty"`
-	TriggerNow  json.RawMessage          `json:"trigger_now,omitempty"`
-	Events      json.RawMessage          `json:"events,omitempty"`
-	Transitions []apiSimulatedTransition `json:"transitions,omitempty"`
-	Note        string                   `json:"note,omitempty"`
-	Error       string                   `json:"error,omitempty"`
+	SiteID          int64                    `json:"site_id"`
+	Action          string                   `json:"action"`
+	TriggerStatus   string                   `json:"trigger_status,omitempty"`
+	EventIDs        []int64                  `json:"event_ids,omitempty"`
+	EventStates     []string                 `json:"event_states,omitempty"`
+	EventSeverities []int                    `json:"event_severities,omitempty"`
+	TransitionCount int                      `json:"transition_count"`
+	Site            json.RawMessage          `json:"site,omitempty"`
+	TriggerNow      json.RawMessage          `json:"trigger_now,omitempty"`
+	Events          json.RawMessage          `json:"events,omitempty"`
+	Transitions     []apiSimulatedTransition `json:"transitions,omitempty"`
+	Note            string                   `json:"note,omitempty"`
+	Error           string                   `json:"error,omitempty"`
 }
 
 type apiSimulatedTransition struct {
@@ -194,6 +199,9 @@ func runAPISiteSimulation(ctx context.Context, client *http.Client, opts apiCLIO
 			return result, err
 		}
 		result.TriggerNow = body
+		result.TriggerStatus = apiTriggerNowStatus(body)
+	} else {
+		result.TriggerStatus = "skipped"
 	}
 
 	events, transitions, err := waitForSimulationEvents(ctx, client, opts, siteID, sim)
@@ -202,6 +210,8 @@ func runAPISiteSimulation(ctx context.Context, client *http.Client, opts apiCLIO
 	}
 	result.Events = events
 	result.Transitions = transitions
+	result.EventIDs, result.EventStates, result.EventSeverities = summarizeSimulationEvents(events)
+	result.TransitionCount = simulationTransitionCount(transitions)
 	if len(transitions) == 0 {
 		result.Note = "no active events returned; trigger-now reports check results but regular orchestrator rounds create failure events"
 	}
@@ -325,6 +335,53 @@ func simulationTransitionsFromResults(results []apiSimulatedTransition) ([]apiSi
 		rows = append(rows, envelope.Data...)
 	}
 	return rows, nil
+}
+
+func apiTriggerNowStatus(body json.RawMessage) string {
+	var envelope struct {
+		Result struct {
+			HTTPCode  int  `json:"http_code"`
+			ErrorCode int  `json:"error_code"`
+			Success   bool `json:"success"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return "unknown"
+	}
+	if envelope.Result.Success {
+		return "success"
+	}
+	if envelope.Result.HTTPCode > 0 {
+		return fmt.Sprintf("failed_http_%d", envelope.Result.HTTPCode)
+	}
+	if envelope.Result.ErrorCode > 0 {
+		return fmt.Sprintf("failed_error_%d", envelope.Result.ErrorCode)
+	}
+	return "failed"
+}
+
+func summarizeSimulationEvents(body json.RawMessage) ([]int64, []string, []int) {
+	events, err := simulationEventsFromList(body)
+	if err != nil {
+		return nil, nil, nil
+	}
+	ids := make([]int64, 0, len(events))
+	states := make([]string, 0, len(events))
+	severities := make([]int, 0, len(events))
+	for _, event := range events {
+		ids = append(ids, event.ID)
+		states = append(states, event.State)
+		severities = append(severities, event.Severity)
+	}
+	return ids, states, severities
+}
+
+func simulationTransitionCount(results []apiSimulatedTransition) int {
+	transitions, err := simulationTransitionsFromResults(results)
+	if err != nil {
+		return 0
+	}
+	return len(transitions)
 }
 
 func validateSimulationExpectations(result apiSimulatedSiteResult, sim apiSitesSimulateFailureOptions) error {

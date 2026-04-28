@@ -78,6 +78,21 @@ func TestRunAPISitesSimulateFailureUpdatesAndReportsEvents(t *testing.T) {
 	if summary.Sites[0].Action != "updated" {
 		t.Fatalf("action = %q, want updated", summary.Sites[0].Action)
 	}
+	if summary.Sites[0].TriggerStatus != "failed_http_500" {
+		t.Fatalf("trigger status = %q, want failed_http_500", summary.Sites[0].TriggerStatus)
+	}
+	if got := summary.Sites[0].EventIDs; len(got) != 1 || got[0] != 99 {
+		t.Fatalf("event ids = %#v, want [99]", got)
+	}
+	if got := summary.Sites[0].EventStates; len(got) != 1 || got[0] != "Seems Down" {
+		t.Fatalf("event states = %#v, want [Seems Down]", got)
+	}
+	if got := summary.Sites[0].EventSeverities; len(got) != 1 || got[0] != 3 {
+		t.Fatalf("event severities = %#v, want [3]", got)
+	}
+	if summary.Sites[0].TransitionCount != 1 {
+		t.Fatalf("transition count = %d, want 1", summary.Sites[0].TransitionCount)
+	}
 	if len(summary.Sites[0].Transitions) != 1 || summary.Sites[0].Transitions[0].EventID != 99 {
 		t.Fatalf("transitions = %#v, want event 99", summary.Sites[0].Transitions)
 	}

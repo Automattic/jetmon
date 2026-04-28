@@ -120,7 +120,7 @@ but it should not become a generic `curl` clone.
   operator explicitly opts out.
 - [x] Add a reproducible documentation/live validation target for the API CLI
   feature guide and Docker-local smoke path.
-- [ ] Improve table output for workflow commands with event IDs, states,
+- [x] Improve table output for workflow commands with event IDs, states,
   severities, transition counts, trigger results, and cleanup status.
 - [ ] Add shell completion or richer command discovery for the expanded
   `jetmon2 api` command tree.
@@ -216,3 +216,6 @@ but it should not become a generic `curl` clone.
   `scripts/api-cli-validate.sh` for a live Docker-local validation pass across
   the feature guide's health, identity, generic request, smoke, failure
   simulation, and cleanup paths.
+- [x] 2026-04-28: Improved workflow table output by surfacing failure
+  simulation trigger status, event IDs, event states, event severities,
+  transition counts, and smoke cleanup rows in stable table columns.
