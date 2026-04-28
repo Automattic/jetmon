@@ -99,7 +99,7 @@ func UpdateSSLExpiry(ctx context.Context, blogID int64, expiry time.Time) error 
 	return err
 }
 
-// OpenSiteEvent inserts a new open event for the site if none is currently open.
+// OpenSiteEvent inserts a new open event for the site/event-type if none is currently open.
 func OpenSiteEvent(ctx context.Context, siteID int64, endpointID *int64, checkType CheckType, eventType EventType, severity EventSeverity, startedAt time.Time) (bool, error) {
 	res, err := db.ExecContext(ctx,
 		`INSERT INTO jetmon_site_events
@@ -111,10 +111,11 @@ func OpenSiteEvent(ctx context.Context, siteID int64, endpointID *int64, checkTy
 			WHERE jetpack_monitor_site_id = ?
 			  AND endpoint_id <=> ?
 			  AND check_type = ?
+			  AND event_type = ?
 			  AND ended_at IS NULL
 		 )`,
 		siteID, endpointID, checkType, eventType, severity, startedAt.UTC(),
-		siteID, endpointID, checkType,
+		siteID, endpointID, checkType, eventType,
 	)
 	if err != nil {
 		return false, err
@@ -126,16 +127,17 @@ func OpenSiteEvent(ctx context.Context, siteID int64, endpointID *int64, checkTy
 	return rows > 0, nil
 }
 
-// UpgradeOpenSiteEvent updates type/severity on the currently open event for a site.
-func UpgradeOpenSiteEvent(ctx context.Context, siteID int64, endpointID *int64, checkType CheckType, eventType EventType, severity EventSeverity) (bool, error) {
+// CloseOpenSiteEventType sets ended_at on the currently open event of the given type.
+func CloseOpenSiteEventType(ctx context.Context, siteID int64, endpointID *int64, checkType CheckType, eventType EventType, endedAt time.Time, reason ResolutionReason) (bool, error) {
 	res, err := db.ExecContext(ctx,
 		`UPDATE jetmon_site_events
-		 SET event_type = ?, severity = ?
+		 SET ended_at = ?, resolution_reason = ?
 		 WHERE jetpack_monitor_site_id = ?
 		   AND endpoint_id <=> ?
 		   AND check_type = ?
+		   AND event_type = ?
 		   AND ended_at IS NULL`,
-		eventType, severity, siteID, endpointID, checkType,
+		endedAt.UTC(), reason, siteID, endpointID, checkType, eventType,
 	)
 	if err != nil {
 		return false, err
@@ -147,7 +149,7 @@ func UpgradeOpenSiteEvent(ctx context.Context, siteID int64, endpointID *int64, 
 	return rows > 0, nil
 }
 
-// CloseOpenSiteEvent sets ended_at on the currently open event for a site.
+// CloseOpenSiteEvent sets ended_at on all currently open events for a site identity.
 func CloseOpenSiteEvent(ctx context.Context, siteID int64, endpointID *int64, checkType CheckType, endedAt time.Time, reason ResolutionReason) (bool, error) {
 	res, err := db.ExecContext(ctx,
 		`UPDATE jetmon_site_events
@@ -168,16 +170,53 @@ func CloseOpenSiteEvent(ctx context.Context, siteID int64, endpointID *int64, ch
 	return rows > 0, nil
 }
 
-// ConfirmDownTx upgrades the open event and updates site status atomically.
+// ConfirmDownTx immutably transitions seems_down to confirmed_down and updates site status atomically.
 func ConfirmDownTx(ctx context.Context, siteID, blogID int64, endpointID *int64, checkType CheckType, eventType EventType, severity EventSeverity, changedAt time.Time, dbUpdatesEnabled bool) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin confirm-down tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	_ = eventType
+	_ = severity
 
-	if _, err := upgradeOpenSiteEventTx(ctx, tx, siteID, endpointID, checkType, eventType, severity); err != nil {
-		return fmt.Errorf("upgrade site event in tx: %w", err)
+	startedAt := changedAt.UTC()
+	var openSeemsDownStartedAt time.Time
+	err = tx.QueryRowContext(ctx,
+		`SELECT started_at
+		 FROM jetmon_site_events
+		 WHERE jetpack_monitor_site_id = ?
+		   AND endpoint_id <=> ?
+		   AND check_type = ?
+		   AND event_type = ?
+		   AND ended_at IS NULL
+		 ORDER BY started_at ASC
+		 LIMIT 1
+		 FOR UPDATE`,
+		siteID, endpointID, checkType, EventTypeSeemsDown,
+	).Scan(&openSeemsDownStartedAt)
+	if err != nil {
+		if err != sql.ErrNoRows {
+			return fmt.Errorf("load open seems_down event in tx: %w", err)
+		}
+	} else {
+		startedAt = openSeemsDownStartedAt.UTC()
+		if _, err := closeOpenSiteEventTypeTx(
+			ctx,
+			tx,
+			siteID,
+			endpointID,
+			checkType,
+			EventTypeSeemsDown,
+			changedAt,
+			ResolutionReasonPromotedToConfirmedDown,
+		); err != nil {
+			return fmt.Errorf("close seems_down site event in tx: %w", err)
+		}
+	}
+
+	if _, err := openSiteEventTx(ctx, tx, siteID, endpointID, checkType, EventTypeConfirmedDown, EventSeverityHigh, startedAt); err != nil {
+		return fmt.Errorf("open confirmed_down site event in tx: %w", err)
 	}
 
 	if dbUpdatesEnabled {
@@ -195,15 +234,43 @@ func ConfirmDownTx(ctx context.Context, siteID, blogID int64, endpointID *int64,
 	return nil
 }
 
-func upgradeOpenSiteEventTx(ctx context.Context, tx *sql.Tx, siteID int64, endpointID *int64, checkType CheckType, eventType EventType, severity EventSeverity) (bool, error) {
+func openSiteEventTx(ctx context.Context, tx *sql.Tx, siteID int64, endpointID *int64, checkType CheckType, eventType EventType, severity EventSeverity, startedAt time.Time) (bool, error) {
+	res, err := tx.ExecContext(ctx,
+		`INSERT INTO jetmon_site_events
+			(jetpack_monitor_site_id, endpoint_id, check_type, event_type, severity, started_at)
+		 SELECT ?, ?, ?, ?, ?, ?
+		 WHERE NOT EXISTS (
+			SELECT 1
+			FROM jetmon_site_events
+			WHERE jetpack_monitor_site_id = ?
+			  AND endpoint_id <=> ?
+			  AND check_type = ?
+			  AND event_type = ?
+			  AND ended_at IS NULL
+		 )`,
+		siteID, endpointID, checkType, eventType, severity, startedAt.UTC(),
+		siteID, endpointID, checkType, eventType,
+	)
+	if err != nil {
+		return false, err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows > 0, nil
+}
+
+func closeOpenSiteEventTypeTx(ctx context.Context, tx *sql.Tx, siteID int64, endpointID *int64, checkType CheckType, eventType EventType, endedAt time.Time, reason ResolutionReason) (bool, error) {
 	res, err := tx.ExecContext(ctx,
 		`UPDATE jetmon_site_events
-		 SET event_type = ?, severity = ?
+		 SET ended_at = ?, resolution_reason = ?
 		 WHERE jetpack_monitor_site_id = ?
 		   AND endpoint_id <=> ?
 		   AND check_type = ?
+		   AND event_type = ?
 		   AND ended_at IS NULL`,
-		eventType, severity, siteID, endpointID, checkType,
+		endedAt.UTC(), reason, siteID, endpointID, checkType, eventType,
 	)
 	if err != nil {
 		return false, err

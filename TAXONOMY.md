@@ -432,7 +432,7 @@ sites (includes derived state for fast reads):
 
 - **Severity and state are separate fields.** Severity is the numeric, comparable value used for rollup (e.g., 1=Warning, 2=Degraded, 3=Seems Down, 4=Down). State is the human-readable category. Keeping them separate lets you add new states without breaking rollup logic.
 
-- **Open events are updated in place, not replaced.** A Seems Down event that gets verifier-confirmed to Down updates the same row with a severity change. The event's `started_at` remains the original detection timestamp. This keeps "how long has this been broken" honest — incident duration starts from first failure, not from verifier confirmation.
+- **Seems Down to Down is an immutable close+open transition.** When verifier confirmation arrives, close the open Seems Down event and open a new confirmed Down event in the same transaction. Copy the original `started_at` into the Down event so incident duration still starts at first failure, not at verifier confirmation.
 
 - **Event identity is idempotent.** If the same check fails twice in a row, it's the same event, not two events. Key events by `(site_id, endpoint_id, check_type, [optional discriminator])` so repeated detection of the same failure updates the existing open event rather than creating a new one. Deduplication logic lives in the shared probe runner, not in individual checks.
 
@@ -446,7 +446,7 @@ The Seems Down state is the key transient between first failure detection and ve
 
 1. First failure detected → open event at severity Seems Down, `started_at` = now
 2. Verifier runs (retry-on-failure, multi-location confirmation, etc.)
-3a. If verifier confirms failure → **update the same event** to severity Down, `started_at` unchanged
+3a. If verifier confirms failure → **close Seems Down and open Down** in one transaction, carrying forward the original `started_at`
 3b. If verifier succeeds → **close the event** with `resolution_reason = "false_positive"`, `ended_at` = now
 
 This pattern makes "events that opened at Seems Down and closed without promotion" a direct measure of detection noise, useful for tuning false-positive rates.
@@ -565,7 +565,7 @@ A consolidated list of architectural decisions made across the conversation hist
 7. **Unknown state exists specifically to prevent monitor-side failures from being reported as customer-site downtime.**
 8. **Event-sourced architecture** with derived site state denormalized for read performance.
 9. **Severity and state are separate fields**; severity is numeric and comparable, state is human-readable.
-10. **Seems Down promotes in place** to Down on verifier confirmation; `started_at` stays at first-failure time.
+10. **Seems Down transitions immutably** to Down via close+open on verifier confirmation; `started_at` stays at first-failure time.
 11. **Event identity is idempotent** via `(site_id, endpoint_id, check_type, discriminator)`.
 12. **Deduplication lives in the shared probe runner**, not in individual checks.
 13. **Resolution reason is recorded on event close** for accurate uptime reporting.

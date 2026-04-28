@@ -12,8 +12,9 @@ const (
 	EventSeverityLow  EventSeverity = 1
 	EventSeverityHigh EventSeverity = 2
 
-	ResolutionReasonVerifierCleared ResolutionReason = 1
-	ResolutionReasonFalseAlarm      ResolutionReason = 2
+	ResolutionReasonVerifierCleared         ResolutionReason = 1
+	ResolutionReasonFalseAlarm              ResolutionReason = 2
+	ResolutionReasonPromotedToConfirmedDown ResolutionReason = 3
 
 	CheckTypeHTTP CheckType = 1
 )
@@ -46,6 +47,8 @@ func ResolutionReasonLabel(r ResolutionReason) string {
 		return "verifier_cleared"
 	case ResolutionReasonFalseAlarm:
 		return "false_alarm"
+	case ResolutionReasonPromotedToConfirmedDown:
+		return "promoted_to_confirmed_down"
 	default:
 		return "unknown"
 	}

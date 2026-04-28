@@ -16,6 +16,9 @@ func TestSiteEventLabels(t *testing.T) {
 	if got := ResolutionReasonLabel(ResolutionReasonFalseAlarm); got != "false_alarm" {
 		t.Fatalf("ResolutionReasonLabel(false_alarm) = %q, want false_alarm", got)
 	}
+	if got := ResolutionReasonLabel(ResolutionReasonPromotedToConfirmedDown); got != "promoted_to_confirmed_down" {
+		t.Fatalf("ResolutionReasonLabel(promoted_to_confirmed_down) = %q, want promoted_to_confirmed_down", got)
+	}
 	if got := CheckTypeLabel(CheckTypeHTTP); got != "http" {
 		t.Fatalf("CheckTypeLabel(http) = %q, want http", got)
 	}
@@ -23,7 +26,7 @@ func TestSiteEventLabels(t *testing.T) {
 
 func TestSiteEventFunctionSignaturesCompile(t *testing.T) {
 	var _ func(context.Context, int64, *int64, CheckType, EventType, EventSeverity, time.Time) (bool, error) = OpenSiteEvent
-	var _ func(context.Context, int64, *int64, CheckType, EventType, EventSeverity) (bool, error) = UpgradeOpenSiteEvent
+	var _ func(context.Context, int64, *int64, CheckType, EventType, time.Time, ResolutionReason) (bool, error) = CloseOpenSiteEventType
 	var _ func(context.Context, int64, *int64, CheckType, time.Time, ResolutionReason) (bool, error) = CloseOpenSiteEvent
 	var _ func(context.Context, int64, int64, *int64, CheckType, EventType, EventSeverity, time.Time, bool) error = ConfirmDownTx
 }

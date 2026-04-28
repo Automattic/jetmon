@@ -36,7 +36,7 @@ Keeping these separate avoids conflating "this got worse" with "this is a differ
 
 ### Identity and idempotency
 
-Event `id` is derived from a stable set of inputs — typically `(site_id, probe_type, start_timestamp_bucket)` or equivalent — so that repeated probe results for the same underlying condition resolve to the same event row. This makes writes idempotent: a retried probe result updates the existing event rather than creating a new one.
+Event `id` is derived from a stable set of inputs — typically `(site_id, check_type, start_timestamp_bucket)` or equivalent — so that repeated check results for the same underlying condition resolve to the same event row. This makes writes idempotent: a retried check result updates the existing event rather than creating a new one.
 
 ## Lifecycle
 
@@ -59,12 +59,12 @@ No active event. Probes are succeeding.
 A probe has failed but the verifier has not yet confirmed. This is a **real state**, not an implementation detail — dashboards show it, alert rules can key off it, and it has its own severity range.
 
 The verifier path has two outcomes:
-- **Confirmed** → transition to `Down`.
+- **Confirmed** → close `Seems Down` with `resolution_reason = promoted_to_confirmed_down`, then open a new `Down` event carrying the same original `start_timestamp`.
 - **Disagreed** → event ends with `resolution_reason = false_alarm`, site returns to `Up`.
 
 ### Down
 
-Outage confirmed. Severity may continue to evolve in place as additional probes report.
+Outage confirmed. The event row remains immutable except closure fields (`end_timestamp`, `resolution_reason`); worsening conditions should close/open distinct events per lifecycle policy.
 
 ### Resolved
 
@@ -106,6 +106,7 @@ New probe types plug into this runner. They do not implement their own dedup.
 
 Every event close records why. Current reasons:
 
+- `promoted_to_confirmed_down` — Seems Down was verifier-confirmed and transitioned to a Down event.
 - `verifier_cleared` — verifier confirms the site is back up.
 - `false_alarm` — verifier disagreed with the initial failure signal.
 - `manual_override` — an operator closed the event.

@@ -314,8 +314,8 @@ func stubOrchestratorDeps() func() {
 	origDBRecordCheckHistory := dbRecordCheckHistory
 	origDBUpdateSSLExpiry := dbUpdateSSLExpiry
 	origDBOpenSiteEvent := dbOpenSiteEvent
-	origDBUpgradeOpenSiteEvent := dbUpgradeOpenSiteEvent
 	origDBCloseOpenSiteEvent := dbCloseOpenSiteEvent
+	origDBCloseOpenSiteEventType := dbCloseOpenSiteEventType
 	origDBConfirmDownTx := dbConfirmDownTx
 	origNotify := wpcomNotifyFunc
 	origVeriflierCheck := veriflierCheckFunc
@@ -330,10 +330,10 @@ func stubOrchestratorDeps() func() {
 	dbOpenSiteEvent = func(context.Context, int64, *int64, db.CheckType, db.EventType, db.EventSeverity, time.Time) (bool, error) {
 		return true, nil
 	}
-	dbUpgradeOpenSiteEvent = func(context.Context, int64, *int64, db.CheckType, db.EventType, db.EventSeverity) (bool, error) {
+	dbCloseOpenSiteEvent = func(context.Context, int64, *int64, db.CheckType, time.Time, db.ResolutionReason) (bool, error) {
 		return true, nil
 	}
-	dbCloseOpenSiteEvent = func(context.Context, int64, *int64, db.CheckType, time.Time, db.ResolutionReason) (bool, error) {
+	dbCloseOpenSiteEventType = func(context.Context, int64, *int64, db.CheckType, db.EventType, time.Time, db.ResolutionReason) (bool, error) {
 		return true, nil
 	}
 	dbConfirmDownTx = func(context.Context, int64, int64, *int64, db.CheckType, db.EventType, db.EventSeverity, time.Time, bool) error {
@@ -353,8 +353,8 @@ func stubOrchestratorDeps() func() {
 		dbRecordCheckHistory = origDBRecordCheckHistory
 		dbUpdateSSLExpiry = origDBUpdateSSLExpiry
 		dbOpenSiteEvent = origDBOpenSiteEvent
-		dbUpgradeOpenSiteEvent = origDBUpgradeOpenSiteEvent
 		dbCloseOpenSiteEvent = origDBCloseOpenSiteEvent
+		dbCloseOpenSiteEventType = origDBCloseOpenSiteEventType
 		dbConfirmDownTx = origDBConfirmDownTx
 		wpcomNotifyFunc = origNotify
 		veriflierCheckFunc = origVeriflierCheck
@@ -677,13 +677,15 @@ func TestEscalateToVerifliersFalsePositiveClosesOpenEvent(t *testing.T) {
 
 	var gotSiteID int64
 	var gotCheckType db.CheckType
+	var gotEventType db.EventType
 	var gotReason db.ResolutionReason
 	var gotEndedAt time.Time
 	var closeCalls int
-	dbCloseOpenSiteEvent = func(_ context.Context, siteID int64, _ *int64, checkType db.CheckType, endedAt time.Time, reason db.ResolutionReason) (bool, error) {
+	dbCloseOpenSiteEventType = func(_ context.Context, siteID int64, _ *int64, checkType db.CheckType, eventType db.EventType, endedAt time.Time, reason db.ResolutionReason) (bool, error) {
 		closeCalls++
 		gotSiteID = siteID
 		gotCheckType = checkType
+		gotEventType = eventType
 		gotReason = reason
 		gotEndedAt = endedAt
 		return true, nil
@@ -728,6 +730,9 @@ func TestEscalateToVerifliersFalsePositiveClosesOpenEvent(t *testing.T) {
 	if gotCheckType != db.CheckTypeHTTP {
 		t.Fatalf("CloseOpenSiteEvent check_type = %d, want %d", gotCheckType, db.CheckTypeHTTP)
 	}
+	if gotEventType != db.EventTypeSeemsDown {
+		t.Fatalf("CloseOpenSiteEvent event_type = %d, want %d", gotEventType, db.EventTypeSeemsDown)
+	}
 	if gotReason != db.ResolutionReasonFalseAlarm {
 		t.Fatalf("CloseOpenSiteEvent reason = %d, want %d", gotReason, db.ResolutionReasonFalseAlarm)
 	}
@@ -741,7 +746,7 @@ func TestEscalateToVerifliersFalsePositiveInMaintenanceDoesNotCloseOpenEvent(t *
 	cfg.PeerOfflineLimit = 2
 
 	var closeCalls int
-	dbCloseOpenSiteEvent = func(context.Context, int64, *int64, db.CheckType, time.Time, db.ResolutionReason) (bool, error) {
+	dbCloseOpenSiteEventType = func(context.Context, int64, *int64, db.CheckType, db.EventType, time.Time, db.ResolutionReason) (bool, error) {
 		closeCalls++
 		return true, nil
 	}
@@ -799,13 +804,15 @@ func TestHandleRecoveryClosesOpenEvent(t *testing.T) {
 
 	var gotSiteID int64
 	var gotCheckType db.CheckType
+	var gotEventType db.EventType
 	var gotReason db.ResolutionReason
 	var gotEndedAt time.Time
 	var closeCalls int
-	dbCloseOpenSiteEvent = func(_ context.Context, siteID int64, _ *int64, checkType db.CheckType, endedAt time.Time, reason db.ResolutionReason) (bool, error) {
+	dbCloseOpenSiteEventType = func(_ context.Context, siteID int64, _ *int64, checkType db.CheckType, eventType db.EventType, endedAt time.Time, reason db.ResolutionReason) (bool, error) {
 		closeCalls++
 		gotSiteID = siteID
 		gotCheckType = checkType
+		gotEventType = eventType
 		gotReason = reason
 		gotEndedAt = endedAt
 		return true, nil
@@ -831,6 +838,9 @@ func TestHandleRecoveryClosesOpenEvent(t *testing.T) {
 	}
 	if gotCheckType != db.CheckTypeHTTP {
 		t.Fatalf("CloseOpenSiteEvent check_type = %d, want %d", gotCheckType, db.CheckTypeHTTP)
+	}
+	if gotEventType != db.EventTypeConfirmedDown {
+		t.Fatalf("CloseOpenSiteEvent event_type = %d, want %d", gotEventType, db.EventTypeConfirmedDown)
 	}
 	if gotReason != db.ResolutionReasonVerifierCleared {
 		t.Fatalf("CloseOpenSiteEvent reason = %d, want %d", gotReason, db.ResolutionReasonVerifierCleared)
@@ -1199,7 +1209,7 @@ func TestHandleRecoveryInMaintenance(t *testing.T) {
 	setTestConfig(t)
 
 	var closeCalls int
-	dbCloseOpenSiteEvent = func(context.Context, int64, *int64, db.CheckType, time.Time, db.ResolutionReason) (bool, error) {
+	dbCloseOpenSiteEventType = func(context.Context, int64, *int64, db.CheckType, db.EventType, time.Time, db.ResolutionReason) (bool, error) {
 		closeCalls++
 		return true, nil
 	}
