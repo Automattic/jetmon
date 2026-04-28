@@ -91,6 +91,7 @@ approved.
    ```bash
    ./bin/jetmon2 api smoke --batch rollout-rehearsal --pretty
    ./bin/jetmon2 api sites simulate-failure --batch rollout-rehearsal --mode http-500 --wait 15s --pretty
+   ./bin/jetmon2 api sites cleanup --batch rollout-rehearsal --count 3 --output table
    ```
 
 5. Confirm the smoke output, event IDs, transitions, API audit rows, and any

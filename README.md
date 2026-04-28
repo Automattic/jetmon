@@ -306,6 +306,11 @@ The same CLI can create bounded test batches and run a Docker-local smoke pass:
 	./bin/jetmon2 api sites bulk-add --count 3 --batch local-smoke --dry-run --pretty
 	./bin/jetmon2 api smoke --batch local-smoke --pretty
 	./bin/jetmon2 api sites simulate-failure --batch local-smoke --mode http-500 --wait 15s --pretty
+	./bin/jetmon2 api sites cleanup --batch local-smoke --count 3 --output table
+
+Or run the standard CLI smoke sequence with:
+
+	JETMON_API_URL=http://localhost:${API_HOST_PORT:-8090} JETMON_API_TOKEN=jm_replace_with_the_printed_token make api-cli-smoke
 
 ### Adding Test Sites
 

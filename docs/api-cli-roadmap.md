@@ -87,6 +87,21 @@ but it should not become a generic `curl` clone.
 - [x] Add examples to `API.md`, Docker docs, and the v1-to-v2 rollout rehearsal
   docs once the command shape has stabilized.
 
+## P4 - Hardening and Repeatability
+
+- [x] Re-run a fresh `docker compose up --build -d` and API CLI smoke pass after
+  Docker bridge networking is healthy, so the branch is verified through the
+  normal container entrypoint instead of only the host-run binary.
+- [x] Add `jetmon2 api sites cleanup --batch <id>` for removing deterministic
+  CLI-created site batches after smoke, bulk-add, and failure simulation runs.
+- [x] Add a one-command `make api-cli-smoke` entrypoint for the documented local
+  smoke path.
+- [ ] Add a deterministic Docker-local failure fixture service for response
+  codes, redirects, keyword mismatch, slow responses, and TLS edge cases.
+- [ ] Teach failure simulation to prefer the Docker-local fixture when it is
+  available, then assert exact event/transition behavior without depending on
+  public endpoint timing.
+
 ## Completed
 
 - [x] 2026-04-28: Created the `feature/api-cli` branch and initial roadmap.
@@ -145,3 +160,12 @@ but it should not become a generic `curl` clone.
   default script-friendly output.
 - [x] 2026-04-28: Documented API CLI setup and examples in `API.md`, the Docker
   development loop, and the pinned v1-to-v2 rollout rehearsal runbook.
+- [x] 2026-04-28: Added `jetmon2 api sites cleanup` with deterministic
+  batch-derived IDs, explicit site IDs, dry-run output, 404-tolerant cleanup,
+  and JSON/table summaries for removing local CLI test data.
+- [x] 2026-04-28: Added `make api-cli-smoke` as the repeatable local API CLI
+  smoke entrypoint and documented cleanup examples in API, Docker, and rollout
+  docs.
+- [x] 2026-04-28: Verified a fresh Docker Compose rebuild after Docker bridge
+  networking was repaired, ran `make api-cli-smoke` against the rebuilt API on
+  alternate host ports, and live-tested `sites cleanup --batch`.

@@ -457,6 +457,7 @@ func apiTableColumns(rows []map[string]any) []string {
 		{"id", "url", "active", "events", "secret_preview", "created_at"},
 		{"id", "label", "active", "transport", "min_severity", "max_per_hour", "destination_preview"},
 		{"id", "status", "attempt", "event_id", "event_type", "last_status_code", "created_at"},
+		{"site_id", "status", "error"},
 		{"site_id", "action", "note", "error"},
 		{"name", "status", "detail"},
 	} {

@@ -112,6 +112,7 @@ before a typed command exists:
 ./bin/jetmon2 api sites bulk-add --count 3 --batch local-smoke --dry-run --pretty
 ./bin/jetmon2 api smoke --batch local-smoke --pretty
 ./bin/jetmon2 api sites simulate-failure --batch local-smoke --mode http-500 --wait 15s --pretty
+./bin/jetmon2 api sites cleanup --batch local-smoke --count 3 --output table
 ```
 
 JSON is the default output for scripts. Add `--pretty` for readable JSON or

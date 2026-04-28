@@ -1,6 +1,8 @@
 BINARY      := bin/jetmon2
 DELIVERER   := bin/jetmon-deliverer
 VERIFLIER   := bin/veriflier2
+API_SMOKE_BATCH ?= local-smoke
+API_SMOKE_ARGS  ?=
 GO          ?= $(shell if command -v go >/dev/null 2>&1; then command -v go; elif [ -x /usr/local/go/bin/go ]; then printf /usr/local/go/bin/go; else printf go; fi)
 GOCACHE     ?= /tmp/jetmon-go-cache
 GO_ENV      := GOCACHE=$(GOCACHE)
@@ -8,7 +10,7 @@ BUILD_FLAGS := -ldflags "-X main.version=$(shell git describe --tags --always --
                          -X main.buildDate=$(shell date -u +%Y-%m-%dT%H:%M:%SZ) \
                          -X main.goVersion=$(shell $(GO) version | awk '{print $$3}')"
 
-.PHONY: all build build-deliverer build-veriflier generate test test-race lint clean
+.PHONY: all build build-deliverer build-veriflier generate test test-race lint api-cli-smoke clean
 
 all: build build-deliverer build-veriflier
 
@@ -38,6 +40,13 @@ test-race:
 
 lint:
 	$(GO_ENV) $(GO) vet ./...
+
+api-cli-smoke: build
+	@test -n "$$JETMON_API_TOKEN" || { echo "JETMON_API_TOKEN is required"; exit 1; }
+	$(BINARY) api health --pretty
+	$(BINARY) api me --pretty
+	$(BINARY) api sites bulk-add --count 3 --batch $(API_SMOKE_BATCH) --dry-run --pretty
+	$(BINARY) api smoke --batch $(API_SMOKE_BATCH) --pretty $(API_SMOKE_ARGS)
 
 clean:
 	rm -f $(BINARY) $(DELIVERER) $(VERIFLIER)
