@@ -62,7 +62,7 @@ See `PROJECT.md` for the full project description, feature list, and performance
 
 **Alerting delivery worker** (`internal/alerting/`): Same shape as the webhook worker but for managed channels — email (via `wpcom`/`smtp`/`stub` senders), PagerDuty Events API v2, Slack incoming webhooks, Microsoft Teams. Filter is simpler (`site_filter` + `min_severity`); per-contact `max_per_hour` rate cap absorbs pager storms. Send-test endpoint exercises the same dispatch path without requiring a real event.
 
-**Current delivery-owner constraint:** In the single-binary v2 deployment, `API_PORT > 0` starts the API server plus webhook and alert-contact delivery workers. Run that on only one active `jetmon2` instance per database cluster; additional monitor hosts should leave `API_PORT = 0` until delivery claiming moves to transactional row locks or the deliverer binary is split out.
+**Current delivery-owner constraint:** In the single-binary v2 deployment, `API_PORT > 0` starts the API server and makes webhook / alert-contact delivery workers eligible to run. Set `DELIVERY_OWNER_HOST` to exactly one `jetmon2` hostname per database cluster so additional API-enabled hosts can serve the API without dispatching duplicate outbound deliveries. If `DELIVERY_OWNER_HOST` is empty, the host preserves the legacy behavior and starts delivery workers whenever `API_PORT > 0`; startup and `validate-config` warn about that fallback. This guard remains until delivery claiming moves to transactional row locks or the deliverer binary is split out.
 
 **Veriflier transport** (`internal/veriflier/`): JSON-over-HTTP client/server for Monitor↔Veriflier communication. Replaces the previous SSL server and custom HTTPS protocol. Run `make generate` to swap in generated gRPC stubs once protoc is set up.
 
@@ -309,7 +309,7 @@ Up → Seems Down → Down → Resolved
 
 **Veriflier Quorum Floor:** When Verifliers are marked unhealthy and excluded, `PEER_OFFLINE_LIMIT` adjusts dynamically, but there is a configured floor to prevent a single healthy Veriflier from confirming downtime alone. Ensure the floor is set appropriately for the number of deployed Verifliers.
 
-**Single Active Delivery Owner:** Webhook and alert-contact workers currently soft-lock delivery rows inside one process. Do not run multiple active API/delivery owners against the same database unless `ClaimReady` has been upgraded to transactional `SELECT ... FOR UPDATE SKIP LOCKED`; otherwise duplicate outbound deliveries are possible.
+**Single Active Delivery Owner:** Webhook and alert-contact workers currently soft-lock delivery rows inside one process. Use `DELIVERY_OWNER_HOST` to keep only one delivery owner active per database cluster. Do not run multiple active delivery owners against the same database unless `ClaimReady` has been upgraded to transactional `SELECT ... FOR UPDATE SKIP LOCKED`; otherwise duplicate outbound deliveries are possible.
 
 **Maintenance Windows:** Checks continue during a maintenance window and data is recorded in the audit log, but no alerts fire. Verify that `maintenance_end` is correctly set — an open-ended maintenance window silently suppresses all alerts for that site indefinitely.
 

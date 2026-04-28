@@ -184,7 +184,8 @@ func TestLoadAndGet(t *testing.T) {
 		"BUCKET_TOTAL": 100,
 		"BUCKET_TARGET": 50,
 		"NET_COMMS_TIMEOUT": 10,
-		"LOG_FORMAT": "json"
+		"LOG_FORMAT": "json",
+		"DELIVERY_OWNER_HOST": "jetmon-api-1"
 	}`)
 
 	if err := Load(p); err != nil {
@@ -203,6 +204,9 @@ func TestLoadAndGet(t *testing.T) {
 	}
 	if cfg.LogFormat != "json" {
 		t.Fatalf("LogFormat = %q, want json", cfg.LogFormat)
+	}
+	if cfg.DeliveryOwnerHost != "jetmon-api-1" {
+		t.Fatalf("DeliveryOwnerHost = %q, want jetmon-api-1", cfg.DeliveryOwnerHost)
 	}
 	if !cfg.LegacyStatusProjectionEnable {
 		t.Fatal("LegacyStatusProjectionEnable default should be true")

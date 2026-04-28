@@ -65,6 +65,11 @@ type Config struct {
 	DebugPort     int    `json:"DEBUG_PORT"`
 	APIPort       int    `json:"API_PORT"` // 0 = API server disabled
 
+	// DeliveryOwnerHost constrains webhook and alert-contact delivery workers
+	// to a single named host while the v2 single-binary deployment still uses
+	// soft delivery locks. Empty preserves the legacy API_PORT behavior.
+	DeliveryOwnerHost string `json:"DELIVERY_OWNER_HOST"`
+
 	// Email transport selection for alert contacts. "stub" = log only
 	// (default; safe for environments where email is not configured),
 	// "smtp" = direct SMTP send (dev / staging with MailHog or similar),

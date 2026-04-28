@@ -34,6 +34,7 @@
 	"LOG_FORMAT"     : "text",
 	"DASHBOARD_PORT" : 8080,
 	"API_PORT"       : 0,
+	"DELIVERY_OWNER_HOST": "",
 	"DEBUG_PORT"     : 6060,
 
 	"EMAIL_TRANSPORT"       : "stub",

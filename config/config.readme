@@ -71,7 +71,10 @@ DASHBOARD_PORT
 Port for the operator dashboard. Set to 0 to disable. Default: 8080.
 
 API_PORT
-Port for the internal REST API. Set to 0 to disable. In the current single-binary v2 deployment, enabling API_PORT also starts the webhook and alert-contact delivery workers. Run API_PORT on only one active jetmon2 instance per database cluster; leave it at 0 on additional monitor instances until multi-instance delivery claiming is implemented. Default: 0.
+Port for the internal REST API. Set to 0 to disable. In the current single-binary v2 deployment, API_PORT also controls whether webhook and alert-contact delivery workers are eligible to run. Default: 0.
+
+DELIVERY_OWNER_HOST
+Optional hostname that is allowed to run webhook and alert-contact delivery workers when API_PORT is enabled. Set this to exactly one jetmon2 hostname per database cluster so additional API-enabled hosts can serve reads/writes without dispatching duplicate outbound deliveries. If empty and API_PORT is enabled, the current host starts delivery workers for backward compatibility and startup / validate-config emit a warning. Default: empty.
 
 DEBUG_PORT
 Port for the pprof debug server. Only binds to 127.0.0.1 (localhost) — never accessible remotely. Set to 0 to disable. Default: 6060.

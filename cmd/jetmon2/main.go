@@ -135,12 +135,29 @@ func runServe() {
 		}()
 	}
 
+	if level, msg := deliveryOwnerStatus(cfg, db.Hostname()); msg != "" {
+		if level == "WARN" {
+			log.Printf("WARN: %s", msg)
+		} else {
+			log.Printf("config: %s", msg)
+		}
+	}
+	deliveryWorkersEnabled := deliveryWorkersShouldStart(cfg, db.Hostname())
+
+	var alertDispatchers map[alerting.Transport]alerting.Dispatcher
+	if cfg.APIPort > 0 {
+		alertDispatchers = buildAlertDispatchers(cfg)
+		if apiSrv != nil {
+			apiSrv.SetAlertDispatchers(alertDispatchers)
+		}
+	}
+
 	// Webhook delivery worker. Polls jetmon_event_transitions for new rows,
 	// matches against active webhooks, fans out signed POSTs with retry.
 	// Disabled when API_PORT is 0 (no consumers to fire to without the
-	// API to manage webhooks).
+	// API to manage webhooks) or when DELIVERY_OWNER_HOST names another host.
 	var hookWorker *webhooks.Worker
-	if cfg.APIPort > 0 {
+	if deliveryWorkersEnabled {
 		hookWorker = webhooks.NewWorker(webhooks.WorkerConfig{
 			DB:         db.DB(),
 			InstanceID: db.Hostname(),
@@ -153,20 +170,17 @@ func runServe() {
 	// separate package so the two can evolve independently — the future
 	// "deliverer binary" extraction is the moment to factor out a
 	// shared abstraction. Disabled when API_PORT is 0 (no contacts to
-	// fire to without the API to manage them).
+	// fire to without the API to manage them) or when DELIVERY_OWNER_HOST
+	// names another host.
 	var alertWorker *alerting.Worker
-	if cfg.APIPort > 0 {
-		dispatchers := buildAlertDispatchers(cfg)
+	if deliveryWorkersEnabled {
 		alertWorker = alerting.NewWorker(alerting.WorkerConfig{
 			DB:          db.DB(),
 			InstanceID:  db.Hostname(),
-			Dispatchers: dispatchers,
+			Dispatchers: alertDispatchers,
 		})
 		alertWorker.Start()
-		if apiSrv != nil {
-			apiSrv.SetAlertDispatchers(dispatchers)
-		}
-		log.Printf("alerting: delivery worker started (transports=%d)", len(dispatchers))
+		log.Printf("alerting: delivery worker started (transports=%d)", len(alertDispatchers))
 	}
 
 	// Push dashboard state every stats interval.
@@ -268,6 +282,9 @@ func cmdValidateConfig() {
 	if !emailTransportDelivers(cfg) {
 		fmt.Printf("WARN email_transport=%s — alert-contact emails will be logged but not delivered\n", emailTransportLabel(cfg))
 	}
+	if level, msg := deliveryOwnerStatus(cfg, db.Hostname()); msg != "" {
+		fmt.Printf("%s %s\n", level, msg)
+	}
 	for _, v := range cfg.Verifiers {
 		addr := fmt.Sprintf("%s:%s", v.Host, v.GRPCPort)
 		// Listing configured Verifliers is operator context, not a reachability check.
@@ -300,6 +317,31 @@ func emailTransportLabel(cfg *config.Config) string {
 // silently disappear into the logs in that mode.
 func emailTransportDelivers(cfg *config.Config) bool {
 	return cfg.EmailTransport == "smtp" || cfg.EmailTransport == "wpcom"
+}
+
+func deliveryWorkersShouldStart(cfg *config.Config, hostname string) bool {
+	if cfg.APIPort <= 0 {
+		return false
+	}
+	owner := strings.TrimSpace(cfg.DeliveryOwnerHost)
+	return owner == "" || owner == hostname
+}
+
+func deliveryOwnerStatus(cfg *config.Config, hostname string) (string, string) {
+	owner := strings.TrimSpace(cfg.DeliveryOwnerHost)
+	if cfg.APIPort <= 0 {
+		if owner == "" {
+			return "INFO", "delivery_workers=disabled api_port=disabled"
+		}
+		return "INFO", fmt.Sprintf("delivery_owner_host=%q ignored because API_PORT is disabled", owner)
+	}
+	if owner == "" {
+		return "WARN", fmt.Sprintf("delivery_owner_host is unset; host %q will run delivery workers because API_PORT is enabled", hostname)
+	}
+	if owner == hostname {
+		return "INFO", fmt.Sprintf("delivery_owner_host=%q matched; delivery workers enabled on this host", owner)
+	}
+	return "INFO", fmt.Sprintf("delivery_owner_host=%q; delivery workers disabled on host %q", owner, hostname)
 }
 
 func cmdStatus() {

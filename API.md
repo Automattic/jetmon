@@ -682,7 +682,7 @@ The signature is HMAC-SHA256 of `{timestamp}.{body}` with the webhook's `secret`
 
 Webhook delivery uses **pull-based detection**: a worker polls `jetmon_event_transitions WHERE id > last_seen` on a 1s interval and creates one delivery row per matching transition. This is the long-term answer for Jetmon's architecture — the orchestrator's flap suppression already adds 10s+ between detection and confirmed events, so 1s poll latency is invisible in the practical budget.
 
-Current v2 deployment constraint: run the API/webhook/alert delivery worker on a single active `jetmon2` instance per database cluster. In the single-binary shape, those workers are enabled by setting `API_PORT`; additional monitor instances should leave `API_PORT` at `0` until delivery claiming moves to transactional row locks. Multi-instance delivery via `SELECT ... FOR UPDATE SKIP LOCKED` is the planned path for the future deliverer-binary split, but it is not the current worker contract.
+Current v2 deployment constraint: run the webhook/alert delivery worker on a single active `jetmon2` instance per database cluster. In the single-binary shape, `API_PORT` makes those workers eligible to run; `DELIVERY_OWNER_HOST` can restrict actual delivery to one named host while allowing additional hosts to serve API traffic. If `DELIVERY_OWNER_HOST` is empty, the host keeps the legacy behavior and starts delivery workers whenever `API_PORT` is enabled. Multi-instance delivery via `SELECT ... FOR UPDATE SKIP LOCKED` is the planned path for the future deliverer-binary split, but it is not the current worker contract.
 
 Push-based or hybrid detection is not on the roadmap. If a future consumer demands sub-second webhook latency, that's the trigger to introduce a pub/sub layer — not before.
 

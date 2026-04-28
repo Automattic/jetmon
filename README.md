@@ -136,7 +136,8 @@ Key settings:
 | `LEGACY_STATUS_PROJECTION_ENABLE` | true | Keep `jetpack_monitor_sites.site_status` / `last_status_change` updated for v1 consumers during migration |
 | `LOG_FORMAT` | `text` | `text` for plain-text logs or `json` for structured logs |
 | `DASHBOARD_PORT` | 8080 | Internal port for the operator dashboard (0 to disable) |
-| `API_PORT` | 0 | Internal REST API port (0 to disable). In the current single-binary v2 shape, this also starts webhook and alert-contact delivery workers; enable it on only one active instance per database cluster. |
+| `API_PORT` | 0 | Internal REST API port (0 to disable). Also makes webhook and alert-contact delivery workers eligible to run. |
+| `DELIVERY_OWNER_HOST` | empty | Optional hostname allowed to run delivery workers when `API_PORT` is enabled; set this on shared production configs so only one API-enabled host dispatches outbound deliveries. |
 | `DEBUG_PORT` | 6060 | localhost-only pprof port (`127.0.0.1:PORT`); 0 to disable |
 | `EMAIL_TRANSPORT` | `stub` | Alert-contact email sender: `stub` (log only), `smtp`, or `wpcom` |
 
@@ -416,7 +417,7 @@ The dashboard is available at http://localhost:8080 (configurable via `DASHBOARD
 
 The internal API is disabled by default. Set `API_PORT` to a non-zero port to enable `/api/v1/...`.
 
-In the current single-binary v2 deployment, enabling `API_PORT` also starts the webhook and alert-contact delivery workers. Run `API_PORT` on only one active `jetmon2` instance per database cluster; leave it at `0` on additional monitor hosts. The future deliverer split will replace this operational constraint with transactional row claiming for active-active delivery workers.
+In the current single-binary v2 deployment, `API_PORT` also makes the webhook and alert-contact delivery workers eligible to run. Set `DELIVERY_OWNER_HOST` to exactly one `jetmon2` hostname per database cluster so additional API-enabled hosts can serve API traffic without dispatching duplicate outbound deliveries. If `DELIVERY_OWNER_HOST` is empty, the host keeps the legacy behavior and starts delivery workers whenever `API_PORT` is enabled; startup and `validate-config` warn about that fallback. The future deliverer split will replace this operational constraint with transactional row claiming for active-active delivery workers.
 
 ### Cleanup
 
