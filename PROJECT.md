@@ -25,7 +25,7 @@ The Veriflier is rewritten in Go as well, replacing the Qt C++ dependency with a
 
 ```
 ┌──────────────────────────────────────────────────────┐
-│                  jetmon2 (single binary)             │
+│                       jetmon2                        │
 │                                                      │
 │  ┌─────────────┐  ┌─────────────┐  ┌──────────────┐  │
 │  │ Orchestrator│  │ Check Pool  │  │  Veriflier   │  │
@@ -43,7 +43,7 @@ The Veriflier is rewritten in Go as well, replacing the Qt C++ dependency with a
           (all unchanged)
 ```
 
-The monolithic process replaces the master/worker/SSL-cluster process tree. Concurrency is managed through Go channels and a bounded goroutine worker pool. The orchestrator goroutine owns DB access and WPCOM notifications. The check pool goroutines own HTTP connections. The Veriflier client/server code handles remote confirmation batches over JSON-over-HTTP today and is isolated behind `internal/veriflier/` for the future gRPC swap.
+The monitor process replaces the master/worker/SSL-cluster process tree. Concurrency is managed through Go channels and a bounded goroutine worker pool. The orchestrator goroutine owns DB access and WPCOM notifications. The check pool goroutines own HTTP connections. The Veriflier client/server code handles remote confirmation batches over JSON-over-HTTP today and is isolated behind `internal/veriflier/` for the future gRPC swap. Outbound webhook and alert-contact delivery can run embedded in one API-enabled `jetmon2` process today, or through the standalone `jetmon-deliverer` entry point as that responsibility moves toward its own deployable process.
 
 ---
 
@@ -77,7 +77,7 @@ Go's `time.Ticker` fires with OS-level timer precision. RTT measurements from `n
 
 Current deployment requires `npm install`, a `node-gyp` rebuild of the native C++ addon (which must match the installed Node.js version), and a coordinated process restart. A failed addon compilation blocks deployment entirely.
 
-Jetmon 2 deploys as a single static binary with no runtime dependencies. Deployment is: copy binary, `systemctl restart jetmon2`. Total deployment time drops from several minutes to under 30 seconds. There is no compilation step on the target host and no dependency on a matching Node.js version.
+Jetmon 2 deploys as static Go binaries with no runtime language dependencies. The conservative v2 monitor deployment is: copy `jetmon2`, run migrations, and `systemctl restart jetmon2`. Total deployment time drops from several minutes to under 30 seconds. There is no compilation step on the target host and no dependency on a matching Node.js version.
 
 ### Mean Time to Recovery
 

@@ -40,7 +40,10 @@ migration and the operating data needed to make larger architecture decisions.
 
 - **Extract `jetmon-deliverer` when delivery scale or blast radius warrants
   it.** Move webhook delivery, alert-contact delivery, and eventually WPCOM
-  notification dispatch behind one outbound-delivery binary.
+  notification dispatch behind one outbound-delivery binary. Initial shared
+  worker wiring and a standalone `jetmon-deliverer` entry point exist; the
+  remaining production cutover work is service packaging, rollout policy, and
+  transactional row claiming.
 - **Replace soft delivery locks with transactional row claims.** As part of
   the deliverer extraction, update the webhook and alert-contact `ClaimReady`
   paths to use `SELECT ... FOR UPDATE SKIP LOCKED` so active-active delivery

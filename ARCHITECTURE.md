@@ -8,12 +8,15 @@ call flow used to determine and report site status.
 System Overview
 ---------------
 
-Jetmon 2 is a single Go binary. Multiple instances can run on different hosts,
-each owning a non-overlapping range of site buckets claimed from MySQL.
+Jetmon 2 runs as a Go monitor binary (`jetmon2`). Multiple monitor instances can
+run on different hosts, each owning a non-overlapping range of site buckets
+claimed from MySQL. Outbound webhooks and alert contacts can still run embedded
+inside one API-enabled `jetmon2` process, or through the standalone
+`jetmon-deliverer` binary as the first step toward the post-v2 process split.
 
 ```
                           ┌─────────────────────────────────────────┐
-                          │            jetmon2 (single binary)      │
+                          │                 jetmon2                 │
                           │                                         │
   ┌──────────┐  sites     │  ┌─────────────┐    ┌─────────────────┐ │
   │  MySQL   │──────────► │  │ Orchestrator│───►│  Checker Pool   │ │
@@ -59,6 +62,7 @@ Package Map
 ```
 jetmon/
 ├── cmd/jetmon2/          Entry point, CLI subcommands, signal handling
+├── cmd/jetmon-deliverer/ Standalone outbound delivery worker
 ├── internal/
 │   ├── orchestrator/     Round loop, bucket coordination, retry queue,
 │   │                     failure escalation, status notifications
@@ -72,6 +76,7 @@ jetmon/
 │   ├── audit/            Structured audit log (read + write)
 │   ├── eventstore/       Authoritative incident event + transition writer
 │   ├── api/              Internal REST API, auth, rate limits, idempotency
+│   ├── deliverer/        Shared webhook + alert-contact worker wiring
 │   ├── webhooks/         Webhook registry + HMAC-signed delivery worker
 │   ├── alerting/         Managed alert-contact registry + delivery worker
 │   ├── metrics/          StatsD UDP client, stats file writer

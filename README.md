@@ -25,7 +25,7 @@ v2 keeps the Jetmon 1 detection pipeline (local retries → geo-distributed Veri
 | API surface | None | Internal REST API at `/api/v1`: Bearer auth, three coarse scopes, per-key rate limit, Stripe-style idempotency, cursor pagination, full audit logging |
 | Per-site config | Bucket + check interval | + custom headers, timeout override, redirect policy, alert cooldown, maintenance windows, keyword content check, SSL-expiry alerts at 30 / 14 / 7 days |
 | Operational audit | Basic logging | Full audit trail (`jetmon_audit_log`) over every check, retry, Veriflier dispatch, alert suppression, API call, and config reload |
-| Process model | Node master + Node workers + C++ native addon + Qt C++ Veriflier | Single Go binary (`jetmon2`) + Go Veriflier (`veriflier2`) |
+| Process model | Node master + Node workers + C++ native addon + Qt C++ Veriflier | Go monitor (`jetmon2`) + optional outbound deliverer (`jetmon-deliverer`) + Go Veriflier (`veriflier2`) |
 | Worker scaling | Spawn / kill child processes | In-process goroutine pool that auto-scales by queue depth |
 | Deployment friction | `npm` + `node-gyp` + Qt | Static binary + `./jetmon2 migrate` + `./jetmon2 validate-config` |
 | Multi-host coordination | Manual `bucket_min` / `bucket_max` per host | MySQL-coordinated `jetmon_hosts` table with heartbeat-and-reclaim |
@@ -46,7 +46,7 @@ Architecture
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│                 jetmon2 (single binary)                      │
+│                           jetmon2                            │
 │                                                              │
 │  ┌────────────┐  ┌────────────┐  ┌────────────────────┐      │
 │  │Orchestrator│  │ Check pool │  │ Veriflier          │      │
@@ -59,7 +59,8 @@ Architecture
 │        │                 │                  │                │
 │  ┌─────┴──────┐  ┌───────┴────────┐  ┌──────┴──────────┐     │
 │  │  REST API  │  │ Webhook worker │  │  Alert-contact  │     │
-│  │  /api/v1/  │  │ (HMAC-signed)  │  │     worker      │     │
+│  │  /api/v1/  │  │ embedded or    │  │ worker embedded │     │
+│  │            │  │ deliverer      │  │ or deliverer    │     │
 │  └────────────┘  └────────────────┘  └─────────────────┘     │
 └────────┬─────────────────────────────────────────┬───────────┘
          │                                         │
@@ -236,8 +237,9 @@ For Developers
 
 ### Building
 
-	make all              # Build bin/jetmon2 and bin/veriflier2
+	make all              # Build bin/jetmon2, bin/jetmon-deliverer, and bin/veriflier2
 	make build            # Build only bin/jetmon2
+	make build-deliverer  # Build only bin/jetmon-deliverer
 	make build-veriflier  # Build only bin/veriflier2
 
 If `go` is not on `PATH`, the Makefile falls back to
@@ -334,6 +336,7 @@ The debug port is configurable via `DEBUG_PORT` (default 6060). Set to 0 to disa
 | Path | Purpose |
 |------|---------|
 | `cmd/jetmon2/` | Binary entry point |
+| `cmd/jetmon-deliverer/` | Standalone outbound delivery worker entry point |
 | `internal/orchestrator/` | Round scheduling, DB fetch, WPCOM notifications |
 | `internal/checker/` | HTTP check goroutine pool |
 | `internal/veriflier/` | JSON-over-HTTP Veriflier transport (proto3 service defined in `proto/`) |
@@ -344,6 +347,7 @@ The debug port is configurable via `DEBUG_PORT` (default 6060). Set to 0 to disa
 | `internal/audit/` | Audit log |
 | `internal/eventstore/` | Authoritative event and transition writer |
 | `internal/api/` | Internal REST API server |
+| `internal/deliverer/` | Shared outbound delivery worker wiring |
 | `internal/webhooks/` | HMAC-signed webhook registry and delivery worker |
 | `internal/alerting/` | Managed alert-contact registry and delivery worker |
 | `internal/dashboard/` | Operator dashboard and SSE handler |
@@ -417,7 +421,9 @@ The dashboard is available at http://localhost:8080 (configurable via `DASHBOARD
 
 The internal API is disabled by default. Set `API_PORT` to a non-zero port to enable `/api/v1/...`.
 
-In the current single-binary v2 deployment, `API_PORT` also makes the webhook and alert-contact delivery workers eligible to run. Set `DELIVERY_OWNER_HOST` to exactly one `jetmon2` hostname per database cluster so additional API-enabled hosts can serve API traffic without dispatching duplicate outbound deliveries. If `DELIVERY_OWNER_HOST` is empty, the host keeps the legacy behavior and starts delivery workers whenever `API_PORT` is enabled; startup and `validate-config` warn about that fallback. The future deliverer split will replace this operational constraint with transactional row claiming for active-active delivery workers.
+In the embedded v2 deployment, `API_PORT` also makes the webhook and alert-contact delivery workers eligible to run inside `jetmon2`. Set `DELIVERY_OWNER_HOST` to exactly one hostname per database cluster so additional API-enabled hosts can serve API traffic without dispatching duplicate outbound deliveries. If `DELIVERY_OWNER_HOST` is empty, the host keeps the legacy behavior and starts delivery workers whenever `API_PORT` is enabled; startup and `validate-config` warn about that fallback.
+
+`bin/jetmon-deliverer` is the first standalone process boundary for outbound delivery. It starts the same webhook and alert-contact workers without starting the monitor, API, dashboard, or bucket ownership loop. It still uses the same soft-lock delivery tables, so run only one active delivery process per database cluster until transactional row claiming lands; do not run standalone delivery on a host whose embedded `jetmon2` delivery workers are also enabled.
 
 ### Cleanup
 

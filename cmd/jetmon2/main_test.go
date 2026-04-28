@@ -14,6 +14,7 @@ import (
 
 	"github.com/Automattic/jetmon/internal/alerting"
 	"github.com/Automattic/jetmon/internal/config"
+	"github.com/Automattic/jetmon/internal/deliverer"
 )
 
 func TestHTTPGet(t *testing.T) {
@@ -317,7 +318,7 @@ func TestReadPIDFileRejectsInvalidContent(t *testing.T) {
 }
 
 func TestBuildAlertDispatchersIncludesStubEmail(t *testing.T) {
-	dispatchers := buildAlertDispatchers(&config.Config{
+	dispatchers := deliverer.BuildAlertDispatchers(&config.Config{
 		EmailTransport: "stub",
 		EmailFrom:      "jetmon@example.com",
 	})
@@ -376,7 +377,7 @@ func TestBuildAlertDispatchersSelectsConfiguredEmailSenders(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			dispatchers := buildAlertDispatchers(&config.Config{
+			dispatchers := deliverer.BuildAlertDispatchers(&config.Config{
 				EmailTransport:     tt.transport,
 				EmailFrom:          "jetmon@example.com",
 				WPCOMEmailEndpoint: "https://wpcom.example/send",
