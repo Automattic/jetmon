@@ -14,14 +14,14 @@ import (
 )
 
 var contactColumns = []string{
-	"id", "label", "active", "transport", "destination_preview",
+	"id", "label", "active", "owner_tenant_id", "transport", "destination_preview",
 	"site_filter", "min_severity", "max_per_hour",
 	"created_by", "created_at", "updated_at",
 }
 
 func contactRow(id int64, label string, active uint8, transport Transport, now time.Time) *sqlmock.Rows {
 	return sqlmock.NewRows(contactColumns).AddRow(
-		id, label, active, string(transport), "mple",
+		id, label, active, "tenant-a", string(transport), "mple",
 		`{"site_ids":[42]}`, uint8(eventstore.SeverityDown), 60,
 		"ops", now, now,
 	)
@@ -38,11 +38,11 @@ func TestCreateContactPersistsDefaultsAndFetchesRecord(t *testing.T) {
 	destination := json.RawMessage(`{"address":"ops@example.com"}`)
 	mock.ExpectExec("INSERT INTO jetmon_alert_contacts").
 		WithArgs(
-			"Ops email", 1, string(TransportEmail), []byte(destination), ".com",
+			"Ops email", 1, nil, string(TransportEmail), []byte(destination), ".com",
 			sqlmock.AnyArg(), uint8(eventstore.SeverityDown), 60, "ops",
 		).
 		WillReturnResult(sqlmock.NewResult(11, 1))
-	mock.ExpectQuery("SELECT id, label, active, transport").
+	mock.ExpectQuery("SELECT id, label, active, owner_tenant_id, transport").
 		WithArgs(int64(11)).
 		WillReturnRows(contactRow(11, "Ops email", 1, TransportEmail, now))
 
@@ -58,6 +58,9 @@ func TestCreateContactPersistsDefaultsAndFetchesRecord(t *testing.T) {
 	}
 	if contact.ID != 11 || !contact.Active || contact.SiteFilter.SiteIDs[0] != 42 {
 		t.Fatalf("contact = %+v", contact)
+	}
+	if contact.OwnerTenantID == nil || *contact.OwnerTenantID != "tenant-a" {
+		t.Fatalf("contact.OwnerTenantID = %v, want tenant-a", contact.OwnerTenantID)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)
@@ -123,7 +126,7 @@ func TestGetContactNotFound(t *testing.T) {
 	}
 	defer db.Close()
 
-	mock.ExpectQuery("SELECT id, label, active, transport").
+	mock.ExpectQuery("SELECT id, label, active, owner_tenant_id, transport").
 		WithArgs(int64(404)).
 		WillReturnError(sql.ErrNoRows)
 
@@ -145,9 +148,9 @@ func TestListContactsScansRows(t *testing.T) {
 
 	now := time.Now().UTC()
 	rows := sqlmock.NewRows(contactColumns).
-		AddRow(int64(1), "Email", uint8(1), string(TransportEmail), "mple", `{}`, uint8(4), 60, "ops", now, now).
-		AddRow(int64(2), "Slack", uint8(0), string(TransportSlack), "hook", nil, uint8(3), 0, "ops", now, now)
-	mock.ExpectQuery("SELECT id, label, active, transport").
+		AddRow(int64(1), "Email", uint8(1), nil, string(TransportEmail), "mple", `{}`, uint8(4), 60, "ops", now, now).
+		AddRow(int64(2), "Slack", uint8(0), "tenant-b", string(TransportSlack), "hook", nil, uint8(3), 0, "ops", now, now)
+	mock.ExpectQuery("SELECT id, label, active, owner_tenant_id, transport").
 		WillReturnRows(rows)
 
 	contacts, err := List(context.Background(), db)
@@ -170,7 +173,7 @@ func TestListActiveContactsScansRows(t *testing.T) {
 	defer db.Close()
 
 	now := time.Now().UTC()
-	mock.ExpectQuery("SELECT id, label, active, transport").
+	mock.ExpectQuery("SELECT id, label, active, owner_tenant_id, transport").
 		WillReturnRows(contactRow(3, "PagerDuty", 1, TransportPagerDuty, now))
 
 	contacts, err := ListActive(context.Background(), db)
@@ -179,6 +182,72 @@ func TestListActiveContactsScansRows(t *testing.T) {
 	}
 	if len(contacts) != 1 || contacts[0].Transport != TransportPagerDuty {
 		t.Fatalf("contacts = %+v", contacts)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestTenantScopedContactQueriesFilterByOwner(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC()
+	active := false
+	mock.ExpectQuery("WHERE id = \\? AND owner_tenant_id = \\?").
+		WithArgs(int64(12), "tenant-a").
+		WillReturnRows(contactRow(12, "Tenant email", 1, TransportEmail, now))
+	mock.ExpectQuery("WHERE owner_tenant_id = \\? ORDER BY id ASC").
+		WithArgs("tenant-a").
+		WillReturnRows(contactRow(13, "Tenant Slack", 1, TransportSlack, now))
+	mock.ExpectQuery("WHERE id = \\? AND owner_tenant_id = \\?").
+		WithArgs(int64(12), "tenant-a").
+		WillReturnRows(contactRow(12, "Tenant email", 1, TransportEmail, now))
+	mock.ExpectExec("UPDATE jetmon_alert_contacts SET active = \\? WHERE id = \\? AND owner_tenant_id = \\?").
+		WithArgs(0, int64(12), "tenant-a").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("WHERE id = \\? AND owner_tenant_id = \\?").
+		WithArgs(int64(12), "tenant-a").
+		WillReturnRows(sqlmock.NewRows(contactColumns).AddRow(
+			int64(12), "Tenant email", uint8(0), "tenant-a", string(TransportEmail), "mple",
+			`{"site_ids":[42]}`, uint8(eventstore.SeverityDown), 60, "ops", now, now,
+		))
+	mock.ExpectQuery("SELECT destination FROM jetmon_alert_contacts WHERE id = \\? AND owner_tenant_id = \\?").
+		WithArgs(int64(12), "tenant-a").
+		WillReturnRows(sqlmock.NewRows([]string{"destination"}).AddRow([]byte(`{"address":"ops@example.com"}`)))
+	mock.ExpectExec("DELETE FROM jetmon_alert_contacts WHERE id = \\? AND owner_tenant_id = \\?").
+		WithArgs(int64(12), "tenant-a").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	contact, err := GetForTenant(context.Background(), db, 12, "tenant-a")
+	if err != nil {
+		t.Fatalf("GetForTenant: %v", err)
+	}
+	if contact.OwnerTenantID == nil || *contact.OwnerTenantID != "tenant-a" {
+		t.Fatalf("contact.OwnerTenantID = %v, want tenant-a", contact.OwnerTenantID)
+	}
+	contacts, err := ListForTenant(context.Background(), db, "tenant-a")
+	if err != nil {
+		t.Fatalf("ListForTenant: %v", err)
+	}
+	if len(contacts) != 1 || contacts[0].ID != 13 {
+		t.Fatalf("contacts = %+v", contacts)
+	}
+	contact, err = UpdateForTenant(context.Background(), db, 12, "tenant-a", UpdateInput{Active: &active})
+	if err != nil {
+		t.Fatalf("UpdateForTenant: %v", err)
+	}
+	if contact.Active {
+		t.Fatalf("contact.Active = true, want false")
+	}
+	if _, err := LoadDestinationForTenant(context.Background(), db, 12, "tenant-a"); err != nil {
+		t.Fatalf("LoadDestinationForTenant: %v", err)
+	}
+	if err := DeleteForTenant(context.Background(), db, 12, "tenant-a"); err != nil {
+		t.Fatalf("DeleteForTenant: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)
@@ -200,16 +269,16 @@ func TestUpdateContactAppliesPatchAndFetchesRecord(t *testing.T) {
 	minSeverity := uint8(eventstore.SeverityWarning)
 	maxPerHour := 5
 
-	mock.ExpectQuery("SELECT id, label, active, transport").
+	mock.ExpectQuery("SELECT id, label, active, owner_tenant_id, transport").
 		WithArgs(int64(5)).
 		WillReturnRows(contactRow(5, "Ops email", 1, TransportEmail, now))
 	mock.ExpectExec("UPDATE jetmon_alert_contacts SET").
 		WithArgs(label, 0, []byte(destination), ".com", sqlmock.AnyArg(), minSeverity, maxPerHour, int64(5)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectQuery("SELECT id, label, active, transport").
+	mock.ExpectQuery("SELECT id, label, active, owner_tenant_id, transport").
 		WithArgs(int64(5)).
 		WillReturnRows(sqlmock.NewRows(contactColumns).AddRow(
-			int64(5), label, uint8(0), string(TransportEmail), ".com",
+			int64(5), label, uint8(0), nil, string(TransportEmail), ".com",
 			`{"site_ids":[7]}`, minSeverity, maxPerHour, "ops", now, now,
 		))
 

@@ -335,6 +335,22 @@ var migrations = []migration{
 		last_transition_id   BIGINT UNSIGNED NOT NULL DEFAULT 0,
 		updated_at           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
+
+	// Migration 19 adds a nullable tenant owner to webhooks. Internal v2
+	// callers leave it NULL, preserving the shared internal registry from
+	// ADR-0002. Future public gateway paths can set owner_tenant_id and use
+	// tenant-scoped repository helpers so customer-owned webhooks are filtered
+	// in Jetmon as defense in depth.
+	{19, `ALTER TABLE jetmon_webhooks
+		ADD COLUMN owner_tenant_id VARCHAR(128) NULL AFTER active,
+		ADD INDEX idx_owner_tenant_id (owner_tenant_id)`},
+
+	// Migration 20 mirrors webhook ownership on alert contacts. Deliveries
+	// derive visibility through their parent contact; this column owns the
+	// customer-managed registration itself.
+	{20, `ALTER TABLE jetmon_alert_contacts
+		ADD COLUMN owner_tenant_id VARCHAR(128) NULL AFTER active,
+		ADD INDEX idx_owner_tenant_id (owner_tenant_id)`},
 }
 
 // Migrate applies all pending migrations idempotently.

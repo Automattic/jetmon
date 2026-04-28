@@ -236,8 +236,9 @@ tests that fail when handler behavior drifts from the published schema.
 
 ### Public API work still to do
 
-- Add tenant ownership fields and filtered queries where Jetmon must enforce
-  ownership directly.
+- Thread gateway tenant context through API handlers and use the existing
+  tenant-scoped webhook/alert-contact repository helpers where Jetmon must
+  enforce ownership directly.
 - Add customer-safe error and metadata redaction paths for every public route.
 - Promote the internal route-driven `GET /api/v1/openapi.json` contract into a
   public compatibility policy with deprecation rules and consumer-specific

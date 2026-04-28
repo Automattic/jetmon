@@ -87,6 +87,7 @@ type AlertContact struct {
 	ID                 int64
 	Label              string
 	Active             bool
+	OwnerTenantID      *string
 	Transport          Transport
 	DestinationPreview string     // last 4 chars of the credential, for display
 	SiteFilter         SiteFilter // empty = match all sites
@@ -143,14 +144,15 @@ func (c *AlertContact) Matches(prevSeverity, newSeverity uint8, siteID int64) bo
 // sensible defaults (Active=true, SiteFilter empty=match-all,
 // MinSeverity=SeverityDown, MaxPerHour=60).
 type CreateInput struct {
-	Label       string
-	Active      *bool // nil → true
-	Transport   Transport
-	Destination json.RawMessage // transport-specific shape; validated per transport
-	SiteFilter  SiteFilter
-	MinSeverity *uint8 // nil → SeverityDown
-	MaxPerHour  *int   // nil → 60
-	CreatedBy   string
+	Label         string
+	Active        *bool // nil → true
+	OwnerTenantID *string
+	Transport     Transport
+	Destination   json.RawMessage // transport-specific shape; validated per transport
+	SiteFilter    SiteFilter
+	MinSeverity   *uint8 // nil → SeverityDown
+	MaxPerHour    *int   // nil → 60
+	CreatedBy     string
 }
 
 // UpdateInput is a sparse patch. nil fields are unchanged. An explicit

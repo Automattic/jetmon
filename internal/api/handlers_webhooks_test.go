@@ -10,22 +10,22 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
-const insertWebhookSQL = ` INSERT INTO jetmon_webhooks (url, active, events, site_filter, state_filter, secret, secret_preview, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+const insertWebhookSQL = ` INSERT INTO jetmon_webhooks (url, active, owner_tenant_id, events, site_filter, state_filter, secret, secret_preview, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
-const selectWebhookOneSQL = ` SELECT id, url, active, events, site_filter, state_filter, secret_preview, created_by, created_at, updated_at FROM jetmon_webhooks WHERE id = ?`
+const selectWebhookOneSQL = ` SELECT id, url, active, owner_tenant_id, events, site_filter, state_filter, secret_preview, created_by, created_at, updated_at FROM jetmon_webhooks WHERE id = ?`
 
-const selectWebhookListSQL = ` SELECT id, url, active, events, site_filter, state_filter, secret_preview, created_by, created_at, updated_at FROM jetmon_webhooks ORDER BY id ASC`
+const selectWebhookListSQL = ` SELECT id, url, active, owner_tenant_id, events, site_filter, state_filter, secret_preview, created_by, created_at, updated_at FROM jetmon_webhooks ORDER BY id ASC`
 
 // columnsWebhook is the column set returned by webhook SELECT queries.
 var columnsWebhook = []string{
-	"id", "url", "active", "events", "site_filter", "state_filter",
+	"id", "url", "active", "owner_tenant_id", "events", "site_filter", "state_filter",
 	"secret_preview", "created_by", "created_at", "updated_at",
 }
 
 func makeWebhookRow(id int64, url string, active uint8) *sqlmock.Rows {
 	now := time.Now().UTC()
 	return sqlmock.NewRows(columnsWebhook).AddRow(
-		id, url, active, []byte(`["event.opened"]`),
+		id, url, active, nil, []byte(`["event.opened"]`),
 		[]byte(`{"site_ids":[]}`), []byte(`{"states":[]}`),
 		"abcd", "test-consumer", now, now,
 	)
@@ -38,6 +38,7 @@ func TestCreateWebhookHappyPath(t *testing.T) {
 	mock.ExpectExec(insertWebhookSQL).
 		WithArgs(
 			"https://example.com/hook", 1,
+			nil,
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 			sqlmock.AnyArg(), sqlmock.AnyArg(), "test-consumer",
 		).
@@ -139,9 +140,9 @@ func TestListWebhooksHappyPath(t *testing.T) {
 
 	now := time.Now().UTC()
 	rows := sqlmock.NewRows(columnsWebhook).
-		AddRow(int64(1), "https://a.example/hook", uint8(1), []byte(`["event.opened"]`),
+		AddRow(int64(1), "https://a.example/hook", uint8(1), nil, []byte(`["event.opened"]`),
 			[]byte(`{"site_ids":[42]}`), []byte(`{"states":["Down"]}`), "aaaa", "test-consumer", now, now).
-		AddRow(int64(2), "https://b.example/hook", uint8(0), nil,
+		AddRow(int64(2), "https://b.example/hook", uint8(0), nil, nil,
 			nil, nil, "bbbb", "test-consumer", now, now)
 	mock.ExpectQuery(selectWebhookListSQL).WillReturnRows(rows)
 

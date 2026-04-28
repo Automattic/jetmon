@@ -107,8 +107,9 @@ errors.
    entry point.
 2. Add request-context parsing for the headers above, restricted to the
    configured gateway API key. Initially log the context for audit only.
-3. Add tenant ownership to customer-managed resources first: webhooks, alert
-   contacts, and their delivery histories.
+3. Thread gateway context through the API handlers and start using the
+   tenant-scoped webhook and alert-contact repository helpers. The nullable
+   owner columns are already present for those customer-managed resources.
 4. Add site visibility enforcement only after choosing the site ownership
    representation. Prefer a mapping table if ownership can be many-to-many or
    gateway-derived.

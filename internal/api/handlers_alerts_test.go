@@ -13,16 +13,16 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
-const insertAlertContactSQL = ` INSERT INTO jetmon_alert_contacts (label, active, transport, destination, destination_preview, site_filter, min_severity, max_per_hour, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+const insertAlertContactSQL = ` INSERT INTO jetmon_alert_contacts (label, active, owner_tenant_id, transport, destination, destination_preview, site_filter, min_severity, max_per_hour, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
-const selectAlertContactOneSQL = ` SELECT id, label, active, transport, destination_preview, site_filter, min_severity, max_per_hour, created_by, created_at, updated_at FROM jetmon_alert_contacts WHERE id = ?`
+const selectAlertContactOneSQL = ` SELECT id, label, active, owner_tenant_id, transport, destination_preview, site_filter, min_severity, max_per_hour, created_by, created_at, updated_at FROM jetmon_alert_contacts WHERE id = ?`
 
-const selectAlertContactListSQL = ` SELECT id, label, active, transport, destination_preview, site_filter, min_severity, max_per_hour, created_by, created_at, updated_at FROM jetmon_alert_contacts ORDER BY id ASC`
+const selectAlertContactListSQL = ` SELECT id, label, active, owner_tenant_id, transport, destination_preview, site_filter, min_severity, max_per_hour, created_by, created_at, updated_at FROM jetmon_alert_contacts ORDER BY id ASC`
 
 const loadAlertDestinationSQL = `SELECT destination FROM jetmon_alert_contacts WHERE id = ?`
 
 var columnsAlertContact = []string{
-	"id", "label", "active", "transport", "destination_preview",
+	"id", "label", "active", "owner_tenant_id", "transport", "destination_preview",
 	"site_filter", "min_severity", "max_per_hour",
 	"created_by", "created_at", "updated_at",
 }
@@ -30,7 +30,7 @@ var columnsAlertContact = []string{
 func makeAlertContactRow(id int64, label string, transport string, active uint8, minSev uint8) *sqlmock.Rows {
 	now := time.Now().UTC()
 	return sqlmock.NewRows(columnsAlertContact).AddRow(
-		id, label, active, transport, "abcd",
+		id, label, active, nil, transport, "abcd",
 		[]byte(`{"site_ids":[]}`), minSev, 60,
 		"test-consumer", now, now,
 	)
@@ -62,7 +62,7 @@ func TestCreateAlertContactHappyPath(t *testing.T) {
 
 	mock.ExpectExec(insertAlertContactSQL).
 		WithArgs(
-			"oncall", 1, "pagerduty",
+			"oncall", 1, nil, "pagerduty",
 			sqlmock.AnyArg(), sqlmock.AnyArg(),
 			sqlmock.AnyArg(), uint8(4), 60,
 			"test-consumer",
@@ -198,9 +198,9 @@ func TestListAlertContactsHappyPath(t *testing.T) {
 
 	now := time.Now().UTC()
 	rows := sqlmock.NewRows(columnsAlertContact).
-		AddRow(int64(1), "primary", uint8(1), "email", "mple",
+		AddRow(int64(1), "primary", uint8(1), nil, "email", "mple",
 			[]byte(`{"site_ids":[42]}`), uint8(4), 60, "test-consumer", now, now).
-		AddRow(int64(2), "secondary", uint8(0), "slack", "hook",
+		AddRow(int64(2), "secondary", uint8(0), nil, "slack", "hook",
 			nil, uint8(2), 0, "test-consumer", now, now)
 	mock.ExpectQuery(selectAlertContactListSQL).WillReturnRows(rows)
 
