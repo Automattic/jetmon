@@ -144,4 +144,13 @@ func TestRunAPISmokeRemoteGuard(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "--allow-remote") {
 		t.Fatalf("runAPISmoke() error = %v, want --allow-remote refusal", err)
 	}
+
+	err = runAPISmoke(context.Background(), nil, apiCLIOptions{
+		baseURL: "https://jetmon-api.example.test",
+		out:     ioDiscard{},
+		errOut:  ioDiscard{},
+	}, apiSmokeOptions{allowRemote: true, exercise: "none"})
+	if err == nil || !strings.Contains(err.Error(), "requires --batch") {
+		t.Fatalf("runAPISmoke() error = %v, want remote batch requirement", err)
+	}
 }

@@ -104,8 +104,12 @@ func runAPISmoke(ctx context.Context, client *http.Client, opts apiCLIOptions, s
 	if opts.out == nil {
 		opts.out = io.Discard
 	}
-	if _, err := requireAPILocalOrAllowRemote(opts, smoke.allowRemote, "api smoke"); err != nil {
+	remote, err := requireAPILocalOrAllowRemote(opts, smoke.allowRemote, "api smoke")
+	if err != nil {
 		return err
+	}
+	if remote && strings.TrimSpace(smoke.batch) == "" {
+		return errors.New("api smoke requires --batch when --allow-remote targets a non-local API")
 	}
 	if smoke.batch == "" {
 		smoke.batch = apiCLINewBatchID("smoke")

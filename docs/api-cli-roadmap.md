@@ -243,7 +243,7 @@ but it should not become a generic `curl` clone.
   wording.
 - [x] 2026-04-28: Added `--allow-remote` guardrails for API CLI test-data
   workflows. Non-local API targets now refuse smoke, bulk-add, cleanup, and
-  failure simulation writes without the explicit flag; remote bulk-add,
+  failure simulation writes without the explicit flag; remote smoke, bulk-add,
   cleanup, and simulation also require `--batch`, and remote cleanup/simulation
   keep marker verification mandatory.
 - [x] 2026-04-28: Extended `api-fixture` with `/webhook` and

@@ -55,9 +55,10 @@ printing them.
 The test-data workflow commands refuse to modify a non-local API unless
 `--allow-remote` is supplied. Local means `localhost`, a `*.localhost` name, or
 a loopback IP address; private LAN hosts still count as remote. On remote API
-targets, `sites bulk-add`, `sites cleanup`, and `sites simulate-failure` also
-require `--batch`, and remote cleanup/simulation keep the CLI batch marker
-check mandatory. Dry-run planning does not contact the API and is not blocked.
+targets, `smoke`, `sites bulk-add`, `sites cleanup`, and
+`sites simulate-failure` also require `--batch`, and remote cleanup/simulation
+keep the CLI batch marker check mandatory. Dry-run planning does not contact
+the API and is not blocked.
 
 List the command catalog and examples when you need to discover the expanded
 tree without returning to this guide:
