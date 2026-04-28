@@ -17,11 +17,12 @@ migration and the operating data needed to make larger architecture decisions.
   probe-agent architecture. The v2 event tables remain authoritative while
   `LEGACY_STATUS_PROJECTION_ENABLE` keeps legacy `site_status` /
   `last_status_change` consumers working during migration.
-- **Operationally enforce single-owner delivery until row claiming lands.**
+- **Use delivery ownership as a rollout guard.**
   In the single-binary deployment, `API_PORT > 0` also starts webhook and
-  alert-contact delivery workers. Run that on only one active `jetmon2`
-  instance per database cluster until delivery claiming moves to transactional
-  `SELECT ... FOR UPDATE SKIP LOCKED` or the deliverer binary is extracted.
+  alert-contact delivery workers. A standalone `jetmon-deliverer` entry point
+  and transactional `SELECT ... FOR UPDATE` row claims now exist; use
+  `DELIVERY_OWNER_HOST` as a rollout guard when intentionally keeping delivery
+  single-owner during migration from embedded to standalone delivery.
 - **Instrument the data needed for the v3 decision.** During v2 production,
   measure first-failure-to-`Seems Down`, `Seems Down`-to-`Down`, false alarm
   rate by failure class, Veriflier agreement/disagreement by region, Veriflier
@@ -31,20 +32,21 @@ migration and the operating data needed to make larger architecture decisions.
 - **Watch projection drift as a production bug.** While the legacy projection
   is enabled, event mutations, transition rows, and the site-row projection
   must remain transactionally consistent.
-- **Reconcile roadmap/API documentation drift.** `API.md` is the source for
-  the implemented internal `/api/v1` route surface. This roadmap should track
-  only the remaining public/customer API work, production hardening, and
-  deferred architecture choices.
+- **Keep roadmap/API documentation drift out of the branch.** `API.md` is the
+  source for the implemented internal `/api/v1` route surface. This roadmap
+  should track only the remaining public/customer API work, production
+  hardening, and deferred architecture choices.
 
 ### P1 - post-v2 platform refinement
 
 - **Extract `jetmon-deliverer` when delivery scale or blast radius warrants
   it.** Move webhook delivery, alert-contact delivery, and eventually WPCOM
-  notification dispatch behind one outbound-delivery binary.
-- **Replace soft delivery locks with transactional row claims.** As part of
-  the deliverer extraction, update the webhook and alert-contact `ClaimReady`
-  paths to use `SELECT ... FOR UPDATE SKIP LOCKED` so active-active delivery
-  workers are safe.
+  notification dispatch behind one outbound-delivery binary. Initial shared
+  worker wiring, a standalone `jetmon-deliverer` entry point, and
+  transactional row claims exist. The rollout policy is captured in
+  [`docs/jetmon-deliverer-rollout.md`](docs/jetmon-deliverer-rollout.md);
+  the remaining production cutover work is service packaging in the deployment
+  system.
 - **Unify webhook and alerting dispatch plumbing after production evidence.**
   Keep the packages separate until there are two proven implementations and a
   third transport path via WPCOM migration, then factor the shared retry,
@@ -52,18 +54,18 @@ migration and the operating data needed to make larger architecture decisions.
 - **Migrate WPCOM notifications behind alert contacts/deliverer.** Do this
   only after alert contacts have proven stable in production and recipient
   parity has been verified.
-- **Decide the Veriflier transport endpoint.** Either wire the generated gRPC
-  stubs once the protoc toolchain is ready, or explicitly bless
-  JSON-over-HTTP as the v2 production transport and update the docs/naming to
-  match.
-- **Generate an OpenAPI 3.1 contract for the internal API.** The spec should
-  be generated from the route/handler contract so client codegen matches the
-  running server.
+- **Adopt consumer-specific OpenAPI generator validation when one is chosen.**
+  The route-driven `GET /api/v1/openapi.json` endpoint now includes
+  handler-derived request/response component schemas, and `make test` validates
+  schema refs plus a generated Go client smoke source. If production consumers
+  standardize on a specific generator, add that exact tool to CI so tool-specific
+  schema drift breaks before release.
 - **Plan encryption-at-rest for outbound credentials before public/customer
   secret management.** Plaintext webhook secrets and alert-contact
   destination credentials are acceptable for the current internal threat
-  model, but KMS-style encryption should be revisited before exposing
-  customer-managed secrets more broadly.
+  model, but KMS-style encryption should be planned before exposing
+  customer-managed secrets more broadly. See
+  [`docs/outbound-credential-encryption-plan.md`](docs/outbound-credential-encryption-plan.md).
 
 ### P2 - v3 and product-driven extensions
 
@@ -238,8 +240,9 @@ tests that fail when handler behavior drifts from the published schema.
 - Add tenant ownership fields and filtered queries where Jetmon must enforce
   ownership directly.
 - Add customer-safe error and metadata redaction paths for every public route.
-- Generate and publish `GET /api/v1/openapi.json` from the running route
-  contract.
+- Promote the internal route-driven `GET /api/v1/openapi.json` contract into a
+  public compatibility policy with deprecation rules and consumer-specific
+  generator validation.
 - Add public-contract integration tests for auth, tenant isolation,
   pagination, idempotency, redaction, webhook ownership, and trigger-now abuse
   controls.

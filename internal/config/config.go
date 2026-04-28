@@ -12,8 +12,18 @@ import (
 type VerifierConfig struct {
 	Name      string `json:"name"`
 	Host      string `json:"host"`
-	GRPCPort  string `json:"grpc_port"`
+	Port      string `json:"port"`
+	GRPCPort  string `json:"grpc_port"` // Deprecated alias for Port.
 	AuthToken string `json:"auth_token"`
+}
+
+// TransportPort returns the canonical JSON-over-HTTP Veriflier port,
+// accepting grpc_port as a deprecated config alias.
+func (v VerifierConfig) TransportPort() string {
+	if v.Port != "" {
+		return v.Port
+	}
+	return v.GRPCPort
 }
 
 // Config holds all runtime configuration for Jetmon 2.
@@ -64,6 +74,11 @@ type Config struct {
 	DashboardPort int    `json:"DASHBOARD_PORT"`
 	DebugPort     int    `json:"DEBUG_PORT"`
 	APIPort       int    `json:"API_PORT"` // 0 = API server disabled
+
+	// DeliveryOwnerHost constrains webhook and alert-contact delivery workers
+	// to a single named host while the v2 single-binary deployment still uses
+	// soft delivery locks. Empty preserves the legacy API_PORT behavior.
+	DeliveryOwnerHost string `json:"DELIVERY_OWNER_HOST"`
 
 	// Email transport selection for alert contacts. "stub" = log only
 	// (default; safe for environments where email is not configured),
@@ -253,15 +268,15 @@ func validate(cfg *Config) error {
 		return fmt.Errorf("EMAIL_TRANSPORT must be one of: stub, smtp, wpcom")
 	}
 	for i, v := range cfg.Verifiers {
-		// host and grpc_port are required. Empty values silently parse to ""
+		// host and port are required. Empty values silently parse to ""
 		// then the orchestrator dials "host:" which resolves to port 80 — the
 		// most common cause of "verifier connection refused" in dev configs
-		// (typo: "port" instead of "grpc_port").
+		// (typo: "ports" instead of "port").
 		if v.Host == "" {
 			return fmt.Errorf("VERIFIERS[%d] (%s): host is required", i, displayName(v, i))
 		}
-		if v.GRPCPort == "" {
-			return fmt.Errorf("VERIFIERS[%d] (%s): grpc_port is required", i, displayName(v, i))
+		if v.TransportPort() == "" {
+			return fmt.Errorf("VERIFIERS[%d] (%s): port is required", i, displayName(v, i))
 		}
 	}
 	return nil

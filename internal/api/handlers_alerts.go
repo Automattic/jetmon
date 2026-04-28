@@ -71,6 +71,16 @@ type updateAlertContactRequest struct {
 	MaxPerHour  *int                 `json:"max_per_hour"`
 }
 
+// alertContactTestResponse is returned by POST /alert-contacts/{id}/test.
+type alertContactTestResponse struct {
+	ContactID    int64  `json:"contact_id"`
+	Transport    string `json:"transport"`
+	StatusCode   int    `json:"status_code"`
+	ResponseBody string `json:"response_body"`
+	Error        string `json:"error,omitempty"`
+	Delivered    bool   `json:"delivered"`
+}
+
 // handleCreateAlertContact implements POST /api/v1/alert-contacts.
 func (s *Server) handleCreateAlertContact(w http.ResponseWriter, r *http.Request) {
 	var body createAlertContactRequest
@@ -283,14 +293,7 @@ func (s *Server) handleAlertContactTest(w http.ResponseWriter, r *http.Request) 
 
 	statusCode, respBody, sendErr := dispatcher.Send(ctx, dest, n)
 
-	resp := struct {
-		ContactID    int64  `json:"contact_id"`
-		Transport    string `json:"transport"`
-		StatusCode   int    `json:"status_code"`
-		ResponseBody string `json:"response_body"`
-		Error        string `json:"error,omitempty"`
-		Delivered    bool   `json:"delivered"`
-	}{
+	resp := alertContactTestResponse{
 		ContactID:    contact.ID,
 		Transport:    string(contact.Transport),
 		StatusCode:   statusCode,

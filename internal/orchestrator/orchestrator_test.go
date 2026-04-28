@@ -110,8 +110,8 @@ func TestSlicesEqual(t *testing.T) {
 func TestRefreshVeriflierClientsReusesUnchangedClients(t *testing.T) {
 	cfg := &config.Config{
 		Verifiers: []config.VerifierConfig{
-			{Name: "a", Host: "host1", GRPCPort: "7803", AuthToken: "token1"},
-			{Name: "b", Host: "host2", GRPCPort: "7804", AuthToken: "token2"},
+			{Name: "a", Host: "host1", Port: "7803", AuthToken: "token1"},
+			{Name: "b", Host: "host2", Port: "7804", AuthToken: "token2"},
 		},
 	}
 
@@ -130,7 +130,7 @@ func TestRefreshVeriflierClientsReusesUnchangedClients(t *testing.T) {
 func TestRefreshVeriflierClientsRebuildsChangedClients(t *testing.T) {
 	cfg := &config.Config{
 		Verifiers: []config.VerifierConfig{
-			{Name: "a", Host: "host1", GRPCPort: "7803", AuthToken: "token1"},
+			{Name: "a", Host: "host1", Port: "7803", AuthToken: "token1"},
 		},
 	}
 
@@ -139,7 +139,7 @@ func TestRefreshVeriflierClientsRebuildsChangedClients(t *testing.T) {
 
 	updated := &config.Config{
 		Verifiers: []config.VerifierConfig{
-			{Name: "a", Host: "host1", GRPCPort: "7803", AuthToken: "token2"},
+			{Name: "a", Host: "host1", Port: "7803", AuthToken: "token2"},
 		},
 	}
 
@@ -335,8 +335,10 @@ func stubOrchestratorDeps() func() {
 	origDBMarkSiteChecked := dbMarkSiteChecked
 	origDBRecordCheckHistory := dbRecordCheckHistory
 	origDBUpdateSSLExpiry := dbUpdateSSLExpiry
+	origDBCountProjectionDrift := dbCountProjectionDrift
 	origNotify := wpcomNotifyFunc
 	origVeriflierCheck := veriflierCheckFunc
+	origMetricsClient := metricsClientFunc
 
 	nowFunc = time.Now
 	dbUpdateSiteStatus = func(context.Context, int64, int, time.Time) error { return nil }
@@ -345,6 +347,7 @@ func stubOrchestratorDeps() func() {
 	dbMarkSiteChecked = func(context.Context, int64, time.Time) error { return nil }
 	dbRecordCheckHistory = func(int64, int, int, int64, int64, int64, int64, int64) error { return nil }
 	dbUpdateSSLExpiry = func(context.Context, int64, time.Time) error { return nil }
+	dbCountProjectionDrift = func(context.Context, int, int) (int, error) { return 0, nil }
 	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error { return nil }
 	veriflierCheckFunc = func(c *veriflier.VeriflierClient, ctx context.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
 		return c.Check(ctx, req)
@@ -358,8 +361,10 @@ func stubOrchestratorDeps() func() {
 		dbMarkSiteChecked = origDBMarkSiteChecked
 		dbRecordCheckHistory = origDBRecordCheckHistory
 		dbUpdateSSLExpiry = origDBUpdateSSLExpiry
+		dbCountProjectionDrift = origDBCountProjectionDrift
 		wpcomNotifyFunc = origNotify
 		veriflierCheckFunc = origVeriflierCheck
+		metricsClientFunc = origMetricsClient
 	}
 }
 
@@ -757,6 +762,70 @@ func TestIsAlertSuppressedCustomCooldown(t *testing.T) {
 	}
 }
 
+func TestCheckLegacyProjectionDriftEmitsGaugeAndWarningCounter(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	cfg := setTestConfig(t)
+	cfg.LegacyStatusProjectionEnable = true
+
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+	dbCountProjectionDrift = func(_ context.Context, bucketMin, bucketMax int) (int, error) {
+		if bucketMin != 10 || bucketMax != 20 {
+			t.Fatalf("drift check buckets = %d-%d, want 10-20", bucketMin, bucketMax)
+		}
+		return 3, nil
+	}
+
+	o := &Orchestrator{ctx: context.Background(), bucketMin: 10, bucketMax: 20}
+	o.checkLegacyProjectionDrift(cfg)
+
+	if got := rec.gauge("projection.drift.count"); got != 3 {
+		t.Fatalf("projection.drift.count = %d, want 3", got)
+	}
+	if got := rec.counter("projection.drift.detected.count"); got != 1 {
+		t.Fatalf("projection.drift.detected.count = %d, want 1", got)
+	}
+}
+
+func TestCheckLegacyProjectionDriftSkipsWhenProjectionDisabled(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	cfg := setTestConfig(t)
+	cfg.LegacyStatusProjectionEnable = false
+
+	var called bool
+	dbCountProjectionDrift = func(context.Context, int, int) (int, error) {
+		called = true
+		return 0, nil
+	}
+
+	o := &Orchestrator{ctx: context.Background()}
+	o.checkLegacyProjectionDrift(cfg)
+	if called {
+		t.Fatal("drift check should be skipped when legacy projection is disabled")
+	}
+}
+
+func TestCheckLegacyProjectionDriftEmitsErrorCounter(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	cfg := setTestConfig(t)
+	cfg.LegacyStatusProjectionEnable = true
+
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+	dbCountProjectionDrift = func(context.Context, int, int) (int, error) {
+		return 0, fmt.Errorf("db failed")
+	}
+
+	o := &Orchestrator{ctx: context.Background()}
+	o.checkLegacyProjectionDrift(cfg)
+	if got := rec.counter("projection.drift.check_error.count"); got != 1 {
+		t.Fatalf("projection.drift.check_error.count = %d, want 1", got)
+	}
+}
+
 func TestSendNotificationBothRetriesFail(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
@@ -949,4 +1018,201 @@ func TestHandleFailureEscalatesAfterThreshold(t *testing.T) {
 	if !escalated {
 		t.Fatal("expected escalation to verifliers after NumOfChecks failures")
 	}
+}
+
+func TestHandleFailureEmitsSeemsDownMetrics(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig(t)
+
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+
+	firstFailureAt := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC)
+	nowFunc = func() time.Time { return firstFailureAt.Add(2 * time.Second) }
+
+	res := checkerResultFailure(42)
+	res.Timestamp = firstFailureAt
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local-host",
+		ctx:      context.Background(),
+	}
+	o.handleFailure(db.Site{BlogID: 42, MonitorURL: "https://example.com", SiteStatus: statusRunning}, res)
+
+	if got := rec.counter("detection.seems_down.open.count"); got != 1 {
+		t.Fatalf("seems-down open counter = %d, want 1", got)
+	}
+	if got := rec.timingCount("detection.first_failure_to_seems_down.time"); got != 1 {
+		t.Fatalf("first failure timing count = %d, want 1", got)
+	}
+}
+
+func TestEscalateToVerifliersEmitsConfirmedMetrics(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+
+	cfg := setTestConfig(t)
+	cfg.PeerOfflineLimit = 1
+
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+
+	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error { return nil }
+	dbUpdateLastAlertSent = func(context.Context, int64, time.Time) error { return nil }
+	veriflierCheckFunc = func(c *veriflier.VeriflierClient, _ context.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
+		return &veriflier.CheckResult{
+			BlogID:    req.BlogID,
+			Host:      c.Addr(),
+			Success:   false,
+			HTTPCode:  500,
+			RequestID: req.RequestID,
+		}, nil
+	}
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		ctx:      context.Background(),
+		hostname: "local-host",
+		veriflierClients: []*veriflier.VeriflierClient{
+			veriflier.NewVeriflierClient("v1", ""),
+		},
+	}
+
+	fail := checkerResultFailure(321)
+	o.retries.record(fail)
+	entry := o.retries.get(321)
+	o.escalateToVerifliers(db.Site{BlogID: 321, MonitorURL: "https://example.com", SiteStatus: statusRunning}, entry)
+
+	for stat, want := range map[string]int{
+		"detection.verifier.escalation.count": 1,
+		"verifier.rpc.success.count":          1,
+		"verifier.vote.confirm_down.count":    1,
+		"detection.verifier.quorum_met.count": 1,
+		"detection.down.confirmed.count":      1,
+	} {
+		if got := rec.counter(stat); got != want {
+			t.Fatalf("%s = %d, want %d", stat, got, want)
+		}
+	}
+	for _, stat := range []string{
+		"detection.first_failure_to_verification.time",
+		"verifier.rpc.duration",
+		"detection.seems_down_to_down.time",
+	} {
+		if got := rec.timingCount(stat); got != 1 {
+			t.Fatalf("%s timing count = %d, want 1", stat, got)
+		}
+	}
+}
+
+func TestEscalateToVerifliersEmitsFalseAlarmMetrics(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+
+	cfg := setTestConfig(t)
+	cfg.PeerOfflineLimit = 1
+
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+
+	dbRecordFalsePositive = func(int64, int, int, int64) error { return nil }
+	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error {
+		t.Fatal("notification should not be sent for false alarm")
+		return nil
+	}
+	veriflierCheckFunc = func(c *veriflier.VeriflierClient, _ context.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
+		return &veriflier.CheckResult{
+			BlogID:    req.BlogID,
+			Host:      c.Addr(),
+			Success:   true,
+			HTTPCode:  200,
+			RequestID: req.RequestID,
+		}, nil
+	}
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		ctx:      context.Background(),
+		hostname: "local-host",
+		veriflierClients: []*veriflier.VeriflierClient{
+			veriflier.NewVeriflierClient("v1", ""),
+		},
+	}
+
+	fail := checkerResultFailure(654)
+	o.retries.record(fail)
+	entry := o.retries.get(654)
+	o.escalateToVerifliers(db.Site{BlogID: 654, MonitorURL: "https://example.com", SiteStatus: statusRunning}, entry)
+
+	for stat, want := range map[string]int{
+		"detection.verifier.escalation.count":  1,
+		"verifier.rpc.success.count":           1,
+		"verifier.vote.disagree.count":         1,
+		"detection.verifier.false_alarm.count": 1,
+	} {
+		if got := rec.counter(stat); got != want {
+			t.Fatalf("%s = %d, want %d", stat, got, want)
+		}
+	}
+	if got := rec.timingCount("detection.seems_down_to_false_alarm.time"); got != 1 {
+		t.Fatalf("false alarm timing count = %d, want 1", got)
+	}
+}
+
+type recordingMetrics struct {
+	mu       sync.Mutex
+	counters map[string]int
+	gauges   map[string]int
+	timings  map[string][]time.Duration
+}
+
+func newRecordingMetrics() *recordingMetrics {
+	return &recordingMetrics{
+		counters: make(map[string]int),
+		gauges:   make(map[string]int),
+		timings:  make(map[string][]time.Duration),
+	}
+}
+
+func (r *recordingMetrics) Increment(stat string, value int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.counters[stat] += value
+}
+
+func (r *recordingMetrics) Gauge(stat string, value int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.gauges[stat] = value
+}
+
+func (r *recordingMetrics) Timing(stat string, d time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.timings[stat] = append(r.timings[stat], d)
+}
+
+func (r *recordingMetrics) EmitMemStats() {}
+
+func (r *recordingMetrics) counter(stat string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.counters[stat]
+}
+
+func (r *recordingMetrics) gauge(stat string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.gauges[stat]
+}
+
+func (r *recordingMetrics) timingCount(stat string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.timings[stat])
 }

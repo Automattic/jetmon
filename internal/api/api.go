@@ -101,91 +101,9 @@ func (s *Server) SetAlertDispatchers(d map[alerting.Transport]alerting.Dispatche
 func (s *Server) routes() *http.ServeMux {
 	mux := http.NewServeMux()
 
-	// Unauthenticated.
-	mux.HandleFunc("GET /api/v1/health", s.handleHealth)
-
-	// Identity — any valid key.
-	mux.HandleFunc("GET /api/v1/me", s.requireScope(scopeRead, s.handleMe))
-
-	// Sites — read.
-	mux.HandleFunc("GET /api/v1/sites", s.requireScope(scopeRead, s.handleListSites))
-	mux.HandleFunc("GET /api/v1/sites/{id}", s.requireScope(scopeRead, s.handleGetSite))
-
-	// Sites — write. POST endpoints route through the idempotency middleware
-	// so retries with the same Idempotency-Key are safe; PATCH/DELETE skip
-	// it because they're inherently idempotent on this schema.
-	mux.HandleFunc("POST /api/v1/sites",
-		s.requireScope(scopeWrite, s.withIdempotency(s.handleCreateSite)))
-	mux.HandleFunc("PATCH /api/v1/sites/{id}",
-		s.requireScope(scopeWrite, s.handleUpdateSite))
-	mux.HandleFunc("DELETE /api/v1/sites/{id}",
-		s.requireScope(scopeWrite, s.handleDeleteSite))
-	mux.HandleFunc("POST /api/v1/sites/{id}/pause",
-		s.requireScope(scopeWrite, s.withIdempotency(s.handlePauseSite)))
-	mux.HandleFunc("POST /api/v1/sites/{id}/resume",
-		s.requireScope(scopeWrite, s.withIdempotency(s.handleResumeSite)))
-	mux.HandleFunc("POST /api/v1/sites/{id}/trigger-now",
-		s.requireScope(scopeWrite, s.withIdempotency(s.handleTriggerNow)))
-
-	// Events — both site-scoped and direct lookup.
-	mux.HandleFunc("GET /api/v1/sites/{id}/events", s.requireScope(scopeRead, s.handleListSiteEvents))
-	mux.HandleFunc("GET /api/v1/sites/{id}/events/{event_id}", s.requireScope(scopeRead, s.handleGetEventBySite))
-	mux.HandleFunc("GET /api/v1/sites/{id}/events/{event_id}/transitions", s.requireScope(scopeRead, s.handleListTransitions))
-	mux.HandleFunc("GET /api/v1/events/{event_id}", s.requireScope(scopeRead, s.handleGetEvent))
-
-	// Events — write (manual close).
-	mux.HandleFunc("POST /api/v1/sites/{id}/events/{event_id}/close",
-		s.requireScope(scopeWrite, s.withIdempotency(s.handleCloseEvent)))
-
-	// SLA / statistics.
-	mux.HandleFunc("GET /api/v1/sites/{id}/uptime", s.requireScope(scopeRead, s.handleSiteUptime))
-	mux.HandleFunc("GET /api/v1/sites/{id}/response-time", s.requireScope(scopeRead, s.handleSiteResponseTime))
-	mux.HandleFunc("GET /api/v1/sites/{id}/timing-breakdown", s.requireScope(scopeRead, s.handleSiteTimingBreakdown))
-
-	// Webhooks — read.
-	mux.HandleFunc("GET /api/v1/webhooks",
-		s.requireScope(scopeRead, s.handleListWebhooks))
-	mux.HandleFunc("GET /api/v1/webhooks/{id}",
-		s.requireScope(scopeRead, s.handleGetWebhook))
-
-	// Webhooks — write. POST endpoints route through idempotency middleware
-	// so a retry after a network blip doesn't double-create a webhook.
-	mux.HandleFunc("POST /api/v1/webhooks",
-		s.requireScope(scopeWrite, s.withIdempotency(s.handleCreateWebhook)))
-	mux.HandleFunc("PATCH /api/v1/webhooks/{id}",
-		s.requireScope(scopeWrite, s.handleUpdateWebhook))
-	mux.HandleFunc("DELETE /api/v1/webhooks/{id}",
-		s.requireScope(scopeWrite, s.handleDeleteWebhook))
-	mux.HandleFunc("POST /api/v1/webhooks/{id}/rotate-secret",
-		s.requireScope(scopeWrite, s.withIdempotency(s.handleRotateWebhookSecret)))
-
-	// Deliveries — read history, manually retry abandoned rows.
-	mux.HandleFunc("GET /api/v1/webhooks/{id}/deliveries",
-		s.requireScope(scopeRead, s.handleListDeliveries))
-	mux.HandleFunc("POST /api/v1/webhooks/{id}/deliveries/{delivery_id}/retry",
-		s.requireScope(scopeWrite, s.withIdempotency(s.handleRetryDelivery)))
-
-	// Alert contacts — read.
-	mux.HandleFunc("GET /api/v1/alert-contacts",
-		s.requireScope(scopeRead, s.handleListAlertContacts))
-	mux.HandleFunc("GET /api/v1/alert-contacts/{id}",
-		s.requireScope(scopeRead, s.handleGetAlertContact))
-
-	// Alert contacts — write.
-	mux.HandleFunc("POST /api/v1/alert-contacts",
-		s.requireScope(scopeWrite, s.withIdempotency(s.handleCreateAlertContact)))
-	mux.HandleFunc("PATCH /api/v1/alert-contacts/{id}",
-		s.requireScope(scopeWrite, s.handleUpdateAlertContact))
-	mux.HandleFunc("DELETE /api/v1/alert-contacts/{id}",
-		s.requireScope(scopeWrite, s.handleDeleteAlertContact))
-	mux.HandleFunc("POST /api/v1/alert-contacts/{id}/test",
-		s.requireScope(scopeWrite, s.withIdempotency(s.handleAlertContactTest)))
-
-	// Alert deliveries — read history, manually retry abandoned rows.
-	mux.HandleFunc("GET /api/v1/alert-contacts/{id}/deliveries",
-		s.requireScope(scopeRead, s.handleListAlertDeliveries))
-	mux.HandleFunc("POST /api/v1/alert-contacts/{id}/deliveries/{delivery_id}/retry",
-		s.requireScope(scopeWrite, s.withIdempotency(s.handleRetryAlertDelivery)))
+	for _, route := range apiRoutes() {
+		route.register(s, mux)
+	}
 
 	// Catch-all → 404 with a useful message rather than the default empty body.
 	mux.HandleFunc("/", s.handleNotFound)

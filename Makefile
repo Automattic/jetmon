@@ -1,4 +1,5 @@
 BINARY      := bin/jetmon2
+DELIVERER   := bin/jetmon-deliverer
 VERIFLIER   := bin/veriflier2
 GO          ?= $(shell if command -v go >/dev/null 2>&1; then command -v go; elif [ -x /usr/local/go/bin/go ]; then printf /usr/local/go/bin/go; else printf go; fi)
 GOCACHE     ?= /tmp/jetmon-go-cache
@@ -7,13 +8,17 @@ BUILD_FLAGS := -ldflags "-X main.version=$(shell git describe --tags --always --
                          -X main.buildDate=$(shell date -u +%Y-%m-%dT%H:%M:%SZ) \
                          -X main.goVersion=$(shell $(GO) version | awk '{print $$3}')"
 
-.PHONY: all build build-veriflier generate test test-race lint clean
+.PHONY: all build build-deliverer build-veriflier generate test test-race lint clean
 
-all: build build-veriflier
+all: build build-deliverer build-veriflier
 
 build:
 	mkdir -p bin
 	$(GO_ENV) CGO_ENABLED=0 $(GO) build $(BUILD_FLAGS) -o $(BINARY) ./cmd/jetmon2/
+
+build-deliverer:
+	mkdir -p bin
+	$(GO_ENV) CGO_ENABLED=0 $(GO) build $(BUILD_FLAGS) -o $(DELIVERER) ./cmd/jetmon-deliverer/
 
 build-veriflier:
 	mkdir -p bin
@@ -35,4 +40,4 @@ lint:
 	$(GO_ENV) $(GO) vet ./...
 
 clean:
-	rm -f $(BINARY) $(VERIFLIER)
+	rm -f $(BINARY) $(DELIVERER) $(VERIFLIER)

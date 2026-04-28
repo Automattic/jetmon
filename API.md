@@ -85,7 +85,7 @@ The CLI talks to the database directly (via `jetmon_api_keys`), prints the new t
 https://api.jetmon.example.com/api/v1
 ```
 
-Hosted in the `jetmon2` binary on a dedicated port (`API_PORT`), separate from the operator dashboard (`DASHBOARD_PORT`) and the verifier transport port (`VERIFLIER_GRPC_PORT`).
+Hosted in the `jetmon2` binary on a dedicated port (`API_PORT`), separate from the operator dashboard (`DASHBOARD_PORT`) and the Veriflier transport port (`VERIFLIER_PORT`).
 
 ### Content negotiation
 
@@ -682,7 +682,7 @@ The signature is HMAC-SHA256 of `{timestamp}.{body}` with the webhook's `secret`
 
 Webhook delivery uses **pull-based detection**: a worker polls `jetmon_event_transitions WHERE id > last_seen` on a 1s interval and creates one delivery row per matching transition. This is the long-term answer for Jetmon's architecture — the orchestrator's flap suppression already adds 10s+ between detection and confirmed events, so 1s poll latency is invisible in the practical budget.
 
-Current v2 deployment constraint: run the API/webhook/alert delivery worker on a single active `jetmon2` instance per database cluster. In the single-binary shape, those workers are enabled by setting `API_PORT`; additional monitor instances should leave `API_PORT` at `0` until delivery claiming moves to transactional row locks. Multi-instance delivery via `SELECT ... FOR UPDATE SKIP LOCKED` is the planned path for the future deliverer-binary split, but it is not the current worker contract.
+Current v2 deployment constraint: in the single-binary shape, `API_PORT` makes webhook and alert-contact workers eligible to run. Delivery rows are claimed transactionally, so multiple active delivery workers do not claim the same pending row. `DELIVERY_OWNER_HOST` can still restrict actual delivery to one named host when operators want a single-owner rollout while moving from embedded `jetmon2` delivery to standalone `jetmon-deliverer`.
 
 Push-based or hybrid detection is not on the roadmap. If a future consumer demands sub-second webhook latency, that's the trigger to introduce a pub/sub layer — not before.
 
@@ -950,9 +950,11 @@ This is the only API surface for keys. **Creation, listing, and revocation are C
 
 Unauthenticated. Returns `{ "status": "ok" }` if the API can talk to the database. For load balancers and external uptime monitors (yes, including external monitors monitoring the monitor).
 
-#### Planned: `GET /api/v1/openapi.json`
+#### `GET /api/v1/openapi.json`
 
-OpenAPI 3.1 spec for client codegen. This is not routed by the current server; it is tracked as Phase 4 polish below. When added, it should be generated from the route/handler contract so it matches what the running server actually accepts.
+Returns the route-driven OpenAPI 3.1 contract for the internal API. Requires `read` scope like other internal introspection routes. The spec is generated from the same route table used to build the running server mux, so new routes must be added to that table before they can be served or documented.
+
+The current contract publishes paths, methods, auth scope, idempotency headers, path parameters, request/response component schemas derived from the handler structs, and the standard error envelope. `internal/api` tests resolve every component `$ref` and type-check a generated Go client smoke source from the published operation IDs and component names. Stricter public compatibility checks are tracked in `ROADMAP.md`.
 
 ---
 
@@ -980,6 +982,7 @@ Phase 2 (write surface, implemented):
 - Family 1 write endpoints (POST/PATCH/DELETE sites, pause/resume, trigger-now)
 - Family 2 manual close
 - Idempotency keys on POST routes
+- Route-driven OpenAPI 3.1 contract at `GET /api/v1/openapi.json`
 
 Phase 3 (webhook delivery, implemented):
 - Family 4 webhooks (CRUD + delivery infrastructure with HMAC signing + retry backoff)
@@ -993,7 +996,7 @@ Phase 3.x (alert contacts, implemented):
 - Legacy WPCOM notification flow continues to operate in parallel; future migration tracked in ROADMAP
 
 Phase 4 (polish, future):
-- OpenAPI spec generation
+- Consumer-specific OpenAPI generator validation if API consumers standardize on a tool
 - Bulk endpoints if real consumers need them
 - Per-region filters when vantage-point work ships
 

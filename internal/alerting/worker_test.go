@@ -153,8 +153,10 @@ func TestDeliverTickNoReadyDeliveries(t *testing.T) {
 	}
 	defer db.Close()
 
+	mock.ExpectBegin()
 	mock.ExpectQuery(selectClaimReadySQL).WithArgs(50).
 		WillReturnRows(sqlmock.NewRows(columnsClaimedDelivery))
+	mock.ExpectCommit()
 
 	w := NewWorker(WorkerConfig{DB: db})
 	if err := w.deliverTick(); err != nil {

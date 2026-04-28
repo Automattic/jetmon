@@ -60,9 +60,9 @@ well.
 
 **Costs:**
 - ~300 lines of duplicated code: retry schedule constants, in-flight
-  cap, claim-and-soft-lock pattern (ADR-0007), polling loop shape,
-  abandon semantics. Bug fixes have to land twice (the soft-lock
-  claim fix did exactly that).
+  cap, transactional claim-and-lease pattern (ADR-0007), polling loop
+  shape, abandon semantics. Bug fixes have to land twice (the claim
+  fix did exactly that).
 - Two metrics namespaces (`webhook_*` vs `alert_*`). Operators have
   to remember which is which.
 - Drift risk — improvements in one package don't automatically reach
@@ -70,8 +70,8 @@ well.
 
 These costs are bounded and acceptable in exchange for the
 flexibility, but they accrue every time we touch the workers. The
-soft-lock fix is the canary: if every fix is two-pass, the unification
-is overdue.
+delivery-claim fix is the canary: if every fix is two-pass, the
+unification is overdue.
 
 ## Future revisit
 

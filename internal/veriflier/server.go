@@ -15,8 +15,7 @@ import (
 // check batches to the local checker. Used by the Veriflier binary.
 //
 // This is the server-side counterpart to VeriflierClient. It implements
-// the same JSON-over-HTTP transport and is replaced by a generated gRPC
-// server after running `make generate`.
+// the v2 production JSON-over-HTTP transport.
 //
 // The HTTP server is configured with read/write/idle timeouts so a slow or
 // stalled client cannot pin a goroutine indefinitely (slowloris-style DoS).

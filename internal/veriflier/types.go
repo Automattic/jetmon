@@ -1,7 +1,7 @@
 // Package veriflier provides the client and server for Monitor↔Veriflier
 // communication. The current transport is JSON-over-HTTP; types mirror the
-// proto definitions in proto/veriflier.proto. Run `make generate` after
-// installing protoc to replace this with generated gRPC stubs.
+// schema shape in proto/veriflier.proto, which is retained as a reference for
+// a possible future transport.
 package veriflier
 
 // CheckRequest is a single site to check, sent from Monitor to Veriflier.

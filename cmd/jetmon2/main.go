@@ -22,9 +22,9 @@ import (
 	"github.com/Automattic/jetmon/internal/config"
 	"github.com/Automattic/jetmon/internal/dashboard"
 	"github.com/Automattic/jetmon/internal/db"
+	"github.com/Automattic/jetmon/internal/deliverer"
 	"github.com/Automattic/jetmon/internal/metrics"
 	"github.com/Automattic/jetmon/internal/orchestrator"
-	"github.com/Automattic/jetmon/internal/webhooks"
 	"github.com/Automattic/jetmon/internal/wpcom"
 )
 
@@ -135,38 +135,33 @@ func runServe() {
 		}()
 	}
 
-	// Webhook delivery worker. Polls jetmon_event_transitions for new rows,
-	// matches against active webhooks, fans out signed POSTs with retry.
-	// Disabled when API_PORT is 0 (no consumers to fire to without the
-	// API to manage webhooks).
-	var hookWorker *webhooks.Worker
+	if level, msg := deliveryOwnerStatus(cfg, db.Hostname()); msg != "" {
+		if level == "WARN" {
+			log.Printf("WARN: %s", msg)
+		} else {
+			log.Printf("config: %s", msg)
+		}
+	}
+	deliveryWorkersEnabled := deliveryWorkersShouldStart(cfg, db.Hostname())
+
+	var alertDispatchers map[alerting.Transport]alerting.Dispatcher
 	if cfg.APIPort > 0 {
-		hookWorker = webhooks.NewWorker(webhooks.WorkerConfig{
-			DB:         db.DB(),
-			InstanceID: db.Hostname(),
-		})
-		hookWorker.Start()
-		log.Println("webhooks: delivery worker started")
+		alertDispatchers = deliverer.BuildAlertDispatchers(cfg)
+		if apiSrv != nil {
+			apiSrv.SetAlertDispatchers(alertDispatchers)
+		}
 	}
 
-	// Alert contact delivery worker. Same shape as webhooks but a
-	// separate package so the two can evolve independently — the future
-	// "deliverer binary" extraction is the moment to factor out a
-	// shared abstraction. Disabled when API_PORT is 0 (no contacts to
-	// fire to without the API to manage them).
-	var alertWorker *alerting.Worker
-	if cfg.APIPort > 0 {
-		dispatchers := buildAlertDispatchers(cfg)
-		alertWorker = alerting.NewWorker(alerting.WorkerConfig{
+	// Embedded outbound delivery workers. Disabled when API_PORT is 0
+	// (no API to manage webhooks or alert contacts) or when
+	// DELIVERY_OWNER_HOST names another host.
+	var deliveryRuntime *deliverer.Runtime
+	if deliveryWorkersEnabled {
+		deliveryRuntime = deliverer.Start(deliverer.Config{
 			DB:          db.DB(),
 			InstanceID:  db.Hostname(),
-			Dispatchers: dispatchers,
+			Dispatchers: alertDispatchers,
 		})
-		alertWorker.Start()
-		if apiSrv != nil {
-			apiSrv.SetAlertDispatchers(dispatchers)
-		}
-		log.Printf("alerting: delivery worker started (transports=%d)", len(dispatchers))
 	}
 
 	// Push dashboard state every stats interval.
@@ -214,13 +209,8 @@ func runServe() {
 					}
 					cancel()
 				}
-				if hookWorker != nil {
-					hookWorker.Stop()
-					log.Println("webhooks: delivery worker stopped")
-				}
-				if alertWorker != nil {
-					alertWorker.Stop()
-					log.Println("alerting: delivery worker stopped")
+				if deliveryRuntime != nil {
+					deliveryRuntime.Stop()
 				}
 				orch.Stop()
 				// Hard kill if drain takes too long (e.g. a stalled HTTP check).
@@ -268,6 +258,9 @@ func cmdValidateConfig() {
 	if !emailTransportDelivers(cfg) {
 		fmt.Printf("WARN email_transport=%s — alert-contact emails will be logged but not delivered\n", emailTransportLabel(cfg))
 	}
+	if level, msg := deliveryOwnerStatus(cfg, db.Hostname()); msg != "" {
+		fmt.Printf("%s %s\n", level, msg)
+	}
 	for _, v := range cfg.Verifiers {
 		addr := fmt.Sprintf("%s:%s", v.Host, v.GRPCPort)
 		// Listing configured Verifliers is operator context, not a reachability check.
@@ -300,6 +293,31 @@ func emailTransportLabel(cfg *config.Config) string {
 // silently disappear into the logs in that mode.
 func emailTransportDelivers(cfg *config.Config) bool {
 	return cfg.EmailTransport == "smtp" || cfg.EmailTransport == "wpcom"
+}
+
+func deliveryWorkersShouldStart(cfg *config.Config, hostname string) bool {
+	if cfg.APIPort <= 0 {
+		return false
+	}
+	owner := strings.TrimSpace(cfg.DeliveryOwnerHost)
+	return owner == "" || owner == hostname
+}
+
+func deliveryOwnerStatus(cfg *config.Config, hostname string) (string, string) {
+	owner := strings.TrimSpace(cfg.DeliveryOwnerHost)
+	if cfg.APIPort <= 0 {
+		if owner == "" {
+			return "INFO", "delivery_workers=disabled api_port=disabled"
+		}
+		return "INFO", fmt.Sprintf("delivery_owner_host=%q ignored because API_PORT is disabled", owner)
+	}
+	if owner == "" {
+		return "WARN", fmt.Sprintf("delivery_owner_host is unset; host %q will run delivery workers because API_PORT is enabled", hostname)
+	}
+	if owner == hostname {
+		return "INFO", fmt.Sprintf("delivery_owner_host=%q matched; delivery workers enabled on this host", owner)
+	}
+	return "INFO", fmt.Sprintf("delivery_owner_host=%q; delivery workers disabled on host %q", owner, hostname)
 }
 
 func cmdStatus() {
@@ -621,43 +639,4 @@ func resolveSince(s string) string {
 		return time.Now().Add(-d).Format("2006-01-02 15:04:05")
 	}
 	return s
-}
-
-// buildAlertDispatchers constructs the per-transport Dispatcher map
-// from runtime config. Always returns the three webhook-shaped
-// transports (PagerDuty, Slack, Teams) — they have no per-instance
-// config beyond the destination credential which lives on each
-// alert contact row. Email is conditionally included based on
-// EMAIL_TRANSPORT: "wpcom"/"smtp" wire the corresponding sender,
-// "stub" or empty falls back to log-only.
-func buildAlertDispatchers(cfg *config.Config) map[alerting.Transport]alerting.Dispatcher {
-	out := map[alerting.Transport]alerting.Dispatcher{
-		alerting.TransportPagerDuty: &alerting.PagerDutyDispatcher{},
-		alerting.TransportSlack:     &alerting.SlackDispatcher{},
-		alerting.TransportTeams:     &alerting.TeamsDispatcher{},
-	}
-
-	var sender alerting.Sender
-	switch cfg.EmailTransport {
-	case "wpcom":
-		sender = &alerting.WPCOMSender{
-			Endpoint:  cfg.WPCOMEmailEndpoint,
-			AuthToken: cfg.WPCOMEmailAuthToken,
-		}
-		log.Printf("alerting/email: using wpcom sender (endpoint=%s)", cfg.WPCOMEmailEndpoint)
-	case "smtp":
-		sender = &alerting.SMTPSender{
-			Host:     cfg.SMTPHost,
-			Port:     cfg.SMTPPort,
-			Username: cfg.SMTPUsername,
-			Password: cfg.SMTPPassword,
-			UseTLS:   cfg.SMTPUseTLS,
-		}
-		log.Printf("alerting/email: using smtp sender (%s:%d)", cfg.SMTPHost, cfg.SMTPPort)
-	default:
-		sender = &alerting.StubSender{}
-		log.Println("alerting/email: using stub sender (set EMAIL_TRANSPORT to enable real delivery)")
-	}
-	out[alerting.TransportEmail] = alerting.NewEmailDispatcher(sender, cfg.EmailFrom)
-	return out
 }

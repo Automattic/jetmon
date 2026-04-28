@@ -34,6 +34,7 @@
 	"LOG_FORMAT"     : "text",
 	"DASHBOARD_PORT" : 8080,
 	"API_PORT"       : 0,
+	"DELIVERY_OWNER_HOST": "",
 	"DEBUG_PORT"     : 6060,
 
 	"EMAIL_TRANSPORT"       : "stub",
@@ -50,7 +51,7 @@
 		{
 			"name"       : "Veriflier 1",
 			"host"       : "veriflier",
-			"grpc_port"  : "<VERIFLIER_GRPC_PORT>",
+			"port"       : "<VERIFLIER_PORT>",
 			"auth_token" : "<VERIFLIER_AUTH_TOKEN>"
 		}
 	]

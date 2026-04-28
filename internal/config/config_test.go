@@ -184,7 +184,8 @@ func TestLoadAndGet(t *testing.T) {
 		"BUCKET_TOTAL": 100,
 		"BUCKET_TARGET": 50,
 		"NET_COMMS_TIMEOUT": 10,
-		"LOG_FORMAT": "json"
+		"LOG_FORMAT": "json",
+		"DELIVERY_OWNER_HOST": "jetmon-api-1"
 	}`)
 
 	if err := Load(p); err != nil {
@@ -203,6 +204,9 @@ func TestLoadAndGet(t *testing.T) {
 	}
 	if cfg.LogFormat != "json" {
 		t.Fatalf("LogFormat = %q, want json", cfg.LogFormat)
+	}
+	if cfg.DeliveryOwnerHost != "jetmon-api-1" {
+		t.Fatalf("DeliveryOwnerHost = %q, want jetmon-api-1", cfg.DeliveryOwnerHost)
 	}
 	if !cfg.LegacyStatusProjectionEnable {
 		t.Fatal("LegacyStatusProjectionEnable default should be true")
@@ -276,6 +280,18 @@ func TestDisplayName(t *testing.T) {
 	}
 	if got := displayName(VerifierConfig{}, 2); got != "verifier #2" {
 		t.Fatalf("displayName(unnamed) = %q, want verifier #2", got)
+	}
+}
+
+func TestVerifierTransportPort(t *testing.T) {
+	if got := (VerifierConfig{Port: "7803"}).TransportPort(); got != "7803" {
+		t.Fatalf("TransportPort(port) = %q, want 7803", got)
+	}
+	if got := (VerifierConfig{GRPCPort: "7804"}).TransportPort(); got != "7804" {
+		t.Fatalf("TransportPort(grpc_port alias) = %q, want 7804", got)
+	}
+	if got := (VerifierConfig{Port: "7803", GRPCPort: "7804"}).TransportPort(); got != "7803" {
+		t.Fatalf("TransportPort(prefer port) = %q, want 7803", got)
 	}
 }
 

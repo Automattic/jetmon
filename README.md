@@ -25,7 +25,7 @@ v2 keeps the Jetmon 1 detection pipeline (local retries → geo-distributed Veri
 | API surface | None | Internal REST API at `/api/v1`: Bearer auth, three coarse scopes, per-key rate limit, Stripe-style idempotency, cursor pagination, full audit logging |
 | Per-site config | Bucket + check interval | + custom headers, timeout override, redirect policy, alert cooldown, maintenance windows, keyword content check, SSL-expiry alerts at 30 / 14 / 7 days |
 | Operational audit | Basic logging | Full audit trail (`jetmon_audit_log`) over every check, retry, Veriflier dispatch, alert suppression, API call, and config reload |
-| Process model | Node master + Node workers + C++ native addon + Qt C++ Veriflier | Single Go binary (`jetmon2`) + Go Veriflier (`veriflier2`) |
+| Process model | Node master + Node workers + C++ native addon + Qt C++ Veriflier | Go monitor (`jetmon2`) + optional outbound deliverer (`jetmon-deliverer`) + Go Veriflier (`veriflier2`) |
 | Worker scaling | Spawn / kill child processes | In-process goroutine pool that auto-scales by queue depth |
 | Deployment friction | `npm` + `node-gyp` + Qt | Static binary + `./jetmon2 migrate` + `./jetmon2 validate-config` |
 | Multi-host coordination | Manual `bucket_min` / `bucket_max` per host | MySQL-coordinated `jetmon_hosts` table with heartbeat-and-reclaim |
@@ -46,7 +46,7 @@ Architecture
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│                 jetmon2 (single binary)                      │
+│                           jetmon2                            │
 │                                                              │
 │  ┌────────────┐  ┌────────────┐  ┌────────────────────┐      │
 │  │Orchestrator│  │ Check pool │  │ Veriflier          │      │
@@ -59,7 +59,8 @@ Architecture
 │        │                 │                  │                │
 │  ┌─────┴──────┐  ┌───────┴────────┐  ┌──────┴──────────┐     │
 │  │  REST API  │  │ Webhook worker │  │  Alert-contact  │     │
-│  │  /api/v1/  │  │ (HMAC-signed)  │  │     worker      │     │
+│  │  /api/v1/  │  │ embedded or    │  │ worker embedded │     │
+│  │            │  │ deliverer      │  │ or deliverer    │     │
 │  └────────────┘  └────────────────┘  └─────────────────┘     │
 └────────┬─────────────────────────────────────────┬───────────┘
          │                                         │
@@ -72,9 +73,9 @@ The **Orchestrator goroutine** fetches site batches from MySQL, dispatches work 
 
 The **Check Pool** is a bounded goroutine pool that performs HTTP checks using Go's `net/http` and `net/http/httptrace`. It records DNS, TCP, TLS, and TTFB timings on every check and auto-scales against queue depth without spawning new processes.
 
-The **Veriflier transport** sends confirmation batches to remote Veriflier instances. It currently uses JSON-over-HTTP on the configured Veriflier port; the proto definition is kept in `proto/` for the planned generated gRPC transport.
+The **Veriflier transport** sends confirmation batches to remote Veriflier instances. JSON-over-HTTP on the configured Veriflier port is the v2 production transport; the proto definition in `proto/` is retained only as a schema reference for a possible future transport.
 
-The **Veriflier** is a standalone Go binary deployed at remote locations. It replaces the Qt C++ Veriflier, using the same JSON-over-HTTP transport as the Monitor-side client until the generated gRPC stubs are wired in.
+The **Veriflier** is a standalone Go binary deployed at remote locations. It replaces the Qt C++ Veriflier and uses the same JSON-over-HTTP transport as the Monitor-side client.
 
 The v2 platform layer sits below the detection pipeline:
 
@@ -136,7 +137,8 @@ Key settings:
 | `LEGACY_STATUS_PROJECTION_ENABLE` | true | Keep `jetpack_monitor_sites.site_status` / `last_status_change` updated for v1 consumers during migration |
 | `LOG_FORMAT` | `text` | `text` for plain-text logs or `json` for structured logs |
 | `DASHBOARD_PORT` | 8080 | Internal port for the operator dashboard (0 to disable) |
-| `API_PORT` | 0 | Internal REST API port (0 to disable). In the current single-binary v2 shape, this also starts webhook and alert-contact delivery workers; enable it on only one active instance per database cluster. |
+| `API_PORT` | 0 | Internal REST API port (0 to disable). Also makes webhook and alert-contact delivery workers eligible to run. |
+| `DELIVERY_OWNER_HOST` | empty | Optional hostname allowed to run delivery workers when `API_PORT` is enabled; set this on shared production configs so only one API-enabled host dispatches outbound deliveries. |
 | `DEBUG_PORT` | 6060 | localhost-only pprof port (`127.0.0.1:PORT`); 0 to disable |
 | `EMAIL_TRANSPORT` | `stub` | Alert-contact email sender: `stub` (log only), `smtp`, or `wpcom` |
 
@@ -235,8 +237,9 @@ For Developers
 
 ### Building
 
-	make all              # Build bin/jetmon2 and bin/veriflier2
+	make all              # Build bin/jetmon2, bin/jetmon-deliverer, and bin/veriflier2
 	make build            # Build only bin/jetmon2
+	make build-deliverer  # Build only bin/jetmon-deliverer
 	make build-veriflier  # Build only bin/veriflier2
 
 If `go` is not on `PATH`, the Makefile falls back to
@@ -246,8 +249,8 @@ default so builds do not depend on a writable home-directory cache; override
 with `make GOCACHE=/path/to/cache ...` when needed.
 
 `make generate` is intentionally separate from `make all`. It requires
-`protoc` and the Go protobuf plugins, and is only needed when replacing the
-current JSON-over-HTTP Veriflier transport with generated gRPC stubs.
+`protoc` and the Go protobuf plugins, and is reserved for experimental proto
+stub generation; generated stubs are not part of the v2 production transport.
 
 ### Running Tests
 
@@ -333,9 +336,10 @@ The debug port is configurable via `DEBUG_PORT` (default 6060). Set to 0 to disa
 | Path | Purpose |
 |------|---------|
 | `cmd/jetmon2/` | Binary entry point |
+| `cmd/jetmon-deliverer/` | Standalone outbound delivery worker entry point |
 | `internal/orchestrator/` | Round scheduling, DB fetch, WPCOM notifications |
 | `internal/checker/` | HTTP check goroutine pool |
-| `internal/veriflier/` | JSON-over-HTTP Veriflier transport (proto3 service defined in `proto/`) |
+| `internal/veriflier/` | JSON-over-HTTP Veriflier transport |
 | `internal/db/` | MySQL access, bucket heartbeat |
 | `internal/config/` | Config loading and hot-reload |
 | `internal/metrics/` | StatsD client, stats file writer |
@@ -343,6 +347,7 @@ The debug port is configurable via `DEBUG_PORT` (default 6060). Set to 0 to disa
 | `internal/audit/` | Audit log |
 | `internal/eventstore/` | Authoritative event and transition writer |
 | `internal/api/` | Internal REST API server |
+| `internal/deliverer/` | Shared outbound delivery worker wiring |
 | `internal/webhooks/` | HMAC-signed webhook registry and delivery worker |
 | `internal/alerting/` | Managed alert-contact registry and delivery worker |
 | `internal/dashboard/` | Operator dashboard and SSE handler |
@@ -416,7 +421,9 @@ The dashboard is available at http://localhost:8080 (configurable via `DASHBOARD
 
 The internal API is disabled by default. Set `API_PORT` to a non-zero port to enable `/api/v1/...`.
 
-In the current single-binary v2 deployment, enabling `API_PORT` also starts the webhook and alert-contact delivery workers. Run `API_PORT` on only one active `jetmon2` instance per database cluster; leave it at `0` on additional monitor hosts. The future deliverer split will replace this operational constraint with transactional row claiming for active-active delivery workers.
+In the embedded v2 deployment, `API_PORT` also makes the webhook and alert-contact delivery workers eligible to run inside `jetmon2`. Set `DELIVERY_OWNER_HOST` to exactly one hostname per database cluster when you want additional API-enabled hosts to serve API traffic without owning delivery during a staged rollout. If `DELIVERY_OWNER_HOST` is empty, the host keeps the legacy behavior and starts delivery workers whenever `API_PORT` is enabled; startup and `validate-config` warn about that fallback.
+
+`bin/jetmon-deliverer` is the first standalone process boundary for outbound delivery. It starts the same webhook and alert-contact workers without starting the monitor, API, dashboard, or bucket ownership loop. Delivery rows are claimed transactionally, so multiple active delivery workers do not claim the same pending row; use `DELIVERY_OWNER_HOST` when you want an explicit single-owner rollout during the transition from embedded to standalone delivery.
 
 ### Cleanup
 
@@ -515,6 +522,13 @@ Metrics are emitted with prefix `com.jetpack.jetmon.<hostname>`. The Graphite/Gr
 - Round completion time
 - WPCOM API success and error rates
 - Veriflier response times
+- Detection flow timing: first failure → Seems Down, first failure →
+  Veriflier escalation, Seems Down → Down, Seems Down → false alarm, and
+  Seems Down → probe-cleared recovery
+- Veriflier decision counters: escalations, RPC success/error, confirm/disagree
+  votes, quorum-met confirmations, and false alarms
+- Legacy projection drift: per-bucket count of active sites whose
+  `site_status` no longer matches the authoritative open HTTP event
 - Memory usage
 
 StatsD is the primary metrics transport. For integration with external systems, expose the Graphite/StatsD data via your existing metrics pipeline.

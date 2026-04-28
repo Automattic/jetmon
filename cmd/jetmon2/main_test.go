@@ -14,6 +14,7 @@ import (
 
 	"github.com/Automattic/jetmon/internal/alerting"
 	"github.com/Automattic/jetmon/internal/config"
+	"github.com/Automattic/jetmon/internal/deliverer"
 )
 
 func TestHTTPGet(t *testing.T) {
@@ -171,6 +172,78 @@ func TestEmailTransportLabelAndDelivery(t *testing.T) {
 	}
 }
 
+func TestDeliveryWorkersShouldStart(t *testing.T) {
+	tests := []struct {
+		name      string
+		cfg       config.Config
+		hostname  string
+		wantStart bool
+		wantLevel string
+		wantMsg   string
+	}{
+		{
+			name:      "api disabled",
+			cfg:       config.Config{},
+			hostname:  "host-a",
+			wantLevel: "INFO",
+			wantMsg:   "delivery_workers=disabled",
+		},
+		{
+			name:      "legacy api port behavior starts workers",
+			cfg:       config.Config{APIPort: 8090},
+			hostname:  "host-a",
+			wantStart: true,
+			wantLevel: "WARN",
+			wantMsg:   "delivery_owner_host is unset",
+		},
+		{
+			name: "matching owner starts workers",
+			cfg: config.Config{
+				APIPort:           8090,
+				DeliveryOwnerHost: "host-a",
+			},
+			hostname:  "host-a",
+			wantStart: true,
+			wantLevel: "INFO",
+			wantMsg:   "matched",
+		},
+		{
+			name: "non-owner skips workers",
+			cfg: config.Config{
+				APIPort:           8090,
+				DeliveryOwnerHost: "host-a",
+			},
+			hostname:  "host-b",
+			wantLevel: "INFO",
+			wantMsg:   "disabled on host",
+		},
+		{
+			name: "owner ignored when api disabled",
+			cfg: config.Config{
+				DeliveryOwnerHost: "host-a",
+			},
+			hostname:  "host-a",
+			wantLevel: "INFO",
+			wantMsg:   "ignored because API_PORT is disabled",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := deliveryWorkersShouldStart(&tt.cfg, tt.hostname); got != tt.wantStart {
+				t.Fatalf("deliveryWorkersShouldStart() = %v, want %v", got, tt.wantStart)
+			}
+			level, msg := deliveryOwnerStatus(&tt.cfg, tt.hostname)
+			if level != tt.wantLevel {
+				t.Fatalf("deliveryOwnerStatus() level = %q, want %q", level, tt.wantLevel)
+			}
+			if !strings.Contains(msg, tt.wantMsg) {
+				t.Fatalf("deliveryOwnerStatus() message = %q, want substring %q", msg, tt.wantMsg)
+			}
+		})
+	}
+}
+
 func TestEnabledLabel(t *testing.T) {
 	if got := enabledLabel(true); got != "enabled" {
 		t.Fatalf("enabledLabel(true) = %q, want enabled", got)
@@ -245,7 +318,7 @@ func TestReadPIDFileRejectsInvalidContent(t *testing.T) {
 }
 
 func TestBuildAlertDispatchersIncludesStubEmail(t *testing.T) {
-	dispatchers := buildAlertDispatchers(&config.Config{
+	dispatchers := deliverer.BuildAlertDispatchers(&config.Config{
 		EmailTransport: "stub",
 		EmailFrom:      "jetmon@example.com",
 	})
@@ -304,7 +377,7 @@ func TestBuildAlertDispatchersSelectsConfiguredEmailSenders(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			dispatchers := buildAlertDispatchers(&config.Config{
+			dispatchers := deliverer.BuildAlertDispatchers(&config.Config{
 				EmailTransport:     tt.transport,
 				EmailFrom:          "jetmon@example.com",
 				WPCOMEmailEndpoint: "https://wpcom.example/send",
