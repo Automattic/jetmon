@@ -678,7 +678,13 @@ func (o *Orchestrator) sendNotification(site db.Site, res checker.Result, status
 		Detail:    fmt.Sprintf("status=%d type=%s", status, n.StatusType),
 	})
 
+	wpcomStatus := wpcomStatusMetricSegment(status)
+	emitCounter("wpcom.notification.attempt.count", 1)
+	emitCounter("wpcom.notification.status."+wpcomStatus+".attempt.count", 1)
 	if err := wpcomNotifyFunc(o.wpcom, n); err != nil {
+		emitCounter("wpcom.notification.error.count", 1)
+		emitCounter("wpcom.notification.status."+wpcomStatus+".error.count", 1)
+		emitCounter("wpcom.notification.retry.count", 1)
 		log.Printf("orchestrator: wpcom notify failed for blog_id=%d: %v", site.BlogID, err)
 		o.auditLog(audit.Entry{
 			BlogID:    site.BlogID,
@@ -689,10 +695,17 @@ func (o *Orchestrator) sendNotification(site db.Site, res checker.Result, status
 
 		// Single retry.
 		if retryErr := wpcomNotifyFunc(o.wpcom, n); retryErr != nil {
+			emitCounter("wpcom.notification.error.count", 1)
+			emitCounter("wpcom.notification.status."+wpcomStatus+".error.count", 1)
+			emitCounter("wpcom.notification.failed.count", 1)
+			emitCounter("wpcom.notification.status."+wpcomStatus+".failed.count", 1)
 			log.Printf("orchestrator: wpcom notify retry failed for blog_id=%d: %v", site.BlogID, retryErr)
 			return
 		}
+		emitCounter("wpcom.notification.retry.delivered.count", 1)
 	}
+	emitCounter("wpcom.notification.delivered.count", 1)
+	emitCounter("wpcom.notification.status."+wpcomStatus+".delivered.count", 1)
 	if err := dbUpdateLastAlertSent(o.ctx, site.BlogID, nowFunc().UTC()); err != nil {
 		log.Printf("orchestrator: update last alert sent blog_id=%d: %v", site.BlogID, err)
 	}
@@ -1114,6 +1127,19 @@ func statusFromBool(success bool) int {
 		return statusRunning
 	}
 	return 0
+}
+
+func wpcomStatusMetricSegment(status int) string {
+	switch status {
+	case statusDown:
+		return "down"
+	case statusRunning:
+		return "running"
+	case statusConfirmedDown:
+		return "confirmed_down"
+	default:
+		return "unknown"
+	}
 }
 
 func (o *Orchestrator) refreshVeriflierClients(cfg *config.Config) {

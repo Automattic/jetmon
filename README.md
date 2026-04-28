@@ -596,7 +596,8 @@ Metrics are emitted with prefix `com.jetpack.jetmon.<hostname>`. The Graphite/Gr
 - Free and active goroutines
 - Sites processed per second
 - Round completion time
-- WPCOM API success and error rates
+- WPCOM API attempt, delivered, retry, error, and failed rates, including
+  status-specific splits for `down`, `running`, and `confirmed_down`
 - Veriflier response times
 - Detection flow timing: first failure → Seems Down, first failure →
   Veriflier escalation, Seems Down → Down, Seems Down → false alarm, and

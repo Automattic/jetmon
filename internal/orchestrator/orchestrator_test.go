@@ -156,6 +156,9 @@ func TestSendNotificationRetriesAndUpdatesAlertTimestamp(t *testing.T) {
 
 	setTestConfig(t)
 
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+
 	var notifyCalls int
 	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error {
 		notifyCalls++
@@ -185,6 +188,20 @@ func TestSendNotificationRetriesAndUpdatesAlertTimestamp(t *testing.T) {
 	}
 	if updatedBlogID != 123 {
 		t.Fatalf("updated blog_id = %d, want 123", updatedBlogID)
+	}
+	for stat, want := range map[string]int{
+		"wpcom.notification.attempt.count":                  1,
+		"wpcom.notification.status.running.attempt.count":   1,
+		"wpcom.notification.error.count":                    1,
+		"wpcom.notification.status.running.error.count":     1,
+		"wpcom.notification.retry.count":                    1,
+		"wpcom.notification.retry.delivered.count":          1,
+		"wpcom.notification.delivered.count":                1,
+		"wpcom.notification.status.running.delivered.count": 1,
+	} {
+		if got := rec.counter(stat); got != want {
+			t.Fatalf("%s = %d, want %d", stat, got, want)
+		}
 	}
 }
 
@@ -929,6 +946,9 @@ func TestSendNotificationBothRetriesFail(t *testing.T) {
 	defer restore()
 	setTestConfig(t)
 
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+
 	calls := 0
 	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error {
 		calls++
@@ -953,6 +973,21 @@ func TestSendNotificationBothRetriesFail(t *testing.T) {
 	}
 	if updateAlertCalled {
 		t.Fatal("dbUpdateLastAlertSent should not be called when both retries fail")
+	}
+	for stat, want := range map[string]int{
+		"wpcom.notification.attempt.count":                         1,
+		"wpcom.notification.status.confirmed_down.attempt.count":   1,
+		"wpcom.notification.error.count":                           2,
+		"wpcom.notification.status.confirmed_down.error.count":     2,
+		"wpcom.notification.retry.count":                           1,
+		"wpcom.notification.failed.count":                          1,
+		"wpcom.notification.status.confirmed_down.failed.count":    1,
+		"wpcom.notification.delivered.count":                       0,
+		"wpcom.notification.status.confirmed_down.delivered.count": 0,
+	} {
+		if got := rec.counter(stat); got != want {
+			t.Fatalf("%s = %d, want %d", stat, got, want)
+		}
 	}
 }
 
@@ -1291,6 +1326,26 @@ func TestMetricSegment(t *testing.T) {
 		t.Run(tt.in, func(t *testing.T) {
 			if got := metricSegment(tt.in); got != tt.want {
 				t.Fatalf("metricSegment(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWPCOMStatusMetricSegment(t *testing.T) {
+	tests := []struct {
+		status int
+		want   string
+	}{
+		{status: statusDown, want: "down"},
+		{status: statusRunning, want: "running"},
+		{status: statusConfirmedDown, want: "confirmed_down"},
+		{status: 99, want: "unknown"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.want, func(t *testing.T) {
+			if got := wpcomStatusMetricSegment(tt.status); got != tt.want {
+				t.Fatalf("wpcomStatusMetricSegment(%d) = %q, want %q", tt.status, got, tt.want)
 			}
 		})
 	}

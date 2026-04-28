@@ -59,7 +59,10 @@ class-specific `detection.*.<failure-class>.count` counters split confirmed,
 false-alarm, and probe-cleared outcomes, and `verifier.host.<host>.*` counters
 split RPC health and confirm/disagree votes by configured Veriflier host. Use
 the host naming convention to preserve region/provider information in those
-series.
+series. Legacy WPCOM notification parity is tracked through
+`wpcom.notification.*` counters for attempts, deliveries, retries, errors, and
+final failures, with status-specific splits for `down`, `running`, and
+`confirmed_down`.
 
 ## Current v2 Baseline
 

@@ -32,8 +32,9 @@ migration and the operating data needed to make larger architecture decisions.
   primary-check vs confirmation cost, operator explanation gaps, and WPCOM
   notification parity. StatsD now emits the core detection timings, outcome
   counters split by local failure class, and per-Veriflier-host RPC/vote
-  counters; the remaining work is production dashboarding and any durable report
-  queries needed after v2 has real traffic.
+  counters, plus legacy WPCOM notification attempt/delivered/retry/error/failed
+  counters split by status; the remaining work is production dashboarding and
+  any durable report queries needed after v2 has real traffic.
 - **Watch projection drift as a production bug.** While the legacy projection
   is enabled, event mutations, transition rows, and the site-row projection
   must remain transactionally consistent. `jetmon2 rollout projection-drift`
