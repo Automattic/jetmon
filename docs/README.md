@@ -10,6 +10,12 @@ capture load-bearing choices that the current v2 implementation depends on.
 
 Start with [`adr/README.md`](adr/README.md) for the ADR format and index.
 
+## User Guides
+
+| Document | Purpose |
+|---|---|
+| [`api-cli-guide.md`](api-cli-guide.md) | Feature guide and examples for using `jetmon2 api` against the internal REST API during local testing, rehearsals, and CI smoke runs. |
+
 ## Planning Notes
 
 Planning notes capture future options and open design threads. They are not

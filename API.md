@@ -105,7 +105,8 @@ export JETMON_API_TOKEN=jm_replace_with_a_local_key
 
 Typed commands cover sites, events, webhooks, alert contacts, local smoke runs,
 and failure simulation. Use `api request` as the escape hatch for new API routes
-before a typed command exists:
+before a typed command exists. See [`docs/api-cli-guide.md`](docs/api-cli-guide.md)
+for a fuller feature guide and workflow examples:
 
 ```bash
 ./bin/jetmon2 api request --output table GET '/api/v1/sites?limit=5'

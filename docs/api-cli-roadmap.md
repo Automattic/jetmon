@@ -104,6 +104,12 @@ but it should not become a generic `curl` clone.
 - [x] Add deterministic failure-simulation assertions for exact
   event/transition behavior without depending on public endpoint timing.
 
+## P5 - Feature Documentation
+
+- [x] Add a feature guide with setup instructions and examples for health,
+  generic requests, site management, batch test data, events, webhooks, alert
+  contacts, smoke runs, failure simulation, cleanup, and automation patterns.
+
 ## Completed
 
 - [x] 2026-04-28: Created the `feature/api-cli` branch and initial roadmap.
@@ -181,3 +187,6 @@ but it should not become a generic `curl` clone.
   state, event severity, transition presence, and transition reason. Assertion
   mode keeps polling until the expectations match or `--wait` expires, then
   returns a non-zero summary with the last observed API state.
+- [x] 2026-04-28: Added `docs/api-cli-guide.md` as a feature-oriented API CLI
+  usage guide with local setup, command examples, workflow recipes, failure
+  simulation assertions, and automation notes.
