@@ -26,7 +26,7 @@ RUN chmod +x entrypoint.sh \
     && chown -R jetmon:jetmon /jetmon \
     && chmod 777 logs stats certs
 
-EXPOSE 8080/tcp
+EXPOSE 8080/tcp 8090/tcp
 
 USER jetmon
 

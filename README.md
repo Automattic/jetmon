@@ -107,8 +107,10 @@ Installation
 		cd docker && cp .env-sample .env
 
 4) Edit `docker/.env` for your local environment. The file is only for local
-   host-side port overrides, credentials, and user ids; container-side service
-   ports are hardcoded in `docker-compose.yml`.
+   host-side bind address / `*_HOST_PORT` overrides, credentials, and user ids;
+   container-side service ports are hardcoded in `docker-compose.yml`.
+   `MYSQL_ROOT_PASSWORD` is used only for local container setup; Jetmon connects
+   with the non-root `MYSQL_USER` / `MYSQL_PASSWORD` credentials.
 
 5) Build and start all services:
 
@@ -274,7 +276,7 @@ The current `go test ./...` suite runs standalone. Use the Docker Compose enviro
 
 Connect to the test database:
 
-	docker compose exec mysqldb mysql -u root -p123456 jetmon_db
+	docker compose exec mysqldb mysql -u jetmon -pjetmon_dev_password jetmon_db
 
 Insert sites to check:
 
@@ -299,15 +301,9 @@ legacy consumers. After all consumers read from the v2 API/event tables, set
 
 ### Simulated Site Server
 
-The Docker Compose environment includes a simulated site server. Toggle site states via its HTTP API to test specific scenarios without depending on external services:
-
-- Static response codes (200, 404, 500, 503)
-- Configurable response delay for timeout testing
-- Flapping mode (alternates up/down on a schedule)
-- SSL with a self-signed certificate
-- Keyword presence and absence for content check testing
-- Redirect chains
-- Abrupt TCP close
+The Docker Compose environment does not yet include the planned simulated site
+server. Use external test endpoints or local ad-hoc services for response-code,
+timeout, redirect, keyword, and TLS scenarios until that service is added.
 
 ### Config Validation
 
@@ -388,7 +384,8 @@ Check that sites are being processed:
 	docker compose exec jetmon cat stats/sitesqueue
 	docker compose exec jetmon ps aux
 
-Check the StatsD dashboard at http://localhost:8088 under:
+Check the StatsD dashboard at `http://localhost:8088` by default, or at the
+`BIND_ADDR` / `GRAPHITE_HOST_PORT` values from `docker/.env`, under:
 `Metrics > stats > com > jetpack > jetmon > docker > jetmon`
 
 ### Key Test Scenarios

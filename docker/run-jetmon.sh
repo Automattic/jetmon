@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
 cd /jetmon
 # /jetmon is owned by the jetmon user from the Dockerfile, but the container
 # runs as ${UID:-1000}:${GID:-1000} via docker-compose — write to stats/ instead, which
