@@ -904,6 +904,9 @@ func resolveProjectionDriftRange(cfg *config.Config, bucketMin, bucketMax int) (
 }
 
 func resolvePinnedOrExplicitRange(cfg *config.Config, bucketMin, bucketMax int, command string) (int, int, error) {
+	if bucketMin < -1 || bucketMax < -1 {
+		return 0, 0, errors.New("bucket-min and bucket-max must be >= 0")
+	}
 	if bucketMin >= 0 || bucketMax >= 0 {
 		return resolveExplicitRolloutBucketRange(cfg, bucketMin, bucketMax)
 	}

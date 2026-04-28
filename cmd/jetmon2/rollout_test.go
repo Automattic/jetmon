@@ -737,6 +737,15 @@ func TestRunRollbackCheckFailures(t *testing.T) {
 			deps:      rollbackCheckDeps(successfulPinnedRolloutDeps()),
 			want:      "bucket-max must be < BUCKET_TOTAL",
 		},
+		{
+			name:      "negative explicit range",
+			cfg:       pinnedRolloutTestConfig(minBucket, maxBucket),
+			host:      "host-a",
+			bucketMin: -2,
+			bucketMax: -2,
+			deps:      rollbackCheckDeps(successfulPinnedRolloutDeps()),
+			want:      "bucket-min and bucket-max must be >= 0",
+		},
 	}
 
 	for _, tt := range tests {
