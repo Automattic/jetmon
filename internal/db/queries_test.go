@@ -283,6 +283,35 @@ func TestHostRowExists(t *testing.T) {
 	}
 }
 
+func TestListHostRowsOverlappingBucketRange(t *testing.T) {
+	mock, cleanup := withMockDB(t)
+	defer cleanup()
+
+	now := time.Now().UTC()
+	mock.ExpectQuery("SELECT host_id, bucket_min, bucket_max").
+		WithArgs(34, 12).
+		WillReturnRows(sqlmock.NewRows([]string{"host_id", "bucket_min", "bucket_max", "last_heartbeat", "status"}).
+			AddRow("host-a", 0, 19, now, "active").
+			AddRow("host-b", 20, 49, now, "draining"))
+
+	hosts, err := ListHostRowsOverlappingBucketRange(context.Background(), 12, 34)
+	if err != nil {
+		t.Fatalf("ListHostRowsOverlappingBucketRange: %v", err)
+	}
+	if len(hosts) != 2 {
+		t.Fatalf("hosts len = %d, want 2", len(hosts))
+	}
+	if hosts[0].HostID != "host-a" || hosts[0].BucketMin != 0 || hosts[0].BucketMax != 19 {
+		t.Fatalf("host 0 = %+v", hosts[0])
+	}
+	if hosts[1].HostID != "host-b" || hosts[1].Status != "draining" {
+		t.Fatalf("host 1 = %+v", hosts[1])
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestCountLegacyProjectionDrift(t *testing.T) {
 	mock, cleanup := withMockDB(t)
 	defer cleanup()

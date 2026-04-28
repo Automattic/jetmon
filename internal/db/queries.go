@@ -353,6 +353,33 @@ func HostRowExists(ctx context.Context, hostID string) (bool, error) {
 	return true, nil
 }
 
+// ListHostRowsOverlappingBucketRange returns jetmon_hosts ownership rows whose
+// bucket ranges overlap the inclusive requested range.
+func ListHostRowsOverlappingBucketRange(ctx context.Context, bucketMin, bucketMax int) ([]HostRow, error) {
+	rows, err := db.QueryContext(ctx,
+		`SELECT host_id, bucket_min, bucket_max, last_heartbeat, status
+		   FROM jetmon_hosts
+		  WHERE bucket_min <= ?
+		    AND bucket_max >= ?
+		  ORDER BY bucket_min, host_id`,
+		bucketMax, bucketMin,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query overlapping host rows: %w", err)
+	}
+	defer rows.Close()
+
+	var hosts []HostRow
+	for rows.Next() {
+		var h HostRow
+		if err := rows.Scan(&h.HostID, &h.BucketMin, &h.BucketMax, &h.LastHeartbeat, &h.Status); err != nil {
+			return nil, fmt.Errorf("scan overlapping host row: %w", err)
+		}
+		hosts = append(hosts, h)
+	}
+	return hosts, rows.Err()
+}
+
 // GetAllHosts returns all rows from jetmon_hosts for operator visibility.
 func GetAllHosts() ([]HostRow, error) {
 	rows, err := db.Query(

@@ -106,10 +106,11 @@ For each v1 host:
    ```
 
    This check fails if the host is not in pinned mode, legacy projection writes
-   are disabled, the current host still has a `jetmon_hosts` ownership row, or
-   the active sites in the pinned range have projection drift. It also prints the
-   active site count for the range. If projection drift is reported, list the
-   mismatched rows before continuing:
+   are disabled, the current host still has a `jetmon_hosts` ownership row, any
+   dynamic `jetmon_hosts` row overlaps the pinned range, or the active sites in
+   the pinned range have projection drift. It also prints the active site count
+   for the range. If projection drift is reported, list the mismatched rows
+   before continuing:
 
    ```bash
    ./jetmon2 rollout projection-drift

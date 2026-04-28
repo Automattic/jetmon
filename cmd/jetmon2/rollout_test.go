@@ -302,6 +302,12 @@ func TestRunPinnedRolloutCheckSuccess(t *testing.T) {
 			gotHost = hostID
 			return false, nil
 		},
+		ListOverlappingHostRows: func(_ context.Context, min, max int) ([]db.HostRow, error) {
+			if min != minBucket || max != maxBucket {
+				t.Fatalf("ListOverlappingHostRows range = %d-%d, want %d-%d", min, max, minBucket, maxBucket)
+			}
+			return nil, nil
+		},
 		CountActiveSitesForBucketRange: func(_ context.Context, min, max int) (int, error) {
 			gotMin, gotMax = min, max
 			return 37, nil
@@ -329,6 +335,7 @@ func TestRunPinnedRolloutCheckSuccess(t *testing.T) {
 		"PASS legacy_status_projection=enabled",
 		"PASS api_port=disabled",
 		"PASS jetmon_hosts row absent host=\"host-a\"",
+		"PASS jetmon_hosts overlap=0",
 		"INFO active_sites_in_pinned_range=37",
 		"PASS legacy_projection_drift=0",
 		"pinned rollout check passed",
@@ -353,6 +360,9 @@ func TestRunPinnedRolloutCheckUsesHostOverride(t *testing.T) {
 		HostRowExists: func(_ context.Context, hostID string) (bool, error) {
 			gotHost = hostID
 			return false, nil
+		},
+		ListOverlappingHostRows: func(context.Context, int, int) ([]db.HostRow, error) {
+			return nil, nil
 		},
 		CountActiveSitesForBucketRange: func(context.Context, int, int) (int, error) {
 			return 1, nil
@@ -453,12 +463,45 @@ func TestRunPinnedRolloutCheckFailures(t *testing.T) {
 			want: "db unavailable",
 		},
 		{
+			name: "overlapping host rows",
+			cfg:  pinnedRolloutTestConfig(minBucket, maxBucket),
+			deps: pinnedRolloutCheckDeps{
+				Hostname: func() string { return "host-a" },
+				HostRowExists: func(context.Context, string) (bool, error) {
+					return false, nil
+				},
+				ListOverlappingHostRows: func(context.Context, int, int) ([]db.HostRow, error) {
+					return []db.HostRow{
+						{HostID: "host-b", BucketMin: 0, BucketMax: 5, Status: "active"},
+					}, nil
+				},
+			},
+			want: "overlapping pinned range",
+		},
+		{
+			name: "overlapping host query error",
+			cfg:  pinnedRolloutTestConfig(minBucket, maxBucket),
+			deps: pinnedRolloutCheckDeps{
+				Hostname: func() string { return "host-a" },
+				HostRowExists: func(context.Context, string) (bool, error) {
+					return false, nil
+				},
+				ListOverlappingHostRows: func(context.Context, int, int) ([]db.HostRow, error) {
+					return nil, errors.New("db unavailable")
+				},
+			},
+			want: "list jetmon_hosts rows overlapping",
+		},
+		{
 			name: "projection drift",
 			cfg:  pinnedRolloutTestConfig(minBucket, maxBucket),
 			deps: pinnedRolloutCheckDeps{
 				Hostname: func() string { return "host-a" },
 				HostRowExists: func(context.Context, string) (bool, error) {
 					return false, nil
+				},
+				ListOverlappingHostRows: func(context.Context, int, int) ([]db.HostRow, error) {
+					return nil, nil
 				},
 				CountActiveSitesForBucketRange: func(context.Context, int, int) (int, error) {
 					return 10, nil
@@ -498,6 +541,9 @@ func successfulPinnedRolloutDeps() pinnedRolloutCheckDeps {
 		Hostname: func() string { return "host-a" },
 		HostRowExists: func(context.Context, string) (bool, error) {
 			return false, nil
+		},
+		ListOverlappingHostRows: func(context.Context, int, int) ([]db.HostRow, error) {
+			return nil, nil
 		},
 		CountActiveSitesForBucketRange: func(context.Context, int, int) (int, error) {
 			return 1, nil

@@ -20,6 +20,7 @@ import (
 type pinnedRolloutCheckDeps struct {
 	Hostname                       func() string
 	HostRowExists                  func(context.Context, string) (bool, error)
+	ListOverlappingHostRows        func(context.Context, int, int) ([]db.HostRow, error)
 	CountActiveSitesForBucketRange func(context.Context, int, int) (int, error)
 	CountLegacyProjectionDrift     func(context.Context, int, int) (int, error)
 }
@@ -137,6 +138,7 @@ func cmdRolloutPinnedCheck(args []string) {
 	deps := pinnedRolloutCheckDeps{
 		Hostname:                       db.Hostname,
 		HostRowExists:                  db.HostRowExists,
+		ListOverlappingHostRows:        db.ListHostRowsOverlappingBucketRange,
 		CountActiveSitesForBucketRange: db.CountActiveSitesForBucketRange,
 		CountLegacyProjectionDrift:     db.CountLegacyProjectionDrift,
 	}
@@ -471,6 +473,18 @@ func runPinnedRolloutCheck(ctx context.Context, out io.Writer, cfg *config.Confi
 	}
 	fmt.Fprintf(out, "PASS jetmon_hosts row absent host=%q\n", hostID)
 
+	if deps.ListOverlappingHostRows == nil {
+		return errors.New("overlapping host row lister is not configured")
+	}
+	overlappingRows, err := deps.ListOverlappingHostRows(ctx, minBucket, maxBucket)
+	if err != nil {
+		return fmt.Errorf("list jetmon_hosts rows overlapping pinned range %d-%d: %w", minBucket, maxBucket, err)
+	}
+	if len(overlappingRows) > 0 {
+		return fmt.Errorf("jetmon_hosts has %d row(s) overlapping pinned range %d-%d: %s", len(overlappingRows), minBucket, maxBucket, formatHostRows(overlappingRows))
+	}
+	fmt.Fprintln(out, "PASS jetmon_hosts overlap=0")
+
 	if deps.CountActiveSitesForBucketRange == nil {
 		return errors.New("active site counter is not configured")
 	}
@@ -600,6 +614,14 @@ func validateDynamicBucketCoverage(hosts []db.HostRow, bucketTotal int, heartbea
 		return fmt.Errorf("dynamic bucket coverage has trailing gap %d-%d", expectedMin, bucketTotal-1)
 	}
 	return nil
+}
+
+func formatHostRows(hosts []db.HostRow) string {
+	parts := make([]string, 0, len(hosts))
+	for _, host := range hosts {
+		parts = append(parts, fmt.Sprintf("%s=%d-%d status=%s", host.HostID, host.BucketMin, host.BucketMax, host.Status))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func runProjectionDriftReport(ctx context.Context, out io.Writer, cfg *config.Config, bucketMin, bucketMax, limit int, deps projectionDriftDeps) error {

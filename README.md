@@ -556,7 +556,8 @@ bucket ownership and gives each host a simple rollback path.
 		./jetmon2 rollout pinned-check
 
    It verifies pinned mode, legacy projection writes, absence of a
-   `jetmon_hosts` row for the host, active site count for the range, and zero
+   `jetmon_hosts` row for the host, absence of dynamic `jetmon_hosts` rows
+   overlapping the pinned range, active site count for the range, and zero
    legacy projection drift.
 
 6) Stop the v1 process for that range, start v2, and verify checks,
