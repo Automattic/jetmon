@@ -103,6 +103,11 @@ export JETMON_API_TOKEN=jm_replace_with_a_local_key
 ./bin/jetmon2 api sites get --pretty 12345
 ```
 
+For Docker-local rehearsals, `make api-cli-token-create`,
+`make api-cli-token-list`, and
+`API_CLI_TOKEN_ID=<id> make api-cli-token-revoke` wrap the in-container
+`jetmon2 keys` commands from the repository root.
+
 Typed commands cover sites, events, webhooks, alert contacts, local smoke runs,
 and failure simulation. Use `api request` as the escape hatch for new API routes
 before a typed command exists. See [`docs/api-cli-guide.md`](docs/api-cli-guide.md)

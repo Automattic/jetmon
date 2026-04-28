@@ -22,8 +22,8 @@ Start Docker and create an API key inside the `jetmon` container:
 ```bash
 cd docker
 docker compose up --build -d
-docker compose exec jetmon ./jetmon2 keys create --consumer api-cli --scope admin --created-by docker-local
 cd ..
+make api-cli-token-create
 ```
 
 Point the CLI at the Docker-local API and token:
@@ -32,6 +32,13 @@ Point the CLI at the Docker-local API and token:
 export JETMON_API_URL=http://localhost:${API_HOST_PORT:-8090}
 export JETMON_API_TOKEN=jm_replace_with_the_printed_token
 ```
+
+The token helpers use the Docker Compose stack from the repository root. Use
+`API_CLI_TOKEN_CONSUMER`, `API_CLI_TOKEN_SCOPE`, `API_CLI_TOKEN_TTL`, and
+`API_CLI_TOKEN_CREATED_BY` to vary token creation. Use
+`make api-cli-token-list` to find local key IDs and
+`API_CLI_TOKEN_ID=<id> make api-cli-token-revoke` when a rehearsal token should
+be revoked.
 
 Every command also accepts `--base-url`, `--token`, `--timeout`, `--header`,
 `--pretty`, `--output table`, `-v`, and `--verbose`. JSON is the default output

@@ -126,7 +126,7 @@ but it should not become a generic `curl` clone.
   `jetmon2 api` command tree.
 - [ ] Extend `api-fixture` into a local webhook receiver so smoke tests can
   verify outbound webhook delivery and signing behavior end-to-end.
-- [ ] Add a local API-token convenience target or wrapper for creating and
+- [x] Add a local API-token convenience target or wrapper for creating and
   revoking Docker-local API CLI tokens during rehearsals.
 
 ## Completed
@@ -219,3 +219,5 @@ but it should not become a generic `curl` clone.
 - [x] 2026-04-28: Improved workflow table output by surfacing failure
   simulation trigger status, event IDs, event states, event severities,
   transition counts, and smoke cleanup rows in stable table columns.
+- [x] 2026-04-28: Added Docker-local API token convenience targets for
+  creating, listing, and revoking rehearsal tokens from the repository root.

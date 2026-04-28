@@ -293,8 +293,9 @@ point the API CLI at the exposed API port:
 
 	make build
 	cd docker
-	docker compose exec jetmon ./jetmon2 keys create --consumer api-cli --scope admin --created-by docker-local
+	docker compose up --build -d
 	cd ..
+	make api-cli-token-create
 	export JETMON_API_URL=http://localhost:${API_HOST_PORT:-8090}
 	export JETMON_API_TOKEN=jm_replace_with_the_printed_token
 	./bin/jetmon2 api health --pretty
@@ -317,6 +318,9 @@ For a fuller live validation pass against the API CLI guide examples and the
 Docker-local failure fixture, run:
 
 	JETMON_API_URL=http://localhost:${API_HOST_PORT:-8090} JETMON_API_TOKEN=jm_replace_with_the_printed_token make api-cli-validate
+
+Use `make api-cli-token-list` to inspect Docker-local API keys and
+`API_CLI_TOKEN_ID=<id> make api-cli-token-revoke` to revoke a rehearsal token.
 
 ### Adding Test Sites
 
