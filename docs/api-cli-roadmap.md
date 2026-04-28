@@ -118,7 +118,7 @@ but it should not become a generic `curl` clone.
   workflows. `sites cleanup --batch` and `sites simulate-failure --batch`
   should verify the target still belongs to the requested CLI batch unless the
   operator explicitly opts out.
-- [ ] Add a reproducible documentation/live validation target for the API CLI
+- [x] Add a reproducible documentation/live validation target for the API CLI
   feature guide and Docker-local smoke path.
 - [ ] Improve table output for workflow commands with event IDs, states,
   severities, transition counts, trigger results, and cleanup status.
@@ -212,3 +212,7 @@ but it should not become a generic `curl` clone.
 - [x] 2026-04-28: Allowed API CLI flags before or after positional arguments by
   normalizing recognized flags before parsing while preserving `--` literals;
   added tests for interspersed flags and help output.
+- [x] 2026-04-28: Added `make api-cli-validate` and
+  `scripts/api-cli-validate.sh` for a live Docker-local validation pass across
+  the feature guide's health, identity, generic request, smoke, failure
+  simulation, and cleanup paths.

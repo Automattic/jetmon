@@ -306,6 +306,23 @@ JETMON_API_TOKEN=jm_replace_with_the_printed_token \
 make api-cli-smoke
 ```
 
+Use `api-cli-validate` for a fuller live pass against the guide's Docker-local
+workflow. It builds the binary, checks health and identity, exercises the
+generic request escape hatch, dry-runs batch creation, runs `api smoke`, runs a
+deterministic failure simulation assertion, and cleans up the validation
+batches on exit:
+
+```bash
+JETMON_API_URL=http://localhost:${API_HOST_PORT:-8090} \
+JETMON_API_TOKEN=jm_replace_with_the_printed_token \
+make api-cli-validate
+```
+
+The validation target uses `API_VALIDATE_BATCH`, `API_VALIDATE_MODE`,
+`API_VALIDATE_WAIT`, and `API_VALIDATE_COUNT` when you need to vary the default
+batch label or failure scenario. Set `API_VALIDATE_SKIP_FAILURE=1` to run only
+the health, identity, request, batch dry-run, and smoke checks.
+
 ## Failure Simulation
 
 `sites simulate-failure` mutates one or more sites into a known failure mode,

@@ -121,6 +121,10 @@ JSON is the default output for scripts. Add `--pretty` for readable JSON or
 `--output table` for stable human-readable tables on list and workflow summary
 commands.
 
+Use `make api-cli-validate` with `JETMON_API_URL` and `JETMON_API_TOKEN` set for
+a live Docker-local validation pass covering the guide's core examples, the
+smoke workflow, and a deterministic failure-simulation assertion.
+
 When Docker Compose is running, `sites simulate-failure` probes
 `http://localhost:18091/health` and uses the Docker-internal fixture URL
 `http://api-fixture:8091` for deterministic HTTP 500, HTTP 403, redirect,

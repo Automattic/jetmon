@@ -313,6 +313,11 @@ Or run the standard CLI smoke sequence with:
 
 	JETMON_API_URL=http://localhost:${API_HOST_PORT:-8090} JETMON_API_TOKEN=jm_replace_with_the_printed_token make api-cli-smoke
 
+For a fuller live validation pass against the API CLI guide examples and the
+Docker-local failure fixture, run:
+
+	JETMON_API_URL=http://localhost:${API_HOST_PORT:-8090} JETMON_API_TOKEN=jm_replace_with_the_printed_token make api-cli-validate
+
 ### Adding Test Sites
 
 Connect to the test database:
