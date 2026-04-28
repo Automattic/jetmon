@@ -57,6 +57,12 @@ migration and the operating data needed to make larger architecture decisions.
   source for the implemented internal `/api/v1` route surface. This roadmap
   should track only the remaining public/customer API work, production
   hardening, and deferred architecture choices.
+- **Build a local API testing CLI.** Add a focused `jetmon2 api` helper so
+  local Docker/API testing does not depend on remembered curl commands,
+  handwritten auth headers, or stale payload examples. Start with health/auth
+  checks, an escape-hatch request command, Docker-local defaults, and verbose
+  request/response header logging. Then add typed resource commands and a smoke
+  workflow. See [`docs/api-cli-roadmap.md`](docs/api-cli-roadmap.md).
 
 ### P1 - post-v2 platform refinement
 

@@ -1,0 +1,324 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"sort"
+	"strings"
+	"time"
+)
+
+const defaultAPIBaseURL = "http://localhost:8090"
+
+type apiCLIOptions struct {
+	baseURL        string
+	token          string
+	verbose        bool
+	pretty         bool
+	timeout        time.Duration
+	body           string
+	bodyFile       string
+	idempotencyKey string
+	headers        apiHeaderFlags
+	out            io.Writer
+	errOut         io.Writer
+	in             io.Reader
+}
+
+type apiHeaderFlags []string
+
+func (h *apiHeaderFlags) String() string {
+	return strings.Join(*h, ",")
+}
+
+func (h *apiHeaderFlags) Set(v string) error {
+	if !strings.Contains(v, ":") {
+		return fmt.Errorf("header %q must be in Name: Value form", v)
+	}
+	*h = append(*h, v)
+	return nil
+}
+
+func cmdAPI(args []string) {
+	if len(args) == 0 {
+		printAPIUsage(os.Stderr)
+		os.Exit(1)
+	}
+
+	sub := args[0]
+	rest := args[1:]
+	var err error
+	switch sub {
+	case "health":
+		err = cmdAPIHealth(rest)
+	case "me":
+		err = cmdAPIMe(rest)
+	case "request":
+		err = cmdAPIRequest(rest)
+	default:
+		fmt.Fprintf(os.Stderr, "unknown api subcommand %q (want: health, me, request)\n", sub)
+		printAPIUsage(os.Stderr)
+		os.Exit(1)
+	}
+	if err != nil {
+		logAPIErrorAndExit(err)
+	}
+}
+
+func printAPIUsage(w io.Writer) {
+	fmt.Fprintln(w, "usage: jetmon2 api <health|me|request> [flags]")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Environment:")
+	fmt.Fprintln(w, "  JETMON_API_URL     API base URL (default: http://localhost:8090)")
+	fmt.Fprintln(w, "  JETMON_API_TOKEN   Bearer token for authenticated routes")
+}
+
+func cmdAPIHealth(args []string) error {
+	opts := defaultAPIOptions()
+	fs := newAPIFlagSet("api health", &opts)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("usage: jetmon2 api health [flags]")
+	}
+	return executeAPIRequest(context.Background(), nil, opts, http.MethodGet, "/api/v1/health", nil)
+}
+
+func cmdAPIMe(args []string) error {
+	opts := defaultAPIOptions()
+	fs := newAPIFlagSet("api me", &opts)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("usage: jetmon2 api me [flags]")
+	}
+	return executeAPIRequest(context.Background(), nil, opts, http.MethodGet, "/api/v1/me", nil)
+}
+
+func cmdAPIRequest(args []string) error {
+	opts := defaultAPIOptions()
+	fs := newAPIFlagSet("api request", &opts)
+	fs.StringVar(&opts.body, "body", "", "literal request body")
+	fs.StringVar(&opts.bodyFile, "body-file", "", "file containing request body (- reads stdin)")
+	fs.StringVar(&opts.idempotencyKey, "idempotency-key", "", "Idempotency-Key header for POST retries")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 2 {
+		return fmt.Errorf("usage: jetmon2 api request [flags] <method> <path-or-url>")
+	}
+
+	body, err := readAPIRequestBody(opts)
+	if err != nil {
+		return err
+	}
+	return executeAPIRequest(context.Background(), nil, opts, fs.Arg(0), fs.Arg(1), body)
+}
+
+func defaultAPIOptions() apiCLIOptions {
+	return apiCLIOptions{
+		baseURL: envOrDefault("JETMON_API_URL", defaultAPIBaseURL),
+		token:   os.Getenv("JETMON_API_TOKEN"),
+		timeout: 10 * time.Second,
+		out:     os.Stdout,
+		errOut:  os.Stderr,
+		in:      os.Stdin,
+	}
+}
+
+func newAPIFlagSet(name string, opts *apiCLIOptions) *flag.FlagSet {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(opts.errOut)
+	fs.StringVar(&opts.baseURL, "base-url", opts.baseURL, "API base URL")
+	fs.StringVar(&opts.token, "token", opts.token, "Bearer token")
+	fs.BoolVar(&opts.verbose, "v", false, "print request and response headers to stderr")
+	fs.BoolVar(&opts.verbose, "verbose", false, "print request and response headers to stderr")
+	fs.BoolVar(&opts.pretty, "pretty", false, "pretty-print JSON response bodies")
+	fs.DurationVar(&opts.timeout, "timeout", opts.timeout, "request timeout")
+	fs.Var(&opts.headers, "header", "additional request header in Name: Value form (repeatable)")
+	return fs
+}
+
+func readAPIRequestBody(opts apiCLIOptions) ([]byte, error) {
+	if opts.body != "" && opts.bodyFile != "" {
+		return nil, errors.New("use --body or --body-file, not both")
+	}
+	if opts.body != "" {
+		return []byte(opts.body), nil
+	}
+	if opts.bodyFile == "" {
+		return nil, nil
+	}
+	if opts.bodyFile == "-" {
+		return io.ReadAll(opts.in)
+	}
+	return os.ReadFile(opts.bodyFile)
+}
+
+func executeAPIRequest(ctx context.Context, client *http.Client, opts apiCLIOptions, method, target string, body []byte) error {
+	if opts.out == nil {
+		opts.out = io.Discard
+	}
+	if opts.errOut == nil {
+		opts.errOut = io.Discard
+	}
+	if opts.timeout <= 0 {
+		opts.timeout = 10 * time.Second
+	}
+	if client == nil {
+		client = &http.Client{Timeout: opts.timeout}
+	}
+
+	requestURL, err := apiRequestURL(opts.baseURL, target)
+	if err != nil {
+		return err
+	}
+
+	var bodyReader io.Reader
+	if len(body) > 0 {
+		bodyReader = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, strings.ToUpper(method), requestURL, bodyReader)
+	if err != nil {
+		return err
+	}
+	applyAPIRequestHeaders(req, opts, len(body) > 0)
+
+	if opts.verbose {
+		writeAPIRequestHeaders(opts.errOut, req)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if opts.verbose {
+		writeAPIResponseHeaders(opts.errOut, resp)
+	}
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if err := writeAPIResponseBody(opts.out, respBody, opts.pretty); err != nil {
+		return err
+	}
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("api returned %s", resp.Status)
+	}
+	return nil
+}
+
+func apiRequestURL(baseURL, target string) (string, error) {
+	if strings.TrimSpace(target) == "" {
+		return "", errors.New("request path is required")
+	}
+	if u, err := url.Parse(target); err == nil && u.IsAbs() {
+		return u.String(), nil
+	}
+
+	base, err := url.Parse(strings.TrimRight(baseURL, "/"))
+	if err != nil {
+		return "", fmt.Errorf("invalid API base URL %q: %w", baseURL, err)
+	}
+	if !base.IsAbs() || base.Host == "" {
+		return "", fmt.Errorf("invalid API base URL %q: must include scheme and host", baseURL)
+	}
+	rel, err := url.Parse(target)
+	if err != nil {
+		return "", fmt.Errorf("invalid API path %q: %w", target, err)
+	}
+	if !strings.HasPrefix(rel.Path, "/") {
+		rel.Path = "/" + rel.Path
+	}
+	return base.ResolveReference(rel).String(), nil
+}
+
+func applyAPIRequestHeaders(req *http.Request, opts apiCLIOptions, hasBody bool) {
+	req.Header.Set("Accept", "application/json")
+	if hasBody {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if strings.TrimSpace(opts.token) != "" {
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(opts.token))
+	}
+	if strings.TrimSpace(opts.idempotencyKey) != "" {
+		req.Header.Set("Idempotency-Key", strings.TrimSpace(opts.idempotencyKey))
+	}
+	for _, raw := range opts.headers {
+		name, value, ok := strings.Cut(raw, ":")
+		if !ok {
+			continue
+		}
+		req.Header.Set(strings.TrimSpace(name), strings.TrimSpace(value))
+	}
+}
+
+func writeAPIRequestHeaders(w io.Writer, req *http.Request) {
+	path := req.URL.RequestURI()
+	if path == "" {
+		path = "/"
+	}
+	fmt.Fprintf(w, "> %s %s %s\n", req.Method, path, req.Proto)
+	fmt.Fprintf(w, "> Host: %s\n", req.URL.Host)
+	writeSortedHeaders(w, "> ", req.Header)
+	fmt.Fprintln(w, ">")
+}
+
+func writeAPIResponseHeaders(w io.Writer, resp *http.Response) {
+	fmt.Fprintf(w, "< %s %s\n", resp.Proto, resp.Status)
+	writeSortedHeaders(w, "< ", resp.Header)
+	fmt.Fprintln(w, "<")
+}
+
+func writeSortedHeaders(w io.Writer, prefix string, h http.Header) {
+	keys := make([]string, 0, len(h))
+	for k := range h {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		for _, v := range h.Values(k) {
+			fmt.Fprintf(w, "%s%s: %s\n", prefix, k, v)
+		}
+	}
+}
+
+func writeAPIResponseBody(w io.Writer, body []byte, pretty bool) error {
+	body = bytes.TrimSpace(body)
+	if len(body) == 0 {
+		return nil
+	}
+	if pretty && json.Valid(body) {
+		var formatted bytes.Buffer
+		if err := json.Indent(&formatted, body, "", "  "); err != nil {
+			return err
+		}
+		body = formatted.Bytes()
+	}
+	if _, err := w.Write(body); err != nil {
+		return err
+	}
+	if !bytes.HasSuffix(body, []byte("\n")) {
+		_, err := fmt.Fprintln(w)
+		return err
+	}
+	return nil
+}
+
+func logAPIErrorAndExit(err error) {
+	fmt.Fprintf(os.Stderr, "api: %v\n", err)
+	os.Exit(1)
+}
