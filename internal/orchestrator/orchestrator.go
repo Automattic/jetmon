@@ -136,6 +136,14 @@ func (o *Orchestrator) ev() *eventstore.Store {
 // ClaimBuckets registers this host in jetmon_hosts and sets the bucket range.
 func (o *Orchestrator) ClaimBuckets() error {
 	cfg := config.Get()
+	if min, max, ok := cfg.PinnedBucketRange(); ok {
+		if o.bucketMin != min || o.bucketMax != max {
+			log.Printf("orchestrator: using pinned buckets %d-%d (dynamic bucket ownership disabled)", min, max)
+		}
+		o.bucketMin = min
+		o.bucketMax = max
+		return nil
+	}
 	min, max, err := dbClaimBuckets(
 		o.hostname,
 		cfg.BucketTotal,
@@ -158,11 +166,15 @@ func (o *Orchestrator) Run() {
 		select {
 		case <-o.ctx.Done():
 			log.Println("orchestrator: shutting down")
-			if err := dbMarkHostDraining(stdctx.Background(), o.hostname); err != nil {
-				log.Printf("orchestrator: mark draining: %v", err)
+			if !o.usesPinnedBuckets(config.Get()) {
+				if err := dbMarkHostDraining(stdctx.Background(), o.hostname); err != nil {
+					log.Printf("orchestrator: mark draining: %v", err)
+				}
 			}
 			o.pool.Drain()
-			if err := dbReleaseHost(stdctx.Background(), o.hostname); err != nil {
+			if o.usesPinnedBuckets(config.Get()) {
+				log.Println("orchestrator: pinned bucket mode active; no jetmon_hosts row to release")
+			} else if err := dbReleaseHost(stdctx.Background(), o.hostname); err != nil {
 				log.Printf("orchestrator: release host: %v", err)
 			}
 			return
@@ -195,14 +207,20 @@ func (o *Orchestrator) Stop() {
 func (o *Orchestrator) runRound() {
 	cfg := config.Get()
 
-	// Update heartbeat.
-	if err := dbHeartbeat(o.ctx, o.hostname); err != nil {
-		log.Printf("orchestrator: heartbeat failed: %v", err)
-	}
-	// Re-claim every round so bucket ranges rebalance automatically when hosts
-	// join or leave the cluster.
-	if err := o.ClaimBuckets(); err != nil {
-		log.Printf("orchestrator: bucket rebalance failed: %v", err)
+	if o.usesPinnedBuckets(cfg) {
+		if err := o.ClaimBuckets(); err != nil {
+			log.Printf("orchestrator: pinned bucket claim failed: %v", err)
+		}
+	} else {
+		// Update heartbeat.
+		if err := dbHeartbeat(o.ctx, o.hostname); err != nil {
+			log.Printf("orchestrator: heartbeat failed: %v", err)
+		}
+		// Re-claim every round so bucket ranges rebalance automatically when
+		// hosts join or leave the cluster.
+		if err := o.ClaimBuckets(); err != nil {
+			log.Printf("orchestrator: bucket rebalance failed: %v", err)
+		}
 	}
 	o.checkLegacyProjectionDrift(cfg)
 
@@ -815,6 +833,11 @@ func (o *Orchestrator) RetryQueueSize() int {
 // BucketRange returns the current bucket min/max for this host.
 func (o *Orchestrator) BucketRange() (int, int) {
 	return o.bucketMin, o.bucketMax
+}
+
+func (o *Orchestrator) usesPinnedBuckets(cfg *config.Config) bool {
+	_, _, ok := cfg.PinnedBucketRange()
+	return ok
 }
 
 // WorkerCount returns the live worker count.

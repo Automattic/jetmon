@@ -66,6 +66,68 @@ func TestValidate(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "pinned bucket range is valid",
+			mutate: func(c *Config) {
+				min, max := 10, 19
+				c.PinnedBucketMin = &min
+				c.PinnedBucketMax = &max
+			},
+		},
+		{
+			name: "legacy bucket range alias is valid",
+			mutate: func(c *Config) {
+				min, max := 10, 19
+				c.BucketNoMin = &min
+				c.BucketNoMax = &max
+			},
+		},
+		{
+			name: "pinned bucket range requires min and max",
+			mutate: func(c *Config) {
+				min := 10
+				c.PinnedBucketMin = &min
+			},
+			wantErr: true,
+		},
+		{
+			name: "legacy bucket range requires min and max",
+			mutate: func(c *Config) {
+				max := 19
+				c.BucketNoMax = &max
+			},
+			wantErr: true,
+		},
+		{
+			name: "pinned bucket range rejects max before min",
+			mutate: func(c *Config) {
+				min, max := 20, 19
+				c.PinnedBucketMin = &min
+				c.PinnedBucketMax = &max
+			},
+			wantErr: true,
+		},
+		{
+			name: "pinned bucket range rejects max outside total",
+			mutate: func(c *Config) {
+				min, max := 90, 100
+				c.PinnedBucketMin = &min
+				c.PinnedBucketMax = &max
+			},
+			wantErr: true,
+		},
+		{
+			name: "pinned and legacy ranges must agree",
+			mutate: func(c *Config) {
+				pMin, pMax := 10, 19
+				lMin, lMax := 20, 29
+				c.PinnedBucketMin = &pMin
+				c.PinnedBucketMax = &pMax
+				c.BucketNoMin = &lMin
+				c.BucketNoMax = &lMax
+			},
+			wantErr: true,
+		},
+		{
 			name:    "net comms timeout zero",
 			mutate:  func(c *Config) { c.NetCommsTimeout = 0 },
 			wantErr: true,
@@ -146,6 +208,28 @@ func TestValidate(t *testing.T) {
 				t.Fatalf("validate() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestPinnedBucketRange(t *testing.T) {
+	pMin, pMax := 10, 19
+	lMin, lMax := 20, 29
+	cfg := &Config{
+		PinnedBucketMin: &pMin,
+		PinnedBucketMax: &pMax,
+		BucketNoMin:     &lMin,
+		BucketNoMax:     &lMax,
+	}
+	min, max, ok := cfg.PinnedBucketRange()
+	if !ok || min != 10 || max != 19 {
+		t.Fatalf("PinnedBucketRange explicit = %d-%d ok=%v, want 10-19 true", min, max, ok)
+	}
+
+	cfg.PinnedBucketMin = nil
+	cfg.PinnedBucketMax = nil
+	min, max, ok = cfg.PinnedBucketRange()
+	if !ok || min != 20 || max != 29 {
+		t.Fatalf("PinnedBucketRange legacy = %d-%d ok=%v, want 20-29 true", min, max, ok)
 	}
 }
 

@@ -275,7 +275,7 @@ The worker pool monitors queue depth against a configurable high-water mark. Whe
 The binary ships with a systemd unit file. `Restart=on-failure` with a short `RestartSec` ensures the process is automatically restarted if it crashes or exits unexpectedly. `StartLimitIntervalSec` and `StartLimitBurst` prevent restart loops from hammering a broken dependency. The unit file also enforces resource limits (`MemoryMax`, `LimitNOFILE`) to keep the process within safe bounds on shared hosts. A watchdog integration via `sd_notify` lets systemd detect and restart a process that has stopped making progress without actually crashing.
 
 **MySQL-Coordinated Bucket Ownership**
-A `jetmon_hosts` table replaces the static `BUCKET_NO_MIN`/`BUCKET_NO_MAX` config values with runtime-negotiated bucket ownership. Hosts claim, hold, and release bucket ranges autonomously using MySQL transactions as the coordination mechanism — no cluster orchestrator required.
+A `jetmon_hosts` table replaces the static `BUCKET_NO_MIN`/`BUCKET_NO_MAX` config values with runtime-negotiated bucket ownership. Hosts claim, hold, and release bucket ranges autonomously using MySQL transactions as the coordination mechanism — no cluster orchestrator required. For the initial v1-to-v2 production migration, `PINNED_BUCKET_MIN`/`PINNED_BUCKET_MAX` (with `BUCKET_NO_MIN`/`BUCKET_NO_MAX` accepted as aliases) temporarily pins a v2 host to the exact static range of the v1 host it replaces; remove those keys after the fleet is on v2 to enable dynamic ownership.
 
 Table structure:
 ```sql
@@ -288,9 +288,9 @@ CREATE TABLE jetmon_hosts (
 );
 ```
 
-On startup, the instance upserts its own row, then scans for rows whose `last_heartbeat` is older than the grace period (suggested: 2× normal round time). Expired rows are presumed dead. The instance claims their uncovered bucket ranges by deleting the dead rows and inserting its own covering range inside a `SELECT ... FOR UPDATE` transaction, preventing two hosts from racing to claim the same range simultaneously. The instance derives its active range from what it successfully claimed — `BUCKET_NO_MIN`/`BUCKET_NO_MAX` are no longer needed in `config.json`.
+In dynamic ownership mode, on startup the instance upserts its own row, then scans for rows whose `last_heartbeat` is older than the grace period (suggested: 2× normal round time). Expired rows are presumed dead. The instance claims their uncovered bucket ranges by deleting the dead rows and inserting its own covering range inside a `SELECT ... FOR UPDATE` transaction, preventing two hosts from racing to claim the same range simultaneously. The instance derives its active range from what it successfully claimed — `BUCKET_NO_MIN`/`BUCKET_NO_MAX` are only needed as aliases for the temporary pinned migration mode.
 
-Each round, the orchestrator issues a single `UPDATE jetmon_hosts SET last_heartbeat = NOW() WHERE host_id = ?`. If a host stalls, is OOM-killed, or loses network, its heartbeat stops updating. Surviving hosts detect the stale row at the start of their next round and absorb its buckets up to their configured `BUCKET_TARGET` maximum.
+In dynamic ownership mode, each round the orchestrator issues a single `UPDATE jetmon_hosts SET last_heartbeat = NOW() WHERE host_id = ?`. If a host stalls, is OOM-killed, or loses network, its heartbeat stops updating. Surviving hosts detect the stale row at the start of their next round and absorb its buckets up to their configured `BUCKET_TARGET` maximum. In pinned migration mode, the host skips `jetmon_hosts` entirely and checks only its configured static range.
 
 On SIGINT, the instance sets `status = 'draining'`, completes in-flight checks, then deletes its own row. Surviving hosts can reclaim those buckets at the start of their next round without waiting for heartbeat expiry. A hard-killed host leaves its row in place; the grace period determines how long before its buckets are reclaimed.
 

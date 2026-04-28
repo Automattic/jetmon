@@ -253,6 +253,17 @@ func TestEnabledLabel(t *testing.T) {
 	}
 }
 
+func TestBucketOwnershipLabel(t *testing.T) {
+	if got := bucketOwnershipLabel(&config.Config{}); got != "dynamic jetmon_hosts" {
+		t.Fatalf("bucketOwnershipLabel(dynamic) = %q", got)
+	}
+	min, max := 12, 34
+	got := bucketOwnershipLabel(&config.Config{PinnedBucketMin: &min, PinnedBucketMax: &max})
+	if got != "pinned range=12-34" {
+		t.Fatalf("bucketOwnershipLabel(pinned) = %q", got)
+	}
+}
+
 func TestParseInt64(t *testing.T) {
 	got, err := parseInt64("12345")
 	if err != nil {

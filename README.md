@@ -133,6 +133,7 @@ Key settings:
 | `BUCKET_TOTAL` | 1000 | Total bucket range across all hosts |
 | `BUCKET_TARGET` | 500 | Maximum buckets this host should own |
 | `BUCKET_HEARTBEAT_GRACE_SEC` | 600 | Seconds before a silent host's buckets are reclaimed |
+| `PINNED_BUCKET_MIN` / `PINNED_BUCKET_MAX` | unset | Migration-only static bucket range; disables `jetmon_hosts` ownership for v1-compatible host-by-host cutover |
 | `ALERT_COOLDOWN_MINUTES` | 30 | Default cooldown between repeated alerts per site |
 | `LEGACY_STATUS_PROJECTION_ENABLE` | true | Keep `jetpack_monitor_sites.site_status` / `last_status_change` updated for v1 consumers during migration |
 | `LOG_FORMAT` | `text` | `text` for plain-text logs or `json` for structured logs |
@@ -466,9 +467,48 @@ Jetmon runs on multiple production hosts managed by the Systems team. Each host 
 
 The new host will claim unclaimed buckets from the pool on first startup. No existing hosts need reconfiguration.
 
-### Rolling Updates (Zero Downtime)
+### v1 to v2 Pinned Rolling Migration
 
-Update one host at a time. Surviving hosts absorb the draining host's buckets during the update window:
+For the first production migration from v1, replace one v1 host at a time with
+a v2 host pinned to that same inclusive bucket range. This avoids mixed v1/v2
+bucket ownership and gives each host a simple rollback path.
+
+1) Pre-apply additive migrations during a quiet period:
+
+		./jetmon2 migrate
+
+2) On the host being replaced, copy the existing v1 bucket range into v2 config:
+
+		"PINNED_BUCKET_MIN": 0,
+		"PINNED_BUCKET_MAX": 99,
+		"LEGACY_STATUS_PROJECTION_ENABLE": true,
+		"API_PORT": 0
+
+   The v1 names `BUCKET_NO_MIN` / `BUCKET_NO_MAX` are accepted as aliases, but
+   `PINNED_BUCKET_*` makes the migration mode explicit. In pinned mode, v2 does
+   not claim or heartbeat `jetmon_hosts`; it checks only the configured range.
+
+3) Stop the v1 process for that range, start v2, and verify checks,
+   Veriflier confirmations, WPCOM notifications, audit rows, and legacy
+   `site_status` projection for that bucket range.
+
+4) If rollback is needed, stop v2 and restart the original v1 process with the
+   same bucket config. Because the v2 migrations are additive and the legacy
+   projection remains enabled, legacy readers continue to see familiar status
+   fields.
+
+5) Repeat for each v1 host. After the whole fleet is on v2 and stable, remove
+   `PINNED_BUCKET_*` from each host and transition to dynamic `jetmon_hosts`
+   ownership one controlled host at a time.
+
+See [`docs/v1-to-v2-pinned-rollout.md`](docs/v1-to-v2-pinned-rollout.md) for
+the detailed rollout checklist.
+
+### v2 Rolling Updates (Zero Downtime)
+
+After all monitor hosts are already on v2 dynamic bucket ownership, update one
+host at a time. Surviving hosts absorb the draining host's buckets during the
+update window:
 
 1) On the host being updated, drain in-flight checks and release buckets:
 

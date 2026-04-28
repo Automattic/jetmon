@@ -16,7 +16,9 @@ migration and the operating data needed to make larger architecture decisions.
   current main-server-plus-Veriflier design before moving toward a v3
   probe-agent architecture. The v2 event tables remain authoritative while
   `LEGACY_STATUS_PROJECTION_ENABLE` keeps legacy `site_status` /
-  `last_status_change` consumers working during migration.
+  `last_status_change` consumers working during migration. Use the pinned
+  bucket rollout path for the first v1-to-v2 production migration, then remove
+  `PINNED_BUCKET_*` after every host is on v2 and stable.
 - **Use delivery ownership as a rollout guard.**
   In the single-binary deployment, `API_PORT > 0` also starts webhook and
   alert-contact delivery workers. A standalone `jetmon-deliverer` entry point

@@ -329,6 +329,11 @@ func TestEscalateToVerifliersRecordsFalsePositiveWhenQuorumMissed(t *testing.T) 
 
 func stubOrchestratorDeps() func() {
 	origNow := nowFunc
+	origDBClaimBuckets := dbClaimBuckets
+	origDBHeartbeat := dbHeartbeat
+	origDBReleaseHost := dbReleaseHost
+	origDBMarkHostDraining := dbMarkHostDraining
+	origDBGetSites := dbGetSitesForBucket
 	origDBUpdateStatus := dbUpdateSiteStatus
 	origDBUpdateLastAlert := dbUpdateLastAlertSent
 	origDBRecordFalsePositive := dbRecordFalsePositive
@@ -341,6 +346,11 @@ func stubOrchestratorDeps() func() {
 	origMetricsClient := metricsClientFunc
 
 	nowFunc = time.Now
+	dbClaimBuckets = func(string, int, int, int) (int, int, error) { return 0, 0, nil }
+	dbHeartbeat = func(context.Context, string) error { return nil }
+	dbReleaseHost = func(context.Context, string) error { return nil }
+	dbMarkHostDraining = func(context.Context, string) error { return nil }
+	dbGetSitesForBucket = func(context.Context, int, int, int, bool) ([]db.Site, error) { return nil, nil }
 	dbUpdateSiteStatus = func(context.Context, int64, int, time.Time) error { return nil }
 	dbUpdateLastAlertSent = func(context.Context, int64, time.Time) error { return nil }
 	dbRecordFalsePositive = func(int64, int, int, int64) error { return nil }
@@ -355,6 +365,11 @@ func stubOrchestratorDeps() func() {
 
 	return func() {
 		nowFunc = origNow
+		dbClaimBuckets = origDBClaimBuckets
+		dbHeartbeat = origDBHeartbeat
+		dbReleaseHost = origDBReleaseHost
+		dbMarkHostDraining = origDBMarkHostDraining
+		dbGetSitesForBucket = origDBGetSites
 		dbUpdateSiteStatus = origDBUpdateStatus
 		dbUpdateLastAlertSent = origDBUpdateLastAlert
 		dbRecordFalsePositive = origDBRecordFalsePositive
@@ -710,6 +725,60 @@ func TestOrchestratorAccessors(t *testing.T) {
 	}
 	if o.QueueDepth() != 0 {
 		t.Fatalf("QueueDepth() = %d, want 0", o.QueueDepth())
+	}
+}
+
+func TestClaimBucketsUsesPinnedRangeWithoutHostTable(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	cfg := setTestConfig(t)
+	min, max := 12, 34
+	cfg.PinnedBucketMin = &min
+	cfg.PinnedBucketMax = &max
+
+	var dynamicClaimCalled bool
+	dbClaimBuckets = func(string, int, int, int) (int, int, error) {
+		dynamicClaimCalled = true
+		return 0, 0, nil
+	}
+
+	o := &Orchestrator{hostname: "host-a"}
+	if err := o.ClaimBuckets(); err != nil {
+		t.Fatalf("ClaimBuckets: %v", err)
+	}
+	if dynamicClaimCalled {
+		t.Fatal("ClaimBuckets called dynamic jetmon_hosts claim in pinned mode")
+	}
+	if o.bucketMin != 12 || o.bucketMax != 34 {
+		t.Fatalf("bucket range = %d-%d, want 12-34", o.bucketMin, o.bucketMax)
+	}
+}
+
+func TestRunRoundSkipsHeartbeatWhenPinned(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	cfg := setTestConfig(t)
+	min, max := 12, 34
+	cfg.PinnedBucketMin = &min
+	cfg.PinnedBucketMax = &max
+
+	var heartbeatCalled bool
+	dbHeartbeat = func(context.Context, string) error {
+		heartbeatCalled = true
+		return nil
+	}
+	dbGetSitesForBucket = func(_ context.Context, gotMin, gotMax, _ int, _ bool) ([]db.Site, error) {
+		if gotMin != 12 || gotMax != 34 {
+			t.Fatalf("fetch buckets = %d-%d, want 12-34", gotMin, gotMax)
+		}
+		return nil, nil
+	}
+
+	o := &Orchestrator{ctx: context.Background(), hostname: "host-a"}
+	o.runRound()
+
+	if heartbeatCalled {
+		t.Fatal("runRound updated jetmon_hosts heartbeat in pinned mode")
 	}
 }
 

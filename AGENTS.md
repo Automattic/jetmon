@@ -147,6 +147,7 @@ Copy `config/config-sample.json` to `config/config.json`. All keys from the orig
 - `BUCKET_TOTAL`: Total bucket range (e.g. 1000); replaces static `BUCKET_NO_MIN/MAX`
 - `BUCKET_TARGET`: Maximum buckets this host should own
 - `BUCKET_HEARTBEAT_GRACE_SEC`: Seconds before an unresponsive host's buckets are reclaimed (suggested: 2× round time)
+- `PINNED_BUCKET_MIN/MAX`: Migration-only static bucket range for replacing one v1 host with one v2 host; disables `jetmon_hosts` dynamic ownership while set. Legacy `BUCKET_NO_MIN/MAX` are accepted as aliases for this mode.
 - `ALERT_COOLDOWN_MINUTES`: Default cooldown between repeated alerts for the same site
 - `LEGACY_STATUS_PROJECTION_ENABLE`: Keep v1 `site_status` / `last_status_change` projection updated during shadow-v2-state migration
 - `LOG_FORMAT`: `text` (default, drop-in compatible) or `json` (structured logging)
@@ -249,7 +250,7 @@ New tables introduced by Jetmon 2:
 
 ## Multi-Host Bucket Coordination
 
-Jetmon 2 replaces static `BUCKET_NO_MIN/MAX` config with runtime bucket ownership via the `jetmon_hosts` table. On startup, each instance claims unclaimed or expired bucket ranges using `SELECT ... FOR UPDATE` transactions. A heartbeat query runs each round; hosts with stale heartbeats (older than `BUCKET_HEARTBEAT_GRACE_SEC`) have their buckets absorbed by surviving peers. On SIGINT, the instance releases its buckets immediately.
+Jetmon 2 normally replaces static `BUCKET_NO_MIN/MAX` config with runtime bucket ownership via the `jetmon_hosts` table. On startup, each instance claims unclaimed or expired bucket ranges using `SELECT ... FOR UPDATE` transactions. A heartbeat query runs each round; hosts with stale heartbeats (older than `BUCKET_HEARTBEAT_GRACE_SEC`) have their buckets absorbed by surviving peers. On SIGINT, the instance releases its buckets immediately. During the initial v1-to-v2 migration only, `PINNED_BUCKET_MIN/MAX` (or legacy `BUCKET_NO_MIN/MAX`) can pin one v2 host to its v1 predecessor's exact bucket range and disables `jetmon_hosts` ownership for that host.
 
 This enables zero-config horizontal scaling (spin up a host, it claims buckets) and self-healing coverage (a failed host's buckets are absorbed within one grace period) without a cluster orchestrator.
 
@@ -304,7 +305,7 @@ Up → Seems Down → Down → Resolved
 
 **Retry Queue Persistence:** The local retry queue must persist between rounds. Do not flush it at round start — a site must accumulate `NUM_OF_CHECKS` failures before Veriflier escalation, and flushing resets that counter, preventing downtime confirmation.
 
-**Bucket Claiming Races:** The `SELECT ... FOR UPDATE` transaction on `jetmon_hosts` is the only safe way to claim buckets. Do not claim buckets outside a transaction — two hosts starting simultaneously will both see the same unclaimed range and must not both write it.
+**Bucket Claiming Races:** When dynamic ownership is active, the `SELECT ... FOR UPDATE` transaction on `jetmon_hosts` is the only safe way to claim buckets. Do not claim buckets outside a transaction — two hosts starting simultaneously will both see the same unclaimed range and must not both write it. Pinned v1-to-v2 migration hosts intentionally do not claim buckets in `jetmon_hosts`.
 
 **Circuit Breaker Floor:** The WPCOM API circuit breaker queue is bounded. If the queue fills, the oldest pending notifications are dropped with an error log. Monitor the circuit breaker state in the operator dashboard during any WPCOM API incident.
 

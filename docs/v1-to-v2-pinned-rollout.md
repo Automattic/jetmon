@@ -1,0 +1,110 @@
+# v1 to v2 Pinned Bucket Rollout
+
+**Status:** Production migration runbook for the first v1-to-v2 cutover.
+
+This rollout replaces one v1 static-bucket host with one v2 host pinned to the
+same inclusive bucket range. It avoids mixed ownership between v1 static config
+and v2 `jetmon_hosts` dynamic ownership during the riskiest part of the
+migration.
+
+## Why Pinned Mode Exists
+
+v1 and v2 do not share a bucket ownership protocol:
+
+- v1 uses static `BUCKET_NO_MIN` / `BUCKET_NO_MAX` config per host.
+- v2 normally uses the `jetmon_hosts` table with heartbeat and reclaim.
+
+During a mixed fleet rollout, dynamic v2 ownership cannot know which buckets are
+still covered by v1. Pinned mode keeps each replacement host on the exact range
+its v1 predecessor owned and disables `jetmon_hosts` ownership for that v2 host.
+
+## Configuration
+
+Prefer explicit pinned keys in v2 config:
+
+```json
+{
+  "PINNED_BUCKET_MIN": 0,
+  "PINNED_BUCKET_MAX": 99,
+  "LEGACY_STATUS_PROJECTION_ENABLE": true,
+  "API_PORT": 0
+}
+```
+
+The legacy v1 names `BUCKET_NO_MIN` and `BUCKET_NO_MAX` are accepted as aliases
+for pinned mode. If both forms are present, they must describe the same range.
+
+While pinned:
+
+- the host checks only `PINNED_BUCKET_MIN <= bucket_no <= PINNED_BUCKET_MAX`
+- the host does not claim or heartbeat `jetmon_hosts`
+- shutdown does not release a `jetmon_hosts` row
+- `BUCKET_TOTAL`, `BUCKET_TARGET`, and `BUCKET_HEARTBEAT_GRACE_SEC` still
+  validate, but dynamic ownership does not use them on that host
+
+## Preflight
+
+1. Confirm the v1 fleet's static bucket ranges are complete and non-overlapping.
+2. Build all v2 binaries and run `make test`, `make test-race`, and `make all`.
+3. Apply additive migrations before the cutover:
+
+   ```bash
+   ./jetmon2 migrate
+   ```
+
+4. Keep `LEGACY_STATUS_PROJECTION_ENABLE=true` so legacy readers continue to see
+   `jetpack_monitor_sites.site_status` and `last_status_change`.
+5. Keep `API_PORT=0` on monitor hosts during initial replacement unless the API
+   and delivery owner plan has been explicitly approved.
+6. Verify Veriflier endpoints, WPCOM auth, StatsD, log paths, and config reload
+   behavior in staging.
+
+## Per-Host Cutover
+
+For each v1 host:
+
+1. Record the host name and v1 bucket range.
+2. Prepare the v2 config with the same pinned range.
+3. Stop the v1 process for that host.
+4. Start the v2 process.
+5. Run `./jetmon2 validate-config` and confirm it reports
+   `bucket_ownership=pinned range=<min>-<max>`.
+6. Verify the process logs:
+   - `legacy_status_projection=enabled`
+   - `bucket_ownership=pinned range=<min>-<max>`
+   - `orchestrator: using pinned buckets <min>-<max>`
+7. Watch one full check round for that bucket range.
+8. Confirm:
+   - checks are running only for the pinned range
+   - Veriflier confirmation works
+   - WPCOM notifications retain the v1 payload shape
+   - `jetmon_events` and `jetmon_event_transitions` receive event mutations
+   - `jetpack_monitor_sites.site_status` projection updates when enabled
+   - no unexpected rows are claimed in `jetmon_hosts` by the pinned host
+
+## Rollback
+
+Rollback is host-local:
+
+1. Stop the v2 process.
+2. Restart the original v1 process with the same `BUCKET_NO_MIN` /
+   `BUCKET_NO_MAX` config.
+3. Verify v1 checks the range again.
+
+The v2 migrations are additive, and legacy projection writes keep the old status
+fields meaningful while `LEGACY_STATUS_PROJECTION_ENABLE=true`, so rollback does
+not require schema rollback.
+
+## Transition to Dynamic v2 Ownership
+
+After every monitor host is on v2 and stable in pinned mode:
+
+1. Pick one host and remove `PINNED_BUCKET_MIN` / `PINNED_BUCKET_MAX`.
+2. Restart it and verify it claims a `jetmon_hosts` row.
+3. Repeat host by host until all monitor hosts use dynamic ownership.
+4. Verify `jetmon_hosts` covers the full bucket range with current heartbeats.
+5. Continue using the normal v2 rolling-update process from `README.md`.
+
+Do not run a mixed configuration where some v1 hosts still own static ranges
+while unpinned v2 hosts use dynamic `jetmon_hosts` ownership. That is the state
+this migration mode is designed to avoid.

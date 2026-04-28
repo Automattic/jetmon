@@ -74,6 +74,7 @@ func runServe() {
 	}
 	cfg := config.Get()
 	log.Printf("config: legacy_status_projection=%s", enabledLabel(cfg.LegacyStatusProjectionEnable))
+	log.Printf("config: bucket_ownership=%s", bucketOwnershipLabel(cfg))
 	log.Printf("config: email_transport=%s", emailTransportLabel(cfg))
 	if !emailTransportDelivers(cfg) {
 		log.Printf("WARN: email_transport=%s — alert-contact emails will be logged but not delivered", emailTransportLabel(cfg))
@@ -256,6 +257,7 @@ func cmdValidateConfig() {
 
 	cfg := config.Get()
 	fmt.Printf("INFO legacy_status_projection=%s\n", enabledLabel(cfg.LegacyStatusProjectionEnable))
+	fmt.Printf("INFO bucket_ownership=%s\n", bucketOwnershipLabel(cfg))
 	fmt.Printf("INFO email_transport=%s\n", emailTransportLabel(cfg))
 	if !emailTransportDelivers(cfg) {
 		fmt.Printf("WARN email_transport=%s — alert-contact emails will be logged but not delivered\n", emailTransportLabel(cfg))
@@ -277,6 +279,13 @@ func enabledLabel(b bool) string {
 		return "enabled"
 	}
 	return "disabled"
+}
+
+func bucketOwnershipLabel(cfg *config.Config) string {
+	if min, max, ok := cfg.PinnedBucketRange(); ok {
+		return fmt.Sprintf("pinned range=%d-%d", min, max)
+	}
+	return "dynamic jetmon_hosts"
 }
 
 // emailTransportLabel collapses an empty EMAIL_TRANSPORT to its compatibility
