@@ -12,7 +12,7 @@ services:
     volumes:
       - db:/var/lib/mysql
     healthcheck:
-      test: ["CMD-SHELL", "MYSQL_PWD=$$MYSQL_ROOT_PASSWORD mysqladmin ping -h localhost -u root --silent"]
+      test: ["CMD-SHELL", "MYSQL_PWD=$$MYSQL_ROOT_PASSWORD mysqladmin ping --protocol=tcp -h 127.0.0.1 -u root --silent"]
       interval: 5s
       timeout: 5s
       retries: 10
