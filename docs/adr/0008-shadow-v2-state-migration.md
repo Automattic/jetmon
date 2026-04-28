@@ -2,6 +2,10 @@
 
 **Status:** Accepted (2026-04-27)
 
+Operational rollout steps live in
+[`../v1-to-v2-migration.md`](../v1-to-v2-migration.md). This ADR explains the
+state-model decision behind that runbook.
+
 ## Context
 
 Jetmon 2 replaces mutable v1 status handling with event-sourced incident

@@ -16,17 +16,18 @@ migration and the operating data needed to make larger architecture decisions.
   current main-server-plus-Veriflier design before moving toward a v3
   probe-agent architecture. The v2 event tables remain authoritative while
   `LEGACY_STATUS_PROJECTION_ENABLE` keeps legacy `site_status` /
-  `last_status_change` consumers working during migration. Use the pinned
-  bucket rollout path for the first v1-to-v2 production migration, then remove
+  `last_status_change` consumers working during migration. Use the
+  [`docs/v1-to-v2-migration.md`](docs/v1-to-v2-migration.md) pinned bucket
+  path for the first v1-to-v2 production migration, then remove
   `PINNED_BUCKET_*` after every host is on v2 and stable.
 - **Keep rollout health visible before cutover.** Operators should not have to
   infer migration-critical state from logs or config while replacing v1 hosts.
   The operator dashboard now shows bucket ownership mode, legacy projection
-  mode, delivery-worker ownership, rollout preflight commands, and live
-  dependency health for MySQL, Verifliers, WPCOM, StatsD, and log/stats disk
-  writes. Keep this visible and verified during rollout rehearsal because it
-  helps separate customer-site downtime from monitor-side impairment during
-  cutover.
+  mode, delivery-worker ownership, rollout preflight/activity/rollback/drift
+  commands, and live dependency health for MySQL, Verifliers, WPCOM, StatsD,
+  and log/stats disk writes. Keep this visible and verified during rollout
+  rehearsal because it helps separate customer-site downtime from monitor-side
+  impairment during cutover.
 - **Use delivery ownership as a rollout guard.**
   In the single-binary deployment, `API_PORT > 0` also starts webhook and
   alert-contact delivery workers. A standalone `jetmon-deliverer` entry point
@@ -34,7 +35,7 @@ migration and the operating data needed to make larger architecture decisions.
   `DELIVERY_OWNER_HOST` as a rollout guard when intentionally keeping delivery
   single-owner during migration from embedded to standalone delivery.
 - **Run a production rollout rehearsal pass.** Validate that README,
-  `docs/v1-to-v2-pinned-rollout.md`, config samples, systemd units,
+  `docs/v1-to-v2-migration.md`, config samples, systemd units,
   `validate-config`, `rollout static-plan-check`, `rollout pinned-check`,
   `rollout activity-check`, `rollout rollback-check`,
   `rollout projection-drift`, and rollback steps line up exactly before the
@@ -59,6 +60,12 @@ migration and the operating data needed to make larger architecture decisions.
   source for the implemented internal `/api/v1` route surface. This roadmap
   should track only the remaining public/customer API work, production
   hardening, and deferred architecture choices.
+- **Build a local API testing CLI.** Add a focused `jetmon2 api` helper so
+  local Docker/API testing does not depend on remembered curl commands,
+  handwritten auth headers, or stale payload examples. Start with health/auth
+  checks, an escape-hatch request command, Docker-local defaults, and verbose
+  request/response header logging. Then add typed resource commands and a smoke
+  workflow. See [`docs/api-cli-roadmap.md`](docs/api-cli-roadmap.md).
 
 ### P1 - post-v2 platform refinement
 
@@ -650,23 +657,10 @@ where to look, and what each item unlocked.
   authoritative open HTTP event.
   Operators get actionable rows instead of a count-only rollout failure.
 - **Rollout guidance in validation and dashboard.** `validate-config` prints
-  the current rollout safety commands, while the operator dashboard shows bucket
-  mode, projection mode, delivery ownership, rollout preflight/activity/
-  rollback/drift commands, and dependency health.
+  the correct rollout preflight and drift-report commands, while the operator
+  dashboard shows bucket mode, projection mode, delivery ownership, rollout
+  commands, and dependency health.
   This keeps migration-critical state visible before and during cutover.
-- **Static bucket plan preflight.** `./jetmon2 rollout static-plan-check`
-  validates the copied v1 host bucket plan before any host is stopped.
-  Operators can catch gaps, overlaps, invalid ranges, and duplicate host rows
-  while the rollback surface is still just the unmodified v1 fleet, then assert
-  the exact host/range being copied into each pinned v2 config.
-- **Post-cutover activity preflight.** `./jetmon2 rollout activity-check`
-  verifies active sites in the rollout range have fresh `last_checked_at`
-  values after a host replacement. It gives operators an executable check for
-  "this range is being processed now" before they move to the next v1 host.
-- **Rollback safety preflight.** After the v2 service has been stopped,
-  `./jetmon2 rollout rollback-check` verifies the host no longer owns dynamic
-  buckets, no other dynamic host overlaps the rollback range, and the legacy
-  status projection is clean before v1 is restarted for that range.
 - **Systemd service cleanup.** The monitor unit now places start-limit keys in
   the correct systemd section, and the deliverer unit validates with
   `systemd-analyze`.

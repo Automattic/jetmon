@@ -15,7 +15,11 @@ const sitesListSQL = ` SELECT blog_id, blog_id AS public_id, monitor_url, monito
 
 const sitesListForTenantSQL = ` SELECT s.blog_id, s.blog_id AS public_id, s.monitor_url, s.monitor_active, s.bucket_no, s.check_interval, s.site_status, s.last_checked_at, s.last_status_change, s.ssl_expiry_date, s.check_keyword, s.redirect_policy, s.maintenance_start, s.maintenance_end, s.alert_cooldown_minutes FROM jetpack_monitor_sites s JOIN jetmon_site_tenants st ON st.blog_id = s.blog_id AND st.tenant_id = ? WHERE s.blog_id > ? ORDER BY s.blog_id ASC LIMIT ?`
 
+const sitesListWithCLIMetadataSQL = ` SELECT blog_id, blog_id AS public_id, monitor_url, monitor_active, bucket_no, check_interval, site_status, last_checked_at, last_status_change, ssl_expiry_date, check_keyword, redirect_policy, maintenance_start, maintenance_end, alert_cooldown_minutes, custom_headers FROM jetpack_monitor_sites WHERE blog_id > ? ORDER BY blog_id ASC LIMIT ?`
+
 const singleSiteSQL = ` SELECT blog_id, blog_id AS public_id, monitor_url, monitor_active, bucket_no, check_interval, site_status, last_checked_at, last_status_change, ssl_expiry_date, check_keyword, redirect_policy, maintenance_start, maintenance_end, alert_cooldown_minutes FROM jetpack_monitor_sites WHERE blog_id = ?`
+
+const singleSiteWithCLIMetadataSQL = ` SELECT blog_id, blog_id AS public_id, monitor_url, monitor_active, bucket_no, check_interval, site_status, last_checked_at, last_status_change, ssl_expiry_date, check_keyword, redirect_policy, maintenance_start, maintenance_end, alert_cooldown_minutes, custom_headers FROM jetpack_monitor_sites WHERE blog_id = ?`
 
 const activeEventsSQL = ` SELECT id, check_type, severity, state, started_at FROM jetmon_events WHERE blog_id = ? AND ended_at IS NULL ORDER BY severity DESC, started_at ASC`
 
@@ -88,6 +92,9 @@ func TestListSitesReturnsRows(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
+	if contains(rec.Body.String(), "cli_batch") {
+		t.Fatalf("canonical list response unexpectedly included cli_batch: %s", rec.Body.String())
+	}
 	var resp struct {
 		Data []siteResponse `json:"data"`
 		Page Page           `json:"page"`
@@ -142,6 +149,38 @@ func TestListSitesWithGatewayTenantScopesRows(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+func TestListSitesIncludesCLIBatchOnlyWhenRequested(t *testing.T) {
+	s, mock, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	mock.ExpectQuery(sitesListWithCLIMetadataSQL).
+		WithArgs(int64(0), 51).
+		WillReturnRows(sqlmock.NewRows(columnsSiteWithCLIMetadata).AddRow(
+			101, 101, "https://example.com", 1, 0, 5, 1,
+			nil, nil, nil, nil, "follow", nil, nil, nil,
+			`{"X-Jetmon-CLI-Batch":"local-smoke"}`,
+		))
+	mock.ExpectQuery(activeEventRollupsSQL("?")).
+		WithArgs(int64(101)).
+		WillReturnRows(sqlmock.NewRows(activeEventRollupColumns))
+
+	req := requestWithKey("GET", "/api/v1/sites?include_cli_metadata=true", key)
+	rec := invokeAuthed(s, req, s.handleListSites)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Data []struct {
+			ID       int64  `json:"id"`
+			CLIBatch string `json:"cli_batch"`
+		} `json:"data"`
+	}
+	readJSON(t, rec.Body, &resp)
+	if len(resp.Data) != 1 || resp.Data[0].ID != 101 || resp.Data[0].CLIBatch != "local-smoke" {
+		t.Fatalf("data = %+v, want site 101 cli_batch=local-smoke", resp.Data)
 	}
 }
 
@@ -382,6 +421,9 @@ func TestScanSiteRowIgnoresLegacyStatusWhenProjectionDisabled(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
+	if contains(rec.Body.String(), "cli_batch") {
+		t.Fatalf("canonical single-site response unexpectedly included cli_batch: %s", rec.Body.String())
+	}
 	var resp singleSiteResponse
 	readJSON(t, rec.Body, &resp)
 	if resp.CurrentState != "Up" || resp.CurrentSeverity != 0 {
@@ -478,6 +520,36 @@ func TestGetSiteFound(t *testing.T) {
 	// Worst event should be reflected on the projection.
 	if resp.CurrentState != "Down" || resp.CurrentSeverity != 4 {
 		t.Errorf("projection = (%q, %d), want (Down, 4)", resp.CurrentState, resp.CurrentSeverity)
+	}
+}
+
+func TestGetSiteIncludesCLIBatchOnlyWhenRequested(t *testing.T) {
+	s, mock, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	mock.ExpectQuery(singleSiteWithCLIMetadataSQL).WithArgs(int64(42)).WillReturnRows(
+		sqlmock.NewRows(columnsSiteWithCLIMetadata).AddRow(
+			42, 42, "https://x", 1, 0, 5, 1,
+			nil, nil, nil, nil, "follow", nil, nil, nil,
+			`{"X-Jetmon-CLI-Batch":"local-smoke"}`,
+		),
+	)
+	mock.ExpectQuery(activeEventsSQL).WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows(columnsActiveEvent))
+
+	req := requestWithKey("GET", "/api/v1/sites/42?include_cli_metadata=true", key)
+	req.SetPathValue("id", "42")
+	rec := invokeAuthed(s, req, s.handleGetSite)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		ID       int64  `json:"id"`
+		CLIBatch string `json:"cli_batch"`
+	}
+	readJSON(t, rec.Body, &resp)
+	if resp.ID != 42 || resp.CLIBatch != "local-smoke" {
+		t.Fatalf("response = %+v, want id=42 cli_batch=local-smoke", resp)
 	}
 }
 

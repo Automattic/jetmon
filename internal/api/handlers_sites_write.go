@@ -495,13 +495,10 @@ func (s *Server) closeEvent(ctx context.Context, eventID, blogID int64, reason s
 // write handlers' read-back step.
 func (s *Server) readSite(ctx context.Context, blogID int64) (siteResponse, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT blog_id, blog_id AS public_id, monitor_url, monitor_active,
-		       bucket_no, check_interval, site_status, last_checked_at,
-		       last_status_change, ssl_expiry_date, check_keyword, redirect_policy,
-		       maintenance_start, maintenance_end, alert_cooldown_minutes
+		SELECT `+siteSelectColumns("", false)+`
 		  FROM jetpack_monitor_sites
 		 WHERE blog_id = ?`, blogID)
-	return scanSiteRow(row)
+	return scanSiteRow(row, false)
 }
 
 // validateMonitorURL accepts only http and https URLs with a non-empty host.

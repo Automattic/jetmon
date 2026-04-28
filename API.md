@@ -71,7 +71,7 @@ We deliberately did not split into `sites:read` / `events:read` / `webhooks:read
 **Key management is ops-only.** No `/api/v1/keys` endpoints. Keys are created and revoked via the `./jetmon2` CLI:
 
 ```
-./jetmon2 keys create --consumer gateway --scope read [--expires 90d]
+./jetmon2 keys create --consumer gateway --scope read [--ttl 2160h]
 ./jetmon2 keys list
 ./jetmon2 keys revoke <key_id>
 ./jetmon2 keys rotate <key_id>     # creates a new key for the same consumer; revokes old after grace
@@ -86,6 +86,63 @@ The CLI talks to the database directly (via `jetmon_api_keys`), prints the new t
 **Why not mTLS / IP allowlists alone?** Either could replace Bearer tokens for service-to-service auth, but tokens make per-consumer identity trivial to log and revoke. mTLS rotation is heavier; IP allowlists don't survive containerized deployments cleanly. Bearer tokens are the lowest-friction option that gives us per-consumer accountability.
 
 **Why not OAuth?** Same reasoning as before, now stronger: there are no user delegations to model. Every caller is a server.
+
+## API CLI helper
+
+`jetmon2 api` is the local developer/operator helper for this API. It defaults
+to the Docker-local API listener and reads the Bearer token from the
+environment:
+
+```bash
+export JETMON_API_URL=http://localhost:8090
+export JETMON_API_TOKEN=jm_replace_with_a_local_key
+
+./bin/jetmon2 api health --pretty
+./bin/jetmon2 api me --pretty
+./bin/jetmon2 api commands --output table
+./bin/jetmon2 api sites list --output table
+./bin/jetmon2 api sites get --pretty 12345
+```
+
+For Docker-local rehearsals, `make api-cli-token-create`,
+`make api-cli-token-list`, and
+`API_CLI_TOKEN_ID=<id> make api-cli-token-revoke` wrap the in-container
+`jetmon2 keys` commands from the repository root.
+
+Typed commands cover sites, events, webhooks, alert contacts, local smoke runs,
+and failure simulation. Use `api request` as the escape hatch for new API routes
+before a typed command exists. See [`docs/api-cli-guide.md`](docs/api-cli-guide.md)
+for a fuller feature guide and workflow examples:
+
+```bash
+./bin/jetmon2 api request --output table GET '/api/v1/sites?limit=5'
+./bin/jetmon2 api sites bulk-add --count 3 --batch local-smoke --dry-run --pretty
+./bin/jetmon2 api smoke --batch local-smoke --pretty
+./bin/jetmon2 api sites simulate-failure --batch local-smoke --mode http-500 --wait 15s --pretty
+./bin/jetmon2 api sites simulate-failure --batch local-smoke --mode http-500 --wait 30s --expect-event-state 'Seems Down' --expect-transition-reason opened --pretty
+./bin/jetmon2 api sites cleanup --batch local-smoke --count 3 --output table
+```
+
+JSON is the default output for scripts. Add `--pretty` for readable JSON or
+`--output table` for stable human-readable tables on list and workflow summary
+commands.
+
+Use `make api-cli-validate` with `JETMON_API_URL` and `JETMON_API_TOKEN` set for
+a live Docker-local validation pass covering the guide's core examples, the
+smoke workflow, and a deterministic failure-simulation assertion.
+
+When Docker Compose is running, `sites simulate-failure` probes
+`http://localhost:18091/health` and uses the Docker-internal fixture URL
+`http://api-fixture:8091` for deterministic HTTP 500, HTTP 403, redirect,
+keyword, timeout, and TLS scenarios. Use `--fixture-url=off` to force the
+public endpoint fallback, or set `JETMON_API_FIXTURE_URL` /
+`JETMON_API_FIXTURE_PROBE_URL` for custom local fixtures.
+
+For strict rehearsal or CI checks, add `--expect-event-state`,
+`--expect-event-severity`, `--require-transition`, or
+`--expect-transition-reason`. When an expectation is set, the command keeps
+polling until the expectation matches or `--wait` expires, then returns non-zero
+with the last observed events/transitions in the summary.
 
 ## Common patterns
 
@@ -288,6 +345,7 @@ see rows mapped to `X-Jetmon-Tenant-ID` in `jetmon_site_tenants`.
 | `severity__gte` | int | Minimum severity |
 | `monitor_active` | bool | Filter active vs paused |
 | `q` | string | URL substring search |
+| `include_cli_metadata` | bool | Optional local-tooling projection; when true, includes `cli_batch` if the site carries the CLI batch marker |
 
 **Response 200:**
 
@@ -320,9 +378,14 @@ see rows mapped to `X-Jetmon-Tenant-ID` in `jetmon_site_tenants`.
 
 `id` and `blog_id` are the same value for now; `id` is the public field name (`blog_id` is the historical column name). Consumers should rely on `id`.
 
+`cli_batch` is an opt-in local-tooling projection. It is present only when
+`include_cli_metadata=true` and the site's `custom_headers` include
+`X-Jetmon-CLI-Batch`; the API does not expose the rest of `custom_headers`.
+
 `current_state`, `current_severity`, and `active_event_id` are derived from
-open rows in `jetmon_events`. During shadow-v2-state migration the legacy
-`site_status` column is only a fallback for sites with no active v2 event while
+open rows in `jetmon_events`. During the
+[v1-to-v2 migration](docs/v1-to-v2-migration.md), the legacy `site_status`
+column is only a fallback for sites with no active v2 event while
 `LEGACY_STATUS_PROJECTION_ENABLE` is true; once the projection is disabled, a
 site with no active v2 event is reported as `Up` regardless of stale legacy
 status values.
@@ -330,6 +393,9 @@ status values.
 #### `GET /api/v1/sites/{id}`
 
 Single site, same shape as a list entry plus an `active_events` array for any open events:
+
+Accepts `include_cli_metadata=true` with the same `cli_batch` behavior as
+`GET /api/v1/sites`.
 
 ```json
 {

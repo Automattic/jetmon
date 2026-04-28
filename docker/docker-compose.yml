@@ -98,6 +98,22 @@ services:
       retries: 12
       start_period: 10s
 
+  api-fixture:
+    build:
+      context: ../
+      dockerfile: docker/Dockerfile_api_fixture
+    init: true
+    restart: unless-stopped
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${API_FIXTURE_HTTP_HOST_PORT:-18091}:8091"
+      - "${BIND_ADDR:-127.0.0.1}:${API_FIXTURE_HTTPS_HOST_PORT:-18443}:8443"
+    healthcheck:
+      test: ["CMD", "/jetmon-testsite", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
   mailpit:
     image: axllent/mailpit:v1.29
     restart: unless-stopped
