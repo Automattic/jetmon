@@ -60,6 +60,8 @@ func main() {
 		cmdKeys(os.Args[2:])
 	case "site-tenants":
 		cmdSiteTenants(os.Args[2:])
+	case "rollout":
+		cmdRollout(os.Args[2:])
 	default:
 		runServe()
 	}

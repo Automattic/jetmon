@@ -69,12 +69,28 @@ For each v1 host:
 4. Start the v2 process.
 5. Run `./jetmon2 validate-config` and confirm it reports
    `bucket_ownership=pinned range=<min>-<max>`.
-6. Verify the process logs:
+6. Run the pinned rollout preflight:
+
+   ```bash
+   ./jetmon2 rollout pinned-check
+   ```
+
+   This check fails if the host is not in pinned mode, legacy projection writes
+   are disabled, the current host still has a `jetmon_hosts` ownership row, or
+   the active sites in the pinned range have projection drift. It also prints the
+   active site count for the range. If checking a config before running on the
+   final hostname, pass the expected host id explicitly:
+
+   ```bash
+   ./jetmon2 rollout pinned-check --host=<v2-hostname>
+   ```
+
+7. Verify the process logs:
    - `legacy_status_projection=enabled`
    - `bucket_ownership=pinned range=<min>-<max>`
    - `orchestrator: using pinned buckets <min>-<max>`
-7. Watch one full check round for that bucket range.
-8. Confirm:
+8. Watch one full check round for that bucket range.
+9. Confirm:
    - checks are running only for the pinned range
    - Veriflier confirmation works
    - WPCOM notifications retain the v1 payload shape

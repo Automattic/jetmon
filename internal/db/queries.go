@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -59,6 +60,23 @@ func GetSitesForBucket(ctx context.Context, bucketMin, bucketMax, batchSize int,
 		sites = append(sites, s)
 	}
 	return sites, rows.Err()
+}
+
+// CountActiveSitesForBucketRange returns the number of active monitor rows in
+// the inclusive bucket range.
+func CountActiveSitesForBucketRange(ctx context.Context, bucketMin, bucketMax int) (int, error) {
+	var count int
+	err := db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		  FROM jetpack_monitor_sites
+		 WHERE monitor_active = 1
+		   AND bucket_no BETWEEN ? AND ?`,
+		bucketMin, bucketMax,
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count active sites: %w", err)
+	}
+	return count, nil
 }
 
 // UpdateSiteStatus updates site_status and last_status_change for a site.
@@ -239,6 +257,23 @@ func MarkHostDraining(ctx context.Context, hostID string) error {
 func ReleaseHost(ctx context.Context, hostID string) error {
 	_, err := db.ExecContext(ctx, `DELETE FROM jetmon_hosts WHERE host_id = ?`, hostID)
 	return err
+}
+
+// HostRowExists reports whether a host currently has a jetmon_hosts ownership
+// row.
+func HostRowExists(ctx context.Context, hostID string) (bool, error) {
+	var exists int
+	err := db.QueryRowContext(ctx,
+		`SELECT 1 FROM jetmon_hosts WHERE host_id = ? LIMIT 1`,
+		hostID,
+	).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("check host row: %w", err)
+	}
+	return true, nil
 }
 
 // GetAllHosts returns all rows from jetmon_hosts for operator visibility.

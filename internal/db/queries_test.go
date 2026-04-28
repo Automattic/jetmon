@@ -140,6 +140,26 @@ func TestGetSitesForBucketScansRowsAndDefaultRedirectPolicy(t *testing.T) {
 	}
 }
 
+func TestCountActiveSitesForBucketRange(t *testing.T) {
+	mock, cleanup := withMockDB(t)
+	defer cleanup()
+
+	mock.ExpectQuery("SELECT COUNT").
+		WithArgs(10, 19).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(42))
+
+	count, err := CountActiveSitesForBucketRange(context.Background(), 10, 19)
+	if err != nil {
+		t.Fatalf("CountActiveSitesForBucketRange: %v", err)
+	}
+	if count != 42 {
+		t.Fatalf("CountActiveSitesForBucketRange = %d, want 42", count)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestSimpleMutationQueries(t *testing.T) {
 	mock, cleanup := withMockDB(t)
 	defer cleanup()
@@ -226,6 +246,38 @@ func TestUpdateSiteStatusTx(t *testing.T) {
 	if err := tx.Commit(); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestHostRowExists(t *testing.T) {
+	mock, cleanup := withMockDB(t)
+	defer cleanup()
+
+	mock.ExpectQuery("SELECT 1 FROM jetmon_hosts").
+		WithArgs("host-a").
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(1))
+	mock.ExpectQuery("SELECT 1 FROM jetmon_hosts").
+		WithArgs("host-b").
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}))
+
+	exists, err := HostRowExists(context.Background(), "host-a")
+	if err != nil {
+		t.Fatalf("HostRowExists(host-a): %v", err)
+	}
+	if !exists {
+		t.Fatal("HostRowExists(host-a) = false, want true")
+	}
+
+	exists, err = HostRowExists(context.Background(), "host-b")
+	if err != nil {
+		t.Fatalf("HostRowExists(host-b): %v", err)
+	}
+	if exists {
+		t.Fatal("HostRowExists(host-b) = true, want false")
+	}
+
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)
 	}

@@ -488,16 +488,24 @@ bucket ownership and gives each host a simple rollback path.
    `PINNED_BUCKET_*` makes the migration mode explicit. In pinned mode, v2 does
    not claim or heartbeat `jetmon_hosts`; it checks only the configured range.
 
-3) Stop the v1 process for that range, start v2, and verify checks,
+3) Before starting the cutover, run the pinned rollout preflight:
+
+		./jetmon2 rollout pinned-check
+
+   It verifies pinned mode, legacy projection writes, absence of a
+   `jetmon_hosts` row for the host, active site count for the range, and zero
+   legacy projection drift.
+
+4) Stop the v1 process for that range, start v2, and verify checks,
    Veriflier confirmations, WPCOM notifications, audit rows, and legacy
    `site_status` projection for that bucket range.
 
-4) If rollback is needed, stop v2 and restart the original v1 process with the
+5) If rollback is needed, stop v2 and restart the original v1 process with the
    same bucket config. Because the v2 migrations are additive and the legacy
    projection remains enabled, legacy readers continue to see familiar status
    fields.
 
-5) Repeat for each v1 host. After the whole fleet is on v2 and stable, remove
+6) Repeat for each v1 host. After the whole fleet is on v2 and stable, remove
    `PINNED_BUCKET_*` from each host and transition to dynamic `jetmon_hosts`
    ownership one controlled host at a time.
 
