@@ -8,9 +8,9 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
-const selectClaimReadySQL = ` SELECT id, alert_contact_id, transition_id, event_id, event_type, severity, payload, status, attempt, next_attempt_at, last_status_code, last_response, last_attempt_at, delivered_at, created_at FROM jetmon_alert_deliveries WHERE status = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP) ORDER BY next_attempt_at ASC LIMIT ?`
+const selectClaimReadySQL = ` SELECT id, alert_contact_id, transition_id, event_id, event_type, severity, payload, status, attempt, next_attempt_at, last_status_code, last_response, last_attempt_at, delivered_at, created_at FROM jetmon_alert_deliveries WHERE status = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP) ORDER BY next_attempt_at ASC LIMIT ? FOR UPDATE`
 
-const softLockClaimedSQL = ` UPDATE jetmon_alert_deliveries SET next_attempt_at = ? WHERE id = ? AND status = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP)`
+const leaseClaimedSQL = ` UPDATE jetmon_alert_deliveries SET next_attempt_at = ? WHERE id = ? AND status = 'pending'`
 
 var columnsClaimedDelivery = []string{
 	"id", "alert_contact_id", "transition_id", "event_id", "event_type", "severity",
@@ -18,13 +18,10 @@ var columnsClaimedDelivery = []string{
 	"last_attempt_at", "delivered_at", "created_at",
 }
 
-// TestClaimReadySoftLocksEachRow verifies the contract that ClaimReady
-// follows its SELECT with one UPDATE per claimed row, pushing
-// next_attempt_at out so subsequent ticks won't re-claim the still-
-// in-flight row. Without this, the deliver loop's 1s tick re-claims
-// pending rows and produces concurrent dispatches that inflate the
-// attempt counter (the bug that motivated the soft lock).
-func TestClaimReadySoftLocksEachRow(t *testing.T) {
+// TestClaimReadyClaimsRowsTransactionally verifies that ClaimReady uses
+// row-level locks and then leases each claimed row so subsequent ticks do not
+// re-claim a still-in-flight delivery.
+func TestClaimReadyClaimsRowsTransactionally(t *testing.T) {
 	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
@@ -38,15 +35,15 @@ func TestClaimReadySoftLocksEachRow(t *testing.T) {
 		AddRow(int64(2), int64(11), int64(101), int64(901), "alert.opened", uint8(4),
 			[]byte(`{}`), "pending", 0, now, nil, nil, nil, nil, now)
 
+	mock.ExpectBegin()
 	mock.ExpectQuery(selectClaimReadySQL).WithArgs(50).WillReturnRows(rows)
-
-	// Each candidate gets a soft-lock UPDATE.
-	mock.ExpectExec(softLockClaimedSQL).
+	mock.ExpectExec(leaseClaimedSQL).
 		WithArgs(sqlmock.AnyArg(), int64(1)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec(softLockClaimedSQL).
+	mock.ExpectExec(leaseClaimedSQL).
 		WithArgs(sqlmock.AnyArg(), int64(2)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 
 	out, err := ClaimReady(context.Background(), db, 50)
 	if err != nil {
@@ -60,7 +57,7 @@ func TestClaimReadySoftLocksEachRow(t *testing.T) {
 	}
 }
 
-func TestClaimReadyReturnsOnlyRowsThatWonSoftLock(t *testing.T) {
+func TestClaimReadyRollsBackWhenLeaseUpdateMisses(t *testing.T) {
 	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
@@ -70,45 +67,41 @@ func TestClaimReadyReturnsOnlyRowsThatWonSoftLock(t *testing.T) {
 	now := time.Now().UTC()
 	rows := sqlmock.NewRows(columnsClaimedDelivery).
 		AddRow(int64(1), int64(11), int64(100), int64(900), "alert.opened", uint8(4),
-			[]byte(`{}`), "pending", 0, now, nil, nil, nil, nil, now).
-		AddRow(int64(2), int64(12), int64(101), int64(901), "alert.opened", uint8(4),
 			[]byte(`{}`), "pending", 0, now, nil, nil, nil, nil, now)
 
+	mock.ExpectBegin()
 	mock.ExpectQuery(selectClaimReadySQL).WithArgs(50).WillReturnRows(rows)
-	mock.ExpectExec(softLockClaimedSQL).
+	mock.ExpectExec(leaseClaimedSQL).
 		WithArgs(sqlmock.AnyArg(), int64(1)).
 		WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec(softLockClaimedSQL).
-		WithArgs(sqlmock.AnyArg(), int64(2)).
-		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectRollback()
 
 	out, err := ClaimReady(context.Background(), db, 50)
-	if err != nil {
-		t.Fatalf("ClaimReady: %v", err)
+	if err == nil {
+		t.Fatal("ClaimReady succeeded after lease update missed")
 	}
-	if len(out) != 1 {
-		t.Fatalf("got %d claimed, want 1", len(out))
-	}
-	if out[0].ID != 2 {
-		t.Errorf("claimed ID = %d, want 2", out[0].ID)
+	if len(out) != 0 {
+		t.Fatalf("got %d claimed rows with failed lease update, want 0", len(out))
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("expectations: %v", err)
 	}
 }
 
-// TestClaimReadyNoCandidatesSkipsLockUpdates verifies that when the
-// SELECT returns nothing, ClaimReady issues no UPDATEs (no extra DB
-// traffic on idle ticks).
-func TestClaimReadyNoCandidatesSkipsLockUpdates(t *testing.T) {
+// TestClaimReadyNoCandidatesCommitsWithoutLeaseUpdates verifies that when the
+// SELECT returns nothing, ClaimReady issues no UPDATEs (no extra DB traffic on
+// idle ticks).
+func TestClaimReadyNoCandidatesCommitsWithoutLeaseUpdates(t *testing.T) {
 	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
 	}
 	defer db.Close()
 
+	mock.ExpectBegin()
 	mock.ExpectQuery(selectClaimReadySQL).WithArgs(50).
 		WillReturnRows(sqlmock.NewRows(columnsClaimedDelivery))
+	mock.ExpectCommit()
 
 	out, err := ClaimReady(context.Background(), db, 50)
 	if err != nil {

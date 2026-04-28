@@ -68,32 +68,37 @@ func Enqueue(ctx context.Context, db *sql.DB, in EnqueueInput) (int64, error) {
 // claimLockDuration is how far ClaimReady pushes next_attempt_at out
 // when it claims a row. Must outlast the worker's per-delivery wall
 // clock so an in-flight goroutine has time to write its real result
-// before the soft lock would expire. The default DispatchTimeout is
+// before the in-flight lease expires. The default DispatchTimeout is
 // 30s with a 5s buffer; 60s gives comfortable headroom. A crashed
 // goroutine that never updates the row recovers naturally when the
-// lock expires.
+// lease expires.
 const claimLockDuration = 60 * time.Second
 
 // ClaimReady returns up to limit pending deliveries whose
-// next_attempt_at is in the past. Each claimed row is soft-locked by
-// pushing next_attempt_at to NOW + claimLockDuration so subsequent
-// ticks don't re-claim a row whose dispatch is still in-flight. The
-// dispatch goroutine overwrites next_attempt_at with its real value
-// when it finishes.
+// next_attempt_at is in the past. It claims rows with SELECT ... FOR UPDATE
+// inside a transaction so active-active delivery workers cannot claim the same
+// row. Each claimed row then gets an in-flight lease by pushing next_attempt_at
+// to NOW + claimLockDuration before the transaction commits, so subsequent
+// ticks don't re-claim a row whose dispatch is still in-flight. The dispatch
+// goroutine overwrites next_attempt_at with its real value when it finishes.
 //
-// Without the soft lock, the deliver loop's 1-second tick re-claims
+// Without the in-flight lease, the deliver loop's 1-second tick re-claims
 // any in-flight row up to the per-contact cap, producing concurrent
 // dispatches that inflate the attempt counter and effectively skip
-// retry-schedule steps. The soft lock prevents that.
-//
-// Multi-instance caveat: same as webhooks — two instances polling
-// simultaneously can still pick up a row in the SELECT phase. The readiness
-// predicate on UPDATE and the RowsAffected check below mean only rows that won
-// the soft lock are returned, but fully multi-instance delivery should still
-// move to SELECT ... FOR UPDATE SKIP LOCKED within a transaction. Tracked
-// alongside the deliverer-binary extraction.
+// retry-schedule steps. The lease prevents that after the transaction commits.
 func ClaimReady(ctx context.Context, db *sql.DB, limit int) ([]Delivery, error) {
-	rows, err := db.QueryContext(ctx, `
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("alerting: begin claim: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	rows, err := tx.QueryContext(ctx, `
 		SELECT id, alert_contact_id, transition_id, event_id, event_type, severity, payload,
 		       status, attempt, next_attempt_at, last_status_code, last_response,
 		       last_attempt_at, delivered_at, created_at
@@ -101,57 +106,51 @@ func ClaimReady(ctx context.Context, db *sql.DB, limit int) ([]Delivery, error) 
 		 WHERE status = 'pending'
 		   AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP)
 		 ORDER BY next_attempt_at ASC
-		 LIMIT ?`, limit)
+		 LIMIT ?
+		 FOR UPDATE`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("alerting: claim ready: %w", err)
 	}
-	var candidates []Delivery
+	var claimed []Delivery
 	for rows.Next() {
 		d, err := scanDeliveryRow(rows)
 		if err != nil {
 			rows.Close()
 			return nil, err
 		}
-		candidates = append(candidates, *d)
+		claimed = append(claimed, *d)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
 		return nil, err
 	}
-	rows.Close()
-
-	if len(candidates) == 0 {
-		return nil, nil
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("alerting: close claim rows: %w", err)
 	}
 
-	// Return only rows whose lock update won; stale SELECT results can happen
-	// if another claimant already moved next_attempt_at between our SELECT and
-	// UPDATE.
 	lockUntil := time.Now().Add(claimLockDuration).UTC()
-	// claimed reuses candidates' backing array — safe because the write index
-	// is always ≤ the read index and candidates is not returned in its
-	// original form.
-	claimed := candidates[:0]
-	for i := range candidates {
-		res, err := db.ExecContext(ctx, `
+	for i := range claimed {
+		res, err := tx.ExecContext(ctx, `
 			UPDATE jetmon_alert_deliveries
 			   SET next_attempt_at = ?
 			 WHERE id = ?
-			   AND status = 'pending'
-			   AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP)`,
-			lockUntil, candidates[i].ID)
+			   AND status = 'pending'`,
+			lockUntil, claimed[i].ID)
 		if err != nil {
-			return nil, fmt.Errorf("alerting: soft-lock row %d: %w", candidates[i].ID, err)
+			return nil, fmt.Errorf("alerting: claim row %d: %w", claimed[i].ID, err)
 		}
 		affected, err := res.RowsAffected()
 		if err != nil {
-			return nil, fmt.Errorf("alerting: soft-lock row %d rows affected: %w", candidates[i].ID, err)
+			return nil, fmt.Errorf("alerting: claim row %d rows affected: %w", claimed[i].ID, err)
 		}
-		if affected == 0 {
-			continue
+		if affected != 1 {
+			return nil, fmt.Errorf("alerting: claim row %d affected %d rows, want 1", claimed[i].ID, affected)
 		}
-		claimed = append(claimed, candidates[i])
 	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("alerting: commit claim: %w", err)
+	}
+	committed = true
 	return claimed, nil
 }
 

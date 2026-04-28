@@ -1,6 +1,6 @@
-# 0007 — Soft-lock claim vs `SELECT … FOR UPDATE SKIP LOCKED`
+# 0007 — Soft-lock claim vs transactional row claim
 
-**Status:** Accepted (2026-04-25)
+**Status:** Accepted (2026-04-25), amended (2026-04-28)
 
 ## Context
 
@@ -40,72 +40,76 @@ There are two well-known fixes:
   `next_attempt_at <= NOW()`) won't match the row again until the
   soft lock expires. The dispatch goroutine overwrites the soft
   lock with its real result.
-- **Row-level locking via `SELECT … FOR UPDATE SKIP LOCKED`** in a
-  transaction. Two concurrent SELECTs against the same row only
-  return it to one caller; the other gets a different row or
-  nothing.
+- **Transactional row claiming via `SELECT … FOR UPDATE`**. Two
+  concurrent claim transactions cannot claim the same row; the second
+  claimant waits briefly for the first transaction to commit, then sees
+  the updated `next_attempt_at` and skips that in-flight delivery.
+- **Transactional row claiming via `SELECT … FOR UPDATE SKIP LOCKED`**.
+  Same correctness property, but concurrent claimers skip locked rows
+  rather than waiting. This is better for high delivery concurrency but
+  requires newer MySQL than the current 5.7+ compatibility target.
 
 ## Decision
 
-Today we use the **soft lock** in both
-`internal/webhooks/deliveries.go` and `internal/alerting/deliveries.go`.
-`ClaimReady` follows its SELECT with a per-row UPDATE that pushes
-`next_attempt_at` to NOW + `claimLockDuration` (60 seconds). The
-dispatch goroutine overwrites with its real value when it finishes.
+`internal/webhooks/deliveries.go` and `internal/alerting/deliveries.go`
+now use a transactional row claim. `ClaimReady` starts a transaction,
+selects ready rows with `SELECT … FOR UPDATE`, pushes each selected
+row's `next_attempt_at` to NOW + `claimLockDuration` (60 seconds), and
+commits. The dispatch goroutine overwrites that in-flight lease with
+its real value when it finishes.
 
-Multi-instance row-level locking via
-`SELECT … FOR UPDATE SKIP LOCKED` is **deferred** until the
-deliverer-binary extraction. Today we run a single jetmon2 instance,
-so the multi-instance failure mode is hypothetical. The soft lock
-solves the real production-shape failure mode (in-process
-re-claiming).
+We intentionally use plain `FOR UPDATE` rather than `SKIP LOCKED` so
+the delivery claim path remains compatible with the MySQL 5.7+
+production target. The claim transaction is short: it only scans rows,
+updates their in-flight lease, and commits before any outbound network
+I/O begins. A competing worker may block briefly during that claim, but
+it will not duplicate the delivery.
 
 A crashed goroutine that never updates the row recovers naturally
-when the soft lock expires after 60s — the row becomes claimable
+when the in-flight lease expires after 60s — the row becomes claimable
 again. This is intentional rollback behavior.
 
 ## Consequences
 
 **Wins:**
-- The retry ladder behaves as documented in single-instance
-  deployments. The visible regression that motivated the fix
-  (~1h-then-abandon instead of 7h36m) is gone.
-- Single SELECT + per-row UPDATE is straightforward to reason about
-  and easy to test (sqlmock contract tests exist for both packages).
+- The retry ladder behaves as documented; the visible regression that
+  motivated the original soft lock (~1h-then-abandon instead of 7h36m)
+  stays fixed.
+- Active-active delivery workers no longer duplicate the same pending
+  delivery row.
+- The implementation remains MySQL 5.7+ compatible.
 - Crash recovery is automatic — a process kill mid-dispatch leaves
   the row recoverable.
 
 **Costs:**
-- Multi-instance deployments still have the original failure mode.
-  Two instances would still both see a pending row in their SELECTs
-  before either runs the soft-lock UPDATE; the row's status hasn't
-  changed yet. The losing UPDATE silently overwrites the winning
-  UPDATE's `next_attempt_at`. Both instances proceed. The fix is
-  to switch to `SELECT … FOR UPDATE SKIP LOCKED` in a transaction,
-  which is a real change but is well-contained — only `ClaimReady`
-  in each package needs updating.
-- The soft lock duration is a tuning parameter. Too short and a
+- `FOR UPDATE` can make one worker wait briefly behind another worker's
+  claim transaction. This is acceptable while the transaction is kept
+  short and contains no network I/O.
+- `SKIP LOCKED` would use high-concurrency workers more efficiently, but
+  it is deferred until the production database compatibility target
+  allows it.
+- The in-flight lease duration is a tuning parameter. Too short and a
   slow dispatch can race with the next tick; too long and a crashed
   goroutine takes longer to recover. 60s is a comfortable margin
   for the default 30s + 5s dispatch timeout.
 
 ## Alternatives considered
 
-- **`SELECT … FOR UPDATE SKIP LOCKED` immediately.** Correct for
-  multi-instance, more complex (requires a transaction around the
-  claim), and over-engineered for the current single-instance
-  deployment. The migration is a small contained change in the two
-  `ClaimReady` functions when the deliverer binary extracts.
+- **`SELECT … FOR UPDATE SKIP LOCKED`.** Correct for multi-instance and
+  avoids blocking behind already-claimed rows, but would raise the MySQL
+  requirement beyond the current compatibility target.
+- **Keep the soft lock only.** Simple and MySQL-compatible, but two
+  workers can both read the same pending row before either moves
+  `next_attempt_at`, so active-active delivery still duplicates work.
 - **Reduce the per-subscriber in-flight cap to 1.** Doesn't fix
   the bug; the second tick still sees the same row, the cap just
   prevents the second goroutine from starting. The row stays pending
   with stale `next_attempt_at` and the dispatch is delayed by the
   cap rather than re-attempted concurrently. Slightly better
   observable behavior, same underlying issue.
-- **A separate "claim ID" column with CAS semantics.** Equivalent
-  to the soft lock but with more schema and more code. Same
-  correctness; not worth the additional complexity at single-instance
-  scale.
+- **A separate "claim ID" column with CAS semantics.** Similar
+  correctness with more schema and more code. Not worth the additional
+  complexity when row locks already provide the claim primitive.
 
 ## Related
 
@@ -114,7 +118,7 @@ again. This is intentional rollback behavior.
 - ADR-0006 (Separate alerting and webhooks packages) — the fix
   had to land in both packages, illustrating the duplication cost.
 - `internal/webhooks/deliveries.go` `ClaimReady` and the matching
-  test (`TestClaimReadySoftLocksEachRow`).
+  `TestClaimReadyClaimsRowsTransactionally`.
 - `internal/alerting/deliveries.go` `ClaimReady` and matching test.
-- ROADMAP.md "Multi-repo / multi-binary split" — the deliverer
-  extraction that reopens this decision.
+- ROADMAP.md post-v2 platform refinement items for the deliverer split
+  and active-active delivery.

@@ -423,7 +423,7 @@ The internal API is disabled by default. Set `API_PORT` to a non-zero port to en
 
 In the embedded v2 deployment, `API_PORT` also makes the webhook and alert-contact delivery workers eligible to run inside `jetmon2`. Set `DELIVERY_OWNER_HOST` to exactly one hostname per database cluster so additional API-enabled hosts can serve API traffic without dispatching duplicate outbound deliveries. If `DELIVERY_OWNER_HOST` is empty, the host keeps the legacy behavior and starts delivery workers whenever `API_PORT` is enabled; startup and `validate-config` warn about that fallback.
 
-`bin/jetmon-deliverer` is the first standalone process boundary for outbound delivery. It starts the same webhook and alert-contact workers without starting the monitor, API, dashboard, or bucket ownership loop. It still uses the same soft-lock delivery tables, so run only one active delivery process per database cluster until transactional row claiming lands; do not run standalone delivery on a host whose embedded `jetmon2` delivery workers are also enabled.
+`bin/jetmon-deliverer` is the first standalone process boundary for outbound delivery. It starts the same webhook and alert-contact workers without starting the monitor, API, dashboard, or bucket ownership loop. Delivery rows are claimed transactionally, so multiple active delivery workers do not claim the same pending row; use `DELIVERY_OWNER_HOST` when you want an explicit single-owner rollout during the transition from embedded to standalone delivery.
 
 ### Cleanup
 

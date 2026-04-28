@@ -17,11 +17,12 @@ migration and the operating data needed to make larger architecture decisions.
   probe-agent architecture. The v2 event tables remain authoritative while
   `LEGACY_STATUS_PROJECTION_ENABLE` keeps legacy `site_status` /
   `last_status_change` consumers working during migration.
-- **Operationally enforce single-owner delivery until row claiming lands.**
+- **Use delivery ownership as a rollout guard.**
   In the single-binary deployment, `API_PORT > 0` also starts webhook and
-  alert-contact delivery workers. Run that on only one active `jetmon2`
-  instance per database cluster until delivery claiming moves to transactional
-  `SELECT ... FOR UPDATE SKIP LOCKED` or the deliverer binary is extracted.
+  alert-contact delivery workers. A standalone `jetmon-deliverer` entry point
+  and transactional `SELECT ... FOR UPDATE` row claims now exist; use
+  `DELIVERY_OWNER_HOST` as a rollout guard when intentionally keeping delivery
+  single-owner during migration from embedded to standalone delivery.
 - **Instrument the data needed for the v3 decision.** During v2 production,
   measure first-failure-to-`Seems Down`, `Seems Down`-to-`Down`, false alarm
   rate by failure class, Veriflier agreement/disagreement by region, Veriflier
@@ -42,12 +43,11 @@ migration and the operating data needed to make larger architecture decisions.
   it.** Move webhook delivery, alert-contact delivery, and eventually WPCOM
   notification dispatch behind one outbound-delivery binary. Initial shared
   worker wiring and a standalone `jetmon-deliverer` entry point exist; the
-  remaining production cutover work is service packaging, rollout policy, and
-  transactional row claiming.
+  remaining production cutover work is service packaging and rollout policy.
 - **Replace soft delivery locks with transactional row claims.** As part of
   the deliverer extraction, update the webhook and alert-contact `ClaimReady`
-  paths to use `SELECT ... FOR UPDATE SKIP LOCKED` so active-active delivery
-  workers are safe.
+  paths to use short `SELECT ... FOR UPDATE` transactions so active-active
+  delivery workers cannot claim the same pending delivery.
 - **Unify webhook and alerting dispatch plumbing after production evidence.**
   Keep the packages separate until there are two proven implementations and a
   third transport path via WPCOM migration, then factor the shared retry,
