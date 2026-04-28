@@ -23,6 +23,8 @@ type siteResponse struct {
 	BlogID               int64   `json:"blog_id"`
 	MonitorURL           string  `json:"monitor_url"`
 	MonitorActive        bool    `json:"monitor_active"`
+	BucketNo             int     `json:"bucket_no"`
+	CheckInterval        int     `json:"check_interval"`
 	CurrentState         string  `json:"current_state"`
 	CurrentSeverity      uint8   `json:"current_severity"`
 	ActiveEventID        *int64  `json:"active_event_id"`
@@ -97,18 +99,20 @@ func (s *Server) handleListSites(w http.ResponseWriter, r *http.Request) {
 	if tenantScoped {
 		args = append(args, tenantID, cursor)
 		sb.WriteString(`
-		SELECT s.blog_id, s.blog_id AS public_id, s.monitor_url, s.monitor_active, s.site_status,
-		       s.last_checked_at, s.last_status_change, s.ssl_expiry_date, s.check_keyword,
-		       s.redirect_policy, s.maintenance_start, s.maintenance_end, s.alert_cooldown_minutes
+		SELECT s.blog_id, s.blog_id AS public_id, s.monitor_url, s.monitor_active,
+		       s.bucket_no, s.check_interval, s.site_status, s.last_checked_at,
+		       s.last_status_change, s.ssl_expiry_date, s.check_keyword, s.redirect_policy,
+		       s.maintenance_start, s.maintenance_end, s.alert_cooldown_minutes
 		  FROM jetpack_monitor_sites s
 		  JOIN jetmon_site_tenants st ON st.blog_id = s.blog_id AND st.tenant_id = ?
 		 WHERE s.blog_id > ?`)
 	} else {
 		args = append(args, cursor)
 		sb.WriteString(`
-		SELECT blog_id, blog_id AS public_id, monitor_url, monitor_active, site_status,
-		       last_checked_at, last_status_change, ssl_expiry_date, check_keyword,
-		       redirect_policy, maintenance_start, maintenance_end, alert_cooldown_minutes
+		SELECT blog_id, blog_id AS public_id, monitor_url, monitor_active,
+		       bucket_no, check_interval, site_status, last_checked_at,
+		       last_status_change, ssl_expiry_date, check_keyword, redirect_policy,
+		       maintenance_start, maintenance_end, alert_cooldown_minutes
 		  FROM jetpack_monitor_sites
 		 WHERE blog_id > ?`)
 	}
@@ -218,9 +222,10 @@ func (s *Server) handleGetSite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	row := s.db.QueryRowContext(ctx, `
-		SELECT blog_id, blog_id AS public_id, monitor_url, monitor_active, site_status,
-		       last_checked_at, last_status_change, ssl_expiry_date, check_keyword,
-		       redirect_policy, maintenance_start, maintenance_end, alert_cooldown_minutes
+		SELECT blog_id, blog_id AS public_id, monitor_url, monitor_active,
+		       bucket_no, check_interval, site_status, last_checked_at,
+		       last_status_change, ssl_expiry_date, check_keyword, redirect_policy,
+		       maintenance_start, maintenance_end, alert_cooldown_minutes
 		  FROM jetpack_monitor_sites
 		 WHERE blog_id = ?`, id)
 
@@ -378,7 +383,8 @@ func scanSiteRow(s rowScanner) (siteResponse, error) {
 		alertCooldown  sql.NullInt64
 	)
 	if err := s.Scan(
-		&out.ID, &out.BlogID, &out.MonitorURL, &monitorActive, &siteStatus,
+		&out.ID, &out.BlogID, &out.MonitorURL, &monitorActive,
+		&out.BucketNo, &out.CheckInterval, &siteStatus,
 		&lastCheckedAt, &lastStatusChg, &sslExpiry, &checkKeyword,
 		&redirectPolicy, &maintStart, &maintEnd, &alertCooldown,
 	); err != nil {

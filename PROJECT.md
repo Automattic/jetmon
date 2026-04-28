@@ -155,10 +155,10 @@ Add a `redirect_policy` column to `jetpack_monitor_sites` with three options: `f
 ## Tooling and Developer Experience
 
 **Docker Compose Environment**
-The existing Docker Compose setup is updated for the Go binary. A single `docker compose up` starts MySQL, the Jetmon 2 binary, one or more Veriflier instances, the simulated site server, StatsD + Graphite, and the operator dashboard. No npm, no node-gyp, no manual build steps. `docker compose up --build` rebuilds the Go binary in a reproducible multi-stage Docker build.
+The existing Docker Compose setup is updated for the Go binary. A single `docker compose up` starts MySQL, the Jetmon 2 binary, one or more Veriflier instances, Mailpit for local email capture, StatsD + Graphite, and the operator dashboard. No npm, no node-gyp, no manual build steps. `docker compose up --build` rebuilds the Go binary in a reproducible multi-stage Docker build. A simulated site server remains a planned addition for deterministic local failure scenarios.
 
-**Simulated Site Server**
-A dedicated HTTP service included in the Docker Compose environment that simulates configurable site states without requiring real external sites:
+**Planned Simulated Site Server**
+A dedicated HTTP service should be added to the Docker Compose environment to simulate configurable site states without requiring real external sites:
 
 - Static response codes (200, 404, 500, 503)
 - Configurable response delay (simulates slow sites and timeouts)
@@ -168,7 +168,7 @@ A dedicated HTTP service included in the Docker Compose environment that simulat
 - Redirect chains (tests the redirect-following logic)
 - Abrupt TCP close (tests connection reset handling)
 
-States are toggled via a simple HTTP API so integration tests can script site behaviour programmatically.
+States should be toggled via a simple HTTP API so integration tests can script site behaviour programmatically.
 
 **Structured Logging**
 All log output is available in two formats: the existing plain-text line format (for drop-in compatibility with current log consumers) and an optional structured JSON format enabled via `config.json`. The JSON format emits the same fields — level, timestamp, message, blog_id, http_code, error_code, RTT — as a machine-readable object, making log ingestion into Elasticsearch, Loki, or any log aggregation platform straightforward without a custom parser. Both formats write to the same log file paths.
@@ -180,7 +180,7 @@ Given a site `blog_id` and a time range, the replay tool reconstructs the full d
 End-to-end integration tests that run against the Docker Compose environment:
 
 - Unit tests for the check logic (status classification, retry transitions, COMPARE mode comparison)
-- Integration tests that insert sites into the test database, configure the simulated site server to return specific states, and assert that the correct WPCOM notification is sent within a defined time window
+- Integration tests that insert sites into the test database, configure deterministic local test endpoints to return specific states, and assert that the correct WPCOM notification is sent within a defined time window
 - Timeout and TLS failure scenarios
 - Maintenance window suppression
 - SSL expiry detection
@@ -190,7 +190,7 @@ End-to-end integration tests that run against the Docker Compose environment:
 - MySQL-coordinated bucket claiming: two hosts starting simultaneously claim non-overlapping ranges
 - MySQL-coordinated bucket failover: a host's heartbeat is artificially expired and surviving hosts absorb its buckets within one grace period
 - Alert cooldown suppression: a flapping site does not fire repeated alerts within the cooldown window
-- Redirect policy: `follow`, `alert`, and `fail` modes behave correctly against the simulated site server
+- Redirect policy: `follow`, `alert`, and `fail` modes behave correctly against deterministic local test endpoints
 
 All tests run with `go test ./...` and are included in CI.
 

@@ -54,14 +54,14 @@ func TestCreateSiteHappyPath(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"1"}))
 	// insert
 	mock.ExpectExec(insertSiteSQL).
-		WithArgs(int64(12345), 0, "https://example.com", 1, 5,
+		WithArgs(int64(12345), 12, "https://example.com", 1, 9,
 			nil, "follow", nil, nil, nil).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	// read-back
 	mock.ExpectQuery(singleSiteSQL).WithArgs(int64(12345)).
-		WillReturnRows(makeSiteRow(12345, "https://example.com", 1))
+		WillReturnRows(makeSiteRowWithSchedule(12345, "https://example.com", 1, 12, 9))
 
-	body := []byte(`{"blog_id": 12345, "monitor_url": "https://example.com"}`)
+	body := []byte(`{"blog_id": 12345, "monitor_url": "https://example.com", "bucket_no": 12, "check_interval": 9}`)
 	req := newPOSTWithBody("/api/v1/sites", body)
 	req = setAuthCtx(req, key)
 	rec := invokeAuthed(s, req, s.handleCreateSite)
@@ -73,6 +73,9 @@ func TestCreateSiteHappyPath(t *testing.T) {
 	readJSON(t, rec.Body, &resp)
 	if resp.ID != 12345 || resp.MonitorURL != "https://example.com" {
 		t.Errorf("response site = %+v", resp)
+	}
+	if resp.BucketNo != 12 || resp.CheckInterval != 9 {
+		t.Errorf("scheduling fields = (%d, %d), want (12, 9)", resp.BucketNo, resp.CheckInterval)
 	}
 }
 

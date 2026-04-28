@@ -31,8 +31,9 @@ The production target for the split is:
 A production package for the deliverer should include:
 
 - `bin/jetmon-deliverer`
+- `systemd/jetmon-deliverer.service` or the equivalent deployment-system unit
 - the same `config/config.json` schema used by `jetmon2`
-- database config via environment variables or `config/db-config.conf`
+- database config via the same `DB_*` environment variables used by `jetmon2`
 - alert transport credentials required by the selected `EMAIL_TRANSPORT`
 - log routing equivalent to the existing `jetmon2` service
 
@@ -40,24 +41,36 @@ The binary uses `JETMON_CONFIG` when set, otherwise it reads
 `config/config.json`. Use a separate config file per process class when API
 hosts and deliverer hosts need different `DELIVERY_OWNER_HOST` values.
 
+The sample systemd unit expects:
+
+- `ExecStart=/opt/jetmon2/bin/jetmon-deliverer`
+- `EnvironmentFile=-/opt/jetmon2/config/jetmon2.env`
+- `JETMON_CONFIG=/opt/jetmon2/config/deliverer.json`
+
+Keep `deliverer.json` process-specific. Sharing a config file with API-enabled
+`jetmon2` hosts is only safe when `DELIVERY_OWNER_HOST` is intentionally set for
+all process classes that read it.
+
 ## Single-Owner Cutover
 
 This is the conservative migration path from embedded delivery to standalone
 delivery.
 
 1. Build and package `bin/jetmon-deliverer`.
-2. Pick one deliverer host and set `DELIVERY_OWNER_HOST` to that host's
+2. Install and enable `systemd/jetmon-deliverer.service` or the equivalent
+   deployment-system unit.
+3. Pick one deliverer host and set `DELIVERY_OWNER_HOST` to that host's
    hostname in the deliverer config.
-3. Keep embedded API hosts from delivering by giving their `jetmon2` process a
+4. Keep embedded API hosts from delivering by giving their `jetmon2` process a
    config where `DELIVERY_OWNER_HOST` does not match the API hostnames. The
    most common pattern is a process-specific config file via `JETMON_CONFIG`.
-4. Start `jetmon-deliverer` on the owner host.
-5. Confirm logs show `delivery_owner_host="<host>" matched; delivery workers
+5. Start `jetmon-deliverer` on the owner host.
+6. Confirm logs show `delivery_owner_host="<host>" matched; delivery workers
    enabled on this host`.
-6. Confirm API-host logs show delivery workers are skipped or idle.
-7. Watch `jetmon_webhook_deliveries` and `jetmon_alert_deliveries` for pending
+7. Confirm API-host logs show delivery workers are skipped or idle.
+8. Watch `jetmon_webhook_deliveries` and `jetmon_alert_deliveries` for pending
    backlog, abandon rate, and retry volume.
-8. Stop embedded delivery after the standalone owner has been stable for at
+9. Stop embedded delivery after the standalone owner has been stable for at
    least one normal alerting window.
 
 Rollback is simple: stop `jetmon-deliverer` and restore the previous embedded
@@ -91,6 +104,11 @@ from both API hosts and standalone deliverer hosts.
 Before enabling standalone delivery:
 
 - `bin/jetmon-deliverer version` reports the expected build.
+- `JETMON_CONFIG=/opt/jetmon2/config/deliverer.json bin/jetmon-deliverer
+  validate-config` passes for the deliverer-specific config while running with
+  the same `DB_*` environment the service will use.
+- `systemd-analyze verify systemd/jetmon-deliverer.service` passes, or the
+  deployment-system equivalent validates the service definition.
 - The process can connect to MySQL using the same schema as `jetmon2`.
 - `EMAIL_TRANSPORT` is set to `wpcom` or `smtp` in any environment where real
   alert-contact emails should be delivered; `stub` is safe for dry runs.

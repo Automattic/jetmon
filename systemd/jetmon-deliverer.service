@@ -1,5 +1,5 @@
 [Unit]
-Description=Jetmon 2 — Jetpack Uptime Monitor
+Description=Jetmon Delivery Workers
 Documentation=https://github.com/Automattic/jetmon
 After=network.target mysql.service
 Wants=network.target
@@ -11,14 +11,13 @@ Type=simple
 User=jetmon
 Group=jetmon
 WorkingDirectory=/opt/jetmon2
-ExecStart=/opt/jetmon2/jetmon2
-ExecReload=/bin/kill -HUP $MAINPID
+ExecStart=/opt/jetmon2/bin/jetmon-deliverer
 Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=35s
 
 # Resource limits.
-MemoryMax=512M
+MemoryMax=256M
 LimitNOFILE=65536
 LimitNPROC=4096
 
@@ -28,16 +27,9 @@ PrivateTmp=yes
 ProtectSystem=full
 ProtectHome=yes
 
-# RuntimeDirectory creates /run/jetmon2/ owned by the service user.
-RuntimeDirectory=jetmon2
-RuntimeDirectoryMode=0750
-
 # Environment.
 EnvironmentFile=-/opt/jetmon2/config/jetmon2.env
-Environment=JETMON_CONFIG=/opt/jetmon2/config/config.json
-
-# PID file for jetmon2 reload/drain subcommands.
-PIDFile=/run/jetmon2/jetmon2.pid
+Environment=JETMON_CONFIG=/opt/jetmon2/config/deliverer.json
 
 [Install]
 WantedBy=multi-user.target

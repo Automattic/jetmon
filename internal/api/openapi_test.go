@@ -138,6 +138,12 @@ func TestOpenAPISchemasIncludeHandlerShapes(t *testing.T) {
 	if _, ok := siteProps["active_event_id"]; !ok {
 		t.Fatal("Site.active_event_id missing")
 	}
+	if _, ok := siteProps["bucket_no"]; !ok {
+		t.Fatal("Site.bucket_no missing")
+	}
+	if _, ok := siteProps["check_interval"]; !ok {
+		t.Fatal("Site.check_interval missing")
+	}
 
 	list, ok := schemas["SiteListEnvelope"].(map[string]any)
 	if !ok {

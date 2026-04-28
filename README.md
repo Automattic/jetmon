@@ -106,7 +106,15 @@ Installation
 
 		cd docker && cp .env-sample .env
 
-4) Edit `docker/.env` for your local environment
+4) Edit `docker/.env` for your local environment. The file is only for local
+   host-side bind address / `*_HOST_PORT` overrides, credentials, and user ids.
+   `BIND_ADDR` keeps non-API services local by default; `API_BIND_ADDR` controls
+   whether the REST API is reachable by other systems. Container-side service
+   ports are hardcoded in `docker-compose.yml`.
+   `MYSQL_ROOT_PASSWORD` is used only for local container setup; Jetmon connects
+   with the non-root `MYSQL_USER` / `MYSQL_PASSWORD` credentials.
+   New Docker-generated Jetmon configs use `EMAIL_TRANSPORT=smtp` through
+   Mailpit so alert-contact emails can be inspected locally.
 
 5) Build and start all services:
 
@@ -164,6 +172,11 @@ To follow logs:
 To stop:
 
 	docker compose down
+
+After pulling Docker service or volume changes, clear stale stopped containers
+before restarting:
+
+	docker compose down --remove-orphans
 
 
 Database
@@ -268,11 +281,18 @@ The current `go test ./...` suite runs standalone. Use the Docker Compose enviro
 	docker compose logs -f jetmon          # Follow logs
 	docker compose exec jetmon bash        # Shell into the container
 
+Mailpit captures Docker-local alert-contact emails. Open the web UI at
+`http://localhost:8025` by default, or at the `BIND_ADDR` /
+`MAILPIT_HOST_PORT` values from `docker/.env`. Jetmon sends SMTP to the
+internal `mailpit:1025` address; that SMTP port is not published to the host.
+Existing `config/config.json` files are not rewritten automatically, so remove
+or update a stale local config if you want it to use Mailpit.
+
 ### Adding Test Sites
 
 Connect to the test database:
 
-	docker compose exec mysqldb mysql -u root -p123456 jetmon_db
+	docker compose exec mysqldb mysql -u jetmon -pjetmon_dev_password jetmon_db
 
 Insert sites to check:
 
@@ -297,15 +317,9 @@ legacy consumers. After all consumers read from the v2 API/event tables, set
 
 ### Simulated Site Server
 
-The Docker Compose environment includes a simulated site server. Toggle site states via its HTTP API to test specific scenarios without depending on external services:
-
-- Static response codes (200, 404, 500, 503)
-- Configurable response delay for timeout testing
-- Flapping mode (alternates up/down on a schedule)
-- SSL with a self-signed certificate
-- Keyword presence and absence for content check testing
-- Redirect chains
-- Abrupt TCP close
+The Docker Compose environment does not yet include the planned simulated site
+server. Use external test endpoints or local ad-hoc services for response-code,
+timeout, redirect, keyword, and TLS scenarios until that service is added.
 
 ### Config Validation
 
@@ -386,7 +400,8 @@ Check that sites are being processed:
 	docker compose exec jetmon cat stats/sitesqueue
 	docker compose exec jetmon ps aux
 
-Check the StatsD dashboard at http://localhost:8088 under:
+Check the StatsD dashboard at `http://localhost:8088` by default, or at the
+`BIND_ADDR` / `GRAPHITE_HOST_PORT` values from `docker/.env`, under:
 `Metrics > stats > com > jetpack > jetmon > docker > jetmon`
 
 ### Key Test Scenarios
@@ -471,6 +486,27 @@ Jetmon runs on multiple production hosts managed by the Systems team. Each host 
 9) Start the service: `systemctl enable --now jetmon2`
 
 The new host will claim unclaimed buckets from the pool on first startup. No existing hosts need reconfiguration.
+
+Manual CLI commands such as `migrate`, `validate-config`, and `rollout` need
+the same `DB_*` environment that systemd reads from
+`/opt/jetmon2/config/jetmon2.env`; systemd's `EnvironmentFile` is not loaded
+automatically for commands run directly from a shell.
+
+### Deploying Standalone Delivery Workers
+
+Standalone delivery is optional during the initial v2 rollout. Use it when
+outbound webhook and alert-contact dispatch should run outside API-enabled
+`jetmon2` processes.
+
+1) Install `bin/jetmon-deliverer` to `/opt/jetmon2/bin/jetmon-deliverer`
+2) Install `systemd/jetmon-deliverer.service` to `/etc/systemd/system/` and run `systemctl daemon-reload`
+3) Create `/opt/jetmon2/config/deliverer.json` from the same schema as `config/config.json`
+4) Set `DELIVERY_OWNER_HOST` in process-specific configs so only the intended process class delivers during cutover
+5) Run `JETMON_CONFIG=/opt/jetmon2/config/deliverer.json /opt/jetmon2/bin/jetmon-deliverer validate-config` with the same `DB_*` environment used by the service
+6) Start the service: `systemctl enable --now jetmon-deliverer`
+
+See `docs/jetmon-deliverer-rollout.md` for the full embedded-to-standalone
+delivery migration runbook and rollback path.
 
 ### v1 to v2 Pinned Rolling Migration
 

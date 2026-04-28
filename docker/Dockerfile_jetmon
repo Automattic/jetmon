@@ -11,7 +11,9 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o jetmon2 ./cmd/jetmon2/
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash \
     ca-certificates \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd -r jetmon && useradd --no-log-init -r -g jetmon jetmon
@@ -26,7 +28,7 @@ RUN chmod +x entrypoint.sh \
     && chown -R jetmon:jetmon /jetmon \
     && chmod 777 logs stats certs
 
-EXPOSE 8080/tcp
+EXPOSE 8080/tcp 8090/tcp
 
 USER jetmon
 

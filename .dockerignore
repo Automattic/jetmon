@@ -8,6 +8,7 @@ config/db-config.conf
 certs/
 
 # Runtime output dirs
+docker/volumes/
 logs/
 stats/
 

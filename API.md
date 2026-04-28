@@ -299,6 +299,8 @@ see rows mapped to `X-Jetmon-Tenant-ID` in `jetmon_site_tenants`.
       "blog_id": 12345,
       "monitor_url": "https://example.com",
       "monitor_active": true,
+      "bucket_no": 0,
+      "check_interval": 5,
       "current_state": "Up",
       "current_severity": 0,
       "active_event_id": null,
@@ -404,6 +406,12 @@ Partial update. Send only the fields you want to change.
 #### `DELETE /api/v1/sites/{id}`
 
 Soft-delete (sets `monitor_active = false` and tombstones). Closes any active events with `resolution_reason = manual_override`.
+
+Delete is intentionally idempotent and preserves the site row. Repeating
+`DELETE /api/v1/sites/{id}` returns `204 No Content`, and a later
+`GET /api/v1/sites/{id}` returns `200 OK` with the same site object and
+`monitor_active: false`. Consumers should treat `monitor_active:false` as the
+readable deleted/paused state rather than expecting a `404` after delete.
 
 #### `POST /api/v1/sites/{id}/pause`, `POST /api/v1/sites/{id}/resume`
 
@@ -898,7 +906,7 @@ Email is unique among the transports in that there is no equivalent of "post to 
 | `EMAIL_TRANSPORT` | Use case | Behavior |
 |-------------------|----------|----------|
 | `wpcom` | Production | Calls existing WPCOM email infrastructure. Default in production deploys. |
-| `smtp` | Local dev / staging | Connects to an SMTP server (e.g. MailHog/Mailpit in docker compose). Configurable host/port/auth. |
+| `smtp` | Local dev / staging | Connects to an SMTP server (e.g. Mailpit in the Docker Compose stack). Configurable host/port/auth. |
 | `stub` | Local dev / unit testing / disabled email | Logs the rendered email; no actual send. |
 
 The `Sender` interface is internal to the alerting package, so swapping transports is a config change — no code path differences. SMTP support specifically exists so docker-based integration tests can verify rendering and addressing end-to-end without depending on WPCOM infrastructure.
