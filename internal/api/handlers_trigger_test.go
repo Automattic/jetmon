@@ -70,6 +70,43 @@ func TestTriggerNowSuccessNoActiveEvents(t *testing.T) {
 	}
 }
 
+func TestTriggerNowWithGatewayTenantAllowsMappedSite(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	s, mock, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	mock.ExpectQuery(siteTenantCheckSQL).
+		WithArgs("tenant-a", int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
+	mock.ExpectQuery(readSiteForCheckSQL).WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"monitor_url", "timeout_seconds", "check_keyword", "custom_headers", "redirect_policy", "site_status"}).
+			AddRow(target.URL, nil, nil, nil, "follow", 1))
+	mock.ExpectQuery(`SELECT id FROM jetmon_events WHERE blog_id = ? AND ended_at IS NULL`).
+		WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+
+	req := httptest.NewRequest("POST", "/api/v1/sites/42/trigger-now", nil)
+	req.SetPathValue("id", "42")
+	req = setGatewayTenantCtx(req, key, "tenant-a")
+	rec := invokeAuthed(s, req, s.handleTriggerNow)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp triggerNowResponse
+	readJSON(t, rec.Body, &resp)
+	if !resp.Result.Success {
+		t.Errorf("expected success=true; got %+v", resp.Result)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
 func TestTriggerNowSuccessClosesActiveEvent(t *testing.T) {
 	// Same as above but with one active event that should be closed
 	// with reason=probe_cleared on success.

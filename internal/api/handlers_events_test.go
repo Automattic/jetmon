@@ -86,6 +86,54 @@ func TestListSiteEventsAppliesActiveFilter(t *testing.T) {
 	}
 }
 
+func TestListSiteEventsWithGatewayTenantRejectsUnmappedSite(t *testing.T) {
+	s, mock, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	mock.ExpectQuery(siteTenantCheckSQL).
+		WithArgs("tenant-a", int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"1"}))
+
+	req := httptest.NewRequest("GET", "/api/v1/sites/42/events", nil)
+	req.SetPathValue("id", "42")
+	req = setGatewayTenantCtx(req, key, "tenant-a")
+	rec := invokeAuthed(s, req, s.handleListSiteEvents)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+	if got := readErrorBody(t, rec.Body).Code; got != "site_not_found" {
+		t.Fatalf("code = %q, want site_not_found", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+func TestListSiteEventsWithGatewayTenantAllowsMappedSite(t *testing.T) {
+	s, mock, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	mock.ExpectQuery(siteTenantCheckSQL).
+		WithArgs("tenant-a", int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
+	mock.ExpectQuery(eventsBaseSQL+` ORDER BY id DESC LIMIT ?`).
+		WithArgs(int64(42), 51).
+		WillReturnRows(sqlmock.NewRows(columnsEvent))
+
+	req := httptest.NewRequest("GET", "/api/v1/sites/42/events", nil)
+	req.SetPathValue("id", "42")
+	req = setGatewayTenantCtx(req, key, "tenant-a")
+	rec := invokeAuthed(s, req, s.handleListSiteEvents)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
 func TestListSiteEventsRejectsBadActive(t *testing.T) {
 	s, _, key, cleanup := newTestServer(t)
 	defer cleanup()
@@ -266,6 +314,65 @@ func TestListTransitionsHappyPath(t *testing.T) {
 	readJSON(t, rec.Body, &resp)
 	if len(resp.Data) != 1 || resp.Data[0].Reason != "opened" {
 		t.Errorf("transitions = %+v, want one with reason=opened", resp.Data)
+	}
+}
+
+func TestListTransitionsWithGatewayTenantRejectsUnmappedEventSite(t *testing.T) {
+	s, mock, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	mock.ExpectQuery(`SELECT blog_id FROM jetmon_events WHERE id = ?`).
+		WithArgs(int64(7)).
+		WillReturnRows(sqlmock.NewRows([]string{"blog_id"}).AddRow(int64(42)))
+	mock.ExpectQuery(siteTenantCheckSQL).
+		WithArgs("tenant-a", int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"1"}))
+
+	req := httptest.NewRequest("GET", "/api/v1/sites/42/events/7/transitions", nil)
+	req.SetPathValue("id", "42")
+	req.SetPathValue("event_id", "7")
+	req = setGatewayTenantCtx(req, key, "tenant-a")
+	rec := invokeAuthed(s, req, s.handleListTransitions)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+	if got := readErrorBody(t, rec.Body).Code; got != "event_not_found" {
+		t.Fatalf("code = %q, want event_not_found", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+func TestListTransitionsWithGatewayTenantAllowsMappedEventSite(t *testing.T) {
+	s, mock, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	mock.ExpectQuery(`SELECT blog_id FROM jetmon_events WHERE id = ?`).
+		WithArgs(int64(7)).
+		WillReturnRows(sqlmock.NewRows([]string{"blog_id"}).AddRow(int64(42)))
+	mock.ExpectQuery(siteTenantCheckSQL).
+		WithArgs("tenant-a", int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
+
+	startedAt := time.Date(2026, 4, 25, 3, 0, 0, 0, time.UTC)
+	mock.ExpectQuery(transitionsListSQL+` ORDER BY id ASC LIMIT ?`).
+		WithArgs(int64(7), 101).
+		WillReturnRows(sqlmock.NewRows(columnsTransition).
+			AddRow(int64(1), int64(7), nil, uint8(3), nil, "Seems Down", "opened", "host", []byte("null"), startedAt))
+
+	req := httptest.NewRequest("GET", "/api/v1/sites/42/events/7/transitions", nil)
+	req.SetPathValue("id", "42")
+	req.SetPathValue("event_id", "7")
+	req = setGatewayTenantCtx(req, key, "tenant-a")
+	rec := invokeAuthed(s, req, s.handleListTransitions)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
 	}
 }
 
