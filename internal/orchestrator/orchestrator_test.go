@@ -337,6 +337,7 @@ func stubOrchestratorDeps() func() {
 	origDBUpdateSSLExpiry := dbUpdateSSLExpiry
 	origNotify := wpcomNotifyFunc
 	origVeriflierCheck := veriflierCheckFunc
+	origMetricsClient := metricsClientFunc
 
 	nowFunc = time.Now
 	dbUpdateSiteStatus = func(context.Context, int64, int, time.Time) error { return nil }
@@ -360,6 +361,7 @@ func stubOrchestratorDeps() func() {
 		dbUpdateSSLExpiry = origDBUpdateSSLExpiry
 		wpcomNotifyFunc = origNotify
 		veriflierCheckFunc = origVeriflierCheck
+		metricsClientFunc = origMetricsClient
 	}
 }
 
@@ -949,4 +951,195 @@ func TestHandleFailureEscalatesAfterThreshold(t *testing.T) {
 	if !escalated {
 		t.Fatal("expected escalation to verifliers after NumOfChecks failures")
 	}
+}
+
+func TestHandleFailureEmitsSeemsDownMetrics(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig(t)
+
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+
+	firstFailureAt := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC)
+	nowFunc = func() time.Time { return firstFailureAt.Add(2 * time.Second) }
+
+	res := checkerResultFailure(42)
+	res.Timestamp = firstFailureAt
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local-host",
+		ctx:      context.Background(),
+	}
+	o.handleFailure(db.Site{BlogID: 42, MonitorURL: "https://example.com", SiteStatus: statusRunning}, res)
+
+	if got := rec.counter("detection.seems_down.open.count"); got != 1 {
+		t.Fatalf("seems-down open counter = %d, want 1", got)
+	}
+	if got := rec.timingCount("detection.first_failure_to_seems_down.time"); got != 1 {
+		t.Fatalf("first failure timing count = %d, want 1", got)
+	}
+}
+
+func TestEscalateToVerifliersEmitsConfirmedMetrics(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+
+	cfg := setTestConfig(t)
+	cfg.PeerOfflineLimit = 1
+
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+
+	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error { return nil }
+	dbUpdateLastAlertSent = func(context.Context, int64, time.Time) error { return nil }
+	veriflierCheckFunc = func(c *veriflier.VeriflierClient, _ context.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
+		return &veriflier.CheckResult{
+			BlogID:    req.BlogID,
+			Host:      c.Addr(),
+			Success:   false,
+			HTTPCode:  500,
+			RequestID: req.RequestID,
+		}, nil
+	}
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		ctx:      context.Background(),
+		hostname: "local-host",
+		veriflierClients: []*veriflier.VeriflierClient{
+			veriflier.NewVeriflierClient("v1", ""),
+		},
+	}
+
+	fail := checkerResultFailure(321)
+	o.retries.record(fail)
+	entry := o.retries.get(321)
+	o.escalateToVerifliers(db.Site{BlogID: 321, MonitorURL: "https://example.com", SiteStatus: statusRunning}, entry)
+
+	for stat, want := range map[string]int{
+		"detection.verifier.escalation.count": 1,
+		"verifier.rpc.success.count":          1,
+		"verifier.vote.confirm_down.count":    1,
+		"detection.verifier.quorum_met.count": 1,
+		"detection.down.confirmed.count":      1,
+	} {
+		if got := rec.counter(stat); got != want {
+			t.Fatalf("%s = %d, want %d", stat, got, want)
+		}
+	}
+	for _, stat := range []string{
+		"detection.first_failure_to_verification.time",
+		"verifier.rpc.duration",
+		"detection.seems_down_to_down.time",
+	} {
+		if got := rec.timingCount(stat); got != 1 {
+			t.Fatalf("%s timing count = %d, want 1", stat, got)
+		}
+	}
+}
+
+func TestEscalateToVerifliersEmitsFalseAlarmMetrics(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+
+	cfg := setTestConfig(t)
+	cfg.PeerOfflineLimit = 1
+
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+
+	dbRecordFalsePositive = func(int64, int, int, int64) error { return nil }
+	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error {
+		t.Fatal("notification should not be sent for false alarm")
+		return nil
+	}
+	veriflierCheckFunc = func(c *veriflier.VeriflierClient, _ context.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
+		return &veriflier.CheckResult{
+			BlogID:    req.BlogID,
+			Host:      c.Addr(),
+			Success:   true,
+			HTTPCode:  200,
+			RequestID: req.RequestID,
+		}, nil
+	}
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		ctx:      context.Background(),
+		hostname: "local-host",
+		veriflierClients: []*veriflier.VeriflierClient{
+			veriflier.NewVeriflierClient("v1", ""),
+		},
+	}
+
+	fail := checkerResultFailure(654)
+	o.retries.record(fail)
+	entry := o.retries.get(654)
+	o.escalateToVerifliers(db.Site{BlogID: 654, MonitorURL: "https://example.com", SiteStatus: statusRunning}, entry)
+
+	for stat, want := range map[string]int{
+		"detection.verifier.escalation.count":  1,
+		"verifier.rpc.success.count":           1,
+		"verifier.vote.disagree.count":         1,
+		"detection.verifier.false_alarm.count": 1,
+	} {
+		if got := rec.counter(stat); got != want {
+			t.Fatalf("%s = %d, want %d", stat, got, want)
+		}
+	}
+	if got := rec.timingCount("detection.seems_down_to_false_alarm.time"); got != 1 {
+		t.Fatalf("false alarm timing count = %d, want 1", got)
+	}
+}
+
+type recordingMetrics struct {
+	mu       sync.Mutex
+	counters map[string]int
+	gauges   map[string]int
+	timings  map[string][]time.Duration
+}
+
+func newRecordingMetrics() *recordingMetrics {
+	return &recordingMetrics{
+		counters: make(map[string]int),
+		gauges:   make(map[string]int),
+		timings:  make(map[string][]time.Duration),
+	}
+}
+
+func (r *recordingMetrics) Increment(stat string, value int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.counters[stat] += value
+}
+
+func (r *recordingMetrics) Gauge(stat string, value int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.gauges[stat] = value
+}
+
+func (r *recordingMetrics) Timing(stat string, d time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.timings[stat] = append(r.timings[stat], d)
+}
+
+func (r *recordingMetrics) EmitMemStats() {}
+
+func (r *recordingMetrics) counter(stat string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.counters[stat]
+}
+
+func (r *recordingMetrics) timingCount(stat string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.timings[stat])
 }

@@ -61,9 +61,22 @@ var (
 	veriflierCheckFunc    = func(c *veriflier.VeriflierClient, ctx stdctx.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
 		return c.Check(ctx, req)
 	}
+	metricsClientFunc = func() metricsClient {
+		if m := metrics.Global(); m != nil {
+			return m
+		}
+		return nil
+	}
 	wpcomNotifyFunc     = func(c *wpcom.Client, n wpcom.Notification) error { return c.Notify(n) }
 	currentMemoryMBFunc = currentMemoryMB
 )
+
+type metricsClient interface {
+	Increment(stat string, value int)
+	Gauge(stat string, value int)
+	Timing(stat string, d time.Duration)
+	EmitMemStats()
+}
 
 // Orchestrator drives the main check loop.
 type Orchestrator struct {
@@ -259,7 +272,7 @@ process:
 
 	// Emit metrics and update stats files.
 	roundDuration := time.Since(o.roundStart)
-	m := metrics.Global()
+	m := metricsClientFunc()
 	if m != nil {
 		m.Timing("round.complete.time", roundDuration)
 		m.Gauge("worker.queue.active", o.pool.ActiveCount())
@@ -340,6 +353,10 @@ func (o *Orchestrator) handleRecovery(site db.Site, res checker.Result) {
 	if site.SiteStatus != statusRunning {
 		changeTime := nowFunc().UTC()
 		log.Printf("orchestrator: blog_id=%d recovered", site.BlogID)
+		if entry != nil && site.SiteStatus == statusDown {
+			emitCounter("detection.probe_cleared.count", 1)
+			emitTimingSince("detection.seems_down_to_probe_cleared.time", entry.firstFailAt, changeTime)
+		}
 
 		// Close the open event and project site_status back to running in the
 		// same transaction. The resolution reason depends on whether the event
@@ -375,6 +392,10 @@ func (o *Orchestrator) handleFailure(site db.Site, res checker.Result) {
 			log.Printf("orchestrator: open seems-down event blog_id=%d: %v", site.BlogID, err)
 		} else {
 			entry.eventID = id
+			if entry.failCount == 1 {
+				emitCounter("detection.seems_down.open.count", 1)
+				emitTimingSince("detection.first_failure_to_seems_down.time", entry.firstFailAt, nowFunc().UTC())
+			}
 		}
 	}
 
@@ -404,7 +425,10 @@ func (o *Orchestrator) handleFailure(site db.Site, res checker.Result) {
 
 func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 	clients := o.veriflierSnapshot()
+	emitCounter("detection.verifier.escalation.count", 1)
+	emitTimingSince("detection.first_failure_to_verification.time", entry.firstFailAt, nowFunc().UTC())
 	if len(clients) == 0 {
+		emitCounter("detection.verifier.no_clients.count", 1)
 		o.confirmDown(site, entry, nil)
 		return
 	}
@@ -441,17 +465,19 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 	defer rpcCancel()
 
 	type vResult struct {
-		host string
-		res  *veriflier.CheckResult
-		err  error
+		host     string
+		duration time.Duration
+		res      *veriflier.CheckResult
+		err      error
 	}
 	ch := make(chan vResult, len(clients))
 
 	for _, client := range clients {
 		c := client
 		go func() {
+			start := nowFunc()
 			res, err := veriflierCheckFunc(c, rpcCtx, req)
-			ch <- vResult{host: c.Addr(), res: res, err: err}
+			ch <- vResult{host: c.Addr(), duration: nowFunc().Sub(start), res: res, err: err}
 		}()
 	}
 
@@ -461,10 +487,13 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 
 	for range clients {
 		vr := <-ch
+		emitTiming("verifier.rpc.duration", vr.duration)
 		if vr.err != nil {
+			emitCounter("verifier.rpc.error.count", 1)
 			log.Printf("orchestrator: veriflier %s error: %v", vr.host, vr.err)
 			continue
 		}
+		emitCounter("verifier.rpc.success.count", 1)
 		healthyVerifliers++
 		// Verifier reply is operational telemetry — recorded under
 		// EventVeriflierSent with the response in metadata. The site-state
@@ -486,7 +515,10 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 		})
 		vResults = append(vResults, *vr.res)
 		if !vr.res.Success {
+			emitCounter("verifier.vote.confirm_down.count", 1)
 			confirmations++
+		} else {
+			emitCounter("verifier.vote.disagree.count", 1)
 		}
 	}
 
@@ -498,13 +530,19 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 	if quorum < 1 {
 		quorum = 1
 	}
+	emitGauge("detection.verifier.healthy.count", healthyVerifliers)
+	emitGauge("detection.verifier.confirmations.count", confirmations)
+	emitGauge("detection.verifier.quorum.count", quorum)
 
 	if confirmations >= quorum {
+		emitCounter("detection.verifier.quorum_met.count", 1)
 		o.confirmDown(site, entry, vResults)
 	} else {
 		// Verifliers did not confirm — false positive. Close the Seems Down
 		// event with reason=false_alarm and reset site_status in the same tx.
 		log.Printf("orchestrator: blog_id=%d verifliers did not confirm down (%d/%d)", site.BlogID, confirmations, quorum)
+		emitCounter("detection.verifier.false_alarm.count", 1)
+		emitTimingSince("detection.seems_down_to_false_alarm.time", entry.firstFailAt, nowFunc().UTC())
 		_ = dbRecordFalsePositive(site.BlogID, entry.lastResult.HTTPCode, entry.lastResult.ErrorCode,
 			entry.lastResult.RTT.Milliseconds())
 
@@ -528,6 +566,8 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 func (o *Orchestrator) confirmDown(site db.Site, entry *retryEntry, vResults []veriflier.CheckResult) {
 	newStatus := statusConfirmedDown
 	changeTime := nowFunc().UTC()
+	emitCounter("detection.down.confirmed.count", 1)
+	emitTimingSince("detection.seems_down_to_down.time", entry.firstFailAt, changeTime)
 
 	log.Printf("orchestrator: blog_id=%d confirmed down", site.BlogID)
 
@@ -777,6 +817,34 @@ func (o *Orchestrator) auditLog(e audit.Entry) {
 	if err := audit.Log(o.ctx, e); err != nil {
 		log.Printf("audit: blog_id=%d event=%s: %v", e.BlogID, e.EventType, err)
 	}
+}
+
+func emitCounter(stat string, value int) {
+	if m := metricsClientFunc(); m != nil {
+		m.Increment(stat, value)
+	}
+}
+
+func emitGauge(stat string, value int) {
+	if m := metricsClientFunc(); m != nil {
+		m.Gauge(stat, value)
+	}
+}
+
+func emitTiming(stat string, d time.Duration) {
+	if d < 0 {
+		return
+	}
+	if m := metricsClientFunc(); m != nil {
+		m.Timing(stat, d)
+	}
+}
+
+func emitTimingSince(stat string, start, end time.Time) {
+	if start.IsZero() || end.IsZero() {
+		return
+	}
+	emitTiming(stat, end.Sub(start))
 }
 
 // openSeemsDown opens (or re-detects) a Seems Down event for an HTTP-failing

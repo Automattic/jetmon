@@ -516,6 +516,11 @@ Metrics are emitted with prefix `com.jetpack.jetmon.<hostname>`. The Graphite/Gr
 - Round completion time
 - WPCOM API success and error rates
 - Veriflier response times
+- Detection flow timing: first failure → Seems Down, first failure →
+  Veriflier escalation, Seems Down → Down, Seems Down → false alarm, and
+  Seems Down → probe-cleared recovery
+- Veriflier decision counters: escalations, RPC success/error, confirm/disagree
+  votes, quorum-met confirmations, and false alarms
 - Memory usage
 
 StatsD is the primary metrics transport. For integration with external systems, expose the Graphite/StatsD data via your existing metrics pipeline.
