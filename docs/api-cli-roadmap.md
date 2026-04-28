@@ -22,7 +22,7 @@ but it should not become a generic `curl` clone.
 ## P1 - Typed Resource Commands
 
 - [x] Add `sites list|get|create|update|delete|pause|resume|trigger-now`.
-- [ ] Add `events list|get|transitions|close`.
+- [x] Add `events list|get|transitions|close`.
 - [ ] Add `webhooks list|get|create|update|delete|rotate-secret|deliveries|retry`.
 - [ ] Add `alert-contacts list|get|create|update|delete|test|deliveries|retry`.
 - [ ] Keep typed command payloads close to the OpenAPI component schemas or shared
@@ -101,3 +101,7 @@ but it should not become a generic `curl` clone.
   `list|get|create|update|delete|pause|resume|trigger-now` commands with
   query flags, typed create/update payload builders, idempotency support for
   POST actions, and focused helper tests.
+- [x] 2026-04-28: Added typed `jetmon2 api events`
+  `list|get|transitions|close` commands with site-scoped list/transition/close
+  paths, direct or site-scoped event lookup, close payload flags, idempotency
+  support, and focused path/body tests.
