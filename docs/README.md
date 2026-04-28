@@ -17,5 +17,6 @@ accepted architecture decisions.
 
 | Document | Purpose |
 |---|---|
+| [`jetmon-deliverer-rollout.md`](jetmon-deliverer-rollout.md) | Operational rollout policy for moving outbound dispatch from embedded `jetmon2` workers to standalone `jetmon-deliverer`. |
 | [`outbound-credential-encryption-plan.md`](outbound-credential-encryption-plan.md) | Migration plan for encrypting webhook secrets and alert-contact destination credentials after the current plaintext v2 model. |
 | [`v3-probe-agent-architecture-options.md`](v3-probe-agent-architecture-options.md) | Post-v2 architecture options for evolving from main servers plus Verifliers toward a probe-agent architecture. |

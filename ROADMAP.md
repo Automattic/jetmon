@@ -43,8 +43,10 @@ migration and the operating data needed to make larger architecture decisions.
   it.** Move webhook delivery, alert-contact delivery, and eventually WPCOM
   notification dispatch behind one outbound-delivery binary. Initial shared
   worker wiring, a standalone `jetmon-deliverer` entry point, and
-  transactional row claims exist; the remaining production cutover work is
-  service packaging and rollout policy.
+  transactional row claims exist. The rollout policy is captured in
+  [`docs/jetmon-deliverer-rollout.md`](docs/jetmon-deliverer-rollout.md);
+  the remaining production cutover work is service packaging in the deployment
+  system.
 - **Unify webhook and alerting dispatch plumbing after production evidence.**
   Keep the packages separate until there are two proven implementations and a
   third transport path via WPCOM migration, then factor the shared retry,
