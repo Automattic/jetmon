@@ -29,13 +29,51 @@ type ctxKey int
 const (
 	ctxKeyRequestID ctxKey = iota
 	ctxKeyAPIKey
+	ctxKeyGatewayContext
 )
+
+const (
+	gatewayConsumerName      = "gateway"
+	headerTenantID           = "X-Jetmon-Tenant-ID"
+	headerActorID            = "X-Jetmon-Actor-ID"
+	headerPublicScopes       = "X-Jetmon-Public-Scopes"
+	headerGatewayRequestID   = "X-Jetmon-Gateway-Request-ID"
+	headerGatewayPlan        = "X-Jetmon-Plan"
+	errForbiddenGatewayCtx   = "forbidden_gateway_context"
+	errInvalidGatewayContext = "invalid_gateway_context"
+)
+
+// gatewayContext is the trusted customer context asserted by the public API
+// gateway after it has authenticated and authorized the caller.
+type gatewayContext struct {
+	TenantID         string
+	ActorID          string
+	PublicScopes     []string
+	GatewayRequestID string
+	Plan             string
+}
 
 // keyFromRequest returns the authenticated key for r, or nil if the request
 // hasn't been through the auth middleware.
 func keyFromRequest(r *http.Request) *apikeys.Key {
 	k, _ := r.Context().Value(ctxKeyAPIKey).(*apikeys.Key)
 	return k
+}
+
+func gatewayContextFromRequest(r *http.Request) (*gatewayContext, bool) {
+	gw, ok := r.Context().Value(ctxKeyGatewayContext).(*gatewayContext)
+	if !ok || gw == nil {
+		return nil, false
+	}
+	return gw, true
+}
+
+func ownerTenantIDFromRequest(r *http.Request) (string, bool) {
+	gw, ok := gatewayContextFromRequest(r)
+	if !ok {
+		return "", false
+	}
+	return gw.TenantID, true
 }
 
 // requestIDFromRequest returns the request id assigned by the middleware.
@@ -97,6 +135,17 @@ func (s *Server) requireScope(required apikeys.Scope, h http.HandlerFunc) http.H
 		}
 
 		ctx = context.WithValue(ctx, ctxKeyAPIKey, key)
+		gw, status, code, msg := parseGatewayContext(r, key)
+		if status != 0 {
+			req = r.WithContext(ctx)
+			writeError(w, req, status, code, msg)
+			s.audit(reqID, key, req, status, time.Time{}, code)
+			return
+		}
+		if gw != nil {
+			ctx = context.WithValue(ctx, ctxKeyGatewayContext, gw)
+		}
+		req = r.WithContext(ctx)
 		started := time.Now()
 
 		// We wrap the response writer so we can capture the final status code
@@ -104,10 +153,58 @@ func (s *Server) requireScope(required apikeys.Scope, h http.HandlerFunc) http.H
 		// explicitly (Go's http.ResponseWriter implicitly flushes 200 on first
 		// body write).
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-		h(rec, r.WithContext(ctx))
+		h(rec, req)
 
 		s.audit(reqID, key, req, rec.status, started, "")
 	}
+}
+
+func parseGatewayContext(r *http.Request, key *apikeys.Key) (*gatewayContext, int, string, string) {
+	hasContext := false
+	for _, h := range []string{
+		headerTenantID,
+		headerActorID,
+		headerPublicScopes,
+		headerGatewayRequestID,
+		headerGatewayPlan,
+	} {
+		if r.Header.Get(h) != "" {
+			hasContext = true
+			break
+		}
+	}
+	if !hasContext {
+		return nil, 0, "", ""
+	}
+
+	if key == nil || key.ConsumerName != gatewayConsumerName {
+		return nil, http.StatusForbidden, errForbiddenGatewayCtx,
+			"gateway tenant context headers are only honored for the gateway API consumer"
+	}
+
+	tenantID := strings.TrimSpace(r.Header.Get(headerTenantID))
+	if tenantID == "" {
+		return nil, http.StatusBadRequest, errInvalidGatewayContext,
+			headerTenantID + " is required when gateway context headers are present"
+	}
+	gatewayRequestID := strings.TrimSpace(r.Header.Get(headerGatewayRequestID))
+	if gatewayRequestID == "" {
+		return nil, http.StatusBadRequest, errInvalidGatewayContext,
+			headerGatewayRequestID + " is required when gateway context headers are present"
+	}
+	publicScopes := strings.Fields(r.Header.Get(headerPublicScopes))
+	if len(publicScopes) == 0 {
+		return nil, http.StatusBadRequest, errInvalidGatewayContext,
+			headerPublicScopes + " is required when gateway context headers are present"
+	}
+
+	return &gatewayContext{
+		TenantID:         tenantID,
+		ActorID:          strings.TrimSpace(r.Header.Get(headerActorID)),
+		PublicScopes:     publicScopes,
+		GatewayRequestID: gatewayRequestID,
+		Plan:             strings.TrimSpace(r.Header.Get(headerGatewayPlan)),
+	}, 0, "", ""
 }
 
 // statusRecorder wraps an http.ResponseWriter to expose the final status code
@@ -181,7 +278,7 @@ func (s *Server) audit(reqID string, key *apikeys.Key, r *http.Request, status i
 		durationMs = time.Since(started).Milliseconds()
 	}
 
-	meta, _ := json.Marshal(map[string]any{
+	metaMap := map[string]any{
 		"key_id":      keyID,
 		"consumer":    consumerName,
 		"method":      r.Method,
@@ -191,7 +288,15 @@ func (s *Server) audit(reqID string, key *apikeys.Key, r *http.Request, status i
 		"request_id":  reqID,
 		"remote_addr": r.RemoteAddr,
 		"note":        note,
-	})
+	}
+	if gw, ok := gatewayContextFromRequest(r); ok {
+		metaMap["tenant_id"] = gw.TenantID
+		metaMap["actor_id"] = gw.ActorID
+		metaMap["public_scopes"] = gw.PublicScopes
+		metaMap["gateway_request_id"] = gw.GatewayRequestID
+		metaMap["plan"] = gw.Plan
+	}
+	meta, _ := json.Marshal(metaMap)
 
 	// Derive the audit context from Background, not r.Context(): a client
 	// disconnect must not silence the audit row, since audit is for the

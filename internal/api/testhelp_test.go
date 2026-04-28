@@ -69,6 +69,23 @@ func setAuthCtx(req *http.Request, key *apikeys.Key) *http.Request {
 	return req.WithContext(ctx)
 }
 
+// setGatewayTenantCtx attaches both an authenticated gateway key and the
+// gateway-derived tenant context that requireScope normally parses from
+// headers. Direct handler tests use this to bypass auth while still
+// exercising tenant-scoped repository calls.
+func setGatewayTenantCtx(req *http.Request, key *apikeys.Key, tenantID string) *http.Request {
+	gatewayKey := *key
+	gatewayKey.ConsumerName = gatewayConsumerName
+	ctx := context.WithValue(req.Context(), ctxKeyAPIKey, &gatewayKey)
+	ctx = context.WithValue(ctx, ctxKeyRequestID, "test-request-id")
+	ctx = context.WithValue(ctx, ctxKeyGatewayContext, &gatewayContext{
+		TenantID:         tenantID,
+		PublicScopes:     []string{"webhooks:write"},
+		GatewayRequestID: "gateway-request-id",
+	})
+	return req.WithContext(ctx)
+}
+
 // readJSON decodes the response body into the target struct.
 func readJSON(t *testing.T, body io.Reader, target any) {
 	t.Helper()
@@ -124,3 +141,7 @@ var columnsTransition = []string{
 	"id", "event_id", "severity_before", "severity_after",
 	"state_before", "state_after", "reason", "source", "metadata", "changed_at",
 }
+
+const siteTenantCheckSQL = `SELECT 1 FROM jetmon_site_tenants WHERE tenant_id = ? AND blog_id = ? LIMIT 1`
+
+const insertSiteTenantTestSQL = ` INSERT INTO jetmon_site_tenants (tenant_id, blog_id, source) VALUES (?, ?, 'gateway') ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP`

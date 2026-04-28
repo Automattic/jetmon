@@ -1,6 +1,6 @@
 # Compiled binaries
 bin/
-jetmon2
+/jetmon2
 
 # Editor and OS files
 .DS_Store

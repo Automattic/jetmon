@@ -205,10 +205,11 @@ The internal API decisions are implemented in `internal/api/` and documented in
 `API.md`. A public/customer API is a different contract and needs these
 decisions before direct exposure:
 
-**Tenant and ownership model.** Decide whether the gateway remains the sole
-tenant boundary or Jetmon stores tenant ownership directly on sites, webhooks,
-alert contacts, idempotency keys, and audit rows. Direct customer exposure
-requires every read/write to be tenant-scoped.
+**Tenant and ownership model.** The baseline gateway-to-Jetmon tenant contract
+is drafted in [`docs/public-api-gateway-tenant-contract.md`](docs/public-api-gateway-tenant-contract.md):
+the gateway remains the first tenant boundary, while Jetmon-side ownership
+columns become necessary for defense in depth or any direct public exposure.
+Direct customer exposure requires every read/write to be tenant-scoped.
 
 **Auth scopes.** The internal API uses coarse `read` / `write` / `admin`
 scopes. Public keys likely need granular scopes such as `sites:read`,
@@ -235,17 +236,20 @@ tests that fail when handler behavior drifts from the published schema.
 
 ### Public API work still to do
 
-- Define the gateway-to-Jetmon tenant contract and decide which tenant checks
-  live in the gateway versus Jetmon itself.
-- Add tenant ownership fields and filtered queries where Jetmon must enforce
-  ownership directly.
+- Backfill and reconcile `jetmon_site_tenants` from the gateway/customer source
+  of truth before customer traffic depends on Jetmon-side site enforcement.
+  Initial CSV import support exists via `jetmon2 site-tenants import`; remaining
+  work is agreeing on the gateway export contract and pruning/reconciliation
+  policy for mappings that disappear from the source of truth.
+- Add public-contract integration tests for route-level tenant success and
+  denial paths across sites, events, stats, trigger-now, webhooks, and alert
+  contacts.
 - Add customer-safe error and metadata redaction paths for every public route.
 - Promote the internal route-driven `GET /api/v1/openapi.json` contract into a
   public compatibility policy with deprecation rules and consumer-specific
   generator validation.
-- Add public-contract integration tests for auth, tenant isolation,
-  pagination, idempotency, redaction, webhook ownership, and trigger-now abuse
-  controls.
+- Add public-contract integration tests for auth, pagination, idempotency,
+  redaction, and trigger-now abuse controls.
 - Revisit response-time/SLA pre-aggregation before exposing high-volume public
   reporting queries.
 - Document the migration path for consumers that currently use direct MySQL or

@@ -145,6 +145,9 @@ func (s *Server) handleSiteUptime(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "invalid_window", werr.Error())
 		return
 	}
+	if !s.ensureSiteVisibleForRequest(w, r, siteID) {
+		return
+	}
 
 	// Verify the site exists. This guards against returning a 100% uptime
 	// answer for a nonexistent site, which would be confusing.
@@ -152,8 +155,7 @@ func (s *Server) handleSiteUptime(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusInternalServerError, "db_error", "site lookup failed: "+err.Error())
 		return
 	} else if !exists {
-		writeError(w, r, http.StatusNotFound, "site_not_found",
-			fmt.Sprintf("Site %d does not exist", siteID))
+		writeSiteNotFound(w, r, siteID)
 		return
 	}
 
@@ -382,6 +384,9 @@ func (s *Server) parseStatsRequest(w http.ResponseWriter, r *http.Request) (site
 		writeError(w, r, http.StatusBadRequest, "invalid_window", werr.Error())
 		return 0, time.Time{}, time.Time{}, false
 	}
+	if !s.ensureSiteVisibleForRequest(w, r, siteID) {
+		return 0, time.Time{}, time.Time{}, false
+	}
 	exists, err := s.siteExists(r.Context(), siteID)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, "db_error",
@@ -389,8 +394,7 @@ func (s *Server) parseStatsRequest(w http.ResponseWriter, r *http.Request) (site
 		return 0, time.Time{}, time.Time{}, false
 	}
 	if !exists {
-		writeError(w, r, http.StatusNotFound, "site_not_found",
-			fmt.Sprintf("Site %d does not exist", siteID))
+		writeSiteNotFound(w, r, siteID)
 		return 0, time.Time{}, time.Time{}, false
 	}
 	return siteID, from, to, true

@@ -232,6 +232,31 @@ func TestResponseTimeHappyPath(t *testing.T) {
 	}
 }
 
+func TestResponseTimeWithGatewayTenantChecksSiteOwnership(t *testing.T) {
+	s, mock, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	mock.ExpectQuery(siteTenantCheckSQL).
+		WithArgs("tenant-a", int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
+	mock.ExpectQuery(siteExistsSQL).WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
+	mock.ExpectQuery(rttSamplesSQL).
+		WillReturnRows(sqlmock.NewRows([]string{"rtt_ms"}).AddRow(int64(123)))
+
+	req := requestWithKey("GET", "/api/v1/sites/42/response-time", key)
+	req.SetPathValue("id", "42")
+	req = setGatewayTenantCtx(req, key, "tenant-a")
+	rec := invokeAuthed(s, req, s.handleSiteResponseTime)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
 func TestResponseTimeNoSamples(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()

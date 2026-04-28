@@ -59,6 +59,9 @@ func (s *Server) handleListSiteEvents(w http.ResponseWriter, r *http.Request) {
 			"site id must be a positive integer")
 		return
 	}
+	if !s.ensureSiteVisibleForRequest(w, r, siteID) {
+		return
+	}
 	s.listEvents(w, r, siteID)
 }
 
@@ -275,6 +278,16 @@ func (s *Server) respondEvent(w http.ResponseWriter, r *http.Request, eventID in
 			fmt.Sprintf("Event %d does not belong to site %d", eventID, *siteIDFilter))
 		return
 	}
+	visible, err := s.siteVisibleToRequest(ctx, r, ev.SiteID)
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, "db_error",
+			"site tenant lookup failed: "+err.Error())
+		return
+	}
+	if !visible {
+		writeEventNotFound(w, r, eventID)
+		return
+	}
 
 	transitions, err := s.queryTransitions(ctx, eventID)
 	if err != nil {
@@ -323,6 +336,16 @@ func (s *Server) handleListTransitions(w http.ResponseWriter, r *http.Request) {
 	if blogID != siteID {
 		writeError(w, r, http.StatusNotFound, "event_not_found",
 			fmt.Sprintf("Event %d does not belong to site %d", eventID, siteID))
+		return
+	}
+	visible, err := s.siteVisibleToRequest(r.Context(), r, blogID)
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, "db_error",
+			"site tenant lookup failed: "+err.Error())
+		return
+	}
+	if !visible {
+		writeEventNotFound(w, r, eventID)
 		return
 	}
 

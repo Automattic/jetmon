@@ -72,6 +72,9 @@ func (s *Server) handleListDeliveries(w http.ResponseWriter, r *http.Request) {
 			"webhook id must be a positive integer")
 		return
 	}
+	if !s.ensureWebhookOwnedForRequest(w, r, webhookID) {
+		return
+	}
 
 	q := r.URL.Query()
 	limit, err := parseLimit(q.Get("limit"), 50, 200)
@@ -143,6 +146,9 @@ func (s *Server) handleRetryDelivery(w http.ResponseWriter, r *http.Request) {
 			"delivery id must be a positive integer")
 		return
 	}
+	if !s.ensureWebhookOwnedForRequest(w, r, webhookID) {
+		return
+	}
 
 	// Cross-check: the delivery must belong to the named webhook. This
 	// matches the cross-site protection we use elsewhere — an explicit
@@ -179,4 +185,22 @@ func (s *Server) handleRetryDelivery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, toDeliveryResponse(d))
+}
+
+func (s *Server) ensureWebhookOwnedForRequest(w http.ResponseWriter, r *http.Request, id int64) bool {
+	tenantID, ok := ownerTenantIDFromRequest(r)
+	if !ok {
+		return true
+	}
+	if _, err := webhooks.GetForTenant(r.Context(), s.db, id, tenantID); err != nil {
+		if errors.Is(err, webhooks.ErrWebhookNotFound) {
+			writeError(w, r, http.StatusNotFound, "webhook_not_found",
+				fmt.Sprintf("Webhook %d does not exist", id))
+			return false
+		}
+		writeError(w, r, http.StatusInternalServerError, "db_error",
+			"webhook lookup failed: "+err.Error())
+		return false
+	}
+	return true
 }

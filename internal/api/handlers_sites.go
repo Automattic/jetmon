@@ -91,20 +91,41 @@ func (s *Server) handleListSites(w http.ResponseWriter, r *http.Request) {
 	// Build the query. Filter on monitor_active and on URL substring at the SQL
 	// level; state/severity filtering happens post-derivation since current
 	// state is derived from site_status (and later from active events).
-	args := []any{cursor}
+	tenantID, tenantScoped := ownerTenantIDFromRequest(r)
+	args := []any{}
 	sb := strings.Builder{}
-	sb.WriteString(`
+	if tenantScoped {
+		args = append(args, tenantID, cursor)
+		sb.WriteString(`
+		SELECT s.blog_id, s.blog_id AS public_id, s.monitor_url, s.monitor_active, s.site_status,
+		       s.last_checked_at, s.last_status_change, s.ssl_expiry_date, s.check_keyword,
+		       s.redirect_policy, s.maintenance_start, s.maintenance_end, s.alert_cooldown_minutes
+		  FROM jetpack_monitor_sites s
+		  JOIN jetmon_site_tenants st ON st.blog_id = s.blog_id AND st.tenant_id = ?
+		 WHERE s.blog_id > ?`)
+	} else {
+		args = append(args, cursor)
+		sb.WriteString(`
 		SELECT blog_id, blog_id AS public_id, monitor_url, monitor_active, site_status,
 		       last_checked_at, last_status_change, ssl_expiry_date, check_keyword,
 		       redirect_policy, maintenance_start, maintenance_end, alert_cooldown_minutes
 		  FROM jetpack_monitor_sites
 		 WHERE blog_id > ?`)
+	}
 
 	switch monitorActive {
 	case "true", "1":
-		sb.WriteString(" AND monitor_active = 1")
+		if tenantScoped {
+			sb.WriteString(" AND s.monitor_active = 1")
+		} else {
+			sb.WriteString(" AND monitor_active = 1")
+		}
 	case "false", "0":
-		sb.WriteString(" AND monitor_active = 0")
+		if tenantScoped {
+			sb.WriteString(" AND s.monitor_active = 0")
+		} else {
+			sb.WriteString(" AND monitor_active = 0")
+		}
 	case "":
 		// no filter
 	default:
@@ -113,10 +134,18 @@ func (s *Server) handleListSites(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if urlSubstr != "" {
-		sb.WriteString(" AND monitor_url LIKE ?")
+		if tenantScoped {
+			sb.WriteString(" AND s.monitor_url LIKE ?")
+		} else {
+			sb.WriteString(" AND monitor_url LIKE ?")
+		}
 		args = append(args, "%"+urlSubstr+"%")
 	}
-	sb.WriteString(" ORDER BY blog_id ASC LIMIT ?")
+	if tenantScoped {
+		sb.WriteString(" ORDER BY s.blog_id ASC LIMIT ?")
+	} else {
+		sb.WriteString(" ORDER BY blog_id ASC LIMIT ?")
+	}
 	// Fetch limit+1 so we know whether there's a next page without an extra count query.
 	args = append(args, limit+1)
 
@@ -185,6 +214,9 @@ func (s *Server) handleGetSite(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+	if !s.ensureSiteVisibleForRequest(w, r, id) {
+		return
+	}
 	row := s.db.QueryRowContext(ctx, `
 		SELECT blog_id, blog_id AS public_id, monitor_url, monitor_active, site_status,
 		       last_checked_at, last_status_change, ssl_expiry_date, check_keyword,
@@ -195,8 +227,7 @@ func (s *Server) handleGetSite(w http.ResponseWriter, r *http.Request) {
 	site, err := scanSiteRow(row)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			writeError(w, r, http.StatusNotFound, "site_not_found",
-				fmt.Sprintf("Site %d does not exist", id))
+			writeSiteNotFound(w, r, id)
 			return
 		}
 		writeError(w, r, http.StatusInternalServerError, "db_error",

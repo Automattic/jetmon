@@ -10,22 +10,26 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
-const insertWebhookSQL = ` INSERT INTO jetmon_webhooks (url, active, events, site_filter, state_filter, secret, secret_preview, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+const insertWebhookSQL = ` INSERT INTO jetmon_webhooks (url, active, owner_tenant_id, events, site_filter, state_filter, secret, secret_preview, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
-const selectWebhookOneSQL = ` SELECT id, url, active, events, site_filter, state_filter, secret_preview, created_by, created_at, updated_at FROM jetmon_webhooks WHERE id = ?`
+const selectWebhookOneSQL = ` SELECT id, url, active, owner_tenant_id, events, site_filter, state_filter, secret_preview, created_by, created_at, updated_at FROM jetmon_webhooks WHERE id = ?`
 
-const selectWebhookListSQL = ` SELECT id, url, active, events, site_filter, state_filter, secret_preview, created_by, created_at, updated_at FROM jetmon_webhooks ORDER BY id ASC`
+const selectWebhookOneForTenantSQL = selectWebhookOneSQL + ` AND owner_tenant_id = ?`
+
+const selectWebhookListSQL = ` SELECT id, url, active, owner_tenant_id, events, site_filter, state_filter, secret_preview, created_by, created_at, updated_at FROM jetmon_webhooks ORDER BY id ASC`
+
+const selectWebhookListForTenantSQL = ` SELECT id, url, active, owner_tenant_id, events, site_filter, state_filter, secret_preview, created_by, created_at, updated_at FROM jetmon_webhooks WHERE owner_tenant_id = ? ORDER BY id ASC`
 
 // columnsWebhook is the column set returned by webhook SELECT queries.
 var columnsWebhook = []string{
-	"id", "url", "active", "events", "site_filter", "state_filter",
+	"id", "url", "active", "owner_tenant_id", "events", "site_filter", "state_filter",
 	"secret_preview", "created_by", "created_at", "updated_at",
 }
 
 func makeWebhookRow(id int64, url string, active uint8) *sqlmock.Rows {
 	now := time.Now().UTC()
 	return sqlmock.NewRows(columnsWebhook).AddRow(
-		id, url, active, []byte(`["event.opened"]`),
+		id, url, active, nil, []byte(`["event.opened"]`),
 		[]byte(`{"site_ids":[]}`), []byte(`{"states":[]}`),
 		"abcd", "test-consumer", now, now,
 	)
@@ -38,6 +42,7 @@ func TestCreateWebhookHappyPath(t *testing.T) {
 	mock.ExpectExec(insertWebhookSQL).
 		WithArgs(
 			"https://example.com/hook", 1,
+			nil,
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 			sqlmock.AnyArg(), sqlmock.AnyArg(), "test-consumer",
 		).
@@ -60,6 +65,31 @@ func TestCreateWebhookHappyPath(t *testing.T) {
 	}
 	if resp.Secret == "" {
 		t.Error("expected raw secret in response")
+	}
+}
+
+func TestCreateWebhookWithGatewayTenantSetsOwner(t *testing.T) {
+	s, mock, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	mock.ExpectExec(insertWebhookSQL).
+		WithArgs(
+			"https://example.com/hook", 1,
+			"tenant-a",
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), gatewayConsumerName,
+		).
+		WillReturnResult(sqlmock.NewResult(7, 1))
+	mock.ExpectQuery(selectWebhookOneSQL).WithArgs(int64(7)).
+		WillReturnRows(makeWebhookRow(7, "https://example.com/hook", 1))
+
+	body := []byte(`{"url":"https://example.com/hook","events":["event.opened"]}`)
+	req := newPOSTWithBody("/api/v1/webhooks", body)
+	req = setGatewayTenantCtx(req, key, "tenant-a")
+	rec := invokeAuthed(s, req, s.handleCreateWebhook)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body=%s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -139,9 +169,9 @@ func TestListWebhooksHappyPath(t *testing.T) {
 
 	now := time.Now().UTC()
 	rows := sqlmock.NewRows(columnsWebhook).
-		AddRow(int64(1), "https://a.example/hook", uint8(1), []byte(`["event.opened"]`),
+		AddRow(int64(1), "https://a.example/hook", uint8(1), nil, []byte(`["event.opened"]`),
 			[]byte(`{"site_ids":[42]}`), []byte(`{"states":["Down"]}`), "aaaa", "test-consumer", now, now).
-		AddRow(int64(2), "https://b.example/hook", uint8(0), nil,
+		AddRow(int64(2), "https://b.example/hook", uint8(0), nil, nil,
 			nil, nil, "bbbb", "test-consumer", now, now)
 	mock.ExpectQuery(selectWebhookListSQL).WillReturnRows(rows)
 
@@ -168,6 +198,22 @@ func TestListWebhooksHappyPath(t *testing.T) {
 	}
 	if env.Data[1].Events == nil {
 		t.Fatal("nil events should serialize as an empty slice")
+	}
+}
+
+func TestListWebhooksWithGatewayTenantScopesRows(t *testing.T) {
+	s, mock, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	mock.ExpectQuery(selectWebhookListForTenantSQL).WithArgs("tenant-a").
+		WillReturnRows(makeWebhookRow(1, "https://a.example/hook", 1))
+
+	req := httptest.NewRequest("GET", "/api/v1/webhooks", nil)
+	req = setGatewayTenantCtx(req, key, "tenant-a")
+	rec := invokeAuthed(s, req, s.handleListWebhooks)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -210,6 +256,27 @@ func TestUpdateWebhookHappyPath(t *testing.T) {
 	}
 }
 
+func TestUpdateWebhookWithGatewayTenantScopesWrite(t *testing.T) {
+	s, mock, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	mock.ExpectExec(`UPDATE jetmon_webhooks SET active = ? WHERE id = ? AND owner_tenant_id = ?`).
+		WithArgs(0, int64(42), "tenant-a").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(selectWebhookOneForTenantSQL).WithArgs(int64(42), "tenant-a").
+		WillReturnRows(makeWebhookRow(42, "https://x.example.com", 0))
+
+	body := []byte(`{"active": false}`)
+	req := newPATCHWithBody("/api/v1/webhooks/42", body)
+	req.SetPathValue("id", "42")
+	req = setGatewayTenantCtx(req, key, "tenant-a")
+	rec := invokeAuthed(s, req, s.handleUpdateWebhook)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestDeleteWebhookHappyPath(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
@@ -221,6 +288,24 @@ func TestDeleteWebhookHappyPath(t *testing.T) {
 	req := httptest.NewRequest("DELETE", "/api/v1/webhooks/42", nil)
 	req.SetPathValue("id", "42")
 	req = setAuthCtx(req, key)
+	rec := invokeAuthed(s, req, s.handleDeleteWebhook)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rec.Code)
+	}
+}
+
+func TestDeleteWebhookWithGatewayTenantScopesWrite(t *testing.T) {
+	s, mock, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	mock.ExpectExec(`DELETE FROM jetmon_webhooks WHERE id = ? AND owner_tenant_id = ?`).
+		WithArgs(int64(42), "tenant-a").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	req := httptest.NewRequest("DELETE", "/api/v1/webhooks/42", nil)
+	req.SetPathValue("id", "42")
+	req = setGatewayTenantCtx(req, key, "tenant-a")
 	rec := invokeAuthed(s, req, s.handleDeleteWebhook)
 
 	if rec.Code != http.StatusNoContent {
@@ -268,6 +353,26 @@ func TestRotateWebhookSecretHappyPath(t *testing.T) {
 	readJSON(t, rec.Body, &resp)
 	if resp.Secret == "" {
 		t.Error("expected new raw secret in rotate response")
+	}
+}
+
+func TestRotateWebhookSecretWithGatewayTenantScopesWrite(t *testing.T) {
+	s, mock, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	mock.ExpectExec(`UPDATE jetmon_webhooks SET secret = ?, secret_preview = ? WHERE id = ? AND owner_tenant_id = ?`).
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), int64(42), "tenant-a").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(selectWebhookOneForTenantSQL).WithArgs(int64(42), "tenant-a").
+		WillReturnRows(makeWebhookRow(42, "https://x.example.com", 1))
+
+	req := newPOSTWithBody("/api/v1/webhooks/42/rotate-secret", nil)
+	req.SetPathValue("id", "42")
+	req = setGatewayTenantCtx(req, key, "tenant-a")
+	rec := invokeAuthed(s, req, s.handleRotateWebhookSecret)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
 }
 

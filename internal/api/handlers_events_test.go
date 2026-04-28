@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -135,6 +136,34 @@ func TestGetEventBySiteHappyPath(t *testing.T) {
 	}
 	if resp.TransitionCount != 1 {
 		t.Errorf("transition_count = %d, want 1", resp.TransitionCount)
+	}
+}
+
+func TestGetEventWithGatewayTenantRejectsUnmappedEventSite(t *testing.T) {
+	s, mock, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	startedAt := time.Date(2026, 4, 25, 3, 0, 0, 0, time.UTC)
+	mock.ExpectQuery(` SELECT id, blog_id, endpoint_id, check_type, discriminator, severity, state, started_at, ended_at, resolution_reason, cause_event_id, metadata FROM jetmon_events WHERE id = ?`).
+		WithArgs(int64(7)).
+		WillReturnRows(makeEventRow(7, 42, 4, "Down", startedAt, nil))
+	mock.ExpectQuery(siteTenantCheckSQL).
+		WithArgs("tenant-a", int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"1"}))
+
+	req := httptest.NewRequest("GET", "/api/v1/events/7", nil)
+	req.SetPathValue("event_id", "7")
+	req = setGatewayTenantCtx(req, key, "tenant-a")
+	rec := invokeAuthed(s, req, s.handleGetEvent)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+	if got := readErrorBody(t, rec.Body).Code; got != "event_not_found" {
+		t.Fatalf("code = %q, want event_not_found", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
 	}
 }
 

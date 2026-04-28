@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -96,13 +97,14 @@ func (s *Server) handleCreateAlertContact(w http.ResponseWriter, r *http.Request
 	}
 
 	in := alerting.CreateInput{
-		Label:       body.Label,
-		Active:      body.Active,
-		Transport:   alerting.Transport(body.Transport),
-		Destination: body.Destination,
-		SiteFilter:  body.SiteFilter,
-		MaxPerHour:  body.MaxPerHour,
-		CreatedBy:   consumerName(r),
+		Label:         body.Label,
+		Active:        body.Active,
+		OwnerTenantID: ownerTenantIDPtr(r),
+		Transport:     alerting.Transport(body.Transport),
+		Destination:   body.Destination,
+		SiteFilter:    body.SiteFilter,
+		MaxPerHour:    body.MaxPerHour,
+		CreatedBy:     consumerName(r),
 	}
 	if body.MinSeverity != nil {
 		sev, err := alerting.SeverityFromName(*body.MinSeverity)
@@ -124,7 +126,15 @@ func (s *Server) handleCreateAlertContact(w http.ResponseWriter, r *http.Request
 
 // handleListAlertContacts implements GET /api/v1/alert-contacts.
 func (s *Server) handleListAlertContacts(w http.ResponseWriter, r *http.Request) {
-	contacts, err := alerting.List(r.Context(), s.db)
+	var (
+		contacts []alerting.AlertContact
+		err      error
+	)
+	if tenantID, ok := ownerTenantIDFromRequest(r); ok {
+		contacts, err = alerting.ListForTenant(r.Context(), s.db, tenantID)
+	} else {
+		contacts, err = alerting.List(r.Context(), s.db)
+	}
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, "db_error",
 			"alert contact list failed: "+err.Error())
@@ -148,7 +158,7 @@ func (s *Server) handleGetAlertContact(w http.ResponseWriter, r *http.Request) {
 			"alert contact id must be a positive integer")
 		return
 	}
-	contact, err := alerting.Get(r.Context(), s.db, id)
+	contact, err := getAlertContactForRequest(r, s.db, id)
 	if err != nil {
 		if errors.Is(err, alerting.ErrContactNotFound) {
 			writeError(w, r, http.StatusNotFound, "alert_contact_not_found",
@@ -194,7 +204,12 @@ func (s *Server) handleUpdateAlertContact(w http.ResponseWriter, r *http.Request
 		in.MinSeverity = &sev
 	}
 
-	contact, err := alerting.Update(r.Context(), s.db, id, in)
+	var contact *alerting.AlertContact
+	if tenantID, ok := ownerTenantIDFromRequest(r); ok {
+		contact, err = alerting.UpdateForTenant(r.Context(), s.db, id, tenantID, in)
+	} else {
+		contact, err = alerting.Update(r.Context(), s.db, id, in)
+	}
 	if err != nil {
 		if errors.Is(err, alerting.ErrContactNotFound) {
 			writeError(w, r, http.StatusNotFound, "alert_contact_not_found",
@@ -216,7 +231,13 @@ func (s *Server) handleDeleteAlertContact(w http.ResponseWriter, r *http.Request
 			"alert contact id must be a positive integer")
 		return
 	}
-	if err := alerting.Delete(r.Context(), s.db, id); err != nil {
+	err = nil
+	if tenantID, ok := ownerTenantIDFromRequest(r); ok {
+		err = alerting.DeleteForTenant(r.Context(), s.db, id, tenantID)
+	} else {
+		err = alerting.Delete(r.Context(), s.db, id)
+	}
+	if err != nil {
 		if errors.Is(err, alerting.ErrContactNotFound) {
 			writeError(w, r, http.StatusNotFound, "alert_contact_not_found",
 				fmt.Sprintf("Alert contact %d does not exist", id))
@@ -247,7 +268,7 @@ func (s *Server) handleAlertContactTest(w http.ResponseWriter, r *http.Request) 
 			"alert contact id must be a positive integer")
 		return
 	}
-	contact, err := alerting.Get(r.Context(), s.db, id)
+	contact, err := getAlertContactForRequest(r, s.db, id)
 	if err != nil {
 		if errors.Is(err, alerting.ErrContactNotFound) {
 			writeError(w, r, http.StatusNotFound, "alert_contact_not_found",
@@ -265,8 +286,18 @@ func (s *Server) handleAlertContactTest(w http.ResponseWriter, r *http.Request) 
 			fmt.Sprintf("transport %q is not configured on this server", contact.Transport))
 		return
 	}
-	dest, err := alerting.LoadDestination(r.Context(), s.db, id)
+	var dest json.RawMessage
+	if tenantID, ok := ownerTenantIDFromRequest(r); ok {
+		dest, err = alerting.LoadDestinationForTenant(r.Context(), s.db, id, tenantID)
+	} else {
+		dest, err = alerting.LoadDestination(r.Context(), s.db, id)
+	}
 	if err != nil {
+		if errors.Is(err, alerting.ErrContactNotFound) {
+			writeError(w, r, http.StatusNotFound, "alert_contact_not_found",
+				fmt.Sprintf("Alert contact %d does not exist", id))
+			return
+		}
 		writeError(w, r, http.StatusInternalServerError, "db_error",
 			"alert contact destination load failed: "+err.Error())
 		return
@@ -341,4 +372,11 @@ func consumerName(r *http.Request) string {
 		return k.ConsumerName
 	}
 	return ""
+}
+
+func getAlertContactForRequest(r *http.Request, db *sql.DB, id int64) (*alerting.AlertContact, error) {
+	if tenantID, ok := ownerTenantIDFromRequest(r); ok {
+		return alerting.GetForTenant(r.Context(), db, id, tenantID)
+	}
+	return alerting.Get(r.Context(), db, id)
 }

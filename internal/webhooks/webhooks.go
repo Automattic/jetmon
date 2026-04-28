@@ -84,6 +84,7 @@ type Webhook struct {
 	ID            int64
 	URL           string
 	Active        bool
+	OwnerTenantID *string
 	Events        []string    // empty slice = match all
 	SiteFilter    SiteFilter  // empty = match all
 	StateFilter   StateFilter // empty = match all
@@ -128,12 +129,13 @@ func (w *Webhook) Matches(eventType string, siteID int64, state string) bool {
 // everything else has sensible defaults (Active=true, all filters empty =
 // match-all).
 type CreateInput struct {
-	URL         string
-	Active      *bool // nil → true
-	Events      []string
-	SiteFilter  SiteFilter
-	StateFilter StateFilter
-	CreatedBy   string
+	URL           string
+	Active        *bool // nil → true
+	OwnerTenantID *string
+	Events        []string
+	SiteFilter    SiteFilter
+	StateFilter   StateFilter
+	CreatedBy     string
 }
 
 // UpdateInput is a sparse patch. nil fields are unchanged. Empty slices
@@ -174,10 +176,10 @@ func Create(ctx context.Context, db *sql.DB, in CreateInput) (rawSecret string, 
 
 	res, err := db.ExecContext(ctx, `
 		INSERT INTO jetmon_webhooks
-			(url, active, events, site_filter, state_filter,
+			(url, active, owner_tenant_id, events, site_filter, state_filter,
 			 secret, secret_preview, created_by)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		in.URL, boolToTinyint(active), eventsJSON, siteFilterJSON, stateFilterJSON,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		in.URL, boolToTinyint(active), nullableString(in.OwnerTenantID), eventsJSON, siteFilterJSON, stateFilterJSON,
 		rawSecret, preview, in.CreatedBy,
 	)
 	if err != nil {
@@ -197,7 +199,27 @@ func Create(ctx context.Context, db *sql.DB, in CreateInput) (rawSecret string, 
 
 // Get returns a single webhook by id, or ErrWebhookNotFound.
 func Get(ctx context.Context, db *sql.DB, id int64) (*Webhook, error) {
-	row := db.QueryRowContext(ctx, selectWebhookSQL+" WHERE id = ?", id)
+	return get(ctx, db, id, "")
+}
+
+// GetForTenant returns a single webhook owned by ownerTenantID. It hides
+// cross-tenant rows behind ErrWebhookNotFound so future public callers don't
+// learn whether another tenant's webhook exists.
+func GetForTenant(ctx context.Context, db *sql.DB, id int64, ownerTenantID string) (*Webhook, error) {
+	if ownerTenantID == "" {
+		return nil, errors.New("webhooks: owner tenant id is required")
+	}
+	return get(ctx, db, id, ownerTenantID)
+}
+
+func get(ctx context.Context, db *sql.DB, id int64, ownerTenantID string) (*Webhook, error) {
+	q := selectWebhookSQL + " WHERE id = ?"
+	args := []any{id}
+	if ownerTenantID != "" {
+		q += " AND owner_tenant_id = ?"
+		args = append(args, ownerTenantID)
+	}
+	row := db.QueryRowContext(ctx, q, args...)
 	w, err := scanWebhookRow(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -212,7 +234,26 @@ func Get(ctx context.Context, db *sql.DB, id int64) (*Webhook, error) {
 // the number of registered consumers; we don't paginate today. If a future
 // deployment grows past hundreds of webhooks, add cursor pagination here.
 func List(ctx context.Context, db *sql.DB) ([]Webhook, error) {
-	rows, err := db.QueryContext(ctx, selectWebhookSQL+" ORDER BY id ASC")
+	return list(ctx, db, "")
+}
+
+// ListForTenant returns only webhooks owned by ownerTenantID.
+func ListForTenant(ctx context.Context, db *sql.DB, ownerTenantID string) ([]Webhook, error) {
+	if ownerTenantID == "" {
+		return nil, errors.New("webhooks: owner tenant id is required")
+	}
+	return list(ctx, db, ownerTenantID)
+}
+
+func list(ctx context.Context, db *sql.DB, ownerTenantID string) ([]Webhook, error) {
+	q := selectWebhookSQL
+	args := []any{}
+	if ownerTenantID != "" {
+		q += " WHERE owner_tenant_id = ?"
+		args = append(args, ownerTenantID)
+	}
+	q += " ORDER BY id ASC"
+	rows, err := db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("webhooks: list: %w", err)
 	}
@@ -251,6 +292,18 @@ func ListActive(ctx context.Context, db *sql.DB) ([]Webhook, error) {
 // left nil in UpdateInput are unchanged; an explicitly empty slice clears
 // the corresponding filter to "match all" semantics.
 func Update(ctx context.Context, db *sql.DB, id int64, in UpdateInput) (*Webhook, error) {
+	return update(ctx, db, id, "", in)
+}
+
+// UpdateForTenant updates a webhook only when it is owned by ownerTenantID.
+func UpdateForTenant(ctx context.Context, db *sql.DB, id int64, ownerTenantID string, in UpdateInput) (*Webhook, error) {
+	if ownerTenantID == "" {
+		return nil, errors.New("webhooks: owner tenant id is required")
+	}
+	return update(ctx, db, id, ownerTenantID, in)
+}
+
+func update(ctx context.Context, db *sql.DB, id int64, ownerTenantID string, in UpdateInput) (*Webhook, error) {
 	if in.Events != nil {
 		if err := validateEvents(*in.Events); err != nil {
 			return nil, err
@@ -285,7 +338,7 @@ func Update(ctx context.Context, db *sql.DB, id int64, in UpdateInput) (*Webhook
 
 	if len(clauses) == 0 {
 		// No-op patch — return current state.
-		return Get(ctx, db, id)
+		return get(ctx, db, id, ownerTenantID)
 	}
 
 	args = append(args, id)
@@ -297,10 +350,14 @@ func Update(ctx context.Context, db *sql.DB, id int64, in UpdateInput) (*Webhook
 		q += c
 	}
 	q += " WHERE id = ?"
+	if ownerTenantID != "" {
+		q += " AND owner_tenant_id = ?"
+		args = append(args, ownerTenantID)
+	}
 	if _, err := db.ExecContext(ctx, q, args...); err != nil {
 		return nil, fmt.Errorf("webhooks: update: %w", err)
 	}
-	return Get(ctx, db, id)
+	return get(ctx, db, id, ownerTenantID)
 }
 
 // Delete removes a webhook from jetmon_webhooks. Existing rows in
@@ -308,7 +365,25 @@ func Update(ctx context.Context, db *sql.DB, id int64, in UpdateInput) (*Webhook
 // for audit and manual retry. The dispatcher won't create new deliveries
 // for a deleted webhook because ListActive filters it out.
 func Delete(ctx context.Context, db *sql.DB, id int64) error {
-	res, err := db.ExecContext(ctx, "DELETE FROM jetmon_webhooks WHERE id = ?", id)
+	return deleteWebhook(ctx, db, id, "")
+}
+
+// DeleteForTenant removes a webhook only when it is owned by ownerTenantID.
+func DeleteForTenant(ctx context.Context, db *sql.DB, id int64, ownerTenantID string) error {
+	if ownerTenantID == "" {
+		return errors.New("webhooks: owner tenant id is required")
+	}
+	return deleteWebhook(ctx, db, id, ownerTenantID)
+}
+
+func deleteWebhook(ctx context.Context, db *sql.DB, id int64, ownerTenantID string) error {
+	q := "DELETE FROM jetmon_webhooks WHERE id = ?"
+	args := []any{id}
+	if ownerTenantID != "" {
+		q += " AND owner_tenant_id = ?"
+		args = append(args, ownerTenantID)
+	}
+	res, err := db.ExecContext(ctx, q, args...)
 	if err != nil {
 		return fmt.Errorf("webhooks: delete: %w", err)
 	}
@@ -325,14 +400,32 @@ func Delete(ctx context.Context, db *sql.DB, id int64) error {
 // rotation" for why this is the v1 behavior and how grace-period rotation
 // will be added later.
 func RotateSecret(ctx context.Context, db *sql.DB, id int64) (string, *Webhook, error) {
+	return rotateSecret(ctx, db, id, "")
+}
+
+// RotateSecretForTenant rotates a webhook secret only when it is owned by
+// ownerTenantID.
+func RotateSecretForTenant(ctx context.Context, db *sql.DB, id int64, ownerTenantID string) (string, *Webhook, error) {
+	if ownerTenantID == "" {
+		return "", nil, errors.New("webhooks: owner tenant id is required")
+	}
+	return rotateSecret(ctx, db, id, ownerTenantID)
+}
+
+func rotateSecret(ctx context.Context, db *sql.DB, id int64, ownerTenantID string) (string, *Webhook, error) {
 	rawSecret, err := GenerateSecret()
 	if err != nil {
 		return "", nil, err
 	}
 	preview := previewOf(rawSecret)
+	q := `UPDATE jetmon_webhooks SET secret = ?, secret_preview = ? WHERE id = ?`
+	args := []any{rawSecret, preview, id}
+	if ownerTenantID != "" {
+		q += " AND owner_tenant_id = ?"
+		args = append(args, ownerTenantID)
+	}
 	res, err := db.ExecContext(ctx,
-		`UPDATE jetmon_webhooks SET secret = ?, secret_preview = ? WHERE id = ?`,
-		rawSecret, preview, id)
+		q, args...)
 	if err != nil {
 		return "", nil, fmt.Errorf("webhooks: rotate-secret: %w", err)
 	}
@@ -340,7 +433,7 @@ func RotateSecret(ctx context.Context, db *sql.DB, id int64) (string, *Webhook, 
 	if n == 0 {
 		return "", nil, ErrWebhookNotFound
 	}
-	w, err := Get(ctx, db, id)
+	w, err := get(ctx, db, id, ownerTenantID)
 	if err != nil {
 		return "", nil, err
 	}
@@ -446,7 +539,7 @@ func previewOf(s string) string {
 // selectWebhookSQL is shared by Get / List / ListActive so the column
 // order matches scanWebhookRow.
 const selectWebhookSQL = `
-	SELECT id, url, active, events, site_filter, state_filter,
+	SELECT id, url, active, owner_tenant_id, events, site_filter, state_filter,
 	       secret_preview, created_by, created_at, updated_at
 	  FROM jetmon_webhooks`
 
@@ -458,17 +551,21 @@ func scanWebhookRow(s rowScanner) (*Webhook, error) {
 	var (
 		w               Webhook
 		active          uint8
+		ownerTenantID   sql.NullString
 		eventsJSON      sql.NullString
 		siteFilterJSON  sql.NullString
 		stateFilterJSON sql.NullString
 	)
 	if err := s.Scan(
-		&w.ID, &w.URL, &active, &eventsJSON, &siteFilterJSON, &stateFilterJSON,
+		&w.ID, &w.URL, &active, &ownerTenantID, &eventsJSON, &siteFilterJSON, &stateFilterJSON,
 		&w.SecretPreview, &w.CreatedBy, &w.CreatedAt, &w.UpdatedAt,
 	); err != nil {
 		return nil, err
 	}
 	w.Active = active == 1
+	if ownerTenantID.Valid {
+		w.OwnerTenantID = &ownerTenantID.String
+	}
 	if eventsJSON.Valid && eventsJSON.String != "" {
 		_ = json.Unmarshal([]byte(eventsJSON.String), &w.Events)
 	}
@@ -486,6 +583,13 @@ func boolToTinyint(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+func nullableString(s *string) any {
+	if s == nil {
+		return nil
+	}
+	return *s
 }
 
 func contains(haystack []string, needle string) bool {

@@ -2,7 +2,17 @@
 
 This document is the reference for Jetmon 2's internal REST API and the design notes behind it. The API server, Bearer-token auth, site/event/SLA endpoints, webhooks, alert contacts, idempotency handling, and delivery retry surfaces are implemented in `internal/api/`, `internal/apikeys/`, `internal/webhooks/`, and `internal/alerting/`. Sections that describe future expansion or deferred behavior call that out explicitly.
 
-**Audience: internal systems only.** Jetmon does not expose this API to end customers directly. A separate gateway service handles all customer-facing access — authentication, tenant isolation, customer rate limiting, plan-based feature gating, public error vocabulary, etc. — and calls Jetmon over this internal interface. Other internal services (operator dashboard, alerting workers, batch reporting jobs, the gateway itself) are the only direct callers.
+**Audience: internal systems only.** Jetmon does not expose this API to end customers directly. A separate gateway service handles all customer-facing access — authentication, tenant isolation, customer rate limiting, plan-based feature gating, public error vocabulary, etc. — and calls Jetmon over this internal interface. Other internal services (operator dashboard, alerting workers, batch reporting jobs, the gateway itself) are the only direct callers. The gateway/tenant boundary and remaining public-exposure prerequisites are documented in [`docs/public-api-gateway-tenant-contract.md`](docs/public-api-gateway-tenant-contract.md).
+
+**Gateway tenant context.** Requests from the internal consumer named `gateway`
+may include `X-Jetmon-Tenant-ID`, `X-Jetmon-Public-Scopes`, and
+`X-Jetmon-Gateway-Request-ID` (plus optional actor/plan headers). Jetmon
+rejects those headers from any other consumer. When accepted, the context is
+recorded in API audit metadata and used to owner-scope webhook and alert-contact
+CRUD, delivery history, manual delivery retry, and alert-contact send-test
+routes. Site, event, SLA/stat, and trigger-now routes are scoped through the
+`jetmon_site_tenants` mapping table. Normal internal callers that omit these
+headers keep the unscoped operator behavior described below.
 
 This shapes several design choices: authentication is per-consumer rather than per-customer, scopes are coarse rather than granular, error messages are verbose rather than guarded, and key management is an ops-only concern rather than a self-service feature. The trust boundary is "is this a known internal system?", not "is this user allowed to see this site?".
 
@@ -254,7 +264,7 @@ Higher severity = worse. Severity climbs independently of state — a worsening 
 
 ## Endpoints
 
-The full surface is grouped into five capability families, matching `ROADMAP.md`. The implemented route table lives in `internal/api/api.go`; design-only additions and deferred behavior are called out where they appear.
+The full surface is grouped into five capability families, matching `ROADMAP.md`. The implemented route table lives in `internal/api/routes.go`; design-only additions and deferred behavior are called out where they appear.
 
 ### Family 1: Sites and current state
 
@@ -263,6 +273,9 @@ The full surface is grouped into five capability families, matching `ROADMAP.md`
 List sites visible to this token.
 
 **Scopes:** `read`
+
+Normal internal callers see the full site table. Gateway-routed requests only
+see rows mapped to `X-Jetmon-Tenant-ID` in `jetmon_site_tenants`.
 
 **Query parameters:**
 
@@ -341,6 +354,10 @@ Single site, same shape as a list entry plus an `active_events` array for any op
 
 `active_events` is the simplest answer to "tell me everything wrong with this site right now." Ordered by severity descending.
 
+Gateway-routed single-site, event/history, SLA/stat, and trigger-now routes all
+derive visibility through `jetmon_site_tenants`. A site or event outside the
+tenant mapping is returned as not found.
+
 #### `POST /api/v1/sites`
 
 Create a site.
@@ -365,6 +382,10 @@ Create a site.
 ```
 
 **Response 201:** the site object.
+
+When the `gateway` consumer creates a site with tenant context, Jetmon inserts
+the site row and the `(tenant_id, blog_id)` mapping in one transaction. Internal
+creates without tenant context keep the existing unscoped behavior.
 
 **Errors:**
 
@@ -725,7 +746,8 @@ Implementation: at dispatch time, the worker checks a `map[webhook_id]int` count
 
 ```
 jetmon_webhooks:
-  id, url, active, events JSON, site_filter JSON, state_filter JSON,
+  id, url, active, owner_tenant_id VARCHAR(128) NULL,
+  events JSON, site_filter JSON, state_filter JSON,
   secret VARCHAR(80), secret_preview VARCHAR(8),
   created_by VARCHAR(128), created_at, updated_at
 
@@ -746,6 +768,7 @@ Indexes:
 - `(status, next_attempt_at)` on deliveries — the worker's "what's ready?" query
 - `(webhook_id, created_at)` on deliveries — the deliveries-list endpoint
 - `(active)` on webhooks — the dispatcher's filter for live webhooks
+- `(owner_tenant_id)` on webhooks — scopes gateway-routed CRUD and delivery visibility while normal internal callers remain unscoped
 
 `payload` is **frozen at delivery creation**: the consumer sees the event as it was when the webhook fired, not as it is now. A closed-and-amended event would not change a delivery's payload — that's the contract consumers expect ("this is what I was told happened, not whatever it became").
 
@@ -755,12 +778,21 @@ Webhooks are managed by any `write`-scope token. `created_by` records the consum
 
 This is appropriate **only** because Jetmon is internal-only with all consumers trusted. Per-consumer ownership doesn't add value at this scale; the gateway in front of Jetmon handles tenant isolation for any customer-facing webhooks.
 
+The table includes nullable `owner_tenant_id`. Normal internal handlers remain
+unscoped when no gateway context is present, so existing internal behavior is
+unchanged. Gateway-routed creates set `owner_tenant_id`, and gateway-routed
+list/get/update/delete/rotate-secret paths filter by it. Delivery history and
+manual retry visibility are derived by first verifying ownership of the parent
+webhook.
+
 **Ramifications if Jetmon ever becomes a public API:**
 
 - This model would need to change. Customer-facing consumers cannot be allowed to read or modify each other's webhooks.
-- Migration path: add `owner_consumer_id` (or `owner_account_id`) column to `jetmon_webhooks`; require it on create; filter list/get/update/delete by it; introduce a `webhooks` scope or formal account/tenant boundary.
+- Migration path: continue requiring `owner_tenant_id` on gateway-routed
+  creates; add granular public `webhooks` scopes or a formal account/tenant
+  boundary before any direct customer exposure.
 - The `created_by` field is forward-compatible — it's already capturing the consumer identity, just not enforcing it.
-- Existing webhooks would need a backfill migration to populate the new ownership column with their original `created_by` value.
+- Existing webhooks would need a backfill migration before being exposed publicly.
 - Webhook secrets would need stronger isolation (currently any write-scope can rotate any secret; in a public API this would be a privilege escalation).
 
 The decision to defer ownership today should be reread before any public-API conversation actually starts.
@@ -903,6 +935,7 @@ jetmon_alert_contacts (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   label VARCHAR(80) NOT NULL,
   active TINYINT(1) NOT NULL DEFAULT 1,
+  owner_tenant_id VARCHAR(128) NULL,
   transport ENUM('email','pagerduty','slack','teams') NOT NULL,
   destination JSON NOT NULL,          -- transport-specific, secret in plaintext (outbound dispatch needs raw value)
   destination_preview VARCHAR(8) NOT NULL,
@@ -927,7 +960,12 @@ jetmon_alert_dispatch_progress (
 
 #### Alert contact ownership
 
-Same model as webhooks: any `write`-scope token can manage any alert contact, `created_by` is audit-only. The "Webhook ownership and scope" section above applies verbatim — the gateway handles tenant isolation; if Jetmon ever exposes the API directly to customers, ownership columns get added then.
+Same internal model as webhooks: any `write`-scope token can manage any alert
+contact when no gateway context is present, and `created_by` is audit-only.
+Gateway-routed creates set `owner_tenant_id`; gateway-routed
+list/get/update/delete/test paths filter by it. Delivery history and manual
+retry visibility are derived by first verifying ownership of the parent alert
+contact.
 
 ### Family 6: Identity and utility
 

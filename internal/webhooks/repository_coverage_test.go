@@ -13,13 +13,13 @@ import (
 )
 
 var webhookColumns = []string{
-	"id", "url", "active", "events", "site_filter", "state_filter",
+	"id", "url", "active", "owner_tenant_id", "events", "site_filter", "state_filter",
 	"secret_preview", "created_by", "created_at", "updated_at",
 }
 
 func webhookRow(id int64, url string, active uint8, createdAt time.Time) *sqlmock.Rows {
 	return sqlmock.NewRows(webhookColumns).AddRow(
-		id, url, active,
+		id, url, active, "tenant-a",
 		`["event.opened"]`,
 		`{"site_ids":[42]}`,
 		`{"states":["Down"]}`,
@@ -39,6 +39,7 @@ func TestCreateWebhookPersistsDefaultsAndFetchesRecord(t *testing.T) {
 		WithArgs(
 			"https://consumer.example/hook",
 			1,
+			nil,
 			sqlmock.AnyArg(),
 			sqlmock.AnyArg(),
 			sqlmock.AnyArg(),
@@ -47,7 +48,7 @@ func TestCreateWebhookPersistsDefaultsAndFetchesRecord(t *testing.T) {
 			"ops",
 		).
 		WillReturnResult(sqlmock.NewResult(12, 1))
-	mock.ExpectQuery("SELECT id, url, active, events").
+	mock.ExpectQuery("SELECT id, url, active, owner_tenant_id, events").
 		WithArgs(int64(12)).
 		WillReturnRows(webhookRow(12, "https://consumer.example/hook", 1, now))
 
@@ -66,6 +67,9 @@ func TestCreateWebhookPersistsDefaultsAndFetchesRecord(t *testing.T) {
 	}
 	if hook.ID != 12 || !hook.Active || hook.SiteFilter.SiteIDs[0] != 42 || hook.StateFilter.States[0] != "Down" {
 		t.Fatalf("hook = %+v", hook)
+	}
+	if hook.OwnerTenantID == nil || *hook.OwnerTenantID != "tenant-a" {
+		t.Fatalf("hook.OwnerTenantID = %v, want tenant-a", hook.OwnerTenantID)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)
@@ -100,7 +104,7 @@ func TestGetWebhookNotFound(t *testing.T) {
 	}
 	defer db.Close()
 
-	mock.ExpectQuery("SELECT id, url, active, events").
+	mock.ExpectQuery("SELECT id, url, active, owner_tenant_id, events").
 		WithArgs(int64(404)).
 		WillReturnError(sql.ErrNoRows)
 
@@ -122,9 +126,9 @@ func TestListWebhooksScansRows(t *testing.T) {
 
 	now := time.Now().UTC()
 	rows := sqlmock.NewRows(webhookColumns).
-		AddRow(int64(1), "https://a.example", uint8(1), `[]`, `{}`, `{}`, "aaaa", "ops", now, now).
-		AddRow(int64(2), "https://b.example", uint8(0), nil, nil, nil, "bbbb", "ops", now, now)
-	mock.ExpectQuery("SELECT id, url, active, events").
+		AddRow(int64(1), "https://a.example", uint8(1), nil, `[]`, `{}`, `{}`, "aaaa", "ops", now, now).
+		AddRow(int64(2), "https://b.example", uint8(0), "tenant-b", nil, nil, nil, "bbbb", "ops", now, now)
+	mock.ExpectQuery("SELECT id, url, active, owner_tenant_id, events").
 		WillReturnRows(rows)
 
 	hooks, err := List(context.Background(), db)
@@ -147,7 +151,7 @@ func TestListActiveWebhooksScansRows(t *testing.T) {
 	defer db.Close()
 
 	now := time.Now().UTC()
-	mock.ExpectQuery("SELECT id, url, active, events").
+	mock.ExpectQuery("SELECT id, url, active, owner_tenant_id, events").
 		WillReturnRows(webhookRow(3, "https://active.example", 1, now))
 
 	hooks, err := ListActive(context.Background(), db)
@@ -156,6 +160,63 @@ func TestListActiveWebhooksScansRows(t *testing.T) {
 	}
 	if len(hooks) != 1 || hooks[0].ID != 3 {
 		t.Fatalf("hooks = %+v", hooks)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestTenantScopedWebhookQueriesFilterByOwner(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC()
+	active := false
+	mock.ExpectQuery("WHERE id = \\? AND owner_tenant_id = \\?").
+		WithArgs(int64(12), "tenant-a").
+		WillReturnRows(webhookRow(12, "https://tenant.example/hook", 1, now))
+	mock.ExpectQuery("WHERE owner_tenant_id = \\? ORDER BY id ASC").
+		WithArgs("tenant-a").
+		WillReturnRows(webhookRow(13, "https://tenant.example/other", 1, now))
+	mock.ExpectExec("UPDATE jetmon_webhooks SET").
+		WithArgs(0, int64(12), "tenant-a").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("WHERE id = \\? AND owner_tenant_id = \\?").
+		WithArgs(int64(12), "tenant-a").
+		WillReturnRows(sqlmock.NewRows(webhookColumns).AddRow(
+			int64(12), "https://tenant.example/hook", uint8(0), "tenant-a",
+			`["event.opened"]`, `{}`, `{}`, "_XYZ", "ops", now, now,
+		))
+	mock.ExpectExec("DELETE FROM jetmon_webhooks WHERE id = \\? AND owner_tenant_id = \\?").
+		WithArgs(int64(12), "tenant-a").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	hook, err := GetForTenant(context.Background(), db, 12, "tenant-a")
+	if err != nil {
+		t.Fatalf("GetForTenant: %v", err)
+	}
+	if hook.OwnerTenantID == nil || *hook.OwnerTenantID != "tenant-a" {
+		t.Fatalf("hook.OwnerTenantID = %v, want tenant-a", hook.OwnerTenantID)
+	}
+	hooks, err := ListForTenant(context.Background(), db, "tenant-a")
+	if err != nil {
+		t.Fatalf("ListForTenant: %v", err)
+	}
+	if len(hooks) != 1 || hooks[0].ID != 13 {
+		t.Fatalf("hooks = %+v", hooks)
+	}
+	hook, err = UpdateForTenant(context.Background(), db, 12, "tenant-a", UpdateInput{Active: &active})
+	if err != nil {
+		t.Fatalf("UpdateForTenant: %v", err)
+	}
+	if hook.Active {
+		t.Fatalf("hook.Active = true, want false")
+	}
+	if err := DeleteForTenant(context.Background(), db, 12, "tenant-a"); err != nil {
+		t.Fatalf("DeleteForTenant: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)
@@ -179,10 +240,10 @@ func TestUpdateWebhookAppliesPatchAndFetchesRecord(t *testing.T) {
 	mock.ExpectExec("UPDATE jetmon_webhooks SET").
 		WithArgs(url, 0, sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), int64(5)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectQuery("SELECT id, url, active, events").
+	mock.ExpectQuery("SELECT id, url, active, owner_tenant_id, events").
 		WithArgs(int64(5)).
 		WillReturnRows(sqlmock.NewRows(webhookColumns).AddRow(
-			int64(5), url, uint8(0), `["event.closed"]`,
+			int64(5), url, uint8(0), nil, `["event.closed"]`,
 			`{"site_ids":[7]}`, `{"states":["Up"]}`, "_NEW", "ops", now, now,
 		))
 
@@ -234,7 +295,7 @@ func TestRotateSecretUpdatesStoredSecret(t *testing.T) {
 	mock.ExpectExec("UPDATE jetmon_webhooks SET secret").
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), int64(8)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectQuery("SELECT id, url, active, events").
+	mock.ExpectQuery("SELECT id, url, active, owner_tenant_id, events").
 		WithArgs(int64(8)).
 		WillReturnRows(webhookRow(8, "https://consumer.example/hook", 1, now))
 
