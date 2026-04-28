@@ -91,6 +91,24 @@ because it is intentionally **not** drop-in with the Jetmon 1 wire format
   SKIP LOCKED) still tracked alongside the deliverer-binary extraction in
   ROADMAP.md.
 
+**Docs / tooling:**
+- `make all` now builds the currently implemented `jetmon2` and
+  `veriflier2` binaries without requiring `protoc`; generated Veriflier
+  gRPC stubs remain an explicit `make generate` step for the future
+  transport swap.
+- Makefile targets now share a configurable `GO` command and fall back to
+  `/usr/local/go/bin/go` when `go` is not on `PATH`; they also use an
+  overrideable `/tmp` Go build cache so checks do not depend on a
+  writable home-directory cache.
+- Developer docs now point at the Makefile build path and document why
+  code generation is separate from the default build.
+- Added a top-level docs index and a post-v2 probe-agent architecture
+  options document for revisiting the v3 direction after v2 is stable in
+  production.
+- Clarified that the current Veriflier transport is JSON-over-HTTP and
+  that the public API roadmap is about a future customer-facing contract,
+  not the already-implemented internal `/api/v1`.
+
 **Polish:**
 - `alerting.Update` now validates `label` (must be non-empty) and
   `max_per_hour` (must be ≥ 0) at input time, surfacing 422

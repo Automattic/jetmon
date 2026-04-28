@@ -60,29 +60,30 @@ func (s *Server) requireScope(required apikeys.Scope, h http.HandlerFunc) http.H
 	return func(w http.ResponseWriter, r *http.Request) {
 		reqID := newRequestID()
 		ctx := context.WithValue(r.Context(), ctxKeyRequestID, reqID)
+		req := r.WithContext(ctx)
 		w.Header().Set("X-Request-ID", reqID)
 
 		token := bearerToken(r)
 		if token == "" {
-			writeError(w, r.WithContext(ctx), http.StatusUnauthorized, "missing_token",
+			writeError(w, req, http.StatusUnauthorized, "missing_token",
 				"Authorization header with Bearer token is required")
-			s.audit(nil, r, http.StatusUnauthorized, time.Time{}, "missing token")
+			s.audit(reqID, nil, req, http.StatusUnauthorized, time.Time{}, "missing token")
 			return
 		}
 
 		key, err := apikeys.Lookup(ctx, s.db, token)
 		if err != nil {
 			status, code, msg := mapAuthError(err)
-			writeError(w, r.WithContext(ctx), status, code, msg)
-			s.audit(nil, r, status, time.Time{}, code)
+			writeError(w, req, status, code, msg)
+			s.audit(reqID, nil, req, status, time.Time{}, code)
 			return
 		}
 
 		if !key.Scope.Includes(required) {
-			writeError(w, r.WithContext(ctx), http.StatusForbidden, "insufficient_scope",
+			writeError(w, req, http.StatusForbidden, "insufficient_scope",
 				"this endpoint requires scope "+string(required)+
 					"; your key has scope "+string(key.Scope))
-			s.audit(key, r, http.StatusForbidden, time.Time{}, "insufficient scope")
+			s.audit(reqID, key, req, http.StatusForbidden, time.Time{}, "insufficient scope")
 			return
 		}
 
@@ -90,8 +91,8 @@ func (s *Server) requireScope(required apikeys.Scope, h http.HandlerFunc) http.H
 		allowed, remaining, resetAt := s.limiter.allow(key.ID, key.RateLimitPerMinute)
 		writeRateLimitHeaders(w, key.RateLimitPerMinute, remaining, resetAt)
 		if !allowed {
-			writeRateLimited(w, r.WithContext(ctx), key.RateLimitPerMinute, remaining, resetAt)
-			s.audit(key, r, http.StatusTooManyRequests, time.Time{}, "rate limited")
+			writeRateLimited(w, req, key.RateLimitPerMinute, remaining, resetAt)
+			s.audit(reqID, key, req, http.StatusTooManyRequests, time.Time{}, "rate limited")
 			return
 		}
 
@@ -105,7 +106,7 @@ func (s *Server) requireScope(required apikeys.Scope, h http.HandlerFunc) http.H
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		h(rec, r.WithContext(ctx))
 
-		s.audit(key, r, rec.status, started, "")
+		s.audit(reqID, key, req, rec.status, started, "")
 	}
 }
 
@@ -163,7 +164,11 @@ func mapAuthError(err error) (status int, code, msg string) {
 // could be moved to a buffered channel if write latency becomes a concern.
 // Errors are logged but never returned to the consumer — audit is observability,
 // not gate.
-func (s *Server) audit(key *apikeys.Key, r *http.Request, status int, started time.Time, note string) {
+//
+// reqID is passed explicitly rather than pulled from r's context so callers
+// can't accidentally drop it by handing in a request whose context wasn't
+// extended with the middleware's request id.
+func (s *Server) audit(reqID string, key *apikeys.Key, r *http.Request, status int, started time.Time, note string) {
 	consumerName := "unknown"
 	var keyID int64
 	if key != nil {
@@ -183,12 +188,17 @@ func (s *Server) audit(key *apikeys.Key, r *http.Request, status int, started ti
 		"path":        r.URL.Path,
 		"status":      status,
 		"duration_ms": durationMs,
-		"request_id":  requestIDFromRequest(r),
+		"request_id":  reqID,
 		"remote_addr": r.RemoteAddr,
 		"note":        note,
 	})
 
-	if err := audit.Log(audit.Entry{
+	// Derive the audit context from Background, not r.Context(): a client
+	// disconnect must not silence the audit row, since audit is for the
+	// operator, not the caller. The timeout caps any wedged-DB hang.
+	ctx, cancel := context.WithTimeout(context.Background(), auditWriteTimeout)
+	defer cancel()
+	if err := audit.Log(ctx, audit.Entry{
 		EventType: audit.EventAPIAccess,
 		Source:    consumerName,
 		Detail:    r.Method + " " + r.URL.Path,
@@ -197,6 +207,11 @@ func (s *Server) audit(key *apikeys.Key, r *http.Request, status int, started ti
 		log.Printf("api: audit log failed: %v", err)
 	}
 }
+
+// auditWriteTimeout caps a single audit insert so a wedged DB cannot block
+// the request goroutine indefinitely. Audit is observability, not gate; if
+// the write times out we log and move on.
+const auditWriteTimeout = 5 * time.Second
 
 // newRequestID returns a 16-byte random hex id (32 chars). Same shape as the
 // verifier's NewRequestID for consistency in operator log-greppage.

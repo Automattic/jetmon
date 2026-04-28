@@ -11,7 +11,7 @@ import (
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if s.db == nil {
 		writeError(w, r, http.StatusServiceUnavailable, "db_unavailable",
-			"database handle is not configured")
+			"database not reachable")
 		return
 	}
 
@@ -19,7 +19,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	if err := s.db.PingContext(ctx); err != nil {
 		writeError(w, r, http.StatusServiceUnavailable, "db_unavailable",
-			"database ping failed: "+err.Error())
+			"database not reachable: "+err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})

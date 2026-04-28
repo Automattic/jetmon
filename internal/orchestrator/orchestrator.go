@@ -774,7 +774,7 @@ func (o *Orchestrator) QueueDepth() int {
 }
 
 func (o *Orchestrator) auditLog(e audit.Entry) {
-	if err := audit.Log(e); err != nil {
+	if err := audit.Log(o.ctx, e); err != nil {
 		log.Printf("audit: blog_id=%d event=%s: %v", e.BlogID, e.EventType, err)
 	}
 }

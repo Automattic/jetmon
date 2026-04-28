@@ -1,12 +1,15 @@
 package api
 
 import (
+	"database/sql/driver"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/Automattic/jetmon/internal/apikeys"
+	"github.com/Automattic/jetmon/internal/audit"
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
@@ -15,10 +18,53 @@ const keyLookupSQL = ` SELECT id, consumer_name, scope, rate_limit_per_minute, e
 
 const keyTouchSQL = `UPDATE jetmon_api_keys SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?`
 
+const auditInsertSQL = `
+		INSERT INTO jetmon_audit_log
+			(blog_id, event_id, event_type, source, detail, metadata)
+		VALUES (?, ?, ?, ?, ?, ?)`
+
 // columnsKey is the column set returned by getByHash.
 var columnsKey = []string{
 	"id", "consumer_name", "scope", "rate_limit_per_minute",
 	"expires_at", "revoked_at", "last_used_at", "created_at", "created_by",
+}
+
+type apiAuditMetadataWithRequestID struct {
+	t          *testing.T
+	wantStatus float64
+	wantNote   string
+}
+
+func (m apiAuditMetadataWithRequestID) Match(v driver.Value) bool {
+	m.t.Helper()
+	var raw []byte
+	switch got := v.(type) {
+	case []byte:
+		raw = got
+	case string:
+		raw = []byte(got)
+	default:
+		m.t.Errorf("metadata type = %T, want []byte or string", v)
+		return false
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		m.t.Errorf("metadata is not JSON: %v", err)
+		return false
+	}
+	if meta["request_id"] == "" {
+		m.t.Errorf("metadata request_id is empty: %s", raw)
+		return false
+	}
+	if meta["status"] != m.wantStatus {
+		m.t.Errorf("metadata status = %v, want %.0f", meta["status"], m.wantStatus)
+		return false
+	}
+	if meta["note"] != m.wantNote {
+		m.t.Errorf("metadata note = %v, want %q", meta["note"], m.wantNote)
+		return false
+	}
+	return true
 }
 
 func makeKeyRow(id int64, scope string, rateLimit int, revokedAt, expiresAt *time.Time) *sqlmock.Rows {
@@ -59,6 +105,108 @@ func TestRequireScopeMissingToken(t *testing.T) {
 	}
 	if rec.Header().Get("X-Request-ID") == "" {
 		t.Error("X-Request-ID header should be set")
+	}
+}
+
+func TestRequireScopeAuditsRejectedRequestWithRequestID(t *testing.T) {
+	tests := []struct {
+		name       string
+		scope      apikeys.Scope
+		setupMock  func(sqlmock.Sqlmock)
+		setHeader  func(*http.Request)
+		wantStatus int
+		wantNote   string
+	}{
+		{
+			name:       "missing_token",
+			scope:      scopeRead,
+			setupMock:  func(_ sqlmock.Sqlmock) {},
+			setHeader:  func(_ *http.Request) {},
+			wantStatus: http.StatusUnauthorized,
+			wantNote:   "missing token",
+		},
+		{
+			name:  "invalid_token",
+			scope: scopeRead,
+			setupMock: func(m sqlmock.Sqlmock) {
+				m.ExpectQuery(keyLookupSQL).WillReturnRows(sqlmock.NewRows(columnsKey))
+			},
+			setHeader: func(r *http.Request) {
+				r.Header.Set("Authorization", "Bearer jm_INVALID-LOOKING-TOKEN-XXXXX")
+			},
+			wantStatus: http.StatusUnauthorized,
+			wantNote:   "invalid_token",
+		},
+		{
+			name:  "token_revoked",
+			scope: scopeRead,
+			setupMock: func(m sqlmock.Sqlmock) {
+				revokedAt := time.Now().UTC().Add(-time.Hour)
+				m.ExpectQuery(keyLookupSQL).WillReturnRows(makeKeyRow(1, "read", 60, &revokedAt, nil))
+			},
+			setHeader: func(r *http.Request) {
+				r.Header.Set("Authorization", "Bearer jm_ANYTOKENWILLDOFORTHISTESTXX")
+			},
+			wantStatus: http.StatusUnauthorized,
+			wantNote:   "token_revoked",
+		},
+		{
+			name:  "insufficient_scope",
+			scope: scopeWrite,
+			setupMock: func(m sqlmock.Sqlmock) {
+				m.ExpectQuery(keyLookupSQL).WillReturnRows(makeKeyRow(1, "read", 60, nil, nil))
+				m.ExpectExec(keyTouchSQL).WithArgs(int64(1)).WillReturnResult(sqlmock.NewResult(0, 1))
+			},
+			setHeader: func(r *http.Request) {
+				r.Header.Set("Authorization", "Bearer jm_ANYTOKENWILLDOFORTHISTESTXX")
+			},
+			wantStatus: http.StatusForbidden,
+			wantNote:   "insufficient scope",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, mock, _, cleanup := newTestServer(t)
+			defer cleanup()
+			audit.Init(s.db)
+			t.Cleanup(func() { audit.Init(nil) })
+
+			tt.setupMock(mock)
+
+			// consumer name varies (unknown vs test-consumer) and is also
+			// reflected in the metadata's consumer field, but the matcher
+			// only asserts request_id/status/note, so AnyArg is enough.
+			mock.ExpectExec(auditInsertSQL).WithArgs(
+				nil,
+				nil,
+				audit.EventAPIAccess,
+				sqlmock.AnyArg(),
+				"GET /api/v1/anything",
+				apiAuditMetadataWithRequestID{
+					t:          t,
+					wantStatus: float64(tt.wantStatus),
+					wantNote:   tt.wantNote,
+				},
+			).WillReturnResult(sqlmock.NewResult(0, 1))
+
+			wrapped := s.requireScope(tt.scope, func(w http.ResponseWriter, r *http.Request) {})
+
+			req := httptest.NewRequest("GET", "/api/v1/anything", nil)
+			tt.setHeader(req)
+			rec := httptest.NewRecorder()
+			wrapped(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body=%s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			if rec.Header().Get("X-Request-ID") == "" {
+				t.Fatal("X-Request-ID header should be set")
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Errorf("expectations: %v", err)
+			}
+		})
 	}
 }
 
@@ -166,9 +314,23 @@ func TestRequireScopeInsufficientScope(t *testing.T) {
 func TestRequireScopeAllowsValidToken(t *testing.T) {
 	s, mock, _, cleanup := newTestServer(t)
 	defer cleanup()
+	audit.Init(s.db)
+	t.Cleanup(func() { audit.Init(nil) })
 
 	mock.ExpectQuery(keyLookupSQL).WillReturnRows(makeKeyRow(1, "read", 60, nil, nil))
 	mock.ExpectExec(keyTouchSQL).WithArgs(int64(1)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(auditInsertSQL).WithArgs(
+		nil,
+		nil,
+		audit.EventAPIAccess,
+		"test-consumer",
+		"GET /",
+		apiAuditMetadataWithRequestID{
+			t:          t,
+			wantStatus: float64(http.StatusOK),
+			wantNote:   "",
+		},
+	).WillReturnResult(sqlmock.NewResult(0, 1))
 
 	called := false
 	wrapped := s.requireScope(scopeRead, func(w http.ResponseWriter, r *http.Request) {
@@ -197,11 +359,16 @@ func TestRequireScopeAllowsValidToken(t *testing.T) {
 	if got := rec.Header().Get("X-RateLimit-Remaining"); got == "" {
 		t.Errorf("X-RateLimit-Remaining missing")
 	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
 }
 
 func TestRequireScopeRateLimit429(t *testing.T) {
 	s, mock, _, cleanup := newTestServer(t)
 	defer cleanup()
+	audit.Init(s.db)
+	t.Cleanup(func() { audit.Init(nil) })
 
 	// Limit = 1/min — second request should 429. We have to set up two
 	// lookup expectations because the limiter check runs after auth.
@@ -210,6 +377,30 @@ func TestRequireScopeRateLimit429(t *testing.T) {
 	mock.ExpectExec(keyTouchSQL).WithArgs(int64(2)).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(keyLookupSQL).WillReturnRows(makeKeyRow(2, "read", 1, nil, nil))
 	mock.ExpectExec(keyTouchSQL).WithArgs(int64(2)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(auditInsertSQL).WithArgs(
+		nil,
+		nil,
+		audit.EventAPIAccess,
+		"test-consumer",
+		"GET /",
+		apiAuditMetadataWithRequestID{
+			t:          t,
+			wantStatus: float64(http.StatusOK),
+			wantNote:   "",
+		},
+	).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(auditInsertSQL).WithArgs(
+		nil,
+		nil,
+		audit.EventAPIAccess,
+		"test-consumer",
+		"GET /",
+		apiAuditMetadataWithRequestID{
+			t:          t,
+			wantStatus: float64(http.StatusTooManyRequests),
+			wantNote:   "rate limited",
+		},
+	).WillReturnResult(sqlmock.NewResult(0, 1))
 
 	wrapped := s.requireScope(scopeRead, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -240,6 +431,9 @@ func TestRequireScopeRateLimit429(t *testing.T) {
 	if body.Code != "rate_limited" {
 		t.Errorf("error code = %q, want rate_limited", body.Code)
 	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
 }
 
 func TestStatusRecorderCapturesCode(t *testing.T) {
@@ -253,6 +447,24 @@ func TestStatusRecorderCapturesCode(t *testing.T) {
 	sr.WriteHeader(http.StatusInternalServerError)
 	if sr.status != http.StatusBadRequest {
 		t.Errorf("status changed after second WriteHeader = %d", sr.status)
+	}
+}
+
+type flushRecorder struct {
+	*httptest.ResponseRecorder
+	flushed bool
+}
+
+func (r *flushRecorder) Flush() {
+	r.flushed = true
+}
+
+func TestStatusRecorderFlushPassThrough(t *testing.T) {
+	rec := &flushRecorder{ResponseRecorder: httptest.NewRecorder()}
+	sr := &statusRecorder{ResponseWriter: rec, status: http.StatusOK}
+	sr.Flush()
+	if !rec.flushed {
+		t.Fatal("Flush did not pass through to the wrapped writer")
 	}
 }
 

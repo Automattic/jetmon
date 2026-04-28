@@ -85,7 +85,7 @@ The CLI talks to the database directly (via `jetmon_api_keys`), prints the new t
 https://api.jetmon.example.com/api/v1
 ```
 
-Hosted in the `jetmon2` binary on a dedicated port (`API_PORT`), separate from the operator dashboard (`DASHBOARD_PORT`) and the verifier transport (`VERIFLIER_GRPC_PORT`).
+Hosted in the `jetmon2` binary on a dedicated port (`API_PORT`), separate from the operator dashboard (`DASHBOARD_PORT`) and the verifier transport port (`VERIFLIER_GRPC_PORT`).
 
 ### Content negotiation
 

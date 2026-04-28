@@ -1,20 +1,23 @@
 BINARY      := bin/jetmon2
 VERIFLIER   := bin/veriflier2
+GO          ?= $(shell if command -v go >/dev/null 2>&1; then command -v go; elif [ -x /usr/local/go/bin/go ]; then printf /usr/local/go/bin/go; else printf go; fi)
+GOCACHE     ?= /tmp/jetmon-go-cache
+GO_ENV      := GOCACHE=$(GOCACHE)
 BUILD_FLAGS := -ldflags "-X main.version=$(shell git describe --tags --always --dirty) \
                          -X main.buildDate=$(shell date -u +%Y-%m-%dT%H:%M:%SZ) \
-                         -X main.goVersion=$(shell go version | awk '{print $$3}')"
+                         -X main.goVersion=$(shell $(GO) version | awk '{print $$3}')"
 
 .PHONY: all build build-veriflier generate test test-race lint clean
 
-all: generate build build-veriflier
+all: build build-veriflier
 
 build:
 	mkdir -p bin
-	CGO_ENABLED=0 go build $(BUILD_FLAGS) -o $(BINARY) ./cmd/jetmon2/
+	$(GO_ENV) CGO_ENABLED=0 $(GO) build $(BUILD_FLAGS) -o $(BINARY) ./cmd/jetmon2/
 
 build-veriflier:
 	mkdir -p bin
-	CGO_ENABLED=0 go build $(BUILD_FLAGS) -o $(VERIFLIER) ./veriflier2/cmd/
+	$(GO_ENV) CGO_ENABLED=0 $(GO) build $(BUILD_FLAGS) -o $(VERIFLIER) ./veriflier2/cmd/
 
 
 generate:
@@ -23,13 +26,13 @@ generate:
 	       proto/veriflier.proto
 
 test:
-	go test ./...
+	$(GO_ENV) $(GO) test ./...
 
 test-race:
-	go test -race ./...
+	$(GO_ENV) $(GO) test -race ./...
 
 lint:
-	go vet ./...
+	$(GO_ENV) $(GO) vet ./...
 
 clean:
 	rm -f $(BINARY) $(VERIFLIER)

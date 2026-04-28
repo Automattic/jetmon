@@ -141,6 +141,9 @@ func (s *Server) handleListSites(w http.ResponseWriter, r *http.Request) {
 		results = append(results, s)
 		lastID = s.ID
 	}
+	rawCount := len(results)
+	rawLastID := lastID
+	fetchedMore := rawCount > limit
 
 	if err := s.applyActiveEventRollups(ctx, results); err != nil {
 		writeError(w, r, http.StatusInternalServerError, "db_error",
@@ -159,6 +162,9 @@ func (s *Server) handleListSites(w http.ResponseWriter, r *http.Request) {
 		results = results[:limit]
 		lastID = results[len(results)-1].ID
 		c := encodeIDCursor(lastID)
+		nextCursor = &c
+	} else if fetchedMore {
+		c := encodeIDCursor(rawLastID)
 		nextCursor = &c
 	}
 

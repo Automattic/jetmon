@@ -58,6 +58,26 @@ func TestIdempotencyStoreExpires(t *testing.T) {
 	}
 }
 
+func TestIdempotencyStoreGCRemovesExpiredEntries(t *testing.T) {
+	store := newIdempotencyStore()
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return now }
+
+	expired := idempotencyKey{keyID: 1, key: "expired"}
+	live := idempotencyKey{keyID: 1, key: "live"}
+	store.store(expired, &idempotencyEntry{expiresAt: now.Add(-time.Second)})
+	store.store(live, &idempotencyEntry{expiresAt: now.Add(time.Hour)})
+
+	store.gc()
+
+	if _, ok := store.entries[expired]; ok {
+		t.Fatal("expired entry survived gc")
+	}
+	if _, ok := store.entries[live]; !ok {
+		t.Fatal("live entry removed by gc")
+	}
+}
+
 // bodyReader wraps a byte slice as an http.Request.Body.
 func bodyReader(b []byte) io.ReadCloser {
 	return io.NopCloser(bytes.NewReader(b))

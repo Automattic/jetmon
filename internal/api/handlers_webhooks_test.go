@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -12,6 +13,8 @@ import (
 const insertWebhookSQL = ` INSERT INTO jetmon_webhooks (url, active, events, site_filter, state_filter, secret, secret_preview, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
 
 const selectWebhookOneSQL = ` SELECT id, url, active, events, site_filter, state_filter, secret_preview, created_by, created_at, updated_at FROM jetmon_webhooks WHERE id = ?`
+
+const selectWebhookListSQL = ` SELECT id, url, active, events, site_filter, state_filter, secret_preview, created_by, created_at, updated_at FROM jetmon_webhooks ORDER BY id ASC`
 
 // columnsWebhook is the column set returned by webhook SELECT queries.
 var columnsWebhook = []string{
@@ -127,6 +130,62 @@ func TestGetWebhookNotFound(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestListWebhooksHappyPath(t *testing.T) {
+	s, mock, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	now := time.Now().UTC()
+	rows := sqlmock.NewRows(columnsWebhook).
+		AddRow(int64(1), "https://a.example/hook", uint8(1), []byte(`["event.opened"]`),
+			[]byte(`{"site_ids":[42]}`), []byte(`{"states":["Down"]}`), "aaaa", "test-consumer", now, now).
+		AddRow(int64(2), "https://b.example/hook", uint8(0), nil,
+			nil, nil, "bbbb", "test-consumer", now, now)
+	mock.ExpectQuery(selectWebhookListSQL).WillReturnRows(rows)
+
+	req := httptest.NewRequest("GET", "/api/v1/webhooks", nil)
+	req = setAuthCtx(req, key)
+	rec := invokeAuthed(s, req, s.handleListWebhooks)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var env struct {
+		Data []webhookResponse `json:"data"`
+		Page Page              `json:"page"`
+	}
+	readJSON(t, rec.Body, &env)
+	if len(env.Data) != 2 {
+		t.Fatalf("len(data) = %d, want 2", len(env.Data))
+	}
+	if env.Page.Limit != 2 || env.Page.Next != nil {
+		t.Fatalf("page = %+v, want limit=2 next=nil", env.Page)
+	}
+	if env.Data[0].Events[0] != "event.opened" || env.Data[0].SiteFilter.SiteIDs[0] != 42 {
+		t.Fatalf("first webhook response = %+v", env.Data[0])
+	}
+	if env.Data[1].Events == nil {
+		t.Fatal("nil events should serialize as an empty slice")
+	}
+}
+
+func TestListWebhooksDBError(t *testing.T) {
+	s, mock, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	mock.ExpectQuery(selectWebhookListSQL).WillReturnError(errors.New("query failed"))
+
+	req := httptest.NewRequest("GET", "/api/v1/webhooks", nil)
+	req = setAuthCtx(req, key)
+	rec := invokeAuthed(s, req, s.handleListWebhooks)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	if got := readErrorBody(t, rec.Body).Code; got != "db_error" {
+		t.Fatalf("code = %q, want db_error", got)
 	}
 }
 

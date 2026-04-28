@@ -10,6 +10,7 @@
 package audit
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -50,8 +51,12 @@ type Entry struct {
 	Metadata  json.RawMessage // optional structured context (e.g. retry attempt, region)
 }
 
-// Log writes an entry to jetmon_audit_log.
-func Log(e Entry) error {
+// Log writes an entry to jetmon_audit_log. ctx propagates cancellation and
+// deadlines into the underlying INSERT. Callers control the context lifetime:
+// the orchestrator passes its long-lived shutdown context; the API middleware
+// uses a short bounded timeout derived from context.Background so audits fire
+// regardless of client disconnect but cannot block on a wedged DB.
+func Log(ctx context.Context, e Entry) error {
 	if db == nil {
 		return nil
 	}
@@ -62,7 +67,7 @@ func Log(e Entry) error {
 	if source == "" {
 		source = "local"
 	}
-	_, err := db.Exec(`
+	_, err := db.ExecContext(ctx, `
 		INSERT INTO jetmon_audit_log
 			(blog_id, event_id, event_type, source, detail, metadata)
 		VALUES (?, ?, ?, ?, ?, ?)`,

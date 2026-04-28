@@ -108,5 +108,5 @@ VERIFIERS
 Array of veriflier configuration objects. Each entry requires:
   name       - display name
   host       - hostname or IP of the veriflier
-  grpc_port  - gRPC/HTTP port (default 7803)
+  grpc_port  - Veriflier transport port; currently JSON-over-HTTP, reserved for future gRPC (default 7803)
   auth_token - shared secret for veriflier authentication

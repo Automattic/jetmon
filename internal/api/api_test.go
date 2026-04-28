@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -136,5 +137,24 @@ func TestRoutesRegisterAllPaths(t *testing.T) {
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("unknown route status = %d, want 404", rec.Code)
+	}
+}
+
+func TestShutdownWithoutListenIsNoop(t *testing.T) {
+	s := New(":0", nil, "test")
+	if err := s.Shutdown(t.Context()); err != nil {
+		t.Fatalf("Shutdown before Listen = %v, want nil", err)
+	}
+}
+
+func TestIsServerClosed(t *testing.T) {
+	if !IsServerClosed(http.ErrServerClosed) {
+		t.Fatal("IsServerClosed(http.ErrServerClosed) = false")
+	}
+	if !IsServerClosed(errors.Join(errors.New("wrapped"), http.ErrServerClosed)) {
+		t.Fatal("IsServerClosed(joined ErrServerClosed) = false")
+	}
+	if IsServerClosed(errors.New("listen failed")) {
+		t.Fatal("IsServerClosed(non-sentinel) = true")
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 )
@@ -23,6 +24,25 @@ func newPATCHWithBody(target string, body []byte) *http.Request {
 	req := httptest.NewRequest("PATCH", target, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	return req
+}
+
+func TestParseMaintenanceTime(t *testing.T) {
+	if got, err := parseMaintenanceTime("", "maintenance_start"); err != nil || got != nil {
+		t.Fatalf("parseMaintenanceTime(empty) = (%v, %v), want (nil, nil)", got, err)
+	}
+
+	got, err := parseMaintenanceTime("2026-04-27T12:00:00-05:00", "maintenance_start")
+	if err != nil {
+		t.Fatalf("parseMaintenanceTime(valid): %v", err)
+	}
+	want := time.Date(2026, 4, 27, 17, 0, 0, 0, time.UTC)
+	if got != want {
+		t.Fatalf("parseMaintenanceTime(valid) = %v, want %v", got, want)
+	}
+
+	if _, err := parseMaintenanceTime("April 27", "maintenance_start"); err == nil {
+		t.Fatal("parseMaintenanceTime(invalid) returned nil error")
+	}
 }
 
 func TestCreateSiteHappyPath(t *testing.T) {

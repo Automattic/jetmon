@@ -1,8 +1,12 @@
 package db
 
 import (
+	"context"
 	"reflect"
 	"testing"
+	"time"
+
+	"github.com/DATA-DOG/go-sqlmock"
 )
 
 func TestAssignBucketRanges(t *testing.T) {
@@ -64,5 +68,255 @@ func TestAssignBucketRanges(t *testing.T) {
 				t.Fatalf("assignBucketRanges() = %#v, want %#v", got, tt.want)
 			}
 		})
+	}
+}
+
+func withMockDB(t *testing.T) (sqlmock.Sqlmock, func()) {
+	t.Helper()
+	mockDB, mock, err := sqlmock.New(sqlmock.MonitorPingsOption(true))
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	orig := db
+	db = mockDB
+	cleanup := func() {
+		db = orig
+		_ = mockDB.Close()
+	}
+	return mock, cleanup
+}
+
+func TestGlobalDBAccessors(t *testing.T) {
+	mock, cleanup := withMockDB(t)
+	defer cleanup()
+
+	mock.ExpectPing()
+	if DB() == nil {
+		t.Fatal("DB() = nil")
+	}
+	if err := Ping(); err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+	if Hostname() == "" {
+		t.Fatal("Hostname() returned empty string")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestGetSitesForBucketScansRowsAndDefaultRedirectPolicy(t *testing.T) {
+	mock, cleanup := withMockDB(t)
+	defer cleanup()
+
+	now := time.Now().UTC()
+	rows := sqlmock.NewRows([]string{
+		"jetpack_monitor_site_id", "blog_id", "bucket_no", "monitor_url",
+		"monitor_active", "site_status", "last_status_change", "check_interval", "last_checked_at",
+		"ssl_expiry_date", "check_keyword", "maintenance_start", "maintenance_end",
+		"custom_headers", "timeout_seconds", "redirect_policy", "alert_cooldown_minutes", "last_alert_sent_at",
+	}).AddRow(
+		int64(1), int64(42), 7, "https://site.example",
+		true, 1, now, 5, now,
+		nil, nil, nil, nil,
+		nil, nil, nil, nil, nil,
+	)
+	mock.ExpectQuery("SELECT").
+		WithArgs(0, 99, 50).
+		WillReturnRows(rows)
+
+	sites, err := GetSitesForBucket(context.Background(), 0, 99, 50, false)
+	if err != nil {
+		t.Fatalf("GetSitesForBucket: %v", err)
+	}
+	if len(sites) != 1 {
+		t.Fatalf("sites len = %d, want 1", len(sites))
+	}
+	if sites[0].BlogID != 42 || sites[0].RedirectPolicy != "follow" {
+		t.Fatalf("site = %+v", sites[0])
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestSimpleMutationQueries(t *testing.T) {
+	mock, cleanup := withMockDB(t)
+	defer cleanup()
+
+	now := time.Now().UTC()
+	mock.ExpectExec("UPDATE jetpack_monitor_sites SET site_status").
+		WithArgs(2, now, int64(42)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE jetpack_monitor_sites SET last_checked_at").
+		WithArgs(now, int64(42)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE jetpack_monitor_sites SET last_alert_sent_at").
+		WithArgs(now, int64(42)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE jetpack_monitor_sites SET ssl_expiry_date").
+		WithArgs(now, int64(42)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE jetmon_hosts SET last_heartbeat").
+		WithArgs("host-a").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE jetmon_hosts SET status = 'draining'").
+		WithArgs("host-a").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("DELETE FROM jetmon_hosts").
+		WithArgs("host-a").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO jetmon_false_positives").
+		WithArgs(int64(42), 500, 1, int64(123)).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec("INSERT INTO jetmon_check_history").
+		WithArgs(int64(42), 200, 0, int64(100), int64(1), int64(2), int64(3), int64(4)).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	if err := UpdateSiteStatus(context.Background(), 42, 2, now); err != nil {
+		t.Fatalf("UpdateSiteStatus: %v", err)
+	}
+	if err := MarkSiteChecked(context.Background(), 42, now); err != nil {
+		t.Fatalf("MarkSiteChecked: %v", err)
+	}
+	if err := UpdateLastAlertSent(context.Background(), 42, now); err != nil {
+		t.Fatalf("UpdateLastAlertSent: %v", err)
+	}
+	if err := UpdateSSLExpiry(context.Background(), 42, now); err != nil {
+		t.Fatalf("UpdateSSLExpiry: %v", err)
+	}
+	if err := Heartbeat(context.Background(), "host-a"); err != nil {
+		t.Fatalf("Heartbeat: %v", err)
+	}
+	if err := MarkHostDraining(context.Background(), "host-a"); err != nil {
+		t.Fatalf("MarkHostDraining: %v", err)
+	}
+	if err := ReleaseHost(context.Background(), "host-a"); err != nil {
+		t.Fatalf("ReleaseHost: %v", err)
+	}
+	if err := RecordFalsePositive(42, 500, 1, 123); err != nil {
+		t.Fatalf("RecordFalsePositive: %v", err)
+	}
+	if err := RecordCheckHistory(42, 200, 0, 100, 1, 2, 3, 4); err != nil {
+		t.Fatalf("RecordCheckHistory: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestUpdateSiteStatusTx(t *testing.T) {
+	mock, cleanup := withMockDB(t)
+	defer cleanup()
+
+	now := time.Now().UTC()
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE jetpack_monitor_sites SET site_status").
+		WithArgs(2, now, int64(42)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if err := UpdateSiteStatusTx(context.Background(), tx, 42, 2, now); err != nil {
+		t.Fatalf("UpdateSiteStatusTx: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestGetAllHostsScansRows(t *testing.T) {
+	mock, cleanup := withMockDB(t)
+	defer cleanup()
+
+	now := time.Now().UTC()
+	mock.ExpectQuery("SELECT host_id, bucket_min, bucket_max").
+		WillReturnRows(sqlmock.NewRows([]string{"host_id", "bucket_min", "bucket_max", "last_heartbeat", "status"}).
+			AddRow("host-a", 0, 49, now, "active").
+			AddRow("host-b", 50, 99, now, "draining"))
+
+	hosts, err := GetAllHosts()
+	if err != nil {
+		t.Fatalf("GetAllHosts: %v", err)
+	}
+	if len(hosts) != 2 || hosts[1].Status != "draining" {
+		t.Fatalf("hosts = %+v", hosts)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestClaimBucketsRebalancesKnownHosts(t *testing.T) {
+	mock, cleanup := withMockDB(t)
+	defer cleanup()
+
+	mock.ExpectBegin()
+	mock.ExpectExec("DELETE FROM jetmon_hosts").
+		WithArgs(60, "host-b").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("SELECT host_id FROM jetmon_hosts").
+		WithArgs("host-b").
+		WillReturnRows(sqlmock.NewRows([]string{"host_id"}).AddRow("host-a"))
+	mock.ExpectExec("INSERT INTO jetmon_hosts").
+		WithArgs("host-a", 0, 4).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO jetmon_hosts").
+		WithArgs("host-b", 5, 9).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	minBucket, maxBucket, err := ClaimBuckets("host-b", 10, 10, 60)
+	if err != nil {
+		t.Fatalf("ClaimBuckets: %v", err)
+	}
+	if minBucket != 5 || maxBucket != 9 {
+		t.Fatalf("claimed range = %d..%d, want 5..9", minBucket, maxBucket)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestMigrateAppliesOnlyPendingMigrations(t *testing.T) {
+	mock, cleanup := withMockDB(t)
+	defer cleanup()
+
+	origMigrations := migrations
+	migrations = []migration{
+		{id: 1, sql: "CREATE TABLE jetmon_schema_migrations"},
+		{id: 2, sql: "ALTER TABLE already_done"},
+		{id: 3, sql: "ALTER TABLE pending_change"},
+	}
+	defer func() { migrations = origMigrations }()
+
+	mock.ExpectExec("CREATE TABLE jetmon_schema_migrations").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT IGNORE INTO jetmon_schema_migrations").
+		WithArgs(1).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT COUNT").
+		WithArgs(2).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	mock.ExpectQuery("SELECT COUNT").
+		WithArgs(3).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectExec("ALTER TABLE pending_change").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT IGNORE INTO jetmon_schema_migrations").
+		WithArgs(3).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	if err := Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
 	}
 }
