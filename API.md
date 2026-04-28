@@ -10,8 +10,9 @@ may include `X-Jetmon-Tenant-ID`, `X-Jetmon-Public-Scopes`, and
 rejects those headers from any other consumer. When accepted, the context is
 recorded in API audit metadata and used to owner-scope webhook and alert-contact
 CRUD, delivery history, manual delivery retry, and alert-contact send-test
-routes. Normal internal callers that omit these headers keep the unscoped
-operator behavior described below.
+routes. Site, event, SLA/stat, and trigger-now routes are scoped through the
+`jetmon_site_tenants` mapping table. Normal internal callers that omit these
+headers keep the unscoped operator behavior described below.
 
 This shapes several design choices: authentication is per-consumer rather than per-customer, scopes are coarse rather than granular, error messages are verbose rather than guarded, and key management is an ops-only concern rather than a self-service feature. The trust boundary is "is this a known internal system?", not "is this user allowed to see this site?".
 
@@ -273,6 +274,9 @@ List sites visible to this token.
 
 **Scopes:** `read`
 
+Normal internal callers see the full site table. Gateway-routed requests only
+see rows mapped to `X-Jetmon-Tenant-ID` in `jetmon_site_tenants`.
+
 **Query parameters:**
 
 | Param | Type | Description |
@@ -350,6 +354,10 @@ Single site, same shape as a list entry plus an `active_events` array for any op
 
 `active_events` is the simplest answer to "tell me everything wrong with this site right now." Ordered by severity descending.
 
+Gateway-routed single-site, event/history, SLA/stat, and trigger-now routes all
+derive visibility through `jetmon_site_tenants`. A site or event outside the
+tenant mapping is returned as not found.
+
 #### `POST /api/v1/sites`
 
 Create a site.
@@ -374,6 +382,10 @@ Create a site.
 ```
 
 **Response 201:** the site object.
+
+When the `gateway` consumer creates a site with tenant context, Jetmon inserts
+the site row and the `(tenant_id, blog_id)` mapping in one transaction. Internal
+creates without tenant context keep the existing unscoped behavior.
 
 **Errors:**
 

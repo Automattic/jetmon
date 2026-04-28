@@ -13,6 +13,8 @@ import (
 
 const sitesListSQL = ` SELECT blog_id, blog_id AS public_id, monitor_url, monitor_active, site_status, last_checked_at, last_status_change, ssl_expiry_date, check_keyword, redirect_policy, maintenance_start, maintenance_end, alert_cooldown_minutes FROM jetpack_monitor_sites WHERE blog_id > ? ORDER BY blog_id ASC LIMIT ?`
 
+const sitesListForTenantSQL = ` SELECT s.blog_id, s.blog_id AS public_id, s.monitor_url, s.monitor_active, s.site_status, s.last_checked_at, s.last_status_change, s.ssl_expiry_date, s.check_keyword, s.redirect_policy, s.maintenance_start, s.maintenance_end, s.alert_cooldown_minutes FROM jetpack_monitor_sites s JOIN jetmon_site_tenants st ON st.blog_id = s.blog_id AND st.tenant_id = ? WHERE s.blog_id > ? ORDER BY s.blog_id ASC LIMIT ?`
+
 const singleSiteSQL = ` SELECT blog_id, blog_id AS public_id, monitor_url, monitor_active, site_status, last_checked_at, last_status_change, ssl_expiry_date, check_keyword, redirect_policy, maintenance_start, maintenance_end, alert_cooldown_minutes FROM jetpack_monitor_sites WHERE blog_id = ?`
 
 const activeEventsSQL = ` SELECT id, check_type, severity, state, started_at FROM jetmon_events WHERE blog_id = ? AND ended_at IS NULL ORDER BY severity DESC, started_at ASC`
@@ -98,6 +100,37 @@ func TestListSitesReturnsRows(t *testing.T) {
 	}
 	if resp.Data[1].ActiveEventID == nil || *resp.Data[1].ActiveEventID != 9 {
 		t.Errorf("second active_event_id = %v, want 9", resp.Data[1].ActiveEventID)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+func TestListSitesWithGatewayTenantScopesRows(t *testing.T) {
+	s, mock, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	rows := makeSiteRow(101, "https://example.com", 1)
+	mock.ExpectQuery(sitesListForTenantSQL).
+		WithArgs("tenant-a", int64(0), 51).
+		WillReturnRows(rows)
+	mock.ExpectQuery(activeEventRollupsSQL("?")).
+		WithArgs(int64(101)).
+		WillReturnRows(sqlmock.NewRows(activeEventRollupColumns))
+
+	req := httptest.NewRequest("GET", "/api/v1/sites", nil)
+	req = setGatewayTenantCtx(req, key, "tenant-a")
+	rec := invokeAuthed(s, req, s.handleListSites)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Data []siteResponse `json:"data"`
+	}
+	readJSON(t, rec.Body, &resp)
+	if len(resp.Data) != 1 || resp.Data[0].ID != 101 {
+		t.Fatalf("data = %+v, want site 101", resp.Data)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
@@ -345,6 +378,30 @@ func TestScanSiteRowIgnoresLegacyStatusWhenProjectionDisabled(t *testing.T) {
 	readJSON(t, rec.Body, &resp)
 	if resp.CurrentState != "Up" || resp.CurrentSeverity != 0 {
 		t.Fatalf("projection-disabled state = (%q, %d), want (Up, 0)", resp.CurrentState, resp.CurrentSeverity)
+	}
+}
+
+func TestGetSiteWithGatewayTenantRejectsUnmappedSite(t *testing.T) {
+	s, mock, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	mock.ExpectQuery(siteTenantCheckSQL).
+		WithArgs("tenant-a", int64(501)).
+		WillReturnRows(sqlmock.NewRows([]string{"1"}))
+
+	req := httptest.NewRequest("GET", "/api/v1/sites/501", nil)
+	req.SetPathValue("id", "501")
+	req = setGatewayTenantCtx(req, key, "tenant-a")
+	rec := invokeAuthed(s, req, s.handleGetSite)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+	if got := readErrorBody(t, rec.Body).Code; got != "site_not_found" {
+		t.Fatalf("code = %q, want site_not_found", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
 	}
 }
 

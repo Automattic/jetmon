@@ -47,6 +47,9 @@ func (s *Server) handleCloseEvent(w http.ResponseWriter, r *http.Request) {
 			"event id must be a positive integer")
 		return
 	}
+	if !s.ensureSiteVisibleForRequest(w, r, siteID) {
+		return
+	}
 
 	var body closeEventRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -179,6 +182,9 @@ func (s *Server) handleTriggerNow(w http.ResponseWriter, r *http.Request) {
 	if err != nil || siteID <= 0 {
 		writeError(w, r, http.StatusBadRequest, "invalid_site_id",
 			"site id must be a positive integer")
+		return
+	}
+	if !s.ensureSiteVisibleForRequest(w, r, siteID) {
 		return
 	}
 

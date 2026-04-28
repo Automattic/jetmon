@@ -72,6 +72,32 @@ func TestCloseEventHappyPath(t *testing.T) {
 	}
 }
 
+func TestCloseEventWithGatewayTenantRejectsUnmappedSite(t *testing.T) {
+	s, mock, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	mock.ExpectQuery(siteTenantCheckSQL).
+		WithArgs("tenant-a", int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"1"}))
+
+	body := []byte(`{"reason":"manual_override"}`)
+	req := newPOSTWithBody("/api/v1/sites/42/events/7/close", body)
+	req.SetPathValue("id", "42")
+	req.SetPathValue("event_id", "7")
+	req = setGatewayTenantCtx(req, key, "tenant-a")
+	rec := invokeAuthed(s, req, s.handleCloseEvent)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+	if got := readErrorBody(t, rec.Body).Code; got != "site_not_found" {
+		t.Fatalf("code = %q, want site_not_found", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
 func TestCloseEventNotFound(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
@@ -197,5 +223,29 @@ func TestCloseEventInvalidIDs(t *testing.T) {
 		if got := readErrorBody(t, rec.Body).Code; got != c.code {
 			t.Errorf("siteID=%s eventID=%s code=%q want %q", c.siteID, c.eventID, got, c.code)
 		}
+	}
+}
+
+func TestTriggerNowWithGatewayTenantRejectsUnmappedSite(t *testing.T) {
+	s, mock, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	mock.ExpectQuery(siteTenantCheckSQL).
+		WithArgs("tenant-a", int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"1"}))
+
+	req := newPOSTWithBody("/api/v1/sites/42/trigger-now", nil)
+	req.SetPathValue("id", "42")
+	req = setGatewayTenantCtx(req, key, "tenant-a")
+	rec := invokeAuthed(s, req, s.handleTriggerNow)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+	if got := readErrorBody(t, rec.Body).Code; got != "site_not_found" {
+		t.Fatalf("code = %q, want site_not_found", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
 	}
 }

@@ -141,3 +141,7 @@ var columnsTransition = []string{
 	"id", "event_id", "severity_before", "severity_after",
 	"state_before", "state_after", "reason", "source", "metadata", "changed_at",
 }
+
+const siteTenantCheckSQL = `SELECT 1 FROM jetmon_site_tenants WHERE tenant_id = ? AND blog_id = ? LIMIT 1`
+
+const insertSiteTenantTestSQL = ` INSERT INTO jetmon_site_tenants (tenant_id, blog_id, source) VALUES (?, ?, 'gateway') ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP`

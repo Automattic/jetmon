@@ -76,6 +76,37 @@ func TestCreateSiteHappyPath(t *testing.T) {
 	}
 }
 
+func TestCreateSiteWithGatewayTenantAssignsMapping(t *testing.T) {
+	s, mock, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	mock.ExpectQuery(siteExistsCheckSQL).WithArgs(int64(12345)).
+		WillReturnRows(sqlmock.NewRows([]string{"1"}))
+	mock.ExpectBegin()
+	mock.ExpectExec(insertSiteSQL).
+		WithArgs(int64(12345), 0, "https://example.com", 1, 5,
+			nil, "follow", nil, nil, nil).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(insertSiteTenantTestSQL).
+		WithArgs("tenant-a", int64(12345)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	mock.ExpectQuery(singleSiteSQL).WithArgs(int64(12345)).
+		WillReturnRows(makeSiteRow(12345, "https://example.com", 1))
+
+	body := []byte(`{"blog_id": 12345, "monitor_url": "https://example.com"}`)
+	req := newPOSTWithBody("/api/v1/sites", body)
+	req = setGatewayTenantCtx(req, key, "tenant-a")
+	rec := invokeAuthed(s, req, s.handleCreateSite)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body=%s", rec.Code, rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
 func TestCreateSiteRejectsMissingBlogID(t *testing.T) {
 	s, _, key, cleanup := newTestServer(t)
 	defer cleanup()
@@ -171,6 +202,31 @@ func TestUpdateSiteHappyPath(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUpdateSiteWithGatewayTenantRejectsUnmappedSite(t *testing.T) {
+	s, mock, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	mock.ExpectQuery(siteTenantCheckSQL).
+		WithArgs("tenant-a", int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"1"}))
+
+	body := []byte(`{"monitor_url": "https://new.example.com"}`)
+	req := newPATCHWithBody("/api/v1/sites/42", body)
+	req.SetPathValue("id", "42")
+	req = setGatewayTenantCtx(req, key, "tenant-a")
+	rec := invokeAuthed(s, req, s.handleUpdateSite)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+	if got := readErrorBody(t, rec.Body).Code; got != "site_not_found" {
+		t.Fatalf("code = %q, want site_not_found", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
 	}
 }
 

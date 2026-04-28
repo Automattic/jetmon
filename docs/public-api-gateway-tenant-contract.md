@@ -56,9 +56,9 @@ Jetmon ever serves customers without a gateway in front.
 
 | Route family | Gateway checks | Jetmon checks before public exposure |
 |---|---|---|
-| Sites list/detail | Caller can access each `blog_id`; plan allows monitoring data. | Filter by tenant-owned site mapping if Jetmon is asked to enforce ownership directly. |
-| Event/history/SLA reads | Caller can access the parent site; requested time range and filters are allowed. | Verify child resources belong to the requested site; add tenant filter through the site mapping. |
-| Site/check writes | Caller can manage the parent site; plan permits monitor mutation and trigger-now. | Verify site ownership before mutation; keep orchestrator/eventstore invariants unchanged. |
+| Sites list/detail | Caller can access each `blog_id`; plan allows monitoring data. | Implemented through `jetmon_site_tenants` when gateway context is present. |
+| Event/history/SLA reads | Caller can access the parent site; requested time range and filters are allowed. | Implemented through the parent site's `jetmon_site_tenants` mapping. |
+| Site/check writes | Caller can manage the parent site; plan permits monitor mutation and trigger-now. | Implemented through the parent site's `jetmon_site_tenants` mapping; orchestrator/eventstore invariants remain unchanged. |
 | Webhook CRUD/deliveries | Caller can manage tenant-owned webhooks; endpoint URL policy is satisfied. | Add `owner_tenant_id` to webhooks and deliveries or derive delivery visibility through the webhook. |
 | Alert contact CRUD/deliveries | Caller can manage tenant-owned alert contacts; transport is allowed by plan. | Add `owner_tenant_id` to alert contacts and deliveries or derive delivery visibility through the contact. |
 | Manual retries/tests | Caller owns the parent webhook/contact and route-specific abuse limits allow the operation. | Verify parent ownership before enqueueing or dispatching. |
@@ -72,6 +72,7 @@ the same tenant id stable.
 
 For customer-owned resources created in Jetmon, prefer explicit ownership:
 
+- `jetmon_site_tenants(tenant_id, blog_id)` for monitored-site visibility
 - `jetmon_webhooks.owner_tenant_id`
 - `jetmon_alert_contacts.owner_tenant_id`
 - delivery visibility derived from the owned webhook/contact
@@ -79,10 +80,9 @@ For customer-owned resources created in Jetmon, prefer explicit ownership:
   cache is made durable or shared across public tenants
 
 For monitored sites, do not assume ownership is always one-to-one with
-`blog_id`. Start with the gateway as the authority. If Jetmon must enforce site
-visibility directly, add a Jetmon-owned mapping such as
-`jetmon_site_tenants(blog_id, tenant_id)` unless product requirements prove a
-single `owner_tenant_id` column is enough.
+`blog_id`. Jetmon now enforces site visibility for gateway-routed requests with
+the `jetmon_site_tenants(tenant_id, blog_id)` mapping table, which preserves
+room for shared ownership or gateway-derived delegation.
 
 Do not use `created_by` as ownership. It records the internal API key consumer
 that created a row and is audit-only.
@@ -114,11 +114,12 @@ errors.
    `owner_tenant_id`. Delivery history and manual retry visibility are derived
    through the owned webhook/contact, and alert-contact send-test verifies the
    contact owner before loading the destination credential.
-4. Add site visibility enforcement only after choosing the site ownership
-   representation. Prefer a mapping table if ownership can be many-to-many or
-   gateway-derived.
-5. Add public-scope and redaction tests route family by route family.
-6. Only after those checks exist, consider exposing Jetmon without a gateway.
+4. Gateway-routed site, event/history, SLA/stat, and trigger-now routes now use
+   `jetmon_site_tenants` for defense-in-depth ownership checks.
+5. Backfill/reconcile `jetmon_site_tenants` from the gateway's source of truth
+   before any customer traffic depends on direct Jetmon enforcement.
+6. Add public-scope and redaction tests route family by route family.
+7. Only after those checks exist, consider exposing Jetmon without a gateway.
 
 ## Non-Goals
 
