@@ -136,7 +136,22 @@ For each v1 host:
      directory writes, and StatsD initialization; WPCOM must not show an open
      circuit
 9. Watch one full check round for that bucket range.
-10. Confirm:
+10. Verify recent check activity for the copied bucket range:
+
+   ```bash
+   ./jetmon2 rollout activity-check --since=15m
+   ```
+
+   The check defaults to the pinned range from config. It fails if active sites
+   exist in the range but none have `last_checked_at` at or after the cutoff.
+   After enough time for a full expected round, use `--require-all` to fail
+   unless every active site in the range has been checked recently:
+
+   ```bash
+   ./jetmon2 rollout activity-check --since=15m --require-all
+   ```
+
+11. Confirm:
    - checks are running only for the pinned range
    - Veriflier confirmation works
    - WPCOM notifications retain the v1 payload shape

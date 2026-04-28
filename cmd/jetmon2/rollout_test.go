@@ -622,6 +622,224 @@ func TestRunDynamicRolloutCheckWarnsWhenSiteTableIsEmpty(t *testing.T) {
 	}
 }
 
+func TestRunActivityCheckSuccess(t *testing.T) {
+	now := time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC)
+	cfg := dynamicRolloutTestConfig()
+	var gotCutoff time.Time
+	deps := activityCheckDeps{
+		Now: func() time.Time { return now },
+		CountActiveSitesForBucketRange: func(_ context.Context, min, max int) (int, error) {
+			if min != 0 || max != 9 {
+				t.Fatalf("active range = %d-%d, want 0-9", min, max)
+			}
+			return 10, nil
+		},
+		CountRecentlyCheckedActiveSitesForRange: func(_ context.Context, min, max int, cutoff time.Time) (int, error) {
+			if min != 0 || max != 9 {
+				t.Fatalf("recent range = %d-%d, want 0-9", min, max)
+			}
+			gotCutoff = cutoff
+			return 3, nil
+		},
+	}
+
+	var out bytes.Buffer
+	if err := runActivityCheck(context.Background(), &out, cfg, -1, -1, "15m", false, deps); err != nil {
+		t.Fatalf("runActivityCheck: %v", err)
+	}
+	if want := now.Add(-15 * time.Minute); !gotCutoff.Equal(want) {
+		t.Fatalf("cutoff = %s, want %s", gotCutoff, want)
+	}
+	for _, want := range []string{
+		"INFO activity_range=0-9",
+		"INFO active_sites=10",
+		"INFO active_sites_checked_since=3",
+		"PASS rollout_activity=recent_checks_present",
+		"post-cutover activity check passed",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestRunActivityCheckRequireAll(t *testing.T) {
+	now := time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC)
+	cfg := dynamicRolloutTestConfig()
+	deps := activityCheckDeps{
+		Now: func() time.Time { return now },
+		CountActiveSitesForBucketRange: func(context.Context, int, int) (int, error) {
+			return 3, nil
+		},
+		CountRecentlyCheckedActiveSitesForRange: func(context.Context, int, int, time.Time) (int, error) {
+			return 3, nil
+		},
+	}
+
+	var out bytes.Buffer
+	if err := runActivityCheck(context.Background(), &out, cfg, -1, -1, "15m", true, deps); err != nil {
+		t.Fatalf("runActivityCheck: %v", err)
+	}
+	if !strings.Contains(out.String(), "PASS rollout_activity=all_active_sites_checked") {
+		t.Fatalf("output missing require-all pass:\n%s", out.String())
+	}
+}
+
+func TestRunActivityCheckWarnsWhenRangeIsEmpty(t *testing.T) {
+	now := time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC)
+	cfg := dynamicRolloutTestConfig()
+	deps := activityCheckDeps{
+		Now: func() time.Time { return now },
+		CountActiveSitesForBucketRange: func(context.Context, int, int) (int, error) {
+			return 0, nil
+		},
+		CountRecentlyCheckedActiveSitesForRange: func(context.Context, int, int, time.Time) (int, error) {
+			return 0, nil
+		},
+	}
+
+	var out bytes.Buffer
+	if err := runActivityCheck(context.Background(), &out, cfg, -1, -1, "15m", false, deps); err != nil {
+		t.Fatalf("runActivityCheck: %v", err)
+	}
+	if !strings.Contains(out.String(), "WARN active_sites=0") {
+		t.Fatalf("output missing empty range warning:\n%s", out.String())
+	}
+}
+
+func TestRunActivityCheckFailures(t *testing.T) {
+	now := time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC)
+	cfg := dynamicRolloutTestConfig()
+	tests := []struct {
+		name string
+		deps activityCheckDeps
+		want string
+	}{
+		{
+			name: "active count error",
+			deps: activityCheckDeps{
+				Now: func() time.Time { return now },
+				CountActiveSitesForBucketRange: func(context.Context, int, int) (int, error) {
+					return 0, errors.New("db unavailable")
+				},
+				CountRecentlyCheckedActiveSitesForRange: func(context.Context, int, int, time.Time) (int, error) {
+					return 0, nil
+				},
+			},
+			want: "db unavailable",
+		},
+		{
+			name: "recent count error",
+			deps: activityCheckDeps{
+				Now: func() time.Time { return now },
+				CountActiveSitesForBucketRange: func(context.Context, int, int) (int, error) {
+					return 10, nil
+				},
+				CountRecentlyCheckedActiveSitesForRange: func(context.Context, int, int, time.Time) (int, error) {
+					return 0, errors.New("db unavailable")
+				},
+			},
+			want: "count recently checked",
+		},
+		{
+			name: "no recent checks",
+			deps: activityCheckDeps{
+				Now: func() time.Time { return now },
+				CountActiveSitesForBucketRange: func(context.Context, int, int) (int, error) {
+					return 10, nil
+				},
+				CountRecentlyCheckedActiveSitesForRange: func(context.Context, int, int, time.Time) (int, error) {
+					return 0, nil
+				},
+			},
+			want: "no active sites",
+		},
+		{
+			name: "require all mismatch",
+			deps: activityCheckDeps{
+				Now: func() time.Time { return now },
+				CountActiveSitesForBucketRange: func(context.Context, int, int) (int, error) {
+					return 10, nil
+				},
+				CountRecentlyCheckedActiveSitesForRange: func(context.Context, int, int, time.Time) (int, error) {
+					return 9, nil
+				},
+			},
+			want: "only 9/10",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			err := runActivityCheck(context.Background(), &out, cfg, -1, -1, "15m", tt.name == "require all mismatch", tt.deps)
+			if err == nil {
+				t.Fatal("runActivityCheck succeeded")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveActivityCutoff(t *testing.T) {
+	now := time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name    string
+		since   string
+		want    time.Time
+		wantErr string
+	}{
+		{
+			name:  "duration",
+			since: "15m",
+			want:  now.Add(-15 * time.Minute),
+		},
+		{
+			name:  "rfc3339",
+			since: "2026-04-28T11:30:00Z",
+			want:  time.Date(2026, 4, 28, 11, 30, 0, 0, time.UTC),
+		},
+		{
+			name:    "empty",
+			since:   "",
+			wantErr: "must not be empty",
+		},
+		{
+			name:    "negative duration",
+			since:   "-1m",
+			wantErr: "must be > 0",
+		},
+		{
+			name:    "invalid",
+			since:   "yesterday",
+			wantErr: "must be a duration",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := resolveActivityCutoff(now, tt.since)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatal("resolveActivityCutoff succeeded")
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("error = %q, want substring %q", err.Error(), tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveActivityCutoff: %v", err)
+			}
+			if !got.Equal(tt.want) {
+				t.Fatalf("cutoff = %s, want %s", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRunDynamicRolloutCheckFailures(t *testing.T) {
 	now := time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC)
 	minBucket, maxBucket := 1, 2

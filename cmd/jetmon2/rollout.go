@@ -32,6 +32,12 @@ type dynamicRolloutCheckDeps struct {
 	CountLegacyProjectionDrift     func(context.Context, int, int) (int, error)
 }
 
+type activityCheckDeps struct {
+	Now                                     func() time.Time
+	CountActiveSitesForBucketRange          func(context.Context, int, int) (int, error)
+	CountRecentlyCheckedActiveSitesForRange func(context.Context, int, int, time.Time) (int, error)
+}
+
 type projectionDriftDeps struct {
 	CountLegacyProjectionDrift func(context.Context, int, int) (int, error)
 	ListLegacyProjectionDrift  func(context.Context, int, int, int) ([]db.ProjectionDriftRow, error)
@@ -39,7 +45,7 @@ type projectionDriftDeps struct {
 
 func cmdRollout(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout <static-plan-check|pinned-check|dynamic-check|projection-drift> [args]")
+		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout <static-plan-check|pinned-check|dynamic-check|activity-check|projection-drift> [args]")
 		os.Exit(1)
 	}
 
@@ -50,10 +56,12 @@ func cmdRollout(args []string) {
 		cmdRolloutPinnedCheck(args[1:])
 	case "dynamic-check":
 		cmdRolloutDynamicCheck(args[1:])
+	case "activity-check":
+		cmdRolloutActivityCheck(args[1:])
 	case "projection-drift":
 		cmdRolloutProjectionDrift(args[1:])
 	default:
-		fmt.Fprintf(os.Stderr, "unknown rollout subcommand %q (want: static-plan-check, pinned-check, dynamic-check, projection-drift)\n", args[0])
+		fmt.Fprintf(os.Stderr, "unknown rollout subcommand %q (want: static-plan-check, pinned-check, dynamic-check, activity-check, projection-drift)\n", args[0])
 		os.Exit(1)
 	}
 }
@@ -177,6 +185,43 @@ func cmdRolloutDynamicCheck(args []string) {
 		CountLegacyProjectionDrift:     db.CountLegacyProjectionDrift,
 	}
 	if err := runDynamicRolloutCheck(context.Background(), os.Stdout, config.Get(), deps); err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func cmdRolloutActivityCheck(args []string) {
+	fs := flag.NewFlagSet("rollout activity-check", flag.ExitOnError)
+	bucketMin := fs.Int("bucket-min", -1, "inclusive bucket minimum (default pinned range or 0)")
+	bucketMax := fs.Int("bucket-max", -1, "inclusive bucket maximum (default pinned range or BUCKET_TOTAL-1)")
+	since := fs.String("since", "15m", "activity cutoff as duration like 15m or RFC3339 timestamp")
+	requireAll := fs.Bool("require-all", false, "fail unless every active site in range was checked since the cutoff")
+	_ = fs.Parse(args)
+	if fs.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout activity-check [--bucket-min=N --bucket-max=N] [--since=15m] [--require-all]")
+		os.Exit(1)
+	}
+
+	configPath := envOrDefault("JETMON_CONFIG", "config/config.json")
+	if err := config.Load(configPath); err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL config parse: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("PASS config parse")
+
+	config.LoadDB()
+	if err := db.ConnectWithRetry(3); err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL db connect: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("PASS db connect")
+
+	deps := activityCheckDeps{
+		Now:                                     time.Now,
+		CountActiveSitesForBucketRange:          db.CountActiveSitesForBucketRange,
+		CountRecentlyCheckedActiveSitesForRange: db.CountRecentlyCheckedActiveSitesForBucketRange,
+	}
+	if err := runActivityCheck(context.Background(), os.Stdout, config.Get(), *bucketMin, *bucketMax, *since, *requireAll, deps); err != nil {
 		fmt.Fprintf(os.Stderr, "FAIL %v\n", err)
 		os.Exit(1)
 	}
@@ -571,6 +616,81 @@ func runDynamicRolloutCheck(ctx context.Context, out io.Writer, cfg *config.Conf
 	return nil
 }
 
+func runActivityCheck(ctx context.Context, out io.Writer, cfg *config.Config, bucketMin, bucketMax int, since string, requireAll bool, deps activityCheckDeps) error {
+	if cfg == nil {
+		return errors.New("config is not loaded")
+	}
+	minBucket, maxBucket, err := resolveRolloutBucketRange(cfg, bucketMin, bucketMax)
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	if deps.Now != nil {
+		now = deps.Now()
+	}
+	cutoff, err := resolveActivityCutoff(now, since)
+	if err != nil {
+		return err
+	}
+
+	if deps.CountActiveSitesForBucketRange == nil {
+		return errors.New("active site counter is not configured")
+	}
+	activeSites, err := deps.CountActiveSitesForBucketRange(ctx, minBucket, maxBucket)
+	if err != nil {
+		return fmt.Errorf("count active sites in activity range %d-%d: %w", minBucket, maxBucket, err)
+	}
+
+	if deps.CountRecentlyCheckedActiveSitesForRange == nil {
+		return errors.New("recently checked active site counter is not configured")
+	}
+	checkedSince, err := deps.CountRecentlyCheckedActiveSitesForRange(ctx, minBucket, maxBucket, cutoff)
+	if err != nil {
+		return fmt.Errorf("count recently checked active sites in range %d-%d since %s: %w", minBucket, maxBucket, cutoff.Format(time.RFC3339), err)
+	}
+
+	fmt.Fprintf(out, "INFO activity_range=%d-%d\n", minBucket, maxBucket)
+	fmt.Fprintf(out, "INFO activity_since=%s\n", cutoff.Format(time.RFC3339))
+	fmt.Fprintf(out, "INFO active_sites=%d\n", activeSites)
+	fmt.Fprintf(out, "INFO active_sites_checked_since=%d\n", checkedSince)
+
+	if activeSites == 0 {
+		fmt.Fprintln(out, "WARN active_sites=0; confirm this range is intentionally empty")
+		fmt.Fprintln(out, "post-cutover activity check passed")
+		return nil
+	}
+	if checkedSince == 0 {
+		return fmt.Errorf("no active sites in range %d-%d have last_checked_at >= %s", minBucket, maxBucket, cutoff.Format(time.RFC3339))
+	}
+	if requireAll && checkedSince < activeSites {
+		return fmt.Errorf("only %d/%d active sites in range %d-%d have last_checked_at >= %s", checkedSince, activeSites, minBucket, maxBucket, cutoff.Format(time.RFC3339))
+	}
+	if requireAll {
+		fmt.Fprintln(out, "PASS rollout_activity=all_active_sites_checked")
+	} else {
+		fmt.Fprintln(out, "PASS rollout_activity=recent_checks_present")
+	}
+	fmt.Fprintln(out, "post-cutover activity check passed")
+	return nil
+}
+
+func resolveActivityCutoff(now time.Time, since string) (time.Time, error) {
+	since = strings.TrimSpace(since)
+	if since == "" {
+		return time.Time{}, errors.New("since must not be empty")
+	}
+	if d, err := time.ParseDuration(since); err == nil {
+		if d <= 0 {
+			return time.Time{}, errors.New("since duration must be > 0")
+		}
+		return now.Add(-d).UTC(), nil
+	}
+	if t, err := time.Parse(time.RFC3339, since); err == nil {
+		return t.UTC(), nil
+	}
+	return time.Time{}, fmt.Errorf("since %q must be a duration like 15m or an RFC3339 timestamp", since)
+}
+
 func validateDynamicBucketCoverage(hosts []db.HostRow, bucketTotal int, heartbeatGrace time.Duration, now time.Time) error {
 	if bucketTotal <= 0 {
 		return errors.New("BUCKET_TOTAL must be > 0")
@@ -666,6 +786,10 @@ func runProjectionDriftReport(ctx context.Context, out io.Writer, cfg *config.Co
 }
 
 func resolveProjectionDriftRange(cfg *config.Config, bucketMin, bucketMax int) (int, int, error) {
+	return resolveRolloutBucketRange(cfg, bucketMin, bucketMax)
+}
+
+func resolveRolloutBucketRange(cfg *config.Config, bucketMin, bucketMax int) (int, int, error) {
 	if bucketMin < -1 || bucketMax < -1 {
 		return 0, 0, errors.New("bucket-min and bucket-max must be >= 0")
 	}

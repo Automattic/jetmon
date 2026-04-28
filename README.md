@@ -560,18 +560,25 @@ bucket ownership and gives each host a simple rollback path.
    overlapping the pinned range, active site count for the range, and zero
    legacy projection drift.
 
-6) Stop the v1 process for that range, start v2, and verify checks,
-   Veriflier confirmations, WPCOM notifications, audit rows, and legacy
+6) Stop the v1 process for that range, start v2, and verify recent check
+   activity for the copied bucket range:
+
+		./jetmon2 rollout activity-check --since=15m
+
+   Use `--require-all` after a full expected round when every active site in
+   the range should have a fresh `last_checked_at`.
+
+7) Verify Veriflier confirmations, WPCOM notifications, audit rows, and legacy
    `site_status` projection for that bucket range. If the operator dashboard is
    enabled, also confirm rollout guard state and dependency health before
    moving to the next host.
 
-7) If rollback is needed, stop v2 and restart the original v1 process with the
+8) If rollback is needed, stop v2 and restart the original v1 process with the
    same bucket config. Because the v2 migrations are additive and the legacy
    projection remains enabled, legacy readers continue to see familiar status
    fields.
 
-8) Repeat for each v1 host. After the whole fleet is on v2 and stable, plan a
+9) Repeat for each v1 host. After the whole fleet is on v2 and stable, plan a
    coordinated dynamic-ownership cutover, remove `PINNED_BUCKET_*` from the v2
    monitor configs, restart the fleet in the approved window, then run:
 

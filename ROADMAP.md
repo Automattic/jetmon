@@ -657,6 +657,10 @@ where to look, and what each item unlocked.
   Operators can catch gaps, overlaps, invalid ranges, and duplicate host rows
   while the rollback surface is still just the unmodified v1 fleet, then assert
   the exact host/range being copied into each pinned v2 config.
+- **Post-cutover activity preflight.** `./jetmon2 rollout activity-check`
+  verifies active sites in the rollout range have fresh `last_checked_at`
+  values after a host replacement. It gives operators an executable check for
+  "this range is being processed now" before they move to the next v1 host.
 - **Systemd service cleanup.** The monitor unit now places start-limit keys in
   the correct systemd section, and the deliverer unit validates with
   `systemd-analyze`.

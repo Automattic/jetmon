@@ -79,6 +79,25 @@ func CountActiveSitesForBucketRange(ctx context.Context, bucketMin, bucketMax in
 	return count, nil
 }
 
+// CountRecentlyCheckedActiveSitesForBucketRange returns the number of active
+// monitor rows in the inclusive bucket range whose last_checked_at timestamp is
+// at or after the provided cutoff.
+func CountRecentlyCheckedActiveSitesForBucketRange(ctx context.Context, bucketMin, bucketMax int, cutoff time.Time) (int, error) {
+	var count int
+	err := db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		  FROM jetpack_monitor_sites
+		 WHERE monitor_active = 1
+		   AND bucket_no BETWEEN ? AND ?
+		   AND last_checked_at >= ?`,
+		bucketMin, bucketMax, cutoff.UTC(),
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count recently checked active sites: %w", err)
+	}
+	return count, nil
+}
+
 // UpdateSiteStatus updates site_status and last_status_change for a site.
 func UpdateSiteStatus(ctx context.Context, blogID int64, status int, changedAt time.Time) error {
 	_, err := db.ExecContext(ctx,

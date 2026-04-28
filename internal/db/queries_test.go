@@ -160,6 +160,27 @@ func TestCountActiveSitesForBucketRange(t *testing.T) {
 	}
 }
 
+func TestCountRecentlyCheckedActiveSitesForBucketRange(t *testing.T) {
+	mock, cleanup := withMockDB(t)
+	defer cleanup()
+
+	cutoff := time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC)
+	mock.ExpectQuery("SELECT COUNT").
+		WithArgs(10, 19, cutoff).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(17))
+
+	count, err := CountRecentlyCheckedActiveSitesForBucketRange(context.Background(), 10, 19, cutoff)
+	if err != nil {
+		t.Fatalf("CountRecentlyCheckedActiveSitesForBucketRange: %v", err)
+	}
+	if count != 17 {
+		t.Fatalf("CountRecentlyCheckedActiveSitesForBucketRange = %d, want 17", count)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestSimpleMutationQueries(t *testing.T) {
 	mock, cleanup := withMockDB(t)
 	defer cleanup()
