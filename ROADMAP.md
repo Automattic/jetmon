@@ -54,9 +54,10 @@ migration and the operating data needed to make larger architecture decisions.
 - **Migrate WPCOM notifications behind alert contacts/deliverer.** Do this
   only after alert contacts have proven stable in production and recipient
   parity has been verified.
-- **Expand the OpenAPI 3.1 contract for the internal API.** The route-driven
-  `GET /api/v1/openapi.json` endpoint exists; next, add detailed
-  request/response schemas and client-codegen validation.
+- **Validate OpenAPI client generation for the internal API.** The
+  route-driven `GET /api/v1/openapi.json` endpoint now includes handler-derived
+  request/response component schemas; next, wire client-codegen validation into
+  CI so schema drift breaks before release.
 - **Plan encryption-at-rest for outbound credentials before public/customer
   secret management.** Plaintext webhook secrets and alert-contact
   destination credentials are acceptable for the current internal threat

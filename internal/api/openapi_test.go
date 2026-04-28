@@ -74,12 +74,88 @@ func TestAPIRouteMetadataIsComplete(t *testing.T) {
 		if route.SuccessStatus == 0 {
 			t.Fatalf("%s has no success status", pattern)
 		}
+		if route.SuccessStatus != http.StatusNoContent && route.ResponseSchema == "" {
+			t.Fatalf("%s has no response schema", pattern)
+		}
+		if route.JSONBody && route.RequestSchema == "" {
+			t.Fatalf("%s has JSON body but no request schema", pattern)
+		}
 		if route.authenticated() && !route.Scope.Valid() {
 			t.Fatalf("%s has invalid scope %q", pattern, route.Scope)
 		}
 		if route.Handler == nil {
 			t.Fatalf("%s has nil handler", pattern)
 		}
+	}
+}
+
+func TestOpenAPIDocumentUsesRouteSchemas(t *testing.T) {
+	doc := buildOpenAPIDocument()
+	schemas := openAPISchemasFromDocument(t, doc)
+	for _, route := range apiRoutes() {
+		if route.RequestSchema != "" {
+			if _, ok := schemas[route.RequestSchema]; !ok {
+				t.Fatalf("%s request schema %q is not in components", route.pattern(), route.RequestSchema)
+			}
+		}
+		if route.ResponseSchema != "" {
+			if _, ok := schemas[route.ResponseSchema]; !ok {
+				t.Fatalf("%s response schema %q is not in components", route.pattern(), route.ResponseSchema)
+			}
+		}
+	}
+
+	me := openAPIOperationAt(t, doc, http.MethodGet, "/api/v1/me")
+	assertOpenAPIResponseRef(t, me, "200", "MeResponse")
+
+	createSite := openAPIOperationAt(t, doc, http.MethodPost, "/api/v1/sites")
+	assertOpenAPIRequestRef(t, createSite, "CreateSiteRequest")
+	assertOpenAPIResponseRef(t, createSite, "201", "Site")
+
+	listSites := openAPIOperationAt(t, doc, http.MethodGet, "/api/v1/sites")
+	assertOpenAPIResponseRef(t, listSites, "200", "SiteListEnvelope")
+
+	deleteSite := openAPIOperationAt(t, doc, http.MethodDelete, "/api/v1/sites/{id}")
+	responses := deleteSite["responses"].(map[string]any)
+	noContent := responses["204"].(map[string]any)
+	if _, ok := noContent["content"]; ok {
+		t.Fatal("204 response should not declare response content")
+	}
+}
+
+func TestOpenAPISchemasIncludeHandlerShapes(t *testing.T) {
+	doc := buildOpenAPIDocument()
+	schemas := openAPISchemasFromDocument(t, doc)
+
+	site, ok := schemas["Site"].(map[string]any)
+	if !ok {
+		t.Fatal("Site schema missing")
+	}
+	siteProps := site["properties"].(map[string]any)
+	if _, ok := siteProps["monitor_url"]; !ok {
+		t.Fatal("Site.monitor_url missing")
+	}
+	if _, ok := siteProps["active_event_id"]; !ok {
+		t.Fatal("Site.active_event_id missing")
+	}
+
+	list, ok := schemas["SiteListEnvelope"].(map[string]any)
+	if !ok {
+		t.Fatal("SiteListEnvelope schema missing")
+	}
+	data := list["properties"].(map[string]any)["data"].(map[string]any)
+	items := data["items"].(map[string]any)
+	if got := items["$ref"]; got != "#/components/schemas/Site" {
+		t.Fatalf("SiteListEnvelope data ref = %v, want Site ref", got)
+	}
+
+	webhookWithSecret, ok := schemas["WebhookWithSecret"].(map[string]any)
+	if !ok {
+		t.Fatal("WebhookWithSecret schema missing")
+	}
+	webhookProps := webhookWithSecret["properties"].(map[string]any)
+	if _, ok := webhookProps["secret"]; !ok {
+		t.Fatal("WebhookWithSecret.secret missing")
 	}
 }
 
@@ -181,4 +257,49 @@ func assertOpenAPIParam(t *testing.T, params []map[string]any, name, location st
 		}
 	}
 	t.Fatalf("parameter %s in %s missing from %#v", name, location, params)
+}
+
+func assertOpenAPIRequestRef(t *testing.T, op map[string]any, want string) {
+	t.Helper()
+	body, ok := op["requestBody"].(map[string]any)
+	if !ok {
+		t.Fatal("requestBody missing")
+	}
+	content := body["content"].(map[string]any)
+	jsonContent := content["application/json"].(map[string]any)
+	schema := jsonContent["schema"].(map[string]any)
+	if got := schema["$ref"]; got != "#/components/schemas/"+want {
+		t.Fatalf("request schema ref = %v, want %s", got, want)
+	}
+}
+
+func assertOpenAPIResponseRef(t *testing.T, op map[string]any, status, want string) {
+	t.Helper()
+	responses, ok := op["responses"].(map[string]any)
+	if !ok {
+		t.Fatal("responses missing")
+	}
+	response, ok := responses[status].(map[string]any)
+	if !ok {
+		t.Fatalf("response %s missing", status)
+	}
+	content := response["content"].(map[string]any)
+	jsonContent := content["application/json"].(map[string]any)
+	schema := jsonContent["schema"].(map[string]any)
+	if got := schema["$ref"]; got != "#/components/schemas/"+want {
+		t.Fatalf("response schema ref = %v, want %s", got, want)
+	}
+}
+
+func openAPISchemasFromDocument(t *testing.T, doc map[string]any) map[string]any {
+	t.Helper()
+	components, ok := doc["components"].(map[string]any)
+	if !ok {
+		t.Fatal("components missing")
+	}
+	schemas, ok := components["schemas"].(map[string]any)
+	if !ok {
+		t.Fatal("components.schemas missing")
+	}
+	return schemas
 }
