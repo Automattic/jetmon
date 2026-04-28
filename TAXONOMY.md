@@ -404,18 +404,31 @@ Jetmon uses an event-sourced architecture where **events are the source of truth
 ### Schema shape
 
 ```
-events (source of truth):
+events (current state — one row per open incident, frozen on close):
   id
-  site_id
+  site_id (blog_id)
   endpoint_id (nullable — null for site-level events)
   check_type
+  discriminator (nullable — tiebreaker for tuples that can have multiple concurrent failures)
   severity (numeric, comparable)
   state (human-readable category)
-  started_at
+  started_at (frozen across severity/state changes)
   ended_at (nullable — null for active events)
   cause_event_id (nullable — causal link, separate from hierarchical rollup)
   resolution_reason (nullable — why the event closed)
   metadata (JSON — check-specific data)
+  dedup_key (generated, NULL when closed; UNIQUE — enforces one-open-per-tuple)
+
+event_transitions (append-only history of every event mutation):
+  id
+  event_id
+  site_id (blog_id, denormalized for SLA queries)
+  severity_before, severity_after
+  state_before, state_after
+  reason (opened, severity_escalation, verifier_confirmed, false_alarm, …)
+  source (local, veriflier:<region>, operator:<user>, system:<reason>)
+  metadata (JSON — transition-specific context)
+  changed_at
 
 sites (includes derived state for fast reads):
   id
@@ -426,9 +439,13 @@ sites (includes derived state for fast reads):
   worst_active_severity
 ```
 
+**Why two tables, not one mutable events table:** keeping current state in `events` and history in `event_transitions` lets you serve "current state of site X" with a single-row read on `events`, and "how did incident Y evolve" with a narrow `WHERE event_id = ?` scan on `event_transitions`. Both queries are common, both want different shapes, and a single mutable-history table compromises one or the other.
+
+The invariant is that **every write to `events` is paired with one row inserted into `event_transitions` in the same transaction**. This is enforced in code by routing all event mutations through a single `eventstore` package. Replaying `event_transitions` in `changed_at` order reconstructs any event's current `severity` and `state`, so the live `events` row is fully rebuildable from the history table.
+
 **Key design decisions:**
 
-- **Events are the source of truth; derived state is denormalized onto the site row for read performance.** Update both transactionally — the derived state should never write without a corresponding event write, and vice versa.
+- **Events are the source of truth across two tables.** `events` holds current state (mutable while open, frozen on close); `event_transitions` is the append-only history of every change. The site row stores a denormalized projection for fast reads. All three update transactionally — the projection should never write without a corresponding event write, and an event write must always be accompanied by a transition row.
 
 - **Severity and state are separate fields.** Severity is the numeric, comparable value used for rollup (e.g., 1=Warning, 2=Degraded, 3=Seems Down, 4=Down). State is the human-readable category. Keeping them separate lets you add new states without breaking rollup logic.
 
@@ -563,7 +580,7 @@ A consolidated list of architectural decisions made across the conversation hist
 5. **Rollup rules are explicit and configurable per site**, not hardcoded.
 6. **Multi-state vocabulary:** Up, Warning, Degraded, Seems Down, Down, Paused, Maintenance, Unknown.
 7. **Unknown state exists specifically to prevent monitor-side failures from being reported as customer-site downtime.**
-8. **Event-sourced architecture** with derived site state denormalized for read performance.
+8. **Event-sourced architecture** across two tables: `events` for current state, `event_transitions` for append-only history of every mutation. Derived site state is denormalized onto the site row for read performance. The `eventstore` package is the sole writer; every event mutation also writes a transition row in the same transaction.
 9. **Severity and state are separate fields**; severity is numeric and comparable, state is human-readable.
 10. **Seems Down promotes in place** to Down on verifier confirmation; `started_at` stays at first-failure time.
 11. **Event identity is idempotent** via `(site_id, endpoint_id, check_type, discriminator)`.

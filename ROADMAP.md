@@ -126,3 +126,92 @@ Programmatic management of where alerts go. Competitors that omit this force use
 - Trigger handler: enqueue immediate check; return `request_id` for polling.
 - Rate limiting middleware: per-key token bucket, separate buckets for read/write/trigger, rate-limit headers.
 - Integration tests in the Docker Compose environment covering auth, pagination, state consistency, and webhook delivery.
+
+---
+
+## Deferred from Phase 3 (webhooks)
+
+These were considered during Phase 3 design and intentionally left out of v1 with clean upgrade paths.
+
+### `site.state_changed` webhook events
+
+Phase 3 v1 ships only `event.*` webhooks (one per `jetmon_event_transitions` row). A `site.state_changed` rollup webhook — fires when the site row's `current_state` projection flips — was punted because:
+
+- Detecting site-level transitions cleanly without races requires changes to the orchestrator (it currently writes `site_status` but doesn't compute deltas)
+- Event-level webhooks already give consumers everything they need to compute site-level rollup themselves
+- The schema for site state is downstream of the events tables; we'd be adding a second source of truth for "the site is now Down"
+
+**When to revisit:** a real consumer asks for site-level rollup webhooks specifically. Likely shape: orchestrator emits a "previous_state → new_state" signal alongside the projection write; a delivery worker translates that into `site.state_changed` deliveries. Same retry/filter/signature plumbing as `event.*` webhooks — the only new piece is the orchestrator-side delta computation.
+
+### Grace-period webhook secret rotation
+
+Phase 3 v1 ships immediate-revocation only: rotating a webhook secret invalidates the old secret immediately. Brief signature-verification failures during the consumer's deploy window go into the retry queue and resolve once the consumer rolls.
+
+A future Phase 3.x extension is **grace-period rotation**: server signs with both old and new secrets for a configurable window (24h default), consumer verifies whichever they support, then the old secret expires. This matches Stripe's webhook signing roll model and lets consumers deploy at their own pace.
+
+**Why this is a clean future addition:**
+- Schema extension only: add `previous_secret_hash` and `previous_secret_expires_at` columns to `jetmon_webhooks`
+- Header format already supports multiple `v1=` values (Stripe-compatible)
+- New endpoint shape: `POST /webhooks/{id}/rotate-secret?grace=24h`
+- No migration of existing webhooks needed; immediate-revocation is the default if `?grace` is absent
+
+**When to revisit:** a customer-managing consumer (not the gateway, not internal alerting) registers webhooks and asks for graceful rotation, or a compliance requirement forces routine secret rotation.
+
+---
+
+## Architectural roadmap
+
+### Multi-repo / multi-binary split
+
+Today everything lives in one repo and the `jetmon2` binary contains the orchestrator, the API server, the operator dashboard, and (after Phase 3) the webhook delivery worker. The `veriflier2` binary is already separate but in the same repo.
+
+This is fine for now but won't scale operationally. Different concerns have very different deployment shapes:
+
+| Concern | Scaling axis | Deployment shape |
+|---------|--------------|------------------|
+| Orchestrator | bucket count, check rate | stateful (claims buckets in `jetmon_hosts`); horizontal via bucket coordination |
+| API server | request rate | stateless; horizontal behind a load balancer |
+| Webhook delivery | event volume + slow consumers | stateless; horizontal via row-claim on `jetmon_webhook_deliveries` |
+| Operator dashboard | one-off operator sessions | one per ops region |
+| Veriflier | geo-distributed vantage points | one per region |
+
+Putting everything in one binary means scaling the most expensive concern scales the cheap ones with it (CPU and memory headroom that's only used for one purpose). It also concentrates failure modes — a panic in the API server takes down the orchestrator.
+
+**Plausible split:**
+- `jetmon-orchestrator` — round loop, check pool, WPCOM notifications, DB writes
+- `jetmon-api` — REST API server, auth, rate limiting (read/write surface)
+- `jetmon-deliverer` — webhook delivery worker (Phase 3)
+- `jetmon-dashboard` — operator UI / SSE state stream
+- `jetmon-verifier` — standalone HTTP check executor (today: `veriflier2`; rename TBD)
+
+The MySQL schema is already the implicit bus between these — each service reads/writes specific tables. Splitting would mostly be:
+1. Extract each concern into its own `cmd/<name>/` directory with a thin main
+2. Move shared types into `pkg/` (currently `internal/`) so the binaries can depend on them across repos
+3. Decide on repo boundaries (one monorepo with multiple binaries, vs. multiple repos sharing a `pkg/` module)
+
+**Naming opportunity:** "veriflier" is a long-standing typo of "verifier" that has stuck around through the rewrite. A split is a natural moment to rename. Candidates: `verifier`, `witness`, `probe-worker`, `vantage`. Worth deciding before the split happens, not during.
+
+**When to revisit:** when a single binary's resource needs (CPU, memory, restart blast radius) starts working against the operational sweet spot for one of the concerns. Likely first trigger: the webhook deliverer's I/O profile (lots of slow outbound HTTP) wanting different sizing than the orchestrator's tight check loop.
+
+### Path to a public API
+
+Today's API is internal-only — every caller is a known service (gateway, alerting workers, dashboard) and tenant isolation lives at the gateway. Several Phase 1–3 design decisions take advantage of that and would have to change if Jetmon ever exposes its API directly to end customers without a gateway in front.
+
+The decisions affected:
+
+| Decision | Internal-API form | Public-API form |
+|----------|-------------------|-----------------|
+| Auth scopes | Three coarse: `read` / `write` / `admin` | Granular per-resource (e.g. `sites:read`, `events:read`, `webhooks:write`) so customer keys can be scoped tightly |
+| Error semantics | Honest 401/403/404 (no info-leak hiding) | 404-on-unauthorized (don't leak existence of resources owned by other tenants) |
+| Error message verbosity | Verbose (DB error class, query stage) for incident response | Sanitized — internal detail belongs in server logs only |
+| Webhook ownership | Any `write`-scope token can manage any webhook (`created_by` audit only) | Per-tenant ownership column; reads/writes filtered by owner |
+| Webhook signing | HMAC-SHA256 with shared secret per webhook | Asymmetric (Ed25519) becomes more attractive — public key at a well-known URL, no per-customer secret to leak |
+| Rate limiting | Per-key bucket sized for service protection | Per-tenant bucket sized for commerce/abuse |
+| Idempotency keys | Scoped by `(api_key_id, key)` | Scoped by `(tenant_id, api_key_id, key)` to prevent cross-tenant collisions |
+| Site `id` (= `blog_id`) | Numeric, canonical from WPCOM | Probably still numeric, but tenant-scoped on lookup |
+
+The migrations are individually clean (each is "add a column, filter on it, deprecate the unscoped version") but they touch most of the API surface. A public-API exposure would be a significant project, not a flag flip.
+
+**When to revisit:** if a stakeholder asks "can a customer integration call Jetmon directly?" — the answer should be "let's design that" rather than "yes, here's the URL."
+
+The Q9 (webhook ownership) section in API.md captures the most concrete piece of this; the rest is captured here for visibility when the conversation comes up.

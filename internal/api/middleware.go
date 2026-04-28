@@ -1,0 +1,211 @@
+package api
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"log"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/Automattic/jetmon/internal/apikeys"
+	"github.com/Automattic/jetmon/internal/audit"
+)
+
+// Scope aliases for handler ergonomics. The api package speaks in apikeys.Scope
+// internally but routes use these constants for brevity.
+const (
+	scopeRead  = apikeys.ScopeRead
+	scopeWrite = apikeys.ScopeWrite
+	scopeAdmin = apikeys.ScopeAdmin
+)
+
+// ctxKey is an unexported type so handlers from other packages can't trample
+// our request-scoped state.
+type ctxKey int
+
+const (
+	ctxKeyRequestID ctxKey = iota
+	ctxKeyAPIKey
+)
+
+// keyFromRequest returns the authenticated key for r, or nil if the request
+// hasn't been through the auth middleware.
+func keyFromRequest(r *http.Request) *apikeys.Key {
+	k, _ := r.Context().Value(ctxKeyAPIKey).(*apikeys.Key)
+	return k
+}
+
+// requestIDFromRequest returns the request id assigned by the middleware.
+// Always non-empty — middleware ensures a value is set before the handler runs.
+func requestIDFromRequest(r *http.Request) string {
+	id, _ := r.Context().Value(ctxKeyRequestID).(string)
+	return id
+}
+
+// requireScope returns an http.HandlerFunc that:
+//  1. assigns a request id (echoed in headers and used in error responses),
+//  2. parses the Bearer token,
+//  3. resolves it to a Key via apikeys.Lookup,
+//  4. enforces the required scope,
+//  5. logs the access to jetmon_audit_log on the way out,
+//  6. invokes the wrapped handler.
+//
+// Internal API quirks: 401 vs 403 is honest (no 404-disguised-as-403), and
+// error messages name the resource type so consumers debugging integrations
+// can tell at a glance what went wrong.
+func (s *Server) requireScope(required apikeys.Scope, h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		reqID := newRequestID()
+		ctx := context.WithValue(r.Context(), ctxKeyRequestID, reqID)
+		w.Header().Set("X-Request-ID", reqID)
+
+		token := bearerToken(r)
+		if token == "" {
+			writeError(w, r.WithContext(ctx), http.StatusUnauthorized, "missing_token",
+				"Authorization header with Bearer token is required")
+			s.audit(ctx, nil, r, http.StatusUnauthorized, time.Time{}, "missing token")
+			return
+		}
+
+		key, err := apikeys.Lookup(ctx, s.db, token)
+		if err != nil {
+			status, code, msg := mapAuthError(err)
+			writeError(w, r.WithContext(ctx), status, code, msg)
+			s.audit(ctx, nil, r, status, time.Time{}, code)
+			return
+		}
+
+		if !key.Scope.Includes(required) {
+			writeError(w, r.WithContext(ctx), http.StatusForbidden, "insufficient_scope",
+				"this endpoint requires scope "+string(required)+
+					"; your key has scope "+string(key.Scope))
+			s.audit(ctx, key, r, http.StatusForbidden, time.Time{}, "insufficient scope")
+			return
+		}
+
+		// Rate limit per key.
+		allowed, remaining, resetAt := s.limiter.allow(key.ID, key.RateLimitPerMinute)
+		writeRateLimitHeaders(w, key.RateLimitPerMinute, remaining, resetAt)
+		if !allowed {
+			writeRateLimited(w, r.WithContext(ctx), key.RateLimitPerMinute, remaining, resetAt)
+			s.audit(ctx, key, r, http.StatusTooManyRequests, time.Time{}, "rate limited")
+			return
+		}
+
+		ctx = context.WithValue(ctx, ctxKeyAPIKey, key)
+		started := time.Now()
+
+		// We wrap the response writer so we can capture the final status code
+		// for the audit log. Default to 200 if the handler doesn't write
+		// explicitly (Go's http.ResponseWriter implicitly flushes 200 on first
+		// body write).
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		h(rec, r.WithContext(ctx))
+
+		s.audit(ctx, key, r, rec.status, started, "")
+	}
+}
+
+// statusRecorder wraps an http.ResponseWriter to expose the final status code
+// after the handler returns. We need this for audit logging — Go's stdlib
+// doesn't expose the status code post-write.
+type statusRecorder struct {
+	http.ResponseWriter
+	status      int
+	wroteHeader bool
+}
+
+func (r *statusRecorder) WriteHeader(status int) {
+	if r.wroteHeader {
+		return
+	}
+	r.status = status
+	r.wroteHeader = true
+	r.ResponseWriter.WriteHeader(status)
+}
+
+// Flush passes through to the underlying writer if it supports it (SSE,
+// streaming responses).
+func (r *statusRecorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// bearerToken extracts the token from "Authorization: Bearer <token>", or
+// returns "" if the header is missing or malformed.
+func bearerToken(r *http.Request) string {
+	h := r.Header.Get("Authorization")
+	const prefix = "Bearer "
+	if !strings.HasPrefix(h, prefix) {
+		return ""
+	}
+	return strings.TrimSpace(h[len(prefix):])
+}
+
+func mapAuthError(err error) (status int, code, msg string) {
+	switch {
+	case errors.Is(err, apikeys.ErrInvalidToken):
+		return http.StatusUnauthorized, "invalid_token", "the provided token is invalid"
+	case errors.Is(err, apikeys.ErrKeyRevoked):
+		return http.StatusUnauthorized, "token_revoked", "the provided token has been revoked"
+	case errors.Is(err, apikeys.ErrKeyExpired):
+		return http.StatusUnauthorized, "token_expired", "the provided token has expired"
+	default:
+		return http.StatusInternalServerError, "auth_error", "internal error during authentication: " + err.Error()
+	}
+}
+
+// audit writes the request to jetmon_audit_log. Done synchronously today;
+// could be moved to a buffered channel if write latency becomes a concern.
+// Errors are logged but never returned to the consumer — audit is observability,
+// not gate.
+func (s *Server) audit(ctx context.Context, key *apikeys.Key, r *http.Request, status int, started time.Time, note string) {
+	consumerName := "unknown"
+	var keyID int64
+	if key != nil {
+		consumerName = key.ConsumerName
+		keyID = key.ID
+	}
+
+	durationMs := int64(0)
+	if !started.IsZero() {
+		durationMs = time.Since(started).Milliseconds()
+	}
+
+	meta, _ := json.Marshal(map[string]any{
+		"key_id":         keyID,
+		"consumer":       consumerName,
+		"method":         r.Method,
+		"path":           r.URL.Path,
+		"status":         status,
+		"duration_ms":    durationMs,
+		"request_id":     requestIDFromRequest(r),
+		"remote_addr":    r.RemoteAddr,
+		"note":           note,
+	})
+
+	if err := audit.Log(audit.Entry{
+		EventType: audit.EventAPIAccess,
+		Source:    consumerName,
+		Detail:    r.Method + " " + r.URL.Path,
+		Metadata:  meta,
+	}); err != nil {
+		log.Printf("api: audit log failed: %v", err)
+	}
+}
+
+// newRequestID returns a 16-byte random hex id (32 chars). Same shape as the
+// verifier's NewRequestID for consistency in operator log-greppage.
+func newRequestID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// Fall back to a timestamp; collisions are non-load-bearing here.
+		return "ts-" + time.Now().UTC().Format("20060102T150405.000")
+	}
+	return hex.EncodeToString(b[:])
+}

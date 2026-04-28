@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 cd /jetmon
-export JETMON_PID_FILE=/jetmon/jetmon2.pid
+# /jetmon is owned by the jetmon user from the Dockerfile, but the container
+# runs as ${JETMON_UID:-1000} via docker-compose — write to stats/ instead, which
+# the Dockerfile chmods 0777 specifically so reload/drain commands work.
+export JETMON_PID_FILE=/jetmon/stats/jetmon2.pid
 
 touch logs/jetmon.log logs/status-change.log
 touch stats/sitespersec stats/sitesqueue stats/totals

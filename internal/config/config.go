@@ -54,6 +54,7 @@ type Config struct {
 	LogFormat     string `json:"LOG_FORMAT"`
 	DashboardPort int    `json:"DASHBOARD_PORT"`
 	DebugPort     int    `json:"DEBUG_PORT"`
+	APIPort       int    `json:"API_PORT"` // 0 = API server disabled
 
 	Verifiers []VerifierConfig `json:"VERIFIERS"`
 }
@@ -183,7 +184,26 @@ func validate(cfg *Config) error {
 	if cfg.LogFormat != "text" && cfg.LogFormat != "json" {
 		return fmt.Errorf("LOG_FORMAT must be 'text' or 'json'")
 	}
+	for i, v := range cfg.Verifiers {
+		// host and grpc_port are required. Empty values silently parse to ""
+		// then the orchestrator dials "host:" which resolves to port 80 — the
+		// most common cause of "verifier connection refused" in dev configs
+		// (typo: "port" instead of "grpc_port").
+		if v.Host == "" {
+			return fmt.Errorf("VERIFIERS[%d] (%s): host is required", i, displayName(v, i))
+		}
+		if v.GRPCPort == "" {
+			return fmt.Errorf("VERIFIERS[%d] (%s): grpc_port is required", i, displayName(v, i))
+		}
+	}
 	return nil
+}
+
+func displayName(v VerifierConfig, i int) string {
+	if v.Name != "" {
+		return v.Name
+	}
+	return fmt.Sprintf("verifier #%d", i)
 }
 
 // Debugf logs a debug message when DEBUG is true in the current config.

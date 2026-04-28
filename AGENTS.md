@@ -52,7 +52,8 @@ See `PROJECT.md` for the full project description, feature list, and performance
 | `internal/config/` | Config loading, SIGHUP hot-reload |
 | `internal/metrics/` | StatsD client, stats file writer |
 | `internal/wpcom/` | WPCOM API client, circuit breaker |
-| `internal/audit/` | Audit log writes to `jetmon_audit_log` |
+| `internal/audit/` | Operational log writes to `jetmon_audit_log` (WPCOM, retries, verifier RPCs, config reloads) |
+| `internal/eventstore/` | Event-sourced site state — manages `jetmon_events` + `jetmon_event_transitions` writes in single transactions |
 | `internal/dashboard/` | Operator dashboard, SSE handler |
 | `veriflier2/` | Go Veriflier binary |
 | `PROJECT.md` | Full project description and feature specification |
@@ -153,10 +154,17 @@ Every HTTPS check inspects `tls.ConnectionState` for:
 - Cipher suite — recorded in audit log
 
 **Downtime Verification:**
-1. Local check fails → enter local retry queue
-2. After `NUM_OF_CHECKS` local failures → dispatch to Verifliers
+1. Local check fails → open a `Seems Down` event (severity 3) and enter the local retry queue. The event opens on the **first** failure so `started_at` reflects the actual incident start. Subsequent failures during retry are no-ops on the events table (idempotent dedup).
+2. After `NUM_OF_CHECKS` local failures → dispatch to Verifliers (event stays Seems Down)
 3. `PEER_OFFLINE_LIMIT` Veriflier agreements required to confirm
-4. Confirmed down → WPCOM notification via same payload as original
+4. Verifier outcomes:
+   - **Confirms** → Promote event to `Down` (severity 4) with `reason = verifier_confirmed`. WPCOM notification via same payload as original.
+   - **Disagrees** → Close event with `resolution_reason = false_alarm`.
+5. Recovery (any successful probe while an event is open):
+   - From `Seems Down` → close with `resolution_reason = probe_cleared`.
+   - From `Down` → close with `resolution_reason = verifier_cleared` and send recovery notification.
+
+The `jetpack_monitor_sites.site_status` projection is updated in the same transaction as every event mutation (no drift). v1 mapping: open Seems Down → `site_status = SITE_DOWN (0)`; promoted to Down → `site_status = SITE_CONFIRMED_DOWN (2)`; closed → `site_status = SITE_RUNNING (1)`.
 
 **Alert Deduplication:**
 After an alert fires, subsequent alerts for the same site are suppressed for `alert_cooldown_minutes`. Suppression is recorded in the audit log.
@@ -190,7 +198,9 @@ New tables introduced by Jetmon 2:
 | Table | Purpose |
 |-------|---------|
 | `jetmon_hosts` | MySQL-coordinated bucket ownership and heartbeat |
-| `jetmon_audit_log` | Full event history per site |
+| `jetmon_events` | Current state of every incident — one row per `(blog_id, endpoint_id, check_type, discriminator)` while open; mutable until `ended_at` is set, then frozen |
+| `jetmon_event_transitions` | Append-only history of every mutation to `jetmon_events` (open, severity change, state change, cause link, close) |
+| `jetmon_audit_log` | Operational trail — WPCOM notifications, retry dispatch, verifier RPCs, alert/maintenance suppression, config reloads. Site-state changes do **not** flow through here |
 | `jetmon_check_history` | RTT and timing samples for trending |
 | `jetmon_false_positives` | Veriflier non-confirmation events |
 
@@ -224,7 +234,9 @@ Rolling updates require no simultaneous restart of all hosts and leave no sites 
 
 These decisions govern how Jetmon models site state. They must be maintained consistently across all changes. Full design rationale is in [`TAXONOMY.md`](TAXONOMY.md) (Parts 2–3) and [`EVENTS.md`](EVENTS.md).
 
-**Events are the source of truth.** Site status is event-sourced. The event log is canonical; the site row stores a denormalized projection for read performance. Update both in the same transaction — they must not drift. If the projection is ever suspect, rebuild it from the log.
+**Events are the source of truth.** Site status is event-sourced across two tables: `jetmon_events` (one row per incident, holding the current severity/state/metadata) and `jetmon_event_transitions` (append-only history of every mutation). The site row stores a denormalized projection for read performance. Update events, transitions, and the projection in the same transaction — they must not drift. If the projection is ever suspect, rebuild it from the events tables.
+
+**Every event mutation writes a transition row in the same transaction.** Open, severity bump, state change, cause-link change, close — no carve-outs. The `eventstore` package is the only writer for `jetmon_events` and `jetmon_event_transitions`; external callers must go through it. This keeps the invariant testable with one integration test surface.
 
 **Severity and state are separate fields.** Severity is numeric — use it for ordering, thresholds, and rollup. State is a human-readable label — use it for display and lifecycle transitions. A live event's severity can be updated in place without changing its state (a worsening degradation is not a new kind of problem).
 

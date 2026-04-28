@@ -9,12 +9,13 @@ import (
 
 // retryEntry tracks local retry state for a site that has failed at least once.
 type retryEntry struct {
-	blogID       int64
-	url          string
-	failCount    int
-	firstFailAt  time.Time
-	lastResult   checker.Result
-	checks       []checker.Result // all check results since first failure
+	blogID      int64
+	url         string
+	failCount   int
+	firstFailAt time.Time
+	lastResult  checker.Result
+	checks      []checker.Result // all check results since first failure
+	eventID     int64            // jetmon_events.id for the open Seems Down event; 0 if not yet opened or eventstore unavailable
 }
 
 // retryQueue holds sites awaiting local retry or veriflier escalation.
