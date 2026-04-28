@@ -231,6 +231,26 @@ func TestUpdateSiteStatusTx(t *testing.T) {
 	}
 }
 
+func TestCountLegacyProjectionDrift(t *testing.T) {
+	mock, cleanup := withMockDB(t)
+	defer cleanup()
+
+	mock.ExpectQuery("SELECT COUNT").
+		WithArgs(0, 99).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(3))
+
+	count, err := CountLegacyProjectionDrift(context.Background(), 0, 99)
+	if err != nil {
+		t.Fatalf("CountLegacyProjectionDrift: %v", err)
+	}
+	if count != 3 {
+		t.Fatalf("CountLegacyProjectionDrift = %d, want 3", count)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestGetAllHostsScansRows(t *testing.T) {
 	mock, cleanup := withMockDB(t)
 	defer cleanup()

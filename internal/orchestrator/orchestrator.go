@@ -46,19 +46,20 @@ const (
 const verifierRPCHeadroom = 5 * time.Second
 
 var (
-	nowFunc               = time.Now
-	dbClaimBuckets        = db.ClaimBuckets
-	dbHeartbeat           = db.Heartbeat
-	dbReleaseHost         = db.ReleaseHost
-	dbMarkHostDraining    = db.MarkHostDraining
-	dbGetSitesForBucket   = db.GetSitesForBucket
-	dbMarkSiteChecked     = db.MarkSiteChecked
-	dbRecordCheckHistory  = db.RecordCheckHistory
-	dbUpdateSSLExpiry     = db.UpdateSSLExpiry
-	dbUpdateSiteStatus    = db.UpdateSiteStatus
-	dbRecordFalsePositive = db.RecordFalsePositive
-	dbUpdateLastAlertSent = db.UpdateLastAlertSent
-	veriflierCheckFunc    = func(c *veriflier.VeriflierClient, ctx stdctx.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
+	nowFunc                = time.Now
+	dbClaimBuckets         = db.ClaimBuckets
+	dbHeartbeat            = db.Heartbeat
+	dbReleaseHost          = db.ReleaseHost
+	dbMarkHostDraining     = db.MarkHostDraining
+	dbGetSitesForBucket    = db.GetSitesForBucket
+	dbMarkSiteChecked      = db.MarkSiteChecked
+	dbRecordCheckHistory   = db.RecordCheckHistory
+	dbUpdateSSLExpiry      = db.UpdateSSLExpiry
+	dbUpdateSiteStatus     = db.UpdateSiteStatus
+	dbRecordFalsePositive  = db.RecordFalsePositive
+	dbUpdateLastAlertSent  = db.UpdateLastAlertSent
+	dbCountProjectionDrift = db.CountLegacyProjectionDrift
+	veriflierCheckFunc     = func(c *veriflier.VeriflierClient, ctx stdctx.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
 		return c.Check(ctx, req)
 	}
 	metricsClientFunc = func() metricsClient {
@@ -203,6 +204,7 @@ func (o *Orchestrator) runRound() {
 	if err := o.ClaimBuckets(); err != nil {
 		log.Printf("orchestrator: bucket rebalance failed: %v", err)
 	}
+	o.checkLegacyProjectionDrift(cfg)
 
 	// Fetch sites.
 	sites, err := dbGetSitesForBucket(o.ctx, o.bucketMin, o.bucketMax, cfg.DatasetSize, cfg.UseVariableCheckIntervals)
@@ -786,6 +788,23 @@ func (o *Orchestrator) isAlertSuppressed(site db.Site) bool {
 		return false
 	}
 	return time.Since(*site.LastAlertSentAt) < time.Duration(cooldown)*time.Minute
+}
+
+func (o *Orchestrator) checkLegacyProjectionDrift(cfg *config.Config) {
+	if !cfg.LegacyStatusProjectionEnable {
+		return
+	}
+	count, err := dbCountProjectionDrift(o.ctx, o.bucketMin, o.bucketMax)
+	if err != nil {
+		log.Printf("orchestrator: legacy projection drift check failed: %v", err)
+		emitCounter("projection.drift.check_error.count", 1)
+		return
+	}
+	emitGauge("projection.drift.count", count)
+	if count > 0 {
+		log.Printf("orchestrator: WARN legacy projection drift detected count=%d buckets=%d-%d", count, o.bucketMin, o.bucketMax)
+		emitCounter("projection.drift.detected.count", 1)
+	}
 }
 
 // RetryQueueSize returns the number of sites currently in local retry.

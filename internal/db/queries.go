@@ -80,6 +80,33 @@ func UpdateSiteStatusTx(ctx context.Context, tx *sql.Tx, blogID int64, status in
 	return err
 }
 
+// CountLegacyProjectionDrift returns the number of active sites in the bucket
+// range whose v1 site_status projection disagrees with the authoritative open
+// HTTP event, if any.
+func CountLegacyProjectionDrift(ctx context.Context, bucketMin, bucketMax int) (int, error) {
+	var count int
+	err := db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		  FROM jetpack_monitor_sites s
+		  LEFT JOIN jetmon_events e
+		    ON e.blog_id = s.blog_id
+		   AND e.check_type = 'http'
+		   AND e.ended_at IS NULL
+		 WHERE s.monitor_active = 1
+		   AND s.bucket_no BETWEEN ? AND ?
+		   AND s.site_status <> CASE
+		     WHEN e.state = 'Down' THEN 2
+		     WHEN e.state = 'Seems Down' THEN 0
+		     ELSE 1
+		   END`,
+		bucketMin, bucketMax,
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count projection drift: %w", err)
+	}
+	return count, nil
+}
+
 // MarkSiteChecked records when a site was last checked.
 func MarkSiteChecked(ctx context.Context, blogID int64, checkedAt time.Time) error {
 	_, err := db.ExecContext(ctx,

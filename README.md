@@ -521,6 +521,8 @@ Metrics are emitted with prefix `com.jetpack.jetmon.<hostname>`. The Graphite/Gr
   Seems Down → probe-cleared recovery
 - Veriflier decision counters: escalations, RPC success/error, confirm/disagree
   votes, quorum-met confirmations, and false alarms
+- Legacy projection drift: per-bucket count of active sites whose
+  `site_status` no longer matches the authoritative open HTTP event
 - Memory usage
 
 StatsD is the primary metrics transport. For integration with external systems, expose the Graphite/StatsD data via your existing metrics pipeline.

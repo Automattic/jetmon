@@ -335,6 +335,7 @@ func stubOrchestratorDeps() func() {
 	origDBMarkSiteChecked := dbMarkSiteChecked
 	origDBRecordCheckHistory := dbRecordCheckHistory
 	origDBUpdateSSLExpiry := dbUpdateSSLExpiry
+	origDBCountProjectionDrift := dbCountProjectionDrift
 	origNotify := wpcomNotifyFunc
 	origVeriflierCheck := veriflierCheckFunc
 	origMetricsClient := metricsClientFunc
@@ -346,6 +347,7 @@ func stubOrchestratorDeps() func() {
 	dbMarkSiteChecked = func(context.Context, int64, time.Time) error { return nil }
 	dbRecordCheckHistory = func(int64, int, int, int64, int64, int64, int64, int64) error { return nil }
 	dbUpdateSSLExpiry = func(context.Context, int64, time.Time) error { return nil }
+	dbCountProjectionDrift = func(context.Context, int, int) (int, error) { return 0, nil }
 	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error { return nil }
 	veriflierCheckFunc = func(c *veriflier.VeriflierClient, ctx context.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
 		return c.Check(ctx, req)
@@ -359,6 +361,7 @@ func stubOrchestratorDeps() func() {
 		dbMarkSiteChecked = origDBMarkSiteChecked
 		dbRecordCheckHistory = origDBRecordCheckHistory
 		dbUpdateSSLExpiry = origDBUpdateSSLExpiry
+		dbCountProjectionDrift = origDBCountProjectionDrift
 		wpcomNotifyFunc = origNotify
 		veriflierCheckFunc = origVeriflierCheck
 		metricsClientFunc = origMetricsClient
@@ -759,6 +762,70 @@ func TestIsAlertSuppressedCustomCooldown(t *testing.T) {
 	}
 }
 
+func TestCheckLegacyProjectionDriftEmitsGaugeAndWarningCounter(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	cfg := setTestConfig(t)
+	cfg.LegacyStatusProjectionEnable = true
+
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+	dbCountProjectionDrift = func(_ context.Context, bucketMin, bucketMax int) (int, error) {
+		if bucketMin != 10 || bucketMax != 20 {
+			t.Fatalf("drift check buckets = %d-%d, want 10-20", bucketMin, bucketMax)
+		}
+		return 3, nil
+	}
+
+	o := &Orchestrator{ctx: context.Background(), bucketMin: 10, bucketMax: 20}
+	o.checkLegacyProjectionDrift(cfg)
+
+	if got := rec.gauge("projection.drift.count"); got != 3 {
+		t.Fatalf("projection.drift.count = %d, want 3", got)
+	}
+	if got := rec.counter("projection.drift.detected.count"); got != 1 {
+		t.Fatalf("projection.drift.detected.count = %d, want 1", got)
+	}
+}
+
+func TestCheckLegacyProjectionDriftSkipsWhenProjectionDisabled(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	cfg := setTestConfig(t)
+	cfg.LegacyStatusProjectionEnable = false
+
+	var called bool
+	dbCountProjectionDrift = func(context.Context, int, int) (int, error) {
+		called = true
+		return 0, nil
+	}
+
+	o := &Orchestrator{ctx: context.Background()}
+	o.checkLegacyProjectionDrift(cfg)
+	if called {
+		t.Fatal("drift check should be skipped when legacy projection is disabled")
+	}
+}
+
+func TestCheckLegacyProjectionDriftEmitsErrorCounter(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	cfg := setTestConfig(t)
+	cfg.LegacyStatusProjectionEnable = true
+
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+	dbCountProjectionDrift = func(context.Context, int, int) (int, error) {
+		return 0, fmt.Errorf("db failed")
+	}
+
+	o := &Orchestrator{ctx: context.Background()}
+	o.checkLegacyProjectionDrift(cfg)
+	if got := rec.counter("projection.drift.check_error.count"); got != 1 {
+		t.Fatalf("projection.drift.check_error.count = %d, want 1", got)
+	}
+}
+
 func TestSendNotificationBothRetriesFail(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
@@ -1136,6 +1203,12 @@ func (r *recordingMetrics) counter(stat string) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.counters[stat]
+}
+
+func (r *recordingMetrics) gauge(stat string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.gauges[stat]
 }
 
 func (r *recordingMetrics) timingCount(stat string) int {
