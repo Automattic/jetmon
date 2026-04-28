@@ -35,6 +35,12 @@ type apiCLIOptions struct {
 
 type apiHeaderFlags []string
 
+type apiHTTPResponse struct {
+	StatusCode int
+	Status     string
+	Body       []byte
+}
+
 func (h *apiHeaderFlags) String() string {
 	return strings.Join(*h, ",")
 }
@@ -71,8 +77,10 @@ func cmdAPI(args []string) {
 		err = cmdAPIWebhooks(rest)
 	case "alert-contacts":
 		err = cmdAPIAlertContacts(rest)
+	case "smoke":
+		err = cmdAPISmoke(rest)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown api subcommand %q (want: health, me, request, sites, events, webhooks, alert-contacts)\n", sub)
+		fmt.Fprintf(os.Stderr, "unknown api subcommand %q (want: health, me, request, sites, events, webhooks, alert-contacts, smoke)\n", sub)
 		printAPIUsage(os.Stderr)
 		os.Exit(1)
 	}
@@ -82,7 +90,7 @@ func cmdAPI(args []string) {
 }
 
 func printAPIUsage(w io.Writer) {
-	fmt.Fprintln(w, "usage: jetmon2 api <health|me|request|sites|events|webhooks|alert-contacts> [flags]")
+	fmt.Fprintln(w, "usage: jetmon2 api <health|me|request|sites|events|webhooks|alert-contacts|smoke> [flags]")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Environment:")
 	fmt.Fprintln(w, "  JETMON_API_URL     API base URL (default: http://localhost:8090)")
@@ -177,6 +185,20 @@ func executeAPIRequest(ctx context.Context, client *http.Client, opts apiCLIOpti
 	if opts.out == nil {
 		opts.out = io.Discard
 	}
+	resp, err := doAPIRequest(ctx, client, opts, method, target, body)
+	if err != nil {
+		return err
+	}
+	if err := writeAPIResponseBody(opts.out, resp.Body, opts.pretty); err != nil {
+		return err
+	}
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("api returned %s", resp.Status)
+	}
+	return nil
+}
+
+func doAPIRequest(ctx context.Context, client *http.Client, opts apiCLIOptions, method, target string, body []byte) (apiHTTPResponse, error) {
 	if opts.errOut == nil {
 		opts.errOut = io.Discard
 	}
@@ -189,7 +211,7 @@ func executeAPIRequest(ctx context.Context, client *http.Client, opts apiCLIOpti
 
 	requestURL, err := apiRequestURL(opts.baseURL, target)
 	if err != nil {
-		return err
+		return apiHTTPResponse{}, err
 	}
 
 	var bodyReader io.Reader
@@ -198,7 +220,7 @@ func executeAPIRequest(ctx context.Context, client *http.Client, opts apiCLIOpti
 	}
 	req, err := http.NewRequestWithContext(ctx, strings.ToUpper(method), requestURL, bodyReader)
 	if err != nil {
-		return err
+		return apiHTTPResponse{}, err
 	}
 	applyAPIRequestHeaders(req, opts, len(body) > 0)
 
@@ -208,7 +230,7 @@ func executeAPIRequest(ctx context.Context, client *http.Client, opts apiCLIOpti
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return apiHTTPResponse{}, err
 	}
 	defer resp.Body.Close()
 
@@ -218,15 +240,13 @@ func executeAPIRequest(ctx context.Context, client *http.Client, opts apiCLIOpti
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return err
+		return apiHTTPResponse{}, err
 	}
-	if err := writeAPIResponseBody(opts.out, respBody, opts.pretty); err != nil {
-		return err
-	}
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("api returned %s", resp.Status)
-	}
-	return nil
+	return apiHTTPResponse{
+		StatusCode: resp.StatusCode,
+		Status:     resp.Status,
+		Body:       respBody,
+	}, nil
 }
 
 func apiRequestURL(baseURL, target string) (string, error) {

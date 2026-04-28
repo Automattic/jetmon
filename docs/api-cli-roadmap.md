@@ -38,7 +38,7 @@ but it should not become a generic `curl` clone.
 
 ## P2 - Local Smoke Workflows
 
-- [ ] Add `jetmon2 api smoke` to run a local end-to-end sanity pass against Docker:
+- [x] Add `jetmon2 api smoke` to run a local end-to-end sanity pass against Docker:
   health, auth, create a site, trigger a check, read events, and exercise a
   webhook or alert-contact test path.
 - [ ] Add `jetmon2 api sites simulate-failure` to intentionally mutate one or
@@ -50,7 +50,7 @@ but it should not become a generic `curl` clone.
 - [ ] Track CLI-created test-site batches with a stable label or metadata marker
   so smoke tests and failure simulations can operate on `--batch <id>`,
   `--count <n>`, or explicit site IDs without touching unrelated local data.
-- [ ] Add cleanup behavior for resources created by smoke runs.
+- [x] Add cleanup behavior for resources created by smoke runs.
 - [ ] Return non-zero exit codes and concise failure summaries suitable for CI.
 
 ## Test Site Source Ideas
@@ -125,3 +125,7 @@ but it should not become a generic `curl` clone.
 - [x] 2026-04-28: Added the embedded `cmd/jetmon2/testdata/api-cli-sites.json`
   fixture with always-up, redirect, slow, HTTP error, TLS error, custom-header,
   and keyword-check examples.
+- [x] 2026-04-28: Added `jetmon2 api smoke` for Docker-local end-to-end API
+  sanity checks covering health, auth identity, site creation, trigger-now,
+  event listing, alert-contact creation, alert-contact send-test, JSON step
+  summaries, and best-effort cleanup of created resources.
