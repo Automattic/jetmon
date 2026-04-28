@@ -32,22 +32,19 @@ migration and the operating data needed to make larger architecture decisions.
 - **Watch projection drift as a production bug.** While the legacy projection
   is enabled, event mutations, transition rows, and the site-row projection
   must remain transactionally consistent.
-- **Reconcile roadmap/API documentation drift.** `API.md` is the source for
-  the implemented internal `/api/v1` route surface. This roadmap should track
-  only the remaining public/customer API work, production hardening, and
-  deferred architecture choices.
+- **Keep roadmap/API documentation drift out of the branch.** `API.md` is the
+  source for the implemented internal `/api/v1` route surface. This roadmap
+  should track only the remaining public/customer API work, production
+  hardening, and deferred architecture choices.
 
 ### P1 - post-v2 platform refinement
 
 - **Extract `jetmon-deliverer` when delivery scale or blast radius warrants
   it.** Move webhook delivery, alert-contact delivery, and eventually WPCOM
   notification dispatch behind one outbound-delivery binary. Initial shared
-  worker wiring and a standalone `jetmon-deliverer` entry point exist; the
-  remaining production cutover work is service packaging and rollout policy.
-- **Replace soft delivery locks with transactional row claims.** As part of
-  the deliverer extraction, update the webhook and alert-contact `ClaimReady`
-  paths to use short `SELECT ... FOR UPDATE` transactions so active-active
-  delivery workers cannot claim the same pending delivery.
+  worker wiring, a standalone `jetmon-deliverer` entry point, and
+  transactional row claims exist; the remaining production cutover work is
+  service packaging and rollout policy.
 - **Unify webhook and alerting dispatch plumbing after production evidence.**
   Keep the packages separate until there are two proven implementations and a
   third transport path via WPCOM migration, then factor the shared retry,
@@ -55,18 +52,15 @@ migration and the operating data needed to make larger architecture decisions.
 - **Migrate WPCOM notifications behind alert contacts/deliverer.** Do this
   only after alert contacts have proven stable in production and recipient
   parity has been verified.
-- **Decide the Veriflier transport endpoint.** JSON-over-HTTP is the v2
-  production transport. The canonical config name is `port`; `grpc_port` and
-  `VERIFLIER_GRPC_PORT` remain compatibility aliases. The proto file stays as
-  a schema reference for a possible future transport, not a v2 dependency.
-- **Generate an OpenAPI 3.1 contract for the internal API.** The spec should
-  be generated from the route/handler contract so client codegen matches the
-  running server.
+- **Expand the OpenAPI 3.1 contract for the internal API.** The route-driven
+  `GET /api/v1/openapi.json` endpoint exists; next, add detailed
+  request/response schemas and client-codegen validation.
 - **Plan encryption-at-rest for outbound credentials before public/customer
   secret management.** Plaintext webhook secrets and alert-contact
   destination credentials are acceptable for the current internal threat
-  model, but KMS-style encryption should be revisited before exposing
-  customer-managed secrets more broadly.
+  model, but KMS-style encryption should be planned before exposing
+  customer-managed secrets more broadly. See
+  [`docs/outbound-credential-encryption-plan.md`](docs/outbound-credential-encryption-plan.md).
 
 ### P2 - v3 and product-driven extensions
 
