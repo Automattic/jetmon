@@ -201,6 +201,8 @@ A standalone binary (`jetmon2 validate-config`) that:
 - Validates value ranges and required per-mode settings
 - Attempts a test connection to MySQL
 - Reports legacy projection and email transport modes
+- Prints the matching rollout preflight and projection-drift investigation
+  commands for the configured bucket ownership mode
 - Warns when the email transport resolves to the log-only `stub` sender
 - Lists configured Verifliers as best-effort operator context
 - Outputs a pass/fail summary with specific error messages

@@ -260,6 +260,9 @@ func cmdValidateConfig() {
 	cfg := config.Get()
 	fmt.Printf("INFO legacy_status_projection=%s\n", enabledLabel(cfg.LegacyStatusProjectionEnable))
 	fmt.Printf("INFO bucket_ownership=%s\n", bucketOwnershipLabel(cfg))
+	for _, line := range rolloutAdviceLines(cfg) {
+		fmt.Println(line)
+	}
 	fmt.Printf("INFO email_transport=%s\n", emailTransportLabel(cfg))
 	if !emailTransportDelivers(cfg) {
 		fmt.Printf("WARN email_transport=%s — alert-contact emails will be logged but not delivered\n", emailTransportLabel(cfg))
@@ -268,7 +271,7 @@ func cmdValidateConfig() {
 		fmt.Printf("%s %s\n", level, msg)
 	}
 	for _, v := range cfg.Verifiers {
-		addr := fmt.Sprintf("%s:%s", v.Host, v.GRPCPort)
+		addr := fmt.Sprintf("%s:%s", v.Host, v.TransportPort())
 		// Listing configured Verifliers is operator context, not a reachability check.
 		fmt.Printf("INFO veriflier %q at %s\n", v.Name, addr)
 	}
@@ -288,6 +291,19 @@ func bucketOwnershipLabel(cfg *config.Config) string {
 		return fmt.Sprintf("pinned range=%d-%d", min, max)
 	}
 	return "dynamic jetmon_hosts"
+}
+
+func rolloutAdviceLines(cfg *config.Config) []string {
+	if _, _, ok := cfg.PinnedBucketRange(); ok {
+		return []string{
+			"INFO rollout_preflight=./jetmon2 rollout pinned-check",
+			"INFO rollout_drift_report=./jetmon2 rollout projection-drift",
+		}
+	}
+	return []string{
+		"INFO rollout_preflight=./jetmon2 rollout dynamic-check",
+		"INFO rollout_drift_report=./jetmon2 rollout projection-drift",
+	}
 }
 
 // emailTransportLabel collapses an empty EMAIL_TRANSPORT to its compatibility

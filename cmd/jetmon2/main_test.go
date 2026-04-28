@@ -264,6 +264,31 @@ func TestBucketOwnershipLabel(t *testing.T) {
 	}
 }
 
+func TestRolloutAdviceLines(t *testing.T) {
+	dynamic := rolloutAdviceLines(&config.Config{})
+	if len(dynamic) != 2 {
+		t.Fatalf("dynamic advice len = %d, want 2", len(dynamic))
+	}
+	if !strings.Contains(dynamic[0], "rollout dynamic-check") {
+		t.Fatalf("dynamic preflight advice = %q", dynamic[0])
+	}
+	if !strings.Contains(dynamic[1], "rollout projection-drift") {
+		t.Fatalf("dynamic drift advice = %q", dynamic[1])
+	}
+
+	min, max := 12, 34
+	pinned := rolloutAdviceLines(&config.Config{PinnedBucketMin: &min, PinnedBucketMax: &max})
+	if len(pinned) != 2 {
+		t.Fatalf("pinned advice len = %d, want 2", len(pinned))
+	}
+	if !strings.Contains(pinned[0], "rollout pinned-check") {
+		t.Fatalf("pinned preflight advice = %q", pinned[0])
+	}
+	if !strings.Contains(pinned[1], "rollout projection-drift") {
+		t.Fatalf("pinned drift advice = %q", pinned[1])
+	}
+}
+
 func TestParseInt64(t *testing.T) {
 	got, err := parseInt64("12345")
 	if err != nil {
