@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Automattic/jetmon/internal/alerting"
 	"github.com/Automattic/jetmon/internal/api"
 	"github.com/Automattic/jetmon/internal/apikeys"
 	"github.com/Automattic/jetmon/internal/audit"
@@ -146,6 +147,26 @@ func runServe() {
 		log.Println("webhooks: delivery worker started")
 	}
 
+	// Alert contact delivery worker. Same shape as webhooks but a
+	// separate package so the two can evolve independently — the future
+	// "deliverer binary" extraction is the moment to factor out a
+	// shared abstraction. Disabled when API_PORT is 0 (no contacts to
+	// fire to without the API to manage them).
+	var alertWorker *alerting.Worker
+	if cfg.APIPort > 0 {
+		dispatchers := buildAlertDispatchers(cfg)
+		alertWorker = alerting.NewWorker(alerting.WorkerConfig{
+			DB:          db.DB(),
+			InstanceID:  db.Hostname(),
+			Dispatchers: dispatchers,
+		})
+		alertWorker.Start()
+		if apiSrv != nil {
+			apiSrv.SetAlertDispatchers(dispatchers)
+		}
+		log.Printf("alerting: delivery worker started (transports=%d)", len(dispatchers))
+	}
+
 	// Push dashboard state every stats interval.
 	if dash != nil {
 		go func() {
@@ -194,6 +215,10 @@ func runServe() {
 				if hookWorker != nil {
 					hookWorker.Stop()
 					log.Println("webhooks: delivery worker stopped")
+				}
+				if alertWorker != nil {
+					alertWorker.Stop()
+					log.Println("alerting: delivery worker stopped")
 				}
 				orch.Stop()
 				// Hard kill if drain takes too long (e.g. a stalled HTTP check).
@@ -571,5 +596,45 @@ func repeat(s string, n int) string {
 	for range n {
 		out += s
 	}
+	return out
+}
+
+
+// buildAlertDispatchers constructs the per-transport Dispatcher map
+// from runtime config. Always returns the three webhook-shaped
+// transports (PagerDuty, Slack, Teams) — they have no per-instance
+// config beyond the destination credential which lives on each
+// alert contact row. Email is conditionally included based on
+// EMAIL_TRANSPORT: "wpcom"/"smtp" wire the corresponding sender,
+// "stub" or empty falls back to log-only.
+func buildAlertDispatchers(cfg *config.Config) map[alerting.Transport]alerting.Dispatcher {
+	out := map[alerting.Transport]alerting.Dispatcher{
+		alerting.TransportPagerDuty: &alerting.PagerDutyDispatcher{},
+		alerting.TransportSlack:     &alerting.SlackDispatcher{},
+		alerting.TransportTeams:     &alerting.TeamsDispatcher{},
+	}
+
+	var sender alerting.Sender
+	switch cfg.EmailTransport {
+	case "wpcom":
+		sender = &alerting.WPCOMSender{
+			Endpoint:  cfg.WPCOMEmailEndpoint,
+			AuthToken: cfg.WPCOMEmailAuthToken,
+		}
+		log.Printf("alerting/email: using wpcom sender (endpoint=%s)", cfg.WPCOMEmailEndpoint)
+	case "smtp":
+		sender = &alerting.SMTPSender{
+			Host:     cfg.SMTPHost,
+			Port:     cfg.SMTPPort,
+			Username: cfg.SMTPUsername,
+			Password: cfg.SMTPPassword,
+			UseTLS:   cfg.SMTPUseTLS,
+		}
+		log.Printf("alerting/email: using smtp sender (%s:%d)", cfg.SMTPHost, cfg.SMTPPort)
+	default:
+		sender = &alerting.StubSender{}
+		log.Println("alerting/email: using stub sender (set EMAIL_TRANSPORT to enable real delivery)")
+	}
+	out[alerting.TransportEmail] = alerting.NewEmailDispatcher(sender, cfg.EmailFrom)
 	return out
 }

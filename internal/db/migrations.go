@@ -253,6 +253,88 @@ var migrations = []migration{
 		last_transition_id   BIGINT UNSIGNED NOT NULL DEFAULT 0,
 		updated_at           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
+
+	// Migration 16 creates the alert contacts registry. Same shape as the
+	// webhook registry but with a simpler filter model (site_filter +
+	// min_severity, no event-type / state filter — see API.md Family 5).
+	//
+	// destination is JSON because each transport has a different shape:
+	//   email     → {"address":"ops@example.com"}
+	//   pagerduty → {"integration_key":"<events-v2 routing key>"}
+	//   slack     → {"webhook_url":"https://hooks.slack.com/..."}
+	//   teams     → {"webhook_url":"https://outlook.office.com/webhook/..."}
+	// destination stores the credential in plaintext for the same reason
+	// jetmon_webhooks.secret does (see migration 13): outbound dispatch
+	// needs the raw value at every send. A hash is useless because we'd
+	// have to recover the original to call the transport. Threat model and
+	// future encryption-at-rest plan are identical.
+	//
+	// min_severity is a TINYINT matching internal/eventstore.Severity*
+	// (0=Up, 1=Warning, 2=Degraded, 3=SeemsDown, 4=Down). Default 4 (Down)
+	// avoids accidental noise from new contacts. The API serializes by
+	// string name; the column stores the underlying uint8.
+	//
+	// max_per_hour caps notification rate per contact (default 60, 0 =
+	// unlimited). Per-contact because different destinations have
+	// different tolerance — a Slack channel can take far more than a
+	// PagerDuty oncall can.
+	{16, `CREATE TABLE IF NOT EXISTS jetmon_alert_contacts (
+		id                   BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+		label                VARCHAR(128) NOT NULL,
+		active               TINYINT UNSIGNED NOT NULL DEFAULT 1,
+		transport            ENUM('email','pagerduty','slack','teams') NOT NULL,
+		destination          JSON NOT NULL,
+		destination_preview  VARCHAR(8) NOT NULL DEFAULT '',
+		site_filter          JSON NULL,
+		min_severity         TINYINT UNSIGNED NOT NULL DEFAULT 4,
+		max_per_hour         INT UNSIGNED NOT NULL DEFAULT 60,
+		created_by           VARCHAR(128) NOT NULL DEFAULT '',
+		created_at           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+		INDEX idx_active (active)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
+
+	// Migration 17 creates the per-fire alert delivery records. One row per
+	// (alert_contact, transition) match — same fan-in shape as
+	// jetmon_webhook_deliveries: one transition produces many deliveries
+	// (one per matching contact), one contact gets at most one delivery
+	// per transition (enforced by uk_alert_transition).
+	//
+	// payload is frozen at row creation: contact sees the event as it was
+	// when the alert fired, not as it is now.
+	//
+	// status lifecycle and 'failed' semantics are identical to
+	// jetmon_webhook_deliveries.
+	{17, `CREATE TABLE IF NOT EXISTS jetmon_alert_deliveries (
+		id                BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+		alert_contact_id  BIGINT UNSIGNED NOT NULL,
+		transition_id     BIGINT UNSIGNED NOT NULL,
+		event_id          BIGINT UNSIGNED NOT NULL,
+		event_type        VARCHAR(64) NOT NULL,
+		severity          TINYINT UNSIGNED NOT NULL,
+		payload           JSON NOT NULL,
+		status            ENUM('pending','delivered','failed','abandoned') NOT NULL DEFAULT 'pending',
+		attempt           INT UNSIGNED NOT NULL DEFAULT 0,
+		next_attempt_at   TIMESTAMP NULL,
+		last_status_code  INT NULL,
+		last_response     VARCHAR(2048) NULL,
+		last_attempt_at   TIMESTAMP NULL,
+		delivered_at      TIMESTAMP NULL,
+		created_at        TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE KEY uk_alert_transition (alert_contact_id, transition_id),
+		INDEX idx_status_next_attempt (status, next_attempt_at),
+		INDEX idx_contact_id_created (alert_contact_id, created_at),
+		INDEX idx_event_id (event_id)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
+
+	// Migration 18 records the alert dispatcher's progress. Mirrors
+	// jetmon_webhook_dispatch_progress — one row per jetmon2 instance with
+	// the high-water mark for jetmon_event_transitions.id.
+	{18, `CREATE TABLE IF NOT EXISTS jetmon_alert_dispatch_progress (
+		instance_id          VARCHAR(255) NOT NULL PRIMARY KEY,
+		last_transition_id   BIGINT UNSIGNED NOT NULL DEFAULT 0,
+		updated_at           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
 }
 
 // Migrate applies all pending migrations idempotently.

@@ -54,8 +54,14 @@ See `PROJECT.md` for the full project description, feature list, and performance
 | `internal/wpcom/` | WPCOM API client, circuit breaker |
 | `internal/audit/` | Operational log writes to `jetmon_audit_log` (WPCOM, retries, verifier RPCs, config reloads) |
 | `internal/eventstore/` | Event-sourced site state — manages `jetmon_events` + `jetmon_event_transitions` writes in single transactions |
+| `internal/api/` | Internal REST API server (`/api/v1/...`) — auth, rate limiting, idempotency, sites/events/SLA/webhooks/alert-contacts handlers |
+| `internal/apikeys/` | API key registry, sha256-hashed at rest; `./jetmon2 keys` CLI |
+| `internal/webhooks/` | Webhook registry + delivery worker — outbound HMAC-signed POSTs of event transitions, retry ladder 1m/5m/30m/1h/6h |
+| `internal/alerting/` | Alert contact registry + delivery worker — managed channels (email/PagerDuty/Slack/Teams) with site_filter + severity gate + per-hour rate cap |
 | `internal/dashboard/` | Operator dashboard, SSE handler |
 | `veriflier2/` | Go Veriflier binary |
+| `API.md` | Internal REST API reference (auth, all endpoints, payload shapes) |
+| `ROADMAP.md` | Deferred features and architectural roadmap (multi-binary split, public-API path) |
 | `PROJECT.md` | Full project description and feature specification |
 
 ## Build and Run

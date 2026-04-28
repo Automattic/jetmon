@@ -17,6 +17,8 @@ import (
 	"log"
 	"net/http"
 	"time"
+
+	"github.com/Automattic/jetmon/internal/alerting"
 )
 
 // Timeout defaults for the API HTTP server. These are generous compared to
@@ -38,6 +40,13 @@ type Server struct {
 	httpSrv     *http.Server
 	limiter     *rateLimiter
 	idempotency *idempotencyStore
+
+	// alertDispatchers is the per-transport dispatcher map used by the
+	// alert-contact send-test endpoint. The same map is shared with the
+	// alerting worker so a successful send-test is a true smoke test of
+	// the path real alerts will take. Wired by main.go via
+	// SetAlertDispatchers; nil if alerting is disabled.
+	alertDispatchers map[alerting.Transport]alerting.Dispatcher
 }
 
 // New constructs a Server. Caller is responsible for ensuring db is connected
@@ -77,6 +86,14 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		return nil
 	}
 	return s.httpSrv.Shutdown(ctx)
+}
+
+// SetAlertDispatchers wires the per-transport dispatcher map for the
+// alert-contact send-test endpoint. Call this before Listen if
+// alerting is enabled. The worker should share the same map so a
+// successful send-test exercises the real production code path.
+func (s *Server) SetAlertDispatchers(d map[alerting.Transport]alerting.Dispatcher) {
+	s.alertDispatchers = d
 }
 
 // routes builds the request multiplexer. Uses Go 1.22's pattern-based routing
@@ -147,6 +164,28 @@ func (s *Server) routes() *http.ServeMux {
 		s.requireScope(scopeRead, s.handleListDeliveries))
 	mux.HandleFunc("POST /api/v1/webhooks/{id}/deliveries/{delivery_id}/retry",
 		s.requireScope(scopeWrite, s.withIdempotency(s.handleRetryDelivery)))
+
+	// Alert contacts — read.
+	mux.HandleFunc("GET /api/v1/alert-contacts",
+		s.requireScope(scopeRead, s.handleListAlertContacts))
+	mux.HandleFunc("GET /api/v1/alert-contacts/{id}",
+		s.requireScope(scopeRead, s.handleGetAlertContact))
+
+	// Alert contacts — write.
+	mux.HandleFunc("POST /api/v1/alert-contacts",
+		s.requireScope(scopeWrite, s.withIdempotency(s.handleCreateAlertContact)))
+	mux.HandleFunc("PATCH /api/v1/alert-contacts/{id}",
+		s.requireScope(scopeWrite, s.handleUpdateAlertContact))
+	mux.HandleFunc("DELETE /api/v1/alert-contacts/{id}",
+		s.requireScope(scopeWrite, s.handleDeleteAlertContact))
+	mux.HandleFunc("POST /api/v1/alert-contacts/{id}/test",
+		s.requireScope(scopeWrite, s.withIdempotency(s.handleAlertContactTest)))
+
+	// Alert deliveries — read history, manually retry abandoned rows.
+	mux.HandleFunc("GET /api/v1/alert-contacts/{id}/deliveries",
+		s.requireScope(scopeRead, s.handleListAlertDeliveries))
+	mux.HandleFunc("POST /api/v1/alert-contacts/{id}/deliveries/{delivery_id}/retry",
+		s.requireScope(scopeWrite, s.withIdempotency(s.handleRetryAlertDelivery)))
 
 	// Catch-all → 404 with a useful message rather than the default empty body.
 	mux.HandleFunc("/", s.handleNotFound)
