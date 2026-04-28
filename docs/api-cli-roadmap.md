@@ -25,13 +25,13 @@ but it should not become a generic `curl` clone.
 - [x] Add `events list|get|transitions|close`.
 - [x] Add `webhooks list|get|create|update|delete|rotate-secret|deliveries|retry`.
 - [x] Add `alert-contacts list|get|create|update|delete|test|deliveries|retry`.
-- [ ] Keep typed command payloads close to the OpenAPI component schemas or shared
+- [x] Keep typed command payloads close to the OpenAPI component schemas or shared
   request structs so CLI examples do not drift from the server contract.
-- [ ] Add `sites bulk-add --count <n>` for creating a bounded batch of real
+- [x] Add `sites bulk-add --count <n>` for creating a bounded batch of real
   monitored URLs for local testing. Support `--source fixture|file|stdin` so the
   default is repeatable but operators can supply their own CSV/JSON/newline
   list without recompiling the CLI.
-- [ ] Add a curated local fixture of real public URLs with mixed behavior:
+- [x] Add a curated local fixture of real public URLs with mixed behavior:
   always-up examples, redirects, slow responses, client/server error responses,
   TLS edge cases, and keyword-check candidates. Keep the fixture small,
   documented, and safe for local-only test data generation.
@@ -115,3 +115,13 @@ but it should not become a generic `curl` clone.
   transport-specific destination shortcuts, raw destination JSON support, site
   filter clearing, delivery status filters, idempotency support for POST
   actions, and focused path/body tests.
+- [x] 2026-04-28: Kept typed command payloads aligned with the implemented API
+  schemas through local request structs, JSON body builders, and focused
+  path/body tests for sites, events, webhooks, and alert contacts.
+- [x] 2026-04-28: Added `jetmon2 api sites bulk-add --count <n>` with a
+  bounded 200-site cap, fixture/file/stdin sources, JSON/CSV/newline parsing,
+  dry-run output, per-site idempotency-key prefixes, and deterministic
+  sequential blog IDs for local Docker data generation.
+- [x] 2026-04-28: Added the embedded `cmd/jetmon2/testdata/api-cli-sites.json`
+  fixture with always-up, redirect, slow, HTTP error, TLS error, custom-header,
+  and keyword-check examples.

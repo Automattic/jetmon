@@ -81,7 +81,7 @@ type apiSiteUpdateRequest struct {
 
 func cmdAPISites(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: jetmon2 api sites <list|get|create|update|delete|pause|resume|trigger-now> [flags]")
+		return errors.New("usage: jetmon2 api sites <list|get|create|update|delete|pause|resume|trigger-now|bulk-add> [flags]")
 	}
 
 	sub := args[0]
@@ -103,13 +103,15 @@ func cmdAPISites(args []string) error {
 		return cmdAPISitesPostAction(rest, "resume", "resume")
 	case "trigger-now":
 		return cmdAPISitesPostAction(rest, "trigger-now", "trigger-now")
+	case "bulk-add":
+		return cmdAPISitesBulkAdd(rest)
 	default:
-		return fmt.Errorf("unknown api sites subcommand %q (want: list, get, create, update, delete, pause, resume, trigger-now)", sub)
+		return fmt.Errorf("unknown api sites subcommand %q (want: list, get, create, update, delete, pause, resume, trigger-now, bulk-add)", sub)
 	}
 }
 
 func printAPISitesUsage(w io.Writer) {
-	fmt.Fprintln(w, "usage: jetmon2 api sites <list|get|create|update|delete|pause|resume|trigger-now> [flags]")
+	fmt.Fprintln(w, "usage: jetmon2 api sites <list|get|create|update|delete|pause|resume|trigger-now|bulk-add> [flags]")
 }
 
 func cmdAPISitesList(args []string) error {

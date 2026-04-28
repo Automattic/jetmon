@@ -1,0 +1,51 @@
+[
+  {
+    "monitor_url": "https://example.com/",
+    "check_keyword": "Example Domain",
+    "redirect_policy": "follow",
+    "check_interval": 5
+  },
+  {
+    "monitor_url": "https://wordpress.com/",
+    "check_keyword": "WordPress",
+    "redirect_policy": "follow",
+    "check_interval": 5
+  },
+  {
+    "monitor_url": "https://httpbin.org/status/204",
+    "redirect_policy": "follow"
+  },
+  {
+    "monitor_url": "https://httpbin.org/status/404",
+    "redirect_policy": "follow"
+  },
+  {
+    "monitor_url": "https://httpbin.org/status/500",
+    "redirect_policy": "follow"
+  },
+  {
+    "monitor_url": "https://httpbin.org/delay/3",
+    "timeout_seconds": 5,
+    "redirect_policy": "follow"
+  },
+  {
+    "monitor_url": "https://httpbin.org/redirect-to?url=https%3A%2F%2Fexample.com%2F",
+    "redirect_policy": "alert"
+  },
+  {
+    "monitor_url": "https://httpbin.org/headers",
+    "check_keyword": "X-Jetmon-CLI",
+    "custom_headers": {
+      "X-Jetmon-CLI": "fixture"
+    },
+    "redirect_policy": "follow"
+  },
+  {
+    "monitor_url": "https://expired.badssl.com/",
+    "redirect_policy": "follow"
+  },
+  {
+    "monitor_url": "https://wrong.host.badssl.com/",
+    "redirect_policy": "follow"
+  }
+]
