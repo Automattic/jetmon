@@ -6,8 +6,12 @@ cd /jetmon
 export JETMON_PID_FILE=/jetmon/stats/jetmon2.pid
 export VERIFLIER_PORT="${VERIFLIER_PORT:-${VERIFLIER_GRPC_PORT:-7803}}"
 
-touch logs/jetmon.log logs/status-change.log
-touch stats/sitespersec stats/sitesqueue stats/totals
+mkdir -p logs stats
+for path in logs/jetmon.log logs/status-change.log stats/sitespersec stats/sitesqueue stats/totals; do
+	if ! touch "$path" 2>/dev/null; then
+		echo "warning: could not write $path; check docker/.env UID/GID and host directory permissions" >&2
+	fi
+done
 
 if [ ! -f config/config.json ]; then
 	if [ -w config/ ]; then
