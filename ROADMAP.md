@@ -30,7 +30,10 @@ migration and the operating data needed to make larger architecture decisions.
   rate by failure class, Veriflier agreement/disagreement by region, Veriflier
   latency/timeout rates, mixed-region outcomes, monitor-side `Unknown` cases,
   primary-check vs confirmation cost, operator explanation gaps, and WPCOM
-  notification parity.
+  notification parity. StatsD now emits the core detection timings, outcome
+  counters split by local failure class, and per-Veriflier-host RPC/vote
+  counters; the remaining work is production dashboarding and any durable report
+  queries needed after v2 has real traffic.
 - **Watch projection drift as a production bug.** While the legacy projection
   is enabled, event mutations, transition rows, and the site-row projection
   must remain transactionally consistent.

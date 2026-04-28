@@ -497,6 +497,35 @@ func TestHandleRecoveryClearsRetryEntryEvenWhenAlreadyRunning(t *testing.T) {
 	}
 }
 
+func TestHandleRecoveryEmitsProbeClearedClassMetric(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig(t)
+
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local",
+		ctx:      context.Background(),
+	}
+	o.retries.record(checkerResultFailure(42))
+
+	o.handleRecovery(db.Site{BlogID: 42, SiteStatus: statusDown}, checkerResultSuccess(42))
+
+	if got := rec.counter("detection.probe_cleared.count"); got != 1 {
+		t.Fatalf("probe-cleared counter = %d, want 1", got)
+	}
+	if got := rec.counter("detection.probe_cleared.server.count"); got != 1 {
+		t.Fatalf("probe-cleared server counter = %d, want 1", got)
+	}
+	if got := rec.timingCount("detection.seems_down_to_probe_cleared.time"); got != 1 {
+		t.Fatalf("probe-cleared timing count = %d, want 1", got)
+	}
+}
+
 func TestHandleFailureBelowThresholdDoesNotEscalate(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
@@ -1114,6 +1143,12 @@ func TestHandleFailureEmitsSeemsDownMetrics(t *testing.T) {
 	if got := rec.counter("detection.seems_down.open.count"); got != 1 {
 		t.Fatalf("seems-down open counter = %d, want 1", got)
 	}
+	if got := rec.counter("detection.failure.server.count"); got != 1 {
+		t.Fatalf("failure class counter = %d, want 1", got)
+	}
+	if got := rec.counter("detection.seems_down.open.server.count"); got != 1 {
+		t.Fatalf("seems-down class counter = %d, want 1", got)
+	}
 	if got := rec.timingCount("detection.first_failure_to_seems_down.time"); got != 1 {
 		t.Fatalf("first failure timing count = %d, want 1", got)
 	}
@@ -1157,11 +1192,14 @@ func TestEscalateToVerifliersEmitsConfirmedMetrics(t *testing.T) {
 	o.escalateToVerifliers(db.Site{BlogID: 321, MonitorURL: "https://example.com", SiteStatus: statusRunning}, entry)
 
 	for stat, want := range map[string]int{
-		"detection.verifier.escalation.count": 1,
-		"verifier.rpc.success.count":          1,
-		"verifier.vote.confirm_down.count":    1,
-		"detection.verifier.quorum_met.count": 1,
-		"detection.down.confirmed.count":      1,
+		"detection.verifier.escalation.count":      1,
+		"verifier.rpc.success.count":               1,
+		"verifier.host.v1.rpc.success.count":       1,
+		"verifier.vote.confirm_down.count":         1,
+		"verifier.host.v1.vote.confirm_down.count": 1,
+		"detection.verifier.quorum_met.count":      1,
+		"detection.down.confirmed.count":           1,
+		"detection.down.confirmed.server.count":    1,
 	} {
 		if got := rec.counter(stat); got != want {
 			t.Fatalf("%s = %d, want %d", stat, got, want)
@@ -1170,6 +1208,7 @@ func TestEscalateToVerifliersEmitsConfirmedMetrics(t *testing.T) {
 	for _, stat := range []string{
 		"detection.first_failure_to_verification.time",
 		"verifier.rpc.duration",
+		"verifier.host.v1.rpc.duration",
 		"detection.seems_down_to_down.time",
 	} {
 		if got := rec.timingCount(stat); got != 1 {
@@ -1219,10 +1258,13 @@ func TestEscalateToVerifliersEmitsFalseAlarmMetrics(t *testing.T) {
 	o.escalateToVerifliers(db.Site{BlogID: 654, MonitorURL: "https://example.com", SiteStatus: statusRunning}, entry)
 
 	for stat, want := range map[string]int{
-		"detection.verifier.escalation.count":  1,
-		"verifier.rpc.success.count":           1,
-		"verifier.vote.disagree.count":         1,
-		"detection.verifier.false_alarm.count": 1,
+		"detection.verifier.escalation.count":         1,
+		"verifier.rpc.success.count":                  1,
+		"verifier.host.v1.rpc.success.count":          1,
+		"verifier.vote.disagree.count":                1,
+		"verifier.host.v1.vote.disagree.count":        1,
+		"detection.verifier.false_alarm.count":        1,
+		"detection.verifier.false_alarm.server.count": 1,
 	} {
 		if got := rec.counter(stat); got != want {
 			t.Fatalf("%s = %d, want %d", stat, got, want)
@@ -1230,6 +1272,27 @@ func TestEscalateToVerifliersEmitsFalseAlarmMetrics(t *testing.T) {
 	}
 	if got := rec.timingCount("detection.seems_down_to_false_alarm.time"); got != 1 {
 		t.Fatalf("false alarm timing count = %d, want 1", got)
+	}
+}
+
+func TestMetricSegment(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{in: "", want: "unknown"},
+		{in: "server", want: "server"},
+		{in: "US-West:7803", want: "us_west_7803"},
+		{in: "  eu.central-1  ", want: "eu_central_1"},
+		{in: "://", want: "unknown"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			if got := metricSegment(tt.in); got != tt.want {
+				t.Fatalf("metricSegment(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
 	}
 }
 

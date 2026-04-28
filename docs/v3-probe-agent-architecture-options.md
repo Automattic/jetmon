@@ -53,6 +53,14 @@ The v3 decision should be based on production data from v2, especially:
 Without this data, v3 risks optimizing for hypothetical problems instead of
 the production failure modes that actually matter.
 
+The v2 monitor emits the first production evidence slice through StatsD:
+`detection.*` timing metrics cover the local-failure to lifecycle-state path,
+class-specific `detection.*.<failure-class>.count` counters split confirmed,
+false-alarm, and probe-cleared outcomes, and `verifier.host.<host>.*` counters
+split RPC health and confirm/disagree votes by configured Veriflier host. Use
+the host naming convention to preserve region/provider information in those
+series.
+
 ## Current v2 Baseline
 
 The v2 flow is:

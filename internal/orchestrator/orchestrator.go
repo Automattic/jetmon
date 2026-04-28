@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	runtimemetrics "runtime/metrics"
+	"strings"
 	"sync"
 	"time"
 
@@ -375,6 +376,7 @@ func (o *Orchestrator) handleRecovery(site db.Site, res checker.Result) {
 		log.Printf("orchestrator: blog_id=%d recovered", site.BlogID)
 		if entry != nil && site.SiteStatus == statusDown {
 			emitCounter("detection.probe_cleared.count", 1)
+			emitCounter("detection.probe_cleared."+failureClass(entry.lastResult)+".count", 1)
 			emitTimingSince("detection.seems_down_to_probe_cleared.time", entry.firstFailAt, changeTime)
 		}
 
@@ -401,6 +403,8 @@ func (o *Orchestrator) handleRecovery(site db.Site, res checker.Result) {
 
 func (o *Orchestrator) handleFailure(site db.Site, res checker.Result) {
 	entry := o.retries.record(res)
+	class := failureClass(res)
+	emitCounter("detection.failure."+class+".count", 1)
 
 	// Open a Seems Down event on the first failure we don't already have an
 	// id for. The schema's idempotent dedup_key means re-detecting the same
@@ -414,6 +418,7 @@ func (o *Orchestrator) handleFailure(site db.Site, res checker.Result) {
 			entry.eventID = id
 			if entry.failCount == 1 {
 				emitCounter("detection.seems_down.open.count", 1)
+				emitCounter("detection.seems_down.open."+class+".count", 1)
 				emitTimingSince("detection.first_failure_to_seems_down.time", entry.firstFailAt, nowFunc().UTC())
 			}
 		}
@@ -508,12 +513,16 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 	for range clients {
 		vr := <-ch
 		emitTiming("verifier.rpc.duration", vr.duration)
+		hostSegment := metricSegment(vr.host)
+		emitTiming("verifier.host."+hostSegment+".rpc.duration", vr.duration)
 		if vr.err != nil {
 			emitCounter("verifier.rpc.error.count", 1)
+			emitCounter("verifier.host."+hostSegment+".rpc.error.count", 1)
 			log.Printf("orchestrator: veriflier %s error: %v", vr.host, vr.err)
 			continue
 		}
 		emitCounter("verifier.rpc.success.count", 1)
+		emitCounter("verifier.host."+hostSegment+".rpc.success.count", 1)
 		healthyVerifliers++
 		// Verifier reply is operational telemetry — recorded under
 		// EventVeriflierSent with the response in metadata. The site-state
@@ -536,9 +545,11 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 		vResults = append(vResults, *vr.res)
 		if !vr.res.Success {
 			emitCounter("verifier.vote.confirm_down.count", 1)
+			emitCounter("verifier.host."+hostSegment+".vote.confirm_down.count", 1)
 			confirmations++
 		} else {
 			emitCounter("verifier.vote.disagree.count", 1)
+			emitCounter("verifier.host."+hostSegment+".vote.disagree.count", 1)
 		}
 	}
 
@@ -562,6 +573,7 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 		// event with reason=false_alarm and reset site_status in the same tx.
 		log.Printf("orchestrator: blog_id=%d verifliers did not confirm down (%d/%d)", site.BlogID, confirmations, quorum)
 		emitCounter("detection.verifier.false_alarm.count", 1)
+		emitCounter("detection.verifier.false_alarm."+failureClass(entry.lastResult)+".count", 1)
 		emitTimingSince("detection.seems_down_to_false_alarm.time", entry.firstFailAt, nowFunc().UTC())
 		_ = dbRecordFalsePositive(site.BlogID, entry.lastResult.HTTPCode, entry.lastResult.ErrorCode,
 			entry.lastResult.RTT.Milliseconds())
@@ -587,6 +599,7 @@ func (o *Orchestrator) confirmDown(site db.Site, entry *retryEntry, vResults []v
 	newStatus := statusConfirmedDown
 	changeTime := nowFunc().UTC()
 	emitCounter("detection.down.confirmed.count", 1)
+	emitCounter("detection.down.confirmed."+failureClass(entry.lastResult)+".count", 1)
 	emitTimingSince("detection.seems_down_to_down.time", entry.firstFailAt, changeTime)
 
 	log.Printf("orchestrator: blog_id=%d confirmed down", site.BlogID)
@@ -887,6 +900,37 @@ func emitTimingSince(stat string, start, end time.Time) {
 		return
 	}
 	emitTiming(stat, end.Sub(start))
+}
+
+func failureClass(res checker.Result) string {
+	return metricSegment((&res).StatusType())
+}
+
+func metricSegment(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if s == "" {
+		return "unknown"
+	}
+
+	var b strings.Builder
+	lastUnderscore := false
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastUnderscore = false
+			continue
+		}
+		if !lastUnderscore {
+			b.WriteByte('_')
+			lastUnderscore = true
+		}
+	}
+
+	out := strings.Trim(b.String(), "_")
+	if out == "" {
+		return "unknown"
+	}
+	return out
 }
 
 // openSeemsDown opens (or re-detects) a Seems Down event for an HTTP-failing

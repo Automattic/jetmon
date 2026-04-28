@@ -592,8 +592,13 @@ Metrics are emitted with prefix `com.jetpack.jetmon.<hostname>`. The Graphite/Gr
 - Detection flow timing: first failure → Seems Down, first failure →
   Veriflier escalation, Seems Down → Down, Seems Down → false alarm, and
   Seems Down → probe-cleared recovery
+- Detection outcome counters split by local failure class (`server`, `client`,
+  `blocked`, `https`, `redirect`, `intermittent`) for false-alarm and
+  confirmed-down rate comparisons
 - Veriflier decision counters: escalations, RPC success/error, confirm/disagree
   votes, quorum-met confirmations, and false alarms
+- Per-Veriflier-host RPC and vote counters under `verifier.host.<host>.*` so
+  region/provider disagreement and latency can be compared during v2 production
 - Legacy projection drift: per-bucket count of active sites whose
   `site_status` no longer matches the authoritative open HTTP event
 - Memory usage
