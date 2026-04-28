@@ -1,11 +1,13 @@
 # Public API Gateway Tenant Contract
 
-**Status:** Planning note. Not implemented by the v2 internal API.
+**Status:** Gateway tenant context and Jetmon-side ownership checks are
+implemented for internal gateway-routed requests. Native public exposure remains
+deferred.
 
-This document defines the expected boundary between a future customer-facing
-gateway and Jetmon if the internal API is exposed through that gateway. It is
-the first public-API prerequisite before adding tenant ownership columns,
-filtered queries, public scopes, or public error redaction inside Jetmon.
+This document defines the expected boundary between a customer-facing gateway
+and Jetmon if the internal API is exposed through that gateway. It captures the
+implemented ownership-enforcement shape and the remaining public-API
+prerequisites before Jetmon could be exposed without that gateway.
 
 ADR-0002 remains the current implementation decision: Jetmon's API is internal
 only, every caller is a trusted service, and tenant isolation lives outside
@@ -19,9 +21,9 @@ The gateway owns customer identity. Jetmon owns monitoring correctness.
 | Concern | Gateway responsibility | Jetmon responsibility |
 |---|---|---|
 | Customer authentication | Authenticate the customer, user, team, app, or service token. | Accept only trusted internal service credentials. |
-| Tenant identity | Derive a stable tenant id from the authenticated customer context. Never accept tenant ids from the public request body. | Treat tenant id as gateway-derived metadata until Jetmon-side ownership enforcement is intentionally added. |
+| Tenant identity | Derive a stable tenant id from the authenticated customer context. Never accept tenant ids from the public request body. | Accept gateway-derived tenant context only from the trusted gateway consumer and use it for ownership checks. |
 | Public authorization | Enforce customer plan, feature flags, public scopes, and role membership. | Enforce internal `read` / `write` / `admin` service scopes and resource relationship invariants. |
-| Resource ownership | Decide whether the public caller may see or mutate a site, webhook, alert contact, or delivery. | Eventually enforce owner columns on resources that Jetmon manages directly. |
+| Resource ownership | Decide whether the public caller may see or mutate a site, webhook, alert contact, or delivery. | Enforce site mappings and owner columns for gateway-routed resources while preserving unscoped internal-operator behavior. |
 | Error vocabulary | Collapse or sanitize 403/404 and internal errors for customers. | Return operator-accurate internal errors to the gateway. |
 | Rate limits | Apply customer fairness, abuse, plan, and route-specific limits. | Keep per-service-key rate limits for internal service protection. |
 | Auditing | Record public actor, tenant, OAuth/client app, and gateway decision details. | Record internal consumer, Jetmon request id, and any gateway-derived tenant context that reaches Jetmon. |
@@ -59,9 +61,9 @@ Jetmon ever serves customers without a gateway in front.
 | Sites list/detail | Caller can access each `blog_id`; plan allows monitoring data. | Implemented through `jetmon_site_tenants` when gateway context is present. |
 | Event/history/SLA reads | Caller can access the parent site; requested time range and filters are allowed. | Implemented through the parent site's `jetmon_site_tenants` mapping. |
 | Site/check writes | Caller can manage the parent site; plan permits monitor mutation and trigger-now. | Implemented through the parent site's `jetmon_site_tenants` mapping; orchestrator/eventstore invariants remain unchanged. |
-| Webhook CRUD/deliveries | Caller can manage tenant-owned webhooks; endpoint URL policy is satisfied. | Add `owner_tenant_id` to webhooks and deliveries or derive delivery visibility through the webhook. |
-| Alert contact CRUD/deliveries | Caller can manage tenant-owned alert contacts; transport is allowed by plan. | Add `owner_tenant_id` to alert contacts and deliveries or derive delivery visibility through the contact. |
-| Manual retries/tests | Caller owns the parent webhook/contact and route-specific abuse limits allow the operation. | Verify parent ownership before enqueueing or dispatching. |
+| Webhook CRUD/deliveries | Caller can manage tenant-owned webhooks; endpoint URL policy is satisfied. | Implemented with `owner_tenant_id`; delivery visibility and manual retry are derived through the owned webhook. |
+| Alert contact CRUD/deliveries | Caller can manage tenant-owned alert contacts; transport is allowed by plan. | Implemented with `owner_tenant_id`; delivery visibility, manual retry, and send-test are derived through the owned contact. |
+| Manual retries/tests | Caller owns the parent webhook/contact and route-specific abuse limits allow the operation. | Implemented by verifying parent ownership before enqueueing, retrying, or dispatching. |
 | Health, `/me`, OpenAPI | Gateway decides whether to expose them at all. | No tenant filtering; these remain service introspection routes unless a public variant is designed. |
 
 ## Ownership Model

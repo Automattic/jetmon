@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -142,7 +143,7 @@ func TestRoutesRegisterAllPaths(t *testing.T) {
 
 func TestShutdownWithoutListenIsNoop(t *testing.T) {
 	s := New(":0", nil, "test")
-	if err := s.Shutdown(t.Context()); err != nil {
+	if err := s.Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown before Listen = %v, want nil", err)
 	}
 }

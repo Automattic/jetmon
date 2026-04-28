@@ -2,7 +2,7 @@
 
 This document is the reference for Jetmon 2's internal REST API and the design notes behind it. The API server, Bearer-token auth, site/event/SLA endpoints, webhooks, alert contacts, idempotency handling, and delivery retry surfaces are implemented in `internal/api/`, `internal/apikeys/`, `internal/webhooks/`, and `internal/alerting/`. Sections that describe future expansion or deferred behavior call that out explicitly.
 
-**Audience: internal systems only.** Jetmon does not expose this API to end customers directly. A separate gateway service handles all customer-facing access — authentication, tenant isolation, customer rate limiting, plan-based feature gating, public error vocabulary, etc. — and calls Jetmon over this internal interface. Other internal services (operator dashboard, alerting workers, batch reporting jobs, the gateway itself) are the only direct callers. The future gateway/tenant boundary is drafted in [`docs/public-api-gateway-tenant-contract.md`](docs/public-api-gateway-tenant-contract.md).
+**Audience: internal systems only.** Jetmon does not expose this API to end customers directly. A separate gateway service handles all customer-facing access — authentication, tenant isolation, customer rate limiting, plan-based feature gating, public error vocabulary, etc. — and calls Jetmon over this internal interface. Other internal services (operator dashboard, alerting workers, batch reporting jobs, the gateway itself) are the only direct callers. The gateway/tenant boundary and remaining public-exposure prerequisites are documented in [`docs/public-api-gateway-tenant-contract.md`](docs/public-api-gateway-tenant-contract.md).
 
 **Gateway tenant context.** Requests from the internal consumer named `gateway`
 may include `X-Jetmon-Tenant-ID`, `X-Jetmon-Public-Scopes`, and
@@ -264,7 +264,7 @@ Higher severity = worse. Severity climbs independently of state — a worsening 
 
 ## Endpoints
 
-The full surface is grouped into five capability families, matching `ROADMAP.md`. The implemented route table lives in `internal/api/api.go`; design-only additions and deferred behavior are called out where they appear.
+The full surface is grouped into five capability families, matching `ROADMAP.md`. The implemented route table lives in `internal/api/routes.go`; design-only additions and deferred behavior are called out where they appear.
 
 ### Family 1: Sites and current state
 
@@ -768,7 +768,7 @@ Indexes:
 - `(status, next_attempt_at)` on deliveries — the worker's "what's ready?" query
 - `(webhook_id, created_at)` on deliveries — the deliveries-list endpoint
 - `(active)` on webhooks — the dispatcher's filter for live webhooks
-- `(owner_tenant_id)` on webhooks — dormant in the internal API; used by future tenant-scoped gateway paths
+- `(owner_tenant_id)` on webhooks — scopes gateway-routed CRUD and delivery visibility while normal internal callers remain unscoped
 
 `payload` is **frozen at delivery creation**: the consumer sees the event as it was when the webhook fired, not as it is now. A closed-and-amended event would not change a delivery's payload — that's the contract consumers expect ("this is what I was told happened, not whatever it became").
 

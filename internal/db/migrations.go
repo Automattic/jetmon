@@ -338,7 +338,7 @@ var migrations = []migration{
 
 	// Migration 19 adds a nullable tenant owner to webhooks. Internal v2
 	// callers leave it NULL, preserving the shared internal registry from
-	// ADR-0002. Future public gateway paths can set owner_tenant_id and use
+	// ADR-0002. Gateway-routed API paths set owner_tenant_id and use
 	// tenant-scoped repository helpers so customer-owned webhooks are filtered
 	// in Jetmon as defense in depth.
 	{19, `ALTER TABLE jetmon_webhooks

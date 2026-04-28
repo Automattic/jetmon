@@ -514,7 +514,3 @@ func contains(s, sub string) bool {
 	}
 	return false
 }
-
-// httptest dependency reference suppresses unused-import checks if a future
-// edit removes the only direct httptest usage above.
-var _ = httptest.NewRecorder
