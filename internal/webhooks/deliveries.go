@@ -97,20 +97,18 @@ const claimLockDuration = 60 * time.Second
 // failure) when it finishes.
 //
 // Without the soft lock, the deliver loop's 1-second tick re-claims
-// any in-flight row up to the per-contact in-flight cap, producing
+// any in-flight row up to the per-webhook in-flight cap, producing
 // concurrent dispatches and inflating the attempt counter — three
 // concurrent claims followed by three failures end up at attempt=3
 // after a single round. The soft lock prevents that.
 //
 // Multi-instance safety: this implementation does NOT use row-level
 // locks (SELECT ... FOR UPDATE SKIP LOCKED). Two instances polling
-// simultaneously could pick up the same row in the SELECT phase. The
-// UPDATE that follows is per-row, so only one of them will actually
-// transition next_attempt_at — but both still see the original
-// pre-claim row in their result set. For single-instance deployment
-// that's fine; for multi-instance the claim-and-lock should move to
-// SELECT ... FOR UPDATE SKIP LOCKED within a transaction. Tracked
-// alongside the deliverer-binary extraction in ROADMAP.md.
+// simultaneously can still pick up the same row in the SELECT phase. The
+// readiness predicate on UPDATE and the RowsAffected check below mean only
+// rows that won the soft lock are returned, but fully multi-instance delivery
+// should still move to SELECT ... FOR UPDATE SKIP LOCKED within a transaction.
+// Tracked alongside the deliverer-binary extraction in ROADMAP.md.
 func ClaimReady(ctx context.Context, db *sql.DB, limit int) ([]Delivery, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, webhook_id, transition_id, event_id, event_type, payload,
@@ -143,18 +141,35 @@ func ClaimReady(ctx context.Context, db *sql.DB, limit int) ([]Delivery, error) 
 		return nil, nil
 	}
 
-	// Soft-lock each claimed row so the next tick won't re-pick it.
+	// Soft-lock each claimed row so the next tick won't re-pick it. Return only
+	// rows whose lock update won; stale SELECT results can happen if another
+	// claimant already moved next_attempt_at between our SELECT and UPDATE.
 	lockUntil := time.Now().Add(claimLockDuration).UTC()
+	// claimed reuses candidates' backing array — safe because the write index
+	// is always ≤ the read index and candidates is not returned in its
+	// original form.
+	claimed := candidates[:0]
 	for i := range candidates {
-		if _, err := db.ExecContext(ctx, `
+		res, err := db.ExecContext(ctx, `
 			UPDATE jetmon_webhook_deliveries
 			   SET next_attempt_at = ?
-			 WHERE id = ? AND status = 'pending'`,
-			lockUntil, candidates[i].ID); err != nil {
+			 WHERE id = ?
+			   AND status = 'pending'
+			   AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP)`,
+			lockUntil, candidates[i].ID)
+		if err != nil {
 			return nil, fmt.Errorf("webhooks: soft-lock row %d: %w", candidates[i].ID, err)
 		}
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return nil, fmt.Errorf("webhooks: soft-lock row %d rows affected: %w", candidates[i].ID, err)
+		}
+		if affected == 0 {
+			continue
+		}
+		claimed = append(claimed, candidates[i])
 	}
-	return candidates, nil
+	return claimed, nil
 }
 
 // MarkDelivered records a successful delivery with the response status.
@@ -308,14 +323,14 @@ func RetryDelivery(ctx context.Context, db *sql.DB, id int64) error {
 
 func scanDeliveryRow(s rowScanner) (*Delivery, error) {
 	var (
-		d                Delivery
-		payload          sql.NullString
-		nextAttemptAt    sql.NullTime
-		lastStatusCode   sql.NullInt64
-		lastResponse     sql.NullString
-		lastAttemptAt    sql.NullTime
-		deliveredAt      sql.NullTime
-		statusStr        string
+		d              Delivery
+		payload        sql.NullString
+		nextAttemptAt  sql.NullTime
+		lastStatusCode sql.NullInt64
+		lastResponse   sql.NullString
+		lastAttemptAt  sql.NullTime
+		deliveredAt    sql.NullTime
+		statusStr      string
 	)
 	if err := s.Scan(
 		&d.ID, &d.WebhookID, &d.TransitionID, &d.EventID, &d.EventType, &payload,

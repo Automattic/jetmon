@@ -8,7 +8,7 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
-const eventsBaseSQL = ` SELECT id, blog_id, endpoint_id, check_type, discriminator, severity, state, started_at, ended_at, resolution_reason, cause_event_id, metadata FROM jetmon_events WHERE 1=1`
+const eventsBaseSQL = ` SELECT id, blog_id, endpoint_id, check_type, discriminator, severity, state, started_at, ended_at, resolution_reason, cause_event_id, metadata FROM jetmon_events WHERE blog_id = ?`
 
 const transitionsListSQL = ` SELECT id, event_id, severity_before, severity_after, state_before, state_after, reason, source, metadata, changed_at FROM jetmon_event_transitions WHERE event_id = ?`
 
@@ -35,7 +35,7 @@ func TestListSiteEventsHappyPath(t *testing.T) {
 	startedAt := time.Date(2026, 4, 25, 3, 0, 0, 0, time.UTC)
 	rows := makeEventRow(7, 42, 4, "Down", startedAt, nil)
 
-	mock.ExpectQuery(eventsBaseSQL + ` AND blog_id = ? ORDER BY id DESC LIMIT ?`).
+	mock.ExpectQuery(eventsBaseSQL+` ORDER BY id DESC LIMIT ?`).
 		WithArgs(int64(42), 51).
 		WillReturnRows(rows)
 
@@ -72,7 +72,7 @@ func TestListSiteEventsAppliesActiveFilter(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
 
-	mock.ExpectQuery(eventsBaseSQL + ` AND blog_id = ? AND ended_at IS NULL ORDER BY id DESC LIMIT ?`).
+	mock.ExpectQuery(eventsBaseSQL+` AND ended_at IS NULL ORDER BY id DESC LIMIT ?`).
 		WithArgs(int64(42), 51).
 		WillReturnRows(sqlmock.NewRows(columnsEvent))
 
@@ -217,7 +217,7 @@ func TestListTransitionsHappyPath(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"blog_id"}).AddRow(int64(42)))
 
 	startedAt := time.Date(2026, 4, 25, 3, 0, 0, 0, time.UTC)
-	mock.ExpectQuery(transitionsListSQL + ` ORDER BY id ASC LIMIT ?`).
+	mock.ExpectQuery(transitionsListSQL+` ORDER BY id ASC LIMIT ?`).
 		WithArgs(int64(7), 101).
 		WillReturnRows(sqlmock.NewRows(columnsTransition).
 			AddRow(int64(1), int64(7), nil, uint8(3), nil, "Seems Down", "opened", "host", []byte("null"), startedAt))

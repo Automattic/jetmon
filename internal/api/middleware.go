@@ -20,7 +20,6 @@ import (
 const (
 	scopeRead  = apikeys.ScopeRead
 	scopeWrite = apikeys.ScopeWrite
-	scopeAdmin = apikeys.ScopeAdmin
 )
 
 // ctxKey is an unexported type so handlers from other packages can't trample
@@ -67,7 +66,7 @@ func (s *Server) requireScope(required apikeys.Scope, h http.HandlerFunc) http.H
 		if token == "" {
 			writeError(w, r.WithContext(ctx), http.StatusUnauthorized, "missing_token",
 				"Authorization header with Bearer token is required")
-			s.audit(ctx, nil, r, http.StatusUnauthorized, time.Time{}, "missing token")
+			s.audit(nil, r, http.StatusUnauthorized, time.Time{}, "missing token")
 			return
 		}
 
@@ -75,7 +74,7 @@ func (s *Server) requireScope(required apikeys.Scope, h http.HandlerFunc) http.H
 		if err != nil {
 			status, code, msg := mapAuthError(err)
 			writeError(w, r.WithContext(ctx), status, code, msg)
-			s.audit(ctx, nil, r, status, time.Time{}, code)
+			s.audit(nil, r, status, time.Time{}, code)
 			return
 		}
 
@@ -83,7 +82,7 @@ func (s *Server) requireScope(required apikeys.Scope, h http.HandlerFunc) http.H
 			writeError(w, r.WithContext(ctx), http.StatusForbidden, "insufficient_scope",
 				"this endpoint requires scope "+string(required)+
 					"; your key has scope "+string(key.Scope))
-			s.audit(ctx, key, r, http.StatusForbidden, time.Time{}, "insufficient scope")
+			s.audit(key, r, http.StatusForbidden, time.Time{}, "insufficient scope")
 			return
 		}
 
@@ -92,7 +91,7 @@ func (s *Server) requireScope(required apikeys.Scope, h http.HandlerFunc) http.H
 		writeRateLimitHeaders(w, key.RateLimitPerMinute, remaining, resetAt)
 		if !allowed {
 			writeRateLimited(w, r.WithContext(ctx), key.RateLimitPerMinute, remaining, resetAt)
-			s.audit(ctx, key, r, http.StatusTooManyRequests, time.Time{}, "rate limited")
+			s.audit(key, r, http.StatusTooManyRequests, time.Time{}, "rate limited")
 			return
 		}
 
@@ -106,7 +105,7 @@ func (s *Server) requireScope(required apikeys.Scope, h http.HandlerFunc) http.H
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		h(rec, r.WithContext(ctx))
 
-		s.audit(ctx, key, r, rec.status, started, "")
+		s.audit(key, r, rec.status, started, "")
 	}
 }
 
@@ -164,7 +163,7 @@ func mapAuthError(err error) (status int, code, msg string) {
 // could be moved to a buffered channel if write latency becomes a concern.
 // Errors are logged but never returned to the consumer — audit is observability,
 // not gate.
-func (s *Server) audit(ctx context.Context, key *apikeys.Key, r *http.Request, status int, started time.Time, note string) {
+func (s *Server) audit(key *apikeys.Key, r *http.Request, status int, started time.Time, note string) {
 	consumerName := "unknown"
 	var keyID int64
 	if key != nil {
@@ -178,15 +177,15 @@ func (s *Server) audit(ctx context.Context, key *apikeys.Key, r *http.Request, s
 	}
 
 	meta, _ := json.Marshal(map[string]any{
-		"key_id":         keyID,
-		"consumer":       consumerName,
-		"method":         r.Method,
-		"path":           r.URL.Path,
-		"status":         status,
-		"duration_ms":    durationMs,
-		"request_id":     requestIDFromRequest(r),
-		"remote_addr":    r.RemoteAddr,
-		"note":           note,
+		"key_id":      keyID,
+		"consumer":    consumerName,
+		"method":      r.Method,
+		"path":        r.URL.Path,
+		"status":      status,
+		"duration_ms": durationMs,
+		"request_id":  requestIDFromRequest(r),
+		"remote_addr": r.RemoteAddr,
+		"note":        note,
 	})
 
 	if err := audit.Log(audit.Entry{

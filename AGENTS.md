@@ -13,32 +13,62 @@ See `PROJECT.md` for the full project description, feature list, and performance
 ## Architecture
 
 ```
-┌───────────────────────────────────────────────────────┐
-│                  jetmon2 (single binary)              │
-│                                                       │
-│  ┌─────────────┐  ┌─────────────┐  ┌──────────────┐   │
-│  │ Orchestrator│  │ Check Pool  │  │  gRPC Server │   │
-│  │  goroutine  │  │ (goroutines)│  │  (Veriflier) │   │
-│  └──────┬──────┘  └──────┬──────┘  └──────┬───────┘   │
-│         │                │                │           │
-│  ┌──────┴────────────────┴────────────────┴───────┐   │
-│  │                 Internal channels              │   │
-│  └────────────────────────────────────────────────┘   │
-└────────────┬──────────────────────────┬───────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                       jetmon2 (single binary)                        │
+│                                                                      │
+│  ┌─────────────┐  ┌─────────────┐  ┌──────────────┐                  │
+│  │ Orchestrator│  │ Check Pool  │  │  Veriflier   │                  │
+│  │  goroutine  │  │ (goroutines)│  │  transport   │                  │
+│  └──────┬──────┘  └──────┬──────┘  └──────┬───────┘                  │
+│         │                │                │                          │
+│  ┌──────┴────────────────┴────────────────┴───────┐                  │
+│  │                 Internal channels              │                  │
+│  └─────────────────────┬──────────────────────────┘                  │
+│                        │                                             │
+│   ┌────────────────────┴────────────────────┐                        │
+│   │   eventstore (jetmon_events +           │                        │
+│   │    jetmon_event_transitions writes)     │                        │
+│   └────────────────────┬────────────────────┘                        │
+│                        │                                             │
+│   ┌────────────┐  ┌────┴────────────┐  ┌──────────────────────┐      │
+│   │  REST API  │  │  Webhook        │  │  Alerting            │      │
+│   │  /api/v1/  │  │  delivery       │  │  delivery            │      │
+│   │  + auth +  │  │  worker         │  │  worker              │      │
+│   │  ratelimit │  │  (HMAC POST)    │  │  (email/PD/Slack/Tm) │      │
+│   └─────┬──────┘  └────────┬────────┘  └──────────┬───────────┘      │
+│         │                  │                      │                  │
+│   ┌─────┴──────┐    ┌──────┴──────────┐  ┌────────┴──────────────┐   │
+│   │  Operator  │    │  Webhook        │  │  Alert contact        │   │
+│   │  dashboard │    │  receivers      │  │  destinations         │   │
+│   │  (SSE)     │    │  (HTTPS)        │  │  (HTTPS / SMTP / API) │   │
+│   └────────────┘    └─────────────────┘  └───────────────────────┘   │
+└────────────┬──────────────────────────┬──────────────────────────────┘
              │                          │
           MySQL                    WPCOM API
-          StatsD                   (unchanged)
-          Log files
-          (all unchanged)
+          StatsD                   (legacy notification path,
+          Log files                 still active alongside
+                                    alert contacts)
 ```
 
-**Orchestrator goroutine** (`internal/orchestrator/`): Fetches site batches from MySQL, dispatches work to the check pool via channels, processes results, manages the local retry queue, coordinates Veriflier confirmation requests, and sends WPCOM status-change notifications. Owns all DB access and all outbound WPCOM calls.
+**Orchestrator goroutine** (`internal/orchestrator/`): Fetches site batches from MySQL, dispatches work to the check pool via channels, processes results, manages the local retry queue, coordinates Veriflier confirmation requests, and emits WPCOM legacy notifications. Owns all DB access for site state and writes events through `eventstore`.
 
-**Check Pool** (`internal/checker/`): A bounded goroutine pool that performs HTTP checks using Go's `net/http` and `net/http/httptrace`. Records DNS, TCP connect, TLS handshake, and TTFB timings for every check. Pool size auto-scales against queue depth within configured min/max bounds. No process spawning — adding a worker is a channel send.
+**Check Pool** (`internal/checker/`): A bounded goroutine pool that performs HTTP checks using Go's `net/http` and `net/http/httptrace`. Records DNS, TCP connect, TLS handshake, and TTFB timings for every check. Pool size auto-scales against queue depth within configured min/max bounds.
+
+**Eventstore** (`internal/eventstore/`): The single writer for `jetmon_events` and `jetmon_event_transitions`. Every status / severity / state change is written transactionally so the event row's projection and the transition log can never disagree. Both downstream workers (webhooks, alerting) consume `jetmon_event_transitions` via a high-water mark.
+
+**REST API** (`internal/api/`): The internal API surface (`/api/v1/...`) used by the gateway, alerting workers, dashboards, and CI tooling. Per-consumer Bearer-token auth (`internal/apikeys/`), per-key rate limiting, Stripe-style idempotency keys on POSTs. Sites CRUD, events list / single / transitions, SLA stats, webhooks CRUD, alert-contacts CRUD, manual delivery retry.
+
+**Webhook delivery worker** (`internal/webhooks/`): Polls `jetmon_event_transitions`, matches each new transition against active webhooks (event-type + site + state filters), and POSTs HMAC-signed payloads to consumer URLs. Retry ladder 1m / 5m / 30m / 1h / 6h then abandon. Per-webhook in-flight cap and shared dispatch pool.
+
+**Alerting delivery worker** (`internal/alerting/`): Same shape as the webhook worker but for managed channels — email (via `wpcom`/`smtp`/`stub` senders), PagerDuty Events API v2, Slack incoming webhooks, Microsoft Teams. Filter is simpler (`site_filter` + `min_severity`); per-contact `max_per_hour` rate cap absorbs pager storms. Send-test endpoint exercises the same dispatch path without requiring a real event.
+
+**Current delivery-owner constraint:** In the single-binary v2 deployment, `API_PORT > 0` starts the API server plus webhook and alert-contact delivery workers. Run that on only one active `jetmon2` instance per database cluster; additional monitor hosts should leave `API_PORT = 0` until delivery claiming moves to transactional row locks or the deliverer binary is split out.
 
 **Veriflier transport** (`internal/veriflier/`): JSON-over-HTTP client/server for Monitor↔Veriflier communication. Replaces the previous SSL server and custom HTTPS protocol. Run `make generate` to swap in generated gRPC stubs once protoc is set up.
 
-**Veriflier** (`veriflier2/`): Standalone Go binary deployed at remote locations. Receives check batches from the Monitor via gRPC, performs HTTP checks, and returns results. Replaces the Qt C++ Veriflier.
+**Veriflier** (`veriflier2/`): Standalone Go binary deployed at remote locations. Receives check batches from the Monitor, performs HTTP checks, and returns results. Replaces the Qt C++ Veriflier.
+
+**Future shape:** the API server, webhook worker, and alerting worker are independently scalable concerns and the natural target for the multi-binary split tracked in `ROADMAP.md`. Today they coexist in `jetmon2` and the MySQL schema is the bus between them; tomorrow the deliverer becomes its own binary handling all outbound dispatch (webhooks + alerting + WPCOM legacy migrated behind it).
 
 ## Key Files
 
@@ -62,6 +92,7 @@ See `PROJECT.md` for the full project description, feature list, and performance
 | `veriflier2/` | Go Veriflier binary |
 | `API.md` | Internal REST API reference (auth, all endpoints, payload shapes) |
 | `ROADMAP.md` | Deferred features and architectural roadmap (multi-binary split, public-API path) |
+| `docs/adr/` | Architecture Decision Records — load-bearing decisions ("why is X like this") with context, decision, and consequences |
 | `PROJECT.md` | Full project description and feature specification |
 
 ## Build and Run
@@ -112,6 +143,7 @@ Copy `config/config-sample.json` to `config/config.json`. All keys from the orig
 - `BUCKET_TARGET`: Maximum buckets this host should own
 - `BUCKET_HEARTBEAT_GRACE_SEC`: Seconds before an unresponsive host's buckets are reclaimed (suggested: 2× round time)
 - `ALERT_COOLDOWN_MINUTES`: Default cooldown between repeated alerts for the same site
+- `LEGACY_STATUS_PROJECTION_ENABLE`: Keep v1 `site_status` / `last_status_change` projection updated during shadow-v2-state migration
 - `LOG_FORMAT`: `text` (default, drop-in compatible) or `json` (structured logging)
 - `DASHBOARD_PORT`: Internal port for the operator dashboard (0 to disable)
 - `DEBUG_PORT`: localhost-only pprof port, default 6060 (0 to disable; never exposed remotely)
@@ -170,7 +202,7 @@ Every HTTPS check inspects `tls.ConnectionState` for:
    - From `Seems Down` → close with `resolution_reason = probe_cleared`.
    - From `Down` → close with `resolution_reason = verifier_cleared` and send recovery notification.
 
-The `jetpack_monitor_sites.site_status` projection is updated in the same transaction as every event mutation (no drift). v1 mapping: open Seems Down → `site_status = SITE_DOWN (0)`; promoted to Down → `site_status = SITE_CONFIRMED_DOWN (2)`; closed → `site_status = SITE_RUNNING (1)`.
+Shadow-v2-state migration keeps incidents authoritative in `jetmon_events` + `jetmon_event_transitions` while `jetpack_monitor_sites` remains the legacy site/config table. When `LEGACY_STATUS_PROJECTION_ENABLE` is true, the `jetpack_monitor_sites.site_status` / `last_status_change` projection is updated in the same transaction as every event mutation (no drift). v1 mapping: open Seems Down → `site_status = SITE_DOWN (0)`; promoted to Down → `site_status = SITE_CONFIRMED_DOWN (2)`; closed → `site_status = SITE_RUNNING (1)`. After legacy readers move to the v2 API/event tables, this projection can be disabled.
 
 **Alert Deduplication:**
 After an alert fires, subsequent alerts for the same site are suppressed for `alert_cooldown_minutes`. Suppression is recorded in the audit log.
@@ -272,6 +304,8 @@ Up → Seems Down → Down → Resolved
 **Circuit Breaker Floor:** The WPCOM API circuit breaker queue is bounded. If the queue fills, the oldest pending notifications are dropped with an error log. Monitor the circuit breaker state in the operator dashboard during any WPCOM API incident.
 
 **Veriflier Quorum Floor:** When Verifliers are marked unhealthy and excluded, `PEER_OFFLINE_LIMIT` adjusts dynamically, but there is a configured floor to prevent a single healthy Veriflier from confirming downtime alone. Ensure the floor is set appropriately for the number of deployed Verifliers.
+
+**Single Active Delivery Owner:** Webhook and alert-contact workers currently soft-lock delivery rows inside one process. Do not run multiple active API/delivery owners against the same database unless `ClaimReady` has been upgraded to transactional `SELECT ... FOR UPDATE SKIP LOCKED`; otherwise duplicate outbound deliveries are possible.
 
 **Maintenance Windows:** Checks continue during a maintenance window and data is recorded in the audit log, but no alerts fire. Verify that `maintenance_end` is correctly set — an open-ended maintenance window silently suppresses all alerts for that site indefinitely.
 

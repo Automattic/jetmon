@@ -16,13 +16,13 @@ import (
 // most recent request body and headers, returning a configurable
 // response status and body.
 type captureServer struct {
-	srv         *httptest.Server
-	gotBody     []byte
-	gotHeaders  http.Header
-	gotMethod   string
-	hits        int
-	respStatus  int
-	respBody    string
+	srv        *httptest.Server
+	gotBody    []byte
+	gotHeaders http.Header
+	gotMethod  string
+	hits       int
+	respStatus int
+	respBody   string
 }
 
 func newCaptureServer() *captureServer {

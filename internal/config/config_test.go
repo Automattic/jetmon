@@ -84,6 +84,57 @@ func TestValidate(t *testing.T) {
 			name:   "json log format is valid",
 			mutate: func(c *Config) { c.LogFormat = "json" },
 		},
+		{
+			name:   "stub email transport is valid",
+			mutate: func(c *Config) { c.EmailTransport = "stub" },
+		},
+		{
+			name:   "empty email transport uses default stub behavior",
+			mutate: func(c *Config) { c.EmailTransport = "" },
+		},
+		{
+			name:    "invalid email transport",
+			mutate:  func(c *Config) { c.EmailTransport = "sendmail" },
+			wantErr: true,
+		},
+		{
+			name: "smtp email transport requires host",
+			mutate: func(c *Config) {
+				c.EmailTransport = "smtp"
+				c.SMTPPort = 1025
+			},
+			wantErr: true,
+		},
+		{
+			name: "smtp email transport requires port",
+			mutate: func(c *Config) {
+				c.EmailTransport = "smtp"
+				c.SMTPHost = "mailhog"
+			},
+			wantErr: true,
+		},
+		{
+			name: "smtp email transport with host and port is valid",
+			mutate: func(c *Config) {
+				c.EmailTransport = "smtp"
+				c.SMTPHost = "mailhog"
+				c.SMTPPort = 1025
+			},
+		},
+		{
+			name: "wpcom email transport requires endpoint",
+			mutate: func(c *Config) {
+				c.EmailTransport = "wpcom"
+			},
+			wantErr: true,
+		},
+		{
+			name: "wpcom email transport with endpoint is valid",
+			mutate: func(c *Config) {
+				c.EmailTransport = "wpcom"
+				c.WPCOMEmailEndpoint = "https://example.test/email"
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -152,6 +203,70 @@ func TestLoadAndGet(t *testing.T) {
 	}
 	if cfg.LogFormat != "json" {
 		t.Fatalf("LogFormat = %q, want json", cfg.LogFormat)
+	}
+	if !cfg.LegacyStatusProjectionEnable {
+		t.Fatal("LegacyStatusProjectionEnable default should be true")
+	}
+}
+
+func TestSampleConfigLoads(t *testing.T) {
+	saveConfigState(t)
+
+	if err := Load("../../config/config-sample.json"); err != nil {
+		t.Fatalf("config-sample.json should load: %v", err)
+	}
+	cfg := Get()
+	if cfg == nil {
+		t.Fatal("Get() = nil after loading sample config")
+	}
+	if cfg.EmailTransport != "stub" {
+		t.Fatalf("EmailTransport = %q, want stub", cfg.EmailTransport)
+	}
+}
+
+func TestLegacyStatusProjectionConfig(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{
+			name: "new key disables projection",
+			body: `"LEGACY_STATUS_PROJECTION_ENABLE": false`,
+			want: false,
+		},
+		{
+			name: "old key remains alias when new key absent",
+			body: `"DB_UPDATES_ENABLE": false`,
+			want: false,
+		},
+		{
+			name: "new key wins over old key",
+			body: `"DB_UPDATES_ENABLE": false, "LEGACY_STATUS_PROJECTION_ENABLE": true`,
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			saveConfigState(t)
+			p := writeConfigFile(t, `{
+				"AUTH_TOKEN": "token",
+				"NUM_WORKERS": 7,
+				"BUCKET_TOTAL": 100,
+				"BUCKET_TARGET": 50,
+				"NET_COMMS_TIMEOUT": 10,
+				"LOG_FORMAT": "text",
+				`+tt.body+`
+			}`)
+
+			if err := Load(p); err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if got := LegacyStatusProjectionEnabled(); got != tt.want {
+				t.Fatalf("LegacyStatusProjectionEnabled() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 

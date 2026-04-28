@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/Automattic/jetmon/internal/alerting"
+	"github.com/DATA-DOG/go-sqlmock"
 )
 
 const insertAlertContactSQL = ` INSERT INTO jetmon_alert_contacts (label, active, transport, destination, destination_preview, site_filter, min_severity, max_per_hour, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`

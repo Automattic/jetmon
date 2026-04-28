@@ -19,8 +19,8 @@ Architecture
 │                  jetmon2 (single binary)             │
 │                                                      │
 │  ┌─────────────┐  ┌─────────────┐  ┌──────────────┐  │
-│  │ Orchestrator│  │ Check Pool  │  │  gRPC Server │  │
-│  │  goroutine  │  │ (goroutines)│  │  (Veriflier) │  │
+│  │ Orchestrator│  │ Check Pool  │  │  Veriflier   │  │
+│  │  goroutine  │  │ (goroutines)│  │  transport   │  │
 │  └──────┬──────┘  └──────┬──────┘  └──────┬───────┘  │
 │         │                │                │          │
 │  ┌──────┴────────────────┴────────────────┴───────┐  │
@@ -38,9 +38,9 @@ The **Orchestrator goroutine** fetches site batches from MySQL, dispatches work 
 
 The **Check Pool** is a bounded goroutine pool that performs HTTP checks using Go's `net/http` and `net/http/httptrace`. It records DNS, TCP, TLS, and TTFB timings on every check and auto-scales against queue depth without spawning new processes.
 
-The **gRPC Server** receives confirmation results from remote Veriflier instances, replacing the previous custom HTTPS protocol.
+The **Veriflier transport** sends confirmation batches to remote Veriflier instances. It currently uses JSON-over-HTTP on the configured Veriflier port; the proto definition is kept in `proto/` for the planned generated gRPC transport.
 
-The **Veriflier** is a standalone Go binary deployed at remote locations. It replaces the Qt C++ Veriflier, communicating with the Monitor via gRPC.
+The **Veriflier** is a standalone Go binary deployed at remote locations. It replaces the Qt C++ Veriflier, using the same JSON-over-HTTP transport as the Monitor-side client until the generated gRPC stubs are wired in.
 
 Status change flows:
 
@@ -90,9 +90,12 @@ Key settings:
 | `BUCKET_TARGET` | 500 | Maximum buckets this host should own |
 | `BUCKET_HEARTBEAT_GRACE_SEC` | 600 | Seconds before a silent host's buckets are reclaimed |
 | `ALERT_COOLDOWN_MINUTES` | 30 | Default cooldown between repeated alerts per site |
+| `LEGACY_STATUS_PROJECTION_ENABLE` | true | Keep `jetpack_monitor_sites.site_status` / `last_status_change` updated for v1 consumers during migration |
 | `LOG_FORMAT` | `text` | `text` for plain-text logs or `json` for structured logs |
 | `DASHBOARD_PORT` | 8080 | Internal port for the operator dashboard (0 to disable) |
+| `API_PORT` | 0 | Internal REST API port (0 to disable). In the current single-binary v2 shape, this also starts webhook and alert-contact delivery workers; enable it on only one active instance per database cluster. |
 | `DEBUG_PORT` | 6060 | localhost-only pprof port (`127.0.0.1:PORT`); 0 to disable |
+| `EMAIL_TRANSPORT` | `stub` | Alert-contact email sender: `stub` (log only), `smtp`, or `wpcom` |
 
 See `config/config.readme` for the full option reference.
 
@@ -148,14 +151,30 @@ New columns added by Jetmon 2 (applied via `jetmon2 migrate`):
 | `redirect_policy` | ENUM NULL | `follow`, `alert`, or `fail` |
 | `alert_cooldown_minutes` | SMALLINT NULL | Per-site cooldown override |
 
+Jetmon 2 uses a shadow-v2-state migration model. Incident state is authoritative
+in the v2 event tables, while `jetpack_monitor_sites` remains the legacy site
+configuration table and compatibility projection during migration. With
+`LEGACY_STATUS_PROJECTION_ENABLE: true`, every v2 incident mutation also updates
+the v1 `site_status` / `last_status_change` fields in the same transaction. Once
+legacy readers have moved to the v2 API/event tables, disable that projection.
+
 New tables added by Jetmon 2:
 
 | Table | Purpose |
 |-------|---------|
 | `jetmon_hosts` | MySQL-coordinated bucket ownership and heartbeat |
-| `jetmon_audit_log` | Full event history per site |
+| `jetmon_events` | Authoritative current state of each v2 incident |
+| `jetmon_event_transitions` | Append-only history of every mutation to `jetmon_events` |
+| `jetmon_audit_log` | Operational trail for checks, retries, WPCOM calls, suppression, API access, and config reloads |
 | `jetmon_check_history` | RTT and timing samples for trending |
 | `jetmon_false_positives` | Veriflier non-confirmation events |
+| `jetmon_api_keys` | Internal REST API Bearer-token registry |
+| `jetmon_webhooks` | Webhook registrations and HMAC signing secrets |
+| `jetmon_webhook_deliveries` | Outbound webhook delivery attempts and retry state |
+| `jetmon_webhook_dispatch_progress` | Webhook worker high-water marks over event transitions |
+| `jetmon_alert_contacts` | Managed alert destinations such as email, PagerDuty, Slack, and Teams |
+| `jetmon_alert_deliveries` | Outbound alert-contact delivery attempts and retry state |
+| `jetmon_alert_dispatch_progress` | Alert worker high-water marks over event transitions |
 
 Apply migrations before starting for the first time:
 
@@ -173,15 +192,16 @@ For Developers
 
 ### Building
 
-	go build ./cmd/jetmon2/
-	go build ./veriflier2/
+	mkdir -p bin
+	go build -o bin/jetmon2 ./cmd/jetmon2/
+	go build -o bin/veriflier2 ./veriflier2/cmd/
 
 ### Running Tests
 
 	go test ./...
 	go test -race ./...
 
-Tests require the Docker Compose environment to be running for integration tests. Unit tests run standalone.
+The current `go test ./...` suite runs standalone. Use the Docker Compose environment for manual end-to-end checks against MySQL, StatsD, and Veriflier services.
 
 ### Docker Development Loop
 
@@ -205,19 +225,17 @@ Insert sites to check:
 	    (3, 0, 'https://httpstat.us/500', 1, 1),
 	    (4, 0, 'https://httpstat.us/200?sleep=15000', 1, 1);
 
-### Enabling Database Updates
+### Legacy Status Projection
 
-Edit `config/config.json`:
+During migration, keep the legacy v1 status fields updated:
 
-	{ "DB_UPDATES_ENABLE": true }
+	{ "LEGACY_STATUS_PROJECTION_ENABLE": true }
 
-Then set the guard environment variable in `docker/.env`:
-
-	JETMON_UNSAFE_DB_UPDATES=1
-
-Both must be set together. The binary refuses to start with `DB_UPDATES_ENABLE: true` unless `JETMON_UNSAFE_DB_UPDATES=1` is also present in the environment.
-
-**WARNING:** Never enable in production.
+This does not make the legacy row the source of truth. Jetmon v2 writes
+`jetmon_events` and `jetmon_event_transitions` first, then projects
+`site_status` and `last_status_change` back to `jetpack_monitor_sites` for
+legacy consumers. After all consumers read from the v2 API/event tables, set
+`LEGACY_STATUS_PROJECTION_ENABLE` to `false`.
 
 ### Simulated Site Server
 
@@ -235,7 +253,10 @@ The Docker Compose environment includes a simulated site server. Toggle site sta
 
 	./jetmon2 validate-config
 
-Checks all required keys, validates value ranges, tests MySQL connectivity, tests Veriflier connectivity, and verifies the WPCOM API certificate.
+Checks all required keys, validates value ranges, tests MySQL connectivity,
+reports legacy projection and email transport modes, warns when alert-contact
+email uses the log-only `stub` sender, and lists configured Verifliers.
+Veriflier reachability is informational here rather than a validation failure.
 
 ### Debugging
 
@@ -266,6 +287,10 @@ The debug port is configurable via `DEBUG_PORT` (default 6060). Set to 0 to disa
 | `internal/metrics/` | StatsD client, stats file writer |
 | `internal/wpcom/` | WPCOM API client and circuit breaker |
 | `internal/audit/` | Audit log |
+| `internal/eventstore/` | Authoritative event and transition writer |
+| `internal/api/` | Internal REST API server |
+| `internal/webhooks/` | HMAC-signed webhook registry and delivery worker |
+| `internal/alerting/` | Managed alert-contact registry and delivery worker |
 | `internal/dashboard/` | Operator dashboard and SSE handler |
 | `veriflier2/` | Go Veriflier binary |
 
@@ -293,7 +318,7 @@ Check the StatsD dashboard at http://localhost:8088 under:
 ### Key Test Scenarios
 
 **Downtime detection and confirmation:**
-Insert a site pointing to `https://httpstat.us/500`. With `DB_UPDATES_ENABLE: true`, Jetmon should detect the failure, retry locally, escalate to the Veriflier, confirm down, and update `site_status` to `2`.
+Insert a site pointing to `https://httpstat.us/500`. With `LEGACY_STATUS_PROJECTION_ENABLE: true`, Jetmon should detect the failure, retry locally, escalate to the Veriflier, confirm down, write the v2 event transition, and project `site_status` to `2`.
 
 **SSL certificate expiry:**
 Insert an HTTPS site. After a check round, verify `ssl_expiry_date` is populated in the database.
@@ -331,7 +356,13 @@ Simulate a host failure by manually expiring a row in `jetmon_hosts`. Verify the
 
 ### Operator Dashboard
 
-The dashboard is available at http://localhost:8080 (configurable via `DASHBOARD_PORT`). It shows goroutine counts, check queue depth, sites per second, Veriflier status, WPCOM API health, slowest sites, and most frequently down sites.
+The dashboard is available at http://localhost:8080 (configurable via `DASHBOARD_PORT`). It shows worker count, active checks, queue depth, retry queue depth, sites per second, round time, owned buckets, RSS, and WPCOM circuit-breaker state.
+
+### Internal API and Delivery Workers
+
+The internal API is disabled by default. Set `API_PORT` to a non-zero port to enable `/api/v1/...`.
+
+In the current single-binary v2 deployment, enabling `API_PORT` also starts the webhook and alert-contact delivery workers. Run `API_PORT` on only one active `jetmon2` instance per database cluster; leave it at `0` on additional monitor hosts. The future deliverer split will replace this operational constraint with transactional row claiming for active-active delivery workers.
 
 ### Cleanup
 
@@ -394,7 +425,7 @@ The service releases its buckets to the pool before exiting. Surviving hosts rec
 
 	./jetmon2 status
 
-Or check the operator dashboard at the configured `DASHBOARD_PORT`. The System Health Map view shows the status of MySQL, each Veriflier, WPCOM API, StatsD, and disk in a single grid.
+Or check the operator dashboard at the configured `DASHBOARD_PORT` for check-pool, throughput, bucket, memory, and WPCOM circuit-breaker state.
 
 ### Config Reload Without Restart
 
@@ -436,7 +467,7 @@ StatsD is the primary metrics transport. For integration with external systems, 
 
 ### Veriflier Health
 
-Verifliers that fail to respond are automatically excluded from confirmation requests. The System Health Map shows each Veriflier's reachability and last response time. If the number of healthy Verifliers drops below `PEER_OFFLINE_LIMIT`, no further downtime confirmations can be issued — monitor Veriflier health closely.
+Verifliers that fail to respond are automatically excluded from confirmation requests. If the number of healthy Verifliers drops below `PEER_OFFLINE_LIMIT`, no further downtime confirmations can be issued — monitor Veriflier health closely.
 
 Verify Veriflier connectivity manually:
 

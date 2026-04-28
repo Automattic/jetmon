@@ -17,7 +17,7 @@ The current architecture uses forked Node.js processes (8–16MB RSS each at sta
 - **Built-in profiling** via `pprof`, race detector via `go test -race`, and a mature testing ecosystem
 - **Graceful goroutine lifecycle management** replaces the fragile worker spawn/recycle/evaporate lifecycle
 
-The Veriflier is rewritten in Go as well, replacing the Qt C++ dependency with a lightweight Go HTTP service. The protocol between Monitor and Verifliers moves from custom HTTPS to gRPC, providing type-safe contracts, built-in retries, and bidirectional streaming for future use.
+The Veriflier is rewritten in Go as well, replacing the Qt C++ dependency with a lightweight Go HTTP service. The current Monitor-to-Veriflier transport is JSON-over-HTTP on the configured Veriflier port. The proto contract is kept in `proto/` so the transport can move to generated gRPC stubs once the protoc toolchain is in place.
 
 ---
 
@@ -28,8 +28,8 @@ The Veriflier is rewritten in Go as well, replacing the Qt C++ dependency with a
 │                  jetmon2 (single binary)             │
 │                                                      │
 │  ┌─────────────┐  ┌─────────────┐  ┌──────────────┐  │
-│  │ Orchestrator│  │ Check Pool  │  │  gRPC Server │  │
-│  │  goroutine  │  │ (goroutines)│  │  (Veriflier) │  │
+│  │ Orchestrator│  │ Check Pool  │  │  Veriflier   │  │
+│  │  goroutine  │  │ (goroutines)│  │  transport   │  │
 │  └──────┬──────┘  └──────┬──────┘  └──────┬───────┘  │
 │         │                │                │          │
 │  ┌──────┴────────────────┴────────────────┴───────┐  │
@@ -43,7 +43,7 @@ The Veriflier is rewritten in Go as well, replacing the Qt C++ dependency with a
           (all unchanged)
 ```
 
-The monolithic process replaces the master/worker/SSL-cluster process tree. Concurrency is managed through Go channels and a bounded goroutine worker pool. The orchestrator goroutine owns DB access and WPCOM notifications. The check pool goroutines own HTTP connections. The gRPC server goroutines receive Veriflier results. All three communicate via typed channels with no shared mutable state.
+The monolithic process replaces the master/worker/SSL-cluster process tree. Concurrency is managed through Go channels and a bounded goroutine worker pool. The orchestrator goroutine owns DB access and WPCOM notifications. The check pool goroutines own HTTP connections. The Veriflier client/server code handles remote confirmation batches over JSON-over-HTTP today and is isolated behind `internal/veriflier/` for the future gRPC swap.
 
 ---
 
@@ -198,10 +198,11 @@ All tests run with `go test ./...` and are included in CI.
 A standalone binary (`jetmon2 validate-config`) that:
 
 - Parses `config.json` and checks all required keys are present
-- Validates value ranges (e.g., `PEER_OFFLINE_LIMIT` must be <= number of configured Verifliers)
-- Attempts a test connection to MySQL and verifies the expected tables exist
-- Attempts a test connection to each configured Veriflier
-- Verifies the WPCOM API certificate is valid and not near expiry
+- Validates value ranges and required per-mode settings
+- Attempts a test connection to MySQL
+- Reports legacy projection and email transport modes
+- Warns when the email transport resolves to the log-only `stub` sender
+- Lists configured Verifliers as best-effort operator context
 - Outputs a pass/fail summary with specific error messages
 
 Intended to run as a pre-deployment check in CI and as an operator tool when diagnosing connectivity issues.
@@ -209,22 +210,19 @@ Intended to run as a pre-deployment check in CI and as an operator tool when dia
 **Operator Dashboard**
 A lightweight web UI served by the binary itself (no separate process) on a configurable internal port. Displays in real time:
 
-- Worker goroutine count, active checks, idle goroutines
-- Per-worker memory allocation and GC pressure
+- Worker goroutine count and active checks
 - Check queue depth and drain rate
-- Sites per second (current and 5-minute rolling average)
-- Round completion time and time to next round
+- Sites per second
+- Round completion time
 - Local retry queue depth
-- Veriflier queue depth and per-Veriflier response times
-- DB connection pool utilisation
-- WPCOM API success/failure rate (last 100 calls)
-- Top 20 slowest sites by RTT (rolling 5-minute window)
-- Top 20 most frequently down sites (rolling 24-hour window)
+- Owned bucket range
+- RSS memory usage
+- WPCOM circuit-breaker state and queued notification depth
 
 Updates via server-sent events — no WebSocket library needed, no JavaScript framework. A plain HTML page with `<EventSource>` is sufficient and has no build toolchain dependency.
 
-**System Health Map**
-A separate view on the operator dashboard that shows all external dependencies as a live status grid:
+**Future System Health Map**
+A broader operator-dashboard health grid is still a natural follow-up:
 
 - MySQL (primary + replicas): connection state, query latency, last successful batch
 - Each configured Veriflier: reachability, last response time, last batch sent/received
@@ -232,16 +230,16 @@ A separate view on the operator dashboard that shows all external dependencies a
 - StatsD: last successful flush
 - Disk (log and stats files): free space, last write time
 
-Each cell is green/amber/red with a hover tooltip showing the last error message if applicable. Intended to give an operator an instant answer to "is everything healthy?" without reading logs.
+The current dashboard has an `/api/health` shape for this data, but the live
+publisher for those entries has not been wired yet.
 
 **False Positive Tracker**
 Every time the system escalates a site to Veriflier confirmation and the Verifliers do NOT confirm it as down (i.e., the queue entry times out or all Verifliers report the site as up), the event is recorded in a `jetmon_false_positives` table with timestamp, site, HTTP code, error code, and RTT from the local check. A view in the operator dashboard surfaces sites with high false positive rates, helping operators tune per-site `NUM_OF_CHECKS` or `TIME_BETWEEN_CHECKS_SEC` settings.
 
 **Internal Audit Log**
-Every state-relevant event for every site is written to a `jetmon_audit_log` table:
+Operational activity for every site is written to a `jetmon_audit_log` table:
 
 - Check performed: timestamp, source (local/veriflier name), result (HTTP code, error code, RTT)
-- Status transition: old status, new status, reason
 - WPCOM notification sent: timestamp, payload hash, response code
 - WPCOM notification retry: timestamp, reason
 - Local retry dispatched: timestamp, retry count
@@ -249,6 +247,8 @@ Every state-relevant event for every site is written to a `jetmon_audit_log` tab
 - Veriflier result received: timestamp, veriflier name, result
 - Maintenance window active: timestamp, window end
 - Config change: timestamp, which keys changed
+
+Authoritative incident state transitions live in `jetmon_event_transitions`, written by the `eventstore` package in the same transaction as the matching `jetmon_events` mutation. The audit log is intentionally operational context, not the source of truth for site state.
 
 Queryable by `blog_id` and time range via a CLI tool (`jetmon2 audit --blog-id 12345 --since 2h`) and via the operator dashboard. Designed specifically for Happiness Engineers investigating customer-reported alert issues.
 
@@ -322,7 +322,7 @@ Check that a domain resolves to expected IPs on a schedule, using Go's `net.Look
 Attempt a TCP connection to an arbitrary host:port on a schedule. No HTTP layer — a successful connection is "up". Useful for database ports, SMTP, and custom application services. A small extension of the existing connection logic.
 
 **Heartbeat / Cron Monitoring**
-New inbound endpoint on the gRPC server (or a separate lightweight HTTPS endpoint) where monitored jobs ping Monitor on completion. If the expected ping doesn't arrive within the configured interval plus grace period, an alert fires. Deep integration with the Jetpack heartbeat for zero-configuration WP-Cron health detection.
+New inbound endpoint on the Monitor's HTTP/API surface where monitored jobs ping on completion. If the expected ping doesn't arrive within the configured interval plus grace period, an alert fires. Deep integration with the Jetpack heartbeat for zero-configuration WP-Cron health detection.
 
 **Response Time Anomaly Detection**
 Using the granular timing breakdown (DNS/TCP/TLS/TTFB) collected in the rewrite, build a per-site baseline over a rolling window and alert when response time exceeds N standard deviations from baseline — even if the site is technically returning 200. Detects slow-but-not-down conditions that users notice but current monitoring misses.
@@ -344,4 +344,3 @@ Within-Jetpack on-call scheduling: route alerts to different contacts at differe
 
 **Distributed Tracing**
 Instrument the full check pipeline with OpenTelemetry spans: DB fetch → work dispatch → HTTP check (with DNS/TCP/TLS sub-spans) → Veriflier request → WPCOM notification. Export to Jaeger or any OTLP-compatible backend. Makes debugging latency anomalies and check delays straightforward without relying on log correlation.
-

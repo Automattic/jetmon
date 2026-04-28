@@ -177,13 +177,21 @@ func Check(ctx context.Context, req Request) Result {
 	resp, err := client.Do(httpReq)
 	res.RTT = time.Since(start)
 
-	if !dnsStart.IsZero() {
+	// Only record a phase duration when BOTH start and end fired. If a
+	// connection errors mid-handshake the DNSStart / ConnectStart / TLS
+	// HandshakeStart hook fires without its matching Done — in that case
+	// the *End is the zero time.Time and *End.Sub(*Start) returns a huge
+	// negative duration (roughly -unix-nanos), which then overflows the
+	// jetmon_check_history INT columns and surfaces as
+	// "Out of range value for column 'dns_ms'". A failed phase is
+	// reported as zero rather than a misleading negative.
+	if !dnsStart.IsZero() && !dnsEnd.IsZero() {
 		res.DNS = dnsEnd.Sub(dnsStart)
 	}
-	if !tcpStart.IsZero() {
+	if !tcpStart.IsZero() && !tcpEnd.IsZero() {
 		res.TCP = tcpEnd.Sub(tcpStart)
 	}
-	if !tlsStart.IsZero() {
+	if !tlsStart.IsZero() && !tlsEnd.IsZero() {
 		res.TLS = tlsEnd.Sub(tlsStart)
 	}
 

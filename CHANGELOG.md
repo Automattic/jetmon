@@ -20,6 +20,9 @@ because it is intentionally **not** drop-in with the Jetmon 1 wire format
 - `jetmon_events` (current authoritative state per incident) and
   `jetmon_event_transitions` (every status/severity change, append-only)
   tables; `internal/eventstore` writes both in a single transaction
+- Shadow-v2-state migration: while `LEGACY_STATUS_PROJECTION_ENABLE` is
+  true, event mutations also maintain the v1 `site_status` /
+  `last_status_change` projection for legacy consumers
 - Five-layer severity ladder: `Up < Warning < Degraded < SeemsDown < Down`
   matching `internal/eventstore.Severity*` constants
 
@@ -59,7 +62,8 @@ because it is intentionally **not** drop-in with the Jetmon 1 wire format
 - POST `/alert-contacts/{id}/test` for synthetic send-tests through the
   same dispatch path
 - Email transport pluggable via `EMAIL_TRANSPORT` config: `wpcom`
-  (production), `smtp` (dev / staging with MailHog), `stub` (unit tests)
+  (production), `smtp` (dev / staging with MailHog), `stub` (default
+  log-only / tests, with startup and validate-config warnings)
 - PagerDuty Events API v2 with severity mapping and event_action
   trigger/resolve based on the recovery flag
 - Slack Block Kit + Microsoft Teams Adaptive Card rendering
@@ -79,9 +83,13 @@ because it is intentionally **not** drop-in with the Jetmon 1 wire format
   still-in-flight row. Without this, the per-contact in-flight cap (3)
   was producing concurrent dispatches that inflated the attempt counter
   and effectively skipped retry-schedule steps; the documented 7h36m
-  retry window was being collapsed to ~1h. Multi-instance row-claim
-  caveat (SELECT ... FOR UPDATE SKIP LOCKED) still tracked alongside the
-  deliverer-binary extraction in ROADMAP.md.
+  retry window was being collapsed to ~1h.
+- `ClaimReady` now repeats the readiness predicate during the soft-lock
+  update and returns only rows whose update affected a row, so overlapping
+  claim attempts skip stale SELECT results instead of doing duplicate
+  dispatch work. Multi-instance row-claim caveat (SELECT ... FOR UPDATE
+  SKIP LOCKED) still tracked alongside the deliverer-binary extraction in
+  ROADMAP.md.
 
 **Polish:**
 - `alerting.Update` now validates `label` (must be non-empty) and
@@ -99,6 +107,18 @@ because it is intentionally **not** drop-in with the Jetmon 1 wire format
 - `POST /api/v1/alert-contacts/{id}/test` now honors `Idempotency-Key`
   like the other write POSTs, so a retried "click to test" during a
   network blip doesn't double-page the destination.
+- API list-site rollup of the worst open event no longer relies on
+  `ROW_NUMBER()` window functions, so the query is compatible with
+  MySQL 5.7. Pagination caps the IN list and a site rarely has more
+  than one open event, so reducing in Go is cheap.
+- API key cutoffs (`revoked_at` and `expires_at`) now share half-open
+  semantics: a key is valid for times strictly before the cutoff and
+  rejected at or after it. Future `revoked_at` continues to act as a
+  rotation grace window. See API.md.
+- `LEGACY_STATUS_PROJECTION_ENABLE` is announced at startup
+  (`config: legacy_status_projection=enabled|disabled`) and surfaced by
+  `./jetmon2 validate-config`, so operators can confirm projection
+  state without reading the running config file.
 
 ### Jetmon 2 — initial Go rewrite
 
@@ -114,7 +134,9 @@ Drop-in replacement for Jetmon 1; all existing MySQL schema columns are preserve
 - `jetmon2 audit` — query per-site audit log from CLI
 - Operator dashboard on configurable port with SSE state stream
 - pprof debug server on localhost-only `DEBUG_PORT` (default 6060)
-- `DB_UPDATES_ENABLE` double-gate: requires both config flag and `JETMON_UNSAFE_DB_UPDATES=1` env var
+- `LEGACY_STATUS_PROJECTION_ENABLE` controls v1 `site_status` /
+  `last_status_change` compatibility writes; `DB_UPDATES_ENABLE` remains
+  as a deprecated alias
 - Graceful shutdown with 30-second hard-exit backstop
 - Non-root Docker images (`jetmon` / `veriflier` system users)
 - Healthcheck-gated MySQL dependency in docker-compose

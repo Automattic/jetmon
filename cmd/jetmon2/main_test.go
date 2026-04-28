@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +11,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Automattic/jetmon/internal/alerting"
+	"github.com/Automattic/jetmon/internal/config"
 )
 
 func TestHTTPGet(t *testing.T) {
@@ -52,18 +57,6 @@ func TestEnvOrDefault(t *testing.T) {
 	t.Setenv(key, "set-value")
 	if got := envOrDefault(key, "fallback"); got != "set-value" {
 		t.Fatalf("envOrDefault() = %q, want set-value", got)
-	}
-}
-
-func TestRepeat(t *testing.T) {
-	if got := repeat("-", 5); got != "-----" {
-		t.Fatalf("repeat(\"-\", 5) = %q, want -----", got)
-	}
-	if got := repeat("ab", 3); got != "ababab" {
-		t.Fatalf("repeat(\"ab\", 3) = %q, want ababab", got)
-	}
-	if got := repeat("x", 0); got != "" {
-		t.Fatalf("repeat(\"x\", 0) = %q, want empty", got)
 	}
 }
 
@@ -124,5 +117,101 @@ func TestResolveSince(t *testing.T) {
 	const literal = "2024-01-15 10:00:00"
 	if got := resolveSince(literal); got != literal {
 		t.Fatalf("resolveSince(%q) = %q, want passthrough", literal, got)
+	}
+}
+
+func TestEmailTransportLabelAndDelivery(t *testing.T) {
+	tests := []struct {
+		name     string
+		cfg      config.Config
+		label    string
+		delivers bool
+	}{
+		{
+			name:     "empty is stub alias",
+			cfg:      config.Config{EmailTransport: ""},
+			label:    "stub",
+			delivers: false,
+		},
+		{
+			name:     "stub logs only",
+			cfg:      config.Config{EmailTransport: "stub"},
+			label:    "stub",
+			delivers: false,
+		},
+		{
+			name:     "smtp delivers",
+			cfg:      config.Config{EmailTransport: "smtp"},
+			label:    "smtp",
+			delivers: true,
+		},
+		{
+			name:     "wpcom delivers",
+			cfg:      config.Config{EmailTransport: "wpcom"},
+			label:    "wpcom",
+			delivers: true,
+		},
+		{
+			name:     "invalid transport does not deliver",
+			cfg:      config.Config{EmailTransport: "sendmail"},
+			label:    "sendmail",
+			delivers: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := emailTransportLabel(&tt.cfg); got != tt.label {
+				t.Fatalf("emailTransportLabel() = %q, want %q", got, tt.label)
+			}
+			if got := emailTransportDelivers(&tt.cfg); got != tt.delivers {
+				t.Fatalf("emailTransportDelivers() = %v, want %v", got, tt.delivers)
+			}
+		})
+	}
+}
+
+func TestBuildAlertDispatchersIncludesStubEmail(t *testing.T) {
+	dispatchers := buildAlertDispatchers(&config.Config{
+		EmailTransport: "stub",
+		EmailFrom:      "jetmon@example.com",
+	})
+
+	for _, transport := range []alerting.Transport{
+		alerting.TransportEmail,
+		alerting.TransportPagerDuty,
+		alerting.TransportSlack,
+		alerting.TransportTeams,
+	} {
+		if dispatchers[transport] == nil {
+			t.Fatalf("dispatcher for %s is nil", transport)
+		}
+	}
+
+	destination, err := json.Marshal(map[string]string{"address": "ops@example.com"})
+	if err != nil {
+		t.Fatalf("Marshal destination: %v", err)
+	}
+
+	status, response, err := dispatchers[alerting.TransportEmail].Send(
+		context.Background(),
+		destination,
+		alerting.Notification{
+			SiteID:       123,
+			SiteURL:      "https://example.com",
+			EventID:      456,
+			EventType:    "alert.opened",
+			SeverityName: "Down",
+			Timestamp:    time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC),
+		},
+	)
+	if err != nil {
+		t.Fatalf("stub email dispatcher Send() error = %v", err)
+	}
+	if status != 250 {
+		t.Fatalf("stub email dispatcher status = %d, want 250", status)
+	}
+	if response != "delivered" {
+		t.Fatalf("stub email dispatcher response = %q, want delivered", response)
 	}
 }

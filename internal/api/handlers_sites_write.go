@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strconv"
 	"time"
+
+	"github.com/Automattic/jetmon/internal/config"
 )
 
 // validRedirectPolicies bounds the redirect_policy field. Matches the ENUM
@@ -388,7 +390,9 @@ func (s *Server) closeAllActiveEvents(ctx context.Context, siteID int64, reason,
 	return nil
 }
 
-// closeEvent writes an event close + a transition row in one transaction.
+// closeEvent writes an event close + transition row and, while enabled,
+// projects the legacy v1 site_status back to running in one transaction when
+// this was the site's last active event.
 // Mirrors what eventstore.Tx.Close does without pulling the package in
 // here — keeps the import graph flat.
 func (s *Server) closeEvent(ctx context.Context, eventID, blogID int64, reason string, metadata []byte) error {
@@ -432,6 +436,22 @@ func (s *Server) closeEvent(ctx context.Context, eventID, blogID int64, reason s
 		eventID, blogID, severity, state, "Resolved", reason, "api", metadata,
 	); err != nil {
 		return fmt.Errorf("insert transition: %w", err)
+	}
+
+	if config.LegacyStatusProjectionEnabled() {
+		var activeCount int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM jetmon_events WHERE blog_id = ? AND ended_at IS NULL`, blogID,
+		).Scan(&activeCount); err != nil {
+			return fmt.Errorf("count active events: %w", err)
+		}
+		if activeCount == 0 {
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE jetpack_monitor_sites SET site_status = 1, last_status_change = ? WHERE blog_id = ?`,
+				time.Now().UTC(), blogID); err != nil {
+				return fmt.Errorf("project site_status: %w", err)
+			}
+		}
 	}
 	return tx.Commit()
 }

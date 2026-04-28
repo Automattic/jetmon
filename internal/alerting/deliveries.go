@@ -87,10 +87,11 @@ const claimLockDuration = 60 * time.Second
 // retry-schedule steps. The soft lock prevents that.
 //
 // Multi-instance caveat: same as webhooks — two instances polling
-// simultaneously could both pick up a row in the SELECT phase, with
-// only the UPDATE differentiating winners. For multi-instance the
-// claim should move to SELECT ... FOR UPDATE SKIP LOCKED in a
-// transaction. Tracked alongside the deliverer-binary extraction.
+// simultaneously can still pick up a row in the SELECT phase. The readiness
+// predicate on UPDATE and the RowsAffected check below mean only rows that won
+// the soft lock are returned, but fully multi-instance delivery should still
+// move to SELECT ... FOR UPDATE SKIP LOCKED within a transaction. Tracked
+// alongside the deliverer-binary extraction.
 func ClaimReady(ctx context.Context, db *sql.DB, limit int) ([]Delivery, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, alert_contact_id, transition_id, event_id, event_type, severity, payload,
@@ -123,17 +124,35 @@ func ClaimReady(ctx context.Context, db *sql.DB, limit int) ([]Delivery, error) 
 		return nil, nil
 	}
 
+	// Return only rows whose lock update won; stale SELECT results can happen
+	// if another claimant already moved next_attempt_at between our SELECT and
+	// UPDATE.
 	lockUntil := time.Now().Add(claimLockDuration).UTC()
+	// claimed reuses candidates' backing array — safe because the write index
+	// is always ≤ the read index and candidates is not returned in its
+	// original form.
+	claimed := candidates[:0]
 	for i := range candidates {
-		if _, err := db.ExecContext(ctx, `
+		res, err := db.ExecContext(ctx, `
 			UPDATE jetmon_alert_deliveries
 			   SET next_attempt_at = ?
-			 WHERE id = ? AND status = 'pending'`,
-			lockUntil, candidates[i].ID); err != nil {
+			 WHERE id = ?
+			   AND status = 'pending'
+			   AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP)`,
+			lockUntil, candidates[i].ID)
+		if err != nil {
 			return nil, fmt.Errorf("alerting: soft-lock row %d: %w", candidates[i].ID, err)
 		}
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return nil, fmt.Errorf("alerting: soft-lock row %d rows affected: %w", candidates[i].ID, err)
+		}
+		if affected == 0 {
+			continue
+		}
+		claimed = append(claimed, candidates[i])
 	}
-	return candidates, nil
+	return claimed, nil
 }
 
 // MarkDelivered records a successful delivery.

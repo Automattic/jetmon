@@ -109,16 +109,6 @@ func (s *Server) handleCloseEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Project site_status back to running if no other active events remain.
-	if err := s.maybeProjectRunning(ctx, siteID); err != nil {
-		// Projection failure isn't fatal — the events table is the source
-		// of truth and the orchestrator's next round will reconcile. Log
-		// and continue.
-		writeError(w, r, http.StatusInternalServerError, "db_error",
-			"site_status projection failed: "+err.Error())
-		return
-	}
-
 	ev, transitions, err := s.readEventWithTransitions(ctx, eventID)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, "db_error",
@@ -149,26 +139,6 @@ func (s *Server) readEventWithTransitions(ctx context.Context, eventID int64) (e
 	return ev, transitions, nil
 }
 
-// maybeProjectRunning updates jetpack_monitor_sites.site_status to 1
-// (RUNNING) if the site has no remaining active events. Run after
-// administrative closes so the v1 projection lines up with the events
-// tables. No-op when other events are still open.
-func (s *Server) maybeProjectRunning(ctx context.Context, siteID int64) error {
-	var n int
-	if err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM jetmon_events WHERE blog_id = ? AND ended_at IS NULL`, siteID,
-	).Scan(&n); err != nil {
-		return err
-	}
-	if n > 0 {
-		return nil
-	}
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE jetpack_monitor_sites SET site_status = 1, last_status_change = ? WHERE blog_id = ?`,
-		time.Now().UTC(), siteID)
-	return err
-}
-
 // triggerNowResponse is the shape returned by POST /api/v1/sites/{id}/trigger-now.
 type triggerNowResponse struct {
 	Result             checkResultPayload `json:"result"`
@@ -178,15 +148,15 @@ type triggerNowResponse struct {
 
 // checkResultPayload is the subset of checker.Result we return inline.
 type checkResultPayload struct {
-	HTTPCode      int    `json:"http_code"`
-	ErrorCode     int    `json:"error_code"`
-	Success       bool   `json:"success"`
-	RTTMs         int64  `json:"rtt_ms"`
-	DNSMs         int64  `json:"dns_ms"`
-	TCPMs         int64  `json:"tcp_ms"`
-	TLSMs         int64  `json:"tls_ms"`
-	TTFBMs        int64  `json:"ttfb_ms"`
-	SSLExpiresAt  string `json:"ssl_expires_at,omitempty"`
+	HTTPCode     int    `json:"http_code"`
+	ErrorCode    int    `json:"error_code"`
+	Success      bool   `json:"success"`
+	RTTMs        int64  `json:"rtt_ms"`
+	DNSMs        int64  `json:"dns_ms"`
+	TCPMs        int64  `json:"tcp_ms"`
+	TLSMs        int64  `json:"tls_ms"`
+	TTFBMs       int64  `json:"ttfb_ms"`
+	SSLExpiresAt string `json:"ssl_expires_at,omitempty"`
 }
 
 // triggerNowTimeout is the synchronous deadline for a POST /trigger-now
@@ -292,11 +262,6 @@ func (s *Server) handleTriggerNow(w http.ResponseWriter, r *http.Request) {
 			closed = append(closed, eventID)
 		}
 		if len(ids) > 0 {
-			if err := s.maybeProjectRunning(ctx, siteID); err != nil {
-				writeError(w, r, http.StatusInternalServerError, "db_error",
-					"site_status projection failed: "+err.Error())
-				return
-			}
 			currentState = "Up"
 		}
 	}
@@ -355,10 +320,10 @@ func (s siteForCheck) deriveState() string {
 
 func (s *Server) readSiteForCheck(ctx context.Context, blogID int64) (siteForCheck, error) {
 	var (
-		out             siteForCheck
-		timeoutSeconds  sql.NullInt64
-		customHeaders   sql.NullString
-		redirectPolicy  sql.NullString
+		out            siteForCheck
+		timeoutSeconds sql.NullInt64
+		customHeaders  sql.NullString
+		redirectPolicy sql.NullString
 	)
 	err := s.db.QueryRowContext(ctx, `
 		SELECT monitor_url, timeout_seconds, check_keyword, custom_headers,

@@ -135,13 +135,13 @@ These were considered during Phase 3 design and intentionally left out of v1 wit
 
 ### `site.state_changed` webhook events
 
-Phase 3 v1 ships only `event.*` webhooks (one per `jetmon_event_transitions` row). A `site.state_changed` rollup webhook — fires when the site row's `current_state` projection flips — was punted because:
+Phase 3 v1 ships only `event.*` webhooks (one per `jetmon_event_transitions` row). A `site.state_changed` rollup webhook — fires when the site's derived rollup state changes — was punted because:
 
 - Detecting site-level transitions cleanly without races requires changes to the orchestrator (it currently writes `site_status` but doesn't compute deltas)
 - Event-level webhooks already give consumers everything they need to compute site-level rollup themselves
 - The schema for site state is downstream of the events tables; we'd be adding a second source of truth for "the site is now Down"
 
-**When to revisit:** a real consumer asks for site-level rollup webhooks specifically. Likely shape: orchestrator emits a "previous_state → new_state" signal alongside the projection write; a delivery worker translates that into `site.state_changed` deliveries. Same retry/filter/signature plumbing as `event.*` webhooks — the only new piece is the orchestrator-side delta computation.
+**When to revisit:** a real consumer asks for site-level rollup webhooks specifically. Likely shape: orchestrator computes a "previous_state → new_state" rollup from active events; a delivery worker translates that into `site.state_changed` deliveries. Same retry/filter/signature plumbing as `event.*` webhooks — the only new piece is the orchestrator-side delta computation.
 
 ### Grace-period webhook secret rotation
 

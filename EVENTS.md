@@ -138,15 +138,27 @@ Condition has cleared. `ended_at` is set, `resolution_reason` is recorded, and a
 
 ## The site row projection
 
-For read performance (dashboards, API queries, bulk lists), the current derived state is denormalized onto the site row:
+During the v2 migration, `jetpack_monitor_sites` remains the legacy site/config
+table and compatibility projection. The authoritative incident state is the
+v2 event model:
 
-- `current_state`
-- `current_severity`
-- `active_event_id` (null when Up)
+- `jetmon_events` stores the current incident row.
+- `jetmon_event_transitions` stores every mutation.
+- `jetpack_monitor_sites.site_status` and `last_status_change` are derived
+  compatibility fields for v1 readers.
 
-**This projection is updated in the same transaction as the event write.** Always. There is no eventual consistency here — if they drift, we have a bug.
+While `LEGACY_STATUS_PROJECTION_ENABLE` is true, the legacy projection is updated
+in the same transaction as the event write. There is no eventual consistency in
+migration mode: event mutation, transition row, and v1 projection commit or roll
+back together.
 
-The projection is rebuildable from `jetmon_events` (current state) plus `jetmon_event_transitions` (full history). If the projection is ever suspected to be wrong, rebuild it; don't patch it.
+Once all downstream readers have moved to the v2 API/event tables,
+`LEGACY_STATUS_PROJECTION_ENABLE` can be set to false. At that point the legacy
+status fields stop being maintained and must not be treated as source of truth.
+
+The compatibility projection is rebuildable from `jetmon_events` (current state)
+plus `jetmon_event_transitions` (full history). If the projection is ever
+suspected to be wrong during migration, rebuild it; don't patch it by hand.
 
 ## Relationship to `jetmon_audit_log`
 
@@ -213,11 +225,11 @@ New reasons should be added as explicit enum values in code, not free-text. The 
 
 - **Retention**: how long do we keep closed events at full fidelity before rolling them up?
 - **Causal graph consumers**: who reads the causal links and what query shapes do they need? That dictates indexing.
-- **Cross-probe severity**: when multiple probe types fire on the same site, does the site-row `current_severity` take the max, a weighted sum, or something else?
+- **Cross-probe severity**: when multiple probe types fire on the same site, should the API rollup use max severity, a weighted sum, or something else?
 
 ## Invariants worth testing
 
-1. Event write and site-row projection update are atomic.
+1. Event write and legacy status projection update are atomic while `LEGACY_STATUS_PROJECTION_ENABLE` is true.
 2. **Every** mutation of a `jetmon_events` row writes exactly one row into `jetmon_event_transitions` in the same transaction. Open, severity change, state change, cause-link change, close — no carve-outs.
 3. Replaying the same probe result twice produces the same single event and a single `opened` transition row (idempotent insert path).
 4. `Seems Down → Up` (false alarm) correctly closes the event with `resolution_reason = false_alarm` and writes a transition row with `reason = false_alarm`.

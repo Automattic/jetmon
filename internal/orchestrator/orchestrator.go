@@ -543,7 +543,7 @@ func (o *Orchestrator) confirmDown(site db.Site, entry *retryEntry, vResults []v
 		if err := o.promoteToDown(site.BlogID, entry.eventID, changeTime, meta); err != nil {
 			log.Printf("orchestrator: promote event blog_id=%d event_id=%d: %v", site.BlogID, entry.eventID, err)
 		}
-	} else if config.Get().DBUpdatesEnable {
+	} else if config.LegacyStatusProjectionEnabled() {
 		_ = dbUpdateSiteStatus(o.ctx, site.BlogID, newStatus, changeTime)
 	}
 
@@ -811,7 +811,7 @@ func (o *Orchestrator) openSeemsDown(site db.Site, res checker.Result) (int64, e
 	// Project v1 site_status=SITE_DOWN only on the actual insert. A re-detection
 	// (Opened=false) is by definition a row that already exists, so site_status
 	// was already projected when the event first opened.
-	if out.Opened && config.Get().DBUpdatesEnable && tx.Tx() != nil {
+	if out.Opened && config.LegacyStatusProjectionEnabled() && tx.Tx() != nil {
 		if err := db.UpdateSiteStatusTx(o.ctx, tx.Tx(), site.BlogID, statusDown, nowFunc().UTC()); err != nil {
 			return 0, fmt.Errorf("project site_status: %w", err)
 		}
@@ -838,7 +838,7 @@ func (o *Orchestrator) promoteToDown(blogID, eventID int64, changeTime time.Time
 		return fmt.Errorf("promote event: %w", err)
 	}
 
-	if config.Get().DBUpdatesEnable && tx.Tx() != nil {
+	if config.LegacyStatusProjectionEnabled() && tx.Tx() != nil {
 		if err := db.UpdateSiteStatusTx(o.ctx, tx.Tx(), blogID, statusConfirmedDown, changeTime); err != nil {
 			return fmt.Errorf("project site_status: %w", err)
 		}
@@ -859,7 +859,7 @@ func (o *Orchestrator) closeEvent(blogID, eventID int64, reason string, projecte
 		return fmt.Errorf("close event: %w", err)
 	}
 
-	if config.Get().DBUpdatesEnable && tx.Tx() != nil {
+	if config.LegacyStatusProjectionEnabled() && tx.Tx() != nil {
 		if err := db.UpdateSiteStatusTx(o.ctx, tx.Tx(), blogID, projectedStatus, changeTime); err != nil {
 			return fmt.Errorf("project site_status: %w", err)
 		}
@@ -898,7 +898,7 @@ func (o *Orchestrator) closeRecoveredEvent(blogID, knownEventID int64, changeTim
 			if errors.Is(err, eventstore.ErrEventNotFound) {
 				// site_status disagreed with the event store (no open event but
 				// projection said non-running). Just project back to running.
-				if config.Get().DBUpdatesEnable {
+				if config.LegacyStatusProjectionEnabled() {
 					if err := db.UpdateSiteStatusTx(o.ctx, tx.Tx(), blogID, statusRunning, changeTime); err != nil {
 						return fmt.Errorf("project site_status: %w", err)
 					}
@@ -922,7 +922,7 @@ func (o *Orchestrator) closeRecoveredEvent(blogID, knownEventID int64, changeTim
 	if err := tx.Close(o.ctx, eventID, reason, o.hostname, nil); err != nil {
 		return fmt.Errorf("close event: %w", err)
 	}
-	if config.Get().DBUpdatesEnable && tx.Tx() != nil {
+	if config.LegacyStatusProjectionEnabled() && tx.Tx() != nil {
 		if err := db.UpdateSiteStatusTx(o.ctx, tx.Tx(), blogID, statusRunning, changeTime); err != nil {
 			return fmt.Errorf("project site_status: %w", err)
 		}

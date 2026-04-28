@@ -33,6 +33,11 @@ func expectCloseEventTx(mock sqlmock.Sqlmock, eventID, blogID int64, severity ui
 	mock.ExpectExec(closeEventInsertTransitionSQL).
 		WithArgs(eventID, blogID, severity, state, "Resolved", reason, "api", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(countActiveEventsSQL).WithArgs(blogID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectExec(projectRunningSQL).
+		WithArgs(sqlmock.AnyArg(), blogID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 }
 
@@ -46,13 +51,6 @@ func TestCloseEventHappyPath(t *testing.T) {
 			AddRow(int64(42), nil))
 
 	expectCloseEventTx(mock, 7, 42, 4, "Down", "manual_override")
-
-	// maybeProjectRunning checks count, finds zero, projects.
-	mock.ExpectQuery(countActiveEventsSQL).WithArgs(int64(42)).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
-	mock.ExpectExec(projectRunningSQL).
-		WithArgs(sqlmock.AnyArg(), int64(42)).
-		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	// Read-back: full event + transitions.
 	startedAt := time.Date(2026, 4, 25, 3, 0, 0, 0, time.UTC)
@@ -156,11 +154,6 @@ func TestCloseEventDefaultReason(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"blog_id", "ended_at"}).
 			AddRow(int64(42), nil))
 	expectCloseEventTx(mock, 7, 42, 4, "Down", "manual_override")
-	mock.ExpectQuery(countActiveEventsSQL).WithArgs(int64(42)).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
-	mock.ExpectExec(projectRunningSQL).
-		WithArgs(sqlmock.AnyArg(), int64(42)).
-		WillReturnResult(sqlmock.NewResult(0, 1))
 	startedAt := time.Date(2026, 4, 25, 3, 0, 0, 0, time.UTC)
 	mock.ExpectQuery(` SELECT id, blog_id, endpoint_id, check_type, discriminator, severity, state, started_at, ended_at, resolution_reason, cause_event_id, metadata FROM jetmon_events WHERE id = ?`).
 		WithArgs(int64(7)).

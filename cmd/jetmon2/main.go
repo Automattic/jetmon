@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -70,9 +71,10 @@ func runServe() {
 		log.Fatalf("load config: %v", err)
 	}
 	cfg := config.Get()
-
-	if cfg.DBUpdatesEnable && os.Getenv("JETMON_UNSAFE_DB_UPDATES") != "1" {
-		log.Fatalf("DB_UPDATES_ENABLE is true but JETMON_UNSAFE_DB_UPDATES=1 is not set — refusing to start. This setting must only be used in local test environments.")
+	log.Printf("config: legacy_status_projection=%s", enabledLabel(cfg.LegacyStatusProjectionEnable))
+	log.Printf("config: email_transport=%s", emailTransportLabel(cfg))
+	if !emailTransportDelivers(cfg) {
+		log.Printf("WARN: email_transport=%s — alert-contact emails will be logged but not delivered", emailTransportLabel(cfg))
 	}
 
 	config.LoadDB()
@@ -261,13 +263,43 @@ func cmdValidateConfig() {
 	fmt.Println("PASS db connect")
 
 	cfg := config.Get()
+	fmt.Printf("INFO legacy_status_projection=%s\n", enabledLabel(cfg.LegacyStatusProjectionEnable))
+	fmt.Printf("INFO email_transport=%s\n", emailTransportLabel(cfg))
+	if !emailTransportDelivers(cfg) {
+		fmt.Printf("WARN email_transport=%s — alert-contact emails will be logged but not delivered\n", emailTransportLabel(cfg))
+	}
 	for _, v := range cfg.Verifiers {
 		addr := fmt.Sprintf("%s:%s", v.Host, v.GRPCPort)
-		// Ping check is best-effort; don't fail validation on veriflier unavailability.
+		// Listing configured Verifliers is operator context, not a reachability check.
 		fmt.Printf("INFO veriflier %q at %s\n", v.Name, addr)
 	}
 
 	fmt.Println("\nvalidation passed")
+}
+
+func enabledLabel(b bool) string {
+	if b {
+		return "enabled"
+	}
+	return "disabled"
+}
+
+// emailTransportLabel collapses an empty EMAIL_TRANSPORT to its compatibility
+// alias ("stub") so startup output and validate-config show a single canonical
+// name regardless of which form an operator wrote in config.
+func emailTransportLabel(cfg *config.Config) string {
+	if cfg.EmailTransport == "" {
+		return "stub"
+	}
+	return cfg.EmailTransport
+}
+
+// emailTransportDelivers reports whether the configured email transport
+// actually delivers mail. The stub transport (and the empty-string alias for
+// it) only logs, so any alert-contact configured with transport="email" will
+// silently disappear into the logs in that mode.
+func emailTransportDelivers(cfg *config.Config) bool {
+	return cfg.EmailTransport == "smtp" || cfg.EmailTransport == "wpcom"
 }
 
 func cmdStatus() {
@@ -306,7 +338,7 @@ func cmdAudit() {
 
 	fmt.Printf("Audit log for blog_id=%d\n", *blogID)
 	fmt.Printf("%-25s %-22s %-15s %s\n", "TIMESTAMP", "EVENT", "SOURCE", "DETAIL")
-	fmt.Println(repeat("-", 90))
+	fmt.Println(strings.Repeat("-", 90))
 
 	for rows.Next() {
 		var (
@@ -444,7 +476,7 @@ func cmdKeysList(ctx context.Context, args []string) {
 
 	fmt.Printf("%-5s %-24s %-7s %-9s %-21s %-21s %s\n",
 		"ID", "CONSUMER", "SCOPE", "RATE/MIN", "EXPIRES", "LAST USED", "STATUS")
-	fmt.Println(repeat("-", 110))
+	fmt.Println(strings.Repeat("-", 110))
 	for _, k := range keys {
 		status := "active"
 		if k.RevokedAt != nil {
@@ -550,7 +582,7 @@ func writePIDFile(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0644)
+	return os.WriteFile(path, fmt.Appendf(nil, "%d\n", os.Getpid()), 0644)
 }
 
 func removePIDFile(path string) {
@@ -590,15 +622,6 @@ func resolveSince(s string) string {
 	}
 	return s
 }
-
-func repeat(s string, n int) string {
-	out := ""
-	for range n {
-		out += s
-	}
-	return out
-}
-
 
 // buildAlertDispatchers constructs the per-transport Dispatcher map
 // from runtime config. Always returns the three webhook-shaped

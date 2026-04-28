@@ -51,9 +51,9 @@ type responseTimeResponse struct {
 // response time. Per-component percentiles let consumers pinpoint *where*
 // latency is spent.
 type timingBreakdownResponse struct {
-	Window    windowResponse  `json:"window"`
-	Samples   int             `json:"samples"`
-	Truncated bool            `json:"truncated"`
+	Window    windowResponse   `json:"window"`
+	Samples   int              `json:"samples"`
+	Truncated bool             `json:"truncated"`
 	DNS       latencyComponent `json:"dns"`
 	TCP       latencyComponent `json:"tcp"`
 	TLS       latencyComponent `json:"tls"`

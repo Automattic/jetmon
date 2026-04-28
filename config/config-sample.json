@@ -5,7 +5,7 @@
 	"DATASET_SIZE"      : 100,
 	"WORKER_MAX_MEM_MB" : 53,
 
-	"DB_UPDATES_ENABLE" : false,
+	"LEGACY_STATUS_PROJECTION_ENABLE" : true,
 
 	"BUCKET_TOTAL"               : 1000,
 	"BUCKET_TARGET"              : 500,
@@ -33,7 +33,18 @@
 
 	"LOG_FORMAT"     : "text",
 	"DASHBOARD_PORT" : 8080,
+	"API_PORT"       : 0,
 	"DEBUG_PORT"     : 6060,
+
+	"EMAIL_TRANSPORT"       : "stub",
+	"EMAIL_FROM"            : "jetmon@noreply.invalid",
+	"WPCOM_EMAIL_ENDPOINT"  : "",
+	"WPCOM_EMAIL_AUTH_TOKEN": "",
+	"SMTP_HOST"             : "",
+	"SMTP_PORT"             : 0,
+	"SMTP_USERNAME"         : "",
+	"SMTP_PASSWORD"         : "",
+	"SMTP_USE_TLS"          : false,
 
 	"VERIFIERS": [
 		{
