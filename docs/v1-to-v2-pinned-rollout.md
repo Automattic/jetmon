@@ -101,9 +101,7 @@ For each v1 host:
    - `rollout_activity_check=./jetmon2 rollout activity-check --since=15m`
    - `rollout_rollback_check=./jetmon2 rollout rollback-check`
    - `rollout_drift_report=./jetmon2 rollout projection-drift`
-4. Stop the v1 process for that host.
-5. Start the v2 process.
-6. Run the pinned rollout preflight:
+4. Before stopping v1, run the pinned rollout preflight:
 
    ```bash
    ./jetmon2 rollout pinned-check
@@ -127,6 +125,8 @@ For each v1 host:
    ./jetmon2 rollout pinned-check --host=<v2-hostname>
    ```
 
+5. Stop the v1 process for that host.
+6. Start the v2 process.
 7. Verify the process logs:
    - `legacy_status_projection=enabled`
    - `bucket_ownership=pinned range=<min>-<max>`
@@ -148,6 +148,9 @@ For each v1 host:
 
    The check defaults to the pinned range from config. It fails if active sites
    exist in the range but none have `last_checked_at` at or after the cutoff.
+   This proves that the copied range has fresh check writes; it does not prove
+   which process wrote them, so keep v1 stopped and use logs or the dashboard to
+   confirm v2 is checking only the pinned range.
    After enough time for a full expected round, use `--require-all` to fail
    unless every active site in the range has been checked recently:
 
@@ -178,7 +181,9 @@ Rollback is host-local:
    still owns a `jetmon_hosts` row, any dynamic `jetmon_hosts` row overlaps the
    rollback range, or the legacy projection has drifted. If running from an
    operator box instead of the v2 host, keep `--host` set to the v2 hostname
-   that was just stopped.
+   that was just stopped. Pinned v2 hosts intentionally do not heartbeat
+   `jetmon_hosts`, so this check cannot prove the pinned v2 process is stopped;
+   confirm the service stop completed before restarting v1.
 3. Restart the original v1 process with the same `BUCKET_NO_MIN` /
    `BUCKET_NO_MAX` config.
 4. Verify v1 checks the range again.

@@ -565,8 +565,11 @@ bucket ownership and gives each host a simple rollback path.
 
 		./jetmon2 rollout activity-check --since=15m
 
-   Use `--require-all` after a full expected round when every active site in
-   the range should have a fresh `last_checked_at`.
+   This proves the range has fresh `last_checked_at` writes, not which process
+   wrote them. Keep v1 stopped and use logs or the operator dashboard to confirm
+   v2 is checking only the pinned range. Use `--require-all` after a full
+   expected round when every active site in the range should have a fresh
+   `last_checked_at`.
 
 7) Verify Veriflier confirmations, WPCOM notifications, audit rows, and legacy
    `site_status` projection for that bucket range. If the operator dashboard is
@@ -578,9 +581,11 @@ bucket ownership and gives each host a simple rollback path.
 
 		./jetmon2 rollout rollback-check --host=<v2-hostname>
 
-   Then restart v1 with the same bucket config. Because the v2 migrations are
-   additive and the legacy projection remains enabled, legacy readers continue
-   to see familiar status fields.
+   Pinned v2 hosts do not heartbeat `jetmon_hosts`, so this check does not prove
+   the v2 process is stopped; confirm the service stop completed first. Then
+   restart v1 with the same bucket config. Because the v2 migrations are additive
+   and the legacy projection remains enabled, legacy readers continue to see
+   familiar status fields.
 
 9) Repeat for each v1 host. After the whole fleet is on v2 and stable, plan a
    coordinated dynamic-ownership cutover, remove `PINNED_BUCKET_*` from the v2

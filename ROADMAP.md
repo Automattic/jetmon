@@ -663,10 +663,10 @@ where to look, and what each item unlocked.
   verifies active sites in the rollout range have fresh `last_checked_at`
   values after a host replacement. It gives operators an executable check for
   "this range is being processed now" before they move to the next v1 host.
-- **Rollback safety preflight.** `./jetmon2 rollout rollback-check` verifies a
-  stopped v2 host no longer owns dynamic buckets, no other dynamic host overlaps
-  the rollback range, and the legacy status projection is clean before v1 is
-  restarted for that range.
+- **Rollback safety preflight.** After the v2 service has been stopped,
+  `./jetmon2 rollout rollback-check` verifies the host no longer owns dynamic
+  buckets, no other dynamic host overlaps the rollback range, and the legacy
+  status projection is clean before v1 is restarted for that range.
 - **Systemd service cleanup.** The monitor unit now places start-limit keys in
   the correct systemd section, and the deliverer unit validates with
   `systemd-analyze`.
