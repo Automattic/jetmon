@@ -241,8 +241,8 @@ tests that fail when handler behavior drifts from the published schema.
 - Add tenant ownership fields and filtered queries where Jetmon must enforce
   ownership directly.
 - Add customer-safe error and metadata redaction paths for every public route.
-- Generate and publish `GET /api/v1/openapi.json` from the running route
-  contract.
+- Expand the route-driven `GET /api/v1/openapi.json` contract with detailed
+  request/response schemas and client-codegen validation.
 - Add public-contract integration tests for auth, tenant isolation,
   pagination, idempotency, redaction, webhook ownership, and trigger-now abuse
   controls.

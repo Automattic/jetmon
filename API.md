@@ -950,9 +950,11 @@ This is the only API surface for keys. **Creation, listing, and revocation are C
 
 Unauthenticated. Returns `{ "status": "ok" }` if the API can talk to the database. For load balancers and external uptime monitors (yes, including external monitors monitoring the monitor).
 
-#### Planned: `GET /api/v1/openapi.json`
+#### `GET /api/v1/openapi.json`
 
-OpenAPI 3.1 spec for client codegen. This is not routed by the current server; it is tracked as Phase 4 polish below. When added, it should be generated from the route/handler contract so it matches what the running server actually accepts.
+Returns the route-driven OpenAPI 3.1 contract for the internal API. Requires `read` scope like other internal introspection routes. The spec is generated from the same route table used to build the running server mux, so new routes must be added to that table before they can be served or documented.
+
+The current contract publishes paths, methods, auth scope, idempotency headers, path parameters, request-body presence, generic success responses, and the standard error envelope. Detailed request/response schemas are intentionally deferred to the public-contract hardening work in `ROADMAP.md`.
 
 ---
 
@@ -980,6 +982,7 @@ Phase 2 (write surface, implemented):
 - Family 1 write endpoints (POST/PATCH/DELETE sites, pause/resume, trigger-now)
 - Family 2 manual close
 - Idempotency keys on POST routes
+- Route-driven OpenAPI 3.1 contract at `GET /api/v1/openapi.json`
 
 Phase 3 (webhook delivery, implemented):
 - Family 4 webhooks (CRUD + delivery infrastructure with HMAC signing + retry backoff)
@@ -993,7 +996,7 @@ Phase 3.x (alert contacts, implemented):
 - Legacy WPCOM notification flow continues to operate in parallel; future migration tracked in ROADMAP
 
 Phase 4 (polish, future):
-- OpenAPI spec generation
+- Detailed OpenAPI request/response schemas and client-codegen validation
 - Bulk endpoints if real consumers need them
 - Per-region filters when vantage-point work ships
 

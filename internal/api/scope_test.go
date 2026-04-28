@@ -51,6 +51,7 @@ var phase2WriteEndpoints = []struct {
 var phase2ReadEndpoints = []struct {
 	method, path string
 }{
+	{"GET", "/api/v1/openapi.json"},
 	{"GET", "/api/v1/sites"},
 	{"GET", "/api/v1/sites/42"},
 	{"GET", "/api/v1/sites/42/events"},
