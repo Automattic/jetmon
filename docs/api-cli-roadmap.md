@@ -134,6 +134,9 @@ but it should not become a generic `curl` clone.
 
 ## Completed
 
+- [x] 2026-04-28: Refreshed the root README into a shorter Jetmon 2 project
+  front door and moved dense setup, operations, data-model, and support
+  material into focused docs.
 - [x] 2026-04-28: Created the `feature/api-cli` branch and initial roadmap.
 - [x] 2026-04-28: Added the `jetmon2 api` command group with `health`, `me`,
   and generic `request` subcommands.
