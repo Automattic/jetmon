@@ -452,3 +452,239 @@ The migrations are individually clean (each is "add a column, filter on it, depr
 **When to revisit:** if a stakeholder asks "can a customer integration call Jetmon directly?" — the answer should be "let's design that" rather than "yes, here's the URL."
 
 The Q9 (webhook ownership) section in API.md captures the most concrete piece of this; the rest is captured here for visibility when the conversation comes up.
+
+---
+
+## Completed
+
+This section lists major roadmap-level work completed since the v1 baseline,
+including both the original `v2` rewrite and later work on this branch. It is
+intentionally higher level than a changelog: entries explain what exists now,
+where to look, and what each item unlocked.
+
+### v1-to-v2 Rewrite Foundation
+
+- **Single Go monitor binary.** Jetmon 2 replaces the Node.js master/worker
+  process tree and C++ native HTTP checker addon with the Go `jetmon2` binary.
+  This removes `npm`, `node-gyp`, and native-addon build friction while keeping
+  the legacy external contracts intact.
+- **Go check pool with bounded concurrency.** HTTP checks run through
+  `internal/checker` using goroutines, `net/http`, and `httptrace` timing
+  capture instead of the v1 native addon.
+  The pool records DNS, TCP, TLS, TTFB, and total RTT timings and can adjust
+  worker count under queue or memory pressure.
+- **Go orchestrator and retry queue.** The v2 orchestrator owns round
+  scheduling, local retry state, Veriflier escalation, WPCOM notifications, and
+  graceful drain behavior.
+  This preserves the v1 detection flow while making the retry queue and
+  shutdown behavior testable in Go.
+- **Go Veriflier replacement.** `veriflier2` replaces the Qt/C++ Veriflier
+  with a small Go HTTP service and shared check logic.
+  The old custom SSL server dependency is gone, and the transport is easier to
+  test and deploy.
+- **Embedded migrations and schema bootstrap.** `jetmon2 migrate` applies the
+  v2 additive schema and can create the legacy `jetpack_monitor_sites` table in
+  local/dev databases.
+  This makes fresh Docker environments and production schema upgrades use the
+  same migration path.
+- **MySQL bucket coordination.** v2 introduced `jetmon_hosts` ownership and
+  heartbeat logic so hosts can claim, release, and reclaim bucket ranges
+  dynamically.
+  Static v1 bucket ranges are still supported later through pinned rollout
+  mode, but dynamic ownership is the v2 steady-state target.
+- **Compatibility-preserving StatsD and stats files.** The Go metrics layer
+  keeps the existing StatsD prefix shape and `stats/` file outputs used by
+  legacy monitoring.
+  This lets operational dashboards survive the rewrite while new metrics are
+  added incrementally.
+- **WPCOM client with circuit breaker.** The v2 WPCOM client preserves the
+  legacy notification payload while adding bounded queueing and circuit-breaker
+  behavior.
+  This protects monitor rounds from prolonged WPCOM API failures.
+- **Operator dashboard and health surface.** v2 added a built-in dashboard for
+  worker state, queues, buckets, memory, WPCOM circuit state, and later rollout
+  and dependency health.
+  It gives operators a first-party view into the monitor without querying the
+  database directly.
+- **Systemd and logrotate packaging.** The v2 branch added production service
+  and logrotate templates for the Go monitor.
+  These files provide the baseline deployment shape for rolling host updates.
+- **Initial Docker Go development environment.** Docker builds now compile the
+  Go monitor and Veriflier, run migrations, and use the new config-rendering
+  entrypoints.
+  Later Docker cleanup refined ports, permissions, Mailpit, healthchecks, and
+  non-root MySQL credentials.
+
+### Core State and Detection
+
+- **Event-sourced incident state.** Jetmon now writes authoritative incident
+  state to `jetmon_events` and append-only lifecycle history to
+  `jetmon_event_transitions`.
+  Useful for: reconstructing incidents, API reads, webhook/alert delivery, and
+  legacy projection drift checks.
+- **Shadow-state migration support.** The legacy `site_status` projection is
+  maintained behind `LEGACY_STATUS_PROJECTION_ENABLE` while v2 event tables
+  remain authoritative.
+  This keeps v1 consumers working during migration without making the legacy
+  column the source of truth.
+- **API state derived from v2 events.** Site API responses use open v2 events
+  to report current health state instead of trusting only the legacy site row.
+  This keeps the API aligned with the eventstore during the shadow migration.
+- **Detection-flow instrumentation.** StatsD now captures first failure to
+  Seems Down, first failure to Veriflier escalation, Seems Down to Down,
+  false-alarm timing, and probe-cleared recovery timing.
+  These metrics are the data set needed to evaluate future v3 probe-agent
+  designs with production evidence.
+- **Outcome metrics split by failure class.** False alarms and confirmed-down
+  outcomes are split by local failure class such as `server`, `client`,
+  `blocked`, `https`, `redirect`, and `intermittent`.
+  This makes it possible to see which failure classes produce useful
+  confirmations and which produce noisy escalations.
+- **Veriflier hardening and observability.** Veriflier request handling now has
+  stronger validation, safer body limits, clearer config behavior, and
+  per-host RPC/vote metrics.
+  The v2 production transport is documented as JSON-over-HTTP, with proto files
+  retained only as a future schema reference.
+- **WPCOM notification parity metrics.** Legacy WPCOM notification attempts,
+  deliveries, retries, errors, and final failures are counted with
+  status-specific splits.
+  This supports production parity checks while WPCOM remains outside the new
+  deliverer path.
+
+### API and Gateway Surface
+
+- **Internal REST API foundation.** The internal `/api/v1` surface now includes
+  API-key auth, read endpoints, event detail/list endpoints, SLA/stat queries,
+  and authenticated write endpoints.
+  This moved Jetmon from DB-only integration toward a service boundary for
+  dashboards, gateway callers, CI tooling, and delivery workers.
+- **Idempotent writes and scope enforcement.** POST-style writes support
+  idempotency keys, and route-level scope checks are covered through the full
+  mux.
+  API key revocation also honors future `revoked_at` timestamps so rotations
+  can use a grace window.
+- **Site management write surface.** The API can create/update/delete/pause/
+  resume sites, close events, and trigger an immediate check.
+  The write handlers preserve the eventstore and legacy-projection invariants
+  used by the orchestrator.
+- **Site scheduling fields in API responses.** API site payloads now expose
+  operational scheduling/config fields such as check interval, maintenance
+  window, redirect policy, keyword, SSL expiry, and alert cooldown.
+  This lets API consumers inspect the settings that affect monitoring behavior.
+- **Site soft-delete contract.** The soft-delete behavior is documented so
+  collaborators know how disabled sites are represented and what API consumers
+  should expect.
+  This avoids accidental hard-delete semantics while the legacy table remains
+  shared infrastructure.
+- **Gateway tenant boundary.** The gateway-to-Jetmon tenant contract is
+  documented, and gateway-routed requests now carry trusted tenant context
+  through the API middleware.
+  Non-gateway consumers cannot spoof public-context headers.
+- **Tenant ownership enforcement.** Gateway-routed site, event, stats,
+  trigger-now, webhook, alert-contact, delivery, and manual retry paths are
+  scoped through `jetmon_site_tenants` or resource `owner_tenant_id`.
+  This gives defense-in-depth behind the gateway while preserving unscoped
+  internal-operator behavior.
+- **Site tenant import tooling.** `jetmon2 site-tenants import` can load
+  `tenant_id,blog_id` mappings from CSV, including dry-run validation.
+  This provides the operator path for backfilling gateway ownership data before
+  customer traffic depends on Jetmon-side checks.
+- **Gateway tenant route tests.** Public-contract tests now cover mapped and
+  unmapped gateway paths across the key route families, including event lists,
+  transition lists, and trigger-now.
+  These tests reduce the risk that future API work bypasses tenant ownership
+  checks.
+- **Route-driven OpenAPI contract.** `GET /api/v1/openapi.json` is generated
+  from the route table with request/response component schemas.
+  Tests validate schema references and smoke-check generated Go client source
+  so route/schema drift is caught early.
+
+### Delivery and Alerting
+
+- **HMAC webhook delivery.** Webhook CRUD, HMAC-signed outbound delivery,
+  filtering, retry, abandonment, delivery listing, and manual retry are
+  implemented.
+  Payloads are frozen at fire time so consumers see the event state that caused
+  the delivery.
+- **Alert contacts.** Managed alert contacts now support email, PagerDuty,
+  Slack, and Teams, with send-test endpoints, delivery listing/retry, retry
+  behavior, and per-contact rate caps.
+  Email supports `stub`, `smtp`, and `wpcom` senders so local, staging, and
+  production modes can share the same API.
+- **Delivery claiming.** Webhook and alert-contact delivery workers claim rows
+  before dispatch so multiple workers do not dispatch the same pending delivery.
+  This is the database coordination point that makes standalone delivery
+  feasible.
+- **Delivery owner guard.** `DELIVERY_OWNER_HOST` constrains embedded delivery
+  to the intended host during conservative rollout.
+  This lets API-enabled hosts serve traffic without accidentally becoming
+  outbound delivery owners.
+- **Standalone deliverer entry point.** `bin/jetmon-deliverer` runs webhook
+  and alert-contact workers without starting the monitor, API, dashboard, or
+  bucket ownership loop.
+  It is the first concrete process boundary for the future outbound-delivery
+  split.
+- **Deliverer service packaging.** A sample
+  `systemd/jetmon-deliverer.service` now exists, and `jetmon-deliverer
+  validate-config` checks config parsing, DB connectivity, email transport
+  mode, and delivery ownership.
+  The rollout docs describe the service, process-specific `deliverer.json`,
+  and the shared `DB_*` environment expectations.
+
+### Rollout and Operations
+
+- **Pinned v1-to-v2 rollout mode.** v2 hosts can run pinned to the exact bucket
+  range of the v1 host they replace.
+  Example: `./jetmon2 rollout pinned-check` verifies pinned config, projection
+  writes, dynamic-ownership absence, active-site coverage, and projection drift
+  before cutover.
+- **Dynamic ownership preflight.** `./jetmon2 rollout dynamic-check` verifies
+  that pinned ranges are removed, `jetmon_hosts` rows cover the full bucket
+  range without gaps/overlaps, heartbeats are fresh, and projection drift is
+  zero.
+  This supports the second step after every host has moved safely to v2.
+- **Projection drift reporting.** `./jetmon2 rollout projection-drift` lists
+  the specific active sites whose legacy projection disagrees with the
+  authoritative open HTTP event.
+  Operators get actionable rows instead of a count-only rollout failure.
+- **Rollout guidance in validation and dashboard.** `validate-config` prints
+  the correct rollout preflight and drift-report commands, while the operator
+  dashboard shows bucket mode, projection mode, delivery ownership, rollout
+  commands, and dependency health.
+  This keeps migration-critical state visible before and during cutover.
+- **Systemd service cleanup.** The monitor unit now places start-limit keys in
+  the correct systemd section, and the deliverer unit validates with
+  `systemd-analyze`.
+  This removes avoidable service-file warnings before production packaging.
+- **Docker development cleanup.** The Docker setup now has clearer local env
+  names, hardcoded container-internal ports, explicit host-port overrides,
+  non-root MySQL credentials, Mailpit, healthchecks, MySQL readiness waits, and
+  runtime permission fixes.
+  Local development now better matches the process and dependency shape used by
+  v2.
+
+### Documentation, Tests, and Tooling
+
+- **Architecture and ADR refresh.** The architecture docs, API reference,
+  AGENTS guidance, and ADRs were brought back in line with the current v2
+  health-platform shape.
+  This captures the "why" behind event-sourced state, pull-only delivery,
+  webhook signatures, gateway tenant boundaries, and credential-storage tradeoffs.
+- **v3 architecture options documented.** The v3 probe-agent candidates are
+  parked in `docs/v3-probe-agent-architecture-options.md` until v2 has
+  production data.
+  Candidate 3 remains the leading option, but the roadmap now says which data
+  should be collected before revisiting it.
+- **Outbound credential encryption plan.** The repo has a staged plan for
+  encrypting webhook secrets and alert-contact destination credentials at rest.
+  The plan preserves current internal behavior while defining dual-write,
+  backfill, encrypted-required, and plaintext-removal phases.
+- **Build and generation cleanup.** `make all` builds the monitor, deliverer,
+  and Veriflier binaries without requiring generated gRPC code, and Makefile
+  targets use an explicit Go path and writable build cache.
+  This keeps normal build/test workflows reliable in local and CI-like shells.
+- **Coverage and race-test expansion.** Core packages gained coverage for
+  list handlers, lifecycle helpers, API audit paths, delivery behavior,
+  startup helpers, and previously racy tests.
+  The branch now has broader regression coverage around the shared API and
+  delivery paths that are most likely to be touched next.
