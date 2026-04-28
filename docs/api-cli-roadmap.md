@@ -232,9 +232,15 @@ but it should not become a generic `curl` clone.
   creating, listing, and revoking rehearsal tokens from the repository root.
 - [x] 2026-04-28: Added `jetmon2 api commands` as a table-first command
   catalog with descriptions and examples for the expanded API CLI tree.
-- [x] 2026-04-28: Added derived site `cli_batch` responses and batch marker
-  checks for `sites cleanup --batch` and `sites simulate-failure --batch`, with
-  `--allow-unmarked` as the explicit legacy opt-out.
+- [x] 2026-04-28: Added opt-in derived site `cli_batch` responses and batch
+  marker checks for `sites cleanup --batch` and
+  `sites simulate-failure --batch`, with `--allow-unmarked` as the explicit
+  legacy opt-out.
+- [x] 2026-04-28: Addressed API CLI review feedback by redacting sensitive
+  verbose headers, defaulting automatic auth to same-origin requests, adding an
+  explicit `--auth-policy any-origin` opt-in, keeping `cli_batch` out of the
+  canonical site response, and clarifying the `sites create` command catalog
+  wording.
 - [x] 2026-04-28: Extended `api-fixture` with `/webhook` and
   `/webhook/requests` endpoints that record deliveries, expose captured
   signature headers, clear recorded requests, and verify signatures when a

@@ -251,9 +251,11 @@ func TestRunAPISitesSimulateFailureRejectsUnmatchedBatchMarker(t *testing.T) {
 	start := apiCLIBatchBlogIDStart("simulation-batch")
 	var calls []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls = append(calls, r.Method+" "+r.URL.Path)
+		calls = append(calls, r.Method+" "+r.URL.RequestURI())
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sites/"+strconvInt64(start):
+		case r.Method == http.MethodGet &&
+			r.URL.Path == "/api/v1/sites/"+strconvInt64(start) &&
+			r.URL.Query().Get("include_cli_metadata") == "true":
 			writeTestJSON(t, w, map[string]any{"id": start, "cli_batch": "other-batch"})
 		default:
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
@@ -280,7 +282,7 @@ func TestRunAPISitesSimulateFailureRejectsUnmatchedBatchMarker(t *testing.T) {
 	if !strings.Contains(err.Error(), `does not belong to CLI batch "simulation-batch"`) {
 		t.Fatalf("error = %v, want batch mismatch", err)
 	}
-	if strings.Join(calls, "\n") != "GET /api/v1/sites/"+strconvInt64(start) {
+	if strings.Join(calls, "\n") != "GET /api/v1/sites/"+strconvInt64(start)+"?include_cli_metadata=true" {
 		t.Fatalf("calls:\n%s\nwant only GET", strings.Join(calls, "\n"))
 	}
 }

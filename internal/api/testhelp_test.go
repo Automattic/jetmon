@@ -122,8 +122,10 @@ var columnsSite = []string{
 	"blog_id", "public_id", "monitor_url", "monitor_active", "bucket_no",
 	"check_interval", "site_status", "last_checked_at", "last_status_change",
 	"ssl_expiry_date", "check_keyword", "redirect_policy", "maintenance_start",
-	"maintenance_end", "alert_cooldown_minutes", "custom_headers",
+	"maintenance_end", "alert_cooldown_minutes",
 }
+
+var columnsSiteWithCLIMetadata = append(append([]string{}, columnsSite...), "custom_headers")
 
 // columnsActiveEvent is the column set returned by queryActiveEvents.
 var columnsActiveEvent = []string{

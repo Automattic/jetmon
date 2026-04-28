@@ -164,7 +164,7 @@ func apiCleanupSiteIDs(cleanup apiSitesCleanupOptions) ([]int64, error) {
 }
 
 func apiSiteBelongsToBatch(ctx context.Context, client *http.Client, opts apiCLIOptions, siteID int64, batch string) (bool, bool, error) {
-	resp, err := doAPIRequest(ctx, client, opts, http.MethodGet, "/api/v1/sites/"+strconv.FormatInt(siteID, 10), nil)
+	resp, err := doAPIRequest(ctx, client, opts, http.MethodGet, apiSitePathWithCLIMetadata(siteID), nil)
 	if err != nil {
 		return false, false, err
 	}
@@ -183,6 +183,10 @@ func apiSiteBelongsToBatch(ctx context.Context, client *http.Client, opts apiCLI
 		return false, true, err
 	}
 	return siteBatch == batch, true, nil
+}
+
+func apiSitePathWithCLIMetadata(siteID int64) string {
+	return "/api/v1/sites/" + strconv.FormatInt(siteID, 10) + "?include_cli_metadata=true"
 }
 
 func apiSiteCLIBatch(body []byte) (string, error) {

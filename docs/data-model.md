@@ -39,8 +39,8 @@ Jetmon 2 adds these columns:
 | `alert_cooldown_minutes` | `SMALLINT NULL` | Per-site alert cooldown override |
 
 The API can expose a derived `cli_batch` field for local API CLI test data when
-`custom_headers` contains `X-Jetmon-CLI-Batch`; it is not a dedicated database
-column.
+`include_cli_metadata=true` is requested and `custom_headers` contains
+`X-Jetmon-CLI-Batch`; it is not a dedicated database column.
 
 ## New Tables
 

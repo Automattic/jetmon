@@ -75,6 +75,8 @@ func TestExecuteAPIRequestSendsAuthAndVerboseHeaders(t *testing.T) {
 			sawIDKey = true
 		}
 		w.Header().Set("X-Test-Response", "yes")
+		w.Header().Set("Set-Cookie", "session=secret-cookie")
+		w.Header().Set("X-Api-Key", "response-api-key")
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	}))
@@ -106,14 +108,107 @@ func TestExecuteAPIRequestSendsAuthAndVerboseHeaders(t *testing.T) {
 	errOut := stderr.String()
 	for _, want := range []string{
 		"> POST /api/v1/sites/42/trigger-now HTTP/1.1",
-		"> Authorization: Bearer token-123",
-		"> Idempotency-Key: idem-1",
+		"> Authorization: [redacted]",
+		"> Idempotency-Key: [redacted]",
 		"< HTTP/1.1 201 Created",
+		"< Set-Cookie: [redacted]",
+		"< X-Api-Key: [redacted]",
 		"< X-Test-Response: yes",
 	} {
 		if !strings.Contains(errOut, want) {
 			t.Fatalf("stderr missing %q:\n%s", want, errOut)
 		}
+	}
+	for _, secret := range []string{"token-123", "idem-1", "secret-cookie", "response-api-key"} {
+		if strings.Contains(errOut, secret) {
+			t.Fatalf("stderr leaked %q:\n%s", secret, errOut)
+		}
+	}
+}
+
+func TestExecuteAPIRequestSkipsAutomaticAuthForDifferentOrigin(t *testing.T) {
+	base := httptest.NewServer(http.NotFoundHandler())
+	defer base.Close()
+
+	var sawAuth, sawIDKey bool
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawAuth = r.Header.Get("Authorization") != ""
+		sawIDKey = r.Header.Get("Idempotency-Key") != ""
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer target.Close()
+
+	var stdout bytes.Buffer
+	opts := apiCLIOptions{
+		baseURL:        base.URL,
+		token:          "token-123",
+		idempotencyKey: "idem-1",
+		timeout:        time.Second,
+		out:            &stdout,
+		errOut:         ioDiscard{},
+	}
+	if err := executeAPIRequest(context.Background(), target.Client(), opts, http.MethodPost, target.URL+"/api/v1/sites", []byte(`{}`)); err != nil {
+		t.Fatalf("executeAPIRequest() error = %v", err)
+	}
+	if sawAuth {
+		t.Fatal("Authorization header was sent to a different origin")
+	}
+	if sawIDKey {
+		t.Fatal("Idempotency-Key header was sent to a different origin")
+	}
+}
+
+func TestExecuteAPIRequestAnyOriginPolicySendsAutomaticAuth(t *testing.T) {
+	base := httptest.NewServer(http.NotFoundHandler())
+	defer base.Close()
+
+	var sawAuth, sawIDKey bool
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawAuth = r.Header.Get("Authorization") == "Bearer token-123"
+		sawIDKey = r.Header.Get("Idempotency-Key") == "idem-1"
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer target.Close()
+
+	var stdout bytes.Buffer
+	opts := apiCLIOptions{
+		baseURL:        base.URL,
+		token:          "token-123",
+		authPolicy:     "any-origin",
+		idempotencyKey: "idem-1",
+		timeout:        time.Second,
+		out:            &stdout,
+		errOut:         ioDiscard{},
+	}
+	if err := executeAPIRequest(context.Background(), target.Client(), opts, http.MethodPost, target.URL+"/api/v1/sites", []byte(`{}`)); err != nil {
+		t.Fatalf("executeAPIRequest() error = %v", err)
+	}
+	if !sawAuth {
+		t.Fatal("Authorization header was not sent with any-origin policy")
+	}
+	if !sawIDKey {
+		t.Fatal("Idempotency-Key header was not sent with any-origin policy")
+	}
+}
+
+func TestExecuteAPIRequestRejectsInvalidAuthPolicy(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("server should not be called")
+	}))
+	defer srv.Close()
+
+	err := executeAPIRequest(context.Background(), srv.Client(), apiCLIOptions{
+		baseURL:    srv.URL,
+		authPolicy: "sometimes",
+		timeout:    time.Second,
+		out:        ioDiscard{},
+		errOut:     ioDiscard{},
+	}, http.MethodGet, "/api/v1/health", nil)
+	if err == nil {
+		t.Fatal("executeAPIRequest() error = nil, want invalid auth policy")
+	}
+	if !strings.Contains(err.Error(), "invalid auth policy") {
+		t.Fatalf("error = %v, want invalid auth policy", err)
 	}
 }
 
@@ -154,6 +249,7 @@ func TestAPIFlagUsageUsesLongDashesAndHidesTokenDefault(t *testing.T) {
 	got := stderr.String()
 	for _, want := range []string{
 		"Usage of api health:",
+		"--auth-policy string",
 		"--base-url string",
 		"--header value",
 		"--output string",

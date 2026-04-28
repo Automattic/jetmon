@@ -40,10 +40,17 @@ The token helpers use the Docker Compose stack from the repository root. Use
 `API_CLI_TOKEN_ID=<id> make api-cli-token-revoke` when a rehearsal token should
 be revoked.
 
-Every command also accepts `--base-url`, `--token`, `--timeout`, `--header`,
-`--pretty`, `--output table`, `-v`, and `--verbose`. JSON is the default output
-for automation. Use `--pretty` when reading JSON directly and `--output table`
-for stable summary tables.
+Every command also accepts `--base-url`, `--token`, `--auth-policy`,
+`--timeout`, `--header`, `--pretty`, `--output table`, `-v`, and `--verbose`.
+JSON is the default output for automation. Use `--pretty` when reading JSON
+directly and `--output table` for stable summary tables.
+
+Automatic `--token` and `--idempotency-key` headers are sent only to the
+configured API origin by default, including when `api request` is given an
+absolute URL. Use `--auth-policy any-origin` only when intentionally targeting
+another trusted API host. Custom `--header` values are always treated as
+explicit operator input. Verbose mode redacts common sensitive headers before
+printing them.
 
 List the command catalog and examples when you need to discover the expanded
 tree without returning to this guide:
@@ -197,8 +204,10 @@ Clean up a batch after testing:
 ```
 
 By default, cleanup verifies each existing `--batch` target still exposes the
-matching derived `cli_batch` marker before deleting it. Use `--allow-unmarked`
-only when cleaning up older local data created before the marker check existed.
+matching derived `cli_batch` marker before deleting it. The CLI requests that
+marker through the API's opt-in `include_cli_metadata=true` projection. Use
+`--allow-unmarked` only when cleaning up older local data created before the
+marker check existed.
 
 ## Events and Transitions
 
@@ -368,9 +377,11 @@ Supported modes are `unreachable`, `http-500`, `http-403`, `redirect`,
 ```
 
 When `--batch` targets an existing site, simulation verifies the site's
-`cli_batch` marker before mutating it. `--create-missing` is still allowed for
-empty deterministic slots because the created site receives the marker. Use
-`--allow-unmarked` only for legacy local batches that predate the marker.
+`cli_batch` marker before mutating it. The marker is fetched through the API's
+opt-in `include_cli_metadata=true` projection. `--create-missing` is still
+allowed for empty deterministic slots because the created site receives the
+marker. Use `--allow-unmarked` only for legacy local batches that predate the
+marker.
 
 When Docker Compose is running, the command probes
 `http://localhost:18091/health` and uses the Docker-internal `api-fixture`

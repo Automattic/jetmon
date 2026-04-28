@@ -15,7 +15,7 @@ import (
 func TestRunAPISitesCleanupDeletesBatchAndIgnoresMissing(t *testing.T) {
 	var calls []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls = append(calls, r.Method+" "+r.URL.Path)
+		calls = append(calls, r.Method+" "+r.URL.RequestURI())
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "000"):
 			writeTestJSON(t, w, map[string]any{"id": apiCLIBatchBlogIDStart("cleanup-batch"), "cli_batch": "cleanup-batch"})
@@ -58,9 +58,9 @@ func TestRunAPISitesCleanupDeletesBatchAndIgnoresMissing(t *testing.T) {
 		t.Fatalf("second cleanup result = %#v", summary.Sites[1])
 	}
 	wantCalls := []string{
-		"GET /api/v1/sites/" + strconvInt64(start),
+		"GET /api/v1/sites/" + strconvInt64(start) + "?include_cli_metadata=true",
 		"DELETE /api/v1/sites/" + strconvInt64(start),
-		"GET /api/v1/sites/" + strconvInt64(start+1),
+		"GET /api/v1/sites/" + strconvInt64(start+1) + "?include_cli_metadata=true",
 	}
 	if strings.Join(calls, "\n") != strings.Join(wantCalls, "\n") {
 		t.Fatalf("calls:\n%s\nwant:\n%s", strings.Join(calls, "\n"), strings.Join(wantCalls, "\n"))
@@ -70,7 +70,7 @@ func TestRunAPISitesCleanupDeletesBatchAndIgnoresMissing(t *testing.T) {
 func TestRunAPISitesCleanupRejectsUnmatchedBatchMarker(t *testing.T) {
 	var calls []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls = append(calls, r.Method+" "+r.URL.Path)
+		calls = append(calls, r.Method+" "+r.URL.RequestURI())
 		switch {
 		case r.Method == http.MethodGet:
 			writeTestJSON(t, w, map[string]any{"id": 42, "cli_batch": "other-batch"})
@@ -101,7 +101,7 @@ func TestRunAPISitesCleanupRejectsUnmatchedBatchMarker(t *testing.T) {
 	if got := summary.Sites[0].Status; got != "skipped_unmatched_batch" {
 		t.Fatalf("status = %q, want skipped_unmatched_batch", got)
 	}
-	if strings.Join(calls, "\n") != "GET /api/v1/sites/42" {
+	if strings.Join(calls, "\n") != "GET /api/v1/sites/42?include_cli_metadata=true" {
 		t.Fatalf("calls:\n%s\nwant only GET", strings.Join(calls, "\n"))
 	}
 }

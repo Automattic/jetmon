@@ -345,6 +345,7 @@ see rows mapped to `X-Jetmon-Tenant-ID` in `jetmon_site_tenants`.
 | `severity__gte` | int | Minimum severity |
 | `monitor_active` | bool | Filter active vs paused |
 | `q` | string | URL substring search |
+| `include_cli_metadata` | bool | Optional local-tooling projection; when true, includes `cli_batch` if the site carries the CLI batch marker |
 
 **Response 200:**
 
@@ -368,8 +369,7 @@ see rows mapped to `X-Jetmon-Tenant-ID` in `jetmon_site_tenants`.
       "redirect_policy": "follow",
       "maintenance_start": null,
       "maintenance_end": null,
-      "alert_cooldown_minutes": null,
-      "cli_batch": "local-smoke"
+      "alert_cooldown_minutes": null
     }
   ],
   "page": { "next": "eyJ...", "limit": 50 }
@@ -378,9 +378,9 @@ see rows mapped to `X-Jetmon-Tenant-ID` in `jetmon_site_tenants`.
 
 `id` and `blog_id` are the same value for now; `id` is the public field name (`blog_id` is the historical column name). Consumers should rely on `id`.
 
-`cli_batch` is a derived local-tooling field. It is present only when the
-site's `custom_headers` include `X-Jetmon-CLI-Batch`; the API does not expose
-the rest of `custom_headers`.
+`cli_batch` is an opt-in local-tooling projection. It is present only when
+`include_cli_metadata=true` and the site's `custom_headers` include
+`X-Jetmon-CLI-Batch`; the API does not expose the rest of `custom_headers`.
 
 `current_state`, `current_severity`, and `active_event_id` are derived from
 open rows in `jetmon_events`. During the
@@ -393,6 +393,9 @@ status values.
 #### `GET /api/v1/sites/{id}`
 
 Single site, same shape as a list entry plus an `active_events` array for any open events:
+
+Accepts `include_cli_metadata=true` with the same `cli_batch` behavior as
+`GET /api/v1/sites`.
 
 ```json
 {

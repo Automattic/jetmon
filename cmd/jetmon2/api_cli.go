@@ -19,10 +19,12 @@ import (
 )
 
 const defaultAPIBaseURL = "http://localhost:8090"
+const defaultAPIAuthPolicy = "same-origin"
 
 type apiCLIOptions struct {
 	baseURL        string
 	token          string
+	authPolicy     string
 	verbose        bool
 	pretty         bool
 	output         string
@@ -56,7 +58,7 @@ var apiCommandCatalog = []apiCommandInfo{
 	{Command: "request", Description: "send an arbitrary request to an API path", Example: "jetmon2 api request --output table GET /api/v1/sites"},
 	{Command: "sites list", Description: "list monitored sites with filters", Example: "jetmon2 api sites list --limit 20 --output table"},
 	{Command: "sites get", Description: "show one monitored site", Example: "jetmon2 api sites get 12345 --pretty"},
-	{Command: "sites create", Description: "create or upsert a monitored site", Example: "jetmon2 api sites create --blog-id 12345 --url https://example.com --pretty"},
+	{Command: "sites create", Description: "create a monitored site", Example: "jetmon2 api sites create --blog-id 12345 --url https://example.com --pretty"},
 	{Command: "sites update", Description: "update check settings for a site", Example: "jetmon2 api sites update 12345 --url https://example.com/health --pretty"},
 	{Command: "sites delete", Description: "delete a monitored site", Example: "jetmon2 api sites delete 12345"},
 	{Command: "sites pause", Description: "pause monitoring for a site", Example: "jetmon2 api sites pause 12345 --idempotency-key site-12345-pause"},
@@ -137,8 +139,9 @@ func printAPIUsage(w io.Writer) {
 	fmt.Fprintln(w, "Run `jetmon2 api commands --output table` for the command catalog.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Environment:")
-	fmt.Fprintln(w, "  JETMON_API_URL     API base URL (default: http://localhost:8090)")
-	fmt.Fprintln(w, "  JETMON_API_TOKEN   Bearer token for authenticated routes")
+	fmt.Fprintln(w, "  JETMON_API_URL          API base URL (default: http://localhost:8090)")
+	fmt.Fprintln(w, "  JETMON_API_TOKEN        Bearer token for authenticated routes")
+	fmt.Fprintln(w, "  JETMON_API_AUTH_POLICY  automatic auth policy: same-origin or any-origin (default: same-origin)")
 }
 
 func cmdAPIHealth(args []string) error {
@@ -204,12 +207,13 @@ func writeAPICommands(opts apiCLIOptions) error {
 
 func defaultAPIOptions() apiCLIOptions {
 	return apiCLIOptions{
-		baseURL: envOrDefault("JETMON_API_URL", defaultAPIBaseURL),
-		token:   os.Getenv("JETMON_API_TOKEN"),
-		timeout: 10 * time.Second,
-		out:     os.Stdout,
-		errOut:  os.Stderr,
-		in:      os.Stdin,
+		baseURL:    envOrDefault("JETMON_API_URL", defaultAPIBaseURL),
+		token:      os.Getenv("JETMON_API_TOKEN"),
+		authPolicy: envOrDefault("JETMON_API_AUTH_POLICY", defaultAPIAuthPolicy),
+		timeout:    10 * time.Second,
+		out:        os.Stdout,
+		errOut:     os.Stderr,
+		in:         os.Stdin,
 	}
 }
 
@@ -221,6 +225,7 @@ func newAPIFlagSet(name string, opts *apiCLIOptions) *flag.FlagSet {
 	if tokenFlag := fs.Lookup("token"); tokenFlag != nil {
 		tokenFlag.DefValue = ""
 	}
+	fs.StringVar(&opts.authPolicy, "auth-policy", opts.authPolicy, "automatic auth policy: same-origin or any-origin")
 	fs.BoolVar(&opts.verbose, "v", false, "print request and response headers to stderr")
 	fs.BoolVar(&opts.verbose, "verbose", false, "print request and response headers to stderr")
 	fs.BoolVar(&opts.pretty, "pretty", false, "pretty-print JSON response bodies")
@@ -399,7 +404,11 @@ func doAPIRequest(ctx context.Context, client *http.Client, opts apiCLIOptions, 
 	if err != nil {
 		return apiHTTPResponse{}, err
 	}
-	applyAPIRequestHeaders(req, opts, len(body) > 0)
+	sendAutoAuth, err := shouldSendAPIAutoAuth(opts.baseURL, requestURL, opts.authPolicy)
+	if err != nil {
+		return apiHTTPResponse{}, err
+	}
+	applyAPIRequestHeaders(req, opts, len(body) > 0, sendAutoAuth)
 
 	if opts.verbose {
 		writeAPIRequestHeaders(opts.errOut, req)
@@ -451,15 +460,45 @@ func apiRequestURL(baseURL, target string) (string, error) {
 	return base.ResolveReference(rel).String(), nil
 }
 
-func applyAPIRequestHeaders(req *http.Request, opts apiCLIOptions, hasBody bool) {
+func shouldSendAPIAutoAuth(baseURL, requestURL, policy string) (bool, error) {
+	policy = strings.ToLower(strings.TrimSpace(policy))
+	if policy == "" {
+		policy = defaultAPIAuthPolicy
+	}
+	switch policy {
+	case "any-origin":
+		return true, nil
+	case "same-origin":
+		base, err := url.Parse(strings.TrimRight(baseURL, "/"))
+		if err != nil {
+			return false, fmt.Errorf("invalid API base URL %q: %w", baseURL, err)
+		}
+		target, err := url.Parse(requestURL)
+		if err != nil {
+			return false, fmt.Errorf("invalid request URL %q: %w", requestURL, err)
+		}
+		return sameAPIOrigin(base, target), nil
+	default:
+		return false, fmt.Errorf("invalid auth policy %q (want: same-origin or any-origin)", policy)
+	}
+}
+
+func sameAPIOrigin(a, b *url.URL) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	return strings.EqualFold(a.Scheme, b.Scheme) && strings.EqualFold(a.Host, b.Host)
+}
+
+func applyAPIRequestHeaders(req *http.Request, opts apiCLIOptions, hasBody bool, sendAutoAuth bool) {
 	req.Header.Set("Accept", "application/json")
 	if hasBody {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if strings.TrimSpace(opts.token) != "" {
+	if sendAutoAuth && strings.TrimSpace(opts.token) != "" {
 		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(opts.token))
 	}
-	if strings.TrimSpace(opts.idempotencyKey) != "" {
+	if sendAutoAuth && strings.TrimSpace(opts.idempotencyKey) != "" {
 		req.Header.Set("Idempotency-Key", strings.TrimSpace(opts.idempotencyKey))
 	}
 	for _, raw := range opts.headers {
@@ -496,8 +535,20 @@ func writeSortedHeaders(w io.Writer, prefix string, h http.Header) {
 	sort.Strings(keys)
 	for _, k := range keys {
 		for _, v := range h.Values(k) {
+			if isSensitiveAPIHeader(k) {
+				v = "[redacted]"
+			}
 			fmt.Fprintf(w, "%s%s: %s\n", prefix, k, v)
 		}
+	}
+}
+
+func isSensitiveAPIHeader(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "authorization", "proxy-authorization", "idempotency-key", "cookie", "set-cookie", "x-api-key":
+		return true
+	default:
+		return false
 	}
 }
 

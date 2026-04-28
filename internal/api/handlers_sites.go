@@ -38,7 +38,15 @@ type siteResponse struct {
 	MaintenanceStart     *string `json:"maintenance_start"`
 	MaintenanceEnd       *string `json:"maintenance_end"`
 	AlertCooldownMinutes *int    `json:"alert_cooldown_minutes"`
-	CLIBatch             string  `json:"cli_batch,omitempty"`
+	cliBatch             string
+}
+
+// siteCLIResponse is an explicit local-tooling projection used only when
+// ?include_cli_metadata=true is supplied. It keeps the canonical Site schema
+// free of API CLI implementation details.
+type siteCLIResponse struct {
+	siteResponse
+	CLIBatch string `json:"cli_batch,omitempty"`
 }
 
 // activeEventSummary is the compact event shape embedded in single-site
@@ -58,6 +66,12 @@ type singleSiteResponse struct {
 	ActiveEvents []activeEventSummary `json:"active_events"`
 }
 
+type singleSiteCLIResponse struct {
+	siteResponse
+	CLIBatch     string               `json:"cli_batch,omitempty"`
+	ActiveEvents []activeEventSummary `json:"active_events"`
+}
+
 // handleListSites implements GET /api/v1/sites with cursor pagination.
 //
 // Cursor encodes the (id) of the last row on the previous page; we use id
@@ -66,6 +80,11 @@ type singleSiteResponse struct {
 // they read.
 func (s *Server) handleListSites(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
+	includeCLIMetadata, err := parseIncludeCLIMetadata(q.Get("include_cli_metadata"))
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_include_cli_metadata", err.Error())
+		return
+	}
 
 	limit, err := parseLimit(q.Get("limit"), 50, 200)
 	if err != nil {
@@ -102,22 +121,14 @@ func (s *Server) handleListSites(w http.ResponseWriter, r *http.Request) {
 	if tenantScoped {
 		args = append(args, tenantID, cursor)
 		sb.WriteString(`
-		SELECT s.blog_id, s.blog_id AS public_id, s.monitor_url, s.monitor_active,
-		       s.bucket_no, s.check_interval, s.site_status, s.last_checked_at,
-		       s.last_status_change, s.ssl_expiry_date, s.check_keyword, s.redirect_policy,
-		       s.maintenance_start, s.maintenance_end, s.alert_cooldown_minutes,
-		       s.custom_headers
+		SELECT ` + siteSelectColumns("s.", includeCLIMetadata) + `
 		  FROM jetpack_monitor_sites s
 		  JOIN jetmon_site_tenants st ON st.blog_id = s.blog_id AND st.tenant_id = ?
 		 WHERE s.blog_id > ?`)
 	} else {
 		args = append(args, cursor)
 		sb.WriteString(`
-		SELECT blog_id, blog_id AS public_id, monitor_url, monitor_active,
-		       bucket_no, check_interval, site_status, last_checked_at,
-		       last_status_change, ssl_expiry_date, check_keyword, redirect_policy,
-		       maintenance_start, maintenance_end, alert_cooldown_minutes,
-		       custom_headers
+		SELECT ` + siteSelectColumns("", includeCLIMetadata) + `
 		  FROM jetpack_monitor_sites
 		 WHERE blog_id > ?`)
 	}
@@ -170,7 +181,7 @@ func (s *Server) handleListSites(w http.ResponseWriter, r *http.Request) {
 	results := make([]siteResponse, 0, limit)
 	var lastID int64
 	for rows.Next() {
-		s, err := scanSiteRow(rows)
+		s, err := scanSiteRow(rows, includeCLIMetadata)
 		if err != nil {
 			writeError(w, r, http.StatusInternalServerError, "db_error",
 				"site row scan failed: "+err.Error())
@@ -207,7 +218,7 @@ func (s *Server) handleListSites(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, ListEnvelope{
-		Data: results,
+		Data: siteListResponseData(results, includeCLIMetadata),
 		Page: Page{Next: nextCursor, Limit: limit},
 	})
 }
@@ -222,20 +233,22 @@ func (s *Server) handleGetSite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	includeCLIMetadata, err := parseIncludeCLIMetadata(r.URL.Query().Get("include_cli_metadata"))
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_include_cli_metadata", err.Error())
+		return
+	}
+
 	ctx := r.Context()
 	if !s.ensureSiteVisibleForRequest(w, r, id) {
 		return
 	}
 	row := s.db.QueryRowContext(ctx, `
-		SELECT blog_id, blog_id AS public_id, monitor_url, monitor_active,
-		       bucket_no, check_interval, site_status, last_checked_at,
-		       last_status_change, ssl_expiry_date, check_keyword, redirect_policy,
-		       maintenance_start, maintenance_end, alert_cooldown_minutes,
-		       custom_headers
+		SELECT `+siteSelectColumns("", includeCLIMetadata)+`
 		  FROM jetpack_monitor_sites
 		 WHERE blog_id = ?`, id)
 
-	site, err := scanSiteRow(row)
+	site, err := scanSiteRow(row, includeCLIMetadata)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			writeSiteNotFound(w, r, id)
@@ -265,10 +278,61 @@ func (s *Server) handleGetSite(w http.ResponseWriter, r *http.Request) {
 		site.ActiveEventID = &eventID
 	}
 
-	writeJSON(w, http.StatusOK, singleSiteResponse{
-		siteResponse: site,
-		ActiveEvents: active,
-	})
+	if includeCLIMetadata {
+		writeJSON(w, http.StatusOK, singleSiteCLIResponse{
+			siteResponse: site,
+			CLIBatch:     site.cliBatch,
+			ActiveEvents: active,
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, singleSiteResponse{siteResponse: site, ActiveEvents: active})
+}
+
+func siteSelectColumns(prefix string, includeCLIMetadata bool) string {
+	cols := []string{
+		prefix + "blog_id",
+		prefix + "blog_id AS public_id",
+		prefix + "monitor_url",
+		prefix + "monitor_active",
+		prefix + "bucket_no",
+		prefix + "check_interval",
+		prefix + "site_status",
+		prefix + "last_checked_at",
+		prefix + "last_status_change",
+		prefix + "ssl_expiry_date",
+		prefix + "check_keyword",
+		prefix + "redirect_policy",
+		prefix + "maintenance_start",
+		prefix + "maintenance_end",
+		prefix + "alert_cooldown_minutes",
+	}
+	if includeCLIMetadata {
+		cols = append(cols, prefix+"custom_headers")
+	}
+	return strings.Join(cols, ", ")
+}
+
+func parseIncludeCLIMetadata(value string) (bool, error) {
+	switch value {
+	case "", "false", "0":
+		return false, nil
+	case "true", "1":
+		return true, nil
+	default:
+		return false, fmt.Errorf("include_cli_metadata must be 'true' or 'false'")
+	}
+}
+
+func siteListResponseData(sites []siteResponse, includeCLIMetadata bool) any {
+	if !includeCLIMetadata {
+		return sites
+	}
+	out := make([]siteCLIResponse, 0, len(sites))
+	for _, site := range sites {
+		out = append(out, siteCLIResponse{siteResponse: site, CLIBatch: site.cliBatch})
+	}
+	return out
 }
 
 // queryActiveEvents returns all open events for a site, ordered by severity
@@ -374,7 +438,7 @@ type rowScanner interface {
 // scanSiteRow scans the columns selected by the site queries into a
 // siteResponse. SiteStatus is not exposed directly; it is used only as a
 // fallback for sites with no active v2 event during the shadow migration.
-func scanSiteRow(s rowScanner) (siteResponse, error) {
+func scanSiteRow(s rowScanner, includeCLIMetadata bool) (siteResponse, error) {
 	var (
 		out            siteResponse
 		monitorActive  uint8
@@ -387,14 +451,18 @@ func scanSiteRow(s rowScanner) (siteResponse, error) {
 		maintStart     sql.NullTime
 		maintEnd       sql.NullTime
 		alertCooldown  sql.NullInt64
-		customHeaders  sql.NullString
 	)
-	if err := s.Scan(
+	dest := []any{
 		&out.ID, &out.BlogID, &out.MonitorURL, &monitorActive,
 		&out.BucketNo, &out.CheckInterval, &siteStatus,
 		&lastCheckedAt, &lastStatusChg, &sslExpiry, &checkKeyword,
-		&redirectPolicy, &maintStart, &maintEnd, &alertCooldown, &customHeaders,
-	); err != nil {
+		&redirectPolicy, &maintStart, &maintEnd, &alertCooldown,
+	}
+	var customHeaders sql.NullString
+	if includeCLIMetadata {
+		dest = append(dest, &customHeaders)
+	}
+	if err := s.Scan(dest...); err != nil {
 		return out, err
 	}
 	out.MonitorActive = monitorActive == 1
@@ -435,8 +503,8 @@ func scanSiteRow(s rowScanner) (siteResponse, error) {
 		v := int(alertCooldown.Int64)
 		out.AlertCooldownMinutes = &v
 	}
-	if customHeaders.Valid {
-		out.CLIBatch = cliBatchFromCustomHeaders(customHeaders.String)
+	if includeCLIMetadata && customHeaders.Valid {
+		out.cliBatch = cliBatchFromCustomHeaders(customHeaders.String)
 	}
 	return out, nil
 }
