@@ -36,7 +36,10 @@ migration and the operating data needed to make larger architecture decisions.
   queries needed after v2 has real traffic.
 - **Watch projection drift as a production bug.** While the legacy projection
   is enabled, event mutations, transition rows, and the site-row projection
-  must remain transactionally consistent.
+  must remain transactionally consistent. `jetmon2 rollout projection-drift`
+  lists the exact active sites whose legacy projection disagrees with the
+  authoritative HTTP event state, so rollout failures are actionable instead of
+  count-only.
 - **Keep roadmap/API documentation drift out of the branch.** `API.md` is the
   source for the implemented internal `/api/v1` route surface. This roadmap
   should track only the remaining public/customer API work, production

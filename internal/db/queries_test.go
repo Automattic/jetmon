@@ -303,6 +303,42 @@ func TestCountLegacyProjectionDrift(t *testing.T) {
 	}
 }
 
+func TestListLegacyProjectionDrift(t *testing.T) {
+	mock, cleanup := withMockDB(t)
+	defer cleanup()
+
+	mock.ExpectQuery("SELECT s.blog_id").
+		WithArgs(0, 99, 50).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"blog_id", "bucket_no", "site_status", "expected_status", "id", "state",
+		}).
+			AddRow(int64(42), 7, 1, 2, int64(123), "Down").
+			AddRow(int64(43), 8, 0, 1, nil, nil))
+
+	rows, err := ListLegacyProjectionDrift(context.Background(), 0, 99, 0)
+	if err != nil {
+		t.Fatalf("ListLegacyProjectionDrift: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("rows len = %d, want 2", len(rows))
+	}
+	if rows[0].BlogID != 42 || rows[0].BucketNo != 7 || rows[0].SiteStatus != 1 || rows[0].ExpectedStatus != 2 {
+		t.Fatalf("row 0 = %+v", rows[0])
+	}
+	if rows[0].EventID == nil || *rows[0].EventID != 123 {
+		t.Fatalf("row 0 EventID = %v, want 123", rows[0].EventID)
+	}
+	if rows[0].EventState == nil || *rows[0].EventState != "Down" {
+		t.Fatalf("row 0 EventState = %v, want Down", rows[0].EventState)
+	}
+	if rows[1].EventID != nil || rows[1].EventState != nil {
+		t.Fatalf("row 1 event fields = %+v, want nil", rows[1])
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestGetAllHostsScansRows(t *testing.T) {
 	mock, cleanup := withMockDB(t)
 	defer cleanup()

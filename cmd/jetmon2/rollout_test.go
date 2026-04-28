@@ -420,6 +420,161 @@ func TestValidateDynamicBucketCoverageFailures(t *testing.T) {
 	}
 }
 
+func TestRunProjectionDriftReportNoDrift(t *testing.T) {
+	cfg := dynamicRolloutTestConfig()
+	deps := projectionDriftDeps{
+		CountLegacyProjectionDrift: func(_ context.Context, min, max int) (int, error) {
+			if min != 0 || max != 9 {
+				t.Fatalf("count range = %d-%d, want 0-9", min, max)
+			}
+			return 0, nil
+		},
+	}
+
+	var out bytes.Buffer
+	if err := runProjectionDriftReport(context.Background(), &out, cfg, -1, -1, 50, deps); err != nil {
+		t.Fatalf("runProjectionDriftReport: %v", err)
+	}
+	for _, want := range []string{
+		"INFO projection_drift_range=0-9",
+		"INFO legacy_projection_drift=0",
+		"PASS legacy_projection_drift=0",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestRunProjectionDriftReportListsRowsAndFails(t *testing.T) {
+	cfg := dynamicRolloutTestConfig()
+	eventID := int64(123)
+	eventState := "Down"
+	deps := projectionDriftDeps{
+		CountLegacyProjectionDrift: func(context.Context, int, int) (int, error) {
+			return 2, nil
+		},
+		ListLegacyProjectionDrift: func(_ context.Context, min, max, limit int) ([]db.ProjectionDriftRow, error) {
+			if min != 2 || max != 4 || limit != 1 {
+				t.Fatalf("list args = %d-%d limit=%d, want 2-4 limit=1", min, max, limit)
+			}
+			return []db.ProjectionDriftRow{
+				{BlogID: 42, BucketNo: 3, SiteStatus: 1, ExpectedStatus: 2, EventID: &eventID, EventState: &eventState},
+			}, nil
+		},
+	}
+
+	var out bytes.Buffer
+	err := runProjectionDriftReport(context.Background(), &out, cfg, 2, 4, 1, deps)
+	if err == nil {
+		t.Fatal("runProjectionDriftReport succeeded")
+	}
+	if !strings.Contains(err.Error(), "legacy projection drift=2") {
+		t.Fatalf("error = %q, want drift count", err.Error())
+	}
+	for _, want := range []string{
+		"BLOG_ID",
+		"42",
+		"Down",
+		"INFO projection_drift_rows_truncated=1",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestResolveProjectionDriftRange(t *testing.T) {
+	minBucket, maxBucket := 2, 4
+	tests := []struct {
+		name    string
+		cfg     *config.Config
+		inMin   int
+		inMax   int
+		wantMin int
+		wantMax int
+		wantErr string
+	}{
+		{
+			name:    "dynamic default",
+			cfg:     dynamicRolloutTestConfig(),
+			inMin:   -1,
+			inMax:   -1,
+			wantMin: 0,
+			wantMax: 9,
+		},
+		{
+			name: "pinned default",
+			cfg: &config.Config{
+				BucketTotal:     10,
+				PinnedBucketMin: &minBucket,
+				PinnedBucketMax: &maxBucket,
+			},
+			inMin:   -1,
+			inMax:   -1,
+			wantMin: 2,
+			wantMax: 4,
+		},
+		{
+			name:    "explicit range",
+			cfg:     dynamicRolloutTestConfig(),
+			inMin:   3,
+			inMax:   5,
+			wantMin: 3,
+			wantMax: 5,
+		},
+		{
+			name:    "one sided range",
+			cfg:     dynamicRolloutTestConfig(),
+			inMin:   3,
+			inMax:   -1,
+			wantErr: "must be set together",
+		},
+		{
+			name:    "negative range",
+			cfg:     dynamicRolloutTestConfig(),
+			inMin:   -2,
+			inMax:   -2,
+			wantErr: "must be >= 0",
+		},
+		{
+			name:    "inverted range",
+			cfg:     dynamicRolloutTestConfig(),
+			inMin:   7,
+			inMax:   3,
+			wantErr: "bucket-max must be >= bucket-min",
+		},
+		{
+			name:    "range outside total",
+			cfg:     dynamicRolloutTestConfig(),
+			inMin:   0,
+			inMax:   10,
+			wantErr: "bucket-max must be < BUCKET_TOTAL",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotMin, gotMax, err := resolveProjectionDriftRange(tt.cfg, tt.inMin, tt.inMax)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatal("resolveProjectionDriftRange succeeded")
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("error = %q, want substring %q", err.Error(), tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveProjectionDriftRange: %v", err)
+			}
+			if gotMin != tt.wantMin || gotMax != tt.wantMax {
+				t.Fatalf("range = %d-%d, want %d-%d", gotMin, gotMax, tt.wantMin, tt.wantMax)
+			}
+		})
+	}
+}
+
 func dynamicRolloutTestConfig() *config.Config {
 	return &config.Config{
 		BucketTotal:                  10,

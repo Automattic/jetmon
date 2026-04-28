@@ -78,8 +78,15 @@ For each v1 host:
    This check fails if the host is not in pinned mode, legacy projection writes
    are disabled, the current host still has a `jetmon_hosts` ownership row, or
    the active sites in the pinned range have projection drift. It also prints the
-   active site count for the range. If checking a config before running on the
-   final hostname, pass the expected host id explicitly:
+   active site count for the range. If projection drift is reported, list the
+   mismatched rows before continuing:
+
+   ```bash
+   ./jetmon2 rollout projection-drift
+   ```
+
+   If checking a config before running on the final hostname, pass the expected
+   host id explicitly:
 
    ```bash
    ./jetmon2 rollout pinned-check --host=<v2-hostname>
@@ -131,6 +138,12 @@ After every monitor host is on v2 and stable in pinned mode:
    This check fails if pinned mode is still configured, legacy projection writes
    are disabled, `jetmon_hosts` rows are missing, stale, inactive, overlapping,
    or gapped, or the legacy projection has drifted.
+
+   To inspect projection drift details across the dynamic range:
+
+   ```bash
+   ./jetmon2 rollout projection-drift --limit=100
+   ```
 
 6. Continue using the normal v2 rolling-update process from `README.md`.
 

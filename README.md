@@ -514,6 +514,15 @@ bucket ownership and gives each host a simple rollback path.
    This verifies fresh, active, gap-free, overlap-free `jetmon_hosts` coverage
    before the fleet moves to normal v2 rolling updates.
 
+If either rollout check reports legacy projection drift, list the mismatched
+active site rows before continuing:
+
+		./jetmon2 rollout projection-drift
+
+For a specific range:
+
+		./jetmon2 rollout projection-drift --bucket-min=0 --bucket-max=99 --limit=100
+
 See [`docs/v1-to-v2-pinned-rollout.md`](docs/v1-to-v2-pinned-rollout.md) for
 the detailed rollout checklist.
 

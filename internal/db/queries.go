@@ -125,6 +125,83 @@ func CountLegacyProjectionDrift(ctx context.Context, bucketMin, bucketMax int) (
 	return count, nil
 }
 
+// ProjectionDriftRow identifies one active site whose legacy site_status
+// projection disagrees with the authoritative open HTTP event, if any.
+type ProjectionDriftRow struct {
+	BlogID         int64
+	BucketNo       int
+	SiteStatus     int
+	ExpectedStatus int
+	EventID        *int64
+	EventState     *string
+}
+
+// ListLegacyProjectionDrift returns active sites in the bucket range whose v1
+// site_status projection disagrees with the authoritative open HTTP event.
+func ListLegacyProjectionDrift(ctx context.Context, bucketMin, bucketMax, limit int) ([]ProjectionDriftRow, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := db.QueryContext(ctx, `
+		SELECT s.blog_id,
+		       s.bucket_no,
+		       s.site_status,
+		       CASE
+		         WHEN e.state = 'Down' THEN 2
+		         WHEN e.state = 'Seems Down' THEN 0
+		         ELSE 1
+		       END AS expected_status,
+		       e.id,
+		       e.state
+		  FROM jetpack_monitor_sites s
+		  LEFT JOIN jetmon_events e
+		    ON e.blog_id = s.blog_id
+		   AND e.check_type = 'http'
+		   AND e.ended_at IS NULL
+		 WHERE s.monitor_active = 1
+		   AND s.bucket_no BETWEEN ? AND ?
+		   AND s.site_status <> CASE
+		     WHEN e.state = 'Down' THEN 2
+		     WHEN e.state = 'Seems Down' THEN 0
+		     ELSE 1
+		   END
+		 ORDER BY s.bucket_no ASC, s.blog_id ASC
+		 LIMIT ?`,
+		bucketMin, bucketMax, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list projection drift: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ProjectionDriftRow
+	for rows.Next() {
+		var row ProjectionDriftRow
+		var eventID sql.NullInt64
+		var eventState sql.NullString
+		if err := rows.Scan(
+			&row.BlogID,
+			&row.BucketNo,
+			&row.SiteStatus,
+			&row.ExpectedStatus,
+			&eventID,
+			&eventState,
+		); err != nil {
+			return nil, fmt.Errorf("scan projection drift: %w", err)
+		}
+		if eventID.Valid {
+			v := eventID.Int64
+			row.EventID = &v
+		}
+		if eventState.Valid {
+			v := eventState.String
+			row.EventState = &v
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
 // MarkSiteChecked records when a site was last checked.
 func MarkSiteChecked(ctx context.Context, blogID int64, checkedAt time.Time) error {
 	_, err := db.ExecContext(ctx,

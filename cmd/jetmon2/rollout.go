@@ -29,9 +29,14 @@ type dynamicRolloutCheckDeps struct {
 	CountLegacyProjectionDrift     func(context.Context, int, int) (int, error)
 }
 
+type projectionDriftDeps struct {
+	CountLegacyProjectionDrift func(context.Context, int, int) (int, error)
+	ListLegacyProjectionDrift  func(context.Context, int, int, int) ([]db.ProjectionDriftRow, error)
+}
+
 func cmdRollout(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout <pinned-check|dynamic-check> [args]")
+		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout <pinned-check|dynamic-check|projection-drift> [args]")
 		os.Exit(1)
 	}
 
@@ -40,8 +45,10 @@ func cmdRollout(args []string) {
 		cmdRolloutPinnedCheck(args[1:])
 	case "dynamic-check":
 		cmdRolloutDynamicCheck(args[1:])
+	case "projection-drift":
+		cmdRolloutProjectionDrift(args[1:])
 	default:
-		fmt.Fprintf(os.Stderr, "unknown rollout subcommand %q (want: pinned-check, dynamic-check)\n", args[0])
+		fmt.Fprintf(os.Stderr, "unknown rollout subcommand %q (want: pinned-check, dynamic-check, projection-drift)\n", args[0])
 		os.Exit(1)
 	}
 }
@@ -110,6 +117,41 @@ func cmdRolloutDynamicCheck(args []string) {
 		CountLegacyProjectionDrift:     db.CountLegacyProjectionDrift,
 	}
 	if err := runDynamicRolloutCheck(context.Background(), os.Stdout, config.Get(), deps); err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func cmdRolloutProjectionDrift(args []string) {
+	fs := flag.NewFlagSet("rollout projection-drift", flag.ExitOnError)
+	bucketMin := fs.Int("bucket-min", -1, "inclusive bucket minimum (default pinned range or 0)")
+	bucketMax := fs.Int("bucket-max", -1, "inclusive bucket maximum (default pinned range or BUCKET_TOTAL-1)")
+	limit := fs.Int("limit", 50, "maximum drift rows to print")
+	_ = fs.Parse(args)
+	if fs.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout projection-drift [--bucket-min=N --bucket-max=N] [--limit=N]")
+		os.Exit(1)
+	}
+
+	configPath := envOrDefault("JETMON_CONFIG", "config/config.json")
+	if err := config.Load(configPath); err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL config parse: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("PASS config parse")
+
+	config.LoadDB()
+	if err := db.ConnectWithRetry(3); err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL db connect: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("PASS db connect")
+
+	deps := projectionDriftDeps{
+		CountLegacyProjectionDrift: db.CountLegacyProjectionDrift,
+		ListLegacyProjectionDrift:  db.ListLegacyProjectionDrift,
+	}
+	if err := runProjectionDriftReport(context.Background(), os.Stdout, config.Get(), *bucketMin, *bucketMax, *limit, deps); err != nil {
 		fmt.Fprintf(os.Stderr, "FAIL %v\n", err)
 		os.Exit(1)
 	}
@@ -282,4 +324,99 @@ func validateDynamicBucketCoverage(hosts []db.HostRow, bucketTotal int, heartbea
 		return fmt.Errorf("dynamic bucket coverage has trailing gap %d-%d", expectedMin, bucketTotal-1)
 	}
 	return nil
+}
+
+func runProjectionDriftReport(ctx context.Context, out io.Writer, cfg *config.Config, bucketMin, bucketMax, limit int, deps projectionDriftDeps) error {
+	if cfg == nil {
+		return errors.New("config is not loaded")
+	}
+	if limit <= 0 {
+		return errors.New("limit must be > 0")
+	}
+	minBucket, maxBucket, err := resolveProjectionDriftRange(cfg, bucketMin, bucketMax)
+	if err != nil {
+		return err
+	}
+
+	if deps.CountLegacyProjectionDrift == nil {
+		return errors.New("projection drift counter is not configured")
+	}
+	count, err := deps.CountLegacyProjectionDrift(ctx, minBucket, maxBucket)
+	if err != nil {
+		return fmt.Errorf("count legacy projection drift in range %d-%d: %w", minBucket, maxBucket, err)
+	}
+	fmt.Fprintf(out, "INFO projection_drift_range=%d-%d\n", minBucket, maxBucket)
+	fmt.Fprintf(out, "INFO legacy_projection_drift=%d\n", count)
+
+	if count == 0 {
+		fmt.Fprintln(out, "PASS legacy_projection_drift=0")
+		return nil
+	}
+
+	if deps.ListLegacyProjectionDrift == nil {
+		return errors.New("projection drift lister is not configured")
+	}
+	rows, err := deps.ListLegacyProjectionDrift(ctx, minBucket, maxBucket, limit)
+	if err != nil {
+		return fmt.Errorf("list legacy projection drift in range %d-%d: %w", minBucket, maxBucket, err)
+	}
+	printProjectionDriftRows(out, rows)
+	if count > len(rows) {
+		fmt.Fprintf(out, "INFO projection_drift_rows_truncated=%d\n", count-len(rows))
+	}
+	return fmt.Errorf("legacy projection drift=%d in range %d-%d", count, minBucket, maxBucket)
+}
+
+func resolveProjectionDriftRange(cfg *config.Config, bucketMin, bucketMax int) (int, int, error) {
+	if bucketMin < -1 || bucketMax < -1 {
+		return 0, 0, errors.New("bucket-min and bucket-max must be >= 0")
+	}
+	if (bucketMin == -1) != (bucketMax == -1) {
+		return 0, 0, errors.New("bucket-min and bucket-max must be set together")
+	}
+	if bucketMin >= 0 && bucketMax >= 0 {
+		if bucketMax < bucketMin {
+			return 0, 0, errors.New("bucket-max must be >= bucket-min")
+		}
+		if bucketMax >= cfg.BucketTotal {
+			return 0, 0, fmt.Errorf("bucket-max must be < BUCKET_TOTAL (%d)", cfg.BucketTotal)
+		}
+		return bucketMin, bucketMax, nil
+	}
+	if minBucket, maxBucket, ok := cfg.PinnedBucketRange(); ok {
+		return minBucket, maxBucket, nil
+	}
+	if cfg.BucketTotal <= 0 {
+		return 0, 0, errors.New("BUCKET_TOTAL must be > 0")
+	}
+	return 0, cfg.BucketTotal - 1, nil
+}
+
+func printProjectionDriftRows(out io.Writer, rows []db.ProjectionDriftRow) {
+	fmt.Fprintf(out, "%-12s %-8s %-11s %-9s %-10s %s\n",
+		"BLOG_ID", "BUCKET", "SITE_STATUS", "EXPECTED", "EVENT_ID", "EVENT_STATE")
+	for _, row := range rows {
+		fmt.Fprintf(out, "%-12d %-8d %-11d %-9d %-10s %s\n",
+			row.BlogID,
+			row.BucketNo,
+			row.SiteStatus,
+			row.ExpectedStatus,
+			formatOptionalInt(row.EventID),
+			formatOptionalString(row.EventState),
+		)
+	}
+}
+
+func formatOptionalInt(v *int64) string {
+	if v == nil {
+		return "-"
+	}
+	return fmt.Sprintf("%d", *v)
+}
+
+func formatOptionalString(v *string) string {
+	if v == nil || *v == "" {
+		return "-"
+	}
+	return *v
 }
