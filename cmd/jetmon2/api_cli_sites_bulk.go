@@ -21,6 +21,7 @@ const (
 
 type apiSitesBulkAddOptions struct {
 	count                int
+	batch                string
 	source               string
 	file                 string
 	blogIDStart          int64
@@ -54,6 +55,7 @@ func cmdAPISitesBulkAdd(args []string) error {
 		blogIDStart: defaultAPIBulkAddBlogIDStart,
 	}
 	fs.IntVar(&bulk.count, "count", 0, "number of sites to create, max 200")
+	fs.StringVar(&bulk.batch, "batch", "", "stable batch label; derives blog ids and stores a custom header marker")
 	fs.StringVar(&bulk.source, "source", bulk.source, "site source: fixture, file, or stdin")
 	fs.StringVar(&bulk.file, "file", "", "source file for --source file")
 	fs.Int64Var(&bulk.blogIDStart, "blog-id-start", bulk.blogIDStart, "first blog_id to assign")
@@ -295,6 +297,9 @@ func planAPIBulkSiteCreates(entries []apiBulkSiteEntry, opts apiSitesBulkAddOpti
 	if opts.blogIDStart <= 0 {
 		return nil, errors.New("blog-id-start must be a positive integer")
 	}
+	if opts.batch != "" && opts.blogIDStart == defaultAPIBulkAddBlogIDStart {
+		opts.blogIDStart = apiCLIBatchBlogIDStart(opts.batch)
+	}
 	if len(entries) == 0 {
 		return nil, errors.New("no sites found in source")
 	}
@@ -312,10 +317,13 @@ func planAPIBulkSiteCreates(entries []apiBulkSiteEntry, opts apiSitesBulkAddOpti
 			AlertCooldownMinutes: entry.AlertCooldownMinutes,
 			CheckInterval:        entry.CheckInterval,
 		}
-		if len(entry.CustomHeaders) > 0 {
-			headers := make(map[string]string, len(entry.CustomHeaders))
+		if len(entry.CustomHeaders) > 0 || opts.batch != "" {
+			headers := make(map[string]string, len(entry.CustomHeaders)+1)
 			for k, v := range entry.CustomHeaders {
 				headers[k] = v
+			}
+			if opts.batch != "" {
+				headers[apiCLIBatchHeader] = opts.batch
 			}
 			req.CustomHeaders = &headers
 		}

@@ -41,17 +41,17 @@ but it should not become a generic `curl` clone.
 - [x] Add `jetmon2 api smoke` to run a local end-to-end sanity pass against Docker:
   health, auth, create a site, trigger a check, read events, and exercise a
   webhook or alert-contact test path.
-- [ ] Add `jetmon2 api sites simulate-failure` to intentionally mutate one or
+- [x] Add `jetmon2 api sites simulate-failure` to intentionally mutate one or
   more CLI-created test sites into known failure states, trigger checks, and
   show the resulting event IDs and transitions.
-- [ ] Support targeted failure modes for simulation: unreachable host, HTTP 500,
+- [x] Support targeted failure modes for simulation: unreachable host, HTTP 500,
   HTTP 403, redirect-policy failure, keyword mismatch, timeout/slow response,
   and TLS/certificate failure.
-- [ ] Track CLI-created test-site batches with a stable label or metadata marker
+- [x] Track CLI-created test-site batches with a stable label or metadata marker
   so smoke tests and failure simulations can operate on `--batch <id>`,
   `--count <n>`, or explicit site IDs without touching unrelated local data.
 - [x] Add cleanup behavior for resources created by smoke runs.
-- [ ] Return non-zero exit codes and concise failure summaries suitable for CI.
+- [x] Return non-zero exit codes and concise failure summaries suitable for CI.
 
 ## Test Site Source Ideas
 
@@ -129,3 +129,14 @@ but it should not become a generic `curl` clone.
   sanity checks covering health, auth identity, site creation, trigger-now,
   event listing, alert-contact creation, alert-contact send-test, JSON step
   summaries, and best-effort cleanup of created resources.
+- [x] 2026-04-28: Added `jetmon2 api sites simulate-failure` with explicit
+  `--site-id` targets or deterministic `--batch`/`--count` site IDs,
+  `--create-missing`, optional trigger-now, active-event polling, transition
+  lookup for returned event IDs, and JSON summaries that include per-site
+  errors before exiting non-zero.
+- [x] 2026-04-28: Added simulation modes for unreachable hosts, HTTP 500, HTTP
+  403, redirect-policy failure, keyword mismatch, timeout/slow responses, and
+  TLS certificate failure.
+- [x] 2026-04-28: Added CLI batch tracking through deterministic blog ID ranges
+  and the `X-Jetmon-CLI-Batch` custom-header marker for smoke-created sites,
+  bulk-added sites, and simulated failure targets.

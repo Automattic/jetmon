@@ -93,6 +93,24 @@ func TestPlanAPIBulkSiteCreatesCyclesFixtureEntries(t *testing.T) {
 	}
 }
 
+func TestPlanAPIBulkSiteCreatesUsesBatchMarker(t *testing.T) {
+	entries := []apiBulkSiteEntry{{MonitorURL: "https://example.com/"}}
+	planned, err := planAPIBulkSiteCreates(entries, apiSitesBulkAddOptions{
+		count:       1,
+		batch:       "batch-a",
+		blogIDStart: defaultAPIBulkAddBlogIDStart,
+	})
+	if err != nil {
+		t.Fatalf("planAPIBulkSiteCreates() error = %v", err)
+	}
+	if planned[0].BlogID != apiCLIBatchBlogIDStart("batch-a") {
+		t.Fatalf("blog_id = %d, want batch-derived id", planned[0].BlogID)
+	}
+	if planned[0].CustomHeaders == nil || (*planned[0].CustomHeaders)[apiCLIBatchHeader] != "batch-a" {
+		t.Fatalf("custom headers = %#v, want batch marker", planned[0].CustomHeaders)
+	}
+}
+
 func TestPlanAPIBulkSiteCreatesRejectsUnboundedCount(t *testing.T) {
 	_, err := planAPIBulkSiteCreates([]apiBulkSiteEntry{{MonitorURL: "https://example.com/"}}, apiSitesBulkAddOptions{
 		count:       apiSitesBulkAddMaxCount + 1,
