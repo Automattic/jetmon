@@ -306,6 +306,7 @@ The same CLI can create bounded test batches and run a Docker-local smoke pass:
 	./bin/jetmon2 api sites bulk-add --count 3 --batch local-smoke --dry-run --pretty
 	./bin/jetmon2 api smoke --batch local-smoke --pretty
 	./bin/jetmon2 api sites simulate-failure --batch local-smoke --mode http-500 --wait 15s --pretty
+	./bin/jetmon2 api sites simulate-failure --batch local-smoke --mode http-500 --wait 30s --expect-event-state 'Seems Down' --expect-transition-reason opened --pretty
 	./bin/jetmon2 api sites cleanup --batch local-smoke --count 3 --output table
 
 Or run the standard CLI smoke sequence with:
@@ -341,9 +342,17 @@ legacy consumers. After all consumers read from the v2 API/event tables, set
 
 ### Simulated Site Server
 
-The Docker Compose environment does not yet include the planned simulated site
-server. Use external test endpoints or local ad-hoc services for response-code,
-timeout, redirect, keyword, and TLS scenarios until that service is added.
+The Docker Compose environment includes `api-fixture`, a deterministic local
+site fixture for API CLI failure simulation. Jetmon containers reach it at
+`http://api-fixture:8091` and `https://api-fixture:8443`; the host can inspect
+it at `http://localhost:18091` and `https://localhost:18443` by default. The
+fixture exposes `/status/403`, `/status/500`, `/redirect`, `/keyword`, `/slow`,
+and `/tls` endpoints. `jetmon2 api sites simulate-failure` automatically uses
+the fixture when `http://localhost:18091/health` is reachable; set
+`--fixture-url=off` to force the public endpoint fallback. Add
+`--expect-event-state`, `--expect-event-severity`, `--require-transition`, or
+`--expect-transition-reason` when a rehearsal should fail unless the API reports
+the expected event/transition state before `--wait` expires.
 
 ### Config Validation
 

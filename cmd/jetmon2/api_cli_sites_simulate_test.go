@@ -12,6 +12,8 @@ import (
 )
 
 func TestRunAPISitesSimulateFailureUpdatesAndReportsEvents(t *testing.T) {
+	var severity apiOptionalIntFlag
+	setTestFlag(t, &severity, "3")
 	var calls []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls = append(calls, r.Method+" "+r.URL.String())
@@ -27,11 +29,19 @@ func TestRunAPISitesSimulateFailureUpdatesAndReportsEvents(t *testing.T) {
 			writeTestJSON(t, w, map[string]any{"result": map[string]any{"success": false, "http_code": 500}})
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sites/42/events":
 			writeTestJSON(t, w, map[string]any{
-				"data": []any{map[string]any{"id": 99, "state": "Seems Down"}},
+				"data": []any{map[string]any{"id": 99, "state": "Seems Down", "severity": 3}},
 				"page": map[string]any{"limit": 10},
 			})
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sites/42/events/99/transitions":
-			writeTestJSON(t, w, map[string]any{"data": []any{map[string]any{"id": 1, "event_id": 99}}})
+			writeTestJSON(t, w, map[string]any{
+				"data": []any{map[string]any{
+					"id":             1,
+					"event_id":       99,
+					"severity_after": 3,
+					"state_after":    "Seems Down",
+					"reason":         "opened",
+				}},
+			})
 		default:
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
 		}
@@ -46,10 +56,14 @@ func TestRunAPISitesSimulateFailureUpdatesAndReportsEvents(t *testing.T) {
 		out:     &stdout,
 		errOut:  ioDiscard{},
 	}, apiSitesSimulateFailureOptions{
-		mode:         "http-500",
-		siteIDs:      mustSiteIDs(t, "42"),
-		trigger:      true,
-		pollInterval: time.Millisecond,
+		mode:                   "http-500",
+		siteIDs:                mustSiteIDs(t, "42"),
+		trigger:                true,
+		pollInterval:           time.Millisecond,
+		expectEventState:       "Seems Down",
+		expectEventSeverity:    severity,
+		requireTransition:      true,
+		expectTransitionReason: "opened",
 	})
 	if err != nil {
 		t.Fatalf("runAPISitesSimulateFailure() error = %v\nstdout=%s", err, stdout.String())
@@ -75,6 +89,101 @@ func TestRunAPISitesSimulateFailureUpdatesAndReportsEvents(t *testing.T) {
 	}
 	if strings.Join(calls, "\n") != strings.Join(wantCalls, "\n") {
 		t.Fatalf("calls:\n%s\nwant:\n%s", strings.Join(calls, "\n"), strings.Join(wantCalls, "\n"))
+	}
+}
+
+func TestRunAPISitesSimulateFailurePollsUntilAssertionsMatch(t *testing.T) {
+	var eventPolls int
+	var transitionPolls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPatch && r.URL.Path == "/api/v1/sites/42":
+			writeTestJSON(t, w, map[string]any{"id": 42})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sites/42/events":
+			eventPolls++
+			state := "Seems Down"
+			severity := 3
+			if eventPolls > 1 {
+				state = "Down"
+				severity = 4
+			}
+			writeTestJSON(t, w, map[string]any{
+				"data": []any{map[string]any{"id": 99, "state": state, "severity": severity}},
+				"page": map[string]any{"limit": 10},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sites/42/events/99/transitions":
+			transitionPolls++
+			reason := "opened"
+			if transitionPolls > 1 {
+				reason = "verifier_confirmed"
+			}
+			writeTestJSON(t, w, map[string]any{
+				"data": []any{map[string]any{"id": transitionPolls, "event_id": 99, "reason": reason}},
+			})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer srv.Close()
+
+	var stdout bytes.Buffer
+	err := runAPISitesSimulateFailure(context.Background(), srv.Client(), apiCLIOptions{
+		baseURL: srv.URL,
+		timeout: time.Second,
+		out:     &stdout,
+		errOut:  ioDiscard{},
+	}, apiSitesSimulateFailureOptions{
+		mode:                   "http-500",
+		siteIDs:                mustSiteIDs(t, "42"),
+		trigger:                false,
+		wait:                   100 * time.Millisecond,
+		pollInterval:           time.Millisecond,
+		expectEventState:       "Down",
+		expectTransitionReason: "verifier_confirmed",
+	})
+	if err != nil {
+		t.Fatalf("runAPISitesSimulateFailure() error = %v\nstdout=%s", err, stdout.String())
+	}
+	if eventPolls < 2 || transitionPolls < 2 {
+		t.Fatalf("eventPolls=%d transitionPolls=%d, want at least 2 each", eventPolls, transitionPolls)
+	}
+}
+
+func TestRunAPISitesSimulateFailureFailsWhenAssertionsDoNotMatch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPatch && r.URL.Path == "/api/v1/sites/42":
+			writeTestJSON(t, w, map[string]any{"id": 42})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sites/42/events":
+			writeTestJSON(t, w, map[string]any{"data": []any{}, "page": map[string]any{"limit": 10}})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer srv.Close()
+
+	var stdout bytes.Buffer
+	err := runAPISitesSimulateFailure(context.Background(), srv.Client(), apiCLIOptions{
+		baseURL: srv.URL,
+		timeout: time.Second,
+		out:     &stdout,
+		errOut:  ioDiscard{},
+	}, apiSitesSimulateFailureOptions{
+		mode:              "http-500",
+		siteIDs:           mustSiteIDs(t, "42"),
+		trigger:           false,
+		pollInterval:      time.Millisecond,
+		expectEventState:  "Seems Down",
+		requireTransition: true,
+	})
+	if err == nil {
+		t.Fatalf("runAPISitesSimulateFailure() error = nil\nstdout=%s", stdout.String())
+	}
+	if !strings.Contains(err.Error(), `expected active event state "Seems Down"`) {
+		t.Fatalf("error = %v, want event-state assertion failure", err)
+	}
+	if !strings.Contains(stdout.String(), "expected at least one transition") {
+		t.Fatalf("stdout = %s, want transition assertion failure", stdout.String())
 	}
 }
 
@@ -140,7 +249,7 @@ func TestAPISimulationSiteIDsFromBatch(t *testing.T) {
 func TestAPIFailureModesCoverRoadmapTargets(t *testing.T) {
 	for _, mode := range []string{"unreachable", "http-500", "http-403", "redirect", "keyword", "timeout", "tls"} {
 		t.Run(mode, func(t *testing.T) {
-			def, err := apiFailureMode(mode)
+			def, err := apiFailureMode(mode, "")
 			if err != nil {
 				t.Fatalf("apiFailureMode(%q) error = %v", mode, err)
 			}
@@ -148,6 +257,57 @@ func TestAPIFailureModesCoverRoadmapTargets(t *testing.T) {
 				t.Fatalf("definition = %#v, want URL and redirect policy", def)
 			}
 		})
+	}
+}
+
+func TestAPIFailureModesPreferFixtureWhenConfigured(t *testing.T) {
+	tests := []struct {
+		mode string
+		url  string
+	}{
+		{mode: "http-500", url: "http://api-fixture:8091/status/500"},
+		{mode: "http-403", url: "http://api-fixture:8091/status/403"},
+		{mode: "redirect", url: "http://api-fixture:8091/redirect"},
+		{mode: "keyword", url: "http://api-fixture:8091/keyword"},
+		{mode: "timeout", url: "http://api-fixture:8091/slow?delay=5s"},
+		{mode: "tls", url: "https://api-fixture:8443/tls"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.mode, func(t *testing.T) {
+			def, err := apiFailureMode(tt.mode, "http://api-fixture:8091")
+			if err != nil {
+				t.Fatalf("apiFailureMode(%q) error = %v", tt.mode, err)
+			}
+			if def.MonitorURL != tt.url {
+				t.Fatalf("MonitorURL = %q, want %q", def.MonitorURL, tt.url)
+			}
+		})
+	}
+}
+
+func TestAPISimulationFixtureURLAutoDetection(t *testing.T) {
+	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/health" {
+			t.Fatalf("probe path = %q, want /health", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer fixture.Close()
+
+	got := apiSimulationFixtureURL(context.Background(), apiSitesSimulateFailureOptions{
+		fixtureURL:      apiFixtureAuto,
+		fixtureProbeURL: fixture.URL + "/health",
+	})
+	if got != defaultAPIFixtureMonitorURL {
+		t.Fatalf("fixture URL = %q, want default Docker monitor URL", got)
+	}
+
+	got = apiSimulationFixtureURL(context.Background(), apiSitesSimulateFailureOptions{
+		fixtureURL:      apiFixtureAuto,
+		fixtureProbeURL: "http://127.0.0.1:1/health",
+	})
+	if got != "" {
+		t.Fatalf("fixture URL = %q, want fallback to public endpoints", got)
 	}
 }
 

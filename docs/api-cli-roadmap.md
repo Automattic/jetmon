@@ -96,11 +96,12 @@ but it should not become a generic `curl` clone.
   CLI-created site batches after smoke, bulk-add, and failure simulation runs.
 - [x] Add a one-command `make api-cli-smoke` entrypoint for the documented local
   smoke path.
-- [ ] Add a deterministic Docker-local failure fixture service for response
+- [x] Add a deterministic Docker-local failure fixture service for response
   codes, redirects, keyword mismatch, slow responses, and TLS edge cases.
-- [ ] Teach failure simulation to prefer the Docker-local fixture when it is
-  available, then assert exact event/transition behavior without depending on
-  public endpoint timing.
+- [x] Teach failure simulation to prefer the Docker-local fixture when it is
+  available, while retaining public endpoint fallback behavior.
+- [x] Add deterministic failure-simulation assertions for exact
+  event/transition behavior without depending on public endpoint timing.
 
 ## Completed
 
@@ -169,3 +170,13 @@ but it should not become a generic `curl` clone.
 - [x] 2026-04-28: Verified a fresh Docker Compose rebuild after Docker bridge
   networking was repaired, ran `make api-cli-smoke` against the rebuilt API on
   alternate host ports, and live-tested `sites cleanup --batch`.
+- [x] 2026-04-28: Added the Docker-local `api-fixture` service with stable
+  response-code, redirect, keyword, slow-response, and self-signed TLS
+  endpoints for deterministic API CLI failure simulation.
+- [x] 2026-04-28: Updated `sites simulate-failure` to auto-detect the fixture
+  via `http://localhost:18091/health`, use Docker-internal fixture URLs when
+  available, and keep public endpoint fallbacks via `--fixture-url=off`.
+- [x] 2026-04-28: Added strict failure-simulation assertions for expected event
+  state, event severity, transition presence, and transition reason. Assertion
+  mode keeps polling until the expectations match or `--wait` expires, then
+  returns a non-zero summary with the last observed API state.

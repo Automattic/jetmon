@@ -112,12 +112,26 @@ before a typed command exists:
 ./bin/jetmon2 api sites bulk-add --count 3 --batch local-smoke --dry-run --pretty
 ./bin/jetmon2 api smoke --batch local-smoke --pretty
 ./bin/jetmon2 api sites simulate-failure --batch local-smoke --mode http-500 --wait 15s --pretty
+./bin/jetmon2 api sites simulate-failure --batch local-smoke --mode http-500 --wait 30s --expect-event-state 'Seems Down' --expect-transition-reason opened --pretty
 ./bin/jetmon2 api sites cleanup --batch local-smoke --count 3 --output table
 ```
 
 JSON is the default output for scripts. Add `--pretty` for readable JSON or
 `--output table` for stable human-readable tables on list and workflow summary
 commands.
+
+When Docker Compose is running, `sites simulate-failure` probes
+`http://localhost:18091/health` and uses the Docker-internal fixture URL
+`http://api-fixture:8091` for deterministic HTTP 500, HTTP 403, redirect,
+keyword, timeout, and TLS scenarios. Use `--fixture-url=off` to force the
+public endpoint fallback, or set `JETMON_API_FIXTURE_URL` /
+`JETMON_API_FIXTURE_PROBE_URL` for custom local fixtures.
+
+For strict rehearsal or CI checks, add `--expect-event-state`,
+`--expect-event-severity`, `--require-transition`, or
+`--expect-transition-reason`. When an expectation is set, the command keeps
+polling until the expectation matches or `--wait` expires, then returns non-zero
+with the last observed events/transitions in the summary.
 
 ## Common patterns
 

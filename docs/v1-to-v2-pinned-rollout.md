@@ -91,12 +91,18 @@ approved.
    ```bash
    ./bin/jetmon2 api smoke --batch rollout-rehearsal --pretty
    ./bin/jetmon2 api sites simulate-failure --batch rollout-rehearsal --mode http-500 --wait 15s --pretty
+   ./bin/jetmon2 api sites simulate-failure --batch rollout-rehearsal --mode http-500 --wait 30s --expect-event-state 'Seems Down' --expect-transition-reason opened --pretty
    ./bin/jetmon2 api sites cleanup --batch rollout-rehearsal --count 3 --output table
    ```
 
-5. Confirm the smoke output, event IDs, transitions, API audit rows, and any
-   cleanup results match the rehearsal plan before carrying the monitor binary
-   into the per-host cutover.
+   In Docker Compose, failure simulation automatically uses the deterministic
+   `api-fixture` service when `http://localhost:18091/health` is reachable.
+   The expectation flags make the rehearsal fail fast if the API never reports
+   the expected active event and transition reason before `--wait` expires.
+
+5. Confirm the smoke output, event IDs, transitions, API audit rows, fixture
+   probe behavior, and any cleanup results match the rehearsal plan before
+   carrying the monitor binary into the per-host cutover.
 
 ## Per-Host Cutover
 
