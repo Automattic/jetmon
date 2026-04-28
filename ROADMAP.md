@@ -205,10 +205,11 @@ The internal API decisions are implemented in `internal/api/` and documented in
 `API.md`. A public/customer API is a different contract and needs these
 decisions before direct exposure:
 
-**Tenant and ownership model.** Decide whether the gateway remains the sole
-tenant boundary or Jetmon stores tenant ownership directly on sites, webhooks,
-alert contacts, idempotency keys, and audit rows. Direct customer exposure
-requires every read/write to be tenant-scoped.
+**Tenant and ownership model.** The baseline gateway-to-Jetmon tenant contract
+is drafted in [`docs/public-api-gateway-tenant-contract.md`](docs/public-api-gateway-tenant-contract.md):
+the gateway remains the first tenant boundary, while Jetmon-side ownership
+columns become necessary for defense in depth or any direct public exposure.
+Direct customer exposure requires every read/write to be tenant-scoped.
 
 **Auth scopes.** The internal API uses coarse `read` / `write` / `admin`
 scopes. Public keys likely need granular scopes such as `sites:read`,
@@ -235,8 +236,6 @@ tests that fail when handler behavior drifts from the published schema.
 
 ### Public API work still to do
 
-- Define the gateway-to-Jetmon tenant contract and decide which tenant checks
-  live in the gateway versus Jetmon itself.
 - Add tenant ownership fields and filtered queries where Jetmon must enforce
   ownership directly.
 - Add customer-safe error and metadata redaction paths for every public route.
