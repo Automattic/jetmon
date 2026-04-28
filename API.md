@@ -954,7 +954,7 @@ Unauthenticated. Returns `{ "status": "ok" }` if the API can talk to the databas
 
 Returns the route-driven OpenAPI 3.1 contract for the internal API. Requires `read` scope like other internal introspection routes. The spec is generated from the same route table used to build the running server mux, so new routes must be added to that table before they can be served or documented.
 
-The current contract publishes paths, methods, auth scope, idempotency headers, path parameters, request/response component schemas derived from the handler structs, and the standard error envelope. Client-codegen validation and stricter public compatibility checks are tracked in `ROADMAP.md`.
+The current contract publishes paths, methods, auth scope, idempotency headers, path parameters, request/response component schemas derived from the handler structs, and the standard error envelope. `internal/api` tests resolve every component `$ref` and type-check a generated Go client smoke source from the published operation IDs and component names. Stricter public compatibility checks are tracked in `ROADMAP.md`.
 
 ---
 
@@ -996,7 +996,7 @@ Phase 3.x (alert contacts, implemented):
 - Legacy WPCOM notification flow continues to operate in parallel; future migration tracked in ROADMAP
 
 Phase 4 (polish, future):
-- Client-codegen validation for the route-driven OpenAPI contract
+- Consumer-specific OpenAPI generator validation if API consumers standardize on a tool
 - Bulk endpoints if real consumers need them
 - Per-region filters when vantage-point work ships
 

@@ -54,10 +54,12 @@ migration and the operating data needed to make larger architecture decisions.
 - **Migrate WPCOM notifications behind alert contacts/deliverer.** Do this
   only after alert contacts have proven stable in production and recipient
   parity has been verified.
-- **Validate OpenAPI client generation for the internal API.** The
-  route-driven `GET /api/v1/openapi.json` endpoint now includes handler-derived
-  request/response component schemas; next, wire client-codegen validation into
-  CI so schema drift breaks before release.
+- **Adopt consumer-specific OpenAPI generator validation when one is chosen.**
+  The route-driven `GET /api/v1/openapi.json` endpoint now includes
+  handler-derived request/response component schemas, and `make test` validates
+  schema refs plus a generated Go client smoke source. If production consumers
+  standardize on a specific generator, add that exact tool to CI so tool-specific
+  schema drift breaks before release.
 - **Plan encryption-at-rest for outbound credentials before public/customer
   secret management.** Plaintext webhook secrets and alert-contact
   destination credentials are acceptable for the current internal threat
@@ -238,8 +240,9 @@ tests that fail when handler behavior drifts from the published schema.
 - Add tenant ownership fields and filtered queries where Jetmon must enforce
   ownership directly.
 - Add customer-safe error and metadata redaction paths for every public route.
-- Expand the route-driven `GET /api/v1/openapi.json` contract with detailed
-  request/response schemas and client-codegen validation.
+- Promote the internal route-driven `GET /api/v1/openapi.json` contract into a
+  public compatibility policy with deprecation rules and consumer-specific
+  generator validation.
 - Add public-contract integration tests for auth, tenant isolation,
   pagination, idempotency, redaction, webhook ownership, and trigger-now abuse
   controls.
