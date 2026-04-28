@@ -1,4 +1,4 @@
 {
 	"auth_token" : "<VERIFLIER_AUTH_TOKEN>",
-	"grpc_port"  : "<VERIFLIER_GRPC_PORT>"
+	"port"       : "<VERIFLIER_PORT>"
 }

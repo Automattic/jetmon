@@ -74,7 +74,7 @@ API_PORT
 Port for the internal REST API. Set to 0 to disable. In the embedded v2 deployment, API_PORT also controls whether webhook and alert-contact delivery workers are eligible to run inside jetmon2. The standalone jetmon-deliverer binary does not start the API and does not require API_PORT. Default: 0.
 
 DELIVERY_OWNER_HOST
-Optional hostname that is allowed to run webhook and alert-contact delivery workers. Set this to exactly one hostname per database cluster so additional API-enabled or standalone deliverer hosts do not dispatch duplicate outbound deliveries. If empty and embedded delivery is eligible, the current jetmon2 host starts delivery workers for backward compatibility and startup / validate-config emit a warning. If empty for jetmon-deliverer, that process starts delivery workers and logs the same warning. Until transactional row claiming lands, do not run standalone delivery on a host whose embedded jetmon2 delivery workers are also enabled. Default: empty.
+Optional hostname that is allowed to run webhook and alert-contact delivery workers. Delivery rows are claimed transactionally, so multiple active workers do not claim the same pending row; use this setting when you want an explicit single-owner rollout while moving from embedded jetmon2 delivery to standalone jetmon-deliverer. If empty and embedded delivery is eligible, the current jetmon2 host starts delivery workers for backward compatibility and startup / validate-config emit a warning. If empty for jetmon-deliverer, that process starts delivery workers and logs the same warning. Default: empty.
 
 DEBUG_PORT
 Port for the pprof debug server. Only binds to 127.0.0.1 (localhost) — never accessible remotely. Set to 0 to disable. Default: 6060.
@@ -111,5 +111,6 @@ VERIFIERS
 Array of veriflier configuration objects. Each entry requires:
   name       - display name
   host       - hostname or IP of the veriflier
-  grpc_port  - Veriflier transport port; currently JSON-over-HTTP, reserved for future gRPC (default 7803)
+  port       - Veriflier JSON-over-HTTP transport port (default 7803)
   auth_token - shared secret for veriflier authentication
+The legacy grpc_port key is still accepted as a compatibility alias.

@@ -1052,7 +1052,7 @@ func statusFromBool(success bool) int {
 func (o *Orchestrator) refreshVeriflierClients(cfg *config.Config) {
 	newAddrs := make([]string, 0, len(cfg.Verifiers))
 	for _, v := range cfg.Verifiers {
-		newAddrs = append(newAddrs, fmt.Sprintf("%s:%s|%s", v.Host, v.GRPCPort, v.AuthToken))
+		newAddrs = append(newAddrs, fmt.Sprintf("%s:%s|%s", v.Host, v.TransportPort(), v.AuthToken))
 	}
 
 	o.veriflierMu.RLock()
@@ -1064,7 +1064,7 @@ func (o *Orchestrator) refreshVeriflierClients(cfg *config.Config) {
 
 	clients := make([]*veriflier.VeriflierClient, 0, len(cfg.Verifiers))
 	for _, v := range cfg.Verifiers {
-		addr := fmt.Sprintf("%s:%s", v.Host, v.GRPCPort)
+		addr := fmt.Sprintf("%s:%s", v.Host, v.TransportPort())
 		clients = append(clients, veriflier.NewVeriflierClient(addr, v.AuthToken))
 	}
 	o.veriflierMu.Lock()

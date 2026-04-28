@@ -110,8 +110,8 @@ func TestSlicesEqual(t *testing.T) {
 func TestRefreshVeriflierClientsReusesUnchangedClients(t *testing.T) {
 	cfg := &config.Config{
 		Verifiers: []config.VerifierConfig{
-			{Name: "a", Host: "host1", GRPCPort: "7803", AuthToken: "token1"},
-			{Name: "b", Host: "host2", GRPCPort: "7804", AuthToken: "token2"},
+			{Name: "a", Host: "host1", Port: "7803", AuthToken: "token1"},
+			{Name: "b", Host: "host2", Port: "7804", AuthToken: "token2"},
 		},
 	}
 
@@ -130,7 +130,7 @@ func TestRefreshVeriflierClientsReusesUnchangedClients(t *testing.T) {
 func TestRefreshVeriflierClientsRebuildsChangedClients(t *testing.T) {
 	cfg := &config.Config{
 		Verifiers: []config.VerifierConfig{
-			{Name: "a", Host: "host1", GRPCPort: "7803", AuthToken: "token1"},
+			{Name: "a", Host: "host1", Port: "7803", AuthToken: "token1"},
 		},
 	}
 
@@ -139,7 +139,7 @@ func TestRefreshVeriflierClientsRebuildsChangedClients(t *testing.T) {
 
 	updated := &config.Config{
 		Verifiers: []config.VerifierConfig{
-			{Name: "a", Host: "host1", GRPCPort: "7803", AuthToken: "token2"},
+			{Name: "a", Host: "host1", Port: "7803", AuthToken: "token2"},
 		},
 	}
 

@@ -73,9 +73,9 @@ The **Orchestrator goroutine** fetches site batches from MySQL, dispatches work 
 
 The **Check Pool** is a bounded goroutine pool that performs HTTP checks using Go's `net/http` and `net/http/httptrace`. It records DNS, TCP, TLS, and TTFB timings on every check and auto-scales against queue depth without spawning new processes.
 
-The **Veriflier transport** sends confirmation batches to remote Veriflier instances. It currently uses JSON-over-HTTP on the configured Veriflier port; the proto definition is kept in `proto/` for the planned generated gRPC transport.
+The **Veriflier transport** sends confirmation batches to remote Veriflier instances. JSON-over-HTTP on the configured Veriflier port is the v2 production transport; the proto definition in `proto/` is retained only as a schema reference for a possible future transport.
 
-The **Veriflier** is a standalone Go binary deployed at remote locations. It replaces the Qt C++ Veriflier, using the same JSON-over-HTTP transport as the Monitor-side client until the generated gRPC stubs are wired in.
+The **Veriflier** is a standalone Go binary deployed at remote locations. It replaces the Qt C++ Veriflier and uses the same JSON-over-HTTP transport as the Monitor-side client.
 
 The v2 platform layer sits below the detection pipeline:
 
@@ -249,8 +249,8 @@ default so builds do not depend on a writable home-directory cache; override
 with `make GOCACHE=/path/to/cache ...` when needed.
 
 `make generate` is intentionally separate from `make all`. It requires
-`protoc` and the Go protobuf plugins, and is only needed when replacing the
-current JSON-over-HTTP Veriflier transport with generated gRPC stubs.
+`protoc` and the Go protobuf plugins, and is reserved for experimental proto
+stub generation; generated stubs are not part of the v2 production transport.
 
 ### Running Tests
 
@@ -339,7 +339,7 @@ The debug port is configurable via `DEBUG_PORT` (default 6060). Set to 0 to disa
 | `cmd/jetmon-deliverer/` | Standalone outbound delivery worker entry point |
 | `internal/orchestrator/` | Round scheduling, DB fetch, WPCOM notifications |
 | `internal/checker/` | HTTP check goroutine pool |
-| `internal/veriflier/` | JSON-over-HTTP Veriflier transport (proto3 service defined in `proto/`) |
+| `internal/veriflier/` | JSON-over-HTTP Veriflier transport |
 | `internal/db/` | MySQL access, bucket heartbeat |
 | `internal/config/` | Config loading and hot-reload |
 | `internal/metrics/` | StatsD client, stats file writer |
@@ -421,7 +421,7 @@ The dashboard is available at http://localhost:8080 (configurable via `DASHBOARD
 
 The internal API is disabled by default. Set `API_PORT` to a non-zero port to enable `/api/v1/...`.
 
-In the embedded v2 deployment, `API_PORT` also makes the webhook and alert-contact delivery workers eligible to run inside `jetmon2`. Set `DELIVERY_OWNER_HOST` to exactly one hostname per database cluster so additional API-enabled hosts can serve API traffic without dispatching duplicate outbound deliveries. If `DELIVERY_OWNER_HOST` is empty, the host keeps the legacy behavior and starts delivery workers whenever `API_PORT` is enabled; startup and `validate-config` warn about that fallback.
+In the embedded v2 deployment, `API_PORT` also makes the webhook and alert-contact delivery workers eligible to run inside `jetmon2`. Set `DELIVERY_OWNER_HOST` to exactly one hostname per database cluster when you want additional API-enabled hosts to serve API traffic without owning delivery during a staged rollout. If `DELIVERY_OWNER_HOST` is empty, the host keeps the legacy behavior and starts delivery workers whenever `API_PORT` is enabled; startup and `validate-config` warn about that fallback.
 
 `bin/jetmon-deliverer` is the first standalone process boundary for outbound delivery. It starts the same webhook and alert-contact workers without starting the monitor, API, dashboard, or bucket ownership loop. Delivery rows are claimed transactionally, so multiple active delivery workers do not claim the same pending row; use `DELIVERY_OWNER_HOST` when you want an explicit single-owner rollout during the transition from embedded to standalone delivery.
 

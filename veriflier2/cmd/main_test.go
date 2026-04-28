@@ -36,7 +36,7 @@ func TestStringPtr(t *testing.T) {
 
 func TestLoadConfigFromFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "veriflier.json")
-	if err := os.WriteFile(path, []byte(`{"auth_token":"secret","grpc_port":"7804"}`), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(`{"auth_token":"secret","port":"7804"}`), 0644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -44,21 +44,49 @@ func TestLoadConfigFromFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
-	if cfg.AuthToken != "secret" || cfg.GRPCPort != "7804" {
+	if cfg.AuthToken != "secret" || cfg.TransportPort() != "7804" {
 		t.Fatalf("config = %+v", cfg)
+	}
+}
+
+func TestLoadConfigSupportsLegacyGRPCPort(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "veriflier.json")
+	if err := os.WriteFile(path, []byte(`{"auth_token":"secret","grpc_port":"7805"}`), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := loadConfig(path)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.TransportPort() != "7805" {
+		t.Fatalf("TransportPort() = %q, want 7805", cfg.TransportPort())
 	}
 }
 
 func TestLoadConfigFallsBackToEnvironment(t *testing.T) {
 	t.Setenv("VERIFLIER_AUTH_TOKEN", "env-secret")
-	t.Setenv("VERIFLIER_GRPC_PORT", "7900")
+	t.Setenv("VERIFLIER_PORT", "7900")
 
 	cfg, err := loadConfig(filepath.Join(t.TempDir(), "missing.json"))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
-	if cfg.AuthToken != "env-secret" || cfg.GRPCPort != "7900" {
+	if cfg.AuthToken != "env-secret" || cfg.TransportPort() != "7900" {
 		t.Fatalf("config = %+v", cfg)
+	}
+}
+
+func TestLoadConfigFallsBackToLegacyPortEnvironment(t *testing.T) {
+	t.Setenv("VERIFLIER_AUTH_TOKEN", "env-secret")
+	t.Setenv("VERIFLIER_GRPC_PORT", "7901")
+
+	cfg, err := loadConfig(filepath.Join(t.TempDir(), "missing.json"))
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.TransportPort() != "7901" {
+		t.Fatalf("TransportPort() = %q, want 7901", cfg.TransportPort())
 	}
 }
 

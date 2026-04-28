@@ -6,7 +6,7 @@ You are an expert Go developer with extensive knowledge about WordPress, enterpr
 
 Jetmon is a parallel HTTP uptime monitoring service that checks Jetpack websites at scale. Jetmon 2 is a complete rewrite of the original Node.js + C++ native addon service into a single Go binary. It retains full drop-in compatibility with all external interfaces — MySQL schema, WPCOM API payload, StatsD metric names, and log file format — while dramatically increasing concurrency, reducing memory usage, and eliminating the native addon compilation dependency.
 
-The Veriflier is rewritten in Go as well, replacing the Qt C++ dependency. The current protocol between Monitor and Verifliers is JSON-over-HTTP on the configured Veriflier port, with the proto contract retained for a future generated gRPC transport.
+The Veriflier is rewritten in Go as well, replacing the Qt C++ dependency. JSON-over-HTTP on the configured Veriflier port is the v2 production Monitor-to-Veriflier transport; the proto contract is retained only as a schema reference for a possible future transport.
 
 See `PROJECT.md` for the full project description, feature list, and performance benefit estimates.
 
@@ -62,9 +62,9 @@ See `PROJECT.md` for the full project description, feature list, and performance
 
 **Alerting delivery worker** (`internal/alerting/`): Same shape as the webhook worker but for managed channels — email (via `wpcom`/`smtp`/`stub` senders), PagerDuty Events API v2, Slack incoming webhooks, Microsoft Teams. Filter is simpler (`site_filter` + `min_severity`); per-contact `max_per_hour` rate cap absorbs pager storms. Send-test endpoint exercises the same dispatch path without requiring a real event.
 
-**Current delivery-owner constraint:** In the single-binary v2 deployment, `API_PORT > 0` starts the API server and makes webhook / alert-contact delivery workers eligible to run. Set `DELIVERY_OWNER_HOST` to exactly one `jetmon2` hostname per database cluster so additional API-enabled hosts can serve the API without dispatching duplicate outbound deliveries. If `DELIVERY_OWNER_HOST` is empty, the host preserves the legacy behavior and starts delivery workers whenever `API_PORT > 0`; startup and `validate-config` warn about that fallback. This guard remains until delivery claiming moves to transactional row locks or the deliverer binary is split out.
+**Current delivery-owner constraint:** In the single-binary v2 deployment, `API_PORT > 0` starts the API server and makes webhook / alert-contact delivery workers eligible to run. Delivery rows are claimed transactionally, so multiple active delivery workers do not claim the same pending row. Use `DELIVERY_OWNER_HOST` as a rollout guard when intentionally keeping delivery single-owner during migration from embedded to standalone delivery.
 
-**Veriflier transport** (`internal/veriflier/`): JSON-over-HTTP client/server for Monitor↔Veriflier communication. Replaces the previous SSL server and custom HTTPS protocol. Run `make generate` to swap in generated gRPC stubs once protoc is set up.
+**Veriflier transport** (`internal/veriflier/`): JSON-over-HTTP client/server for Monitor↔Veriflier communication. Replaces the previous SSL server and custom HTTPS protocol. This is the v2 production transport.
 
 **Veriflier** (`veriflier2/`): Standalone Go binary deployed at remote locations. Receives check batches from the Monitor, performs HTTP checks, and returns results. Replaces the Qt C++ Veriflier.
 
@@ -309,7 +309,7 @@ Up → Seems Down → Down → Resolved
 
 **Veriflier Quorum Floor:** When Verifliers are marked unhealthy and excluded, `PEER_OFFLINE_LIMIT` adjusts dynamically, but there is a configured floor to prevent a single healthy Veriflier from confirming downtime alone. Ensure the floor is set appropriately for the number of deployed Verifliers.
 
-**Single Active Delivery Owner:** Webhook and alert-contact workers currently soft-lock delivery rows inside one process. Use `DELIVERY_OWNER_HOST` to keep only one delivery owner active per database cluster. Do not run multiple active delivery owners against the same database unless `ClaimReady` has been upgraded to transactional `SELECT ... FOR UPDATE SKIP LOCKED`; otherwise duplicate outbound deliveries are possible.
+**Delivery Ownership During Rollout:** Webhook and alert-contact workers claim delivery rows transactionally. Use `DELIVERY_OWNER_HOST` when you want to keep only one delivery owner active per database cluster during migration from embedded `jetmon2` delivery to standalone `jetmon-deliverer`.
 
 **Maintenance Windows:** Checks continue during a maintenance window and data is recorded in the audit log, but no alerts fire. Verify that `maintenance_end` is correctly set — an open-ended maintenance window silently suppresses all alerts for that site indefinitely.
 

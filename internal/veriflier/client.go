@@ -12,11 +12,8 @@ import (
 	"time"
 )
 
-// VeriflierClient sends check batches to a remote Veriflier over the verifier
-// transport. Until protoc-generated stubs are in place this implementation
-// uses lightweight JSON-over-HTTP on the configured port, making it fully
-// functional without a protoc dependency. Swap in the generated gRPC client by
-// replacing the send() method after running `make generate`.
+// VeriflierClient sends check batches to a remote Veriflier over the v2
+// production JSON-over-HTTP transport.
 type VeriflierClient struct {
 	addr       string
 	authToken  string

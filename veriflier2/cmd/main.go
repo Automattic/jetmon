@@ -23,7 +23,8 @@ const shutdownGracePeriod = 30 * time.Second
 
 type veriflierConfig struct {
 	AuthToken string `json:"auth_token"`
-	GRPCPort  string `json:"grpc_port"`
+	Port      string `json:"port"`
+	GRPCPort  string `json:"grpc_port"` // Deprecated alias for Port.
 }
 
 func main() {
@@ -40,12 +41,14 @@ func main() {
 	if v := os.Getenv("VERIFLIER_AUTH_TOKEN"); v != "" {
 		cfg.AuthToken = v
 	}
-	if v := os.Getenv("VERIFLIER_GRPC_PORT"); v != "" {
-		cfg.GRPCPort = v
+	if v := envOrDefault("VERIFLIER_PORT", ""); v != "" {
+		cfg.Port = v
+	} else if v := os.Getenv("VERIFLIER_GRPC_PORT"); v != "" {
+		cfg.Port = v
 	}
 
-	if cfg.GRPCPort == "" {
-		log.Fatalf("VERIFLIER_GRPC_PORT is not set")
+	if cfg.TransportPort() == "" {
+		log.Fatalf("VERIFLIER_PORT is not set")
 	}
 	// Reject empty auth tokens at startup. The verifier's Bearer comparison
 	// would otherwise accept any request with the literal "Bearer " header
@@ -54,7 +57,7 @@ func main() {
 	if cfg.AuthToken == "" {
 		log.Fatalf("VERIFLIER_AUTH_TOKEN is not set; refusing to start with no authentication")
 	}
-	addr := fmt.Sprintf(":%s", cfg.GRPCPort)
+	addr := fmt.Sprintf(":%s", cfg.TransportPort())
 
 	// Optional StatsD metrics. STATSD_ADDR is unset in standalone deploys,
 	// "statsd:8125" in the docker compose stack. metrics.Init failure logs and
@@ -124,7 +127,7 @@ func loadConfig(path string) (*veriflierConfig, error) {
 		// Fall back to environment-only config.
 		return &veriflierConfig{
 			AuthToken: os.Getenv("VERIFLIER_AUTH_TOKEN"),
-			GRPCPort:  envOrDefault("VERIFLIER_GRPC_PORT", "7803"),
+			Port:      envOrDefault("VERIFLIER_PORT", envOrDefault("VERIFLIER_GRPC_PORT", "7803")),
 		}, nil
 	}
 	defer f.Close()
@@ -134,6 +137,13 @@ func loadConfig(path string) (*veriflierConfig, error) {
 		return nil, err
 	}
 	return &cfg, nil
+}
+
+func (c veriflierConfig) TransportPort() string {
+	if c.Port != "" {
+		return c.Port
+	}
+	return c.GRPCPort
 }
 
 func envOrDefault(key, def string) string {

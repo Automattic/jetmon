@@ -51,7 +51,7 @@
 		{
 			"name"       : "Veriflier 1",
 			"host"       : "veriflier",
-			"grpc_port"  : "<VERIFLIER_GRPC_PORT>",
+			"port"       : "<VERIFLIER_PORT>",
 			"auth_token" : "<VERIFLIER_AUTH_TOKEN>"
 		}
 	]

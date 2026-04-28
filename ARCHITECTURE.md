@@ -336,7 +336,9 @@ Veriflier Transport
     ◄── {"status":"OK","version":"1.2.3"}
 ```
 
-The transport is JSON-over-HTTP (a placeholder for gRPC; swap after `make generate`).
+The transport is JSON-over-HTTP for v2 production. `proto/veriflier.proto`
+remains as a schema reference for a possible future transport, but generated
+gRPC stubs are not required to build or deploy v2.
 
 
 Bucket Distribution — Multi-Host Scaling

@@ -283,6 +283,18 @@ func TestDisplayName(t *testing.T) {
 	}
 }
 
+func TestVerifierTransportPort(t *testing.T) {
+	if got := (VerifierConfig{Port: "7803"}).TransportPort(); got != "7803" {
+		t.Fatalf("TransportPort(port) = %q, want 7803", got)
+	}
+	if got := (VerifierConfig{GRPCPort: "7804"}).TransportPort(); got != "7804" {
+		t.Fatalf("TransportPort(grpc_port alias) = %q, want 7804", got)
+	}
+	if got := (VerifierConfig{Port: "7803", GRPCPort: "7804"}).TransportPort(); got != "7803" {
+		t.Fatalf("TransportPort(prefer port) = %q, want 7803", got)
+	}
+}
+
 func TestLoadInvalidConfigReturnsError(t *testing.T) {
 	saveConfigState(t)
 

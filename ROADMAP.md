@@ -55,10 +55,10 @@ migration and the operating data needed to make larger architecture decisions.
 - **Migrate WPCOM notifications behind alert contacts/deliverer.** Do this
   only after alert contacts have proven stable in production and recipient
   parity has been verified.
-- **Decide the Veriflier transport endpoint.** Either wire the generated gRPC
-  stubs once the protoc toolchain is ready, or explicitly bless
-  JSON-over-HTTP as the v2 production transport and update the docs/naming to
-  match.
+- **Decide the Veriflier transport endpoint.** JSON-over-HTTP is the v2
+  production transport. The canonical config name is `port`; `grpc_port` and
+  `VERIFLIER_GRPC_PORT` remain compatibility aliases. The proto file stays as
+  a schema reference for a possible future transport, not a v2 dependency.
 - **Generate an OpenAPI 3.1 contract for the internal API.** The spec should
   be generated from the route/handler contract so client codegen matches the
   running server.
