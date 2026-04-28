@@ -3,7 +3,7 @@
 ## Status
 
 Planning note. This is not an accepted architecture decision and should not
-block the v2 production migration.
+block the [v2 production migration](v1-to-v2-migration.md).
 
 The intended migration order is:
 

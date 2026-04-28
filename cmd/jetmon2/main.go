@@ -59,6 +59,8 @@ func main() {
 		cmdReload()
 	case "keys":
 		cmdKeys(os.Args[2:])
+	case "api":
+		cmdAPI(os.Args[2:])
 	case "site-tenants":
 		cmdSiteTenants(os.Args[2:])
 	case "rollout":
