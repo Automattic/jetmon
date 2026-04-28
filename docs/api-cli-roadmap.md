@@ -21,7 +21,7 @@ but it should not become a generic `curl` clone.
 
 ## P1 - Typed Resource Commands
 
-- [ ] Add `sites list|get|create|update|delete|pause|resume|trigger-now`.
+- [x] Add `sites list|get|create|update|delete|pause|resume|trigger-now`.
 - [ ] Add `events list|get|transitions|close`.
 - [ ] Add `webhooks list|get|create|update|delete|rotate-secret|deliveries|retry`.
 - [ ] Add `alert-contacts list|get|create|update|delete|test|deliveries|retry`.
@@ -97,3 +97,7 @@ but it should not become a generic `curl` clone.
   and verbose request/response header logging.
 - [x] 2026-04-28: Added focused tests for URL resolution, auth/idempotency
   headers, verbose output, pretty JSON output, and HTTP error handling.
+- [x] 2026-04-28: Added typed `jetmon2 api sites`
+  `list|get|create|update|delete|pause|resume|trigger-now` commands with
+  query flags, typed create/update payload builders, idempotency support for
+  POST actions, and focused helper tests.

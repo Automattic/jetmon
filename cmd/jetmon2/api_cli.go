@@ -63,8 +63,10 @@ func cmdAPI(args []string) {
 		err = cmdAPIMe(rest)
 	case "request":
 		err = cmdAPIRequest(rest)
+	case "sites":
+		err = cmdAPISites(rest)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown api subcommand %q (want: health, me, request)\n", sub)
+		fmt.Fprintf(os.Stderr, "unknown api subcommand %q (want: health, me, request, sites)\n", sub)
 		printAPIUsage(os.Stderr)
 		os.Exit(1)
 	}
@@ -74,7 +76,7 @@ func cmdAPI(args []string) {
 }
 
 func printAPIUsage(w io.Writer) {
-	fmt.Fprintln(w, "usage: jetmon2 api <health|me|request> [flags]")
+	fmt.Fprintln(w, "usage: jetmon2 api <health|me|request|sites> [flags]")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Environment:")
 	fmt.Fprintln(w, "  JETMON_API_URL     API base URL (default: http://localhost:8090)")
