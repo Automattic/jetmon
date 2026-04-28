@@ -13,19 +13,25 @@ import (
 
 // State holds the real-time metrics snapshot served by the dashboard.
 type State struct {
-	WorkerCount      int       `json:"worker_count"`
-	ActiveChecks     int       `json:"active_checks"`
-	QueueDepth       int       `json:"queue_depth"`
-	RetryQueueSize   int       `json:"retry_queue_size"`
-	SitesPerSec      int       `json:"sites_per_sec"`
-	RoundDurationMs  int64     `json:"round_duration_ms"`
-	WPCOMCircuitOpen bool      `json:"wpcom_circuit_open"`
-	WPCOMQueueDepth  int       `json:"wpcom_queue_depth"`
-	MemRSSMB         int       `json:"mem_rss_mb"`
-	BucketMin        int       `json:"bucket_min"`
-	BucketMax        int       `json:"bucket_max"`
-	Hostname         string    `json:"hostname"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	WorkerCount                   int       `json:"worker_count"`
+	ActiveChecks                  int       `json:"active_checks"`
+	QueueDepth                    int       `json:"queue_depth"`
+	RetryQueueSize                int       `json:"retry_queue_size"`
+	SitesPerSec                   int       `json:"sites_per_sec"`
+	RoundDurationMs               int64     `json:"round_duration_ms"`
+	WPCOMCircuitOpen              bool      `json:"wpcom_circuit_open"`
+	WPCOMQueueDepth               int       `json:"wpcom_queue_depth"`
+	MemRSSMB                      int       `json:"mem_rss_mb"`
+	BucketMin                     int       `json:"bucket_min"`
+	BucketMax                     int       `json:"bucket_max"`
+	BucketOwnership               string    `json:"bucket_ownership"`
+	LegacyStatusProjectionEnabled bool      `json:"legacy_status_projection_enabled"`
+	DeliveryWorkersEnabled        bool      `json:"delivery_workers_enabled"`
+	DeliveryOwnerHost             string    `json:"delivery_owner_host"`
+	RolloutPreflightCommand       string    `json:"rollout_preflight_command"`
+	ProjectionDriftCommand        string    `json:"projection_drift_command"`
+	Hostname                      string    `json:"hostname"`
+	UpdatedAt                     time.Time `json:"updated_at"`
 }
 
 // HealthEntry represents one external dependency's status.
@@ -71,7 +77,7 @@ func (s *Server) Update(st State) {
 	s.broadcast(st)
 }
 
-// UpdateHealth replaces the health entries and pushes an SSE event.
+// UpdateHealth replaces the health entries served by /api/health.
 func (s *Server) UpdateHealth(entries []HealthEntry) {
 	s.mu.Lock()
 	s.health = entries
@@ -193,6 +199,7 @@ const dashboardHTML = `<!DOCTYPE html>
   .card { background: #2a2a2a; padding: 1rem; border-radius: 4px; }
   .card .label { font-size: 0.75rem; color: #888; }
   .card .value { font-size: 1.5rem; color: #7ec8e3; margin-top: 0.25rem; }
+  .card .value.command { font-size: 0.85rem; line-height: 1.35; overflow-wrap: anywhere; }
   .health-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 0.5rem; margin-top: 1rem; }
   .health-item { padding: 0.5rem 1rem; border-radius: 4px; font-size: 0.85rem; }
   .green  { background: #1a3a1a; border-left: 4px solid #4caf50; }
@@ -221,11 +228,22 @@ const dashboardHTML = `<!DOCTYPE html>
   <div class="card"><div class="label">RSS</div><div class="value" id="rss">—</div></div>
 </div>
 
+<h2>ROLLOUT</h2>
+<div class="grid">
+  <div class="card"><div class="label">OWNERSHIP</div><div class="value" id="ownership">—</div></div>
+  <div class="card"><div class="label">LEGACY PROJECTION</div><div class="value" id="projection">—</div></div>
+  <div class="card"><div class="label">DELIVERY WORKERS</div><div class="value" id="delivery">—</div></div>
+  <div class="card"><div class="label">DELIVERY OWNER</div><div class="value" id="delivery-owner">—</div></div>
+  <div class="card"><div class="label">PREFLIGHT</div><div class="value command" id="preflight">—</div></div>
+  <div class="card"><div class="label">DRIFT REPORT</div><div class="value command" id="drift">—</div></div>
+</div>
+
 <h2>EXTERNAL DEPENDENCIES</h2>
 <div class="grid">
   <div class="card"><div class="label">WPCOM CIRCUIT</div><div class="value" id="wpcom">—</div></div>
   <div class="card"><div class="label">WPCOM QUEUE</div><div class="value" id="wpcomq">—</div></div>
 </div>
+<div class="health-grid" id="health"></div>
 
 <div id="updated"></div>
 
@@ -242,10 +260,42 @@ src.onmessage = function(e) {
   document.getElementById('round').textContent   = (d.round_duration_ms / 1000).toFixed(1) + 's';
   document.getElementById('buckets').textContent = d.bucket_min + '–' + d.bucket_max;
   document.getElementById('rss').textContent     = d.mem_rss_mb + 'MB';
+  document.getElementById('ownership').textContent = d.bucket_ownership || '—';
+  document.getElementById('projection').textContent = d.legacy_status_projection_enabled ? 'enabled' : 'disabled';
+  document.getElementById('delivery').textContent = d.delivery_workers_enabled ? 'enabled' : 'disabled';
+  document.getElementById('delivery-owner').textContent = d.delivery_owner_host || 'unset';
+  document.getElementById('preflight').textContent = d.rollout_preflight_command || '—';
+  document.getElementById('drift').textContent = d.projection_drift_command || '—';
   document.getElementById('wpcom').textContent   = d.wpcom_circuit_open ? 'OPEN' : 'closed';
   document.getElementById('wpcomq').textContent  = d.wpcom_queue_depth;
   document.getElementById('updated').textContent = 'Updated: ' + new Date(d.updated_at).toLocaleTimeString();
 };
+
+async function refreshHealth() {
+  try {
+    const res = await fetch('/api/health', { cache: 'no-store' });
+    const entries = await res.json();
+    const box = document.getElementById('health');
+    box.textContent = '';
+    entries.forEach(function(entry) {
+      const item = document.createElement('div');
+      item.className = 'health-item ' + (entry.status || 'amber');
+      const latency = entry.latency_ms ? ' ' + entry.latency_ms + 'ms' : '';
+      const detail = entry.last_error ? ' — ' + entry.last_error : '';
+      item.textContent = entry.name + ': ' + entry.status + latency + detail;
+      box.appendChild(item);
+    });
+  } catch (err) {
+    const box = document.getElementById('health');
+    box.textContent = '';
+    const item = document.createElement('div');
+    item.className = 'health-item red';
+    item.textContent = 'dashboard health: red — ' + err;
+    box.appendChild(item);
+  }
+}
+refreshHealth();
+setInterval(refreshHealth, 10000);
 </script>
 </body>
 </html>`

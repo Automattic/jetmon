@@ -15,6 +15,7 @@ import (
 	"github.com/Automattic/jetmon/internal/alerting"
 	"github.com/Automattic/jetmon/internal/config"
 	"github.com/Automattic/jetmon/internal/deliverer"
+	"github.com/DATA-DOG/go-sqlmock"
 )
 
 func TestHTTPGet(t *testing.T) {
@@ -250,6 +251,119 @@ func TestEnabledLabel(t *testing.T) {
 	}
 	if got := enabledLabel(false); got != "disabled" {
 		t.Fatalf("enabledLabel(false) = %q, want disabled", got)
+	}
+}
+
+func TestBucketOwnershipLabel(t *testing.T) {
+	if got := bucketOwnershipLabel(&config.Config{}); got != "dynamic jetmon_hosts" {
+		t.Fatalf("bucketOwnershipLabel(dynamic) = %q", got)
+	}
+	min, max := 12, 34
+	got := bucketOwnershipLabel(&config.Config{PinnedBucketMin: &min, PinnedBucketMax: &max})
+	if got != "pinned range=12-34" {
+		t.Fatalf("bucketOwnershipLabel(pinned) = %q", got)
+	}
+}
+
+func TestRolloutAdviceLines(t *testing.T) {
+	dynamic := rolloutAdviceLines(&config.Config{})
+	if len(dynamic) != 2 {
+		t.Fatalf("dynamic advice len = %d, want 2", len(dynamic))
+	}
+	if !strings.Contains(dynamic[0], "rollout dynamic-check") {
+		t.Fatalf("dynamic preflight advice = %q", dynamic[0])
+	}
+	if !strings.Contains(dynamic[1], "rollout projection-drift") {
+		t.Fatalf("dynamic drift advice = %q", dynamic[1])
+	}
+
+	min, max := 12, 34
+	pinned := rolloutAdviceLines(&config.Config{PinnedBucketMin: &min, PinnedBucketMax: &max})
+	if len(pinned) != 2 {
+		t.Fatalf("pinned advice len = %d, want 2", len(pinned))
+	}
+	if !strings.Contains(pinned[0], "rollout pinned-check") {
+		t.Fatalf("pinned preflight advice = %q", pinned[0])
+	}
+	if !strings.Contains(pinned[1], "rollout projection-drift") {
+		t.Fatalf("pinned drift advice = %q", pinned[1])
+	}
+}
+
+func TestRolloutCommandHelpers(t *testing.T) {
+	if got := rolloutPreflightCommand(&config.Config{}); got != "./jetmon2 rollout dynamic-check" {
+		t.Fatalf("rolloutPreflightCommand(dynamic) = %q", got)
+	}
+	min, max := 12, 34
+	cfg := &config.Config{PinnedBucketMin: &min, PinnedBucketMax: &max}
+	if got := rolloutPreflightCommand(cfg); got != "./jetmon2 rollout pinned-check" {
+		t.Fatalf("rolloutPreflightCommand(pinned) = %q", got)
+	}
+	if got := projectionDriftCommand(); got != "./jetmon2 rollout projection-drift" {
+		t.Fatalf("projectionDriftCommand() = %q", got)
+	}
+}
+
+func TestDashboardHealthEntriesReportsCoreDependencies(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "logs"), 0755); err != nil {
+		t.Fatalf("mkdir logs: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "stats"), 0755); err != nil {
+		t.Fatalf("mkdir stats: %v", err)
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+	defer func() {
+		if err := os.Chdir(wd); err != nil {
+			t.Fatalf("restore working directory: %v", err)
+		}
+	}()
+
+	sqlDB, mock, err := sqlmock.New(sqlmock.MonitorPingsOption(true))
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer sqlDB.Close()
+	mock.ExpectPing()
+
+	checkedAt := time.Date(2026, 4, 28, 3, 0, 0, 0, time.UTC)
+	entries := dashboardHealthEntries(context.Background(), &config.Config{}, sqlDB, nil, false, checkedAt)
+	byName := make(map[string]string, len(entries))
+	for _, entry := range entries {
+		byName[entry.Name] = entry.Status
+		if !entry.CheckedAt.Equal(checkedAt) {
+			t.Fatalf("%s CheckedAt = %s, want %s", entry.Name, entry.CheckedAt, checkedAt)
+		}
+	}
+
+	want := map[string]string{
+		"mysql":      "green",
+		"wpcom":      "red",
+		"statsd":     "amber",
+		"disk:logs":  "green",
+		"disk:stats": "green",
+		"verifliers": "amber",
+	}
+	for name, status := range want {
+		if byName[name] != status {
+			t.Fatalf("health[%s] = %q, want %q (entries=%v)", name, byName[name], status, entries)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestCheckWritableDirReportsMissingDirectory(t *testing.T) {
+	err := checkWritableDir(filepath.Join(t.TempDir(), "missing"))
+	if err == nil {
+		t.Fatal("checkWritableDir() returned nil for missing directory")
 	}
 }
 

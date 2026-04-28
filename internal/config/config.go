@@ -50,6 +50,18 @@ type Config struct {
 	BucketTarget            int `json:"BUCKET_TARGET"`
 	BucketHeartbeatGraceSec int `json:"BUCKET_HEARTBEAT_GRACE_SEC"`
 
+	// PinnedBucketMin/Max let a v2 host temporarily use the exact static bucket
+	// range of the v1 host it replaces during host-by-host migration. While set,
+	// the orchestrator does not participate in jetmon_hosts dynamic ownership.
+	PinnedBucketMin *int `json:"PINNED_BUCKET_MIN"`
+	PinnedBucketMax *int `json:"PINNED_BUCKET_MAX"`
+
+	// BucketNoMin/Max are the legacy v1 config names. They are accepted as
+	// aliases for the pinned migration mode so operators can copy a v1 host's
+	// bucket range directly into v2 config during cutover.
+	BucketNoMin *int `json:"BUCKET_NO_MIN"`
+	BucketNoMax *int `json:"BUCKET_NO_MAX"`
+
 	BatchSize int    `json:"BATCH_SIZE"`
 	AuthToken string `json:"AUTH_TOKEN"`
 
@@ -231,6 +243,22 @@ func LegacyStatusProjectionEnabled() bool {
 	return cfg.LegacyStatusProjectionEnable
 }
 
+// PinnedBucketRange returns the migration-only static bucket range configured
+// on this host. Explicit PINNED_BUCKET_* keys take precedence over legacy
+// BUCKET_NO_* aliases after validation has checked for conflicts.
+func (cfg *Config) PinnedBucketRange() (int, int, bool) {
+	if cfg == nil {
+		return 0, 0, false
+	}
+	if cfg.PinnedBucketMin != nil && cfg.PinnedBucketMax != nil {
+		return *cfg.PinnedBucketMin, *cfg.PinnedBucketMax, true
+	}
+	if cfg.BucketNoMin != nil && cfg.BucketNoMax != nil {
+		return *cfg.BucketNoMin, *cfg.BucketNoMax, true
+	}
+	return 0, 0, false
+}
+
 func validate(cfg *Config) error {
 	if cfg.AuthToken == "" {
 		return fmt.Errorf("AUTH_TOKEN is required")
@@ -243,6 +271,9 @@ func validate(cfg *Config) error {
 	}
 	if cfg.BucketTarget <= 0 || cfg.BucketTarget > cfg.BucketTotal {
 		return fmt.Errorf("BUCKET_TARGET must be between 1 and BUCKET_TOTAL")
+	}
+	if err := validatePinnedBucketRange(cfg); err != nil {
+		return err
 	}
 	if cfg.NetCommsTimeout <= 0 {
 		return fmt.Errorf("NET_COMMS_TIMEOUT must be > 0")
@@ -278,6 +309,37 @@ func validate(cfg *Config) error {
 		if v.TransportPort() == "" {
 			return fmt.Errorf("VERIFIERS[%d] (%s): port is required", i, displayName(v, i))
 		}
+	}
+	return nil
+}
+
+func validatePinnedBucketRange(cfg *Config) error {
+	hasPinned := cfg.PinnedBucketMin != nil || cfg.PinnedBucketMax != nil
+	hasLegacy := cfg.BucketNoMin != nil || cfg.BucketNoMax != nil
+
+	if hasPinned && (cfg.PinnedBucketMin == nil || cfg.PinnedBucketMax == nil) {
+		return fmt.Errorf("PINNED_BUCKET_MIN and PINNED_BUCKET_MAX must be set together")
+	}
+	if hasLegacy && (cfg.BucketNoMin == nil || cfg.BucketNoMax == nil) {
+		return fmt.Errorf("BUCKET_NO_MIN and BUCKET_NO_MAX must be set together")
+	}
+	if hasPinned && hasLegacy &&
+		(*cfg.PinnedBucketMin != *cfg.BucketNoMin || *cfg.PinnedBucketMax != *cfg.BucketNoMax) {
+		return fmt.Errorf("PINNED_BUCKET_* conflicts with legacy BUCKET_NO_* range")
+	}
+
+	min, max, ok := cfg.PinnedBucketRange()
+	if !ok {
+		return nil
+	}
+	if min < 0 {
+		return fmt.Errorf("pinned bucket min must be >= 0")
+	}
+	if max < min {
+		return fmt.Errorf("pinned bucket max must be >= min")
+	}
+	if max >= cfg.BucketTotal {
+		return fmt.Errorf("pinned bucket max must be < BUCKET_TOTAL")
 	}
 	return nil
 }

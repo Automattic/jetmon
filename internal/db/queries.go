@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -61,6 +62,23 @@ func GetSitesForBucket(ctx context.Context, bucketMin, bucketMax, batchSize int,
 	return sites, rows.Err()
 }
 
+// CountActiveSitesForBucketRange returns the number of active monitor rows in
+// the inclusive bucket range.
+func CountActiveSitesForBucketRange(ctx context.Context, bucketMin, bucketMax int) (int, error) {
+	var count int
+	err := db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		  FROM jetpack_monitor_sites
+		 WHERE monitor_active = 1
+		   AND bucket_no BETWEEN ? AND ?`,
+		bucketMin, bucketMax,
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count active sites: %w", err)
+	}
+	return count, nil
+}
+
 // UpdateSiteStatus updates site_status and last_status_change for a site.
 func UpdateSiteStatus(ctx context.Context, blogID int64, status int, changedAt time.Time) error {
 	_, err := db.ExecContext(ctx,
@@ -105,6 +123,83 @@ func CountLegacyProjectionDrift(ctx context.Context, bucketMin, bucketMax int) (
 		return 0, fmt.Errorf("count projection drift: %w", err)
 	}
 	return count, nil
+}
+
+// ProjectionDriftRow identifies one active site whose legacy site_status
+// projection disagrees with the authoritative open HTTP event, if any.
+type ProjectionDriftRow struct {
+	BlogID         int64
+	BucketNo       int
+	SiteStatus     int
+	ExpectedStatus int
+	EventID        *int64
+	EventState     *string
+}
+
+// ListLegacyProjectionDrift returns active sites in the bucket range whose v1
+// site_status projection disagrees with the authoritative open HTTP event.
+func ListLegacyProjectionDrift(ctx context.Context, bucketMin, bucketMax, limit int) ([]ProjectionDriftRow, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := db.QueryContext(ctx, `
+		SELECT s.blog_id,
+		       s.bucket_no,
+		       s.site_status,
+		       CASE
+		         WHEN e.state = 'Down' THEN 2
+		         WHEN e.state = 'Seems Down' THEN 0
+		         ELSE 1
+		       END AS expected_status,
+		       e.id,
+		       e.state
+		  FROM jetpack_monitor_sites s
+		  LEFT JOIN jetmon_events e
+		    ON e.blog_id = s.blog_id
+		   AND e.check_type = 'http'
+		   AND e.ended_at IS NULL
+		 WHERE s.monitor_active = 1
+		   AND s.bucket_no BETWEEN ? AND ?
+		   AND s.site_status <> CASE
+		     WHEN e.state = 'Down' THEN 2
+		     WHEN e.state = 'Seems Down' THEN 0
+		     ELSE 1
+		   END
+		 ORDER BY s.bucket_no ASC, s.blog_id ASC
+		 LIMIT ?`,
+		bucketMin, bucketMax, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list projection drift: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ProjectionDriftRow
+	for rows.Next() {
+		var row ProjectionDriftRow
+		var eventID sql.NullInt64
+		var eventState sql.NullString
+		if err := rows.Scan(
+			&row.BlogID,
+			&row.BucketNo,
+			&row.SiteStatus,
+			&row.ExpectedStatus,
+			&eventID,
+			&eventState,
+		); err != nil {
+			return nil, fmt.Errorf("scan projection drift: %w", err)
+		}
+		if eventID.Valid {
+			v := eventID.Int64
+			row.EventID = &v
+		}
+		if eventState.Valid {
+			v := eventState.String
+			row.EventState = &v
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
 }
 
 // MarkSiteChecked records when a site was last checked.
@@ -239,6 +334,23 @@ func MarkHostDraining(ctx context.Context, hostID string) error {
 func ReleaseHost(ctx context.Context, hostID string) error {
 	_, err := db.ExecContext(ctx, `DELETE FROM jetmon_hosts WHERE host_id = ?`, hostID)
 	return err
+}
+
+// HostRowExists reports whether a host currently has a jetmon_hosts ownership
+// row.
+func HostRowExists(ctx context.Context, hostID string) (bool, error) {
+	var exists int
+	err := db.QueryRowContext(ctx,
+		`SELECT 1 FROM jetmon_hosts WHERE host_id = ? LIMIT 1`,
+		hostID,
+	).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("check host row: %w", err)
+	}
+	return true, nil
 }
 
 // GetAllHosts returns all rows from jetmon_hosts for operator visibility.

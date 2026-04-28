@@ -156,6 +156,9 @@ func TestSendNotificationRetriesAndUpdatesAlertTimestamp(t *testing.T) {
 
 	setTestConfig(t)
 
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+
 	var notifyCalls int
 	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error {
 		notifyCalls++
@@ -185,6 +188,20 @@ func TestSendNotificationRetriesAndUpdatesAlertTimestamp(t *testing.T) {
 	}
 	if updatedBlogID != 123 {
 		t.Fatalf("updated blog_id = %d, want 123", updatedBlogID)
+	}
+	for stat, want := range map[string]int{
+		"wpcom.notification.attempt.count":                  1,
+		"wpcom.notification.status.running.attempt.count":   1,
+		"wpcom.notification.error.count":                    1,
+		"wpcom.notification.status.running.error.count":     1,
+		"wpcom.notification.retry.count":                    1,
+		"wpcom.notification.retry.delivered.count":          1,
+		"wpcom.notification.delivered.count":                1,
+		"wpcom.notification.status.running.delivered.count": 1,
+	} {
+		if got := rec.counter(stat); got != want {
+			t.Fatalf("%s = %d, want %d", stat, got, want)
+		}
 	}
 }
 
@@ -329,6 +346,11 @@ func TestEscalateToVerifliersRecordsFalsePositiveWhenQuorumMissed(t *testing.T) 
 
 func stubOrchestratorDeps() func() {
 	origNow := nowFunc
+	origDBClaimBuckets := dbClaimBuckets
+	origDBHeartbeat := dbHeartbeat
+	origDBReleaseHost := dbReleaseHost
+	origDBMarkHostDraining := dbMarkHostDraining
+	origDBGetSites := dbGetSitesForBucket
 	origDBUpdateStatus := dbUpdateSiteStatus
 	origDBUpdateLastAlert := dbUpdateLastAlertSent
 	origDBRecordFalsePositive := dbRecordFalsePositive
@@ -341,6 +363,11 @@ func stubOrchestratorDeps() func() {
 	origMetricsClient := metricsClientFunc
 
 	nowFunc = time.Now
+	dbClaimBuckets = func(string, int, int, int) (int, int, error) { return 0, 0, nil }
+	dbHeartbeat = func(context.Context, string) error { return nil }
+	dbReleaseHost = func(context.Context, string) error { return nil }
+	dbMarkHostDraining = func(context.Context, string) error { return nil }
+	dbGetSitesForBucket = func(context.Context, int, int, int, bool) ([]db.Site, error) { return nil, nil }
 	dbUpdateSiteStatus = func(context.Context, int64, int, time.Time) error { return nil }
 	dbUpdateLastAlertSent = func(context.Context, int64, time.Time) error { return nil }
 	dbRecordFalsePositive = func(int64, int, int, int64) error { return nil }
@@ -355,6 +382,11 @@ func stubOrchestratorDeps() func() {
 
 	return func() {
 		nowFunc = origNow
+		dbClaimBuckets = origDBClaimBuckets
+		dbHeartbeat = origDBHeartbeat
+		dbReleaseHost = origDBReleaseHost
+		dbMarkHostDraining = origDBMarkHostDraining
+		dbGetSitesForBucket = origDBGetSites
 		dbUpdateSiteStatus = origDBUpdateStatus
 		dbUpdateLastAlertSent = origDBUpdateLastAlert
 		dbRecordFalsePositive = origDBRecordFalsePositive
@@ -479,6 +511,35 @@ func TestHandleRecoveryClearsRetryEntryEvenWhenAlreadyRunning(t *testing.T) {
 
 	if o.retries.get(1) != nil {
 		t.Fatal("stale retry entry should be cleared on recovery even when status was already running")
+	}
+}
+
+func TestHandleRecoveryEmitsProbeClearedClassMetric(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig(t)
+
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local",
+		ctx:      context.Background(),
+	}
+	o.retries.record(checkerResultFailure(42))
+
+	o.handleRecovery(db.Site{BlogID: 42, SiteStatus: statusDown}, checkerResultSuccess(42))
+
+	if got := rec.counter("detection.probe_cleared.count"); got != 1 {
+		t.Fatalf("probe-cleared counter = %d, want 1", got)
+	}
+	if got := rec.counter("detection.probe_cleared.server.count"); got != 1 {
+		t.Fatalf("probe-cleared server counter = %d, want 1", got)
+	}
+	if got := rec.timingCount("detection.seems_down_to_probe_cleared.time"); got != 1 {
+		t.Fatalf("probe-cleared timing count = %d, want 1", got)
 	}
 }
 
@@ -713,6 +774,60 @@ func TestOrchestratorAccessors(t *testing.T) {
 	}
 }
 
+func TestClaimBucketsUsesPinnedRangeWithoutHostTable(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	cfg := setTestConfig(t)
+	min, max := 12, 34
+	cfg.PinnedBucketMin = &min
+	cfg.PinnedBucketMax = &max
+
+	var dynamicClaimCalled bool
+	dbClaimBuckets = func(string, int, int, int) (int, int, error) {
+		dynamicClaimCalled = true
+		return 0, 0, nil
+	}
+
+	o := &Orchestrator{hostname: "host-a"}
+	if err := o.ClaimBuckets(); err != nil {
+		t.Fatalf("ClaimBuckets: %v", err)
+	}
+	if dynamicClaimCalled {
+		t.Fatal("ClaimBuckets called dynamic jetmon_hosts claim in pinned mode")
+	}
+	if o.bucketMin != 12 || o.bucketMax != 34 {
+		t.Fatalf("bucket range = %d-%d, want 12-34", o.bucketMin, o.bucketMax)
+	}
+}
+
+func TestRunRoundSkipsHeartbeatWhenPinned(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	cfg := setTestConfig(t)
+	min, max := 12, 34
+	cfg.PinnedBucketMin = &min
+	cfg.PinnedBucketMax = &max
+
+	var heartbeatCalled bool
+	dbHeartbeat = func(context.Context, string) error {
+		heartbeatCalled = true
+		return nil
+	}
+	dbGetSitesForBucket = func(_ context.Context, gotMin, gotMax, _ int, _ bool) ([]db.Site, error) {
+		if gotMin != 12 || gotMax != 34 {
+			t.Fatalf("fetch buckets = %d-%d, want 12-34", gotMin, gotMax)
+		}
+		return nil, nil
+	}
+
+	o := &Orchestrator{ctx: context.Background(), hostname: "host-a"}
+	o.runRound()
+
+	if heartbeatCalled {
+		t.Fatal("runRound updated jetmon_hosts heartbeat in pinned mode")
+	}
+}
+
 func TestRetryQueueAllBlogIDs(t *testing.T) {
 	q := newRetryQueue()
 	q.record(checkerResultFailure(1))
@@ -831,6 +946,9 @@ func TestSendNotificationBothRetriesFail(t *testing.T) {
 	defer restore()
 	setTestConfig(t)
 
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+
 	calls := 0
 	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error {
 		calls++
@@ -855,6 +973,21 @@ func TestSendNotificationBothRetriesFail(t *testing.T) {
 	}
 	if updateAlertCalled {
 		t.Fatal("dbUpdateLastAlertSent should not be called when both retries fail")
+	}
+	for stat, want := range map[string]int{
+		"wpcom.notification.attempt.count":                         1,
+		"wpcom.notification.status.confirmed_down.attempt.count":   1,
+		"wpcom.notification.error.count":                           2,
+		"wpcom.notification.status.confirmed_down.error.count":     2,
+		"wpcom.notification.retry.count":                           1,
+		"wpcom.notification.failed.count":                          1,
+		"wpcom.notification.status.confirmed_down.failed.count":    1,
+		"wpcom.notification.delivered.count":                       0,
+		"wpcom.notification.status.confirmed_down.delivered.count": 0,
+	} {
+		if got := rec.counter(stat); got != want {
+			t.Fatalf("%s = %d, want %d", stat, got, want)
+		}
 	}
 }
 
@@ -1045,6 +1178,12 @@ func TestHandleFailureEmitsSeemsDownMetrics(t *testing.T) {
 	if got := rec.counter("detection.seems_down.open.count"); got != 1 {
 		t.Fatalf("seems-down open counter = %d, want 1", got)
 	}
+	if got := rec.counter("detection.failure.server.count"); got != 1 {
+		t.Fatalf("failure class counter = %d, want 1", got)
+	}
+	if got := rec.counter("detection.seems_down.open.server.count"); got != 1 {
+		t.Fatalf("seems-down class counter = %d, want 1", got)
+	}
 	if got := rec.timingCount("detection.first_failure_to_seems_down.time"); got != 1 {
 		t.Fatalf("first failure timing count = %d, want 1", got)
 	}
@@ -1088,11 +1227,14 @@ func TestEscalateToVerifliersEmitsConfirmedMetrics(t *testing.T) {
 	o.escalateToVerifliers(db.Site{BlogID: 321, MonitorURL: "https://example.com", SiteStatus: statusRunning}, entry)
 
 	for stat, want := range map[string]int{
-		"detection.verifier.escalation.count": 1,
-		"verifier.rpc.success.count":          1,
-		"verifier.vote.confirm_down.count":    1,
-		"detection.verifier.quorum_met.count": 1,
-		"detection.down.confirmed.count":      1,
+		"detection.verifier.escalation.count":      1,
+		"verifier.rpc.success.count":               1,
+		"verifier.host.v1.rpc.success.count":       1,
+		"verifier.vote.confirm_down.count":         1,
+		"verifier.host.v1.vote.confirm_down.count": 1,
+		"detection.verifier.quorum_met.count":      1,
+		"detection.down.confirmed.count":           1,
+		"detection.down.confirmed.server.count":    1,
 	} {
 		if got := rec.counter(stat); got != want {
 			t.Fatalf("%s = %d, want %d", stat, got, want)
@@ -1101,6 +1243,7 @@ func TestEscalateToVerifliersEmitsConfirmedMetrics(t *testing.T) {
 	for _, stat := range []string{
 		"detection.first_failure_to_verification.time",
 		"verifier.rpc.duration",
+		"verifier.host.v1.rpc.duration",
 		"detection.seems_down_to_down.time",
 	} {
 		if got := rec.timingCount(stat); got != 1 {
@@ -1150,10 +1293,13 @@ func TestEscalateToVerifliersEmitsFalseAlarmMetrics(t *testing.T) {
 	o.escalateToVerifliers(db.Site{BlogID: 654, MonitorURL: "https://example.com", SiteStatus: statusRunning}, entry)
 
 	for stat, want := range map[string]int{
-		"detection.verifier.escalation.count":  1,
-		"verifier.rpc.success.count":           1,
-		"verifier.vote.disagree.count":         1,
-		"detection.verifier.false_alarm.count": 1,
+		"detection.verifier.escalation.count":         1,
+		"verifier.rpc.success.count":                  1,
+		"verifier.host.v1.rpc.success.count":          1,
+		"verifier.vote.disagree.count":                1,
+		"verifier.host.v1.vote.disagree.count":        1,
+		"detection.verifier.false_alarm.count":        1,
+		"detection.verifier.false_alarm.server.count": 1,
 	} {
 		if got := rec.counter(stat); got != want {
 			t.Fatalf("%s = %d, want %d", stat, got, want)
@@ -1161,6 +1307,47 @@ func TestEscalateToVerifliersEmitsFalseAlarmMetrics(t *testing.T) {
 	}
 	if got := rec.timingCount("detection.seems_down_to_false_alarm.time"); got != 1 {
 		t.Fatalf("false alarm timing count = %d, want 1", got)
+	}
+}
+
+func TestMetricSegment(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{in: "", want: "unknown"},
+		{in: "server", want: "server"},
+		{in: "US-West:7803", want: "us_west_7803"},
+		{in: "  eu.central-1  ", want: "eu_central_1"},
+		{in: "://", want: "unknown"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			if got := metricSegment(tt.in); got != tt.want {
+				t.Fatalf("metricSegment(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWPCOMStatusMetricSegment(t *testing.T) {
+	tests := []struct {
+		status int
+		want   string
+	}{
+		{status: statusDown, want: "down"},
+		{status: statusRunning, want: "running"},
+		{status: statusConfirmedDown, want: "confirmed_down"},
+		{status: 99, want: "unknown"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.want, func(t *testing.T) {
+			if got := wpcomStatusMetricSegment(tt.status); got != tt.want {
+				t.Fatalf("wpcomStatusMetricSegment(%d) = %q, want %q", tt.status, got, tt.want)
+			}
+		})
 	}
 }
 

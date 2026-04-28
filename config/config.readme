@@ -25,6 +25,12 @@ Number of buckets this host should claim on startup. Used for initial distributi
 BUCKET_HEARTBEAT_GRACE_SEC
 Seconds after a host's last heartbeat before its buckets are considered available for reclaiming by another host. Default: 600.
 
+PINNED_BUCKET_MIN / PINNED_BUCKET_MAX
+Migration-only static bucket range for replacing one v1 host with one v2 host during the initial v1-to-v2 rollout. When both are set, jetmon2 checks only that inclusive bucket range and does not claim, heartbeat, or release rows in jetmon_hosts. Disable after the whole fleet is on v2 so dynamic bucket ownership can take over. Must satisfy 0 <= min <= max < BUCKET_TOTAL. Default: unset.
+
+BUCKET_NO_MIN / BUCKET_NO_MAX
+Deprecated v1 names accepted as aliases for PINNED_BUCKET_MIN / PINNED_BUCKET_MAX. They must be set together and must match PINNED_BUCKET_* if both forms are present.
+
 BATCH_SIZE
 Number of buckets fetched per database query when loading sites. Default: 32.
 

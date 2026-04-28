@@ -132,6 +132,9 @@ func (c *VeriflierClient) Ping(ctx context.Context) (string, error) {
 		return "", err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("veriflier status returned %d", resp.StatusCode)
+	}
 
 	var s struct {
 		Status  string `json:"status"`

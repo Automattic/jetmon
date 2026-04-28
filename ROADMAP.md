@@ -16,22 +16,43 @@ migration and the operating data needed to make larger architecture decisions.
   current main-server-plus-Veriflier design before moving toward a v3
   probe-agent architecture. The v2 event tables remain authoritative while
   `LEGACY_STATUS_PROJECTION_ENABLE` keeps legacy `site_status` /
-  `last_status_change` consumers working during migration.
+  `last_status_change` consumers working during migration. Use the pinned
+  bucket rollout path for the first v1-to-v2 production migration, then remove
+  `PINNED_BUCKET_*` after every host is on v2 and stable.
+- **Keep rollout health visible before cutover.** Operators should not have to
+  infer migration-critical state from logs or config while replacing v1 hosts.
+  The operator dashboard now shows bucket ownership mode, legacy projection
+  mode, delivery-worker ownership, rollout preflight commands, and live
+  dependency health for MySQL, Verifliers, WPCOM, StatsD, and log/stats disk
+  writes. Keep this visible and verified during rollout rehearsal because it
+  helps separate customer-site downtime from monitor-side impairment during
+  cutover.
 - **Use delivery ownership as a rollout guard.**
   In the single-binary deployment, `API_PORT > 0` also starts webhook and
   alert-contact delivery workers. A standalone `jetmon-deliverer` entry point
   and transactional `SELECT ... FOR UPDATE` row claims now exist; use
   `DELIVERY_OWNER_HOST` as a rollout guard when intentionally keeping delivery
   single-owner during migration from embedded to standalone delivery.
+- **Run a production rollout rehearsal pass.** Validate that README,
+  `docs/v1-to-v2-pinned-rollout.md`, config samples, systemd units,
+  `validate-config`, `rollout pinned-check`, `rollout projection-drift`, and
+  rollback steps line up exactly before the first production host replacement.
 - **Instrument the data needed for the v3 decision.** During v2 production,
   measure first-failure-to-`Seems Down`, `Seems Down`-to-`Down`, false alarm
   rate by failure class, Veriflier agreement/disagreement by region, Veriflier
   latency/timeout rates, mixed-region outcomes, monitor-side `Unknown` cases,
   primary-check vs confirmation cost, operator explanation gaps, and WPCOM
-  notification parity.
+  notification parity. StatsD now emits the core detection timings, outcome
+  counters split by local failure class, and per-Veriflier-host RPC/vote
+  counters, plus legacy WPCOM notification attempt/delivered/retry/error/failed
+  counters split by status. Durable report queries should wait until v2 has
+  enough real traffic to prove which questions operators actually need to ask.
 - **Watch projection drift as a production bug.** While the legacy projection
   is enabled, event mutations, transition rows, and the site-row projection
-  must remain transactionally consistent.
+  must remain transactionally consistent. `jetmon2 rollout projection-drift`
+  lists the exact active sites whose legacy projection disagrees with the
+  authoritative HTTP event state, so rollout failures are actionable instead of
+  count-only.
 - **Keep roadmap/API documentation drift out of the branch.** `API.md` is the
   source for the implemented internal `/api/v1` route surface. This roadmap
   should track only the remaining public/customer API work, production

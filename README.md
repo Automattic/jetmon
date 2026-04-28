@@ -37,7 +37,7 @@ A few specifics worth bragging about:
 - **Webhooks with Stripe-style HMAC signatures.** `t=<unix>,v1=<hex>` over `{ts}.{body}`, per-webhook in-flight cap, retry ladder 1m → 5m → 30m → 1h → 6h before abandon. Frozen-at-fire-time payload contract — consumers see the event as it was when the webhook fired, not as it is now.
 - **Idempotent write endpoints.** POSTs accept `Idempotency-Key`; replays return the original response, so a retried "click to test" through a network blip won't double-page the destination.
 - **Rotation grace windows on API keys.** `revoked_at` and `expires_at` are half-open cutoffs; setting `revoked_at` in the future keeps the old key valid until consumers deploy the replacement.
-- **Migrations embedded in the binary.** `./jetmon2 migrate` walks the schema forward; `./jetmon2 validate-config` checks config + DB connectivity + email transport mode + verifier list before deploy, and warns loudly when alert-contact email is set to the log-only stub.
+- **Migrations embedded in the binary.** `./jetmon2 migrate` walks the schema forward; `./jetmon2 validate-config` checks config + DB connectivity + email transport mode + verifier list before deploy, prints the matching rollout preflight command, and warns loudly when alert-contact email is set to the log-only stub.
 - **MySQL 5.7+ compatible.** No window functions, no JSON-path expressions in SELECT — the v2 schema and queries land cleanly on the legacy production database.
 
 
@@ -133,6 +133,7 @@ Key settings:
 | `BUCKET_TOTAL` | 1000 | Total bucket range across all hosts |
 | `BUCKET_TARGET` | 500 | Maximum buckets this host should own |
 | `BUCKET_HEARTBEAT_GRACE_SEC` | 600 | Seconds before a silent host's buckets are reclaimed |
+| `PINNED_BUCKET_MIN` / `PINNED_BUCKET_MAX` | unset | Migration-only static bucket range; disables `jetmon_hosts` ownership for v1-compatible host-by-host cutover |
 | `ALERT_COOLDOWN_MINUTES` | 30 | Default cooldown between repeated alerts per site |
 | `LEGACY_STATUS_PROJECTION_ENABLE` | true | Keep `jetpack_monitor_sites.site_status` / `last_status_change` updated for v1 consumers during migration |
 | `LOG_FORMAT` | `text` | `text` for plain-text logs or `json` for structured logs |
@@ -429,7 +430,11 @@ Simulate a host failure by manually expiring a row in `jetmon_hosts`. Verify the
 
 ### Operator Dashboard
 
-The dashboard is available at http://localhost:8080 (configurable via `DASHBOARD_PORT`). It shows worker count, active checks, queue depth, retry queue depth, sites per second, round time, owned buckets, RSS, and WPCOM circuit-breaker state.
+The dashboard is available at http://localhost:8080 (configurable via
+`DASHBOARD_PORT`). It shows worker count, active checks, queue depth, retry
+queue depth, sites per second, round time, owned buckets, rollout guard state,
+RSS, WPCOM circuit-breaker state, and live dependency health for MySQL,
+configured Verifliers, WPCOM, StatsD, and log/stats directory writes.
 
 ### Internal API and Delivery Workers
 
@@ -458,17 +463,86 @@ Jetmon runs on multiple production hosts managed by the Systems team. Each host 
 1) Install the `jetmon2` binary to `/opt/jetmon2/`
 2) Install `systemd/jetmon2.service` to `/etc/systemd/system/` and run `systemctl daemon-reload`
 3) Install `systemd/jetmon2-logrotate` to `/etc/logrotate.d/jetmon2`
-4) Create `/opt/jetmon2/config/jetmon2.env` with the database credentials and auth tokens (see `config/db-config-sample.conf` for the required keys)
-5) Copy `config/config.json` from an existing host (or generate from `config-sample.json`)
-6) Set `BUCKET_TARGET` to the desired maximum bucket count for this host
-7) Run `./jetmon2 migrate` to apply any pending schema migrations
-8) Start the service: `systemctl enable --now jetmon2`
+4) Create `/opt/jetmon2/logs` and `/opt/jetmon2/stats`, owned by the `jetmon` service user
+5) Create `/opt/jetmon2/config/jetmon2.env` with the database credentials and auth tokens (see `config/db-config-sample.conf` for the required keys)
+6) Copy `config/config.json` from an existing host (or generate from `config-sample.json`)
+7) Set `BUCKET_TARGET` to the desired maximum bucket count for this host
+8) Run `./jetmon2 migrate` to apply any pending schema migrations
+9) Start the service: `systemctl enable --now jetmon2`
 
 The new host will claim unclaimed buckets from the pool on first startup. No existing hosts need reconfiguration.
 
-### Rolling Updates (Zero Downtime)
+### v1 to v2 Pinned Rolling Migration
 
-Update one host at a time. Surviving hosts absorb the draining host's buckets during the update window:
+For the first production migration from v1, replace one v1 host at a time with
+a v2 host pinned to that same inclusive bucket range. This avoids mixed v1/v2
+bucket ownership and gives each host a simple rollback path.
+
+1) Pre-apply additive migrations during a quiet period:
+
+		./jetmon2 migrate
+
+2) On the host being replaced, copy the existing v1 bucket range into v2 config:
+
+		"PINNED_BUCKET_MIN": 0,
+		"PINNED_BUCKET_MAX": 99,
+		"LEGACY_STATUS_PROJECTION_ENABLE": true,
+		"API_PORT": 0
+
+   The v1 names `BUCKET_NO_MIN` / `BUCKET_NO_MAX` are accepted as aliases, but
+   `PINNED_BUCKET_*` makes the migration mode explicit. In pinned mode, v2 does
+   not claim or heartbeat `jetmon_hosts`; it checks only the configured range.
+
+3) Before stopping v1, run config validation and confirm it prints the pinned
+   preflight plus projection-drift commands:
+
+		./jetmon2 validate-config
+
+4) Before starting the cutover, run the pinned rollout preflight:
+
+		./jetmon2 rollout pinned-check
+
+   It verifies pinned mode, legacy projection writes, absence of a
+   `jetmon_hosts` row for the host, active site count for the range, and zero
+   legacy projection drift.
+
+5) Stop the v1 process for that range, start v2, and verify checks,
+   Veriflier confirmations, WPCOM notifications, audit rows, and legacy
+   `site_status` projection for that bucket range. If the operator dashboard is
+   enabled, also confirm rollout guard state and dependency health before
+   moving to the next host.
+
+6) If rollback is needed, stop v2 and restart the original v1 process with the
+   same bucket config. Because the v2 migrations are additive and the legacy
+   projection remains enabled, legacy readers continue to see familiar status
+   fields.
+
+7) Repeat for each v1 host. After the whole fleet is on v2 and stable, plan a
+   coordinated dynamic-ownership cutover, remove `PINNED_BUCKET_*` from the v2
+   monitor configs, restart the fleet in the approved window, then run:
+
+		./jetmon2 rollout dynamic-check
+
+   This verifies fresh, active, gap-free, overlap-free `jetmon_hosts` coverage
+   before the fleet moves to normal v2 rolling updates.
+
+If either rollout check reports legacy projection drift, list the mismatched
+active site rows before continuing:
+
+		./jetmon2 rollout projection-drift
+
+For a specific range:
+
+		./jetmon2 rollout projection-drift --bucket-min=0 --bucket-max=99 --limit=100
+
+See [`docs/v1-to-v2-pinned-rollout.md`](docs/v1-to-v2-pinned-rollout.md) for
+the detailed rollout checklist.
+
+### v2 Rolling Updates (Zero Downtime)
+
+After all monitor hosts are already on v2 dynamic bucket ownership, update one
+host at a time. Surviving hosts absorb the draining host's buckets during the
+update window:
 
 1) On the host being updated, drain in-flight checks and release buckets:
 
@@ -500,7 +574,11 @@ The service releases its buckets to the pool before exiting. Surviving hosts rec
 
 	./jetmon2 status
 
-Or check the operator dashboard at the configured `DASHBOARD_PORT` for check-pool, throughput, bucket, memory, and WPCOM circuit-breaker state.
+Or check the operator dashboard at the configured `DASHBOARD_PORT` for
+check-pool, throughput, bucket, rollout guard, memory, WPCOM circuit-breaker
+state, and live dependency health. The rollout section shows bucket ownership
+mode, legacy projection mode, delivery-worker ownership, and the matching
+rollout preflight and projection-drift commands for the active config.
 
 ### Config Reload Without Restart
 
@@ -534,13 +612,19 @@ Metrics are emitted with prefix `com.jetpack.jetmon.<hostname>`. The Graphite/Gr
 - Free and active goroutines
 - Sites processed per second
 - Round completion time
-- WPCOM API success and error rates
+- WPCOM API attempt, delivered, retry, error, and failed rates, including
+  status-specific splits for `down`, `running`, and `confirmed_down`
 - Veriflier response times
 - Detection flow timing: first failure → Seems Down, first failure →
   Veriflier escalation, Seems Down → Down, Seems Down → false alarm, and
   Seems Down → probe-cleared recovery
+- Detection outcome counters split by local failure class (`server`, `client`,
+  `blocked`, `https`, `redirect`, `intermittent`) for false-alarm and
+  confirmed-down rate comparisons
 - Veriflier decision counters: escalations, RPC success/error, confirm/disagree
   votes, quorum-met confirmations, and false alarms
+- Per-Veriflier-host RPC and vote counters under `verifier.host.<host>.*` so
+  region/provider disagreement and latency can be compared during v2 production
 - Legacy projection drift: per-bucket count of active sites whose
   `site_status` no longer matches the authoritative open HTTP event
 - Memory usage

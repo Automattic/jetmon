@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	runtimemetrics "runtime/metrics"
+	"strings"
 	"sync"
 	"time"
 
@@ -136,6 +137,14 @@ func (o *Orchestrator) ev() *eventstore.Store {
 // ClaimBuckets registers this host in jetmon_hosts and sets the bucket range.
 func (o *Orchestrator) ClaimBuckets() error {
 	cfg := config.Get()
+	if min, max, ok := cfg.PinnedBucketRange(); ok {
+		if o.bucketMin != min || o.bucketMax != max {
+			log.Printf("orchestrator: using pinned buckets %d-%d (dynamic bucket ownership disabled)", min, max)
+		}
+		o.bucketMin = min
+		o.bucketMax = max
+		return nil
+	}
 	min, max, err := dbClaimBuckets(
 		o.hostname,
 		cfg.BucketTotal,
@@ -158,11 +167,15 @@ func (o *Orchestrator) Run() {
 		select {
 		case <-o.ctx.Done():
 			log.Println("orchestrator: shutting down")
-			if err := dbMarkHostDraining(stdctx.Background(), o.hostname); err != nil {
-				log.Printf("orchestrator: mark draining: %v", err)
+			if !o.usesPinnedBuckets(config.Get()) {
+				if err := dbMarkHostDraining(stdctx.Background(), o.hostname); err != nil {
+					log.Printf("orchestrator: mark draining: %v", err)
+				}
 			}
 			o.pool.Drain()
-			if err := dbReleaseHost(stdctx.Background(), o.hostname); err != nil {
+			if o.usesPinnedBuckets(config.Get()) {
+				log.Println("orchestrator: pinned bucket mode active; no jetmon_hosts row to release")
+			} else if err := dbReleaseHost(stdctx.Background(), o.hostname); err != nil {
 				log.Printf("orchestrator: release host: %v", err)
 			}
 			return
@@ -195,14 +208,20 @@ func (o *Orchestrator) Stop() {
 func (o *Orchestrator) runRound() {
 	cfg := config.Get()
 
-	// Update heartbeat.
-	if err := dbHeartbeat(o.ctx, o.hostname); err != nil {
-		log.Printf("orchestrator: heartbeat failed: %v", err)
-	}
-	// Re-claim every round so bucket ranges rebalance automatically when hosts
-	// join or leave the cluster.
-	if err := o.ClaimBuckets(); err != nil {
-		log.Printf("orchestrator: bucket rebalance failed: %v", err)
+	if o.usesPinnedBuckets(cfg) {
+		if err := o.ClaimBuckets(); err != nil {
+			log.Printf("orchestrator: pinned bucket claim failed: %v", err)
+		}
+	} else {
+		// Update heartbeat.
+		if err := dbHeartbeat(o.ctx, o.hostname); err != nil {
+			log.Printf("orchestrator: heartbeat failed: %v", err)
+		}
+		// Re-claim every round so bucket ranges rebalance automatically when
+		// hosts join or leave the cluster.
+		if err := o.ClaimBuckets(); err != nil {
+			log.Printf("orchestrator: bucket rebalance failed: %v", err)
+		}
 	}
 	o.checkLegacyProjectionDrift(cfg)
 
@@ -357,6 +376,7 @@ func (o *Orchestrator) handleRecovery(site db.Site, res checker.Result) {
 		log.Printf("orchestrator: blog_id=%d recovered", site.BlogID)
 		if entry != nil && site.SiteStatus == statusDown {
 			emitCounter("detection.probe_cleared.count", 1)
+			emitCounter("detection.probe_cleared."+failureClass(entry.lastResult)+".count", 1)
 			emitTimingSince("detection.seems_down_to_probe_cleared.time", entry.firstFailAt, changeTime)
 		}
 
@@ -383,6 +403,8 @@ func (o *Orchestrator) handleRecovery(site db.Site, res checker.Result) {
 
 func (o *Orchestrator) handleFailure(site db.Site, res checker.Result) {
 	entry := o.retries.record(res)
+	class := failureClass(res)
+	emitCounter("detection.failure."+class+".count", 1)
 
 	// Open a Seems Down event on the first failure we don't already have an
 	// id for. The schema's idempotent dedup_key means re-detecting the same
@@ -396,6 +418,7 @@ func (o *Orchestrator) handleFailure(site db.Site, res checker.Result) {
 			entry.eventID = id
 			if entry.failCount == 1 {
 				emitCounter("detection.seems_down.open.count", 1)
+				emitCounter("detection.seems_down.open."+class+".count", 1)
 				emitTimingSince("detection.first_failure_to_seems_down.time", entry.firstFailAt, nowFunc().UTC())
 			}
 		}
@@ -490,12 +513,16 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 	for range clients {
 		vr := <-ch
 		emitTiming("verifier.rpc.duration", vr.duration)
+		hostSegment := metricSegment(vr.host)
+		emitTiming("verifier.host."+hostSegment+".rpc.duration", vr.duration)
 		if vr.err != nil {
 			emitCounter("verifier.rpc.error.count", 1)
+			emitCounter("verifier.host."+hostSegment+".rpc.error.count", 1)
 			log.Printf("orchestrator: veriflier %s error: %v", vr.host, vr.err)
 			continue
 		}
 		emitCounter("verifier.rpc.success.count", 1)
+		emitCounter("verifier.host."+hostSegment+".rpc.success.count", 1)
 		healthyVerifliers++
 		// Verifier reply is operational telemetry — recorded under
 		// EventVeriflierSent with the response in metadata. The site-state
@@ -518,9 +545,11 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 		vResults = append(vResults, *vr.res)
 		if !vr.res.Success {
 			emitCounter("verifier.vote.confirm_down.count", 1)
+			emitCounter("verifier.host."+hostSegment+".vote.confirm_down.count", 1)
 			confirmations++
 		} else {
 			emitCounter("verifier.vote.disagree.count", 1)
+			emitCounter("verifier.host."+hostSegment+".vote.disagree.count", 1)
 		}
 	}
 
@@ -544,6 +573,7 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 		// event with reason=false_alarm and reset site_status in the same tx.
 		log.Printf("orchestrator: blog_id=%d verifliers did not confirm down (%d/%d)", site.BlogID, confirmations, quorum)
 		emitCounter("detection.verifier.false_alarm.count", 1)
+		emitCounter("detection.verifier.false_alarm."+failureClass(entry.lastResult)+".count", 1)
 		emitTimingSince("detection.seems_down_to_false_alarm.time", entry.firstFailAt, nowFunc().UTC())
 		_ = dbRecordFalsePositive(site.BlogID, entry.lastResult.HTTPCode, entry.lastResult.ErrorCode,
 			entry.lastResult.RTT.Milliseconds())
@@ -569,6 +599,7 @@ func (o *Orchestrator) confirmDown(site db.Site, entry *retryEntry, vResults []v
 	newStatus := statusConfirmedDown
 	changeTime := nowFunc().UTC()
 	emitCounter("detection.down.confirmed.count", 1)
+	emitCounter("detection.down.confirmed."+failureClass(entry.lastResult)+".count", 1)
 	emitTimingSince("detection.seems_down_to_down.time", entry.firstFailAt, changeTime)
 
 	log.Printf("orchestrator: blog_id=%d confirmed down", site.BlogID)
@@ -647,7 +678,13 @@ func (o *Orchestrator) sendNotification(site db.Site, res checker.Result, status
 		Detail:    fmt.Sprintf("status=%d type=%s", status, n.StatusType),
 	})
 
+	wpcomStatus := wpcomStatusMetricSegment(status)
+	emitCounter("wpcom.notification.attempt.count", 1)
+	emitCounter("wpcom.notification.status."+wpcomStatus+".attempt.count", 1)
 	if err := wpcomNotifyFunc(o.wpcom, n); err != nil {
+		emitCounter("wpcom.notification.error.count", 1)
+		emitCounter("wpcom.notification.status."+wpcomStatus+".error.count", 1)
+		emitCounter("wpcom.notification.retry.count", 1)
 		log.Printf("orchestrator: wpcom notify failed for blog_id=%d: %v", site.BlogID, err)
 		o.auditLog(audit.Entry{
 			BlogID:    site.BlogID,
@@ -658,10 +695,17 @@ func (o *Orchestrator) sendNotification(site db.Site, res checker.Result, status
 
 		// Single retry.
 		if retryErr := wpcomNotifyFunc(o.wpcom, n); retryErr != nil {
+			emitCounter("wpcom.notification.error.count", 1)
+			emitCounter("wpcom.notification.status."+wpcomStatus+".error.count", 1)
+			emitCounter("wpcom.notification.failed.count", 1)
+			emitCounter("wpcom.notification.status."+wpcomStatus+".failed.count", 1)
 			log.Printf("orchestrator: wpcom notify retry failed for blog_id=%d: %v", site.BlogID, retryErr)
 			return
 		}
+		emitCounter("wpcom.notification.retry.delivered.count", 1)
 	}
+	emitCounter("wpcom.notification.delivered.count", 1)
+	emitCounter("wpcom.notification.status."+wpcomStatus+".delivered.count", 1)
 	if err := dbUpdateLastAlertSent(o.ctx, site.BlogID, nowFunc().UTC()); err != nil {
 		log.Printf("orchestrator: update last alert sent blog_id=%d: %v", site.BlogID, err)
 	}
@@ -817,6 +861,11 @@ func (o *Orchestrator) BucketRange() (int, int) {
 	return o.bucketMin, o.bucketMax
 }
 
+func (o *Orchestrator) usesPinnedBuckets(cfg *config.Config) bool {
+	_, _, ok := cfg.PinnedBucketRange()
+	return ok
+}
+
 // WorkerCount returns the live worker count.
 func (o *Orchestrator) WorkerCount() int {
 	return o.pool.WorkerCount()
@@ -864,6 +913,37 @@ func emitTimingSince(stat string, start, end time.Time) {
 		return
 	}
 	emitTiming(stat, end.Sub(start))
+}
+
+func failureClass(res checker.Result) string {
+	return metricSegment((&res).StatusType())
+}
+
+func metricSegment(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if s == "" {
+		return "unknown"
+	}
+
+	var b strings.Builder
+	lastUnderscore := false
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastUnderscore = false
+			continue
+		}
+		if !lastUnderscore {
+			b.WriteByte('_')
+			lastUnderscore = true
+		}
+	}
+
+	out := strings.Trim(b.String(), "_")
+	if out == "" {
+		return "unknown"
+	}
+	return out
 }
 
 // openSeemsDown opens (or re-detects) a Seems Down event for an HTTP-failing
@@ -1047,6 +1127,19 @@ func statusFromBool(success bool) int {
 		return statusRunning
 	}
 	return 0
+}
+
+func wpcomStatusMetricSegment(status int) string {
+	switch status {
+	case statusDown:
+		return "down"
+	case statusRunning:
+		return "running"
+	case statusConfirmedDown:
+		return "confirmed_down"
+	default:
+		return "unknown"
+	}
 }
 
 func (o *Orchestrator) refreshVeriflierClients(cfg *config.Config) {

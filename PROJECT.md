@@ -201,6 +201,8 @@ A standalone binary (`jetmon2 validate-config`) that:
 - Validates value ranges and required per-mode settings
 - Attempts a test connection to MySQL
 - Reports legacy projection and email transport modes
+- Prints the matching rollout preflight and projection-drift investigation
+  commands for the configured bucket ownership mode
 - Warns when the email transport resolves to the log-only `stub` sender
 - Lists configured Verifliers as best-effort operator context
 - Outputs a pass/fail summary with specific error messages
@@ -216,22 +218,28 @@ A lightweight web UI served by the binary itself (no separate process) on a conf
 - Round completion time
 - Local retry queue depth
 - Owned bucket range
+- Bucket ownership mode, legacy projection mode, delivery-worker ownership, and
+  rollout preflight / projection-drift commands
 - RSS memory usage
 - WPCOM circuit-breaker state and queued notification depth
+- Live dependency health for MySQL, configured Verifliers, WPCOM, StatsD, and
+  log/stats directory writes
 
-Updates via server-sent events — no WebSocket library needed, no JavaScript framework. A plain HTML page with `<EventSource>` is sufficient and has no build toolchain dependency.
+Updates via server-sent events and lightweight JSON polling — no WebSocket library needed, no JavaScript framework. A plain HTML page with `<EventSource>` and `fetch` is sufficient and has no build toolchain dependency.
 
-**Future System Health Map**
-A broader operator-dashboard health grid is still a natural follow-up:
+**System Health Map**
+The operator dashboard health grid publishes:
 
-- MySQL (primary + replicas): connection state, query latency, last successful batch
-- Each configured Veriflier: reachability, last response time, last batch sent/received
-- WPCOM API: last successful notification, current error rate
-- StatsD: last successful flush
-- Disk (log and stats files): free space, last write time
+- MySQL: connection state and ping latency
+- Each configured Veriflier: reachability and status latency
+- WPCOM API: circuit-breaker state and queued notification depth
+- StatsD: local client initialization state
+- Disk: writable `logs/` and `stats/` directories
 
-The current dashboard has an `/api/health` shape for this data, but the live
-publisher for those entries has not been wired yet.
+Future refinements can add primary/replica breakdowns, last successful
+orchestrator batch, WPCOM request error-rate windows, and disk free-space
+thresholds once production operating data shows which signals are worth paging
+on.
 
 **False Positive Tracker**
 Every time the system escalates a site to Veriflier confirmation and the Verifliers do NOT confirm it as down (i.e., the queue entry times out or all Verifliers report the site as up), the event is recorded in a `jetmon_false_positives` table with timestamp, site, HTTP code, error code, and RTT from the local check. A view in the operator dashboard surfaces sites with high false positive rates, helping operators tune per-site `NUM_OF_CHECKS` or `TIME_BETWEEN_CHECKS_SEC` settings.
@@ -256,6 +264,9 @@ Queryable by `blog_id` and time range via a CLI tool (`jetmon2 audit --blog-id 1
 - `jetmon2 version` — prints binary version, build date, Go version, and git commit hash
 - `jetmon2 migrate` — applies pending DB schema migrations idempotently
 - `jetmon2 status` — connects to a running instance's internal API and prints a one-line health summary (equivalent to reading `stats/totals` but richer)
+- `jetmon2 rollout pinned-check` — validates a pinned v1-to-v2 cutover host before or during host replacement
+- `jetmon2 rollout dynamic-check` — validates full `jetmon_hosts` coverage after the fleet transitions from pinned to dynamic ownership
+- `jetmon2 rollout projection-drift` — lists active sites whose legacy `site_status` projection disagrees with the authoritative event state
 - `jetmon2 drain --worker N` — gracefully removes one worker pool slot, waiting for in-flight checks to complete before reducing concurrency
 - `jetmon2 reload` — sends SIGHUP to the running process (convenience wrapper)
 
@@ -275,7 +286,7 @@ The worker pool monitors queue depth against a configurable high-water mark. Whe
 The binary ships with a systemd unit file. `Restart=on-failure` with a short `RestartSec` ensures the process is automatically restarted if it crashes or exits unexpectedly. `StartLimitIntervalSec` and `StartLimitBurst` prevent restart loops from hammering a broken dependency. The unit file also enforces resource limits (`MemoryMax`, `LimitNOFILE`) to keep the process within safe bounds on shared hosts. A watchdog integration via `sd_notify` lets systemd detect and restart a process that has stopped making progress without actually crashing.
 
 **MySQL-Coordinated Bucket Ownership**
-A `jetmon_hosts` table replaces the static `BUCKET_NO_MIN`/`BUCKET_NO_MAX` config values with runtime-negotiated bucket ownership. Hosts claim, hold, and release bucket ranges autonomously using MySQL transactions as the coordination mechanism — no cluster orchestrator required.
+A `jetmon_hosts` table replaces the static `BUCKET_NO_MIN`/`BUCKET_NO_MAX` config values with runtime-negotiated bucket ownership. Hosts claim, hold, and release bucket ranges autonomously using MySQL transactions as the coordination mechanism — no cluster orchestrator required. For the initial v1-to-v2 production migration, `PINNED_BUCKET_MIN`/`PINNED_BUCKET_MAX` (with `BUCKET_NO_MIN`/`BUCKET_NO_MAX` accepted as aliases) temporarily pins a v2 host to the exact static range of the v1 host it replaces; remove those keys after the fleet is on v2 to enable dynamic ownership.
 
 Table structure:
 ```sql
@@ -288,9 +299,9 @@ CREATE TABLE jetmon_hosts (
 );
 ```
 
-On startup, the instance upserts its own row, then scans for rows whose `last_heartbeat` is older than the grace period (suggested: 2× normal round time). Expired rows are presumed dead. The instance claims their uncovered bucket ranges by deleting the dead rows and inserting its own covering range inside a `SELECT ... FOR UPDATE` transaction, preventing two hosts from racing to claim the same range simultaneously. The instance derives its active range from what it successfully claimed — `BUCKET_NO_MIN`/`BUCKET_NO_MAX` are no longer needed in `config.json`.
+In dynamic ownership mode, on startup the instance upserts its own row, then scans for rows whose `last_heartbeat` is older than the grace period (suggested: 2× normal round time). Expired rows are presumed dead. The instance claims their uncovered bucket ranges by deleting the dead rows and inserting its own covering range inside a `SELECT ... FOR UPDATE` transaction, preventing two hosts from racing to claim the same range simultaneously. The instance derives its active range from what it successfully claimed — `BUCKET_NO_MIN`/`BUCKET_NO_MAX` are only needed as aliases for the temporary pinned migration mode.
 
-Each round, the orchestrator issues a single `UPDATE jetmon_hosts SET last_heartbeat = NOW() WHERE host_id = ?`. If a host stalls, is OOM-killed, or loses network, its heartbeat stops updating. Surviving hosts detect the stale row at the start of their next round and absorb its buckets up to their configured `BUCKET_TARGET` maximum.
+In dynamic ownership mode, each round the orchestrator issues a single `UPDATE jetmon_hosts SET last_heartbeat = NOW() WHERE host_id = ?`. If a host stalls, is OOM-killed, or loses network, its heartbeat stops updating. Surviving hosts detect the stale row at the start of their next round and absorb its buckets up to their configured `BUCKET_TARGET` maximum. In pinned migration mode, the host skips `jetmon_hosts` entirely and checks only its configured static range.
 
 On SIGINT, the instance sets `status = 'draining'`, completes in-flight checks, then deletes its own row. Surviving hosts can reclaim those buckets at the start of their next round without waiting for heartbeat expiry. A hard-killed host leaves its row in place; the grace period determines how long before its buckets are reclaimed.
 
