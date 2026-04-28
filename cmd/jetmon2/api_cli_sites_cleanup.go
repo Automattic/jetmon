@@ -45,7 +45,7 @@ func cmdAPISitesCleanup(args []string) error {
 	fs.Int64Var(&cleanup.blogIDStart, "blog-id-start", 0, "first batch blog_id; default derives from --batch")
 	fs.BoolVar(&cleanup.dryRun, "dry-run", false, "print the planned deletes without sending requests")
 	fs.BoolVar(&cleanup.ignoreNotFound, "ignore-not-found", cleanup.ignoreNotFound, "treat 404 responses as already cleaned")
-	if err := fs.Parse(args); err != nil {
+	if err := parseAPIFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {

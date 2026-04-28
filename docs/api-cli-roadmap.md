@@ -1,6 +1,6 @@
 # API CLI Roadmap
 
-Status: completed on `feature/api-cli`.
+Status: active on `feature/api-cli`.
 
 This roadmap tracks a local developer/operator CLI for exercising the internal
 Jetmon `/api/v1` surface without remembering endpoint paths, auth headers, and
@@ -110,6 +110,25 @@ but it should not become a generic `curl` clone.
   generic requests, site management, batch test data, events, webhooks, alert
   contacts, smoke runs, failure simulation, cleanup, and automation patterns.
 
+## P6 - Operator Ergonomics and Safety
+
+- [x] Allow API CLI flags before or after positional arguments so examples like
+  `sites get 123 --pretty` work the way operators naturally type them.
+- [ ] Add batch ownership safety checks for destructive or mutating batch
+  workflows. `sites cleanup --batch` and `sites simulate-failure --batch`
+  should verify the target still belongs to the requested CLI batch unless the
+  operator explicitly opts out.
+- [ ] Add a reproducible documentation/live validation target for the API CLI
+  feature guide and Docker-local smoke path.
+- [ ] Improve table output for workflow commands with event IDs, states,
+  severities, transition counts, trigger results, and cleanup status.
+- [ ] Add shell completion or richer command discovery for the expanded
+  `jetmon2 api` command tree.
+- [ ] Extend `api-fixture` into a local webhook receiver so smoke tests can
+  verify outbound webhook delivery and signing behavior end-to-end.
+- [ ] Add a local API-token convenience target or wrapper for creating and
+  revoking Docker-local API CLI tokens during rehearsals.
+
 ## Completed
 
 - [x] 2026-04-28: Created the `feature/api-cli` branch and initial roadmap.
@@ -190,3 +209,6 @@ but it should not become a generic `curl` clone.
 - [x] 2026-04-28: Added `docs/api-cli-guide.md` as a feature-oriented API CLI
   usage guide with local setup, command examples, workflow recipes, failure
   simulation assertions, and automation notes.
+- [x] 2026-04-28: Allowed API CLI flags before or after positional arguments by
+  normalizing recognized flags before parsing while preserving `--` literals;
+  added tests for interspersed flags and help output.

@@ -92,7 +92,7 @@ func cmdAPIWebhooks(args []string) error {
 func cmdAPIWebhooksList(args []string) error {
 	opts := defaultAPIOptions()
 	fs := newAPIFlagSet("api webhooks list", &opts)
-	if err := fs.Parse(args); err != nil {
+	if err := parseAPIFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
@@ -104,7 +104,7 @@ func cmdAPIWebhooksList(args []string) error {
 func cmdAPIWebhooksGet(args []string) error {
 	opts := defaultAPIOptions()
 	fs := newAPIFlagSet("api webhooks get", &opts)
-	if err := fs.Parse(args); err != nil {
+	if err := parseAPIFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
@@ -127,7 +127,7 @@ func cmdAPIWebhooksCreate(args []string) error {
 	fs.Var(&create.events, "event", "event type filter (repeatable or comma-separated)")
 	fs.Var(&create.siteIDs, "site-id", "site id filter (repeatable or comma-separated)")
 	fs.Var(&create.states, "state", "state filter (repeatable or comma-separated)")
-	if err := fs.Parse(args); err != nil {
+	if err := parseAPIFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
@@ -152,7 +152,7 @@ func cmdAPIWebhooksUpdate(args []string) error {
 	fs.BoolVar(&update.clearSites, "clear-sites", false, "clear site filters")
 	fs.Var(&update.states, "state", "state filter (repeatable or comma-separated)")
 	fs.BoolVar(&update.clearStates, "clear-states", false, "clear state filters")
-	if err := fs.Parse(args); err != nil {
+	if err := parseAPIFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
@@ -172,7 +172,7 @@ func cmdAPIWebhooksUpdate(args []string) error {
 func cmdAPIWebhooksDelete(args []string) error {
 	opts := defaultAPIOptions()
 	fs := newAPIFlagSet("api webhooks delete", &opts)
-	if err := fs.Parse(args); err != nil {
+	if err := parseAPIFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
@@ -189,7 +189,7 @@ func cmdAPIWebhooksRotateSecret(args []string) error {
 	opts := defaultAPIOptions()
 	fs := newAPIFlagSet("api webhooks rotate-secret", &opts)
 	addAPIIdempotencyFlag(fs, &opts)
-	if err := fs.Parse(args); err != nil {
+	if err := parseAPIFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
@@ -209,7 +209,7 @@ func cmdAPIWebhooksDeliveries(args []string) error {
 	fs.StringVar(&filters.cursor, "cursor", "", "pagination cursor")
 	fs.IntVar(&filters.limit, "limit", 0, "page size (1-200)")
 	fs.StringVar(&filters.status, "status", "", "delivery status: pending, delivered, failed, or abandoned")
-	if err := fs.Parse(args); err != nil {
+	if err := parseAPIFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
@@ -226,7 +226,7 @@ func cmdAPIWebhooksRetry(args []string) error {
 	opts := defaultAPIOptions()
 	fs := newAPIFlagSet("api webhooks retry", &opts)
 	addAPIIdempotencyFlag(fs, &opts)
-	if err := fs.Parse(args); err != nil {
+	if err := parseAPIFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 2 {

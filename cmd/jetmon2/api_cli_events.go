@@ -72,7 +72,7 @@ func cmdAPIEventsList(args []string) error {
 	fs.StringVar(&filters.startedAtGTE, "started-at-gte", "", "filter events started at or after this RFC3339 timestamp")
 	fs.StringVar(&filters.startedAtLT, "started-at-lt", "", "filter events started before this RFC3339 timestamp")
 	fs.StringVar(&filters.active, "active", "", "filter open events: true or false")
-	if err := fs.Parse(args); err != nil {
+	if err := parseAPIFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
@@ -90,7 +90,7 @@ func cmdAPIEventsGet(args []string) error {
 	fs := newAPIFlagSet("api events get", &opts)
 	var siteID string
 	fs.StringVar(&siteID, "site-id", "", "optional site id for site-scoped event lookup")
-	if err := fs.Parse(args); err != nil {
+	if err := parseAPIFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
@@ -109,7 +109,7 @@ func cmdAPIEventsTransitions(args []string) error {
 	filters := apiTransitionsListFilters{}
 	fs.StringVar(&filters.cursor, "cursor", "", "pagination cursor")
 	fs.IntVar(&filters.limit, "limit", 0, "page size (1-200)")
-	if err := fs.Parse(args); err != nil {
+	if err := parseAPIFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 2 {
@@ -129,7 +129,7 @@ func cmdAPIEventsClose(args []string) error {
 	closeOpts := apiEventCloseOptions{}
 	fs.StringVar(&closeOpts.reason, "reason", "", "resolution reason (default: manual_override)")
 	fs.StringVar(&closeOpts.note, "note", "", "operator note recorded in transition metadata")
-	if err := fs.Parse(args); err != nil {
+	if err := parseAPIFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 2 {

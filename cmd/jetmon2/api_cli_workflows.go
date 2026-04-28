@@ -89,7 +89,7 @@ func cmdAPISmoke(args []string) error {
 	fs.BoolVar(&smoke.cleanup, "cleanup", smoke.cleanup, "delete smoke-created resources before exit")
 	fs.StringVar(&smoke.exercise, "exercise", smoke.exercise, "extra path to exercise: alert-contact or none")
 	fs.StringVar(&smoke.idempotencyKeyPrefix, "idempotency-key-prefix", "", "prefix for smoke POST Idempotency-Key headers")
-	if err := fs.Parse(args); err != nil {
+	if err := parseAPIFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {

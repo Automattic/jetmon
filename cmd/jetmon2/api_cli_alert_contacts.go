@@ -100,7 +100,7 @@ func cmdAPIAlertContacts(args []string) error {
 func cmdAPIAlertContactsList(args []string) error {
 	opts := defaultAPIOptions()
 	fs := newAPIFlagSet("api alert-contacts list", &opts)
-	if err := fs.Parse(args); err != nil {
+	if err := parseAPIFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
@@ -112,7 +112,7 @@ func cmdAPIAlertContactsList(args []string) error {
 func cmdAPIAlertContactsGet(args []string) error {
 	opts := defaultAPIOptions()
 	fs := newAPIFlagSet("api alert-contacts get", &opts)
-	if err := fs.Parse(args); err != nil {
+	if err := parseAPIFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
@@ -137,7 +137,7 @@ func cmdAPIAlertContactsCreate(args []string) error {
 	fs.Var(&create.siteIDs, "site-id", "site id filter (repeatable or comma-separated)")
 	fs.Var(&create.minSeverity, "min-severity", "minimum severity: Up, Warning, Degraded, SeemsDown, or Down")
 	fs.Var(&create.maxPerHour, "max-per-hour", "maximum notifications per hour, 0 for unlimited")
-	if err := fs.Parse(args); err != nil {
+	if err := parseAPIFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
@@ -161,7 +161,7 @@ func cmdAPIAlertContactsUpdate(args []string) error {
 	fs.BoolVar(&update.clearSites, "clear-sites", false, "clear site filters")
 	fs.Var(&update.minSeverity, "min-severity", "minimum severity: Up, Warning, Degraded, SeemsDown, or Down")
 	fs.Var(&update.maxPerHour, "max-per-hour", "maximum notifications per hour, 0 for unlimited")
-	if err := fs.Parse(args); err != nil {
+	if err := parseAPIFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
@@ -181,7 +181,7 @@ func cmdAPIAlertContactsUpdate(args []string) error {
 func cmdAPIAlertContactsDelete(args []string) error {
 	opts := defaultAPIOptions()
 	fs := newAPIFlagSet("api alert-contacts delete", &opts)
-	if err := fs.Parse(args); err != nil {
+	if err := parseAPIFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
@@ -198,7 +198,7 @@ func cmdAPIAlertContactsTest(args []string) error {
 	opts := defaultAPIOptions()
 	fs := newAPIFlagSet("api alert-contacts test", &opts)
 	addAPIIdempotencyFlag(fs, &opts)
-	if err := fs.Parse(args); err != nil {
+	if err := parseAPIFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
@@ -218,7 +218,7 @@ func cmdAPIAlertContactsDeliveries(args []string) error {
 	fs.StringVar(&filters.cursor, "cursor", "", "pagination cursor")
 	fs.IntVar(&filters.limit, "limit", 0, "page size (1-200)")
 	fs.StringVar(&filters.status, "status", "", "delivery status: pending, delivered, failed, or abandoned")
-	if err := fs.Parse(args); err != nil {
+	if err := parseAPIFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
@@ -235,7 +235,7 @@ func cmdAPIAlertContactsRetry(args []string) error {
 	opts := defaultAPIOptions()
 	fs := newAPIFlagSet("api alert-contacts retry", &opts)
 	addAPIIdempotencyFlag(fs, &opts)
-	if err := fs.Parse(args); err != nil {
+	if err := parseAPIFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 2 {

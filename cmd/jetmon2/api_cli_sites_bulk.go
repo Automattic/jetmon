@@ -62,7 +62,7 @@ func cmdAPISitesBulkAdd(args []string) error {
 	fs.BoolVar(&bulk.dryRun, "dry-run", false, "print planned create payloads without sending requests")
 	fs.StringVar(&bulk.idempotencyKeyPrefix, "idempotency-key-prefix", "", "prefix for per-site Idempotency-Key headers")
 	fs.Var(&bulk.monitorActive, "monitor-active", "override monitor_active for every generated site")
-	if err := fs.Parse(args); err != nil {
+	if err := parseAPIFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {

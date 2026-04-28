@@ -103,7 +103,7 @@ func printAPIUsage(w io.Writer) {
 func cmdAPIHealth(args []string) error {
 	opts := defaultAPIOptions()
 	fs := newAPIFlagSet("api health", &opts)
-	if err := fs.Parse(args); err != nil {
+	if err := parseAPIFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
@@ -115,7 +115,7 @@ func cmdAPIHealth(args []string) error {
 func cmdAPIMe(args []string) error {
 	opts := defaultAPIOptions()
 	fs := newAPIFlagSet("api me", &opts)
-	if err := fs.Parse(args); err != nil {
+	if err := parseAPIFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
@@ -130,7 +130,7 @@ func cmdAPIRequest(args []string) error {
 	fs.StringVar(&opts.body, "body", "", "literal request body")
 	fs.StringVar(&opts.bodyFile, "body-file", "", "file containing request body (- reads stdin)")
 	fs.StringVar(&opts.idempotencyKey, "idempotency-key", "", "Idempotency-Key header for POST retries")
-	if err := fs.Parse(args); err != nil {
+	if err := parseAPIFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 2 {
@@ -173,6 +173,66 @@ func newAPIFlagSet(name string, opts *apiCLIOptions) *flag.FlagSet {
 		printAPIFlagUsage(fs.Output(), fs)
 	}
 	return fs
+}
+
+type apiBoolFlag interface {
+	IsBoolFlag() bool
+}
+
+func parseAPIFlags(fs *flag.FlagSet, args []string) error {
+	normalized := normalizeAPIFlagArgs(fs, args)
+	return fs.Parse(normalized)
+}
+
+func normalizeAPIFlagArgs(fs *flag.FlagSet, args []string) []string {
+	flags := []string{}
+	positionals := []string{}
+	onlyPositionals := false
+	hasTerminator := false
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if onlyPositionals || arg == "-" || !strings.HasPrefix(arg, "-") {
+			positionals = append(positionals, arg)
+			continue
+		}
+		if arg == "--" {
+			onlyPositionals = true
+			hasTerminator = true
+			continue
+		}
+
+		name, hasValue := apiFlagName(arg)
+		f := fs.Lookup(name)
+		if f == nil {
+			flags = append(flags, arg)
+			continue
+		}
+		flags = append(flags, arg)
+		if hasValue || apiFlagIsBool(f) {
+			continue
+		}
+		if i+1 < len(args) {
+			i++
+			flags = append(flags, args[i])
+		}
+	}
+	if hasTerminator {
+		flags = append(flags, "--")
+	}
+	return append(flags, positionals...)
+}
+
+func apiFlagName(arg string) (string, bool) {
+	name := strings.TrimLeft(arg, "-")
+	if idx := strings.IndexByte(name, '='); idx >= 0 {
+		return name[:idx], true
+	}
+	return name, false
+}
+
+func apiFlagIsBool(f *flag.Flag) bool {
+	bf, ok := f.Value.(apiBoolFlag)
+	return ok && bf.IsBoolFlag()
 }
 
 func printAPIFlagUsage(w io.Writer, fs *flag.FlagSet) {

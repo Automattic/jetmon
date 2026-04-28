@@ -105,7 +105,7 @@ func cmdAPISitesSimulateFailure(args []string) error {
 	fs.Var(&sim.expectEventSeverity, "expect-event-severity", "require at least one active event with this severity after polling")
 	fs.BoolVar(&sim.requireTransition, "require-transition", false, "require at least one event transition after polling")
 	fs.StringVar(&sim.expectTransitionReason, "expect-transition-reason", "", "require at least one transition with this reason after polling")
-	if err := fs.Parse(args); err != nil {
+	if err := parseAPIFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {

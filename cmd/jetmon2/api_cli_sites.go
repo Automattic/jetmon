@@ -129,7 +129,7 @@ func cmdAPISitesList(args []string) error {
 	fs.IntVar(&filters.severityGTE, "severity-gte", -1, "minimum current severity")
 	fs.StringVar(&filters.monitorActive, "monitor-active", "", "filter active sites: true or false")
 	fs.StringVar(&filters.q, "q", "", "monitor URL substring search")
-	if err := fs.Parse(args); err != nil {
+	if err := parseAPIFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
@@ -145,7 +145,7 @@ func cmdAPISitesList(args []string) error {
 func cmdAPISitesGet(args []string) error {
 	opts := defaultAPIOptions()
 	fs := newAPIFlagSet("api sites get", &opts)
-	if err := fs.Parse(args); err != nil {
+	if err := parseAPIFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
@@ -173,7 +173,7 @@ func cmdAPISitesCreate(args []string) error {
 	fs.Var(&create.customHeaders, "custom-header", "site custom header in Name: Value form (repeatable)")
 	fs.Var(&create.alertCooldownMinutes, "alert-cooldown-minutes", "per-site alert cooldown in minutes")
 	fs.Var(&create.checkInterval, "check-interval", "check interval in minutes")
-	if err := fs.Parse(args); err != nil {
+	if err := parseAPIFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
@@ -202,7 +202,7 @@ func cmdAPISitesUpdate(args []string) error {
 	fs.Var(&update.checkInterval, "check-interval", "check interval in minutes")
 	fs.Var(&update.maintenanceStart, "maintenance-start", "maintenance start RFC3339 timestamp; empty clears it")
 	fs.Var(&update.maintenanceEnd, "maintenance-end", "maintenance end RFC3339 timestamp; empty clears it")
-	if err := fs.Parse(args); err != nil {
+	if err := parseAPIFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
@@ -222,7 +222,7 @@ func cmdAPISitesUpdate(args []string) error {
 func cmdAPISitesDelete(args []string) error {
 	opts := defaultAPIOptions()
 	fs := newAPIFlagSet("api sites delete", &opts)
-	if err := fs.Parse(args); err != nil {
+	if err := parseAPIFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
@@ -239,7 +239,7 @@ func cmdAPISitesPostAction(args []string, usageName, suffix string) error {
 	opts := defaultAPIOptions()
 	fs := newAPIFlagSet("api sites "+usageName, &opts)
 	addAPIIdempotencyFlag(fs, &opts)
-	if err := fs.Parse(args); err != nil {
+	if err := parseAPIFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {

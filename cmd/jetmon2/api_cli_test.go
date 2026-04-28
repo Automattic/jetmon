@@ -189,12 +189,49 @@ func TestAPIHelpReturnsFlagErrHelp(t *testing.T) {
 	var stderr bytes.Buffer
 	opts := apiCLIOptions{baseURL: "http://localhost:8090", timeout: 10 * time.Second, errOut: &stderr}
 	fs := newAPIFlagSet("api health", &opts)
-	err := fs.Parse([]string{"--help"})
+	err := parseAPIFlags(fs, []string{"--help"})
 	if !errors.Is(err, flag.ErrHelp) {
 		t.Fatalf("Parse(--help) error = %v, want flag.ErrHelp", err)
 	}
 	if got := stderr.String(); !strings.Contains(got, "--base-url string") {
 		t.Fatalf("usage = %q, want long-dash flag output", got)
+	}
+}
+
+func TestParseAPIFlagsAllowsFlagsAfterPositionals(t *testing.T) {
+	var stderr bytes.Buffer
+	opts := apiCLIOptions{baseURL: "http://localhost:8090", timeout: 10 * time.Second, errOut: &stderr}
+	fs := newAPIFlagSet("api sites get", &opts)
+
+	err := parseAPIFlags(fs, []string{"12345", "--pretty", "--output", "table", "--header", "X-Test: yes"})
+	if err != nil {
+		t.Fatalf("parseAPIFlags() error = %v", err)
+	}
+	if !opts.pretty {
+		t.Fatal("pretty = false, want true")
+	}
+	if opts.output != "table" {
+		t.Fatalf("output = %q, want table", opts.output)
+	}
+	if got := opts.headers; len(got) != 1 || got[0] != "X-Test: yes" {
+		t.Fatalf("headers = %#v, want X-Test header", got)
+	}
+	if got := fs.Args(); len(got) != 1 || got[0] != "12345" {
+		t.Fatalf("args = %#v, want [12345]", got)
+	}
+}
+
+func TestParseAPIFlagsPreservesPositionalsAfterDoubleDash(t *testing.T) {
+	var stderr bytes.Buffer
+	opts := apiCLIOptions{baseURL: "http://localhost:8090", timeout: 10 * time.Second, errOut: &stderr}
+	fs := newAPIFlagSet("api request", &opts)
+
+	err := parseAPIFlags(fs, []string{"GET", "--", "--not-a-flag"})
+	if err != nil {
+		t.Fatalf("parseAPIFlags() error = %v", err)
+	}
+	if got := fs.Args(); len(got) != 2 || got[0] != "GET" || got[1] != "--not-a-flag" {
+		t.Fatalf("args = %#v, want GET and literal --not-a-flag", got)
 	}
 }
 
