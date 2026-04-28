@@ -119,7 +119,10 @@ errors.
 4. Gateway-routed site, event/history, SLA/stat, and trigger-now routes now use
    `jetmon_site_tenants` for defense-in-depth ownership checks.
 5. Backfill/reconcile `jetmon_site_tenants` from the gateway's source of truth
-   before any customer traffic depends on direct Jetmon enforcement.
+   before any customer traffic depends on direct Jetmon enforcement. The initial
+   operator path is `jetmon2 site-tenants import --file <csv>`, where the CSV is
+   `tenant_id,blog_id`; pruning stale mappings still depends on an agreed
+   gateway export/reconciliation policy.
 6. Add public-scope and redaction tests route family by route family.
 7. Only after those checks exist, consider exposing Jetmon without a gateway.
 

@@ -58,6 +58,8 @@ func main() {
 		cmdReload()
 	case "keys":
 		cmdKeys(os.Args[2:])
+	case "site-tenants":
+		cmdSiteTenants(os.Args[2:])
 	default:
 		runServe()
 	}

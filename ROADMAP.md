@@ -238,6 +238,9 @@ tests that fail when handler behavior drifts from the published schema.
 
 - Backfill and reconcile `jetmon_site_tenants` from the gateway/customer source
   of truth before customer traffic depends on Jetmon-side site enforcement.
+  Initial CSV import support exists via `jetmon2 site-tenants import`; remaining
+  work is agreeing on the gateway export contract and pruning/reconciliation
+  policy for mappings that disappear from the source of truth.
 - Add public-contract integration tests for route-level tenant success and
   denial paths across sites, events, stats, trigger-now, webhooks, and alert
   contacts.

@@ -315,6 +315,20 @@ reports legacy projection and email transport modes, warns when alert-contact
 email uses the log-only `stub` sender, and lists configured Verifliers.
 Veriflier reachability is informational here rather than a validation failure.
 
+### Tenant Mapping Backfill
+
+Gateway-routed site reads and writes are scoped through
+`jetmon_site_tenants`. Before customer traffic depends on Jetmon-side tenant
+enforcement, import the gateway/customer source of truth as CSV:
+
+	./jetmon2 site-tenants import --file site-tenants.csv --dry-run
+	./jetmon2 site-tenants import --file site-tenants.csv --source gateway
+
+The CSV format is `tenant_id,blog_id` with an optional header row. The import
+upserts mappings and skips duplicate rows in the input; it does not delete
+missing mappings, because pruning requires a source-specific reconciliation
+policy.
+
 ### Debugging
 
 Enable debug logging in `config/config.json`:
