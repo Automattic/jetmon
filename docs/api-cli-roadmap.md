@@ -1,6 +1,6 @@
 # API CLI Roadmap
 
-Status: started on `feature/api-cli`.
+Status: completed on `feature/api-cli`.
 
 This roadmap tracks a local developer/operator CLI for exercising the internal
 Jetmon `/api/v1` surface without remembering endpoint paths, auth headers, and
@@ -55,21 +55,22 @@ but it should not become a generic `curl` clone.
 
 ## Test Site Source Ideas
 
-- **Recommended path:** Start with a curated checked-in fixture plus
-  operator-supplied file/stdin imports. Use real public endpoints for network
-  realism, add a Docker failure fixture later for deterministic event
-  assertions, and cycle through the source list with varied site settings for
-  larger `--count` values instead of inventing fake public domains.
+- **Implemented path:** Use a curated checked-in fixture plus operator-supplied
+  file/stdin imports for repeatable test-site creation. Use real public
+  endpoints for network realism, and use the Docker-local `api-fixture` service
+  for deterministic event assertions. For larger `--count` values, cycle
+  through the source list with varied site settings instead of inventing fake
+  public domains.
 - **Curated fixture:** Check in a small `docs/testdata` or `internal/testdata`
   source list with public endpoints selected for deterministic behavior. This
   should be the default because it keeps local test runs repeatable.
 - **Operator-supplied file/stdin:** Accept newline, CSV, or JSON site lists so
   developers can test with a private list of real customer-like domains without
   committing those domains to the repo.
-- **Docker failure fixture:** Add a local test-site container later for the
-  most deterministic failure simulation. Real public sites are useful for
-  network realism, but local fixture endpoints are better for asserting exact
-  event transitions.
+- **Docker failure fixture:** The local `api-fixture` service provides the most
+  deterministic failure simulation. Real public sites remain useful for network
+  realism, but local fixture endpoints are better for asserting exact event
+  transitions.
 - **Generated variants:** For `--count` larger than the curated fixture, cycle
   through the source list with deterministic suffix metadata and varied
   per-site settings: redirect policy, keyword, timeout, custom headers, and
