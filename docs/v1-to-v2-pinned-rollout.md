@@ -164,9 +164,20 @@ For each v1 host:
 Rollback is host-local:
 
 1. Stop the v2 process.
-2. Restart the original v1 process with the same `BUCKET_NO_MIN` /
+2. Run the rollback safety check:
+
+   ```bash
+   ./jetmon2 rollout rollback-check --host=<v2-hostname>
+   ```
+
+   This check defaults to the pinned range from config. It fails if the v2 host
+   still owns a `jetmon_hosts` row, any dynamic `jetmon_hosts` row overlaps the
+   rollback range, or the legacy projection has drifted. If running from an
+   operator box instead of the v2 host, keep `--host` set to the v2 hostname
+   that was just stopped.
+3. Restart the original v1 process with the same `BUCKET_NO_MIN` /
    `BUCKET_NO_MAX` config.
-3. Verify v1 checks the range again.
+4. Verify v1 checks the range again.
 
 The v2 migrations are additive, and legacy projection writes keep the old status
 fields meaningful while `LEGACY_STATUS_PROJECTION_ENABLE=true`, so rollback does

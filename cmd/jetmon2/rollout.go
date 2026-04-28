@@ -25,6 +25,8 @@ type pinnedRolloutCheckDeps struct {
 	CountLegacyProjectionDrift     func(context.Context, int, int) (int, error)
 }
 
+type rollbackCheckDeps = pinnedRolloutCheckDeps
+
 type dynamicRolloutCheckDeps struct {
 	Now                            func() time.Time
 	GetAllHosts                    func() ([]db.HostRow, error)
@@ -45,7 +47,7 @@ type projectionDriftDeps struct {
 
 func cmdRollout(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout <static-plan-check|pinned-check|dynamic-check|activity-check|projection-drift> [args]")
+		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout <static-plan-check|pinned-check|rollback-check|dynamic-check|activity-check|projection-drift> [args]")
 		os.Exit(1)
 	}
 
@@ -54,6 +56,8 @@ func cmdRollout(args []string) {
 		cmdRolloutStaticPlanCheck(args[1:])
 	case "pinned-check":
 		cmdRolloutPinnedCheck(args[1:])
+	case "rollback-check":
+		cmdRolloutRollbackCheck(args[1:])
 	case "dynamic-check":
 		cmdRolloutDynamicCheck(args[1:])
 	case "activity-check":
@@ -61,7 +65,7 @@ func cmdRollout(args []string) {
 	case "projection-drift":
 		cmdRolloutProjectionDrift(args[1:])
 	default:
-		fmt.Fprintf(os.Stderr, "unknown rollout subcommand %q (want: static-plan-check, pinned-check, dynamic-check, activity-check, projection-drift)\n", args[0])
+		fmt.Fprintf(os.Stderr, "unknown rollout subcommand %q (want: static-plan-check, pinned-check, rollback-check, dynamic-check, activity-check, projection-drift)\n", args[0])
 		os.Exit(1)
 	}
 }
@@ -151,6 +155,44 @@ func cmdRolloutPinnedCheck(args []string) {
 		CountLegacyProjectionDrift:     db.CountLegacyProjectionDrift,
 	}
 	if err := runPinnedRolloutCheck(context.Background(), os.Stdout, config.Get(), *host, deps); err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func cmdRolloutRollbackCheck(args []string) {
+	fs := flag.NewFlagSet("rollout rollback-check", flag.ExitOnError)
+	host := fs.String("host", "", "v2 host id that must not own dynamic buckets (default current hostname)")
+	bucketMin := fs.Int("bucket-min", -1, "inclusive rollback bucket minimum (default pinned range)")
+	bucketMax := fs.Int("bucket-max", -1, "inclusive rollback bucket maximum (default pinned range)")
+	_ = fs.Parse(args)
+	if fs.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout rollback-check [--host=<host_id>] [--bucket-min=N --bucket-max=N]")
+		os.Exit(1)
+	}
+
+	configPath := envOrDefault("JETMON_CONFIG", "config/config.json")
+	if err := config.Load(configPath); err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL config parse: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("PASS config parse")
+
+	config.LoadDB()
+	if err := db.ConnectWithRetry(3); err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL db connect: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("PASS db connect")
+
+	deps := rollbackCheckDeps{
+		Hostname:                       db.Hostname,
+		HostRowExists:                  db.HostRowExists,
+		ListOverlappingHostRows:        db.ListHostRowsOverlappingBucketRange,
+		CountActiveSitesForBucketRange: db.CountActiveSitesForBucketRange,
+		CountLegacyProjectionDrift:     db.CountLegacyProjectionDrift,
+	}
+	if err := runRollbackCheck(context.Background(), os.Stdout, config.Get(), *host, *bucketMin, *bucketMax, deps); err != nil {
 		fmt.Fprintf(os.Stderr, "FAIL %v\n", err)
 		os.Exit(1)
 	}
@@ -557,6 +599,78 @@ func runPinnedRolloutCheck(ctx context.Context, out io.Writer, cfg *config.Confi
 	return nil
 }
 
+func runRollbackCheck(ctx context.Context, out io.Writer, cfg *config.Config, hostOverride string, bucketMin, bucketMax int, deps rollbackCheckDeps) error {
+	if cfg == nil {
+		return errors.New("config is not loaded")
+	}
+	minBucket, maxBucket, err := resolvePinnedOrExplicitRange(cfg, bucketMin, bucketMax, "rollback-check")
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "PASS rollback_range=%d-%d\n", minBucket, maxBucket)
+
+	hostID := strings.TrimSpace(hostOverride)
+	if hostID == "" {
+		if deps.Hostname == nil {
+			return errors.New("hostname resolver is not configured")
+		}
+		hostID = strings.TrimSpace(deps.Hostname())
+	}
+	if hostID == "" {
+		return errors.New("host id is empty")
+	}
+
+	if deps.HostRowExists == nil {
+		return errors.New("host row checker is not configured")
+	}
+	hostRowExists, err := deps.HostRowExists(ctx, hostID)
+	if err != nil {
+		return fmt.Errorf("check jetmon_hosts row for %q: %w", hostID, err)
+	}
+	if hostRowExists {
+		return fmt.Errorf("host %q still has a jetmon_hosts row; stop v2 or clear dynamic ownership before restarting v1", hostID)
+	}
+	fmt.Fprintf(out, "PASS jetmon_hosts row absent host=%q\n", hostID)
+
+	if deps.ListOverlappingHostRows == nil {
+		return errors.New("overlapping host row lister is not configured")
+	}
+	overlappingRows, err := deps.ListOverlappingHostRows(ctx, minBucket, maxBucket)
+	if err != nil {
+		return fmt.Errorf("list jetmon_hosts rows overlapping rollback range %d-%d: %w", minBucket, maxBucket, err)
+	}
+	if len(overlappingRows) > 0 {
+		return fmt.Errorf("jetmon_hosts has %d row(s) overlapping rollback range %d-%d: %s", len(overlappingRows), minBucket, maxBucket, formatHostRows(overlappingRows))
+	}
+	fmt.Fprintln(out, "PASS jetmon_hosts overlap=0")
+
+	if deps.CountActiveSitesForBucketRange == nil {
+		return errors.New("active site counter is not configured")
+	}
+	activeSites, err := deps.CountActiveSitesForBucketRange(ctx, minBucket, maxBucket)
+	if err != nil {
+		return fmt.Errorf("count active sites in rollback range %d-%d: %w", minBucket, maxBucket, err)
+	}
+	fmt.Fprintf(out, "INFO active_sites_in_rollback_range=%d\n", activeSites)
+	if activeSites == 0 {
+		fmt.Fprintln(out, "WARN active_sites_in_rollback_range=0; confirm this v1 host range is intentionally empty")
+	}
+
+	if deps.CountLegacyProjectionDrift == nil {
+		return errors.New("projection drift counter is not configured")
+	}
+	drift, err := deps.CountLegacyProjectionDrift(ctx, minBucket, maxBucket)
+	if err != nil {
+		return fmt.Errorf("count legacy projection drift in rollback range %d-%d: %w", minBucket, maxBucket, err)
+	}
+	if drift > 0 {
+		return fmt.Errorf("legacy projection drift=%d in rollback range %d-%d; fix drift before restarting v1 readers", drift, minBucket, maxBucket)
+	}
+	fmt.Fprintln(out, "PASS legacy_projection_drift=0")
+	fmt.Fprintln(out, "rollback check passed")
+	return nil
+}
+
 func runDynamicRolloutCheck(ctx context.Context, out io.Writer, cfg *config.Config, deps dynamicRolloutCheckDeps) error {
 	if cfg == nil {
 		return errors.New("config is not loaded")
@@ -789,6 +903,16 @@ func resolveProjectionDriftRange(cfg *config.Config, bucketMin, bucketMax int) (
 	return resolveRolloutBucketRange(cfg, bucketMin, bucketMax)
 }
 
+func resolvePinnedOrExplicitRange(cfg *config.Config, bucketMin, bucketMax int, command string) (int, int, error) {
+	if bucketMin >= 0 || bucketMax >= 0 {
+		return resolveExplicitRolloutBucketRange(cfg, bucketMin, bucketMax)
+	}
+	if minBucket, maxBucket, ok := cfg.PinnedBucketRange(); ok {
+		return minBucket, maxBucket, nil
+	}
+	return 0, 0, fmt.Errorf("%s needs a pinned bucket config or explicit --bucket-min/--bucket-max", command)
+}
+
 func resolveRolloutBucketRange(cfg *config.Config, bucketMin, bucketMax int) (int, int, error) {
 	if bucketMin < -1 || bucketMax < -1 {
 		return 0, 0, errors.New("bucket-min and bucket-max must be >= 0")
@@ -812,6 +936,19 @@ func resolveRolloutBucketRange(cfg *config.Config, bucketMin, bucketMax int) (in
 		return 0, 0, errors.New("BUCKET_TOTAL must be > 0")
 	}
 	return 0, cfg.BucketTotal - 1, nil
+}
+
+func resolveExplicitRolloutBucketRange(cfg *config.Config, bucketMin, bucketMax int) (int, int, error) {
+	if bucketMin < 0 || bucketMax < 0 {
+		return 0, 0, errors.New("bucket-min and bucket-max must be set together")
+	}
+	if bucketMax < bucketMin {
+		return 0, 0, errors.New("bucket-max must be >= bucket-min")
+	}
+	if bucketMax >= cfg.BucketTotal {
+		return 0, 0, fmt.Errorf("bucket-max must be < BUCKET_TOTAL (%d)", cfg.BucketTotal)
+	}
+	return bucketMin, bucketMax, nil
 }
 
 func printProjectionDriftRows(out io.Writer, rows []db.ProjectionDriftRow) {

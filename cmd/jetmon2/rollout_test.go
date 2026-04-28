@@ -554,6 +554,205 @@ func successfulPinnedRolloutDeps() pinnedRolloutCheckDeps {
 	}
 }
 
+func TestRunRollbackCheckSuccess(t *testing.T) {
+	minBucket, maxBucket := 12, 34
+	cfg := pinnedRolloutTestConfig(minBucket, maxBucket)
+	var gotHost string
+	var gotMin, gotMax int
+	deps := rollbackCheckDeps{
+		Hostname: func() string { return "host-a" },
+		HostRowExists: func(_ context.Context, hostID string) (bool, error) {
+			gotHost = hostID
+			return false, nil
+		},
+		ListOverlappingHostRows: func(_ context.Context, min, max int) ([]db.HostRow, error) {
+			if min != minBucket || max != maxBucket {
+				t.Fatalf("overlap range = %d-%d, want %d-%d", min, max, minBucket, maxBucket)
+			}
+			return nil, nil
+		},
+		CountActiveSitesForBucketRange: func(_ context.Context, min, max int) (int, error) {
+			gotMin, gotMax = min, max
+			return 42, nil
+		},
+		CountLegacyProjectionDrift: func(_ context.Context, min, max int) (int, error) {
+			if min != minBucket || max != maxBucket {
+				t.Fatalf("drift range = %d-%d, want %d-%d", min, max, minBucket, maxBucket)
+			}
+			return 0, nil
+		},
+	}
+
+	var out bytes.Buffer
+	if err := runRollbackCheck(context.Background(), &out, cfg, "", -1, -1, deps); err != nil {
+		t.Fatalf("runRollbackCheck: %v", err)
+	}
+	if gotHost != "host-a" {
+		t.Fatalf("host = %q, want host-a", gotHost)
+	}
+	if gotMin != minBucket || gotMax != maxBucket {
+		t.Fatalf("active site range = %d-%d, want %d-%d", gotMin, gotMax, minBucket, maxBucket)
+	}
+	for _, want := range []string{
+		"PASS rollback_range=12-34",
+		"PASS jetmon_hosts row absent host=\"host-a\"",
+		"PASS jetmon_hosts overlap=0",
+		"INFO active_sites_in_rollback_range=42",
+		"PASS legacy_projection_drift=0",
+		"rollback check passed",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestRunRollbackCheckUsesExplicitRangeAndHostOverride(t *testing.T) {
+	cfg := dynamicRolloutTestConfig()
+	var gotHost string
+	var gotMin, gotMax int
+	deps := rollbackCheckDeps{
+		Hostname: func() string { return "wrong-host" },
+		HostRowExists: func(_ context.Context, hostID string) (bool, error) {
+			gotHost = hostID
+			return false, nil
+		},
+		ListOverlappingHostRows: func(context.Context, int, int) ([]db.HostRow, error) {
+			return nil, nil
+		},
+		CountActiveSitesForBucketRange: func(_ context.Context, min, max int) (int, error) {
+			gotMin, gotMax = min, max
+			return 1, nil
+		},
+		CountLegacyProjectionDrift: func(context.Context, int, int) (int, error) {
+			return 0, nil
+		},
+	}
+
+	var out bytes.Buffer
+	if err := runRollbackCheck(context.Background(), &out, cfg, " v2-host ", 2, 4, deps); err != nil {
+		t.Fatalf("runRollbackCheck: %v", err)
+	}
+	if gotHost != "v2-host" {
+		t.Fatalf("host = %q, want v2-host", gotHost)
+	}
+	if gotMin != 2 || gotMax != 4 {
+		t.Fatalf("range = %d-%d, want 2-4", gotMin, gotMax)
+	}
+}
+
+func TestRunRollbackCheckWarnsWhenRangeIsEmpty(t *testing.T) {
+	minBucket, maxBucket := 12, 34
+	cfg := pinnedRolloutTestConfig(minBucket, maxBucket)
+	deps := rollbackCheckDeps(successfulPinnedRolloutDeps())
+	deps.CountActiveSitesForBucketRange = func(context.Context, int, int) (int, error) {
+		return 0, nil
+	}
+
+	var out bytes.Buffer
+	if err := runRollbackCheck(context.Background(), &out, cfg, "", -1, -1, deps); err != nil {
+		t.Fatalf("runRollbackCheck: %v", err)
+	}
+	if !strings.Contains(out.String(), "WARN active_sites_in_rollback_range=0") {
+		t.Fatalf("output missing empty-range warning:\n%s", out.String())
+	}
+}
+
+func TestRunRollbackCheckFailures(t *testing.T) {
+	minBucket, maxBucket := 12, 34
+	tests := []struct {
+		name      string
+		cfg       *config.Config
+		host      string
+		bucketMin int
+		bucketMax int
+		deps      rollbackCheckDeps
+		want      string
+	}{
+		{
+			name:      "no range",
+			cfg:       dynamicRolloutTestConfig(),
+			bucketMin: -1,
+			bucketMax: -1,
+			deps:      rollbackCheckDeps(successfulPinnedRolloutDeps()),
+			want:      "needs a pinned bucket config",
+		},
+		{
+			name:      "host row exists",
+			cfg:       pinnedRolloutTestConfig(minBucket, maxBucket),
+			bucketMin: -1,
+			bucketMax: -1,
+			deps: rollbackCheckDeps{
+				Hostname: func() string { return "host-a" },
+				HostRowExists: func(context.Context, string) (bool, error) {
+					return true, nil
+				},
+			},
+			want: "still has a jetmon_hosts row",
+		},
+		{
+			name:      "overlapping dynamic row",
+			cfg:       pinnedRolloutTestConfig(minBucket, maxBucket),
+			bucketMin: -1,
+			bucketMax: -1,
+			deps: rollbackCheckDeps{
+				Hostname: func() string { return "host-a" },
+				HostRowExists: func(context.Context, string) (bool, error) {
+					return false, nil
+				},
+				ListOverlappingHostRows: func(context.Context, int, int) ([]db.HostRow, error) {
+					return []db.HostRow{{HostID: "dynamic-host", BucketMin: 10, BucketMax: 20, Status: "active"}}, nil
+				},
+			},
+			want: "overlapping rollback range",
+		},
+		{
+			name:      "projection drift",
+			cfg:       pinnedRolloutTestConfig(minBucket, maxBucket),
+			bucketMin: -1,
+			bucketMax: -1,
+			deps: rollbackCheckDeps{
+				Hostname: func() string { return "host-a" },
+				HostRowExists: func(context.Context, string) (bool, error) {
+					return false, nil
+				},
+				ListOverlappingHostRows: func(context.Context, int, int) ([]db.HostRow, error) {
+					return nil, nil
+				},
+				CountActiveSitesForBucketRange: func(context.Context, int, int) (int, error) {
+					return 10, nil
+				},
+				CountLegacyProjectionDrift: func(context.Context, int, int) (int, error) {
+					return 2, nil
+				},
+			},
+			want: "fix drift before restarting v1",
+		},
+		{
+			name:      "explicit range outside total",
+			cfg:       dynamicRolloutTestConfig(),
+			host:      "host-a",
+			bucketMin: 0,
+			bucketMax: 10,
+			deps:      rollbackCheckDeps(successfulPinnedRolloutDeps()),
+			want:      "bucket-max must be < BUCKET_TOTAL",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			err := runRollbackCheck(context.Background(), &out, tt.cfg, tt.host, tt.bucketMin, tt.bucketMax, tt.deps)
+			if err == nil {
+				t.Fatal("runRollbackCheck succeeded")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tt.want)
+			}
+		})
+	}
+}
+
 func TestRunDynamicRolloutCheckSuccess(t *testing.T) {
 	now := time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC)
 	cfg := &config.Config{

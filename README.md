@@ -573,10 +573,14 @@ bucket ownership and gives each host a simple rollback path.
    enabled, also confirm rollout guard state and dependency health before
    moving to the next host.
 
-8) If rollback is needed, stop v2 and restart the original v1 process with the
-   same bucket config. Because the v2 migrations are additive and the legacy
-   projection remains enabled, legacy readers continue to see familiar status
-   fields.
+8) If rollback is needed, stop v2 and run the rollback safety check before
+   restarting the original v1 process:
+
+		./jetmon2 rollout rollback-check --host=<v2-hostname>
+
+   Then restart v1 with the same bucket config. Because the v2 migrations are
+   additive and the legacy projection remains enabled, legacy readers continue
+   to see familiar status fields.
 
 9) Repeat for each v1 host. After the whole fleet is on v2 and stable, plan a
    coordinated dynamic-ownership cutover, remove `PINNED_BUCKET_*` from the v2
