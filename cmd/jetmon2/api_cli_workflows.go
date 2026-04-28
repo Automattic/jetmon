@@ -26,6 +26,7 @@ type apiSmokeOptions struct {
 	blogID               int64
 	url                  string
 	cleanup              bool
+	allowRemote          bool
 	exercise             string
 	idempotencyKeyPrefix string
 }
@@ -87,6 +88,7 @@ func cmdAPISmoke(args []string) error {
 	fs.Int64Var(&smoke.blogID, "blog-id", 0, "specific blog_id to create; default derives from --batch")
 	fs.StringVar(&smoke.url, "url", smoke.url, "site monitor URL to create")
 	fs.BoolVar(&smoke.cleanup, "cleanup", smoke.cleanup, "delete smoke-created resources before exit")
+	fs.BoolVar(&smoke.allowRemote, "allow-remote", false, "allow smoke-created resources on a non-local API base URL")
 	fs.StringVar(&smoke.exercise, "exercise", smoke.exercise, "extra path to exercise: alert-contact or none")
 	fs.StringVar(&smoke.idempotencyKeyPrefix, "idempotency-key-prefix", "", "prefix for smoke POST Idempotency-Key headers")
 	if err := parseAPIFlags(fs, args); err != nil {
@@ -101,6 +103,9 @@ func cmdAPISmoke(args []string) error {
 func runAPISmoke(ctx context.Context, client *http.Client, opts apiCLIOptions, smoke apiSmokeOptions) error {
 	if opts.out == nil {
 		opts.out = io.Discard
+	}
+	if _, err := requireAPILocalOrAllowRemote(opts, smoke.allowRemote, "api smoke"); err != nil {
+		return err
 	}
 	if smoke.batch == "" {
 		smoke.batch = apiCLINewBatchID("smoke")

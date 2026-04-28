@@ -17,6 +17,7 @@ type apiSitesCleanupOptions struct {
 	count          int
 	blogIDStart    int64
 	dryRun         bool
+	allowRemote    bool
 	ignoreNotFound bool
 	allowUnmarked  bool
 }
@@ -46,6 +47,7 @@ func cmdAPISitesCleanup(args []string) error {
 	fs.IntVar(&cleanup.count, "count", cleanup.count, "number of batch-derived site ids to delete, max 200")
 	fs.Int64Var(&cleanup.blogIDStart, "blog-id-start", 0, "first batch blog_id; default derives from --batch")
 	fs.BoolVar(&cleanup.dryRun, "dry-run", false, "print the planned deletes without sending requests")
+	fs.BoolVar(&cleanup.allowRemote, "allow-remote", false, "allow deletes against a non-local API base URL")
 	fs.BoolVar(&cleanup.ignoreNotFound, "ignore-not-found", cleanup.ignoreNotFound, "treat 404 responses as already cleaned")
 	fs.BoolVar(&cleanup.allowUnmarked, "allow-unmarked", false, "allow cleanup of --batch targets that do not expose the matching CLI batch marker")
 	if err := parseAPIFlags(fs, args); err != nil {
@@ -64,6 +66,20 @@ func runAPISitesCleanup(ctx context.Context, client *http.Client, opts apiCLIOpt
 	siteIDs, err := apiCleanupSiteIDs(cleanup)
 	if err != nil {
 		return err
+	}
+	if !cleanup.dryRun {
+		remote, err := requireAPILocalOrAllowRemote(opts, cleanup.allowRemote, "api sites cleanup")
+		if err != nil {
+			return err
+		}
+		if remote {
+			if strings.TrimSpace(cleanup.batch) == "" {
+				return errors.New("api sites cleanup requires --batch when --allow-remote targets a non-local API")
+			}
+			if cleanup.allowUnmarked {
+				return errors.New("api sites cleanup cannot use --allow-unmarked with --allow-remote")
+			}
+		}
 	}
 
 	summary := apiSitesCleanupSummary{

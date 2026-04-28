@@ -52,6 +52,13 @@ another trusted API host. Custom `--header` values are always treated as
 explicit operator input. Verbose mode redacts common sensitive headers before
 printing them.
 
+The test-data workflow commands refuse to modify a non-local API unless
+`--allow-remote` is supplied. Local means `localhost`, a `*.localhost` name, or
+a loopback IP address; private LAN hosts still count as remote. On remote API
+targets, `sites bulk-add`, `sites cleanup`, and `sites simulate-failure` also
+require `--batch`, and remote cleanup/simulation keep the CLI batch marker
+check mandatory. Dry-run planning does not contact the API and is not blocked.
+
 List the command catalog and examples when you need to discover the expanded
 tree without returning to this guide:
 
@@ -186,6 +193,9 @@ The batch label derives deterministic blog IDs and stores an
 `X-Jetmon-CLI-Batch` custom header marker so later smoke, simulation, and
 cleanup commands can target only CLI-created data.
 
+Against a non-local API, add `--allow-remote`; `--batch` remains required so
+the created rows carry the CLI marker.
+
 Use your own source list when needed:
 
 ```bash
@@ -208,6 +218,9 @@ matching derived `cli_batch` marker before deleting it. The CLI requests that
 marker through the API's opt-in `include_cli_metadata=true` projection. Use
 `--allow-unmarked` only when cleaning up older local data created before the
 marker check existed.
+
+Against a non-local API, cleanup requires `--allow-remote --batch` and rejects
+`--allow-unmarked`.
 
 ## Events and Transitions
 
@@ -382,6 +395,9 @@ opt-in `include_cli_metadata=true` projection. `--create-missing` is still
 allowed for empty deterministic slots because the created site receives the
 marker. Use `--allow-unmarked` only for legacy local batches that predate the
 marker.
+
+Against a non-local API, simulation requires `--allow-remote --batch` and
+rejects `--allow-unmarked`.
 
 When Docker Compose is running, the command probes
 `http://localhost:18091/health` and uses the Docker-internal `api-fixture`

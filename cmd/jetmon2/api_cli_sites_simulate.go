@@ -33,6 +33,7 @@ type apiSitesSimulateFailureOptions struct {
 	idempotencyKeyPrefix   string
 	fixtureURL             string
 	fixtureProbeURL        string
+	allowRemote            bool
 	allowUnmarkedBatch     bool
 	expectEventState       string
 	expectEventSeverity    apiOptionalIntFlag
@@ -107,6 +108,7 @@ func cmdAPISitesSimulateFailure(args []string) error {
 	fs.StringVar(&sim.idempotencyKeyPrefix, "idempotency-key-prefix", "", "prefix for per-site POST Idempotency-Key headers")
 	fs.StringVar(&sim.fixtureURL, "fixture-url", sim.fixtureURL, "Docker fixture monitor URL, auto, or off")
 	fs.StringVar(&sim.fixtureProbeURL, "fixture-probe-url", sim.fixtureProbeURL, "URL used when --fixture-url=auto")
+	fs.BoolVar(&sim.allowRemote, "allow-remote", false, "allow mutation against a non-local API base URL")
 	fs.BoolVar(&sim.allowUnmarkedBatch, "allow-unmarked", false, "allow mutation of --batch targets that do not expose the matching CLI batch marker")
 	fs.StringVar(&sim.expectEventState, "expect-event-state", "", "require at least one active event with this state after polling")
 	fs.Var(&sim.expectEventSeverity, "expect-event-severity", "require at least one active event with this severity after polling")
@@ -124,6 +126,18 @@ func cmdAPISitesSimulateFailure(args []string) error {
 func runAPISitesSimulateFailure(ctx context.Context, client *http.Client, opts apiCLIOptions, sim apiSitesSimulateFailureOptions) error {
 	if opts.out == nil {
 		opts.out = io.Discard
+	}
+	remote, err := requireAPILocalOrAllowRemote(opts, sim.allowRemote, "api sites simulate-failure")
+	if err != nil {
+		return err
+	}
+	if remote {
+		if strings.TrimSpace(sim.batch) == "" {
+			return errors.New("api sites simulate-failure requires --batch when --allow-remote targets a non-local API")
+		}
+		if sim.allowUnmarkedBatch {
+			return errors.New("api sites simulate-failure cannot use --allow-unmarked with --allow-remote")
+		}
 	}
 	fixtureURL := apiSimulationFixtureURL(ctx, sim)
 	def, err := apiFailureMode(sim.mode, fixtureURL)

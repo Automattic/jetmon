@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -488,6 +489,36 @@ func sameAPIOrigin(a, b *url.URL) bool {
 		return false
 	}
 	return strings.EqualFold(a.Scheme, b.Scheme) && strings.EqualFold(a.Host, b.Host)
+}
+
+func requireAPILocalOrAllowRemote(opts apiCLIOptions, allowRemote bool, command string) (bool, error) {
+	local, err := isLocalAPIBaseURL(opts.baseURL)
+	if err != nil {
+		return false, err
+	}
+	if local {
+		return false, nil
+	}
+	if allowRemote {
+		return true, nil
+	}
+	return true, fmt.Errorf("%s refuses to modify non-local API base URL %q without --allow-remote (local means localhost or loopback IP)", command, opts.baseURL)
+}
+
+func isLocalAPIBaseURL(baseURL string) (bool, error) {
+	u, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil {
+		return false, fmt.Errorf("invalid API base URL %q: %w", baseURL, err)
+	}
+	if !u.IsAbs() || u.Host == "" {
+		return false, fmt.Errorf("invalid API base URL %q: must include scheme and host", baseURL)
+	}
+	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true, nil
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback(), nil
 }
 
 func applyAPIRequestHeaders(req *http.Request, opts apiCLIOptions, hasBody bool, sendAutoAuth bool) {

@@ -26,6 +26,7 @@ type apiSitesBulkAddOptions struct {
 	file                 string
 	blogIDStart          int64
 	dryRun               bool
+	allowRemote          bool
 	idempotencyKeyPrefix string
 	monitorActive        apiOptionalBoolFlag
 }
@@ -60,6 +61,7 @@ func cmdAPISitesBulkAdd(args []string) error {
 	fs.StringVar(&bulk.file, "file", "", "source file for --source file")
 	fs.Int64Var(&bulk.blogIDStart, "blog-id-start", bulk.blogIDStart, "first blog_id to assign")
 	fs.BoolVar(&bulk.dryRun, "dry-run", false, "print planned create payloads without sending requests")
+	fs.BoolVar(&bulk.allowRemote, "allow-remote", false, "allow writes to a non-local API base URL")
 	fs.StringVar(&bulk.idempotencyKeyPrefix, "idempotency-key-prefix", "", "prefix for per-site Idempotency-Key headers")
 	fs.Var(&bulk.monitorActive, "monitor-active", "override monitor_active for every generated site")
 	if err := parseAPIFlags(fs, args); err != nil {
@@ -94,6 +96,14 @@ func runAPISitesBulkAdd(ctx context.Context, client *http.Client, opts apiCLIOpt
 			Count:  len(sites),
 			Sites:  sites,
 		}, opts)
+	}
+
+	remote, err := requireAPILocalOrAllowRemote(opts, bulk.allowRemote, "api sites bulk-add")
+	if err != nil {
+		return err
+	}
+	if remote && strings.TrimSpace(bulk.batch) == "" {
+		return errors.New("api sites bulk-add requires --batch when --allow-remote targets a non-local API")
 	}
 
 	created := make([]json.RawMessage, 0, len(planned))
