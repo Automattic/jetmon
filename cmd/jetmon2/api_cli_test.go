@@ -235,6 +235,38 @@ func TestParseAPIFlagsPreservesPositionalsAfterDoubleDash(t *testing.T) {
 	}
 }
 
+func TestNewAPIFlagSetHonorsPresetOutputDefault(t *testing.T) {
+	var stderr bytes.Buffer
+	opts := apiCLIOptions{output: "table", errOut: &stderr}
+	fs := newAPIFlagSet("api commands", &opts)
+	if err := parseAPIFlags(fs, nil); err != nil {
+		t.Fatalf("parseAPIFlags() error = %v", err)
+	}
+	if opts.output != "table" {
+		t.Fatalf("output = %q, want table", opts.output)
+	}
+}
+
+func TestWriteAPICommandsTable(t *testing.T) {
+	var out bytes.Buffer
+	err := writeAPICommands(apiCLIOptions{output: "table", out: &out})
+	if err != nil {
+		t.Fatalf("writeAPICommands() error = %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"command                    description",
+		"sites simulate-failure",
+		"mutate test sites into known failure modes",
+		"commands",
+		"list API CLI commands and examples",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("commands table missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestWriteAPIResponseTableForSiteList(t *testing.T) {
 	body := []byte(`{
 		"data": [

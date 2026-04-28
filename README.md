@@ -300,6 +300,7 @@ point the API CLI at the exposed API port:
 	export JETMON_API_TOKEN=jm_replace_with_the_printed_token
 	./bin/jetmon2 api health --pretty
 	./bin/jetmon2 api me --pretty
+	./bin/jetmon2 api commands --output table
 	./bin/jetmon2 api sites list --output table
 
 The same CLI can create bounded test batches and run a Docker-local smoke pass:

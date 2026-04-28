@@ -45,6 +45,13 @@ Every command also accepts `--base-url`, `--token`, `--timeout`, `--header`,
 for automation. Use `--pretty` when reading JSON directly and `--output table`
 for stable summary tables.
 
+List the command catalog and examples when you need to discover the expanded
+tree without returning to this guide:
+
+```bash
+./bin/jetmon2 api commands --output table
+```
+
 ## Health and Identity
 
 Use `health` before authenticating anything. It checks the API and database

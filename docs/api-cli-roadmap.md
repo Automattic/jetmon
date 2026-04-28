@@ -122,7 +122,7 @@ but it should not become a generic `curl` clone.
   feature guide and Docker-local smoke path.
 - [x] Improve table output for workflow commands with event IDs, states,
   severities, transition counts, trigger results, and cleanup status.
-- [ ] Add shell completion or richer command discovery for the expanded
+- [x] Add shell completion or richer command discovery for the expanded
   `jetmon2 api` command tree.
 - [ ] Extend `api-fixture` into a local webhook receiver so smoke tests can
   verify outbound webhook delivery and signing behavior end-to-end.
@@ -221,3 +221,5 @@ but it should not become a generic `curl` clone.
   transition counts, and smoke cleanup rows in stable table columns.
 - [x] 2026-04-28: Added Docker-local API token convenience targets for
   creating, listing, and revoking rehearsal tokens from the repository root.
+- [x] 2026-04-28: Added `jetmon2 api commands` as a table-first command
+  catalog with descriptions and examples for the expanded API CLI tree.

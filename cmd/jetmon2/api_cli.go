@@ -44,6 +44,43 @@ type apiHTTPResponse struct {
 	Body       []byte
 }
 
+type apiCommandInfo struct {
+	Command     string `json:"command"`
+	Description string `json:"description"`
+	Example     string `json:"example"`
+}
+
+var apiCommandCatalog = []apiCommandInfo{
+	{Command: "health", Description: "check API and database health", Example: "jetmon2 api health --pretty"},
+	{Command: "me", Description: "show the authenticated API key identity", Example: "jetmon2 api me --pretty"},
+	{Command: "request", Description: "send an arbitrary request to an API path", Example: "jetmon2 api request --output table GET /api/v1/sites"},
+	{Command: "sites list", Description: "list monitored sites with filters", Example: "jetmon2 api sites list --limit 20 --output table"},
+	{Command: "sites get", Description: "show one monitored site", Example: "jetmon2 api sites get 12345 --pretty"},
+	{Command: "sites create", Description: "create or upsert a monitored site", Example: "jetmon2 api sites create --blog-id 12345 --url https://example.com --pretty"},
+	{Command: "sites update", Description: "update check settings for a site", Example: "jetmon2 api sites update 12345 --url https://example.com/health --pretty"},
+	{Command: "sites delete", Description: "delete a monitored site", Example: "jetmon2 api sites delete 12345"},
+	{Command: "sites pause", Description: "pause monitoring for a site", Example: "jetmon2 api sites pause 12345 --idempotency-key site-12345-pause"},
+	{Command: "sites resume", Description: "resume monitoring for a site", Example: "jetmon2 api sites resume 12345 --idempotency-key site-12345-resume"},
+	{Command: "sites trigger-now", Description: "run an immediate check", Example: "jetmon2 api sites trigger-now 12345 --pretty"},
+	{Command: "sites bulk-add", Description: "create bounded local test-site batches", Example: "jetmon2 api sites bulk-add --count 3 --batch local-smoke --dry-run --pretty"},
+	{Command: "sites cleanup", Description: "delete deterministic CLI-created site batches", Example: "jetmon2 api sites cleanup --batch local-smoke --count 3 --output table"},
+	{Command: "sites simulate-failure", Description: "mutate test sites into known failure modes", Example: "jetmon2 api sites simulate-failure --batch local-smoke --mode http-500 --wait 30s --output table"},
+	{Command: "events list", Description: "list events for a site", Example: "jetmon2 api events list 12345 --active=true --output table"},
+	{Command: "events get", Description: "show one event", Example: "jetmon2 api events get --site-id 12345 98765 --pretty"},
+	{Command: "events transitions", Description: "list event transition history", Example: "jetmon2 api events transitions 12345 98765 --output table"},
+	{Command: "events close", Description: "manually close an event", Example: "jetmon2 api events close 12345 98765 --reason manual_override --pretty"},
+	{Command: "webhooks list", Description: "list webhook registrations", Example: "jetmon2 api webhooks list --output table"},
+	{Command: "webhooks create", Description: "create a webhook registration", Example: "jetmon2 api webhooks create --url https://receiver.example.test/jetmon --event event.opened --pretty"},
+	{Command: "webhooks deliveries", Description: "list webhook delivery rows", Example: "jetmon2 api webhooks deliveries 77 --status failed --output table"},
+	{Command: "webhooks retry", Description: "retry an abandoned webhook delivery", Example: "jetmon2 api webhooks retry 77 555 --idempotency-key webhook-77-555-retry --pretty"},
+	{Command: "alert-contacts list", Description: "list managed alert contacts", Example: "jetmon2 api alert-contacts list --output table"},
+	{Command: "alert-contacts create", Description: "create an email, PagerDuty, Slack, or Teams contact", Example: "jetmon2 api alert-contacts create --label Local --transport email --address alerts@example.test --pretty"},
+	{Command: "alert-contacts test", Description: "send a managed alert-contact test", Example: "jetmon2 api alert-contacts test 12 --idempotency-key alert-12-test --pretty"},
+	{Command: "alert-contacts deliveries", Description: "list managed alert delivery rows", Example: "jetmon2 api alert-contacts deliveries 12 --status failed --output table"},
+	{Command: "smoke", Description: "run the Docker-local API smoke workflow", Example: "jetmon2 api smoke --batch local-smoke --pretty"},
+	{Command: "commands", Description: "list API CLI commands and examples", Example: "jetmon2 api commands --output table"},
+}
+
 func (h *apiHeaderFlags) String() string {
 	return strings.Join(*h, ",")
 }
@@ -72,6 +109,8 @@ func cmdAPI(args []string) {
 		err = cmdAPIMe(rest)
 	case "request":
 		err = cmdAPIRequest(rest)
+	case "commands":
+		err = cmdAPICommands(rest)
 	case "sites":
 		err = cmdAPISites(rest)
 	case "events":
@@ -83,7 +122,7 @@ func cmdAPI(args []string) {
 	case "smoke":
 		err = cmdAPISmoke(rest)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown api subcommand %q (want: health, me, request, sites, events, webhooks, alert-contacts, smoke)\n", sub)
+		fmt.Fprintf(os.Stderr, "unknown api subcommand %q (want: health, me, request, commands, sites, events, webhooks, alert-contacts, smoke)\n", sub)
 		printAPIUsage(os.Stderr)
 		os.Exit(1)
 	}
@@ -93,7 +132,9 @@ func cmdAPI(args []string) {
 }
 
 func printAPIUsage(w io.Writer) {
-	fmt.Fprintln(w, "usage: jetmon2 api <health|me|request|sites|events|webhooks|alert-contacts|smoke> [flags]")
+	fmt.Fprintln(w, "usage: jetmon2 api <health|me|request|commands|sites|events|webhooks|alert-contacts|smoke> [flags]")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Run `jetmon2 api commands --output table` for the command catalog.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Environment:")
 	fmt.Fprintln(w, "  JETMON_API_URL     API base URL (default: http://localhost:8090)")
@@ -144,6 +185,23 @@ func cmdAPIRequest(args []string) error {
 	return executeAPIRequest(context.Background(), nil, opts, fs.Arg(0), fs.Arg(1), body)
 }
 
+func cmdAPICommands(args []string) error {
+	opts := defaultAPIOptions()
+	opts.output = "table"
+	fs := newAPIFlagSet("api commands", &opts)
+	if err := parseAPIFlags(fs, args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("usage: jetmon2 api commands [flags]")
+	}
+	return writeAPICommands(opts)
+}
+
+func writeAPICommands(opts apiCLIOptions) error {
+	return writeAPIValueOutput(opts.out, map[string]any{"commands": apiCommandCatalog}, opts)
+}
+
 func defaultAPIOptions() apiCLIOptions {
 	return apiCLIOptions{
 		baseURL: envOrDefault("JETMON_API_URL", defaultAPIBaseURL),
@@ -166,7 +224,11 @@ func newAPIFlagSet(name string, opts *apiCLIOptions) *flag.FlagSet {
 	fs.BoolVar(&opts.verbose, "v", false, "print request and response headers to stderr")
 	fs.BoolVar(&opts.verbose, "verbose", false, "print request and response headers to stderr")
 	fs.BoolVar(&opts.pretty, "pretty", false, "pretty-print JSON response bodies")
-	fs.StringVar(&opts.output, "output", "json", "response output format: json or table")
+	defaultOutput := opts.output
+	if defaultOutput == "" {
+		defaultOutput = "json"
+	}
+	fs.StringVar(&opts.output, "output", defaultOutput, "response output format: json or table")
 	fs.DurationVar(&opts.timeout, "timeout", opts.timeout, "request timeout")
 	fs.Var(&opts.headers, "header", "additional request header in Name: Value form (repeatable)")
 	fs.Usage = func() {
@@ -535,7 +597,7 @@ func apiTableRows(value any) []map[string]any {
 		if rows := apiWorkflowTableRows(v); len(rows) > 0 {
 			return rows
 		}
-		for _, key := range []string{"data", "created", "sites", "steps"} {
+		for _, key := range []string{"data", "created", "sites", "steps", "commands"} {
 			if data, ok := v[key].([]any); ok {
 				return apiRowsFromArray(data)
 			}
@@ -610,6 +672,7 @@ func apiTableColumns(rows []map[string]any) []string {
 		{"site_id", "action", "trigger_status", "event_ids", "event_states", "event_severities", "transition_count", "note", "error"},
 		{"site_id", "action", "note", "error"},
 		{"kind", "name", "id", "status", "detail"},
+		{"command", "description", "example"},
 		{"name", "status", "detail"},
 	} {
 		present := apiColumnsPresent(rows, cols)
