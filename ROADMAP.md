@@ -236,16 +236,15 @@ tests that fail when handler behavior drifts from the published schema.
 
 ### Public API work still to do
 
-- Thread gateway tenant context through API handlers and use the existing
-  tenant-scoped webhook/alert-contact repository helpers where Jetmon must
-  enforce ownership directly.
+- Choose the site ownership representation and extend tenant enforcement to
+  site, event, SLA, and trigger-now route families. Prefer a mapping table if
+  ownership can be many-to-many or gateway-derived.
 - Add customer-safe error and metadata redaction paths for every public route.
 - Promote the internal route-driven `GET /api/v1/openapi.json` contract into a
   public compatibility policy with deprecation rules and consumer-specific
   generator validation.
-- Add public-contract integration tests for auth, tenant isolation,
-  pagination, idempotency, redaction, webhook ownership, and trigger-now abuse
-  controls.
+- Add public-contract integration tests for auth, site/event tenant isolation,
+  pagination, idempotency, redaction, and trigger-now abuse controls.
 - Revisit response-time/SLA pre-aggregation before exposing high-volume public
   reporting queries.
 - Document the migration path for consumers that currently use direct MySQL or

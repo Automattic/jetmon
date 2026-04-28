@@ -43,8 +43,10 @@ the gateway service.
 
 Jetmon should only honor these headers from the configured gateway consumer
 identity. A non-gateway API key sending public-context headers should be
-rejected once Jetmon starts parsing them. Until that parsing exists, the
-headers are design-only and must not be treated as an enforcement mechanism.
+rejected. Jetmon currently treats `consumer_name = "gateway"` as that trusted
+gateway identity, requires tenant id, public scopes, and gateway request id
+when any public-context header is present, and records accepted gateway context
+in API audit metadata.
 
 ## Tenant Checks
 
@@ -105,11 +107,13 @@ errors.
 
 1. Keep the v2 internal API unchanged while the gateway is the only public
    entry point.
-2. Add request-context parsing for the headers above, restricted to the
-   configured gateway API key. Initially log the context for audit only.
-3. Thread gateway context through the API handlers and start using the
-   tenant-scoped webhook and alert-contact repository helpers. The nullable
-   owner columns are already present for those customer-managed resources.
+2. Request-context parsing for the headers above is implemented in the API
+   middleware and restricted to the gateway API key. Accepted context is logged
+   in audit metadata; non-gateway keys asserting it are rejected.
+3. Gateway-routed webhook and alert-contact CRUD now set/filter
+   `owner_tenant_id`. Delivery history and manual retry visibility are derived
+   through the owned webhook/contact, and alert-contact send-test verifies the
+   contact owner before loading the destination credential.
 4. Add site visibility enforcement only after choosing the site ownership
    representation. Prefer a mapping table if ownership can be many-to-many or
    gateway-derived.

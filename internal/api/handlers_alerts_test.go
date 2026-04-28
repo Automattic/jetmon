@@ -17,9 +17,15 @@ const insertAlertContactSQL = ` INSERT INTO jetmon_alert_contacts (label, active
 
 const selectAlertContactOneSQL = ` SELECT id, label, active, owner_tenant_id, transport, destination_preview, site_filter, min_severity, max_per_hour, created_by, created_at, updated_at FROM jetmon_alert_contacts WHERE id = ?`
 
+const selectAlertContactOneForTenantSQL = selectAlertContactOneSQL + ` AND owner_tenant_id = ?`
+
 const selectAlertContactListSQL = ` SELECT id, label, active, owner_tenant_id, transport, destination_preview, site_filter, min_severity, max_per_hour, created_by, created_at, updated_at FROM jetmon_alert_contacts ORDER BY id ASC`
 
+const selectAlertContactListForTenantSQL = ` SELECT id, label, active, owner_tenant_id, transport, destination_preview, site_filter, min_severity, max_per_hour, created_by, created_at, updated_at FROM jetmon_alert_contacts WHERE owner_tenant_id = ? ORDER BY id ASC`
+
 const loadAlertDestinationSQL = `SELECT destination FROM jetmon_alert_contacts WHERE id = ?`
+
+const loadAlertDestinationForTenantSQL = loadAlertDestinationSQL + ` AND owner_tenant_id = ?`
 
 var columnsAlertContact = []string{
 	"id", "label", "active", "owner_tenant_id", "transport", "destination_preview",
@@ -93,6 +99,35 @@ func TestCreateAlertContactHappyPath(t *testing.T) {
 	}
 	if resp.MinSeverity != "Down" {
 		t.Errorf("MinSeverity = %q, want Down (default)", resp.MinSeverity)
+	}
+}
+
+func TestCreateAlertContactWithGatewayTenantSetsOwner(t *testing.T) {
+	s, mock, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	mock.ExpectExec(insertAlertContactSQL).
+		WithArgs(
+			"oncall", 1, "tenant-a", "pagerduty",
+			sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), uint8(4), 60,
+			gatewayConsumerName,
+		).
+		WillReturnResult(sqlmock.NewResult(11, 1))
+	mock.ExpectQuery(selectAlertContactOneSQL).WithArgs(int64(11)).
+		WillReturnRows(makeAlertContactRow(11, "oncall", "pagerduty", 1, 4))
+
+	body := []byte(`{
+		"label":"oncall",
+		"transport":"pagerduty",
+		"destination":{"integration_key":"PDKEY-12345"}
+	}`)
+	req := newPOSTWithBody("/api/v1/alert-contacts", body)
+	req = setGatewayTenantCtx(req, key, "tenant-a")
+	rec := invokeAuthed(s, req, s.handleCreateAlertContact)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body=%s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -230,6 +265,22 @@ func TestListAlertContactsHappyPath(t *testing.T) {
 	}
 }
 
+func TestListAlertContactsWithGatewayTenantScopesRows(t *testing.T) {
+	s, mock, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	mock.ExpectQuery(selectAlertContactListForTenantSQL).WithArgs("tenant-a").
+		WillReturnRows(makeAlertContactRow(1, "primary", "email", 1, 4))
+
+	req := httptest.NewRequest("GET", "/api/v1/alert-contacts", nil)
+	req = setGatewayTenantCtx(req, key, "tenant-a")
+	rec := invokeAuthed(s, req, s.handleListAlertContacts)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestListAlertContactsDBError(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
@@ -267,6 +318,29 @@ func TestUpdateAlertContactHappyPath(t *testing.T) {
 	req := newPATCHWithBody("/api/v1/alert-contacts/11", body)
 	req.SetPathValue("id", "11")
 	req = setAuthCtx(req, key)
+	rec := invokeAuthed(s, req, s.handleUpdateAlertContact)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUpdateAlertContactWithGatewayTenantScopesWrite(t *testing.T) {
+	s, mock, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	mock.ExpectQuery(selectAlertContactOneForTenantSQL).WithArgs(int64(11), "tenant-a").
+		WillReturnRows(makeAlertContactRow(11, "oncall", "pagerduty", 1, 4))
+	mock.ExpectExec(`UPDATE jetmon_alert_contacts SET active = ? WHERE id = ? AND owner_tenant_id = ?`).
+		WithArgs(0, int64(11), "tenant-a").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(selectAlertContactOneForTenantSQL).WithArgs(int64(11), "tenant-a").
+		WillReturnRows(makeAlertContactRow(11, "oncall", "pagerduty", 0, 4))
+
+	body := []byte(`{"active": false}`)
+	req := newPATCHWithBody("/api/v1/alert-contacts/11", body)
+	req.SetPathValue("id", "11")
+	req = setGatewayTenantCtx(req, key, "tenant-a")
 	rec := invokeAuthed(s, req, s.handleUpdateAlertContact)
 
 	if rec.Code != http.StatusOK {
@@ -355,6 +429,24 @@ func TestDeleteAlertContactHappyPath(t *testing.T) {
 	}
 }
 
+func TestDeleteAlertContactWithGatewayTenantScopesWrite(t *testing.T) {
+	s, mock, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	mock.ExpectExec(`DELETE FROM jetmon_alert_contacts WHERE id = ? AND owner_tenant_id = ?`).
+		WithArgs(int64(11), "tenant-a").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	req := httptest.NewRequest("DELETE", "/api/v1/alert-contacts/11", nil)
+	req.SetPathValue("id", "11")
+	req = setGatewayTenantCtx(req, key, "tenant-a")
+	rec := invokeAuthed(s, req, s.handleDeleteAlertContact)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rec.Code)
+	}
+}
+
 func TestDeleteAlertContactNotFound(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
@@ -404,6 +496,34 @@ func TestAlertContactTestHappyPath(t *testing.T) {
 	}
 	if !disp.gotN.IsTest {
 		t.Error("dispatched notification should have IsTest=true")
+	}
+}
+
+func TestAlertContactTestWithGatewayTenantScopesDestinationLoad(t *testing.T) {
+	s, mock, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	disp := &recordingDispatcher{respCode: 200, respBody: "ok"}
+	s.SetAlertDispatchers(map[alerting.Transport]alerting.Dispatcher{
+		alerting.TransportSlack: disp,
+	})
+
+	mock.ExpectQuery(selectAlertContactOneForTenantSQL).WithArgs(int64(11), "tenant-a").
+		WillReturnRows(makeAlertContactRow(11, "oncall-slack", "slack", 1, 4))
+	mock.ExpectQuery(loadAlertDestinationForTenantSQL).WithArgs(int64(11), "tenant-a").
+		WillReturnRows(sqlmock.NewRows([]string{"destination"}).
+			AddRow([]byte(`{"webhook_url":"https://hooks.slack.com/x"}`)))
+
+	req := newPOSTWithBody("/api/v1/alert-contacts/11/test", nil)
+	req.SetPathValue("id", "11")
+	req = setGatewayTenantCtx(req, key, "tenant-a")
+	rec := invokeAuthed(s, req, s.handleAlertContactTest)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if disp.calls != 1 {
+		t.Errorf("dispatcher called %d times, want 1", disp.calls)
 	}
 }
 

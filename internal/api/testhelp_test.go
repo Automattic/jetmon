@@ -69,6 +69,23 @@ func setAuthCtx(req *http.Request, key *apikeys.Key) *http.Request {
 	return req.WithContext(ctx)
 }
 
+// setGatewayTenantCtx attaches both an authenticated gateway key and the
+// gateway-derived tenant context that requireScope normally parses from
+// headers. Direct handler tests use this to bypass auth while still
+// exercising tenant-scoped repository calls.
+func setGatewayTenantCtx(req *http.Request, key *apikeys.Key, tenantID string) *http.Request {
+	gatewayKey := *key
+	gatewayKey.ConsumerName = gatewayConsumerName
+	ctx := context.WithValue(req.Context(), ctxKeyAPIKey, &gatewayKey)
+	ctx = context.WithValue(ctx, ctxKeyRequestID, "test-request-id")
+	ctx = context.WithValue(ctx, ctxKeyGatewayContext, &gatewayContext{
+		TenantID:         tenantID,
+		PublicScopes:     []string{"webhooks:write"},
+		GatewayRequestID: "gateway-request-id",
+	})
+	return req.WithContext(ctx)
+}
+
 // readJSON decodes the response body into the target struct.
 func readJSON(t *testing.T, body io.Reader, target any) {
 	t.Helper()

@@ -58,6 +58,26 @@ func TestListDeliveriesHappyPath(t *testing.T) {
 	}
 }
 
+func TestListDeliveriesWithGatewayTenantVerifiesWebhookOwnership(t *testing.T) {
+	s, mock, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	mock.ExpectQuery(selectWebhookOneForTenantSQL).WithArgs(int64(11), "tenant-a").
+		WillReturnRows(makeWebhookRow(11, "https://x.example.com", 1))
+	mock.ExpectQuery(selectWebhookDeliveriesSQL).
+		WithArgs(int64(11), 51).
+		WillReturnRows(makeWebhookDeliveryRow(101, 11, "delivered"))
+
+	req := httptest.NewRequest("GET", "/api/v1/webhooks/11/deliveries", nil)
+	req.SetPathValue("id", "11")
+	req = setGatewayTenantCtx(req, key, "tenant-a")
+	rec := invokeAuthed(s, req, s.handleListDeliveries)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestListDeliveriesRejectsBadStatus(t *testing.T) {
 	s, _, key, cleanup := newTestServer(t)
 	defer cleanup()
@@ -100,6 +120,31 @@ func TestRetryDeliveryHappyPath(t *testing.T) {
 	readJSON(t, rec.Body, &resp)
 	if resp.Status != "pending" {
 		t.Errorf("Status = %q, want pending", resp.Status)
+	}
+}
+
+func TestRetryDeliveryWithGatewayTenantVerifiesWebhookOwnership(t *testing.T) {
+	s, mock, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	mock.ExpectQuery(selectWebhookOneForTenantSQL).WithArgs(int64(11), "tenant-a").
+		WillReturnRows(makeWebhookRow(11, "https://x.example.com", 1))
+	mock.ExpectQuery(selectWebhookDeliveryOneSQL).WithArgs(int64(101)).
+		WillReturnRows(makeWebhookDeliveryRow(101, 11, "abandoned"))
+	mock.ExpectExec(`UPDATE jetmon_webhook_deliveries SET status = 'pending', attempt = 0, next_attempt_at = CURRENT_TIMESTAMP, last_status_code = NULL, last_response = NULL, last_attempt_at = NULL WHERE id = ? AND status = 'abandoned'`).
+		WithArgs(int64(101)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(selectWebhookDeliveryOneSQL).WithArgs(int64(101)).
+		WillReturnRows(makeWebhookDeliveryRow(101, 11, "pending"))
+
+	req := newPOSTWithBody("/api/v1/webhooks/11/deliveries/101/retry", nil)
+	req.SetPathValue("id", "11")
+	req.SetPathValue("delivery_id", "101")
+	req = setGatewayTenantCtx(req, key, "tenant-a")
+	rec := invokeAuthed(s, req, s.handleRetryDelivery)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
 }
 

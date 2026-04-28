@@ -59,6 +59,26 @@ func TestListAlertDeliveriesHappyPath(t *testing.T) {
 	}
 }
 
+func TestListAlertDeliveriesWithGatewayTenantVerifiesContactOwnership(t *testing.T) {
+	s, mock, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	mock.ExpectQuery(selectAlertContactOneForTenantSQL).WithArgs(int64(11), "tenant-a").
+		WillReturnRows(makeAlertContactRow(11, "oncall", "slack", 1, 4))
+	mock.ExpectQuery(selectAlertDeliveriesSQL).
+		WithArgs(int64(11), 51).
+		WillReturnRows(makeAlertDeliveryRow(101, 11, "delivered"))
+
+	req := httptest.NewRequest("GET", "/api/v1/alert-contacts/11/deliveries", nil)
+	req.SetPathValue("id", "11")
+	req = setGatewayTenantCtx(req, key, "tenant-a")
+	rec := invokeAuthed(s, req, s.handleListAlertDeliveries)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestListAlertDeliveriesRejectsBadStatus(t *testing.T) {
 	s, _, key, cleanup := newTestServer(t)
 	defer cleanup()
@@ -104,6 +124,31 @@ func TestRetryAlertDeliveryHappyPath(t *testing.T) {
 	readJSON(t, rec.Body, &resp)
 	if resp.Status != "pending" {
 		t.Errorf("Status = %q, want pending", resp.Status)
+	}
+}
+
+func TestRetryAlertDeliveryWithGatewayTenantVerifiesContactOwnership(t *testing.T) {
+	s, mock, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	mock.ExpectQuery(selectAlertContactOneForTenantSQL).WithArgs(int64(11), "tenant-a").
+		WillReturnRows(makeAlertContactRow(11, "oncall", "slack", 1, 4))
+	mock.ExpectQuery(selectAlertDeliveryOneSQL).WithArgs(int64(101)).
+		WillReturnRows(makeAlertDeliveryRow(101, 11, "abandoned"))
+	mock.ExpectExec(`UPDATE jetmon_alert_deliveries SET status = 'pending', attempt = 0, next_attempt_at = CURRENT_TIMESTAMP, last_status_code = NULL, last_response = NULL, last_attempt_at = NULL WHERE id = ? AND status = 'abandoned'`).
+		WithArgs(int64(101)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(selectAlertDeliveryOneSQL).WithArgs(int64(101)).
+		WillReturnRows(makeAlertDeliveryRow(101, 11, "pending"))
+
+	req := newPOSTWithBody("/api/v1/alert-contacts/11/deliveries/101/retry", nil)
+	req.SetPathValue("id", "11")
+	req.SetPathValue("delivery_id", "101")
+	req = setGatewayTenantCtx(req, key, "tenant-a")
+	rec := invokeAuthed(s, req, s.handleRetryAlertDelivery)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
 }
 

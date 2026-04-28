@@ -70,6 +70,9 @@ func (s *Server) handleListAlertDeliveries(w http.ResponseWriter, r *http.Reques
 			"alert contact id must be a positive integer")
 		return
 	}
+	if !s.ensureAlertContactOwnedForRequest(w, r, contactID) {
+		return
+	}
 
 	q := r.URL.Query()
 	limit, err := parseLimit(q.Get("limit"), 50, 200)
@@ -140,6 +143,9 @@ func (s *Server) handleRetryAlertDelivery(w http.ResponseWriter, r *http.Request
 			"delivery id must be a positive integer")
 		return
 	}
+	if !s.ensureAlertContactOwnedForRequest(w, r, contactID) {
+		return
+	}
 
 	d, err := alerting.GetDelivery(r.Context(), s.db, deliveryID)
 	if err != nil {
@@ -170,4 +176,22 @@ func (s *Server) handleRetryAlertDelivery(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, toAlertDeliveryResponse(d))
+}
+
+func (s *Server) ensureAlertContactOwnedForRequest(w http.ResponseWriter, r *http.Request, id int64) bool {
+	tenantID, ok := ownerTenantIDFromRequest(r)
+	if !ok {
+		return true
+	}
+	if _, err := alerting.GetForTenant(r.Context(), s.db, id, tenantID); err != nil {
+		if errors.Is(err, alerting.ErrContactNotFound) {
+			writeError(w, r, http.StatusNotFound, "alert_contact_not_found",
+				fmt.Sprintf("Alert contact %d does not exist", id))
+			return false
+		}
+		writeError(w, r, http.StatusInternalServerError, "db_error",
+			"alert contact lookup failed: "+err.Error())
+		return false
+	}
+	return true
 }

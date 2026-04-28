@@ -1,6 +1,7 @@
 package api
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -95,12 +96,13 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rawSecret, hook, err := webhooks.Create(r.Context(), s.db, webhooks.CreateInput{
-		URL:         body.URL,
-		Active:      body.Active,
-		Events:      body.Events,
-		SiteFilter:  body.SiteFilter,
-		StateFilter: body.StateFilter,
-		CreatedBy:   createdBy,
+		URL:           body.URL,
+		Active:        body.Active,
+		OwnerTenantID: ownerTenantIDPtr(r),
+		Events:        body.Events,
+		SiteFilter:    body.SiteFilter,
+		StateFilter:   body.StateFilter,
+		CreatedBy:     createdBy,
 	})
 	if err != nil {
 		if errors.Is(err, webhooks.ErrInvalidEvent) {
@@ -125,7 +127,15 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 // the full set; if a deployment ever grows past hundreds, add cursor
 // pagination here mirroring the sites endpoint.
 func (s *Server) handleListWebhooks(w http.ResponseWriter, r *http.Request) {
-	hooks, err := webhooks.List(r.Context(), s.db)
+	var (
+		hooks []webhooks.Webhook
+		err   error
+	)
+	if tenantID, ok := ownerTenantIDFromRequest(r); ok {
+		hooks, err = webhooks.ListForTenant(r.Context(), s.db, tenantID)
+	} else {
+		hooks, err = webhooks.List(r.Context(), s.db)
+	}
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, "db_error",
 			"webhook list failed: "+err.Error())
@@ -149,7 +159,7 @@ func (s *Server) handleGetWebhook(w http.ResponseWriter, r *http.Request) {
 			"webhook id must be a positive integer")
 		return
 	}
-	hook, err := webhooks.Get(r.Context(), s.db, id)
+	hook, err := getWebhookForRequest(r, s.db, id)
 	if err != nil {
 		if errors.Is(err, webhooks.ErrWebhookNotFound) {
 			writeError(w, r, http.StatusNotFound, "webhook_not_found",
@@ -186,13 +196,19 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	hook, err := webhooks.Update(r.Context(), s.db, id, webhooks.UpdateInput{
+	in := webhooks.UpdateInput{
 		URL:         body.URL,
 		Active:      body.Active,
 		Events:      body.Events,
 		SiteFilter:  body.SiteFilter,
 		StateFilter: body.StateFilter,
-	})
+	}
+	var hook *webhooks.Webhook
+	if tenantID, ok := ownerTenantIDFromRequest(r); ok {
+		hook, err = webhooks.UpdateForTenant(r.Context(), s.db, id, tenantID, in)
+	} else {
+		hook, err = webhooks.Update(r.Context(), s.db, id, in)
+	}
 	if err != nil {
 		if errors.Is(err, webhooks.ErrInvalidEvent) {
 			writeError(w, r, http.StatusUnprocessableEntity, "invalid_event_type",
@@ -225,7 +241,13 @@ func (s *Server) handleDeleteWebhook(w http.ResponseWriter, r *http.Request) {
 			"webhook id must be a positive integer")
 		return
 	}
-	if err := webhooks.Delete(r.Context(), s.db, id); err != nil {
+	err = nil
+	if tenantID, ok := ownerTenantIDFromRequest(r); ok {
+		err = webhooks.DeleteForTenant(r.Context(), s.db, id, tenantID)
+	} else {
+		err = webhooks.Delete(r.Context(), s.db, id)
+	}
+	if err != nil {
 		if errors.Is(err, webhooks.ErrWebhookNotFound) {
 			writeError(w, r, http.StatusNotFound, "webhook_not_found",
 				fmt.Sprintf("Webhook %d does not exist", id))
@@ -252,7 +274,15 @@ func (s *Server) handleRotateWebhookSecret(w http.ResponseWriter, r *http.Reques
 			"webhook id must be a positive integer")
 		return
 	}
-	rawSecret, hook, err := webhooks.RotateSecret(r.Context(), s.db, id)
+	var (
+		rawSecret string
+		hook      *webhooks.Webhook
+	)
+	if tenantID, ok := ownerTenantIDFromRequest(r); ok {
+		rawSecret, hook, err = webhooks.RotateSecretForTenant(r.Context(), s.db, id, tenantID)
+	} else {
+		rawSecret, hook, err = webhooks.RotateSecret(r.Context(), s.db, id)
+	}
 	if err != nil {
 		if errors.Is(err, webhooks.ErrWebhookNotFound) {
 			writeError(w, r, http.StatusNotFound, "webhook_not_found",
@@ -278,4 +308,19 @@ func parseIDPath(r *http.Request, name string) (int64, error) {
 		return 0, errors.New("must be a positive integer")
 	}
 	return id, nil
+}
+
+func getWebhookForRequest(r *http.Request, db *sql.DB, id int64) (*webhooks.Webhook, error) {
+	if tenantID, ok := ownerTenantIDFromRequest(r); ok {
+		return webhooks.GetForTenant(r.Context(), db, id, tenantID)
+	}
+	return webhooks.Get(r.Context(), db, id)
+}
+
+func ownerTenantIDPtr(r *http.Request) *string {
+	tenantID, ok := ownerTenantIDFromRequest(r)
+	if !ok {
+		return nil
+	}
+	return &tenantID
 }

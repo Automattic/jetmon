@@ -4,6 +4,15 @@ This document is the reference for Jetmon 2's internal REST API and the design n
 
 **Audience: internal systems only.** Jetmon does not expose this API to end customers directly. A separate gateway service handles all customer-facing access — authentication, tenant isolation, customer rate limiting, plan-based feature gating, public error vocabulary, etc. — and calls Jetmon over this internal interface. Other internal services (operator dashboard, alerting workers, batch reporting jobs, the gateway itself) are the only direct callers. The future gateway/tenant boundary is drafted in [`docs/public-api-gateway-tenant-contract.md`](docs/public-api-gateway-tenant-contract.md).
 
+**Gateway tenant context.** Requests from the internal consumer named `gateway`
+may include `X-Jetmon-Tenant-ID`, `X-Jetmon-Public-Scopes`, and
+`X-Jetmon-Gateway-Request-ID` (plus optional actor/plan headers). Jetmon
+rejects those headers from any other consumer. When accepted, the context is
+recorded in API audit metadata and used to owner-scope webhook and alert-contact
+CRUD, delivery history, manual delivery retry, and alert-contact send-test
+routes. Normal internal callers that omit these headers keep the unscoped
+operator behavior described below.
+
 This shapes several design choices: authentication is per-consumer rather than per-customer, scopes are coarse rather than granular, error messages are verbose rather than guarded, and key management is an ops-only concern rather than a self-service feature. The trust boundary is "is this a known internal system?", not "is this user allowed to see this site?".
 
 The goal is to expose Jetmon's distinctive data model — the five-layer test taxonomy, the site → endpoint → event hierarchy, the multi-state vocabulary, and the event-sourced architecture (`TAXONOMY.md`, `EVENTS.md`) — over a shape that internal consumers can integrate against confidently. We took inspiration from Better Stack, UptimeRobot v3, Pingdom, and Atlassian Statuspage but did not copy any of their shapes wholesale; Jetmon's richer model (multi-state, layered tests, causal links, separate severity) wouldn't fit cleanly into a flat "monitors" API.
@@ -757,12 +766,19 @@ Webhooks are managed by any `write`-scope token. `created_by` records the consum
 
 This is appropriate **only** because Jetmon is internal-only with all consumers trusted. Per-consumer ownership doesn't add value at this scale; the gateway in front of Jetmon handles tenant isolation for any customer-facing webhooks.
 
-The table includes nullable `owner_tenant_id` and the repository has tenant-scoped helpers for future gateway paths. The current internal handlers do not set or filter on it, so existing internal behavior is unchanged.
+The table includes nullable `owner_tenant_id`. Normal internal handlers remain
+unscoped when no gateway context is present, so existing internal behavior is
+unchanged. Gateway-routed creates set `owner_tenant_id`, and gateway-routed
+list/get/update/delete/rotate-secret paths filter by it. Delivery history and
+manual retry visibility are derived by first verifying ownership of the parent
+webhook.
 
 **Ramifications if Jetmon ever becomes a public API:**
 
 - This model would need to change. Customer-facing consumers cannot be allowed to read or modify each other's webhooks.
-- Migration path: require `owner_tenant_id` on gateway-routed creates; filter list/get/update/delete by it; introduce a `webhooks` scope or formal account/tenant boundary.
+- Migration path: continue requiring `owner_tenant_id` on gateway-routed
+  creates; add granular public `webhooks` scopes or a formal account/tenant
+  boundary before any direct customer exposure.
 - The `created_by` field is forward-compatible — it's already capturing the consumer identity, just not enforcing it.
 - Existing webhooks would need a backfill migration before being exposed publicly.
 - Webhook secrets would need stronger isolation (currently any write-scope can rotate any secret; in a public API this would be a privilege escalation).
@@ -932,7 +948,12 @@ jetmon_alert_dispatch_progress (
 
 #### Alert contact ownership
 
-Same internal model as webhooks: any `write`-scope token can manage any alert contact, `created_by` is audit-only, and current internal handlers do not set or filter `owner_tenant_id`. The nullable owner column and tenant-scoped repository helpers exist for future gateway paths.
+Same internal model as webhooks: any `write`-scope token can manage any alert
+contact when no gateway context is present, and `created_by` is audit-only.
+Gateway-routed creates set `owner_tenant_id`; gateway-routed
+list/get/update/delete/test paths filter by it. Delivery history and manual
+retry visibility are derived by first verifying ownership of the parent alert
+contact.
 
 ### Family 6: Identity and utility
 

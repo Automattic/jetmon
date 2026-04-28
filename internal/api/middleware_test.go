@@ -33,6 +33,7 @@ type apiAuditMetadataWithRequestID struct {
 	t          *testing.T
 	wantStatus float64
 	wantNote   string
+	wantTenant string
 }
 
 func (m apiAuditMetadataWithRequestID) Match(v driver.Value) bool {
@@ -64,10 +65,29 @@ func (m apiAuditMetadataWithRequestID) Match(v driver.Value) bool {
 		m.t.Errorf("metadata note = %v, want %q", meta["note"], m.wantNote)
 		return false
 	}
+	if m.wantTenant != "" {
+		if meta["tenant_id"] != m.wantTenant {
+			m.t.Errorf("metadata tenant_id = %v, want %q", meta["tenant_id"], m.wantTenant)
+			return false
+		}
+		if meta["gateway_request_id"] != "gw-req-123" {
+			m.t.Errorf("metadata gateway_request_id = %v, want gw-req-123", meta["gateway_request_id"])
+			return false
+		}
+		scopes, ok := meta["public_scopes"].([]any)
+		if !ok || len(scopes) != 2 || scopes[0] != "webhooks:read" || scopes[1] != "webhooks:write" {
+			m.t.Errorf("metadata public_scopes = %v, want webhooks read/write", meta["public_scopes"])
+			return false
+		}
+	}
 	return true
 }
 
 func makeKeyRow(id int64, scope string, rateLimit int, revokedAt, expiresAt *time.Time) *sqlmock.Rows {
+	return makeConsumerKeyRow(id, "test-consumer", scope, rateLimit, revokedAt, expiresAt)
+}
+
+func makeConsumerKeyRow(id int64, consumerName, scope string, rateLimit int, revokedAt, expiresAt *time.Time) *sqlmock.Rows {
 	rows := sqlmock.NewRows(columnsKey)
 	var rev, exp any
 	if revokedAt != nil {
@@ -76,7 +96,7 @@ func makeKeyRow(id int64, scope string, rateLimit int, revokedAt, expiresAt *tim
 	if expiresAt != nil {
 		exp = *expiresAt
 	}
-	rows.AddRow(id, "test-consumer", scope, rateLimit, exp, rev, nil, time.Now().UTC(), "test")
+	rows.AddRow(id, consumerName, scope, rateLimit, exp, rev, nil, time.Now().UTC(), "test")
 	return rows
 }
 
@@ -358,6 +378,113 @@ func TestRequireScopeAllowsValidToken(t *testing.T) {
 	}
 	if got := rec.Header().Get("X-RateLimit-Remaining"); got == "" {
 		t.Errorf("X-RateLimit-Remaining missing")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+}
+
+func TestRequireScopeRejectsGatewayContextFromNonGatewayConsumer(t *testing.T) {
+	s, mock, _, cleanup := newTestServer(t)
+	defer cleanup()
+	audit.Init(s.db)
+	t.Cleanup(func() { audit.Init(nil) })
+
+	mock.ExpectQuery(keyLookupSQL).WillReturnRows(makeKeyRow(1, "write", 60, nil, nil))
+	mock.ExpectExec(keyTouchSQL).WithArgs(int64(1)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(auditInsertSQL).WithArgs(
+		nil,
+		nil,
+		audit.EventAPIAccess,
+		"test-consumer",
+		"POST /api/v1/webhooks",
+		apiAuditMetadataWithRequestID{
+			t:          t,
+			wantStatus: float64(http.StatusForbidden),
+			wantNote:   errForbiddenGatewayCtx,
+		},
+	).WillReturnResult(sqlmock.NewResult(0, 1))
+
+	called := false
+	wrapped := s.requireScope(scopeWrite, func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	})
+
+	req := httptest.NewRequest("POST", "/api/v1/webhooks", nil)
+	req.Header.Set("Authorization", "Bearer jm_ANYTOKENWILLDOFORTHISTESTXX")
+	req.Header.Set(headerTenantID, "tenant-a")
+	req.Header.Set(headerPublicScopes, "webhooks:write")
+	req.Header.Set(headerGatewayRequestID, "gw-req-123")
+	rec := httptest.NewRecorder()
+	wrapped(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", rec.Code, rec.Body.String())
+	}
+	if called {
+		t.Fatal("handler should not run when a non-gateway key asserts gateway context")
+	}
+	if got := readErrorBody(t, rec.Body).Code; got != errForbiddenGatewayCtx {
+		t.Fatalf("code = %q, want %s", got, errForbiddenGatewayCtx)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+}
+
+func TestRequireScopeAttachesGatewayContext(t *testing.T) {
+	s, mock, _, cleanup := newTestServer(t)
+	defer cleanup()
+	audit.Init(s.db)
+	t.Cleanup(func() { audit.Init(nil) })
+
+	mock.ExpectQuery(keyLookupSQL).WillReturnRows(makeConsumerKeyRow(1, gatewayConsumerName, "write", 60, nil, nil))
+	mock.ExpectExec(keyTouchSQL).WithArgs(int64(1)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(auditInsertSQL).WithArgs(
+		nil,
+		nil,
+		audit.EventAPIAccess,
+		gatewayConsumerName,
+		"POST /api/v1/webhooks",
+		apiAuditMetadataWithRequestID{
+			t:          t,
+			wantStatus: float64(http.StatusNoContent),
+			wantNote:   "",
+			wantTenant: "tenant-a",
+		},
+	).WillReturnResult(sqlmock.NewResult(0, 1))
+
+	called := false
+	wrapped := s.requireScope(scopeWrite, func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		gw, ok := gatewayContextFromRequest(r)
+		if !ok {
+			t.Fatal("gateway context missing from handler request")
+		}
+		if gw.TenantID != "tenant-a" || gw.GatewayRequestID != "gw-req-123" {
+			t.Fatalf("gateway context = %+v", gw)
+		}
+		if len(gw.PublicScopes) != 2 || gw.PublicScopes[0] != "webhooks:read" || gw.PublicScopes[1] != "webhooks:write" {
+			t.Fatalf("public scopes = %v", gw.PublicScopes)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	req := httptest.NewRequest("POST", "/api/v1/webhooks", nil)
+	req.Header.Set("Authorization", "Bearer jm_ANYTOKENWILLDOFORTHISTESTXX")
+	req.Header.Set(headerTenantID, "tenant-a")
+	req.Header.Set(headerPublicScopes, "webhooks:read webhooks:write")
+	req.Header.Set(headerGatewayRequestID, "gw-req-123")
+	req.Header.Set(headerActorID, "user-123")
+	req.Header.Set(headerGatewayPlan, "business")
+	rec := httptest.NewRecorder()
+	wrapped(rec, req)
+
+	if !called {
+		t.Fatal("handler should have run")
+	}
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body=%s", rec.Code, rec.Body.String())
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("expectations: %v", err)
