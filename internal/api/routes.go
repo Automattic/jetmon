@@ -138,7 +138,7 @@ func apiRoutes() []routeDef {
 			Method:        http.MethodDelete,
 			Path:          "/api/v1/sites/{id}",
 			OperationID:   "deleteSite",
-			Summary:       "Deactivate a monitored site",
+			Summary:       "Soft-delete a monitored site",
 			Tags:          []string{"Sites"},
 			Scope:         scopeWrite,
 			SuccessStatus: http.StatusNoContent,

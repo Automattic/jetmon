@@ -407,6 +407,12 @@ Partial update. Send only the fields you want to change.
 
 Soft-delete (sets `monitor_active = false` and tombstones). Closes any active events with `resolution_reason = manual_override`.
 
+Delete is intentionally idempotent and preserves the site row. Repeating
+`DELETE /api/v1/sites/{id}` returns `204 No Content`, and a later
+`GET /api/v1/sites/{id}` returns `200 OK` with the same site object and
+`monitor_active: false`. Consumers should treat `monitor_active:false` as the
+readable deleted/paused state rather than expecting a `404` after delete.
+
 #### `POST /api/v1/sites/{id}/pause`, `POST /api/v1/sites/{id}/resume`
 
 Convenience verbs for the common pause/resume flow. Pause closes any active events with `resolution_reason = manual_override` and sets `current_state = "Paused"`. Resume reverts.
