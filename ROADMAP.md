@@ -652,6 +652,11 @@ where to look, and what each item unlocked.
   dashboard shows bucket mode, projection mode, delivery ownership, rollout
   commands, and dependency health.
   This keeps migration-critical state visible before and during cutover.
+- **Static bucket plan preflight.** `./jetmon2 rollout static-plan-check`
+  validates the copied v1 host bucket plan before any host is stopped.
+  Operators can catch gaps, overlaps, invalid ranges, and duplicate host rows
+  while the rollback surface is still just the unmodified v1 fleet, then assert
+  the exact host/range being copied into each pinned v2 config.
 - **Systemd service cleanup.** The monitor unit now places start-limit keys in
   the correct systemd section, and the deliverer unit validates with
   `systemd-analyze`.

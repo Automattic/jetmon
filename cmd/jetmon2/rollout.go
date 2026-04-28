@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/csv"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,11 +38,13 @@ type projectionDriftDeps struct {
 
 func cmdRollout(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout <pinned-check|dynamic-check|projection-drift> [args]")
+		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout <static-plan-check|pinned-check|dynamic-check|projection-drift> [args]")
 		os.Exit(1)
 	}
 
 	switch args[0] {
+	case "static-plan-check":
+		cmdRolloutStaticPlanCheck(args[1:])
 	case "pinned-check":
 		cmdRolloutPinnedCheck(args[1:])
 	case "dynamic-check":
@@ -48,7 +52,61 @@ func cmdRollout(args []string) {
 	case "projection-drift":
 		cmdRolloutProjectionDrift(args[1:])
 	default:
-		fmt.Fprintf(os.Stderr, "unknown rollout subcommand %q (want: pinned-check, dynamic-check, projection-drift)\n", args[0])
+		fmt.Fprintf(os.Stderr, "unknown rollout subcommand %q (want: static-plan-check, pinned-check, dynamic-check, projection-drift)\n", args[0])
+		os.Exit(1)
+	}
+}
+
+func cmdRolloutStaticPlanCheck(args []string) {
+	fs := flag.NewFlagSet("rollout static-plan-check", flag.ExitOnError)
+	file := fs.String("file", "", "CSV file with host,bucket_min,bucket_max rows (use - for stdin)")
+	bucketTotal := fs.Int("bucket-total", 0, "total bucket count (default BUCKET_TOTAL from config)")
+	host := fs.String("host", "", "optional host id that must appear in the plan")
+	bucketMin := fs.Int("bucket-min", -1, "expected bucket minimum for --host")
+	bucketMax := fs.Int("bucket-max", -1, "expected bucket maximum for --host")
+	_ = fs.Parse(args)
+	if fs.NArg() != 0 || strings.TrimSpace(*file) == "" {
+		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout static-plan-check --file=<ranges.csv> [--bucket-total=N] [--host=<host> --bucket-min=N --bucket-max=N]")
+		os.Exit(1)
+	}
+	assertion, err := staticPlanAssertionFromFlags(*host, *bucketMin, *bucketMax)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL %v\n", err)
+		os.Exit(1)
+	}
+
+	resolvedBucketTotal := *bucketTotal
+	if resolvedBucketTotal < 0 {
+		fmt.Fprintln(os.Stderr, "FAIL bucket-total must be > 0")
+		os.Exit(1)
+	}
+	if resolvedBucketTotal == 0 {
+		configPath := envOrDefault("JETMON_CONFIG", "config/config.json")
+		if err := config.Load(configPath); err != nil {
+			fmt.Fprintf(os.Stderr, "FAIL config parse: %v\n", err)
+			os.Exit(1)
+		}
+		resolvedBucketTotal = config.Get().BucketTotal
+	}
+
+	inputName := strings.TrimSpace(*file)
+	input := io.Reader(os.Stdin)
+	var opened *os.File
+	if inputName != "-" {
+		f, err := os.Open(inputName)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "FAIL open static bucket plan: %v\n", err)
+			os.Exit(1)
+		}
+		opened = f
+		input = f
+	}
+	if opened != nil {
+		defer opened.Close()
+	}
+
+	if err := runStaticPlanCheck(os.Stdout, inputName, input, resolvedBucketTotal, assertion); err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL %v\n", err)
 		os.Exit(1)
 	}
 }
@@ -157,6 +215,218 @@ func cmdRolloutProjectionDrift(args []string) {
 	}
 }
 
+type staticBucketRange struct {
+	HostID    string
+	BucketMin int
+	BucketMax int
+}
+
+type staticPlanAssertion struct {
+	HostID    string
+	BucketMin int
+	BucketMax int
+}
+
+func (a staticPlanAssertion) enabled() bool {
+	return strings.TrimSpace(a.HostID) != ""
+}
+
+func (a staticPlanAssertion) checksRange() bool {
+	return a.BucketMin >= 0 || a.BucketMax >= 0
+}
+
+func staticPlanAssertionFromFlags(host string, bucketMin, bucketMax int) (staticPlanAssertion, error) {
+	host = strings.TrimSpace(host)
+	if bucketMin < -1 || bucketMax < -1 {
+		return staticPlanAssertion{}, errors.New("--bucket-min and --bucket-max must be >= 0")
+	}
+	if host == "" {
+		if bucketMin >= 0 || bucketMax >= 0 {
+			return staticPlanAssertion{}, errors.New("--host is required when --bucket-min or --bucket-max is set")
+		}
+		return staticPlanAssertion{}, nil
+	}
+	if (bucketMin >= 0) != (bucketMax >= 0) {
+		return staticPlanAssertion{}, errors.New("--bucket-min and --bucket-max must be set together")
+	}
+	return staticPlanAssertion{
+		HostID:    host,
+		BucketMin: bucketMin,
+		BucketMax: bucketMax,
+	}, nil
+}
+
+func runStaticPlanCheck(out io.Writer, inputName string, input io.Reader, bucketTotal int, assertion staticPlanAssertion) error {
+	ranges, err := parseStaticBucketPlanCSV(input)
+	if err != nil {
+		return err
+	}
+	if err := validateStaticBucketPlan(ranges, bucketTotal); err != nil {
+		return err
+	}
+	assertedRange, err := validateStaticPlanAssertion(ranges, assertion)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "PASS static_plan_file=%s ranges=%d\n", inputName, len(ranges))
+	fmt.Fprintf(out, "PASS static_bucket_coverage=0-%d hosts=%d\n", bucketTotal-1, len(ranges))
+	if assertion.enabled() {
+		fmt.Fprintf(out, "PASS static_plan_host=%q range=%d-%d\n", assertedRange.HostID, assertedRange.BucketMin, assertedRange.BucketMax)
+	}
+	fmt.Fprintln(out, "static rollout plan check passed")
+	return nil
+}
+
+func parseStaticBucketPlanCSV(input io.Reader) ([]staticBucketRange, error) {
+	reader := csv.NewReader(input)
+	reader.FieldsPerRecord = -1
+	reader.TrimLeadingSpace = true
+
+	records, err := reader.ReadAll()
+	if err != nil {
+		return nil, fmt.Errorf("read static bucket plan CSV: %w", err)
+	}
+
+	ranges := make([]staticBucketRange, 0, len(records))
+	seenData := false
+	for i, record := range records {
+		row := i + 1
+		if staticPlanRowIsBlank(record) || staticPlanRowIsComment(record) {
+			continue
+		}
+		if !seenData && staticPlanRowIsHeader(record) {
+			seenData = true
+			continue
+		}
+		seenData = true
+		if len(record) != 3 {
+			return nil, fmt.Errorf("row %d: expected host,bucket_min,bucket_max", row)
+		}
+		hostID := strings.TrimSpace(record[0])
+		if hostID == "" {
+			return nil, fmt.Errorf("row %d: host is required", row)
+		}
+		minBucket, err := parseStaticPlanInt(row, "bucket_min", record[1])
+		if err != nil {
+			return nil, err
+		}
+		maxBucket, err := parseStaticPlanInt(row, "bucket_max", record[2])
+		if err != nil {
+			return nil, err
+		}
+		ranges = append(ranges, staticBucketRange{
+			HostID:    hostID,
+			BucketMin: minBucket,
+			BucketMax: maxBucket,
+		})
+	}
+	if len(ranges) == 0 {
+		return nil, errors.New("static bucket plan has no host ranges")
+	}
+	return ranges, nil
+}
+
+func staticPlanRowIsBlank(record []string) bool {
+	for _, field := range record {
+		if strings.TrimSpace(field) != "" {
+			return false
+		}
+	}
+	return true
+}
+
+func staticPlanRowIsComment(record []string) bool {
+	return len(record) > 0 && strings.HasPrefix(strings.TrimSpace(record[0]), "#")
+}
+
+func staticPlanRowIsHeader(record []string) bool {
+	if len(record) != 3 {
+		return false
+	}
+	return staticPlanHeaderField(record[0]) == "host" &&
+		staticPlanHeaderField(record[1]) == "bucket_min" &&
+		staticPlanHeaderField(record[2]) == "bucket_max"
+}
+
+func staticPlanHeaderField(field string) string {
+	normalized := strings.ToLower(strings.TrimSpace(field))
+	switch normalized {
+	case "bucket_no_min", "min":
+		return "bucket_min"
+	case "bucket_no_max", "max":
+		return "bucket_max"
+	default:
+		return normalized
+	}
+}
+
+func parseStaticPlanInt(row int, field, value string) (int, error) {
+	parsed, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil {
+		return 0, fmt.Errorf("row %d: %s %q is not an integer", row, field, strings.TrimSpace(value))
+	}
+	return parsed, nil
+}
+
+func validateStaticBucketPlan(ranges []staticBucketRange, bucketTotal int) error {
+	if bucketTotal <= 0 {
+		return errors.New("BUCKET_TOTAL must be > 0")
+	}
+	if len(ranges) == 0 {
+		return errors.New("static bucket plan has no host ranges")
+	}
+
+	seenHosts := make(map[string]struct{}, len(ranges))
+	for _, rng := range ranges {
+		if _, ok := seenHosts[rng.HostID]; ok {
+			return fmt.Errorf("host %q is listed more than once", rng.HostID)
+		}
+		seenHosts[rng.HostID] = struct{}{}
+		if rng.BucketMin < 0 || rng.BucketMax < rng.BucketMin || rng.BucketMax >= bucketTotal {
+			return fmt.Errorf("host %q has invalid bucket range %d-%d for BUCKET_TOTAL=%d", rng.HostID, rng.BucketMin, rng.BucketMax, bucketTotal)
+		}
+	}
+
+	sortedRanges := append([]staticBucketRange(nil), ranges...)
+	sort.Slice(sortedRanges, func(i, j int) bool {
+		if sortedRanges[i].BucketMin == sortedRanges[j].BucketMin {
+			return sortedRanges[i].HostID < sortedRanges[j].HostID
+		}
+		return sortedRanges[i].BucketMin < sortedRanges[j].BucketMin
+	})
+
+	expectedMin := 0
+	for _, rng := range sortedRanges {
+		if rng.BucketMin > expectedMin {
+			return fmt.Errorf("static bucket plan has gap %d-%d before host %q", expectedMin, rng.BucketMin-1, rng.HostID)
+		}
+		if rng.BucketMin < expectedMin {
+			return fmt.Errorf("static bucket plan overlaps before host %q at bucket %d", rng.HostID, rng.BucketMin)
+		}
+		expectedMin = rng.BucketMax + 1
+	}
+	if expectedMin < bucketTotal {
+		return fmt.Errorf("static bucket plan has trailing gap %d-%d", expectedMin, bucketTotal-1)
+	}
+	return nil
+}
+
+func validateStaticPlanAssertion(ranges []staticBucketRange, assertion staticPlanAssertion) (staticBucketRange, error) {
+	if !assertion.enabled() {
+		return staticBucketRange{}, nil
+	}
+	for _, rng := range ranges {
+		if rng.HostID != assertion.HostID {
+			continue
+		}
+		if assertion.checksRange() && (rng.BucketMin != assertion.BucketMin || rng.BucketMax != assertion.BucketMax) {
+			return staticBucketRange{}, fmt.Errorf("host %q has bucket range %d-%d in plan, want %d-%d", assertion.HostID, rng.BucketMin, rng.BucketMax, assertion.BucketMin, assertion.BucketMax)
+		}
+		return rng, nil
+	}
+	return staticBucketRange{}, fmt.Errorf("host %q is not present in static bucket plan", assertion.HostID)
+}
+
 func runPinnedRolloutCheck(ctx context.Context, out io.Writer, cfg *config.Config, hostOverride string, deps pinnedRolloutCheckDeps) error {
 	if cfg == nil {
 		return errors.New("config is not loaded")
@@ -209,6 +479,9 @@ func runPinnedRolloutCheck(ctx context.Context, out io.Writer, cfg *config.Confi
 		return fmt.Errorf("count active sites in pinned range %d-%d: %w", minBucket, maxBucket, err)
 	}
 	fmt.Fprintf(out, "INFO active_sites_in_pinned_range=%d\n", activeSites)
+	if activeSites == 0 {
+		fmt.Fprintln(out, "WARN active_sites_in_pinned_range=0; confirm this v1 host range is intentionally empty")
+	}
 
 	if deps.CountLegacyProjectionDrift == nil {
 		return errors.New("projection drift counter is not configured")
@@ -265,6 +538,9 @@ func runDynamicRolloutCheck(ctx context.Context, out io.Writer, cfg *config.Conf
 		return fmt.Errorf("count active sites in dynamic range 0-%d: %w", cfg.BucketTotal-1, err)
 	}
 	fmt.Fprintf(out, "INFO active_sites_dynamic_range=%d\n", activeSites)
+	if activeSites == 0 {
+		fmt.Fprintln(out, "WARN active_sites_dynamic_range=0; confirm the production site table is intentionally empty")
+	}
 
 	if deps.CountLegacyProjectionDrift == nil {
 		return errors.New("projection drift counter is not configured")

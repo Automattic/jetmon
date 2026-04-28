@@ -44,7 +44,31 @@ While pinned:
 
 ## Preflight
 
-1. Confirm the v1 fleet's static bucket ranges are complete and non-overlapping.
+1. Export the v1 fleet's static bucket plan to CSV and verify that the ranges
+   are complete and non-overlapping before touching any hosts:
+
+   ```csv
+   host,bucket_min,bucket_max
+   jetmon-v1-a,0,99
+   jetmon-v1-b,100,199
+   ```
+
+   ```bash
+   ./jetmon2 rollout static-plan-check --file rollout-buckets.csv
+   ```
+
+   The check reads `BUCKET_TOTAL` from `JETMON_CONFIG` by default. Use
+   `--bucket-total=<n>` if the config file is not available yet. The legacy
+   header names `BUCKET_NO_MIN` and `BUCKET_NO_MAX` are accepted so operators
+   can paste directly from v1 config inventory.
+
+   Before replacing an individual host, assert that the copied host/range still
+   matches the approved plan:
+
+   ```bash
+   ./jetmon2 rollout static-plan-check --file rollout-buckets.csv \
+     --host=jetmon-v1-a --bucket-min=0 --bucket-max=99
+   ```
 2. Build all v2 binaries and run `make test`, `make test-race`, and `make all`.
 3. Apply additive migrations before the cutover:
 
@@ -66,7 +90,8 @@ While pinned:
 For each v1 host:
 
 1. Record the host name and v1 bucket range.
-2. Prepare the v2 config with the same pinned range.
+2. Confirm that host and range are present in the already-validated static
+   bucket plan, then prepare the v2 config with the same pinned range.
 3. Before stopping v1, run `./jetmon2 validate-config` and confirm it reports:
    - `legacy_status_projection=enabled`
    - `bucket_ownership=pinned range=<min>-<max>`

@@ -514,11 +514,28 @@ For the first production migration from v1, replace one v1 host at a time with
 a v2 host pinned to that same inclusive bucket range. This avoids mixed v1/v2
 bucket ownership and gives each host a simple rollback path.
 
-1) Pre-apply additive migrations during a quiet period:
+1) Export the v1 static bucket plan and verify complete, non-overlapping
+   coverage before touching any hosts:
+
+		host,bucket_min,bucket_max
+		jetmon-v1-a,0,99
+		jetmon-v1-b,100,199
+
+		./jetmon2 rollout static-plan-check --file rollout-buckets.csv
+
+   The command reads `BUCKET_TOTAL` from config by default; use
+   `--bucket-total=<n>` if checking the plan before config is available. To
+   catch copy/paste mistakes before replacing a specific host, assert the
+   expected row:
+
+		./jetmon2 rollout static-plan-check --file rollout-buckets.csv \
+		  --host=jetmon-v1-a --bucket-min=0 --bucket-max=99
+
+2) Pre-apply additive migrations during a quiet period:
 
 		./jetmon2 migrate
 
-2) On the host being replaced, copy the existing v1 bucket range into v2 config:
+3) On the host being replaced, copy the existing v1 bucket range into v2 config:
 
 		"PINNED_BUCKET_MIN": 0,
 		"PINNED_BUCKET_MAX": 99,
@@ -529,12 +546,12 @@ bucket ownership and gives each host a simple rollback path.
    `PINNED_BUCKET_*` makes the migration mode explicit. In pinned mode, v2 does
    not claim or heartbeat `jetmon_hosts`; it checks only the configured range.
 
-3) Before stopping v1, run config validation and confirm it prints the pinned
+4) Before stopping v1, run config validation and confirm it prints the pinned
    preflight plus projection-drift commands:
 
 		./jetmon2 validate-config
 
-4) Before starting the cutover, run the pinned rollout preflight:
+5) Before starting the cutover, run the pinned rollout preflight:
 
 		./jetmon2 rollout pinned-check
 
@@ -542,18 +559,18 @@ bucket ownership and gives each host a simple rollback path.
    `jetmon_hosts` row for the host, active site count for the range, and zero
    legacy projection drift.
 
-5) Stop the v1 process for that range, start v2, and verify checks,
+6) Stop the v1 process for that range, start v2, and verify checks,
    Veriflier confirmations, WPCOM notifications, audit rows, and legacy
    `site_status` projection for that bucket range. If the operator dashboard is
    enabled, also confirm rollout guard state and dependency health before
    moving to the next host.
 
-6) If rollback is needed, stop v2 and restart the original v1 process with the
+7) If rollback is needed, stop v2 and restart the original v1 process with the
    same bucket config. Because the v2 migrations are additive and the legacy
    projection remains enabled, legacy readers continue to see familiar status
    fields.
 
-7) Repeat for each v1 host. After the whole fleet is on v2 and stable, plan a
+8) Repeat for each v1 host. After the whole fleet is on v2 and stable, plan a
    coordinated dynamic-ownership cutover, remove `PINNED_BUCKET_*` from the v2
    monitor configs, restart the fleet in the approved window, then run:
 
