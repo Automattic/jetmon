@@ -196,6 +196,10 @@ Clean up a batch after testing:
 ./bin/jetmon2 api sites cleanup --batch local-smoke --count 5 --output table
 ```
 
+By default, cleanup verifies each existing `--batch` target still exposes the
+matching derived `cli_batch` marker before deleting it. Use `--allow-unmarked`
+only when cleaning up older local data created before the marker check existed.
+
 ## Events and Transitions
 
 Events are the API source of truth for incident state. Use event commands to
@@ -356,6 +360,11 @@ Supported modes are `unreachable`, `http-500`, `http-403`, `redirect`,
   --wait 15s \
   --pretty
 ```
+
+When `--batch` targets an existing site, simulation verifies the site's
+`cli_batch` marker before mutating it. `--create-missing` is still allowed for
+empty deterministic slots because the created site receives the marker. Use
+`--allow-unmarked` only for legacy local batches that predate the marker.
 
 When Docker Compose is running, the command probes
 `http://localhost:18091/health` and uses the Docker-internal `api-fixture`

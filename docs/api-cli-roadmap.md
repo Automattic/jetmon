@@ -114,7 +114,7 @@ but it should not become a generic `curl` clone.
 
 - [x] Allow API CLI flags before or after positional arguments so examples like
   `sites get 123 --pretty` work the way operators naturally type them.
-- [ ] Add batch ownership safety checks for destructive or mutating batch
+- [x] Add batch ownership safety checks for destructive or mutating batch
   workflows. `sites cleanup --batch` and `sites simulate-failure --batch`
   should verify the target still belongs to the requested CLI batch unless the
   operator explicitly opts out.
@@ -223,3 +223,6 @@ but it should not become a generic `curl` clone.
   creating, listing, and revoking rehearsal tokens from the repository root.
 - [x] 2026-04-28: Added `jetmon2 api commands` as a table-first command
   catalog with descriptions and examples for the expanded API CLI tree.
+- [x] 2026-04-28: Added derived site `cli_batch` responses and batch marker
+  checks for `sites cleanup --batch` and `sites simulate-failure --batch`, with
+  `--allow-unmarked` as the explicit legacy opt-out.

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ type apiSitesCleanupOptions struct {
 	blogIDStart    int64
 	dryRun         bool
 	ignoreNotFound bool
+	allowUnmarked  bool
 }
 
 type apiSitesCleanupSummary struct {
@@ -45,6 +47,7 @@ func cmdAPISitesCleanup(args []string) error {
 	fs.Int64Var(&cleanup.blogIDStart, "blog-id-start", 0, "first batch blog_id; default derives from --batch")
 	fs.BoolVar(&cleanup.dryRun, "dry-run", false, "print the planned deletes without sending requests")
 	fs.BoolVar(&cleanup.ignoreNotFound, "ignore-not-found", cleanup.ignoreNotFound, "treat 404 responses as already cleaned")
+	fs.BoolVar(&cleanup.allowUnmarked, "allow-unmarked", false, "allow cleanup of --batch targets that do not expose the matching CLI batch marker")
 	if err := parseAPIFlags(fs, args); err != nil {
 		return err
 	}
@@ -75,6 +78,35 @@ func runAPISitesCleanup(ctx context.Context, client *http.Client, opts apiCLIOpt
 			result.Status = "would_delete"
 			summary.Sites = append(summary.Sites, result)
 			continue
+		}
+		if cleanup.batch != "" && !cleanup.allowUnmarked {
+			ok, exists, err := apiSiteBelongsToBatch(ctx, client, opts, siteID, cleanup.batch)
+			if err != nil {
+				result.Status = "failed"
+				result.Error = err.Error()
+				summary.Sites = append(summary.Sites, result)
+				_ = writeAPIValueOutput(opts.out, summary, opts)
+				return fmt.Errorf("verify site %d batch marker: %w", siteID, err)
+			}
+			if !exists && cleanup.ignoreNotFound {
+				result.Status = "not_found"
+				summary.Sites = append(summary.Sites, result)
+				continue
+			}
+			if !exists {
+				result.Status = "failed"
+				result.Error = "site not found"
+				summary.Sites = append(summary.Sites, result)
+				_ = writeAPIValueOutput(opts.out, summary, opts)
+				return fmt.Errorf("site %d not found", siteID)
+			}
+			if !ok {
+				result.Status = "skipped_unmatched_batch"
+				result.Error = fmt.Sprintf("site does not expose cli_batch %q", cleanup.batch)
+				summary.Sites = append(summary.Sites, result)
+				_ = writeAPIValueOutput(opts.out, summary, opts)
+				return fmt.Errorf("site %d does not belong to CLI batch %q", siteID, cleanup.batch)
+			}
 		}
 		resp, err := doAPIRequest(ctx, client, opts, http.MethodDelete, "/api/v1/sites/"+strconv.FormatInt(siteID, 10), nil)
 		if err != nil {
@@ -129,4 +161,36 @@ func apiCleanupSiteIDs(cleanup apiSitesCleanupOptions) ([]int64, error) {
 		ids = append(ids, start+int64(i))
 	}
 	return ids, nil
+}
+
+func apiSiteBelongsToBatch(ctx context.Context, client *http.Client, opts apiCLIOptions, siteID int64, batch string) (bool, bool, error) {
+	resp, err := doAPIRequest(ctx, client, opts, http.MethodGet, "/api/v1/sites/"+strconv.FormatInt(siteID, 10), nil)
+	if err != nil {
+		return false, false, err
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return false, false, nil
+	}
+	if resp.StatusCode >= 400 {
+		body := strings.TrimSpace(string(resp.Body))
+		if body == "" {
+			body = resp.Status
+		}
+		return false, true, fmt.Errorf("site lookup returned %s: %s", resp.Status, body)
+	}
+	siteBatch, err := apiSiteCLIBatch(resp.Body)
+	if err != nil {
+		return false, true, err
+	}
+	return siteBatch == batch, true, nil
+}
+
+func apiSiteCLIBatch(body []byte) (string, error) {
+	var site struct {
+		CLIBatch string `json:"cli_batch"`
+	}
+	if err := json.Unmarshal(body, &site); err != nil {
+		return "", err
+	}
+	return site.CLIBatch, nil
 }

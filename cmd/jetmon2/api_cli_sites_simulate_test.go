@@ -247,6 +247,44 @@ func TestRunAPISitesSimulateFailureCanCreateMissing(t *testing.T) {
 	}
 }
 
+func TestRunAPISitesSimulateFailureRejectsUnmatchedBatchMarker(t *testing.T) {
+	start := apiCLIBatchBlogIDStart("simulation-batch")
+	var calls []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Method+" "+r.URL.Path)
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sites/"+strconvInt64(start):
+			writeTestJSON(t, w, map[string]any{"id": start, "cli_batch": "other-batch"})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer srv.Close()
+
+	var stdout bytes.Buffer
+	err := runAPISitesSimulateFailure(context.Background(), srv.Client(), apiCLIOptions{
+		baseURL: srv.URL,
+		timeout: time.Second,
+		out:     &stdout,
+		errOut:  ioDiscard{},
+	}, apiSitesSimulateFailureOptions{
+		mode:         "http-500",
+		batch:        "simulation-batch",
+		count:        1,
+		trigger:      false,
+		pollInterval: time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("runAPISitesSimulateFailure() error = nil, want batch mismatch")
+	}
+	if !strings.Contains(err.Error(), `does not belong to CLI batch "simulation-batch"`) {
+		t.Fatalf("error = %v, want batch mismatch", err)
+	}
+	if strings.Join(calls, "\n") != "GET /api/v1/sites/"+strconvInt64(start) {
+		t.Fatalf("calls:\n%s\nwant only GET", strings.Join(calls, "\n"))
+	}
+}
+
 func TestAPISimulationSiteIDsFromBatch(t *testing.T) {
 	ids, err := apiSimulationSiteIDs(apiSitesSimulateFailureOptions{batch: "batch-a", count: 3})
 	if err != nil {

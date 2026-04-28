@@ -368,7 +368,8 @@ see rows mapped to `X-Jetmon-Tenant-ID` in `jetmon_site_tenants`.
       "redirect_policy": "follow",
       "maintenance_start": null,
       "maintenance_end": null,
-      "alert_cooldown_minutes": null
+      "alert_cooldown_minutes": null,
+      "cli_batch": "local-smoke"
     }
   ],
   "page": { "next": "eyJ...", "limit": 50 }
@@ -376,6 +377,10 @@ see rows mapped to `X-Jetmon-Tenant-ID` in `jetmon_site_tenants`.
 ```
 
 `id` and `blog_id` are the same value for now; `id` is the public field name (`blog_id` is the historical column name). Consumers should rely on `id`.
+
+`cli_batch` is a derived local-tooling field. It is present only when the
+site's `custom_headers` include `X-Jetmon-CLI-Batch`; the API does not expose
+the rest of `custom_headers`.
 
 `current_state`, `current_severity`, and `active_event_id` are derived from
 open rows in `jetmon_events`. During shadow-v2-state migration the legacy

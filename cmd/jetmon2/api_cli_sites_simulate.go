@@ -33,6 +33,7 @@ type apiSitesSimulateFailureOptions struct {
 	idempotencyKeyPrefix   string
 	fixtureURL             string
 	fixtureProbeURL        string
+	allowUnmarkedBatch     bool
 	expectEventState       string
 	expectEventSeverity    apiOptionalIntFlag
 	requireTransition      bool
@@ -106,6 +107,7 @@ func cmdAPISitesSimulateFailure(args []string) error {
 	fs.StringVar(&sim.idempotencyKeyPrefix, "idempotency-key-prefix", "", "prefix for per-site POST Idempotency-Key headers")
 	fs.StringVar(&sim.fixtureURL, "fixture-url", sim.fixtureURL, "Docker fixture monitor URL, auto, or off")
 	fs.StringVar(&sim.fixtureProbeURL, "fixture-probe-url", sim.fixtureProbeURL, "URL used when --fixture-url=auto")
+	fs.BoolVar(&sim.allowUnmarkedBatch, "allow-unmarked", false, "allow mutation of --batch targets that do not expose the matching CLI batch marker")
 	fs.StringVar(&sim.expectEventState, "expect-event-state", "", "require at least one active event with this state after polling")
 	fs.Var(&sim.expectEventSeverity, "expect-event-severity", "require at least one active event with this severity after polling")
 	fs.BoolVar(&sim.requireTransition, "require-transition", false, "require at least one event transition after polling")
@@ -159,6 +161,15 @@ func runAPISitesSimulateFailure(ctx context.Context, client *http.Client, opts a
 
 func runAPISiteSimulation(ctx context.Context, client *http.Client, opts apiCLIOptions, sim apiSitesSimulateFailureOptions, def apiFailureModeDefinition, siteID int64, index int) (apiSimulatedSiteResult, error) {
 	result := apiSimulatedSiteResult{SiteID: siteID}
+	if sim.batch != "" && !sim.allowUnmarkedBatch {
+		ok, exists, err := apiSiteBelongsToBatch(ctx, client, opts, siteID, sim.batch)
+		if err != nil {
+			return result, err
+		}
+		if exists && !ok {
+			return result, fmt.Errorf("site %d does not belong to CLI batch %q", siteID, sim.batch)
+		}
+	}
 	update := apiSiteUpdateRequest{
 		MonitorURL:     &def.MonitorURL,
 		CheckKeyword:   def.CheckKeyword,

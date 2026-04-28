@@ -15,6 +15,8 @@ import (
 	"github.com/Automattic/jetmon/internal/eventstore"
 )
 
+const cliBatchHeader = "X-Jetmon-CLI-Batch"
+
 // siteResponse is the JSON shape for a site in list and single-site responses.
 // Field ordering kept human-friendly (id and url first, configuration fields
 // after, computed fields last). See API.md "Family 1: Sites and current state".
@@ -36,6 +38,7 @@ type siteResponse struct {
 	MaintenanceStart     *string `json:"maintenance_start"`
 	MaintenanceEnd       *string `json:"maintenance_end"`
 	AlertCooldownMinutes *int    `json:"alert_cooldown_minutes"`
+	CLIBatch             string  `json:"cli_batch,omitempty"`
 }
 
 // activeEventSummary is the compact event shape embedded in single-site
@@ -102,7 +105,8 @@ func (s *Server) handleListSites(w http.ResponseWriter, r *http.Request) {
 		SELECT s.blog_id, s.blog_id AS public_id, s.monitor_url, s.monitor_active,
 		       s.bucket_no, s.check_interval, s.site_status, s.last_checked_at,
 		       s.last_status_change, s.ssl_expiry_date, s.check_keyword, s.redirect_policy,
-		       s.maintenance_start, s.maintenance_end, s.alert_cooldown_minutes
+		       s.maintenance_start, s.maintenance_end, s.alert_cooldown_minutes,
+		       s.custom_headers
 		  FROM jetpack_monitor_sites s
 		  JOIN jetmon_site_tenants st ON st.blog_id = s.blog_id AND st.tenant_id = ?
 		 WHERE s.blog_id > ?`)
@@ -112,7 +116,8 @@ func (s *Server) handleListSites(w http.ResponseWriter, r *http.Request) {
 		SELECT blog_id, blog_id AS public_id, monitor_url, monitor_active,
 		       bucket_no, check_interval, site_status, last_checked_at,
 		       last_status_change, ssl_expiry_date, check_keyword, redirect_policy,
-		       maintenance_start, maintenance_end, alert_cooldown_minutes
+		       maintenance_start, maintenance_end, alert_cooldown_minutes,
+		       custom_headers
 		  FROM jetpack_monitor_sites
 		 WHERE blog_id > ?`)
 	}
@@ -225,7 +230,8 @@ func (s *Server) handleGetSite(w http.ResponseWriter, r *http.Request) {
 		SELECT blog_id, blog_id AS public_id, monitor_url, monitor_active,
 		       bucket_no, check_interval, site_status, last_checked_at,
 		       last_status_change, ssl_expiry_date, check_keyword, redirect_policy,
-		       maintenance_start, maintenance_end, alert_cooldown_minutes
+		       maintenance_start, maintenance_end, alert_cooldown_minutes,
+		       custom_headers
 		  FROM jetpack_monitor_sites
 		 WHERE blog_id = ?`, id)
 
@@ -381,12 +387,13 @@ func scanSiteRow(s rowScanner) (siteResponse, error) {
 		maintStart     sql.NullTime
 		maintEnd       sql.NullTime
 		alertCooldown  sql.NullInt64
+		customHeaders  sql.NullString
 	)
 	if err := s.Scan(
 		&out.ID, &out.BlogID, &out.MonitorURL, &monitorActive,
 		&out.BucketNo, &out.CheckInterval, &siteStatus,
 		&lastCheckedAt, &lastStatusChg, &sslExpiry, &checkKeyword,
-		&redirectPolicy, &maintStart, &maintEnd, &alertCooldown,
+		&redirectPolicy, &maintStart, &maintEnd, &alertCooldown, &customHeaders,
 	); err != nil {
 		return out, err
 	}
@@ -428,7 +435,26 @@ func scanSiteRow(s rowScanner) (siteResponse, error) {
 		v := int(alertCooldown.Int64)
 		out.AlertCooldownMinutes = &v
 	}
+	if customHeaders.Valid {
+		out.CLIBatch = cliBatchFromCustomHeaders(customHeaders.String)
+	}
 	return out, nil
+}
+
+func cliBatchFromCustomHeaders(raw string) string {
+	var headers map[string]any
+	if err := json.Unmarshal([]byte(raw), &headers); err != nil {
+		return ""
+	}
+	for name, value := range headers {
+		if !strings.EqualFold(name, cliBatchHeader) {
+			continue
+		}
+		if s, ok := value.(string); ok {
+			return s
+		}
+	}
+	return ""
 }
 
 // deriveStateFromSiteStatus maps the v1 site_status integer to the v2
