@@ -10,6 +10,30 @@ This is the current implementation/refinement queue. Lower-priority items are
 not abandoned; they are intentionally sequenced behind the v2 production
 migration and the operating data needed to make larger architecture decisions.
 
+### Candidate follow-up branches
+
+These are scoped branches worth considering after the API CLI work and rollout
+preflight hardening settle:
+
+- **`feature/rollout-preflight-hardening`** - finish and merge the in-flight
+  branch that adds static bucket plan validation, post-cutover activity checks,
+  rollback checks, and operator-visible rollout safety commands.
+- **`feature/deliverer-rollout-hardening`** - make the standalone
+  `jetmon-deliverer` rollout safer with stronger config validation, ownership
+  checks, service docs, and explicit rollback rehearsal.
+- **`feature/operator-dashboard-polish`** - turn the dashboard into a clearer
+  production rollout cockpit: stronger warning states, dependency health
+  details, rollout-command visibility, and event/API pointers for operators.
+- **`feature/api-cli-fixture-workflows`** - extend the merged API CLI with
+  richer seeded data, additional deterministic failure modes, cleanup helpers,
+  and safer batch-owned staging workflows.
+- **`feature/projection-drift-tooling`** - expand drift diagnostics beyond
+  count/list output with range summaries, likely causes, rehearsal reports, and
+  dry-run repair guidance if repair becomes safe enough to automate.
+- **`feature/v2-rollout-docs-rehearsal`** - walk the migration docs through a
+  full rehearsal and keep README, operations docs, migration docs, config
+  samples, service units, and CLI output aligned.
+
 ### P0 - v2 production hardening
 
 - **Keep the v2 deployment target conservative.** Ship and stabilize the
@@ -58,12 +82,11 @@ migration and the operating data needed to make larger architecture decisions.
   source for the implemented internal `/api/v1` route surface. This roadmap
   should track only the remaining public/customer API work, production
   hardening, and deferred architecture choices.
-- **Build a local API testing CLI.** Add a focused `jetmon2 api` helper so
-  local Docker/API testing does not depend on remembered curl commands,
-  handwritten auth headers, or stale payload examples. Start with health/auth
-  checks, an escape-hatch request command, Docker-local defaults, and verbose
-  request/response header logging. Then add typed resource commands and a smoke
-  workflow. See [`docs/api-cli-roadmap.md`](docs/api-cli-roadmap.md).
+- **Keep API CLI rehearsal workflows production-safe.** The focused
+  `jetmon2 api` helper now exists; continue hardening fixture and smoke
+  workflows so local, staging, and any approved remote runs remain explicitly
+  batch-owned, easy to clean up, and difficult to aim at production by mistake.
+  See [`docs/api-cli-roadmap.md`](docs/api-cli-roadmap.md).
 
 ### P1 - post-v2 platform refinement
 
