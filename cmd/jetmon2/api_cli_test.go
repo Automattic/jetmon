@@ -249,6 +249,7 @@ func TestAPIFlagUsageUsesLongDashesAndHidesTokenDefault(t *testing.T) {
 	got := stderr.String()
 	for _, want := range []string{
 		"Usage of api health:",
+		"--allow-remote",
 		"--auth-policy string",
 		"--base-url string",
 		"--header value",
@@ -267,6 +268,7 @@ func TestAPIFlagUsageUsesLongDashesAndHidesTokenDefault(t *testing.T) {
 	}
 	for _, unwanted := range []string{
 		"  -base-url",
+		"  -allow-remote",
 		"  -header",
 		"  -output",
 		"  -pretty",

@@ -26,6 +26,7 @@ type apiCLIOptions struct {
 	baseURL        string
 	token          string
 	authPolicy     string
+	allowRemote    bool
 	verbose        bool
 	pretty         bool
 	output         string
@@ -37,6 +38,7 @@ type apiCLIOptions struct {
 	out            io.Writer
 	errOut         io.Writer
 	in             io.Reader
+	commandName    string
 }
 
 type apiHeaderFlags []string
@@ -219,6 +221,7 @@ func defaultAPIOptions() apiCLIOptions {
 }
 
 func newAPIFlagSet(name string, opts *apiCLIOptions) *flag.FlagSet {
+	opts.commandName = name
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(opts.errOut)
 	fs.StringVar(&opts.baseURL, "base-url", opts.baseURL, "API base URL")
@@ -227,6 +230,7 @@ func newAPIFlagSet(name string, opts *apiCLIOptions) *flag.FlagSet {
 		tokenFlag.DefValue = ""
 	}
 	fs.StringVar(&opts.authPolicy, "auth-policy", opts.authPolicy, "automatic auth policy: same-origin or any-origin")
+	fs.BoolVar(&opts.allowRemote, "allow-remote", opts.allowRemote, "allow writes to a non-local API base URL")
 	fs.BoolVar(&opts.verbose, "v", false, "print request and response headers to stderr")
 	fs.BoolVar(&opts.verbose, "verbose", false, "print request and response headers to stderr")
 	fs.BoolVar(&opts.pretty, "pretty", false, "pretty-print JSON response bodies")
@@ -396,6 +400,11 @@ func doAPIRequest(ctx context.Context, client *http.Client, opts apiCLIOptions, 
 	if err != nil {
 		return apiHTTPResponse{}, err
 	}
+	if apiMethodRequiresRemoteWriteGuard(method) {
+		if _, err := requireAPILocalURLOrAllowRemote(requestURL, opts.allowRemote, apiRemoteGuardCommand(opts)); err != nil {
+			return apiHTTPResponse{}, err
+		}
+	}
 
 	var bodyReader io.Reader
 	if len(body) > 0 {
@@ -491,8 +500,28 @@ func sameAPIOrigin(a, b *url.URL) bool {
 	return strings.EqualFold(a.Scheme, b.Scheme) && strings.EqualFold(a.Host, b.Host)
 }
 
+func apiMethodRequiresRemoteWriteGuard(method string) bool {
+	switch strings.ToUpper(strings.TrimSpace(method)) {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return true
+	default:
+		return false
+	}
+}
+
+func apiRemoteGuardCommand(opts apiCLIOptions) string {
+	if strings.TrimSpace(opts.commandName) != "" {
+		return strings.TrimSpace(opts.commandName)
+	}
+	return "api"
+}
+
 func requireAPILocalOrAllowRemote(opts apiCLIOptions, allowRemote bool, command string) (bool, error) {
-	local, err := isLocalAPIBaseURL(opts.baseURL)
+	return requireAPILocalURLOrAllowRemote(opts.baseURL, allowRemote, command)
+}
+
+func requireAPILocalURLOrAllowRemote(rawURL string, allowRemote bool, command string) (bool, error) {
+	local, err := isLocalAPIURL(rawURL)
 	if err != nil {
 		return false, err
 	}
@@ -502,16 +531,16 @@ func requireAPILocalOrAllowRemote(opts apiCLIOptions, allowRemote bool, command 
 	if allowRemote {
 		return true, nil
 	}
-	return true, fmt.Errorf("%s refuses to modify non-local API base URL %q without --allow-remote (local means localhost or loopback IP)", command, opts.baseURL)
+	return true, fmt.Errorf("%s refuses to modify non-local API URL %q without --allow-remote (local means localhost or loopback IP)", command, rawURL)
 }
 
-func isLocalAPIBaseURL(baseURL string) (bool, error) {
-	u, err := url.Parse(strings.TrimSpace(baseURL))
+func isLocalAPIURL(rawURL string) (bool, error) {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil {
-		return false, fmt.Errorf("invalid API base URL %q: %w", baseURL, err)
+		return false, fmt.Errorf("invalid API URL %q: %w", rawURL, err)
 	}
 	if !u.IsAbs() || u.Host == "" {
-		return false, fmt.Errorf("invalid API base URL %q: must include scheme and host", baseURL)
+		return false, fmt.Errorf("invalid API URL %q: must include scheme and host", rawURL)
 	}
 	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
 	if host == "localhost" || strings.HasSuffix(host, ".localhost") {

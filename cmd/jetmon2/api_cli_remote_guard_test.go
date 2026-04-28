@@ -23,14 +23,36 @@ func TestIsLocalAPIBaseURL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := isLocalAPIBaseURL(tt.baseURL)
+			got, err := isLocalAPIURL(tt.baseURL)
 			if err != nil {
-				t.Fatalf("isLocalAPIBaseURL() error = %v", err)
+				t.Fatalf("isLocalAPIURL() error = %v", err)
 			}
 			if got != tt.want {
-				t.Fatalf("isLocalAPIBaseURL(%q) = %v, want %v", tt.baseURL, got, tt.want)
+				t.Fatalf("isLocalAPIURL(%q) = %v, want %v", tt.baseURL, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestExecuteAPIRequestRejectsRemoteWrite(t *testing.T) {
+	err := executeAPIRequest(context.Background(), nil, apiCLIOptions{
+		baseURL: "https://jetmon-api.example.test",
+		out:     ioDiscard{},
+		errOut:  ioDiscard{},
+	}, "POST", "/api/v1/sites", []byte(`{}`))
+	if err == nil || !strings.Contains(err.Error(), "--allow-remote") {
+		t.Fatalf("executeAPIRequest() error = %v, want --allow-remote refusal", err)
+	}
+}
+
+func TestExecuteAPIRequestRejectsAbsoluteRemoteWriteWithLocalBase(t *testing.T) {
+	err := executeAPIRequest(context.Background(), nil, apiCLIOptions{
+		baseURL: "http://localhost:8090",
+		out:     ioDiscard{},
+		errOut:  ioDiscard{},
+	}, "DELETE", "https://jetmon-api.example.test/api/v1/sites/42", nil)
+	if err == nil || !strings.Contains(err.Error(), "--allow-remote") {
+		t.Fatalf("executeAPIRequest() error = %v, want --allow-remote refusal", err)
 	}
 }
 
@@ -69,7 +91,7 @@ func TestRunAPISitesBulkAddRemoteGuard(t *testing.T) {
 		t.Fatalf("runAPISitesBulkAdd() error = %v, want --allow-remote refusal", err)
 	}
 
-	bulk.allowRemote = true
+	opts.allowRemote = true
 	bulk.batch = ""
 	err = runAPISitesBulkAdd(context.Background(), nil, opts, bulk)
 	if err == nil || !strings.Contains(err.Error(), "requires --batch") {
@@ -105,7 +127,7 @@ func TestRunAPISitesCleanupRemoteGuard(t *testing.T) {
 		t.Fatalf("runAPISitesCleanup() error = %v, want --allow-remote refusal", err)
 	}
 
-	cleanup.allowRemote = true
+	opts.allowRemote = true
 	cleanup.allowUnmarked = true
 	err = runAPISitesCleanup(context.Background(), nil, opts, cleanup)
 	if err == nil || !strings.Contains(err.Error(), "cannot use --allow-unmarked") {
@@ -127,7 +149,7 @@ func TestRunAPISitesSimulateFailureRemoteGuard(t *testing.T) {
 		t.Fatalf("runAPISitesSimulateFailure() error = %v, want --allow-remote refusal", err)
 	}
 
-	sim.allowRemote = true
+	opts.allowRemote = true
 	sim.batch = ""
 	err = runAPISitesSimulateFailure(context.Background(), nil, opts, sim)
 	if err == nil || !strings.Contains(err.Error(), "requires --batch") {
@@ -146,10 +168,11 @@ func TestRunAPISmokeRemoteGuard(t *testing.T) {
 	}
 
 	err = runAPISmoke(context.Background(), nil, apiCLIOptions{
-		baseURL: "https://jetmon-api.example.test",
-		out:     ioDiscard{},
-		errOut:  ioDiscard{},
-	}, apiSmokeOptions{allowRemote: true, exercise: "none"})
+		baseURL:     "https://jetmon-api.example.test",
+		allowRemote: true,
+		out:         ioDiscard{},
+		errOut:      ioDiscard{},
+	}, apiSmokeOptions{exercise: "none"})
 	if err == nil || !strings.Contains(err.Error(), "requires --batch") {
 		t.Fatalf("runAPISmoke() error = %v, want remote batch requirement", err)
 	}

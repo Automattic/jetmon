@@ -241,11 +241,11 @@ but it should not become a generic `curl` clone.
   explicit `--auth-policy any-origin` opt-in, keeping `cli_batch` out of the
   canonical site response, and clarifying the `sites create` command catalog
   wording.
-- [x] 2026-04-28: Added `--allow-remote` guardrails for API CLI test-data
-  workflows. Non-local API targets now refuse smoke, bulk-add, cleanup, and
-  failure simulation writes without the explicit flag; remote smoke, bulk-add,
-  cleanup, and simulation also require `--batch`, and remote cleanup/simulation
-  keep marker verification mandatory.
+- [x] 2026-04-28: Added `--allow-remote` guardrails for API CLI writes.
+  Non-local API targets now refuse POST, PUT, PATCH, and DELETE requests
+  without the explicit flag; remote smoke, bulk-add, cleanup, and simulation
+  also require `--batch`, and remote cleanup/simulation keep marker
+  verification mandatory.
 - [x] 2026-04-28: Extended `api-fixture` with `/webhook` and
   `/webhook/requests` endpoints that record deliveries, expose captured
   signature headers, clear recorded requests, and verify signatures when a

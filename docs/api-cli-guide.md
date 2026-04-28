@@ -41,9 +41,9 @@ The token helpers use the Docker Compose stack from the repository root. Use
 be revoked.
 
 Every command also accepts `--base-url`, `--token`, `--auth-policy`,
-`--timeout`, `--header`, `--pretty`, `--output table`, `-v`, and `--verbose`.
-JSON is the default output for automation. Use `--pretty` when reading JSON
-directly and `--output table` for stable summary tables.
+`--allow-remote`, `--timeout`, `--header`, `--pretty`, `--output table`, `-v`,
+and `--verbose`. JSON is the default output for automation. Use `--pretty`
+when reading JSON directly and `--output table` for stable summary tables.
 
 Automatic `--token` and `--idempotency-key` headers are sent only to the
 configured API origin by default, including when `api request` is given an
@@ -52,13 +52,23 @@ another trusted API host. Custom `--header` values are always treated as
 explicit operator input. Verbose mode redacts common sensitive headers before
 printing them.
 
-The test-data workflow commands refuse to modify a non-local API unless
+Every POST, PUT, PATCH, and DELETE refuses to modify a non-local API unless
 `--allow-remote` is supplied. Local means `localhost`, a `*.localhost` name, or
 a loopback IP address; private LAN hosts still count as remote. On remote API
 targets, `smoke`, `sites bulk-add`, `sites cleanup`, and
 `sites simulate-failure` also require `--batch`, and remote cleanup/simulation
 keep the CLI batch marker check mandatory. Dry-run planning does not contact
 the API and is not blocked.
+
+Security notes:
+- Prefer `--auth-policy any-origin` as a one-command flag. Exporting
+  `JETMON_API_AUTH_POLICY=any-origin` is convenient but persistent; later
+  absolute-URL requests can attach the token to a different trusted host.
+- Manual sensitive headers such as `--header 'Authorization: ...'` are explicit
+  operator input and bypass same-origin automatic auth protections. Use them
+  only with trusted URLs.
+- API error bodies are printed as returned by the server for internal debugging.
+  Do not point this CLI at untrusted API servers.
 
 List the command catalog and examples when you need to discover the expanded
 tree without returning to this guide:
@@ -114,6 +124,11 @@ POST and PATCH requests can take literal JSON, a file, or stdin:
   --pretty \
   PATCH /api/v1/sites/12345
 ```
+
+`api request` is intentionally an escape hatch, not a hardened data transfer
+tool. Request bodies and response bodies are read into memory; avoid very large
+files or endpoints that stream unbounded responses. Non-local writes still
+require `--allow-remote`.
 
 ## Site Management
 
@@ -258,6 +273,8 @@ The Docker-local `api-fixture` service also exposes a receiver at
 `http://localhost:18091/webhook/requests` to inspect recorded deliveries or
 `DELETE` the same path to clear them. Add `?secret=<webhook-secret>` to the
 receiver URL when you want the fixture to verify `X-Jetmon-Signature`.
+Webhook secrets returned by create/rotate responses are shown once; treat the
+JSON output like a credential and avoid saving it in logs.
 
 ```bash
 ./bin/jetmon2 api webhooks create \
@@ -334,6 +351,11 @@ not fit a test case:
   --destination '{"webhook_url":"https://example.test/teams"}' \
   --pretty
 ```
+
+PagerDuty integration keys and Slack/Teams webhook URLs are credentials. The
+CLI does not print request bodies in verbose mode, but shell history and saved
+JSON output can still retain values supplied through `--integration-key`,
+`--webhook-url`, or `--destination`.
 
 ## Smoke Workflows
 
@@ -439,6 +461,7 @@ Target explicit site IDs instead of a batch:
 - Use `--batch` and `sites cleanup` for disposable data so local runs do not
   touch unrelated sites.
 - Use `--verbose` when debugging auth, rate limits, idempotency behavior, or
-  unexpected server errors.
+  unexpected server errors. Header values are redacted, but response bodies are
+  not.
 - Treat tokens as local secrets. Do not commit exported tokens, shell history
   snippets, or generated local config containing credentials.
