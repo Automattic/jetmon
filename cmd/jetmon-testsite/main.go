@@ -2,11 +2,15 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -19,6 +23,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -94,10 +99,13 @@ func main() {
 
 func newFixtureHandler() http.Handler {
 	mux := http.NewServeMux()
+	webhooks := &fixtureWebhookReceiver{}
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = io.WriteString(w, "ok\n")
 	})
+	mux.HandleFunc("/webhook", webhooks.handleWebhook)
+	mux.HandleFunc("/webhook/requests", webhooks.handleRequests)
 	mux.HandleFunc("/ok", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = io.WriteString(w, "jetmon fixture ok\n")
@@ -132,6 +140,109 @@ func newFixtureHandler() http.Handler {
 		}
 	})
 	return mux
+}
+
+type fixtureWebhookReceiver struct {
+	mu       sync.Mutex
+	nextID   int
+	requests []fixtureWebhookRequest
+}
+
+type fixtureWebhookRequest struct {
+	ID             int    `json:"id"`
+	ReceivedAt     string `json:"received_at"`
+	Event          string `json:"event,omitempty"`
+	Delivery       string `json:"delivery,omitempty"`
+	Signature      string `json:"signature,omitempty"`
+	SignatureValid *bool  `json:"signature_valid,omitempty"`
+	Body           string `json:"body"`
+}
+
+func (f *fixtureWebhookReceiver) handleWebhook(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+	if err != nil {
+		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	signature := r.Header.Get("X-Jetmon-Signature")
+	var signatureValid *bool
+	if secret := r.URL.Query().Get("secret"); secret != "" {
+		valid := verifyJetmonSignature(signature, body, secret)
+		signatureValid = &valid
+	}
+
+	f.mu.Lock()
+	f.nextID++
+	f.requests = append(f.requests, fixtureWebhookRequest{
+		ID:             f.nextID,
+		ReceivedAt:     time.Now().UTC().Format(time.RFC3339Nano),
+		Event:          r.Header.Get("X-Jetmon-Event"),
+		Delivery:       r.Header.Get("X-Jetmon-Delivery"),
+		Signature:      signature,
+		SignatureValid: signatureValid,
+		Body:           string(body),
+	})
+	f.mu.Unlock()
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (f *fixtureWebhookReceiver) handleRequests(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		f.mu.Lock()
+		requests := append([]fixtureWebhookRequest(nil), f.requests...)
+		f.mu.Unlock()
+		writeFixtureJSON(w, map[string]any{
+			"count":    len(requests),
+			"requests": requests,
+		})
+	case http.MethodDelete:
+		f.mu.Lock()
+		f.nextID = 0
+		f.requests = nil
+		f.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func verifyJetmonSignature(signature string, body []byte, secret string) bool {
+	var timestamp string
+	var got string
+	for _, part := range strings.Split(signature, ",") {
+		k, v, ok := strings.Cut(part, "=")
+		if !ok {
+			continue
+		}
+		switch k {
+		case "t":
+			timestamp = v
+		case "v1":
+			got = v
+		}
+	}
+	if timestamp == "" || got == "" {
+		return false
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(timestamp))
+	_, _ = mac.Write([]byte("."))
+	_, _ = mac.Write(body)
+	want := hex.EncodeToString(mac.Sum(nil))
+	return hmac.Equal([]byte(got), []byte(want))
+}
+
+func writeFixtureJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		log.Printf("jetmon-testsite: encode json: %v", err)
+	}
 }
 
 func fixtureDelay(raw string, fallback time.Duration) time.Duration {

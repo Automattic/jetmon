@@ -230,6 +230,12 @@ Webhooks receive HMAC-signed POSTs for matching event transitions. The CLI can
 create, update, rotate secrets, inspect deliveries, and retry failed delivery
 rows.
 
+The Docker-local `api-fixture` service also exposes a receiver at
+`http://api-fixture:8091/webhook`. From the host, use
+`http://localhost:18091/webhook/requests` to inspect recorded deliveries or
+`DELETE` the same path to clear them. Add `?secret=<webhook-secret>` to the
+receiver URL when you want the fixture to verify `X-Jetmon-Signature`.
+
 ```bash
 ./bin/jetmon2 api webhooks create \
   --url https://receiver.example.test/jetmon \

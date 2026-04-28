@@ -124,8 +124,11 @@ but it should not become a generic `curl` clone.
   severities, transition counts, trigger results, and cleanup status.
 - [x] Add shell completion or richer command discovery for the expanded
   `jetmon2 api` command tree.
-- [ ] Extend `api-fixture` into a local webhook receiver so smoke tests can
-  verify outbound webhook delivery and signing behavior end-to-end.
+- [x] Extend `api-fixture` into a local webhook receiver that records webhook
+  deliveries and verifies `X-Jetmon-Signature` when a shared secret is supplied.
+- [ ] Wire API CLI smoke or validation workflows to create a Docker-local
+  webhook, share the generated secret with the fixture receiver, and assert
+  delivery plus signature verification end-to-end.
 - [x] Add a local API-token convenience target or wrapper for creating and
   revoking Docker-local API CLI tokens during rehearsals.
 
@@ -226,3 +229,7 @@ but it should not become a generic `curl` clone.
 - [x] 2026-04-28: Added derived site `cli_batch` responses and batch marker
   checks for `sites cleanup --batch` and `sites simulate-failure --batch`, with
   `--allow-unmarked` as the explicit legacy opt-out.
+- [x] 2026-04-28: Extended `api-fixture` with `/webhook` and
+  `/webhook/requests` endpoints that record deliveries, expose captured
+  signature headers, clear recorded requests, and verify signatures when a
+  `secret` query parameter is supplied.
