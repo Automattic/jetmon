@@ -115,12 +115,27 @@ not require schema rollback.
 
 After every monitor host is on v2 and stable in pinned mode:
 
-1. Pick one host and remove `PINNED_BUCKET_MIN` / `PINNED_BUCKET_MAX`.
-2. Restart it and verify it claims a `jetmon_hosts` row.
-3. Repeat host by host until all monitor hosts use dynamic ownership.
-4. Verify `jetmon_hosts` covers the full bucket range with current heartbeats.
-5. Continue using the normal v2 rolling-update process from `README.md`.
+1. Confirm no v1 monitor hosts remain active.
+2. Plan a coordinated dynamic-ownership cutover. Pinned hosts do not write
+   `jetmon_hosts`, so avoid leaving a long-lived mixed fleet where some v2
+   hosts are pinned and others use dynamic ownership.
+3. Remove `PINNED_BUCKET_MIN` / `PINNED_BUCKET_MAX` (and any legacy
+   `BUCKET_NO_MIN` / `BUCKET_NO_MAX` aliases) from the v2 monitor configs.
+4. Restart the v2 monitor hosts in the approved deployment window.
+5. Run the dynamic ownership preflight:
+
+   ```bash
+   ./jetmon2 rollout dynamic-check
+   ```
+
+   This check fails if pinned mode is still configured, legacy projection writes
+   are disabled, `jetmon_hosts` rows are missing, stale, inactive, overlapping,
+   or gapped, or the legacy projection has drifted.
+
+6. Continue using the normal v2 rolling-update process from `README.md`.
 
 Do not run a mixed configuration where some v1 hosts still own static ranges
-while unpinned v2 hosts use dynamic `jetmon_hosts` ownership. That is the state
-this migration mode is designed to avoid.
+while unpinned v2 hosts use dynamic `jetmon_hosts` ownership. Also avoid a
+long-lived pinned-v2/dynamic-v2 mix: dynamic hosts cannot see pinned hosts in
+`jetmon_hosts`, so the fleet can overlap checks even though it should not create
+coverage gaps.

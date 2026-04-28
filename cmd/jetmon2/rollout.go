@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/Automattic/jetmon/internal/config"
 	"github.com/Automattic/jetmon/internal/db"
@@ -20,17 +22,26 @@ type pinnedRolloutCheckDeps struct {
 	CountLegacyProjectionDrift     func(context.Context, int, int) (int, error)
 }
 
+type dynamicRolloutCheckDeps struct {
+	Now                            func() time.Time
+	GetAllHosts                    func() ([]db.HostRow, error)
+	CountActiveSitesForBucketRange func(context.Context, int, int) (int, error)
+	CountLegacyProjectionDrift     func(context.Context, int, int) (int, error)
+}
+
 func cmdRollout(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout <pinned-check> [args]")
+		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout <pinned-check|dynamic-check> [args]")
 		os.Exit(1)
 	}
 
 	switch args[0] {
 	case "pinned-check":
 		cmdRolloutPinnedCheck(args[1:])
+	case "dynamic-check":
+		cmdRolloutDynamicCheck(args[1:])
 	default:
-		fmt.Fprintf(os.Stderr, "unknown rollout subcommand %q (want: pinned-check)\n", args[0])
+		fmt.Fprintf(os.Stderr, "unknown rollout subcommand %q (want: pinned-check, dynamic-check)\n", args[0])
 		os.Exit(1)
 	}
 }
@@ -65,6 +76,40 @@ func cmdRolloutPinnedCheck(args []string) {
 		CountLegacyProjectionDrift:     db.CountLegacyProjectionDrift,
 	}
 	if err := runPinnedRolloutCheck(context.Background(), os.Stdout, config.Get(), *host, deps); err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func cmdRolloutDynamicCheck(args []string) {
+	fs := flag.NewFlagSet("rollout dynamic-check", flag.ExitOnError)
+	_ = fs.Parse(args)
+	if fs.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout dynamic-check")
+		os.Exit(1)
+	}
+
+	configPath := envOrDefault("JETMON_CONFIG", "config/config.json")
+	if err := config.Load(configPath); err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL config parse: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("PASS config parse")
+
+	config.LoadDB()
+	if err := db.ConnectWithRetry(3); err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL db connect: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("PASS db connect")
+
+	deps := dynamicRolloutCheckDeps{
+		Now:                            time.Now,
+		GetAllHosts:                    db.GetAllHosts,
+		CountActiveSitesForBucketRange: db.CountActiveSitesForBucketRange,
+		CountLegacyProjectionDrift:     db.CountLegacyProjectionDrift,
+	}
+	if err := runDynamicRolloutCheck(context.Background(), os.Stdout, config.Get(), deps); err != nil {
 		fmt.Fprintf(os.Stderr, "FAIL %v\n", err)
 		os.Exit(1)
 	}
@@ -135,5 +180,106 @@ func runPinnedRolloutCheck(ctx context.Context, out io.Writer, cfg *config.Confi
 	}
 	fmt.Fprintln(out, "PASS legacy_projection_drift=0")
 	fmt.Fprintln(out, "pinned rollout check passed")
+	return nil
+}
+
+func runDynamicRolloutCheck(ctx context.Context, out io.Writer, cfg *config.Config, deps dynamicRolloutCheckDeps) error {
+	if cfg == nil {
+		return errors.New("config is not loaded")
+	}
+	if minBucket, maxBucket, ok := cfg.PinnedBucketRange(); ok {
+		return fmt.Errorf("pinned bucket range %d-%d is still configured; remove PINNED_BUCKET_*/BUCKET_NO_* before dynamic ownership cutover", minBucket, maxBucket)
+	}
+	fmt.Fprintln(out, "PASS bucket_ownership=dynamic")
+
+	if !cfg.LegacyStatusProjectionEnable {
+		return errors.New("LEGACY_STATUS_PROJECTION_ENABLE must remain true until legacy readers have migrated")
+	}
+	fmt.Fprintln(out, "PASS legacy_status_projection=enabled")
+
+	if deps.GetAllHosts == nil {
+		return errors.New("host list query is not configured")
+	}
+	hosts, err := deps.GetAllHosts()
+	if err != nil {
+		return fmt.Errorf("query jetmon_hosts: %w", err)
+	}
+	fmt.Fprintf(out, "INFO jetmon_hosts_rows=%d\n", len(hosts))
+
+	now := time.Now()
+	if deps.Now != nil {
+		now = deps.Now()
+	}
+	if err := validateDynamicBucketCoverage(hosts, cfg.BucketTotal, time.Duration(cfg.BucketHeartbeatGraceSec)*time.Second, now); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "PASS dynamic_bucket_coverage=0-%d hosts=%d\n", cfg.BucketTotal-1, len(hosts))
+
+	if deps.CountActiveSitesForBucketRange == nil {
+		return errors.New("active site counter is not configured")
+	}
+	activeSites, err := deps.CountActiveSitesForBucketRange(ctx, 0, cfg.BucketTotal-1)
+	if err != nil {
+		return fmt.Errorf("count active sites in dynamic range 0-%d: %w", cfg.BucketTotal-1, err)
+	}
+	fmt.Fprintf(out, "INFO active_sites_dynamic_range=%d\n", activeSites)
+
+	if deps.CountLegacyProjectionDrift == nil {
+		return errors.New("projection drift counter is not configured")
+	}
+	drift, err := deps.CountLegacyProjectionDrift(ctx, 0, cfg.BucketTotal-1)
+	if err != nil {
+		return fmt.Errorf("count legacy projection drift in dynamic range 0-%d: %w", cfg.BucketTotal-1, err)
+	}
+	if drift > 0 {
+		return fmt.Errorf("legacy projection drift=%d in dynamic range 0-%d", drift, cfg.BucketTotal-1)
+	}
+	fmt.Fprintln(out, "PASS legacy_projection_drift=0")
+	fmt.Fprintln(out, "dynamic rollout check passed")
+	return nil
+}
+
+func validateDynamicBucketCoverage(hosts []db.HostRow, bucketTotal int, heartbeatGrace time.Duration, now time.Time) error {
+	if bucketTotal <= 0 {
+		return errors.New("BUCKET_TOTAL must be > 0")
+	}
+	if heartbeatGrace <= 0 {
+		return errors.New("BUCKET_HEARTBEAT_GRACE_SEC must be > 0")
+	}
+	if len(hosts) == 0 {
+		return errors.New("jetmon_hosts has no rows; dynamic ownership is not established")
+	}
+
+	sortedHosts := append([]db.HostRow(nil), hosts...)
+	sort.Slice(sortedHosts, func(i, j int) bool {
+		if sortedHosts[i].BucketMin == sortedHosts[j].BucketMin {
+			return sortedHosts[i].HostID < sortedHosts[j].HostID
+		}
+		return sortedHosts[i].BucketMin < sortedHosts[j].BucketMin
+	})
+
+	expectedMin := 0
+	for _, host := range sortedHosts {
+		if host.Status != "active" {
+			return fmt.Errorf("host %q has status=%q; all dynamic ownership rows must be active", host.HostID, host.Status)
+		}
+		if age := now.Sub(host.LastHeartbeat); age > heartbeatGrace {
+			return fmt.Errorf("host %q heartbeat is stale age=%s grace=%s", host.HostID, age.Round(time.Second), heartbeatGrace)
+		}
+		if host.BucketMin < 0 || host.BucketMax < host.BucketMin || host.BucketMax >= bucketTotal {
+			return fmt.Errorf("host %q has invalid bucket range %d-%d for BUCKET_TOTAL=%d", host.HostID, host.BucketMin, host.BucketMax, bucketTotal)
+		}
+		if host.BucketMin > expectedMin {
+			return fmt.Errorf("dynamic bucket coverage has gap %d-%d before host %q", expectedMin, host.BucketMin-1, host.HostID)
+		}
+		if host.BucketMin < expectedMin {
+			return fmt.Errorf("dynamic bucket coverage overlaps before host %q at bucket %d", host.HostID, host.BucketMin)
+		}
+		expectedMin = host.BucketMax + 1
+	}
+
+	if expectedMin < bucketTotal {
+		return fmt.Errorf("dynamic bucket coverage has trailing gap %d-%d", expectedMin, bucketTotal-1)
+	}
 	return nil
 }

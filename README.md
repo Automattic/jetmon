@@ -505,9 +505,14 @@ bucket ownership and gives each host a simple rollback path.
    projection remains enabled, legacy readers continue to see familiar status
    fields.
 
-6) Repeat for each v1 host. After the whole fleet is on v2 and stable, remove
-   `PINNED_BUCKET_*` from each host and transition to dynamic `jetmon_hosts`
-   ownership one controlled host at a time.
+6) Repeat for each v1 host. After the whole fleet is on v2 and stable, plan a
+   coordinated dynamic-ownership cutover, remove `PINNED_BUCKET_*` from the v2
+   monitor configs, restart the fleet in the approved window, then run:
+
+		./jetmon2 rollout dynamic-check
+
+   This verifies fresh, active, gap-free, overlap-free `jetmon_hosts` coverage
+   before the fleet moves to normal v2 rolling updates.
 
 See [`docs/v1-to-v2-pinned-rollout.md`](docs/v1-to-v2-pinned-rollout.md) for
 the detailed rollout checklist.

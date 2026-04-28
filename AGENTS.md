@@ -127,6 +127,7 @@ go run -race ./cmd/jetmon2/
 ./jetmon2 status
 ./jetmon2 audit --blog-id 12345 --since 2h
 ./jetmon2 rollout pinned-check
+./jetmon2 rollout dynamic-check
 ./jetmon2 site-tenants import --file site-tenants.csv --dry-run
 ./jetmon2 drain
 ./jetmon2 reload
