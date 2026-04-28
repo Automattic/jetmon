@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -159,13 +160,61 @@ func newAPIFlagSet(name string, opts *apiCLIOptions) *flag.FlagSet {
 	fs.SetOutput(opts.errOut)
 	fs.StringVar(&opts.baseURL, "base-url", opts.baseURL, "API base URL")
 	fs.StringVar(&opts.token, "token", opts.token, "Bearer token")
+	if tokenFlag := fs.Lookup("token"); tokenFlag != nil {
+		tokenFlag.DefValue = ""
+	}
 	fs.BoolVar(&opts.verbose, "v", false, "print request and response headers to stderr")
 	fs.BoolVar(&opts.verbose, "verbose", false, "print request and response headers to stderr")
 	fs.BoolVar(&opts.pretty, "pretty", false, "pretty-print JSON response bodies")
 	fs.StringVar(&opts.output, "output", "json", "response output format: json or table")
 	fs.DurationVar(&opts.timeout, "timeout", opts.timeout, "request timeout")
 	fs.Var(&opts.headers, "header", "additional request header in Name: Value form (repeatable)")
+	fs.Usage = func() {
+		printAPIFlagUsage(fs.Output(), fs)
+	}
 	return fs
+}
+
+func printAPIFlagUsage(w io.Writer, fs *flag.FlagSet) {
+	fmt.Fprintf(w, "Usage of %s:\n", fs.Name())
+	printAPIFlagDefaults(w, fs)
+}
+
+func printAPIFlagDefaults(w io.Writer, fs *flag.FlagSet) {
+	flags := []*flag.Flag{}
+	fs.VisitAll(func(f *flag.Flag) {
+		flags = append(flags, f)
+	})
+	sort.Slice(flags, func(i, j int) bool {
+		return flags[i].Name < flags[j].Name
+	})
+
+	for _, f := range flags {
+		valueName, usage := flag.UnquoteUsage(f)
+		prefix := "--"
+		if len(f.Name) == 1 {
+			prefix = "-"
+		}
+		fmt.Fprintf(w, "  %s%s", prefix, f.Name)
+		if valueName != "" {
+			fmt.Fprintf(w, " %s", valueName)
+		}
+		fmt.Fprintf(w, "\n    \t%s", usage)
+		if defaultValue := apiFlagDefaultValue(f, valueName); defaultValue != "" {
+			fmt.Fprintf(w, " (default %s)", defaultValue)
+		}
+		fmt.Fprintln(w)
+	}
+}
+
+func apiFlagDefaultValue(f *flag.Flag, valueName string) string {
+	if f.DefValue == "" || f.DefValue == "0" || f.DefValue == "0s" || f.DefValue == "false" {
+		return ""
+	}
+	if valueName == "string" {
+		return strconv.Quote(f.DefValue)
+	}
+	return f.DefValue
 }
 
 func readAPIRequestBody(opts apiCLIOptions) ([]byte, error) {
@@ -525,6 +574,9 @@ func apiTableValue(v any) string {
 }
 
 func logAPIErrorAndExit(err error) {
+	if errors.Is(err, flag.ErrHelp) {
+		os.Exit(0)
+	}
 	fmt.Fprintf(os.Stderr, "api: %v\n", err)
 	os.Exit(1)
 }

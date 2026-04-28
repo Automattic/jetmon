@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
+	"flag"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -135,6 +137,64 @@ func TestExecuteAPIRequestReturnsErrorForHTTPFailureAfterWritingBody(t *testing.
 	}
 	if got := stdout.String(); !strings.Contains(got, `"missing token"`) {
 		t.Fatalf("stdout = %q, want error body", got)
+	}
+}
+
+func TestAPIFlagUsageUsesLongDashesAndHidesTokenDefault(t *testing.T) {
+	var stderr bytes.Buffer
+	opts := apiCLIOptions{
+		baseURL: "http://localhost:8090",
+		token:   "token-should-not-print",
+		timeout: 10 * time.Second,
+		errOut:  &stderr,
+	}
+	fs := newAPIFlagSet("api health", &opts)
+	fs.Usage()
+
+	got := stderr.String()
+	for _, want := range []string{
+		"Usage of api health:",
+		"--base-url string",
+		"--header value",
+		"--output string",
+		"--pretty",
+		"--timeout duration",
+		"--token string",
+		"-v",
+		"--verbose",
+		`API base URL (default "http://localhost:8090")`,
+		`request timeout (default 10s)`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("usage missing %q:\n%s", want, got)
+		}
+	}
+	for _, unwanted := range []string{
+		"  -base-url",
+		"  -header",
+		"  -output",
+		"  -pretty",
+		"  -timeout",
+		"  -token",
+		"  -verbose",
+		"token-should-not-print",
+	} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("usage contains %q:\n%s", unwanted, got)
+		}
+	}
+}
+
+func TestAPIHelpReturnsFlagErrHelp(t *testing.T) {
+	var stderr bytes.Buffer
+	opts := apiCLIOptions{baseURL: "http://localhost:8090", timeout: 10 * time.Second, errOut: &stderr}
+	fs := newAPIFlagSet("api health", &opts)
+	err := fs.Parse([]string{"--help"})
+	if !errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("Parse(--help) error = %v, want flag.ErrHelp", err)
+	}
+	if got := stderr.String(); !strings.Contains(got, "--base-url string") {
+		t.Fatalf("usage = %q, want long-dash flag output", got)
 	}
 }
 
