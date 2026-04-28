@@ -66,22 +66,24 @@ when debugging auth, rate limiting, or idempotency:
 Use `api request` when a route exists but a typed CLI wrapper does not yet.
 
 ```bash
-./bin/jetmon2 api request GET '/api/v1/sites?limit=5' --output table
+./bin/jetmon2 api request --output table GET '/api/v1/sites?limit=5'
 ```
 
 POST and PATCH requests can take literal JSON, a file, or stdin:
 
 ```bash
-./bin/jetmon2 api request POST /api/v1/sites \
+./bin/jetmon2 api request \
   --idempotency-key local-site-12345-create \
   --body '{"blog_id":12345,"monitor_url":"https://example.com","monitor_active":true}' \
-  --pretty
+  --pretty \
+  POST /api/v1/sites
 ```
 
 ```bash
-./bin/jetmon2 api request PATCH /api/v1/sites/12345 \
+./bin/jetmon2 api request \
   --body-file site-update.json \
-  --pretty
+  --pretty \
+  PATCH /api/v1/sites/12345
 ```
 
 ## Site Management
@@ -92,7 +94,7 @@ get, create, update, delete, pause, resume, and trigger-now.
 ```bash
 ./bin/jetmon2 api sites list --limit 20 --output table
 ./bin/jetmon2 api sites list --monitor-active=true --state-in 'Seems Down,Down' --severity-gte 3 --output table
-./bin/jetmon2 api sites get 12345 --pretty
+./bin/jetmon2 api sites get --pretty 12345
 ```
 
 Create a monitored site with explicit per-site check behavior:
@@ -113,21 +115,22 @@ Update a site when testing redirects, keyword checks, custom headers, or
 maintenance windows:
 
 ```bash
-./bin/jetmon2 api sites update 12345 \
+./bin/jetmon2 api sites update \
   --url https://example.com/health \
   --check-keyword Example \
   --custom-header 'X-Jetmon-Test: api-cli' \
   --maintenance-start 2026-04-28T18:00:00Z \
   --maintenance-end 2026-04-28T19:00:00Z \
-  --pretty
+  --pretty \
+  12345
 ```
 
 Pause, resume, and run an immediate check:
 
 ```bash
-./bin/jetmon2 api sites pause 12345 --idempotency-key site-12345-pause --pretty
-./bin/jetmon2 api sites resume 12345 --idempotency-key site-12345-resume --pretty
-./bin/jetmon2 api sites trigger-now 12345 --idempotency-key site-12345-trigger --pretty
+./bin/jetmon2 api sites pause --idempotency-key site-12345-pause --pretty 12345
+./bin/jetmon2 api sites resume --idempotency-key site-12345-resume --pretty 12345
+./bin/jetmon2 api sites trigger-now --idempotency-key site-12345-trigger --pretty 12345
 ```
 
 Delete disposable sites:
@@ -186,20 +189,21 @@ list active incidents for a site, inspect an event, fetch transition history,
 and manually close false alarms or operator-resolved incidents.
 
 ```bash
-./bin/jetmon2 api events list 12345 --active=true --output table
-./bin/jetmon2 api events list 12345 --state 'Seems Down' --limit 10 --pretty
-./bin/jetmon2 api events get --site-id 12345 98765 --pretty
-./bin/jetmon2 api events transitions 12345 98765 --output table
+./bin/jetmon2 api events list --active=true --output table 12345
+./bin/jetmon2 api events list --state 'Seems Down' --limit 10 --pretty 12345
+./bin/jetmon2 api events get --site-id 12345 --pretty 98765
+./bin/jetmon2 api events transitions --output table 12345 98765
 ```
 
 Close an event with an explicit reason and note:
 
 ```bash
-./bin/jetmon2 api events close 12345 98765 \
+./bin/jetmon2 api events close \
   --reason manual_override \
   --note 'Confirmed maintenance outside scheduled window' \
   --idempotency-key event-98765-close \
-  --pretty
+  --pretty \
+  12345 98765
 ```
 
 ## Webhooks
@@ -221,16 +225,16 @@ rows.
 
 ```bash
 ./bin/jetmon2 api webhooks list --output table
-./bin/jetmon2 api webhooks get 77 --pretty
-./bin/jetmon2 api webhooks deliveries 77 --status failed --output table
-./bin/jetmon2 api webhooks retry 77 555 --idempotency-key webhook-77-delivery-555-retry --pretty
-./bin/jetmon2 api webhooks rotate-secret 77 --idempotency-key webhook-77-rotate --pretty
+./bin/jetmon2 api webhooks get --pretty 77
+./bin/jetmon2 api webhooks deliveries --status failed --output table 77
+./bin/jetmon2 api webhooks retry --idempotency-key webhook-77-delivery-555-retry --pretty 77 555
+./bin/jetmon2 api webhooks rotate-secret --idempotency-key webhook-77-rotate --pretty 77
 ```
 
 Update filters without rebuilding the whole object:
 
 ```bash
-./bin/jetmon2 api webhooks update 77 --clear-sites --state Down --pretty
+./bin/jetmon2 api webhooks update --clear-sites --state Down --pretty 77
 ```
 
 ## Alert Contacts
@@ -268,9 +272,9 @@ Create a Slack contact:
 Exercise the send-test path and inspect delivery rows:
 
 ```bash
-./bin/jetmon2 api alert-contacts test 12 --idempotency-key alert-12-test --pretty
-./bin/jetmon2 api alert-contacts deliveries 12 --status failed --output table
-./bin/jetmon2 api alert-contacts retry 12 9001 --idempotency-key alert-12-delivery-9001-retry --pretty
+./bin/jetmon2 api alert-contacts test --idempotency-key alert-12-test --pretty 12
+./bin/jetmon2 api alert-contacts deliveries --status failed --output table 12
+./bin/jetmon2 api alert-contacts retry --idempotency-key alert-12-delivery-9001-retry --pretty 12 9001
 ```
 
 Use `--destination` for raw transport-specific JSON when a shortcut flag does
