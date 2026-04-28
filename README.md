@@ -589,7 +589,10 @@ bucket ownership and gives each host a simple rollback path.
 		./jetmon2 rollout dynamic-check
 
    This verifies fresh, active, gap-free, overlap-free `jetmon_hosts` coverage
-   before the fleet moves to normal v2 rolling updates.
+   before the fleet moves to normal v2 rolling updates. After one full expected
+   round, verify all active sites have fresh activity:
+
+		./jetmon2 rollout activity-check --since=15m --require-all
 
 If either rollout check reports legacy projection drift, list the mismatched
 active site rows before continuing:

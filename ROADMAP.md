@@ -35,8 +35,10 @@ migration and the operating data needed to make larger architecture decisions.
   single-owner during migration from embedded to standalone delivery.
 - **Run a production rollout rehearsal pass.** Validate that README,
   `docs/v1-to-v2-pinned-rollout.md`, config samples, systemd units,
-  `validate-config`, `rollout pinned-check`, `rollout projection-drift`, and
-  rollback steps line up exactly before the first production host replacement.
+  `validate-config`, `rollout static-plan-check`, `rollout pinned-check`,
+  `rollout activity-check`, `rollout rollback-check`,
+  `rollout projection-drift`, and rollback steps line up exactly before the
+  first production host replacement.
 - **Instrument the data needed for the v3 decision.** During v2 production,
   measure first-failure-to-`Seems Down`, `Seems Down`-to-`Down`, false alarm
   rate by failure class, Veriflier agreement/disagreement by region, Veriflier

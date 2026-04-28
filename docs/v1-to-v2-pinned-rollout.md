@@ -198,8 +198,10 @@ After every monitor host is on v2 and stable in pinned mode:
 3. Remove `PINNED_BUCKET_MIN` / `PINNED_BUCKET_MAX` (and any legacy
    `BUCKET_NO_MIN` / `BUCKET_NO_MAX` aliases) from the v2 monitor configs.
 4. Restart the v2 monitor hosts in the approved deployment window.
-5. Run `./jetmon2 validate-config` and confirm it reports
-   `rollout_preflight=./jetmon2 rollout dynamic-check`.
+5. Run `./jetmon2 validate-config` and confirm it reports:
+   - `rollout_preflight=./jetmon2 rollout dynamic-check`
+   - `rollout_activity_check=./jetmon2 rollout activity-check --since=15m`
+   - `rollout_drift_report=./jetmon2 rollout projection-drift`
 6. Run the dynamic ownership preflight:
 
    ```bash
@@ -216,7 +218,13 @@ After every monitor host is on v2 and stable in pinned mode:
    ./jetmon2 rollout projection-drift --limit=100
    ```
 
-7. Continue using the normal v2 rolling-update process from `README.md`.
+7. After one full expected round, verify all active sites have fresh activity:
+
+   ```bash
+   ./jetmon2 rollout activity-check --since=15m --require-all
+   ```
+
+8. Continue using the normal v2 rolling-update process from `README.md`.
 
 Do not run a mixed configuration where some v1 hosts still own static ranges
 while unpinned v2 hosts use dynamic `jetmon_hosts` ownership. Also avoid a
