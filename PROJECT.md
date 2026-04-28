@@ -117,8 +117,11 @@ These features address the most significant gaps against competing solutions and
 **SSL Certificate Expiry Monitoring**
 During each HTTPS check, inspect the peer certificate chain via Go's `tls.ConnectionState`. Extract `NotAfter` from the leaf certificate and store it in a new `ssl_expiry_date` column on `jetpack_monitor_sites`. Emit alerts at configurable thresholds (30, 14, and 7 days before expiry) through the same WPCOM notification path as downtime alerts. Zero additional network requests — the data is present in every existing HTTPS connection.
 
+**GET-Based Site Checks**
+Jetmon 1's HEAD-only verification was a major source of customer-visible false positives and false negatives because many production stacks block, special-case, or incorrectly implement HEAD. Jetmon 2 uses GET requests for local monitor checks and Veriflier checks so uptime decisions are based on the same class of request a browser and customer-facing uptime product normally make.
+
 **Keyword / Content Checking**
-For sites with a `check_keyword` value set in the database, perform a GET request and search the response body for the configured string. A missing keyword on an otherwise-200 response counts as a failure and enters the same retry and confirmation pipeline as an HTTP error. Builds directly on the GET request mode introduced in the current branch.
+For sites with a `check_keyword` value set in the database, perform a GET request and search the response body for the configured string. A missing keyword on an otherwise-200 response counts as a failure and enters the same retry and confirmation pipeline as an HTTP error. Builds directly on the GET request mode used by v2 checks.
 
 **Maintenance Windows**
 Add `maintenance_start` and `maintenance_end` (nullable `DATETIME`) columns to `jetpack_monitor_sites`. During a maintenance window, checks continue and RTT data is collected, but status-change notifications are suppressed. The check result is logged internally so the audit trail is complete, but no alert fires. Configurable via the WPCOM API or direct DB write.
@@ -269,6 +272,9 @@ Queryable by `blog_id` and time range via a CLI tool (`jetmon2 audit --blog-id 1
 - `jetmon2 rollout projection-drift` — lists active sites whose legacy `site_status` projection disagrees with the authoritative event state
 - `jetmon2 drain --worker N` — gracefully removes one worker pool slot, waiting for in-flight checks to complete before reducing concurrency
 - `jetmon2 reload` — sends SIGHUP to the running process (convenience wrapper)
+
+The complete v1-to-v2 production process is documented in
+[`docs/v1-to-v2-migration.md`](docs/v1-to-v2-migration.md).
 
 **Zero-Downtime Rolling Updates**
 Because bucket ownership is coordinated via MySQL, a multi-host deployment can be updated one host at a time with no coverage gap. The procedure for each host: send SIGINT to release its buckets, wait for the drain to complete, deploy the new binary, start the new process. Surviving hosts absorb the draining host's buckets during the update window and release them back once the updated host rejoins and reclaims its range. No simultaneous restart of all hosts is required, and no sites are left unchecked during the update.

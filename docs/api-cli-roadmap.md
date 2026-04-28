@@ -137,6 +137,9 @@ but it should not become a generic `curl` clone.
 - [x] 2026-04-28: Refreshed the root README into a shorter Jetmon 2 project
   front door and moved dense setup, operations, data-model, and support
   material into focused docs.
+- [x] 2026-04-28: Added the consolidated v1-to-v2 migration runbook, linked it
+  from README and the docs index, and updated migration references that had
+  pointed at the older pinned-rollout checklist.
 - [x] 2026-04-28: Created the `feature/api-cli` branch and initial roadmap.
 - [x] 2026-04-28: Added the `jetmon2 api` command group with `health`, `me`,
   and generic `request` subcommands.
@@ -192,7 +195,7 @@ but it should not become a generic `curl` clone.
   for API list responses and CLI workflow summaries while keeping JSON as the
   default script-friendly output.
 - [x] 2026-04-28: Documented API CLI setup and examples in `API.md`, the Docker
-  development loop, and the pinned v1-to-v2 rollout rehearsal runbook.
+  development loop, and the v1-to-v2 migration rehearsal runbook.
 - [x] 2026-04-28: Added `jetmon2 api sites cleanup` with deterministic
   batch-derived IDs, explicit site IDs, dry-run output, 404-tolerant cleanup,
   and JSON/table summaries for removing local CLI test data.

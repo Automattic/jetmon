@@ -1,8 +1,9 @@
 # Data Model
 
-Jetmon 2 keeps the legacy site table as the configuration source during
-migration and adds event-sourced incident tables around it. New schema changes
-are additive and applied by `./jetmon2 migrate`.
+Jetmon 2 keeps the legacy site table as the configuration source during the
+[v1-to-v2 migration](v1-to-v2-migration.md) and adds event-sourced incident
+tables around it. New schema changes are additive and applied by
+`./jetmon2 migrate`.
 
 ## Legacy Site Table
 
@@ -87,10 +88,11 @@ the outage.
 
 ## Legacy Projection
 
-During the shadow-state migration, `jetpack_monitor_sites.site_status` and
-`last_status_change` are compatibility projections. With
-`LEGACY_STATUS_PROJECTION_ENABLE` enabled, every v2 event mutation also updates
-the legacy fields in the same transaction.
+During the shadow-state portion of the
+[v1-to-v2 migration](v1-to-v2-migration.md),
+`jetpack_monitor_sites.site_status` and `last_status_change` are compatibility
+projections. With `LEGACY_STATUS_PROJECTION_ENABLE` enabled, every v2 event
+mutation also updates the legacy fields in the same transaction.
 
 Projection mapping:
 

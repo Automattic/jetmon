@@ -16,8 +16,9 @@ migration and the operating data needed to make larger architecture decisions.
   current main-server-plus-Veriflier design before moving toward a v3
   probe-agent architecture. The v2 event tables remain authoritative while
   `LEGACY_STATUS_PROJECTION_ENABLE` keeps legacy `site_status` /
-  `last_status_change` consumers working during migration. Use the pinned
-  bucket rollout path for the first v1-to-v2 production migration, then remove
+  `last_status_change` consumers working during migration. Use the
+  [`docs/v1-to-v2-migration.md`](docs/v1-to-v2-migration.md) pinned bucket
+  path for the first v1-to-v2 production migration, then remove
   `PINNED_BUCKET_*` after every host is on v2 and stable.
 - **Keep rollout health visible before cutover.** Operators should not have to
   infer migration-critical state from logs or config while replacing v1 hosts.
@@ -34,7 +35,7 @@ migration and the operating data needed to make larger architecture decisions.
   `DELIVERY_OWNER_HOST` as a rollout guard when intentionally keeping delivery
   single-owner during migration from embedded to standalone delivery.
 - **Run a production rollout rehearsal pass.** Validate that README,
-  `docs/v1-to-v2-pinned-rollout.md`, config samples, systemd units,
+  `docs/v1-to-v2-migration.md`, config samples, systemd units,
   `validate-config`, `rollout pinned-check`, `rollout projection-drift`, and
   rollback steps line up exactly before the first production host replacement.
 - **Instrument the data needed for the v3 decision.** During v2 production,

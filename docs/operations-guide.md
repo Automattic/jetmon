@@ -27,9 +27,9 @@ Key settings:
 | `BUCKET_TOTAL` | 1000 | Total bucket range across all hosts |
 | `BUCKET_TARGET` | 500 | Maximum buckets this host should own |
 | `BUCKET_HEARTBEAT_GRACE_SEC` | 600 | Seconds before a silent host's buckets are reclaimed |
-| `PINNED_BUCKET_MIN` / `PINNED_BUCKET_MAX` | unset | Migration-only static bucket range |
+| `PINNED_BUCKET_MIN` / `PINNED_BUCKET_MAX` | unset | Static bucket range used by the [v1-to-v2 migration runbook](v1-to-v2-migration.md) |
 | `ALERT_COOLDOWN_MINUTES` | 30 | Default cooldown between repeated alerts per site |
-| `LEGACY_STATUS_PROJECTION_ENABLE` | true | Keep v1 status fields projected during migration |
+| `LEGACY_STATUS_PROJECTION_ENABLE` | true | Keep v1 status fields projected during the [v1-to-v2 migration](v1-to-v2-migration.md) |
 | `LOG_FORMAT` | `text` | `text` or `json` |
 | `DASHBOARD_PORT` | 8080 | Internal operator dashboard port, 0 disables it |
 | `API_PORT` | 0 | Internal REST API port, 0 disables it |
@@ -60,51 +60,12 @@ same `DB_*` environment that systemd reads from
 `/opt/jetmon2/config/jetmon2.env`; systemd's `EnvironmentFile` is not loaded for
 commands run directly from a shell.
 
-## First v1 To v2 Migration
+## v1 To v2 Migration
 
-For the first production migration, replace one v1 host at a time with a v2 host
-pinned to the same inclusive bucket range. This avoids mixed v1/v2 ownership and
-keeps rollback simple.
-
-1. Pre-apply additive migrations during a quiet period:
-
-   ```bash
-   ./jetmon2 migrate
-   ```
-
-2. Configure the v2 host with the same bucket range:
-
-   ```json
-   {
-     "PINNED_BUCKET_MIN": 0,
-     "PINNED_BUCKET_MAX": 99,
-     "LEGACY_STATUS_PROJECTION_ENABLE": true,
-     "API_PORT": 0
-   }
-   ```
-
-3. Run validation and pinned rollout checks:
-
-   ```bash
-   ./jetmon2 validate-config
-   ./jetmon2 rollout pinned-check
-   ```
-
-4. Stop the v1 process for that range, start v2, and verify checks, Veriflier
-   confirmations, WPCOM notifications, audit rows, and legacy projection.
-
-5. If rollback is needed, stop v2 and restart the original v1 process with the
-   same bucket config.
-
-6. After the fleet is on v2, remove `PINNED_BUCKET_*`, restart during the
-   approved window, and run:
-
-   ```bash
-   ./jetmon2 rollout dynamic-check
-   ```
-
-See [v1-to-v2-pinned-rollout.md](v1-to-v2-pinned-rollout.md) for the full
-checklist.
+Use [v1-to-v2-migration.md](v1-to-v2-migration.md) for the full production
+migration process. It covers preparation, additive migrations, pinned bucket
+mode, replacing v1 on the same server, moving a range to a fresh v2 server,
+monitoring, revert paths, dynamic ownership cutover, and v1 teardown.
 
 ## v2 Rolling Updates
 

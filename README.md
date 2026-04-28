@@ -10,17 +10,19 @@ The core detection story stays familiar:
 local checks -> local retries -> geo Veriflier confirmation -> notify
 ```
 
-The difference is what happens around that flow. Jetmon 2 records what it saw,
-why it believed a site was down, which Verifliers agreed, which notifications
-were sent, and how every incident changed over time. It turns "up or down" into
-an auditable health platform.
+The first difference is correctness: v2 checks sites with `GET`, not the
+`HEAD`-only probes that made v1 disagree with real visitor behavior on too many
+VIP and Agency sites. Around that more realistic probe, Jetmon 2 records what
+it saw, why it believed a site was down, which Verifliers agreed, which
+notifications were sent, and how every incident changed over time. It turns "up
+or down" into an auditable health platform.
 
 ## Why This Matters
 
 | Audience | What Gets Better |
 |---|---|
 | Systems teams | Static Go binaries, no `npm`, `node-gyp`, Qt, or worker process tree. Bucket ownership is coordinated in MySQL, hosts drain cleanly, and memory pressure is handled inside the goroutine pool. |
-| VIP and Agency teams | Fewer noisy pages and fewer missed incidents through local retries, Veriflier quorum, maintenance windows, keyword checks, redirect policy, SSL/TLS checks, and clearer failure classes. |
+| VIP and Agency teams | GET-based checks that match customer-visible behavior better than v1's HEAD probes, plus fewer noisy pages and fewer missed incidents through local retries, Veriflier quorum, maintenance windows, keyword checks, redirect policy, SSL/TLS checks, and clearer failure classes. |
 | Leadership | A foundation for differentiated uptime monitoring: internal API, webhooks, managed alert contacts, tenant-aware gateway paths, and future Jetpack/WPCOM integrations. |
 | Happiness Engineers | Incident answers with evidence: audit logs, event transitions, check timing, Veriflier votes, WPCOM payloads, and suppression reasons are all queryable. |
 | Jetpack contributors | A monitor that can grow into a product surface, not just a backend notification hook. |
@@ -30,6 +32,7 @@ an auditable health platform.
 | Area | Jetmon 1 | Jetmon 2 |
 |---|---|---|
 | Runtime | Node master, Node workers, C++ native addon, Qt Veriflier | Go monitor, Go Veriflier, optional Go deliverer |
+| Probe method | `HEAD` requests that could disagree with real page loads | `GET` requests for local checks and Veriflier checks |
 | State | Mutable `site_status` projection | `jetmon_events` plus append-only `jetmon_event_transitions` |
 | Detection | Binary status changes | `Seems Down`, `Down`, recovery, false-alarm, and severity transitions |
 | Evidence | Basic logs | Audit log, check history, timing breakdown, verifier outcomes, API request logs |
@@ -43,7 +46,7 @@ Jetmon 2 keeps the compatibility surfaces that matter during rollout:
 - StatsD metric naming remains `com.jetpack.jetmon.<hostname>`.
 - Legacy log and stats file paths remain available.
 - `jetpack_monitor_sites.site_status` can be projected from v2 events during
-  the shadow-state migration.
+  the [v1-to-v2 migration](docs/v1-to-v2-migration.md).
 
 ## How Incidents Flow
 
@@ -106,7 +109,7 @@ See [docs/getting-started.md](docs/getting-started.md) for the full local loop.
 | [docs/data-model.md](docs/data-model.md) | Tables, migrations, event projection, tenant mapping |
 | [docs/support-guide.md](docs/support-guide.md) | HE workflows for explaining alerts and missed alerts |
 | [docs/api-cli-guide.md](docs/api-cli-guide.md) | API CLI examples and automation patterns |
-| [docs/v1-to-v2-pinned-rollout.md](docs/v1-to-v2-pinned-rollout.md) | First production migration from v1 static buckets |
+| [docs/v1-to-v2-migration.md](docs/v1-to-v2-migration.md) | Full v1-to-v2 production migration and rollback runbook |
 | [docs/jetmon-deliverer-rollout.md](docs/jetmon-deliverer-rollout.md) | Moving outbound delivery to `jetmon-deliverer` |
 | [ROADMAP.md](ROADMAP.md) | Broader v2 and v3 planning |
 
@@ -114,7 +117,8 @@ Longer design decisions live in [docs/adr/](docs/adr/).
 
 ## Production Posture
 
-Jetmon 2 is designed for a cautious host-by-host rollout:
+Jetmon 2 is designed for a cautious host-by-host rollout. The complete process
+is in [docs/v1-to-v2-migration.md](docs/v1-to-v2-migration.md):
 
 - Run `./jetmon2 migrate` before first start. Migrations are embedded and
   additive.

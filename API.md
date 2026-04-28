@@ -383,8 +383,9 @@ site's `custom_headers` include `X-Jetmon-CLI-Batch`; the API does not expose
 the rest of `custom_headers`.
 
 `current_state`, `current_severity`, and `active_event_id` are derived from
-open rows in `jetmon_events`. During shadow-v2-state migration the legacy
-`site_status` column is only a fallback for sites with no active v2 event while
+open rows in `jetmon_events`. During the
+[v1-to-v2 migration](docs/v1-to-v2-migration.md), the legacy `site_status`
+column is only a fallback for sites with no active v2 event while
 `LEGACY_STATUS_PROJECTION_ENABLE` is true; once the projection is disabled, a
 site with no active v2 event is reported as `Up` regardless of stale legacy
 status values.

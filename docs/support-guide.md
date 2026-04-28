@@ -44,6 +44,17 @@ the monitor and then recover before Verifliers confirm it. That closes as a
 false alarm or probe-cleared event instead of sending a customer-facing outage
 notification.
 
+## Explain The GET Change
+
+Jetmon 1 used `HEAD` requests to decide whether a site was reachable. Some
+customer stacks block `HEAD`, route it differently, or return a status that does
+not match a real page load. Jetmon 2 uses `GET` for local checks and Veriflier
+checks, which better matches what visitors and customer-facing uptime tools see.
+
+When an alert differs from old v1 behavior, this is often the first thing to
+check: v2 may be surfacing a real GET-path issue that v1's HEAD-only probe did
+not exercise.
+
 ## Understand Alert Types
 
 | Type | Meaning |

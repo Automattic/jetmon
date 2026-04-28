@@ -138,9 +138,9 @@ Condition has cleared. `ended_at` is set, `resolution_reason` is recorded, and a
 
 ## The site row projection
 
-During the v2 migration, `jetpack_monitor_sites` remains the legacy site/config
-table and compatibility projection. The authoritative incident state is the
-v2 event model:
+During the [v1-to-v2 migration](docs/v1-to-v2-migration.md),
+`jetpack_monitor_sites` remains the legacy site/config table and compatibility
+projection. The authoritative incident state is the v2 event model:
 
 - `jetmon_events` stores the current incident row.
 - `jetmon_event_transitions` stores every mutation.
