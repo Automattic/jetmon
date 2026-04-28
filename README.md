@@ -113,6 +113,8 @@ Installation
    ports are hardcoded in `docker-compose.yml`.
    `MYSQL_ROOT_PASSWORD` is used only for local container setup; Jetmon connects
    with the non-root `MYSQL_USER` / `MYSQL_PASSWORD` credentials.
+   New Docker-generated Jetmon configs use `EMAIL_TRANSPORT=smtp` through
+   Mailpit so alert-contact emails can be inspected locally.
 
 5) Build and start all services:
 
@@ -170,6 +172,11 @@ To follow logs:
 To stop:
 
 	docker compose down
+
+After pulling Docker service or volume changes, clear stale stopped containers
+before restarting:
+
+	docker compose down --remove-orphans
 
 
 Database
@@ -273,6 +280,13 @@ The current `go test ./...` suite runs standalone. Use the Docker Compose enviro
 	docker compose up --build -d          # Build binary and start all services
 	docker compose logs -f jetmon          # Follow logs
 	docker compose exec jetmon bash        # Shell into the container
+
+Mailpit captures Docker-local alert-contact emails. Open the web UI at
+`http://localhost:8025` by default, or at the `BIND_ADDR` /
+`MAILPIT_HOST_PORT` values from `docker/.env`. Jetmon sends SMTP to the
+internal `mailpit:1025` address; that SMTP port is not published to the host.
+Existing `config/config.json` files are not rewritten automatically, so remove
+or update a stale local config if you want it to use Mailpit.
 
 ### Adding Test Sites
 

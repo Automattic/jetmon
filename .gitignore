@@ -24,6 +24,7 @@ veriflier2/config/veriflier.json
 *.pb.go
 
 # Runtime output dirs
+docker/volumes/
 logs/*.log
 stats/*
 !logs/.gitkeep

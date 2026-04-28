@@ -54,6 +54,13 @@ services:
       VERIFLIER_AUTH_TOKEN: ${VERIFLIER_AUTH_TOKEN:-veriflier_1_auth_token}
       VERIFLIER_PORT: "7803"
       WPCOM_AUTH_TOKEN: ${WPCOM_AUTH_TOKEN:-change_me}
+      EMAIL_TRANSPORT: ${EMAIL_TRANSPORT:-smtp}
+      EMAIL_FROM: ${EMAIL_FROM:-jetmon@noreply.invalid}
+      SMTP_HOST: ${SMTP_HOST:-mailpit}
+      SMTP_PORT: ${SMTP_PORT:-1025}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_USE_TLS: ${SMTP_USE_TLS:-false}
       JETMON_PID_FILE: /jetmon/stats/jetmon2.pid
     ports:
       - "${BIND_ADDR:-127.0.0.1}:${DASHBOARD_HOST_PORT:-8080}:8080"
@@ -61,6 +68,14 @@ services:
     depends_on:
       mysql-user:
         condition: service_completed_successfully
+      mailpit:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8090/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
 
   veriflier:
     build:
@@ -76,6 +91,29 @@ services:
       VERIFLIER_AUTH_TOKEN: ${VERIFLIER_AUTH_TOKEN:-veriflier_1_auth_token}
       VERIFLIER_PORT: "7803"
       STATSD_ADDR: statsd:8125
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7803/status"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  mailpit:
+    image: axllent/mailpit:v1.29
+    restart: unless-stopped
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${MAILPIT_HOST_PORT:-8025}:8025"
+    environment:
+      MP_DATABASE: /data/mailpit.db
+      MP_MAX_MESSAGES: 5000
+    volumes:
+      - mailpit-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8025/readyz"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
 
   statsd:
     image: graphiteapp/graphite-statsd
@@ -87,8 +125,15 @@ services:
     volumes:
       - statsd-graphite-storage:/opt/graphite/storage
       - statsd-logs:/var/log
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1/', timeout=2).close()\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
 
 volumes:
   db:
+  mailpit-data:
   statsd-graphite-storage:
   statsd-logs:

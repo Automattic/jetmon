@@ -155,7 +155,7 @@ Add a `redirect_policy` column to `jetpack_monitor_sites` with three options: `f
 ## Tooling and Developer Experience
 
 **Docker Compose Environment**
-The existing Docker Compose setup is updated for the Go binary. A single `docker compose up` starts MySQL, the Jetmon 2 binary, one or more Veriflier instances, StatsD + Graphite, and the operator dashboard. No npm, no node-gyp, no manual build steps. `docker compose up --build` rebuilds the Go binary in a reproducible multi-stage Docker build. A simulated site server remains a planned addition for deterministic local failure scenarios.
+The existing Docker Compose setup is updated for the Go binary. A single `docker compose up` starts MySQL, the Jetmon 2 binary, one or more Veriflier instances, Mailpit for local email capture, StatsD + Graphite, and the operator dashboard. No npm, no node-gyp, no manual build steps. `docker compose up --build` rebuilds the Go binary in a reproducible multi-stage Docker build. A simulated site server remains a planned addition for deterministic local failure scenarios.
 
 **Planned Simulated Site Server**
 A dedicated HTTP service should be added to the Docker Compose environment to simulate configurable site states without requiring real external sites:

@@ -898,7 +898,7 @@ Email is unique among the transports in that there is no equivalent of "post to 
 | `EMAIL_TRANSPORT` | Use case | Behavior |
 |-------------------|----------|----------|
 | `wpcom` | Production | Calls existing WPCOM email infrastructure. Default in production deploys. |
-| `smtp` | Local dev / staging | Connects to an SMTP server (e.g. MailHog/Mailpit in a local Compose overlay). Configurable host/port/auth. |
+| `smtp` | Local dev / staging | Connects to an SMTP server (e.g. Mailpit in the Docker Compose stack). Configurable host/port/auth. |
 | `stub` | Local dev / unit testing / disabled email | Logs the rendered email; no actual send. |
 
 The `Sender` interface is internal to the alerting package, so swapping transports is a config change — no code path differences. SMTP support specifically exists so docker-based integration tests can verify rendering and addressing end-to-end without depending on WPCOM infrastructure.
