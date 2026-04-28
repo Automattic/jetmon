@@ -56,7 +56,9 @@ While pinned:
    `jetpack_monitor_sites.site_status` and `last_status_change`.
 5. Keep `API_PORT=0` on monitor hosts during initial replacement unless the API
    and delivery owner plan has been explicitly approved.
-6. Verify Veriflier endpoints, WPCOM auth, StatsD, log paths, and config reload
+6. Run `./jetmon2 validate-config` with the prepared v2 config and confirm it
+   prints the pinned rollout preflight command plus the projection-drift command.
+7. Verify Veriflier endpoints, WPCOM auth, StatsD, log paths, and config reload
    behavior in staging.
 
 ## Per-Host Cutover
@@ -65,10 +67,13 @@ For each v1 host:
 
 1. Record the host name and v1 bucket range.
 2. Prepare the v2 config with the same pinned range.
-3. Stop the v1 process for that host.
-4. Start the v2 process.
-5. Run `./jetmon2 validate-config` and confirm it reports
-   `bucket_ownership=pinned range=<min>-<max>`.
+3. Before stopping v1, run `./jetmon2 validate-config` and confirm it reports:
+   - `legacy_status_projection=enabled`
+   - `bucket_ownership=pinned range=<min>-<max>`
+   - `rollout_preflight=./jetmon2 rollout pinned-check`
+   - `rollout_drift_report=./jetmon2 rollout projection-drift`
+4. Stop the v1 process for that host.
+5. Start the v2 process.
 6. Run the pinned rollout preflight:
 
    ```bash
@@ -96,8 +101,16 @@ For each v1 host:
    - `legacy_status_projection=enabled`
    - `bucket_ownership=pinned range=<min>-<max>`
    - `orchestrator: using pinned buckets <min>-<max>`
-8. Watch one full check round for that bucket range.
-9. Confirm:
+8. If `DASHBOARD_PORT` is enabled, open the operator dashboard and confirm:
+   - rollout ownership shows the pinned range
+   - legacy projection is enabled
+   - delivery workers are disabled unless the delivery owner plan explicitly
+     enables them on this host
+   - dependency health is green for MySQL, configured Verifliers, log/stats
+     directory writes, and StatsD initialization; WPCOM must not show an open
+     circuit
+9. Watch one full check round for that bucket range.
+10. Confirm:
    - checks are running only for the pinned range
    - Veriflier confirmation works
    - WPCOM notifications retain the v1 payload shape
@@ -129,7 +142,9 @@ After every monitor host is on v2 and stable in pinned mode:
 3. Remove `PINNED_BUCKET_MIN` / `PINNED_BUCKET_MAX` (and any legacy
    `BUCKET_NO_MIN` / `BUCKET_NO_MAX` aliases) from the v2 monitor configs.
 4. Restart the v2 monitor hosts in the approved deployment window.
-5. Run the dynamic ownership preflight:
+5. Run `./jetmon2 validate-config` and confirm it reports
+   `rollout_preflight=./jetmon2 rollout dynamic-check`.
+6. Run the dynamic ownership preflight:
 
    ```bash
    ./jetmon2 rollout dynamic-check
@@ -145,7 +160,7 @@ After every monitor host is on v2 and stable in pinned mode:
    ./jetmon2 rollout projection-drift --limit=100
    ```
 
-6. Continue using the normal v2 rolling-update process from `README.md`.
+7. Continue using the normal v2 rolling-update process from `README.md`.
 
 Do not run a mixed configuration where some v1 hosts still own static ranges
 while unpinned v2 hosts use dynamic `jetmon_hosts` ownership. Also avoid a

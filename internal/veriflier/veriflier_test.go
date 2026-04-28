@@ -178,6 +178,22 @@ func TestClientPing(t *testing.T) {
 	}
 }
 
+func TestClientPingRejectsErrorStatus(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer ts.Close()
+
+	client := NewVeriflierClient(ts.Listener.Addr().String(), "secret")
+	_, err := client.Ping(context.Background())
+	if err == nil {
+		t.Fatal("Ping() expected error")
+	}
+	if err.Error() != "veriflier status returned 503" {
+		t.Fatalf("Ping() error = %v", err)
+	}
+}
+
 func TestClientBatchRoundTrip(t *testing.T) {
 	_, ts := newTestServer(func(req CheckRequest) CheckResult {
 		return CheckResult{BlogID: req.BlogID, Success: true, HTTPCode: 200}

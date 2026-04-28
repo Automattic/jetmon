@@ -430,7 +430,11 @@ Simulate a host failure by manually expiring a row in `jetmon_hosts`. Verify the
 
 ### Operator Dashboard
 
-The dashboard is available at http://localhost:8080 (configurable via `DASHBOARD_PORT`). It shows worker count, active checks, queue depth, retry queue depth, sites per second, round time, owned buckets, RSS, and WPCOM circuit-breaker state.
+The dashboard is available at http://localhost:8080 (configurable via
+`DASHBOARD_PORT`). It shows worker count, active checks, queue depth, retry
+queue depth, sites per second, round time, owned buckets, rollout guard state,
+RSS, WPCOM circuit-breaker state, and live dependency health for MySQL,
+configured Verifliers, WPCOM, StatsD, and log/stats directory writes.
 
 ### Internal API and Delivery Workers
 
@@ -459,11 +463,12 @@ Jetmon runs on multiple production hosts managed by the Systems team. Each host 
 1) Install the `jetmon2` binary to `/opt/jetmon2/`
 2) Install `systemd/jetmon2.service` to `/etc/systemd/system/` and run `systemctl daemon-reload`
 3) Install `systemd/jetmon2-logrotate` to `/etc/logrotate.d/jetmon2`
-4) Create `/opt/jetmon2/config/jetmon2.env` with the database credentials and auth tokens (see `config/db-config-sample.conf` for the required keys)
-5) Copy `config/config.json` from an existing host (or generate from `config-sample.json`)
-6) Set `BUCKET_TARGET` to the desired maximum bucket count for this host
-7) Run `./jetmon2 migrate` to apply any pending schema migrations
-8) Start the service: `systemctl enable --now jetmon2`
+4) Create `/opt/jetmon2/logs` and `/opt/jetmon2/stats`, owned by the `jetmon` service user
+5) Create `/opt/jetmon2/config/jetmon2.env` with the database credentials and auth tokens (see `config/db-config-sample.conf` for the required keys)
+6) Copy `config/config.json` from an existing host (or generate from `config-sample.json`)
+7) Set `BUCKET_TARGET` to the desired maximum bucket count for this host
+8) Run `./jetmon2 migrate` to apply any pending schema migrations
+9) Start the service: `systemctl enable --now jetmon2`
 
 The new host will claim unclaimed buckets from the pool on first startup. No existing hosts need reconfiguration.
 
@@ -488,7 +493,12 @@ bucket ownership and gives each host a simple rollback path.
    `PINNED_BUCKET_*` makes the migration mode explicit. In pinned mode, v2 does
    not claim or heartbeat `jetmon_hosts`; it checks only the configured range.
 
-3) Before starting the cutover, run the pinned rollout preflight:
+3) Before stopping v1, run config validation and confirm it prints the pinned
+   preflight plus projection-drift commands:
+
+		./jetmon2 validate-config
+
+4) Before starting the cutover, run the pinned rollout preflight:
 
 		./jetmon2 rollout pinned-check
 
@@ -496,16 +506,18 @@ bucket ownership and gives each host a simple rollback path.
    `jetmon_hosts` row for the host, active site count for the range, and zero
    legacy projection drift.
 
-4) Stop the v1 process for that range, start v2, and verify checks,
+5) Stop the v1 process for that range, start v2, and verify checks,
    Veriflier confirmations, WPCOM notifications, audit rows, and legacy
-   `site_status` projection for that bucket range.
+   `site_status` projection for that bucket range. If the operator dashboard is
+   enabled, also confirm rollout guard state and dependency health before
+   moving to the next host.
 
-5) If rollback is needed, stop v2 and restart the original v1 process with the
+6) If rollback is needed, stop v2 and restart the original v1 process with the
    same bucket config. Because the v2 migrations are additive and the legacy
    projection remains enabled, legacy readers continue to see familiar status
    fields.
 
-6) Repeat for each v1 host. After the whole fleet is on v2 and stable, plan a
+7) Repeat for each v1 host. After the whole fleet is on v2 and stable, plan a
    coordinated dynamic-ownership cutover, remove `PINNED_BUCKET_*` from the v2
    monitor configs, restart the fleet in the approved window, then run:
 
@@ -562,7 +574,11 @@ The service releases its buckets to the pool before exiting. Surviving hosts rec
 
 	./jetmon2 status
 
-Or check the operator dashboard at the configured `DASHBOARD_PORT` for check-pool, throughput, bucket, memory, and WPCOM circuit-breaker state.
+Or check the operator dashboard at the configured `DASHBOARD_PORT` for
+check-pool, throughput, bucket, rollout guard, memory, WPCOM circuit-breaker
+state, and live dependency health. The rollout section shows bucket ownership
+mode, legacy projection mode, delivery-worker ownership, and the matching
+rollout preflight and projection-drift commands for the active config.
 
 ### Config Reload Without Restart
 

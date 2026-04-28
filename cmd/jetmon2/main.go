@@ -25,6 +25,7 @@ import (
 	"github.com/Automattic/jetmon/internal/deliverer"
 	"github.com/Automattic/jetmon/internal/metrics"
 	"github.com/Automattic/jetmon/internal/orchestrator"
+	"github.com/Automattic/jetmon/internal/veriflier"
 	"github.com/Automattic/jetmon/internal/wpcom"
 )
 
@@ -171,22 +172,37 @@ func runServe() {
 
 	// Push dashboard state every stats interval.
 	if dash != nil {
+		publishDashboardHealth(dash, wp)
 		go func() {
 			ticker := time.NewTicker(time.Duration(cfg.StatsUpdateIntervalMS) * time.Millisecond)
 			defer ticker.Stop()
 			for range ticker.C {
 				bMin, bMax := orch.BucketRange()
+				currentCfg := config.Get()
 				dash.Update(dashboard.State{
-					WorkerCount:      orch.WorkerCount(),
-					ActiveChecks:     orch.ActiveChecks(),
-					QueueDepth:       orch.QueueDepth(),
-					RetryQueueSize:   orch.RetryQueueSize(),
-					SitesPerSec:      0,
-					WPCOMCircuitOpen: wp.IsCircuitOpen(),
-					WPCOMQueueDepth:  wp.QueueDepth(),
-					BucketMin:        bMin,
-					BucketMax:        bMax,
+					WorkerCount:                   orch.WorkerCount(),
+					ActiveChecks:                  orch.ActiveChecks(),
+					QueueDepth:                    orch.QueueDepth(),
+					RetryQueueSize:                orch.RetryQueueSize(),
+					SitesPerSec:                   0,
+					WPCOMCircuitOpen:              wp.IsCircuitOpen(),
+					WPCOMQueueDepth:               wp.QueueDepth(),
+					BucketMin:                     bMin,
+					BucketMax:                     bMax,
+					BucketOwnership:               bucketOwnershipLabel(currentCfg),
+					LegacyStatusProjectionEnabled: currentCfg.LegacyStatusProjectionEnable,
+					DeliveryWorkersEnabled:        deliveryWorkersEnabled,
+					DeliveryOwnerHost:             currentCfg.DeliveryOwnerHost,
+					RolloutPreflightCommand:       rolloutPreflightCommand(currentCfg),
+					ProjectionDriftCommand:        projectionDriftCommand(),
 				})
+			}
+		}()
+		go func() {
+			ticker := time.NewTicker(time.Duration(cfg.StatsUpdateIntervalMS) * time.Millisecond)
+			defer ticker.Stop()
+			for range ticker.C {
+				publishDashboardHealth(dash, wp)
 			}
 		}()
 	}
@@ -294,16 +310,176 @@ func bucketOwnershipLabel(cfg *config.Config) string {
 }
 
 func rolloutAdviceLines(cfg *config.Config) []string {
-	if _, _, ok := cfg.PinnedBucketRange(); ok {
-		return []string{
-			"INFO rollout_preflight=./jetmon2 rollout pinned-check",
-			"INFO rollout_drift_report=./jetmon2 rollout projection-drift",
-		}
-	}
 	return []string{
-		"INFO rollout_preflight=./jetmon2 rollout dynamic-check",
-		"INFO rollout_drift_report=./jetmon2 rollout projection-drift",
+		"INFO rollout_preflight=" + rolloutPreflightCommand(cfg),
+		"INFO rollout_drift_report=" + projectionDriftCommand(),
 	}
+}
+
+func rolloutPreflightCommand(cfg *config.Config) string {
+	if _, _, ok := cfg.PinnedBucketRange(); ok {
+		return "./jetmon2 rollout pinned-check"
+	}
+	return "./jetmon2 rollout dynamic-check"
+}
+
+func projectionDriftCommand() string {
+	return "./jetmon2 rollout projection-drift"
+}
+
+const dashboardHealthTimeout = 2 * time.Second
+
+func publishDashboardHealth(dash *dashboard.Server, wp *wpcom.Client) {
+	if dash == nil {
+		return
+	}
+	dash.UpdateHealth(dashboardHealthEntries(context.Background(), config.Get(), db.DB(), wp, metrics.Global() != nil, time.Now().UTC()))
+}
+
+func dashboardHealthEntries(ctx context.Context, cfg *config.Config, sqlDB *sql.DB, wp *wpcom.Client, statsdReady bool, checkedAt time.Time) []dashboard.HealthEntry {
+	entries := []dashboard.HealthEntry{
+		mysqlHealthEntry(ctx, sqlDB, checkedAt),
+		wpcomHealthEntry(wp, checkedAt),
+		statsdHealthEntry(statsdReady, checkedAt),
+		diskHealthEntry("logs", checkedAt),
+		diskHealthEntry("stats", checkedAt),
+	}
+	entries = append(entries, veriflierHealthEntries(ctx, cfg, checkedAt)...)
+	return entries
+}
+
+func mysqlHealthEntry(ctx context.Context, sqlDB *sql.DB, checkedAt time.Time) dashboard.HealthEntry {
+	entry := dashboard.HealthEntry{Name: "mysql", CheckedAt: checkedAt}
+	if sqlDB == nil {
+		entry.Status = "red"
+		entry.LastError = "database pool is not initialized"
+		return entry
+	}
+
+	pingCtx, cancel := context.WithTimeout(ctx, dashboardHealthTimeout)
+	defer cancel()
+
+	start := time.Now()
+	if err := sqlDB.PingContext(pingCtx); err != nil {
+		entry.Status = "red"
+		entry.Latency = time.Since(start).Milliseconds()
+		entry.LastError = err.Error()
+		return entry
+	}
+	entry.Status = "green"
+	entry.Latency = time.Since(start).Milliseconds()
+	return entry
+}
+
+func veriflierHealthEntries(ctx context.Context, cfg *config.Config, checkedAt time.Time) []dashboard.HealthEntry {
+	if cfg == nil || len(cfg.Verifiers) == 0 {
+		return []dashboard.HealthEntry{{
+			Name:      "verifliers",
+			Status:    "amber",
+			LastError: "no verifliers configured",
+			CheckedAt: checkedAt,
+		}}
+	}
+
+	entries := make([]dashboard.HealthEntry, 0, len(cfg.Verifiers))
+	for _, v := range cfg.Verifiers {
+		addr := fmt.Sprintf("%s:%s", v.Host, v.TransportPort())
+		name := "veriflier:" + v.Name
+		if v.Name == "" {
+			name = "veriflier:" + addr
+		}
+		entry := dashboard.HealthEntry{Name: name, CheckedAt: checkedAt}
+		if v.Host == "" || v.TransportPort() == "" {
+			entry.Status = "red"
+			entry.LastError = "host or port is not configured"
+			entries = append(entries, entry)
+			continue
+		}
+
+		pingCtx, cancel := context.WithTimeout(ctx, dashboardHealthTimeout)
+		start := time.Now()
+		version, err := veriflier.NewVeriflierClient(addr, v.AuthToken).Ping(pingCtx)
+		cancel()
+		entry.Latency = time.Since(start).Milliseconds()
+		if err != nil {
+			entry.Status = "red"
+			entry.LastError = err.Error()
+		} else {
+			entry.Status = "green"
+			if version != "" {
+				entry.Name = fmt.Sprintf("%s (%s)", entry.Name, version)
+			}
+		}
+		entries = append(entries, entry)
+	}
+	return entries
+}
+
+func wpcomHealthEntry(wp *wpcom.Client, checkedAt time.Time) dashboard.HealthEntry {
+	entry := dashboard.HealthEntry{Name: "wpcom", CheckedAt: checkedAt}
+	if wp == nil {
+		entry.Status = "red"
+		entry.LastError = "wpcom client is not initialized"
+		return entry
+	}
+	queueDepth := wp.QueueDepth()
+	if wp.IsCircuitOpen() {
+		entry.Status = "red"
+		entry.LastError = fmt.Sprintf("circuit open, queued notifications=%d", queueDepth)
+		return entry
+	}
+	if queueDepth > 0 {
+		entry.Status = "amber"
+		entry.LastError = fmt.Sprintf("queued notifications=%d", queueDepth)
+		return entry
+	}
+	entry.Status = "green"
+	return entry
+}
+
+func statsdHealthEntry(ready bool, checkedAt time.Time) dashboard.HealthEntry {
+	entry := dashboard.HealthEntry{Name: "statsd", CheckedAt: checkedAt}
+	if !ready {
+		entry.Status = "amber"
+		entry.LastError = "statsd client is not initialized"
+		return entry
+	}
+	entry.Status = "green"
+	return entry
+}
+
+func diskHealthEntry(dir string, checkedAt time.Time) dashboard.HealthEntry {
+	entry := dashboard.HealthEntry{Name: "disk:" + dir, CheckedAt: checkedAt}
+	if err := checkWritableDir(dir); err != nil {
+		entry.Status = "red"
+		entry.LastError = err.Error()
+		return entry
+	}
+	entry.Status = "green"
+	return entry
+}
+
+func checkWritableDir(dir string) error {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s is not a directory", dir)
+	}
+	f, err := os.CreateTemp(dir, ".jetmon-health-*")
+	if err != nil {
+		return err
+	}
+	name := f.Name()
+	if err := f.Close(); err != nil {
+		_ = os.Remove(name)
+		return err
+	}
+	if err := os.Remove(name); err != nil {
+		return err
+	}
+	return nil
 }
 
 // emailTransportLabel collapses an empty EMAIL_TRANSPORT to its compatibility

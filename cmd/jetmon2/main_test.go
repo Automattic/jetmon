@@ -15,6 +15,7 @@ import (
 	"github.com/Automattic/jetmon/internal/alerting"
 	"github.com/Automattic/jetmon/internal/config"
 	"github.com/Automattic/jetmon/internal/deliverer"
+	"github.com/DATA-DOG/go-sqlmock"
 )
 
 func TestHTTPGet(t *testing.T) {
@@ -286,6 +287,83 @@ func TestRolloutAdviceLines(t *testing.T) {
 	}
 	if !strings.Contains(pinned[1], "rollout projection-drift") {
 		t.Fatalf("pinned drift advice = %q", pinned[1])
+	}
+}
+
+func TestRolloutCommandHelpers(t *testing.T) {
+	if got := rolloutPreflightCommand(&config.Config{}); got != "./jetmon2 rollout dynamic-check" {
+		t.Fatalf("rolloutPreflightCommand(dynamic) = %q", got)
+	}
+	min, max := 12, 34
+	cfg := &config.Config{PinnedBucketMin: &min, PinnedBucketMax: &max}
+	if got := rolloutPreflightCommand(cfg); got != "./jetmon2 rollout pinned-check" {
+		t.Fatalf("rolloutPreflightCommand(pinned) = %q", got)
+	}
+	if got := projectionDriftCommand(); got != "./jetmon2 rollout projection-drift" {
+		t.Fatalf("projectionDriftCommand() = %q", got)
+	}
+}
+
+func TestDashboardHealthEntriesReportsCoreDependencies(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "logs"), 0755); err != nil {
+		t.Fatalf("mkdir logs: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "stats"), 0755); err != nil {
+		t.Fatalf("mkdir stats: %v", err)
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+	defer func() {
+		if err := os.Chdir(wd); err != nil {
+			t.Fatalf("restore working directory: %v", err)
+		}
+	}()
+
+	sqlDB, mock, err := sqlmock.New(sqlmock.MonitorPingsOption(true))
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer sqlDB.Close()
+	mock.ExpectPing()
+
+	checkedAt := time.Date(2026, 4, 28, 3, 0, 0, 0, time.UTC)
+	entries := dashboardHealthEntries(context.Background(), &config.Config{}, sqlDB, nil, false, checkedAt)
+	byName := make(map[string]string, len(entries))
+	for _, entry := range entries {
+		byName[entry.Name] = entry.Status
+		if !entry.CheckedAt.Equal(checkedAt) {
+			t.Fatalf("%s CheckedAt = %s, want %s", entry.Name, entry.CheckedAt, checkedAt)
+		}
+	}
+
+	want := map[string]string{
+		"mysql":      "green",
+		"wpcom":      "red",
+		"statsd":     "amber",
+		"disk:logs":  "green",
+		"disk:stats": "green",
+		"verifliers": "amber",
+	}
+	for name, status := range want {
+		if byName[name] != status {
+			t.Fatalf("health[%s] = %q, want %q (entries=%v)", name, byName[name], status, entries)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestCheckWritableDirReportsMissingDirectory(t *testing.T) {
+	err := checkWritableDir(filepath.Join(t.TempDir(), "missing"))
+	if err == nil {
+		t.Fatal("checkWritableDir() returned nil for missing directory")
 	}
 }
 

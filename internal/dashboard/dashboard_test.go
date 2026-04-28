@@ -12,7 +12,16 @@ import (
 
 func TestHandleState(t *testing.T) {
 	srv := New("test-host")
-	srv.Update(State{WorkerCount: 5, QueueDepth: 3})
+	srv.Update(State{
+		WorkerCount:                   5,
+		QueueDepth:                    3,
+		BucketOwnership:               "pinned range=0-99",
+		LegacyStatusProjectionEnabled: true,
+		DeliveryWorkersEnabled:        true,
+		DeliveryOwnerHost:             "api-1",
+		RolloutPreflightCommand:       "./jetmon2 rollout pinned-check",
+		ProjectionDriftCommand:        "./jetmon2 rollout projection-drift",
+	})
 
 	r := httptest.NewRequest(http.MethodGet, "/api/state", nil)
 	w := httptest.NewRecorder()
@@ -30,6 +39,24 @@ func TestHandleState(t *testing.T) {
 	}
 	if st.Hostname != "test-host" {
 		t.Fatalf("Hostname = %q, want test-host", st.Hostname)
+	}
+	if st.BucketOwnership != "pinned range=0-99" {
+		t.Fatalf("BucketOwnership = %q, want pinned range=0-99", st.BucketOwnership)
+	}
+	if !st.LegacyStatusProjectionEnabled {
+		t.Fatal("LegacyStatusProjectionEnabled = false, want true")
+	}
+	if !st.DeliveryWorkersEnabled {
+		t.Fatal("DeliveryWorkersEnabled = false, want true")
+	}
+	if st.DeliveryOwnerHost != "api-1" {
+		t.Fatalf("DeliveryOwnerHost = %q, want api-1", st.DeliveryOwnerHost)
+	}
+	if st.RolloutPreflightCommand != "./jetmon2 rollout pinned-check" {
+		t.Fatalf("RolloutPreflightCommand = %q", st.RolloutPreflightCommand)
+	}
+	if st.ProjectionDriftCommand != "./jetmon2 rollout projection-drift" {
+		t.Fatalf("ProjectionDriftCommand = %q", st.ProjectionDriftCommand)
 	}
 }
 
@@ -73,6 +100,15 @@ func TestHandleIndex(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "Jetmon") {
 		t.Fatal("body does not contain expected HTML content")
+	}
+	if !strings.Contains(w.Body.String(), "id=\"preflight\"") {
+		t.Fatal("body does not contain rollout preflight card")
+	}
+	if !strings.Contains(w.Body.String(), "id=\"delivery-owner\"") {
+		t.Fatal("body does not contain delivery owner card")
+	}
+	if !strings.Contains(w.Body.String(), "id=\"health\"") {
+		t.Fatal("body does not contain dependency health grid")
 	}
 }
 

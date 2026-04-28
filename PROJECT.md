@@ -218,22 +218,28 @@ A lightweight web UI served by the binary itself (no separate process) on a conf
 - Round completion time
 - Local retry queue depth
 - Owned bucket range
+- Bucket ownership mode, legacy projection mode, delivery-worker ownership, and
+  rollout preflight / projection-drift commands
 - RSS memory usage
 - WPCOM circuit-breaker state and queued notification depth
+- Live dependency health for MySQL, configured Verifliers, WPCOM, StatsD, and
+  log/stats directory writes
 
-Updates via server-sent events — no WebSocket library needed, no JavaScript framework. A plain HTML page with `<EventSource>` is sufficient and has no build toolchain dependency.
+Updates via server-sent events and lightweight JSON polling — no WebSocket library needed, no JavaScript framework. A plain HTML page with `<EventSource>` and `fetch` is sufficient and has no build toolchain dependency.
 
-**Future System Health Map**
-A broader operator-dashboard health grid is still a natural follow-up:
+**System Health Map**
+The operator dashboard health grid publishes:
 
-- MySQL (primary + replicas): connection state, query latency, last successful batch
-- Each configured Veriflier: reachability, last response time, last batch sent/received
-- WPCOM API: last successful notification, current error rate
-- StatsD: last successful flush
-- Disk (log and stats files): free space, last write time
+- MySQL: connection state and ping latency
+- Each configured Veriflier: reachability and status latency
+- WPCOM API: circuit-breaker state and queued notification depth
+- StatsD: local client initialization state
+- Disk: writable `logs/` and `stats/` directories
 
-The current dashboard has an `/api/health` shape for this data, but the live
-publisher for those entries has not been wired yet.
+Future refinements can add primary/replica breakdowns, last successful
+orchestrator batch, WPCOM request error-rate windows, and disk free-space
+thresholds once production operating data shows which signals are worth paging
+on.
 
 **False Positive Tracker**
 Every time the system escalates a site to Veriflier confirmation and the Verifliers do NOT confirm it as down (i.e., the queue entry times out or all Verifliers report the site as up), the event is recorded in a `jetmon_false_positives` table with timestamp, site, HTTP code, error code, and RTT from the local check. A view in the operator dashboard surfaces sites with high false positive rates, helping operators tune per-site `NUM_OF_CHECKS` or `TIME_BETWEEN_CHECKS_SEC` settings.
