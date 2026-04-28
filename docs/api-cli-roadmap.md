@@ -24,7 +24,7 @@ but it should not become a generic `curl` clone.
 - [x] Add `sites list|get|create|update|delete|pause|resume|trigger-now`.
 - [x] Add `events list|get|transitions|close`.
 - [x] Add `webhooks list|get|create|update|delete|rotate-secret|deliveries|retry`.
-- [ ] Add `alert-contacts list|get|create|update|delete|test|deliveries|retry`.
+- [x] Add `alert-contacts list|get|create|update|delete|test|deliveries|retry`.
 - [ ] Keep typed command payloads close to the OpenAPI component schemas or shared
   request structs so CLI examples do not drift from the server contract.
 - [ ] Add `sites bulk-add --count <n>` for creating a bounded batch of real
@@ -110,3 +110,8 @@ but it should not become a generic `curl` clone.
   typed event/site/state filter payloads, explicit filter-clearing flags,
   delivery status filters, idempotency support for POST actions, and focused
   path/body tests.
+- [x] 2026-04-28: Added typed `jetmon2 api alert-contacts`
+  `list|get|create|update|delete|test|deliveries|retry` commands with
+  transport-specific destination shortcuts, raw destination JSON support, site
+  filter clearing, delivery status filters, idempotency support for POST
+  actions, and focused path/body tests.
