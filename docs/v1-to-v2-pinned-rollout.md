@@ -81,7 +81,8 @@ While pinned:
 5. Keep `API_PORT=0` on monitor hosts during initial replacement unless the API
    and delivery owner plan has been explicitly approved.
 6. Run `./jetmon2 validate-config` with the prepared v2 config and confirm it
-   prints the pinned rollout preflight command plus the projection-drift command.
+   prints the pinned rollout safety commands: static plan, pinned preflight,
+   activity check, rollback check, and projection-drift report.
 7. Verify Veriflier endpoints, WPCOM auth, StatsD, log paths, and config reload
    behavior in staging.
 
@@ -95,7 +96,10 @@ For each v1 host:
 3. Before stopping v1, run `./jetmon2 validate-config` and confirm it reports:
    - `legacy_status_projection=enabled`
    - `bucket_ownership=pinned range=<min>-<max>`
+   - `rollout_static_plan=./jetmon2 rollout static-plan-check --file=<ranges.csv>`
    - `rollout_preflight=./jetmon2 rollout pinned-check`
+   - `rollout_activity_check=./jetmon2 rollout activity-check --since=15m`
+   - `rollout_rollback_check=./jetmon2 rollout rollback-check`
    - `rollout_drift_report=./jetmon2 rollout projection-drift`
 4. Stop the v1 process for that host.
 5. Start the v2 process.

@@ -29,6 +29,8 @@ type State struct {
 	DeliveryWorkersEnabled        bool      `json:"delivery_workers_enabled"`
 	DeliveryOwnerHost             string    `json:"delivery_owner_host"`
 	RolloutPreflightCommand       string    `json:"rollout_preflight_command"`
+	RolloutActivityCommand        string    `json:"rollout_activity_command"`
+	RolloutRollbackCommand        string    `json:"rollout_rollback_command"`
 	ProjectionDriftCommand        string    `json:"projection_drift_command"`
 	Hostname                      string    `json:"hostname"`
 	UpdatedAt                     time.Time `json:"updated_at"`
@@ -235,6 +237,8 @@ const dashboardHTML = `<!DOCTYPE html>
   <div class="card"><div class="label">DELIVERY WORKERS</div><div class="value" id="delivery">—</div></div>
   <div class="card"><div class="label">DELIVERY OWNER</div><div class="value" id="delivery-owner">—</div></div>
   <div class="card"><div class="label">PREFLIGHT</div><div class="value command" id="preflight">—</div></div>
+  <div class="card"><div class="label">ACTIVITY</div><div class="value command" id="activity">—</div></div>
+  <div class="card"><div class="label">ROLLBACK</div><div class="value command" id="rollback">—</div></div>
   <div class="card"><div class="label">DRIFT REPORT</div><div class="value command" id="drift">—</div></div>
 </div>
 
@@ -265,6 +269,8 @@ src.onmessage = function(e) {
   document.getElementById('delivery').textContent = d.delivery_workers_enabled ? 'enabled' : 'disabled';
   document.getElementById('delivery-owner').textContent = d.delivery_owner_host || 'unset';
   document.getElementById('preflight').textContent = d.rollout_preflight_command || '—';
+  document.getElementById('activity').textContent = d.rollout_activity_command || '—';
+  document.getElementById('rollback').textContent = d.rollout_rollback_command || '—';
   document.getElementById('drift').textContent = d.projection_drift_command || '—';
   document.getElementById('wpcom').textContent   = d.wpcom_circuit_open ? 'OPEN' : 'closed';
   document.getElementById('wpcomq').textContent  = d.wpcom_queue_depth;

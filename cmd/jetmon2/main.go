@@ -194,6 +194,8 @@ func runServe() {
 					DeliveryWorkersEnabled:        deliveryWorkersEnabled,
 					DeliveryOwnerHost:             currentCfg.DeliveryOwnerHost,
 					RolloutPreflightCommand:       rolloutPreflightCommand(currentCfg),
+					RolloutActivityCommand:        rolloutActivityCommand(),
+					RolloutRollbackCommand:        rollbackCheckCommand(currentCfg),
 					ProjectionDriftCommand:        projectionDriftCommand(),
 				})
 			}
@@ -310,10 +312,23 @@ func bucketOwnershipLabel(cfg *config.Config) string {
 }
 
 func rolloutAdviceLines(cfg *config.Config) []string {
-	return []string{
-		"INFO rollout_preflight=" + rolloutPreflightCommand(cfg),
-		"INFO rollout_drift_report=" + projectionDriftCommand(),
+	lines := []string{}
+	if _, _, ok := cfg.PinnedBucketRange(); ok {
+		lines = append(lines, "INFO rollout_static_plan="+staticPlanCheckCommand())
 	}
+	lines = append(lines,
+		"INFO rollout_preflight="+rolloutPreflightCommand(cfg),
+		"INFO rollout_activity_check="+rolloutActivityCommand(),
+	)
+	if cmd := rollbackCheckCommand(cfg); cmd != "" {
+		lines = append(lines, "INFO rollout_rollback_check="+cmd)
+	}
+	lines = append(lines, "INFO rollout_drift_report="+projectionDriftCommand())
+	return lines
+}
+
+func staticPlanCheckCommand() string {
+	return "./jetmon2 rollout static-plan-check --file=<ranges.csv>"
 }
 
 func rolloutPreflightCommand(cfg *config.Config) string {
@@ -321,6 +336,17 @@ func rolloutPreflightCommand(cfg *config.Config) string {
 		return "./jetmon2 rollout pinned-check"
 	}
 	return "./jetmon2 rollout dynamic-check"
+}
+
+func rolloutActivityCommand() string {
+	return "./jetmon2 rollout activity-check --since=15m"
+}
+
+func rollbackCheckCommand(cfg *config.Config) string {
+	if _, _, ok := cfg.PinnedBucketRange(); ok {
+		return "./jetmon2 rollout rollback-check"
+	}
+	return ""
 }
 
 func projectionDriftCommand() string {

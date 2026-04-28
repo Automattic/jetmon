@@ -37,7 +37,7 @@ A few specifics worth bragging about:
 - **Webhooks with Stripe-style HMAC signatures.** `t=<unix>,v1=<hex>` over `{ts}.{body}`, per-webhook in-flight cap, retry ladder 1m → 5m → 30m → 1h → 6h before abandon. Frozen-at-fire-time payload contract — consumers see the event as it was when the webhook fired, not as it is now.
 - **Idempotent write endpoints.** POSTs accept `Idempotency-Key`; replays return the original response, so a retried "click to test" through a network blip won't double-page the destination.
 - **Rotation grace windows on API keys.** `revoked_at` and `expires_at` are half-open cutoffs; setting `revoked_at` in the future keeps the old key valid until consumers deploy the replacement.
-- **Migrations embedded in the binary.** `./jetmon2 migrate` walks the schema forward; `./jetmon2 validate-config` checks config + DB connectivity + email transport mode + verifier list before deploy, prints the matching rollout preflight command, and warns loudly when alert-contact email is set to the log-only stub.
+- **Migrations embedded in the binary.** `./jetmon2 migrate` walks the schema forward; `./jetmon2 validate-config` checks config + DB connectivity + email transport mode + verifier list before deploy, prints the rollout safety commands for the active config, and warns loudly when alert-contact email is set to the log-only stub.
 - **MySQL 5.7+ compatible.** No window functions, no JSON-path expressions in SELECT — the v2 schema and queries land cleanly on the legacy production database.
 
 
@@ -547,7 +547,7 @@ bucket ownership and gives each host a simple rollback path.
    not claim or heartbeat `jetmon_hosts`; it checks only the configured range.
 
 4) Before stopping v1, run config validation and confirm it prints the pinned
-   preflight plus projection-drift commands:
+   rollout safety commands:
 
 		./jetmon2 validate-config
 
@@ -643,7 +643,8 @@ Or check the operator dashboard at the configured `DASHBOARD_PORT` for
 check-pool, throughput, bucket, rollout guard, memory, WPCOM circuit-breaker
 state, and live dependency health. The rollout section shows bucket ownership
 mode, legacy projection mode, delivery-worker ownership, and the matching
-rollout preflight and projection-drift commands for the active config.
+rollout preflight, activity-check, rollback, and projection-drift commands for
+the active config.
 
 ### Config Reload Without Restart
 

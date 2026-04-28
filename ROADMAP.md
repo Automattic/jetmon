@@ -648,9 +648,9 @@ where to look, and what each item unlocked.
   authoritative open HTTP event.
   Operators get actionable rows instead of a count-only rollout failure.
 - **Rollout guidance in validation and dashboard.** `validate-config` prints
-  the correct rollout preflight and drift-report commands, while the operator
-  dashboard shows bucket mode, projection mode, delivery ownership, rollout
-  commands, and dependency health.
+  the current rollout safety commands, while the operator dashboard shows bucket
+  mode, projection mode, delivery ownership, rollout preflight/activity/
+  rollback/drift commands, and dependency health.
   This keeps migration-critical state visible before and during cutover.
 - **Static bucket plan preflight.** `./jetmon2 rollout static-plan-check`
   validates the copied v1 host bucket plan before any host is stopped.
