@@ -107,8 +107,10 @@ Installation
 		cd docker && cp .env-sample .env
 
 4) Edit `docker/.env` for your local environment. The file is only for local
-   host-side bind address / `*_HOST_PORT` overrides, credentials, and user ids;
-   container-side service ports are hardcoded in `docker-compose.yml`.
+   host-side bind address / `*_HOST_PORT` overrides, credentials, and user ids.
+   `BIND_ADDR` keeps non-API services local by default; `API_BIND_ADDR` controls
+   whether the REST API is reachable by other systems. Container-side service
+   ports are hardcoded in `docker-compose.yml`.
    `MYSQL_ROOT_PASSWORD` is used only for local container setup; Jetmon connects
    with the non-root `MYSQL_USER` / `MYSQL_PASSWORD` credentials.
 

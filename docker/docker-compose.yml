@@ -57,7 +57,7 @@ services:
       JETMON_PID_FILE: /jetmon/stats/jetmon2.pid
     ports:
       - "${BIND_ADDR:-127.0.0.1}:${DASHBOARD_HOST_PORT:-8080}:8080"
-      - "${BIND_ADDR:-127.0.0.1}:${API_HOST_PORT:-8090}:8090"
+      - "${API_BIND_ADDR:-0.0.0.0}:${API_HOST_PORT:-8090}:8090"
     depends_on:
       mysql-user:
         condition: service_completed_successfully
