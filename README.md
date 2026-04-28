@@ -106,7 +106,9 @@ Installation
 
 		cd docker && cp .env-sample .env
 
-4) Edit `docker/.env` for your local environment
+4) Edit `docker/.env` for your local environment. The file is only for local
+   host-side port overrides, credentials, and user ids; container-side service
+   ports are hardcoded in `docker-compose.yml`.
 
 5) Build and start all services:
 

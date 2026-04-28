@@ -2,17 +2,15 @@ services:
     mysqldb:
         image: mysql:8.0
         restart: unless-stopped
-        env_file:
-          - .env
         environment:
-          - MYSQL_ROOT_PASSWORD=$MYSQLDB_ROOT_PASSWORD
-          - MYSQL_DATABASE=$MYSQLDB_DATABASE
+          - MYSQL_ROOT_PASSWORD=$MYSQL_ROOT_PASSWORD
+          - MYSQL_DATABASE=$MYSQL_DATABASE
         ports:
-          - $MYSQLDB_LOCAL_PORT:$MYSQLDB_DOCKER_PORT
+          - ${MYSQL_PORT:-3307}:3306
         volumes:
           - db:/var/lib/mysql
         healthcheck:
-            test: ["CMD-SHELL", "MYSQL_PWD=$$MYSQLDB_ROOT_PASSWORD mysqladmin ping -h localhost -u root --silent"]
+            test: ["CMD-SHELL", "MYSQL_PWD=$$MYSQL_ROOT_PASSWORD mysqladmin ping -h localhost -u root --silent"]
             interval: 5s
             timeout: 5s
             retries: 10
@@ -23,25 +21,22 @@ services:
           context: ../
           dockerfile: docker/Dockerfile_jetmon
         restart: unless-stopped
-        user: "${JETMON_UID:-1000}:${JETMON_GID:-1000}"
-        env_file:
-          - .env
+        user: "${UID:-1000}:${GID:-1000}"
         volumes:
           - ../config:/jetmon/config
         environment:
           - DB_HOST=mysqldb
-          - DB_USER=$MYSQLDB_USER
-          - DB_PASSWORD=$MYSQLDB_ROOT_PASSWORD
-          - DB_NAME=$MYSQLDB_DATABASE
-          - DB_PORT=$MYSQLDB_DOCKER_PORT
+          - DB_USER=$MYSQL_USER
+          - DB_PASSWORD=$MYSQL_ROOT_PASSWORD
+          - DB_NAME=$MYSQL_DATABASE
+          - DB_PORT=3306
           - VERIFLIER_AUTH_TOKEN=$VERIFLIER_AUTH_TOKEN
-          - VERIFLIER_PORT=$VERIFLIER_DOCKER_PORT
-          - WPCOM_JETMON_AUTH_TOKEN=$WPCOM_JETMON_AUTH_TOKEN
-          - DASHBOARD_PORT=$DASHBOARD_DOCKER_PORT
+          - VERIFLIER_PORT=7803
+          - WPCOM_AUTH_TOKEN=$WPCOM_AUTH_TOKEN
           - JETMON_PID_FILE=/jetmon/stats/jetmon2.pid
         ports:
-          - $DASHBOARD_LOCAL_PORT:$DASHBOARD_DOCKER_PORT
-          - "8090:8090"
+          - ${DASHBOARD_PORT:-8080}:8080
+          - ${API_PORT:-8090}:8090
         depends_on:
             mysqldb:
                 condition: service_healthy
@@ -53,10 +48,10 @@ services:
         volumes:
           - ../veriflier2/config:/opt/veriflier/config
         ports:
-          - $VERIFLIER_LOCAL_PORT:$VERIFLIER_DOCKER_PORT
+          - ${VERIFLIER_PORT:-7803}:7803
         environment:
           - VERIFLIER_AUTH_TOKEN=$VERIFLIER_AUTH_TOKEN
-          - VERIFLIER_PORT=$VERIFLIER_DOCKER_PORT
+          - VERIFLIER_PORT=7803
           - STATSD_ADDR=statsd:8125
     statsd:
         image: graphiteapp/graphite-statsd
