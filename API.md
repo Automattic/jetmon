@@ -299,6 +299,8 @@ see rows mapped to `X-Jetmon-Tenant-ID` in `jetmon_site_tenants`.
       "blog_id": 12345,
       "monitor_url": "https://example.com",
       "monitor_active": true,
+      "bucket_no": 0,
+      "check_interval": 5,
       "current_state": "Up",
       "current_severity": 0,
       "active_event_id": null,
