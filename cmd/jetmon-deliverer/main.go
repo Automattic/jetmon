@@ -28,12 +28,42 @@ func main() {
 		case "version":
 			fmt.Printf("jetmon-deliverer %s (built %s with %s)\n", version, buildDate, goVersion)
 			return
+		case "validate-config":
+			cmdValidateConfig()
+			return
 		default:
-			fmt.Fprintf(os.Stderr, "unknown command %q\n", os.Args[1])
+			fmt.Fprintf(os.Stderr, "unknown command %q (want: version, validate-config)\n", os.Args[1])
 			os.Exit(2)
 		}
 	}
 	run()
+}
+
+func cmdValidateConfig() {
+	configPath := envOrDefault("JETMON_CONFIG", "config/config.json")
+	if err := config.Load(configPath); err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL config parse: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("PASS config parse")
+
+	config.LoadDB()
+	if err := db.ConnectWithRetry(3); err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL db connect: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("PASS db connect")
+
+	cfg := config.Get()
+	fmt.Printf("INFO email_transport=%s\n", emailTransportLabel(cfg))
+	if !emailTransportDelivers(cfg) {
+		fmt.Printf("WARN email_transport=%s; alert-contact emails will be logged but not delivered\n", emailTransportLabel(cfg))
+	}
+	if level, msg := deliveryOwnerStatus(cfg, db.Hostname()); msg != "" {
+		fmt.Printf("%s %s\n", level, msg)
+	}
+
+	fmt.Println("\nvalidation passed")
 }
 
 func run() {

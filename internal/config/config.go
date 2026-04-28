@@ -110,7 +110,7 @@ type Config struct {
 	Verifiers []VerifierConfig `json:"VERIFIERS"`
 }
 
-// DBConfig holds MySQL connection parameters loaded from db-config.conf.
+// DBConfig holds MySQL connection parameters loaded from environment variables.
 type DBConfig struct {
 	Host     string
 	Port     string
@@ -166,8 +166,8 @@ func Get() *Config {
 	return current
 }
 
-// LoadDB reads the database config from environment variables (set by the
-// Docker entrypoint) or falls back to the legacy db-config.conf format.
+// LoadDB reads the database config from environment variables set by Docker,
+// systemd EnvironmentFile, or the operator shell running CLI preflight commands.
 func LoadDB() *DBConfig {
 	db := &DBConfig{
 		Host:     envOrDefault("DB_HOST", "localhost"),

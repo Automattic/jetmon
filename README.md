@@ -487,6 +487,27 @@ Jetmon runs on multiple production hosts managed by the Systems team. Each host 
 
 The new host will claim unclaimed buckets from the pool on first startup. No existing hosts need reconfiguration.
 
+Manual CLI commands such as `migrate`, `validate-config`, and `rollout` need
+the same `DB_*` environment that systemd reads from
+`/opt/jetmon2/config/jetmon2.env`; systemd's `EnvironmentFile` is not loaded
+automatically for commands run directly from a shell.
+
+### Deploying Standalone Delivery Workers
+
+Standalone delivery is optional during the initial v2 rollout. Use it when
+outbound webhook and alert-contact dispatch should run outside API-enabled
+`jetmon2` processes.
+
+1) Install `bin/jetmon-deliverer` to `/opt/jetmon2/bin/jetmon-deliverer`
+2) Install `systemd/jetmon-deliverer.service` to `/etc/systemd/system/` and run `systemctl daemon-reload`
+3) Create `/opt/jetmon2/config/deliverer.json` from the same schema as `config/config.json`
+4) Set `DELIVERY_OWNER_HOST` in process-specific configs so only the intended process class delivers during cutover
+5) Run `JETMON_CONFIG=/opt/jetmon2/config/deliverer.json /opt/jetmon2/bin/jetmon-deliverer validate-config` with the same `DB_*` environment used by the service
+6) Start the service: `systemctl enable --now jetmon-deliverer`
+
+See `docs/jetmon-deliverer-rollout.md` for the full embedded-to-standalone
+delivery migration runbook and rollback path.
+
 ### v1 to v2 Pinned Rolling Migration
 
 For the first production migration from v1, replace one v1 host at a time with
