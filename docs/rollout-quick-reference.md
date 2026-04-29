@@ -14,6 +14,10 @@ Prefer the guided command during the production window. It checks that the
 rollout log directory is writable before it starts, writes a transcript and
 resume state file, explains each step, asks before proceeding, uses typed
 confirmations for v1/v2 stop/start transitions, and stops on failed gates.
+If the command is interrupted after a stop/start transition, resuming with the
+same options uses the saved service state to avoid repeating an already
+completed transition. When resume state exists, the command has no default
+choice; the operator must type `RESUME` or `START OVER`.
 
 ```bash
 ./jetmon2 rollout guided \
@@ -32,8 +36,9 @@ confirmations for v1/v2 stop/start transitions, and stops on failed gates.
 By default, guided rollout prints v1/v2 stop/start commands and asks the
 operator to confirm when they have been run. Add `--execute-operator-commands`
 only when the operator wants the command to execute those stop/start commands
-after typed confirmation. Use `--dry-run` to verify the prompt flow and log
-paths without running rollout checks or service commands.
+after typed confirmation. Use `--dry-run` to verify the selected path, log
+paths, service commands, typed confirmation phrases, and manual `DONE`
+checkpoints without running rollout checks or service commands.
 
 To return a range to v1, run the guided rollback path:
 

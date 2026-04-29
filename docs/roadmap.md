@@ -69,6 +69,10 @@ preflight, deliverer hardening, and API CLI fixture workflow branches:
   rollback walkthrough with log-dir write checks, transcripts, resume state,
   typed confirmations for destructive transitions, dry-run rehearsal, and
   optional execution of operator commands.
+- [x] Rehearse the guided rollout UX with repeated dry-run simulations and
+  tighten the flow: richer dry-run plans with commands and confirmations,
+  state-aware resume skips for interrupted service transitions, and an explicit
+  resume/start-over prompt with no unsafe default.
 
 Recently completed candidate branches:
 

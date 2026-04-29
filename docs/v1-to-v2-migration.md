@@ -161,6 +161,14 @@ rollback, or restarting v1. By default it prints service commands for the
 operator to run and asks for `DONE`; add `--execute-operator-commands` only
 when the operator intentionally wants the guided command to execute those
 commands after confirmation.
+If the command is interrupted after a stop/start transition, rerun it with the
+same options and choose resume; saved service state prevents the command from
+asking the operator to repeat a transition that already completed. When resume
+state exists, there is no default choice; the operator must type `RESUME` or
+`START OVER`.
+Dry-run mode prints the selected path, service commands, typed confirmation
+phrases, and manual `DONE` checkpoints without running rollout checks or
+service commands.
 
 If a rollout needs to return the range to v1, use the guided rollback path:
 

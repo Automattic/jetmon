@@ -699,11 +699,16 @@ func TestRunGuidedRolloutDryRunChecksLogDir(t *testing.T) {
 		t.Fatal("dry run executed static plan check")
 	}
 	for _, want := range []string{
+		"PASS rollout_log_dir_writable=",
 		"INFO rollout_log=",
 		"INFO rollout_state=",
 		"INFO dry_run=true",
-		`PLAN step=static-plan-check`,
-		`PLAN step=rollback-start-v1`,
+		"INFO selected_path=forward",
+		`PLAN path=FORWARD step=static-plan-check`,
+		`PLAN path=FORWARD step=stop-v1 command="systemctl stop jetmon"`,
+		`PLAN path=FORWARD step=stop-v1 typed_confirmation="STOP jetmon-v1-a 0-4"`,
+		`PLAN path=FORWARD step=stop-v1 manual_checkpoint="DONE after v1 is stopped and the process is no longer running"`,
+		`PLAN path=ROLLBACK step=rollback-start-v1`,
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("output missing %q:\n%s", want, out.String())
@@ -731,6 +736,29 @@ func TestRunGuidedRolloutLogDirWriteFailure(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "create rollout log directory") {
 		t.Fatalf("error = %q", err.Error())
+	}
+}
+
+func TestRunGuidedRolloutRollbackDryRunOnlyShowsRollbackPath(t *testing.T) {
+	opts := guidedRolloutTestOptions(t)
+	opts.Rollback = true
+	opts.DryRun = true
+
+	var out bytes.Buffer
+	if err := runGuidedRollout(context.Background(), &out, strings.NewReader(""), opts, guidedRolloutTestDeps(t)); err != nil {
+		t.Fatalf("runGuidedRollout: %v", err)
+	}
+	for _, want := range []string{
+		"INFO selected_path=rollback",
+		`PLAN path=ROLLBACK step=rollback-stop-v2 command="systemctl stop jetmon2"`,
+		`PLAN path=ROLLBACK step=rollback-start-v1 typed_confirmation="START V1 jetmon-v1-a 0-4"`,
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+	if strings.Contains(out.String(), "path=FORWARD") {
+		t.Fatalf("rollback dry-run included forward path:\n%s", out.String())
 	}
 }
 
@@ -796,6 +824,9 @@ func TestRunGuidedRolloutForwardExecuteCommands(t *testing.T) {
 	state := readGuidedStateForTest(t, opts)
 	if state.LastCompletedStep != "cutover-require-all" || !state.V1Stopped || !state.V2Started {
 		t.Fatalf("state = %+v", state)
+	}
+	if !state.V1StateKnown || !state.V2StateKnown {
+		t.Fatalf("state did not mark service state as known: %+v", state)
 	}
 }
 
@@ -911,6 +942,111 @@ func TestRunGuidedRolloutResumeSkipsCompletedSteps(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "SKIP step=static-plan-check reason=completed_from_state") {
 		t.Fatalf("output missing resume skip:\n%s", out.String())
+	}
+}
+
+func TestRunGuidedRolloutResumeStateRequiresExplicitChoice(t *testing.T) {
+	opts := guidedRolloutTestOptions(t)
+	normalized := normalizeGuidedOptionsForTest(t, opts)
+	state := newGuidedRolloutState(normalized, time.Date(2026, 4, 29, 17, 0, 0, 0, time.UTC))
+	state.CompletedSteps = []string{
+		"static-plan-check",
+		"validate-config",
+		"host-preflight",
+		"stop-v1",
+		"start-v2",
+		"cutover-smoke",
+		"cutover-require-all",
+	}
+	state.LastCompletedStep = "cutover-require-all"
+	state.V1Stopped = true
+	state.V1StateKnown = true
+	state.V2Started = true
+	state.V2StateKnown = true
+	writeGuidedStateForTest(t, normalized, state)
+
+	var out bytes.Buffer
+	input := strings.Join([]string{"", "RESUME", ""}, "\n")
+	if err := runGuidedRollout(context.Background(), &out, strings.NewReader(input), opts, guidedRolloutTestDeps(t)); err != nil {
+		t.Fatalf("runGuidedRollout: %v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "No default is selected when state exists") {
+		t.Fatalf("output missing no-default warning:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "PASS guided_rollout=complete") {
+		t.Fatalf("output missing completion:\n%s", out.String())
+	}
+}
+
+func TestRunGuidedRolloutResumeSkipsAlreadyStoppedV1(t *testing.T) {
+	opts := guidedRolloutTestOptions(t)
+	normalized := normalizeGuidedOptionsForTest(t, opts)
+	state := newGuidedRolloutState(normalized, time.Date(2026, 4, 29, 17, 0, 0, 0, time.UTC))
+	state.CompletedSteps = []string{"static-plan-check", "validate-config", "host-preflight"}
+	state.LastCompletedStep = "host-preflight"
+	state.V1Stopped = true
+	state.V1StateKnown = true
+	writeGuidedStateForTest(t, normalized, state)
+
+	deps := guidedRolloutTestDeps(t)
+	var commands []string
+	deps.ExecCommand = func(_ context.Context, command string) (string, error) {
+		commands = append(commands, command)
+		return "", nil
+	}
+
+	input := strings.Join([]string{
+		"y",
+		"START V2 jetmon-v1-a 0-4",
+		"DONE",
+		"y",
+		"READY",
+		"",
+	}, "\n")
+	var out bytes.Buffer
+	if err := runGuidedRollout(context.Background(), &out, strings.NewReader(input), opts, deps); err != nil {
+		t.Fatalf("runGuidedRollout: %v\n%s", err, out.String())
+	}
+	if strings.Contains(strings.Join(commands, ","), "systemctl stop jetmon") {
+		t.Fatalf("resume reran v1 stop command: %v", commands)
+	}
+	if !strings.Contains(out.String(), "SKIP step=stop-v1 reason=state_v1_already_stopped") {
+		t.Fatalf("output missing v1 stopped skip:\n%s", out.String())
+	}
+}
+
+func TestRunGuidedRolloutRollbackResumeSkipsAlreadyStoppedV2(t *testing.T) {
+	opts := guidedRolloutTestOptions(t)
+	opts.Rollback = true
+	normalized := normalizeGuidedOptionsForTest(t, opts)
+	state := newGuidedRolloutState(normalized, time.Date(2026, 4, 29, 17, 0, 0, 0, time.UTC))
+	state.V2Started = false
+	state.V2StateKnown = true
+	writeGuidedStateForTest(t, normalized, state)
+
+	deps := guidedRolloutTestDeps(t)
+	var commands []string
+	deps.ExecCommand = func(_ context.Context, command string) (string, error) {
+		commands = append(commands, command)
+		return "", nil
+	}
+
+	input := strings.Join([]string{
+		"y",
+		"y",
+		"START V1 jetmon-v1-a 0-4",
+		"DONE",
+		"",
+	}, "\n")
+	var out bytes.Buffer
+	if err := runGuidedRollout(context.Background(), &out, strings.NewReader(input), opts, deps); err != nil {
+		t.Fatalf("runGuidedRollout: %v\n%s", err, out.String())
+	}
+	if strings.Contains(strings.Join(commands, ","), "systemctl stop jetmon2") {
+		t.Fatalf("resume reran v2 stop command: %v", commands)
+	}
+	if !strings.Contains(out.String(), "SKIP step=rollback-stop-v2 reason=state_v2_already_stopped") {
+		t.Fatalf("output missing v2 stopped skip:\n%s", out.String())
 	}
 }
 

@@ -881,7 +881,9 @@ type guidedRolloutState struct {
 	LastCompletedStep string    `json:"last_completed_step,omitempty"`
 	CompletedSteps    []string  `json:"completed_steps,omitempty"`
 	V1Stopped         bool      `json:"v1_stopped"`
+	V1StateKnown      bool      `json:"v1_state_known,omitempty"`
 	V2Started         bool      `json:"v2_started"`
+	V2StateKnown      bool      `json:"v2_state_known,omitempty"`
 }
 
 type guidedRolloutSession struct {
@@ -1182,6 +1184,7 @@ func runGuidedRollout(ctx context.Context, out io.Writer, input io.Reader, opts 
 		out:       transcript,
 		statePath: statePath,
 	}
+	fmt.Fprintf(session.out, "PASS rollout_log_dir_writable=%s\n", opts.LogDir)
 	fmt.Fprintf(session.out, "INFO rollout_log=%s\n", logPath)
 	fmt.Fprintf(session.out, "INFO rollout_state=%s\n", statePath)
 
@@ -1207,7 +1210,7 @@ func runGuidedRollout(ctx context.Context, out io.Writer, input io.Reader, opts 
 	}
 	if found {
 		fmt.Fprintf(session.out, "INFO previous_state=found last_completed=%q v1_stopped=%t v2_started=%t\n", state.LastCompletedStep, state.V1Stopped, state.V2Started)
-		resume, err := session.confirmYes("Resume from the previous guided rollout state?")
+		resume, err := session.chooseResumeState()
 		if err != nil {
 			return err
 		}
@@ -1326,7 +1329,7 @@ func validateGuidedRolloutOptions(opts guidedRolloutOptions) error {
 
 func openGuidedRolloutTranscript(out io.Writer, opts guidedRolloutOptions, now time.Time) (io.Writer, string, string, func(), error) {
 	if err := ensureGuidedLogDirWritable(opts.LogDir); err != nil {
-		return nil, "", "", nil, err
+		return nil, "", "", nil, fmt.Errorf("rollout log directory preflight failed before any rollout checks or service commands ran: %w", err)
 	}
 	logPath := guidedRolloutLogPathAt(opts, now)
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
@@ -1479,10 +1482,83 @@ func (s *guidedRolloutSession) stepCompleted(stepID string) bool {
 func (s *guidedRolloutSession) printDryRunPlan() error {
 	fmt.Fprintln(s.out, "INFO dry_run=true")
 	fmt.Fprintln(s.out, "INFO no rollout checks or service commands will be executed")
-	for _, step := range append(forwardGuidedSteps(), rollbackGuidedSteps()...) {
-		fmt.Fprintf(s.out, "PLAN step=%s title=%q\n", step.ID, step.Title)
+	commandMode := "manual"
+	if s.opts.ExecuteOperatorCommands {
+		commandMode = "execute-after-confirmation"
 	}
+	fmt.Fprintf(s.out, "INFO operator_command_mode=%s\n", commandMode)
+	if s.opts.Rollback {
+		fmt.Fprintln(s.out, "INFO selected_path=rollback")
+		s.printDryRunSteps("ROLLBACK", rollbackGuidedSteps())
+		return nil
+	}
+	fmt.Fprintln(s.out, "INFO selected_path=forward")
+	s.printDryRunSteps("FORWARD", forwardGuidedSteps())
+	fmt.Fprintln(s.out, "INFO recovery_path=rollback")
+	s.printDryRunSteps("ROLLBACK", rollbackGuidedSteps())
 	return nil
+}
+
+func (s *guidedRolloutSession) printDryRunSteps(prefix string, steps []guidedStep) {
+	for _, step := range steps {
+		fmt.Fprintf(s.out, "PLAN path=%s step=%s title=%q\n", prefix, step.ID, step.Title)
+		if command := s.dryRunCommandForStep(step.ID); command != "" {
+			fmt.Fprintf(s.out, "PLAN path=%s step=%s command=%q\n", prefix, step.ID, command)
+		}
+		if phrase := s.dryRunConfirmationForStep(step.ID); phrase != "" {
+			fmt.Fprintf(s.out, "PLAN path=%s step=%s typed_confirmation=%q\n", prefix, step.ID, phrase)
+		}
+		if manualPrompt := s.dryRunManualPromptForStep(step.ID); manualPrompt != "" && !s.opts.ExecuteOperatorCommands {
+			fmt.Fprintf(s.out, "PLAN path=%s step=%s manual_checkpoint=%q\n", prefix, step.ID, manualPrompt)
+		}
+	}
+}
+
+func (s *guidedRolloutSession) dryRunCommandForStep(stepID string) string {
+	switch stepID {
+	case "stop-v1":
+		return s.opts.V1StopCmd
+	case "start-v2":
+		return "systemctl enable --now " + shellQuote(s.opts.Service)
+	case "rollback-stop-v2":
+		return "systemctl stop " + shellQuote(s.opts.Service)
+	case "rollback-start-v1":
+		return s.opts.V1StartCmd
+	default:
+		return ""
+	}
+}
+
+func (s *guidedRolloutSession) dryRunConfirmationForStep(stepID string) string {
+	switch stepID {
+	case "stop-v1":
+		return fmt.Sprintf("STOP %s %d-%d", s.opts.HostID, s.opts.BucketMin, s.opts.BucketMax)
+	case "start-v2":
+		return fmt.Sprintf("START V2 %s %d-%d", s.opts.RuntimeHost, s.opts.BucketMin, s.opts.BucketMax)
+	case "cutover-require-all":
+		return "READY"
+	case "rollback-stop-v2":
+		return fmt.Sprintf("STOP V2 %s %d-%d", s.opts.RuntimeHost, s.opts.BucketMin, s.opts.BucketMax)
+	case "rollback-start-v1":
+		return fmt.Sprintf("START V1 %s %d-%d", s.opts.HostID, s.opts.BucketMin, s.opts.BucketMax)
+	default:
+		return ""
+	}
+}
+
+func (s *guidedRolloutSession) dryRunManualPromptForStep(stepID string) string {
+	switch stepID {
+	case "stop-v1":
+		return "DONE after v1 is stopped and the process is no longer running"
+	case "start-v2":
+		return "DONE after v2 is started and logs show the pinned range"
+	case "rollback-stop-v2":
+		return "DONE after v2 is stopped and the process is no longer running"
+	case "rollback-start-v1":
+		return "DONE after v1 is started and checking the original bucket range"
+	default:
+		return ""
+	}
 }
 
 func forwardGuidedSteps() []guidedStep {
@@ -1528,6 +1604,7 @@ func forwardGuidedSteps() []guidedStep {
 					return err
 				}
 				s.state.V1Stopped = true
+				s.state.V1StateKnown = true
 				return s.saveState()
 			},
 		},
@@ -1548,6 +1625,7 @@ func forwardGuidedSteps() []guidedStep {
 					return err
 				}
 				s.state.V2Started = true
+				s.state.V2StateKnown = true
 				return s.saveState()
 			},
 		},
@@ -1592,6 +1670,7 @@ func rollbackGuidedSteps() []guidedStep {
 					return err
 				}
 				s.state.V2Started = false
+				s.state.V2StateKnown = true
 				return s.saveState()
 			},
 		},
@@ -1620,6 +1699,7 @@ func rollbackGuidedSteps() []guidedStep {
 					return err
 				}
 				s.state.V1Stopped = false
+				s.state.V1StateKnown = true
 				return s.saveState()
 			},
 		},
@@ -1662,6 +1742,10 @@ func (s *guidedRolloutSession) runStep(ctx context.Context, step guidedStep) err
 		fmt.Fprintf(s.out, "SKIP step=%s reason=completed_from_state\n", step.ID)
 		return nil
 	}
+	if reason, ok := s.stepAlreadySatisfied(step.ID); ok {
+		fmt.Fprintf(s.out, "SKIP step=%s reason=%s\n", step.ID, reason)
+		return s.markStepComplete(step.ID)
+	}
 	for {
 		writeRolloutPlanSection(s.out, step.Title)
 		fmt.Fprintf(s.out, "INFO step=%s\n", step.ID)
@@ -1698,6 +1782,28 @@ func (s *guidedRolloutSession) runStep(ctx context.Context, step guidedStep) err
 			return fmt.Errorf("step %s failed: %w", step.ID, err)
 		}
 	}
+}
+
+func (s *guidedRolloutSession) stepAlreadySatisfied(stepID string) (string, bool) {
+	switch stepID {
+	case "stop-v1":
+		if s.state.V1StateKnown && s.state.V1Stopped {
+			return "state_v1_already_stopped", true
+		}
+	case "start-v2":
+		if s.state.V2StateKnown && s.state.V2Started {
+			return "state_v2_already_started", true
+		}
+	case "rollback-stop-v2":
+		if s.state.V2StateKnown && !s.state.V2Started {
+			return "state_v2_already_stopped", true
+		}
+	case "rollback-start-v1":
+		if s.state.V1StateKnown && !s.state.V1Stopped {
+			return "state_v1_already_started", true
+		}
+	}
+	return "", false
 }
 
 func (s *guidedRolloutSession) handleStepFailure(step guidedStep, stepErr error) (string, error) {
@@ -1757,6 +1863,27 @@ func (s *guidedRolloutSession) runOperatorCommand(ctx context.Context, label, co
 	fmt.Fprintln(s.out, "INFO executing_operator_command=false")
 	fmt.Fprintln(s.out, "Run the command above in the appropriate shell, then confirm completion.")
 	return s.confirmTyped(manualDonePrompt, "DONE")
+}
+
+func (s *guidedRolloutSession) chooseResumeState() (bool, error) {
+	fmt.Fprintln(s.out, "A previous guided rollout state exists for this host and range.")
+	fmt.Fprintln(s.out, "Type RESUME to continue from it, or START OVER to discard it and create a new state.")
+	for {
+		answer, err := s.promptLine("Choose RESUME or START OVER:")
+		if err != nil {
+			return false, err
+		}
+		switch strings.ToLower(answer) {
+		case "resume", "r", "yes", "y":
+			return true, nil
+		case "start over", "start-over", "startover", "new", "n", "no":
+			return false, nil
+		case "":
+			fmt.Fprintln(s.out, "No default is selected when state exists; choose RESUME or START OVER.")
+		default:
+			fmt.Fprintln(s.out, "Please choose RESUME or START OVER.")
+		}
+	}
 }
 
 func (s *guidedRolloutSession) confirmYes(prompt string) (bool, error) {
