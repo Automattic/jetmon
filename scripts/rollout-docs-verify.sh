@@ -75,6 +75,15 @@ grep -q 'rollout cutover-check' <<<"$plan_output" || fail "rehearsal plan omitte
 grep -q 'rollout rollback-check' <<<"$plan_output" || fail "rehearsal plan omitted rollback-check"
 grep -q 'rollout dynamic-check' <<<"$plan_output" || fail "rehearsal plan omitted dynamic-check"
 
+step "rollout json smoke"
+json_output="$("$jetmon_binary" rollout static-plan-check \
+	--file "$plan_file" \
+	--bucket-total 10 \
+	--output=json)"
+printf '%s\n' "$json_output"
+grep -q '"ok": true' <<<"$json_output" || fail "static-plan-check JSON did not report ok=true"
+grep -q '"command": "rollout static-plan-check"' <<<"$json_output" || fail "static-plan-check JSON omitted command name"
+
 step "staged systemd verify"
 if ! command -v systemd-analyze >/dev/null 2>&1; then
 	printf 'WARN systemd-analyze not found; skipping service-unit verification\n'

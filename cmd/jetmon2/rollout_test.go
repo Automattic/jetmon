@@ -3,7 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +14,53 @@ import (
 	"github.com/Automattic/jetmon/internal/config"
 	"github.com/Automattic/jetmon/internal/db"
 )
+
+func TestRunRolloutCommandOutputJSON(t *testing.T) {
+	var out bytes.Buffer
+	err := runRolloutCommandOutput(&out, "rollout test-check", "json", func(w io.Writer) error {
+		fmt.Fprintln(w, "PASS config parse")
+		fmt.Fprintln(w, "## activity check")
+		fmt.Fprintln(w, "INFO active_sites=3")
+		return errors.New("activity failed")
+	})
+	if err == nil {
+		t.Fatal("runRolloutCommandOutput returned nil error")
+	}
+
+	var report rolloutJSONReport
+	if decodeErr := json.Unmarshal(out.Bytes(), &report); decodeErr != nil {
+		t.Fatalf("decode rollout JSON report: %v\n%s", decodeErr, out.String())
+	}
+	if report.OK {
+		t.Fatal("report.OK = true, want false")
+	}
+	if report.Command != "rollout test-check" {
+		t.Fatalf("command = %q", report.Command)
+	}
+	if len(report.Failures) != 1 || report.Failures[0] != "activity failed" {
+		t.Fatalf("failures = %#v", report.Failures)
+	}
+	wantLevels := []string{"pass", "section", "info"}
+	if len(report.Lines) != len(wantLevels) {
+		t.Fatalf("line count = %d, want %d: %#v", len(report.Lines), len(wantLevels), report.Lines)
+	}
+	for i, want := range wantLevels {
+		if report.Lines[i].Level != want {
+			t.Fatalf("line %d level = %q, want %q", i, report.Lines[i].Level, want)
+		}
+	}
+}
+
+func TestNormalizeRolloutOutput(t *testing.T) {
+	for _, raw := range []string{"", "text", "TEXT", " json "} {
+		if _, err := normalizeRolloutOutput(raw); err != nil {
+			t.Fatalf("normalizeRolloutOutput(%q): %v", raw, err)
+		}
+	}
+	if _, err := normalizeRolloutOutput("yaml"); err == nil {
+		t.Fatal("normalizeRolloutOutput(yaml) error = nil")
+	}
+}
 
 func TestRunStaticPlanCheckSuccess(t *testing.T) {
 	input := strings.NewReader(`

@@ -280,6 +280,11 @@ Queryable by `blog_id` and time range via a CLI tool (`jetmon2 audit --blog-id 1
 - `jetmon2 drain --worker N` — gracefully removes one worker pool slot, waiting for in-flight checks to complete before reducing concurrency
 - `jetmon2 reload` — sends SIGHUP to the running process (convenience wrapper)
 
+Rollout gate commands accept `--output=json` for Systems automation. JSON output
+keeps the command's pass/fail state, generated timestamp, parsed output lines,
+and failure messages on stdout while preserving non-zero exit status on failed
+checks.
+
 The complete v1-to-v2 production process is documented in
 [`v1-to-v2-migration.md`](v1-to-v2-migration.md).
 

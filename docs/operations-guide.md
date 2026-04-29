@@ -81,6 +81,10 @@ to run the post-start pinned preflight, recent activity check, dashboard status
 check, and projection-drift report together. After one full expected check
 round, rerun it with `--require-all` before moving to the next host.
 
+Use `--output=json` on rollout gate commands when wiring them into Systems
+automation. The command still exits non-zero on failed checks, and stdout
+contains `ok`, the command name, parsed output lines, and failure messages.
+
 ## v2 Rolling Updates
 
 After all monitor hosts are on v2 dynamic bucket ownership, update one host at a

@@ -40,7 +40,7 @@ preflight, deliverer hardening, and API CLI fixture workflow branches:
 - [x] Add `jetmon2 rollout cutover-check` to bundle the read-only post-start
   pinned preflight, activity, status, and projection-drift checks used after
   each host replacement.
-- [ ] Add JSON output to rollout checks for Systems automation gates.
+- [x] Add JSON output to rollout checks for Systems automation gates.
 - [ ] Create a one-page rollout quick reference that links to the full
   migration runbook.
 - [ ] Add a rollout state report that summarizes ownership mode, bucket
@@ -705,6 +705,9 @@ where to look, and what each item unlocked.
   and projection-drift report used after each v1 host replacement.
   Operators can run it immediately after start, then again with `--require-all`
   after one full expected check round.
+- **Rollout check JSON output.** Rollout gate commands accept `--output=json`
+  so Systems automation can parse a stable pass/fail envelope while retaining
+  the same non-zero exit behavior as text mode.
 - **Dynamic ownership preflight.** `./jetmon2 rollout dynamic-check` verifies
   that pinned ranges are removed, `jetmon_hosts` rows cover the full bucket
   range without gaps/overlaps, heartbeats are fresh, and projection drift is
