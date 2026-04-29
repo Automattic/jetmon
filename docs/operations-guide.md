@@ -69,6 +69,8 @@ Use [v1-to-v2-migration.md](v1-to-v2-migration.md) for the full production
 migration process. It covers preparation, additive migrations, pinned bucket
 mode, replacing v1 on the same server, moving a range to a fresh v2 server,
 monitoring, revert paths, dynamic ownership cutover, and v1 teardown.
+Use [rollout-quick-reference.md](rollout-quick-reference.md) as the one-page
+operator command checklist during rehearsals and rollout windows.
 
 Use `./jetmon2 rollout rehearsal-plan --file=<ranges.csv> --host=<host>
 --bucket-min=N --bucket-max=N --mode=same-server` to print the ordered command

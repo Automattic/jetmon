@@ -118,7 +118,9 @@ Longer design decisions live in [docs/adr/](docs/adr/).
 ## Production Posture
 
 Jetmon 2 is designed for a cautious host-by-host rollout. The complete process
-is in [docs/v1-to-v2-migration.md](docs/v1-to-v2-migration.md):
+is in [docs/v1-to-v2-migration.md](docs/v1-to-v2-migration.md). Use
+[docs/rollout-quick-reference.md](docs/rollout-quick-reference.md) as the
+one-page command checklist during rehearsals and rollout windows:
 
 - Run `./jetmon2 migrate` before first start. Migrations are embedded and
   additive.

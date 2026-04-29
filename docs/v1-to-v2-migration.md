@@ -3,6 +3,10 @@
 This is the source-of-truth runbook for the first production migration from
 Jetmon 1 to Jetmon 2.
 
+Use [rollout-quick-reference.md](rollout-quick-reference.md) as the condensed
+command checklist during rehearsals and rollout windows. If it conflicts with
+this runbook, this runbook wins.
+
 Use this document for:
 
 - preparing the fleet before any production change
