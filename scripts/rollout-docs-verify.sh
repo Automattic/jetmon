@@ -75,12 +75,20 @@ plan_output="$("$jetmon_binary" rollout rehearsal-plan \
 printf '%s\n' "$plan_output"
 grep -q 'rollout static-plan-check' <<<"$plan_output" || fail "rehearsal plan omitted static-plan-check"
 grep -q 'rollout host-preflight' <<<"$plan_output" || fail "rehearsal plan omitted host-preflight"
-grep -q 'rollout pinned-check' <<<"$plan_output" || fail "rehearsal plan omitted pinned-check"
 grep -q 'rollout cutover-check' <<<"$plan_output" || fail "rehearsal plan omitted cutover-check"
 grep -q 'rollout rollback-check' <<<"$plan_output" || fail "rehearsal plan omitted rollback-check"
 grep -q 'rollout dynamic-check' <<<"$plan_output" || fail "rehearsal plan omitted dynamic-check"
+grep -q -- '--bucket-total 10' <<<"$plan_output" || fail "rehearsal plan omitted bucket-total passthrough"
+grep -q 'same DB_\* environment' <<<"$plan_output" || fail "rehearsal plan omitted service environment reminder"
+grep -q 'Immediate smoke gate' <<<"$plan_output" || fail "rehearsal plan omitted immediate smoke gate note"
 grep -q 'systemctl stop jetmon' <<<"$plan_output" || fail "rehearsal plan omitted v1 stop command"
 grep -q 'systemctl start jetmon' <<<"$plan_output" || fail "rehearsal plan omitted v1 start command"
+if grep -q 'rollout pinned-check' <<<"$plan_output"; then
+	fail "rehearsal plan should not print redundant pinned-check after host-preflight"
+fi
+if grep -q 'systemd-analyze verify' <<<"$plan_output"; then
+	fail "rehearsal plan should not print redundant systemd-analyze after host-preflight"
+fi
 
 step "rollout json smoke"
 json_output="$("$jetmon_binary" rollout static-plan-check \

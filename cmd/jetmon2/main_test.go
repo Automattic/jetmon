@@ -288,7 +288,7 @@ func TestRolloutAdviceLines(t *testing.T) {
 	if !strings.Contains(pinned[0], "rollout static-plan-check") {
 		t.Fatalf("pinned static-plan advice = %q", pinned[0])
 	}
-	if !strings.Contains(pinned[1], "rollout pinned-check") {
+	if !strings.Contains(pinned[1], "rollout host-preflight") {
 		t.Fatalf("pinned preflight advice = %q", pinned[1])
 	}
 	if !strings.Contains(pinned[2], "rollout activity-check") {
@@ -313,8 +313,9 @@ func TestRolloutCommandHelpers(t *testing.T) {
 		t.Fatalf("rolloutPreflightCommand(dynamic) = %q", got)
 	}
 	min, max := 12, 34
-	cfg := &config.Config{PinnedBucketMin: &min, PinnedBucketMax: &max}
-	if got := rolloutPreflightCommand(cfg); got != "./jetmon2 rollout pinned-check" {
+	cfg := &config.Config{PinnedBucketMin: &min, PinnedBucketMax: &max, BucketTotal: 100}
+	want := "./jetmon2 rollout host-preflight --file=<ranges.csv> --host=<v1-hostname> --runtime-host=<v2-hostname> --bucket-min=12 --bucket-max=34 --bucket-total=100"
+	if got := rolloutPreflightCommand(cfg); got != want {
 		t.Fatalf("rolloutPreflightCommand(pinned) = %q", got)
 	}
 	if got := rolloutActivityCommand(); got != "./jetmon2 rollout activity-check --since=15m" {

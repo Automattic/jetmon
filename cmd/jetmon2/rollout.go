@@ -210,12 +210,13 @@ func cmdRolloutRehearsalPlan(args []string) {
 	bucketTotal := fs.Int("bucket-total", 0, "total bucket count (default BUCKET_TOTAL from config)")
 	binary := fs.String("binary", "./jetmon2", "jetmon2 command path to print")
 	service := fs.String("service", "jetmon2", "systemd service name to print for v2")
+	systemdUnit := fs.String("systemd-unit", "", "systemd unit path to pass through to host-preflight (default /etc/systemd/system/<service>.service)")
 	since := fs.String("since", "15m", "activity cutoff to print for post-cutover checks")
 	v1StopCommand := fs.String("v1-stop-command", "", "exact command to stop the v1 monitor for this range")
 	v1StartCommand := fs.String("v1-start-command", "", "exact command to restart the v1 monitor during rollback")
 	_ = fs.Parse(args)
 	if fs.NArg() != 0 || strings.TrimSpace(*file) == "" {
-		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout rehearsal-plan --file=<ranges.csv> --host=<host> --bucket-min=N --bucket-max=N [--mode=same-server|fresh-server] [--runtime-host=<v2-host>] [--bucket-total=N] [--v1-stop-command=<cmd>] [--v1-start-command=<cmd>]")
+		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout rehearsal-plan --file=<ranges.csv> --host=<host> --bucket-min=N --bucket-max=N [--mode=same-server|fresh-server] [--runtime-host=<v2-host>] [--bucket-total=N] [--systemd-unit=<path>] [--v1-stop-command=<cmd>] [--v1-start-command=<cmd>]")
 		os.Exit(1)
 	}
 
@@ -255,6 +256,7 @@ func cmdRolloutRehearsalPlan(args []string) {
 		BucketTotal: resolvedBucketTotal,
 		Binary:      *binary,
 		Service:     *service,
+		SystemdUnit: *systemdUnit,
 		Since:       *since,
 		V1StopCmd:   *v1StopCommand,
 		V1StartCmd:  *v1StartCommand,
@@ -289,6 +291,16 @@ func cmdRolloutHostPreflight(args []string) {
 	}
 
 	if err := runRolloutCommandOutput(os.Stdout, "rollout host-preflight", outputFormat, func(out io.Writer) error {
+		inputName := strings.TrimSpace(*file)
+		if inputName == "-" {
+			return errors.New("--file=- is not supported for host-preflight; pass a reusable CSV path")
+		}
+		f, err := os.Open(inputName)
+		if err != nil {
+			return fmt.Errorf("open static bucket plan: %w", err)
+		}
+		defer f.Close()
+
 		configPath := envOrDefault("JETMON_CONFIG", "config/config.json")
 		if err := config.Load(configPath); err != nil {
 			return fmt.Errorf("config parse: %w", err)
@@ -300,16 +312,6 @@ func cmdRolloutHostPreflight(args []string) {
 			return fmt.Errorf("db connect: %w", err)
 		}
 		fmt.Fprintln(out, "PASS db connect")
-
-		inputName := strings.TrimSpace(*file)
-		if inputName == "-" {
-			return errors.New("--file=- is not supported for host-preflight; pass a reusable CSV path")
-		}
-		f, err := os.Open(inputName)
-		if err != nil {
-			return fmt.Errorf("open static bucket plan: %w", err)
-		}
-		defer f.Close()
 
 		opts := hostPreflightOptions{
 			PlanFile:    inputName,
@@ -769,6 +771,7 @@ type rolloutRehearsalPlanOptions struct {
 	BucketTotal int
 	Binary      string
 	Service     string
+	SystemdUnit string
 	Since       string
 	V1StopCmd   string
 	V1StartCmd  string
@@ -954,18 +957,27 @@ func runRolloutRehearsalPlan(out io.Writer, input io.Reader, opts rolloutRehears
 	fmt.Fprintf(out, "INFO mode=%s\n", mode)
 	fmt.Fprintf(out, "INFO static_plan_file=%s ranges=%d\n", planFile, len(ranges))
 	fmt.Fprintf(out, "INFO plan_host=%q runtime_host=%q range=%d-%d\n", assertedRange.HostID, runtimeHost, assertedRange.BucketMin, assertedRange.BucketMax)
+	fmt.Fprintln(out, "# Run commands from the staged v2 host unless a command explicitly targets another host.")
+	fmt.Fprintln(out, "# Shell commands need the same DB_* environment used by the jetmon2 service.")
 	fmt.Fprintln(out)
 
+	bucketTotalArgs := []string{"--bucket-total", strconv.Itoa(opts.BucketTotal)}
+	staticPlanArgs := append([]string{binary, "rollout", "static-plan-check", "--file", planFile, "--host", hostID, "--bucket-min", strconv.Itoa(opts.BucketMin), "--bucket-max", strconv.Itoa(opts.BucketMax)}, bucketTotalArgs...)
+	hostPreflightArgs := append([]string{binary, "rollout", "host-preflight", "--file", planFile, "--host", hostID, "--runtime-host", runtimeHost, "--bucket-min", strconv.Itoa(opts.BucketMin), "--bucket-max", strconv.Itoa(opts.BucketMax)}, bucketTotalArgs...)
+	if systemdUnit := strings.TrimSpace(opts.SystemdUnit); systemdUnit != "" {
+		hostPreflightArgs = append(hostPreflightArgs, "--systemd-unit", systemdUnit)
+	} else {
+		hostPreflightArgs = append(hostPreflightArgs, "--service", service)
+	}
+
 	writeRolloutPlanSection(out, "1. Validate the copied static bucket plan",
-		rolloutCommand(binary, "rollout", "static-plan-check", "--file", planFile, "--host", hostID, "--bucket-min", strconv.Itoa(opts.BucketMin), "--bucket-max", strconv.Itoa(opts.BucketMax)),
+		rolloutCommand(staticPlanArgs...),
 	)
-	writeRolloutPlanSection(out, "2. Validate the staged v2 config and service unit",
+	writeRolloutPlanSection(out, "2. Validate the staged v2 config with the service environment",
 		rolloutCommand(binary, "validate-config"),
-		"systemd-analyze verify "+shellQuote("/etc/systemd/system/"+service+".service"),
 	)
-	writeRolloutPlanSection(out, "3. Run the pinned preflight before stopping v1",
-		rolloutCommand(binary, "rollout", "host-preflight", "--file", planFile, "--host", hostID, "--runtime-host", runtimeHost, "--bucket-min", strconv.Itoa(opts.BucketMin), "--bucket-max", strconv.Itoa(opts.BucketMax), "--service", service),
-		rolloutCommand(binary, "rollout", "pinned-check", "--host", runtimeHost),
+	writeRolloutPlanSection(out, "3. Run the host preflight before stopping v1",
+		rolloutCommand(hostPreflightArgs...),
 	)
 
 	v1StopLine := rolloutOperatorCommandOrComment(opts.V1StopCmd, "TODO: stop the v1 monitor for this bucket range with the documented production command.")
@@ -986,8 +998,9 @@ func runRolloutRehearsalPlan(out io.Writer, input io.Reader, opts rolloutRehears
 
 	rangeArgs := []string{"--bucket-min", strconv.Itoa(opts.BucketMin), "--bucket-max", strconv.Itoa(opts.BucketMax)}
 	writeRolloutPlanSection(out, "5. Verify the v2 host after start",
+		"# Immediate smoke gate: checks startup and recent activity; recent writes can still include v1.",
 		rolloutCommand(append([]string{binary, "rollout", "cutover-check", "--host", runtimeHost}, append(append([]string{}, rangeArgs...), "--since", since)...)...),
-		"# After one full expected check round:",
+		"# Strong gate after one full v2 check round:",
 		rolloutCommand(append([]string{binary, "rollout", "cutover-check", "--host", runtimeHost}, append(append([]string{}, rangeArgs...), "--since", since, "--require-all")...)...),
 	)
 
@@ -1005,9 +1018,10 @@ func runRolloutRehearsalPlan(out io.Writer, input io.Reader, opts rolloutRehears
 		"# Do not roll back schema migrations.",
 	)
 
-	writeRolloutPlanSection(out, "7. Complete fleet-level pinned and dynamic checks after every host is on v2",
+	writeRolloutPlanSection(out, "7. Finish this host, then complete fleet-level checks",
+		"# Host signoff before moving on or before the fleet dynamic cutover:",
 		rolloutCommand(append([]string{binary, "rollout", "cutover-check", "--host", runtimeHost}, append(append([]string{}, rangeArgs...), "--since", since, "--require-all")...)...),
-		"# After PINNED_BUCKET_* is removed from every v2 monitor config and the fleet is restarted:",
+		"# After every host is on v2, remove PINNED_BUCKET_* from every monitor config and restart the fleet:",
 		rolloutCommand(binary, "validate-config"),
 		rolloutCommand(binary, "rollout", "dynamic-check"),
 		rolloutCommand(binary, "rollout", "activity-check", "--since", since, "--require-all"),

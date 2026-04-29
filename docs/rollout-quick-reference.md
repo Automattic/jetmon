@@ -4,6 +4,10 @@ This is the short operator checklist for a production v1-to-v2 monitor rollout.
 Use the full [migration runbook](v1-to-v2-migration.md) for preparation,
 approval, troubleshooting, revert details, and final v1 teardown.
 
+Unless a command explicitly targets the old v1 host, run it from the staged v2
+host with the same `DB_*` environment the `jetmon2` service will use. Shell
+commands do not automatically inherit systemd's `EnvironmentFile`.
+
 ## Before The First Host
 
 1. Confirm the approved static bucket plan exists as a reusable CSV:
@@ -13,7 +17,8 @@ approval, troubleshooting, revert details, and final v1 teardown.
      --file=<ranges.csv> \
      --host=<v1-hostname> \
      --bucket-min=<min> \
-     --bucket-max=<max>
+     --bucket-max=<max> \
+     --bucket-total=<total>
    ```
 
 2. Generate the exact host command sequence:
@@ -24,13 +29,15 @@ approval, troubleshooting, revert details, and final v1 teardown.
      --host=<v1-hostname> \
      --bucket-min=<min> \
      --bucket-max=<max> \
+     --bucket-total=<total> \
      --mode=same-server \
      --v1-stop-command='<exact v1 stop command>' \
      --v1-start-command='<exact v1 rollback start command>'
    ```
 
    Use `--mode=fresh-server --runtime-host=<new-v2-hostname>` for a fresh v2
-   server taking over from an existing v1 server.
+   server taking over from an existing v1 server. Add `--systemd-unit=<path>`
+   when the staged service unit is not `/etc/systemd/system/jetmon2.service`.
 
 3. Validate config, migrations, static plan match, pinned safety, and the
    staged systemd service:
@@ -43,7 +50,8 @@ approval, troubleshooting, revert details, and final v1 teardown.
      --host=<v1-hostname> \
      --runtime-host=<v2-hostname> \
      --bucket-min=<min> \
-     --bucket-max=<max>
+     --bucket-max=<max> \
+     --bucket-total=<total>
    ```
 
 ## Per-Host Cutover
@@ -56,7 +64,8 @@ approval, troubleshooting, revert details, and final v1 teardown.
      --host=<v1-hostname> \
      --runtime-host=<v2-hostname> \
      --bucket-min=<min> \
-     --bucket-max=<max>
+     --bucket-max=<max> \
+     --bucket-total=<total>
    ```
 
 2. Stop the v1 monitor for that bucket range.
@@ -66,16 +75,28 @@ approval, troubleshooting, revert details, and final v1 teardown.
    systemctl enable --now jetmon2
    ```
 
-4. Immediately run:
+4. Immediately run the smoke gate:
 
    ```bash
-   ./jetmon2 rollout cutover-check --host=<v2-hostname> --since=15m
+   ./jetmon2 rollout cutover-check \
+     --host=<v2-hostname> \
+     --bucket-min=<min> \
+     --bucket-max=<max> \
+     --since=15m
    ```
 
-5. After one full expected check round, run:
+   This confirms startup and recent activity, but recent writes can still
+   include v1 because the cutoff reaches back before cutover.
+
+5. After one full expected v2 check round, run the stronger gate:
 
    ```bash
-   ./jetmon2 rollout cutover-check --host=<v2-hostname> --since=15m --require-all
+   ./jetmon2 rollout cutover-check \
+     --host=<v2-hostname> \
+     --bucket-min=<min> \
+     --bucket-max=<max> \
+     --since=15m \
+     --require-all
    ```
 
 6. Watch logs, dashboard health, WPCOM notification parity, event rows, and
@@ -86,7 +107,10 @@ approval, troubleshooting, revert details, and final v1 teardown.
 Before restarting v1 for a range, stop v2 and run:
 
 ```bash
-./jetmon2 rollout rollback-check --host=<v2-hostname>
+./jetmon2 rollout rollback-check \
+  --host=<v2-hostname> \
+  --bucket-min=<min> \
+  --bucket-max=<max>
 ```
 
 Only restart v1 after the v2 process is stopped and the rollback check passes.

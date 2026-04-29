@@ -363,25 +363,36 @@ jetmon-v1-b,5,9
 	for _, want := range []string{
 		"INFO mode=same-server",
 		`INFO plan_host="jetmon-v1-a" runtime_host="jetmon-v1-a" range=0-4`,
-		"./jetmon2 rollout static-plan-check --file rollout-buckets.csv --host jetmon-v1-a --bucket-min 0 --bucket-max 4",
+		"# Run commands from the staged v2 host unless a command explicitly targets another host.",
+		"# Shell commands need the same DB_* environment used by the jetmon2 service.",
+		"./jetmon2 rollout static-plan-check --file rollout-buckets.csv --host jetmon-v1-a --bucket-min 0 --bucket-max 4 --bucket-total 10",
 		"./jetmon2 validate-config",
-		"systemd-analyze verify /etc/systemd/system/jetmon2.service",
-		"./jetmon2 rollout host-preflight --file rollout-buckets.csv --host jetmon-v1-a --runtime-host jetmon-v1-a --bucket-min 0 --bucket-max 4 --service jetmon2",
-		"./jetmon2 rollout pinned-check --host jetmon-v1-a",
+		"./jetmon2 rollout host-preflight --file rollout-buckets.csv --host jetmon-v1-a --runtime-host jetmon-v1-a --bucket-min 0 --bucket-max 4 --bucket-total 10 --service jetmon2",
 		"systemctl stop jetmon",
 		"# HOLD: confirm v1 is stopped before starting v2.",
 		"systemctl enable --now jetmon2",
+		"# Immediate smoke gate: checks startup and recent activity; recent writes can still include v1.",
 		"./jetmon2 rollout cutover-check --host jetmon-v1-a --bucket-min 0 --bucket-max 4 --since 15m",
+		"# Strong gate after one full v2 check round:",
 		"./jetmon2 rollout cutover-check --host jetmon-v1-a --bucket-min 0 --bucket-max 4 --since 15m --require-all",
 		"# HOLD: confirm the v2 process is stopped before restarting v1.",
 		"./jetmon2 rollout rollback-check --host jetmon-v1-a --bucket-min 0 --bucket-max 4",
 		"# HOLD: do not restart v1 unless rollback-check passes.",
 		"systemctl start jetmon",
 		"# Do not roll back schema migrations.",
+		"# Host signoff before moving on or before the fleet dynamic cutover:",
 		"./jetmon2 rollout dynamic-check",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+	for _, unwanted := range []string{
+		"systemd-analyze verify",
+		"rollout pinned-check",
+	} {
+		if strings.Contains(out.String(), unwanted) {
+			t.Fatalf("output contains redundant %q:\n%s", unwanted, out.String())
 		}
 	}
 }
@@ -401,6 +412,7 @@ jetmon-v1-a,0,9
 		BucketTotal: 10,
 		Binary:      "/opt/jetmon2/jetmon2",
 		Service:     "jetmon2",
+		SystemdUnit: "/tmp/staged/jetmon2.service",
 		Since:       "20m",
 		V1StopCmd:   "ssh jetmon-v1-a sudo systemctl stop jetmon",
 		V1StartCmd:  "ssh jetmon-v1-a sudo systemctl start jetmon",
@@ -413,8 +425,8 @@ jetmon-v1-a,0,9
 	for _, want := range []string{
 		"INFO mode=fresh-server",
 		`INFO plan_host="jetmon-v1-a" runtime_host="jetmon-v2-a" range=0-9`,
-		"/opt/jetmon2/jetmon2 rollout host-preflight --file rollout-buckets.csv --host jetmon-v1-a --runtime-host jetmon-v2-a --bucket-min 0 --bucket-max 9 --service jetmon2",
-		"/opt/jetmon2/jetmon2 rollout pinned-check --host jetmon-v2-a",
+		"/opt/jetmon2/jetmon2 rollout static-plan-check --file rollout-buckets.csv --host jetmon-v1-a --bucket-min 0 --bucket-max 9 --bucket-total 10",
+		"/opt/jetmon2/jetmon2 rollout host-preflight --file rollout-buckets.csv --host jetmon-v1-a --runtime-host jetmon-v2-a --bucket-min 0 --bucket-max 9 --bucket-total 10 --systemd-unit /tmp/staged/jetmon2.service",
 		"ssh jetmon-v1-a sudo systemctl stop jetmon",
 		"# HOLD: confirm v1 on jetmon-v1-a is stopped before starting v2 on jetmon-v2-a.",
 		"/opt/jetmon2/jetmon2 rollout cutover-check --host jetmon-v2-a --bucket-min 0 --bucket-max 9 --since 20m",
@@ -423,6 +435,15 @@ jetmon-v1-a,0,9
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+	for _, unwanted := range []string{
+		"systemd-analyze verify",
+		"rollout pinned-check",
+		"--service jetmon2",
+	} {
+		if strings.Contains(out.String(), unwanted) {
+			t.Fatalf("output contains redundant %q:\n%s", unwanted, out.String())
 		}
 	}
 }

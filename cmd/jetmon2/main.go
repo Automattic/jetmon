@@ -337,8 +337,12 @@ func staticPlanCheckCommand() string {
 }
 
 func rolloutPreflightCommand(cfg *config.Config) string {
-	if _, _, ok := cfg.PinnedBucketRange(); ok {
-		return "./jetmon2 rollout pinned-check"
+	if minBucket, maxBucket, ok := cfg.PinnedBucketRange(); ok {
+		cmd := fmt.Sprintf("./jetmon2 rollout host-preflight --file=<ranges.csv> --host=<v1-hostname> --runtime-host=<v2-hostname> --bucket-min=%d --bucket-max=%d", minBucket, maxBucket)
+		if cfg.BucketTotal > 0 {
+			cmd += fmt.Sprintf(" --bucket-total=%d", cfg.BucketTotal)
+		}
+		return cmd
 	}
 	return "./jetmon2 rollout dynamic-check"
 }

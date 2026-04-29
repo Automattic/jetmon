@@ -78,17 +78,22 @@ sequence for one host replacement. Use `--mode=fresh-server` plus
 `--runtime-host=<new-v2-hostname>` when the new v2 hostname differs from the v1
 host recorded in the static bucket plan. Add `--v1-stop-command` and
 `--v1-start-command` so the generated plan includes the exact cutover and
-rollback commands instead of comments.
+rollback commands instead of comments. Add `--bucket-total=N` when rehearsing
+against an explicit bucket count, and `--systemd-unit=<path>` when the staged
+unit is not `/etc/systemd/system/jetmon2.service`.
 
 Before stopping v1 for a host, use `./jetmon2 rollout host-preflight
 --file=<ranges.csv> --host=<v1-host> --runtime-host=<v2-host>
 --bucket-min=N --bucket-max=N` to bundle the static plan match, config parse,
-DB connectivity, pinned safety checks, and staged systemd validation.
+DB connectivity, pinned safety checks, and staged systemd validation. This is
+the pre-stop gate; it runs the older pinned safety check internally.
 
-After a pinned v2 host starts, use `./jetmon2 rollout cutover-check --since=15m`
-to run the post-start pinned preflight, recent activity check, dashboard status
-check, and projection-drift report together. After one full expected check
-round, rerun it with `--require-all` before moving to the next host.
+After a pinned v2 host starts, use `./jetmon2 rollout cutover-check
+--host=<v2-host> --bucket-min=N --bucket-max=N --since=15m` to run the
+post-start pinned preflight, recent activity check, dashboard status check, and
+projection-drift report together. Treat the immediate run as a smoke gate
+because recent activity can still include v1 writes. After one full expected v2
+check round, rerun it with `--require-all` before moving to the next host.
 
 Use `--output=json` on rollout gate commands when wiring them into Systems
 automation. The command still exits non-zero on failed checks, and stdout

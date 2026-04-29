@@ -59,6 +59,12 @@ preflight, deliverer hardening, and API CLI fixture workflow branches:
   confirmation, rollback-check success, and the no-schema-rollback rule.
 - [x] Update migration docs and quick reference so operators know which checks
   are pre-stop gates, post-start gates, rollback gates, and fleet gates.
+- [x] Simplify generated rehearsal plans so `host-preflight` is the single
+  pre-stop gate, while preserving `--bucket-total` and custom systemd unit
+  choices in the printed commands.
+- [x] Clarify operator-facing docs around service environment setup, explicit
+  cutover/rollback ranges, and the difference between the immediate cutover
+  smoke gate and the full-round `--require-all` gate.
 
 Recently completed candidate branches:
 
