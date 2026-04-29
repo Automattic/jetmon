@@ -4,9 +4,17 @@ This is the short operator checklist for a production v1-to-v2 monitor rollout.
 Use the full [migration runbook](v1-to-v2-migration.md) for preparation,
 approval, troubleshooting, revert details, and final v1 teardown.
 
-Unless a command explicitly targets the old v1 host, run it from the staged v2
-host with the same `DB_*` environment the `jetmon2` service will use. Shell
-commands do not automatically inherit systemd's `EnvironmentFile`.
+Run this runbook from the staged v2 runtime host for the bucket range. Do not
+run it from a separate orchestration host unless that host is also the intended
+v2 runtime host and has the same `DB_*` environment the `jetmon2` service will
+use. Shell commands do not automatically inherit systemd's `EnvironmentFile`.
+
+- Same-server rollout: `--host` and `--runtime-host` are normally the same
+  hostname, and local service commands stop v1/start v2 on that host.
+- Fresh-server rollout: run the guided command on the new v2
+  `--runtime-host`, while `--host` names the old v1 host from the static plan.
+  The v2 runtime host must have SSH access to the old v1 host when
+  `--v1-stop-command` / `--v1-start-command` use `ssh` to stop or restart v1.
 
 ## Guided Path
 
@@ -14,6 +22,8 @@ Prefer the guided command during the production window. It checks that the
 rollout log directory is writable before it starts, writes a transcript and
 resume state file, explains each step, asks before proceeding, uses typed
 confirmations for v1/v2 stop/start transitions, and stops on failed gates.
+The guided command prints `guided_run_origin=runtime_host` and, in
+fresh-server mode, warns when remote v1 access is required.
 If the command is interrupted after a stop/start transition, resuming with the
 same options uses the saved service state to avoid repeating an already
 completed transition. When resume state exists, the command has no default

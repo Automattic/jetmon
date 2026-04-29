@@ -364,7 +364,8 @@ jetmon-v1-b,5,9
 	for _, want := range []string{
 		"INFO mode=same-server",
 		`INFO plan_host="jetmon-v1-a" runtime_host="jetmon-v1-a" range=0-4`,
-		"# Run commands from the staged v2 host unless a command explicitly targets another host.",
+		"# Run this runbook from the staged v2 runtime host, not from a separate orchestrator host.",
+		"# Commands run from that runtime host unless the printed command explicitly targets another host.",
 		"# Shell commands need the same DB_* environment used by the jetmon2 service.",
 		"./jetmon2 rollout static-plan-check --file rollout-buckets.csv --host jetmon-v1-a --bucket-min 0 --bucket-max 4 --bucket-total 10",
 		"./jetmon2 validate-config",
@@ -426,6 +427,8 @@ jetmon-v1-a,0,9
 	for _, want := range []string{
 		"INFO mode=fresh-server",
 		`INFO plan_host="jetmon-v1-a" runtime_host="jetmon-v2-a" range=0-9`,
+		"# Run this runbook from the staged v2 runtime host, not from a separate orchestrator host.",
+		"# Fresh-server mode requires jetmon-v2-a to have SSH access to old v1 host jetmon-v1-a for any v1 stop/start commands that use ssh.",
 		"/opt/jetmon2/jetmon2 rollout static-plan-check --file rollout-buckets.csv --host jetmon-v1-a --bucket-min 0 --bucket-max 9 --bucket-total 10",
 		"/opt/jetmon2/jetmon2 rollout host-preflight --file rollout-buckets.csv --host jetmon-v1-a --runtime-host jetmon-v2-a --bucket-min 0 --bucket-max 9 --bucket-total 10 --systemd-unit /tmp/staged/jetmon2.service",
 		"ssh jetmon-v1-a sudo systemctl stop jetmon",
@@ -703,6 +706,9 @@ func TestRunGuidedRolloutDryRunChecksLogDir(t *testing.T) {
 		"INFO rollout_log=",
 		"INFO rollout_state=",
 		"INFO dry_run=true",
+		`INFO guided_run_origin=runtime_host mode="same-server" v1_host="jetmon-v1-a" runtime_host="jetmon-v1-a"`,
+		"INFO run_this_command_from=runtime_host",
+		"INFO remote_v1_access_required=false reason=same_server",
 		"INFO selected_path=forward",
 		`PLAN path=FORWARD step=static-plan-check`,
 		`PLAN path=FORWARD step=stop-v1 command="systemctl stop jetmon"`,
@@ -804,6 +810,8 @@ func TestRunGuidedRolloutFreshServerDryRunShowsRemoteV1Commands(t *testing.T) {
 	}
 	for _, want := range []string{
 		`INFO rollout_state=`,
+		`INFO guided_run_origin=runtime_host mode="fresh-server" v1_host="jetmon-v1-a" runtime_host="jetmon-v2-a"`,
+		`WARN remote_v1_access_required=true runtime_host="jetmon-v2-a" v1_host="jetmon-v1-a"`,
 		`PLAN path=FORWARD step=stop-v1 command="ssh jetmon-v1-a sudo systemctl stop jetmon"`,
 		`PLAN path=FORWARD step=start-v2 typed_confirmation="START V2 jetmon-v2-a 0-4"`,
 		`PLAN path=ROLLBACK step=rollback-stop-v2 typed_confirmation="STOP V2 jetmon-v2-a 0-4"`,

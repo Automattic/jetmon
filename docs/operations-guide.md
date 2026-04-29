@@ -75,19 +75,26 @@ operator command checklist during rehearsals and rollout windows.
 Use `./jetmon2 rollout guided --file=<ranges.csv> --host=<v1-host>
 --runtime-host=<v2-host> --bucket-min=N --bucket-max=N --bucket-total=N
 --v1-stop-command='<cmd>' --v1-start-command='<cmd>'` for the preferred
-interactive rollout path. It verifies that `--log-dir` is writable before it
+interactive rollout path. Run it from the staged v2 runtime host, not from a
+separate orchestration host. For fresh-server rollouts, `--host` is the old v1
+host and `--runtime-host` is the new v2 host where the guided command runs; if
+the v1 stop/start commands use `ssh`, that runtime host must have SSH access to
+the old v1 host. The command verifies that `--log-dir` is writable before it
 starts, writes a transcript plus resume state, explains each gate, asks before
 continuing, and requires typed confirmations before v1/v2 stop/start
-transitions. By default it prints service commands for the operator to run;
-add `--execute-operator-commands` only when the operator intentionally wants
-the guided command to execute those commands after confirmation. Use
-`--rollback` for the guided return-to-v1 path and `--dry-run` for rehearsal.
+transitions. By default it prints service commands for the operator to run from
+the runtime host; add `--execute-operator-commands` only when the operator
+intentionally wants the guided command to execute those commands after
+confirmation. Use `--rollback` for the guided return-to-v1 path and
+`--dry-run` for rehearsal.
 
 Use `./jetmon2 rollout rehearsal-plan --file=<ranges.csv> --host=<host>
 --bucket-min=N --bucket-max=N --mode=same-server` to print the ordered command
 sequence for one host replacement. Use `--mode=fresh-server` plus
 `--runtime-host=<new-v2-hostname>` when the new v2 hostname differs from the v1
-host recorded in the static bucket plan. Add `--v1-stop-command` and
+host recorded in the static bucket plan. Confirm SSH from the new v2 runtime
+host to the old v1 host before using SSH-based v1 commands. Add
+`--v1-stop-command` and
 `--v1-start-command` so the generated plan includes the exact cutover and
 rollback commands instead of comments. Add `--bucket-total=N` when rehearsing
 against an explicit bucket count, and `--systemd-unit=<path>` when the staged

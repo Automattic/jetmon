@@ -119,6 +119,15 @@ approved plan:
 
 Generate the host-specific command sequence operators will rehearse and run:
 
+Run the generated runbook and `rollout guided` from the staged v2 runtime host,
+not from a separate orchestration host. In same-server mode the v1 host and v2
+runtime host are normally the same machine. In fresh-server mode,
+`--host=<old-v1-hostname>` identifies the v1 host from the static plan and
+`--runtime-host=<new-v2-hostname>` identifies the new v2 machine where the
+guided command runs. If the v1 stop/start commands use `ssh`, the new v2
+runtime host must be able to SSH to the old v1 host before the production
+window starts.
+
 ```bash
 ./jetmon2 rollout rehearsal-plan \
   --file rollout-buckets.csv \
@@ -134,7 +143,9 @@ Generate the host-specific command sequence operators will rehearse and run:
 For a fresh-server takeover where the v2 hostname differs from the v1 host in
 the static plan, add `--runtime-host=<new-v2-hostname>` and use
 `--mode=fresh-server`. Add `--systemd-unit=<path>` if the staged service unit
-is not `/etc/systemd/system/jetmon2.service`.
+is not `/etc/systemd/system/jetmon2.service`. Confirm SSH from the new v2
+runtime host to the old v1 host before relying on SSH-based
+`--v1-stop-command` or `--v1-start-command`.
 
 During the production window, prefer the guided command so operators do not
 need to copy/paste each command manually:
@@ -155,12 +166,12 @@ need to copy/paste each command manually:
 
 `rollout guided` checks that the log directory is writable before it starts,
 writes a transcript plus `<runtime-host>-<min>-<max>.state.json` resume state,
-explains each gate, asks before continuing, and stops on failed gates. It uses
-typed confirmations before stopping v1, starting v2, stopping v2 during
-rollback, or restarting v1. By default it prints service commands for the
-operator to run and asks for `DONE`; add `--execute-operator-commands` only
-when the operator intentionally wants the guided command to execute those
-commands after confirmation.
+prints the expected run origin, explains each gate, asks before continuing, and
+stops on failed gates. It uses typed confirmations before stopping v1, starting
+v2, stopping v2 during rollback, or restarting v1. By default it prints
+service commands for the operator to run from the v2 runtime host and asks for
+`DONE`; add `--execute-operator-commands` only when the operator intentionally
+wants the guided command to execute those commands after confirmation.
 If the command is interrupted after a stop/start transition, rerun it with the
 same options and choose resume; saved service state prevents the command from
 asking the operator to repeat a transition that already completed. When resume

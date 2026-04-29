@@ -208,7 +208,7 @@ func cmdRolloutGuided(args []string) {
 	file := fs.String("file", "", "CSV file with host,bucket_min,bucket_max rows")
 	mode := fs.String("mode", "same-server", "rollout mode: same-server or fresh-server")
 	host := fs.String("host", "", "v1 host id that must appear in the static plan")
-	runtimeHost := fs.String("runtime-host", "", "v2 host id for pinned checks (default --host)")
+	runtimeHost := fs.String("runtime-host", "", "v2 runtime host where guided rollout runs (default --host)")
 	bucketMin := fs.Int("bucket-min", -1, "expected bucket minimum for --host")
 	bucketMax := fs.Int("bucket-max", -1, "expected bucket maximum for --host")
 	bucketTotal := fs.Int("bucket-total", 0, "total bucket count (default BUCKET_TOTAL from config)")
@@ -263,7 +263,7 @@ func cmdRolloutRehearsalPlan(args []string) {
 	file := fs.String("file", "", "CSV file with host,bucket_min,bucket_max rows")
 	mode := fs.String("mode", "same-server", "rollout mode: same-server or fresh-server")
 	host := fs.String("host", "", "host id that must appear in the static plan")
-	runtimeHost := fs.String("runtime-host", "", "v2 host id for pinned/rollback checks (default --host)")
+	runtimeHost := fs.String("runtime-host", "", "v2 runtime host where the runbook is executed (default --host)")
 	bucketMin := fs.Int("bucket-min", -1, "expected bucket minimum for --host")
 	bucketMax := fs.Int("bucket-max", -1, "expected bucket maximum for --host")
 	bucketTotal := fs.Int("bucket-total", 0, "total bucket count (default BUCKET_TOTAL from config)")
@@ -330,7 +330,7 @@ func cmdRolloutHostPreflight(args []string) {
 	fs := flag.NewFlagSet("rollout host-preflight", flag.ExitOnError)
 	file := fs.String("file", "", "CSV file with host,bucket_min,bucket_max rows")
 	host := fs.String("host", "", "v1 host id that must appear in the static plan")
-	runtimeHost := fs.String("runtime-host", "", "v2 host id for pinned checks (default --host)")
+	runtimeHost := fs.String("runtime-host", "", "v2 runtime host for pinned checks (default --host)")
 	bucketMin := fs.Int("bucket-min", -1, "expected bucket minimum for --host")
 	bucketMax := fs.Int("bucket-max", -1, "expected bucket maximum for --host")
 	bucketTotal := fs.Int("bucket-total", 0, "total bucket count (default BUCKET_TOTAL from config)")
@@ -1200,6 +1200,7 @@ func runGuidedRollout(ctx context.Context, out io.Writer, input io.Reader, opts 
 	if err := validateGuidedRolloutOptions(opts); err != nil {
 		return err
 	}
+	session.printRunOrigin()
 	if opts.DryRun {
 		session.state = newGuidedRolloutState(opts, deps.Now())
 		return session.printDryRunPlan()
@@ -1505,6 +1506,27 @@ func (s *guidedRolloutSession) stepCompleted(stepID string) bool {
 		}
 	}
 	return false
+}
+
+func (s *guidedRolloutSession) printRunOrigin() {
+	fmt.Fprintf(
+		s.out,
+		"INFO guided_run_origin=runtime_host mode=%q v1_host=%q runtime_host=%q\n",
+		s.opts.Mode,
+		s.opts.HostID,
+		s.opts.RuntimeHost,
+	)
+	fmt.Fprintln(s.out, "INFO run_this_command_from=runtime_host note=\"run the guided command from the staged v2 runtime host with the jetmon2 service DB environment\"")
+	if s.opts.Mode == "fresh-server" || s.opts.HostID != s.opts.RuntimeHost {
+		fmt.Fprintf(
+			s.out,
+			"WARN remote_v1_access_required=true runtime_host=%q v1_host=%q note=\"runtime host must be able to SSH to the v1 host if v1 stop/start commands use ssh\"\n",
+			s.opts.RuntimeHost,
+			s.opts.HostID,
+		)
+		return
+	}
+	fmt.Fprintln(s.out, "INFO remote_v1_access_required=false reason=same_server")
 }
 
 func (s *guidedRolloutSession) printDryRunPlan() error {
@@ -2023,8 +2045,12 @@ func runRolloutRehearsalPlan(out io.Writer, input io.Reader, opts rolloutRehears
 	fmt.Fprintf(out, "INFO mode=%s\n", mode)
 	fmt.Fprintf(out, "INFO static_plan_file=%s ranges=%d\n", planFile, len(ranges))
 	fmt.Fprintf(out, "INFO plan_host=%q runtime_host=%q range=%d-%d\n", assertedRange.HostID, runtimeHost, assertedRange.BucketMin, assertedRange.BucketMax)
-	fmt.Fprintln(out, "# Run commands from the staged v2 host unless a command explicitly targets another host.")
+	fmt.Fprintln(out, "# Run this runbook from the staged v2 runtime host, not from a separate orchestrator host.")
+	fmt.Fprintln(out, "# Commands run from that runtime host unless the printed command explicitly targets another host.")
 	fmt.Fprintln(out, "# Shell commands need the same DB_* environment used by the jetmon2 service.")
+	if mode == "fresh-server" || hostID != runtimeHost {
+		fmt.Fprintf(out, "# Fresh-server mode requires %s to have SSH access to old v1 host %s for any v1 stop/start commands that use ssh.\n", runtimeHost, hostID)
+	}
 	fmt.Fprintln(out)
 
 	bucketTotalArgs := []string{"--bucket-total", strconv.Itoa(opts.BucketTotal)}

@@ -76,6 +76,9 @@ preflight, deliverer hardening, and API CLI fixture workflow branches:
 - [x] Extend targeted guided rollout flow coverage for fresh-server handoff,
   execute-mode dry-runs, wrong typed confirmations, mismatched resume state,
   explicit start-over, and rollback after a failed post-start gate.
+- [x] Make rollout run origin explicit in guided output and docs: run from the
+  staged v2 runtime host, and require SSH from that runtime host to the old v1
+  host when fresh-server v1 stop/start commands use SSH.
 
 Recently completed candidate branches:
 
