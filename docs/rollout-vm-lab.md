@@ -1,0 +1,219 @@
+# Rollout VM Lab
+
+The rollout VM lab is a KVM/libvirt test bed for rehearsing the v1-to-v2 host
+rollout on real Linux guests instead of containers. It is meant to catch the
+host-level failures that are hard to validate in Docker: systemd unit state,
+SSH reachability between fresh-server hosts, service start/stop ordering,
+cloud-init provisioning, writable log paths, and snapshot-based rollback.
+
+The lab harness is [`scripts/rollout-vm-lab.sh`](../scripts/rollout-vm-lab.sh).
+Run it on the virtualization host itself. For the current in-house lab host:
+
+```bash
+ssh jetmon-deploy-test
+cd /path/to/jetmon
+scripts/rollout-vm-lab.sh doctor
+```
+
+## Host Requirements
+
+The lab host needs:
+
+- KVM available through `/dev/kvm`
+- `qemu:///system` libvirt access for the operator user
+- an active libvirt NAT network, default `default`
+- an active libvirt storage pool, default `jetmon-rollout`
+- write access to the storage pool path for the operator user
+- `qemu-img`, `virt-install`, `cloud-localds`, `ssh`, `scp`, `curl`, `mysql`,
+  `sed`, `awk`, `ansible`, and `expect`
+- a dedicated lab SSH key, default
+  `~/.ssh/jetmon-rollout-lab_ed25519`
+
+Validate the host:
+
+```bash
+scripts/rollout-vm-lab.sh doctor
+```
+
+The command is read-only except for checking local files and libvirt state.
+
+## First-Time Setup
+
+Fetch the Ubuntu cloud image once. By default the image is cached in the
+libvirt storage pool so QEMU can use it as a backing file:
+
+```bash
+scripts/rollout-vm-lab.sh fetch-image
+```
+
+Create the baseline topology:
+
+```bash
+scripts/rollout-vm-lab.sh create-topology
+scripts/rollout-vm-lab.sh wait-ssh db
+scripts/rollout-vm-lab.sh wait-ssh v1
+scripts/rollout-vm-lab.sh wait-ssh v2
+```
+
+This creates:
+
+| VM | Purpose |
+| --- | --- |
+| `jetmon-rollout-db` | MariaDB host for seeded v1-compatible data and v2 migrations. |
+| `jetmon-rollout-v1` | Old monitor host used to model v1 service ownership. |
+| `jetmon-rollout-v2` | Fresh v2 runtime host where guided rollout commands run. |
+
+The guests use cloud-init to create a `jetmon` user with passwordless sudo and
+the dedicated lab SSH key. The DB guest also installs MariaDB, listens on the
+libvirt network, creates `jetmon_db`, and grants `jetmon` / `jetmon`.
+
+## Prepare The Rollout Lab
+
+After the topology is reachable, prepare it for real rollout command testing:
+
+```bash
+scripts/rollout-vm-lab.sh prepare-topology
+```
+
+This command is intentionally idempotent for the lab data and staged service
+files. It:
+
+- seeds the DB VM with a v1-compatible `jetpack_monitor_sites` table and ten
+  active sites in buckets `0-99`
+- installs and starts `jetmon-v1-sim.service` on the v1 VM
+- stages `jetmon2`, `/opt/jetmon2/config/config.json`,
+  `/opt/jetmon2/config/jetmon2.env`, `systemd/jetmon2.service`, logrotate, and
+  `rollout-buckets.csv` on the v2 VM
+- installs the lab SSH key on the v2 VM so fresh-server stop/start commands can
+  reach the old v1 VM over SSH
+- runs `jetmon2 migrate` from the v2 VM against the DB VM
+- runs `rollout host-preflight` and a guided fresh-server dry-run from the v2 VM
+
+From the local workstation, the Makefile wraps artifact sync and remote
+execution:
+
+```bash
+make rollout-vm-lab-doctor
+make rollout-vm-lab-prepare
+make rollout-vm-lab-smoke
+make rollout-vm-lab-execute-smoke
+make rollout-vm-lab-failure-smoke
+```
+
+The harness keeps the v2 `jetmon2` service staged but stopped. That preserves
+the production rollout shape: v1 owns the range until the guided flow reaches
+the explicit stop-v1/start-v2 transition.
+
+## Snapshots
+
+Create a named snapshot after each known-good checkpoint:
+
+```bash
+scripts/rollout-vm-lab.sh snapshot-all base-installed
+scripts/rollout-vm-lab.sh snapshot-all db-seeded
+scripts/rollout-vm-lab.sh snapshot-all pre-cutover-ready
+```
+
+Return every VM to a checkpoint:
+
+```bash
+scripts/rollout-vm-lab.sh revert-all pre-cutover-ready
+scripts/rollout-vm-lab.sh wait-ssh db
+scripts/rollout-vm-lab.sh wait-ssh v1
+scripts/rollout-vm-lab.sh wait-ssh v2
+```
+
+Snapshots are intentionally offline snapshots. The harness shuts the VM down
+before creating or reverting snapshots so disk state is deterministic.
+
+## Useful Commands
+
+List current lab state:
+
+```bash
+scripts/rollout-vm-lab.sh list
+```
+
+SSH to a guest:
+
+```bash
+scripts/rollout-vm-lab.sh ssh v2
+scripts/rollout-vm-lab.sh ssh db 'sudo systemctl status mariadb --no-pager'
+```
+
+Run only the v2-side rollout smoke checks:
+
+```bash
+scripts/rollout-vm-lab.sh smoke-preflight
+scripts/rollout-vm-lab.sh smoke-guided-dry-run
+```
+
+Run the heavier execute-mode cutover and rollback smoke. This actually stops
+the v1 simulator, starts `jetmon2`, verifies the post-start gates, then resumes
+guided rollback to stop `jetmon2` and restart the v1 simulator:
+
+```bash
+scripts/rollout-vm-lab.sh smoke-guided-execute-rollback
+```
+
+Run the failure-gate smoke:
+
+```bash
+scripts/rollout-vm-lab.sh smoke-failure-gates
+```
+
+This injects an overlapping `jetmon_hosts` row and a broken staged systemd unit,
+then confirms `rollout host-preflight` refuses both before restoring the DB
+state.
+
+Destroy the topology and its lab volumes:
+
+```bash
+scripts/rollout-vm-lab.sh destroy-topology
+```
+
+## Environment Overrides
+
+| Variable | Default |
+| --- | --- |
+| `JETMON_ROLLOUT_LAB_DIR` | `~/rollout-lab` |
+| `JETMON_ROLLOUT_POOL` | `jetmon-rollout` |
+| `JETMON_ROLLOUT_NETWORK` | `default` |
+| `JETMON_ROLLOUT_PREFIX` | `jetmon-rollout` |
+| `JETMON_ROLLOUT_IMAGE_URL` | Ubuntu 24.04 noble amd64 cloud image |
+| `JETMON_ROLLOUT_IMAGE_PATH` | `<pool path>/noble-server-cloudimg-amd64.img` |
+| `JETMON_ROLLOUT_SSH_KEY` | `~/.ssh/jetmon-rollout-lab_ed25519` |
+| `JETMON_ROLLOUT_WAIT_TIMEOUT` | `600` seconds |
+| `JETMON_ROLLOUT_MEMORY_MIB` | `2048` |
+| `JETMON_ROLLOUT_VCPUS` | `2` |
+| `JETMON_ROLLOUT_DISK_GIB` | `20` |
+| `JETMON_ROLLOUT_DB_MEMORY_MIB` | `4096` |
+| `JETMON_ROLLOUT_DB_DISK_GIB` | `30` |
+| `JETMON_ROLLOUT_BUCKET_MIN` | `0` |
+| `JETMON_ROLLOUT_BUCKET_MAX` | `99` |
+| `JETMON_ROLLOUT_BUCKET_TOTAL` | `1000` |
+| `JETMON_ROLLOUT_JETMON2_BINARY` | `<repo>/bin/jetmon2` |
+| `JETMON_ROLLOUT_JETMON2_SERVICE` | `<repo>/systemd/jetmon2.service` |
+| `JETMON_ROLLOUT_JETMON2_LOGROTATE` | `<repo>/systemd/jetmon2-logrotate` |
+
+## Planned Flow Coverage
+
+The VM lab is intended to exercise these rollout scenarios:
+
+- DB seeded with the v1-compatible site table plus v2 additive migrations
+- v1 host active for one static bucket range
+- fresh v2 host staged with pinned config but stopped
+- `rollout guided --dry-run` from the v2 runtime host
+- successful fresh-server cutover with `--execute-operator-commands`
+- guided rollback after execute-mode cutover
+- interrupted guided flow and resume from state
+- failed pre-stop gate refusal
+- bad staged systemd unit refusal
+- failed post-start smoke gate followed by guided rollback
+- bad SSH access from the v2 runtime host to the old v1 host
+- bad systemd unit or unwritable rollout log directory
+
+The current harness provides VM lifecycle, DB seeding, v1/v2 service staging,
+preflight/dry-run smoke coverage, and a full execute-mode cutover plus guided
+rollback smoke. The next layer should drive interrupted resume and targeted
+failure cases automatically from snapshots.

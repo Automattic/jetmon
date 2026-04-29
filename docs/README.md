@@ -22,6 +22,7 @@ Start with [`adr/README.md`](adr/README.md) for the ADR format and index.
 | [`getting-started.md`](getting-started.md) | Local Docker setup, build/test commands, API CLI smoke runs, fixture failure simulation, and tenant import basics. |
 | [`operations-guide.md`](operations-guide.md) | Production configuration, host setup, rollout modes, delivery workers, metrics, dashboard checks, and debugging. |
 | [`rollout-quick-reference.md`](rollout-quick-reference.md) | One-page operator checklist for the v1-to-v2 rollout, linked back to the full migration runbook. |
+| [`rollout-vm-lab.md`](rollout-vm-lab.md) | KVM/libvirt lab harness for rehearsing rollout flows with DB, v1, and fresh v2 VMs plus snapshots. |
 | [`data-model.md`](data-model.md) | Legacy and v2 tables, additive migrations, event-sourced incident state, legacy projection, and tenant mapping. |
 | [`support-guide.md`](support-guide.md) | Happiness Engineer workflows for explaining alerts, missed alerts, false positives, maintenance windows, and WPCOM payloads. |
 | [`api-cli-guide.md`](api-cli-guide.md) | Feature guide and examples for using `jetmon2 api` against the internal REST API during local testing, rehearsals, and CI smoke runs. |
