@@ -25,7 +25,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// meResponse is what GET /api/v1/me returns. Same shape as the spec in API.md.
+// meResponse is what GET /api/v1/me returns. Same shape as the spec in docs/internal-api-reference.md.
 type meResponse struct {
 	ConsumerName       string  `json:"consumer_name"`
 	Scope              string  `json:"scope"`

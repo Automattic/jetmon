@@ -6,7 +6,7 @@
 // Site-state changes (incidents opening, severity escalating, state changing,
 // events closing) flow through the eventstore package and the
 // jetmon_events / jetmon_event_transitions tables. They do not go through this
-// package. See EVENTS.md for the split.
+// package. See docs/events.md for the split.
 package audit
 
 import (

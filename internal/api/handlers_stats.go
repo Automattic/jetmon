@@ -17,7 +17,7 @@ import (
 const maxSamples = 100_000
 
 // uptimeResponse is the shape returned by GET /api/v1/sites/{id}/uptime.
-// See API.md "Family 3".
+// See docs/internal-api-reference.md "Family 3".
 type uptimeResponse struct {
 	Window             windowResponse `json:"window"`
 	UptimePercent      float64        `json:"uptime_percent"`

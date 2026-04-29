@@ -274,7 +274,7 @@ Queryable by `blog_id` and time range via a CLI tool (`jetmon2 audit --blog-id 1
 - `jetmon2 reload` — sends SIGHUP to the running process (convenience wrapper)
 
 The complete v1-to-v2 production process is documented in
-[`docs/v1-to-v2-migration.md`](docs/v1-to-v2-migration.md).
+[`v1-to-v2-migration.md`](v1-to-v2-migration.md).
 
 **Zero-Downtime Rolling Updates**
 Because bucket ownership is coordinated via MySQL, a multi-host deployment can be updated one host at a time with no coverage gap. The procedure for each host: send SIGINT to release its buckets, wait for the drain to complete, deploy the new binary, start the new process. Surviving hosts absorb the draining host's buckets during the update window and release them back once the updated host rejoins and reclaims its range. No simultaneous restart of all hosts is required, and no sites are left unchecked during the update.

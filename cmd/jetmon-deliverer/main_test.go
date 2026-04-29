@@ -61,6 +61,117 @@ func TestDeliveryWorkersShouldStart(t *testing.T) {
 	}
 }
 
+func TestParseValidateConfigOptions(t *testing.T) {
+	opts, err := parseValidateConfigOptions([]string{
+		"--host=deliverer-1",
+		"--require-owner-match",
+		"--require-email-delivery",
+		"--require-api-disabled",
+	})
+	if err != nil {
+		t.Fatalf("parseValidateConfigOptions: %v", err)
+	}
+	if opts.HostOverride != "deliverer-1" {
+		t.Fatalf("HostOverride = %q, want deliverer-1", opts.HostOverride)
+	}
+	if !opts.RequireOwnerMatch || !opts.RequireEmailDelivery || !opts.RequireAPIDisabled {
+		t.Fatalf("parsed options = %+v, want all requirements enabled", opts)
+	}
+
+	if _, err := parseValidateConfigOptions([]string{"extra"}); err == nil {
+		t.Fatal("parseValidateConfigOptions accepted unexpected positional argument")
+	}
+}
+
+func TestValidateDelivererConfigRequirements(t *testing.T) {
+	tests := []struct {
+		name     string
+		cfg      config.Config
+		hostname string
+		opts     delivererValidationOptions
+		want     []string
+	}{
+		{
+			name: "single owner production config passes",
+			cfg: config.Config{
+				DeliveryOwnerHost: "deliverer-1",
+				EmailTransport:    "smtp",
+			},
+			hostname: "deliverer-1",
+			opts: delivererValidationOptions{
+				RequireOwnerMatch:    true,
+				RequireEmailDelivery: true,
+				RequireAPIDisabled:   true,
+			},
+		},
+		{
+			name:     "owner required but empty",
+			cfg:      config.Config{EmailTransport: "smtp"},
+			hostname: "deliverer-1",
+			opts:     delivererValidationOptions{RequireOwnerMatch: true},
+			want:     []string{"DELIVERY_OWNER_HOST must be set"},
+		},
+		{
+			name: "owner mismatch",
+			cfg: config.Config{
+				DeliveryOwnerHost: "deliverer-2",
+				EmailTransport:    "smtp",
+			},
+			hostname: "deliverer-1",
+			opts:     delivererValidationOptions{RequireOwnerMatch: true},
+			want:     []string{"does not match"},
+		},
+		{
+			name: "stub email rejected",
+			cfg: config.Config{
+				DeliveryOwnerHost: "deliverer-1",
+				EmailTransport:    "stub",
+			},
+			hostname: "deliverer-1",
+			opts:     delivererValidationOptions{RequireEmailDelivery: true},
+			want:     []string{"does not deliver email"},
+		},
+		{
+			name: "api port rejected",
+			cfg: config.Config{
+				DeliveryOwnerHost: "deliverer-1",
+				EmailTransport:    "smtp",
+				APIPort:           8090,
+			},
+			hostname: "deliverer-1",
+			opts:     delivererValidationOptions{RequireAPIDisabled: true},
+			want:     []string{"API_PORT=8090"},
+		},
+		{
+			name:     "empty host rejected when owner must match",
+			cfg:      config.Config{DeliveryOwnerHost: "deliverer-1"},
+			hostname: " ",
+			opts:     delivererValidationOptions{RequireOwnerMatch: true},
+			want:     []string{"host id is empty"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			failures := validateDelivererConfigRequirements(&tt.cfg, tt.hostname, tt.opts)
+			if len(tt.want) == 0 {
+				if len(failures) != 0 {
+					t.Fatalf("failures = %v, want none", failures)
+				}
+				return
+			}
+			if len(failures) != len(tt.want) {
+				t.Fatalf("failures = %v, want %d failures", failures, len(tt.want))
+			}
+			for i, want := range tt.want {
+				if !strings.Contains(failures[i], want) {
+					t.Fatalf("failure[%d] = %q, want substring %q", i, failures[i], want)
+				}
+			}
+		})
+	}
+}
+
 func TestEmailTransportLabelAndDelivery(t *testing.T) {
 	tests := []struct {
 		name     string

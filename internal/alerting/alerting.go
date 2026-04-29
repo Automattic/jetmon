@@ -12,7 +12,7 @@
 // notification through a transport Jetmon owns end-to-end (subject lines,
 // PagerDuty severity mapping, Slack Block Kit rendering, etc.).
 //
-// See API.md "Family 5" for the public design and ROADMAP.md for deferred
+// See docs/internal-api-reference.md "Family 5" for the public design and docs/roadmap.md for deferred
 // items (SMS, OpsGenie, alert grouping, WPCOM-flow migration).
 package alerting
 
@@ -30,7 +30,7 @@ import (
 // jetmon_webhooks.secret — outbound dispatch needs the raw value at
 // every send. A hash is useless because we'd have to recover the
 // original to call the transport. Encryption at rest with a master
-// key is on ROADMAP.md as a future hardening step.
+// key is on docs/roadmap.md as a future hardening step.
 
 // Status enumerates the lifecycle states of a delivery row.
 type Status string

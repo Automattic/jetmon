@@ -2,7 +2,7 @@
 
 This document is the reference for Jetmon 2's internal REST API and the design notes behind it. The API server, Bearer-token auth, site/event/SLA endpoints, webhooks, alert contacts, idempotency handling, and delivery retry surfaces are implemented in `internal/api/`, `internal/apikeys/`, `internal/webhooks/`, and `internal/alerting/`. Sections that describe future expansion or deferred behavior call that out explicitly.
 
-**Audience: internal systems only.** Jetmon does not expose this API to end customers directly. A separate gateway service handles all customer-facing access — authentication, tenant isolation, customer rate limiting, plan-based feature gating, public error vocabulary, etc. — and calls Jetmon over this internal interface. Other internal services (operator dashboard, alerting workers, batch reporting jobs, the gateway itself) are the only direct callers. The gateway/tenant boundary and remaining public-exposure prerequisites are documented in [`docs/public-api-gateway-tenant-contract.md`](docs/public-api-gateway-tenant-contract.md).
+**Audience: internal systems only.** Jetmon does not expose this API to end customers directly. A separate gateway service handles all customer-facing access — authentication, tenant isolation, customer rate limiting, plan-based feature gating, public error vocabulary, etc. — and calls Jetmon over this internal interface. Other internal services (operator dashboard, alerting workers, batch reporting jobs, the gateway itself) are the only direct callers. The gateway/tenant boundary and remaining public-exposure prerequisites are documented in [`public-api-gateway-tenant-contract.md`](public-api-gateway-tenant-contract.md).
 
 **Gateway tenant context.** Requests from the internal consumer named `gateway`
 may include `X-Jetmon-Tenant-ID`, `X-Jetmon-Public-Scopes`, and
@@ -16,7 +16,7 @@ headers keep the unscoped operator behavior described below.
 
 This shapes several design choices: authentication is per-consumer rather than per-customer, scopes are coarse rather than granular, error messages are verbose rather than guarded, and key management is an ops-only concern rather than a self-service feature. The trust boundary is "is this a known internal system?", not "is this user allowed to see this site?".
 
-The goal is to expose Jetmon's distinctive data model — the five-layer test taxonomy, the site → endpoint → event hierarchy, the multi-state vocabulary, and the event-sourced architecture (`TAXONOMY.md`, `EVENTS.md`) — over a shape that internal consumers can integrate against confidently. We took inspiration from Better Stack, UptimeRobot v3, Pingdom, and Atlassian Statuspage but did not copy any of their shapes wholesale; Jetmon's richer model (multi-state, layered tests, causal links, separate severity) wouldn't fit cleanly into a flat "monitors" API.
+The goal is to expose Jetmon's distinctive data model — the five-layer test taxonomy, the site → endpoint → event hierarchy, the multi-state vocabulary, and the event-sourced architecture (`taxonomy.md`, `events.md`) — over a shape that internal consumers can integrate against confidently. We took inspiration from Better Stack, UptimeRobot v3, Pingdom, and Atlassian Statuspage but did not copy any of their shapes wholesale; Jetmon's richer model (multi-state, layered tests, causal links, separate severity) wouldn't fit cleanly into a flat "monitors" API.
 
 ## Principles
 
@@ -66,7 +66,7 @@ jetmon_api_keys:
 
 We deliberately did not split into `sites:read` / `events:read` / `webhooks:read` etc. Internal consumers tend to need the whole read surface — the gateway needs to read everything to mediate it; an alerts worker reads sites, events, *and* webhooks. Granular scopes would create more configuration burden than they solve.
 
-**Per-consumer audit logging.** Every authenticated request is logged to `jetmon_audit_log` with the consumer name, endpoint, status code, and latency. This is the load-bearing accountability mechanism — if "alerts-worker is hammering the trigger-now endpoint," that's visible in the audit log without parsing access logs. The audit log already exists for operational events (`EVENTS.md`); API access becomes another `event_type` value (`api_access`).
+**Per-consumer audit logging.** Every authenticated request is logged to `jetmon_audit_log` with the consumer name, endpoint, status code, and latency. This is the load-bearing accountability mechanism — if "alerts-worker is hammering the trigger-now endpoint," that's visible in the audit log without parsing access logs. The audit log already exists for operational events (`events.md`); API access becomes another `event_type` value (`api_access`).
 
 **Key management is ops-only.** No `/api/v1/keys` endpoints. Keys are created and revoked via the `./jetmon2` CLI:
 
@@ -111,7 +111,7 @@ For Docker-local rehearsals, `make api-cli-token-create`,
 
 Typed commands cover sites, events, webhooks, alert contacts, local smoke runs,
 and failure simulation. Use `api request` as the escape hatch for new API routes
-before a typed command exists. See [`docs/api-cli-guide.md`](docs/api-cli-guide.md)
+before a typed command exists. See [`api-cli-guide.md`](api-cli-guide.md)
 for a fuller feature guide and workflow examples:
 
 ```bash
@@ -287,7 +287,7 @@ The server is always UTC. Clients converting to local time is their problem.
 
 ## Status and state vocabulary
 
-The API exposes the same vocabulary the orchestrator and event store use. From `TAXONOMY.md` Part 3 and `EVENTS.md`:
+The API exposes the same vocabulary the orchestrator and event store use. From `taxonomy.md` Part 3 and `events.md`:
 
 **State** (string, human-readable):
 
@@ -321,7 +321,7 @@ Higher severity = worse. Severity climbs independently of state — a worsening 
 
 ## Endpoints
 
-The full surface is grouped into five capability families, matching `ROADMAP.md`. The implemented route table lives in `internal/api/routes.go`; design-only additions and deferred behavior are called out where they appear.
+The full surface is grouped into five capability families, matching `roadmap.md`. The implemented route table lives in `internal/api/routes.go`; design-only additions and deferred behavior are called out where they appear.
 
 ### Family 1: Sites and current state
 
@@ -384,7 +384,7 @@ see rows mapped to `X-Jetmon-Tenant-ID` in `jetmon_site_tenants`.
 
 `current_state`, `current_severity`, and `active_event_id` are derived from
 open rows in `jetmon_events`. During the
-[v1-to-v2 migration](docs/v1-to-v2-migration.md), the legacy `site_status`
+[v1-to-v2 migration](v1-to-v2-migration.md), the legacy `site_status`
 column is only a fallback for sites with no active v2 event while
 `LEGACY_STATUS_PROJECTION_ENABLE` is true; once the projection is disabled, a
 site with no active v2 event is reported as `Up` regardless of stale legacy
@@ -771,7 +771,7 @@ The signature is HMAC-SHA256 of `{timestamp}.{body}` with the webhook's `secret`
 
 `event.*` types fire once per transition row written to `jetmon_event_transitions` — i.e., once per actual mutation. The 1:1 invariant the eventstore maintains is what makes detection reliable.
 
-**Deferred:** `site.state_changed` (rollup from events to the site-row projection) is **not** in v1. Rolling up cleanly without races requires changes to the orchestrator, and event-level webhooks already give consumers everything they need. Tracked in ROADMAP.md.
+**Deferred:** `site.state_changed` (rollup from events to the site-row projection) is **not** in v1. Rolling up cleanly without races requires changes to the orchestrator, and event-level webhooks already give consumers everything they need. Tracked in roadmap.md.
 
 #### Detection mechanism
 
@@ -808,7 +808,7 @@ When to revisit: a public-API-without-gateway requirement (then asymmetric becom
 
 Secret rotation in v1: **immediate revocation only**. `POST /api/v1/webhooks/{id}/rotate-secret` returns a new secret once, replaces the stored hash, and the old secret stops working immediately. Failed deliveries during the consumer's deploy window go into the retry queue.
 
-**Deferred:** grace-period rotation (server signs with both old and new secrets for a configurable window so consumers can roll over without coordinated downtime) is in ROADMAP.md. The signature header format already supports multiple `v1=...,v1=...` values per Stripe convention, so adding grace-period rotation later is non-breaking.
+**Deferred:** grace-period rotation (server signs with both old and new secrets for a configurable window so consumers can roll over without coordinated downtime) is in roadmap.md. The signature header format already supports multiple `v1=...,v1=...` values per Stripe convention, so adding grace-period rotation later is non-breaking.
 
 #### Backpressure
 
@@ -1066,7 +1066,7 @@ Unauthenticated. Returns `{ "status": "ok" }` if the API can talk to the databas
 
 Returns the route-driven OpenAPI 3.1 contract for the internal API. Requires `read` scope like other internal introspection routes. The spec is generated from the same route table used to build the running server mux, so new routes must be added to that table before they can be served or documented.
 
-The current contract publishes paths, methods, auth scope, idempotency headers, path parameters, request/response component schemas derived from the handler structs, and the standard error envelope. `internal/api` tests resolve every component `$ref` and type-check a generated Go client smoke source from the published operation IDs and component names. Stricter public compatibility checks are tracked in `ROADMAP.md`.
+The current contract publishes paths, methods, auth scope, idempotency headers, path parameters, request/response component schemas derived from the handler structs, and the standard error envelope. `internal/api` tests resolve every component `$ref` and type-check a generated Go client smoke source from the published operation IDs and component names. Stricter public compatibility checks are tracked in `roadmap.md`.
 
 ---
 
@@ -1075,7 +1075,7 @@ The current contract publishes paths, methods, auth scope, idempotency headers, 
 - **No Statuspage-style public status pages.** That's a separate product; Jetmon focuses on monitoring. If you want a public status page, the API gives you what you need to build one.
 - **No "monitor groups" / "tags" in v1.** Most consumers organize by `owner_blog_id`; tagging is a complexity multiplier we'd rather defer until requested.
 - **No GraphQL.** REST + cursor pagination + filters covers everything the v1 use cases need. If a future consumer needs nested-fetch optimization (sites + active events + recent transitions in one round-trip), we'd add a single `/api/v1/sites/{id}/full` endpoint before reaching for GraphQL.
-- **No per-region SLA breakdown.** All sites are checked from the orchestrator's bucket assignment, not a multi-region fleet (yet — see `TAXONOMY.md` v2/v3 vantage-point work). When that ships, the SLA endpoint gains a `?vantage_point=us-west-1` filter.
+- **No per-region SLA breakdown.** All sites are checked from the orchestrator's bucket assignment, not a multi-region fleet (yet — see `taxonomy.md` v2/v3 vantage-point work). When that ships, the SLA endpoint gains a `?vantage_point=us-west-1` filter.
 - **No streaming.** Webhooks cover event-driven needs; long-poll/SSE/WebSocket support is overkill for the current consumer set. Could be added on `/api/v1/sites/{id}/events/stream` if a consumer asks.
 
 ## Implementation Phase Map

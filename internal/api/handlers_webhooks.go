@@ -265,7 +265,7 @@ func (s *Server) handleDeleteWebhook(w http.ResponseWriter, r *http.Request) {
 // v1 behaviour: immediate revocation. The new secret is returned ONCE in
 // the response; the old secret stops working immediately. Failed deliveries
 // during the consumer's deploy window go into the retry queue and clear
-// when the consumer rolls. Grace-period rotation is in ROADMAP.md as a
+// when the consumer rolls. Grace-period rotation is in docs/roadmap.md as a
 // non-breaking future addition.
 func (s *Server) handleRotateWebhookSecret(w http.ResponseWriter, r *http.Request) {
 	id, err := parseIDPath(r, "id")

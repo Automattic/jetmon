@@ -21,7 +21,7 @@ import (
 // 2–6 retry at the documented intervals.
 //
 // After attempt 6 fails, the delivery is abandoned. Total elapsed time
-// from first attempt to abandonment: ~7h36m. See API.md for rationale.
+// from first attempt to abandonment: ~7h36m. See docs/internal-api-reference.md for rationale.
 var retrySchedule = []time.Duration{
 	0,                // attempt 1 — initial enqueue, no retry delay
 	1 * time.Minute,  // attempt 2
@@ -268,7 +268,7 @@ func (w *Worker) dispatchTick() error {
 }
 
 // buildPayload returns the JSON body that the consumer receives. Frozen at
-// enqueue time — see API.md "frozen-at-fire-time" contract.
+// enqueue time — see docs/internal-api-reference.md "frozen-at-fire-time" contract.
 //
 // Shape is flat: type, occurred_at, ids, and the relevant event/transition
 // fields. Consumers who want full event detail call GET /events/{id}.

@@ -97,6 +97,44 @@ It starts the same webhook and alert-contact workers without starting the
 monitor, API, dashboard, or bucket ownership loop. Delivery rows are claimed
 transactionally, so multiple workers do not claim the same pending row.
 
+For conservative single-owner rollout, validate the deliverer-specific config
+before enabling the service:
+
+```bash
+JETMON_CONFIG=/opt/jetmon2/config/deliverer.json \
+  /opt/jetmon2/bin/jetmon-deliverer validate-config \
+    --require-owner-match \
+    --require-api-disabled
+```
+
+Add `--require-email-delivery` when real alert-contact email delivery is
+expected in that environment.
+
+During rollout, inspect the shared webhook and alert-contact delivery queues
+from the same environment the service uses:
+
+```bash
+JETMON_CONFIG=/opt/jetmon2/config/deliverer.json \
+  /opt/jetmon2/bin/jetmon-deliverer delivery-check --since=15m
+```
+
+Use thresholds for automated gates:
+
+```bash
+JETMON_CONFIG=/opt/jetmon2/config/deliverer.json \
+  /opt/jetmon2/bin/jetmon-deliverer delivery-check \
+    --since=15m \
+    --max-due=0 \
+    --max-abandoned=0 \
+    --max-failed=0 \
+    --output=json
+```
+
+`delivery-check` also reports `failed_since`, `oldest_pending_age_sec`, and
+`oldest_due_age_sec`. Use `--require-recent-webhook-delivery` or
+`--require-recent-alert-delivery` when a rollout gate needs each delivery family
+to prove a successful send independently.
+
 See [jetmon-deliverer-rollout.md](jetmon-deliverer-rollout.md) for the rollout
 and rollback path.
 

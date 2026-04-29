@@ -96,7 +96,7 @@ type Config struct {
 	// (default; safe for environments where email is not configured),
 	// "smtp" = direct SMTP send (dev / staging with MailHog or similar),
 	// "wpcom" = POST to a WPCOM-owned email API endpoint (production).
-	// See API.md "Family 5 → Email delivery".
+	// See docs/internal-api-reference.md "Family 5 → Email delivery".
 	EmailTransport      string `json:"EMAIL_TRANSPORT"`
 	EmailFrom           string `json:"EMAIL_FROM"`
 	WPCOMEmailEndpoint  string `json:"WPCOM_EMAIL_ENDPOINT"`

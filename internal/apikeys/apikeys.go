@@ -5,7 +5,7 @@
 // token is only ever returned at creation time via the CLI.
 //
 // This package is the only writer for jetmon_api_keys. The HTTP API exposes
-// no key management endpoints — see API.md "Authentication".
+// no key management endpoints — see docs/internal-api-reference.md "Authentication".
 package apikeys
 
 import (
@@ -21,7 +21,7 @@ import (
 	"time"
 )
 
-// Scope is the coarse permission level granted to a key. See API.md.
+// Scope is the coarse permission level granted to a key. See docs/internal-api-reference.md.
 type Scope string
 
 const (

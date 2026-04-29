@@ -88,10 +88,10 @@ webhooks to customer-managed receivers (per ADR-0002 reversal).
 
 ## Related
 
-- API.md "Family 4 → Signing and secret rotation"
+- [`../internal-api-reference.md`](../internal-api-reference.md) "Family 4 → Signing and secret rotation"
 - `internal/webhooks/webhooks.go` `Sign` function and
   `TestSignatureRoundTrip` in the test suite (the contract test that
   every consumer's verification depends on).
 - ADR-0003 (Plaintext credentials)
-- ROADMAP.md "Grace-period webhook secret rotation" — the next
+- [`../roadmap.md`](../roadmap.md) "Grace-period webhook secret rotation" — the next
   follow-up that builds on the `v1=` reservation.

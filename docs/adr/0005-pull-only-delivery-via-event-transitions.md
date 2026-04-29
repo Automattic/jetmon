@@ -29,7 +29,7 @@ matter at the architectural scale:
   (Multi-instance does need row-level claim semantics on the
   delivery table; see ADR-0007.)
 - Workers don't have to live in the same process as the eventstore
-  writer. The deliverer-binary extraction (`ROADMAP.md`,
+  writer. The deliverer-binary extraction ([`../roadmap.md`](../roadmap.md),
   Architectural roadmap) becomes a clean cut: the worker code moves
   to its own binary, points at the same MySQL, and continues
   working without the eventstore writer being aware.
@@ -111,5 +111,5 @@ The MySQL schema is the bus between writers (eventstore) and readers
   multi-instance pull safe.
 - `internal/webhooks/worker.go`, `internal/alerting/worker.go` — the
   two pull-loop implementations.
-- `ROADMAP.md` "Multi-repo / multi-binary split" — the deliverer
+- [`../roadmap.md`](../roadmap.md) "Multi-repo / multi-binary split" — the deliverer
   binary that builds on this decision.

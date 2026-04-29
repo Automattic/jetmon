@@ -5,7 +5,7 @@ internal `/api/v1` API. It wraps the common API paths with typed commands,
 repeatable request payloads, Docker-local defaults, and output modes that work
 for both humans and scripts.
 
-Use this guide for day-to-day examples. Use [`../API.md`](../API.md) as the
+Use this guide for day-to-day examples. Use [`internal-api-reference.md`](internal-api-reference.md) as the
 endpoint contract reference when you need exact response shapes, request
 schemas, pagination semantics, or design rationale.
 

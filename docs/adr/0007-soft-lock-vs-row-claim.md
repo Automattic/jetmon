@@ -120,5 +120,5 @@ again. This is intentional rollback behavior.
 - `internal/webhooks/deliveries.go` `ClaimReady` and the matching
   `TestClaimReadyClaimsRowsTransactionally`.
 - `internal/alerting/deliveries.go` `ClaimReady` and matching test.
-- ROADMAP.md post-v2 platform refinement items for the deliverer split
+- [`../roadmap.md`](../roadmap.md) post-v2 platform refinement items for the deliverer split
   and active-active delivery.

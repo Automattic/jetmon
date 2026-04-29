@@ -35,7 +35,7 @@ because it is intentionally **not** drop-in with the Jetmon 1 wire format
 - Events list + single + transitions list + manual close
 - SLA endpoints: uptime, response-time, timing-breakdown
 - Audit logging via `jetmon_audit_log` with `event_type=api_access`
-- See API.md for full surface and design rationale
+- See internal-api-reference.md for full surface and design rationale
 
 **New — webhooks (Phase 3):**
 - `jetmon_webhooks` registry + `jetmon_webhook_deliveries` per-fire records
@@ -48,7 +48,7 @@ because it is intentionally **not** drop-in with the Jetmon 1 wire format
 - Frozen-at-fire-time payload contract — consumer sees the event as it was
   when the webhook fired, not as it is now
 - POST `/webhooks/{id}/rotate-secret` (immediate revocation; grace-period
-  rotation deferred — see ROADMAP.md)
+  rotation deferred — see roadmap.md)
 - POST `/webhooks/{id}/deliveries/{delivery_id}/retry` for operator manual
   retry of abandoned rows
 
@@ -70,7 +70,7 @@ because it is intentionally **not** drop-in with the Jetmon 1 wire format
 - Plaintext credential storage in `destination` JSON; same outbound-dispatch
   rationale as webhook secrets, threat model documented inline
 - Legacy WPCOM notification flow continues alongside; migration tracked
-  in ROADMAP.md
+  in roadmap.md
 
 **Verifier hardening:**
 - Body size cap and empty-token guard on the JSON-over-HTTP transport
@@ -89,7 +89,7 @@ because it is intentionally **not** drop-in with the Jetmon 1 wire format
   claim attempts skip stale SELECT results instead of doing duplicate
   dispatch work. Multi-instance row-claim caveat (SELECT ... FOR UPDATE
   SKIP LOCKED) still tracked alongside the deliverer-binary extraction in
-  ROADMAP.md.
+  roadmap.md.
 
 **Docs / tooling:**
 - `make all` now builds the currently implemented `jetmon2` and
@@ -132,7 +132,7 @@ because it is intentionally **not** drop-in with the Jetmon 1 wire format
 - API key cutoffs (`revoked_at` and `expires_at`) now share half-open
   semantics: a key is valid for times strictly before the cutoff and
   rejected at or after it. Future `revoked_at` continues to act as a
-  rotation grace window. See API.md.
+  rotation grace window. See internal-api-reference.md.
 - `LEGACY_STATUS_PROJECTION_ENABLE` is announced at startup
   (`config: legacy_status_projection=enabled|disabled`) and surfaced by
   `./jetmon2 validate-config`, so operators can confirm projection

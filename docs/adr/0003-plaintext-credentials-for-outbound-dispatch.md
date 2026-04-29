@@ -76,7 +76,7 @@ so future readers can audit it without rediscovering it.
   ADR-0002 is reversed), this trade-off changes. Customer-managed
   secrets in plaintext under shared infrastructure is a stronger
   threat. The mitigation path is encryption at rest with a master
-  key (KMS-style), which is queued in ROADMAP.md as a future
+  key (KMS-style), which is queued in [`../roadmap.md`](../roadmap.md) as a future
   hardening step.
 
 ## Alternatives considered
