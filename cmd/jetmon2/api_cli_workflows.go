@@ -151,7 +151,7 @@ func cmdAPISmoke(args []string) error {
 	fs.StringVar(&smoke.exercise, "exercise", smoke.exercise, "extra path to exercise: alert-contact, webhook, or none")
 	fs.StringVar(&smoke.idempotencyKeyPrefix, "idempotency-key-prefix", "", "prefix for smoke POST Idempotency-Key headers")
 	fs.StringVar(&smoke.webhookURL, "webhook-url", smoke.webhookURL, "receiver URL to register when --exercise=webhook")
-	fs.StringVar(&smoke.webhookRequestsURL, "webhook-requests-url", smoke.webhookRequestsURL, "fixture requests URL to poll when --exercise=webhook")
+	fs.StringVar(&smoke.webhookRequestsURL, "webhook-requests-url", smoke.webhookRequestsURL, "local fixture requests URL to poll when --exercise=webhook")
 	fs.DurationVar(&smoke.webhookWait, "webhook-wait", smoke.webhookWait, "maximum wait for webhook delivery when --exercise=webhook")
 	fs.DurationVar(&smoke.webhookPollInterval, "webhook-poll-interval", smoke.webhookPollInterval, "poll interval for webhook delivery checks")
 	fs.StringVar(&smoke.fixtureURL, "fixture-url", smoke.fixtureURL, "Docker fixture monitor URL, auto, or off when --exercise=webhook")
@@ -208,6 +208,14 @@ func runAPISmoke(ctx context.Context, client *http.Client, opts apiCLIOptions, s
 	}
 	if smoke.exercise != "alert-contact" && smoke.exercise != "webhook" && smoke.exercise != "none" {
 		return errors.New("exercise must be one of: alert-contact, webhook, none")
+	}
+	if remote && smoke.exercise == "webhook" {
+		return errors.New("api smoke --exercise webhook is Docker-local only and refuses non-local API targets")
+	}
+	if smoke.exercise == "webhook" {
+		if err := requireAPIWebhookFixtureRequestsLocal(smoke.webhookRequestsURL); err != nil {
+			return err
+		}
 	}
 	if smoke.webhookWait <= 0 {
 		return errors.New("webhook-wait must be positive")
@@ -408,7 +416,7 @@ func runAPISmoke(ctx context.Context, client *http.Client, opts apiCLIOptions, s
 				Active: &active,
 			}, "")
 			if err != nil {
-				return err
+				return redactAPISecretError(err, webhookSecret)
 			}
 			summary.Webhook = redactedAPIWebhookSummary(body)
 			return nil
@@ -682,6 +690,17 @@ func apiExternalHTTPClient(client *http.Client, opts apiCLIOptions) *http.Client
 	return &http.Client{Timeout: timeout}
 }
 
+func requireAPIWebhookFixtureRequestsLocal(rawURL string) error {
+	local, err := isLocalAPIURL(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid webhook-requests-url: %w", err)
+	}
+	if !local {
+		return fmt.Errorf("webhook-requests-url must be local for api smoke --exercise webhook: %q", rawURL)
+	}
+	return nil
+}
+
 func apiJSONInt64(body json.RawMessage, field string) (int64, error) {
 	var obj map[string]any
 	if err := json.Unmarshal(body, &obj); err != nil {
@@ -713,6 +732,23 @@ func apiJSONString(body json.RawMessage, field string) (string, error) {
 		return "", fmt.Errorf("response field %q is %T, want string", field, raw)
 	}
 	return value, nil
+}
+
+func redactAPISecretError(err error, secret string) error {
+	if err == nil {
+		return nil
+	}
+	secret = strings.TrimSpace(secret)
+	if secret == "" {
+		return err
+	}
+	msg := err.Error()
+	msg = strings.ReplaceAll(msg, secret, "redacted")
+	msg = strings.ReplaceAll(msg, url.QueryEscape(secret), "redacted")
+	if msg == err.Error() {
+		return err
+	}
+	return errors.New(msg)
 }
 
 func redactedAPIWebhookSummary(body json.RawMessage) *apiSmokeWebhookSummary {

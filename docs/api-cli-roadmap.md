@@ -254,3 +254,6 @@ but it should not become a generic `curl` clone.
   `api-cli-validate` to create a Docker-local webhook, update the fixture
   receiver with the generated secret, simulate a fixture-backed failure,
   verify the fixture's signature result, and confirm a delivered webhook row.
+- [x] 2026-04-29: Hardened webhook smoke so it stays Docker-local, requires a
+  local fixture polling endpoint, and redacts the generated webhook secret from
+  activation errors.

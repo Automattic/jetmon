@@ -177,3 +177,33 @@ func TestRunAPISmokeRemoteGuard(t *testing.T) {
 		t.Fatalf("runAPISmoke() error = %v, want remote batch requirement", err)
 	}
 }
+
+func TestRunAPISmokeWebhookExerciseRemoteGuard(t *testing.T) {
+	err := runAPISmoke(context.Background(), nil, apiCLIOptions{
+		baseURL:     "https://jetmon-api.example.test",
+		allowRemote: true,
+		out:         ioDiscard{},
+		errOut:      ioDiscard{},
+	}, apiSmokeOptions{
+		batch:    "remote-smoke",
+		exercise: "webhook",
+	})
+	if err == nil || !strings.Contains(err.Error(), "Docker-local only") {
+		t.Fatalf("runAPISmoke() error = %v, want Docker-local webhook refusal", err)
+	}
+}
+
+func TestRunAPISmokeWebhookRequiresLocalRequestsURL(t *testing.T) {
+	err := runAPISmoke(context.Background(), nil, apiCLIOptions{
+		baseURL: "http://localhost:8090",
+		out:     ioDiscard{},
+		errOut:  ioDiscard{},
+	}, apiSmokeOptions{
+		batch:              "local-smoke",
+		exercise:           "webhook",
+		webhookRequestsURL: "https://fixture.example.test/webhook/requests",
+	})
+	if err == nil || !strings.Contains(err.Error(), "webhook-requests-url must be local") {
+		t.Fatalf("runAPISmoke() error = %v, want local webhook requests URL refusal", err)
+	}
+}

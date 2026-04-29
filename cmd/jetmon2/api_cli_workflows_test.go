@@ -329,6 +329,22 @@ func TestRunAPISmokeWritesFailureSummary(t *testing.T) {
 	}
 }
 
+func TestRedactAPISecretError(t *testing.T) {
+	err := redactAPISecretError(
+		fmt.Errorf(`PATCH /api/v1/webhooks/88 returned 400 Bad Request: {"url":"http://api-fixture:8091/webhook?secret=whsec_TEST"}`),
+		"whsec_TEST",
+	)
+	if err == nil {
+		t.Fatal("redactAPISecretError() = nil, want error")
+	}
+	if strings.Contains(err.Error(), "whsec_TEST") {
+		t.Fatalf("redactAPISecretError() leaked secret: %v", err)
+	}
+	if !strings.Contains(err.Error(), "secret=redacted") {
+		t.Fatalf("redactAPISecretError() = %v, want redacted query value", err)
+	}
+}
+
 func TestAPICLIBatchBlogIDStartStable(t *testing.T) {
 	first := apiCLIBatchBlogIDStart("batch-a")
 	second := apiCLIBatchBlogIDStart("batch-a")
