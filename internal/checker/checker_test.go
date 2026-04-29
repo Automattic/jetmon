@@ -1,9 +1,14 @@
 package checker
 
 import (
+	"bufio"
 	"context"
+	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -395,6 +400,114 @@ func TestCheckConnectionRefused(t *testing.T) {
 	}
 	if res.DNS < 0 {
 		t.Errorf("DNS duration is negative (%v); zero-time underflow", res.DNS)
+	}
+}
+
+func TestCheckTruncatedContentLengthResponse(t *testing.T) {
+	url, shutdown := startRawHTTPServer(t, func(conn net.Conn) {
+		_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n")
+		_, _ = io.WriteString(conn, "short body")
+	})
+	defer shutdown()
+
+	res := Check(context.Background(), Request{BlogID: 1, URL: url, TimeoutSeconds: 5})
+	if res.ErrorCode != ErrorBodyTruncated {
+		t.Fatalf("ErrorCode = %d, want ErrorBodyTruncated", res.ErrorCode)
+	}
+	if res.Success {
+		t.Fatal("Success = true for truncated content-length response, want false")
+	}
+}
+
+func TestCheckTruncatedChunkedResponse(t *testing.T) {
+	url, shutdown := startRawHTTPServer(t, func(conn net.Conn) {
+		_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n")
+		_, _ = io.WriteString(conn, "A\r\n0123456789\r\n")
+		_, _ = io.WriteString(conn, "8\r\ntrunc")
+	})
+	defer shutdown()
+
+	res := Check(context.Background(), Request{BlogID: 1, URL: url, TimeoutSeconds: 5})
+	if res.ErrorCode != ErrorBodyTruncated {
+		t.Fatalf("ErrorCode = %d, want ErrorBodyTruncated", res.ErrorCode)
+	}
+	if res.Success {
+		t.Fatal("Success = true for truncated chunked response, want false")
+	}
+}
+
+func TestCheckKeywordFoundBeforeTruncationStillFails(t *testing.T) {
+	url, shutdown := startRawHTTPServer(t, func(conn net.Conn) {
+		_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n")
+		_, _ = io.WriteString(conn, "E\r\nhello jetpack!\r\n")
+		_, _ = io.WriteString(conn, "20\r\nthis-will-never-complete")
+	})
+	defer shutdown()
+
+	kw := "jetpack"
+	res := Check(context.Background(), Request{BlogID: 1, URL: url, TimeoutSeconds: 5, Keyword: &kw})
+	if res.ErrorCode != ErrorBodyTruncated {
+		t.Fatalf("ErrorCode = %d, want ErrorBodyTruncated", res.ErrorCode)
+	}
+	if res.Success {
+		t.Fatal("Success = true for truncated keyword response, want false")
+	}
+}
+
+func TestCheckLargeValidResponseDrainsSuccessfully(t *testing.T) {
+	largeBody := strings.Repeat("a", 2*1024*1024)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, largeBody)
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{BlogID: 1, URL: srv.URL, TimeoutSeconds: 5})
+	if !res.Success {
+		t.Fatalf("Success = false for large valid body, want true (error code %d)", res.ErrorCode)
+	}
+	if res.ErrorCode != ErrorNone {
+		t.Fatalf("ErrorCode = %d, want ErrorNone", res.ErrorCode)
+	}
+}
+
+func startRawHTTPServer(t *testing.T, handler func(net.Conn)) (string, func()) {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen failed: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				_ = c.SetDeadline(time.Now().Add(2 * time.Second))
+				reader := bufio.NewReader(c)
+				for {
+					line, readErr := reader.ReadString('\n')
+					if readErr != nil {
+						return
+					}
+					if line == "\r\n" {
+						break
+					}
+				}
+				handler(c)
+			}(conn)
+		}
+	}()
+
+	return fmt.Sprintf("http://%s", ln.Addr().String()), func() {
+		_ = ln.Close()
+		<-done
 	}
 }
 
