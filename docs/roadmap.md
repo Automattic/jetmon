@@ -37,7 +37,7 @@ preflight, deliverer hardening, and API CLI fixture workflow branches:
 - [x] Add `make rollout-docs-verify` so docs/tooling drift checks, command help
   checks, staged systemd validation, build, test, and lint can run as one
   repeatable gate.
-- [ ] Add `jetmon2 rollout cutover-check` to bundle the read-only post-start
+- [x] Add `jetmon2 rollout cutover-check` to bundle the read-only post-start
   pinned preflight, activity, status, and projection-drift checks used after
   each host replacement.
 - [ ] Add JSON output to rollout checks for Systems automation gates.
@@ -86,7 +86,7 @@ Recently completed candidate branches:
 - **Run a production rollout rehearsal pass.** Validate that README,
   `v1-to-v2-migration.md`, config samples, systemd units,
   `validate-config`, `rollout static-plan-check`, `rollout pinned-check`,
-  `rollout activity-check`, `rollout rollback-check`,
+  `rollout cutover-check`, `rollout activity-check`, `rollout rollback-check`,
   `rollout projection-drift`, and rollback steps line up exactly before the
   first production host replacement.
 - **Instrument the data needed for the v3 decision.** During v2 production,
@@ -700,6 +700,11 @@ where to look, and what each item unlocked.
   Example: `./jetmon2 rollout pinned-check` verifies pinned config, projection
   writes, dynamic-ownership absence, active-site coverage, and projection drift
   before cutover.
+- **Post-start cutover check.** `./jetmon2 rollout cutover-check` bundles the
+  read-only pinned preflight, recent activity check, dashboard status check,
+  and projection-drift report used after each v1 host replacement.
+  Operators can run it immediately after start, then again with `--require-all`
+  after one full expected check round.
 - **Dynamic ownership preflight.** `./jetmon2 rollout dynamic-check` verifies
   that pinned ranges are removed, `jetmon_hosts` rows cover the full bucket
   range without gaps/overlaps, heartbeats are fresh, and projection drift is
@@ -752,9 +757,9 @@ where to look, and what each item unlocked.
   This gives local, staging, and CI rehearsals a repeatable way to exercise the
   internal API without hand-written curl scripts.
 - **Rollout preflight and deliverer hardening branches.** The v2 branch now has
-  static bucket plan validation, pinned/dynamic/activity/rollback/drift rollout
-  checks, standalone `jetmon-deliverer` validation, delivery queue checks, and
-  matching operator docs.
+  static bucket plan validation, pinned/dynamic/cutover/activity/rollback/drift
+  rollout checks, standalone `jetmon-deliverer` validation, delivery queue
+  checks, and matching operator docs.
   These are the guardrails needed before replacing the first v1 production
   monitor host or splitting outbound delivery.
 - **Coverage and race-test expansion.** Core packages gained coverage for

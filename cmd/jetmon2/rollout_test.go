@@ -316,7 +316,8 @@ jetmon-v1-b,5,9
 		"systemd-analyze verify /etc/systemd/system/jetmon2.service",
 		"./jetmon2 rollout pinned-check --host jetmon-v1-a",
 		"systemctl enable --now jetmon2",
-		"./jetmon2 rollout activity-check --bucket-min 0 --bucket-max 4 --since 15m --require-all",
+		"./jetmon2 rollout cutover-check --host jetmon-v1-a --bucket-min 0 --bucket-max 4 --since 15m",
+		"./jetmon2 rollout cutover-check --host jetmon-v1-a --bucket-min 0 --bucket-max 4 --since 15m --require-all",
 		"./jetmon2 rollout rollback-check --host jetmon-v1-a --bucket-min 0 --bucket-max 4",
 		"./jetmon2 rollout dynamic-check",
 	} {
@@ -353,7 +354,7 @@ jetmon-v1-a,0,9
 		`INFO plan_host="jetmon-v1-a" runtime_host="jetmon-v2-a" range=0-9`,
 		"/opt/jetmon2/jetmon2 rollout pinned-check --host jetmon-v2-a",
 		"# Stop v1 on jetmon-v1-a with the documented production command.",
-		"/opt/jetmon2/jetmon2 rollout activity-check --bucket-min 0 --bucket-max 9 --since 20m",
+		"/opt/jetmon2/jetmon2 rollout cutover-check --host jetmon-v2-a --bucket-min 0 --bucket-max 9 --since 20m",
 		"/opt/jetmon2/jetmon2 rollout rollback-check --host jetmon-v2-a --bucket-min 0 --bucket-max 9",
 	} {
 		if !strings.Contains(out.String(), want) {
@@ -682,12 +683,202 @@ func TestRunPinnedRolloutCheckFailures(t *testing.T) {
 	}
 }
 
+func TestRunCutoverCheckSuccess(t *testing.T) {
+	now := time.Date(2026, 4, 29, 12, 0, 0, 0, time.UTC)
+	cfg := pinnedRolloutTestConfig(12, 34)
+	cfg.DashboardPort = 8080
+
+	deps := successfulCutoverCheckDeps(now)
+	var gotStatusPort int
+	deps.Status = func(port int) (string, error) {
+		gotStatusPort = port
+		return "{\n  \"state\": \"ok\"\n}", nil
+	}
+
+	var out bytes.Buffer
+	err := runCutoverCheck(context.Background(), &out, cfg, cutoverCheckOptions{
+		HostOverride: "host-a",
+		BucketMin:    -1,
+		BucketMax:    -1,
+		Since:        "15m",
+		Limit:        100,
+		StatusPort:   -1,
+	}, deps)
+	if err != nil {
+		t.Fatalf("runCutoverCheck: %v", err)
+	}
+	if gotStatusPort != 8080 {
+		t.Fatalf("status port = %d, want 8080", gotStatusPort)
+	}
+	for _, want := range []string{
+		"## pinned preflight",
+		"pinned rollout check passed",
+		"## activity check",
+		"PASS rollout_activity=recent_checks_present",
+		"## dashboard status",
+		"PASS dashboard_status=http://localhost:8080/api/state",
+		`INFO dashboard_state={ "state": "ok" }`,
+		"## projection drift",
+		"PASS legacy_projection_drift=0",
+		"cutover check passed",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestRunCutoverCheckRequireAllAndSkipStatus(t *testing.T) {
+	now := time.Date(2026, 4, 29, 12, 0, 0, 0, time.UTC)
+	cfg := pinnedRolloutTestConfig(12, 34)
+	deps := successfulCutoverCheckDeps(now)
+	deps.Status = func(int) (string, error) {
+		t.Fatal("status should not be called")
+		return "", nil
+	}
+
+	var out bytes.Buffer
+	err := runCutoverCheck(context.Background(), &out, cfg, cutoverCheckOptions{
+		BucketMin:  -1,
+		BucketMax:  -1,
+		Since:      "15m",
+		RequireAll: true,
+		Limit:      100,
+		StatusPort: -1,
+		SkipStatus: true,
+	}, deps)
+	if err != nil {
+		t.Fatalf("runCutoverCheck: %v", err)
+	}
+	for _, want := range []string{
+		"PASS rollout_activity=all_active_sites_checked",
+		"INFO dashboard_status=skipped reason=operator",
+		"cutover check passed",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestRunCutoverCheckSkipsDisabledDashboard(t *testing.T) {
+	now := time.Date(2026, 4, 29, 12, 0, 0, 0, time.UTC)
+	cfg := pinnedRolloutTestConfig(12, 34)
+	cfg.DashboardPort = 0
+	deps := successfulCutoverCheckDeps(now)
+	deps.Status = func(int) (string, error) {
+		t.Fatal("status should not be called")
+		return "", nil
+	}
+
+	var out bytes.Buffer
+	if err := runCutoverCheck(context.Background(), &out, cfg, cutoverCheckOptions{BucketMin: -1, BucketMax: -1, Since: "15m", Limit: 100, StatusPort: -1}, deps); err != nil {
+		t.Fatalf("runCutoverCheck: %v", err)
+	}
+	if !strings.Contains(out.String(), "INFO dashboard_status=skipped dashboard_port=disabled") {
+		t.Fatalf("output missing disabled dashboard skip:\n%s", out.String())
+	}
+}
+
+func TestRunCutoverCheckFailures(t *testing.T) {
+	now := time.Date(2026, 4, 29, 12, 0, 0, 0, time.UTC)
+	cfg := pinnedRolloutTestConfig(12, 34)
+	cfg.DashboardPort = 8080
+
+	tests := []struct {
+		name string
+		opts cutoverCheckOptions
+		deps cutoverCheckDeps
+		want string
+	}{
+		{
+			name: "status error",
+			opts: cutoverCheckOptions{BucketMin: -1, BucketMax: -1, Since: "15m", Limit: 100, StatusPort: -1},
+			deps: func() cutoverCheckDeps {
+				deps := successfulCutoverCheckDeps(now)
+				deps.Status = func(int) (string, error) {
+					return "", errors.New("connection refused")
+				}
+				return deps
+			}(),
+			want: "connection refused",
+		},
+		{
+			name: "activity require all failure",
+			opts: cutoverCheckOptions{BucketMin: -1, BucketMax: -1, Since: "15m", RequireAll: true, Limit: 100, StatusPort: -1, SkipStatus: true},
+			deps: func() cutoverCheckDeps {
+				deps := successfulCutoverCheckDeps(now)
+				deps.Activity.CountRecentlyCheckedActiveSitesForRange = func(context.Context, int, int, time.Time) (int, error) {
+					return 1, nil
+				}
+				return deps
+			}(),
+			want: "only 1/3 active sites",
+		},
+		{
+			name: "projection drift",
+			opts: cutoverCheckOptions{BucketMin: -1, BucketMax: -1, Since: "15m", Limit: 100, StatusPort: -1, SkipStatus: true},
+			deps: func() cutoverCheckDeps {
+				deps := successfulCutoverCheckDeps(now)
+				deps.Projection.CountLegacyProjectionDrift = func(context.Context, int, int) (int, error) {
+					return 2, nil
+				}
+				deps.Projection.ListLegacyProjectionDrift = func(context.Context, int, int, int) ([]db.ProjectionDriftRow, error) {
+					return nil, nil
+				}
+				return deps
+			}(),
+			want: "legacy projection drift=2",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			err := runCutoverCheck(context.Background(), &out, cfg, tt.opts, tt.deps)
+			if err == nil {
+				t.Fatal("runCutoverCheck succeeded")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tt.want)
+			}
+		})
+	}
+}
+
 func pinnedRolloutTestConfig(minBucket, maxBucket int) *config.Config {
 	return &config.Config{
 		PinnedBucketMin:              &minBucket,
 		PinnedBucketMax:              &maxBucket,
 		LegacyStatusProjectionEnable: true,
 	}
+}
+
+func successfulCutoverCheckDeps(now time.Time) cutoverCheckDeps {
+	deps := cutoverCheckDeps{
+		Pinned: successfulPinnedRolloutDeps(),
+		Activity: activityCheckDeps{
+			Now: func() time.Time { return now },
+			CountActiveSitesForBucketRange: func(context.Context, int, int) (int, error) {
+				return 3, nil
+			},
+			CountRecentlyCheckedActiveSitesForRange: func(context.Context, int, int, time.Time) (int, error) {
+				return 3, nil
+			},
+		},
+		Projection: projectionDriftDeps{
+			CountLegacyProjectionDrift: func(context.Context, int, int) (int, error) {
+				return 0, nil
+			},
+			ListLegacyProjectionDrift: func(context.Context, int, int, int) ([]db.ProjectionDriftRow, error) {
+				return nil, nil
+			},
+		},
+		Status: func(int) (string, error) {
+			return `{"state":"ok"}`, nil
+		},
+	}
+	return deps
 }
 
 func successfulPinnedRolloutDeps() pinnedRolloutCheckDeps {

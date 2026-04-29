@@ -76,6 +76,11 @@ sequence for one host replacement. Use `--mode=fresh-server` plus
 `--runtime-host=<new-v2-hostname>` when the new v2 hostname differs from the v1
 host recorded in the static bucket plan.
 
+After a pinned v2 host starts, use `./jetmon2 rollout cutover-check --since=15m`
+to run the post-start pinned preflight, recent activity check, dashboard status
+check, and projection-drift report together. After one full expected check
+round, rerun it with `--require-all` before moving to the next host.
+
 ## v2 Rolling Updates
 
 After all monitor hosts are on v2 dynamic bucket ownership, update one host at a

@@ -282,8 +282,8 @@ func TestRolloutAdviceLines(t *testing.T) {
 
 	min, max := 12, 34
 	pinned := rolloutAdviceLines(&config.Config{PinnedBucketMin: &min, PinnedBucketMax: &max})
-	if len(pinned) != 5 {
-		t.Fatalf("pinned advice len = %d, want 5", len(pinned))
+	if len(pinned) != 6 {
+		t.Fatalf("pinned advice len = %d, want 6", len(pinned))
 	}
 	if !strings.Contains(pinned[0], "rollout static-plan-check") {
 		t.Fatalf("pinned static-plan advice = %q", pinned[0])
@@ -294,11 +294,14 @@ func TestRolloutAdviceLines(t *testing.T) {
 	if !strings.Contains(pinned[2], "rollout activity-check") {
 		t.Fatalf("pinned activity advice = %q", pinned[2])
 	}
-	if !strings.Contains(pinned[3], "rollout rollback-check") {
-		t.Fatalf("pinned rollback advice = %q", pinned[3])
+	if !strings.Contains(pinned[3], "rollout cutover-check") {
+		t.Fatalf("pinned cutover advice = %q", pinned[3])
 	}
-	if !strings.Contains(pinned[4], "rollout projection-drift") {
-		t.Fatalf("pinned drift advice = %q", pinned[4])
+	if !strings.Contains(pinned[4], "rollout rollback-check") {
+		t.Fatalf("pinned rollback advice = %q", pinned[4])
+	}
+	if !strings.Contains(pinned[5], "rollout projection-drift") {
+		t.Fatalf("pinned drift advice = %q", pinned[5])
 	}
 }
 
@@ -316,6 +319,12 @@ func TestRolloutCommandHelpers(t *testing.T) {
 	}
 	if got := rolloutActivityCommand(); got != "./jetmon2 rollout activity-check --since=15m" {
 		t.Fatalf("rolloutActivityCommand() = %q", got)
+	}
+	if got := cutoverCheckCommand(&config.Config{}); got != "" {
+		t.Fatalf("cutoverCheckCommand(dynamic) = %q, want empty", got)
+	}
+	if got := cutoverCheckCommand(cfg); got != "./jetmon2 rollout cutover-check --since=15m" {
+		t.Fatalf("cutoverCheckCommand(pinned) = %q", got)
 	}
 	if got := rollbackCheckCommand(&config.Config{}); got != "" {
 		t.Fatalf("rollbackCheckCommand(dynamic) = %q, want empty", got)

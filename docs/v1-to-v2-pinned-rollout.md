@@ -17,6 +17,8 @@ Pinned mode still means:
   and delivery-owner plan has been approved
 - run `./jetmon2 validate-config`
 - run `./jetmon2 rollout pinned-check`
+- after v2 starts, run `./jetmon2 rollout cutover-check --since=15m`, then
+  rerun it with `--require-all` after one full expected check round
 
 The old detailed checklist was consolidated into
 [v1-to-v2-migration.md](v1-to-v2-migration.md) so migration guidance does not

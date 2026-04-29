@@ -44,6 +44,7 @@ step "rollout command help"
 run_help_check "$jetmon_binary" rollout rehearsal-plan --help
 run_help_check "$jetmon_binary" rollout static-plan-check --help
 run_help_check "$jetmon_binary" rollout pinned-check --help
+run_help_check "$jetmon_binary" rollout cutover-check --help
 run_help_check "$jetmon_binary" rollout rollback-check --help
 run_help_check "$jetmon_binary" rollout dynamic-check --help
 run_help_check "$jetmon_binary" rollout activity-check --help
@@ -70,6 +71,7 @@ plan_output="$("$jetmon_binary" rollout rehearsal-plan \
 printf '%s\n' "$plan_output"
 grep -q 'rollout static-plan-check' <<<"$plan_output" || fail "rehearsal plan omitted static-plan-check"
 grep -q 'rollout pinned-check' <<<"$plan_output" || fail "rehearsal plan omitted pinned-check"
+grep -q 'rollout cutover-check' <<<"$plan_output" || fail "rehearsal plan omitted cutover-check"
 grep -q 'rollout rollback-check' <<<"$plan_output" || fail "rehearsal plan omitted rollback-check"
 grep -q 'rollout dynamic-check' <<<"$plan_output" || fail "rehearsal plan omitted dynamic-check"
 

@@ -224,6 +224,7 @@ Confirm it reports:
 - `rollout_static_plan=./jetmon2 rollout static-plan-check --file=<ranges.csv>`
 - `rollout_preflight=./jetmon2 rollout pinned-check`
 - `rollout_activity_check=./jetmon2 rollout activity-check --since=15m`
+- `rollout_cutover_check=./jetmon2 rollout cutover-check --since=15m`
 - `rollout_rollback_check=./jetmon2 rollout rollback-check`
 - `rollout_drift_report=./jetmon2 rollout projection-drift`
 
@@ -315,18 +316,18 @@ same bucket range.
 10. Run:
 
     ```bash
-    ./jetmon2 rollout pinned-check
-    ./jetmon2 rollout activity-check --since=15m
-    ./jetmon2 status
+    ./jetmon2 rollout cutover-check --since=15m
     ```
 
-    `activity-check` proves the range has fresh `last_checked_at` writes, not
-    which process wrote them. Keep v1 stopped and use logs or the dashboard to
-    confirm v2 is checking only the pinned range.
+    `cutover-check` runs the pinned preflight, recent activity check,
+    dashboard status check, and projection-drift report. Its activity section
+    proves the range has fresh `last_checked_at` writes, not which process
+    wrote them. Keep v1 stopped and use logs or the dashboard to confirm v2 is
+    checking only the pinned range.
 11. After one full expected round, run:
 
     ```bash
-    ./jetmon2 rollout activity-check --since=15m --require-all
+    ./jetmon2 rollout cutover-check --since=15m --require-all
     ```
 
 12. Watch one full check round before moving to the next host.
@@ -353,11 +354,9 @@ v1 server.
    systemctl enable --now jetmon2
    ```
 
-10. Run `./jetmon2 rollout pinned-check`,
-    `./jetmon2 rollout activity-check --since=15m`, and `./jetmon2 status` on
-    the new server.
+10. Run `./jetmon2 rollout cutover-check --since=15m` on the new server.
 11. After one full expected round, run
-    `./jetmon2 rollout activity-check --since=15m --require-all`.
+    `./jetmon2 rollout cutover-check --since=15m --require-all`.
 12. Watch one full check round before moving to the next host.
 
 Do not leave the old v1 server running as a warm standby for the same range. A
@@ -394,6 +393,14 @@ For every replaced range, verify:
 
   ```bash
   ./jetmon2 rollout activity-check --since=15m --require-all
+  ```
+
+  The bundled cutover check runs the pinned preflight, activity check,
+  dashboard status check, and projection-drift report together:
+
+  ```bash
+  ./jetmon2 rollout cutover-check --since=15m
+  ./jetmon2 rollout cutover-check --since=15m --require-all
   ```
 
 If `DASHBOARD_PORT` is enabled, confirm:
@@ -479,9 +486,7 @@ After every monitor host is on v2 and stable in pinned mode:
 2. Confirm every v2 host passes:
 
    ```bash
-   ./jetmon2 rollout pinned-check
-   ./jetmon2 rollout activity-check --since=15m --require-all
-   ./jetmon2 rollout projection-drift --limit=100
+   ./jetmon2 rollout cutover-check --since=15m --require-all
    ```
 
 3. Observe the fleet for the agreed stabilization window.
@@ -533,7 +538,7 @@ Only remove v1 after rollout signoff.
 - [ ] pinned configs prepared for every range
 - [ ] rollback commands documented for every host
 - [ ] first host cutover observed for one full round
-- [ ] `rollout activity-check --require-all` passes for replaced ranges
+- [ ] `rollout cutover-check --require-all` passes for replaced ranges
 - [ ] `rollout rollback-check` exercised during rehearsal
 - [ ] all hosts running v2 pinned
 - [ ] dynamic ownership cutover completed

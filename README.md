@@ -128,9 +128,9 @@ is in [docs/v1-to-v2-migration.md](docs/v1-to-v2-migration.md):
 - Use pinned bucket mode for the first v1-to-v2 migration so one v1 host can be
   replaced by one v2 host with the same bucket range.
 - Use `rollout static-plan-check`, `rollout pinned-check`,
-  `rollout activity-check`, `rollout rollback-check`, and
-  `rollout projection-drift` from the migration runbook before changing the
-  next host.
+  `rollout cutover-check`, `rollout rollback-check`, and targeted
+  `rollout activity-check` / `rollout projection-drift` from the migration
+  runbook before changing the next host.
 - Keep `LEGACY_STATUS_PROJECTION_ENABLE` on until legacy readers have moved to
   the v2 API or event tables.
 - Use `SIGINT` or `./jetmon2 drain` for graceful shutdown.

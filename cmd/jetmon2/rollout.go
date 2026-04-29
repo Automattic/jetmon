@@ -45,9 +45,16 @@ type projectionDriftDeps struct {
 	ListLegacyProjectionDrift  func(context.Context, int, int, int) ([]db.ProjectionDriftRow, error)
 }
 
+type cutoverCheckDeps struct {
+	Pinned     pinnedRolloutCheckDeps
+	Activity   activityCheckDeps
+	Projection projectionDriftDeps
+	Status     func(int) (string, error)
+}
+
 func cmdRollout(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout <rehearsal-plan|static-plan-check|pinned-check|rollback-check|dynamic-check|activity-check|projection-drift> [args]")
+		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout <rehearsal-plan|static-plan-check|pinned-check|cutover-check|rollback-check|dynamic-check|activity-check|projection-drift> [args]")
 		os.Exit(1)
 	}
 
@@ -58,6 +65,8 @@ func cmdRollout(args []string) {
 		cmdRolloutStaticPlanCheck(args[1:])
 	case "pinned-check":
 		cmdRolloutPinnedCheck(args[1:])
+	case "cutover-check":
+		cmdRolloutCutoverCheck(args[1:])
 	case "rollback-check":
 		cmdRolloutRollbackCheck(args[1:])
 	case "dynamic-check":
@@ -67,7 +76,7 @@ func cmdRollout(args []string) {
 	case "projection-drift":
 		cmdRolloutProjectionDrift(args[1:])
 	default:
-		fmt.Fprintf(os.Stderr, "unknown rollout subcommand %q (want: rehearsal-plan, static-plan-check, pinned-check, rollback-check, dynamic-check, activity-check, projection-drift)\n", args[0])
+		fmt.Fprintf(os.Stderr, "unknown rollout subcommand %q (want: rehearsal-plan, static-plan-check, pinned-check, cutover-check, rollback-check, dynamic-check, activity-check, projection-drift)\n", args[0])
 		os.Exit(1)
 	}
 }
@@ -219,6 +228,71 @@ func cmdRolloutPinnedCheck(args []string) {
 		CountLegacyProjectionDrift:     db.CountLegacyProjectionDrift,
 	}
 	if err := runPinnedRolloutCheck(context.Background(), os.Stdout, config.Get(), *host, deps); err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func cmdRolloutCutoverCheck(args []string) {
+	fs := flag.NewFlagSet("rollout cutover-check", flag.ExitOnError)
+	host := fs.String("host", "", "host id to check (default current hostname)")
+	bucketMin := fs.Int("bucket-min", -1, "inclusive bucket minimum (default pinned range)")
+	bucketMax := fs.Int("bucket-max", -1, "inclusive bucket maximum (default pinned range)")
+	since := fs.String("since", "15m", "activity cutoff as duration like 15m or RFC3339 timestamp")
+	requireAll := fs.Bool("require-all", false, "fail unless every active site in range was checked since the cutoff")
+	limit := fs.Int("limit", 100, "maximum projection drift rows to print")
+	statusPort := fs.Int("status-port", -1, "dashboard port for status check (default DASHBOARD_PORT from config)")
+	skipStatus := fs.Bool("skip-status", false, "skip dashboard status check")
+	_ = fs.Parse(args)
+	if fs.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout cutover-check [--host=<host_id>] [--bucket-min=N --bucket-max=N] [--since=15m] [--require-all] [--limit=N] [--status-port=N] [--skip-status]")
+		os.Exit(1)
+	}
+
+	configPath := envOrDefault("JETMON_CONFIG", "config/config.json")
+	if err := config.Load(configPath); err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL config parse: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("PASS config parse")
+
+	config.LoadDB()
+	if err := db.ConnectWithRetry(3); err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL db connect: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("PASS db connect")
+
+	deps := cutoverCheckDeps{
+		Pinned: pinnedRolloutCheckDeps{
+			Hostname:                       db.Hostname,
+			HostRowExists:                  db.HostRowExists,
+			ListOverlappingHostRows:        db.ListHostRowsOverlappingBucketRange,
+			CountActiveSitesForBucketRange: db.CountActiveSitesForBucketRange,
+			CountLegacyProjectionDrift:     db.CountLegacyProjectionDrift,
+		},
+		Activity: activityCheckDeps{
+			Now:                                     time.Now,
+			CountActiveSitesForBucketRange:          db.CountActiveSitesForBucketRange,
+			CountRecentlyCheckedActiveSitesForRange: db.CountRecentlyCheckedActiveSitesForBucketRange,
+		},
+		Projection: projectionDriftDeps{
+			CountLegacyProjectionDrift: db.CountLegacyProjectionDrift,
+			ListLegacyProjectionDrift:  db.ListLegacyProjectionDrift,
+		},
+		Status: dashboardStatus,
+	}
+	opts := cutoverCheckOptions{
+		HostOverride: *host,
+		BucketMin:    *bucketMin,
+		BucketMax:    *bucketMax,
+		Since:        *since,
+		RequireAll:   *requireAll,
+		Limit:        *limit,
+		StatusPort:   *statusPort,
+		SkipStatus:   *skipStatus,
+	}
+	if err := runCutoverCheck(context.Background(), os.Stdout, config.Get(), opts, deps); err != nil {
 		fmt.Fprintf(os.Stderr, "FAIL %v\n", err)
 		os.Exit(1)
 	}
@@ -479,12 +553,9 @@ func runRolloutRehearsalPlan(out io.Writer, input io.Reader, opts rolloutRehears
 
 	rangeArgs := []string{"--bucket-min", strconv.Itoa(opts.BucketMin), "--bucket-max", strconv.Itoa(opts.BucketMax)}
 	writeRolloutPlanSection(out, "5. Verify the v2 host after start",
-		rolloutCommand(binary, "rollout", "pinned-check", "--host", runtimeHost),
-		rolloutCommand(append([]string{binary, "rollout", "activity-check"}, append(rangeArgs, "--since", since)...)...),
-		rolloutCommand(binary, "status"),
+		rolloutCommand(append([]string{binary, "rollout", "cutover-check", "--host", runtimeHost}, append(append([]string{}, rangeArgs...), "--since", since)...)...),
 		"# After one full expected check round:",
-		rolloutCommand(append([]string{binary, "rollout", "activity-check"}, append(append([]string{}, rangeArgs...), "--since", since, "--require-all")...)...),
-		rolloutCommand(append([]string{binary, "rollout", "projection-drift"}, append(rangeArgs, "--limit", "100")...)...),
+		rolloutCommand(append([]string{binary, "rollout", "cutover-check", "--host", runtimeHost}, append(append([]string{}, rangeArgs...), "--since", since, "--require-all")...)...),
 	)
 
 	rollbackComment := "# Restart the original v1 service with its original BUCKET_NO_MIN/BUCKET_NO_MAX config."
@@ -498,9 +569,7 @@ func runRolloutRehearsalPlan(out io.Writer, input io.Reader, opts rolloutRehears
 	)
 
 	writeRolloutPlanSection(out, "7. Complete fleet-level pinned and dynamic checks after every host is on v2",
-		rolloutCommand(binary, "rollout", "pinned-check", "--host", runtimeHost),
-		rolloutCommand(append([]string{binary, "rollout", "activity-check"}, append(append([]string{}, rangeArgs...), "--since", since, "--require-all")...)...),
-		rolloutCommand(append([]string{binary, "rollout", "projection-drift"}, append(rangeArgs, "--limit", "100")...)...),
+		rolloutCommand(append([]string{binary, "rollout", "cutover-check", "--host", runtimeHost}, append(append([]string{}, rangeArgs...), "--since", since, "--require-all")...)...),
 		"# After PINNED_BUCKET_* is removed from every v2 monitor config and the fleet is restarted:",
 		rolloutCommand(binary, "validate-config"),
 		rolloutCommand(binary, "rollout", "dynamic-check"),
@@ -508,6 +577,83 @@ func runRolloutRehearsalPlan(out io.Writer, input io.Reader, opts rolloutRehears
 		rolloutCommand(binary, "rollout", "projection-drift", "--limit", "100"),
 	)
 	return nil
+}
+
+type cutoverCheckOptions struct {
+	HostOverride string
+	BucketMin    int
+	BucketMax    int
+	Since        string
+	RequireAll   bool
+	Limit        int
+	StatusPort   int
+	SkipStatus   bool
+}
+
+func runCutoverCheck(ctx context.Context, out io.Writer, cfg *config.Config, opts cutoverCheckOptions, deps cutoverCheckDeps) error {
+	if cfg == nil {
+		return errors.New("config is not loaded")
+	}
+	if out == nil {
+		out = io.Discard
+	}
+
+	writeRolloutPlanSection(out, "pinned preflight")
+	if err := runPinnedRolloutCheck(ctx, out, cfg, opts.HostOverride, deps.Pinned); err != nil {
+		return err
+	}
+
+	writeRolloutPlanSection(out, "activity check")
+	if err := runActivityCheck(ctx, out, cfg, opts.BucketMin, opts.BucketMax, opts.Since, opts.RequireAll, deps.Activity); err != nil {
+		return err
+	}
+
+	writeRolloutPlanSection(out, "dashboard status")
+	if err := runCutoverStatusCheck(out, cfg, opts, deps); err != nil {
+		return err
+	}
+
+	writeRolloutPlanSection(out, "projection drift")
+	if err := runProjectionDriftReport(ctx, out, cfg, opts.BucketMin, opts.BucketMax, opts.Limit, deps.Projection); err != nil {
+		return err
+	}
+
+	fmt.Fprintln(out, "cutover check passed")
+	return nil
+}
+
+func runCutoverStatusCheck(out io.Writer, cfg *config.Config, opts cutoverCheckOptions, deps cutoverCheckDeps) error {
+	if opts.SkipStatus {
+		fmt.Fprintln(out, "INFO dashboard_status=skipped reason=operator")
+		return nil
+	}
+	port := opts.StatusPort
+	if port == -1 {
+		port = cfg.DashboardPort
+	}
+	if port < 0 {
+		return errors.New("status-port must be >= 0")
+	}
+	if port == 0 {
+		fmt.Fprintln(out, "INFO dashboard_status=skipped dashboard_port=disabled")
+		return nil
+	}
+	if deps.Status == nil {
+		return errors.New("dashboard status checker is not configured")
+	}
+	body, err := deps.Status(port)
+	if err != nil {
+		return fmt.Errorf("dashboard status check on port %d: %w", port, err)
+	}
+	fmt.Fprintf(out, "PASS dashboard_status=http://localhost:%d/api/state\n", port)
+	if body = strings.TrimSpace(body); body != "" {
+		fmt.Fprintf(out, "INFO dashboard_state=%s\n", strings.Join(strings.Fields(body), " "))
+	}
+	return nil
+}
+
+func dashboardStatus(port int) (string, error) {
+	return httpGet(fmt.Sprintf("http://localhost:%d/api/state", port))
 }
 
 func writeRolloutPlanSection(out io.Writer, title string, lines ...string) {
