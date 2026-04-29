@@ -73,6 +73,9 @@ preflight, deliverer hardening, and API CLI fixture workflow branches:
   tighten the flow: richer dry-run plans with commands and confirmations,
   state-aware resume skips for interrupted service transitions, and an explicit
   resume/start-over prompt with no unsafe default.
+- [x] Extend targeted guided rollout flow coverage for fresh-server handoff,
+  execute-mode dry-runs, wrong typed confirmations, mismatched resume state,
+  explicit start-over, and rollback after a failed post-start gate.
 
 Recently completed candidate branches:
 

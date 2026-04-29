@@ -165,7 +165,7 @@ If the command is interrupted after a stop/start transition, rerun it with the
 same options and choose resume; saved service state prevents the command from
 asking the operator to repeat a transition that already completed. When resume
 state exists, there is no default choice; the operator must type `RESUME` or
-`START OVER`.
+`START OVER`. Short `y` / `n` answers are rejected for this prompt.
 Dry-run mode prints the selected path, service commands, typed confirmation
 phrases, and manual `DONE` checkpoints without running rollout checks or
 service commands.
@@ -184,6 +184,11 @@ If a rollout needs to return the range to v1, use the guided rollback path:
   --v1-start-command='<exact v1 rollback start command>' \
   --log-dir=logs/rollout
 ```
+
+If a forward gate fails after v2 has started and the operator chooses rollback,
+the rollback path can complete successfully while the overall command exits
+non-zero. This is intentional: the host rollout did not complete, even though
+the range was returned to v1. Keep the transcript with the rollout record.
 
 ### Prepare Database And Rollback Safety
 

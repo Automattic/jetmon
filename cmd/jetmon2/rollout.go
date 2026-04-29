@@ -907,6 +907,7 @@ const guidedRolloutStateVersion = 1
 var (
 	errGuidedStopped           = errors.New("guided rollout stopped by operator")
 	errGuidedRollbackRequested = errors.New("guided rollback requested by operator")
+	errGuidedForwardRolledBack = errors.New("forward rollout failed; guided rollback completed and range is back on v1")
 )
 
 type hostPreflightOptions struct {
@@ -1209,7 +1210,20 @@ func runGuidedRollout(ctx context.Context, out io.Writer, input io.Reader, opts 
 		return err
 	}
 	if found {
-		fmt.Fprintf(session.out, "INFO previous_state=found last_completed=%q v1_stopped=%t v2_started=%t\n", state.LastCompletedStep, state.V1Stopped, state.V2Started)
+		fmt.Fprintf(
+			session.out,
+			"INFO previous_state=found mode=%q host=%q runtime_host=%q range=%d-%d last_completed=%q v1_stopped=%t v1_state_known=%t v2_started=%t v2_state_known=%t\n",
+			state.Mode,
+			state.HostID,
+			state.RuntimeHost,
+			state.BucketMin,
+			state.BucketMax,
+			state.LastCompletedStep,
+			state.V1Stopped,
+			state.V1StateKnown,
+			state.V2Started,
+			state.V2StateKnown,
+		)
 		resume, err := session.chooseResumeState()
 		if err != nil {
 			return err
@@ -1218,8 +1232,10 @@ func runGuidedRollout(ctx context.Context, out io.Writer, input io.Reader, opts 
 			if err := validateGuidedStateMatchesOptions(state, opts); err != nil {
 				return err
 			}
+			fmt.Fprintln(session.out, "INFO previous_state=resumed")
 			session.state = state
 		} else {
+			fmt.Fprintln(session.out, "WARN previous_state=discarded reason=operator_start_over")
 			session.state = newGuidedRolloutState(opts, deps.Now())
 		}
 	} else {
@@ -1432,7 +1448,19 @@ func validateGuidedStateMatchesOptions(state guidedRolloutState, opts guidedRoll
 		return fmt.Errorf("guided rollout state version=%d is not supported", state.Version)
 	}
 	if state.Mode != opts.Mode || state.HostID != opts.HostID || state.RuntimeHost != opts.RuntimeHost || state.BucketMin != opts.BucketMin || state.BucketMax != opts.BucketMax {
-		return errors.New("guided rollout state does not match the requested host, runtime host, mode, or bucket range")
+		return fmt.Errorf(
+			"guided rollout state does not match request (state mode=%q host=%q runtime_host=%q range=%d-%d; request mode=%q host=%q runtime_host=%q range=%d-%d)",
+			state.Mode,
+			state.HostID,
+			state.RuntimeHost,
+			state.BucketMin,
+			state.BucketMax,
+			opts.Mode,
+			opts.HostID,
+			opts.RuntimeHost,
+			opts.BucketMin,
+			opts.BucketMax,
+		)
 	}
 	return nil
 }
@@ -1715,6 +1743,8 @@ func (s *guidedRolloutSession) runForward(ctx context.Context) error {
 				if rollbackErr := s.runRollback(ctx); rollbackErr != nil {
 					return fmt.Errorf("rollback after failed forward step also failed: %w", rollbackErr)
 				}
+				fmt.Fprintln(s.out, "FAIL guided_rollout=rolled_back reason=operator_requested_after_failed_step")
+				return errGuidedForwardRolledBack
 			}
 			return err
 		}
@@ -1874,9 +1904,9 @@ func (s *guidedRolloutSession) chooseResumeState() (bool, error) {
 			return false, err
 		}
 		switch strings.ToLower(answer) {
-		case "resume", "r", "yes", "y":
+		case "resume":
 			return true, nil
-		case "start over", "start-over", "startover", "new", "n", "no":
+		case "start over", "start-over", "startover":
 			return false, nil
 		case "":
 			fmt.Fprintln(s.out, "No default is selected when state exists; choose RESUME or START OVER.")

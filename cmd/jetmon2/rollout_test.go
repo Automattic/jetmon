@@ -762,6 +762,63 @@ func TestRunGuidedRolloutRollbackDryRunOnlyShowsRollbackPath(t *testing.T) {
 	}
 }
 
+func TestRunGuidedRolloutDryRunExecuteModeDoesNotRunCommands(t *testing.T) {
+	opts := guidedRolloutTestOptions(t)
+	opts.DryRun = true
+	opts.ExecuteOperatorCommands = true
+	deps := guidedRolloutTestDeps(t)
+	deps.ExecCommand = func(context.Context, string) (string, error) {
+		t.Fatal("dry-run executed operator command")
+		return "", nil
+	}
+
+	var out bytes.Buffer
+	if err := runGuidedRollout(context.Background(), &out, strings.NewReader(""), opts, deps); err != nil {
+		t.Fatalf("runGuidedRollout: %v", err)
+	}
+	for _, want := range []string{
+		"INFO operator_command_mode=execute-after-confirmation",
+		`PLAN path=FORWARD step=stop-v1 command="systemctl stop jetmon"`,
+		`PLAN path=FORWARD step=start-v2 command="systemctl enable --now jetmon2"`,
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+	if strings.Contains(out.String(), "manual_checkpoint=") {
+		t.Fatalf("execute-mode dry-run should not print manual checkpoints:\n%s", out.String())
+	}
+}
+
+func TestRunGuidedRolloutFreshServerDryRunShowsRemoteV1Commands(t *testing.T) {
+	opts := guidedRolloutTestOptions(t)
+	opts.DryRun = true
+	opts.Mode = "fresh-server"
+	opts.RuntimeHost = "jetmon-v2-a"
+	opts.V1StopCmd = "ssh jetmon-v1-a sudo systemctl stop jetmon"
+	opts.V1StartCmd = "ssh jetmon-v1-a sudo systemctl start jetmon"
+
+	var out bytes.Buffer
+	if err := runGuidedRollout(context.Background(), &out, strings.NewReader(""), opts, guidedRolloutTestDeps(t)); err != nil {
+		t.Fatalf("runGuidedRollout: %v", err)
+	}
+	for _, want := range []string{
+		`INFO rollout_state=`,
+		`PLAN path=FORWARD step=stop-v1 command="ssh jetmon-v1-a sudo systemctl stop jetmon"`,
+		`PLAN path=FORWARD step=start-v2 typed_confirmation="START V2 jetmon-v2-a 0-4"`,
+		`PLAN path=ROLLBACK step=rollback-stop-v2 typed_confirmation="STOP V2 jetmon-v2-a 0-4"`,
+		`PLAN path=ROLLBACK step=rollback-start-v1 command="ssh jetmon-v1-a sudo systemctl start jetmon"`,
+		`PLAN path=ROLLBACK step=rollback-start-v1 typed_confirmation="START V1 jetmon-v1-a 0-4"`,
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+	if !strings.Contains(out.String(), "jetmon-v2-a-0-4.state.json") {
+		t.Fatalf("fresh-server state path should use runtime host:\n%s", out.String())
+	}
+}
+
 func TestRunGuidedRolloutForwardExecuteCommands(t *testing.T) {
 	opts := guidedRolloutTestOptions(t)
 	opts.ExecuteOperatorCommands = true
@@ -830,6 +887,40 @@ func TestRunGuidedRolloutForwardExecuteCommands(t *testing.T) {
 	}
 }
 
+func TestRunGuidedRolloutWrongConfirmationDoesNotExecuteCommand(t *testing.T) {
+	opts := guidedRolloutTestOptions(t)
+	opts.ExecuteOperatorCommands = true
+	deps := guidedRolloutTestDeps(t)
+	var commands []string
+	deps.ExecCommand = func(_ context.Context, command string) (string, error) {
+		commands = append(commands, command)
+		return "", nil
+	}
+
+	input := strings.Join([]string{
+		"y",
+		"y",
+		"y",
+		"STOP wrong-host 0-4",
+		"s",
+		"",
+	}, "\n")
+	var out bytes.Buffer
+	err := runGuidedRollout(context.Background(), &out, strings.NewReader(input), opts, deps)
+	if err == nil {
+		t.Fatal("runGuidedRollout succeeded")
+	}
+	if len(commands) != 0 {
+		t.Fatalf("commands executed after wrong confirmation: %v", commands)
+	}
+	if !strings.Contains(err.Error(), `confirmation did not match "STOP jetmon-v1-a 0-4"`) {
+		t.Fatalf("error = %q", err.Error())
+	}
+	if !strings.Contains(out.String(), "COMMAND systemctl stop jetmon") {
+		t.Fatalf("output should show command before confirmation failure:\n%s", out.String())
+	}
+}
+
 func TestRunGuidedRolloutRollbackExecuteCommands(t *testing.T) {
 	opts := guidedRolloutTestOptions(t)
 	opts.Rollback = true
@@ -864,6 +955,58 @@ func TestRunGuidedRolloutRollbackExecuteCommands(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "PASS guided_rollback=complete") {
 		t.Fatalf("output missing rollback completion:\n%s", out.String())
+	}
+}
+
+func TestRunGuidedRolloutFailureAfterV2CanRollback(t *testing.T) {
+	opts := guidedRolloutTestOptions(t)
+	deps := guidedRolloutTestDeps(t)
+	var cutoverCalls int
+	deps.CutoverCheck = func(_ context.Context, _ io.Writer, _ guidedRolloutOptions, requireAll bool) error {
+		cutoverCalls++
+		if !requireAll {
+			return errors.New("cutover smoke failed")
+		}
+		return nil
+	}
+
+	input := strings.Join([]string{
+		"y",
+		"y",
+		"y",
+		"STOP jetmon-v1-a 0-4",
+		"DONE",
+		"START V2 jetmon-v1-a 0-4",
+		"DONE",
+		"y",
+		"b",
+		"STOP V2 jetmon-v1-a 0-4",
+		"DONE",
+		"y",
+		"START V1 jetmon-v1-a 0-4",
+		"DONE",
+		"",
+	}, "\n")
+	var out bytes.Buffer
+	err := runGuidedRollout(context.Background(), &out, strings.NewReader(input), opts, deps)
+	if !errors.Is(err, errGuidedForwardRolledBack) {
+		t.Fatalf("error = %v, want errGuidedForwardRolledBack\n%s", err, out.String())
+	}
+	if cutoverCalls != 1 {
+		t.Fatalf("cutover calls = %d, want 1", cutoverCalls)
+	}
+	for _, want := range []string{
+		"Options: [r] retry this step, [b] begin guided rollback, [s] stop here",
+		"PASS guided_rollback=complete",
+		"FAIL guided_rollout=rolled_back reason=operator_requested_after_failed_step",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+	state := readGuidedStateForTest(t, opts)
+	if state.V1Stopped || state.V2Started || state.LastCompletedStep != "rollback-start-v1" {
+		t.Fatalf("state after rollback = %+v", state)
 	}
 }
 
@@ -920,7 +1063,7 @@ func TestRunGuidedRolloutResumeSkipsCompletedSteps(t *testing.T) {
 	}
 
 	input := strings.Join([]string{
-		"y",
+		"RESUME",
 		"y",
 		"STOP jetmon-v1-a 0-4",
 		"DONE",
@@ -978,6 +1121,118 @@ func TestRunGuidedRolloutResumeStateRequiresExplicitChoice(t *testing.T) {
 	}
 }
 
+func TestRunGuidedRolloutResumeStateRejectsYNAliases(t *testing.T) {
+	opts := guidedRolloutTestOptions(t)
+	normalized := normalizeGuidedOptionsForTest(t, opts)
+	state := newGuidedRolloutState(normalized, time.Date(2026, 4, 29, 17, 0, 0, 0, time.UTC))
+	state.CompletedSteps = []string{
+		"static-plan-check",
+		"validate-config",
+		"host-preflight",
+		"stop-v1",
+		"start-v2",
+		"cutover-smoke",
+		"cutover-require-all",
+	}
+	state.LastCompletedStep = "cutover-require-all"
+	state.V1Stopped = true
+	state.V1StateKnown = true
+	state.V2Started = true
+	state.V2StateKnown = true
+	writeGuidedStateForTest(t, normalized, state)
+
+	var out bytes.Buffer
+	input := strings.Join([]string{"n", "y", "RESUME", ""}, "\n")
+	if err := runGuidedRollout(context.Background(), &out, strings.NewReader(input), opts, guidedRolloutTestDeps(t)); err != nil {
+		t.Fatalf("runGuidedRollout: %v\n%s", err, out.String())
+	}
+	if strings.Count(out.String(), "Please choose RESUME or START OVER.") != 2 {
+		t.Fatalf("output should reject y/n aliases:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "previous_state=discarded") {
+		t.Fatalf("y/n alias discarded state:\n%s", out.String())
+	}
+}
+
+func TestRunGuidedRolloutResumeMismatchedStateRefuses(t *testing.T) {
+	opts := guidedRolloutTestOptions(t)
+	normalized := normalizeGuidedOptionsForTest(t, opts)
+	state := newGuidedRolloutState(normalized, time.Date(2026, 4, 29, 17, 0, 0, 0, time.UTC))
+	state.HostID = "jetmon-v1-other"
+	writeGuidedStateForTest(t, normalized, state)
+
+	var out bytes.Buffer
+	err := runGuidedRollout(context.Background(), &out, strings.NewReader("RESUME\n"), opts, guidedRolloutTestDeps(t))
+	if err == nil {
+		t.Fatal("runGuidedRollout succeeded")
+	}
+	if !strings.Contains(err.Error(), `state mode="same-server" host="jetmon-v1-other"`) {
+		t.Fatalf("error = %q", err.Error())
+	}
+	if !strings.Contains(out.String(), `INFO previous_state=found mode="same-server" host="jetmon-v1-other"`) {
+		t.Fatalf("output missing previous state details:\n%s", out.String())
+	}
+}
+
+func TestRunGuidedRolloutStartOverDiscardsPreviousState(t *testing.T) {
+	opts := guidedRolloutTestOptions(t)
+	normalized := normalizeGuidedOptionsForTest(t, opts)
+	state := newGuidedRolloutState(normalized, time.Date(2026, 4, 29, 17, 0, 0, 0, time.UTC))
+	state.CompletedSteps = []string{"static-plan-check", "validate-config"}
+	state.LastCompletedStep = "validate-config"
+	writeGuidedStateForTest(t, normalized, state)
+
+	deps := guidedRolloutTestDeps(t)
+	var calls []string
+	deps.StaticPlanCheck = func(context.Context, io.Writer, guidedRolloutOptions) error {
+		calls = append(calls, "static")
+		return nil
+	}
+	deps.ValidateConfig = func(context.Context, io.Writer, guidedRolloutOptions) error {
+		calls = append(calls, "validate")
+		return nil
+	}
+	deps.HostPreflight = func(context.Context, io.Writer, guidedRolloutOptions) error {
+		calls = append(calls, "preflight")
+		return nil
+	}
+	deps.CutoverCheck = func(_ context.Context, _ io.Writer, _ guidedRolloutOptions, requireAll bool) error {
+		if requireAll {
+			calls = append(calls, "cutover-all")
+		} else {
+			calls = append(calls, "cutover-smoke")
+		}
+		return nil
+	}
+
+	input := strings.Join([]string{
+		"START OVER",
+		"y",
+		"y",
+		"y",
+		"STOP jetmon-v1-a 0-4",
+		"DONE",
+		"START V2 jetmon-v1-a 0-4",
+		"DONE",
+		"y",
+		"READY",
+		"",
+	}, "\n")
+	var out bytes.Buffer
+	if err := runGuidedRollout(context.Background(), &out, strings.NewReader(input), opts, deps); err != nil {
+		t.Fatalf("runGuidedRollout: %v\n%s", err, out.String())
+	}
+	if got, want := strings.Join(calls, ","), "static,validate,preflight,cutover-smoke,cutover-all"; got != want {
+		t.Fatalf("calls = %s, want %s", got, want)
+	}
+	if !strings.Contains(out.String(), "WARN previous_state=discarded reason=operator_start_over") {
+		t.Fatalf("output missing start-over warning:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "SKIP step=static-plan-check") {
+		t.Fatalf("start-over reused previous completed step:\n%s", out.String())
+	}
+}
+
 func TestRunGuidedRolloutResumeSkipsAlreadyStoppedV1(t *testing.T) {
 	opts := guidedRolloutTestOptions(t)
 	normalized := normalizeGuidedOptionsForTest(t, opts)
@@ -996,7 +1251,7 @@ func TestRunGuidedRolloutResumeSkipsAlreadyStoppedV1(t *testing.T) {
 	}
 
 	input := strings.Join([]string{
-		"y",
+		"RESUME",
 		"START V2 jetmon-v1-a 0-4",
 		"DONE",
 		"y",
@@ -1032,7 +1287,7 @@ func TestRunGuidedRolloutRollbackResumeSkipsAlreadyStoppedV2(t *testing.T) {
 	}
 
 	input := strings.Join([]string{
-		"y",
+		"RESUME",
 		"y",
 		"START V1 jetmon-v1-a 0-4",
 		"DONE",

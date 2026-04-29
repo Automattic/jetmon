@@ -17,7 +17,8 @@ confirmations for v1/v2 stop/start transitions, and stops on failed gates.
 If the command is interrupted after a stop/start transition, resuming with the
 same options uses the saved service state to avoid repeating an already
 completed transition. When resume state exists, the command has no default
-choice; the operator must type `RESUME` or `START OVER`.
+choice; the operator must type `RESUME` or `START OVER`. Short `y` / `n`
+answers are rejected for this prompt.
 
 ```bash
 ./jetmon2 rollout guided \
@@ -53,6 +54,11 @@ To return a range to v1, run the guided rollback path:
   --bucket-total=<total> \
   --v1-start-command='<exact v1 rollback start command>'
 ```
+
+If a forward gate fails after v2 has started and the operator chooses guided
+rollback, the rollback path can complete successfully while the overall command
+still exits non-zero. Treat that as "rollout did not complete; range returned
+to v1" and keep the transcript with the incident record.
 
 ## Before The First Host
 
