@@ -70,6 +70,12 @@ migration process. It covers preparation, additive migrations, pinned bucket
 mode, replacing v1 on the same server, moving a range to a fresh v2 server,
 monitoring, revert paths, dynamic ownership cutover, and v1 teardown.
 
+Use `./jetmon2 rollout rehearsal-plan --file=<ranges.csv> --host=<host>
+--bucket-min=N --bucket-max=N --mode=same-server` to print the ordered command
+sequence for one host replacement. Use `--mode=fresh-server` plus
+`--runtime-host=<new-v2-hostname>` when the new v2 hostname differs from the v1
+host recorded in the static bucket plan.
+
 ## v2 Rolling Updates
 
 After all monitor hosts are on v2 dynamic bucket ownership, update one host at a

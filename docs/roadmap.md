@@ -29,6 +29,24 @@ preflight, deliverer hardening, and API CLI fixture workflow branches:
   full rehearsal and keep README, operations docs, migration docs, config
   samples, service units, and CLI output aligned.
 
+### Rollout Simplification TODO
+
+- [x] Add `jetmon2 rollout rehearsal-plan` so operators can generate the exact
+  same-server or fresh-server command sequence from a bucket CSV, host, bucket
+  range, and rollout mode.
+- [x] Add `make rollout-docs-verify` so docs/tooling drift checks, command help
+  checks, staged systemd validation, build, test, and lint can run as one
+  repeatable gate.
+- [ ] Add `jetmon2 rollout cutover-check` to bundle the read-only post-start
+  pinned preflight, activity, status, and projection-drift checks used after
+  each host replacement.
+- [ ] Add JSON output to rollout checks for Systems automation gates.
+- [ ] Create a one-page rollout quick reference that links to the full
+  migration runbook.
+- [ ] Add a rollout state report that summarizes ownership mode, bucket
+  coverage, drift, recent activity, delivery owner state, and suggested next
+  action.
+
 Recently completed candidate branches:
 
 - **`feature/rollout-preflight-hardening`** - merged rollout safety commands

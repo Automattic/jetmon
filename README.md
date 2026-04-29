@@ -157,6 +157,7 @@ make build-veriflier  # Build only veriflier2
 make test             # Run the Go test suite
 make test-race        # Run tests with the race detector
 make lint             # Run lint checks
+make rollout-docs-verify  # Verify rollout docs/tooling alignment
 ```
 
 `make generate` is intentionally separate. It requires `protoc` and Go protobuf

@@ -113,6 +113,21 @@ approved plan:
   --host=jetmon-v1-a --bucket-min=0 --bucket-max=99
 ```
 
+Generate the host-specific command sequence operators will rehearse and run:
+
+```bash
+./jetmon2 rollout rehearsal-plan \
+  --file rollout-buckets.csv \
+  --host=jetmon-v1-a \
+  --bucket-min=0 \
+  --bucket-max=99 \
+  --mode=same-server
+```
+
+For a fresh-server takeover where the v2 hostname differs from the v1 host in
+the static plan, add `--runtime-host=<new-v2-hostname>` and use
+`--mode=fresh-server`.
+
 ### Prepare Database And Rollback Safety
 
 1. Confirm a recent MySQL backup exists and restore has been tested according
@@ -137,6 +152,7 @@ make all
 make test
 make test-race
 make lint
+make rollout-docs-verify
 ```
 
 Stage these artifacts for each target host:

@@ -47,11 +47,13 @@ type projectionDriftDeps struct {
 
 func cmdRollout(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout <static-plan-check|pinned-check|rollback-check|dynamic-check|activity-check|projection-drift> [args]")
+		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout <rehearsal-plan|static-plan-check|pinned-check|rollback-check|dynamic-check|activity-check|projection-drift> [args]")
 		os.Exit(1)
 	}
 
 	switch args[0] {
+	case "rehearsal-plan":
+		cmdRolloutRehearsalPlan(args[1:])
 	case "static-plan-check":
 		cmdRolloutStaticPlanCheck(args[1:])
 	case "pinned-check":
@@ -65,7 +67,69 @@ func cmdRollout(args []string) {
 	case "projection-drift":
 		cmdRolloutProjectionDrift(args[1:])
 	default:
-		fmt.Fprintf(os.Stderr, "unknown rollout subcommand %q (want: static-plan-check, pinned-check, rollback-check, dynamic-check, activity-check, projection-drift)\n", args[0])
+		fmt.Fprintf(os.Stderr, "unknown rollout subcommand %q (want: rehearsal-plan, static-plan-check, pinned-check, rollback-check, dynamic-check, activity-check, projection-drift)\n", args[0])
+		os.Exit(1)
+	}
+}
+
+func cmdRolloutRehearsalPlan(args []string) {
+	fs := flag.NewFlagSet("rollout rehearsal-plan", flag.ExitOnError)
+	file := fs.String("file", "", "CSV file with host,bucket_min,bucket_max rows")
+	mode := fs.String("mode", "same-server", "rollout mode: same-server or fresh-server")
+	host := fs.String("host", "", "host id that must appear in the static plan")
+	runtimeHost := fs.String("runtime-host", "", "v2 host id for pinned/rollback checks (default --host)")
+	bucketMin := fs.Int("bucket-min", -1, "expected bucket minimum for --host")
+	bucketMax := fs.Int("bucket-max", -1, "expected bucket maximum for --host")
+	bucketTotal := fs.Int("bucket-total", 0, "total bucket count (default BUCKET_TOTAL from config)")
+	binary := fs.String("binary", "./jetmon2", "jetmon2 command path to print")
+	service := fs.String("service", "jetmon2", "systemd service name to print for v2")
+	since := fs.String("since", "15m", "activity cutoff to print for post-cutover checks")
+	_ = fs.Parse(args)
+	if fs.NArg() != 0 || strings.TrimSpace(*file) == "" {
+		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout rehearsal-plan --file=<ranges.csv> --host=<host> --bucket-min=N --bucket-max=N [--mode=same-server|fresh-server] [--runtime-host=<v2-host>] [--bucket-total=N]")
+		os.Exit(1)
+	}
+
+	resolvedBucketTotal := *bucketTotal
+	if resolvedBucketTotal < 0 {
+		fmt.Fprintln(os.Stderr, "FAIL bucket-total must be > 0")
+		os.Exit(1)
+	}
+	if resolvedBucketTotal == 0 {
+		configPath := envOrDefault("JETMON_CONFIG", "config/config.json")
+		if err := config.Load(configPath); err != nil {
+			fmt.Fprintf(os.Stderr, "FAIL config parse: %v\n", err)
+			os.Exit(1)
+		}
+		resolvedBucketTotal = config.Get().BucketTotal
+	}
+
+	inputName := strings.TrimSpace(*file)
+	if inputName == "-" {
+		fmt.Fprintln(os.Stderr, "FAIL --file=- is not supported for rehearsal-plan; pass a reusable CSV path so the printed commands are repeatable")
+		os.Exit(1)
+	}
+	f, err := os.Open(inputName)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL open static bucket plan: %v\n", err)
+		os.Exit(1)
+	}
+	defer f.Close()
+
+	opts := rolloutRehearsalPlanOptions{
+		Mode:        *mode,
+		PlanFile:    inputName,
+		HostID:      *host,
+		RuntimeHost: *runtimeHost,
+		BucketMin:   *bucketMin,
+		BucketMax:   *bucketMax,
+		BucketTotal: resolvedBucketTotal,
+		Binary:      *binary,
+		Service:     *service,
+		Since:       *since,
+	}
+	if err := runRolloutRehearsalPlan(os.Stdout, f, opts); err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL %v\n", err)
 		os.Exit(1)
 	}
 }
@@ -308,6 +372,176 @@ type staticBucketRange struct {
 	HostID    string
 	BucketMin int
 	BucketMax int
+}
+
+type rolloutRehearsalPlanOptions struct {
+	Mode        string
+	PlanFile    string
+	HostID      string
+	RuntimeHost string
+	BucketMin   int
+	BucketMax   int
+	BucketTotal int
+	Binary      string
+	Service     string
+	Since       string
+}
+
+func runRolloutRehearsalPlan(out io.Writer, input io.Reader, opts rolloutRehearsalPlanOptions) error {
+	if out == nil {
+		out = io.Discard
+	}
+	mode := strings.ToLower(strings.TrimSpace(opts.Mode))
+	switch mode {
+	case "", "same-server":
+		mode = "same-server"
+	case "fresh-server":
+	default:
+		return fmt.Errorf("--mode must be same-server or fresh-server, got %q", opts.Mode)
+	}
+
+	planFile := strings.TrimSpace(opts.PlanFile)
+	if planFile == "" || planFile == "-" {
+		return errors.New("--file must be a reusable CSV path")
+	}
+	hostID := strings.TrimSpace(opts.HostID)
+	if hostID == "" {
+		return errors.New("--host is required")
+	}
+	runtimeHost := strings.TrimSpace(opts.RuntimeHost)
+	if runtimeHost == "" {
+		runtimeHost = hostID
+	}
+	if opts.BucketMin < 0 || opts.BucketMax < 0 {
+		return errors.New("--bucket-min and --bucket-max are required")
+	}
+	if opts.BucketMax < opts.BucketMin {
+		return errors.New("--bucket-max must be >= --bucket-min")
+	}
+	if opts.BucketTotal <= 0 {
+		return errors.New("BUCKET_TOTAL must be > 0")
+	}
+	binary := strings.TrimSpace(opts.Binary)
+	if binary == "" {
+		binary = "./jetmon2"
+	}
+	service := strings.TrimSpace(opts.Service)
+	if service == "" {
+		service = "jetmon2"
+	}
+	since := strings.TrimSpace(opts.Since)
+	if since == "" {
+		since = "15m"
+	}
+
+	ranges, err := parseStaticBucketPlanCSV(input)
+	if err != nil {
+		return err
+	}
+	if err := validateStaticBucketPlan(ranges, opts.BucketTotal); err != nil {
+		return err
+	}
+	assertion := staticPlanAssertion{HostID: hostID, BucketMin: opts.BucketMin, BucketMax: opts.BucketMax}
+	assertedRange, err := validateStaticPlanAssertion(ranges, assertion)
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintln(out, "# Jetmon v2 rollout rehearsal plan")
+	fmt.Fprintf(out, "INFO mode=%s\n", mode)
+	fmt.Fprintf(out, "INFO static_plan_file=%s ranges=%d\n", planFile, len(ranges))
+	fmt.Fprintf(out, "INFO plan_host=%q runtime_host=%q range=%d-%d\n", assertedRange.HostID, runtimeHost, assertedRange.BucketMin, assertedRange.BucketMax)
+	fmt.Fprintln(out)
+
+	writeRolloutPlanSection(out, "1. Validate the copied static bucket plan",
+		rolloutCommand(binary, "rollout", "static-plan-check", "--file", planFile, "--host", hostID, "--bucket-min", strconv.Itoa(opts.BucketMin), "--bucket-max", strconv.Itoa(opts.BucketMax)),
+	)
+	writeRolloutPlanSection(out, "2. Validate the staged v2 config and service unit",
+		rolloutCommand(binary, "validate-config"),
+		"systemd-analyze verify "+shellQuote("/etc/systemd/system/"+service+".service"),
+	)
+	writeRolloutPlanSection(out, "3. Run the pinned preflight before stopping v1",
+		rolloutCommand(binary, "rollout", "pinned-check", "--host", runtimeHost),
+	)
+
+	if mode == "fresh-server" {
+		writeRolloutPlanSection(out, "4. Cut over from the old v1 host to the fresh v2 host",
+			"# Keep v2 stopped on the fresh server until the old v1 monitor process is stopped.",
+			"# Stop v1 on "+shellQuote(hostID)+" with the documented production command.",
+			"systemctl enable --now "+shellQuote(service),
+		)
+	} else {
+		writeRolloutPlanSection(out, "4. Cut over the same server from v1 to v2",
+			"# Stop the v1 service with the documented production command.",
+			"systemctl enable --now "+shellQuote(service),
+		)
+	}
+
+	rangeArgs := []string{"--bucket-min", strconv.Itoa(opts.BucketMin), "--bucket-max", strconv.Itoa(opts.BucketMax)}
+	writeRolloutPlanSection(out, "5. Verify the v2 host after start",
+		rolloutCommand(binary, "rollout", "pinned-check", "--host", runtimeHost),
+		rolloutCommand(append([]string{binary, "rollout", "activity-check"}, append(rangeArgs, "--since", since)...)...),
+		rolloutCommand(binary, "status"),
+		"# After one full expected check round:",
+		rolloutCommand(append([]string{binary, "rollout", "activity-check"}, append(append([]string{}, rangeArgs...), "--since", since, "--require-all")...)...),
+		rolloutCommand(append([]string{binary, "rollout", "projection-drift"}, append(rangeArgs, "--limit", "100")...)...),
+	)
+
+	rollbackComment := "# Restart the original v1 service with its original BUCKET_NO_MIN/BUCKET_NO_MAX config."
+	if mode == "fresh-server" {
+		rollbackComment = "# Restart v1 on " + shellQuote(hostID) + " with its original BUCKET_NO_MIN/BUCKET_NO_MAX config."
+	}
+	writeRolloutPlanSection(out, "6. Rehearse the rollback path before the rollback window closes",
+		"systemctl stop "+shellQuote(service),
+		rolloutCommand(append([]string{binary, "rollout", "rollback-check", "--host", runtimeHost}, rangeArgs...)...),
+		rollbackComment,
+	)
+
+	writeRolloutPlanSection(out, "7. Complete fleet-level pinned and dynamic checks after every host is on v2",
+		rolloutCommand(binary, "rollout", "pinned-check", "--host", runtimeHost),
+		rolloutCommand(append([]string{binary, "rollout", "activity-check"}, append(append([]string{}, rangeArgs...), "--since", since, "--require-all")...)...),
+		rolloutCommand(append([]string{binary, "rollout", "projection-drift"}, append(rangeArgs, "--limit", "100")...)...),
+		"# After PINNED_BUCKET_* is removed from every v2 monitor config and the fleet is restarted:",
+		rolloutCommand(binary, "validate-config"),
+		rolloutCommand(binary, "rollout", "dynamic-check"),
+		rolloutCommand(binary, "rollout", "activity-check", "--since", since, "--require-all"),
+		rolloutCommand(binary, "rollout", "projection-drift", "--limit", "100"),
+	)
+	return nil
+}
+
+func writeRolloutPlanSection(out io.Writer, title string, lines ...string) {
+	fmt.Fprintf(out, "## %s\n", title)
+	for _, line := range lines {
+		fmt.Fprintln(out, line)
+	}
+	fmt.Fprintln(out)
+}
+
+func rolloutCommand(parts ...string) string {
+	quoted := make([]string, 0, len(parts))
+	for _, part := range parts {
+		quoted = append(quoted, shellQuote(part))
+	}
+	return strings.Join(quoted, " ")
+}
+
+func shellQuote(value string) string {
+	if value == "" {
+		return "''"
+	}
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			continue
+		}
+		switch r {
+		case '_', '-', '.', '/', ':', '=', '+', ',', '@':
+			continue
+		default:
+			return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+		}
+	}
+	return value
 }
 
 type staticPlanAssertion struct {
