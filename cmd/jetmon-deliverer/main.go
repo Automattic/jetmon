@@ -1,7 +1,9 @@
 package main
 
 import (
+	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -29,7 +31,7 @@ func main() {
 			fmt.Printf("jetmon-deliverer %s (built %s with %s)\n", version, buildDate, goVersion)
 			return
 		case "validate-config":
-			cmdValidateConfig()
+			cmdValidateConfig(os.Args[2:])
 			return
 		default:
 			fmt.Fprintf(os.Stderr, "unknown command %q (want: version, validate-config)\n", os.Args[1])
@@ -39,7 +41,38 @@ func main() {
 	run()
 }
 
-func cmdValidateConfig() {
+type delivererValidationOptions struct {
+	HostOverride         string
+	RequireOwnerMatch    bool
+	RequireEmailDelivery bool
+	RequireAPIDisabled   bool
+}
+
+func parseValidateConfigOptions(args []string) (delivererValidationOptions, error) {
+	var opts delivererValidationOptions
+	fs := flag.NewFlagSet("validate-config", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	fs.StringVar(&opts.HostOverride, "host", "", "host id to validate against DELIVERY_OWNER_HOST (default current hostname)")
+	fs.BoolVar(&opts.RequireOwnerMatch, "require-owner-match", false, "fail unless DELIVERY_OWNER_HOST exactly matches the validated host")
+	fs.BoolVar(&opts.RequireEmailDelivery, "require-email-delivery", false, "fail unless EMAIL_TRANSPORT is smtp or wpcom")
+	fs.BoolVar(&opts.RequireAPIDisabled, "require-api-disabled", false, "fail unless API_PORT is 0 in the deliverer config")
+	if err := fs.Parse(args); err != nil {
+		return opts, err
+	}
+	if fs.NArg() != 0 {
+		return opts, fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	}
+	return opts, nil
+}
+
+func cmdValidateConfig(args []string) {
+	opts, err := parseValidateConfigOptions(args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "usage: jetmon-deliverer validate-config [--host=<host>] [--require-owner-match] [--require-email-delivery] [--require-api-disabled]\n")
+		fmt.Fprintf(os.Stderr, "FAIL %v\n", err)
+		os.Exit(2)
+	}
+
 	configPath := envOrDefault("JETMON_CONFIG", "config/config.json")
 	if err := config.Load(configPath); err != nil {
 		fmt.Fprintf(os.Stderr, "FAIL config parse: %v\n", err)
@@ -55,12 +88,29 @@ func cmdValidateConfig() {
 	fmt.Println("PASS db connect")
 
 	cfg := config.Get()
+	hostID := strings.TrimSpace(opts.HostOverride)
+	if hostID == "" {
+		hostID = db.Hostname()
+	}
+	fmt.Printf("INFO deliverer_host=%q\n", hostID)
 	fmt.Printf("INFO email_transport=%s\n", emailTransportLabel(cfg))
 	if !emailTransportDelivers(cfg) {
 		fmt.Printf("WARN email_transport=%s; alert-contact emails will be logged but not delivered\n", emailTransportLabel(cfg))
 	}
-	if level, msg := deliveryOwnerStatus(cfg, db.Hostname()); msg != "" {
+	if cfg.APIPort > 0 {
+		fmt.Printf("WARN api_port=%d; standalone deliverer ignores API_PORT, confirm this is a process-specific config\n", cfg.APIPort)
+	} else {
+		fmt.Println("PASS api_port=disabled")
+	}
+	if level, msg := deliveryOwnerStatus(cfg, hostID); msg != "" {
 		fmt.Printf("%s %s\n", level, msg)
+	}
+	failures := validateDelivererConfigRequirements(cfg, hostID, opts)
+	if len(failures) > 0 {
+		for _, failure := range failures {
+			fmt.Fprintf(os.Stderr, "FAIL %s\n", failure)
+		}
+		os.Exit(1)
 	}
 
 	fmt.Println("\nvalidation passed")
@@ -125,6 +175,31 @@ func deliveryOwnerStatus(cfg *config.Config, hostname string) (string, string) {
 		return "INFO", fmt.Sprintf("delivery_owner_host=%q matched; delivery workers enabled on this host", owner)
 	}
 	return "INFO", fmt.Sprintf("delivery_owner_host=%q; standalone deliverer idle on host %q", owner, hostname)
+}
+
+func validateDelivererConfigRequirements(cfg *config.Config, hostname string, opts delivererValidationOptions) []string {
+	if cfg == nil {
+		return []string{"config is not loaded"}
+	}
+	hostID := strings.TrimSpace(hostname)
+	failures := []string{}
+	if opts.RequireOwnerMatch {
+		owner := strings.TrimSpace(cfg.DeliveryOwnerHost)
+		if hostID == "" {
+			failures = append(failures, "validated host id is empty")
+		} else if owner == "" {
+			failures = append(failures, fmt.Sprintf("DELIVERY_OWNER_HOST must be set to %q for single-owner deliverer rollout", hostID))
+		} else if owner != hostID {
+			failures = append(failures, fmt.Sprintf("DELIVERY_OWNER_HOST=%q does not match deliverer host %q", owner, hostID))
+		}
+	}
+	if opts.RequireEmailDelivery && !emailTransportDelivers(cfg) {
+		failures = append(failures, fmt.Sprintf("EMAIL_TRANSPORT=%q does not deliver email; set smtp or wpcom", emailTransportLabel(cfg)))
+	}
+	if opts.RequireAPIDisabled && cfg.APIPort > 0 {
+		failures = append(failures, fmt.Sprintf("API_PORT=%d must be 0 for standalone deliverer config", cfg.APIPort))
+	}
+	return failures
 }
 
 func waitForShutdown() {

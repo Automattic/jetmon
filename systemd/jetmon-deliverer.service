@@ -11,6 +11,7 @@ Type=simple
 User=jetmon
 Group=jetmon
 WorkingDirectory=/opt/jetmon2
+ExecStartPre=/opt/jetmon2/bin/jetmon-deliverer validate-config --require-owner-match --require-api-disabled
 ExecStart=/opt/jetmon2/bin/jetmon-deliverer
 Restart=on-failure
 RestartSec=5s

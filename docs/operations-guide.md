@@ -97,6 +97,19 @@ It starts the same webhook and alert-contact workers without starting the
 monitor, API, dashboard, or bucket ownership loop. Delivery rows are claimed
 transactionally, so multiple workers do not claim the same pending row.
 
+For conservative single-owner rollout, validate the deliverer-specific config
+before enabling the service:
+
+```bash
+JETMON_CONFIG=/opt/jetmon2/config/deliverer.json \
+  /opt/jetmon2/bin/jetmon-deliverer validate-config \
+    --require-owner-match \
+    --require-api-disabled
+```
+
+Add `--require-email-delivery` when real alert-contact email delivery is
+expected in that environment.
+
 See [jetmon-deliverer-rollout.md](jetmon-deliverer-rollout.md) for the rollout
 and rollback path.
 

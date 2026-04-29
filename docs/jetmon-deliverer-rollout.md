@@ -44,12 +44,19 @@ hosts and deliverer hosts need different `DELIVERY_OWNER_HOST` values.
 The sample systemd unit expects:
 
 - `ExecStart=/opt/jetmon2/bin/jetmon-deliverer`
+- `ExecStartPre=/opt/jetmon2/bin/jetmon-deliverer validate-config
+  --require-owner-match --require-api-disabled`
 - `EnvironmentFile=-/opt/jetmon2/config/jetmon2.env`
 - `JETMON_CONFIG=/opt/jetmon2/config/deliverer.json`
 
 Keep `deliverer.json` process-specific. Sharing a config file with API-enabled
 `jetmon2` hosts is only safe when `DELIVERY_OWNER_HOST` is intentionally set for
 all process classes that read it.
+
+The sample service is intentionally conservative: its `ExecStartPre` refuses to
+start unless `DELIVERY_OWNER_HOST` matches the deliverer host and `API_PORT` is
+disabled in the deliverer config. Remove or replace those preflight flags only
+for an explicitly approved active-active rollout.
 
 ## Single-Owner Cutover
 
@@ -64,18 +71,36 @@ delivery.
 4. Keep embedded API hosts from delivering by giving their `jetmon2` process a
    config where `DELIVERY_OWNER_HOST` does not match the API hostnames. The
    most common pattern is a process-specific config file via `JETMON_CONFIG`.
-5. Start `jetmon-deliverer` on the owner host.
-6. Confirm logs show `delivery_owner_host="<host>" matched; delivery workers
+5. Run the owner-host preflight from the same shell environment the service will
+   use:
+
+   ```bash
+   JETMON_CONFIG=/opt/jetmon2/config/deliverer.json \
+     /opt/jetmon2/bin/jetmon-deliverer validate-config \
+       --require-owner-match \
+       --require-api-disabled
+   ```
+
+   Add `--require-email-delivery` in any environment where email alert contacts
+   must send real mail instead of using the log-only stub.
+6. Start `jetmon-deliverer` on the owner host.
+7. Confirm logs show `delivery_owner_host="<host>" matched; delivery workers
    enabled on this host`.
-7. Confirm API-host logs show delivery workers are skipped or idle.
-8. Watch `jetmon_webhook_deliveries` and `jetmon_alert_deliveries` for pending
+8. Confirm API-host logs show delivery workers are skipped or idle.
+9. Watch `jetmon_webhook_deliveries` and `jetmon_alert_deliveries` for pending
    backlog, abandon rate, and retry volume.
-9. Stop embedded delivery after the standalone owner has been stable for at
+10. Stop embedded delivery after the standalone owner has been stable for at
    least one normal alerting window.
 
 Rollback is simple: stop `jetmon-deliverer` and restore the previous embedded
 delivery config so one API-enabled `jetmon2` host matches
 `DELIVERY_OWNER_HOST` or uses the legacy empty-owner behavior.
+
+Before rollback, rehearse the embedded owner config with `./jetmon2
+validate-config` on the API host that will resume delivery, and make sure its
+`DELIVERY_OWNER_HOST` plan is intentional. After stopping the standalone
+deliverer, start the embedded owner and watch the delivery tables until pending
+rows drain normally.
 
 ## Active-Active Delivery
 
@@ -105,8 +130,11 @@ Before enabling standalone delivery:
 
 - `bin/jetmon-deliverer version` reports the expected build.
 - `JETMON_CONFIG=/opt/jetmon2/config/deliverer.json bin/jetmon-deliverer
-  validate-config` passes for the deliverer-specific config while running with
-  the same `DB_*` environment the service will use.
+  validate-config --require-owner-match --require-api-disabled` passes for the
+  deliverer-specific config while running with the same `DB_*` environment the
+  service will use.
+- `--require-email-delivery` is included when real alert-contact email delivery
+  is expected.
 - `systemd-analyze verify systemd/jetmon-deliverer.service` passes, or the
   deployment-system equivalent validates the service definition.
 - The process can connect to MySQL using the same schema as `jetmon2`.
