@@ -16,7 +16,7 @@ import (
 
 // closeEventRequest is the body for POST .../events/{event_id}/close.
 //
-// reason is a free-form short label per API.md transition vocabulary
+// reason is a free-form short label per docs/internal-api-reference.md transition vocabulary
 // (manual_override, false_alarm, maintenance_swallowed, etc.) — we don't
 // constrain it to a strict allowlist server-side because the orchestrator
 // and the operator might legitimately use different reason vocabularies
@@ -246,7 +246,7 @@ func (s *Server) handleTriggerNow(w http.ResponseWriter, r *http.Request) {
 	if res.Success {
 		// Probe came back clean — close any open events the orchestrator
 		// hasn't reconciled yet. probe_cleared matches the recovery semantics
-		// the orchestrator already uses (see EVENTS.md: "verifier wasn't
+		// the orchestrator already uses (see docs/events.md: "verifier wasn't
 		// involved in this recovery").
 		ids, err := s.queryActiveEventIDs(ctx, siteID)
 		if err != nil {

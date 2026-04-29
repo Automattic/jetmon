@@ -7,7 +7,7 @@ import (
 )
 
 // ListEnvelope wraps every list response. Single-resource responses are
-// returned as bare objects without an envelope. See API.md "Response envelope".
+// returned as bare objects without an envelope. See docs/internal-api-reference.md "Response envelope".
 type ListEnvelope struct {
 	Data any  `json:"data"`
 	Page Page `json:"page"`

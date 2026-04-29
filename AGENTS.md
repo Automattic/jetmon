@@ -8,7 +8,7 @@ Jetmon is a parallel HTTP uptime monitoring service that checks Jetpack websites
 
 The Veriflier is rewritten in Go as well, replacing the Qt C++ dependency. JSON-over-HTTP on the configured Veriflier port is the v2 production Monitor-to-Veriflier transport; the proto contract is retained only as a schema reference for a possible future transport.
 
-See `PROJECT.md` for the full project description, feature list, and performance benefit estimates.
+See `docs/project.md` for the full project description, feature list, and performance benefit estimates.
 
 ## Architecture
 
@@ -68,7 +68,7 @@ See `PROJECT.md` for the full project description, feature list, and performance
 
 **Veriflier** (`veriflier2/`): Standalone Go binary deployed at remote locations. Receives check batches from the Monitor, performs HTTP checks, and returns results. Replaces the Qt C++ Veriflier.
 
-**Future shape:** the API server, webhook worker, and alerting worker are independently scalable concerns and the natural target for the multi-binary split tracked in `ROADMAP.md`. Today they coexist in `jetmon2` and the MySQL schema is the bus between them; tomorrow the deliverer becomes its own binary handling all outbound dispatch (webhooks + alerting + WPCOM legacy migrated behind it).
+**Future shape:** the API server, webhook worker, and alerting worker are independently scalable concerns and the natural target for the multi-binary split tracked in `docs/roadmap.md`. Today they coexist in `jetmon2` and the MySQL schema is the bus between them; tomorrow the deliverer becomes its own binary handling all outbound dispatch (webhooks + alerting + WPCOM legacy migrated behind it).
 
 ## Key Files
 
@@ -90,10 +90,10 @@ See `PROJECT.md` for the full project description, feature list, and performance
 | `internal/alerting/` | Alert contact registry + delivery worker — managed channels (email/PagerDuty/Slack/Teams) with site_filter + severity gate + per-hour rate cap |
 | `internal/dashboard/` | Operator dashboard, SSE handler |
 | `veriflier2/` | Go Veriflier binary |
-| `API.md` | Internal REST API reference (auth, all endpoints, payload shapes) |
-| `ROADMAP.md` | Deferred features and architectural roadmap (multi-binary split, public-API path) |
+| `docs/internal-api-reference.md` | Internal REST API reference (auth, all endpoints, payload shapes) |
+| `docs/roadmap.md` | Deferred features and architectural roadmap (multi-binary split, public-API path) |
 | `docs/adr/` | Architecture Decision Records — load-bearing decisions ("why is X like this") with context, decision, and consequences |
-| `PROJECT.md` | Full project description and feature specification |
+| `docs/project.md` | Full project description and feature specification |
 
 ## Build and Run
 
@@ -279,7 +279,7 @@ Rolling updates require no simultaneous restart of all hosts and leave no sites 
 
 ## Architectural Decisions — Event and State Model
 
-These decisions govern how Jetmon models site state. They must be maintained consistently across all changes. Full design rationale is in [`TAXONOMY.md`](TAXONOMY.md) (Parts 2–3) and [`EVENTS.md`](EVENTS.md).
+These decisions govern how Jetmon models site state. They must be maintained consistently across all changes. Full design rationale is in [`docs/taxonomy.md`](docs/taxonomy.md) (Parts 2–3) and [`docs/events.md`](docs/events.md).
 
 **Events are the source of truth.** Site status is event-sourced across two tables: `jetmon_events` (one row per incident, holding the current severity/state/metadata) and `jetmon_event_transitions` (append-only history of every mutation). The site row stores a denormalized projection for read performance. Update events, transitions, and the projection in the same transaction — they must not drift. If the projection is ever suspect, rebuild it from the events tables.
 

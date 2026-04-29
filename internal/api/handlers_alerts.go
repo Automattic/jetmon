@@ -62,7 +62,7 @@ type createAlertContactRequest struct {
 // updateAlertContactRequest is the body shape for PATCH
 // /api/v1/alert-contacts/{id}. Pointer fields distinguish absent from
 // explicitly empty. Transport itself cannot be changed via PATCH —
-// see API.md "Family 5".
+// see docs/internal-api-reference.md "Family 5".
 type updateAlertContactRequest struct {
 	Label       *string              `json:"label"`
 	Active      *bool                `json:"active"`

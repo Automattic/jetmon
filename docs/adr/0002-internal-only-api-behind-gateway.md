@@ -41,7 +41,8 @@ We will treat Jetmon's API as **internal-only**. Specifically:
 - **Rate limits are per-key, sized for service protection** (preventing
   one buggy caller from DoS-ing the rest), not for commerce or abuse.
 - **Resource IDs are raw integers.** No type-prefixed IDs (`evt_`,
-  `whk_`); see the "Resolved design questions" section in API.md for
+  `whk_`); see the "Resolved design questions" section in
+  [`../internal-api-reference.md`](../internal-api-reference.md) for
   the full rationale.
 
 Each of these is the appropriate choice for an internal service and
@@ -61,19 +62,19 @@ not the appropriate choice for a public API.
 **Costs:**
 - If Jetmon's API is ever exposed to customers without a gateway in
   front, several decisions need to be unwound. The migration path is
-  documented in ROADMAP.md "Path to a public API." Each change is
+  documented in [`../roadmap.md`](../roadmap.md) "Path to a public API." Each change is
   individually clean (add a column, filter on it, deprecate the
   unscoped version) but they touch most of the surface, so it would
   be a significant project rather than a flag flip.
 - Documentation has to be careful not to leak the internal surface to
-  external readers. API.md is checked-in but is unambiguous about
+  external readers. [`../internal-api-reference.md`](../internal-api-reference.md) is checked-in but is unambiguous about
   internal-only scope; the gateway will re-export a sanitized subset.
 
 ## Related
 
-- `API.md` — full API reference; the "Resolved design questions"
+- [`../internal-api-reference.md`](../internal-api-reference.md) — full API reference; the "Resolved design questions"
   section captures the trade-offs that fall out of this decision.
-- `ROADMAP.md` "Path to a public API" — what would change if this
+- [`../roadmap.md`](../roadmap.md) "Path to a public API" — what would change if this
   decision is reversed.
 - ADR-0003 (Plaintext credentials) — depends on this; if customers
   managed their own webhooks the credential storage threat model

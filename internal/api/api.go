@@ -2,7 +2,7 @@
 //
 // The API is internal-only — a separate gateway service handles all
 // customer-facing concerns (tenant isolation, public errors, customer rate
-// limiting). See API.md for the full design rationale and endpoint reference.
+// limiting). See docs/internal-api-reference.md for the full design rationale and endpoint reference.
 //
 // Authentication is per-consumer Bearer tokens managed via the apikeys
 // package. Every authenticated request is logged to jetmon_audit_log under

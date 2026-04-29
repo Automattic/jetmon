@@ -29,7 +29,7 @@ share the loop / retry / claim plumbing.
 
 We will keep `internal/alerting` and `internal/webhooks` as
 **separate packages with parallel-but-duplicated structure**, at
-least until the deliverer-binary extraction (`ROADMAP.md`).
+least until the deliverer-binary extraction ([`../roadmap.md`](../roadmap.md)).
 
 The webhook worker keeps its existing shape; the alerting worker is
 copy-paste-and-adapt with the alerting-specific concerns layered on
@@ -87,12 +87,12 @@ this. By then we'll have:
 
 At that point, factor a `Dispatcher` interface against three known
 implementations, not one known plus one guess. The unification work
-is documented in `ROADMAP.md` "Multi-repo / multi-binary split →
+is documented in [`../roadmap.md`](../roadmap.md) "Multi-repo / multi-binary split →
 Revisit point: unify `internal/alerting/` and `internal/webhooks/`."
 
 ## Related
 
-- ROADMAP.md "Multi-repo / multi-binary split"
+- [`../roadmap.md`](../roadmap.md) "Multi-repo / multi-binary split"
 - `internal/webhooks/worker.go` and `internal/alerting/worker.go` —
   the parallel implementations.
 - ADR-0005 (Pull-only delivery) — the shared shape both workers

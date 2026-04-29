@@ -100,10 +100,10 @@ See [docs/getting-started.md](docs/getting-started.md) for the full local loop.
 
 | Document | Start Here For |
 |---|---|
-| [PROJECT.md](PROJECT.md) | Full product and implementation specification |
-| [API.md](API.md) | Internal REST API reference |
-| [EVENTS.md](EVENTS.md) | Event lifecycle and transition semantics |
-| [TAXONOMY.md](TAXONOMY.md) | Severity, state, cause, and rollup taxonomy |
+| [docs/project.md](docs/project.md) | Full product and implementation specification |
+| [docs/internal-api-reference.md](docs/internal-api-reference.md) | Internal REST API reference |
+| [docs/events.md](docs/events.md) | Event lifecycle and transition semantics |
+| [docs/taxonomy.md](docs/taxonomy.md) | Severity, state, cause, and rollup taxonomy |
 | [docs/getting-started.md](docs/getting-started.md) | Docker setup, builds, tests, API CLI smoke runs |
 | [docs/operations-guide.md](docs/operations-guide.md) | Production config, rollout, delivery workers, metrics, debugging |
 | [docs/data-model.md](docs/data-model.md) | Tables, migrations, event projection, tenant mapping |
@@ -111,7 +111,7 @@ See [docs/getting-started.md](docs/getting-started.md) for the full local loop.
 | [docs/api-cli-guide.md](docs/api-cli-guide.md) | API CLI examples and automation patterns |
 | [docs/v1-to-v2-migration.md](docs/v1-to-v2-migration.md) | Full v1-to-v2 production migration and rollback runbook |
 | [docs/jetmon-deliverer-rollout.md](docs/jetmon-deliverer-rollout.md) | Moving outbound delivery to `jetmon-deliverer` |
-| [ROADMAP.md](ROADMAP.md) | Broader v2 and v3 planning |
+| [docs/roadmap.md](docs/roadmap.md) | Broader v2 and v3 planning |
 
 Longer design decisions live in [docs/adr/](docs/adr/).
 

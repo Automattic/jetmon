@@ -85,7 +85,7 @@ but it should not become a generic `curl` clone.
 - [x] Add stable table output for list commands while keeping JSON as the default
   automation-friendly format.
 - [x] Add `--pretty` for formatted JSON and preserve raw JSON for scripts.
-- [x] Add examples to `API.md`, Docker docs, and the v1-to-v2 rollout rehearsal
+- [x] Add examples to `internal-api-reference.md`, Docker docs, and the v1-to-v2 rollout rehearsal
   docs once the command shape has stabilized.
 
 ## P4 - Hardening and Repeatability
@@ -194,7 +194,7 @@ but it should not become a generic `curl` clone.
 - [x] 2026-04-28: Added `--output table` with stable resource-oriented columns
   for API list responses and CLI workflow summaries while keeping JSON as the
   default script-friendly output.
-- [x] 2026-04-28: Documented API CLI setup and examples in `API.md`, the Docker
+- [x] 2026-04-28: Documented API CLI setup and examples in `internal-api-reference.md`, the Docker
   development loop, and the v1-to-v2 migration rehearsal runbook.
 - [x] 2026-04-28: Added `jetmon2 api sites cleanup` with deterministic
   batch-derived IDs, explicit site IDs, dry-run output, 404-tolerant cleanup,
@@ -215,7 +215,7 @@ but it should not become a generic `curl` clone.
   state, event severity, transition presence, and transition reason. Assertion
   mode keeps polling until the expectations match or `--wait` expires, then
   returns a non-zero summary with the last observed API state.
-- [x] 2026-04-28: Added `docs/api-cli-guide.md` as a feature-oriented API CLI
+- [x] 2026-04-28: Added `api-cli-guide.md` as a feature-oriented API CLI
   usage guide with local setup, command examples, workflow recipes, failure
   simulation assertions, and automation notes.
 - [x] 2026-04-28: Allowed API CLI flags before or after positional arguments by

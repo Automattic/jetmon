@@ -42,7 +42,7 @@ preflight hardening settle:
   probe-agent architecture. The v2 event tables remain authoritative while
   `LEGACY_STATUS_PROJECTION_ENABLE` keeps legacy `site_status` /
   `last_status_change` consumers working during migration. Use the
-  [`docs/v1-to-v2-migration.md`](docs/v1-to-v2-migration.md) pinned bucket
+  [`v1-to-v2-migration.md`](v1-to-v2-migration.md) pinned bucket
   path for the first v1-to-v2 production migration, then remove
   `PINNED_BUCKET_*` after every host is on v2 and stable.
 - **Keep rollout health visible before cutover.** Operators should not have to
@@ -60,7 +60,7 @@ preflight hardening settle:
   `DELIVERY_OWNER_HOST` as a rollout guard when intentionally keeping delivery
   single-owner during migration from embedded to standalone delivery.
 - **Run a production rollout rehearsal pass.** Validate that README,
-  `docs/v1-to-v2-migration.md`, config samples, systemd units,
+  `v1-to-v2-migration.md`, config samples, systemd units,
   `validate-config`, `rollout static-plan-check`, `rollout pinned-check`,
   `rollout activity-check`, `rollout rollback-check`,
   `rollout projection-drift`, and rollback steps line up exactly before the
@@ -81,7 +81,7 @@ preflight hardening settle:
   lists the exact active sites whose legacy projection disagrees with the
   authoritative HTTP event state, so rollout failures are actionable instead of
   count-only.
-- **Keep roadmap/API documentation drift out of the branch.** `API.md` is the
+- **Keep roadmap/API documentation drift out of the branch.** `internal-api-reference.md` is the
   source for the implemented internal `/api/v1` route surface. This roadmap
   should track only the remaining public/customer API work, production
   hardening, and deferred architecture choices.
@@ -89,7 +89,7 @@ preflight hardening settle:
   `jetmon2 api` helper now exists; continue hardening fixture and smoke
   workflows so local, staging, and any approved remote runs remain explicitly
   batch-owned, easy to clean up, and difficult to aim at production by mistake.
-  See [`docs/api-cli-roadmap.md`](docs/api-cli-roadmap.md).
+  See [`api-cli-roadmap.md`](api-cli-roadmap.md).
 
 ### P1 - post-v2 platform refinement
 
@@ -99,7 +99,7 @@ preflight hardening settle:
   worker wiring, a standalone `jetmon-deliverer` entry point, and
   transactional row claims exist. A sample systemd service is available at
   `systemd/jetmon-deliverer.service`. The rollout policy is captured in
-  [`docs/jetmon-deliverer-rollout.md`](docs/jetmon-deliverer-rollout.md);
+  [`jetmon-deliverer-rollout.md`](jetmon-deliverer-rollout.md);
   the remaining production cutover work is deployment-system adoption and
   host-specific config wiring.
 - **Unify webhook and alerting dispatch plumbing after production evidence.**
@@ -120,7 +120,7 @@ preflight hardening settle:
   destination credentials are acceptable for the current internal threat
   model, but KMS-style encryption should be planned before exposing
   customer-managed secrets more broadly. See
-  [`docs/outbound-credential-encryption-plan.md`](docs/outbound-credential-encryption-plan.md).
+  [`outbound-credential-encryption-plan.md`](outbound-credential-encryption-plan.md).
 
 ### P2 - v3 and product-driven extensions
 
@@ -151,7 +151,7 @@ The current v2 production target keeps the main-server-plus-Veriflier
 confirmation model. After v2 has enough production data, revisit whether Jetmon
 should evolve into a central scheduler plus regional probe-agent architecture.
 
-See [`docs/v3-probe-agent-architecture-options.md`](docs/v3-probe-agent-architecture-options.md)
+See [`v3-probe-agent-architecture-options.md`](v3-probe-agent-architecture-options.md)
 for the candidate architectures, data to gather during v2, and the current
 recommendation.
 
@@ -168,7 +168,7 @@ safely.
 
 A versioned, authenticated customer-facing REST API on competitive parity with established uptime monitoring services (Pingdom, UptimeRobot, Better Uptime, Datadog Synthetics). Users and integrations interact with Jetmon entirely through this API — reading current health state, pulling event history and SLA statistics, managing what gets monitored, configuring alerts, and triggering on-demand checks.
 
-Currently, Jetmon's API is internal-only: callers are known services, tenant isolation lives at the gateway, errors are intentionally verbose, and ownership checks are coarse. What is missing is a stable public contract with customer-scoped auth, tenant ownership, sanitized error semantics, public rate limits, and payloads safe to expose directly to customer tooling. The capability list below describes the public/customer contract target; many internal equivalents already exist and are documented in `API.md`.
+Currently, Jetmon's API is internal-only: callers are known services, tenant isolation lives at the gateway, errors are intentionally verbose, and ownership checks are coarse. What is missing is a stable public contract with customer-scoped auth, tenant ownership, sanitized error semantics, public rate limits, and payloads safe to expose directly to customer tooling. The capability list below describes the public/customer contract target; many internal equivalents already exist and are documented in `internal-api-reference.md`.
 
 ### Why it matters
 
@@ -204,7 +204,7 @@ Read-only endpoints for event timelines and raw check results.
 | `GET /api/v1/sites/{blog_id}/history` | Raw check timing history (DNS, TCP, TLS, TTFB, status code) with time range params |
 | `GET /api/v1/sites/{blog_id}/audit` | Audit log entries with time range and event type filters |
 
-Event response schema follows `EVENTS.md`: `started_at`, `ended_at`, `severity`, `state`, `resolution_reason`, `check_type`, `cause_event_id`, `metadata`.
+Event response schema follows `events.md`: `started_at`, `ended_at`, `severity`, `state`, `resolution_reason`, `check_type`, `cause_event_id`, `metadata`.
 
 ### Capability 3: Statistics and SLA reporting
 
@@ -216,7 +216,7 @@ Aggregate calculations for uptime, response time, and incident summary. This is 
 | `GET /api/v1/sites/{blog_id}/response-times` | Response time statistics for a time range: mean, p50, p95, p99, min, max, bucketed by interval |
 | `GET /api/v1/sites/{blog_id}/incidents` | Incident summary: count, total duration, and MTTR for a time range |
 
-**Design note on Unknown vs. Downtime.** The uptime calculation must honour the Unknown/Downtime distinction from `TAXONOMY.md`: Unknown periods (monitor-side failures, agent not reporting) are excluded from the denominator, not counted as downtime. Conflating these breaks SLA calculations and erodes user trust. The response must return the three separately: `downtime_seconds`, `degraded_seconds`, `unknown_seconds`, and `monitored_seconds` (the denominator).
+**Design note on Unknown vs. Downtime.** The uptime calculation must honour the Unknown/Downtime distinction from `taxonomy.md`: Unknown periods (monitor-side failures, agent not reporting) are excluded from the denominator, not counted as downtime. Conflating these breaks SLA calculations and erodes user trust. The response must return the three separately: `downtime_seconds`, `degraded_seconds`, `unknown_seconds`, and `monitored_seconds` (the denominator).
 
 ### Capability 4: Monitor management
 
@@ -257,11 +257,11 @@ Programmatic management of where alerts go. Competitors that omit this force use
 ### Public API decisions before direct exposure
 
 The internal API decisions are implemented in `internal/api/` and documented in
-`API.md`. A public/customer API is a different contract and needs these
+`internal-api-reference.md`. A public/customer API is a different contract and needs these
 decisions before direct exposure:
 
 **Tenant and ownership model.** The baseline gateway-to-Jetmon tenant contract
-is drafted in [`docs/public-api-gateway-tenant-contract.md`](docs/public-api-gateway-tenant-contract.md):
+is drafted in [`public-api-gateway-tenant-contract.md`](public-api-gateway-tenant-contract.md):
 the gateway remains the first tenant boundary, while Jetmon-side ownership
 columns become necessary for defense in depth or any direct public exposure.
 Direct customer exposure requires every read/write to be tenant-scoped.
@@ -484,7 +484,7 @@ The migrations are individually clean (each is "add a column, filter on it, depr
 
 **When to revisit:** if a stakeholder asks "can a customer integration call Jetmon directly?" — the answer should be "let's design that" rather than "yes, here's the URL."
 
-The Q9 (webhook ownership) section in API.md captures the most concrete piece of this; the rest is captured here for visibility when the conversation comes up.
+The Q9 (webhook ownership) section in internal-api-reference.md captures the most concrete piece of this; the rest is captured here for visibility when the conversation comes up.
 
 ---
 
@@ -709,7 +709,7 @@ where to look, and what each item unlocked.
   This captures the "why" behind event-sourced state, pull-only delivery,
   webhook signatures, gateway tenant boundaries, and credential-storage tradeoffs.
 - **v3 architecture options documented.** The v3 probe-agent candidates are
-  parked in `docs/v3-probe-agent-architecture-options.md` until v2 has
+  parked in `v3-probe-agent-architecture-options.md` until v2 has
   production data.
   Candidate 3 remains the leading option, but the roadmap now says which data
   should be collected before revisiting it.

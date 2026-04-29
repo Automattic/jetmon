@@ -649,7 +649,7 @@ func cmdReload() {
 
 // cmdKeys is the entrypoint for `./jetmon2 keys ...` ops commands. Key
 // management is intentionally CLI-only — the public API has no /keys
-// endpoints. See API.md "Authentication".
+// endpoints. See docs/internal-api-reference.md "Authentication".
 func cmdKeys(args []string) {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "usage: jetmon2 keys <create|list|revoke|rotate> [args]")

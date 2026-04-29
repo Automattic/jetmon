@@ -19,7 +19,7 @@ const cliBatchHeader = "X-Jetmon-CLI-Batch"
 
 // siteResponse is the JSON shape for a site in list and single-site responses.
 // Field ordering kept human-friendly (id and url first, configuration fields
-// after, computed fields last). See API.md "Family 1: Sites and current state".
+// after, computed fields last). See docs/internal-api-reference.md "Family 1: Sites and current state".
 type siteResponse struct {
 	ID                   int64   `json:"id"`
 	BlogID               int64   `json:"blog_id"`

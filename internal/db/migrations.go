@@ -161,7 +161,7 @@ var migrations = []migration{
 	// the raw token is shown only once at creation time via the CLI. Per-key rate
 	// limit, scope, expiry, and revocation are all stored here. consumer_name is
 	// the audit-log key — every authenticated API request logs against it so we
-	// can track and revoke specific internal systems. See API.md "Authentication".
+	// can track and revoke specific internal systems. See docs/internal-api-reference.md "Authentication".
 	{12, `CREATE TABLE IF NOT EXISTS jetmon_api_keys (
 		id                    BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
 		key_hash              CHAR(64) NOT NULL,
@@ -181,7 +181,7 @@ var migrations = []migration{
 	// raw secret (which is shown once at creation, mirrors jetmon_api_keys).
 	// events / site_filter / state_filter are JSON to allow flexible filter
 	// shapes without per-filter columns; semantics: empty = match all, AND
-	// across dimensions, whitelist within each. See API.md "Family 4".
+	// across dimensions, whitelist within each. See docs/internal-api-reference.md "Family 4".
 	// secret stores the raw HMAC signing key in plaintext. Unlike
 	// jetmon_api_keys (sha256-hashed at rest, used for inbound auth where
 	// hash is sufficient), webhook secrets are used to SIGN outbound
@@ -193,7 +193,7 @@ var migrations = []migration{
 	// Threat model: anyone with read access to jetmon_webhooks can mint
 	// valid deliveries. For the internal API behind a gateway, that's
 	// equivalent to the existing access-to-events threat. Encryption at
-	// rest with a master key (KMS-style) is in ROADMAP.md as a future
+	// rest with a master key (KMS-style) is in docs/roadmap.md as a future
 	// hardening step.
 	{13, `CREATE TABLE IF NOT EXISTS jetmon_webhooks (
 		id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -256,7 +256,7 @@ var migrations = []migration{
 
 	// Migration 16 creates the alert contacts registry. Same shape as the
 	// webhook registry but with a simpler filter model (site_filter +
-	// min_severity, no event-type / state filter — see API.md Family 5).
+	// min_severity, no event-type / state filter — see docs/internal-api-reference.md Family 5).
 	//
 	// destination is JSON because each transport has a different shape:
 	//   email     → {"address":"ops@example.com"}

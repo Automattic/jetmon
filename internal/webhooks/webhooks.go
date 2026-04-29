@@ -6,7 +6,7 @@
 // transition matches the webhook's filters, then dispatched by the
 // background delivery worker.
 //
-// See API.md "Family 4" for the public design and ROADMAP.md for deferred
+// See docs/internal-api-reference.md "Family 4" for the public design and docs/roadmap.md for deferred
 // items (site.state_changed events, grace-period secret rotation).
 package webhooks
 
@@ -29,7 +29,7 @@ import (
 // Webhooks are outbound-only — the server signs every delivery, so the HMAC
 // key has to be available in plaintext at signing time. Hashing the secret
 // at rest (the API-key pattern) would make signing impossible. Encryption
-// at rest with a master key is on ROADMAP.md as a future hardening step.
+// at rest with a master key is on docs/roadmap.md as a future hardening step.
 
 // Status enumerates the lifecycle states of a delivery row.
 type Status string
@@ -396,7 +396,7 @@ func deleteWebhook(ctx context.Context, db *sql.DB, id int64, ownerTenantID stri
 
 // RotateSecret generates a new secret, replaces the stored value, and
 // returns the new raw secret (one-time view in API responses). The old
-// secret stops working immediately — see API.md "Signing and secret
+// secret stops working immediately — see docs/internal-api-reference.md "Signing and secret
 // rotation" for why this is the v1 behavior and how grace-period rotation
 // will be added later.
 func RotateSecret(ctx context.Context, db *sql.DB, id int64) (string, *Webhook, error) {
@@ -472,7 +472,7 @@ func GenerateSecret() (string, error) {
 }
 
 // Sign produces the X-Jetmon-Signature header value for a delivery.
-// Format: "t=<unix>,v1=<hex_hmac_sha256(t.body)>" — see API.md.
+// Format: "t=<unix>,v1=<hex_hmac_sha256(t.body)>" — see docs/internal-api-reference.md.
 //
 // The timestamp is part of the signature input so consumers can reject
 // stale (replayed) deliveries by checking the t= value against their

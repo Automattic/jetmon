@@ -79,5 +79,5 @@ configs, but `LEGACY_STATUS_PROJECTION_ENABLE` is the real switch.
 ## Related
 
 - ADR-0001 — Event-sourced state model.
-- `EVENTS.md` — event lifecycle and projection invariants.
+- [`../events.md`](../events.md) — event lifecycle and projection invariants.
 - `internal/eventstore` — sole writer for event rows and transitions.

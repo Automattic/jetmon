@@ -33,7 +33,7 @@ The events row is the authoritative current-state projection. The transitions ta
 | Field                | Type             | Notes                                                                    |
 |----------------------|------------------|--------------------------------------------------------------------------|
 | `id`                 | BIGINT UNSIGNED  | Primary key.                                                             |
-| `blog_id`            | BIGINT UNSIGNED  | The site this event is about. (`site_id` in TAXONOMY.md terms.)          |
+| `blog_id`            | BIGINT UNSIGNED  | The site this event is about. (`site_id` in taxonomy.md terms.)          |
 | `endpoint_id`        | BIGINT UNSIGNED, null | The endpoint, when applicable. Null for site-level events.          |
 | `check_type`         | VARCHAR(64)      | Which probe observed this — `http`, `dns`, `tls_expiry`, etc.            |
 | `discriminator`      | VARCHAR(128), null | Optional tiebreaker for tuples that can have multiple concurrent failures (e.g. multiple keyword checks on the same endpoint). |
@@ -138,7 +138,7 @@ Condition has cleared. `ended_at` is set, `resolution_reason` is recorded, and a
 
 ## The site row projection
 
-During the [v1-to-v2 migration](docs/v1-to-v2-migration.md),
+During the [v1-to-v2 migration](v1-to-v2-migration.md),
 `jetpack_monitor_sites` remains the legacy site/config table and compatibility
 projection. The authoritative incident state is the v2 event model:
 

@@ -35,7 +35,7 @@ options carry useful information for a future revisit.
   always link to the related decisions.
 - **Don't backfill speculatively.** ADRs document decisions that have
   actually been made and shipped. Open questions belong in
-  `ROADMAP.md` until they're resolved.
+  [`../roadmap.md`](../roadmap.md) until they're resolved.
 
 ## Index
 
