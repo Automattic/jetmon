@@ -41,6 +41,7 @@ type apiSmokeOptions struct {
 	webhookPollInterval  time.Duration
 	fixtureURL           string
 	fixtureProbeURL      string
+	allowExternalWebhook bool
 }
 
 type apiSmokeSummary struct {
@@ -156,6 +157,7 @@ func cmdAPISmoke(args []string) error {
 	fs.DurationVar(&smoke.webhookPollInterval, "webhook-poll-interval", smoke.webhookPollInterval, "poll interval for webhook delivery checks")
 	fs.StringVar(&smoke.fixtureURL, "fixture-url", smoke.fixtureURL, "Docker fixture monitor URL, auto, or off when --exercise=webhook")
 	fs.StringVar(&smoke.fixtureProbeURL, "fixture-probe-url", smoke.fixtureProbeURL, "URL used when --fixture-url=auto")
+	fs.BoolVar(&smoke.allowExternalWebhook, "allow-external-webhook-url", false, "allow --exercise=webhook to register a receiver URL outside localhost, loopback, or api-fixture")
 	if err := parseAPIFlags(fs, args); err != nil {
 		return err
 	}
@@ -213,6 +215,9 @@ func runAPISmoke(ctx context.Context, client *http.Client, opts apiCLIOptions, s
 		return errors.New("api smoke --exercise webhook is Docker-local only and refuses non-local API targets")
 	}
 	if smoke.exercise == "webhook" {
+		if err := requireAPIWebhookFixtureURLAllowed(smoke.webhookURL, smoke.allowExternalWebhook); err != nil {
+			return err
+		}
 		if err := requireAPIWebhookFixtureRequestsLocal(smoke.webhookRequestsURL); err != nil {
 			return err
 		}
@@ -444,7 +449,7 @@ func runAPISmoke(ctx context.Context, client *http.Client, opts apiCLIOptions, s
 			return err
 		}
 		if err := step("webhook_delivery_row", func() error {
-			body, err := waitForAPIWebhookDeliveredRow(ctx, client, opts, createdWebhookID, smoke)
+			body, err := waitForAPIWebhookDeliveredRow(ctx, client, opts, createdWebhookID, smoke, summary.WebhookFixture.MatchedDeliveryID)
 			if err != nil {
 				return err
 			}
@@ -602,6 +607,9 @@ func matchingAPIWebhookFixtureDelivery(fixture apiSmokeFixtureResponse, siteID i
 		if body.Type != apiSmokeWebhookEvent || body.SiteID != siteID {
 			continue
 		}
+		if strings.TrimSpace(req.Delivery) == "" {
+			continue
+		}
 		return &apiSmokeWebhookFixtureSummary{
 			Requests:          fixture.Count,
 			MatchedDeliveryID: req.Delivery,
@@ -612,7 +620,7 @@ func matchingAPIWebhookFixtureDelivery(fixture apiSmokeFixtureResponse, siteID i
 	return nil
 }
 
-func waitForAPIWebhookDeliveredRow(ctx context.Context, client *http.Client, opts apiCLIOptions, webhookID int64, smoke apiSmokeOptions) (json.RawMessage, error) {
+func waitForAPIWebhookDeliveredRow(ctx context.Context, client *http.Client, opts apiCLIOptions, webhookID int64, smoke apiSmokeOptions, expectedDeliveryID string) (json.RawMessage, error) {
 	deadline := time.Now().Add(smoke.webhookWait)
 	target := fmt.Sprintf("/api/v1/webhooks/%d/deliveries?status=delivered&limit=10", webhookID)
 	for {
@@ -620,10 +628,13 @@ func waitForAPIWebhookDeliveredRow(ctx context.Context, client *http.Client, opt
 		if err != nil {
 			return nil, err
 		}
-		if apiDeliveredWebhookRowsIncludeSite(body, smoke.blogID) {
+		if apiDeliveredWebhookRowsIncludeSite(body, smoke.blogID, expectedDeliveryID) {
 			return body, nil
 		}
 		if time.Now().After(deadline) {
+			if strings.TrimSpace(expectedDeliveryID) != "" {
+				return nil, fmt.Errorf("timed out waiting for delivered webhook row %s for webhook %d and site %d", expectedDeliveryID, webhookID, smoke.blogID)
+			}
 			return nil, fmt.Errorf("timed out waiting for delivered webhook row for webhook %d and site %d", webhookID, smoke.blogID)
 		}
 		select {
@@ -634,9 +645,10 @@ func waitForAPIWebhookDeliveredRow(ctx context.Context, client *http.Client, opt
 	}
 }
 
-func apiDeliveredWebhookRowsIncludeSite(body json.RawMessage, siteID int64) bool {
+func apiDeliveredWebhookRowsIncludeSite(body json.RawMessage, siteID int64, expectedDeliveryID string) bool {
 	var envelope struct {
 		Data []struct {
+			ID      int64           `json:"id"`
 			Status  string          `json:"status"`
 			Payload json.RawMessage `json:"payload"`
 		} `json:"data"`
@@ -655,11 +667,23 @@ func apiDeliveredWebhookRowsIncludeSite(body json.RawMessage, siteID int64) bool
 		if err := json.Unmarshal(row.Payload, &payload); err != nil {
 			continue
 		}
-		if payload.Type == apiSmokeWebhookEvent && payload.SiteID == siteID {
+		if payload.Type == apiSmokeWebhookEvent && payload.SiteID == siteID && apiDeliveryIDMatches(row.ID, expectedDeliveryID) {
 			return true
 		}
 	}
 	return false
+}
+
+func apiDeliveryIDMatches(rowID int64, expectedDeliveryID string) bool {
+	expectedDeliveryID = strings.TrimSpace(expectedDeliveryID)
+	if expectedDeliveryID == "" {
+		return true
+	}
+	expected, err := strconv.ParseInt(expectedDeliveryID, 10, 64)
+	if err != nil {
+		return false
+	}
+	return rowID == expected
 }
 
 func apiWebhookFixtureURLWithSecret(rawURL, secret string) (string, error) {
@@ -688,6 +712,31 @@ func apiExternalHTTPClient(client *http.Client, opts apiCLIOptions) *http.Client
 		timeout = 10 * time.Second
 	}
 	return &http.Client{Timeout: timeout}
+}
+
+func requireAPIWebhookFixtureURLAllowed(rawURL string, allowExternal bool) error {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return fmt.Errorf("invalid webhook-url: %w", err)
+	}
+	if !u.IsAbs() || u.Host == "" {
+		return errors.New("webhook-url must be absolute")
+	}
+	if allowExternal {
+		return nil
+	}
+	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+	if host == "api-fixture" {
+		return nil
+	}
+	local, err := isLocalAPIURL(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid webhook-url: %w", err)
+	}
+	if local {
+		return nil
+	}
+	return fmt.Errorf("webhook-url must be localhost, loopback, or api-fixture for api smoke --exercise webhook; pass --allow-external-webhook-url to register %q", rawURL)
 }
 
 func requireAPIWebhookFixtureRequestsLocal(rawURL string) error {

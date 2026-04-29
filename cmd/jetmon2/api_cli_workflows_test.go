@@ -204,6 +204,13 @@ func TestRunAPISmokeWebhookExercise(t *testing.T) {
 			writeTestJSON(t, w, map[string]any{
 				"data": []any{
 					map[string]any{
+						"id":         776,
+						"status":     "delivered",
+						"event_id":   321,
+						"event_type": apiSmokeWebhookEvent,
+						"payload":    map[string]any{"type": apiSmokeWebhookEvent, "site_id": 910},
+					},
+					map[string]any{
 						"id":         777,
 						"status":     "delivered",
 						"event_id":   321,
@@ -342,6 +349,21 @@ func TestRedactAPISecretError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "secret=redacted") {
 		t.Fatalf("redactAPISecretError() = %v, want redacted query value", err)
+	}
+}
+
+func TestAPIDeliveredWebhookRowsIncludeSiteRequiresExpectedDeliveryID(t *testing.T) {
+	body := json.RawMessage(`{
+		"data": [
+			{"id": 776, "status": "delivered", "payload": {"type": "event.opened", "site_id": 910}},
+			{"id": 778, "status": "delivered", "payload": {"type": "event.opened", "site_id": 911}}
+		]
+	}`)
+	if apiDeliveredWebhookRowsIncludeSite(body, 910, "777") {
+		t.Fatal("apiDeliveredWebhookRowsIncludeSite() = true for wrong delivery id")
+	}
+	if !apiDeliveredWebhookRowsIncludeSite(body, 910, "776") {
+		t.Fatal("apiDeliveredWebhookRowsIncludeSite() = false for expected delivery id")
 	}
 }
 

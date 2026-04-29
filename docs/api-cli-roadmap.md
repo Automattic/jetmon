@@ -257,3 +257,6 @@ but it should not become a generic `curl` clone.
 - [x] 2026-04-29: Hardened webhook smoke so it stays Docker-local, requires a
   local fixture polling endpoint, and redacts the generated webhook secret from
   activation errors.
+- [x] 2026-04-29: Tightened webhook smoke review follow-ups by requiring an
+  explicit opt-in for external receiver URLs, matching fixture delivery IDs to
+  API delivery rows, and refreshing the broader validation docs.

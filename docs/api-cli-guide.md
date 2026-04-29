@@ -379,7 +379,10 @@ signature result, confirms a delivered webhook row, and cleans up:
 
 The webhook exercise is Docker-local only. It refuses non-local API targets even
 with `--allow-remote`, and the fixture polling URL must resolve to localhost or
-a loopback IP because the CLI clears and polls that endpoint directly.
+a loopback IP because the CLI clears and polls that endpoint directly. The
+registered receiver URL must also be localhost, loopback, or `api-fixture`
+unless you pass `--allow-external-webhook-url` for an intentionally external
+test receiver.
 
 The Makefile target builds the binary first and runs the standard smoke path:
 

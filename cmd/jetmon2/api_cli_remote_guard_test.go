@@ -207,3 +207,47 @@ func TestRunAPISmokeWebhookRequiresLocalRequestsURL(t *testing.T) {
 		t.Fatalf("runAPISmoke() error = %v, want local webhook requests URL refusal", err)
 	}
 }
+
+func TestRunAPISmokeWebhookRejectsExternalWebhookURL(t *testing.T) {
+	err := runAPISmoke(context.Background(), nil, apiCLIOptions{
+		baseURL: "http://localhost:8090",
+		out:     ioDiscard{},
+		errOut:  ioDiscard{},
+	}, apiSmokeOptions{
+		batch:              "local-smoke",
+		exercise:           "webhook",
+		webhookURL:         "https://receiver.example.test/webhook",
+		webhookRequestsURL: "http://localhost:18091/webhook/requests",
+	})
+	if err == nil || !strings.Contains(err.Error(), "allow-external-webhook-url") {
+		t.Fatalf("runAPISmoke() error = %v, want external webhook URL refusal", err)
+	}
+}
+
+func TestRequireAPIWebhookFixtureURLAllowed(t *testing.T) {
+	tests := []struct {
+		name          string
+		rawURL        string
+		allowExternal bool
+		wantErr       bool
+	}{
+		{name: "api fixture", rawURL: "http://api-fixture:8091/webhook"},
+		{name: "localhost", rawURL: "http://localhost:18091/webhook"},
+		{name: "loopback", rawURL: "http://127.0.0.1:18091/webhook"},
+		{name: "external blocked", rawURL: "https://receiver.example.test/webhook", wantErr: true},
+		{name: "external explicit", rawURL: "https://receiver.example.test/webhook", allowExternal: true},
+		{name: "relative rejected", rawURL: "/webhook", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := requireAPIWebhookFixtureURLAllowed(tt.rawURL, tt.allowExternal)
+			if tt.wantErr && err == nil {
+				t.Fatal("requireAPIWebhookFixtureURLAllowed() error = nil, want error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("requireAPIWebhookFixtureURLAllowed() error = %v", err)
+			}
+		})
+	}
+}
