@@ -158,20 +158,22 @@ Add a `redirect_policy` column to `jetpack_monitor_sites` with three options: `f
 ## Tooling and Developer Experience
 
 **Docker Compose Environment**
-The existing Docker Compose setup is updated for the Go binary. A single `docker compose up` starts MySQL, the Jetmon 2 binary, one or more Veriflier instances, Mailpit for local email capture, StatsD + Graphite, and the operator dashboard. No npm, no node-gyp, no manual build steps. `docker compose up --build` rebuilds the Go binary in a reproducible multi-stage Docker build. A simulated site server remains a planned addition for deterministic local failure scenarios.
+The existing Docker Compose setup is updated for the Go binary. A single `docker compose up` starts MySQL, the Jetmon 2 binary, one or more Veriflier instances, Mailpit for local email capture, StatsD + Graphite, the operator dashboard, and the deterministic API fixture. No npm, no node-gyp, no manual build steps. `docker compose up --build` rebuilds the Go binaries in a reproducible multi-stage Docker build.
 
-**Planned Simulated Site Server**
-A dedicated HTTP service should be added to the Docker Compose environment to simulate configurable site states without requiring real external sites:
+**Docker-Local API Fixture**
+The Docker Compose environment includes an `api-fixture` service for deterministic local API CLI and event-flow rehearsals without depending on public endpoint timing. It exposes:
 
-- Static response codes (200, 404, 500, 503)
-- Configurable response delay (simulates slow sites and timeouts)
-- Flapping mode (alternates between up and down on a configurable schedule)
-- SSL with a self-signed certificate (for TLS path testing)
-- Keyword presence/absence for content check testing
-- Redirect chains (tests the redirect-following logic)
-- Abrupt TCP close (tests connection reset handling)
+- static response-code endpoints for success, client error, and server error cases
+- configurable slow responses for timeout paths
+- keyword-present and keyword-missing responses
+- redirect paths for redirect-policy checks
+- HTTPS with a self-signed certificate for TLS failure paths
+- webhook capture endpoints that record deliveries and verify
+  `X-Jetmon-Signature` when a shared secret is supplied
 
-States should be toggled via a simple HTTP API so integration tests can script site behaviour programmatically.
+`make api-cli-smoke` exercises the normal local API smoke path, and
+`make api-cli-validate` runs the broader guide validation with fixture-backed
+failure simulation and optional webhook signature verification.
 
 **Structured Logging**
 All log output is available in two formats: the existing plain-text line format (for drop-in compatibility with current log consumers) and an optional structured JSON format enabled via `config.json`. The JSON format emits the same fields — level, timestamp, message, blog_id, http_code, error_code, RTT — as a machine-readable object, making log ingestion into Elasticsearch, Loki, or any log aggregation platform straightforward without a custom parser. Both formats write to the same log file paths.
@@ -267,7 +269,10 @@ Queryable by `blog_id` and time range via a CLI tool (`jetmon2 audit --blog-id 1
 - `jetmon2 version` — prints binary version, build date, Go version, and git commit hash
 - `jetmon2 migrate` — applies pending DB schema migrations idempotently
 - `jetmon2 status` — connects to a running instance's internal API and prints a one-line health summary (equivalent to reading `stats/totals` but richer)
+- `jetmon2 rollout static-plan-check` — validates a CSV host-to-bucket plan before any v1 host is stopped
 - `jetmon2 rollout pinned-check` — validates a pinned v1-to-v2 cutover host before or during host replacement
+- `jetmon2 rollout activity-check` — verifies recent check activity for a bucket range after cutover
+- `jetmon2 rollout rollback-check` — verifies a pinned v2 range is safe to hand back to v1
 - `jetmon2 rollout dynamic-check` — validates full `jetmon_hosts` coverage after the fleet transitions from pinned to dynamic ownership
 - `jetmon2 rollout projection-drift` — lists active sites whose legacy `site_status` projection disagrees with the authoritative event state
 - `jetmon2 drain --worker N` — gracefully removes one worker pool slot, waiting for in-flight checks to complete before reducing concurrency

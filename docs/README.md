@@ -35,7 +35,7 @@ accepted architecture decisions.
 | Document | Purpose |
 |---|---|
 | [`roadmap.md`](roadmap.md) | Broader v2/v3 planning, deferred feature work, and public API prerequisites. |
-| [`api-cli-roadmap.md`](api-cli-roadmap.md) | Prioritized plan for a local `jetmon2 api` helper CLI that exercises the internal REST API during Docker and rollout testing. |
+| [`api-cli-roadmap.md`](api-cli-roadmap.md) | Completed implementation history for the local `jetmon2 api` helper CLI used during Docker and rollout testing. |
 | [`jetmon-deliverer-rollout.md`](jetmon-deliverer-rollout.md) | Operational rollout policy for moving outbound dispatch from embedded `jetmon2` workers to standalone `jetmon-deliverer`. |
 | [`outbound-credential-encryption-plan.md`](outbound-credential-encryption-plan.md) | Migration plan for encrypting webhook secrets and alert-contact destination credentials after the current plaintext v2 model. |
 | [`public-api-gateway-tenant-contract.md`](public-api-gateway-tenant-contract.md) | Gateway boundary contract, implemented Jetmon-side tenant ownership checks, and remaining public-exposure prerequisites. |

@@ -42,7 +42,8 @@ reference.
 
 ## Production Host Setup
 
-1. Install `jetmon2` to `/opt/jetmon2/`.
+1. Install `bin/jetmon2` as `/opt/jetmon2/jetmon2`, or update the service unit
+   if your deployment system uses a different path.
 2. Install `systemd/jetmon2.service` to `/etc/systemd/system/` and run
    `systemctl daemon-reload`.
 3. Install `systemd/jetmon2-logrotate` to `/etc/logrotate.d/jetmon2`.
@@ -53,7 +54,9 @@ reference.
 6. Copy or generate `config/config.json`.
 7. Set `BUCKET_TARGET` to the desired maximum bucket count for the host.
 8. Run `./jetmon2 migrate`.
-9. Start the service with `systemctl enable --now jetmon2`.
+9. Run `systemd-analyze verify /etc/systemd/system/jetmon2.service` after the
+   binary exists at the path used by `ExecStart`.
+10. Start the service with `systemctl enable --now jetmon2`.
 
 Manual commands such as `migrate`, `validate-config`, and `rollout` need the
 same `DB_*` environment that systemd reads from
@@ -109,6 +112,11 @@ JETMON_CONFIG=/opt/jetmon2/config/deliverer.json \
 
 Add `--require-email-delivery` when real alert-contact email delivery is
 expected in that environment.
+
+Run `systemd-analyze verify /etc/systemd/system/jetmon-deliverer.service` after
+`/opt/jetmon2/bin/jetmon-deliverer` exists, or against an equivalent staged
+deployment root where the service's `ExecStart` and `ExecStartPre` paths are
+present.
 
 During rollout, inspect the shared webhook and alert-contact delivery queues
 from the same environment the service uses:

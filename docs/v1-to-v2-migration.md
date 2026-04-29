@@ -136,12 +136,14 @@ Build and verify the release:
 make all
 make test
 make test-race
+make lint
 ```
 
 Stage these artifacts for each target host:
 
-- `jetmon2`
-- `veriflier2` when that host also owns a Veriflier deployment
+- `bin/jetmon2`, installed at the path expected by the service unit
+  (`/opt/jetmon2/jetmon2` for the sample unit)
+- `bin/veriflier2` when that host also owns a Veriflier deployment
 - `systemd/jetmon2.service`
 - `systemd/jetmon2-logrotate`
 - `config/config.json`
@@ -149,6 +151,22 @@ Stage these artifacts for each target host:
 
 Keep v2 files in `/opt/jetmon2` or another v2-specific directory. Do not
 overwrite the v1 install until rollback signoff.
+
+Do not start `bin/jetmon-deliverer` during the initial monitor replacement
+unless standalone delivery is part of the approved rollout plan. Use
+[`jetmon-deliverer-rollout.md`](jetmon-deliverer-rollout.md) for that separate
+process cutover.
+
+After the binary and service files are staged, verify the service definition
+from that staged host or deployment root:
+
+```bash
+systemd-analyze verify /etc/systemd/system/jetmon2.service
+```
+
+If this check is run directly against the repository copy before installing the
+binary to `/opt/jetmon2`, systemd can report missing `ExecStart` paths. Treat
+that as a packaging reminder and re-run the check after the final paths exist.
 
 ### Prepare Pinned v2 Config
 
@@ -234,6 +252,25 @@ export JETMON_API_TOKEN=jm_replace_with_the_printed_token
   --pretty
 ./bin/jetmon2 api sites cleanup --batch rollout-rehearsal --count 3 --output table
 ```
+
+When the Docker-local fixture and delivery workers are enabled, also exercise
+the webhook path:
+
+```bash
+./bin/jetmon2 api smoke --batch rollout-webhook --exercise webhook --pretty
+```
+
+For a fuller Docker-local pass against the feature-guide examples, failure
+fixture, webhook receiver, signature verification, and cleanup path, run:
+
+```bash
+make api-cli-validate
+```
+
+Set `API_VALIDATE_SKIP_WEBHOOK=1` when the environment does not have outbound
+delivery workers enabled. Any API CLI write against a non-local API URL must
+use `--allow-remote`, and remote smoke, bulk-add, cleanup, and failure
+simulation must also use `--batch`.
 
 ## Phase 1A: Replace v1 On The Existing Server
 
