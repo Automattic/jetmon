@@ -1,11 +1,14 @@
 package checker
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptrace"
 	"strings"
@@ -22,6 +25,7 @@ const (
 	ErrorKeyword       = 5
 	ErrorTLSExpired    = 6
 	ErrorTLSDeprecated = 7
+	ErrorBodyTruncated = 8
 )
 
 // RedirectPolicy controls how redirect responses are handled.
@@ -233,17 +237,80 @@ func Check(ctx context.Context, req Request) Result {
 		res.RedirectChanged = true
 	}
 
-	// Keyword check — read body only if keyword is configured.
-	if req.Keyword != nil && *req.Keyword != "" {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		if !strings.Contains(string(body), *req.Keyword) {
-			res.ErrorCode = ErrorKeyword
-			return res
+	matchedKeyword, bodyErr := validateBodyToEOF(resp.Body, req.Keyword)
+	if bodyErr != nil {
+		if isTimeoutError(ctx, bodyErr) {
+			res.ErrorCode = ErrorTimeout
+		} else if res.HTTPCode > 0 && res.HTTPCode < 400 {
+			res.ErrorCode = ErrorBodyTruncated
 		}
+		return res
+	}
+
+	if req.Keyword != nil && *req.Keyword != "" && !matchedKeyword {
+		res.ErrorCode = ErrorKeyword
+		return res
 	}
 
 	res.Success = res.HTTPCode > 0 && res.HTTPCode < 400
 	return res
+}
+
+func validateBodyToEOF(body io.Reader, keyword *string) (bool, error) {
+	if keyword == nil || *keyword == "" {
+		_, err := io.Copy(io.Discard, body)
+		return true, err
+	}
+
+	needle := []byte(*keyword)
+	if len(needle) == 0 {
+		_, err := io.Copy(io.Discard, body)
+		return true, err
+	}
+
+	buf := make([]byte, 32*1024)
+	carryLimit := len(needle) - 1
+	if carryLimit < 0 {
+		carryLimit = 0
+	}
+	carry := make([]byte, 0, carryLimit)
+	found := false
+
+	for {
+		n, err := body.Read(buf)
+		if n > 0 {
+			window := append(carry, buf[:n]...)
+			if !found && bytes.Contains(window, needle) {
+				found = true
+			}
+
+			if carryLimit > 0 {
+				if len(window) > carryLimit {
+					carry = append(carry[:0], window[len(window)-carryLimit:]...)
+				} else {
+					carry = append(carry[:0], window...)
+				}
+			}
+		}
+
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return found, nil
+			}
+			return found, err
+		}
+	}
+}
+
+func isTimeoutError(ctx context.Context, err error) bool {
+	if ctx.Err() != nil {
+		return true
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
 }
 
 // ParseCustomHeaders deserialises a JSON custom headers string into a map.
