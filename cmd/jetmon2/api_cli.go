@@ -82,7 +82,7 @@ var apiCommandCatalog = []apiCommandInfo{
 	{Command: "alert-contacts create", Description: "create an email, PagerDuty, Slack, or Teams contact", Example: "jetmon2 api alert-contacts create --label Local --transport email --address alerts@example.test --pretty"},
 	{Command: "alert-contacts test", Description: "send a managed alert-contact test", Example: "jetmon2 api alert-contacts test 12 --idempotency-key alert-12-test --pretty"},
 	{Command: "alert-contacts deliveries", Description: "list managed alert delivery rows", Example: "jetmon2 api alert-contacts deliveries 12 --status failed --output table"},
-	{Command: "smoke", Description: "run the Docker-local API smoke workflow", Example: "jetmon2 api smoke --batch local-smoke --pretty"},
+	{Command: "smoke", Description: "run the Docker-local API smoke workflow", Example: "jetmon2 api smoke --batch local-smoke --exercise webhook --pretty"},
 	{Command: "commands", Description: "list API CLI commands and examples", Example: "jetmon2 api commands --output table"},
 }
 

@@ -89,12 +89,15 @@ Run the standard smoke sequence:
 make api-cli-smoke
 ```
 
-Run the fuller live validation pass against the guide examples and local failure
-fixture:
+Run the fuller live validation pass against the guide examples, local failure
+fixture, and webhook delivery/signature flow:
 
 ```bash
 make api-cli-validate
 ```
+
+Set `API_VALIDATE_SKIP_WEBHOOK=1` for a shorter pass that avoids the outbound
+webhook worker.
 
 Use these helper targets to manage local rehearsal tokens:
 

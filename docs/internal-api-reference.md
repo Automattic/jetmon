@@ -129,7 +129,9 @@ commands.
 
 Use `make api-cli-validate` with `JETMON_API_URL` and `JETMON_API_TOKEN` set for
 a live Docker-local validation pass covering the guide's core examples, the
-smoke workflow, and a deterministic failure-simulation assertion.
+smoke workflow, webhook delivery/signature verification, and a deterministic
+failure-simulation assertion. Set `API_VALIDATE_SKIP_WEBHOOK=1` when you need a
+shorter pass that avoids the outbound webhook worker.
 
 When Docker Compose is running, `sites simulate-failure` probes
 `http://localhost:18091/health` and uses the Docker-internal fixture URL

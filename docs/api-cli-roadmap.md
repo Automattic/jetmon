@@ -126,7 +126,7 @@ but it should not become a generic `curl` clone.
   `jetmon2 api` command tree.
 - [x] Extend `api-fixture` into a local webhook receiver that records webhook
   deliveries and verifies `X-Jetmon-Signature` when a shared secret is supplied.
-- [ ] Wire API CLI smoke or validation workflows to create a Docker-local
+- [x] Wire API CLI smoke or validation workflows to create a Docker-local
   webhook, share the generated secret with the fixture receiver, and assert
   delivery plus signature verification end-to-end.
 - [x] Add a local API-token convenience target or wrapper for creating and
@@ -250,3 +250,13 @@ but it should not become a generic `curl` clone.
   `/webhook/requests` endpoints that record deliveries, expose captured
   signature headers, clear recorded requests, and verify signatures when a
   `secret` query parameter is supplied.
+- [x] 2026-04-29: Added `api smoke --exercise webhook` and wired
+  `api-cli-validate` to create a Docker-local webhook, update the fixture
+  receiver with the generated secret, simulate a fixture-backed failure,
+  verify the fixture's signature result, and confirm a delivered webhook row.
+- [x] 2026-04-29: Hardened webhook smoke so it stays Docker-local, requires a
+  local fixture polling endpoint, and redacts the generated webhook secret from
+  activation errors.
+- [x] 2026-04-29: Tightened webhook smoke review follow-ups by requiring an
+  explicit opt-in for external receiver URLs, matching fixture delivery IDs to
+  API delivery rows, and refreshing the broader validation docs.
