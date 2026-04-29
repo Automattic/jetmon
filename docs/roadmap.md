@@ -79,6 +79,8 @@ preflight, deliverer hardening, and API CLI fixture workflow branches:
 - [x] Make rollout run origin explicit in guided output and docs: run from the
   staged v2 runtime host, and require SSH from that runtime host to the old v1
   host when fresh-server v1 stop/start commands use SSH.
+- [x] Add fresh-server guided happy-path simulations for manual flow, execute
+  flow, and direct rollback command ordering.
 
 Recently completed candidate branches:
 

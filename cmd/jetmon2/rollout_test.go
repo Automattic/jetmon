@@ -895,6 +895,93 @@ func TestRunGuidedRolloutForwardExecuteCommands(t *testing.T) {
 	}
 }
 
+func TestRunGuidedRolloutFreshServerManualFlowPrintsRemoteAndLocalCommands(t *testing.T) {
+	opts := guidedRolloutTestOptions(t)
+	opts.Mode = "fresh-server"
+	opts.RuntimeHost = "jetmon-v2-a"
+	opts.V1StopCmd = "ssh jetmon-v1-a sudo systemctl stop jetmon"
+	opts.V1StartCmd = "ssh jetmon-v1-a sudo systemctl start jetmon"
+	deps := guidedRolloutTestDeps(t)
+	deps.ExecCommand = func(context.Context, string) (string, error) {
+		t.Fatal("manual mode executed operator command")
+		return "", nil
+	}
+
+	input := strings.Join([]string{
+		"y",
+		"y",
+		"y",
+		"STOP jetmon-v1-a 0-4",
+		"DONE",
+		"START V2 jetmon-v2-a 0-4",
+		"DONE",
+		"y",
+		"READY",
+		"",
+	}, "\n")
+	var out bytes.Buffer
+	if err := runGuidedRollout(context.Background(), &out, strings.NewReader(input), opts, deps); err != nil {
+		t.Fatalf("runGuidedRollout: %v\n%s", err, out.String())
+	}
+	for _, want := range []string{
+		`INFO guided_run_origin=runtime_host mode="fresh-server" v1_host="jetmon-v1-a" runtime_host="jetmon-v2-a"`,
+		`WARN remote_v1_access_required=true runtime_host="jetmon-v2-a" v1_host="jetmon-v1-a"`,
+		"COMMAND ssh jetmon-v1-a sudo systemctl stop jetmon",
+		"COMMAND systemctl enable --now jetmon2",
+		"INFO executing_operator_command=false",
+		"PASS guided_rollout=complete",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+	stopAt := strings.Index(out.String(), "COMMAND ssh jetmon-v1-a sudo systemctl stop jetmon")
+	startAt := strings.Index(out.String(), "COMMAND systemctl enable --now jetmon2")
+	if stopAt < 0 || startAt < 0 || stopAt > startAt {
+		t.Fatalf("fresh-server command order is wrong:\n%s", out.String())
+	}
+	state := readGuidedStateForTest(t, opts)
+	if state.RuntimeHost != "jetmon-v2-a" || !state.V1Stopped || !state.V2Started {
+		t.Fatalf("state = %+v", state)
+	}
+}
+
+func TestRunGuidedRolloutFreshServerExecuteFlowCommandOrder(t *testing.T) {
+	opts := guidedRolloutTestOptions(t)
+	opts.Mode = "fresh-server"
+	opts.RuntimeHost = "jetmon-v2-a"
+	opts.V1StopCmd = "ssh jetmon-v1-a sudo systemctl stop jetmon"
+	opts.V1StartCmd = "ssh jetmon-v1-a sudo systemctl start jetmon"
+	opts.ExecuteOperatorCommands = true
+	deps := guidedRolloutTestDeps(t)
+	var commands []string
+	deps.ExecCommand = func(_ context.Context, command string) (string, error) {
+		commands = append(commands, command)
+		return "", nil
+	}
+
+	input := strings.Join([]string{
+		"y",
+		"y",
+		"y",
+		"STOP jetmon-v1-a 0-4",
+		"START V2 jetmon-v2-a 0-4",
+		"y",
+		"READY",
+		"",
+	}, "\n")
+	var out bytes.Buffer
+	if err := runGuidedRollout(context.Background(), &out, strings.NewReader(input), opts, deps); err != nil {
+		t.Fatalf("runGuidedRollout: %v\n%s", err, out.String())
+	}
+	if got, want := strings.Join(commands, ","), "ssh jetmon-v1-a sudo systemctl stop jetmon,systemctl enable --now jetmon2"; got != want {
+		t.Fatalf("commands = %s, want %s", got, want)
+	}
+	if !strings.Contains(out.String(), "PASS guided_rollout=complete") {
+		t.Fatalf("output missing completion:\n%s", out.String())
+	}
+}
+
 func TestRunGuidedRolloutWrongConfirmationDoesNotExecuteCommand(t *testing.T) {
 	opts := guidedRolloutTestOptions(t)
 	opts.ExecuteOperatorCommands = true
@@ -960,6 +1047,41 @@ func TestRunGuidedRolloutRollbackExecuteCommands(t *testing.T) {
 	}
 	if got, want := strings.Join(commands, ","), "systemctl stop jetmon2,systemctl start jetmon"; got != want {
 		t.Fatalf("commands = %s, want %s", got, want)
+	}
+	if !strings.Contains(out.String(), "PASS guided_rollback=complete") {
+		t.Fatalf("output missing rollback completion:\n%s", out.String())
+	}
+}
+
+func TestRunGuidedRolloutFreshServerRollbackExecuteCommands(t *testing.T) {
+	opts := guidedRolloutTestOptions(t)
+	opts.Mode = "fresh-server"
+	opts.RuntimeHost = "jetmon-v2-a"
+	opts.V1StartCmd = "ssh jetmon-v1-a sudo systemctl start jetmon"
+	opts.Rollback = true
+	opts.ExecuteOperatorCommands = true
+	deps := guidedRolloutTestDeps(t)
+	var commands []string
+	deps.ExecCommand = func(_ context.Context, command string) (string, error) {
+		commands = append(commands, command)
+		return "", nil
+	}
+
+	input := strings.Join([]string{
+		"STOP V2 jetmon-v2-a 0-4",
+		"y",
+		"START V1 jetmon-v1-a 0-4",
+		"",
+	}, "\n")
+	var out bytes.Buffer
+	if err := runGuidedRollout(context.Background(), &out, strings.NewReader(input), opts, deps); err != nil {
+		t.Fatalf("runGuidedRollout: %v\n%s", err, out.String())
+	}
+	if got, want := strings.Join(commands, ","), "systemctl stop jetmon2,ssh jetmon-v1-a sudo systemctl start jetmon"; got != want {
+		t.Fatalf("commands = %s, want %s", got, want)
+	}
+	if !strings.Contains(out.String(), `WARN remote_v1_access_required=true runtime_host="jetmon-v2-a" v1_host="jetmon-v1-a"`) {
+		t.Fatalf("output missing remote access warning:\n%s", out.String())
 	}
 	if !strings.Contains(out.String(), "PASS guided_rollback=complete") {
 		t.Fatalf("output missing rollback completion:\n%s", out.String())
