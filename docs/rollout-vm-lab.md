@@ -101,6 +101,10 @@ make rollout-vm-lab-failure-smoke
 make rollout-vm-lab-resume-smoke
 make rollout-vm-lab-post-start-rollback-smoke
 make rollout-vm-lab-bad-ssh-smoke
+make rollout-vm-lab-v2-start-failure-smoke
+make rollout-vm-lab-runtime-guard-smoke
+make rollout-vm-lab-real-activity-smoke
+make rollout-vm-lab-snapshot-all-smoke
 ```
 
 The harness keeps the v2 `jetmon2` service staged but stopped. That preserves
@@ -165,6 +169,9 @@ Run targeted guided-flow smokes:
 scripts/rollout-vm-lab.sh smoke-interrupted-resume
 scripts/rollout-vm-lab.sh smoke-post-start-rollback
 scripts/rollout-vm-lab.sh smoke-bad-ssh
+scripts/rollout-vm-lab.sh smoke-v2-start-failure
+scripts/rollout-vm-lab.sh smoke-runtime-guards
+scripts/rollout-vm-lab.sh smoke-real-activity
 ```
 
 - `smoke-interrupted-resume` stops v1, intentionally leaves the first guided
@@ -173,6 +180,15 @@ scripts/rollout-vm-lab.sh smoke-bad-ssh
   fail with a future cutoff, chooses guided rollback, and confirms v1 is active.
 - `smoke-bad-ssh` uses an invalid v1 SSH target and confirms the flow fails
   before v1 is stopped or v2 is started.
+- `smoke-v2-start-failure` corrupts only the staged v2 systemd start command,
+  confirms the guided flow stops after v1 is stopped and v2 fails to start,
+  then restores the unit and returns the range to v1.
+- `smoke-runtime-guards` confirms guided rollout refuses an unwritable log
+  directory before any rollout checks run, and confirms host preflight refuses
+  a broken DB connection before service state changes.
+- `smoke-real-activity` clears the seeded range's `last_checked_at`, stops the
+  v1 simulator, starts real `jetmon2`, and waits for every active seeded site
+  to receive a real check write before returning the range to v1.
 
 Run the failure-gate smoke:
 
@@ -190,14 +206,16 @@ service state:
 ```bash
 scripts/rollout-vm-lab.sh snapshot-all pre-guided-flow
 scripts/rollout-vm-lab.sh snapshot-run pre-guided-flow execute-rollback
+scripts/rollout-vm-lab.sh snapshot-run-all pre-guided-flow
 ```
 
 Supported snapshot flow names are `execute-rollback`, `interrupted-resume`,
-`post-start-rollback`, `bad-ssh`, and `failure-gates`. Snapshot runners are
-useful when iterating on guided behavior because each run starts from the same
-VM, DB, service, and log state. At the end, the runner reverts to the snapshot
-and enforces the safe lab state: v1 simulator active, v2 `jetmon2` stopped and
-disabled.
+`post-start-rollback`, `bad-ssh`, `v2-start-failure`, `runtime-guards`,
+`real-activity`, and `failure-gates`. Snapshot runners are useful when
+iterating on guided behavior because each run starts from the same VM, DB,
+service, and log state. At the end, the runner reverts to the snapshot and
+enforces the safe lab state: v1 simulator active, v2 `jetmon2` stopped and
+disabled. `snapshot-run-all` replays every named flow from the same snapshot.
 
 Destroy the topology and its lab volumes:
 
@@ -225,6 +243,7 @@ scripts/rollout-vm-lab.sh destroy-topology
 | `JETMON_ROLLOUT_BUCKET_MIN` | `0` |
 | `JETMON_ROLLOUT_BUCKET_MAX` | `99` |
 | `JETMON_ROLLOUT_BUCKET_TOTAL` | `1000` |
+| `JETMON_ROLLOUT_ACTIVITY_WAIT_TIMEOUT` | `240` seconds |
 | `JETMON_ROLLOUT_JETMON2_BINARY` | `<repo>/bin/jetmon2` |
 | `JETMON_ROLLOUT_JETMON2_SERVICE` | `<repo>/systemd/jetmon2.service` |
 | `JETMON_ROLLOUT_JETMON2_LOGROTATE` | `<repo>/systemd/jetmon2-logrotate` |
@@ -245,11 +264,18 @@ The VM lab is intended to exercise these rollout scenarios:
 - bad staged systemd unit refusal
 - failed post-start smoke gate followed by guided rollback
 - bad SSH access from the v2 runtime host to the old v1 host
+- failed v2 service start after v1 has stopped, preserving a resumable stopped
+  state and returning the lab to v1 after the fixture
+- unwritable rollout log directory refusal before any rollout checks or service
+  commands run
+- bad DB connection refusal during host preflight
+- real v2 monitor activity that writes seeded sites' `last_checked_at`
 - snapshot-backed flow reruns
-- bad systemd unit or unwritable rollout log directory
+- bad systemd unit refusal
 
 The current harness provides VM lifecycle, DB seeding, v1/v2 service staging,
 preflight/dry-run smoke coverage, and a full execute-mode cutover plus guided
 rollback smoke. It also exercises interrupted resume, post-start rollback, bad
-SSH, failure gates, and named-snapshot reruns. The next layer should add more
-specialized failure fixtures as new rollout bugs are discovered.
+SSH, v2 start failure, runtime guard failures, real activity, failure gates,
+and named-snapshot reruns. The next layer should add more specialized failure
+fixtures as new rollout bugs are discovered.

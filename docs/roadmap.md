@@ -104,6 +104,10 @@ preflight, deliverer hardening, and API CLI fixture workflow branches:
   flows.
 - [x] Add snapshot-backed VM flow runners for full execute-mode cutover and
   rollback simulations.
+- [x] Automate v2 service start failure after v1 stops, unwritable rollout log
+  directory refusal, bad DB connection refusal, and real `last_checked_at`
+  activity from the `jetmon2` service.
+- [x] Add snapshot-backed replay for every named VM lab smoke flow.
 
 Recently completed candidate branches:
 
