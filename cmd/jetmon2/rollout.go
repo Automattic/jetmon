@@ -1569,9 +1569,9 @@ func (s *guidedRolloutSession) dryRunCommandForStep(stepID string) string {
 	case "stop-v1":
 		return s.opts.V1StopCmd
 	case "start-v2":
-		return "systemctl enable --now " + shellQuote(s.opts.Service)
+		return startSystemdServiceCommand(s.opts.Service)
 	case "rollback-stop-v2":
-		return "systemctl stop " + shellQuote(s.opts.Service)
+		return stopSystemdServiceCommand(s.opts.Service)
 	case "rollback-start-v1":
 		return s.opts.V1StartCmd
 	default:
@@ -1667,7 +1667,7 @@ func forwardGuidedSteps() []guidedStep {
 				if err := s.runOperatorCommand(
 					ctx,
 					"Start v2",
-					"systemctl enable --now "+shellQuote(s.opts.Service),
+					startSystemdServiceCommand(s.opts.Service),
 					"Starting v2 begins production checks for this range.",
 					phrase,
 					"Type DONE after v2 is started and logs show the pinned range.",
@@ -1712,7 +1712,7 @@ func rollbackGuidedSteps() []guidedStep {
 				if err := s.runOperatorCommand(
 					ctx,
 					"Stop v2",
-					"systemctl stop "+shellQuote(s.opts.Service),
+					stopSystemdServiceCommand(s.opts.Service),
 					"Stopping v2 is required before v1 can be restarted.",
 					phrase,
 					"Type DONE after v2 is stopped and you have confirmed the process is no longer running.",
@@ -2078,13 +2078,13 @@ func runRolloutRehearsalPlan(out io.Writer, input io.Reader, opts rolloutRehears
 			"# HOLD: keep v2 stopped on the fresh server until the old v1 monitor process is stopped.",
 			v1StopLine,
 			"# HOLD: confirm v1 on "+shellQuote(hostID)+" is stopped before starting v2 on "+shellQuote(runtimeHost)+".",
-			"systemctl enable --now "+shellQuote(service),
+			startSystemdServiceCommand(service),
 		)
 	} else {
 		writeRolloutPlanSection(out, "4. Cut over the same server from v1 to v2",
 			v1StopLine,
 			"# HOLD: confirm v1 is stopped before starting v2.",
-			"systemctl enable --now "+shellQuote(service),
+			startSystemdServiceCommand(service),
 		)
 	}
 
@@ -2102,7 +2102,7 @@ func runRolloutRehearsalPlan(out io.Writer, input io.Reader, opts rolloutRehears
 	}
 	v1StartLine := rolloutOperatorCommandOrComment(opts.V1StartCmd, strings.TrimPrefix(rollbackComment, "# "))
 	writeRolloutPlanSection(out, "6. Rehearse the rollback path before the rollback window closes",
-		"systemctl stop "+shellQuote(service),
+		stopSystemdServiceCommand(service),
 		"# HOLD: confirm the v2 process is stopped before restarting v1.",
 		rolloutCommand(append([]string{binary, "rollout", "rollback-check", "--host", runtimeHost}, rangeArgs...)...),
 		"# HOLD: do not restart v1 unless rollback-check passes.",
@@ -2502,6 +2502,16 @@ func rolloutCommand(parts ...string) string {
 		quoted = append(quoted, shellQuote(part))
 	}
 	return strings.Join(quoted, " ")
+}
+
+func startSystemdServiceCommand(service string) string {
+	quotedService := shellQuote(service)
+	return "systemctl enable --now " + quotedService + " && systemctl is-active --quiet " + quotedService
+}
+
+func stopSystemdServiceCommand(service string) string {
+	quotedService := shellQuote(service)
+	return "systemctl stop " + quotedService + " && ! systemctl is-active --quiet " + quotedService
 }
 
 func shellQuote(value string) string {

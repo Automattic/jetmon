@@ -56,7 +56,8 @@ reference.
 8. Run `./jetmon2 migrate`.
 9. Run `systemd-analyze verify /etc/systemd/system/jetmon2.service` after the
    binary exists at the path used by `ExecStart`.
-10. Start the service with `systemctl enable --now jetmon2`.
+10. Start the service with
+    `systemctl enable --now jetmon2 && systemctl is-active --quiet jetmon2`.
 
 Manual commands such as `migrate`, `validate-config`, and `rollout` need the
 same `DB_*` environment that systemd reads from
@@ -127,7 +128,7 @@ time. Surviving hosts absorb the draining host's buckets during the update
 window.
 
 ```bash
-systemctl stop jetmon2
+systemctl stop jetmon2 && ! systemctl is-active --quiet jetmon2
 ./jetmon2 migrate
 systemctl start jetmon2
 ./jetmon2 status

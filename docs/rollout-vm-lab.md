@@ -89,12 +89,13 @@ files. It:
 - runs `jetmon2 migrate` from the v2 VM against the DB VM
 - runs `rollout host-preflight` and a guided fresh-server dry-run from the v2 VM
 
-From the local workstation, the Makefile wraps artifact sync and remote
-execution:
+From the local workstation, the Makefile wraps artifact sync, v2 VM artifact
+staging, and remote execution:
 
 ```bash
 make rollout-vm-lab-doctor
 make rollout-vm-lab-prepare
+make rollout-vm-lab-stage-v2
 make rollout-vm-lab-smoke
 make rollout-vm-lab-execute-smoke
 make rollout-vm-lab-failure-smoke

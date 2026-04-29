@@ -398,7 +398,7 @@ are the fallback/reference path and match what the guided command walks through.
 8. Start v2:
 
    ```bash
-   systemctl enable --now jetmon2
+   systemctl enable --now jetmon2 && systemctl is-active --quiet jetmon2
    ```
 
 9. Confirm v2 logs show:
@@ -469,7 +469,7 @@ fallback/reference path.
 9. Start v2 on the new server:
 
    ```bash
-   systemctl enable --now jetmon2
+   systemctl enable --now jetmon2 && systemctl is-active --quiet jetmon2
    ```
 
 10. Run the cutover smoke gate on the new server:
@@ -590,7 +590,7 @@ start command. The manual steps below are the fallback/reference path.
 1. Stop v2:
 
    ```bash
-   systemctl stop jetmon2
+   systemctl stop jetmon2 && ! systemctl is-active --quiet jetmon2
    ```
 
 2. Confirm the v2 process is stopped. Do not restart v1 until this is true.
@@ -624,7 +624,7 @@ manual steps below are the fallback/reference path.
 1. Stop v2 on the new server:
 
    ```bash
-   systemctl stop jetmon2
+   systemctl stop jetmon2 && ! systemctl is-active --quiet jetmon2
    ```
 
 2. Confirm the new v2 process is stopped. Do not restart v1 until this is true.

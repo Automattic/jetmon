@@ -1077,7 +1077,7 @@ smoke_v2_start_failure() {
 	reset_guided_lab_state
 	mark_lab_activity
 
-	ssh_vm "$v2_vm" 'sudo cp /etc/systemd/system/jetmon2.service /tmp/jetmon2.service.rollout-lab-good; sudo sed -i "s#^ExecStart=.*#ExecStart=/bin/false#" /etc/systemd/system/jetmon2.service; sudo systemctl daemon-reload; sudo systemctl reset-failed jetmon2 >/dev/null 2>&1 || true'
+	ssh_vm "$v2_vm" 'sudo cp /etc/systemd/system/jetmon2.service /tmp/jetmon2.service.rollout-lab-good; sudo sed -i "/^ExecStart=/i ExecStartPre=/bin/false" /etc/systemd/system/jetmon2.service; sudo systemctl daemon-reload; sudo systemctl reset-failed jetmon2 >/dev/null 2>&1 || true'
 	out="$LAB_DIR/logs/v2-start-failure.out"
 	run_status=0
 	if ssh_vm "$v2_vm" 'bash -s' <<REMOTE >"$out" 2>&1; then
