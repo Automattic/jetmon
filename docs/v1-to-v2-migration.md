@@ -84,6 +84,35 @@ GROUP BY bucket_no
 ORDER BY bucket_no;
 ```
 
+Export the approved host-to-bucket plan to CSV before touching any hosts:
+
+```csv
+host,bucket_min,bucket_max
+jetmon-v1-a,0,99
+jetmon-v1-b,100,199
+```
+
+Then verify that the copied v1 static plan covers the full configured bucket
+range without gaps, overlaps, invalid ranges, or duplicate host rows:
+
+```bash
+./jetmon2 rollout static-plan-check --file rollout-buckets.csv
+```
+
+If checking the plan before the v2 config is available, pass the expected total:
+
+```bash
+./jetmon2 rollout static-plan-check --file rollout-buckets.csv --bucket-total=<n>
+```
+
+Before replacing a specific host, assert that the copied range still matches the
+approved plan:
+
+```bash
+./jetmon2 rollout static-plan-check --file rollout-buckets.csv \
+  --host=jetmon-v1-a --bucket-min=0 --bucket-max=99
+```
+
 ### Prepare Database And Rollback Safety
 
 1. Confirm a recent MySQL backup exists and restore has been tested according
@@ -158,7 +187,10 @@ Confirm it reports:
 
 - `legacy_status_projection=enabled`
 - `bucket_ownership=pinned range=<min>-<max>`
+- `rollout_static_plan=./jetmon2 rollout static-plan-check --file=<ranges.csv>`
 - `rollout_preflight=./jetmon2 rollout pinned-check`
+- `rollout_activity_check=./jetmon2 rollout activity-check --since=15m`
+- `rollout_rollback_check=./jetmon2 rollout rollback-check`
 - `rollout_drift_report=./jetmon2 rollout projection-drift`
 
 Run the pinned preflight when the host identity and config are final:
@@ -166,6 +198,10 @@ Run the pinned preflight when the host identity and config are final:
 ```bash
 ./jetmon2 rollout pinned-check
 ```
+
+This check fails if pinned config is missing, legacy projection writes are
+disabled, the current host still owns a dynamic `jetmon_hosts` row, any dynamic
+`jetmon_hosts` row overlaps the pinned range, or projection drift exists.
 
 If checking a config before it is running on the final hostname, pass the
 expected host id:
@@ -227,10 +263,20 @@ same bucket range.
 
     ```bash
     ./jetmon2 rollout pinned-check
+    ./jetmon2 rollout activity-check --since=15m
     ./jetmon2 status
     ```
 
-11. Watch one full check round before moving to the next host.
+    `activity-check` proves the range has fresh `last_checked_at` writes, not
+    which process wrote them. Keep v1 stopped and use logs or the dashboard to
+    confirm v2 is checking only the pinned range.
+11. After one full expected round, run:
+
+    ```bash
+    ./jetmon2 rollout activity-check --since=15m --require-all
+    ```
+
+12. Watch one full check round before moving to the next host.
 
 ## Phase 1B: Move A v1 Range To A Fresh Server
 
@@ -254,9 +300,12 @@ v1 server.
    systemctl enable --now jetmon2
    ```
 
-10. Run `./jetmon2 rollout pinned-check` and `./jetmon2 status` on the new
-    server.
-11. Watch one full check round before moving to the next host.
+10. Run `./jetmon2 rollout pinned-check`,
+    `./jetmon2 rollout activity-check --since=15m`, and `./jetmon2 status` on
+    the new server.
+11. After one full expected round, run
+    `./jetmon2 rollout activity-check --since=15m --require-all`.
+12. Watch one full check round before moving to the next host.
 
 Do not leave the old v1 server running as a warm standby for the same range. A
 standby is safe only when the monitor process is stopped.
@@ -279,6 +328,19 @@ For every replaced range, verify:
 
   ```bash
   ./jetmon2 rollout projection-drift --limit=100
+  ```
+
+- recent check activity exists for the pinned range:
+
+  ```bash
+  ./jetmon2 rollout activity-check --since=15m
+  ```
+
+  After a full expected round, require every active site in the range to have a
+  fresh `last_checked_at`:
+
+  ```bash
+  ./jetmon2 rollout activity-check --since=15m --require-all
   ```
 
 If `DASHBOARD_PORT` is enabled, confirm:
@@ -315,11 +377,21 @@ Use this when v2 replaced v1 on the same server.
    ```
 
 2. Confirm the v2 process is stopped.
-3. Restart the original v1 service with its original `BUCKET_NO_MIN` /
+3. Run the rollback safety check before restarting v1:
+
+   ```bash
+   ./jetmon2 rollout rollback-check --host=<v2-hostname>
+   ```
+
+   Pinned v2 hosts intentionally do not heartbeat `jetmon_hosts`, so this check
+   cannot prove the pinned v2 process is stopped. It verifies the rollback range
+   has no dynamic ownership overlap and no legacy projection drift; the process
+   stop still needs explicit confirmation.
+4. Restart the original v1 service with its original `BUCKET_NO_MIN` /
    `BUCKET_NO_MAX` config.
-4. Verify v1 checks the range again.
-5. Watch WPCOM notifications and legacy logs for one full v1 check round.
-6. Leave v2 schema in place. Do not attempt schema rollback.
+5. Verify v1 checks the range again.
+6. Watch WPCOM notifications and legacy logs for one full v1 check round.
+7. Leave v2 schema in place. Do not attempt schema rollback.
 
 ### Revert A Fresh-Server Takeover
 
@@ -332,9 +404,16 @@ Use this when v2 was started on a new server and the old v1 server was stopped.
    ```
 
 2. Confirm the new v2 process is stopped.
-3. Restart v1 on the old server with its original bucket config.
-4. Verify v1 checks the range again.
-5. Keep the new v2 server disabled until the next approved attempt.
+3. Run the rollback safety check from an operator shell with the stopped v2
+   hostname:
+
+   ```bash
+   ./jetmon2 rollout rollback-check --host=<new-v2-hostname>
+   ```
+
+4. Restart v1 on the old server with its original bucket config.
+5. Verify v1 checks the range again.
+6. Keep the new v2 server disabled until the next approved attempt.
 
 Never start the old v1 process until the new v2 process is stopped for that
 range.
@@ -348,6 +427,7 @@ After every monitor host is on v2 and stable in pinned mode:
 
    ```bash
    ./jetmon2 rollout pinned-check
+   ./jetmon2 rollout activity-check --since=15m --require-all
    ./jetmon2 rollout projection-drift --limit=100
    ```
 
@@ -363,6 +443,7 @@ After every monitor host is on v2 and stable in pinned mode:
    ```bash
    ./jetmon2 validate-config
    ./jetmon2 rollout dynamic-check
+   ./jetmon2 rollout activity-check --since=15m --require-all
    ./jetmon2 rollout projection-drift --limit=100
    ```
 
@@ -392,12 +473,15 @@ Only remove v1 after rollout signoff.
 
 - [ ] v1 host inventory complete
 - [ ] bucket ranges complete and non-overlapping
+- [ ] `rollout static-plan-check` passes for the approved v1 bucket plan
 - [ ] DB backup and restore path confirmed
 - [ ] v2 binaries built and tested
 - [ ] additive migrations applied
 - [ ] pinned configs prepared for every range
 - [ ] rollback commands documented for every host
 - [ ] first host cutover observed for one full round
+- [ ] `rollout activity-check --require-all` passes for replaced ranges
+- [ ] `rollout rollback-check` exercised during rehearsal
 - [ ] all hosts running v2 pinned
 - [ ] dynamic ownership cutover completed
 - [ ] `rollout dynamic-check` passes

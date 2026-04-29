@@ -79,6 +79,25 @@ func CountActiveSitesForBucketRange(ctx context.Context, bucketMin, bucketMax in
 	return count, nil
 }
 
+// CountRecentlyCheckedActiveSitesForBucketRange returns the number of active
+// monitor rows in the inclusive bucket range whose last_checked_at timestamp is
+// at or after the provided cutoff.
+func CountRecentlyCheckedActiveSitesForBucketRange(ctx context.Context, bucketMin, bucketMax int, cutoff time.Time) (int, error) {
+	var count int
+	err := db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		  FROM jetpack_monitor_sites
+		 WHERE monitor_active = 1
+		   AND bucket_no BETWEEN ? AND ?
+		   AND last_checked_at >= ?`,
+		bucketMin, bucketMax, cutoff.UTC(),
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count recently checked active sites: %w", err)
+	}
+	return count, nil
+}
+
 // UpdateSiteStatus updates site_status and last_status_change for a site.
 func UpdateSiteStatus(ctx context.Context, blogID int64, status int, changedAt time.Time) error {
 	_, err := db.ExecContext(ctx,
@@ -351,6 +370,33 @@ func HostRowExists(ctx context.Context, hostID string) (bool, error) {
 		return false, fmt.Errorf("check host row: %w", err)
 	}
 	return true, nil
+}
+
+// ListHostRowsOverlappingBucketRange returns jetmon_hosts ownership rows whose
+// bucket ranges overlap the inclusive requested range.
+func ListHostRowsOverlappingBucketRange(ctx context.Context, bucketMin, bucketMax int) ([]HostRow, error) {
+	rows, err := db.QueryContext(ctx,
+		`SELECT host_id, bucket_min, bucket_max, last_heartbeat, status
+		   FROM jetmon_hosts
+		  WHERE bucket_min <= ?
+		    AND bucket_max >= ?
+		  ORDER BY bucket_min, host_id`,
+		bucketMax, bucketMin,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query overlapping host rows: %w", err)
+	}
+	defer rows.Close()
+
+	var hosts []HostRow
+	for rows.Next() {
+		var h HostRow
+		if err := rows.Scan(&h.HostID, &h.BucketMin, &h.BucketMax, &h.LastHeartbeat, &h.Status); err != nil {
+			return nil, fmt.Errorf("scan overlapping host row: %w", err)
+		}
+		hosts = append(hosts, h)
+	}
+	return hosts, rows.Err()
 }
 
 // GetAllHosts returns all rows from jetmon_hosts for operator visibility.

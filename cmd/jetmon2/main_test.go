@@ -267,30 +267,45 @@ func TestBucketOwnershipLabel(t *testing.T) {
 
 func TestRolloutAdviceLines(t *testing.T) {
 	dynamic := rolloutAdviceLines(&config.Config{})
-	if len(dynamic) != 2 {
-		t.Fatalf("dynamic advice len = %d, want 2", len(dynamic))
+	if len(dynamic) != 3 {
+		t.Fatalf("dynamic advice len = %d, want 3", len(dynamic))
 	}
 	if !strings.Contains(dynamic[0], "rollout dynamic-check") {
 		t.Fatalf("dynamic preflight advice = %q", dynamic[0])
 	}
-	if !strings.Contains(dynamic[1], "rollout projection-drift") {
-		t.Fatalf("dynamic drift advice = %q", dynamic[1])
+	if !strings.Contains(dynamic[1], "rollout activity-check") {
+		t.Fatalf("dynamic activity advice = %q", dynamic[1])
+	}
+	if !strings.Contains(dynamic[2], "rollout projection-drift") {
+		t.Fatalf("dynamic drift advice = %q", dynamic[2])
 	}
 
 	min, max := 12, 34
 	pinned := rolloutAdviceLines(&config.Config{PinnedBucketMin: &min, PinnedBucketMax: &max})
-	if len(pinned) != 2 {
-		t.Fatalf("pinned advice len = %d, want 2", len(pinned))
+	if len(pinned) != 5 {
+		t.Fatalf("pinned advice len = %d, want 5", len(pinned))
 	}
-	if !strings.Contains(pinned[0], "rollout pinned-check") {
-		t.Fatalf("pinned preflight advice = %q", pinned[0])
+	if !strings.Contains(pinned[0], "rollout static-plan-check") {
+		t.Fatalf("pinned static-plan advice = %q", pinned[0])
 	}
-	if !strings.Contains(pinned[1], "rollout projection-drift") {
-		t.Fatalf("pinned drift advice = %q", pinned[1])
+	if !strings.Contains(pinned[1], "rollout pinned-check") {
+		t.Fatalf("pinned preflight advice = %q", pinned[1])
+	}
+	if !strings.Contains(pinned[2], "rollout activity-check") {
+		t.Fatalf("pinned activity advice = %q", pinned[2])
+	}
+	if !strings.Contains(pinned[3], "rollout rollback-check") {
+		t.Fatalf("pinned rollback advice = %q", pinned[3])
+	}
+	if !strings.Contains(pinned[4], "rollout projection-drift") {
+		t.Fatalf("pinned drift advice = %q", pinned[4])
 	}
 }
 
 func TestRolloutCommandHelpers(t *testing.T) {
+	if got := staticPlanCheckCommand(); got != "./jetmon2 rollout static-plan-check --file=<ranges.csv>" {
+		t.Fatalf("staticPlanCheckCommand() = %q", got)
+	}
 	if got := rolloutPreflightCommand(&config.Config{}); got != "./jetmon2 rollout dynamic-check" {
 		t.Fatalf("rolloutPreflightCommand(dynamic) = %q", got)
 	}
@@ -298,6 +313,15 @@ func TestRolloutCommandHelpers(t *testing.T) {
 	cfg := &config.Config{PinnedBucketMin: &min, PinnedBucketMax: &max}
 	if got := rolloutPreflightCommand(cfg); got != "./jetmon2 rollout pinned-check" {
 		t.Fatalf("rolloutPreflightCommand(pinned) = %q", got)
+	}
+	if got := rolloutActivityCommand(); got != "./jetmon2 rollout activity-check --since=15m" {
+		t.Fatalf("rolloutActivityCommand() = %q", got)
+	}
+	if got := rollbackCheckCommand(&config.Config{}); got != "" {
+		t.Fatalf("rollbackCheckCommand(dynamic) = %q, want empty", got)
+	}
+	if got := rollbackCheckCommand(cfg); got != "./jetmon2 rollout rollback-check" {
+		t.Fatalf("rollbackCheckCommand(pinned) = %q", got)
 	}
 	if got := projectionDriftCommand(); got != "./jetmon2 rollout projection-drift" {
 		t.Fatalf("projectionDriftCommand() = %q", got)

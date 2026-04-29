@@ -5,7 +5,8 @@ This document has moved.
 Use [v1-to-v2-migration.md](v1-to-v2-migration.md) for the complete production
 migration runbook, including pinned bucket mode, same-server replacement,
 fresh-server takeover, monitoring, revert paths, dynamic ownership cutover, and
-v1 teardown.
+v1 teardown. That runbook is also the source of truth for static bucket plan,
+post-cutover activity, rollback, and projection-drift safety checks.
 
 Pinned mode still means:
 

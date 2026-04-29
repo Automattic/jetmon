@@ -47,11 +47,11 @@ preflight hardening settle:
 - **Keep rollout health visible before cutover.** Operators should not have to
   infer migration-critical state from logs or config while replacing v1 hosts.
   The operator dashboard now shows bucket ownership mode, legacy projection
-  mode, delivery-worker ownership, rollout preflight commands, and live
-  dependency health for MySQL, Verifliers, WPCOM, StatsD, and log/stats disk
-  writes. Keep this visible and verified during rollout rehearsal because it
-  helps separate customer-site downtime from monitor-side impairment during
-  cutover.
+  mode, delivery-worker ownership, rollout preflight/activity/rollback/drift
+  commands, and live dependency health for MySQL, Verifliers, WPCOM, StatsD,
+  and log/stats disk writes. Keep this visible and verified during rollout
+  rehearsal because it helps separate customer-site downtime from monitor-side
+  impairment during cutover.
 - **Use delivery ownership as a rollout guard.**
   In the single-binary deployment, `API_PORT > 0` also starts webhook and
   alert-contact delivery workers. A standalone `jetmon-deliverer` entry point
@@ -60,8 +60,10 @@ preflight hardening settle:
   single-owner during migration from embedded to standalone delivery.
 - **Run a production rollout rehearsal pass.** Validate that README,
   `docs/v1-to-v2-migration.md`, config samples, systemd units,
-  `validate-config`, `rollout pinned-check`, `rollout projection-drift`, and
-  rollback steps line up exactly before the first production host replacement.
+  `validate-config`, `rollout static-plan-check`, `rollout pinned-check`,
+  `rollout activity-check`, `rollout rollback-check`,
+  `rollout projection-drift`, and rollback steps line up exactly before the
+  first production host replacement.
 - **Instrument the data needed for the v3 decision.** During v2 production,
   measure first-failure-to-`Seems Down`, `Seems Down`-to-`Down`, false alarm
   rate by failure class, Veriflier agreement/disagreement by region, Veriflier

@@ -12,6 +12,280 @@ import (
 	"github.com/Automattic/jetmon/internal/db"
 )
 
+func TestRunStaticPlanCheckSuccess(t *testing.T) {
+	input := strings.NewReader(`
+# host ranges copied from v1 config
+host,bucket_min,bucket_max
+jetmon-v1-b,5,9
+jetmon-v1-a,0,4
+	`)
+
+	var out bytes.Buffer
+	if err := runStaticPlanCheck(&out, "ranges.csv", input, 10, staticPlanAssertion{}); err != nil {
+		t.Fatalf("runStaticPlanCheck: %v", err)
+	}
+	for _, want := range []string{
+		"PASS static_plan_file=ranges.csv ranges=2",
+		"PASS static_bucket_coverage=0-9 hosts=2",
+		"static rollout plan check passed",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestRunStaticPlanCheckHostAssertionSuccess(t *testing.T) {
+	input := strings.NewReader(`
+host,bucket_min,bucket_max
+jetmon-v1-a,0,4
+jetmon-v1-b,5,9
+`)
+
+	var out bytes.Buffer
+	err := runStaticPlanCheck(&out, "ranges.csv", input, 10, staticPlanAssertion{
+		HostID:    "jetmon-v1-b",
+		BucketMin: 5,
+		BucketMax: 9,
+	})
+	if err != nil {
+		t.Fatalf("runStaticPlanCheck: %v", err)
+	}
+	if !strings.Contains(out.String(), `PASS static_plan_host="jetmon-v1-b" range=5-9`) {
+		t.Fatalf("output missing host assertion:\n%s", out.String())
+	}
+}
+
+func TestStaticPlanAssertionFromFlags(t *testing.T) {
+	tests := []struct {
+		name      string
+		host      string
+		bucketMin int
+		bucketMax int
+		want      staticPlanAssertion
+		wantErr   string
+	}{
+		{name: "none", bucketMin: -1, bucketMax: -1},
+		{
+			name:      "host only",
+			host:      " host-a ",
+			bucketMin: -1,
+			bucketMax: -1,
+			want:      staticPlanAssertion{HostID: "host-a", BucketMin: -1, BucketMax: -1},
+		},
+		{
+			name:      "host and range",
+			host:      "host-a",
+			bucketMin: 0,
+			bucketMax: 9,
+			want:      staticPlanAssertion{HostID: "host-a", BucketMin: 0, BucketMax: 9},
+		},
+		{
+			name:      "range without host",
+			bucketMin: 0,
+			bucketMax: 9,
+			wantErr:   "--host is required",
+		},
+		{
+			name:      "negative range",
+			host:      "host-a",
+			bucketMin: -2,
+			bucketMax: -2,
+			wantErr:   "must be >= 0",
+		},
+		{
+			name:      "one sided range",
+			host:      "host-a",
+			bucketMin: 0,
+			bucketMax: -1,
+			wantErr:   "must be set together",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := staticPlanAssertionFromFlags(tt.host, tt.bucketMin, tt.bucketMax)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatal("staticPlanAssertionFromFlags succeeded")
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("error = %q, want substring %q", err.Error(), tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("staticPlanAssertionFromFlags: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("assertion = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateStaticPlanAssertionFailures(t *testing.T) {
+	ranges := []staticBucketRange{
+		{HostID: "host-a", BucketMin: 0, BucketMax: 4},
+		{HostID: "host-b", BucketMin: 5, BucketMax: 9},
+	}
+	tests := []struct {
+		name      string
+		assertion staticPlanAssertion
+		want      string
+	}{
+		{
+			name:      "missing host",
+			assertion: staticPlanAssertion{HostID: "host-c", BucketMin: -1, BucketMax: -1},
+			want:      "not present",
+		},
+		{
+			name:      "range mismatch",
+			assertion: staticPlanAssertion{HostID: "host-b", BucketMin: 6, BucketMax: 9},
+			want:      "want 6-9",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := validateStaticPlanAssertion(ranges, tt.assertion)
+			if err == nil {
+				t.Fatal("validateStaticPlanAssertion succeeded")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tt.want)
+			}
+		})
+	}
+}
+
+func TestParseStaticBucketPlanCSVAcceptsLegacyHeader(t *testing.T) {
+	ranges, err := parseStaticBucketPlanCSV(strings.NewReader(`
+host,BUCKET_NO_MIN,BUCKET_NO_MAX
+jetmon-v1-a,0,4
+`))
+	if err != nil {
+		t.Fatalf("parseStaticBucketPlanCSV: %v", err)
+	}
+	if len(ranges) != 1 {
+		t.Fatalf("ranges len = %d, want 1", len(ranges))
+	}
+	got := ranges[0]
+	if got.HostID != "jetmon-v1-a" || got.BucketMin != 0 || got.BucketMax != 4 {
+		t.Fatalf("range = %#v, want jetmon-v1-a 0-4", got)
+	}
+}
+
+func TestParseStaticBucketPlanCSVFailures(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "empty",
+			input: "\n# only comments\n",
+			want:  "no host ranges",
+		},
+		{
+			name:  "wrong field count",
+			input: "host-a,0,9,extra\n",
+			want:  "expected host,bucket_min,bucket_max",
+		},
+		{
+			name:  "missing host",
+			input: ",0,9\n",
+			want:  "host is required",
+		},
+		{
+			name:  "invalid min",
+			input: "host-a,nope,9\n",
+			want:  "bucket_min \"nope\" is not an integer",
+		},
+		{
+			name:  "invalid max",
+			input: "host-a,0,nope\n",
+			want:  "bucket_max \"nope\" is not an integer",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parseStaticBucketPlanCSV(strings.NewReader(tt.input))
+			if err == nil {
+				t.Fatal("parseStaticBucketPlanCSV succeeded")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateStaticBucketPlanFailures(t *testing.T) {
+	tests := []struct {
+		name        string
+		ranges      []staticBucketRange
+		bucketTotal int
+		want        string
+	}{
+		{
+			name:        "invalid total",
+			ranges:      []staticBucketRange{{HostID: "host-a", BucketMin: 0, BucketMax: 9}},
+			bucketTotal: 0,
+			want:        "BUCKET_TOTAL must be > 0",
+		},
+		{
+			name:        "duplicate host",
+			ranges:      []staticBucketRange{{HostID: "host-a", BucketMin: 0, BucketMax: 4}, {HostID: "host-a", BucketMin: 5, BucketMax: 9}},
+			bucketTotal: 10,
+			want:        "listed more than once",
+		},
+		{
+			name:        "invalid range",
+			ranges:      []staticBucketRange{{HostID: "host-a", BucketMin: 0, BucketMax: 10}},
+			bucketTotal: 10,
+			want:        "invalid bucket range",
+		},
+		{
+			name:        "leading gap",
+			ranges:      []staticBucketRange{{HostID: "host-a", BucketMin: 1, BucketMax: 9}},
+			bucketTotal: 10,
+			want:        "gap 0-0",
+		},
+		{
+			name:        "middle gap",
+			ranges:      []staticBucketRange{{HostID: "host-a", BucketMin: 0, BucketMax: 3}, {HostID: "host-b", BucketMin: 5, BucketMax: 9}},
+			bucketTotal: 10,
+			want:        "gap 4-4",
+		},
+		{
+			name:        "overlap",
+			ranges:      []staticBucketRange{{HostID: "host-a", BucketMin: 0, BucketMax: 5}, {HostID: "host-b", BucketMin: 5, BucketMax: 9}},
+			bucketTotal: 10,
+			want:        "overlaps",
+		},
+		{
+			name:        "trailing gap",
+			ranges:      []staticBucketRange{{HostID: "host-a", BucketMin: 0, BucketMax: 8}},
+			bucketTotal: 10,
+			want:        "trailing gap 9-9",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateStaticBucketPlan(tt.ranges, tt.bucketTotal)
+			if err == nil {
+				t.Fatal("validateStaticBucketPlan succeeded")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tt.want)
+			}
+		})
+	}
+}
+
 func TestRunPinnedRolloutCheckSuccess(t *testing.T) {
 	minBucket, maxBucket := 12, 34
 	cfg := &config.Config{
@@ -27,6 +301,12 @@ func TestRunPinnedRolloutCheckSuccess(t *testing.T) {
 		HostRowExists: func(_ context.Context, hostID string) (bool, error) {
 			gotHost = hostID
 			return false, nil
+		},
+		ListOverlappingHostRows: func(_ context.Context, min, max int) ([]db.HostRow, error) {
+			if min != minBucket || max != maxBucket {
+				t.Fatalf("ListOverlappingHostRows range = %d-%d, want %d-%d", min, max, minBucket, maxBucket)
+			}
+			return nil, nil
 		},
 		CountActiveSitesForBucketRange: func(_ context.Context, min, max int) (int, error) {
 			gotMin, gotMax = min, max
@@ -55,6 +335,7 @@ func TestRunPinnedRolloutCheckSuccess(t *testing.T) {
 		"PASS legacy_status_projection=enabled",
 		"PASS api_port=disabled",
 		"PASS jetmon_hosts row absent host=\"host-a\"",
+		"PASS jetmon_hosts overlap=0",
 		"INFO active_sites_in_pinned_range=37",
 		"PASS legacy_projection_drift=0",
 		"pinned rollout check passed",
@@ -79,6 +360,9 @@ func TestRunPinnedRolloutCheckUsesHostOverride(t *testing.T) {
 		HostRowExists: func(_ context.Context, hostID string) (bool, error) {
 			gotHost = hostID
 			return false, nil
+		},
+		ListOverlappingHostRows: func(context.Context, int, int) ([]db.HostRow, error) {
+			return nil, nil
 		},
 		CountActiveSitesForBucketRange: func(context.Context, int, int) (int, error) {
 			return 1, nil
@@ -113,6 +397,23 @@ func TestRunPinnedRolloutCheckWarnsWhenAPIEnabled(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "WARN api_port=8090") {
 		t.Fatalf("output missing API warning:\n%s", out.String())
+	}
+}
+
+func TestRunPinnedRolloutCheckWarnsWhenRangeIsEmpty(t *testing.T) {
+	minBucket, maxBucket := 1, 2
+	cfg := pinnedRolloutTestConfig(minBucket, maxBucket)
+	deps := successfulPinnedRolloutDeps()
+	deps.CountActiveSitesForBucketRange = func(context.Context, int, int) (int, error) {
+		return 0, nil
+	}
+
+	var out bytes.Buffer
+	if err := runPinnedRolloutCheck(context.Background(), &out, cfg, "", deps); err != nil {
+		t.Fatalf("runPinnedRolloutCheck: %v", err)
+	}
+	if !strings.Contains(out.String(), "WARN active_sites_in_pinned_range=0") {
+		t.Fatalf("output missing empty-range warning:\n%s", out.String())
 	}
 }
 
@@ -162,12 +463,45 @@ func TestRunPinnedRolloutCheckFailures(t *testing.T) {
 			want: "db unavailable",
 		},
 		{
+			name: "overlapping host rows",
+			cfg:  pinnedRolloutTestConfig(minBucket, maxBucket),
+			deps: pinnedRolloutCheckDeps{
+				Hostname: func() string { return "host-a" },
+				HostRowExists: func(context.Context, string) (bool, error) {
+					return false, nil
+				},
+				ListOverlappingHostRows: func(context.Context, int, int) ([]db.HostRow, error) {
+					return []db.HostRow{
+						{HostID: "host-b", BucketMin: 0, BucketMax: 5, Status: "active"},
+					}, nil
+				},
+			},
+			want: "overlapping pinned range",
+		},
+		{
+			name: "overlapping host query error",
+			cfg:  pinnedRolloutTestConfig(minBucket, maxBucket),
+			deps: pinnedRolloutCheckDeps{
+				Hostname: func() string { return "host-a" },
+				HostRowExists: func(context.Context, string) (bool, error) {
+					return false, nil
+				},
+				ListOverlappingHostRows: func(context.Context, int, int) ([]db.HostRow, error) {
+					return nil, errors.New("db unavailable")
+				},
+			},
+			want: "list jetmon_hosts rows overlapping",
+		},
+		{
 			name: "projection drift",
 			cfg:  pinnedRolloutTestConfig(minBucket, maxBucket),
 			deps: pinnedRolloutCheckDeps{
 				Hostname: func() string { return "host-a" },
 				HostRowExists: func(context.Context, string) (bool, error) {
 					return false, nil
+				},
+				ListOverlappingHostRows: func(context.Context, int, int) ([]db.HostRow, error) {
+					return nil, nil
 				},
 				CountActiveSitesForBucketRange: func(context.Context, int, int) (int, error) {
 					return 10, nil
@@ -208,12 +542,223 @@ func successfulPinnedRolloutDeps() pinnedRolloutCheckDeps {
 		HostRowExists: func(context.Context, string) (bool, error) {
 			return false, nil
 		},
+		ListOverlappingHostRows: func(context.Context, int, int) ([]db.HostRow, error) {
+			return nil, nil
+		},
 		CountActiveSitesForBucketRange: func(context.Context, int, int) (int, error) {
 			return 1, nil
 		},
 		CountLegacyProjectionDrift: func(context.Context, int, int) (int, error) {
 			return 0, nil
 		},
+	}
+}
+
+func TestRunRollbackCheckSuccess(t *testing.T) {
+	minBucket, maxBucket := 12, 34
+	cfg := pinnedRolloutTestConfig(minBucket, maxBucket)
+	var gotHost string
+	var gotMin, gotMax int
+	deps := rollbackCheckDeps{
+		Hostname: func() string { return "host-a" },
+		HostRowExists: func(_ context.Context, hostID string) (bool, error) {
+			gotHost = hostID
+			return false, nil
+		},
+		ListOverlappingHostRows: func(_ context.Context, min, max int) ([]db.HostRow, error) {
+			if min != minBucket || max != maxBucket {
+				t.Fatalf("overlap range = %d-%d, want %d-%d", min, max, minBucket, maxBucket)
+			}
+			return nil, nil
+		},
+		CountActiveSitesForBucketRange: func(_ context.Context, min, max int) (int, error) {
+			gotMin, gotMax = min, max
+			return 42, nil
+		},
+		CountLegacyProjectionDrift: func(_ context.Context, min, max int) (int, error) {
+			if min != minBucket || max != maxBucket {
+				t.Fatalf("drift range = %d-%d, want %d-%d", min, max, minBucket, maxBucket)
+			}
+			return 0, nil
+		},
+	}
+
+	var out bytes.Buffer
+	if err := runRollbackCheck(context.Background(), &out, cfg, "", -1, -1, deps); err != nil {
+		t.Fatalf("runRollbackCheck: %v", err)
+	}
+	if gotHost != "host-a" {
+		t.Fatalf("host = %q, want host-a", gotHost)
+	}
+	if gotMin != minBucket || gotMax != maxBucket {
+		t.Fatalf("active site range = %d-%d, want %d-%d", gotMin, gotMax, minBucket, maxBucket)
+	}
+	for _, want := range []string{
+		"PASS rollback_range=12-34",
+		"PASS jetmon_hosts row absent host=\"host-a\"",
+		"PASS jetmon_hosts overlap=0",
+		"INFO active_sites_in_rollback_range=42",
+		"PASS legacy_projection_drift=0",
+		"rollback check passed",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestRunRollbackCheckUsesExplicitRangeAndHostOverride(t *testing.T) {
+	cfg := dynamicRolloutTestConfig()
+	var gotHost string
+	var gotMin, gotMax int
+	deps := rollbackCheckDeps{
+		Hostname: func() string { return "wrong-host" },
+		HostRowExists: func(_ context.Context, hostID string) (bool, error) {
+			gotHost = hostID
+			return false, nil
+		},
+		ListOverlappingHostRows: func(context.Context, int, int) ([]db.HostRow, error) {
+			return nil, nil
+		},
+		CountActiveSitesForBucketRange: func(_ context.Context, min, max int) (int, error) {
+			gotMin, gotMax = min, max
+			return 1, nil
+		},
+		CountLegacyProjectionDrift: func(context.Context, int, int) (int, error) {
+			return 0, nil
+		},
+	}
+
+	var out bytes.Buffer
+	if err := runRollbackCheck(context.Background(), &out, cfg, " v2-host ", 2, 4, deps); err != nil {
+		t.Fatalf("runRollbackCheck: %v", err)
+	}
+	if gotHost != "v2-host" {
+		t.Fatalf("host = %q, want v2-host", gotHost)
+	}
+	if gotMin != 2 || gotMax != 4 {
+		t.Fatalf("range = %d-%d, want 2-4", gotMin, gotMax)
+	}
+}
+
+func TestRunRollbackCheckWarnsWhenRangeIsEmpty(t *testing.T) {
+	minBucket, maxBucket := 12, 34
+	cfg := pinnedRolloutTestConfig(minBucket, maxBucket)
+	deps := rollbackCheckDeps(successfulPinnedRolloutDeps())
+	deps.CountActiveSitesForBucketRange = func(context.Context, int, int) (int, error) {
+		return 0, nil
+	}
+
+	var out bytes.Buffer
+	if err := runRollbackCheck(context.Background(), &out, cfg, "", -1, -1, deps); err != nil {
+		t.Fatalf("runRollbackCheck: %v", err)
+	}
+	if !strings.Contains(out.String(), "WARN active_sites_in_rollback_range=0") {
+		t.Fatalf("output missing empty-range warning:\n%s", out.String())
+	}
+}
+
+func TestRunRollbackCheckFailures(t *testing.T) {
+	minBucket, maxBucket := 12, 34
+	tests := []struct {
+		name      string
+		cfg       *config.Config
+		host      string
+		bucketMin int
+		bucketMax int
+		deps      rollbackCheckDeps
+		want      string
+	}{
+		{
+			name:      "no range",
+			cfg:       dynamicRolloutTestConfig(),
+			bucketMin: -1,
+			bucketMax: -1,
+			deps:      rollbackCheckDeps(successfulPinnedRolloutDeps()),
+			want:      "needs a pinned bucket config",
+		},
+		{
+			name:      "host row exists",
+			cfg:       pinnedRolloutTestConfig(minBucket, maxBucket),
+			bucketMin: -1,
+			bucketMax: -1,
+			deps: rollbackCheckDeps{
+				Hostname: func() string { return "host-a" },
+				HostRowExists: func(context.Context, string) (bool, error) {
+					return true, nil
+				},
+			},
+			want: "still has a jetmon_hosts row",
+		},
+		{
+			name:      "overlapping dynamic row",
+			cfg:       pinnedRolloutTestConfig(minBucket, maxBucket),
+			bucketMin: -1,
+			bucketMax: -1,
+			deps: rollbackCheckDeps{
+				Hostname: func() string { return "host-a" },
+				HostRowExists: func(context.Context, string) (bool, error) {
+					return false, nil
+				},
+				ListOverlappingHostRows: func(context.Context, int, int) ([]db.HostRow, error) {
+					return []db.HostRow{{HostID: "dynamic-host", BucketMin: 10, BucketMax: 20, Status: "active"}}, nil
+				},
+			},
+			want: "overlapping rollback range",
+		},
+		{
+			name:      "projection drift",
+			cfg:       pinnedRolloutTestConfig(minBucket, maxBucket),
+			bucketMin: -1,
+			bucketMax: -1,
+			deps: rollbackCheckDeps{
+				Hostname: func() string { return "host-a" },
+				HostRowExists: func(context.Context, string) (bool, error) {
+					return false, nil
+				},
+				ListOverlappingHostRows: func(context.Context, int, int) ([]db.HostRow, error) {
+					return nil, nil
+				},
+				CountActiveSitesForBucketRange: func(context.Context, int, int) (int, error) {
+					return 10, nil
+				},
+				CountLegacyProjectionDrift: func(context.Context, int, int) (int, error) {
+					return 2, nil
+				},
+			},
+			want: "fix drift before restarting v1",
+		},
+		{
+			name:      "explicit range outside total",
+			cfg:       dynamicRolloutTestConfig(),
+			host:      "host-a",
+			bucketMin: 0,
+			bucketMax: 10,
+			deps:      rollbackCheckDeps(successfulPinnedRolloutDeps()),
+			want:      "bucket-max must be < BUCKET_TOTAL",
+		},
+		{
+			name:      "negative explicit range",
+			cfg:       pinnedRolloutTestConfig(minBucket, maxBucket),
+			host:      "host-a",
+			bucketMin: -2,
+			bucketMax: -2,
+			deps:      rollbackCheckDeps(successfulPinnedRolloutDeps()),
+			want:      "bucket-min and bucket-max must be >= 0",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			err := runRollbackCheck(context.Background(), &out, tt.cfg, tt.host, tt.bucketMin, tt.bucketMax, tt.deps)
+			if err == nil {
+				t.Fatal("runRollbackCheck succeeded")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tt.want)
+			}
+		})
 	}
 }
 
@@ -265,6 +810,241 @@ func TestRunDynamicRolloutCheckSuccess(t *testing.T) {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("output missing %q:\n%s", want, out.String())
 		}
+	}
+}
+
+func TestRunDynamicRolloutCheckWarnsWhenSiteTableIsEmpty(t *testing.T) {
+	now := time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC)
+	cfg := dynamicRolloutTestConfig()
+	deps := successfulDynamicRolloutDeps(now)
+	deps.CountActiveSitesForBucketRange = func(context.Context, int, int) (int, error) {
+		return 0, nil
+	}
+
+	var out bytes.Buffer
+	if err := runDynamicRolloutCheck(context.Background(), &out, cfg, deps); err != nil {
+		t.Fatalf("runDynamicRolloutCheck: %v", err)
+	}
+	if !strings.Contains(out.String(), "WARN active_sites_dynamic_range=0") {
+		t.Fatalf("output missing empty-table warning:\n%s", out.String())
+	}
+}
+
+func TestRunActivityCheckSuccess(t *testing.T) {
+	now := time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC)
+	cfg := dynamicRolloutTestConfig()
+	var gotCutoff time.Time
+	deps := activityCheckDeps{
+		Now: func() time.Time { return now },
+		CountActiveSitesForBucketRange: func(_ context.Context, min, max int) (int, error) {
+			if min != 0 || max != 9 {
+				t.Fatalf("active range = %d-%d, want 0-9", min, max)
+			}
+			return 10, nil
+		},
+		CountRecentlyCheckedActiveSitesForRange: func(_ context.Context, min, max int, cutoff time.Time) (int, error) {
+			if min != 0 || max != 9 {
+				t.Fatalf("recent range = %d-%d, want 0-9", min, max)
+			}
+			gotCutoff = cutoff
+			return 3, nil
+		},
+	}
+
+	var out bytes.Buffer
+	if err := runActivityCheck(context.Background(), &out, cfg, -1, -1, "15m", false, deps); err != nil {
+		t.Fatalf("runActivityCheck: %v", err)
+	}
+	if want := now.Add(-15 * time.Minute); !gotCutoff.Equal(want) {
+		t.Fatalf("cutoff = %s, want %s", gotCutoff, want)
+	}
+	for _, want := range []string{
+		"INFO activity_range=0-9",
+		"INFO active_sites=10",
+		"INFO active_sites_checked_since=3",
+		"PASS rollout_activity=recent_checks_present",
+		"post-cutover activity check passed",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestRunActivityCheckRequireAll(t *testing.T) {
+	now := time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC)
+	cfg := dynamicRolloutTestConfig()
+	deps := activityCheckDeps{
+		Now: func() time.Time { return now },
+		CountActiveSitesForBucketRange: func(context.Context, int, int) (int, error) {
+			return 3, nil
+		},
+		CountRecentlyCheckedActiveSitesForRange: func(context.Context, int, int, time.Time) (int, error) {
+			return 3, nil
+		},
+	}
+
+	var out bytes.Buffer
+	if err := runActivityCheck(context.Background(), &out, cfg, -1, -1, "15m", true, deps); err != nil {
+		t.Fatalf("runActivityCheck: %v", err)
+	}
+	if !strings.Contains(out.String(), "PASS rollout_activity=all_active_sites_checked") {
+		t.Fatalf("output missing require-all pass:\n%s", out.String())
+	}
+}
+
+func TestRunActivityCheckWarnsWhenRangeIsEmpty(t *testing.T) {
+	now := time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC)
+	cfg := dynamicRolloutTestConfig()
+	deps := activityCheckDeps{
+		Now: func() time.Time { return now },
+		CountActiveSitesForBucketRange: func(context.Context, int, int) (int, error) {
+			return 0, nil
+		},
+		CountRecentlyCheckedActiveSitesForRange: func(context.Context, int, int, time.Time) (int, error) {
+			return 0, nil
+		},
+	}
+
+	var out bytes.Buffer
+	if err := runActivityCheck(context.Background(), &out, cfg, -1, -1, "15m", false, deps); err != nil {
+		t.Fatalf("runActivityCheck: %v", err)
+	}
+	if !strings.Contains(out.String(), "WARN active_sites=0") {
+		t.Fatalf("output missing empty range warning:\n%s", out.String())
+	}
+}
+
+func TestRunActivityCheckFailures(t *testing.T) {
+	now := time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC)
+	cfg := dynamicRolloutTestConfig()
+	tests := []struct {
+		name string
+		deps activityCheckDeps
+		want string
+	}{
+		{
+			name: "active count error",
+			deps: activityCheckDeps{
+				Now: func() time.Time { return now },
+				CountActiveSitesForBucketRange: func(context.Context, int, int) (int, error) {
+					return 0, errors.New("db unavailable")
+				},
+				CountRecentlyCheckedActiveSitesForRange: func(context.Context, int, int, time.Time) (int, error) {
+					return 0, nil
+				},
+			},
+			want: "db unavailable",
+		},
+		{
+			name: "recent count error",
+			deps: activityCheckDeps{
+				Now: func() time.Time { return now },
+				CountActiveSitesForBucketRange: func(context.Context, int, int) (int, error) {
+					return 10, nil
+				},
+				CountRecentlyCheckedActiveSitesForRange: func(context.Context, int, int, time.Time) (int, error) {
+					return 0, errors.New("db unavailable")
+				},
+			},
+			want: "count recently checked",
+		},
+		{
+			name: "no recent checks",
+			deps: activityCheckDeps{
+				Now: func() time.Time { return now },
+				CountActiveSitesForBucketRange: func(context.Context, int, int) (int, error) {
+					return 10, nil
+				},
+				CountRecentlyCheckedActiveSitesForRange: func(context.Context, int, int, time.Time) (int, error) {
+					return 0, nil
+				},
+			},
+			want: "no active sites",
+		},
+		{
+			name: "require all mismatch",
+			deps: activityCheckDeps{
+				Now: func() time.Time { return now },
+				CountActiveSitesForBucketRange: func(context.Context, int, int) (int, error) {
+					return 10, nil
+				},
+				CountRecentlyCheckedActiveSitesForRange: func(context.Context, int, int, time.Time) (int, error) {
+					return 9, nil
+				},
+			},
+			want: "only 9/10",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			err := runActivityCheck(context.Background(), &out, cfg, -1, -1, "15m", tt.name == "require all mismatch", tt.deps)
+			if err == nil {
+				t.Fatal("runActivityCheck succeeded")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveActivityCutoff(t *testing.T) {
+	now := time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name    string
+		since   string
+		want    time.Time
+		wantErr string
+	}{
+		{
+			name:  "duration",
+			since: "15m",
+			want:  now.Add(-15 * time.Minute),
+		},
+		{
+			name:  "rfc3339",
+			since: "2026-04-28T11:30:00Z",
+			want:  time.Date(2026, 4, 28, 11, 30, 0, 0, time.UTC),
+		},
+		{
+			name:    "empty",
+			since:   "",
+			wantErr: "must not be empty",
+		},
+		{
+			name:    "negative duration",
+			since:   "-1m",
+			wantErr: "must be > 0",
+		},
+		{
+			name:    "invalid",
+			since:   "yesterday",
+			wantErr: "must be a duration",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := resolveActivityCutoff(now, tt.since)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatal("resolveActivityCutoff succeeded")
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("error = %q, want substring %q", err.Error(), tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveActivityCutoff: %v", err)
+			}
+			if !got.Equal(tt.want) {
+				t.Fatalf("cutoff = %s, want %s", got, tt.want)
+			}
+		})
 	}
 }
 

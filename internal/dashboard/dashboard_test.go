@@ -20,6 +20,8 @@ func TestHandleState(t *testing.T) {
 		DeliveryWorkersEnabled:        true,
 		DeliveryOwnerHost:             "api-1",
 		RolloutPreflightCommand:       "./jetmon2 rollout pinned-check",
+		RolloutActivityCommand:        "./jetmon2 rollout activity-check --since=15m",
+		RolloutRollbackCommand:        "./jetmon2 rollout rollback-check",
 		ProjectionDriftCommand:        "./jetmon2 rollout projection-drift",
 	})
 
@@ -54,6 +56,12 @@ func TestHandleState(t *testing.T) {
 	}
 	if st.RolloutPreflightCommand != "./jetmon2 rollout pinned-check" {
 		t.Fatalf("RolloutPreflightCommand = %q", st.RolloutPreflightCommand)
+	}
+	if st.RolloutActivityCommand != "./jetmon2 rollout activity-check --since=15m" {
+		t.Fatalf("RolloutActivityCommand = %q", st.RolloutActivityCommand)
+	}
+	if st.RolloutRollbackCommand != "./jetmon2 rollout rollback-check" {
+		t.Fatalf("RolloutRollbackCommand = %q", st.RolloutRollbackCommand)
 	}
 	if st.ProjectionDriftCommand != "./jetmon2 rollout projection-drift" {
 		t.Fatalf("ProjectionDriftCommand = %q", st.ProjectionDriftCommand)
@@ -103,6 +111,12 @@ func TestHandleIndex(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "id=\"preflight\"") {
 		t.Fatal("body does not contain rollout preflight card")
+	}
+	if !strings.Contains(w.Body.String(), "id=\"activity\"") {
+		t.Fatal("body does not contain rollout activity card")
+	}
+	if !strings.Contains(w.Body.String(), "id=\"rollback\"") {
+		t.Fatal("body does not contain rollback card")
 	}
 	if !strings.Contains(w.Body.String(), "id=\"delivery-owner\"") {
 		t.Fatal("body does not contain delivery owner card")
