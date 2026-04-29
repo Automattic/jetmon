@@ -21,11 +21,11 @@ or down" into an auditable health platform.
 
 | Audience | What Gets Better |
 |---|---|
-| Systems teams | Static Go binaries, no `npm`, `node-gyp`, Qt, or worker process tree. Bucket ownership is coordinated in MySQL, hosts drain cleanly, and memory pressure is handled inside the goroutine pool. |
-| VIP and Agency teams | GET-based checks that match customer-visible behavior better than v1's HEAD probes, plus fewer noisy pages and fewer missed incidents through local retries, Veriflier quorum, maintenance windows, keyword checks, redirect policy, SSL/TLS checks, and clearer failure classes. |
+| Systems | Static Go binaries, no `npm`, `node-gyp`, Qt, or worker process tree. Bucket ownership is coordinated in MySQL, hosts drain cleanly, and memory pressure is handled inside the goroutine pool. |
+| VIP and Agency | GET-based checks that match customer-visible behavior better than v1's HEAD probes, plus fewer noisy pages and fewer missed incidents through local retries, Veriflier quorum, maintenance windows, keyword checks, redirect policy, SSL/TLS checks, and clearer failure classes. |
 | Leadership | A foundation for differentiated uptime monitoring: internal API, webhooks, managed alert contacts, tenant-aware gateway paths, and future Jetpack/WPCOM integrations. |
 | Happiness Engineers | Incident answers with evidence: audit logs, event transitions, check timing, Veriflier votes, WPCOM payloads, and suppression reasons are all queryable. |
-| Jetpack contributors | A monitor that can grow into a product surface, not just a backend notification hook. |
+| Jetpack | A monitor that can grow into a product surface, not just a backend notification hook. |
 
 ## What Changed
 
