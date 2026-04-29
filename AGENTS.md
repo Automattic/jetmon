@@ -130,6 +130,7 @@ go run -race ./cmd/jetmon2/
 ./jetmon2 rollout cutover-check
 ./jetmon2 rollout dynamic-check
 ./jetmon2 rollout projection-drift
+./jetmon2 rollout state-report
 ./jetmon2 site-tenants import --file site-tenants.csv --dry-run
 ./jetmon2 drain
 ./jetmon2 reload

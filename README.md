@@ -132,7 +132,8 @@ one-page command checklist during rehearsals and rollout windows:
 - Use `rollout static-plan-check`, `rollout pinned-check`,
   `rollout cutover-check`, `rollout rollback-check`, and targeted
   `rollout activity-check` / `rollout projection-drift` from the migration
-  runbook before changing the next host.
+  runbook before changing the next host. Use `rollout state-report` for a
+  quick handoff snapshot.
 - Keep `LEGACY_STATUS_PROJECTION_ENABLE` on until legacy readers have moved to
   the v2 API or event tables.
 - Use `SIGINT` or `./jetmon2 drain` for graceful shutdown.

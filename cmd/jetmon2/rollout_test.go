@@ -896,6 +896,105 @@ func TestRunCutoverCheckFailures(t *testing.T) {
 	}
 }
 
+func TestBuildRolloutStateReportPinned(t *testing.T) {
+	now := time.Date(2026, 4, 29, 12, 0, 0, 0, time.UTC)
+	cfg := pinnedRolloutTestConfig(12, 34)
+	cfg.APIPort = 0
+
+	report, err := buildRolloutStateReport(context.Background(), cfg, rolloutStateReportOptions{Since: "15m"}, rolloutStateReportDeps{
+		Now:      func() time.Time { return now },
+		Hostname: func() string { return "host-a" },
+		CountActiveSitesForBucketRange: func(_ context.Context, min, max int) (int, error) {
+			if min != 12 || max != 34 {
+				t.Fatalf("active range = %d-%d, want 12-34", min, max)
+			}
+			return 3, nil
+		},
+		CountRecentlyCheckedActiveSitesForRange: func(_ context.Context, min, max int, cutoff time.Time) (int, error) {
+			if min != 12 || max != 34 {
+				t.Fatalf("activity range = %d-%d, want 12-34", min, max)
+			}
+			if !cutoff.Equal(now.Add(-15 * time.Minute)) {
+				t.Fatalf("cutoff = %s, want %s", cutoff, now.Add(-15*time.Minute))
+			}
+			return 3, nil
+		},
+		CountLegacyProjectionDrift: func(_ context.Context, min, max int) (int, error) {
+			if min != 12 || max != 34 {
+				t.Fatalf("drift range = %d-%d, want 12-34", min, max)
+			}
+			return 0, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildRolloutStateReport: %v", err)
+	}
+	if !report.OK {
+		t.Fatalf("report.OK = false issues=%v", report.Issues)
+	}
+	if report.Ownership.Mode != "pinned" || report.BucketCoverage.Status != "pinned_config" {
+		t.Fatalf("ownership/coverage = %s/%s", report.Ownership.Mode, report.BucketCoverage.Status)
+	}
+	if report.Activity.CheckedPercent != 100 {
+		t.Fatalf("checked percent = %f, want 100", report.Activity.CheckedPercent)
+	}
+	if !strings.Contains(report.SuggestedNextAction, "next pinned host") {
+		t.Fatalf("suggested action = %q", report.SuggestedNextAction)
+	}
+}
+
+func TestBuildRolloutStateReportDynamicIssues(t *testing.T) {
+	now := time.Date(2026, 4, 29, 12, 0, 0, 0, time.UTC)
+	cfg := &config.Config{
+		BucketTotal:                  10,
+		BucketHeartbeatGraceSec:      60,
+		LegacyStatusProjectionEnable: true,
+		APIPort:                      8090,
+	}
+
+	report, err := buildRolloutStateReport(context.Background(), cfg, rolloutStateReportOptions{Since: "15m"}, rolloutStateReportDeps{
+		Now:      func() time.Time { return now },
+		Hostname: func() string { return "host-a" },
+		GetAllHosts: func() ([]db.HostRow, error) {
+			return []db.HostRow{
+				{HostID: "host-a", BucketMin: 0, BucketMax: 4, LastHeartbeat: now, Status: "active"},
+				{HostID: "host-b", BucketMin: 6, BucketMax: 9, LastHeartbeat: now, Status: "active"},
+			}, nil
+		},
+		CountActiveSitesForBucketRange: func(context.Context, int, int) (int, error) {
+			return 4, nil
+		},
+		CountRecentlyCheckedActiveSitesForRange: func(context.Context, int, int, time.Time) (int, error) {
+			return 1, nil
+		},
+		CountLegacyProjectionDrift: func(context.Context, int, int) (int, error) {
+			return 2, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildRolloutStateReport: %v", err)
+	}
+	if report.OK {
+		t.Fatal("report.OK = true, want false")
+	}
+	for _, want := range []string{
+		"dynamic bucket coverage has gap",
+		"legacy projection drift=2",
+		"1/4 active sites checked",
+		"delivery_owner_host is unset",
+	} {
+		if !strings.Contains(strings.Join(report.Issues, "\n"), want) {
+			t.Fatalf("issues missing %q: %#v", want, report.Issues)
+		}
+	}
+	if report.BucketCoverage.Status != "invalid" {
+		t.Fatalf("coverage status = %q, want invalid", report.BucketCoverage.Status)
+	}
+	if !strings.Contains(report.SuggestedNextAction, "Fix jetmon_hosts bucket coverage") {
+		t.Fatalf("suggested action = %q", report.SuggestedNextAction)
+	}
+}
+
 func pinnedRolloutTestConfig(minBucket, maxBucket int) *config.Config {
 	return &config.Config{
 		PinnedBucketMin:              &minBucket,

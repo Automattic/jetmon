@@ -54,9 +54,18 @@ type cutoverCheckDeps struct {
 	Status     func(int) (string, error)
 }
 
+type rolloutStateReportDeps struct {
+	Now                                     func() time.Time
+	Hostname                                func() string
+	GetAllHosts                             func() ([]db.HostRow, error)
+	CountActiveSitesForBucketRange          func(context.Context, int, int) (int, error)
+	CountRecentlyCheckedActiveSitesForRange func(context.Context, int, int, time.Time) (int, error)
+	CountLegacyProjectionDrift              func(context.Context, int, int) (int, error)
+}
+
 func cmdRollout(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout <rehearsal-plan|static-plan-check|pinned-check|cutover-check|rollback-check|dynamic-check|activity-check|projection-drift> [args]")
+		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout <rehearsal-plan|static-plan-check|pinned-check|cutover-check|rollback-check|dynamic-check|activity-check|projection-drift|state-report> [args]")
 		os.Exit(1)
 	}
 
@@ -77,8 +86,10 @@ func cmdRollout(args []string) {
 		cmdRolloutActivityCheck(args[1:])
 	case "projection-drift":
 		cmdRolloutProjectionDrift(args[1:])
+	case "state-report":
+		cmdRolloutStateReport(args[1:])
 	default:
-		fmt.Fprintf(os.Stderr, "unknown rollout subcommand %q (want: rehearsal-plan, static-plan-check, pinned-check, cutover-check, rollback-check, dynamic-check, activity-check, projection-drift)\n", args[0])
+		fmt.Fprintf(os.Stderr, "unknown rollout subcommand %q (want: rehearsal-plan, static-plan-check, pinned-check, cutover-check, rollback-check, dynamic-check, activity-check, projection-drift, state-report)\n", args[0])
 		os.Exit(1)
 	}
 }
@@ -575,6 +586,88 @@ func cmdRolloutProjectionDrift(args []string) {
 	}
 }
 
+func cmdRolloutStateReport(args []string) {
+	fs := flag.NewFlagSet("rollout state-report", flag.ExitOnError)
+	since := fs.String("since", "15m", "activity cutoff as duration like 15m or RFC3339 timestamp")
+	output := rolloutOutputFlag(fs)
+	_ = fs.Parse(args)
+	if fs.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout state-report [--since=15m] [--output=text|json]")
+		os.Exit(1)
+	}
+	outputFormat, err := normalizeRolloutOutput(*output)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL %v\n", err)
+		os.Exit(2)
+	}
+
+	configPath := envOrDefault("JETMON_CONFIG", "config/config.json")
+	if err := config.Load(configPath); err != nil {
+		if outputFormat == "json" {
+			report := rolloutStateReport{
+				OK:          false,
+				Command:     "rollout state-report",
+				GeneratedAt: time.Now().UTC(),
+				Issues:      []string{fmt.Sprintf("config parse: %v", err)},
+			}
+			_ = renderRolloutStateReport(os.Stdout, report, outputFormat)
+		} else {
+			fmt.Fprintf(os.Stderr, "FAIL config parse: %v\n", err)
+		}
+		os.Exit(1)
+	}
+	if outputFormat != "json" {
+		fmt.Println("PASS config parse")
+	}
+
+	config.LoadDB()
+	if err := db.ConnectWithRetry(3); err != nil {
+		if outputFormat == "json" {
+			report := rolloutStateReport{
+				OK:          false,
+				Command:     "rollout state-report",
+				GeneratedAt: time.Now().UTC(),
+				Issues:      []string{fmt.Sprintf("db connect: %v", err)},
+			}
+			_ = renderRolloutStateReport(os.Stdout, report, outputFormat)
+		} else {
+			fmt.Fprintf(os.Stderr, "FAIL db connect: %v\n", err)
+		}
+		os.Exit(1)
+	}
+	if outputFormat != "json" {
+		fmt.Println("PASS db connect")
+	}
+
+	deps := rolloutStateReportDeps{
+		Now:                                     time.Now,
+		Hostname:                                db.Hostname,
+		GetAllHosts:                             db.GetAllHosts,
+		CountActiveSitesForBucketRange:          db.CountActiveSitesForBucketRange,
+		CountRecentlyCheckedActiveSitesForRange: db.CountRecentlyCheckedActiveSitesForBucketRange,
+		CountLegacyProjectionDrift:              db.CountLegacyProjectionDrift,
+	}
+	report, err := buildRolloutStateReport(context.Background(), config.Get(), rolloutStateReportOptions{Since: *since}, deps)
+	if err != nil {
+		if outputFormat == "json" {
+			failed := rolloutStateReport{
+				OK:          false,
+				Command:     "rollout state-report",
+				GeneratedAt: time.Now().UTC(),
+				Issues:      []string{err.Error()},
+			}
+			_ = renderRolloutStateReport(os.Stdout, failed, outputFormat)
+		} else {
+			fmt.Fprintf(os.Stderr, "FAIL %v\n", err)
+		}
+		os.Exit(1)
+	}
+	if err := renderRolloutStateReport(os.Stdout, report, outputFormat); err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL render rollout state report: %v\n", err)
+		os.Exit(1)
+	}
+}
+
 type staticBucketRange struct {
 	HostID    string
 	BucketMin int
@@ -787,6 +880,280 @@ func runCutoverStatusCheck(out io.Writer, cfg *config.Config, opts cutoverCheckO
 
 func dashboardStatus(port int) (string, error) {
 	return httpGet(fmt.Sprintf("http://localhost:%d/api/state", port))
+}
+
+type rolloutStateReportOptions struct {
+	Since string
+}
+
+type rolloutStateReport struct {
+	OK                  bool                       `json:"ok"`
+	Command             string                     `json:"command"`
+	GeneratedAt         time.Time                  `json:"generated_at"`
+	Host                string                     `json:"host,omitempty"`
+	Ownership           rolloutStateOwnership      `json:"ownership"`
+	BucketCoverage      rolloutStateBucketCoverage `json:"bucket_coverage"`
+	Activity            rolloutStateActivity       `json:"activity"`
+	ProjectionDrift     rolloutStateDrift          `json:"projection_drift"`
+	DeliveryOwner       rolloutStateDeliveryOwner  `json:"delivery_owner"`
+	SuggestedNextAction string                     `json:"suggested_next_action,omitempty"`
+	Issues              []string                   `json:"issues,omitempty"`
+}
+
+type rolloutStateOwnership struct {
+	Mode      string `json:"mode"`
+	BucketMin int    `json:"bucket_min"`
+	BucketMax int    `json:"bucket_max"`
+}
+
+type rolloutStateBucketCoverage struct {
+	Status      string                `json:"status"`
+	BucketTotal int                   `json:"bucket_total"`
+	HostCount   int                   `json:"host_count"`
+	Error       string                `json:"error,omitempty"`
+	Hosts       []rolloutStateHostRow `json:"hosts,omitempty"`
+}
+
+type rolloutStateHostRow struct {
+	HostID              string    `json:"host_id"`
+	BucketMin           int       `json:"bucket_min"`
+	BucketMax           int       `json:"bucket_max"`
+	Status              string    `json:"status"`
+	LastHeartbeat       time.Time `json:"last_heartbeat"`
+	LastHeartbeatAgeSec int64     `json:"last_heartbeat_age_sec"`
+}
+
+type rolloutStateActivity struct {
+	Since          time.Time `json:"since"`
+	ActiveSites    int       `json:"active_sites"`
+	CheckedSince   int       `json:"checked_since"`
+	UncheckedSince int       `json:"unchecked_since"`
+	CheckedPercent float64   `json:"checked_percent"`
+}
+
+type rolloutStateDrift struct {
+	Count int `json:"count"`
+}
+
+type rolloutStateDeliveryOwner struct {
+	Level   string `json:"level"`
+	Message string `json:"message"`
+}
+
+func buildRolloutStateReport(ctx context.Context, cfg *config.Config, opts rolloutStateReportOptions, deps rolloutStateReportDeps) (rolloutStateReport, error) {
+	if cfg == nil {
+		return rolloutStateReport{}, errors.New("config is not loaded")
+	}
+	now := time.Now().UTC()
+	if deps.Now != nil {
+		now = deps.Now().UTC()
+	}
+	cutoff, err := resolveActivityCutoff(now, opts.Since)
+	if err != nil {
+		return rolloutStateReport{}, err
+	}
+
+	hostID := ""
+	if deps.Hostname != nil {
+		hostID = strings.TrimSpace(deps.Hostname())
+	}
+	if hostID == "" {
+		hostID = "unknown"
+	}
+
+	minBucket, maxBucket, ownershipMode, err := rolloutStateRange(cfg)
+	if err != nil {
+		return rolloutStateReport{}, err
+	}
+
+	report := rolloutStateReport{
+		Command:     "rollout state-report",
+		GeneratedAt: now,
+		Host:        hostID,
+		Ownership: rolloutStateOwnership{
+			Mode:      ownershipMode,
+			BucketMin: minBucket,
+			BucketMax: maxBucket,
+		},
+		BucketCoverage: rolloutStateBucketCoverage{
+			BucketTotal: cfg.BucketTotal,
+		},
+		Activity: rolloutStateActivity{
+			Since: cutoff,
+		},
+	}
+
+	if ownershipMode == "pinned" {
+		report.BucketCoverage.Status = "pinned_config"
+	} else {
+		if deps.GetAllHosts == nil {
+			return rolloutStateReport{}, errors.New("host list query is not configured")
+		}
+		hosts, err := deps.GetAllHosts()
+		if err != nil {
+			return rolloutStateReport{}, fmt.Errorf("query jetmon_hosts: %w", err)
+		}
+		report.BucketCoverage.HostCount = len(hosts)
+		report.BucketCoverage.Hosts = summarizeRolloutHosts(hosts, now)
+		if err := validateDynamicBucketCoverage(hosts, cfg.BucketTotal, time.Duration(cfg.BucketHeartbeatGraceSec)*time.Second, now); err != nil {
+			report.BucketCoverage.Status = "invalid"
+			report.BucketCoverage.Error = err.Error()
+			report.Issues = append(report.Issues, err.Error())
+		} else {
+			report.BucketCoverage.Status = "complete"
+		}
+	}
+
+	if deps.CountActiveSitesForBucketRange == nil {
+		return rolloutStateReport{}, errors.New("active site counter is not configured")
+	}
+	activeSites, err := deps.CountActiveSitesForBucketRange(ctx, minBucket, maxBucket)
+	if err != nil {
+		return rolloutStateReport{}, fmt.Errorf("count active sites in range %d-%d: %w", minBucket, maxBucket, err)
+	}
+	report.Activity.ActiveSites = activeSites
+
+	if deps.CountRecentlyCheckedActiveSitesForRange == nil {
+		return rolloutStateReport{}, errors.New("recently checked active site counter is not configured")
+	}
+	checkedSince, err := deps.CountRecentlyCheckedActiveSitesForRange(ctx, minBucket, maxBucket, cutoff)
+	if err != nil {
+		return rolloutStateReport{}, fmt.Errorf("count recently checked active sites in range %d-%d since %s: %w", minBucket, maxBucket, cutoff.Format(time.RFC3339), err)
+	}
+	report.Activity.CheckedSince = checkedSince
+	report.Activity.UncheckedSince = maxInt(0, activeSites-checkedSince)
+	if activeSites > 0 {
+		report.Activity.CheckedPercent = float64(checkedSince) * 100 / float64(activeSites)
+	}
+
+	if deps.CountLegacyProjectionDrift == nil {
+		return rolloutStateReport{}, errors.New("projection drift counter is not configured")
+	}
+	drift, err := deps.CountLegacyProjectionDrift(ctx, minBucket, maxBucket)
+	if err != nil {
+		return rolloutStateReport{}, fmt.Errorf("count legacy projection drift in range %d-%d: %w", minBucket, maxBucket, err)
+	}
+	report.ProjectionDrift.Count = drift
+
+	level, message := deliveryOwnerStatus(cfg, hostID)
+	report.DeliveryOwner = rolloutStateDeliveryOwner{Level: level, Message: message}
+
+	report.Issues = append(report.Issues, rolloutStateIssues(report)...)
+	report.SuggestedNextAction = suggestRolloutNextAction(report)
+	report.OK = len(report.Issues) == 0
+	return report, nil
+}
+
+func rolloutStateRange(cfg *config.Config) (int, int, string, error) {
+	if minBucket, maxBucket, ok := cfg.PinnedBucketRange(); ok {
+		return minBucket, maxBucket, "pinned", nil
+	}
+	if cfg.BucketTotal <= 0 {
+		return 0, 0, "", errors.New("BUCKET_TOTAL must be > 0")
+	}
+	return 0, cfg.BucketTotal - 1, "dynamic", nil
+}
+
+func summarizeRolloutHosts(hosts []db.HostRow, now time.Time) []rolloutStateHostRow {
+	out := make([]rolloutStateHostRow, 0, len(hosts))
+	for _, host := range hosts {
+		age := now.Sub(host.LastHeartbeat)
+		if age < 0 {
+			age = 0
+		}
+		out = append(out, rolloutStateHostRow{
+			HostID:              host.HostID,
+			BucketMin:           host.BucketMin,
+			BucketMax:           host.BucketMax,
+			Status:              host.Status,
+			LastHeartbeat:       host.LastHeartbeat,
+			LastHeartbeatAgeSec: int64(age.Round(time.Second) / time.Second),
+		})
+	}
+	return out
+}
+
+func rolloutStateIssues(report rolloutStateReport) []string {
+	var issues []string
+	if report.ProjectionDrift.Count > 0 {
+		issues = append(issues, fmt.Sprintf("legacy projection drift=%d", report.ProjectionDrift.Count))
+	}
+	if report.Activity.ActiveSites > 0 && report.Activity.CheckedSince == 0 {
+		issues = append(issues, fmt.Sprintf("no active sites checked since %s", report.Activity.Since.Format(time.RFC3339)))
+	} else if report.Activity.UncheckedSince > 0 {
+		issues = append(issues, fmt.Sprintf("%d/%d active sites checked since %s", report.Activity.CheckedSince, report.Activity.ActiveSites, report.Activity.Since.Format(time.RFC3339)))
+	}
+	if report.DeliveryOwner.Level == "WARN" {
+		issues = append(issues, report.DeliveryOwner.Message)
+	}
+	return issues
+}
+
+func suggestRolloutNextAction(report rolloutStateReport) string {
+	if report.BucketCoverage.Status == "invalid" {
+		return "Fix jetmon_hosts bucket coverage before relying on dynamic ownership."
+	}
+	if report.ProjectionDrift.Count > 0 {
+		return "Run rollout projection-drift --limit=100 and fix legacy projection drift before continuing."
+	}
+	if report.Activity.ActiveSites == 0 {
+		return "Confirm this range is intentionally empty before continuing."
+	}
+	if report.Activity.CheckedSince == 0 {
+		return "Investigate the check loop; no active sites have fresh last_checked_at writes."
+	}
+	if report.Activity.UncheckedSince > 0 {
+		return "Wait one full expected round, then run rollout cutover-check --require-all before moving on."
+	}
+	if report.DeliveryOwner.Level == "WARN" {
+		return "Set DELIVERY_OWNER_HOST or explicitly approve multi-owner delivery before enabling API delivery workers."
+	}
+	if report.Ownership.Mode == "pinned" {
+		return "Continue with the next pinned host; after every host is on v2, plan dynamic ownership cutover."
+	}
+	return "Dynamic ownership looks healthy; continue normal v2 rolling updates and monitoring."
+}
+
+func renderRolloutStateReport(out io.Writer, report rolloutStateReport, output string) error {
+	if output == "json" {
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		return enc.Encode(report)
+	}
+	renderRolloutStateText(out, report)
+	return nil
+}
+
+func renderRolloutStateText(out io.Writer, report rolloutStateReport) {
+	fmt.Fprintf(out, "INFO rollout_state_generated_at=%s\n", report.GeneratedAt.Format(time.RFC3339))
+	fmt.Fprintf(out, "INFO host=%q\n", report.Host)
+	fmt.Fprintf(out, "INFO ownership_mode=%s bucket_range=%d-%d\n", report.Ownership.Mode, report.Ownership.BucketMin, report.Ownership.BucketMax)
+	if report.BucketCoverage.Status == "invalid" {
+		fmt.Fprintf(out, "WARN bucket_coverage=%s error=%q\n", report.BucketCoverage.Status, report.BucketCoverage.Error)
+	} else {
+		fmt.Fprintf(out, "PASS bucket_coverage=%s bucket_total=%d host_count=%d\n", report.BucketCoverage.Status, report.BucketCoverage.BucketTotal, report.BucketCoverage.HostCount)
+	}
+	fmt.Fprintf(out, "INFO activity_since=%s\n", report.Activity.Since.Format(time.RFC3339))
+	fmt.Fprintf(out, "INFO active_sites=%d checked_since=%d unchecked_since=%d checked_percent=%.1f\n", report.Activity.ActiveSites, report.Activity.CheckedSince, report.Activity.UncheckedSince, report.Activity.CheckedPercent)
+	if report.ProjectionDrift.Count > 0 {
+		fmt.Fprintf(out, "WARN legacy_projection_drift=%d\n", report.ProjectionDrift.Count)
+	} else {
+		fmt.Fprintln(out, "PASS legacy_projection_drift=0")
+	}
+	if report.DeliveryOwner.Message != "" {
+		fmt.Fprintf(out, "%s %s\n", report.DeliveryOwner.Level, report.DeliveryOwner.Message)
+	}
+	for _, issue := range report.Issues {
+		fmt.Fprintf(out, "WARN rollout_state_issue=%q\n", issue)
+	}
+	fmt.Fprintf(out, "INFO suggested_next_action=%q\n", report.SuggestedNextAction)
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func writeRolloutPlanSection(out io.Writer, title string, lines ...string) {

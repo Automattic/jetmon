@@ -43,7 +43,7 @@ preflight, deliverer hardening, and API CLI fixture workflow branches:
 - [x] Add JSON output to rollout checks for Systems automation gates.
 - [x] Create a one-page rollout quick reference that links to the full
   migration runbook.
-- [ ] Add a rollout state report that summarizes ownership mode, bucket
+- [x] Add a rollout state report that summarizes ownership mode, bucket
   coverage, drift, recent activity, delivery owner state, and suggested next
   action.
 
@@ -712,6 +712,9 @@ where to look, and what each item unlocked.
   operators a one-page command checklist for rehearsal, per-host cutover,
   rollback, fleet completion, and JSON automation while linking back to the
   full migration runbook as source of truth.
+- **Rollout state report.** `./jetmon2 rollout state-report` summarizes the
+  current ownership mode, bucket coverage, recent activity, projection drift,
+  delivery-owner state, and suggested next action for operator handoffs.
 - **Dynamic ownership preflight.** `./jetmon2 rollout dynamic-check` verifies
   that pinned ranges are removed, `jetmon_hosts` rows cover the full bucket
   range without gaps/overlaps, heartbeats are fresh, and projection drift is

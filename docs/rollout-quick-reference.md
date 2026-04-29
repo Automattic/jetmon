@@ -109,3 +109,12 @@ Rollout gate commands support JSON output:
 
 Automation should gate on both the process exit code and the JSON `ok` field.
 The human runbook remains the source of truth for what to do when a gate fails.
+
+For a quick operator snapshot, run:
+
+```bash
+./jetmon2 rollout state-report --since=15m
+```
+
+This summarizes ownership mode, bucket coverage, activity freshness, projection
+drift, delivery-owner state, and the suggested next action.

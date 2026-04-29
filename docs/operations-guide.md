@@ -86,6 +86,9 @@ round, rerun it with `--require-all` before moving to the next host.
 Use `--output=json` on rollout gate commands when wiring them into Systems
 automation. The command still exits non-zero on failed checks, and stdout
 contains `ok`, the command name, parsed output lines, and failure messages.
+Use `./jetmon2 rollout state-report --since=15m` for an operator snapshot of
+ownership mode, bucket coverage, activity freshness, projection drift, delivery
+owner state, and the suggested next action.
 
 ## v2 Rolling Updates
 

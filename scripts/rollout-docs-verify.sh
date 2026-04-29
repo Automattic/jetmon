@@ -49,6 +49,7 @@ run_help_check "$jetmon_binary" rollout rollback-check --help
 run_help_check "$jetmon_binary" rollout dynamic-check --help
 run_help_check "$jetmon_binary" rollout activity-check --help
 run_help_check "$jetmon_binary" rollout projection-drift --help
+run_help_check "$jetmon_binary" rollout state-report --help
 
 step "deliverer command help"
 run_help_check "$deliverer_binary" validate-config --help
