@@ -20,7 +20,8 @@ preflight hardening settle:
   rollback checks, and operator-visible rollout safety commands.
 - **`feature/deliverer-rollout-hardening`** - make the standalone
   `jetmon-deliverer` rollout safer with stronger config validation, ownership
-  checks, service docs, and explicit rollback rehearsal.
+  checks, delivery backlog checks, service docs, and explicit rollback
+  rehearsal.
 - **`feature/operator-dashboard-polish`** - turn the dashboard into a clearer
   production rollout cockpit: stronger warning states, dependency health
   details, rollout-command visibility, and event/API pointers for operators.
@@ -662,6 +663,11 @@ where to look, and what each item unlocked.
   mode, and delivery ownership.
   The rollout docs describe the service, process-specific `deliverer.json`,
   and the shared `DB_*` environment expectations.
+- **Deliverer rollout checks.** `jetmon-deliverer delivery-check` summarizes
+  webhook and alert-contact delivery queues from the shared MySQL tables.
+  Operators can inspect pending, due, retry, delivered, and abandoned counts in
+  text or JSON and enforce explicit thresholds during standalone-deliverer
+  cutover or rollback.
 
 ### Rollout and Operations
 

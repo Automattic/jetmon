@@ -110,6 +110,25 @@ JETMON_CONFIG=/opt/jetmon2/config/deliverer.json \
 Add `--require-email-delivery` when real alert-contact email delivery is
 expected in that environment.
 
+During rollout, inspect the shared webhook and alert-contact delivery queues
+from the same environment the service uses:
+
+```bash
+JETMON_CONFIG=/opt/jetmon2/config/deliverer.json \
+  /opt/jetmon2/bin/jetmon-deliverer delivery-check --since=15m
+```
+
+Use thresholds for automated gates:
+
+```bash
+JETMON_CONFIG=/opt/jetmon2/config/deliverer.json \
+  /opt/jetmon2/bin/jetmon-deliverer delivery-check \
+    --since=15m \
+    --max-due=0 \
+    --max-abandoned=0 \
+    --output=json
+```
+
 See [jetmon-deliverer-rollout.md](jetmon-deliverer-rollout.md) for the rollout
 and rollback path.
 

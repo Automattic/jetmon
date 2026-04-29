@@ -33,8 +33,11 @@ func main() {
 		case "validate-config":
 			cmdValidateConfig(os.Args[2:])
 			return
+		case "delivery-check":
+			cmdDeliveryCheck(os.Args[2:])
+			return
 		default:
-			fmt.Fprintf(os.Stderr, "unknown command %q (want: version, validate-config)\n", os.Args[1])
+			fmt.Fprintf(os.Stderr, "unknown command %q (want: version, validate-config, delivery-check)\n", os.Args[1])
 			os.Exit(2)
 		}
 	}

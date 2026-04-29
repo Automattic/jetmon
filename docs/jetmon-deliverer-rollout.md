@@ -87,8 +87,24 @@ delivery.
 7. Confirm logs show `delivery_owner_host="<host>" matched; delivery workers
    enabled on this host`.
 8. Confirm API-host logs show delivery workers are skipped or idle.
-9. Watch `jetmon_webhook_deliveries` and `jetmon_alert_deliveries` for pending
-   backlog, abandon rate, and retry volume.
+9. Watch delivery backlog and terminal outcomes with the read-only rollout
+   check:
+
+   ```bash
+   JETMON_CONFIG=/opt/jetmon2/config/deliverer.json \
+     /opt/jetmon2/bin/jetmon-deliverer delivery-check --since=15m
+   ```
+
+   For a strict cutover gate, add thresholds that fail if any delivery is due
+   now or newly abandoned:
+
+   ```bash
+   JETMON_CONFIG=/opt/jetmon2/config/deliverer.json \
+     /opt/jetmon2/bin/jetmon-deliverer delivery-check \
+       --since=15m \
+       --max-due=0 \
+       --max-abandoned=0
+   ```
 10. Stop embedded delivery after the standalone owner has been stable for at
    least one normal alerting window.
 
@@ -99,8 +115,16 @@ delivery config so one API-enabled `jetmon2` host matches
 Before rollback, rehearse the embedded owner config with `./jetmon2
 validate-config` on the API host that will resume delivery, and make sure its
 `DELIVERY_OWNER_HOST` plan is intentional. After stopping the standalone
-deliverer, start the embedded owner and watch the delivery tables until pending
-rows drain normally.
+deliverer, start the embedded owner and watch `delivery-check` until pending
+rows drain normally. The same check can validate rollback drain:
+
+```bash
+JETMON_CONFIG=/opt/jetmon2/config/api-owner.json \
+  /opt/jetmon2/bin/jetmon-deliverer delivery-check \
+    --since=15m \
+    --max-due=0 \
+    --max-abandoned=0
+```
 
 ## Active-Active Delivery
 
@@ -135,6 +159,8 @@ Before enabling standalone delivery:
   service will use.
 - `--require-email-delivery` is included when real alert-contact email delivery
   is expected.
+- `JETMON_CONFIG=/opt/jetmon2/config/deliverer.json bin/jetmon-deliverer
+  delivery-check --since=15m --output=json` returns clean JSON for automation.
 - `systemd-analyze verify systemd/jetmon-deliverer.service` passes, or the
   deployment-system equivalent validates the service definition.
 - The process can connect to MySQL using the same schema as `jetmon2`.
@@ -145,10 +171,28 @@ Before enabling standalone delivery:
 
 During rollout:
 
-- No sustained growth in `status = 'pending'` rows.
-- No unexpected increase in `status = 'abandoned'` rows.
+- `delivery-check --since=15m` shows no sustained growth in pending rows.
+- `delivery-check --since=15m --max-due=0 --max-abandoned=0` passes once the
+  queue has drained and no new abandons are present.
+- Use `--require-recent-delivery` only when the rollout window is expected to
+  include at least one real webhook or alert-contact delivery. It is too strict
+  for quiet environments with no outbound dispatch.
 - Logs show only the intended process class running workers.
 - Webhook and alert-contact manual retry endpoints still work.
+
+Example text output:
+
+```text
+INFO deliverer_host="deliverer-01"
+INFO delivery_check_generated_at=2026-04-29T18:30:00Z
+INFO delivery_check_since=2026-04-29T18:15:00Z
+INFO delivery_owner_host="deliverer-01" matched; delivery workers enabled on this host
+KIND     PENDING  DUE_NOW  FUTURE_RETRY  DELIVERED_SINCE  ABANDONED_SINCE
+webhook  0        0        0             4                0
+alert    1        0        1             2                0
+total    1        0        1             6                0
+PASS delivery_check=ok
+```
 
 After rollout:
 
