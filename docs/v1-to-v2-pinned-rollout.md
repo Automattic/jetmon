@@ -16,6 +16,8 @@ Pinned mode still means:
 - keep `API_PORT=0` during initial production monitor replacement unless an API
   and delivery-owner plan has been approved
 - run `./jetmon2 validate-config`
+- run `./jetmon2 rollout host-preflight` with the copied static bucket plan,
+  v1 host, v2 runtime host, and bucket range before stopping v1
 - run `./jetmon2 rollout pinned-check`
 - after v2 starts, run `./jetmon2 rollout cutover-check --since=15m`, then
   rerun it with `--require-all` after one full expected check round

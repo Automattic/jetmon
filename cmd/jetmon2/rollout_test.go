@@ -352,6 +352,8 @@ jetmon-v1-b,5,9
 		Binary:      "./jetmon2",
 		Service:     "jetmon2",
 		Since:       "15m",
+		V1StopCmd:   "systemctl stop jetmon",
+		V1StartCmd:  "systemctl start jetmon",
 	}
 
 	var out bytes.Buffer
@@ -364,11 +366,18 @@ jetmon-v1-b,5,9
 		"./jetmon2 rollout static-plan-check --file rollout-buckets.csv --host jetmon-v1-a --bucket-min 0 --bucket-max 4",
 		"./jetmon2 validate-config",
 		"systemd-analyze verify /etc/systemd/system/jetmon2.service",
+		"./jetmon2 rollout host-preflight --file rollout-buckets.csv --host jetmon-v1-a --runtime-host jetmon-v1-a --bucket-min 0 --bucket-max 4 --service jetmon2",
 		"./jetmon2 rollout pinned-check --host jetmon-v1-a",
+		"systemctl stop jetmon",
+		"# HOLD: confirm v1 is stopped before starting v2.",
 		"systemctl enable --now jetmon2",
 		"./jetmon2 rollout cutover-check --host jetmon-v1-a --bucket-min 0 --bucket-max 4 --since 15m",
 		"./jetmon2 rollout cutover-check --host jetmon-v1-a --bucket-min 0 --bucket-max 4 --since 15m --require-all",
+		"# HOLD: confirm the v2 process is stopped before restarting v1.",
 		"./jetmon2 rollout rollback-check --host jetmon-v1-a --bucket-min 0 --bucket-max 4",
+		"# HOLD: do not restart v1 unless rollback-check passes.",
+		"systemctl start jetmon",
+		"# Do not roll back schema migrations.",
 		"./jetmon2 rollout dynamic-check",
 	} {
 		if !strings.Contains(out.String(), want) {
@@ -393,6 +402,8 @@ jetmon-v1-a,0,9
 		Binary:      "/opt/jetmon2/jetmon2",
 		Service:     "jetmon2",
 		Since:       "20m",
+		V1StopCmd:   "ssh jetmon-v1-a sudo systemctl stop jetmon",
+		V1StartCmd:  "ssh jetmon-v1-a sudo systemctl start jetmon",
 	}
 
 	var out bytes.Buffer
@@ -402,14 +413,167 @@ jetmon-v1-a,0,9
 	for _, want := range []string{
 		"INFO mode=fresh-server",
 		`INFO plan_host="jetmon-v1-a" runtime_host="jetmon-v2-a" range=0-9`,
+		"/opt/jetmon2/jetmon2 rollout host-preflight --file rollout-buckets.csv --host jetmon-v1-a --runtime-host jetmon-v2-a --bucket-min 0 --bucket-max 9 --service jetmon2",
 		"/opt/jetmon2/jetmon2 rollout pinned-check --host jetmon-v2-a",
-		"# Stop v1 on jetmon-v1-a with the documented production command.",
+		"ssh jetmon-v1-a sudo systemctl stop jetmon",
+		"# HOLD: confirm v1 on jetmon-v1-a is stopped before starting v2 on jetmon-v2-a.",
 		"/opt/jetmon2/jetmon2 rollout cutover-check --host jetmon-v2-a --bucket-min 0 --bucket-max 9 --since 20m",
 		"/opt/jetmon2/jetmon2 rollout rollback-check --host jetmon-v2-a --bucket-min 0 --bucket-max 9",
+		"ssh jetmon-v1-a sudo systemctl start jetmon",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("output missing %q:\n%s", want, out.String())
 		}
+	}
+}
+
+func TestRunHostPreflightSuccess(t *testing.T) {
+	input := strings.NewReader(`
+host,bucket_min,bucket_max
+jetmon-v1-a,0,4
+jetmon-v1-b,5,9
+`)
+	cfg := pinnedRolloutTestConfig(0, 4)
+	var gotUnit string
+	deps := hostPreflightDeps{
+		Pinned: successfulPinnedRolloutDeps(),
+		SystemdVerify: func(unit string) (string, error) {
+			gotUnit = unit
+			return "unit verified", nil
+		},
+	}
+
+	var out bytes.Buffer
+	err := runHostPreflight(context.Background(), &out, cfg, input, hostPreflightOptions{
+		PlanFile:    "rollout-buckets.csv",
+		HostID:      "jetmon-v1-a",
+		RuntimeHost: "host-a",
+		BucketMin:   0,
+		BucketMax:   4,
+		BucketTotal: 10,
+		Service:     "jetmon2",
+	}, deps)
+	if err != nil {
+		t.Fatalf("runHostPreflight: %v", err)
+	}
+	if gotUnit != "/etc/systemd/system/jetmon2.service" {
+		t.Fatalf("systemd unit = %q, want default jetmon2 unit", gotUnit)
+	}
+	for _, want := range []string{
+		"## static bucket plan",
+		"PASS static_plan_file=rollout-buckets.csv ranges=2",
+		"PASS static_plan_host=\"jetmon-v1-a\" range=0-4",
+		"## pinned pre-stop safety",
+		"PASS pinned_range_matches_request=0-4",
+		"pinned rollout check passed",
+		"## systemd unit",
+		"PASS systemd_unit=/etc/systemd/system/jetmon2.service",
+		"INFO systemd_verify=unit verified",
+		"PASS pre_stop_gate=ready",
+		"host preflight passed",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestRunHostPreflightSkipSystemd(t *testing.T) {
+	input := strings.NewReader(`host,bucket_min,bucket_max
+jetmon-v1-a,0,4
+`)
+	cfg := pinnedRolloutTestConfig(0, 4)
+	deps := hostPreflightDeps{
+		Pinned: successfulPinnedRolloutDeps(),
+		SystemdVerify: func(string) (string, error) {
+			t.Fatal("systemd verifier should not be called")
+			return "", nil
+		},
+	}
+
+	var out bytes.Buffer
+	err := runHostPreflight(context.Background(), &out, cfg, input, hostPreflightOptions{
+		PlanFile:    "rollout-buckets.csv",
+		HostID:      "jetmon-v1-a",
+		RuntimeHost: "host-a",
+		BucketMin:   0,
+		BucketMax:   4,
+		BucketTotal: 5,
+		SkipSystemd: true,
+	}, deps)
+	if err != nil {
+		t.Fatalf("runHostPreflight: %v", err)
+	}
+	if !strings.Contains(out.String(), "INFO systemd_verify=skipped reason=operator") {
+		t.Fatalf("output missing systemd skip:\n%s", out.String())
+	}
+}
+
+func TestRunHostPreflightFailures(t *testing.T) {
+	validInput := `host,bucket_min,bucket_max
+jetmon-v1-a,0,4
+`
+	cfg := pinnedRolloutTestConfig(0, 4)
+
+	tests := []struct {
+		name  string
+		input string
+		opts  hostPreflightOptions
+		deps  hostPreflightDeps
+		cfg   *config.Config
+		want  string
+	}{
+		{
+			name:  "missing host",
+			input: validInput,
+			opts:  hostPreflightOptions{PlanFile: "rollout-buckets.csv", BucketMin: 0, BucketMax: 4, BucketTotal: 5, SkipSystemd: true},
+			deps:  hostPreflightDeps{Pinned: successfulPinnedRolloutDeps()},
+			want:  "--host is required",
+		},
+		{
+			name:  "plan mismatch",
+			input: validInput,
+			opts:  hostPreflightOptions{PlanFile: "rollout-buckets.csv", HostID: "jetmon-v1-a", BucketMin: 1, BucketMax: 4, BucketTotal: 5, SkipSystemd: true},
+			deps:  hostPreflightDeps{Pinned: successfulPinnedRolloutDeps()},
+			want:  "has bucket range 0-4",
+		},
+		{
+			name:  "systemd failure",
+			input: validInput,
+			opts:  hostPreflightOptions{PlanFile: "rollout-buckets.csv", HostID: "jetmon-v1-a", RuntimeHost: "host-a", BucketMin: 0, BucketMax: 4, BucketTotal: 5, SystemdUnit: "/tmp/bad.service"},
+			deps: hostPreflightDeps{
+				Pinned: successfulPinnedRolloutDeps(),
+				SystemdVerify: func(string) (string, error) {
+					return "bad unit", errors.New("exit status 1")
+				},
+			},
+			want: "systemd-analyze verify /tmp/bad.service",
+		},
+		{
+			name:  "config range mismatch",
+			input: "host,bucket_min,bucket_max\njetmon-v1-a,0,5\n",
+			opts:  hostPreflightOptions{PlanFile: "rollout-buckets.csv", HostID: "jetmon-v1-a", RuntimeHost: "host-a", BucketMin: 0, BucketMax: 5, BucketTotal: 6, SkipSystemd: true},
+			deps:  hostPreflightDeps{Pinned: successfulPinnedRolloutDeps()},
+			cfg:   pinnedRolloutTestConfig(0, 4),
+			want:  "config pinned range 0-4 does not match requested bucket range 0-5",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			testConfig := cfg
+			if tt.cfg != nil {
+				testConfig = tt.cfg
+			}
+			err := runHostPreflight(context.Background(), &out, testConfig, strings.NewReader(tt.input), tt.opts, tt.deps)
+			if err == nil {
+				t.Fatal("runHostPreflight succeeded")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tt.want)
+			}
+		})
 	}
 }
 

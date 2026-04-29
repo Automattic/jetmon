@@ -76,7 +76,14 @@ Use `./jetmon2 rollout rehearsal-plan --file=<ranges.csv> --host=<host>
 --bucket-min=N --bucket-max=N --mode=same-server` to print the ordered command
 sequence for one host replacement. Use `--mode=fresh-server` plus
 `--runtime-host=<new-v2-hostname>` when the new v2 hostname differs from the v1
-host recorded in the static bucket plan.
+host recorded in the static bucket plan. Add `--v1-stop-command` and
+`--v1-start-command` so the generated plan includes the exact cutover and
+rollback commands instead of comments.
+
+Before stopping v1 for a host, use `./jetmon2 rollout host-preflight
+--file=<ranges.csv> --host=<v1-host> --runtime-host=<v2-host>
+--bucket-min=N --bucket-max=N` to bundle the static plan match, config parse,
+DB connectivity, pinned safety checks, and staged systemd validation.
 
 After a pinned v2 host starts, use `./jetmon2 rollout cutover-check --since=15m`
 to run the post-start pinned preflight, recent activity check, dashboard status

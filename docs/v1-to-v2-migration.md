@@ -125,7 +125,9 @@ Generate the host-specific command sequence operators will rehearse and run:
   --host=jetmon-v1-a \
   --bucket-min=0 \
   --bucket-max=99 \
-  --mode=same-server
+  --mode=same-server \
+  --v1-stop-command='<exact v1 stop command>' \
+  --v1-start-command='<exact v1 rollback start command>'
 ```
 
 For a fresh-server takeover where the v2 hostname differs from the v1 host in
@@ -299,9 +301,20 @@ Use this path when the same server currently running v1 will run v2 for the
 same bucket range.
 
 1. Confirm v2 files and config are staged beside, not on top of, v1.
-2. Confirm v1 service start commands and config are documented for rollback.
+2. Confirm v1 service stop/start commands and config are documented for
+   cutover and rollback.
 3. Run `./jetmon2 validate-config`.
-4. Run `./jetmon2 rollout pinned-check`.
+4. Run the pre-stop host gate:
+
+   ```bash
+   ./jetmon2 rollout host-preflight \
+     --file=rollout-buckets.csv \
+     --host=<v1-hostname> \
+     --runtime-host=<v2-hostname> \
+     --bucket-min=<min> \
+     --bucket-max=<max>
+   ```
+
 5. Start a terminal watching v1 logs and a terminal ready to watch v2 logs.
 6. Stop v1 cleanly with the existing production command.
 7. Confirm the v1 process is no longer running.
@@ -440,7 +453,7 @@ Use this when v2 replaced v1 on the same server.
    systemctl stop jetmon2
    ```
 
-2. Confirm the v2 process is stopped.
+2. Confirm the v2 process is stopped. Do not restart v1 until this is true.
 3. Run the rollback safety check before restarting v1:
 
    ```bash
@@ -467,7 +480,7 @@ Use this when v2 was started on a new server and the old v1 server was stopped.
    systemctl stop jetmon2
    ```
 
-2. Confirm the new v2 process is stopped.
+2. Confirm the new v2 process is stopped. Do not restart v1 until this is true.
 3. Run the rollback safety check from an operator shell with the stopped v2
    hostname:
 

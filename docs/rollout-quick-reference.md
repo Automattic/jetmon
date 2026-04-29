@@ -24,31 +24,43 @@ approval, troubleshooting, revert details, and final v1 teardown.
      --host=<v1-hostname> \
      --bucket-min=<min> \
      --bucket-max=<max> \
-     --mode=same-server
+     --mode=same-server \
+     --v1-stop-command='<exact v1 stop command>' \
+     --v1-start-command='<exact v1 rollback start command>'
    ```
 
    Use `--mode=fresh-server --runtime-host=<new-v2-hostname>` for a fresh v2
    server taking over from an existing v1 server.
 
-3. Validate config, migrations, and the staged systemd service:
+3. Validate config, migrations, static plan match, pinned safety, and the
+   staged systemd service:
 
    ```bash
    ./jetmon2 validate-config
    ./jetmon2 migrate
-   systemd-analyze verify /etc/systemd/system/jetmon2.service
+   ./jetmon2 rollout host-preflight \
+     --file=<ranges.csv> \
+     --host=<v1-hostname> \
+     --runtime-host=<v2-hostname> \
+     --bucket-min=<min> \
+     --bucket-max=<max>
    ```
 
 ## Per-Host Cutover
 
-1. Confirm the v2 host is pinned to the v1 range and not participating in
-   dynamic bucket ownership:
+1. Confirm the pre-stop host gate passes:
 
    ```bash
-   ./jetmon2 rollout pinned-check --host=<v2-hostname>
+   ./jetmon2 rollout host-preflight \
+     --file=<ranges.csv> \
+     --host=<v1-hostname> \
+     --runtime-host=<v2-hostname> \
+     --bucket-min=<min> \
+     --bucket-max=<max>
    ```
 
 2. Stop the v1 monitor for that bucket range.
-3. Start v2:
+3. Confirm the v1 process is stopped, then start v2:
 
    ```bash
    systemctl enable --now jetmon2

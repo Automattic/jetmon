@@ -129,7 +129,7 @@ one-page command checklist during rehearsals and rollout windows:
   safety commands.
 - Use pinned bucket mode for the first v1-to-v2 migration so one v1 host can be
   replaced by one v2 host with the same bucket range.
-- Use `rollout static-plan-check`, `rollout pinned-check`,
+- Use `rollout static-plan-check`, `rollout host-preflight`,
   `rollout cutover-check`, `rollout rollback-check`, and targeted
   `rollout activity-check` / `rollout projection-drift` from the migration
   runbook before changing the next host. Use `rollout state-report` for a

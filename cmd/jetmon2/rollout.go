@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
@@ -63,15 +64,22 @@ type rolloutStateReportDeps struct {
 	CountLegacyProjectionDrift              func(context.Context, int, int) (int, error)
 }
 
+type hostPreflightDeps struct {
+	Pinned        pinnedRolloutCheckDeps
+	SystemdVerify func(string) (string, error)
+}
+
 func cmdRollout(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout <rehearsal-plan|static-plan-check|pinned-check|cutover-check|rollback-check|dynamic-check|activity-check|projection-drift|state-report> [args]")
+		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout <rehearsal-plan|host-preflight|static-plan-check|pinned-check|cutover-check|rollback-check|dynamic-check|activity-check|projection-drift|state-report> [args]")
 		os.Exit(1)
 	}
 
 	switch args[0] {
 	case "rehearsal-plan":
 		cmdRolloutRehearsalPlan(args[1:])
+	case "host-preflight":
+		cmdRolloutHostPreflight(args[1:])
 	case "static-plan-check":
 		cmdRolloutStaticPlanCheck(args[1:])
 	case "pinned-check":
@@ -89,7 +97,7 @@ func cmdRollout(args []string) {
 	case "state-report":
 		cmdRolloutStateReport(args[1:])
 	default:
-		fmt.Fprintf(os.Stderr, "unknown rollout subcommand %q (want: rehearsal-plan, static-plan-check, pinned-check, cutover-check, rollback-check, dynamic-check, activity-check, projection-drift, state-report)\n", args[0])
+		fmt.Fprintf(os.Stderr, "unknown rollout subcommand %q (want: rehearsal-plan, host-preflight, static-plan-check, pinned-check, cutover-check, rollback-check, dynamic-check, activity-check, projection-drift, state-report)\n", args[0])
 		os.Exit(1)
 	}
 }
@@ -203,9 +211,11 @@ func cmdRolloutRehearsalPlan(args []string) {
 	binary := fs.String("binary", "./jetmon2", "jetmon2 command path to print")
 	service := fs.String("service", "jetmon2", "systemd service name to print for v2")
 	since := fs.String("since", "15m", "activity cutoff to print for post-cutover checks")
+	v1StopCommand := fs.String("v1-stop-command", "", "exact command to stop the v1 monitor for this range")
+	v1StartCommand := fs.String("v1-start-command", "", "exact command to restart the v1 monitor during rollback")
 	_ = fs.Parse(args)
 	if fs.NArg() != 0 || strings.TrimSpace(*file) == "" {
-		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout rehearsal-plan --file=<ranges.csv> --host=<host> --bucket-min=N --bucket-max=N [--mode=same-server|fresh-server] [--runtime-host=<v2-host>] [--bucket-total=N]")
+		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout rehearsal-plan --file=<ranges.csv> --host=<host> --bucket-min=N --bucket-max=N [--mode=same-server|fresh-server] [--runtime-host=<v2-host>] [--bucket-total=N] [--v1-stop-command=<cmd>] [--v1-start-command=<cmd>]")
 		os.Exit(1)
 	}
 
@@ -246,10 +256,85 @@ func cmdRolloutRehearsalPlan(args []string) {
 		Binary:      *binary,
 		Service:     *service,
 		Since:       *since,
+		V1StopCmd:   *v1StopCommand,
+		V1StartCmd:  *v1StartCommand,
 	}
 	if err := runRolloutRehearsalPlan(os.Stdout, f, opts); err != nil {
 		fmt.Fprintf(os.Stderr, "FAIL %v\n", err)
 		os.Exit(1)
+	}
+}
+
+func cmdRolloutHostPreflight(args []string) {
+	fs := flag.NewFlagSet("rollout host-preflight", flag.ExitOnError)
+	file := fs.String("file", "", "CSV file with host,bucket_min,bucket_max rows")
+	host := fs.String("host", "", "v1 host id that must appear in the static plan")
+	runtimeHost := fs.String("runtime-host", "", "v2 host id for pinned checks (default --host)")
+	bucketMin := fs.Int("bucket-min", -1, "expected bucket minimum for --host")
+	bucketMax := fs.Int("bucket-max", -1, "expected bucket maximum for --host")
+	bucketTotal := fs.Int("bucket-total", 0, "total bucket count (default BUCKET_TOTAL from config)")
+	service := fs.String("service", "jetmon2", "systemd service name for default --systemd-unit")
+	systemdUnit := fs.String("systemd-unit", "", "systemd unit path to verify (default /etc/systemd/system/<service>.service)")
+	skipSystemd := fs.Bool("skip-systemd", false, "skip systemd-analyze verify")
+	output := rolloutOutputFlag(fs)
+	_ = fs.Parse(args)
+	if fs.NArg() != 0 || strings.TrimSpace(*file) == "" {
+		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout host-preflight --file=<ranges.csv> --host=<host> --bucket-min=N --bucket-max=N [--runtime-host=<v2-host>] [--bucket-total=N] [--service=jetmon2] [--systemd-unit=<path>] [--skip-systemd] [--output=text|json]")
+		os.Exit(1)
+	}
+	outputFormat, err := normalizeRolloutOutput(*output)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL %v\n", err)
+		os.Exit(2)
+	}
+
+	if err := runRolloutCommandOutput(os.Stdout, "rollout host-preflight", outputFormat, func(out io.Writer) error {
+		configPath := envOrDefault("JETMON_CONFIG", "config/config.json")
+		if err := config.Load(configPath); err != nil {
+			return fmt.Errorf("config parse: %w", err)
+		}
+		fmt.Fprintln(out, "PASS config parse")
+
+		config.LoadDB()
+		if err := db.ConnectWithRetry(3); err != nil {
+			return fmt.Errorf("db connect: %w", err)
+		}
+		fmt.Fprintln(out, "PASS db connect")
+
+		inputName := strings.TrimSpace(*file)
+		if inputName == "-" {
+			return errors.New("--file=- is not supported for host-preflight; pass a reusable CSV path")
+		}
+		f, err := os.Open(inputName)
+		if err != nil {
+			return fmt.Errorf("open static bucket plan: %w", err)
+		}
+		defer f.Close()
+
+		opts := hostPreflightOptions{
+			PlanFile:    inputName,
+			HostID:      *host,
+			RuntimeHost: *runtimeHost,
+			BucketMin:   *bucketMin,
+			BucketMax:   *bucketMax,
+			BucketTotal: *bucketTotal,
+			Service:     *service,
+			SystemdUnit: *systemdUnit,
+			SkipSystemd: *skipSystemd,
+		}
+		deps := hostPreflightDeps{
+			Pinned: pinnedRolloutCheckDeps{
+				Hostname:                       db.Hostname,
+				HostRowExists:                  db.HostRowExists,
+				ListOverlappingHostRows:        db.ListHostRowsOverlappingBucketRange,
+				CountActiveSitesForBucketRange: db.CountActiveSitesForBucketRange,
+				CountLegacyProjectionDrift:     db.CountLegacyProjectionDrift,
+			},
+			SystemdVerify: systemdAnalyzeVerify,
+		}
+		return runHostPreflight(context.Background(), out, config.Get(), f, opts, deps)
+	}); err != nil {
+		exitRolloutCommandError(err, outputFormat)
 	}
 }
 
@@ -685,6 +770,124 @@ type rolloutRehearsalPlanOptions struct {
 	Binary      string
 	Service     string
 	Since       string
+	V1StopCmd   string
+	V1StartCmd  string
+}
+
+type hostPreflightOptions struct {
+	PlanFile    string
+	HostID      string
+	RuntimeHost string
+	BucketMin   int
+	BucketMax   int
+	BucketTotal int
+	Service     string
+	SystemdUnit string
+	SkipSystemd bool
+}
+
+func runHostPreflight(ctx context.Context, out io.Writer, cfg *config.Config, input io.Reader, opts hostPreflightOptions, deps hostPreflightDeps) error {
+	if cfg == nil {
+		return errors.New("config is not loaded")
+	}
+	if out == nil {
+		out = io.Discard
+	}
+	if input == nil {
+		return errors.New("static bucket plan input is required")
+	}
+
+	planFile := strings.TrimSpace(opts.PlanFile)
+	if planFile == "" || planFile == "-" {
+		return errors.New("--file must be a reusable CSV path")
+	}
+	hostID := strings.TrimSpace(opts.HostID)
+	if hostID == "" {
+		return errors.New("--host is required")
+	}
+	runtimeHost := strings.TrimSpace(opts.RuntimeHost)
+	if runtimeHost == "" {
+		runtimeHost = hostID
+	}
+	if opts.BucketMin < 0 || opts.BucketMax < 0 {
+		return errors.New("--bucket-min and --bucket-max are required")
+	}
+	if opts.BucketMax < opts.BucketMin {
+		return errors.New("--bucket-max must be >= --bucket-min")
+	}
+	bucketTotal := opts.BucketTotal
+	if bucketTotal < 0 {
+		return errors.New("bucket-total must be > 0")
+	}
+	if bucketTotal == 0 {
+		bucketTotal = cfg.BucketTotal
+	}
+	if bucketTotal <= 0 {
+		return errors.New("BUCKET_TOTAL must be > 0")
+	}
+
+	writeRolloutPlanSection(out, "static bucket plan")
+	assertion := staticPlanAssertion{HostID: hostID, BucketMin: opts.BucketMin, BucketMax: opts.BucketMax}
+	if err := runStaticPlanCheck(out, planFile, input, bucketTotal, assertion); err != nil {
+		return err
+	}
+
+	writeRolloutPlanSection(out, "pinned pre-stop safety")
+	configMin, configMax, ok := cfg.PinnedBucketRange()
+	if !ok {
+		return errors.New("pinned bucket range is not configured; set PINNED_BUCKET_MIN/PINNED_BUCKET_MAX or BUCKET_NO_MIN/BUCKET_NO_MAX")
+	}
+	if configMin != opts.BucketMin || configMax != opts.BucketMax {
+		return fmt.Errorf("config pinned range %d-%d does not match requested bucket range %d-%d", configMin, configMax, opts.BucketMin, opts.BucketMax)
+	}
+	fmt.Fprintf(out, "PASS pinned_range_matches_request=%d-%d\n", configMin, configMax)
+	if err := runPinnedRolloutCheck(ctx, out, cfg, runtimeHost, deps.Pinned); err != nil {
+		return err
+	}
+
+	writeRolloutPlanSection(out, "systemd unit")
+	if opts.SkipSystemd {
+		fmt.Fprintln(out, "INFO systemd_verify=skipped reason=operator")
+	} else {
+		unitPath := hostPreflightSystemdUnit(opts)
+		if deps.SystemdVerify == nil {
+			return errors.New("systemd verifier is not configured")
+		}
+		verifyOutput, err := deps.SystemdVerify(unitPath)
+		if err != nil {
+			if trimmed := strings.TrimSpace(verifyOutput); trimmed != "" {
+				return fmt.Errorf("systemd-analyze verify %s: %w: %s", unitPath, err, strings.Join(strings.Fields(trimmed), " "))
+			}
+			return fmt.Errorf("systemd-analyze verify %s: %w", unitPath, err)
+		}
+		fmt.Fprintf(out, "PASS systemd_unit=%s\n", unitPath)
+		if verifyOutput = strings.TrimSpace(verifyOutput); verifyOutput != "" {
+			fmt.Fprintf(out, "INFO systemd_verify=%s\n", strings.Join(strings.Fields(verifyOutput), " "))
+		}
+	}
+
+	fmt.Fprintln(out, "PASS pre_stop_gate=ready")
+	fmt.Fprintln(out, "host preflight passed")
+	return nil
+}
+
+func hostPreflightSystemdUnit(opts hostPreflightOptions) string {
+	if unit := strings.TrimSpace(opts.SystemdUnit); unit != "" {
+		return unit
+	}
+	service := strings.TrimSpace(opts.Service)
+	if service == "" {
+		service = "jetmon2"
+	}
+	return "/etc/systemd/system/" + service + ".service"
+}
+
+func systemdAnalyzeVerify(unitPath string) (string, error) {
+	out, err := exec.Command("systemd-analyze", "verify", unitPath).CombinedOutput()
+	if err != nil {
+		return string(out), err
+	}
+	return string(out), nil
 }
 
 func runRolloutRehearsalPlan(out io.Writer, input io.Reader, opts rolloutRehearsalPlanOptions) error {
@@ -761,18 +964,22 @@ func runRolloutRehearsalPlan(out io.Writer, input io.Reader, opts rolloutRehears
 		"systemd-analyze verify "+shellQuote("/etc/systemd/system/"+service+".service"),
 	)
 	writeRolloutPlanSection(out, "3. Run the pinned preflight before stopping v1",
+		rolloutCommand(binary, "rollout", "host-preflight", "--file", planFile, "--host", hostID, "--runtime-host", runtimeHost, "--bucket-min", strconv.Itoa(opts.BucketMin), "--bucket-max", strconv.Itoa(opts.BucketMax), "--service", service),
 		rolloutCommand(binary, "rollout", "pinned-check", "--host", runtimeHost),
 	)
 
+	v1StopLine := rolloutOperatorCommandOrComment(opts.V1StopCmd, "TODO: stop the v1 monitor for this bucket range with the documented production command.")
 	if mode == "fresh-server" {
 		writeRolloutPlanSection(out, "4. Cut over from the old v1 host to the fresh v2 host",
-			"# Keep v2 stopped on the fresh server until the old v1 monitor process is stopped.",
-			"# Stop v1 on "+shellQuote(hostID)+" with the documented production command.",
+			"# HOLD: keep v2 stopped on the fresh server until the old v1 monitor process is stopped.",
+			v1StopLine,
+			"# HOLD: confirm v1 on "+shellQuote(hostID)+" is stopped before starting v2 on "+shellQuote(runtimeHost)+".",
 			"systemctl enable --now "+shellQuote(service),
 		)
 	} else {
 		writeRolloutPlanSection(out, "4. Cut over the same server from v1 to v2",
-			"# Stop the v1 service with the documented production command.",
+			v1StopLine,
+			"# HOLD: confirm v1 is stopped before starting v2.",
 			"systemctl enable --now "+shellQuote(service),
 		)
 	}
@@ -788,10 +995,14 @@ func runRolloutRehearsalPlan(out io.Writer, input io.Reader, opts rolloutRehears
 	if mode == "fresh-server" {
 		rollbackComment = "# Restart v1 on " + shellQuote(hostID) + " with its original BUCKET_NO_MIN/BUCKET_NO_MAX config."
 	}
+	v1StartLine := rolloutOperatorCommandOrComment(opts.V1StartCmd, strings.TrimPrefix(rollbackComment, "# "))
 	writeRolloutPlanSection(out, "6. Rehearse the rollback path before the rollback window closes",
 		"systemctl stop "+shellQuote(service),
+		"# HOLD: confirm the v2 process is stopped before restarting v1.",
 		rolloutCommand(append([]string{binary, "rollout", "rollback-check", "--host", runtimeHost}, rangeArgs...)...),
-		rollbackComment,
+		"# HOLD: do not restart v1 unless rollback-check passes.",
+		v1StartLine,
+		"# Do not roll back schema migrations.",
 	)
 
 	writeRolloutPlanSection(out, "7. Complete fleet-level pinned and dynamic checks after every host is on v2",
@@ -1162,6 +1373,21 @@ func writeRolloutPlanSection(out io.Writer, title string, lines ...string) {
 		fmt.Fprintln(out, line)
 	}
 	fmt.Fprintln(out)
+}
+
+func rolloutOperatorCommandOrComment(command, comment string) string {
+	command = strings.TrimSpace(command)
+	if command != "" {
+		return command
+	}
+	comment = strings.TrimSpace(comment)
+	if comment == "" {
+		comment = "TODO: operator command required."
+	}
+	if strings.HasPrefix(comment, "#") {
+		return comment
+	}
+	return "# " + comment
 }
 
 func rolloutCommand(parts ...string) string {

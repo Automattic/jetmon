@@ -42,6 +42,7 @@ git diff --check
 
 step "rollout command help"
 run_help_check "$jetmon_binary" rollout rehearsal-plan --help
+run_help_check "$jetmon_binary" rollout host-preflight --help
 run_help_check "$jetmon_binary" rollout static-plan-check --help
 run_help_check "$jetmon_binary" rollout pinned-check --help
 run_help_check "$jetmon_binary" rollout cutover-check --help
@@ -68,13 +69,18 @@ plan_output="$("$jetmon_binary" rollout rehearsal-plan \
 	--host jetmon-v1-a \
 	--bucket-min 0 \
 	--bucket-max 4 \
-	--mode same-server)"
+	--mode same-server \
+	--v1-stop-command 'systemctl stop jetmon' \
+	--v1-start-command 'systemctl start jetmon')"
 printf '%s\n' "$plan_output"
 grep -q 'rollout static-plan-check' <<<"$plan_output" || fail "rehearsal plan omitted static-plan-check"
+grep -q 'rollout host-preflight' <<<"$plan_output" || fail "rehearsal plan omitted host-preflight"
 grep -q 'rollout pinned-check' <<<"$plan_output" || fail "rehearsal plan omitted pinned-check"
 grep -q 'rollout cutover-check' <<<"$plan_output" || fail "rehearsal plan omitted cutover-check"
 grep -q 'rollout rollback-check' <<<"$plan_output" || fail "rehearsal plan omitted rollback-check"
 grep -q 'rollout dynamic-check' <<<"$plan_output" || fail "rehearsal plan omitted dynamic-check"
+grep -q 'systemctl stop jetmon' <<<"$plan_output" || fail "rehearsal plan omitted v1 stop command"
+grep -q 'systemctl start jetmon' <<<"$plan_output" || fail "rehearsal plan omitted v1 start command"
 
 step "rollout json smoke"
 json_output="$("$jetmon_binary" rollout static-plan-check \

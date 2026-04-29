@@ -47,6 +47,19 @@ preflight, deliverer hardening, and API CLI fixture workflow branches:
   coverage, drift, recent activity, delivery owner state, and suggested next
   action.
 
+### Rollout Host Preflight Polish TODO
+
+- [x] Add `jetmon2 rollout host-preflight` to bundle the pre-stop host gate:
+  static bucket plan match, config parse, DB connectivity, pinned safety
+  checks, and staged systemd validation.
+- [x] Let `rollout rehearsal-plan` accept explicit v1 stop/start commands so
+  generated plans do not leave the most stressful cutover and rollback actions
+  as comments.
+- [x] Make generated rollback blocks more explicit about hold points, stop-v2
+  confirmation, rollback-check success, and the no-schema-rollback rule.
+- [x] Update migration docs and quick reference so operators know which checks
+  are pre-stop gates, post-start gates, rollback gates, and fleet gates.
+
 Recently completed candidate branches:
 
 - **`feature/rollout-preflight-hardening`** - merged rollout safety commands
@@ -85,10 +98,10 @@ Recently completed candidate branches:
   single-owner during migration from embedded to standalone delivery.
 - **Run a production rollout rehearsal pass.** Validate that README,
   `v1-to-v2-migration.md`, config samples, systemd units,
-  `validate-config`, `rollout static-plan-check`, `rollout pinned-check`,
-  `rollout cutover-check`, `rollout activity-check`, `rollout rollback-check`,
-  `rollout projection-drift`, and rollback steps line up exactly before the
-  first production host replacement.
+  `validate-config`, `rollout static-plan-check`, `rollout host-preflight`,
+  `rollout pinned-check`, `rollout cutover-check`, `rollout activity-check`,
+  `rollout rollback-check`, `rollout projection-drift`, and rollback steps line
+  up exactly before the first production host replacement.
 - **Instrument the data needed for the v3 decision.** During v2 production,
   measure first-failure-to-`Seems Down`, `Seems Down`-to-`Down`, false alarm
   rate by failure class, Veriflier agreement/disagreement by region, Veriflier
@@ -715,6 +728,10 @@ where to look, and what each item unlocked.
 - **Rollout state report.** `./jetmon2 rollout state-report` summarizes the
   current ownership mode, bucket coverage, recent activity, projection drift,
   delivery-owner state, and suggested next action for operator handoffs.
+- **Host preflight gate.** `./jetmon2 rollout host-preflight` bundles the
+  pre-stop static plan assertion, config/DB load, pinned safety checks, and
+  staged systemd validation. Rehearsal plans can now include exact v1 stop/start
+  commands and explicit rollback hold points.
 - **Dynamic ownership preflight.** `./jetmon2 rollout dynamic-check` verifies
   that pinned ranges are removed, `jetmon_hosts` rows cover the full bucket
   range without gaps/overlaps, heartbeats are fresh, and projection drift is
