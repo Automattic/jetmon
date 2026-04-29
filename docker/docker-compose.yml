@@ -1,3 +1,5 @@
+name: jetmon
+
 services:
     mysqldb:
         image: mysql:8.0
@@ -12,8 +14,10 @@ services:
         volumes:
           - db:/var/lib/mysql
         networks:
-          - default
-          - jetmon-shared
+          default:
+          jetmon-shared:
+            aliases:
+              - jetmon-v1-mysql
     jetmon:
         hostname: docker.jetmon.dev.com
         build:
