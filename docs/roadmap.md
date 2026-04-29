@@ -100,9 +100,9 @@ preflight, deliverer hardening, and API CLI fixture workflow branches:
 - [x] Automate fresh-server execute-mode happy path and guided rollback smoke.
 - [x] Automate failed pre-stop dynamic-overlap and bad systemd-unit refusal
   flows.
-- [ ] Automate interrupted resume, failed post-start rollback, and bad SSH
+- [x] Automate interrupted resume, failed post-start rollback, and bad SSH
   flows.
-- [ ] Add snapshot-backed VM flow runners for full execute-mode cutover and
+- [x] Add snapshot-backed VM flow runners for full execute-mode cutover and
   rollback simulations.
 
 Recently completed candidate branches:

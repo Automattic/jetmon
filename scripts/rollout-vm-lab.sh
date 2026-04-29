@@ -44,6 +44,10 @@ Commands:
   smoke-guided-dry-run           Print the guided fresh-server rollout plan on v2.
   smoke-guided-execute-rollback  Execute guided cutover, then guided rollback.
   smoke-failure-gates            Verify preflight refuses unsafe DB/systemd state.
+  smoke-interrupted-resume       Interrupt after v1 stop, resume, then roll back.
+  smoke-post-start-rollback      Fail a post-start gate and verify guided rollback.
+  smoke-bad-ssh                  Verify bad v1 SSH commands fail before stopping v1.
+  snapshot-run <snapshot> <flow> Revert to snapshot, run flow, revert again.
   wait-ssh <vm>                  Wait until a VM has an IP and accepts SSH.
   ssh <vm> [command...]          SSH into a VM or run a command.
   snapshot <vm> <snapshot>       Create an offline libvirt snapshot.
@@ -650,6 +654,10 @@ mark_lab_activity() {
 	pass "lab_activity_marked bucket_range=$LAB_BUCKET_MIN-$LAB_BUCKET_MAX"
 }
 
+future_activity_cutoff() {
+	date -u -d '+1 hour' +%Y-%m-%dT%H:%M:%SZ
+}
+
 smoke_preflight() {
 	local v2_vm
 	v2_vm="$(vm_name v2)"
@@ -691,8 +699,9 @@ reset_guided_lab_state() {
 	v2_vm="$(vm_name v2)"
 	wait_ssh "$v1_vm"
 	wait_ssh "$v2_vm"
-	ssh_vm "$v2_vm" 'sudo systemctl stop jetmon2 >/dev/null 2>&1 || true; sudo rm -f /opt/jetmon2/logs/rollout/*.state.json'
+	ssh_vm "$v2_vm" 'sudo systemctl disable --now jetmon2 >/dev/null 2>&1 || true; sudo rm -f /opt/jetmon2/logs/rollout/*.state.json'
 	ssh_vm "$v1_vm" 'sudo systemctl start jetmon-v1-sim; systemctl is-active --quiet jetmon-v1-sim'
+	ssh_vm "$v2_vm" '! systemctl is-enabled --quiet jetmon2'
 	pass "guided_lab_state_reset v1=$v1_vm v2=$v2_vm"
 }
 
@@ -765,7 +774,242 @@ printf '%s\n%s\n%s\n%s\n' \\
 REMOTE
 	ssh_vm "$v2_vm" '! systemctl is-active --quiet jetmon2'
 	ssh_vm "$v1_vm" 'systemctl is-active --quiet jetmon-v1-sim'
+	ssh_vm "$v2_vm" 'sudo systemctl disable jetmon2 >/dev/null 2>&1 || true'
 	pass "smoke_guided_execute_rollback_passed v1=$v1_vm v2=$v2_vm"
+}
+
+smoke_interrupted_resume() {
+	local v1_vm v2_vm out
+	v1_vm="$(vm_name v1)"
+	v2_vm="$(vm_name v2)"
+	ensure_lab_dirs
+	reset_guided_lab_state
+	mark_lab_activity
+
+	out="$LAB_DIR/logs/interrupted-resume-first.out"
+	if ssh_vm "$v2_vm" 'bash -s' <<REMOTE >"$out" 2>&1; then
+set -euo pipefail
+cd /opt/jetmon2
+set -a
+. config/jetmon2.env
+set +a
+printf '%s\n%s\n%s\n%s\n' \\
+	'y' \\
+	'y' \\
+	'y' \\
+	'STOP $v1_vm $LAB_BUCKET_MIN-$LAB_BUCKET_MAX' | sudo env \\
+	JETMON_CONFIG=/opt/jetmon2/config/config.json \\
+	DB_HOST="\$DB_HOST" DB_PORT="\$DB_PORT" DB_USER="\$DB_USER" DB_PASSWORD="\$DB_PASSWORD" DB_NAME="\$DB_NAME" \\
+	/opt/jetmon2/jetmon2 rollout guided \\
+	--file rollout-buckets.csv \\
+	--host $v1_vm \\
+	--runtime-host $v2_vm \\
+	--bucket-min $LAB_BUCKET_MIN \\
+	--bucket-max $LAB_BUCKET_MAX \\
+	--bucket-total $LAB_BUCKET_TOTAL \\
+	--mode fresh-server \\
+	--v1-stop-command 'sudo -u jetmon ssh $v1_vm sudo systemctl stop jetmon-v1-sim' \\
+	--v1-start-command 'sudo -u jetmon ssh $v1_vm sudo systemctl start jetmon-v1-sim' \\
+	--log-dir logs/rollout \\
+	--execute-operator-commands \\
+	--skip-status
+REMOTE
+		fail "interrupted guided run unexpectedly completed"
+	fi
+	grep -q 'PASS guided_step=stop-v1' "$out" || {
+		cat "$out"
+		fail "interrupted guided run did not complete stop-v1"
+	}
+	ssh_vm "$v1_vm" '! systemctl is-active --quiet jetmon-v1-sim'
+	ssh_vm "$v2_vm" '! systemctl is-active --quiet jetmon2'
+	pass "interrupted_after_v1_stop output=$out"
+
+	out="$LAB_DIR/logs/interrupted-resume-complete.out"
+	ssh_vm "$v2_vm" 'bash -s' <<REMOTE >"$out" 2>&1
+set -euo pipefail
+cd /opt/jetmon2
+set -a
+. config/jetmon2.env
+set +a
+printf '%s\n%s\n%s\n%s\n' \\
+	'RESUME' \\
+	'START V2 $v2_vm $LAB_BUCKET_MIN-$LAB_BUCKET_MAX' \\
+	'y' \\
+	'READY' | sudo env \\
+	JETMON_CONFIG=/opt/jetmon2/config/config.json \\
+	DB_HOST="\$DB_HOST" DB_PORT="\$DB_PORT" DB_USER="\$DB_USER" DB_PASSWORD="\$DB_PASSWORD" DB_NAME="\$DB_NAME" \\
+	/opt/jetmon2/jetmon2 rollout guided \\
+	--file rollout-buckets.csv \\
+	--host $v1_vm \\
+	--runtime-host $v2_vm \\
+	--bucket-min $LAB_BUCKET_MIN \\
+	--bucket-max $LAB_BUCKET_MAX \\
+	--bucket-total $LAB_BUCKET_TOTAL \\
+	--mode fresh-server \\
+	--v1-stop-command 'sudo -u jetmon ssh $v1_vm sudo systemctl stop jetmon-v1-sim' \\
+	--v1-start-command 'sudo -u jetmon ssh $v1_vm sudo systemctl start jetmon-v1-sim' \\
+	--log-dir logs/rollout \\
+	--execute-operator-commands \\
+	--skip-status
+REMOTE
+	grep -q 'previous_state=resumed' "$out" || {
+		cat "$out"
+		fail "resume run did not resume previous state"
+	}
+	grep -q 'SKIP step=stop-v1 reason=completed_from_state' "$out" || {
+		cat "$out"
+		fail "resume run did not skip completed stop-v1"
+	}
+	grep -q 'PASS guided_rollout=complete' "$out" || {
+		cat "$out"
+		fail "resume run did not complete guided rollout"
+	}
+	ssh_vm "$v1_vm" '! systemctl is-active --quiet jetmon-v1-sim'
+	ssh_vm "$v2_vm" 'systemctl is-active --quiet jetmon2'
+	pass "interrupted_resume_completed output=$out"
+
+	out="$LAB_DIR/logs/interrupted-resume-rollback.out"
+	ssh_vm "$v2_vm" 'bash -s' <<REMOTE >"$out" 2>&1
+set -euo pipefail
+cd /opt/jetmon2
+set -a
+. config/jetmon2.env
+set +a
+printf '%s\n%s\n%s\n%s\n' \\
+	'RESUME' \\
+	'STOP V2 $v2_vm $LAB_BUCKET_MIN-$LAB_BUCKET_MAX' \\
+	'y' \\
+	'START V1 $v1_vm $LAB_BUCKET_MIN-$LAB_BUCKET_MAX' | sudo env \\
+	JETMON_CONFIG=/opt/jetmon2/config/config.json \\
+	DB_HOST="\$DB_HOST" DB_PORT="\$DB_PORT" DB_USER="\$DB_USER" DB_PASSWORD="\$DB_PASSWORD" DB_NAME="\$DB_NAME" \\
+	/opt/jetmon2/jetmon2 rollout guided \\
+	--file rollout-buckets.csv \\
+	--host $v1_vm \\
+	--runtime-host $v2_vm \\
+	--bucket-min $LAB_BUCKET_MIN \\
+	--bucket-max $LAB_BUCKET_MAX \\
+	--bucket-total $LAB_BUCKET_TOTAL \\
+	--mode fresh-server \\
+	--v1-stop-command 'sudo -u jetmon ssh $v1_vm sudo systemctl stop jetmon-v1-sim' \\
+	--v1-start-command 'sudo -u jetmon ssh $v1_vm sudo systemctl start jetmon-v1-sim' \\
+	--log-dir logs/rollout \\
+	--execute-operator-commands \\
+	--skip-status \\
+	--rollback
+REMOTE
+	ssh_vm "$v2_vm" '! systemctl is-active --quiet jetmon2'
+	ssh_vm "$v1_vm" 'systemctl is-active --quiet jetmon-v1-sim'
+	ssh_vm "$v2_vm" 'sudo systemctl disable jetmon2 >/dev/null 2>&1 || true'
+	pass "smoke_interrupted_resume_passed v1=$v1_vm v2=$v2_vm"
+}
+
+smoke_post_start_rollback() {
+	local v1_vm v2_vm out future_since
+	v1_vm="$(vm_name v1)"
+	v2_vm="$(vm_name v2)"
+	ensure_lab_dirs
+	reset_guided_lab_state
+	future_since="$(future_activity_cutoff)"
+	out="$LAB_DIR/logs/post-start-rollback.out"
+	if ssh_vm "$v2_vm" 'bash -s' <<REMOTE >"$out" 2>&1; then
+set -euo pipefail
+cd /opt/jetmon2
+set -a
+. config/jetmon2.env
+set +a
+printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \\
+	'y' \\
+	'y' \\
+	'y' \\
+	'STOP $v1_vm $LAB_BUCKET_MIN-$LAB_BUCKET_MAX' \\
+	'START V2 $v2_vm $LAB_BUCKET_MIN-$LAB_BUCKET_MAX' \\
+	'y' \\
+	'b' \\
+	'STOP V2 $v2_vm $LAB_BUCKET_MIN-$LAB_BUCKET_MAX' \\
+	'y' \\
+	'START V1 $v1_vm $LAB_BUCKET_MIN-$LAB_BUCKET_MAX' | sudo env \\
+	JETMON_CONFIG=/opt/jetmon2/config/config.json \\
+	DB_HOST="\$DB_HOST" DB_PORT="\$DB_PORT" DB_USER="\$DB_USER" DB_PASSWORD="\$DB_PASSWORD" DB_NAME="\$DB_NAME" \\
+	/opt/jetmon2/jetmon2 rollout guided \\
+	--file rollout-buckets.csv \\
+	--host $v1_vm \\
+	--runtime-host $v2_vm \\
+	--bucket-min $LAB_BUCKET_MIN \\
+	--bucket-max $LAB_BUCKET_MAX \\
+	--bucket-total $LAB_BUCKET_TOTAL \\
+	--mode fresh-server \\
+	--since '$future_since' \\
+	--v1-stop-command 'sudo -u jetmon ssh $v1_vm sudo systemctl stop jetmon-v1-sim' \\
+	--v1-start-command 'sudo -u jetmon ssh $v1_vm sudo systemctl start jetmon-v1-sim' \\
+	--log-dir logs/rollout \\
+	--execute-operator-commands \\
+	--skip-status
+REMOTE
+		fail "post-start rollback flow unexpectedly exited successfully"
+	fi
+	grep -q 'PASS guided_step=start-v2' "$out" || {
+		cat "$out"
+		fail "post-start rollback flow did not reach start-v2"
+	}
+	grep -q 'PASS guided_rollback=complete' "$out" || {
+		cat "$out"
+		fail "post-start rollback flow did not complete rollback"
+	}
+	grep -q 'guided_rollout=rolled_back' "$out" || {
+		cat "$out"
+		fail "post-start rollback flow did not report rolled_back"
+	}
+	ssh_vm "$v2_vm" '! systemctl is-active --quiet jetmon2'
+	ssh_vm "$v1_vm" 'systemctl is-active --quiet jetmon-v1-sim'
+	ssh_vm "$v2_vm" 'sudo systemctl disable jetmon2 >/dev/null 2>&1 || true'
+	pass "smoke_post_start_rollback_passed v1=$v1_vm v2=$v2_vm output=$out"
+}
+
+smoke_bad_ssh() {
+	local v1_vm v2_vm out
+	v1_vm="$(vm_name v1)"
+	v2_vm="$(vm_name v2)"
+	ensure_lab_dirs
+	reset_guided_lab_state
+	mark_lab_activity
+	out="$LAB_DIR/logs/bad-ssh.out"
+	if ssh_vm "$v2_vm" 'bash -s' <<REMOTE >"$out" 2>&1; then
+set -euo pipefail
+cd /opt/jetmon2
+set -a
+. config/jetmon2.env
+set +a
+printf '%s\n%s\n%s\n%s\n%s\n' \\
+	'y' \\
+	'y' \\
+	'y' \\
+	'STOP $v1_vm $LAB_BUCKET_MIN-$LAB_BUCKET_MAX' \\
+	's' | sudo env \\
+	JETMON_CONFIG=/opt/jetmon2/config/config.json \\
+	DB_HOST="\$DB_HOST" DB_PORT="\$DB_PORT" DB_USER="\$DB_USER" DB_PASSWORD="\$DB_PASSWORD" DB_NAME="\$DB_NAME" \\
+	/opt/jetmon2/jetmon2 rollout guided \\
+	--file rollout-buckets.csv \\
+	--host $v1_vm \\
+	--runtime-host $v2_vm \\
+	--bucket-min $LAB_BUCKET_MIN \\
+	--bucket-max $LAB_BUCKET_MAX \\
+	--bucket-total $LAB_BUCKET_TOTAL \\
+	--mode fresh-server \\
+	--v1-stop-command 'sudo -u jetmon ssh $v1_vm-missing sudo systemctl stop jetmon-v1-sim' \\
+	--v1-start-command 'sudo -u jetmon ssh $v1_vm sudo systemctl start jetmon-v1-sim' \\
+	--log-dir logs/rollout \\
+	--execute-operator-commands \\
+	--skip-status
+REMOTE
+		fail "bad SSH guided run unexpectedly passed"
+	fi
+	grep -q 'FAIL step=stop-v1' "$out" || {
+		cat "$out"
+		fail "bad SSH flow failed before expected stop-v1 failure"
+	}
+	ssh_vm "$v1_vm" 'systemctl is-active --quiet jetmon-v1-sim'
+	ssh_vm "$v2_vm" '! systemctl is-active --quiet jetmon2'
+	pass "smoke_bad_ssh_passed v1=$v1_vm v2=$v2_vm output=$out"
 }
 
 smoke_failure_gates() {
@@ -800,6 +1044,67 @@ smoke_failure_gates() {
 		fail "bad systemd preflight failed for an unexpected reason"
 	}
 	pass "failure_gate_bad_systemd_refused output=$out"
+}
+
+wait_topology_ssh() {
+	wait_ssh "$(vm_name db)"
+	wait_ssh "$(vm_name v1)"
+	wait_ssh "$(vm_name v2)"
+}
+
+snapshot_exists() {
+	local vm="$1"
+	local snapshot="$2"
+	virsh_cmd snapshot-info "$vm" "$snapshot" >/dev/null 2>&1
+}
+
+validate_snapshot_all_exists() {
+	local snapshot="$1"
+	local role vm
+	for role in db v1 v2; do
+		vm="$(vm_name "$role")"
+		snapshot_exists "$vm" "$snapshot" || fail "missing snapshot $snapshot for $vm; create it with snapshot-all $snapshot"
+	done
+}
+
+run_flow_by_name() {
+	case "$1" in
+	execute-rollback) smoke_guided_execute_rollback ;;
+	interrupted-resume) smoke_interrupted_resume ;;
+	post-start-rollback) smoke_post_start_rollback ;;
+	bad-ssh) smoke_bad_ssh ;;
+	failure-gates) smoke_failure_gates ;;
+	*) fail "unknown snapshot flow $1 (want: execute-rollback, interrupted-resume, post-start-rollback, bad-ssh, failure-gates)" ;;
+	esac
+}
+
+SNAPSHOT_RUN_CLEANUP_ACTIVE=0
+SNAPSHOT_RUN_CLEANUP_NAME=""
+
+cleanup_snapshot_run() {
+	if [[ "$SNAPSHOT_RUN_CLEANUP_ACTIVE" == "1" && -n "$SNAPSHOT_RUN_CLEANUP_NAME" ]]; then
+		warn "snapshot_flow_cleanup snapshot=$SNAPSHOT_RUN_CLEANUP_NAME"
+		revert_all "$SNAPSHOT_RUN_CLEANUP_NAME" || true
+	fi
+}
+
+snapshot_run() {
+	local snapshot="$1"
+	local flow="$2"
+	validate_snapshot_all_exists "$snapshot"
+	SNAPSHOT_RUN_CLEANUP_ACTIVE=1
+	SNAPSHOT_RUN_CLEANUP_NAME="$snapshot"
+	trap cleanup_snapshot_run EXIT
+	revert_all "$snapshot"
+	wait_topology_ssh
+	run_flow_by_name "$flow"
+	revert_all "$snapshot"
+	wait_topology_ssh
+	reset_guided_lab_state
+	SNAPSHOT_RUN_CLEANUP_ACTIVE=0
+	SNAPSHOT_RUN_CLEANUP_NAME=""
+	trap - EXIT
+	pass "snapshot_flow_passed snapshot=$snapshot flow=$flow"
 }
 
 prepare_topology() {
@@ -909,6 +1214,13 @@ main() {
 	smoke-guided-dry-run) smoke_guided_dry_run "$@" ;;
 	smoke-guided-execute-rollback) smoke_guided_execute_rollback "$@" ;;
 	smoke-failure-gates) smoke_failure_gates "$@" ;;
+	smoke-interrupted-resume) smoke_interrupted_resume "$@" ;;
+	smoke-post-start-rollback) smoke_post_start_rollback "$@" ;;
+	smoke-bad-ssh) smoke_bad_ssh "$@" ;;
+	snapshot-run)
+		[[ $# -eq 2 ]] || fail "snapshot-run requires snapshot and flow"
+		snapshot_run "$@"
+		;;
 	wait-ssh)
 		[[ $# -eq 1 ]] || fail "wait-ssh requires vm"
 		wait_ssh "$(vm_name "$1")"

@@ -18,6 +18,7 @@ API_CLI_TOKEN_TTL ?= 0
 API_CLI_TOKEN_ID ?=
 ROLLOUT_VM_LAB_HOST ?= jetmon-deploy-test
 ROLLOUT_VM_LAB_SSH ?= ssh -F $(HOME)/.ssh/config -o ControlMaster=no -o ControlPath=none -o BatchMode=yes -o ConnectTimeout=10
+ROLLOUT_VM_LAB_SNAPSHOT ?= pre-guided-flow
 GO          ?= $(shell if command -v go >/dev/null 2>&1; then command -v go; elif [ -x /usr/local/go/bin/go ]; then printf /usr/local/go/bin/go; else printf go; fi)
 GOCACHE     ?= /tmp/jetmon-go-cache
 GOMODCACHE  ?= /tmp/jetmon-gomod-cache
@@ -26,7 +27,7 @@ BUILD_FLAGS := -ldflags "-X main.version=$(shell git describe --tags --always --
                          -X main.buildDate=$(shell date -u +%Y-%m-%dT%H:%M:%SZ) \
                          -X main.goVersion=$(shell $(GO) version | awk '{print $$3}')"
 
-.PHONY: all build build-deliverer build-veriflier generate test test-race lint rollout-docs-verify rollout-vm-lab-sync rollout-vm-lab-sync-artifacts rollout-vm-lab-doctor rollout-vm-lab-prepare rollout-vm-lab-smoke rollout-vm-lab-execute-smoke rollout-vm-lab-failure-smoke api-cli-smoke api-cli-validate api-cli-token-create api-cli-token-list api-cli-token-revoke clean
+.PHONY: all build build-deliverer build-veriflier generate test test-race lint rollout-docs-verify rollout-vm-lab-sync rollout-vm-lab-sync-artifacts rollout-vm-lab-doctor rollout-vm-lab-prepare rollout-vm-lab-smoke rollout-vm-lab-execute-smoke rollout-vm-lab-failure-smoke rollout-vm-lab-resume-smoke rollout-vm-lab-post-start-rollback-smoke rollout-vm-lab-bad-ssh-smoke rollout-vm-lab-snapshot-execute-smoke api-cli-smoke api-cli-validate api-cli-token-create api-cli-token-list api-cli-token-revoke clean
 
 all: build build-deliverer build-veriflier
 
@@ -86,6 +87,18 @@ rollout-vm-lab-execute-smoke: rollout-vm-lab-sync-artifacts
 
 rollout-vm-lab-failure-smoke: rollout-vm-lab-sync-artifacts
 	$(ROLLOUT_VM_LAB_SSH) $(ROLLOUT_VM_LAB_HOST) 'cd ~/jetmon-rollout-tools && scripts/rollout-vm-lab.sh smoke-failure-gates'
+
+rollout-vm-lab-resume-smoke: rollout-vm-lab-sync-artifacts
+	$(ROLLOUT_VM_LAB_SSH) $(ROLLOUT_VM_LAB_HOST) 'cd ~/jetmon-rollout-tools && scripts/rollout-vm-lab.sh smoke-interrupted-resume'
+
+rollout-vm-lab-post-start-rollback-smoke: rollout-vm-lab-sync-artifacts
+	$(ROLLOUT_VM_LAB_SSH) $(ROLLOUT_VM_LAB_HOST) 'cd ~/jetmon-rollout-tools && scripts/rollout-vm-lab.sh smoke-post-start-rollback'
+
+rollout-vm-lab-bad-ssh-smoke: rollout-vm-lab-sync-artifacts
+	$(ROLLOUT_VM_LAB_SSH) $(ROLLOUT_VM_LAB_HOST) 'cd ~/jetmon-rollout-tools && scripts/rollout-vm-lab.sh smoke-bad-ssh'
+
+rollout-vm-lab-snapshot-execute-smoke: rollout-vm-lab-sync-artifacts
+	$(ROLLOUT_VM_LAB_SSH) $(ROLLOUT_VM_LAB_HOST) 'cd ~/jetmon-rollout-tools && scripts/rollout-vm-lab.sh snapshot-run $(ROLLOUT_VM_LAB_SNAPSHOT) execute-rollback'
 
 api-cli-smoke: build
 	@test -n "$$JETMON_API_TOKEN" || { echo "JETMON_API_TOKEN is required"; exit 1; }

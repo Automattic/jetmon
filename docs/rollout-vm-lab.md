@@ -98,6 +98,9 @@ make rollout-vm-lab-prepare
 make rollout-vm-lab-smoke
 make rollout-vm-lab-execute-smoke
 make rollout-vm-lab-failure-smoke
+make rollout-vm-lab-resume-smoke
+make rollout-vm-lab-post-start-rollback-smoke
+make rollout-vm-lab-bad-ssh-smoke
 ```
 
 The harness keeps the v2 `jetmon2` service staged but stopped. That preserves
@@ -156,6 +159,21 @@ guided rollback to stop `jetmon2` and restart the v1 simulator:
 scripts/rollout-vm-lab.sh smoke-guided-execute-rollback
 ```
 
+Run targeted guided-flow smokes:
+
+```bash
+scripts/rollout-vm-lab.sh smoke-interrupted-resume
+scripts/rollout-vm-lab.sh smoke-post-start-rollback
+scripts/rollout-vm-lab.sh smoke-bad-ssh
+```
+
+- `smoke-interrupted-resume` stops v1, intentionally leaves the first guided
+  run at EOF, resumes from state, completes cutover, then rolls back to v1.
+- `smoke-post-start-rollback` starts v2, forces the post-start activity gate to
+  fail with a future cutoff, chooses guided rollback, and confirms v1 is active.
+- `smoke-bad-ssh` uses an invalid v1 SSH target and confirms the flow fails
+  before v1 is stopped or v2 is started.
+
 Run the failure-gate smoke:
 
 ```bash
@@ -165,6 +183,21 @@ scripts/rollout-vm-lab.sh smoke-failure-gates
 This injects an overlapping `jetmon_hosts` row and a broken staged systemd unit,
 then confirms `rollout host-preflight` refuses both before restoring the DB
 state.
+
+Run a flow from a named snapshot, then revert back and normalize the safe lab
+service state:
+
+```bash
+scripts/rollout-vm-lab.sh snapshot-all pre-guided-flow
+scripts/rollout-vm-lab.sh snapshot-run pre-guided-flow execute-rollback
+```
+
+Supported snapshot flow names are `execute-rollback`, `interrupted-resume`,
+`post-start-rollback`, `bad-ssh`, and `failure-gates`. Snapshot runners are
+useful when iterating on guided behavior because each run starts from the same
+VM, DB, service, and log state. At the end, the runner reverts to the snapshot
+and enforces the safe lab state: v1 simulator active, v2 `jetmon2` stopped and
+disabled.
 
 Destroy the topology and its lab volumes:
 
@@ -195,6 +228,7 @@ scripts/rollout-vm-lab.sh destroy-topology
 | `JETMON_ROLLOUT_JETMON2_BINARY` | `<repo>/bin/jetmon2` |
 | `JETMON_ROLLOUT_JETMON2_SERVICE` | `<repo>/systemd/jetmon2.service` |
 | `JETMON_ROLLOUT_JETMON2_LOGROTATE` | `<repo>/systemd/jetmon2-logrotate` |
+| `ROLLOUT_VM_LAB_SNAPSHOT` | `pre-guided-flow` for Makefile snapshot smoke |
 
 ## Planned Flow Coverage
 
@@ -211,9 +245,11 @@ The VM lab is intended to exercise these rollout scenarios:
 - bad staged systemd unit refusal
 - failed post-start smoke gate followed by guided rollback
 - bad SSH access from the v2 runtime host to the old v1 host
+- snapshot-backed flow reruns
 - bad systemd unit or unwritable rollout log directory
 
 The current harness provides VM lifecycle, DB seeding, v1/v2 service staging,
 preflight/dry-run smoke coverage, and a full execute-mode cutover plus guided
-rollback smoke. The next layer should drive interrupted resume and targeted
-failure cases automatically from snapshots.
+rollback smoke. It also exercises interrupted resume, post-start rollback, bad
+SSH, failure gates, and named-snapshot reruns. The next layer should add more
+specialized failure fixtures as new rollout bugs are discovered.
