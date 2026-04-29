@@ -163,8 +163,10 @@ Before enabling standalone delivery:
   is expected.
 - `JETMON_CONFIG=/opt/jetmon2/config/deliverer.json bin/jetmon-deliverer
   delivery-check --since=15m --output=json` returns clean JSON for automation.
-- `systemd-analyze verify systemd/jetmon-deliverer.service` passes, or the
-  deployment-system equivalent validates the service definition.
+- `systemd-analyze verify /etc/systemd/system/jetmon-deliverer.service` passes
+  on a staged host, or against an alternate deployment root, after
+  `/opt/jetmon2/bin/jetmon-deliverer` exists. The repository copy can report
+  missing `ExecStart` paths before packaging.
 - The process can connect to MySQL using the same schema as `jetmon2`.
 - `EMAIL_TRANSPORT` is set to `wpcom` or `smtp` in any environment where real
   alert-contact emails should be delivered; `stub` is safe for dry runs.

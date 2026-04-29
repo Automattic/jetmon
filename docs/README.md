@@ -21,6 +21,7 @@ Start with [`adr/README.md`](adr/README.md) for the ADR format and index.
 | [`taxonomy.md`](taxonomy.md) | Severity, state, cause, rollup, and test taxonomy. |
 | [`getting-started.md`](getting-started.md) | Local Docker setup, build/test commands, API CLI smoke runs, fixture failure simulation, and tenant import basics. |
 | [`operations-guide.md`](operations-guide.md) | Production configuration, host setup, rollout modes, delivery workers, metrics, dashboard checks, and debugging. |
+| [`rollout-quick-reference.md`](rollout-quick-reference.md) | One-page operator checklist for the v1-to-v2 rollout, linked back to the full migration runbook. |
 | [`data-model.md`](data-model.md) | Legacy and v2 tables, additive migrations, event-sourced incident state, legacy projection, and tenant mapping. |
 | [`support-guide.md`](support-guide.md) | Happiness Engineer workflows for explaining alerts, missed alerts, false positives, maintenance windows, and WPCOM payloads. |
 | [`api-cli-guide.md`](api-cli-guide.md) | Feature guide and examples for using `jetmon2 api` against the internal REST API during local testing, rehearsals, and CI smoke runs. |
@@ -35,7 +36,7 @@ accepted architecture decisions.
 | Document | Purpose |
 |---|---|
 | [`roadmap.md`](roadmap.md) | Broader v2/v3 planning, deferred feature work, and public API prerequisites. |
-| [`api-cli-roadmap.md`](api-cli-roadmap.md) | Prioritized plan for a local `jetmon2 api` helper CLI that exercises the internal REST API during Docker and rollout testing. |
+| [`api-cli-roadmap.md`](api-cli-roadmap.md) | Completed implementation history for the local `jetmon2 api` helper CLI used during Docker and rollout testing. |
 | [`jetmon-deliverer-rollout.md`](jetmon-deliverer-rollout.md) | Operational rollout policy for moving outbound dispatch from embedded `jetmon2` workers to standalone `jetmon-deliverer`. |
 | [`outbound-credential-encryption-plan.md`](outbound-credential-encryption-plan.md) | Migration plan for encrypting webhook secrets and alert-contact destination credentials after the current plaintext v2 model. |
 | [`public-api-gateway-tenant-contract.md`](public-api-gateway-tenant-contract.md) | Gateway boundary contract, implemented Jetmon-side tenant ownership checks, and remaining public-exposure prerequisites. |

@@ -3,7 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +14,53 @@ import (
 	"github.com/Automattic/jetmon/internal/config"
 	"github.com/Automattic/jetmon/internal/db"
 )
+
+func TestRunRolloutCommandOutputJSON(t *testing.T) {
+	var out bytes.Buffer
+	err := runRolloutCommandOutput(&out, "rollout test-check", "json", func(w io.Writer) error {
+		fmt.Fprintln(w, "PASS config parse")
+		fmt.Fprintln(w, "## activity check")
+		fmt.Fprintln(w, "INFO active_sites=3")
+		return errors.New("activity failed")
+	})
+	if err == nil {
+		t.Fatal("runRolloutCommandOutput returned nil error")
+	}
+
+	var report rolloutJSONReport
+	if decodeErr := json.Unmarshal(out.Bytes(), &report); decodeErr != nil {
+		t.Fatalf("decode rollout JSON report: %v\n%s", decodeErr, out.String())
+	}
+	if report.OK {
+		t.Fatal("report.OK = true, want false")
+	}
+	if report.Command != "rollout test-check" {
+		t.Fatalf("command = %q", report.Command)
+	}
+	if len(report.Failures) != 1 || report.Failures[0] != "activity failed" {
+		t.Fatalf("failures = %#v", report.Failures)
+	}
+	wantLevels := []string{"pass", "section", "info"}
+	if len(report.Lines) != len(wantLevels) {
+		t.Fatalf("line count = %d, want %d: %#v", len(report.Lines), len(wantLevels), report.Lines)
+	}
+	for i, want := range wantLevels {
+		if report.Lines[i].Level != want {
+			t.Fatalf("line %d level = %q, want %q", i, report.Lines[i].Level, want)
+		}
+	}
+}
+
+func TestNormalizeRolloutOutput(t *testing.T) {
+	for _, raw := range []string{"", "text", "TEXT", " json "} {
+		if _, err := normalizeRolloutOutput(raw); err != nil {
+			t.Fatalf("normalizeRolloutOutput(%q): %v", raw, err)
+		}
+	}
+	if _, err := normalizeRolloutOutput("yaml"); err == nil {
+		t.Fatal("normalizeRolloutOutput(yaml) error = nil")
+	}
+}
 
 func TestRunStaticPlanCheckSuccess(t *testing.T) {
 	input := strings.NewReader(`
@@ -286,6 +336,161 @@ func TestValidateStaticBucketPlanFailures(t *testing.T) {
 	}
 }
 
+func TestRunRolloutRehearsalPlanSameServer(t *testing.T) {
+	input := strings.NewReader(`
+host,bucket_min,bucket_max
+jetmon-v1-a,0,4
+jetmon-v1-b,5,9
+`)
+	opts := rolloutRehearsalPlanOptions{
+		Mode:        "same-server",
+		PlanFile:    "rollout-buckets.csv",
+		HostID:      "jetmon-v1-a",
+		BucketMin:   0,
+		BucketMax:   4,
+		BucketTotal: 10,
+		Binary:      "./jetmon2",
+		Service:     "jetmon2",
+		Since:       "15m",
+	}
+
+	var out bytes.Buffer
+	if err := runRolloutRehearsalPlan(&out, input, opts); err != nil {
+		t.Fatalf("runRolloutRehearsalPlan: %v", err)
+	}
+	for _, want := range []string{
+		"INFO mode=same-server",
+		`INFO plan_host="jetmon-v1-a" runtime_host="jetmon-v1-a" range=0-4`,
+		"./jetmon2 rollout static-plan-check --file rollout-buckets.csv --host jetmon-v1-a --bucket-min 0 --bucket-max 4",
+		"./jetmon2 validate-config",
+		"systemd-analyze verify /etc/systemd/system/jetmon2.service",
+		"./jetmon2 rollout pinned-check --host jetmon-v1-a",
+		"systemctl enable --now jetmon2",
+		"./jetmon2 rollout cutover-check --host jetmon-v1-a --bucket-min 0 --bucket-max 4 --since 15m",
+		"./jetmon2 rollout cutover-check --host jetmon-v1-a --bucket-min 0 --bucket-max 4 --since 15m --require-all",
+		"./jetmon2 rollout rollback-check --host jetmon-v1-a --bucket-min 0 --bucket-max 4",
+		"./jetmon2 rollout dynamic-check",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestRunRolloutRehearsalPlanFreshServerRuntimeHost(t *testing.T) {
+	input := strings.NewReader(`
+host,bucket_min,bucket_max
+jetmon-v1-a,0,9
+`)
+	opts := rolloutRehearsalPlanOptions{
+		Mode:        "fresh-server",
+		PlanFile:    "rollout-buckets.csv",
+		HostID:      "jetmon-v1-a",
+		RuntimeHost: "jetmon-v2-a",
+		BucketMin:   0,
+		BucketMax:   9,
+		BucketTotal: 10,
+		Binary:      "/opt/jetmon2/jetmon2",
+		Service:     "jetmon2",
+		Since:       "20m",
+	}
+
+	var out bytes.Buffer
+	if err := runRolloutRehearsalPlan(&out, input, opts); err != nil {
+		t.Fatalf("runRolloutRehearsalPlan: %v", err)
+	}
+	for _, want := range []string{
+		"INFO mode=fresh-server",
+		`INFO plan_host="jetmon-v1-a" runtime_host="jetmon-v2-a" range=0-9`,
+		"/opt/jetmon2/jetmon2 rollout pinned-check --host jetmon-v2-a",
+		"# Stop v1 on jetmon-v1-a with the documented production command.",
+		"/opt/jetmon2/jetmon2 rollout cutover-check --host jetmon-v2-a --bucket-min 0 --bucket-max 9 --since 20m",
+		"/opt/jetmon2/jetmon2 rollout rollback-check --host jetmon-v2-a --bucket-min 0 --bucket-max 9",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestRunRolloutRehearsalPlanFailures(t *testing.T) {
+	validInput := `host,bucket_min,bucket_max
+jetmon-v1-a,0,9
+`
+	tests := []struct {
+		name  string
+		input string
+		opts  rolloutRehearsalPlanOptions
+		want  string
+	}{
+		{
+			name:  "bad mode",
+			input: validInput,
+			opts: rolloutRehearsalPlanOptions{
+				Mode:        "auto",
+				PlanFile:    "rollout-buckets.csv",
+				HostID:      "jetmon-v1-a",
+				BucketMin:   0,
+				BucketMax:   9,
+				BucketTotal: 10,
+			},
+			want: "--mode must be",
+		},
+		{
+			name:  "missing range",
+			input: validInput,
+			opts: rolloutRehearsalPlanOptions{
+				Mode:        "same-server",
+				PlanFile:    "rollout-buckets.csv",
+				HostID:      "jetmon-v1-a",
+				BucketMin:   -1,
+				BucketMax:   9,
+				BucketTotal: 10,
+			},
+			want: "--bucket-min and --bucket-max are required",
+		},
+		{
+			name:  "host not in plan",
+			input: validInput,
+			opts: rolloutRehearsalPlanOptions{
+				Mode:        "same-server",
+				PlanFile:    "rollout-buckets.csv",
+				HostID:      "jetmon-v1-b",
+				BucketMin:   0,
+				BucketMax:   9,
+				BucketTotal: 10,
+			},
+			want: "not present",
+		},
+		{
+			name:  "range mismatch",
+			input: validInput,
+			opts: rolloutRehearsalPlanOptions{
+				Mode:        "same-server",
+				PlanFile:    "rollout-buckets.csv",
+				HostID:      "jetmon-v1-a",
+				BucketMin:   1,
+				BucketMax:   9,
+				BucketTotal: 10,
+			},
+			want: "want 1-9",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			err := runRolloutRehearsalPlan(&out, strings.NewReader(tt.input), tt.opts)
+			if err == nil {
+				t.Fatal("runRolloutRehearsalPlan succeeded")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tt.want)
+			}
+		})
+	}
+}
+
 func TestRunPinnedRolloutCheckSuccess(t *testing.T) {
 	minBucket, maxBucket := 12, 34
 	cfg := &config.Config{
@@ -528,12 +733,301 @@ func TestRunPinnedRolloutCheckFailures(t *testing.T) {
 	}
 }
 
+func TestRunCutoverCheckSuccess(t *testing.T) {
+	now := time.Date(2026, 4, 29, 12, 0, 0, 0, time.UTC)
+	cfg := pinnedRolloutTestConfig(12, 34)
+	cfg.DashboardPort = 8080
+
+	deps := successfulCutoverCheckDeps(now)
+	var gotStatusPort int
+	deps.Status = func(port int) (string, error) {
+		gotStatusPort = port
+		return "{\n  \"state\": \"ok\"\n}", nil
+	}
+
+	var out bytes.Buffer
+	err := runCutoverCheck(context.Background(), &out, cfg, cutoverCheckOptions{
+		HostOverride: "host-a",
+		BucketMin:    -1,
+		BucketMax:    -1,
+		Since:        "15m",
+		Limit:        100,
+		StatusPort:   -1,
+	}, deps)
+	if err != nil {
+		t.Fatalf("runCutoverCheck: %v", err)
+	}
+	if gotStatusPort != 8080 {
+		t.Fatalf("status port = %d, want 8080", gotStatusPort)
+	}
+	for _, want := range []string{
+		"## pinned preflight",
+		"pinned rollout check passed",
+		"## activity check",
+		"PASS rollout_activity=recent_checks_present",
+		"## dashboard status",
+		"PASS dashboard_status=http://localhost:8080/api/state",
+		`INFO dashboard_state={ "state": "ok" }`,
+		"## projection drift",
+		"PASS legacy_projection_drift=0",
+		"cutover check passed",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestRunCutoverCheckRequireAllAndSkipStatus(t *testing.T) {
+	now := time.Date(2026, 4, 29, 12, 0, 0, 0, time.UTC)
+	cfg := pinnedRolloutTestConfig(12, 34)
+	deps := successfulCutoverCheckDeps(now)
+	deps.Status = func(int) (string, error) {
+		t.Fatal("status should not be called")
+		return "", nil
+	}
+
+	var out bytes.Buffer
+	err := runCutoverCheck(context.Background(), &out, cfg, cutoverCheckOptions{
+		BucketMin:  -1,
+		BucketMax:  -1,
+		Since:      "15m",
+		RequireAll: true,
+		Limit:      100,
+		StatusPort: -1,
+		SkipStatus: true,
+	}, deps)
+	if err != nil {
+		t.Fatalf("runCutoverCheck: %v", err)
+	}
+	for _, want := range []string{
+		"PASS rollout_activity=all_active_sites_checked",
+		"INFO dashboard_status=skipped reason=operator",
+		"cutover check passed",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestRunCutoverCheckSkipsDisabledDashboard(t *testing.T) {
+	now := time.Date(2026, 4, 29, 12, 0, 0, 0, time.UTC)
+	cfg := pinnedRolloutTestConfig(12, 34)
+	cfg.DashboardPort = 0
+	deps := successfulCutoverCheckDeps(now)
+	deps.Status = func(int) (string, error) {
+		t.Fatal("status should not be called")
+		return "", nil
+	}
+
+	var out bytes.Buffer
+	if err := runCutoverCheck(context.Background(), &out, cfg, cutoverCheckOptions{BucketMin: -1, BucketMax: -1, Since: "15m", Limit: 100, StatusPort: -1}, deps); err != nil {
+		t.Fatalf("runCutoverCheck: %v", err)
+	}
+	if !strings.Contains(out.String(), "INFO dashboard_status=skipped dashboard_port=disabled") {
+		t.Fatalf("output missing disabled dashboard skip:\n%s", out.String())
+	}
+}
+
+func TestRunCutoverCheckFailures(t *testing.T) {
+	now := time.Date(2026, 4, 29, 12, 0, 0, 0, time.UTC)
+	cfg := pinnedRolloutTestConfig(12, 34)
+	cfg.DashboardPort = 8080
+
+	tests := []struct {
+		name string
+		opts cutoverCheckOptions
+		deps cutoverCheckDeps
+		want string
+	}{
+		{
+			name: "status error",
+			opts: cutoverCheckOptions{BucketMin: -1, BucketMax: -1, Since: "15m", Limit: 100, StatusPort: -1},
+			deps: func() cutoverCheckDeps {
+				deps := successfulCutoverCheckDeps(now)
+				deps.Status = func(int) (string, error) {
+					return "", errors.New("connection refused")
+				}
+				return deps
+			}(),
+			want: "connection refused",
+		},
+		{
+			name: "activity require all failure",
+			opts: cutoverCheckOptions{BucketMin: -1, BucketMax: -1, Since: "15m", RequireAll: true, Limit: 100, StatusPort: -1, SkipStatus: true},
+			deps: func() cutoverCheckDeps {
+				deps := successfulCutoverCheckDeps(now)
+				deps.Activity.CountRecentlyCheckedActiveSitesForRange = func(context.Context, int, int, time.Time) (int, error) {
+					return 1, nil
+				}
+				return deps
+			}(),
+			want: "only 1/3 active sites",
+		},
+		{
+			name: "projection drift",
+			opts: cutoverCheckOptions{BucketMin: -1, BucketMax: -1, Since: "15m", Limit: 100, StatusPort: -1, SkipStatus: true},
+			deps: func() cutoverCheckDeps {
+				deps := successfulCutoverCheckDeps(now)
+				deps.Projection.CountLegacyProjectionDrift = func(context.Context, int, int) (int, error) {
+					return 2, nil
+				}
+				deps.Projection.ListLegacyProjectionDrift = func(context.Context, int, int, int) ([]db.ProjectionDriftRow, error) {
+					return nil, nil
+				}
+				return deps
+			}(),
+			want: "legacy projection drift=2",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			err := runCutoverCheck(context.Background(), &out, cfg, tt.opts, tt.deps)
+			if err == nil {
+				t.Fatal("runCutoverCheck succeeded")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildRolloutStateReportPinned(t *testing.T) {
+	now := time.Date(2026, 4, 29, 12, 0, 0, 0, time.UTC)
+	cfg := pinnedRolloutTestConfig(12, 34)
+	cfg.APIPort = 0
+
+	report, err := buildRolloutStateReport(context.Background(), cfg, rolloutStateReportOptions{Since: "15m"}, rolloutStateReportDeps{
+		Now:      func() time.Time { return now },
+		Hostname: func() string { return "host-a" },
+		CountActiveSitesForBucketRange: func(_ context.Context, min, max int) (int, error) {
+			if min != 12 || max != 34 {
+				t.Fatalf("active range = %d-%d, want 12-34", min, max)
+			}
+			return 3, nil
+		},
+		CountRecentlyCheckedActiveSitesForRange: func(_ context.Context, min, max int, cutoff time.Time) (int, error) {
+			if min != 12 || max != 34 {
+				t.Fatalf("activity range = %d-%d, want 12-34", min, max)
+			}
+			if !cutoff.Equal(now.Add(-15 * time.Minute)) {
+				t.Fatalf("cutoff = %s, want %s", cutoff, now.Add(-15*time.Minute))
+			}
+			return 3, nil
+		},
+		CountLegacyProjectionDrift: func(_ context.Context, min, max int) (int, error) {
+			if min != 12 || max != 34 {
+				t.Fatalf("drift range = %d-%d, want 12-34", min, max)
+			}
+			return 0, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildRolloutStateReport: %v", err)
+	}
+	if !report.OK {
+		t.Fatalf("report.OK = false issues=%v", report.Issues)
+	}
+	if report.Ownership.Mode != "pinned" || report.BucketCoverage.Status != "pinned_config" {
+		t.Fatalf("ownership/coverage = %s/%s", report.Ownership.Mode, report.BucketCoverage.Status)
+	}
+	if report.Activity.CheckedPercent != 100 {
+		t.Fatalf("checked percent = %f, want 100", report.Activity.CheckedPercent)
+	}
+	if !strings.Contains(report.SuggestedNextAction, "next pinned host") {
+		t.Fatalf("suggested action = %q", report.SuggestedNextAction)
+	}
+}
+
+func TestBuildRolloutStateReportDynamicIssues(t *testing.T) {
+	now := time.Date(2026, 4, 29, 12, 0, 0, 0, time.UTC)
+	cfg := &config.Config{
+		BucketTotal:                  10,
+		BucketHeartbeatGraceSec:      60,
+		LegacyStatusProjectionEnable: true,
+		APIPort:                      8090,
+	}
+
+	report, err := buildRolloutStateReport(context.Background(), cfg, rolloutStateReportOptions{Since: "15m"}, rolloutStateReportDeps{
+		Now:      func() time.Time { return now },
+		Hostname: func() string { return "host-a" },
+		GetAllHosts: func() ([]db.HostRow, error) {
+			return []db.HostRow{
+				{HostID: "host-a", BucketMin: 0, BucketMax: 4, LastHeartbeat: now, Status: "active"},
+				{HostID: "host-b", BucketMin: 6, BucketMax: 9, LastHeartbeat: now, Status: "active"},
+			}, nil
+		},
+		CountActiveSitesForBucketRange: func(context.Context, int, int) (int, error) {
+			return 4, nil
+		},
+		CountRecentlyCheckedActiveSitesForRange: func(context.Context, int, int, time.Time) (int, error) {
+			return 1, nil
+		},
+		CountLegacyProjectionDrift: func(context.Context, int, int) (int, error) {
+			return 2, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildRolloutStateReport: %v", err)
+	}
+	if report.OK {
+		t.Fatal("report.OK = true, want false")
+	}
+	for _, want := range []string{
+		"dynamic bucket coverage has gap",
+		"legacy projection drift=2",
+		"1/4 active sites checked",
+		"delivery_owner_host is unset",
+	} {
+		if !strings.Contains(strings.Join(report.Issues, "\n"), want) {
+			t.Fatalf("issues missing %q: %#v", want, report.Issues)
+		}
+	}
+	if report.BucketCoverage.Status != "invalid" {
+		t.Fatalf("coverage status = %q, want invalid", report.BucketCoverage.Status)
+	}
+	if !strings.Contains(report.SuggestedNextAction, "Fix jetmon_hosts bucket coverage") {
+		t.Fatalf("suggested action = %q", report.SuggestedNextAction)
+	}
+}
+
 func pinnedRolloutTestConfig(minBucket, maxBucket int) *config.Config {
 	return &config.Config{
 		PinnedBucketMin:              &minBucket,
 		PinnedBucketMax:              &maxBucket,
 		LegacyStatusProjectionEnable: true,
 	}
+}
+
+func successfulCutoverCheckDeps(now time.Time) cutoverCheckDeps {
+	deps := cutoverCheckDeps{
+		Pinned: successfulPinnedRolloutDeps(),
+		Activity: activityCheckDeps{
+			Now: func() time.Time { return now },
+			CountActiveSitesForBucketRange: func(context.Context, int, int) (int, error) {
+				return 3, nil
+			},
+			CountRecentlyCheckedActiveSitesForRange: func(context.Context, int, int, time.Time) (int, error) {
+				return 3, nil
+			},
+		},
+		Projection: projectionDriftDeps{
+			CountLegacyProjectionDrift: func(context.Context, int, int) (int, error) {
+				return 0, nil
+			},
+			ListLegacyProjectionDrift: func(context.Context, int, int, int) ([]db.ProjectionDriftRow, error) {
+				return nil, nil
+			},
+		},
+		Status: func(int) (string, error) {
+			return `{"state":"ok"}`, nil
+		},
+	}
+	return deps
 }
 
 func successfulPinnedRolloutDeps() pinnedRolloutCheckDeps {

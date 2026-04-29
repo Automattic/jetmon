@@ -1,11 +1,13 @@
 # API CLI Roadmap
 
-Status: active on `feature/api-cli`.
+Status: complete and merged into `v2`.
 
-This roadmap tracks a local developer/operator CLI for exercising the internal
-Jetmon `/api/v1` surface without remembering endpoint paths, auth headers, and
-payload shapes by hand. The CLI should make local Docker testing repeatable,
-but it should not become a generic `curl` clone.
+This roadmap is retained as implementation history for the local
+developer/operator CLI that exercises the internal Jetmon `/api/v1` surface
+without remembering endpoint paths, auth headers, and payload shapes by hand.
+New API CLI follow-up ideas should be tracked in
+[`roadmap.md`](roadmap.md) unless they are small enough to land with adjacent
+feature work.
 
 ## P0 - Request Foundation
 

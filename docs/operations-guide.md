@@ -42,7 +42,8 @@ reference.
 
 ## Production Host Setup
 
-1. Install `jetmon2` to `/opt/jetmon2/`.
+1. Install `bin/jetmon2` as `/opt/jetmon2/jetmon2`, or update the service unit
+   if your deployment system uses a different path.
 2. Install `systemd/jetmon2.service` to `/etc/systemd/system/` and run
    `systemctl daemon-reload`.
 3. Install `systemd/jetmon2-logrotate` to `/etc/logrotate.d/jetmon2`.
@@ -53,7 +54,9 @@ reference.
 6. Copy or generate `config/config.json`.
 7. Set `BUCKET_TARGET` to the desired maximum bucket count for the host.
 8. Run `./jetmon2 migrate`.
-9. Start the service with `systemctl enable --now jetmon2`.
+9. Run `systemd-analyze verify /etc/systemd/system/jetmon2.service` after the
+   binary exists at the path used by `ExecStart`.
+10. Start the service with `systemctl enable --now jetmon2`.
 
 Manual commands such as `migrate`, `validate-config`, and `rollout` need the
 same `DB_*` environment that systemd reads from
@@ -66,6 +69,26 @@ Use [v1-to-v2-migration.md](v1-to-v2-migration.md) for the full production
 migration process. It covers preparation, additive migrations, pinned bucket
 mode, replacing v1 on the same server, moving a range to a fresh v2 server,
 monitoring, revert paths, dynamic ownership cutover, and v1 teardown.
+Use [rollout-quick-reference.md](rollout-quick-reference.md) as the one-page
+operator command checklist during rehearsals and rollout windows.
+
+Use `./jetmon2 rollout rehearsal-plan --file=<ranges.csv> --host=<host>
+--bucket-min=N --bucket-max=N --mode=same-server` to print the ordered command
+sequence for one host replacement. Use `--mode=fresh-server` plus
+`--runtime-host=<new-v2-hostname>` when the new v2 hostname differs from the v1
+host recorded in the static bucket plan.
+
+After a pinned v2 host starts, use `./jetmon2 rollout cutover-check --since=15m`
+to run the post-start pinned preflight, recent activity check, dashboard status
+check, and projection-drift report together. After one full expected check
+round, rerun it with `--require-all` before moving to the next host.
+
+Use `--output=json` on rollout gate commands when wiring them into Systems
+automation. The command still exits non-zero on failed checks, and stdout
+contains `ok`, the command name, parsed output lines, and failure messages.
+Use `./jetmon2 rollout state-report --since=15m` for an operator snapshot of
+ownership mode, bucket coverage, activity freshness, projection drift, delivery
+owner state, and the suggested next action.
 
 ## v2 Rolling Updates
 
@@ -109,6 +132,11 @@ JETMON_CONFIG=/opt/jetmon2/config/deliverer.json \
 
 Add `--require-email-delivery` when real alert-contact email delivery is
 expected in that environment.
+
+Run `systemd-analyze verify /etc/systemd/system/jetmon-deliverer.service` after
+`/opt/jetmon2/bin/jetmon-deliverer` exists, or against an equivalent staged
+deployment root where the service's `ExecStart` and `ExecStartPre` paths are
+present.
 
 During rollout, inspect the shared webhook and alert-contact delivery queues
 from the same environment the service uses:

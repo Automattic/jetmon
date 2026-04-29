@@ -12,28 +12,52 @@ migration and the operating data needed to make larger architecture decisions.
 
 ### Candidate follow-up branches
 
-These are scoped branches worth considering after the API CLI work and rollout
-preflight hardening settle:
+These are scoped branches worth considering after the merged API CLI, rollout
+preflight, deliverer hardening, and API CLI fixture workflow branches:
 
-- **`feature/rollout-preflight-hardening`** - finish and merge the in-flight
-  branch that adds static bucket plan validation, post-cutover activity checks,
-  rollback checks, and operator-visible rollout safety commands.
-- **`feature/deliverer-rollout-hardening`** - make the standalone
-  `jetmon-deliverer` rollout safer with stronger config validation, ownership
-  checks, delivery backlog checks, service docs, and explicit rollback
-  rehearsal.
 - **`feature/operator-dashboard-polish`** - turn the dashboard into a clearer
   production rollout cockpit: stronger warning states, dependency health
   details, rollout-command visibility, and event/API pointers for operators.
-- **`feature/api-cli-fixture-workflows`** - extend the merged API CLI with
-  richer seeded data, additional deterministic failure modes, cleanup helpers,
-  and safer batch-owned staging workflows.
 - **`feature/projection-drift-tooling`** - expand drift diagnostics beyond
   count/list output with range summaries, likely causes, rehearsal reports, and
   dry-run repair guidance if repair becomes safe enough to automate.
+- **`feature/production-telemetry-reports`** - turn existing StatsD and event
+  data into repeatable reports for first-failure timing, verifier agreement,
+  false-alarm classes, WPCOM parity, and operator explanation gaps after v2 has
+  enough traffic.
 - **`feature/v2-rollout-docs-rehearsal`** - walk the migration docs through a
   full rehearsal and keep README, operations docs, migration docs, config
   samples, service units, and CLI output aligned.
+
+### Rollout Simplification TODO
+
+- [x] Add `jetmon2 rollout rehearsal-plan` so operators can generate the exact
+  same-server or fresh-server command sequence from a bucket CSV, host, bucket
+  range, and rollout mode.
+- [x] Add `make rollout-docs-verify` so docs/tooling drift checks, command help
+  checks, staged systemd validation, build, test, and lint can run as one
+  repeatable gate.
+- [x] Add `jetmon2 rollout cutover-check` to bundle the read-only post-start
+  pinned preflight, activity, status, and projection-drift checks used after
+  each host replacement.
+- [x] Add JSON output to rollout checks for Systems automation gates.
+- [x] Create a one-page rollout quick reference that links to the full
+  migration runbook.
+- [x] Add a rollout state report that summarizes ownership mode, bucket
+  coverage, drift, recent activity, delivery owner state, and suggested next
+  action.
+
+Recently completed candidate branches:
+
+- **`feature/rollout-preflight-hardening`** - merged rollout safety commands
+  for static bucket plans, pinned checks, activity checks, rollback checks,
+  projection drift, and operator-visible rollout guidance.
+- **`feature/deliverer-rollout-hardening`** - merged standalone deliverer
+  validation, owner checks, delivery backlog checks, service docs, rollback
+  guidance, and service-file cleanup.
+- **`feature/api-cli-fixture-workflows`** - merged deterministic fixture-backed
+  API CLI validation, webhook smoke, signature checks, remote-write guardrails,
+  batch-owned cleanup, and command discovery.
 
 ### P0 - v2 production hardening
 
@@ -62,7 +86,7 @@ preflight hardening settle:
 - **Run a production rollout rehearsal pass.** Validate that README,
   `v1-to-v2-migration.md`, config samples, systemd units,
   `validate-config`, `rollout static-plan-check`, `rollout pinned-check`,
-  `rollout activity-check`, `rollout rollback-check`,
+  `rollout cutover-check`, `rollout activity-check`, `rollout rollback-check`,
   `rollout projection-drift`, and rollback steps line up exactly before the
   first production host replacement.
 - **Instrument the data needed for the v3 decision.** During v2 production,
@@ -676,6 +700,21 @@ where to look, and what each item unlocked.
   Example: `./jetmon2 rollout pinned-check` verifies pinned config, projection
   writes, dynamic-ownership absence, active-site coverage, and projection drift
   before cutover.
+- **Post-start cutover check.** `./jetmon2 rollout cutover-check` bundles the
+  read-only pinned preflight, recent activity check, dashboard status check,
+  and projection-drift report used after each v1 host replacement.
+  Operators can run it immediately after start, then again with `--require-all`
+  after one full expected check round.
+- **Rollout check JSON output.** Rollout gate commands accept `--output=json`
+  so Systems automation can parse a stable pass/fail envelope while retaining
+  the same non-zero exit behavior as text mode.
+- **Rollout quick reference.** `docs/rollout-quick-reference.md` gives
+  operators a one-page command checklist for rehearsal, per-host cutover,
+  rollback, fleet completion, and JSON automation while linking back to the
+  full migration runbook as source of truth.
+- **Rollout state report.** `./jetmon2 rollout state-report` summarizes the
+  current ownership mode, bucket coverage, recent activity, projection drift,
+  delivery-owner state, and suggested next action for operator handoffs.
 - **Dynamic ownership preflight.** `./jetmon2 rollout dynamic-check` verifies
   that pinned ranges are removed, `jetmon_hosts` rows cover the full bucket
   range without gaps/overlaps, heartbeats are fresh, and projection drift is
@@ -721,6 +760,18 @@ where to look, and what each item unlocked.
   and Veriflier binaries without requiring generated gRPC code, and Makefile
   targets use an explicit Go path and writable build cache.
   This keeps normal build/test workflows reliable in local and CI-like shells.
+- **API CLI and deterministic rehearsal workflows.** `jetmon2 api` now has
+  typed commands, smoke workflows, batch-owned test data, remote-write
+  guardrails, a Docker-local failure/webhook fixture, `make api-cli-smoke`,
+  and `make api-cli-validate`.
+  This gives local, staging, and CI rehearsals a repeatable way to exercise the
+  internal API without hand-written curl scripts.
+- **Rollout preflight and deliverer hardening branches.** The v2 branch now has
+  static bucket plan validation, pinned/dynamic/cutover/activity/rollback/drift
+  rollout checks, standalone `jetmon-deliverer` validation, delivery queue
+  checks, and matching operator docs.
+  These are the guardrails needed before replacing the first v1 production
+  monitor host or splitting outbound delivery.
 - **Coverage and race-test expansion.** Core packages gained coverage for
   list handlers, lifecycle helpers, API audit paths, delivery behavior,
   startup helpers, and previously racy tests.

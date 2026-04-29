@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/csv"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -45,17 +47,37 @@ type projectionDriftDeps struct {
 	ListLegacyProjectionDrift  func(context.Context, int, int, int) ([]db.ProjectionDriftRow, error)
 }
 
+type cutoverCheckDeps struct {
+	Pinned     pinnedRolloutCheckDeps
+	Activity   activityCheckDeps
+	Projection projectionDriftDeps
+	Status     func(int) (string, error)
+}
+
+type rolloutStateReportDeps struct {
+	Now                                     func() time.Time
+	Hostname                                func() string
+	GetAllHosts                             func() ([]db.HostRow, error)
+	CountActiveSitesForBucketRange          func(context.Context, int, int) (int, error)
+	CountRecentlyCheckedActiveSitesForRange func(context.Context, int, int, time.Time) (int, error)
+	CountLegacyProjectionDrift              func(context.Context, int, int) (int, error)
+}
+
 func cmdRollout(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout <static-plan-check|pinned-check|rollback-check|dynamic-check|activity-check|projection-drift> [args]")
+		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout <rehearsal-plan|static-plan-check|pinned-check|cutover-check|rollback-check|dynamic-check|activity-check|projection-drift|state-report> [args]")
 		os.Exit(1)
 	}
 
 	switch args[0] {
+	case "rehearsal-plan":
+		cmdRolloutRehearsalPlan(args[1:])
 	case "static-plan-check":
 		cmdRolloutStaticPlanCheck(args[1:])
 	case "pinned-check":
 		cmdRolloutPinnedCheck(args[1:])
+	case "cutover-check":
+		cmdRolloutCutoverCheck(args[1:])
 	case "rollback-check":
 		cmdRolloutRollbackCheck(args[1:])
 	case "dynamic-check":
@@ -64,27 +86,126 @@ func cmdRollout(args []string) {
 		cmdRolloutActivityCheck(args[1:])
 	case "projection-drift":
 		cmdRolloutProjectionDrift(args[1:])
+	case "state-report":
+		cmdRolloutStateReport(args[1:])
 	default:
-		fmt.Fprintf(os.Stderr, "unknown rollout subcommand %q (want: static-plan-check, pinned-check, rollback-check, dynamic-check, activity-check, projection-drift)\n", args[0])
+		fmt.Fprintf(os.Stderr, "unknown rollout subcommand %q (want: rehearsal-plan, static-plan-check, pinned-check, cutover-check, rollback-check, dynamic-check, activity-check, projection-drift, state-report)\n", args[0])
 		os.Exit(1)
 	}
 }
 
-func cmdRolloutStaticPlanCheck(args []string) {
-	fs := flag.NewFlagSet("rollout static-plan-check", flag.ExitOnError)
-	file := fs.String("file", "", "CSV file with host,bucket_min,bucket_max rows (use - for stdin)")
-	bucketTotal := fs.Int("bucket-total", 0, "total bucket count (default BUCKET_TOTAL from config)")
-	host := fs.String("host", "", "optional host id that must appear in the plan")
+type rolloutJSONLine struct {
+	Level   string `json:"level"`
+	Message string `json:"message"`
+}
+
+type rolloutJSONReport struct {
+	OK          bool              `json:"ok"`
+	Command     string            `json:"command"`
+	GeneratedAt time.Time         `json:"generated_at"`
+	Lines       []rolloutJSONLine `json:"lines,omitempty"`
+	Failures    []string          `json:"failures,omitempty"`
+}
+
+func rolloutOutputFlag(fs *flag.FlagSet) *string {
+	return fs.String("output", "text", "output format: text or json")
+}
+
+func normalizeRolloutOutput(output string) (string, error) {
+	output = strings.ToLower(strings.TrimSpace(output))
+	if output == "" {
+		output = "text"
+	}
+	if output != "text" && output != "json" {
+		return "", errors.New("--output must be text or json")
+	}
+	return output, nil
+}
+
+func runRolloutCommandOutput(stdout io.Writer, command, output string, run func(io.Writer) error) error {
+	if stdout == nil {
+		stdout = io.Discard
+	}
+	if output != "json" {
+		return run(stdout)
+	}
+
+	var text bytes.Buffer
+	err := run(&text)
+	report := buildRolloutJSONReport(command, text.String(), err)
+	if renderErr := renderRolloutJSONReport(stdout, report); renderErr != nil {
+		return renderErr
+	}
+	return err
+}
+
+func buildRolloutJSONReport(command, text string, err error) rolloutJSONReport {
+	report := rolloutJSONReport{
+		OK:          err == nil,
+		Command:     command,
+		GeneratedAt: time.Now().UTC(),
+		Lines:       parseRolloutOutputLines(text),
+	}
+	if err != nil {
+		report.Failures = []string{err.Error()}
+	}
+	return report
+}
+
+func parseRolloutOutputLines(text string) []rolloutJSONLine {
+	var lines []rolloutJSONLine
+	for _, raw := range strings.Split(strings.TrimRight(text, "\n"), "\n") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		level, message := parseRolloutOutputLine(raw)
+		lines = append(lines, rolloutJSONLine{Level: level, Message: message})
+	}
+	return lines
+}
+
+func parseRolloutOutputLine(line string) (string, string) {
+	if strings.HasPrefix(line, "## ") {
+		return "section", strings.TrimSpace(strings.TrimPrefix(line, "## "))
+	}
+	for _, level := range []string{"PASS", "WARN", "INFO", "FAIL"} {
+		prefix := level + " "
+		if strings.HasPrefix(line, prefix) {
+			return strings.ToLower(level), strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		}
+	}
+	return "output", line
+}
+
+func renderRolloutJSONReport(out io.Writer, report rolloutJSONReport) error {
+	enc := json.NewEncoder(out)
+	enc.SetIndent("", "  ")
+	return enc.Encode(report)
+}
+
+func exitRolloutCommandError(err error, output string) {
+	if output != "json" {
+		fmt.Fprintf(os.Stderr, "FAIL %v\n", err)
+	}
+	os.Exit(1)
+}
+
+func cmdRolloutRehearsalPlan(args []string) {
+	fs := flag.NewFlagSet("rollout rehearsal-plan", flag.ExitOnError)
+	file := fs.String("file", "", "CSV file with host,bucket_min,bucket_max rows")
+	mode := fs.String("mode", "same-server", "rollout mode: same-server or fresh-server")
+	host := fs.String("host", "", "host id that must appear in the static plan")
+	runtimeHost := fs.String("runtime-host", "", "v2 host id for pinned/rollback checks (default --host)")
 	bucketMin := fs.Int("bucket-min", -1, "expected bucket minimum for --host")
 	bucketMax := fs.Int("bucket-max", -1, "expected bucket maximum for --host")
+	bucketTotal := fs.Int("bucket-total", 0, "total bucket count (default BUCKET_TOTAL from config)")
+	binary := fs.String("binary", "./jetmon2", "jetmon2 command path to print")
+	service := fs.String("service", "jetmon2", "systemd service name to print for v2")
+	since := fs.String("since", "15m", "activity cutoff to print for post-cutover checks")
 	_ = fs.Parse(args)
 	if fs.NArg() != 0 || strings.TrimSpace(*file) == "" {
-		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout static-plan-check --file=<ranges.csv> [--bucket-total=N] [--host=<host> --bucket-min=N --bucket-max=N]")
-		os.Exit(1)
-	}
-	assertion, err := staticPlanAssertionFromFlags(*host, *bucketMin, *bucketMax)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "FAIL %v\n", err)
+		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout rehearsal-plan --file=<ranges.csv> --host=<host> --bucket-min=N --bucket-max=N [--mode=same-server|fresh-server] [--runtime-host=<v2-host>] [--bucket-total=N]")
 		os.Exit(1)
 	}
 
@@ -103,60 +224,201 @@ func cmdRolloutStaticPlanCheck(args []string) {
 	}
 
 	inputName := strings.TrimSpace(*file)
-	input := io.Reader(os.Stdin)
-	var opened *os.File
-	if inputName != "-" {
-		f, err := os.Open(inputName)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "FAIL open static bucket plan: %v\n", err)
-			os.Exit(1)
-		}
-		opened = f
-		input = f
+	if inputName == "-" {
+		fmt.Fprintln(os.Stderr, "FAIL --file=- is not supported for rehearsal-plan; pass a reusable CSV path so the printed commands are repeatable")
+		os.Exit(1)
 	}
-	if opened != nil {
-		defer opened.Close()
+	f, err := os.Open(inputName)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL open static bucket plan: %v\n", err)
+		os.Exit(1)
 	}
+	defer f.Close()
 
-	if err := runStaticPlanCheck(os.Stdout, inputName, input, resolvedBucketTotal, assertion); err != nil {
+	opts := rolloutRehearsalPlanOptions{
+		Mode:        *mode,
+		PlanFile:    inputName,
+		HostID:      *host,
+		RuntimeHost: *runtimeHost,
+		BucketMin:   *bucketMin,
+		BucketMax:   *bucketMax,
+		BucketTotal: resolvedBucketTotal,
+		Binary:      *binary,
+		Service:     *service,
+		Since:       *since,
+	}
+	if err := runRolloutRehearsalPlan(os.Stdout, f, opts); err != nil {
 		fmt.Fprintf(os.Stderr, "FAIL %v\n", err)
 		os.Exit(1)
+	}
+}
+
+func cmdRolloutStaticPlanCheck(args []string) {
+	fs := flag.NewFlagSet("rollout static-plan-check", flag.ExitOnError)
+	file := fs.String("file", "", "CSV file with host,bucket_min,bucket_max rows (use - for stdin)")
+	bucketTotal := fs.Int("bucket-total", 0, "total bucket count (default BUCKET_TOTAL from config)")
+	host := fs.String("host", "", "optional host id that must appear in the plan")
+	bucketMin := fs.Int("bucket-min", -1, "expected bucket minimum for --host")
+	bucketMax := fs.Int("bucket-max", -1, "expected bucket maximum for --host")
+	output := rolloutOutputFlag(fs)
+	_ = fs.Parse(args)
+	if fs.NArg() != 0 || strings.TrimSpace(*file) == "" {
+		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout static-plan-check --file=<ranges.csv> [--bucket-total=N] [--host=<host> --bucket-min=N --bucket-max=N] [--output=text|json]")
+		os.Exit(1)
+	}
+	outputFormat, err := normalizeRolloutOutput(*output)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL %v\n", err)
+		os.Exit(2)
+	}
+	assertion, err := staticPlanAssertionFromFlags(*host, *bucketMin, *bucketMax)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := runRolloutCommandOutput(os.Stdout, "rollout static-plan-check", outputFormat, func(out io.Writer) error {
+		resolvedBucketTotal := *bucketTotal
+		if resolvedBucketTotal < 0 {
+			return errors.New("bucket-total must be > 0")
+		}
+		if resolvedBucketTotal == 0 {
+			configPath := envOrDefault("JETMON_CONFIG", "config/config.json")
+			if err := config.Load(configPath); err != nil {
+				return fmt.Errorf("config parse: %w", err)
+			}
+			resolvedBucketTotal = config.Get().BucketTotal
+		}
+
+		inputName := strings.TrimSpace(*file)
+		input := io.Reader(os.Stdin)
+		var opened *os.File
+		if inputName != "-" {
+			f, err := os.Open(inputName)
+			if err != nil {
+				return fmt.Errorf("open static bucket plan: %w", err)
+			}
+			opened = f
+			input = f
+		}
+		if opened != nil {
+			defer opened.Close()
+		}
+
+		return runStaticPlanCheck(out, inputName, input, resolvedBucketTotal, assertion)
+	}); err != nil {
+		exitRolloutCommandError(err, outputFormat)
 	}
 }
 
 func cmdRolloutPinnedCheck(args []string) {
 	fs := flag.NewFlagSet("rollout pinned-check", flag.ExitOnError)
 	host := fs.String("host", "", "host id to check (default current hostname)")
+	output := rolloutOutputFlag(fs)
 	_ = fs.Parse(args)
 	if fs.NArg() != 0 {
-		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout pinned-check [--host=<host_id>]")
+		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout pinned-check [--host=<host_id>] [--output=text|json]")
 		os.Exit(1)
 	}
-
-	configPath := envOrDefault("JETMON_CONFIG", "config/config.json")
-	if err := config.Load(configPath); err != nil {
-		fmt.Fprintf(os.Stderr, "FAIL config parse: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Println("PASS config parse")
-
-	config.LoadDB()
-	if err := db.ConnectWithRetry(3); err != nil {
-		fmt.Fprintf(os.Stderr, "FAIL db connect: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Println("PASS db connect")
-
-	deps := pinnedRolloutCheckDeps{
-		Hostname:                       db.Hostname,
-		HostRowExists:                  db.HostRowExists,
-		ListOverlappingHostRows:        db.ListHostRowsOverlappingBucketRange,
-		CountActiveSitesForBucketRange: db.CountActiveSitesForBucketRange,
-		CountLegacyProjectionDrift:     db.CountLegacyProjectionDrift,
-	}
-	if err := runPinnedRolloutCheck(context.Background(), os.Stdout, config.Get(), *host, deps); err != nil {
+	outputFormat, err := normalizeRolloutOutput(*output)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "FAIL %v\n", err)
+		os.Exit(2)
+	}
+
+	if err := runRolloutCommandOutput(os.Stdout, "rollout pinned-check", outputFormat, func(out io.Writer) error {
+		configPath := envOrDefault("JETMON_CONFIG", "config/config.json")
+		if err := config.Load(configPath); err != nil {
+			return fmt.Errorf("config parse: %w", err)
+		}
+		fmt.Fprintln(out, "PASS config parse")
+
+		config.LoadDB()
+		if err := db.ConnectWithRetry(3); err != nil {
+			return fmt.Errorf("db connect: %w", err)
+		}
+		fmt.Fprintln(out, "PASS db connect")
+
+		deps := pinnedRolloutCheckDeps{
+			Hostname:                       db.Hostname,
+			HostRowExists:                  db.HostRowExists,
+			ListOverlappingHostRows:        db.ListHostRowsOverlappingBucketRange,
+			CountActiveSitesForBucketRange: db.CountActiveSitesForBucketRange,
+			CountLegacyProjectionDrift:     db.CountLegacyProjectionDrift,
+		}
+		return runPinnedRolloutCheck(context.Background(), out, config.Get(), *host, deps)
+	}); err != nil {
+		exitRolloutCommandError(err, outputFormat)
+	}
+}
+
+func cmdRolloutCutoverCheck(args []string) {
+	fs := flag.NewFlagSet("rollout cutover-check", flag.ExitOnError)
+	host := fs.String("host", "", "host id to check (default current hostname)")
+	bucketMin := fs.Int("bucket-min", -1, "inclusive bucket minimum (default pinned range)")
+	bucketMax := fs.Int("bucket-max", -1, "inclusive bucket maximum (default pinned range)")
+	since := fs.String("since", "15m", "activity cutoff as duration like 15m or RFC3339 timestamp")
+	requireAll := fs.Bool("require-all", false, "fail unless every active site in range was checked since the cutoff")
+	limit := fs.Int("limit", 100, "maximum projection drift rows to print")
+	statusPort := fs.Int("status-port", -1, "dashboard port for status check (default DASHBOARD_PORT from config)")
+	skipStatus := fs.Bool("skip-status", false, "skip dashboard status check")
+	output := rolloutOutputFlag(fs)
+	_ = fs.Parse(args)
+	if fs.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout cutover-check [--host=<host_id>] [--bucket-min=N --bucket-max=N] [--since=15m] [--require-all] [--limit=N] [--status-port=N] [--skip-status] [--output=text|json]")
 		os.Exit(1)
+	}
+	outputFormat, err := normalizeRolloutOutput(*output)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL %v\n", err)
+		os.Exit(2)
+	}
+
+	if err := runRolloutCommandOutput(os.Stdout, "rollout cutover-check", outputFormat, func(out io.Writer) error {
+		configPath := envOrDefault("JETMON_CONFIG", "config/config.json")
+		if err := config.Load(configPath); err != nil {
+			return fmt.Errorf("config parse: %w", err)
+		}
+		fmt.Fprintln(out, "PASS config parse")
+
+		config.LoadDB()
+		if err := db.ConnectWithRetry(3); err != nil {
+			return fmt.Errorf("db connect: %w", err)
+		}
+		fmt.Fprintln(out, "PASS db connect")
+
+		deps := cutoverCheckDeps{
+			Pinned: pinnedRolloutCheckDeps{
+				Hostname:                       db.Hostname,
+				HostRowExists:                  db.HostRowExists,
+				ListOverlappingHostRows:        db.ListHostRowsOverlappingBucketRange,
+				CountActiveSitesForBucketRange: db.CountActiveSitesForBucketRange,
+				CountLegacyProjectionDrift:     db.CountLegacyProjectionDrift,
+			},
+			Activity: activityCheckDeps{
+				Now:                                     time.Now,
+				CountActiveSitesForBucketRange:          db.CountActiveSitesForBucketRange,
+				CountRecentlyCheckedActiveSitesForRange: db.CountRecentlyCheckedActiveSitesForBucketRange,
+			},
+			Projection: projectionDriftDeps{
+				CountLegacyProjectionDrift: db.CountLegacyProjectionDrift,
+				ListLegacyProjectionDrift:  db.ListLegacyProjectionDrift,
+			},
+			Status: dashboardStatus,
+		}
+		opts := cutoverCheckOptions{
+			HostOverride: *host,
+			BucketMin:    *bucketMin,
+			BucketMax:    *bucketMax,
+			Since:        *since,
+			RequireAll:   *requireAll,
+			Limit:        *limit,
+			StatusPort:   *statusPort,
+			SkipStatus:   *skipStatus,
+		}
+		return runCutoverCheck(context.Background(), out, config.Get(), opts, deps)
+	}); err != nil {
+		exitRolloutCommandError(err, outputFormat)
 	}
 }
 
@@ -165,70 +427,80 @@ func cmdRolloutRollbackCheck(args []string) {
 	host := fs.String("host", "", "v2 host id that must not own dynamic buckets (default current hostname)")
 	bucketMin := fs.Int("bucket-min", -1, "inclusive rollback bucket minimum (default pinned range)")
 	bucketMax := fs.Int("bucket-max", -1, "inclusive rollback bucket maximum (default pinned range)")
+	output := rolloutOutputFlag(fs)
 	_ = fs.Parse(args)
 	if fs.NArg() != 0 {
-		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout rollback-check [--host=<host_id>] [--bucket-min=N --bucket-max=N]")
+		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout rollback-check [--host=<host_id>] [--bucket-min=N --bucket-max=N] [--output=text|json]")
 		os.Exit(1)
 	}
-
-	configPath := envOrDefault("JETMON_CONFIG", "config/config.json")
-	if err := config.Load(configPath); err != nil {
-		fmt.Fprintf(os.Stderr, "FAIL config parse: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Println("PASS config parse")
-
-	config.LoadDB()
-	if err := db.ConnectWithRetry(3); err != nil {
-		fmt.Fprintf(os.Stderr, "FAIL db connect: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Println("PASS db connect")
-
-	deps := rollbackCheckDeps{
-		Hostname:                       db.Hostname,
-		HostRowExists:                  db.HostRowExists,
-		ListOverlappingHostRows:        db.ListHostRowsOverlappingBucketRange,
-		CountActiveSitesForBucketRange: db.CountActiveSitesForBucketRange,
-		CountLegacyProjectionDrift:     db.CountLegacyProjectionDrift,
-	}
-	if err := runRollbackCheck(context.Background(), os.Stdout, config.Get(), *host, *bucketMin, *bucketMax, deps); err != nil {
+	outputFormat, err := normalizeRolloutOutput(*output)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "FAIL %v\n", err)
-		os.Exit(1)
+		os.Exit(2)
+	}
+
+	if err := runRolloutCommandOutput(os.Stdout, "rollout rollback-check", outputFormat, func(out io.Writer) error {
+		configPath := envOrDefault("JETMON_CONFIG", "config/config.json")
+		if err := config.Load(configPath); err != nil {
+			return fmt.Errorf("config parse: %w", err)
+		}
+		fmt.Fprintln(out, "PASS config parse")
+
+		config.LoadDB()
+		if err := db.ConnectWithRetry(3); err != nil {
+			return fmt.Errorf("db connect: %w", err)
+		}
+		fmt.Fprintln(out, "PASS db connect")
+
+		deps := rollbackCheckDeps{
+			Hostname:                       db.Hostname,
+			HostRowExists:                  db.HostRowExists,
+			ListOverlappingHostRows:        db.ListHostRowsOverlappingBucketRange,
+			CountActiveSitesForBucketRange: db.CountActiveSitesForBucketRange,
+			CountLegacyProjectionDrift:     db.CountLegacyProjectionDrift,
+		}
+		return runRollbackCheck(context.Background(), out, config.Get(), *host, *bucketMin, *bucketMax, deps)
+	}); err != nil {
+		exitRolloutCommandError(err, outputFormat)
 	}
 }
 
 func cmdRolloutDynamicCheck(args []string) {
 	fs := flag.NewFlagSet("rollout dynamic-check", flag.ExitOnError)
+	output := rolloutOutputFlag(fs)
 	_ = fs.Parse(args)
 	if fs.NArg() != 0 {
-		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout dynamic-check")
+		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout dynamic-check [--output=text|json]")
 		os.Exit(1)
 	}
-
-	configPath := envOrDefault("JETMON_CONFIG", "config/config.json")
-	if err := config.Load(configPath); err != nil {
-		fmt.Fprintf(os.Stderr, "FAIL config parse: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Println("PASS config parse")
-
-	config.LoadDB()
-	if err := db.ConnectWithRetry(3); err != nil {
-		fmt.Fprintf(os.Stderr, "FAIL db connect: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Println("PASS db connect")
-
-	deps := dynamicRolloutCheckDeps{
-		Now:                            time.Now,
-		GetAllHosts:                    db.GetAllHosts,
-		CountActiveSitesForBucketRange: db.CountActiveSitesForBucketRange,
-		CountLegacyProjectionDrift:     db.CountLegacyProjectionDrift,
-	}
-	if err := runDynamicRolloutCheck(context.Background(), os.Stdout, config.Get(), deps); err != nil {
+	outputFormat, err := normalizeRolloutOutput(*output)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "FAIL %v\n", err)
-		os.Exit(1)
+		os.Exit(2)
+	}
+
+	if err := runRolloutCommandOutput(os.Stdout, "rollout dynamic-check", outputFormat, func(out io.Writer) error {
+		configPath := envOrDefault("JETMON_CONFIG", "config/config.json")
+		if err := config.Load(configPath); err != nil {
+			return fmt.Errorf("config parse: %w", err)
+		}
+		fmt.Fprintln(out, "PASS config parse")
+
+		config.LoadDB()
+		if err := db.ConnectWithRetry(3); err != nil {
+			return fmt.Errorf("db connect: %w", err)
+		}
+		fmt.Fprintln(out, "PASS db connect")
+
+		deps := dynamicRolloutCheckDeps{
+			Now:                            time.Now,
+			GetAllHosts:                    db.GetAllHosts,
+			CountActiveSitesForBucketRange: db.CountActiveSitesForBucketRange,
+			CountLegacyProjectionDrift:     db.CountLegacyProjectionDrift,
+		}
+		return runDynamicRolloutCheck(context.Background(), out, config.Get(), deps)
+	}); err != nil {
+		exitRolloutCommandError(err, outputFormat)
 	}
 }
 
@@ -238,34 +510,39 @@ func cmdRolloutActivityCheck(args []string) {
 	bucketMax := fs.Int("bucket-max", -1, "inclusive bucket maximum (default pinned range or BUCKET_TOTAL-1)")
 	since := fs.String("since", "15m", "activity cutoff as duration like 15m or RFC3339 timestamp")
 	requireAll := fs.Bool("require-all", false, "fail unless every active site in range was checked since the cutoff")
+	output := rolloutOutputFlag(fs)
 	_ = fs.Parse(args)
 	if fs.NArg() != 0 {
-		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout activity-check [--bucket-min=N --bucket-max=N] [--since=15m] [--require-all]")
+		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout activity-check [--bucket-min=N --bucket-max=N] [--since=15m] [--require-all] [--output=text|json]")
 		os.Exit(1)
 	}
-
-	configPath := envOrDefault("JETMON_CONFIG", "config/config.json")
-	if err := config.Load(configPath); err != nil {
-		fmt.Fprintf(os.Stderr, "FAIL config parse: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Println("PASS config parse")
-
-	config.LoadDB()
-	if err := db.ConnectWithRetry(3); err != nil {
-		fmt.Fprintf(os.Stderr, "FAIL db connect: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Println("PASS db connect")
-
-	deps := activityCheckDeps{
-		Now:                                     time.Now,
-		CountActiveSitesForBucketRange:          db.CountActiveSitesForBucketRange,
-		CountRecentlyCheckedActiveSitesForRange: db.CountRecentlyCheckedActiveSitesForBucketRange,
-	}
-	if err := runActivityCheck(context.Background(), os.Stdout, config.Get(), *bucketMin, *bucketMax, *since, *requireAll, deps); err != nil {
+	outputFormat, err := normalizeRolloutOutput(*output)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "FAIL %v\n", err)
-		os.Exit(1)
+		os.Exit(2)
+	}
+
+	if err := runRolloutCommandOutput(os.Stdout, "rollout activity-check", outputFormat, func(out io.Writer) error {
+		configPath := envOrDefault("JETMON_CONFIG", "config/config.json")
+		if err := config.Load(configPath); err != nil {
+			return fmt.Errorf("config parse: %w", err)
+		}
+		fmt.Fprintln(out, "PASS config parse")
+
+		config.LoadDB()
+		if err := db.ConnectWithRetry(3); err != nil {
+			return fmt.Errorf("db connect: %w", err)
+		}
+		fmt.Fprintln(out, "PASS db connect")
+
+		deps := activityCheckDeps{
+			Now:                                     time.Now,
+			CountActiveSitesForBucketRange:          db.CountActiveSitesForBucketRange,
+			CountRecentlyCheckedActiveSitesForRange: db.CountRecentlyCheckedActiveSitesForBucketRange,
+		}
+		return runActivityCheck(context.Background(), out, config.Get(), *bucketMin, *bucketMax, *since, *requireAll, deps)
+	}); err != nil {
+		exitRolloutCommandError(err, outputFormat)
 	}
 }
 
@@ -274,32 +551,119 @@ func cmdRolloutProjectionDrift(args []string) {
 	bucketMin := fs.Int("bucket-min", -1, "inclusive bucket minimum (default pinned range or 0)")
 	bucketMax := fs.Int("bucket-max", -1, "inclusive bucket maximum (default pinned range or BUCKET_TOTAL-1)")
 	limit := fs.Int("limit", 50, "maximum drift rows to print")
+	output := rolloutOutputFlag(fs)
 	_ = fs.Parse(args)
 	if fs.NArg() != 0 {
-		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout projection-drift [--bucket-min=N --bucket-max=N] [--limit=N]")
+		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout projection-drift [--bucket-min=N --bucket-max=N] [--limit=N] [--output=text|json]")
 		os.Exit(1)
+	}
+	outputFormat, err := normalizeRolloutOutput(*output)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL %v\n", err)
+		os.Exit(2)
+	}
+
+	if err := runRolloutCommandOutput(os.Stdout, "rollout projection-drift", outputFormat, func(out io.Writer) error {
+		configPath := envOrDefault("JETMON_CONFIG", "config/config.json")
+		if err := config.Load(configPath); err != nil {
+			return fmt.Errorf("config parse: %w", err)
+		}
+		fmt.Fprintln(out, "PASS config parse")
+
+		config.LoadDB()
+		if err := db.ConnectWithRetry(3); err != nil {
+			return fmt.Errorf("db connect: %w", err)
+		}
+		fmt.Fprintln(out, "PASS db connect")
+
+		deps := projectionDriftDeps{
+			CountLegacyProjectionDrift: db.CountLegacyProjectionDrift,
+			ListLegacyProjectionDrift:  db.ListLegacyProjectionDrift,
+		}
+		return runProjectionDriftReport(context.Background(), out, config.Get(), *bucketMin, *bucketMax, *limit, deps)
+	}); err != nil {
+		exitRolloutCommandError(err, outputFormat)
+	}
+}
+
+func cmdRolloutStateReport(args []string) {
+	fs := flag.NewFlagSet("rollout state-report", flag.ExitOnError)
+	since := fs.String("since", "15m", "activity cutoff as duration like 15m or RFC3339 timestamp")
+	output := rolloutOutputFlag(fs)
+	_ = fs.Parse(args)
+	if fs.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout state-report [--since=15m] [--output=text|json]")
+		os.Exit(1)
+	}
+	outputFormat, err := normalizeRolloutOutput(*output)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL %v\n", err)
+		os.Exit(2)
 	}
 
 	configPath := envOrDefault("JETMON_CONFIG", "config/config.json")
 	if err := config.Load(configPath); err != nil {
-		fmt.Fprintf(os.Stderr, "FAIL config parse: %v\n", err)
+		if outputFormat == "json" {
+			report := rolloutStateReport{
+				OK:          false,
+				Command:     "rollout state-report",
+				GeneratedAt: time.Now().UTC(),
+				Issues:      []string{fmt.Sprintf("config parse: %v", err)},
+			}
+			_ = renderRolloutStateReport(os.Stdout, report, outputFormat)
+		} else {
+			fmt.Fprintf(os.Stderr, "FAIL config parse: %v\n", err)
+		}
 		os.Exit(1)
 	}
-	fmt.Println("PASS config parse")
+	if outputFormat != "json" {
+		fmt.Println("PASS config parse")
+	}
 
 	config.LoadDB()
 	if err := db.ConnectWithRetry(3); err != nil {
-		fmt.Fprintf(os.Stderr, "FAIL db connect: %v\n", err)
+		if outputFormat == "json" {
+			report := rolloutStateReport{
+				OK:          false,
+				Command:     "rollout state-report",
+				GeneratedAt: time.Now().UTC(),
+				Issues:      []string{fmt.Sprintf("db connect: %v", err)},
+			}
+			_ = renderRolloutStateReport(os.Stdout, report, outputFormat)
+		} else {
+			fmt.Fprintf(os.Stderr, "FAIL db connect: %v\n", err)
+		}
 		os.Exit(1)
 	}
-	fmt.Println("PASS db connect")
-
-	deps := projectionDriftDeps{
-		CountLegacyProjectionDrift: db.CountLegacyProjectionDrift,
-		ListLegacyProjectionDrift:  db.ListLegacyProjectionDrift,
+	if outputFormat != "json" {
+		fmt.Println("PASS db connect")
 	}
-	if err := runProjectionDriftReport(context.Background(), os.Stdout, config.Get(), *bucketMin, *bucketMax, *limit, deps); err != nil {
-		fmt.Fprintf(os.Stderr, "FAIL %v\n", err)
+
+	deps := rolloutStateReportDeps{
+		Now:                                     time.Now,
+		Hostname:                                db.Hostname,
+		GetAllHosts:                             db.GetAllHosts,
+		CountActiveSitesForBucketRange:          db.CountActiveSitesForBucketRange,
+		CountRecentlyCheckedActiveSitesForRange: db.CountRecentlyCheckedActiveSitesForBucketRange,
+		CountLegacyProjectionDrift:              db.CountLegacyProjectionDrift,
+	}
+	report, err := buildRolloutStateReport(context.Background(), config.Get(), rolloutStateReportOptions{Since: *since}, deps)
+	if err != nil {
+		if outputFormat == "json" {
+			failed := rolloutStateReport{
+				OK:          false,
+				Command:     "rollout state-report",
+				GeneratedAt: time.Now().UTC(),
+				Issues:      []string{err.Error()},
+			}
+			_ = renderRolloutStateReport(os.Stdout, failed, outputFormat)
+		} else {
+			fmt.Fprintf(os.Stderr, "FAIL %v\n", err)
+		}
+		os.Exit(1)
+	}
+	if err := renderRolloutStateReport(os.Stdout, report, outputFormat); err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL render rollout state report: %v\n", err)
 		os.Exit(1)
 	}
 }
@@ -308,6 +672,522 @@ type staticBucketRange struct {
 	HostID    string
 	BucketMin int
 	BucketMax int
+}
+
+type rolloutRehearsalPlanOptions struct {
+	Mode        string
+	PlanFile    string
+	HostID      string
+	RuntimeHost string
+	BucketMin   int
+	BucketMax   int
+	BucketTotal int
+	Binary      string
+	Service     string
+	Since       string
+}
+
+func runRolloutRehearsalPlan(out io.Writer, input io.Reader, opts rolloutRehearsalPlanOptions) error {
+	if out == nil {
+		out = io.Discard
+	}
+	mode := strings.ToLower(strings.TrimSpace(opts.Mode))
+	switch mode {
+	case "", "same-server":
+		mode = "same-server"
+	case "fresh-server":
+	default:
+		return fmt.Errorf("--mode must be same-server or fresh-server, got %q", opts.Mode)
+	}
+
+	planFile := strings.TrimSpace(opts.PlanFile)
+	if planFile == "" || planFile == "-" {
+		return errors.New("--file must be a reusable CSV path")
+	}
+	hostID := strings.TrimSpace(opts.HostID)
+	if hostID == "" {
+		return errors.New("--host is required")
+	}
+	runtimeHost := strings.TrimSpace(opts.RuntimeHost)
+	if runtimeHost == "" {
+		runtimeHost = hostID
+	}
+	if opts.BucketMin < 0 || opts.BucketMax < 0 {
+		return errors.New("--bucket-min and --bucket-max are required")
+	}
+	if opts.BucketMax < opts.BucketMin {
+		return errors.New("--bucket-max must be >= --bucket-min")
+	}
+	if opts.BucketTotal <= 0 {
+		return errors.New("BUCKET_TOTAL must be > 0")
+	}
+	binary := strings.TrimSpace(opts.Binary)
+	if binary == "" {
+		binary = "./jetmon2"
+	}
+	service := strings.TrimSpace(opts.Service)
+	if service == "" {
+		service = "jetmon2"
+	}
+	since := strings.TrimSpace(opts.Since)
+	if since == "" {
+		since = "15m"
+	}
+
+	ranges, err := parseStaticBucketPlanCSV(input)
+	if err != nil {
+		return err
+	}
+	if err := validateStaticBucketPlan(ranges, opts.BucketTotal); err != nil {
+		return err
+	}
+	assertion := staticPlanAssertion{HostID: hostID, BucketMin: opts.BucketMin, BucketMax: opts.BucketMax}
+	assertedRange, err := validateStaticPlanAssertion(ranges, assertion)
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintln(out, "# Jetmon v2 rollout rehearsal plan")
+	fmt.Fprintf(out, "INFO mode=%s\n", mode)
+	fmt.Fprintf(out, "INFO static_plan_file=%s ranges=%d\n", planFile, len(ranges))
+	fmt.Fprintf(out, "INFO plan_host=%q runtime_host=%q range=%d-%d\n", assertedRange.HostID, runtimeHost, assertedRange.BucketMin, assertedRange.BucketMax)
+	fmt.Fprintln(out)
+
+	writeRolloutPlanSection(out, "1. Validate the copied static bucket plan",
+		rolloutCommand(binary, "rollout", "static-plan-check", "--file", planFile, "--host", hostID, "--bucket-min", strconv.Itoa(opts.BucketMin), "--bucket-max", strconv.Itoa(opts.BucketMax)),
+	)
+	writeRolloutPlanSection(out, "2. Validate the staged v2 config and service unit",
+		rolloutCommand(binary, "validate-config"),
+		"systemd-analyze verify "+shellQuote("/etc/systemd/system/"+service+".service"),
+	)
+	writeRolloutPlanSection(out, "3. Run the pinned preflight before stopping v1",
+		rolloutCommand(binary, "rollout", "pinned-check", "--host", runtimeHost),
+	)
+
+	if mode == "fresh-server" {
+		writeRolloutPlanSection(out, "4. Cut over from the old v1 host to the fresh v2 host",
+			"# Keep v2 stopped on the fresh server until the old v1 monitor process is stopped.",
+			"# Stop v1 on "+shellQuote(hostID)+" with the documented production command.",
+			"systemctl enable --now "+shellQuote(service),
+		)
+	} else {
+		writeRolloutPlanSection(out, "4. Cut over the same server from v1 to v2",
+			"# Stop the v1 service with the documented production command.",
+			"systemctl enable --now "+shellQuote(service),
+		)
+	}
+
+	rangeArgs := []string{"--bucket-min", strconv.Itoa(opts.BucketMin), "--bucket-max", strconv.Itoa(opts.BucketMax)}
+	writeRolloutPlanSection(out, "5. Verify the v2 host after start",
+		rolloutCommand(append([]string{binary, "rollout", "cutover-check", "--host", runtimeHost}, append(append([]string{}, rangeArgs...), "--since", since)...)...),
+		"# After one full expected check round:",
+		rolloutCommand(append([]string{binary, "rollout", "cutover-check", "--host", runtimeHost}, append(append([]string{}, rangeArgs...), "--since", since, "--require-all")...)...),
+	)
+
+	rollbackComment := "# Restart the original v1 service with its original BUCKET_NO_MIN/BUCKET_NO_MAX config."
+	if mode == "fresh-server" {
+		rollbackComment = "# Restart v1 on " + shellQuote(hostID) + " with its original BUCKET_NO_MIN/BUCKET_NO_MAX config."
+	}
+	writeRolloutPlanSection(out, "6. Rehearse the rollback path before the rollback window closes",
+		"systemctl stop "+shellQuote(service),
+		rolloutCommand(append([]string{binary, "rollout", "rollback-check", "--host", runtimeHost}, rangeArgs...)...),
+		rollbackComment,
+	)
+
+	writeRolloutPlanSection(out, "7. Complete fleet-level pinned and dynamic checks after every host is on v2",
+		rolloutCommand(append([]string{binary, "rollout", "cutover-check", "--host", runtimeHost}, append(append([]string{}, rangeArgs...), "--since", since, "--require-all")...)...),
+		"# After PINNED_BUCKET_* is removed from every v2 monitor config and the fleet is restarted:",
+		rolloutCommand(binary, "validate-config"),
+		rolloutCommand(binary, "rollout", "dynamic-check"),
+		rolloutCommand(binary, "rollout", "activity-check", "--since", since, "--require-all"),
+		rolloutCommand(binary, "rollout", "projection-drift", "--limit", "100"),
+	)
+	return nil
+}
+
+type cutoverCheckOptions struct {
+	HostOverride string
+	BucketMin    int
+	BucketMax    int
+	Since        string
+	RequireAll   bool
+	Limit        int
+	StatusPort   int
+	SkipStatus   bool
+}
+
+func runCutoverCheck(ctx context.Context, out io.Writer, cfg *config.Config, opts cutoverCheckOptions, deps cutoverCheckDeps) error {
+	if cfg == nil {
+		return errors.New("config is not loaded")
+	}
+	if out == nil {
+		out = io.Discard
+	}
+
+	writeRolloutPlanSection(out, "pinned preflight")
+	if err := runPinnedRolloutCheck(ctx, out, cfg, opts.HostOverride, deps.Pinned); err != nil {
+		return err
+	}
+
+	writeRolloutPlanSection(out, "activity check")
+	if err := runActivityCheck(ctx, out, cfg, opts.BucketMin, opts.BucketMax, opts.Since, opts.RequireAll, deps.Activity); err != nil {
+		return err
+	}
+
+	writeRolloutPlanSection(out, "dashboard status")
+	if err := runCutoverStatusCheck(out, cfg, opts, deps); err != nil {
+		return err
+	}
+
+	writeRolloutPlanSection(out, "projection drift")
+	if err := runProjectionDriftReport(ctx, out, cfg, opts.BucketMin, opts.BucketMax, opts.Limit, deps.Projection); err != nil {
+		return err
+	}
+
+	fmt.Fprintln(out, "cutover check passed")
+	return nil
+}
+
+func runCutoverStatusCheck(out io.Writer, cfg *config.Config, opts cutoverCheckOptions, deps cutoverCheckDeps) error {
+	if opts.SkipStatus {
+		fmt.Fprintln(out, "INFO dashboard_status=skipped reason=operator")
+		return nil
+	}
+	port := opts.StatusPort
+	if port == -1 {
+		port = cfg.DashboardPort
+	}
+	if port < 0 {
+		return errors.New("status-port must be >= 0")
+	}
+	if port == 0 {
+		fmt.Fprintln(out, "INFO dashboard_status=skipped dashboard_port=disabled")
+		return nil
+	}
+	if deps.Status == nil {
+		return errors.New("dashboard status checker is not configured")
+	}
+	body, err := deps.Status(port)
+	if err != nil {
+		return fmt.Errorf("dashboard status check on port %d: %w", port, err)
+	}
+	fmt.Fprintf(out, "PASS dashboard_status=http://localhost:%d/api/state\n", port)
+	if body = strings.TrimSpace(body); body != "" {
+		fmt.Fprintf(out, "INFO dashboard_state=%s\n", strings.Join(strings.Fields(body), " "))
+	}
+	return nil
+}
+
+func dashboardStatus(port int) (string, error) {
+	return httpGet(fmt.Sprintf("http://localhost:%d/api/state", port))
+}
+
+type rolloutStateReportOptions struct {
+	Since string
+}
+
+type rolloutStateReport struct {
+	OK                  bool                       `json:"ok"`
+	Command             string                     `json:"command"`
+	GeneratedAt         time.Time                  `json:"generated_at"`
+	Host                string                     `json:"host,omitempty"`
+	Ownership           rolloutStateOwnership      `json:"ownership"`
+	BucketCoverage      rolloutStateBucketCoverage `json:"bucket_coverage"`
+	Activity            rolloutStateActivity       `json:"activity"`
+	ProjectionDrift     rolloutStateDrift          `json:"projection_drift"`
+	DeliveryOwner       rolloutStateDeliveryOwner  `json:"delivery_owner"`
+	SuggestedNextAction string                     `json:"suggested_next_action,omitempty"`
+	Issues              []string                   `json:"issues,omitempty"`
+}
+
+type rolloutStateOwnership struct {
+	Mode      string `json:"mode"`
+	BucketMin int    `json:"bucket_min"`
+	BucketMax int    `json:"bucket_max"`
+}
+
+type rolloutStateBucketCoverage struct {
+	Status      string                `json:"status"`
+	BucketTotal int                   `json:"bucket_total"`
+	HostCount   int                   `json:"host_count"`
+	Error       string                `json:"error,omitempty"`
+	Hosts       []rolloutStateHostRow `json:"hosts,omitempty"`
+}
+
+type rolloutStateHostRow struct {
+	HostID              string    `json:"host_id"`
+	BucketMin           int       `json:"bucket_min"`
+	BucketMax           int       `json:"bucket_max"`
+	Status              string    `json:"status"`
+	LastHeartbeat       time.Time `json:"last_heartbeat"`
+	LastHeartbeatAgeSec int64     `json:"last_heartbeat_age_sec"`
+}
+
+type rolloutStateActivity struct {
+	Since          time.Time `json:"since"`
+	ActiveSites    int       `json:"active_sites"`
+	CheckedSince   int       `json:"checked_since"`
+	UncheckedSince int       `json:"unchecked_since"`
+	CheckedPercent float64   `json:"checked_percent"`
+}
+
+type rolloutStateDrift struct {
+	Count int `json:"count"`
+}
+
+type rolloutStateDeliveryOwner struct {
+	Level   string `json:"level"`
+	Message string `json:"message"`
+}
+
+func buildRolloutStateReport(ctx context.Context, cfg *config.Config, opts rolloutStateReportOptions, deps rolloutStateReportDeps) (rolloutStateReport, error) {
+	if cfg == nil {
+		return rolloutStateReport{}, errors.New("config is not loaded")
+	}
+	now := time.Now().UTC()
+	if deps.Now != nil {
+		now = deps.Now().UTC()
+	}
+	cutoff, err := resolveActivityCutoff(now, opts.Since)
+	if err != nil {
+		return rolloutStateReport{}, err
+	}
+
+	hostID := ""
+	if deps.Hostname != nil {
+		hostID = strings.TrimSpace(deps.Hostname())
+	}
+	if hostID == "" {
+		hostID = "unknown"
+	}
+
+	minBucket, maxBucket, ownershipMode, err := rolloutStateRange(cfg)
+	if err != nil {
+		return rolloutStateReport{}, err
+	}
+
+	report := rolloutStateReport{
+		Command:     "rollout state-report",
+		GeneratedAt: now,
+		Host:        hostID,
+		Ownership: rolloutStateOwnership{
+			Mode:      ownershipMode,
+			BucketMin: minBucket,
+			BucketMax: maxBucket,
+		},
+		BucketCoverage: rolloutStateBucketCoverage{
+			BucketTotal: cfg.BucketTotal,
+		},
+		Activity: rolloutStateActivity{
+			Since: cutoff,
+		},
+	}
+
+	if ownershipMode == "pinned" {
+		report.BucketCoverage.Status = "pinned_config"
+	} else {
+		if deps.GetAllHosts == nil {
+			return rolloutStateReport{}, errors.New("host list query is not configured")
+		}
+		hosts, err := deps.GetAllHosts()
+		if err != nil {
+			return rolloutStateReport{}, fmt.Errorf("query jetmon_hosts: %w", err)
+		}
+		report.BucketCoverage.HostCount = len(hosts)
+		report.BucketCoverage.Hosts = summarizeRolloutHosts(hosts, now)
+		if err := validateDynamicBucketCoverage(hosts, cfg.BucketTotal, time.Duration(cfg.BucketHeartbeatGraceSec)*time.Second, now); err != nil {
+			report.BucketCoverage.Status = "invalid"
+			report.BucketCoverage.Error = err.Error()
+			report.Issues = append(report.Issues, err.Error())
+		} else {
+			report.BucketCoverage.Status = "complete"
+		}
+	}
+
+	if deps.CountActiveSitesForBucketRange == nil {
+		return rolloutStateReport{}, errors.New("active site counter is not configured")
+	}
+	activeSites, err := deps.CountActiveSitesForBucketRange(ctx, minBucket, maxBucket)
+	if err != nil {
+		return rolloutStateReport{}, fmt.Errorf("count active sites in range %d-%d: %w", minBucket, maxBucket, err)
+	}
+	report.Activity.ActiveSites = activeSites
+
+	if deps.CountRecentlyCheckedActiveSitesForRange == nil {
+		return rolloutStateReport{}, errors.New("recently checked active site counter is not configured")
+	}
+	checkedSince, err := deps.CountRecentlyCheckedActiveSitesForRange(ctx, minBucket, maxBucket, cutoff)
+	if err != nil {
+		return rolloutStateReport{}, fmt.Errorf("count recently checked active sites in range %d-%d since %s: %w", minBucket, maxBucket, cutoff.Format(time.RFC3339), err)
+	}
+	report.Activity.CheckedSince = checkedSince
+	report.Activity.UncheckedSince = maxInt(0, activeSites-checkedSince)
+	if activeSites > 0 {
+		report.Activity.CheckedPercent = float64(checkedSince) * 100 / float64(activeSites)
+	}
+
+	if deps.CountLegacyProjectionDrift == nil {
+		return rolloutStateReport{}, errors.New("projection drift counter is not configured")
+	}
+	drift, err := deps.CountLegacyProjectionDrift(ctx, minBucket, maxBucket)
+	if err != nil {
+		return rolloutStateReport{}, fmt.Errorf("count legacy projection drift in range %d-%d: %w", minBucket, maxBucket, err)
+	}
+	report.ProjectionDrift.Count = drift
+
+	level, message := deliveryOwnerStatus(cfg, hostID)
+	report.DeliveryOwner = rolloutStateDeliveryOwner{Level: level, Message: message}
+
+	report.Issues = append(report.Issues, rolloutStateIssues(report)...)
+	report.SuggestedNextAction = suggestRolloutNextAction(report)
+	report.OK = len(report.Issues) == 0
+	return report, nil
+}
+
+func rolloutStateRange(cfg *config.Config) (int, int, string, error) {
+	if minBucket, maxBucket, ok := cfg.PinnedBucketRange(); ok {
+		return minBucket, maxBucket, "pinned", nil
+	}
+	if cfg.BucketTotal <= 0 {
+		return 0, 0, "", errors.New("BUCKET_TOTAL must be > 0")
+	}
+	return 0, cfg.BucketTotal - 1, "dynamic", nil
+}
+
+func summarizeRolloutHosts(hosts []db.HostRow, now time.Time) []rolloutStateHostRow {
+	out := make([]rolloutStateHostRow, 0, len(hosts))
+	for _, host := range hosts {
+		age := now.Sub(host.LastHeartbeat)
+		if age < 0 {
+			age = 0
+		}
+		out = append(out, rolloutStateHostRow{
+			HostID:              host.HostID,
+			BucketMin:           host.BucketMin,
+			BucketMax:           host.BucketMax,
+			Status:              host.Status,
+			LastHeartbeat:       host.LastHeartbeat,
+			LastHeartbeatAgeSec: int64(age.Round(time.Second) / time.Second),
+		})
+	}
+	return out
+}
+
+func rolloutStateIssues(report rolloutStateReport) []string {
+	var issues []string
+	if report.ProjectionDrift.Count > 0 {
+		issues = append(issues, fmt.Sprintf("legacy projection drift=%d", report.ProjectionDrift.Count))
+	}
+	if report.Activity.ActiveSites > 0 && report.Activity.CheckedSince == 0 {
+		issues = append(issues, fmt.Sprintf("no active sites checked since %s", report.Activity.Since.Format(time.RFC3339)))
+	} else if report.Activity.UncheckedSince > 0 {
+		issues = append(issues, fmt.Sprintf("%d/%d active sites checked since %s", report.Activity.CheckedSince, report.Activity.ActiveSites, report.Activity.Since.Format(time.RFC3339)))
+	}
+	if report.DeliveryOwner.Level == "WARN" {
+		issues = append(issues, report.DeliveryOwner.Message)
+	}
+	return issues
+}
+
+func suggestRolloutNextAction(report rolloutStateReport) string {
+	if report.BucketCoverage.Status == "invalid" {
+		return "Fix jetmon_hosts bucket coverage before relying on dynamic ownership."
+	}
+	if report.ProjectionDrift.Count > 0 {
+		return "Run rollout projection-drift --limit=100 and fix legacy projection drift before continuing."
+	}
+	if report.Activity.ActiveSites == 0 {
+		return "Confirm this range is intentionally empty before continuing."
+	}
+	if report.Activity.CheckedSince == 0 {
+		return "Investigate the check loop; no active sites have fresh last_checked_at writes."
+	}
+	if report.Activity.UncheckedSince > 0 {
+		return "Wait one full expected round, then run rollout cutover-check --require-all before moving on."
+	}
+	if report.DeliveryOwner.Level == "WARN" {
+		return "Set DELIVERY_OWNER_HOST or explicitly approve multi-owner delivery before enabling API delivery workers."
+	}
+	if report.Ownership.Mode == "pinned" {
+		return "Continue with the next pinned host; after every host is on v2, plan dynamic ownership cutover."
+	}
+	return "Dynamic ownership looks healthy; continue normal v2 rolling updates and monitoring."
+}
+
+func renderRolloutStateReport(out io.Writer, report rolloutStateReport, output string) error {
+	if output == "json" {
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		return enc.Encode(report)
+	}
+	renderRolloutStateText(out, report)
+	return nil
+}
+
+func renderRolloutStateText(out io.Writer, report rolloutStateReport) {
+	fmt.Fprintf(out, "INFO rollout_state_generated_at=%s\n", report.GeneratedAt.Format(time.RFC3339))
+	fmt.Fprintf(out, "INFO host=%q\n", report.Host)
+	fmt.Fprintf(out, "INFO ownership_mode=%s bucket_range=%d-%d\n", report.Ownership.Mode, report.Ownership.BucketMin, report.Ownership.BucketMax)
+	if report.BucketCoverage.Status == "invalid" {
+		fmt.Fprintf(out, "WARN bucket_coverage=%s error=%q\n", report.BucketCoverage.Status, report.BucketCoverage.Error)
+	} else {
+		fmt.Fprintf(out, "PASS bucket_coverage=%s bucket_total=%d host_count=%d\n", report.BucketCoverage.Status, report.BucketCoverage.BucketTotal, report.BucketCoverage.HostCount)
+	}
+	fmt.Fprintf(out, "INFO activity_since=%s\n", report.Activity.Since.Format(time.RFC3339))
+	fmt.Fprintf(out, "INFO active_sites=%d checked_since=%d unchecked_since=%d checked_percent=%.1f\n", report.Activity.ActiveSites, report.Activity.CheckedSince, report.Activity.UncheckedSince, report.Activity.CheckedPercent)
+	if report.ProjectionDrift.Count > 0 {
+		fmt.Fprintf(out, "WARN legacy_projection_drift=%d\n", report.ProjectionDrift.Count)
+	} else {
+		fmt.Fprintln(out, "PASS legacy_projection_drift=0")
+	}
+	if report.DeliveryOwner.Message != "" {
+		fmt.Fprintf(out, "%s %s\n", report.DeliveryOwner.Level, report.DeliveryOwner.Message)
+	}
+	for _, issue := range report.Issues {
+		fmt.Fprintf(out, "WARN rollout_state_issue=%q\n", issue)
+	}
+	fmt.Fprintf(out, "INFO suggested_next_action=%q\n", report.SuggestedNextAction)
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func writeRolloutPlanSection(out io.Writer, title string, lines ...string) {
+	fmt.Fprintf(out, "## %s\n", title)
+	for _, line := range lines {
+		fmt.Fprintln(out, line)
+	}
+	fmt.Fprintln(out)
+}
+
+func rolloutCommand(parts ...string) string {
+	quoted := make([]string, 0, len(parts))
+	for _, part := range parts {
+		quoted = append(quoted, shellQuote(part))
+	}
+	return strings.Join(quoted, " ")
+}
+
+func shellQuote(value string) string {
+	if value == "" {
+		return "''"
+	}
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			continue
+		}
+		switch r {
+		case '_', '-', '.', '/', ':', '=', '+', ',', '@':
+			continue
+		default:
+			return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+		}
+	}
+	return value
 }
 
 type staticPlanAssertion struct {

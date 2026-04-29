@@ -18,12 +18,13 @@ API_CLI_TOKEN_TTL ?= 0
 API_CLI_TOKEN_ID ?=
 GO          ?= $(shell if command -v go >/dev/null 2>&1; then command -v go; elif [ -x /usr/local/go/bin/go ]; then printf /usr/local/go/bin/go; else printf go; fi)
 GOCACHE     ?= /tmp/jetmon-go-cache
-GO_ENV      := GOCACHE=$(GOCACHE)
+GOMODCACHE  ?= /tmp/jetmon-gomod-cache
+GO_ENV      := GOCACHE=$(GOCACHE) GOMODCACHE=$(GOMODCACHE)
 BUILD_FLAGS := -ldflags "-X main.version=$(shell git describe --tags --always --dirty) \
                          -X main.buildDate=$(shell date -u +%Y-%m-%dT%H:%M:%SZ) \
                          -X main.goVersion=$(shell $(GO) version | awk '{print $$3}')"
 
-.PHONY: all build build-deliverer build-veriflier generate test test-race lint api-cli-smoke api-cli-validate api-cli-token-create api-cli-token-list api-cli-token-revoke clean
+.PHONY: all build build-deliverer build-veriflier generate test test-race lint rollout-docs-verify api-cli-smoke api-cli-validate api-cli-token-create api-cli-token-list api-cli-token-revoke clean
 
 all: build build-deliverer build-veriflier
 
@@ -53,6 +54,9 @@ test-race:
 
 lint:
 	$(GO_ENV) $(GO) vet ./...
+
+rollout-docs-verify: all test lint
+	scripts/rollout-docs-verify.sh
 
 api-cli-smoke: build
 	@test -n "$$JETMON_API_TOKEN" || { echo "JETMON_API_TOKEN is required"; exit 1; }

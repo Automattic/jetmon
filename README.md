@@ -118,7 +118,9 @@ Longer design decisions live in [docs/adr/](docs/adr/).
 ## Production Posture
 
 Jetmon 2 is designed for a cautious host-by-host rollout. The complete process
-is in [docs/v1-to-v2-migration.md](docs/v1-to-v2-migration.md):
+is in [docs/v1-to-v2-migration.md](docs/v1-to-v2-migration.md). Use
+[docs/rollout-quick-reference.md](docs/rollout-quick-reference.md) as the
+one-page command checklist during rehearsals and rollout windows:
 
 - Run `./jetmon2 migrate` before first start. Migrations are embedded and
   additive.
@@ -128,9 +130,10 @@ is in [docs/v1-to-v2-migration.md](docs/v1-to-v2-migration.md):
 - Use pinned bucket mode for the first v1-to-v2 migration so one v1 host can be
   replaced by one v2 host with the same bucket range.
 - Use `rollout static-plan-check`, `rollout pinned-check`,
-  `rollout activity-check`, `rollout rollback-check`, and
-  `rollout projection-drift` from the migration runbook before changing the
-  next host.
+  `rollout cutover-check`, `rollout rollback-check`, and targeted
+  `rollout activity-check` / `rollout projection-drift` from the migration
+  runbook before changing the next host. Use `rollout state-report` for a
+  quick handoff snapshot.
 - Keep `LEGACY_STATUS_PROJECTION_ENABLE` on until legacy readers have moved to
   the v2 API or event tables.
 - Use `SIGINT` or `./jetmon2 drain` for graceful shutdown.
@@ -157,6 +160,7 @@ make build-veriflier  # Build only veriflier2
 make test             # Run the Go test suite
 make test-race        # Run tests with the race detector
 make lint             # Run lint checks
+make rollout-docs-verify  # Verify rollout docs/tooling alignment
 ```
 
 `make generate` is intentionally separate. It requires `protoc` and Go protobuf
