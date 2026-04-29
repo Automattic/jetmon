@@ -367,6 +367,16 @@ alert-contact creation, alert-contact send-test, and best-effort cleanup.
 ./bin/jetmon2 api smoke --batch local-smoke --pretty
 ```
 
+Use the webhook exercise when you want the smoke workflow to prove the outbound
+webhook path too. It creates a temporary webhook, updates the receiver URL with
+the one-time generated secret, mutates the smoke site into a fixture-backed
+HTTP 500 failure, waits for an `event.opened` delivery, verifies the fixture's
+signature result, confirms a delivered webhook row, and cleans up:
+
+```bash
+./bin/jetmon2 api smoke --batch local-webhook --exercise webhook --pretty
+```
+
 The Makefile target builds the binary first and runs the standard smoke path:
 
 ```bash
@@ -378,8 +388,8 @@ make api-cli-smoke
 Use `api-cli-validate` for a fuller live pass against the guide's Docker-local
 workflow. It builds the binary, checks health and identity, exercises the
 generic request escape hatch, dry-runs batch creation, runs `api smoke`, runs a
-deterministic failure simulation assertion, and cleans up the validation
-batches on exit:
+webhook delivery/signature smoke pass, runs a deterministic failure simulation
+assertion, and cleans up the validation batches on exit:
 
 ```bash
 JETMON_API_URL=http://localhost:${API_HOST_PORT:-8090} \
@@ -388,9 +398,10 @@ make api-cli-validate
 ```
 
 The validation target uses `API_VALIDATE_BATCH`, `API_VALIDATE_MODE`,
-`API_VALIDATE_WAIT`, and `API_VALIDATE_COUNT` when you need to vary the default
-batch label or failure scenario. Set `API_VALIDATE_SKIP_FAILURE=1` to run only
-the health, identity, request, batch dry-run, and smoke checks.
+`API_VALIDATE_WAIT`, `API_VALIDATE_WEBHOOK_WAIT`, and `API_VALIDATE_COUNT` when
+you need to vary the default batch label or failure scenario. Set
+`API_VALIDATE_SKIP_WEBHOOK=1` or `API_VALIDATE_SKIP_FAILURE=1` to skip the
+longer webhook or failure-simulation checks.
 
 ## Failure Simulation
 
