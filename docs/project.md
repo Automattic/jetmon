@@ -269,6 +269,7 @@ Queryable by `blog_id` and time range via a CLI tool (`jetmon2 audit --blog-id 1
 - `jetmon2 version` — prints binary version, build date, Go version, and git commit hash
 - `jetmon2 migrate` — applies pending DB schema migrations idempotently
 - `jetmon2 status` — connects to a running instance's internal API and prints a one-line health summary (equivalent to reading `stats/totals` but richer)
+- `jetmon2 rollout guided` — interactive host rollout and rollback walkthrough with transcript logging, resume state, typed destructive confirmations, and fail-closed gates
 - `jetmon2 rollout rehearsal-plan` — prints the ordered same-server or fresh-server command sequence for a host replacement from the approved bucket CSV
 - `jetmon2 rollout host-preflight` — bundles the pre-stop host gate: static plan match, config parse, DB connectivity, pinned safety checks, and systemd validation
 - `jetmon2 rollout static-plan-check` — validates a CSV host-to-bucket plan before any v1 host is stopped

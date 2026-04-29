@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -673,6 +674,328 @@ jetmon-v1-a,0,9
 				t.Fatalf("error = %q, want substring %q", err.Error(), tt.want)
 			}
 		})
+	}
+}
+
+func TestRunGuidedRolloutDryRunChecksLogDir(t *testing.T) {
+	opts := guidedRolloutTestOptions(t)
+	opts.DryRun = true
+	opts.BucketTotal = 0
+	var called bool
+	deps := guidedRolloutTestDeps(t)
+	deps.ResolveBucketTotal = func(context.Context) (int, error) {
+		return 10, nil
+	}
+	deps.StaticPlanCheck = func(context.Context, io.Writer, guidedRolloutOptions) error {
+		called = true
+		return nil
+	}
+
+	var out bytes.Buffer
+	if err := runGuidedRollout(context.Background(), &out, strings.NewReader(""), opts, deps); err != nil {
+		t.Fatalf("runGuidedRollout: %v", err)
+	}
+	if called {
+		t.Fatal("dry run executed static plan check")
+	}
+	for _, want := range []string{
+		"INFO rollout_log=",
+		"INFO rollout_state=",
+		"INFO dry_run=true",
+		`PLAN step=static-plan-check`,
+		`PLAN step=rollback-start-v1`,
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+	if _, err := os.Stat(guidedRolloutStatePath(normalizeGuidedOptionsForTest(t, opts))); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("dry-run state file exists or stat failed: %v", err)
+	}
+}
+
+func TestRunGuidedRolloutLogDirWriteFailure(t *testing.T) {
+	tempDir := t.TempDir()
+	logDirFile := tempDir + "/not-a-directory"
+	if err := os.WriteFile(logDirFile, []byte("not a dir"), 0600); err != nil {
+		t.Fatalf("write logDirFile: %v", err)
+	}
+	opts := guidedRolloutTestOptions(t)
+	opts.LogDir = logDirFile
+	opts.DryRun = true
+
+	var out bytes.Buffer
+	err := runGuidedRollout(context.Background(), &out, strings.NewReader(""), opts, guidedRolloutTestDeps(t))
+	if err == nil {
+		t.Fatal("runGuidedRollout succeeded")
+	}
+	if !strings.Contains(err.Error(), "create rollout log directory") {
+		t.Fatalf("error = %q", err.Error())
+	}
+}
+
+func TestRunGuidedRolloutForwardExecuteCommands(t *testing.T) {
+	opts := guidedRolloutTestOptions(t)
+	opts.ExecuteOperatorCommands = true
+	deps := guidedRolloutTestDeps(t)
+	var calls []string
+	deps.StaticPlanCheck = func(context.Context, io.Writer, guidedRolloutOptions) error {
+		calls = append(calls, "static")
+		return nil
+	}
+	deps.ValidateConfig = func(context.Context, io.Writer, guidedRolloutOptions) error {
+		calls = append(calls, "validate")
+		return nil
+	}
+	deps.HostPreflight = func(context.Context, io.Writer, guidedRolloutOptions) error {
+		calls = append(calls, "preflight")
+		return nil
+	}
+	deps.CutoverCheck = func(_ context.Context, _ io.Writer, _ guidedRolloutOptions, requireAll bool) error {
+		if requireAll {
+			calls = append(calls, "cutover-all")
+		} else {
+			calls = append(calls, "cutover-smoke")
+		}
+		return nil
+	}
+	var commands []string
+	deps.ExecCommand = func(_ context.Context, command string) (string, error) {
+		commands = append(commands, command)
+		return "", nil
+	}
+
+	input := strings.Join([]string{
+		"y",
+		"y",
+		"y",
+		"STOP jetmon-v1-a 0-4",
+		"START V2 jetmon-v1-a 0-4",
+		"y",
+		"READY",
+		"",
+	}, "\n")
+	var out bytes.Buffer
+	if err := runGuidedRollout(context.Background(), &out, strings.NewReader(input), opts, deps); err != nil {
+		t.Fatalf("runGuidedRollout: %v\n%s", err, out.String())
+	}
+	if got, want := strings.Join(calls, ","), "static,validate,preflight,cutover-smoke,cutover-all"; got != want {
+		t.Fatalf("calls = %s, want %s", got, want)
+	}
+	if got, want := strings.Join(commands, ","), "systemctl stop jetmon,systemctl enable --now jetmon2"; got != want {
+		t.Fatalf("commands = %s, want %s", got, want)
+	}
+	stopCommandAt := strings.Index(out.String(), "COMMAND systemctl stop jetmon")
+	stopConfirmAt := strings.Index(out.String(), "Type STOP jetmon-v1-a 0-4 to continue:")
+	if stopCommandAt < 0 || stopConfirmAt < 0 || stopCommandAt > stopConfirmAt {
+		t.Fatalf("stop command should be shown before typed confirmation:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "PASS guided_rollout=complete") {
+		t.Fatalf("output missing completion:\n%s", out.String())
+	}
+	state := readGuidedStateForTest(t, opts)
+	if state.LastCompletedStep != "cutover-require-all" || !state.V1Stopped || !state.V2Started {
+		t.Fatalf("state = %+v", state)
+	}
+}
+
+func TestRunGuidedRolloutRollbackExecuteCommands(t *testing.T) {
+	opts := guidedRolloutTestOptions(t)
+	opts.Rollback = true
+	opts.ExecuteOperatorCommands = true
+	deps := guidedRolloutTestDeps(t)
+	var calls []string
+	deps.RollbackCheck = func(context.Context, io.Writer, guidedRolloutOptions) error {
+		calls = append(calls, "rollback-check")
+		return nil
+	}
+	var commands []string
+	deps.ExecCommand = func(_ context.Context, command string) (string, error) {
+		commands = append(commands, command)
+		return "", nil
+	}
+
+	input := strings.Join([]string{
+		"STOP V2 jetmon-v1-a 0-4",
+		"y",
+		"START V1 jetmon-v1-a 0-4",
+		"",
+	}, "\n")
+	var out bytes.Buffer
+	if err := runGuidedRollout(context.Background(), &out, strings.NewReader(input), opts, deps); err != nil {
+		t.Fatalf("runGuidedRollout: %v\n%s", err, out.String())
+	}
+	if got, want := strings.Join(calls, ","), "rollback-check"; got != want {
+		t.Fatalf("calls = %s, want %s", got, want)
+	}
+	if got, want := strings.Join(commands, ","), "systemctl stop jetmon2,systemctl start jetmon"; got != want {
+		t.Fatalf("commands = %s, want %s", got, want)
+	}
+	if !strings.Contains(out.String(), "PASS guided_rollback=complete") {
+		t.Fatalf("output missing rollback completion:\n%s", out.String())
+	}
+}
+
+func TestRunGuidedRolloutFailureCanStop(t *testing.T) {
+	opts := guidedRolloutTestOptions(t)
+	deps := guidedRolloutTestDeps(t)
+	deps.StaticPlanCheck = func(context.Context, io.Writer, guidedRolloutOptions) error {
+		return errors.New("static mismatch")
+	}
+
+	input := strings.Join([]string{"y", "s", ""}, "\n")
+	var out bytes.Buffer
+	err := runGuidedRollout(context.Background(), &out, strings.NewReader(input), opts, deps)
+	if err == nil {
+		t.Fatal("runGuidedRollout succeeded")
+	}
+	if !strings.Contains(err.Error(), "static mismatch") {
+		t.Fatalf("error = %q", err.Error())
+	}
+	if !strings.Contains(out.String(), "Options: [r] retry this step, [s] stop here") {
+		t.Fatalf("output missing failure options:\n%s", out.String())
+	}
+}
+
+func TestRunGuidedRolloutResumeSkipsCompletedSteps(t *testing.T) {
+	opts := guidedRolloutTestOptions(t)
+	normalized := normalizeGuidedOptionsForTest(t, opts)
+	state := newGuidedRolloutState(normalized, time.Date(2026, 4, 29, 17, 0, 0, 0, time.UTC))
+	state.CompletedSteps = []string{"static-plan-check", "validate-config"}
+	state.LastCompletedStep = "validate-config"
+	writeGuidedStateForTest(t, normalized, state)
+
+	deps := guidedRolloutTestDeps(t)
+	var calls []string
+	deps.StaticPlanCheck = func(context.Context, io.Writer, guidedRolloutOptions) error {
+		calls = append(calls, "static")
+		return nil
+	}
+	deps.ValidateConfig = func(context.Context, io.Writer, guidedRolloutOptions) error {
+		calls = append(calls, "validate")
+		return nil
+	}
+	deps.HostPreflight = func(context.Context, io.Writer, guidedRolloutOptions) error {
+		calls = append(calls, "preflight")
+		return nil
+	}
+	deps.CutoverCheck = func(_ context.Context, _ io.Writer, _ guidedRolloutOptions, requireAll bool) error {
+		if requireAll {
+			calls = append(calls, "cutover-all")
+		} else {
+			calls = append(calls, "cutover-smoke")
+		}
+		return nil
+	}
+
+	input := strings.Join([]string{
+		"y",
+		"y",
+		"STOP jetmon-v1-a 0-4",
+		"DONE",
+		"START V2 jetmon-v1-a 0-4",
+		"DONE",
+		"y",
+		"READY",
+		"",
+	}, "\n")
+	var out bytes.Buffer
+	if err := runGuidedRollout(context.Background(), &out, strings.NewReader(input), opts, deps); err != nil {
+		t.Fatalf("runGuidedRollout: %v\n%s", err, out.String())
+	}
+	if strings.Contains(strings.Join(calls, ","), "static") || strings.Contains(strings.Join(calls, ","), "validate") {
+		t.Fatalf("resume reran completed calls: %v", calls)
+	}
+	if got, want := strings.Join(calls, ","), "preflight,cutover-smoke,cutover-all"; got != want {
+		t.Fatalf("calls = %s, want %s", got, want)
+	}
+	if !strings.Contains(out.String(), "SKIP step=static-plan-check reason=completed_from_state") {
+		t.Fatalf("output missing resume skip:\n%s", out.String())
+	}
+}
+
+func guidedRolloutTestOptions(t *testing.T) guidedRolloutOptions {
+	t.Helper()
+	return guidedRolloutOptions{
+		Mode:        "same-server",
+		PlanFile:    "rollout-buckets.csv",
+		HostID:      "jetmon-v1-a",
+		RuntimeHost: "jetmon-v1-a",
+		BucketMin:   0,
+		BucketMax:   4,
+		BucketTotal: 10,
+		Service:     "jetmon2",
+		Since:       "15m",
+		V1StopCmd:   "systemctl stop jetmon",
+		V1StartCmd:  "systemctl start jetmon",
+		LogDir:      t.TempDir(),
+	}
+}
+
+func guidedRolloutTestDeps(t *testing.T) guidedRolloutDeps {
+	t.Helper()
+	return guidedRolloutDeps{
+		Now: func() time.Time {
+			return time.Date(2026, 4, 29, 17, 30, 0, 0, time.UTC)
+		},
+		ResolveBucketTotal: func(context.Context) (int, error) {
+			return 10, nil
+		},
+		StaticPlanCheck: func(context.Context, io.Writer, guidedRolloutOptions) error {
+			return nil
+		},
+		ValidateConfig: func(context.Context, io.Writer, guidedRolloutOptions) error {
+			return nil
+		},
+		HostPreflight: func(context.Context, io.Writer, guidedRolloutOptions) error {
+			return nil
+		},
+		CutoverCheck: func(context.Context, io.Writer, guidedRolloutOptions, bool) error {
+			return nil
+		},
+		RollbackCheck: func(context.Context, io.Writer, guidedRolloutOptions) error {
+			return nil
+		},
+		ExecCommand: func(context.Context, string) (string, error) {
+			return "", nil
+		},
+	}
+}
+
+func normalizeGuidedOptionsForTest(t *testing.T, opts guidedRolloutOptions) guidedRolloutOptions {
+	t.Helper()
+	normalized, err := normalizeGuidedRolloutOptions(opts)
+	if err != nil {
+		t.Fatalf("normalizeGuidedRolloutOptions: %v", err)
+	}
+	return normalized
+}
+
+func readGuidedStateForTest(t *testing.T, opts guidedRolloutOptions) guidedRolloutState {
+	t.Helper()
+	normalized := normalizeGuidedOptionsForTest(t, opts)
+	data, err := os.ReadFile(guidedRolloutStatePath(normalized))
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	var state guidedRolloutState
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatalf("decode state: %v", err)
+	}
+	return state
+}
+
+func writeGuidedStateForTest(t *testing.T, opts guidedRolloutOptions, state guidedRolloutState) {
+	t.Helper()
+	if err := os.MkdirAll(opts.LogDir, 0750); err != nil {
+		t.Fatalf("mkdir log dir: %v", err)
+	}
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		t.Fatalf("encode state: %v", err)
+	}
+	if err := os.WriteFile(guidedRolloutStatePath(opts), data, 0600); err != nil {
+		t.Fatalf("write state: %v", err)
 	}
 }
 

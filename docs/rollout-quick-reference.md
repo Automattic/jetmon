@@ -8,6 +8,47 @@ Unless a command explicitly targets the old v1 host, run it from the staged v2
 host with the same `DB_*` environment the `jetmon2` service will use. Shell
 commands do not automatically inherit systemd's `EnvironmentFile`.
 
+## Guided Path
+
+Prefer the guided command during the production window. It checks that the
+rollout log directory is writable before it starts, writes a transcript and
+resume state file, explains each step, asks before proceeding, uses typed
+confirmations for v1/v2 stop/start transitions, and stops on failed gates.
+
+```bash
+./jetmon2 rollout guided \
+  --file=<ranges.csv> \
+  --host=<v1-hostname> \
+  --runtime-host=<v2-hostname> \
+  --bucket-min=<min> \
+  --bucket-max=<max> \
+  --bucket-total=<total> \
+  --mode=same-server \
+  --v1-stop-command='<exact v1 stop command>' \
+  --v1-start-command='<exact v1 rollback start command>' \
+  --log-dir=logs/rollout
+```
+
+By default, guided rollout prints v1/v2 stop/start commands and asks the
+operator to confirm when they have been run. Add `--execute-operator-commands`
+only when the operator wants the command to execute those stop/start commands
+after typed confirmation. Use `--dry-run` to verify the prompt flow and log
+paths without running rollout checks or service commands.
+
+To return a range to v1, run the guided rollback path:
+
+```bash
+./jetmon2 rollout guided \
+  --rollback \
+  --file=<ranges.csv> \
+  --host=<v1-hostname> \
+  --runtime-host=<v2-hostname> \
+  --bucket-min=<min> \
+  --bucket-max=<max> \
+  --bucket-total=<total> \
+  --v1-start-command='<exact v1 rollback start command>'
+```
+
 ## Before The First Host
 
 1. Confirm the approved static bucket plan exists as a reusable CSV:

@@ -65,6 +65,10 @@ preflight, deliverer hardening, and API CLI fixture workflow branches:
 - [x] Clarify operator-facing docs around service environment setup, explicit
   cutover/rollback ranges, and the difference between the immediate cutover
   smoke gate and the full-round `--require-all` gate.
+- [x] Add `jetmon2 rollout guided` as an interactive, idempotent rollout and
+  rollback walkthrough with log-dir write checks, transcripts, resume state,
+  typed confirmations for destructive transitions, dry-run rehearsal, and
+  optional execution of operator commands.
 
 Recently completed candidate branches:
 
@@ -104,8 +108,8 @@ Recently completed candidate branches:
   single-owner during migration from embedded to standalone delivery.
 - **Run a production rollout rehearsal pass.** Validate that README,
   `v1-to-v2-migration.md`, config samples, systemd units,
-  `validate-config`, `rollout static-plan-check`, `rollout host-preflight`,
-  `rollout pinned-check`, `rollout cutover-check`, `rollout activity-check`,
+  `validate-config`, `rollout guided`, `rollout static-plan-check`,
+  `rollout host-preflight`, `rollout cutover-check`, `rollout activity-check`,
   `rollout rollback-check`, `rollout projection-drift`, and rollback steps line
   up exactly before the first production host replacement.
 - **Instrument the data needed for the v3 decision.** During v2 production,
@@ -716,9 +720,10 @@ where to look, and what each item unlocked.
 
 - **Pinned v1-to-v2 rollout mode.** v2 hosts can run pinned to the exact bucket
   range of the v1 host they replace.
-  Example: `./jetmon2 rollout pinned-check` verifies pinned config, projection
-  writes, dynamic-ownership absence, active-site coverage, and projection drift
-  before cutover.
+  Example: `./jetmon2 rollout guided` wraps static-plan validation,
+  host-preflight, cutover checks, and rollback gates with prompts, transcript
+  logging, and resume state; `./jetmon2 rollout host-preflight` is the direct
+  pre-stop gate for manual runs.
 - **Post-start cutover check.** `./jetmon2 rollout cutover-check` bundles the
   read-only pinned preflight, recent activity check, dashboard status check,
   and projection-drift report used after each v1 host replacement.

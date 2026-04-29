@@ -136,6 +136,47 @@ the static plan, add `--runtime-host=<new-v2-hostname>` and use
 `--mode=fresh-server`. Add `--systemd-unit=<path>` if the staged service unit
 is not `/etc/systemd/system/jetmon2.service`.
 
+During the production window, prefer the guided command so operators do not
+need to copy/paste each command manually:
+
+```bash
+./jetmon2 rollout guided \
+  --file rollout-buckets.csv \
+  --host=jetmon-v1-a \
+  --runtime-host=jetmon-v1-a \
+  --bucket-min=0 \
+  --bucket-max=99 \
+  --bucket-total=<total> \
+  --mode=same-server \
+  --v1-stop-command='<exact v1 stop command>' \
+  --v1-start-command='<exact v1 rollback start command>' \
+  --log-dir=logs/rollout
+```
+
+`rollout guided` checks that the log directory is writable before it starts,
+writes a transcript plus `<runtime-host>-<min>-<max>.state.json` resume state,
+explains each gate, asks before continuing, and stops on failed gates. It uses
+typed confirmations before stopping v1, starting v2, stopping v2 during
+rollback, or restarting v1. By default it prints service commands for the
+operator to run and asks for `DONE`; add `--execute-operator-commands` only
+when the operator intentionally wants the guided command to execute those
+commands after confirmation.
+
+If a rollout needs to return the range to v1, use the guided rollback path:
+
+```bash
+./jetmon2 rollout guided \
+  --rollback \
+  --file rollout-buckets.csv \
+  --host=jetmon-v1-a \
+  --runtime-host=jetmon-v1-a \
+  --bucket-min=0 \
+  --bucket-max=99 \
+  --bucket-total=<total> \
+  --v1-start-command='<exact v1 rollback start command>' \
+  --log-dir=logs/rollout
+```
+
 ### Prepare Database And Rollback Safety
 
 1. Confirm a recent MySQL backup exists and restore has been tested according
@@ -307,6 +348,10 @@ simulation must also use `--batch`.
 Use this path when the same server currently running v1 will run v2 for the
 same bucket range.
 
+Preferred: run `./jetmon2 rollout guided ...` with the same host, range, stop,
+and rollback commands from the generated rehearsal plan. The manual steps below
+are the fallback/reference path and match what the guided command walks through.
+
 1. Confirm v2 files and config are staged beside, not on top of, v1.
 2. Confirm v1 service stop/start commands and config are documented for
    cutover and rollback.
@@ -370,6 +415,11 @@ same bucket range.
 
 Use this path when a new server will take over a bucket range from an existing
 v1 server.
+
+Preferred: run `./jetmon2 rollout guided --mode=fresh-server ...` from the new
+v2 server, with `--host=<old-v1-hostname>` and
+`--runtime-host=<new-v2-hostname>`. The manual steps below are the
+fallback/reference path.
 
 1. Provision the new server and install v2 artifacts.
 2. Configure `PINNED_BUCKET_MIN` and `PINNED_BUCKET_MAX` to match the old v1
@@ -510,6 +560,9 @@ cat stats/totals
 
 Use this when v2 replaced v1 on the same server.
 
+Preferred: run `./jetmon2 rollout guided --rollback ...` with the original v1
+start command. The manual steps below are the fallback/reference path.
+
 1. Stop v2:
 
    ```bash
@@ -539,6 +592,10 @@ Use this when v2 replaced v1 on the same server.
 ### Revert A Fresh-Server Takeover
 
 Use this when v2 was started on a new server and the old v1 server was stopped.
+
+Preferred: run `./jetmon2 rollout guided --rollback ...` from the new v2 server
+with `--host=<old-v1-hostname>` and `--runtime-host=<new-v2-hostname>`. The
+manual steps below are the fallback/reference path.
 
 1. Stop v2 on the new server:
 
@@ -623,6 +680,7 @@ Only remove v1 after rollout signoff.
 - [ ] additive migrations applied
 - [ ] pinned configs prepared for every range
 - [ ] rollback commands documented for every host
+- [ ] `rollout guided --dry-run` exercised for the first host
 - [ ] `rollout host-preflight` passes before each v1 host is stopped
 - [ ] first host cutover observed for one full round
 - [ ] `rollout cutover-check --require-all` passes for replaced ranges

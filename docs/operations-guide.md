@@ -72,6 +72,17 @@ monitoring, revert paths, dynamic ownership cutover, and v1 teardown.
 Use [rollout-quick-reference.md](rollout-quick-reference.md) as the one-page
 operator command checklist during rehearsals and rollout windows.
 
+Use `./jetmon2 rollout guided --file=<ranges.csv> --host=<v1-host>
+--runtime-host=<v2-host> --bucket-min=N --bucket-max=N --bucket-total=N
+--v1-stop-command='<cmd>' --v1-start-command='<cmd>'` for the preferred
+interactive rollout path. It verifies that `--log-dir` is writable before it
+starts, writes a transcript plus resume state, explains each gate, asks before
+continuing, and requires typed confirmations before v1/v2 stop/start
+transitions. By default it prints service commands for the operator to run;
+add `--execute-operator-commands` only when the operator intentionally wants
+the guided command to execute those commands after confirmation. Use
+`--rollback` for the guided return-to-v1 path and `--dry-run` for rehearsal.
+
 Use `./jetmon2 rollout rehearsal-plan --file=<ranges.csv> --host=<host>
 --bucket-min=N --bucket-max=N --mode=same-server` to print the ordered command
 sequence for one host replacement. Use `--mode=fresh-server` plus
