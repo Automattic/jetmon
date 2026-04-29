@@ -20,22 +20,28 @@ import (
 const deliveryCheckDefaultSince = "15m"
 
 type deliveryCheckOptions struct {
-	HostOverride          string
-	Since                 string
-	Output                string
-	MaxPending            int64
-	MaxDue                int64
-	MaxAbandoned          int64
-	RequireRecentDelivery bool
+	HostOverride                 string
+	Since                        string
+	Output                       string
+	MaxPending                   int64
+	MaxDue                       int64
+	MaxAbandoned                 int64
+	MaxFailed                    int64
+	RequireRecentDelivery        bool
+	RequireRecentWebhookDelivery bool
+	RequireRecentAlertDelivery   bool
 }
 
 type deliveryTableSummary struct {
-	Kind           string `json:"kind"`
-	Pending        int64  `json:"pending"`
-	DueNow         int64  `json:"due_now"`
-	FutureRetry    int64  `json:"future_retry"`
-	DeliveredSince int64  `json:"delivered_since"`
-	AbandonedSince int64  `json:"abandoned_since"`
+	Kind                string `json:"kind"`
+	Pending             int64  `json:"pending"`
+	DueNow              int64  `json:"due_now"`
+	FutureRetry         int64  `json:"future_retry"`
+	DeliveredSince      int64  `json:"delivered_since"`
+	AbandonedSince      int64  `json:"abandoned_since"`
+	FailedSince         int64  `json:"failed_since"`
+	OldestPendingAgeSec int64  `json:"oldest_pending_age_sec"`
+	OldestDueAgeSec     int64  `json:"oldest_due_age_sec"`
 }
 
 type deliveryCheckReport struct {
@@ -57,6 +63,7 @@ func parseDeliveryCheckOptions(args []string) (deliveryCheckOptions, error) {
 		MaxPending:   -1,
 		MaxDue:       -1,
 		MaxAbandoned: -1,
+		MaxFailed:    -1,
 	}
 	fs := flag.NewFlagSet("delivery-check", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -66,7 +73,10 @@ func parseDeliveryCheckOptions(args []string) (deliveryCheckOptions, error) {
 	fs.Int64Var(&opts.MaxPending, "max-pending", -1, "fail when total pending deliveries exceed this count (-1 disables)")
 	fs.Int64Var(&opts.MaxDue, "max-due", -1, "fail when total due deliveries exceed this count (-1 disables)")
 	fs.Int64Var(&opts.MaxAbandoned, "max-abandoned", -1, "fail when abandoned deliveries since cutoff exceed this count (-1 disables)")
+	fs.Int64Var(&opts.MaxFailed, "max-failed", -1, "fail when failed deliveries since cutoff exceed this count (-1 disables)")
 	fs.BoolVar(&opts.RequireRecentDelivery, "require-recent-delivery", false, "fail unless at least one delivery succeeded since cutoff")
+	fs.BoolVar(&opts.RequireRecentWebhookDelivery, "require-recent-webhook-delivery", false, "fail unless at least one webhook delivery succeeded since cutoff")
+	fs.BoolVar(&opts.RequireRecentAlertDelivery, "require-recent-alert-delivery", false, "fail unless at least one alert-contact delivery succeeded since cutoff")
 	if err := fs.Parse(args); err != nil {
 		return opts, err
 	}
@@ -86,13 +96,16 @@ func parseDeliveryCheckOptions(args []string) (deliveryCheckOptions, error) {
 	if opts.MaxAbandoned < -1 {
 		return opts, fmt.Errorf("--max-abandoned must be >= 0, or -1 to disable")
 	}
+	if opts.MaxFailed < -1 {
+		return opts, fmt.Errorf("--max-failed must be >= 0, or -1 to disable")
+	}
 	return opts, nil
 }
 
 func cmdDeliveryCheck(args []string) {
 	opts, err := parseDeliveryCheckOptions(args)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "usage: jetmon-deliverer delivery-check [--host=<host>] [--since=15m] [--max-pending=N] [--max-due=N] [--max-abandoned=N] [--require-recent-delivery] [--output=text|json]")
+		fmt.Fprintln(os.Stderr, "usage: jetmon-deliverer delivery-check [--host=<host>] [--since=15m] [--max-pending=N] [--max-due=N] [--max-abandoned=N] [--max-failed=N] [--require-recent-delivery] [--require-recent-webhook-delivery] [--require-recent-alert-delivery] [--output=text|json]")
 		fmt.Fprintf(os.Stderr, "FAIL %v\n", err)
 		os.Exit(2)
 	}
@@ -173,6 +186,9 @@ func buildDeliveryCheckReport(ctx context.Context, conn *sql.DB, cfg *config.Con
 		report.Total.FutureRetry += summary.FutureRetry
 		report.Total.DeliveredSince += summary.DeliveredSince
 		report.Total.AbandonedSince += summary.AbandonedSince
+		report.Total.FailedSince += summary.FailedSince
+		report.Total.OldestPendingAgeSec = maxInt64(report.Total.OldestPendingAgeSec, summary.OldestPendingAgeSec)
+		report.Total.OldestDueAgeSec = maxInt64(report.Total.OldestDueAgeSec, summary.OldestDueAgeSec)
 	}
 
 	report.Failures = evaluateDeliveryCheckFailures(report, opts)
@@ -208,27 +224,100 @@ func queryDeliveryTableSummary(ctx context.Context, conn *sql.DB, kind, table st
 		return deliveryTableSummary{}, fmt.Errorf("unsupported delivery table %q", table)
 	}
 
-	query := fmt.Sprintf(`
-		SELECT
-			COALESCE(SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END), 0) AS pending,
-			COALESCE(SUM(CASE WHEN status = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= ?) THEN 1 ELSE 0 END), 0) AS due_now,
-			COALESCE(SUM(CASE WHEN status = 'pending' AND next_attempt_at > ? THEN 1 ELSE 0 END), 0) AS future_retry,
-			COALESCE(SUM(CASE WHEN status = 'delivered' AND delivered_at >= ? THEN 1 ELSE 0 END), 0) AS delivered_since,
-			COALESCE(SUM(CASE WHEN status = 'abandoned' AND COALESCE(last_attempt_at, created_at) >= ? THEN 1 ELSE 0 END), 0) AS abandoned_since
-		  FROM %s`, table)
+	summary := deliveryTableSummary{Kind: kind}
 
-	var summary deliveryTableSummary
-	summary.Kind = kind
-	if err := conn.QueryRowContext(ctx, query, now, now, cutoff, cutoff).Scan(
+	pendingQuery := fmt.Sprintf(`
+		SELECT COUNT(*),
+		       COALESCE(TIMESTAMPDIFF(SECOND, MIN(created_at), ?), 0)
+		  FROM %s
+		 WHERE status = 'pending'`, table)
+	if err := conn.QueryRowContext(ctx, pendingQuery, now).Scan(
 		&summary.Pending,
-		&summary.DueNow,
-		&summary.FutureRetry,
-		&summary.DeliveredSince,
-		&summary.AbandonedSince,
+		&summary.OldestPendingAgeSec,
 	); err != nil {
-		return deliveryTableSummary{}, fmt.Errorf("%s delivery summary: %w", kind, err)
+		return deliveryTableSummary{}, fmt.Errorf("%s pending delivery summary: %w", kind, err)
 	}
+
+	dueQuery := fmt.Sprintf(`
+		SELECT COUNT(*),
+		       COALESCE(TIMESTAMPDIFF(SECOND, MIN(COALESCE(next_attempt_at, created_at)), ?), 0)
+		  FROM %s
+		 WHERE status = 'pending'
+		   AND (next_attempt_at IS NULL OR next_attempt_at <= ?)`, table)
+	if err := conn.QueryRowContext(ctx, dueQuery, now, now).Scan(
+		&summary.DueNow,
+		&summary.OldestDueAgeSec,
+	); err != nil {
+		return deliveryTableSummary{}, fmt.Errorf("%s due delivery summary: %w", kind, err)
+	}
+
+	futureQuery := fmt.Sprintf(`
+		SELECT COUNT(*)
+		  FROM %s
+		 WHERE status = 'pending'
+		   AND next_attempt_at > ?`, table)
+	if err := conn.QueryRowContext(ctx, futureQuery, now).Scan(&summary.FutureRetry); err != nil {
+		return deliveryTableSummary{}, fmt.Errorf("%s future delivery summary: %w", kind, err)
+	}
+
+	deliveredQuery := fmt.Sprintf(`
+		SELECT COUNT(*)
+		  FROM %s
+		 WHERE status = 'delivered'
+		   AND delivered_at >= ?`, table)
+	if err := conn.QueryRowContext(ctx, deliveredQuery, cutoff).Scan(&summary.DeliveredSince); err != nil {
+		return deliveryTableSummary{}, fmt.Errorf("%s delivered summary: %w", kind, err)
+	}
+
+	abandonedSince, err := queryRecentTerminalDeliveryCount(ctx, conn, table, "abandoned", cutoff)
+	if err != nil {
+		return deliveryTableSummary{}, fmt.Errorf("%s abandoned summary: %w", kind, err)
+	}
+	summary.AbandonedSince = abandonedSince
+
+	failedSince, err := queryRecentTerminalDeliveryCount(ctx, conn, table, "failed", cutoff)
+	if err != nil {
+		return deliveryTableSummary{}, fmt.Errorf("%s failed summary: %w", kind, err)
+	}
+	summary.FailedSince = failedSince
+	summary.OldestPendingAgeSec = maxInt64(0, summary.OldestPendingAgeSec)
+	summary.OldestDueAgeSec = maxInt64(0, summary.OldestDueAgeSec)
 	return summary, nil
+}
+
+func queryRecentTerminalDeliveryCount(ctx context.Context, conn *sql.DB, table, status string, cutoff time.Time) (int64, error) {
+	switch table {
+	case "jetmon_webhook_deliveries", "jetmon_alert_deliveries":
+	default:
+		return 0, fmt.Errorf("unsupported delivery table %q", table)
+	}
+	switch status {
+	case "abandoned", "failed":
+	default:
+		return 0, fmt.Errorf("unsupported terminal status %q", status)
+	}
+
+	withAttemptQuery := fmt.Sprintf(`
+		SELECT COUNT(*)
+		  FROM %s
+		 WHERE status = ?
+		   AND last_attempt_at >= ?`, table)
+	var withAttempt int64
+	if err := conn.QueryRowContext(ctx, withAttemptQuery, status, cutoff).Scan(&withAttempt); err != nil {
+		return 0, err
+	}
+
+	createdFallbackQuery := fmt.Sprintf(`
+		SELECT COUNT(*)
+		  FROM %s
+		 WHERE status = ?
+		   AND last_attempt_at IS NULL
+		   AND created_at >= ?`, table)
+	var createdFallback int64
+	if err := conn.QueryRowContext(ctx, createdFallbackQuery, status, cutoff).Scan(&createdFallback); err != nil {
+		return 0, err
+	}
+	return withAttempt + createdFallback, nil
 }
 
 func evaluateDeliveryCheckFailures(report deliveryCheckReport, opts deliveryCheckOptions) []string {
@@ -242,8 +331,17 @@ func evaluateDeliveryCheckFailures(report deliveryCheckReport, opts deliveryChec
 	if opts.MaxAbandoned >= 0 && report.Total.AbandonedSince > opts.MaxAbandoned {
 		failures = append(failures, fmt.Sprintf("abandoned deliveries since %s total=%d exceeds max-abandoned=%d", report.Since.Format(time.RFC3339), report.Total.AbandonedSince, opts.MaxAbandoned))
 	}
+	if opts.MaxFailed >= 0 && report.Total.FailedSince > opts.MaxFailed {
+		failures = append(failures, fmt.Sprintf("failed deliveries since %s total=%d exceeds max-failed=%d", report.Since.Format(time.RFC3339), report.Total.FailedSince, opts.MaxFailed))
+	}
 	if opts.RequireRecentDelivery && report.Total.DeliveredSince == 0 {
 		failures = append(failures, fmt.Sprintf("no delivered rows since %s", report.Since.Format(time.RFC3339)))
+	}
+	if opts.RequireRecentWebhookDelivery && deliveredSince(report, "webhook") == 0 {
+		failures = append(failures, fmt.Sprintf("no webhook deliveries since %s", report.Since.Format(time.RFC3339)))
+	}
+	if opts.RequireRecentAlertDelivery && deliveredSince(report, "alert") == 0 {
+		failures = append(failures, fmt.Sprintf("no alert-contact deliveries since %s", report.Since.Format(time.RFC3339)))
 	}
 	return failures
 }
@@ -266,7 +364,7 @@ func renderDeliveryCheckText(out io.Writer, report deliveryCheckReport) error {
 	}
 
 	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "KIND\tPENDING\tDUE_NOW\tFUTURE_RETRY\tDELIVERED_SINCE\tABANDONED_SINCE")
+	fmt.Fprintln(tw, "KIND\tPENDING\tDUE_NOW\tFUTURE_RETRY\tDELIVERED_SINCE\tABANDONED_SINCE\tFAILED_SINCE\tOLDEST_PENDING_SEC\tOLDEST_DUE_SEC")
 	for _, summary := range report.Tables {
 		writeDeliverySummaryRow(tw, summary)
 	}
@@ -288,12 +386,31 @@ func renderDeliveryCheckText(out io.Writer, report deliveryCheckReport) error {
 func writeDeliverySummaryRow(out io.Writer, summary deliveryTableSummary) {
 	fmt.Fprintf(
 		out,
-		"%s\t%d\t%d\t%d\t%d\t%d\n",
+		"%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n",
 		summary.Kind,
 		summary.Pending,
 		summary.DueNow,
 		summary.FutureRetry,
 		summary.DeliveredSince,
 		summary.AbandonedSince,
+		summary.FailedSince,
+		summary.OldestPendingAgeSec,
+		summary.OldestDueAgeSec,
 	)
+}
+
+func deliveredSince(report deliveryCheckReport, kind string) int64 {
+	for _, summary := range report.Tables {
+		if summary.Kind == kind {
+			return summary.DeliveredSince
+		}
+	}
+	return 0
+}
+
+func maxInt64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }

@@ -103,7 +103,8 @@ delivery.
      /opt/jetmon2/bin/jetmon-deliverer delivery-check \
        --since=15m \
        --max-due=0 \
-       --max-abandoned=0
+       --max-abandoned=0 \
+       --max-failed=0
    ```
 10. Stop embedded delivery after the standalone owner has been stable for at
    least one normal alerting window.
@@ -123,7 +124,8 @@ JETMON_CONFIG=/opt/jetmon2/config/api-owner.json \
   /opt/jetmon2/bin/jetmon-deliverer delivery-check \
     --since=15m \
     --max-due=0 \
-    --max-abandoned=0
+    --max-abandoned=0 \
+    --max-failed=0
 ```
 
 ## Active-Active Delivery
@@ -172,11 +174,17 @@ Before enabling standalone delivery:
 During rollout:
 
 - `delivery-check --since=15m` shows no sustained growth in pending rows.
-- `delivery-check --since=15m --max-due=0 --max-abandoned=0` passes once the
-  queue has drained and no new abandons are present.
+- `delivery-check --since=15m --max-due=0 --max-abandoned=0 --max-failed=0`
+  passes once the queue has drained and no new terminal failures are present.
 - Use `--require-recent-delivery` only when the rollout window is expected to
   include at least one real webhook or alert-contact delivery. It is too strict
   for quiet environments with no outbound dispatch.
+- Use `--require-recent-webhook-delivery` and
+  `--require-recent-alert-delivery` when each delivery family must prove a
+  successful send independently.
+- `OLDEST_PENDING_SEC` and `OLDEST_DUE_SEC` show queue age. A non-zero pending
+  count with a growing oldest age is a stronger signal than a one-time backlog
+  spike.
 - Logs show only the intended process class running workers.
 - Webhook and alert-contact manual retry endpoints still work.
 
@@ -187,10 +195,10 @@ INFO deliverer_host="deliverer-01"
 INFO delivery_check_generated_at=2026-04-29T18:30:00Z
 INFO delivery_check_since=2026-04-29T18:15:00Z
 INFO delivery_owner_host="deliverer-01" matched; delivery workers enabled on this host
-KIND     PENDING  DUE_NOW  FUTURE_RETRY  DELIVERED_SINCE  ABANDONED_SINCE
-webhook  0        0        0             4                0
-alert    1        0        1             2                0
-total    1        0        1             6                0
+KIND     PENDING  DUE_NOW  FUTURE_RETRY  DELIVERED_SINCE  ABANDONED_SINCE  FAILED_SINCE  OLDEST_PENDING_SEC  OLDEST_DUE_SEC
+webhook  0        0        0             4                0                0             0                   0
+alert    1        0        1             2                0                0             45                  0
+total    1        0        1             6                0                0             45                  0
 PASS delivery_check=ok
 ```
 

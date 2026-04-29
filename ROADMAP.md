@@ -665,9 +665,9 @@ where to look, and what each item unlocked.
   and the shared `DB_*` environment expectations.
 - **Deliverer rollout checks.** `jetmon-deliverer delivery-check` summarizes
   webhook and alert-contact delivery queues from the shared MySQL tables.
-  Operators can inspect pending, due, retry, delivered, and abandoned counts in
-  text or JSON and enforce explicit thresholds during standalone-deliverer
-  cutover or rollback.
+  Operators can inspect pending, due, retry, delivered, abandoned, failed, and
+  oldest-queue-age signals in text or JSON and enforce explicit thresholds
+  during standalone-deliverer cutover or rollback.
 
 ### Rollout and Operations
 

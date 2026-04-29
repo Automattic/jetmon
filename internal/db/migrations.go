@@ -367,6 +367,22 @@ var migrations = []migration{
 		PRIMARY KEY (tenant_id, blog_id),
 		INDEX idx_blog_id (blog_id)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
+
+	// Migration 22 adds delivery-check support indexes for webhook deliveries.
+	// idx_status_next_attempt already covers ready/future pending rows; these
+	// indexes keep recent terminal outcome counts and queue-age checks from
+	// scanning historical delivery rows as the audit trail grows.
+	{22, `ALTER TABLE jetmon_webhook_deliveries
+		ADD INDEX idx_status_delivered_at (status, delivered_at),
+		ADD INDEX idx_status_last_attempt_at (status, last_attempt_at),
+		ADD INDEX idx_status_created_at (status, created_at)`},
+
+	// Migration 23 mirrors delivery-check support indexes for alert-contact
+	// deliveries.
+	{23, `ALTER TABLE jetmon_alert_deliveries
+		ADD INDEX idx_status_delivered_at (status, delivered_at),
+		ADD INDEX idx_status_last_attempt_at (status, last_attempt_at),
+		ADD INDEX idx_status_created_at (status, created_at)`},
 }
 
 // Migrate applies all pending migrations idempotently.

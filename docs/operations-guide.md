@@ -126,8 +126,14 @@ JETMON_CONFIG=/opt/jetmon2/config/deliverer.json \
     --since=15m \
     --max-due=0 \
     --max-abandoned=0 \
+    --max-failed=0 \
     --output=json
 ```
+
+`delivery-check` also reports `failed_since`, `oldest_pending_age_sec`, and
+`oldest_due_age_sec`. Use `--require-recent-webhook-delivery` or
+`--require-recent-alert-delivery` when a rollout gate needs each delivery family
+to prove a successful send independently.
 
 See [jetmon-deliverer-rollout.md](jetmon-deliverer-rollout.md) for the rollout
 and rollback path.
