@@ -25,7 +25,7 @@ The lab host needs:
 - an active libvirt storage pool, default `jetmon-rollout`
 - write access to the storage pool path for the operator user
 - `qemu-img`, `virt-install`, `cloud-localds`, `ssh`, `scp`, `curl`, `mysql`,
-  `sed`, `awk`, `ansible`, and `expect`
+  `sed`, and `awk`
 - a dedicated lab SSH key, default
   `~/.ssh/jetmon-rollout-lab_ed25519`
 
