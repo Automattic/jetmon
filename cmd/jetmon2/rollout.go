@@ -3112,6 +3112,7 @@ func runProjectionDriftReport(ctx context.Context, out io.Writer, cfg *config.Co
 		fmt.Fprintln(out, "PASS legacy_projection_drift=0")
 		return nil
 	}
+	fmt.Fprintf(out, "WARN legacy_projection_drift_requires_manual_review=%d\n", count)
 
 	if deps.SummarizeLegacyProjectionDrift == nil {
 		return errors.New("projection drift summarizer is not configured")
@@ -3201,11 +3202,11 @@ func resolveExplicitRolloutBucketRange(cfg *config.Config, bucketMin, bucketMax 
 }
 
 func printProjectionDriftRows(out io.Writer, rows []db.ProjectionDriftRow) {
-	fmt.Fprintf(out, "%-12s %-8s %-22s %-22s %-10s %-11s %-24s %s\n",
+	fmt.Fprintf(out, "%-12s %-8s %-22s %-22s %-10s %-11s %-35s %s\n",
 		"BLOG_ID", "BUCKET", "SITE_STATUS", "EXPECTED", "EVENT_ID", "OPEN_EVENTS", "CAUSE", "EVENT_STATE")
 	for _, row := range rows {
 		cause := classifyProjectionDriftCause(row.SiteStatus, row.ExpectedStatus, row.EventState, row.OpenEventCount)
-		fmt.Fprintf(out, "%-12d %-8d %-22s %-22s %-10s %-11d %-24s %s\n",
+		fmt.Fprintf(out, "%-12d %-8d %-22s %-22s %-10s %-11d %-35s %s\n",
 			row.BlogID,
 			row.BucketNo,
 			formatLegacySiteStatus(row.SiteStatus),
@@ -3223,11 +3224,11 @@ func printProjectionDriftSummaries(out io.Writer, summaries []db.ProjectionDrift
 		fmt.Fprintln(out, "INFO projection_drift_summary=none")
 		return
 	}
-	fmt.Fprintf(out, "%-8s %-7s %-22s %-22s %-11s %-12s %-24s %s\n",
+	fmt.Fprintf(out, "%-8s %-7s %-22s %-22s %-11s %-12s %-35s %s\n",
 		"BUCKET", "COUNT", "SITE_STATUS", "EXPECTED", "OPEN_EVENTS", "SAMPLE_BLOG", "CAUSE", "EVENT_STATE")
 	for _, row := range summaries {
 		cause := classifyProjectionDriftCause(row.SiteStatus, row.ExpectedStatus, row.EventState, row.MaxOpenEventCount)
-		fmt.Fprintf(out, "%-8d %-7d %-22s %-22s %-11d %-12d %-24s %s\n",
+		fmt.Fprintf(out, "%-8d %-7d %-22s %-22s %-11d %-12d %-35s %s\n",
 			row.BucketNo,
 			row.DriftCount,
 			formatLegacySiteStatus(row.SiteStatus),
@@ -3268,7 +3269,7 @@ func classifyProjectionDriftCause(siteStatus, expectedStatus int, eventState *st
 	case expectedStatus == 1 && siteStatus != 1:
 		return projectionDriftCause{
 			Code:   "stale_legacy_down_projection",
-			Action: "the legacy site row still reports downtime even though no open HTTP event requires it; inspect recent close transitions before setting the projection back to running",
+			Action: "the legacy site row still reports downtime even though no open HTTP downtime event requires it; inspect recent close transitions before setting the projection back to running",
 		}
 	case expectedStatus == 2 && siteStatus == 1:
 		return projectionDriftCause{
@@ -3321,7 +3322,12 @@ func printProjectionDriftCauseGuidance(out io.Writer, summaries []db.ProjectionD
 	for code := range counts {
 		codes = append(codes, code)
 	}
-	sort.Strings(codes)
+	sort.Slice(codes, func(i, j int) bool {
+		if counts[codes[i]] != counts[codes[j]] {
+			return counts[codes[i]] > counts[codes[j]]
+		}
+		return codes[i] < codes[j]
+	})
 	for _, code := range codes {
 		fmt.Fprintf(out, "WARN projection_drift_cause=%s count=%d action=%q\n", code, counts[code], causes[code].Action)
 	}
@@ -3351,5 +3357,14 @@ func formatOptionalString(v *string) string {
 	if v == nil || *v == "" {
 		return "-"
 	}
-	return *v
+	return sanitizeRolloutTableString(*v)
+}
+
+func sanitizeRolloutTableString(v string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return '?'
+		}
+		return r
+	}, v)
 }

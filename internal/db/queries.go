@@ -124,23 +124,25 @@ func CountLegacyProjectionDrift(ctx context.Context, bucketMin, bucketMax int) (
 	var count int
 	err := db.QueryRowContext(ctx, `
 		SELECT COUNT(*)
-		  FROM jetpack_monitor_sites s
-		  LEFT JOIN (
-			SELECT blog_id,
+		  FROM (
+			SELECT s.jetpack_monitor_site_id,
+			       s.blog_id,
+			       s.site_status,
 			       CASE
-			         WHEN SUM(CASE WHEN state = 'Down' THEN 1 ELSE 0 END) > 0 THEN 2
-			         WHEN SUM(CASE WHEN state = 'Seems Down' THEN 1 ELSE 0 END) > 0 THEN 0
+			         WHEN SUM(CASE WHEN e.state = 'Down' THEN 1 ELSE 0 END) > 0 THEN 2
+			         WHEN SUM(CASE WHEN e.state = 'Seems Down' THEN 1 ELSE 0 END) > 0 THEN 0
 			         ELSE 1
 			       END AS expected_status
-			  FROM jetmon_events
-			 WHERE check_type = 'http'
-			   AND ended_at IS NULL
-			 GROUP BY blog_id
-		  ) open_events
-		    ON open_events.blog_id = s.blog_id
-		 WHERE s.monitor_active = 1
-		   AND s.bucket_no BETWEEN ? AND ?
-		   AND s.site_status <> COALESCE(open_events.expected_status, 1)`,
+			  FROM jetpack_monitor_sites s
+			  LEFT JOIN jetmon_events e
+			    ON e.blog_id = s.blog_id
+			   AND e.check_type = 'http'
+			   AND e.ended_at IS NULL
+			 WHERE s.monitor_active = 1
+			   AND s.bucket_no BETWEEN ? AND ?
+			 GROUP BY s.jetpack_monitor_site_id, s.blog_id, s.site_status
+		  ) drift
+		 WHERE drift.site_status <> drift.expected_status`,
 		bucketMin, bucketMax,
 	).Scan(&count)
 	if err != nil {
@@ -180,42 +182,45 @@ func ListLegacyProjectionDrift(ctx context.Context, bucketMin, bucketMax, limit 
 		limit = 50
 	}
 	rows, err := db.QueryContext(ctx, `
-		SELECT s.blog_id,
-		       s.bucket_no,
-		       s.site_status,
-		       COALESCE(open_events.expected_status, 1) AS expected_status,
-		       open_events.event_id,
-		       open_events.expected_state,
-		       COALESCE(open_events.open_event_count, 0) AS open_event_count
-		  FROM jetpack_monitor_sites s
-		  LEFT JOIN (
-			SELECT blog_id,
+		SELECT drift.blog_id,
+		       drift.bucket_no,
+		       drift.site_status,
+		       drift.expected_status,
+		       drift.event_id,
+		       drift.event_state,
+		       drift.open_event_count
+		  FROM (
+			SELECT s.jetpack_monitor_site_id,
+			       s.blog_id,
+			       s.bucket_no,
+			       s.site_status,
 			       CASE
-			         WHEN SUM(CASE WHEN state = 'Down' THEN 1 ELSE 0 END) > 0 THEN 2
-			         WHEN SUM(CASE WHEN state = 'Seems Down' THEN 1 ELSE 0 END) > 0 THEN 0
+			         WHEN SUM(CASE WHEN e.state = 'Down' THEN 1 ELSE 0 END) > 0 THEN 2
+			         WHEN SUM(CASE WHEN e.state = 'Seems Down' THEN 1 ELSE 0 END) > 0 THEN 0
 			         ELSE 1
 			       END AS expected_status,
 			       CASE
-			         WHEN SUM(CASE WHEN state = 'Down' THEN 1 ELSE 0 END) > 0 THEN 'Down'
-			         WHEN SUM(CASE WHEN state = 'Seems Down' THEN 1 ELSE 0 END) > 0 THEN 'Seems Down'
-			         ELSE NULL
-			       END AS expected_state,
+			         WHEN SUM(CASE WHEN e.state = 'Down' THEN 1 ELSE 0 END) > 0 THEN 'Down'
+			         WHEN SUM(CASE WHEN e.state = 'Seems Down' THEN 1 ELSE 0 END) > 0 THEN 'Seems Down'
+			         ELSE MIN(e.state)
+			       END AS event_state,
 			       COALESCE(
-			         MIN(CASE WHEN state = 'Down' THEN id END),
-			         MIN(CASE WHEN state = 'Seems Down' THEN id END),
-			         MIN(id)
+			         MIN(CASE WHEN e.state = 'Down' THEN e.id END),
+			         MIN(CASE WHEN e.state = 'Seems Down' THEN e.id END),
+			         MIN(e.id)
 			       ) AS event_id,
-			       COUNT(*) AS open_event_count
-			  FROM jetmon_events
-			 WHERE check_type = 'http'
-			   AND ended_at IS NULL
-			 GROUP BY blog_id
-		  ) open_events
-		    ON open_events.blog_id = s.blog_id
-		 WHERE s.monitor_active = 1
-		   AND s.bucket_no BETWEEN ? AND ?
-		   AND s.site_status <> COALESCE(open_events.expected_status, 1)
-		 ORDER BY s.bucket_no ASC, s.blog_id ASC
+			       COUNT(e.id) AS open_event_count
+			  FROM jetpack_monitor_sites s
+			  LEFT JOIN jetmon_events e
+			    ON e.blog_id = s.blog_id
+			   AND e.check_type = 'http'
+			   AND e.ended_at IS NULL
+			 WHERE s.monitor_active = 1
+			   AND s.bucket_no BETWEEN ? AND ?
+			 GROUP BY s.jetpack_monitor_site_id, s.blog_id, s.bucket_no, s.site_status
+		  ) drift
+		 WHERE drift.site_status <> drift.expected_status
+		 ORDER BY drift.bucket_no ASC, drift.blog_id ASC
 		 LIMIT ?`,
 		bucketMin, bucketMax, limit,
 	)
@@ -264,43 +269,38 @@ func SummarizeLegacyProjectionDrift(ctx context.Context, bucketMin, bucketMax, l
 		SELECT drift.bucket_no,
 		       drift.site_status,
 		       drift.expected_status,
-		       drift.expected_state,
+		       drift.event_state,
 		       MAX(drift.open_event_count) AS max_open_event_count,
 		       COUNT(*) AS drift_count,
 		       MIN(drift.blog_id) AS sample_blog_id
 		  FROM (
-			SELECT s.blog_id,
+			SELECT s.jetpack_monitor_site_id,
+			       s.blog_id,
 			       s.bucket_no,
 			       s.site_status,
-			       COALESCE(open_events.expected_status, 1) AS expected_status,
-			       open_events.expected_state,
-			       COALESCE(open_events.open_event_count, 0) AS open_event_count
+			       CASE
+			         WHEN SUM(CASE WHEN e.state = 'Down' THEN 1 ELSE 0 END) > 0 THEN 2
+			         WHEN SUM(CASE WHEN e.state = 'Seems Down' THEN 1 ELSE 0 END) > 0 THEN 0
+			         ELSE 1
+			       END AS expected_status,
+			       CASE
+			         WHEN SUM(CASE WHEN e.state = 'Down' THEN 1 ELSE 0 END) > 0 THEN 'Down'
+			         WHEN SUM(CASE WHEN e.state = 'Seems Down' THEN 1 ELSE 0 END) > 0 THEN 'Seems Down'
+			         ELSE MIN(e.state)
+			       END AS event_state,
+			       COUNT(e.id) AS open_event_count
 			  FROM jetpack_monitor_sites s
-			  LEFT JOIN (
-				SELECT blog_id,
-				       CASE
-				         WHEN SUM(CASE WHEN state = 'Down' THEN 1 ELSE 0 END) > 0 THEN 2
-				         WHEN SUM(CASE WHEN state = 'Seems Down' THEN 1 ELSE 0 END) > 0 THEN 0
-				         ELSE 1
-				       END AS expected_status,
-				       CASE
-				         WHEN SUM(CASE WHEN state = 'Down' THEN 1 ELSE 0 END) > 0 THEN 'Down'
-				         WHEN SUM(CASE WHEN state = 'Seems Down' THEN 1 ELSE 0 END) > 0 THEN 'Seems Down'
-				         ELSE NULL
-				       END AS expected_state,
-				       COUNT(*) AS open_event_count
-				  FROM jetmon_events
-				 WHERE check_type = 'http'
-				   AND ended_at IS NULL
-				 GROUP BY blog_id
-			  ) open_events
-			    ON open_events.blog_id = s.blog_id
+			  LEFT JOIN jetmon_events e
+			    ON e.blog_id = s.blog_id
+			   AND e.check_type = 'http'
+			   AND e.ended_at IS NULL
 			 WHERE s.monitor_active = 1
 			   AND s.bucket_no BETWEEN ? AND ?
-			   AND s.site_status <> COALESCE(open_events.expected_status, 1)
+			 GROUP BY s.jetpack_monitor_site_id, s.blog_id, s.bucket_no, s.site_status
 		  ) drift
-		 GROUP BY drift.bucket_no, drift.site_status, drift.expected_status, drift.expected_state
-		 ORDER BY drift.bucket_no ASC, drift_count DESC, drift.site_status ASC, drift.expected_status ASC
+		 WHERE drift.site_status <> drift.expected_status
+		 GROUP BY drift.bucket_no, drift.site_status, drift.expected_status, drift.event_state
+		 ORDER BY drift_count DESC, drift.bucket_no ASC, drift.site_status ASC, drift.expected_status ASC
 		 LIMIT ?`,
 		bucketMin, bucketMax, limit,
 	)

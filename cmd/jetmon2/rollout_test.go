@@ -2789,6 +2789,7 @@ func TestRunProjectionDriftReportListsRowsAndFails(t *testing.T) {
 		t.Fatalf("error = %q, want drift count", err.Error())
 	}
 	for _, want := range []string{
+		"WARN legacy_projection_drift_requires_manual_review=2",
 		"SAMPLE_BLOG",
 		"missing_confirmed_down_projection",
 		"projection_drift_cause=missing_confirmed_down_projection count=2",
@@ -2801,6 +2802,17 @@ func TestRunProjectionDriftReportListsRowsAndFails(t *testing.T) {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("output missing %q:\n%s", want, out.String())
 		}
+	}
+}
+
+func TestFormatOptionalStringSanitizesControlCharacters(t *testing.T) {
+	raw := "Down\x1b[31m\nStill Down"
+	got := formatOptionalString(&raw)
+	if strings.ContainsAny(got, "\x1b\n\r\t") {
+		t.Fatalf("formatted string contains control characters: %q", got)
+	}
+	if !strings.Contains(got, "?") {
+		t.Fatalf("formatted string = %q, want replacement marker", got)
 	}
 }
 

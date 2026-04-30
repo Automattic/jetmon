@@ -357,7 +357,7 @@ func TestListLegacyProjectionDrift(t *testing.T) {
 	mock, cleanup := withMockDB(t)
 	defer cleanup()
 
-	mock.ExpectQuery("SELECT s.blog_id").
+	mock.ExpectQuery("SELECT drift.blog_id").
 		WithArgs(0, 99, 50).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"blog_id", "bucket_no", "site_status", "expected_status", "id", "state", "open_event_count",
