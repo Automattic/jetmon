@@ -256,6 +256,18 @@ func TestEscalateToVerifliersConfirmsWhenQuorumReached(t *testing.T) {
 	dbUpdateLastAlertSent = func(context.Context, int64, time.Time) error { return nil }
 
 	veriflierCheckFunc = func(c *veriflier.VeriflierClient, _ context.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
+		if req.BodyReadMaxBytes != cfg.BodyReadMaxBytes {
+			t.Fatalf("verifier req BodyReadMaxBytes = %d, want %d", req.BodyReadMaxBytes, cfg.BodyReadMaxBytes)
+		}
+		if req.BodyReadMaxMS != int32(cfg.BodyReadMaxMS) {
+			t.Fatalf("verifier req BodyReadMaxMS = %d, want %d", req.BodyReadMaxMS, cfg.BodyReadMaxMS)
+		}
+		if req.KeywordReadMaxBytes != cfg.KeywordReadMaxBytes {
+			t.Fatalf("verifier req KeywordReadMaxBytes = %d, want %d", req.KeywordReadMaxBytes, cfg.KeywordReadMaxBytes)
+		}
+		if req.KeywordReadMaxMS != int32(cfg.KeywordReadMaxMS) {
+			t.Fatalf("verifier req KeywordReadMaxMS = %d, want %d", req.KeywordReadMaxMS, cfg.KeywordReadMaxMS)
+		}
 		return &veriflier.CheckResult{
 			BlogID:   req.BlogID,
 			Host:     c.Addr(),
@@ -341,6 +353,73 @@ func TestEscalateToVerifliersRecordsFalsePositiveWhenQuorumMissed(t *testing.T) 
 	}
 	if o.retries.get(654) != nil {
 		t.Fatal("retry entry should be cleared after false positive")
+	}
+}
+
+func TestEscalateToVerifliersConfirmsDownOnPartialResponseFromLocalAndVerifier(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+
+	cfg := setTestConfig(t)
+	cfg.PeerOfflineLimit = 1
+
+	var got wpcom.Notification
+	wpcomNotifyFunc = func(_ *wpcom.Client, n wpcom.Notification) error {
+		got = n
+		return nil
+	}
+	dbUpdateLastAlertSent = func(context.Context, int64, time.Time) error { return nil }
+
+	veriflierCheckFunc = func(c *veriflier.VeriflierClient, _ context.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
+		if req.BodyReadMaxBytes != cfg.BodyReadMaxBytes {
+			t.Fatalf("verifier req BodyReadMaxBytes = %d, want %d", req.BodyReadMaxBytes, cfg.BodyReadMaxBytes)
+		}
+		if req.BodyReadMaxMS != int32(cfg.BodyReadMaxMS) {
+			t.Fatalf("verifier req BodyReadMaxMS = %d, want %d", req.BodyReadMaxMS, cfg.BodyReadMaxMS)
+		}
+		if req.KeywordReadMaxBytes != cfg.KeywordReadMaxBytes {
+			t.Fatalf("verifier req KeywordReadMaxBytes = %d, want %d", req.KeywordReadMaxBytes, cfg.KeywordReadMaxBytes)
+		}
+		if req.KeywordReadMaxMS != int32(cfg.KeywordReadMaxMS) {
+			t.Fatalf("verifier req KeywordReadMaxMS = %d, want %d", req.KeywordReadMaxMS, cfg.KeywordReadMaxMS)
+		}
+		return &veriflier.CheckResult{
+			BlogID:    req.BlogID,
+			Host:      c.Addr(),
+			Success:   false,
+			HTTPCode:  200,
+			ErrorCode: checker.ErrorBodyTruncated,
+		}, nil
+	}
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		ctx:      context.Background(),
+		hostname: "local-host",
+		veriflierClients: []*veriflier.VeriflierClient{
+			veriflier.NewVeriflierClient("v1", ""),
+		},
+	}
+
+	fail := checker.Result{BlogID: 777, Success: false, HTTPCode: 200, ErrorCode: checker.ErrorBodyTruncated, RTT: 120 * time.Millisecond, Timestamp: time.Now().UTC()}
+	entry := o.retries.record(fail)
+	entry.failCount = cfg.NumOfChecks
+	entry.firstFailAt = time.Now().Add(-2 * time.Minute)
+
+	o.escalateToVerifliers(db.Site{BlogID: 777, MonitorURL: "https://example.com", SiteStatus: statusRunning}, entry)
+
+	if got.BlogID != 777 {
+		t.Fatalf("notified blog_id = %d, want 777", got.BlogID)
+	}
+	if got.StatusID != statusConfirmedDown {
+		t.Fatalf("notification status = %d, want %d", got.StatusID, statusConfirmedDown)
+	}
+	if len(got.Checks) != 2 {
+		t.Fatalf("checks len = %d, want 2 (local + verifier)", len(got.Checks))
+	}
+	if got.Checks[0].Code != 200 || got.Checks[1].Code != 200 {
+		t.Fatalf("check HTTP codes = [%d, %d], want [200, 200]", got.Checks[0].Code, got.Checks[1].Code)
 	}
 }
 

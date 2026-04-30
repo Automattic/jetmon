@@ -67,6 +67,18 @@ Minimum seconds between check rounds. Has no effect when USE_VARIABLE_CHECK_INTE
 NET_COMMS_TIMEOUT
 Default HTTP request timeout in seconds. Can be overridden per-site via timeout_seconds column. Default: 10.
 
+BODY_READ_MAX_BYTES
+Maximum response-body bytes checker will read for success-path validation when Content-Length is unknown or larger than this budget. For known Content-Length <= this budget, checker requires full EOF and treats truncation as a hard failure. Default: 262144.
+
+BODY_READ_MAX_MS
+Post-header response-body phase budget in milliseconds for budgeted reads (unknown or large Content-Length). In strict finite mode (known Content-Length <= BODY_READ_MAX_BYTES), this budget does not hard-fail completion; request timeout remains the hard deadline. Default: 250.
+
+KEYWORD_READ_MAX_BYTES
+Maximum response-body bytes checker will read when a keyword check is configured. This budget is separate from BODY_READ_MAX_BYTES so keyword checks can scan deeper without changing non-keyword body-read behavior. Default: 1048576.
+
+KEYWORD_READ_MAX_MS
+Keyword body-read budget in milliseconds. Set to 0 to inherit the request timeout envelope (NET_COMMS_TIMEOUT or per-site timeout_seconds). If set > 0 and exhausted before the keyword is found, the check fails as timeout (ErrorTimeout), not keyword mismatch. Default: 0.
+
 USE_VARIABLE_CHECK_INTERVALS
 Set to true to respect the check_interval column per site instead of running all sites every round. Default: false.
 

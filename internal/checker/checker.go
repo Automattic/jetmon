@@ -1,14 +1,18 @@
 package checker
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptrace"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -22,6 +26,7 @@ const (
 	ErrorKeyword       = 5
 	ErrorTLSExpired    = 6
 	ErrorTLSDeprecated = 7
+	ErrorBodyTruncated = 8
 )
 
 // RedirectPolicy controls how redirect responses are handled.
@@ -35,13 +40,100 @@ const (
 
 // Request holds the parameters for a single HTTP check.
 type Request struct {
-	BlogID         int64
-	URL            string
-	TimeoutSeconds int
-	Keyword        *string
-	CustomHeaders  map[string]string
-	RedirectPolicy RedirectPolicy
+	BlogID              int64
+	URL                 string
+	TimeoutSeconds      int
+	BodyReadMaxBytes    int64
+	BodyReadMaxMS       int
+	KeywordReadMaxBytes int64
+	KeywordReadMaxMS    int
+	Keyword             *string
+	CustomHeaders       map[string]string
+	RedirectPolicy      RedirectPolicy
 }
+
+const (
+	defaultBodyReadMaxBytes    int64 = 256 * 1024
+	defaultBodyReadMaxMS             = 250
+	defaultKeywordReadMaxBytes int64 = 1024 * 1024
+)
+
+var bodyReadCounters = struct {
+	strictEOFSuccess    atomic.Uint64
+	strictEOFTruncated  atomic.Uint64
+	strictEOFTimeout    atomic.Uint64
+	budgetBytesExceeded atomic.Uint64
+	budgetTimeExceeded  atomic.Uint64
+	budgetEOFSuccess    atomic.Uint64
+	budgetTruncated     atomic.Uint64
+	skippedStatusCode   atomic.Uint64
+	skippedUpgradeOr101 atomic.Uint64
+	skippedSSE          atomic.Uint64
+}{}
+
+// BodyReadCounterSnapshot exposes additive internal body-read outcomes.
+type BodyReadCounterSnapshot struct {
+	StrictEOFSuccess    uint64
+	StrictEOFTruncated  uint64
+	StrictEOFTimeout    uint64
+	BudgetBytesExceeded uint64
+	BudgetTimeExceeded  uint64
+	BudgetEOFSuccess    uint64
+	BudgetTruncated     uint64
+	SkippedStatusCode   uint64
+	SkippedUpgradeOr101 uint64
+	SkippedSSE          uint64
+}
+
+// BodyReadCounters returns current body-read outcome counters.
+func BodyReadCounters() BodyReadCounterSnapshot {
+	return BodyReadCounterSnapshot{
+		StrictEOFSuccess:    bodyReadCounters.strictEOFSuccess.Load(),
+		StrictEOFTruncated:  bodyReadCounters.strictEOFTruncated.Load(),
+		StrictEOFTimeout:    bodyReadCounters.strictEOFTimeout.Load(),
+		BudgetBytesExceeded: bodyReadCounters.budgetBytesExceeded.Load(),
+		BudgetTimeExceeded:  bodyReadCounters.budgetTimeExceeded.Load(),
+		BudgetEOFSuccess:    bodyReadCounters.budgetEOFSuccess.Load(),
+		BudgetTruncated:     bodyReadCounters.budgetTruncated.Load(),
+		SkippedStatusCode:   bodyReadCounters.skippedStatusCode.Load(),
+		SkippedUpgradeOr101: bodyReadCounters.skippedUpgradeOr101.Load(),
+		SkippedSSE:          bodyReadCounters.skippedSSE.Load(),
+	}
+}
+
+// BodyReadCountersMap returns the same counters in a metric-friendly map.
+func BodyReadCountersMap() map[string]uint64 {
+	s := BodyReadCounters()
+	return map[string]uint64{
+		"strict_eof_success":     s.StrictEOFSuccess,
+		"strict_eof_truncated":   s.StrictEOFTruncated,
+		"strict_eof_timeout":     s.StrictEOFTimeout,
+		"budget_bytes_exceeded":  s.BudgetBytesExceeded,
+		"budget_time_exceeded":   s.BudgetTimeExceeded,
+		"budget_eof_success":     s.BudgetEOFSuccess,
+		"budget_truncated":       s.BudgetTruncated,
+		"skipped_status_code":    s.SkippedStatusCode,
+		"skipped_upgrade_or_101": s.SkippedUpgradeOr101,
+		"skipped_sse":            s.SkippedSSE,
+	}
+}
+
+type bodyReadPolicy int
+
+const (
+	bodyPolicySkip bodyReadPolicy = iota
+	bodyPolicyStrictEOF
+	bodyPolicyBudgeted
+)
+
+type bodyReadOutcome int
+
+const (
+	bodyReadEOF bodyReadOutcome = iota
+	bodyReadBudgetBytesExceeded
+	bodyReadBudgetTimeExceeded
+	bodyReadTruncated
+)
 
 // Result holds the outcome of a single HTTP check.
 type Result struct {
@@ -233,17 +325,322 @@ func Check(ctx context.Context, req Request) Result {
 		res.RedirectChanged = true
 	}
 
-	// Keyword check — read body only if keyword is configured.
-	if req.Keyword != nil && *req.Keyword != "" {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		if !strings.Contains(string(body), *req.Keyword) {
-			res.ErrorCode = ErrorKeyword
-			return res
+	if res.HTTPCode >= 400 {
+		bodyReadCounters.skippedStatusCode.Add(1)
+		res.Success = false
+		return res
+	}
+
+	matchedKeyword, bodyErr := validateBody(ctx, resp, req)
+	if bodyErr != nil {
+		if isTimeoutError(ctx, bodyErr) {
+			res.ErrorCode = ErrorTimeout
+		} else if res.HTTPCode > 0 && res.HTTPCode < 400 {
+			res.ErrorCode = ErrorBodyTruncated
 		}
+		return res
+	}
+
+	if req.Keyword != nil && *req.Keyword != "" && !matchedKeyword {
+		res.ErrorCode = ErrorKeyword
+		return res
 	}
 
 	res.Success = res.HTTPCode > 0 && res.HTTPCode < 400
 	return res
+}
+
+func validateBodyToEOF(body io.ReadCloser, keyword *string) (bool, error) {
+	if keyword == nil || *keyword == "" {
+		_, err := io.Copy(io.Discard, body)
+		return true, err
+	}
+
+	needle := []byte(*keyword)
+	if len(needle) == 0 {
+		_, err := io.Copy(io.Discard, body)
+		return true, err
+	}
+
+	buf := make([]byte, 32*1024)
+	carryLimit := len(needle) - 1
+	if carryLimit < 0 {
+		carryLimit = 0
+	}
+	carry := make([]byte, 0, carryLimit)
+	found := false
+
+	for {
+		n, err := body.Read(buf)
+		if n > 0 {
+			window := append(carry, buf[:n]...)
+			if !found && bytes.Contains(window, needle) {
+				found = true
+			}
+
+			if carryLimit > 0 {
+				if len(window) > carryLimit {
+					carry = append(carry[:0], window[len(window)-carryLimit:]...)
+				} else {
+					carry = append(carry[:0], window...)
+				}
+			}
+		}
+
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return found, nil
+			}
+			return found, err
+		}
+	}
+}
+
+func validateBody(ctx context.Context, resp *http.Response, req Request) (bool, error) {
+	maxBytes := req.BodyReadMaxBytes
+	if maxBytes <= 0 {
+		maxBytes = defaultBodyReadMaxBytes
+	}
+	keywordMaxBytes := req.KeywordReadMaxBytes
+	if keywordMaxBytes <= 0 {
+		keywordMaxBytes = defaultKeywordReadMaxBytes
+	}
+	bodyMaxDuration := time.Duration(req.BodyReadMaxMS) * time.Millisecond
+	if bodyMaxDuration <= 0 {
+		bodyMaxDuration = time.Duration(defaultBodyReadMaxMS) * time.Millisecond
+	}
+	hasKeyword := req.Keyword != nil && *req.Keyword != ""
+	keywordMaxDuration := time.Duration(req.KeywordReadMaxMS) * time.Millisecond
+	if hasKeyword && keywordMaxDuration < 0 {
+		keywordMaxDuration = 0
+	}
+
+	policy := selectBodyReadPolicy(resp, maxBytes)
+	readBudgetBytes := maxBytes
+	if hasKeyword {
+		readBudgetBytes = keywordMaxBytes
+	}
+	switch policy {
+	case bodyPolicySkip:
+		if !hasKeyword {
+			return true, nil
+		}
+		return scanKeywordBudgeted(resp.Body, req.Keyword, readBudgetBytes, keywordMaxDuration)
+	case bodyPolicyStrictEOF:
+		if !hasKeyword {
+			matched, err := validateBodyToEOF(resp.Body, nil)
+			if err != nil {
+				if isTimeoutError(ctx, err) {
+					bodyReadCounters.strictEOFTimeout.Add(1)
+				} else {
+					bodyReadCounters.strictEOFTruncated.Add(1)
+				}
+				return matched, err
+			}
+			bodyReadCounters.strictEOFSuccess.Add(1)
+			return matched, nil
+		}
+		matched, outcome, err := scanBodyWithBudget(resp.Body, req.Keyword, 0, keywordMaxDuration)
+		switch outcome {
+		case bodyReadEOF:
+			bodyReadCounters.strictEOFSuccess.Add(1)
+			return matched, nil
+		case bodyReadBudgetTimeExceeded:
+			bodyReadCounters.strictEOFTimeout.Add(1)
+			return matched, context.DeadlineExceeded
+		case bodyReadTruncated:
+			bodyReadCounters.strictEOFTruncated.Add(1)
+			if err == nil {
+				err = io.ErrUnexpectedEOF
+			}
+			return matched, err
+		default:
+			return matched, err
+		}
+	case bodyPolicyBudgeted:
+		maxDuration := bodyMaxDuration
+		if hasKeyword {
+			maxDuration = keywordMaxDuration
+		}
+		matched, outcome, err := scanBodyWithBudget(resp.Body, req.Keyword, readBudgetBytes, maxDuration)
+		switch outcome {
+		case bodyReadEOF:
+			bodyReadCounters.budgetEOFSuccess.Add(1)
+			return matched, nil
+		case bodyReadBudgetBytesExceeded:
+			bodyReadCounters.budgetBytesExceeded.Add(1)
+			return matched, nil
+		case bodyReadBudgetTimeExceeded:
+			bodyReadCounters.budgetTimeExceeded.Add(1)
+			if hasKeyword {
+				if err == nil {
+					err = context.DeadlineExceeded
+				}
+				return matched, err
+			}
+			return matched, nil
+		case bodyReadTruncated:
+			bodyReadCounters.budgetTruncated.Add(1)
+			if err == nil {
+				err = io.ErrUnexpectedEOF
+			}
+			return matched, err
+		default:
+			return matched, err
+		}
+	default:
+		return validateBodyToEOF(resp.Body, req.Keyword)
+	}
+}
+
+func selectBodyReadPolicy(resp *http.Response, maxBytes int64) bodyReadPolicy {
+	if resp.StatusCode == http.StatusSwitchingProtocols || isUpgradeResponse(resp) {
+		bodyReadCounters.skippedUpgradeOr101.Add(1)
+		return bodyPolicySkip
+	}
+	if isSSE(resp) {
+		bodyReadCounters.skippedSSE.Add(1)
+		return bodyPolicySkip
+	}
+	// Unknown Content-Length (including chunked responses) stays in the
+	// budgeted path: budget exceed is non-fatal, explicit truncation fails.
+	_ = isChunkedResponse(resp)
+	if resp.ContentLength >= 0 && resp.ContentLength <= maxBytes {
+		return bodyPolicyStrictEOF
+	}
+	return bodyPolicyBudgeted
+}
+
+func isChunkedResponse(resp *http.Response) bool {
+	for _, v := range resp.TransferEncoding {
+		if strings.EqualFold(v, "chunked") {
+			return true
+		}
+	}
+	return false
+}
+
+func isUpgradeResponse(resp *http.Response) bool {
+	connHdr := strings.ToLower(resp.Header.Get("Connection"))
+	if strings.Contains(connHdr, "upgrade") {
+		return true
+	}
+	return strings.TrimSpace(resp.Header.Get("Upgrade")) != ""
+}
+
+func isSSE(resp *http.Response) bool {
+	ct := strings.ToLower(resp.Header.Get("Content-Type"))
+	return strings.HasPrefix(ct, "text/event-stream")
+}
+
+func scanKeywordBudgeted(body io.ReadCloser, keyword *string, maxBytes int64, maxDuration time.Duration) (bool, error) {
+	matched, outcome, err := scanBodyWithBudget(body, keyword, maxBytes, maxDuration)
+	if outcome == bodyReadBudgetTimeExceeded {
+		return matched, context.DeadlineExceeded
+	}
+	return matched, err
+}
+
+func scanBodyWithBudget(body io.ReadCloser, keyword *string, maxBytes int64, maxDuration time.Duration) (bool, bodyReadOutcome, error) {
+	needle := []byte("")
+	if keyword != nil {
+		needle = []byte(*keyword)
+	}
+
+	buf := make([]byte, 32*1024)
+	carryLimit := len(needle) - 1
+	if carryLimit < 0 {
+		carryLimit = 0
+	}
+	carry := make([]byte, 0, carryLimit)
+	found := len(needle) == 0
+	var readBytes int64
+	start := time.Now()
+
+	for {
+		remaining := maxDuration
+		if maxDuration > 0 {
+			elapsed := time.Since(start)
+			remaining = maxDuration - elapsed
+			if remaining <= 0 {
+				_ = body.Close()
+				return found, bodyReadBudgetTimeExceeded, context.DeadlineExceeded
+			}
+		}
+
+		type readResult struct {
+			n   int
+			err error
+		}
+		readCh := make(chan readResult, 1)
+		go func() {
+			n, err := body.Read(buf)
+			readCh <- readResult{n: n, err: err}
+		}()
+
+		var (
+			n   int
+			err error
+		)
+		if maxDuration > 0 {
+			select {
+			case rr := <-readCh:
+				n = rr.n
+				err = rr.err
+			case <-time.After(remaining):
+				_ = body.Close()
+				<-readCh
+				return found, bodyReadBudgetTimeExceeded, context.DeadlineExceeded
+			}
+		} else {
+			rr := <-readCh
+			n = rr.n
+			err = rr.err
+		}
+		if n > 0 {
+			readBytes += int64(n)
+			window := append(carry, buf[:n]...)
+			if !found && len(needle) > 0 && bytes.Contains(window, needle) {
+				found = true
+			}
+
+			if carryLimit > 0 {
+				if len(window) > carryLimit {
+					carry = append(carry[:0], window[len(window)-carryLimit:]...)
+				} else {
+					carry = append(carry[:0], window...)
+				}
+			}
+
+			if maxBytes > 0 && readBytes > maxBytes {
+				return found, bodyReadBudgetBytesExceeded, nil
+			}
+		}
+
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return found, bodyReadEOF, nil
+			}
+			if errors.Is(err, io.ErrUnexpectedEOF) {
+				return found, bodyReadTruncated, err
+			}
+			if strings.Contains(strings.ToLower(err.Error()), "truncated") {
+				return found, bodyReadTruncated, err
+			}
+			return found, bodyReadTruncated, err
+		}
+	}
+}
+
+func isTimeoutError(ctx context.Context, err error) bool {
+	if ctx.Err() != nil {
+		return true
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
 }
 
 // ParseCustomHeaders deserialises a JSON custom headers string into a map.

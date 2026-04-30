@@ -96,12 +96,16 @@ func main() {
 // performCheck runs a single HTTP check and returns the result for the server.
 func performCheck(req veriflier.CheckRequest) veriflier.CheckResult {
 	res := checker.Check(context.Background(), checker.Request{
-		BlogID:         req.BlogID,
-		URL:            req.URL,
-		TimeoutSeconds: int(req.TimeoutSeconds),
-		Keyword:        stringPtr(req.Keyword),
-		CustomHeaders:  req.CustomHeaders,
-		RedirectPolicy: checker.RedirectPolicy(req.RedirectPolicy),
+		BlogID:              req.BlogID,
+		URL:                 req.URL,
+		TimeoutSeconds:      int(req.TimeoutSeconds),
+		BodyReadMaxBytes:    req.BodyReadMaxBytes,
+		BodyReadMaxMS:       int(req.BodyReadMaxMS),
+		KeywordReadMaxBytes: req.KeywordReadMaxBytes,
+		KeywordReadMaxMS:    int(req.KeywordReadMaxMS),
+		Keyword:             stringPtr(req.Keyword),
+		CustomHeaders:       req.CustomHeaders,
+		RedirectPolicy:      checker.RedirectPolicy(req.RedirectPolicy),
 	})
 
 	return veriflier.CheckResult{

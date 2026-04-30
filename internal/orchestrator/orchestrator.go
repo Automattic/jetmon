@@ -250,12 +250,16 @@ func (o *Orchestrator) runRound() {
 		}
 
 		req := checker.Request{
-			BlogID:         site.BlogID,
-			URL:            site.MonitorURL,
-			TimeoutSeconds: timeout,
-			Keyword:        site.CheckKeyword,
-			CustomHeaders:  checker.ParseCustomHeaders(site.CustomHeaders),
-			RedirectPolicy: checker.RedirectPolicy(site.RedirectPolicy),
+			BlogID:              site.BlogID,
+			URL:                 site.MonitorURL,
+			TimeoutSeconds:      timeout,
+			BodyReadMaxBytes:    cfg.BodyReadMaxBytes,
+			BodyReadMaxMS:       cfg.BodyReadMaxMS,
+			KeywordReadMaxBytes: cfg.KeywordReadMaxBytes,
+			KeywordReadMaxMS:    cfg.KeywordReadMaxMS,
+			Keyword:             site.CheckKeyword,
+			CustomHeaders:       checker.ParseCustomHeaders(site.CustomHeaders),
+			RedirectPolicy:      checker.RedirectPolicy(site.RedirectPolicy),
 		}
 		if req.RedirectPolicy == "" {
 			req.RedirectPolicy = checker.RedirectFollow
@@ -466,13 +470,17 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 	}
 
 	req := veriflier.CheckRequest{
-		BlogID:         site.BlogID,
-		URL:            site.MonitorURL,
-		TimeoutSeconds: int32(timeoutForSite(config.Get(), site)),
-		Keyword:        stringPtrValue(site.CheckKeyword),
-		CustomHeaders:  checker.ParseCustomHeaders(site.CustomHeaders),
-		RedirectPolicy: site.RedirectPolicy,
-		RequestID:      veriflier.NewRequestID(),
+		BlogID:              site.BlogID,
+		URL:                 site.MonitorURL,
+		TimeoutSeconds:      int32(timeoutForSite(config.Get(), site)),
+		BodyReadMaxBytes:    config.Get().BodyReadMaxBytes,
+		BodyReadMaxMS:       int32(config.Get().BodyReadMaxMS),
+		KeywordReadMaxBytes: config.Get().KeywordReadMaxBytes,
+		KeywordReadMaxMS:    int32(config.Get().KeywordReadMaxMS),
+		Keyword:             stringPtrValue(site.CheckKeyword),
+		CustomHeaders:       checker.ParseCustomHeaders(site.CustomHeaders),
+		RedirectPolicy:      site.RedirectPolicy,
+		RequestID:           veriflier.NewRequestID(),
 	}
 
 	escalateMeta, _ := json.Marshal(map[string]any{

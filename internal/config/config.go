@@ -76,12 +76,16 @@ type Config struct {
 
 	AlertCooldownMinutes int `json:"ALERT_COOLDOWN_MINUTES"`
 
-	StatsUpdateIntervalMS     int  `json:"STATS_UPDATE_INTERVAL_MS"`
-	StatsdSendMemUsage        bool `json:"STATSD_SEND_MEM_USAGE"`
-	TimeBetweenNoticesMin     int  `json:"TIME_BETWEEN_NOTICES_MIN"`
-	MinTimeBetweenRoundsSec   int  `json:"MIN_TIME_BETWEEN_ROUNDS_SEC"`
-	NetCommsTimeout           int  `json:"NET_COMMS_TIMEOUT"`
-	UseVariableCheckIntervals bool `json:"USE_VARIABLE_CHECK_INTERVALS"`
+	StatsUpdateIntervalMS     int   `json:"STATS_UPDATE_INTERVAL_MS"`
+	StatsdSendMemUsage        bool  `json:"STATSD_SEND_MEM_USAGE"`
+	TimeBetweenNoticesMin     int   `json:"TIME_BETWEEN_NOTICES_MIN"`
+	MinTimeBetweenRoundsSec   int   `json:"MIN_TIME_BETWEEN_ROUNDS_SEC"`
+	NetCommsTimeout           int   `json:"NET_COMMS_TIMEOUT"`
+	BodyReadMaxBytes          int64 `json:"BODY_READ_MAX_BYTES"`
+	BodyReadMaxMS             int   `json:"BODY_READ_MAX_MS"`
+	KeywordReadMaxBytes       int64 `json:"KEYWORD_READ_MAX_BYTES"`
+	KeywordReadMaxMS          int   `json:"KEYWORD_READ_MAX_MS"`
+	UseVariableCheckIntervals bool  `json:"USE_VARIABLE_CHECK_INTERVALS"`
 
 	LogFormat         string `json:"LOG_FORMAT"`
 	DashboardPort     int    `json:"DASHBOARD_PORT"`
@@ -213,6 +217,9 @@ func defaults() *Config {
 		TimeBetweenNoticesMin:        59,
 		MinTimeBetweenRoundsSec:      300,
 		NetCommsTimeout:              10,
+		BodyReadMaxBytes:             262144,
+		BodyReadMaxMS:                250,
+		KeywordReadMaxBytes:          1048576,
 		LogFormat:                    "text",
 		DashboardPort:                8080,
 		DashboardBindAddr:            "127.0.0.1",
@@ -280,6 +287,18 @@ func validate(cfg *Config) error {
 	}
 	if cfg.NetCommsTimeout <= 0 {
 		return fmt.Errorf("NET_COMMS_TIMEOUT must be > 0")
+	}
+	if cfg.BodyReadMaxBytes <= 0 {
+		return fmt.Errorf("BODY_READ_MAX_BYTES must be > 0")
+	}
+	if cfg.BodyReadMaxMS <= 0 {
+		return fmt.Errorf("BODY_READ_MAX_MS must be > 0")
+	}
+	if cfg.KeywordReadMaxBytes <= 0 {
+		return fmt.Errorf("KEYWORD_READ_MAX_BYTES must be > 0")
+	}
+	if cfg.KeywordReadMaxMS < 0 {
+		return fmt.Errorf("KEYWORD_READ_MAX_MS must be >= 0")
 	}
 	if cfg.LogFormat != "text" && cfg.LogFormat != "json" {
 		return fmt.Errorf("LOG_FORMAT must be 'text' or 'json'")

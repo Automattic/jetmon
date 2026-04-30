@@ -1,9 +1,14 @@
 package checker
 
 import (
+	"bufio"
 	"context"
+	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -243,6 +248,19 @@ func TestCheckHTTP200(t *testing.T) {
 	}
 }
 
+func TestCheckSmallFinite2xxRequiresAndGetsEOF(t *testing.T) {
+	url, shutdown := startRawHTTPServer(t, func(conn net.Conn) {
+		_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\n")
+		_, _ = io.WriteString(conn, "hello world")
+	})
+	defer shutdown()
+
+	res := Check(context.Background(), Request{BlogID: 1, URL: url, TimeoutSeconds: 5, BodyReadMaxBytes: 1024, BodyReadMaxMS: 1000})
+	if !res.Success || res.ErrorCode != ErrorNone {
+		t.Fatalf("small finite success should pass strict EOF, got success=%v error=%d", res.Success, res.ErrorCode)
+	}
+}
+
 func TestCheckHTTP500(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -255,6 +273,9 @@ func TestCheckHTTP500(t *testing.T) {
 	}
 	if res.HTTPCode != 500 {
 		t.Fatalf("HTTPCode = %d, want 500", res.HTTPCode)
+	}
+	if res.ErrorCode != ErrorNone {
+		t.Fatalf("ErrorCode = %d, want ErrorNone", res.ErrorCode)
 	}
 }
 
@@ -395,6 +416,312 @@ func TestCheckConnectionRefused(t *testing.T) {
 	}
 	if res.DNS < 0 {
 		t.Errorf("DNS duration is negative (%v); zero-time underflow", res.DNS)
+	}
+}
+
+func TestCheckTruncatedContentLengthResponse(t *testing.T) {
+	url, shutdown := startRawHTTPServer(t, func(conn net.Conn) {
+		_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n")
+		_, _ = io.WriteString(conn, "short body")
+	})
+	defer shutdown()
+
+	res := Check(context.Background(), Request{BlogID: 1, URL: url, TimeoutSeconds: 5, BodyReadMaxBytes: 1024, BodyReadMaxMS: 1000})
+	if res.ErrorCode != ErrorBodyTruncated {
+		t.Fatalf("ErrorCode = %d, want ErrorBodyTruncated", res.ErrorCode)
+	}
+	if res.Success {
+		t.Fatal("Success = true for truncated content-length response, want false")
+	}
+}
+
+func TestCheckTruncatedChunkedResponseUnknownLengthFails(t *testing.T) {
+	url, shutdown := startRawHTTPServer(t, func(conn net.Conn) {
+		_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n")
+		_, _ = io.WriteString(conn, "A\r\n0123456789\r\n")
+		_, _ = io.WriteString(conn, "8\r\ntrunc")
+	})
+	defer shutdown()
+
+	res := Check(context.Background(), Request{BlogID: 1, URL: url, TimeoutSeconds: 5, BodyReadMaxBytes: 1024, BodyReadMaxMS: 1000})
+	if res.ErrorCode != ErrorBodyTruncated {
+		t.Fatalf("ErrorCode = %d, want ErrorBodyTruncated", res.ErrorCode)
+	}
+	if res.Success {
+		t.Fatal("Success = true for truncated chunked response, want false")
+	}
+}
+
+func TestCheckKeywordFoundBeforeTruncationStillFails(t *testing.T) {
+	url, shutdown := startRawHTTPServer(t, func(conn net.Conn) {
+		_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n")
+		_, _ = io.WriteString(conn, "E\r\nhello jetpack!\r\n")
+		_, _ = io.WriteString(conn, "20\r\nthis-will-never-complete")
+	})
+	defer shutdown()
+
+	kw := "jetpack"
+	res := Check(context.Background(), Request{BlogID: 1, URL: url, TimeoutSeconds: 5, BodyReadMaxBytes: 1024, BodyReadMaxMS: 1000, Keyword: &kw})
+	if res.ErrorCode != ErrorBodyTruncated {
+		t.Fatalf("ErrorCode = %d, want ErrorBodyTruncated", res.ErrorCode)
+	}
+	if res.Success {
+		t.Fatal("Success = true for truncated keyword response, want false")
+	}
+}
+
+func TestCheckLargeKnownLengthBudgetExceedIsNonFatal(t *testing.T) {
+	largeBody := strings.Repeat("a", 2*1024*1024)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(largeBody)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, largeBody)
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{BlogID: 1, URL: srv.URL, TimeoutSeconds: 5, BodyReadMaxBytes: 4096, BodyReadMaxMS: 1000})
+	if !res.Success {
+		t.Fatalf("Success = false for large known body with budget, want true (error code %d)", res.ErrorCode)
+	}
+	if res.ErrorCode != ErrorNone {
+		t.Fatalf("ErrorCode = %d, want ErrorNone", res.ErrorCode)
+	}
+}
+
+func TestCheckHTTP500ShortCircuitsBodyDrain(t *testing.T) {
+	url, shutdown := startRawHTTPServer(t, func(conn net.Conn) {
+		_, _ = io.WriteString(conn, "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 100\r\nConnection: close\r\n\r\n")
+		_, _ = io.WriteString(conn, "short")
+	})
+	defer shutdown()
+
+	res := Check(context.Background(), Request{BlogID: 1, URL: url, TimeoutSeconds: 5, BodyReadMaxBytes: 1024, BodyReadMaxMS: 1000})
+	if res.HTTPCode != 500 {
+		t.Fatalf("HTTPCode = %d, want 500", res.HTTPCode)
+	}
+	if res.ErrorCode != ErrorNone {
+		t.Fatalf("ErrorCode = %d, want ErrorNone", res.ErrorCode)
+	}
+	if res.Success {
+		t.Fatal("Success = true for 500 response, want false")
+	}
+}
+
+func TestCheckSSEExemptFromStrictEOF(t *testing.T) {
+	url, shutdown := startRawHTTPServer(t, func(conn net.Conn) {
+		_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n")
+		_, _ = io.WriteString(conn, "data: hello\n\n")
+	})
+	defer shutdown()
+
+	res := Check(context.Background(), Request{BlogID: 1, URL: url, TimeoutSeconds: 5, BodyReadMaxBytes: 1, BodyReadMaxMS: 1000})
+	if !res.Success || res.ErrorCode != ErrorNone {
+		t.Fatalf("SSE response should be successful, got success=%v error=%d", res.Success, res.ErrorCode)
+	}
+}
+
+func TestCheckUpgradeExemptFromStrictEOF(t *testing.T) {
+	url, shutdown := startRawHTTPServer(t, func(conn net.Conn) {
+		_, _ = io.WriteString(conn, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
+	})
+	defer shutdown()
+
+	res := Check(context.Background(), Request{BlogID: 1, URL: url, TimeoutSeconds: 5, BodyReadMaxBytes: 1, BodyReadMaxMS: 1000})
+	if !res.Success || res.ErrorCode != ErrorNone {
+		t.Fatalf("101 upgrade should be successful, got success=%v error=%d", res.Success, res.ErrorCode)
+	}
+}
+
+func TestCheckUnknownLengthBudgetExceedIsNonFatal(t *testing.T) {
+	largeBody := strings.Repeat("x", 64*1024)
+	url, shutdown := startRawHTTPServer(t, func(conn net.Conn) {
+		_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n")
+		_, _ = io.WriteString(conn, largeBody)
+	})
+	defer shutdown()
+
+	res := Check(context.Background(), Request{BlogID: 1, URL: url, TimeoutSeconds: 5, BodyReadMaxBytes: 1024, BodyReadMaxMS: 1000})
+	if !res.Success || res.ErrorCode != ErrorNone {
+		t.Fatalf("unknown-length budget exceed should be non-fatal, got success=%v error=%d", res.Success, res.ErrorCode)
+	}
+}
+
+func TestCheckContentLengthBoundaryUsesStrictEOFAtExactBudget(t *testing.T) {
+	body := strings.Repeat("b", 1024)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", "1024")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, body)
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{BlogID: 1, URL: srv.URL, TimeoutSeconds: 5, BodyReadMaxBytes: 1024, BodyReadMaxMS: 1000})
+	if !res.Success || res.ErrorCode != ErrorNone {
+		t.Fatalf("exact-budget content-length should succeed, got success=%v error=%d", res.Success, res.ErrorCode)
+	}
+}
+
+func TestCheckContentLengthBoundaryFallsBackToBudgetWhenJustOver(t *testing.T) {
+	body := strings.Repeat("c", 1025)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", "1025")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, body)
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{BlogID: 1, URL: srv.URL, TimeoutSeconds: 5, BodyReadMaxBytes: 1024, BodyReadMaxMS: 1000})
+	if !res.Success || res.ErrorCode != ErrorNone {
+		t.Fatalf("just-over-budget content-length should use budgeted path, got success=%v error=%d", res.Success, res.ErrorCode)
+	}
+}
+
+func TestCheckStalledBodyReadReturnsPromptlyAtReadBudget(t *testing.T) {
+	url, shutdown := startRawHTTPServer(t, func(conn net.Conn) {
+		_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n")
+		time.Sleep(2 * time.Second)
+	})
+	defer shutdown()
+
+	start := time.Now()
+	res := Check(context.Background(), Request{BlogID: 1, URL: url, TimeoutSeconds: 1, BodyReadMaxBytes: 1024, BodyReadMaxMS: 80})
+	elapsed := time.Since(start)
+
+	if res.ErrorCode != ErrorTimeout {
+		t.Fatalf("ErrorCode = %d, want ErrorTimeout", res.ErrorCode)
+	}
+	if elapsed < 800*time.Millisecond || elapsed > 2*time.Second {
+		t.Fatalf("stalled body read returned too slowly: %v", elapsed)
+	}
+}
+
+func TestCheckStrictFiniteSlowBodyIgnoresBodyReadBudget(t *testing.T) {
+	url, shutdown := startRawHTTPServer(t, func(conn net.Conn) {
+		_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\n")
+		time.Sleep(250 * time.Millisecond)
+		_, _ = io.WriteString(conn, "hello world")
+	})
+	defer shutdown()
+
+	res := Check(context.Background(), Request{BlogID: 1, URL: url, TimeoutSeconds: 2, BodyReadMaxBytes: 1024, BodyReadMaxMS: 100})
+	if !res.Success || res.ErrorCode != ErrorNone {
+		t.Fatalf("strict finite slow body should succeed, got success=%v error=%d", res.Success, res.ErrorCode)
+	}
+}
+
+func TestCheckKeywordCanArriveAfterBodyReadBudget(t *testing.T) {
+	url, shutdown := startRawHTTPServer(t, func(conn net.Conn) {
+		_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n")
+		_, _ = io.WriteString(conn, "6\r\nhello \r\n")
+		time.Sleep(250 * time.Millisecond)
+		_, _ = io.WriteString(conn, "7\r\njetpack\r\n")
+		_, _ = io.WriteString(conn, "0\r\n\r\n")
+	})
+	defer shutdown()
+
+	kw := "jetpack"
+	res := Check(context.Background(), Request{BlogID: 1, URL: url, TimeoutSeconds: 2, BodyReadMaxBytes: 1024, BodyReadMaxMS: 100, Keyword: &kw})
+	if !res.Success || res.ErrorCode != ErrorNone {
+		t.Fatalf("slow keyword should succeed before request timeout, got success=%v error=%d", res.Success, res.ErrorCode)
+	}
+}
+
+func TestCheckKeywordTimeoutUsesTimeoutClassification(t *testing.T) {
+	url, shutdown := startRawHTTPServer(t, func(conn net.Conn) {
+		_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n")
+		_, _ = io.WriteString(conn, "6\r\nhello \r\n")
+		time.Sleep(300 * time.Millisecond)
+		_, _ = io.WriteString(conn, "7\r\njetpack\r\n")
+		_, _ = io.WriteString(conn, "0\r\n\r\n")
+	})
+	defer shutdown()
+
+	kw := "jetpack"
+	res := Check(context.Background(), Request{BlogID: 1, URL: url, TimeoutSeconds: 2, BodyReadMaxBytes: 1024, BodyReadMaxMS: 100, KeywordReadMaxMS: 120, Keyword: &kw})
+	if res.ErrorCode != ErrorTimeout {
+		t.Fatalf("ErrorCode = %d, want ErrorTimeout", res.ErrorCode)
+	}
+}
+
+func TestCheckUpgradeNoKeywordReturnsWithoutBodyWait(t *testing.T) {
+	url, shutdown := startRawHTTPServer(t, func(conn net.Conn) {
+		_, _ = io.WriteString(conn, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
+		time.Sleep(500 * time.Millisecond)
+	})
+	defer shutdown()
+
+	start := time.Now()
+	res := Check(context.Background(), Request{BlogID: 1, URL: url, TimeoutSeconds: 2, BodyReadMaxBytes: 1, BodyReadMaxMS: 300})
+	if !res.Success || res.ErrorCode != ErrorNone {
+		t.Fatalf("101 upgrade should be successful, got success=%v error=%d", res.Success, res.ErrorCode)
+	}
+	if time.Since(start) > 250*time.Millisecond {
+		t.Fatalf("upgrade no-keyword should return promptly")
+	}
+}
+
+func TestCheckKeywordReadBudgetAllowsOverBodyBudgetCompatibility(t *testing.T) {
+	prefix := strings.Repeat("x", 400*1024)
+	needle := "keyword-match"
+	body := prefix + needle + strings.Repeat("y", 8*1024)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, body)
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{
+		BlogID:              1,
+		URL:                 srv.URL,
+		TimeoutSeconds:      5,
+		BodyReadMaxBytes:    256 * 1024,
+		BodyReadMaxMS:       1000,
+		KeywordReadMaxBytes: 1024 * 1024,
+		Keyword:             &needle,
+	})
+	if !res.Success || res.ErrorCode != ErrorNone {
+		t.Fatalf("keyword compatibility read should succeed, got success=%v error=%d", res.Success, res.ErrorCode)
+	}
+}
+
+func startRawHTTPServer(t *testing.T, handler func(net.Conn)) (string, func()) {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen failed: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				_ = c.SetDeadline(time.Now().Add(2 * time.Second))
+				reader := bufio.NewReader(c)
+				for {
+					line, readErr := reader.ReadString('\n')
+					if readErr != nil {
+						return
+					}
+					if line == "\r\n" {
+						break
+					}
+				}
+				handler(c)
+			}(conn)
+		}
+	}()
+
+	return fmt.Sprintf("http://%s", ln.Addr().String()), func() {
+		_ = ln.Close()
+		<-done
 	}
 }
 
