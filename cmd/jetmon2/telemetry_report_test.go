@@ -72,8 +72,8 @@ func TestBuildTelemetryReport(t *testing.T) {
 	if len(report.ExplanationGaps) != 0 {
 		t.Fatalf("ExplanationGaps = %+v, want none", report.ExplanationGaps)
 	}
-	if report.Status != "pass" || len(report.Highlights) == 0 {
-		t.Fatalf("Status/Highlights = %q/%+v, want pass with highlights", report.Status, report.Highlights)
+	if report.TelemetryStatus != "pass" || report.ExplanationGapRows != 0 || len(report.Highlights) == 0 {
+		t.Fatalf("TelemetryStatus/GapRows/Highlights = %q/%d/%+v, want pass with no gap rows and highlights", report.TelemetryStatus, report.ExplanationGapRows, report.Highlights)
 	}
 	if len(report.SuggestedNextActions) == 0 || !strings.Contains(report.SuggestedNextActions[0], "consistent") {
 		t.Fatalf("SuggestedNextActions = %+v, want consistency guidance", report.SuggestedNextActions)
@@ -90,9 +90,9 @@ func TestRenderTelemetryReportText(t *testing.T) {
 			Since: time.Date(2026, 4, 30, 16, 0, 0, 0, time.UTC),
 			Until: time.Date(2026, 4, 30, 18, 0, 0, 0, time.UTC),
 		},
-		Status:     "pass",
-		Highlights: []string{"Telemetry looks internally consistent for this window."},
-		Summary:    telemetrySummary{Opened: 5, ConfirmedDown: 2, ProbeCleared: 1},
+		TelemetryStatus: "pass",
+		Highlights:      []string{"Telemetry looks internally consistent for this window."},
+		Summary:         telemetrySummary{Opened: 5, ConfirmedDown: 2, ProbeCleared: 1},
 		Timings: []telemetryTiming{{
 			Name:  "first_failure_to_down",
 			Count: 2,
@@ -121,7 +121,7 @@ func TestRenderTelemetryReportText(t *testing.T) {
 	got := out.String()
 	for _, want := range []string{
 		"## Production Telemetry Report",
-		"PASS status=pass explanation_gaps=0",
+		"PASS telemetry_status=pass explanation_gap_types=0 explanation_gap_rows=0",
 		"INFO highlight=\"Telemetry looks internally consistent for this window.\"",
 		"window_end=exclusive",
 		"INFO events opened=5 confirmed_down=2",
@@ -137,10 +137,59 @@ func TestRenderTelemetryReportText(t *testing.T) {
 	}
 }
 
+func TestRenderTelemetryReportWarnTextSimulation(t *testing.T) {
+	report := telemetryReport{
+		GeneratedAt: time.Date(2026, 4, 30, 18, 0, 0, 0, time.UTC),
+		Window: telemetryWindow{
+			Since: time.Date(2026, 4, 30, 16, 0, 0, 0, time.UTC),
+			Until: time.Date(2026, 4, 30, 18, 0, 0, 0, time.UTC),
+		},
+		Summary: telemetrySummary{Opened: 3, ConfirmedDown: 2},
+		Verifier: telemetryVerifierReport{
+			Replies:        4,
+			ConfirmDown:    3,
+			Disagree:       1,
+			MissingOutcome: 1,
+			ConfirmPercent: 75,
+		},
+		WPCOM: telemetryWPCOMReport{
+			ExpectedDownTransitions: 2,
+			Attempts:                1,
+			AttemptDelta:            1,
+		},
+		ExplanationGaps: []telemetryGap{
+			{Name: "wpcom_attempt_delta", Severity: "amber", Count: 1, Detail: "missing WPCOM attempt"},
+			{Name: "verifier_reply_missing_outcome", Severity: "amber", Count: 6, Detail: "missing verifier outcome"},
+		},
+	}
+	report.TelemetryStatus = telemetryReportStatus(report.ExplanationGaps)
+	report.ExplanationGapRows = telemetryExplanationGapRows(report.ExplanationGaps)
+	report.Highlights = telemetryReportHighlights(report)
+	report.SuggestedNextActions = suggestTelemetryNextActions(report)
+
+	var out bytes.Buffer
+	if err := renderTelemetryReport(&out, report, "text"); err != nil {
+		t.Fatalf("renderTelemetryReport(warn) error = %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"WARN telemetry_status=warn explanation_gap_types=2 explanation_gap_rows=7",
+		"INFO highlight=\"WPCOM attempt delta is 1 after expected suppressions.\"",
+		"INFO highlight=\"Verifier reply outcome is missing for 6 audit row(s).\"",
+		"WARN gap=wpcom_attempt_delta count=1",
+		"WARN gap=verifier_reply_missing_outcome count=6",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("warn simulation missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestRenderTelemetryReportJSON(t *testing.T) {
 	report := telemetryReport{
-		Command:     "telemetry report",
-		GeneratedAt: time.Date(2026, 4, 30, 18, 0, 0, 0, time.UTC),
+		Command:         "telemetry report",
+		GeneratedAt:     time.Date(2026, 4, 30, 18, 0, 0, 0, time.UTC),
+		TelemetryStatus: "pass",
 		Window: telemetryWindow{
 			Since: time.Date(2026, 4, 30, 16, 0, 0, 0, time.UTC),
 			Until: time.Date(2026, 4, 30, 18, 0, 0, 0, time.UTC),
@@ -157,6 +206,16 @@ func TestRenderTelemetryReportJSON(t *testing.T) {
 	}
 	if got.Command != "telemetry report" || got.Summary.ConfirmedDown != 2 {
 		t.Fatalf("decoded report = %+v, want telemetry report with confirmed_down=2", got)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(out.Bytes(), &raw); err != nil {
+		t.Fatalf("rendered JSON did not decode to map: %v", err)
+	}
+	if raw["telemetry_status"] != "pass" {
+		t.Fatalf("telemetry_status JSON field = %#v, want pass", raw["telemetry_status"])
+	}
+	if _, ok := raw["status"]; ok {
+		t.Fatalf("JSON included ambiguous status field: %s", out.String())
 	}
 	if err := renderTelemetryReport(&out, report, "yaml"); err == nil {
 		t.Fatal("renderTelemetryReport(yaml) error = nil, want error")
@@ -199,7 +258,7 @@ func TestTelemetryValidation(t *testing.T) {
 
 func expectTelemetryReportQueries(t *testing.T, mock sqlmock.Sqlmock, start, end time.Time) {
 	t.Helper()
-	mock.ExpectQuery(`SELECT reason, COUNT`).
+	mock.ExpectQuery(`(?s)SELECT reason, COUNT.*changed_at >= \?.*changed_at < \?`).
 		WithArgs(start, end).
 		WillReturnRows(sqlmock.NewRows([]string{"reason", "count"}).
 			AddRow(eventstore.ReasonOpened, int64(5)).
@@ -219,47 +278,47 @@ func expectTelemetryReportQueries(t *testing.T, mock sqlmock.Sqlmock, start, end
 		{eventstore.ReasonProbeCleared, 1, 600, 600},
 		{eventstore.ReasonVerifierCleared, 1, 3000, 3000},
 	} {
-		mock.ExpectQuery(`(?s)SELECT COUNT\(\*\).*FROM jetmon_event_transitions outcome.*opened.reason = \?`).
+		mock.ExpectQuery(`(?s)SELECT COUNT\(\*\).*FROM jetmon_event_transitions outcome.*opened.reason = \?.*outcome.changed_at >= \?.*outcome.changed_at < \?`).
 			WithArgs(eventstore.ReasonOpened, tc.reason, start, end).
 			WillReturnRows(sqlmock.NewRows([]string{"count", "avg", "max"}).AddRow(tc.count, tc.avg, tc.max))
 	}
 
-	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\).*FROM jetmon_audit_log.*detail = 'veriflier reply'`).
+	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\).*FROM jetmon_audit_log.*detail = 'veriflier reply'.*created_at >= \?.*created_at < \?`).
 		WithArgs(audit.EventVeriflierSent, start, end).
 		WillReturnRows(sqlmock.NewRows([]string{"count", "confirm", "disagree", "missing"}).
 			AddRow(int64(6), int64(4), int64(2), int64(0)))
-	mock.ExpectQuery(`(?s)SELECT source,.*GROUP BY source.*LIMIT 5`).
+	mock.ExpectQuery(`(?s)SELECT source,.*created_at >= \?.*created_at < \?.*GROUP BY source.*LIMIT 5`).
 		WithArgs(audit.EventVeriflierSent, start, end).
 		WillReturnRows(sqlmock.NewRows([]string{"source", "count", "confirm", "disagree", "missing"}).
 			AddRow("verifier-a", int64(4), int64(3), int64(1), int64(0)).
 			AddRow("verifier-b", int64(2), int64(1), int64(1), int64(0)))
 
-	mock.ExpectQuery(`(?s)SELECT outcome.reason AS outcome.*GROUP BY outcome.reason, class.*LIMIT 5`).
+	mock.ExpectQuery(`(?s)SELECT outcome.reason AS outcome.*outcome.changed_at >= \?.*outcome.changed_at < \?.*GROUP BY outcome.reason, class.*LIMIT 5`).
 		WithArgs(eventstore.ReasonOpened, eventstore.ReasonFalseAlarm, eventstore.ReasonProbeCleared, start, end).
 		WillReturnRows(sqlmock.NewRows([]string{"outcome", "class", "count"}).
 			AddRow(eventstore.ReasonFalseAlarm, "server", int64(1)).
 			AddRow(eventstore.ReasonProbeCleared, "client", int64(1)))
 
-	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\).*detail LIKE 'status=2 %'`).
+	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\).*detail LIKE 'status=2 %'.*created_at >= \?.*created_at < \?`).
 		WithArgs(audit.EventWPCOMSent, start, end).
 		WillReturnRows(sqlmock.NewRows([]string{"count", "down", "recovery"}).AddRow(int64(3), int64(2), int64(1)))
-	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\).*event_type = \?`).
+	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\).*event_type = \?.*created_at >= \?.*created_at < \?`).
 		WithArgs(audit.EventWPCOMRetry, start, end).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(int64(1)))
-	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\).*event_type IN`).
+	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\).*event_type IN.*created_at >= \?.*created_at < \?`).
 		WithArgs(audit.EventMaintenanceActive, audit.EventAlertSuppressed, start, end).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(int64(1)))
 
-	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\).*reason = \?.*http_code`).
+	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\).*reason = \?.*changed_at >= \?.*changed_at < \?.*http_code`).
 		WithArgs(eventstore.ReasonOpened, start, end).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(int64(0)))
-	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\).*reason = \?.*verifier_results`).
+	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\).*reason = \?.*changed_at >= \?.*changed_at < \?.*verifier_results`).
 		WithArgs(eventstore.ReasonVerifierConfirmed, start, end).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(int64(0)))
-	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\).*reason = \?.*verifier_healthy`).
+	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\).*reason = \?.*changed_at >= \?.*changed_at < \?.*verifier_healthy`).
 		WithArgs(eventstore.ReasonFalseAlarm, start, end).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(int64(0)))
-	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\).*event_type = \?.*\$\.success`).
+	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\).*event_type = \?.*created_at >= \?.*created_at < \?.*\$\.success`).
 		WithArgs(audit.EventVeriflierSent, start, end).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(int64(0)))
 }

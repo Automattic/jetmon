@@ -397,6 +397,10 @@ verifier agreement, false-alarm classes, WPCOM attempt parity, and metadata gaps
 that would make operator or customer explanations weaker. It reports aggregate
 counts and classes rather than raw payloads or credentials.
 
+The top line reports `telemetry_status`, `explanation_gap_types`, and
+`explanation_gap_rows`. Treat `warn` or `fail` as a signal that the report found
+missing or inconsistent telemetry, not as a site-availability rollup.
+
 Use `LOG_FORMAT=json` for structured logs during investigations.
 
 ## Debugging

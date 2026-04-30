@@ -41,8 +41,9 @@ type telemetryReport struct {
 	Command              string                  `json:"command"`
 	GeneratedAt          time.Time               `json:"generated_at"`
 	Window               telemetryWindow         `json:"window"`
-	Status               string                  `json:"status"`
+	TelemetryStatus      string                  `json:"telemetry_status"`
 	Highlights           []string                `json:"highlights,omitempty"`
+	ExplanationGapRows   int64                   `json:"explanation_gap_rows"`
 	Summary              telemetrySummary        `json:"summary"`
 	Timings              []telemetryTiming       `json:"timings"`
 	Verifier             telemetryVerifierReport `json:"verifier"`
@@ -286,7 +287,8 @@ func buildTelemetryReport(ctx context.Context, conn *sql.DB, now time.Time, opts
 		WPCOM:             wpcom,
 		ExplanationGaps:   gaps,
 	}
-	report.Status = telemetryReportStatus(report.ExplanationGaps)
+	report.TelemetryStatus = telemetryReportStatus(report.ExplanationGaps)
+	report.ExplanationGapRows = telemetryExplanationGapRows(report.ExplanationGaps)
 	report.Highlights = telemetryReportHighlights(report)
 	report.SuggestedNextActions = suggestTelemetryNextActions(report)
 	return report, nil
@@ -675,13 +677,29 @@ func telemetryReportStatus(gaps []telemetryGap) string {
 	return status
 }
 
+func telemetryExplanationGapRows(gaps []telemetryGap) int64 {
+	var total int64
+	for _, gap := range gaps {
+		total += gap.Count
+	}
+	return total
+}
+
 func telemetryReportHighlights(report telemetryReport) []string {
 	var highlights []string
-	if len(report.ExplanationGaps) > 0 {
-		highlights = append(highlights, fmt.Sprintf("%d explanation gap(s) need follow-up before using this report for customer-facing explanations.", len(report.ExplanationGaps)))
-	}
 	if report.WPCOM.AttemptDelta != 0 {
 		highlights = append(highlights, fmt.Sprintf("WPCOM attempt delta is %d after expected suppressions.", report.WPCOM.AttemptDelta))
+	}
+	for _, gap := range report.ExplanationGaps {
+		switch gap.Name {
+		case "no_verifier_replies_for_event_window":
+			highlights = append(highlights, fmt.Sprintf("No verifier reply audit rows were recorded for %d verifier-confirmed transition(s).", gap.Count))
+		case "verifier_reply_missing_outcome":
+			highlights = append(highlights, fmt.Sprintf("Verifier reply outcome is missing for %d audit row(s).", gap.Count))
+		}
+	}
+	if len(report.ExplanationGaps) > 0 {
+		highlights = append(highlights, fmt.Sprintf("%d explanation gap type(s) across %d row(s) need follow-up before using this report for customer-facing explanations.", len(report.ExplanationGaps), report.ExplanationGapRows))
 	}
 	if report.Verifier.Replies > 0 {
 		highlights = append(highlights, fmt.Sprintf("Verifier agreement is %.1f%% across %d replies.", report.Verifier.ConfirmPercent, report.Verifier.Replies))
@@ -734,11 +752,12 @@ func renderTelemetryReport(out io.Writer, report telemetryReport, output string)
 
 func renderTelemetryReportText(out io.Writer, report telemetryReport) {
 	fmt.Fprintf(out, "## Production Telemetry Report\n")
-	statusLevel := telemetryReportStatusLevel(report.Status)
-	fmt.Fprintf(out, "%s status=%s explanation_gaps=%d suggested_actions=%d\n",
+	statusLevel := telemetryReportStatusLevel(report.TelemetryStatus)
+	fmt.Fprintf(out, "%s telemetry_status=%s explanation_gap_types=%d explanation_gap_rows=%d suggested_actions=%d\n",
 		statusLevel,
-		report.Status,
+		report.TelemetryStatus,
 		len(report.ExplanationGaps),
+		report.ExplanationGapRows,
 		len(report.SuggestedNextActions),
 	)
 	for _, highlight := range report.Highlights {
