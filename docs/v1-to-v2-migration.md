@@ -559,13 +559,15 @@ For every replaced range, verify:
 
 If `DASHBOARD_PORT` is enabled, confirm:
 
-- bucket ownership mode is pinned
-- dependency health is green for MySQL, configured Verifliers, WPCOM, StatsD,
-  and log/stats directory writes
-- WPCOM circuit breaker is closed
+- the host dashboard at `/` shows bucket ownership mode as pinned
+- the host dashboard dependency health is green for MySQL, configured
+  Verifliers, WPCOM, StatsD, and log/stats directory writes
+- the host dashboard shows the WPCOM circuit breaker closed
 - retry queue depth is not growing unexpectedly
 - Go runtime system memory stays below the configured guardrail
 - delivery workers are disabled unless explicitly approved
+- the fleet dashboard at `/fleet` shows the replaced host as fresh, and pinned
+  bucket mode as an expected amber rollout state
 
 Useful direct checks:
 
@@ -673,7 +675,9 @@ After every monitor host is on v2 and stable in pinned mode:
    ```
 
 8. Confirm `jetmon_hosts` coverage is active, fresh, gap-free, and
-   overlap-free.
+   overlap-free. If `DASHBOARD_PORT` is enabled, `/fleet` should show
+   `mode=dynamic`, green bucket coverage, no stale processes, no projection
+   drift, and no failed or abandoned delivery rows.
 9. Continue with normal v2 rolling updates: stop one host, deploy, start it,
    verify `./jetmon2 status`, then move to the next host.
 

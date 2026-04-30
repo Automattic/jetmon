@@ -95,7 +95,7 @@ because it is intentionally **not** drop-in with the Jetmon 1 wire format
 - Host dashboard now has a combined `/api/host` snapshot endpoint, stronger
   red/amber/green summary behavior, clearer rollout-command visibility, and a
   durable `jetmon_process_health` heartbeat table that `jetmon2` and
-  `jetmon-deliverer` publish to for future fleet dashboards.
+  `jetmon-deliverer` publish to for fleet dashboards.
 - Host dashboard exposure now defaults to localhost, host summaries include
   named red/amber issues, process lifecycle is stored separately from health
   rollup, and memory is labeled as Go runtime system memory rather than RSS.

@@ -232,6 +232,59 @@ deciding whether a process or dynamic bucket owner is healthy.
 Fleet snapshots are cached briefly by the dashboard process so multiple open
 operator tabs do not run the full fleet query set on every refresh.
 
+### Fleet Dashboard Operation
+
+Enable the dashboards with:
+
+```json
+{
+  "DASHBOARD_PORT": 8080,
+  "DASHBOARD_BIND_ADDR": "127.0.0.1"
+}
+```
+
+Open the host dashboard at `http://127.0.0.1:8080/` and the fleet dashboard at
+`http://127.0.0.1:8080/fleet`. If an operator needs remote access, prefer an SSH
+tunnel or a trusted management network instead of binding the dashboard to a
+public interface:
+
+```bash
+ssh -L 8080:127.0.0.1:8080 <jetmon-host>
+```
+
+The fleet dashboard is read-only and unauthenticated. It accepts only `GET` and
+`HEAD` requests, and `/api/fleet` returns the same rollup as JSON for local
+operator scripts:
+
+```bash
+curl -sS http://127.0.0.1:8080/api/fleet
+```
+
+Read the top summary first:
+
+- **Red**: do not advance rollout. Typical causes are stale process heartbeats,
+  broken dynamic bucket coverage, projection drift, failed/abandoned delivery
+  rows, or red process dependency health.
+- **Amber**: operator attention needed before the next change. Typical causes
+  are pinned or mixed bucket ownership during rollout, due delivery rows,
+  delivery workers without a clear owner, no process snapshots yet, or amber
+  dependency health.
+- **Green**: no fleet-level blocker is visible. Continue normal monitoring or
+  the next approved rollout step.
+
+During the v1-to-v2 rollout, pinned monitor hosts should make bucket coverage
+show `mode=pinned` and amber. After the final dynamic-ownership cutover,
+`mode=dynamic` should be green with fresh `jetmon_hosts` coverage and no gaps or
+overlaps. A `mode=mixed` result means some monitor hosts still report pinned
+ownership while others report dynamic ownership; treat that as a rollout state
+to resolve intentionally.
+
+For delivery ownership, green means the visible fresh delivery-capable process
+set has a consistent owner posture. Amber means the fleet either has queued
+delivery rows with no fresh worker, multiple owner values, enabled workers
+without `DELIVERY_OWNER_HOST`, or a mix of explicit and unset ownership. Fix the
+delivery-owner plan before moving outbound delivery responsibility.
+
 The dashboard exposes these local JSON endpoints:
 
 ```text
@@ -271,6 +324,18 @@ For health rollups and memory:
 SELECT process_id, state, health_status, go_sys_mem_mb, updated_at
 FROM jetmon_process_health
 ORDER BY health_status DESC, updated_at;
+```
+
+Delivery queues can be inspected directly:
+
+```sql
+SELECT status, COUNT(*), MIN(COALESCE(next_attempt_at, created_at))
+FROM jetmon_webhook_deliveries
+GROUP BY status;
+
+SELECT status, COUNT(*), MIN(COALESCE(next_attempt_at, created_at))
+FROM jetmon_alert_deliveries
+GROUP BY status;
 ```
 
 A host whose heartbeat is older than `BUCKET_HEARTBEAT_GRACE_SEC` will have its
