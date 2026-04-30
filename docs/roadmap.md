@@ -15,16 +15,21 @@ migration and the operating data needed to make larger architecture decisions.
 These are scoped branches worth considering after the merged API CLI, rollout
 preflight, deliverer hardening, and API CLI fixture workflow branches:
 
-- **`feature/projection-drift-tooling`** - expand drift diagnostics beyond
-  count/list output with range summaries, likely causes, rehearsal reports, and
-  dry-run repair guidance if repair becomes safe enough to automate.
 - **`feature/production-telemetry-reports`** - turn existing StatsD and event
   data into repeatable reports for first-failure timing, verifier agreement,
   false-alarm classes, WPCOM parity, and operator explanation gaps after v2 has
   enough traffic.
-- **`feature/v2-rollout-docs-rehearsal`** - walk the migration docs through a
-  full rehearsal and keep README, operations docs, migration docs, config
-  samples, service units, and CLI output aligned.
+
+### Projection Drift Tooling TODO
+
+- [x] Compare legacy projection status against a per-blog rollup of open HTTP
+  events so multiple open endpoint events cannot overcount drift.
+- [x] Add bucket/status summaries to `rollout projection-drift` so operators
+  can distinguish one-off rows from range-wide projection failures.
+- [x] Add likely-cause labels and manual repair guidance to the drift report
+  without mutating production data automatically.
+- [ ] Consider a dedicated dry-run repair planner after production rehearsals
+  show which drift classes are safe enough to automate.
 
 ### Rollout Simplification TODO
 
@@ -846,10 +851,12 @@ where to look, and what each item unlocked.
   range without gaps/overlaps, heartbeats are fresh, and projection drift is
   zero.
   This supports the second step after every host has moved safely to v2.
-- **Projection drift reporting.** `./jetmon2 rollout projection-drift` lists
-  the specific active sites whose legacy projection disagrees with the
-  authoritative open HTTP event.
-  Operators get actionable rows instead of a count-only rollout failure.
+- **Projection drift reporting.** `./jetmon2 rollout projection-drift` prints
+  bucket/status summaries, likely causes, sample rows, and the specific active
+  sites whose legacy projection disagrees with the authoritative open HTTP
+  event.
+  Operators get actionable diagnostics and manual repair guidance instead of a
+  count-only rollout failure.
 - **Rollout guidance in validation and dashboard.** `validate-config` prints
   the correct rollout preflight and drift-report commands, while the operator
   dashboard shows bucket mode, projection mode, delivery ownership, rollout

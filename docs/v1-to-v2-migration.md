@@ -527,6 +527,11 @@ For every replaced range, verify:
     --limit=100
   ```
 
+  If this fails, read the summary section first. It groups mismatches by bucket
+  and likely cause, then lists sample rows. Do not restart v1 readers or apply
+  ad hoc `site_status` updates until the matching `jetmon_events` rows and
+  transition history confirm which projection value is authoritative.
+
 - recent check activity exists for the pinned range:
 
   ```bash
@@ -685,6 +690,9 @@ After every monitor host is on v2 and stable in pinned mode:
    overlap-free. If `DASHBOARD_PORT` is enabled, `/fleet` should show
    `mode=dynamic`, green bucket coverage, no stale processes, no projection
    drift, and no failed or abandoned delivery rows.
+   If the projection-drift check fails, use the bucket/cause summary to decide
+   whether this is a stale legacy projection, a missing event-to-projection
+   write, or an unexpected status value before making any manual repair.
 9. Continue with normal v2 rolling updates: stop one host, deploy, start it,
    verify `./jetmon2 status`, then move to the next host.
 

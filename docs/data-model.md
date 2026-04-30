@@ -136,6 +136,16 @@ If drift is suspected, inspect mismatches with:
 ./jetmon2 rollout projection-drift --bucket-min=0 --bucket-max=99 --limit=100
 ```
 
+The drift report summarizes mismatches by bucket, projected status, expected
+status, likely cause, and sample blog before listing individual rows. It is
+read-only: use the likely-cause and repair guidance to confirm the event rows
+and transition history before making any reviewed database repair.
+
+Watch for repeated drift classes during rollout rehearsal and early production
+operation. Do not add an automated or dry-run repair planner until those real
+examples show which mismatch classes are safe to repair mechanically and which
+ones require eventstore investigation first.
+
 After legacy readers move to the v2 API or event tables, disable the projection.
 
 ## Status And Failure Types

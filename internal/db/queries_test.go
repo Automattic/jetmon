@@ -357,13 +357,13 @@ func TestListLegacyProjectionDrift(t *testing.T) {
 	mock, cleanup := withMockDB(t)
 	defer cleanup()
 
-	mock.ExpectQuery("SELECT s.blog_id").
+	mock.ExpectQuery("SELECT drift.blog_id").
 		WithArgs(0, 99, 50).
 		WillReturnRows(sqlmock.NewRows([]string{
-			"blog_id", "bucket_no", "site_status", "expected_status", "id", "state",
+			"blog_id", "bucket_no", "site_status", "expected_status", "id", "state", "open_event_count",
 		}).
-			AddRow(int64(42), 7, 1, 2, int64(123), "Down").
-			AddRow(int64(43), 8, 0, 1, nil, nil))
+			AddRow(int64(42), 7, 1, 2, int64(123), "Down", 1).
+			AddRow(int64(43), 8, 0, 1, nil, nil, 0))
 
 	rows, err := ListLegacyProjectionDrift(context.Background(), 0, 99, 0)
 	if err != nil {
@@ -381,8 +381,44 @@ func TestListLegacyProjectionDrift(t *testing.T) {
 	if rows[0].EventState == nil || *rows[0].EventState != "Down" {
 		t.Fatalf("row 0 EventState = %v, want Down", rows[0].EventState)
 	}
+	if rows[0].OpenEventCount != 1 {
+		t.Fatalf("row 0 OpenEventCount = %d, want 1", rows[0].OpenEventCount)
+	}
 	if rows[1].EventID != nil || rows[1].EventState != nil {
 		t.Fatalf("row 1 event fields = %+v, want nil", rows[1])
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestSummarizeLegacyProjectionDrift(t *testing.T) {
+	mock, cleanup := withMockDB(t)
+	defer cleanup()
+
+	mock.ExpectQuery("SELECT drift.bucket_no").
+		WithArgs(0, 99, 20).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"bucket_no", "site_status", "expected_status", "expected_state", "max_open_event_count", "drift_count", "sample_blog_id",
+		}).
+			AddRow(7, 1, 2, "Down", 1, 3, int64(42)).
+			AddRow(8, 0, 1, nil, 0, 2, int64(43)))
+
+	rows, err := SummarizeLegacyProjectionDrift(context.Background(), 0, 99, 0)
+	if err != nil {
+		t.Fatalf("SummarizeLegacyProjectionDrift: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("rows len = %d, want 2", len(rows))
+	}
+	if rows[0].BucketNo != 7 || rows[0].SiteStatus != 1 || rows[0].ExpectedStatus != 2 || rows[0].DriftCount != 3 || rows[0].SampleBlogID != 42 {
+		t.Fatalf("row 0 = %+v", rows[0])
+	}
+	if rows[0].EventState == nil || *rows[0].EventState != "Down" {
+		t.Fatalf("row 0 EventState = %v, want Down", rows[0].EventState)
+	}
+	if rows[1].EventState != nil {
+		t.Fatalf("row 1 EventState = %v, want nil", rows[1].EventState)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)

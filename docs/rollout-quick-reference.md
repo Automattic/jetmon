@@ -214,6 +214,10 @@ restart the fleet in the approved window, and run:
 ./jetmon2 rollout projection-drift --limit=100
 ```
 
+When `projection-drift` fails, start with the summary and cause lines before
+the row table. The command is read-only and gives repair guidance; it does not
+change `site_status` automatically.
+
 ## Automation
 
 Rollout gate commands support JSON output:
