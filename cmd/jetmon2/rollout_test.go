@@ -2763,8 +2763,8 @@ func TestRunProjectionDriftReportListsRowsAndFails(t *testing.T) {
 			return 2, nil
 		},
 		SummarizeLegacyProjectionDrift: func(_ context.Context, min, max, limit int) ([]db.ProjectionDriftSummaryRow, error) {
-			if min != 2 || max != 4 || limit != defaultProjectionDriftSummaryLimit {
-				t.Fatalf("summary args = %d-%d limit=%d, want 2-4 limit=%d", min, max, limit, defaultProjectionDriftSummaryLimit)
+			if min != 2 || max != 4 || limit != 2 {
+				t.Fatalf("summary args = %d-%d limit=%d, want 2-4 limit=2", min, max, limit)
 			}
 			return []db.ProjectionDriftSummaryRow{
 				{BucketNo: 3, SiteStatus: 1, ExpectedStatus: 2, EventState: &eventState, MaxOpenEventCount: 1, DriftCount: 2, SampleBlogID: 42},
@@ -2790,6 +2790,7 @@ func TestRunProjectionDriftReportListsRowsAndFails(t *testing.T) {
 	}
 	for _, want := range []string{
 		"WARN legacy_projection_drift_requires_manual_review=2",
+		"projection_drift_next_step=",
 		"SAMPLE_BLOG",
 		"missing_confirmed_down_projection",
 		"projection_drift_cause=missing_confirmed_down_projection count=2",
@@ -2802,6 +2803,57 @@ func TestRunProjectionDriftReportListsRowsAndFails(t *testing.T) {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("output missing %q:\n%s", want, out.String())
 		}
+	}
+}
+
+func TestRunProjectionDriftReportUsesAllSummariesForCauseGuidance(t *testing.T) {
+	cfg := dynamicRolloutTestConfig()
+	deps := projectionDriftDeps{
+		CountLegacyProjectionDrift: func(context.Context, int, int) (int, error) {
+			return defaultProjectionDriftSummaryLimit + 1, nil
+		},
+		SummarizeLegacyProjectionDrift: func(context.Context, int, int, int) ([]db.ProjectionDriftSummaryRow, error) {
+			var summaries []db.ProjectionDriftSummaryRow
+			for i := range defaultProjectionDriftSummaryLimit {
+				summaries = append(summaries, db.ProjectionDriftSummaryRow{
+					BucketNo:       i,
+					SiteStatus:     1,
+					ExpectedStatus: 2,
+					DriftCount:     1,
+					SampleBlogID:   int64(100 + i),
+				})
+			}
+			summaries = append(summaries, db.ProjectionDriftSummaryRow{
+				BucketNo:       99,
+				SiteStatus:     0,
+				ExpectedStatus: 1,
+				DriftCount:     1,
+				SampleBlogID:   999,
+			})
+			return summaries, nil
+		},
+		ListLegacyProjectionDrift: func(context.Context, int, int, int) ([]db.ProjectionDriftRow, error) {
+			return nil, nil
+		},
+	}
+
+	var out bytes.Buffer
+	err := runProjectionDriftReport(context.Background(), &out, cfg, 0, 9, 1, deps)
+	if err == nil {
+		t.Fatal("runProjectionDriftReport succeeded")
+	}
+	for _, want := range []string{
+		"INFO projection_drift_summary_groups_truncated=1",
+		"INFO projection_drift_summary_rows_hidden=1",
+		"projection_drift_cause=missing_confirmed_down_projection count=20",
+		"projection_drift_cause=stale_legacy_down_projection count=1",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+	if strings.Contains(out.String(), "999") {
+		t.Fatalf("hidden summary sample was printed:\n%s", out.String())
 	}
 }
 

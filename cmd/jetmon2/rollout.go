@@ -3113,19 +3113,26 @@ func runProjectionDriftReport(ctx context.Context, out io.Writer, cfg *config.Co
 		return nil
 	}
 	fmt.Fprintf(out, "WARN legacy_projection_drift_requires_manual_review=%d\n", count)
+	fmt.Fprintln(out, `WARN projection_drift_next_step="review the summary first, then inspect listed event rows before making any site_status repair"`)
 
 	if deps.SummarizeLegacyProjectionDrift == nil {
 		return errors.New("projection drift summarizer is not configured")
 	}
-	summaries, err := deps.SummarizeLegacyProjectionDrift(ctx, minBucket, maxBucket, defaultProjectionDriftSummaryLimit)
+	summaries, err := deps.SummarizeLegacyProjectionDrift(ctx, minBucket, maxBucket, count)
 	if err != nil {
 		return fmt.Errorf("summarize legacy projection drift in range %d-%d: %w", minBucket, maxBucket, err)
 	}
+	visibleSummaries := firstProjectionDriftSummaries(summaries, defaultProjectionDriftSummaryLimit)
 	fmt.Fprintln(out, "## projection drift summary")
-	printProjectionDriftSummaries(out, summaries)
-	summaryCount := sumProjectionDriftSummaryRows(summaries)
-	if count > summaryCount {
-		fmt.Fprintf(out, "INFO projection_drift_summary_truncated=%d\n", count-summaryCount)
+	printProjectionDriftSummaries(out, visibleSummaries)
+	visibleSummaryCount := sumProjectionDriftSummaryRows(visibleSummaries)
+	totalSummaryCount := sumProjectionDriftSummaryRows(summaries)
+	if len(summaries) > len(visibleSummaries) {
+		fmt.Fprintf(out, "INFO projection_drift_summary_groups_truncated=%d\n", len(summaries)-len(visibleSummaries))
+		fmt.Fprintf(out, "INFO projection_drift_summary_rows_hidden=%d\n", totalSummaryCount-visibleSummaryCount)
+	}
+	if totalSummaryCount != count {
+		fmt.Fprintf(out, `WARN projection_drift_count_changed=%d summarized=%d note="drift changed while the report was running; rerun projection-drift before repair"`+"\n", count, totalSummaryCount)
 	}
 	printProjectionDriftCauseGuidance(out, summaries)
 
@@ -3247,6 +3254,13 @@ func sumProjectionDriftSummaryRows(summaries []db.ProjectionDriftSummaryRow) int
 		total += row.DriftCount
 	}
 	return total
+}
+
+func firstProjectionDriftSummaries(summaries []db.ProjectionDriftSummaryRow, limit int) []db.ProjectionDriftSummaryRow {
+	if limit <= 0 || len(summaries) <= limit {
+		return summaries
+	}
+	return summaries[:limit]
 }
 
 type projectionDriftCause struct {
