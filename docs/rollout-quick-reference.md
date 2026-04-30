@@ -4,6 +4,72 @@ This is the short operator checklist for a production v1-to-v2 monitor rollout.
 Use the full [migration runbook](v1-to-v2-migration.md) for preparation,
 approval, troubleshooting, revert details, and final v1 teardown.
 
+Run this runbook from the staged v2 runtime host for the bucket range. Do not
+run it from a separate orchestration host unless that host is also the intended
+v2 runtime host and has the same `DB_*` environment the `jetmon2` service will
+use. Shell commands do not automatically inherit systemd's `EnvironmentFile`.
+
+- Same-server rollout: `--host` and `--runtime-host` are normally the same
+  hostname, and local service commands stop v1/start v2 on that host.
+- Fresh-server rollout: run the guided command on the new v2
+  `--runtime-host`, while `--host` names the old v1 host from the static plan.
+  The v2 runtime host must have SSH access to the old v1 host when
+  `--v1-stop-command` / `--v1-start-command` use `ssh` to stop or restart v1.
+
+## Guided Path
+
+Prefer the guided command during the production window. It checks that the
+rollout log directory is writable before it starts, writes a transcript and
+resume state file, explains each step, asks before proceeding, uses typed
+confirmations for v1/v2 stop/start transitions, and stops on failed gates.
+The guided command prints `guided_run_origin=runtime_host` and, in
+fresh-server mode, warns when remote v1 access is required.
+If the command is interrupted after a stop/start transition, resuming with the
+same options uses the saved service state to avoid repeating an already
+completed transition. When resume state exists, the command has no default
+choice; the operator must type `RESUME` or `START OVER`. Short `y` / `n`
+answers are rejected for this prompt.
+
+```bash
+./jetmon2 rollout guided \
+  --file=<ranges.csv> \
+  --host=<v1-hostname> \
+  --runtime-host=<v2-hostname> \
+  --bucket-min=<min> \
+  --bucket-max=<max> \
+  --bucket-total=<total> \
+  --mode=same-server \
+  --v1-stop-command='<exact v1 stop command>' \
+  --v1-start-command='<exact v1 rollback start command>' \
+  --log-dir=logs/rollout
+```
+
+By default, guided rollout prints v1/v2 stop/start commands and asks the
+operator to confirm when they have been run. Add `--execute-operator-commands`
+only when the operator wants the command to execute those stop/start commands
+after typed confirmation. Use `--dry-run` to verify the selected path, log
+paths, service commands, typed confirmation phrases, and manual `DONE`
+checkpoints without running rollout checks or service commands.
+
+To return a range to v1, run the guided rollback path:
+
+```bash
+./jetmon2 rollout guided \
+  --rollback \
+  --file=<ranges.csv> \
+  --host=<v1-hostname> \
+  --runtime-host=<v2-hostname> \
+  --bucket-min=<min> \
+  --bucket-max=<max> \
+  --bucket-total=<total> \
+  --v1-start-command='<exact v1 rollback start command>'
+```
+
+If a forward gate fails after v2 has started and the operator chooses guided
+rollback, the rollback path can complete successfully while the overall command
+still exits non-zero. Treat that as "rollout did not complete; range returned
+to v1" and keep the transcript with the incident record.
+
 ## Before The First Host
 
 1. Confirm the approved static bucket plan exists as a reusable CSV:
@@ -13,7 +79,8 @@ approval, troubleshooting, revert details, and final v1 teardown.
      --file=<ranges.csv> \
      --host=<v1-hostname> \
      --bucket-min=<min> \
-     --bucket-max=<max>
+     --bucket-max=<max> \
+     --bucket-total=<total>
    ```
 
 2. Generate the exact host command sequence:
@@ -24,46 +91,74 @@ approval, troubleshooting, revert details, and final v1 teardown.
      --host=<v1-hostname> \
      --bucket-min=<min> \
      --bucket-max=<max> \
-     --mode=same-server
+     --bucket-total=<total> \
+     --mode=same-server \
+     --v1-stop-command='<exact v1 stop command>' \
+     --v1-start-command='<exact v1 rollback start command>'
    ```
 
    Use `--mode=fresh-server --runtime-host=<new-v2-hostname>` for a fresh v2
-   server taking over from an existing v1 server.
+   server taking over from an existing v1 server. Add `--systemd-unit=<path>`
+   when the staged service unit is not `/etc/systemd/system/jetmon2.service`.
 
-3. Validate config, migrations, and the staged systemd service:
+3. Validate config, migrations, static plan match, pinned safety, and the
+   staged systemd service:
 
    ```bash
    ./jetmon2 validate-config
    ./jetmon2 migrate
-   systemd-analyze verify /etc/systemd/system/jetmon2.service
+   ./jetmon2 rollout host-preflight \
+     --file=<ranges.csv> \
+     --host=<v1-hostname> \
+     --runtime-host=<v2-hostname> \
+     --bucket-min=<min> \
+     --bucket-max=<max> \
+     --bucket-total=<total>
    ```
 
 ## Per-Host Cutover
 
-1. Confirm the v2 host is pinned to the v1 range and not participating in
-   dynamic bucket ownership:
+1. Confirm the pre-stop host gate passes:
 
    ```bash
-   ./jetmon2 rollout pinned-check --host=<v2-hostname>
+   ./jetmon2 rollout host-preflight \
+     --file=<ranges.csv> \
+     --host=<v1-hostname> \
+     --runtime-host=<v2-hostname> \
+     --bucket-min=<min> \
+     --bucket-max=<max> \
+     --bucket-total=<total>
    ```
 
 2. Stop the v1 monitor for that bucket range.
-3. Start v2:
+3. Confirm the v1 process is stopped, then start v2:
 
    ```bash
    systemctl enable --now jetmon2
    ```
 
-4. Immediately run:
+4. Immediately run the smoke gate:
 
    ```bash
-   ./jetmon2 rollout cutover-check --host=<v2-hostname> --since=15m
+   ./jetmon2 rollout cutover-check \
+     --host=<v2-hostname> \
+     --bucket-min=<min> \
+     --bucket-max=<max> \
+     --since=15m
    ```
 
-5. After one full expected check round, run:
+   This confirms startup and recent activity, but recent writes can still
+   include v1 because the cutoff reaches back before cutover.
+
+5. After one full expected v2 check round, run the stronger gate:
 
    ```bash
-   ./jetmon2 rollout cutover-check --host=<v2-hostname> --since=15m --require-all
+   ./jetmon2 rollout cutover-check \
+     --host=<v2-hostname> \
+     --bucket-min=<min> \
+     --bucket-max=<max> \
+     --since=15m \
+     --require-all
    ```
 
 6. Watch logs, dashboard health, WPCOM notification parity, event rows, and
@@ -74,7 +169,10 @@ approval, troubleshooting, revert details, and final v1 teardown.
 Before restarting v1 for a range, stop v2 and run:
 
 ```bash
-./jetmon2 rollout rollback-check --host=<v2-hostname>
+./jetmon2 rollout rollback-check \
+  --host=<v2-hostname> \
+  --bucket-min=<min> \
+  --bucket-max=<max>
 ```
 
 Only restart v1 after the v2 process is stopped and the rollback check passes.

@@ -129,7 +129,12 @@ one-page command checklist during rehearsals and rollout windows:
   safety commands.
 - Use pinned bucket mode for the first v1-to-v2 migration so one v1 host can be
   replaced by one v2 host with the same bucket range.
-- Use `rollout static-plan-check`, `rollout pinned-check`,
+- Prefer `rollout guided` during production rollout windows so operators get a
+  transcript, resume state, typed confirmations, and fail-closed rollout gates.
+  Run it from the staged v2 runtime host. For fresh-server takeovers, that
+  runtime host must have SSH access to the old v1 host when the configured v1
+  stop/start commands use SSH.
+  Use `rollout static-plan-check`, `rollout host-preflight`,
   `rollout cutover-check`, `rollout rollback-check`, and targeted
   `rollout activity-check` / `rollout projection-drift` from the migration
   runbook before changing the next host. Use `rollout state-report` for a

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -352,6 +353,8 @@ jetmon-v1-b,5,9
 		Binary:      "./jetmon2",
 		Service:     "jetmon2",
 		Since:       "15m",
+		V1StopCmd:   "systemctl stop jetmon",
+		V1StartCmd:  "systemctl start jetmon",
 	}
 
 	var out bytes.Buffer
@@ -361,18 +364,37 @@ jetmon-v1-b,5,9
 	for _, want := range []string{
 		"INFO mode=same-server",
 		`INFO plan_host="jetmon-v1-a" runtime_host="jetmon-v1-a" range=0-4`,
-		"./jetmon2 rollout static-plan-check --file rollout-buckets.csv --host jetmon-v1-a --bucket-min 0 --bucket-max 4",
+		"# Run this runbook from the staged v2 runtime host, not from a separate orchestrator host.",
+		"# Commands run from that runtime host unless the printed command explicitly targets another host.",
+		"# Shell commands need the same DB_* environment used by the jetmon2 service.",
+		"./jetmon2 rollout static-plan-check --file rollout-buckets.csv --host jetmon-v1-a --bucket-min 0 --bucket-max 4 --bucket-total 10",
 		"./jetmon2 validate-config",
-		"systemd-analyze verify /etc/systemd/system/jetmon2.service",
-		"./jetmon2 rollout pinned-check --host jetmon-v1-a",
+		"./jetmon2 rollout host-preflight --file rollout-buckets.csv --host jetmon-v1-a --runtime-host jetmon-v1-a --bucket-min 0 --bucket-max 4 --bucket-total 10 --service jetmon2",
+		"systemctl stop jetmon",
+		"# HOLD: confirm v1 is stopped before starting v2.",
 		"systemctl enable --now jetmon2",
+		"# Immediate smoke gate: checks startup and recent activity; recent writes can still include v1.",
 		"./jetmon2 rollout cutover-check --host jetmon-v1-a --bucket-min 0 --bucket-max 4 --since 15m",
+		"# Strong gate after one full v2 check round:",
 		"./jetmon2 rollout cutover-check --host jetmon-v1-a --bucket-min 0 --bucket-max 4 --since 15m --require-all",
+		"# HOLD: confirm the v2 process is stopped before restarting v1.",
 		"./jetmon2 rollout rollback-check --host jetmon-v1-a --bucket-min 0 --bucket-max 4",
+		"# HOLD: do not restart v1 unless rollback-check passes.",
+		"systemctl start jetmon",
+		"# Do not roll back schema migrations.",
+		"# Host signoff before moving on or before the fleet dynamic cutover:",
 		"./jetmon2 rollout dynamic-check",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+	for _, unwanted := range []string{
+		"systemd-analyze verify",
+		"rollout pinned-check",
+	} {
+		if strings.Contains(out.String(), unwanted) {
+			t.Fatalf("output contains redundant %q:\n%s", unwanted, out.String())
 		}
 	}
 }
@@ -392,7 +414,10 @@ jetmon-v1-a,0,9
 		BucketTotal: 10,
 		Binary:      "/opt/jetmon2/jetmon2",
 		Service:     "jetmon2",
+		SystemdUnit: "/tmp/staged/jetmon2.service",
 		Since:       "20m",
+		V1StopCmd:   "ssh jetmon-v1-a sudo systemctl stop jetmon",
+		V1StartCmd:  "ssh jetmon-v1-a sudo systemctl start jetmon",
 	}
 
 	var out bytes.Buffer
@@ -402,14 +427,178 @@ jetmon-v1-a,0,9
 	for _, want := range []string{
 		"INFO mode=fresh-server",
 		`INFO plan_host="jetmon-v1-a" runtime_host="jetmon-v2-a" range=0-9`,
-		"/opt/jetmon2/jetmon2 rollout pinned-check --host jetmon-v2-a",
-		"# Stop v1 on jetmon-v1-a with the documented production command.",
+		"# Run this runbook from the staged v2 runtime host, not from a separate orchestrator host.",
+		"# Fresh-server mode requires jetmon-v2-a to have SSH access to old v1 host jetmon-v1-a for any v1 stop/start commands that use ssh.",
+		"/opt/jetmon2/jetmon2 rollout static-plan-check --file rollout-buckets.csv --host jetmon-v1-a --bucket-min 0 --bucket-max 9 --bucket-total 10",
+		"/opt/jetmon2/jetmon2 rollout host-preflight --file rollout-buckets.csv --host jetmon-v1-a --runtime-host jetmon-v2-a --bucket-min 0 --bucket-max 9 --bucket-total 10 --systemd-unit /tmp/staged/jetmon2.service",
+		"ssh jetmon-v1-a sudo systemctl stop jetmon",
+		"# HOLD: confirm v1 on jetmon-v1-a is stopped before starting v2 on jetmon-v2-a.",
 		"/opt/jetmon2/jetmon2 rollout cutover-check --host jetmon-v2-a --bucket-min 0 --bucket-max 9 --since 20m",
 		"/opt/jetmon2/jetmon2 rollout rollback-check --host jetmon-v2-a --bucket-min 0 --bucket-max 9",
+		"ssh jetmon-v1-a sudo systemctl start jetmon",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("output missing %q:\n%s", want, out.String())
 		}
+	}
+	for _, unwanted := range []string{
+		"systemd-analyze verify",
+		"rollout pinned-check",
+		"--service jetmon2",
+	} {
+		if strings.Contains(out.String(), unwanted) {
+			t.Fatalf("output contains redundant %q:\n%s", unwanted, out.String())
+		}
+	}
+}
+
+func TestRunHostPreflightSuccess(t *testing.T) {
+	input := strings.NewReader(`
+host,bucket_min,bucket_max
+jetmon-v1-a,0,4
+jetmon-v1-b,5,9
+`)
+	cfg := pinnedRolloutTestConfig(0, 4)
+	var gotUnit string
+	deps := hostPreflightDeps{
+		Pinned: successfulPinnedRolloutDeps(),
+		SystemdVerify: func(unit string) (string, error) {
+			gotUnit = unit
+			return "unit verified", nil
+		},
+	}
+
+	var out bytes.Buffer
+	err := runHostPreflight(context.Background(), &out, cfg, input, hostPreflightOptions{
+		PlanFile:    "rollout-buckets.csv",
+		HostID:      "jetmon-v1-a",
+		RuntimeHost: "host-a",
+		BucketMin:   0,
+		BucketMax:   4,
+		BucketTotal: 10,
+		Service:     "jetmon2",
+	}, deps)
+	if err != nil {
+		t.Fatalf("runHostPreflight: %v", err)
+	}
+	if gotUnit != "/etc/systemd/system/jetmon2.service" {
+		t.Fatalf("systemd unit = %q, want default jetmon2 unit", gotUnit)
+	}
+	for _, want := range []string{
+		"## static bucket plan",
+		"PASS static_plan_file=rollout-buckets.csv ranges=2",
+		"PASS static_plan_host=\"jetmon-v1-a\" range=0-4",
+		"## pinned pre-stop safety",
+		"PASS pinned_range_matches_request=0-4",
+		"pinned rollout check passed",
+		"## systemd unit",
+		"PASS systemd_unit=/etc/systemd/system/jetmon2.service",
+		"INFO systemd_verify=unit verified",
+		"PASS pre_stop_gate=ready",
+		"host preflight passed",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestRunHostPreflightSkipSystemd(t *testing.T) {
+	input := strings.NewReader(`host,bucket_min,bucket_max
+jetmon-v1-a,0,4
+`)
+	cfg := pinnedRolloutTestConfig(0, 4)
+	deps := hostPreflightDeps{
+		Pinned: successfulPinnedRolloutDeps(),
+		SystemdVerify: func(string) (string, error) {
+			t.Fatal("systemd verifier should not be called")
+			return "", nil
+		},
+	}
+
+	var out bytes.Buffer
+	err := runHostPreflight(context.Background(), &out, cfg, input, hostPreflightOptions{
+		PlanFile:    "rollout-buckets.csv",
+		HostID:      "jetmon-v1-a",
+		RuntimeHost: "host-a",
+		BucketMin:   0,
+		BucketMax:   4,
+		BucketTotal: 5,
+		SkipSystemd: true,
+	}, deps)
+	if err != nil {
+		t.Fatalf("runHostPreflight: %v", err)
+	}
+	if !strings.Contains(out.String(), "INFO systemd_verify=skipped reason=operator") {
+		t.Fatalf("output missing systemd skip:\n%s", out.String())
+	}
+}
+
+func TestRunHostPreflightFailures(t *testing.T) {
+	validInput := `host,bucket_min,bucket_max
+jetmon-v1-a,0,4
+`
+	cfg := pinnedRolloutTestConfig(0, 4)
+
+	tests := []struct {
+		name  string
+		input string
+		opts  hostPreflightOptions
+		deps  hostPreflightDeps
+		cfg   *config.Config
+		want  string
+	}{
+		{
+			name:  "missing host",
+			input: validInput,
+			opts:  hostPreflightOptions{PlanFile: "rollout-buckets.csv", BucketMin: 0, BucketMax: 4, BucketTotal: 5, SkipSystemd: true},
+			deps:  hostPreflightDeps{Pinned: successfulPinnedRolloutDeps()},
+			want:  "--host is required",
+		},
+		{
+			name:  "plan mismatch",
+			input: validInput,
+			opts:  hostPreflightOptions{PlanFile: "rollout-buckets.csv", HostID: "jetmon-v1-a", BucketMin: 1, BucketMax: 4, BucketTotal: 5, SkipSystemd: true},
+			deps:  hostPreflightDeps{Pinned: successfulPinnedRolloutDeps()},
+			want:  "has bucket range 0-4",
+		},
+		{
+			name:  "systemd failure",
+			input: validInput,
+			opts:  hostPreflightOptions{PlanFile: "rollout-buckets.csv", HostID: "jetmon-v1-a", RuntimeHost: "host-a", BucketMin: 0, BucketMax: 4, BucketTotal: 5, SystemdUnit: "/tmp/bad.service"},
+			deps: hostPreflightDeps{
+				Pinned: successfulPinnedRolloutDeps(),
+				SystemdVerify: func(string) (string, error) {
+					return "bad unit", errors.New("exit status 1")
+				},
+			},
+			want: "systemd-analyze verify /tmp/bad.service",
+		},
+		{
+			name:  "config range mismatch",
+			input: "host,bucket_min,bucket_max\njetmon-v1-a,0,5\n",
+			opts:  hostPreflightOptions{PlanFile: "rollout-buckets.csv", HostID: "jetmon-v1-a", RuntimeHost: "host-a", BucketMin: 0, BucketMax: 5, BucketTotal: 6, SkipSystemd: true},
+			deps:  hostPreflightDeps{Pinned: successfulPinnedRolloutDeps()},
+			cfg:   pinnedRolloutTestConfig(0, 4),
+			want:  "config pinned range 0-4 does not match requested bucket range 0-5",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			testConfig := cfg
+			if tt.cfg != nil {
+				testConfig = tt.cfg
+			}
+			err := runHostPreflight(context.Background(), &out, testConfig, strings.NewReader(tt.input), tt.opts, tt.deps)
+			if err == nil {
+				t.Fatal("runHostPreflight succeeded")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tt.want)
+			}
+		})
 	}
 }
 
@@ -488,6 +677,846 @@ jetmon-v1-a,0,9
 				t.Fatalf("error = %q, want substring %q", err.Error(), tt.want)
 			}
 		})
+	}
+}
+
+func TestRunGuidedRolloutDryRunChecksLogDir(t *testing.T) {
+	opts := guidedRolloutTestOptions(t)
+	opts.DryRun = true
+	opts.BucketTotal = 0
+	var called bool
+	deps := guidedRolloutTestDeps(t)
+	deps.ResolveBucketTotal = func(context.Context) (int, error) {
+		return 10, nil
+	}
+	deps.StaticPlanCheck = func(context.Context, io.Writer, guidedRolloutOptions) error {
+		called = true
+		return nil
+	}
+
+	var out bytes.Buffer
+	if err := runGuidedRollout(context.Background(), &out, strings.NewReader(""), opts, deps); err != nil {
+		t.Fatalf("runGuidedRollout: %v", err)
+	}
+	if called {
+		t.Fatal("dry run executed static plan check")
+	}
+	for _, want := range []string{
+		"PASS rollout_log_dir_writable=",
+		"INFO rollout_log=",
+		"INFO rollout_state=",
+		"INFO dry_run=true",
+		`INFO guided_run_origin=runtime_host mode="same-server" v1_host="jetmon-v1-a" runtime_host="jetmon-v1-a"`,
+		"INFO run_this_command_from=runtime_host",
+		"INFO remote_v1_access_required=false reason=same_server",
+		"INFO selected_path=forward",
+		`PLAN path=FORWARD step=static-plan-check`,
+		`PLAN path=FORWARD step=stop-v1 command="systemctl stop jetmon"`,
+		`PLAN path=FORWARD step=stop-v1 typed_confirmation="STOP jetmon-v1-a 0-4"`,
+		`PLAN path=FORWARD step=stop-v1 manual_checkpoint="DONE after v1 is stopped and the process is no longer running"`,
+		`PLAN path=ROLLBACK step=rollback-start-v1`,
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+	if _, err := os.Stat(guidedRolloutStatePath(normalizeGuidedOptionsForTest(t, opts))); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("dry-run state file exists or stat failed: %v", err)
+	}
+}
+
+func TestRunGuidedRolloutLogDirWriteFailure(t *testing.T) {
+	tempDir := t.TempDir()
+	logDirFile := tempDir + "/not-a-directory"
+	if err := os.WriteFile(logDirFile, []byte("not a dir"), 0600); err != nil {
+		t.Fatalf("write logDirFile: %v", err)
+	}
+	opts := guidedRolloutTestOptions(t)
+	opts.LogDir = logDirFile
+	opts.DryRun = true
+
+	var out bytes.Buffer
+	err := runGuidedRollout(context.Background(), &out, strings.NewReader(""), opts, guidedRolloutTestDeps(t))
+	if err == nil {
+		t.Fatal("runGuidedRollout succeeded")
+	}
+	if !strings.Contains(err.Error(), "create rollout log directory") {
+		t.Fatalf("error = %q", err.Error())
+	}
+}
+
+func TestRunGuidedRolloutRollbackDryRunOnlyShowsRollbackPath(t *testing.T) {
+	opts := guidedRolloutTestOptions(t)
+	opts.Rollback = true
+	opts.DryRun = true
+
+	var out bytes.Buffer
+	if err := runGuidedRollout(context.Background(), &out, strings.NewReader(""), opts, guidedRolloutTestDeps(t)); err != nil {
+		t.Fatalf("runGuidedRollout: %v", err)
+	}
+	for _, want := range []string{
+		"INFO selected_path=rollback",
+		`PLAN path=ROLLBACK step=rollback-stop-v2 command="systemctl stop jetmon2"`,
+		`PLAN path=ROLLBACK step=rollback-start-v1 typed_confirmation="START V1 jetmon-v1-a 0-4"`,
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+	if strings.Contains(out.String(), "path=FORWARD") {
+		t.Fatalf("rollback dry-run included forward path:\n%s", out.String())
+	}
+}
+
+func TestRunGuidedRolloutDryRunExecuteModeDoesNotRunCommands(t *testing.T) {
+	opts := guidedRolloutTestOptions(t)
+	opts.DryRun = true
+	opts.ExecuteOperatorCommands = true
+	deps := guidedRolloutTestDeps(t)
+	deps.ExecCommand = func(context.Context, string) (string, error) {
+		t.Fatal("dry-run executed operator command")
+		return "", nil
+	}
+
+	var out bytes.Buffer
+	if err := runGuidedRollout(context.Background(), &out, strings.NewReader(""), opts, deps); err != nil {
+		t.Fatalf("runGuidedRollout: %v", err)
+	}
+	for _, want := range []string{
+		"INFO operator_command_mode=execute-after-confirmation",
+		`PLAN path=FORWARD step=stop-v1 command="systemctl stop jetmon"`,
+		`PLAN path=FORWARD step=start-v2 command="systemctl enable --now jetmon2"`,
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+	if strings.Contains(out.String(), "manual_checkpoint=") {
+		t.Fatalf("execute-mode dry-run should not print manual checkpoints:\n%s", out.String())
+	}
+}
+
+func TestRunGuidedRolloutFreshServerDryRunShowsRemoteV1Commands(t *testing.T) {
+	opts := guidedRolloutTestOptions(t)
+	opts.DryRun = true
+	opts.Mode = "fresh-server"
+	opts.RuntimeHost = "jetmon-v2-a"
+	opts.V1StopCmd = "ssh jetmon-v1-a sudo systemctl stop jetmon"
+	opts.V1StartCmd = "ssh jetmon-v1-a sudo systemctl start jetmon"
+
+	var out bytes.Buffer
+	if err := runGuidedRollout(context.Background(), &out, strings.NewReader(""), opts, guidedRolloutTestDeps(t)); err != nil {
+		t.Fatalf("runGuidedRollout: %v", err)
+	}
+	for _, want := range []string{
+		`INFO rollout_state=`,
+		`INFO guided_run_origin=runtime_host mode="fresh-server" v1_host="jetmon-v1-a" runtime_host="jetmon-v2-a"`,
+		`WARN remote_v1_access_required=true runtime_host="jetmon-v2-a" v1_host="jetmon-v1-a"`,
+		`PLAN path=FORWARD step=stop-v1 command="ssh jetmon-v1-a sudo systemctl stop jetmon"`,
+		`PLAN path=FORWARD step=start-v2 typed_confirmation="START V2 jetmon-v2-a 0-4"`,
+		`PLAN path=ROLLBACK step=rollback-stop-v2 typed_confirmation="STOP V2 jetmon-v2-a 0-4"`,
+		`PLAN path=ROLLBACK step=rollback-start-v1 command="ssh jetmon-v1-a sudo systemctl start jetmon"`,
+		`PLAN path=ROLLBACK step=rollback-start-v1 typed_confirmation="START V1 jetmon-v1-a 0-4"`,
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+	if !strings.Contains(out.String(), "jetmon-v2-a-0-4.state.json") {
+		t.Fatalf("fresh-server state path should use runtime host:\n%s", out.String())
+	}
+}
+
+func TestRunGuidedRolloutForwardExecuteCommands(t *testing.T) {
+	opts := guidedRolloutTestOptions(t)
+	opts.ExecuteOperatorCommands = true
+	deps := guidedRolloutTestDeps(t)
+	var calls []string
+	deps.StaticPlanCheck = func(context.Context, io.Writer, guidedRolloutOptions) error {
+		calls = append(calls, "static")
+		return nil
+	}
+	deps.ValidateConfig = func(context.Context, io.Writer, guidedRolloutOptions) error {
+		calls = append(calls, "validate")
+		return nil
+	}
+	deps.HostPreflight = func(context.Context, io.Writer, guidedRolloutOptions) error {
+		calls = append(calls, "preflight")
+		return nil
+	}
+	deps.CutoverCheck = func(_ context.Context, _ io.Writer, _ guidedRolloutOptions, requireAll bool) error {
+		if requireAll {
+			calls = append(calls, "cutover-all")
+		} else {
+			calls = append(calls, "cutover-smoke")
+		}
+		return nil
+	}
+	var commands []string
+	deps.ExecCommand = func(_ context.Context, command string) (string, error) {
+		commands = append(commands, command)
+		return "", nil
+	}
+
+	input := strings.Join([]string{
+		"y",
+		"y",
+		"y",
+		"STOP jetmon-v1-a 0-4",
+		"START V2 jetmon-v1-a 0-4",
+		"y",
+		"READY",
+		"",
+	}, "\n")
+	var out bytes.Buffer
+	if err := runGuidedRollout(context.Background(), &out, strings.NewReader(input), opts, deps); err != nil {
+		t.Fatalf("runGuidedRollout: %v\n%s", err, out.String())
+	}
+	if got, want := strings.Join(calls, ","), "static,validate,preflight,cutover-smoke,cutover-all"; got != want {
+		t.Fatalf("calls = %s, want %s", got, want)
+	}
+	if got, want := strings.Join(commands, ","), "systemctl stop jetmon,systemctl enable --now jetmon2"; got != want {
+		t.Fatalf("commands = %s, want %s", got, want)
+	}
+	stopCommandAt := strings.Index(out.String(), "COMMAND systemctl stop jetmon")
+	stopConfirmAt := strings.Index(out.String(), "Type STOP jetmon-v1-a 0-4 to continue:")
+	if stopCommandAt < 0 || stopConfirmAt < 0 || stopCommandAt > stopConfirmAt {
+		t.Fatalf("stop command should be shown before typed confirmation:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "PASS guided_rollout=complete") {
+		t.Fatalf("output missing completion:\n%s", out.String())
+	}
+	state := readGuidedStateForTest(t, opts)
+	if state.LastCompletedStep != "cutover-require-all" || !state.V1Stopped || !state.V2Started {
+		t.Fatalf("state = %+v", state)
+	}
+	if !state.V1StateKnown || !state.V2StateKnown {
+		t.Fatalf("state did not mark service state as known: %+v", state)
+	}
+}
+
+func TestRunGuidedRolloutFreshServerManualFlowPrintsRemoteAndLocalCommands(t *testing.T) {
+	opts := guidedRolloutTestOptions(t)
+	opts.Mode = "fresh-server"
+	opts.RuntimeHost = "jetmon-v2-a"
+	opts.V1StopCmd = "ssh jetmon-v1-a sudo systemctl stop jetmon"
+	opts.V1StartCmd = "ssh jetmon-v1-a sudo systemctl start jetmon"
+	deps := guidedRolloutTestDeps(t)
+	deps.ExecCommand = func(context.Context, string) (string, error) {
+		t.Fatal("manual mode executed operator command")
+		return "", nil
+	}
+
+	input := strings.Join([]string{
+		"y",
+		"y",
+		"y",
+		"STOP jetmon-v1-a 0-4",
+		"DONE",
+		"START V2 jetmon-v2-a 0-4",
+		"DONE",
+		"y",
+		"READY",
+		"",
+	}, "\n")
+	var out bytes.Buffer
+	if err := runGuidedRollout(context.Background(), &out, strings.NewReader(input), opts, deps); err != nil {
+		t.Fatalf("runGuidedRollout: %v\n%s", err, out.String())
+	}
+	for _, want := range []string{
+		`INFO guided_run_origin=runtime_host mode="fresh-server" v1_host="jetmon-v1-a" runtime_host="jetmon-v2-a"`,
+		`WARN remote_v1_access_required=true runtime_host="jetmon-v2-a" v1_host="jetmon-v1-a"`,
+		"COMMAND ssh jetmon-v1-a sudo systemctl stop jetmon",
+		"COMMAND systemctl enable --now jetmon2",
+		"INFO executing_operator_command=false",
+		"PASS guided_rollout=complete",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+	stopAt := strings.Index(out.String(), "COMMAND ssh jetmon-v1-a sudo systemctl stop jetmon")
+	startAt := strings.Index(out.String(), "COMMAND systemctl enable --now jetmon2")
+	if stopAt < 0 || startAt < 0 || stopAt > startAt {
+		t.Fatalf("fresh-server command order is wrong:\n%s", out.String())
+	}
+	state := readGuidedStateForTest(t, opts)
+	if state.RuntimeHost != "jetmon-v2-a" || !state.V1Stopped || !state.V2Started {
+		t.Fatalf("state = %+v", state)
+	}
+}
+
+func TestRunGuidedRolloutFreshServerExecuteFlowCommandOrder(t *testing.T) {
+	opts := guidedRolloutTestOptions(t)
+	opts.Mode = "fresh-server"
+	opts.RuntimeHost = "jetmon-v2-a"
+	opts.V1StopCmd = "ssh jetmon-v1-a sudo systemctl stop jetmon"
+	opts.V1StartCmd = "ssh jetmon-v1-a sudo systemctl start jetmon"
+	opts.ExecuteOperatorCommands = true
+	deps := guidedRolloutTestDeps(t)
+	var commands []string
+	deps.ExecCommand = func(_ context.Context, command string) (string, error) {
+		commands = append(commands, command)
+		return "", nil
+	}
+
+	input := strings.Join([]string{
+		"y",
+		"y",
+		"y",
+		"STOP jetmon-v1-a 0-4",
+		"START V2 jetmon-v2-a 0-4",
+		"y",
+		"READY",
+		"",
+	}, "\n")
+	var out bytes.Buffer
+	if err := runGuidedRollout(context.Background(), &out, strings.NewReader(input), opts, deps); err != nil {
+		t.Fatalf("runGuidedRollout: %v\n%s", err, out.String())
+	}
+	if got, want := strings.Join(commands, ","), "ssh jetmon-v1-a sudo systemctl stop jetmon,systemctl enable --now jetmon2"; got != want {
+		t.Fatalf("commands = %s, want %s", got, want)
+	}
+	if !strings.Contains(out.String(), "PASS guided_rollout=complete") {
+		t.Fatalf("output missing completion:\n%s", out.String())
+	}
+}
+
+func TestRunGuidedRolloutWrongConfirmationDoesNotExecuteCommand(t *testing.T) {
+	opts := guidedRolloutTestOptions(t)
+	opts.ExecuteOperatorCommands = true
+	deps := guidedRolloutTestDeps(t)
+	var commands []string
+	deps.ExecCommand = func(_ context.Context, command string) (string, error) {
+		commands = append(commands, command)
+		return "", nil
+	}
+
+	input := strings.Join([]string{
+		"y",
+		"y",
+		"y",
+		"STOP wrong-host 0-4",
+		"s",
+		"",
+	}, "\n")
+	var out bytes.Buffer
+	err := runGuidedRollout(context.Background(), &out, strings.NewReader(input), opts, deps)
+	if err == nil {
+		t.Fatal("runGuidedRollout succeeded")
+	}
+	if len(commands) != 0 {
+		t.Fatalf("commands executed after wrong confirmation: %v", commands)
+	}
+	if !strings.Contains(err.Error(), `confirmation did not match "STOP jetmon-v1-a 0-4"`) {
+		t.Fatalf("error = %q", err.Error())
+	}
+	if !strings.Contains(out.String(), "COMMAND systemctl stop jetmon") {
+		t.Fatalf("output should show command before confirmation failure:\n%s", out.String())
+	}
+}
+
+func TestRunGuidedRolloutRollbackExecuteCommands(t *testing.T) {
+	opts := guidedRolloutTestOptions(t)
+	opts.Rollback = true
+	opts.ExecuteOperatorCommands = true
+	deps := guidedRolloutTestDeps(t)
+	var calls []string
+	deps.RollbackCheck = func(context.Context, io.Writer, guidedRolloutOptions) error {
+		calls = append(calls, "rollback-check")
+		return nil
+	}
+	var commands []string
+	deps.ExecCommand = func(_ context.Context, command string) (string, error) {
+		commands = append(commands, command)
+		return "", nil
+	}
+
+	input := strings.Join([]string{
+		"STOP V2 jetmon-v1-a 0-4",
+		"y",
+		"START V1 jetmon-v1-a 0-4",
+		"",
+	}, "\n")
+	var out bytes.Buffer
+	if err := runGuidedRollout(context.Background(), &out, strings.NewReader(input), opts, deps); err != nil {
+		t.Fatalf("runGuidedRollout: %v\n%s", err, out.String())
+	}
+	if got, want := strings.Join(calls, ","), "rollback-check"; got != want {
+		t.Fatalf("calls = %s, want %s", got, want)
+	}
+	if got, want := strings.Join(commands, ","), "systemctl stop jetmon2,systemctl start jetmon"; got != want {
+		t.Fatalf("commands = %s, want %s", got, want)
+	}
+	if !strings.Contains(out.String(), "PASS guided_rollback=complete") {
+		t.Fatalf("output missing rollback completion:\n%s", out.String())
+	}
+}
+
+func TestRunGuidedRolloutFreshServerRollbackExecuteCommands(t *testing.T) {
+	opts := guidedRolloutTestOptions(t)
+	opts.Mode = "fresh-server"
+	opts.RuntimeHost = "jetmon-v2-a"
+	opts.V1StartCmd = "ssh jetmon-v1-a sudo systemctl start jetmon"
+	opts.Rollback = true
+	opts.ExecuteOperatorCommands = true
+	deps := guidedRolloutTestDeps(t)
+	var commands []string
+	deps.ExecCommand = func(_ context.Context, command string) (string, error) {
+		commands = append(commands, command)
+		return "", nil
+	}
+
+	input := strings.Join([]string{
+		"STOP V2 jetmon-v2-a 0-4",
+		"y",
+		"START V1 jetmon-v1-a 0-4",
+		"",
+	}, "\n")
+	var out bytes.Buffer
+	if err := runGuidedRollout(context.Background(), &out, strings.NewReader(input), opts, deps); err != nil {
+		t.Fatalf("runGuidedRollout: %v\n%s", err, out.String())
+	}
+	if got, want := strings.Join(commands, ","), "systemctl stop jetmon2,ssh jetmon-v1-a sudo systemctl start jetmon"; got != want {
+		t.Fatalf("commands = %s, want %s", got, want)
+	}
+	if !strings.Contains(out.String(), `WARN remote_v1_access_required=true runtime_host="jetmon-v2-a" v1_host="jetmon-v1-a"`) {
+		t.Fatalf("output missing remote access warning:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "PASS guided_rollback=complete") {
+		t.Fatalf("output missing rollback completion:\n%s", out.String())
+	}
+}
+
+func TestRunGuidedRolloutFailureAfterV2CanRollback(t *testing.T) {
+	opts := guidedRolloutTestOptions(t)
+	deps := guidedRolloutTestDeps(t)
+	var cutoverCalls int
+	deps.CutoverCheck = func(_ context.Context, _ io.Writer, _ guidedRolloutOptions, requireAll bool) error {
+		cutoverCalls++
+		if !requireAll {
+			return errors.New("cutover smoke failed")
+		}
+		return nil
+	}
+
+	input := strings.Join([]string{
+		"y",
+		"y",
+		"y",
+		"STOP jetmon-v1-a 0-4",
+		"DONE",
+		"START V2 jetmon-v1-a 0-4",
+		"DONE",
+		"y",
+		"b",
+		"STOP V2 jetmon-v1-a 0-4",
+		"DONE",
+		"y",
+		"START V1 jetmon-v1-a 0-4",
+		"DONE",
+		"",
+	}, "\n")
+	var out bytes.Buffer
+	err := runGuidedRollout(context.Background(), &out, strings.NewReader(input), opts, deps)
+	if !errors.Is(err, errGuidedForwardRolledBack) {
+		t.Fatalf("error = %v, want errGuidedForwardRolledBack\n%s", err, out.String())
+	}
+	if cutoverCalls != 1 {
+		t.Fatalf("cutover calls = %d, want 1", cutoverCalls)
+	}
+	for _, want := range []string{
+		"Options: [r] retry this step, [b] begin guided rollback, [s] stop here",
+		"PASS guided_rollback=complete",
+		"FAIL guided_rollout=rolled_back reason=operator_requested_after_failed_step",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+	state := readGuidedStateForTest(t, opts)
+	if state.V1Stopped || state.V2Started || state.LastCompletedStep != "rollback-start-v1" {
+		t.Fatalf("state after rollback = %+v", state)
+	}
+}
+
+func TestRunGuidedRolloutFailureCanStop(t *testing.T) {
+	opts := guidedRolloutTestOptions(t)
+	deps := guidedRolloutTestDeps(t)
+	deps.StaticPlanCheck = func(context.Context, io.Writer, guidedRolloutOptions) error {
+		return errors.New("static mismatch")
+	}
+
+	input := strings.Join([]string{"y", "s", ""}, "\n")
+	var out bytes.Buffer
+	err := runGuidedRollout(context.Background(), &out, strings.NewReader(input), opts, deps)
+	if err == nil {
+		t.Fatal("runGuidedRollout succeeded")
+	}
+	if !strings.Contains(err.Error(), "static mismatch") {
+		t.Fatalf("error = %q", err.Error())
+	}
+	if !strings.Contains(out.String(), "Options: [r] retry this step, [s] stop here") {
+		t.Fatalf("output missing failure options:\n%s", out.String())
+	}
+}
+
+func TestRunGuidedRolloutResumeSkipsCompletedSteps(t *testing.T) {
+	opts := guidedRolloutTestOptions(t)
+	normalized := normalizeGuidedOptionsForTest(t, opts)
+	state := newGuidedRolloutState(normalized, time.Date(2026, 4, 29, 17, 0, 0, 0, time.UTC))
+	state.CompletedSteps = []string{"static-plan-check", "validate-config"}
+	state.LastCompletedStep = "validate-config"
+	writeGuidedStateForTest(t, normalized, state)
+
+	deps := guidedRolloutTestDeps(t)
+	var calls []string
+	deps.StaticPlanCheck = func(context.Context, io.Writer, guidedRolloutOptions) error {
+		calls = append(calls, "static")
+		return nil
+	}
+	deps.ValidateConfig = func(context.Context, io.Writer, guidedRolloutOptions) error {
+		calls = append(calls, "validate")
+		return nil
+	}
+	deps.HostPreflight = func(context.Context, io.Writer, guidedRolloutOptions) error {
+		calls = append(calls, "preflight")
+		return nil
+	}
+	deps.CutoverCheck = func(_ context.Context, _ io.Writer, _ guidedRolloutOptions, requireAll bool) error {
+		if requireAll {
+			calls = append(calls, "cutover-all")
+		} else {
+			calls = append(calls, "cutover-smoke")
+		}
+		return nil
+	}
+
+	input := strings.Join([]string{
+		"RESUME",
+		"y",
+		"STOP jetmon-v1-a 0-4",
+		"DONE",
+		"START V2 jetmon-v1-a 0-4",
+		"DONE",
+		"y",
+		"READY",
+		"",
+	}, "\n")
+	var out bytes.Buffer
+	if err := runGuidedRollout(context.Background(), &out, strings.NewReader(input), opts, deps); err != nil {
+		t.Fatalf("runGuidedRollout: %v\n%s", err, out.String())
+	}
+	if strings.Contains(strings.Join(calls, ","), "static") || strings.Contains(strings.Join(calls, ","), "validate") {
+		t.Fatalf("resume reran completed calls: %v", calls)
+	}
+	if got, want := strings.Join(calls, ","), "preflight,cutover-smoke,cutover-all"; got != want {
+		t.Fatalf("calls = %s, want %s", got, want)
+	}
+	if !strings.Contains(out.String(), "SKIP step=static-plan-check reason=completed_from_state") {
+		t.Fatalf("output missing resume skip:\n%s", out.String())
+	}
+}
+
+func TestRunGuidedRolloutResumeStateRequiresExplicitChoice(t *testing.T) {
+	opts := guidedRolloutTestOptions(t)
+	normalized := normalizeGuidedOptionsForTest(t, opts)
+	state := newGuidedRolloutState(normalized, time.Date(2026, 4, 29, 17, 0, 0, 0, time.UTC))
+	state.CompletedSteps = []string{
+		"static-plan-check",
+		"validate-config",
+		"host-preflight",
+		"stop-v1",
+		"start-v2",
+		"cutover-smoke",
+		"cutover-require-all",
+	}
+	state.LastCompletedStep = "cutover-require-all"
+	state.V1Stopped = true
+	state.V1StateKnown = true
+	state.V2Started = true
+	state.V2StateKnown = true
+	writeGuidedStateForTest(t, normalized, state)
+
+	var out bytes.Buffer
+	input := strings.Join([]string{"", "RESUME", ""}, "\n")
+	if err := runGuidedRollout(context.Background(), &out, strings.NewReader(input), opts, guidedRolloutTestDeps(t)); err != nil {
+		t.Fatalf("runGuidedRollout: %v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "No default is selected when state exists") {
+		t.Fatalf("output missing no-default warning:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "PASS guided_rollout=complete") {
+		t.Fatalf("output missing completion:\n%s", out.String())
+	}
+}
+
+func TestRunGuidedRolloutResumeStateRejectsYNAliases(t *testing.T) {
+	opts := guidedRolloutTestOptions(t)
+	normalized := normalizeGuidedOptionsForTest(t, opts)
+	state := newGuidedRolloutState(normalized, time.Date(2026, 4, 29, 17, 0, 0, 0, time.UTC))
+	state.CompletedSteps = []string{
+		"static-plan-check",
+		"validate-config",
+		"host-preflight",
+		"stop-v1",
+		"start-v2",
+		"cutover-smoke",
+		"cutover-require-all",
+	}
+	state.LastCompletedStep = "cutover-require-all"
+	state.V1Stopped = true
+	state.V1StateKnown = true
+	state.V2Started = true
+	state.V2StateKnown = true
+	writeGuidedStateForTest(t, normalized, state)
+
+	var out bytes.Buffer
+	input := strings.Join([]string{"n", "y", "RESUME", ""}, "\n")
+	if err := runGuidedRollout(context.Background(), &out, strings.NewReader(input), opts, guidedRolloutTestDeps(t)); err != nil {
+		t.Fatalf("runGuidedRollout: %v\n%s", err, out.String())
+	}
+	if strings.Count(out.String(), "Please choose RESUME or START OVER.") != 2 {
+		t.Fatalf("output should reject y/n aliases:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "previous_state=discarded") {
+		t.Fatalf("y/n alias discarded state:\n%s", out.String())
+	}
+}
+
+func TestRunGuidedRolloutResumeMismatchedStateRefuses(t *testing.T) {
+	opts := guidedRolloutTestOptions(t)
+	normalized := normalizeGuidedOptionsForTest(t, opts)
+	state := newGuidedRolloutState(normalized, time.Date(2026, 4, 29, 17, 0, 0, 0, time.UTC))
+	state.HostID = "jetmon-v1-other"
+	writeGuidedStateForTest(t, normalized, state)
+
+	var out bytes.Buffer
+	err := runGuidedRollout(context.Background(), &out, strings.NewReader("RESUME\n"), opts, guidedRolloutTestDeps(t))
+	if err == nil {
+		t.Fatal("runGuidedRollout succeeded")
+	}
+	if !strings.Contains(err.Error(), `state mode="same-server" host="jetmon-v1-other"`) {
+		t.Fatalf("error = %q", err.Error())
+	}
+	if !strings.Contains(out.String(), `INFO previous_state=found mode="same-server" host="jetmon-v1-other"`) {
+		t.Fatalf("output missing previous state details:\n%s", out.String())
+	}
+}
+
+func TestRunGuidedRolloutStartOverDiscardsPreviousState(t *testing.T) {
+	opts := guidedRolloutTestOptions(t)
+	normalized := normalizeGuidedOptionsForTest(t, opts)
+	state := newGuidedRolloutState(normalized, time.Date(2026, 4, 29, 17, 0, 0, 0, time.UTC))
+	state.CompletedSteps = []string{"static-plan-check", "validate-config"}
+	state.LastCompletedStep = "validate-config"
+	writeGuidedStateForTest(t, normalized, state)
+
+	deps := guidedRolloutTestDeps(t)
+	var calls []string
+	deps.StaticPlanCheck = func(context.Context, io.Writer, guidedRolloutOptions) error {
+		calls = append(calls, "static")
+		return nil
+	}
+	deps.ValidateConfig = func(context.Context, io.Writer, guidedRolloutOptions) error {
+		calls = append(calls, "validate")
+		return nil
+	}
+	deps.HostPreflight = func(context.Context, io.Writer, guidedRolloutOptions) error {
+		calls = append(calls, "preflight")
+		return nil
+	}
+	deps.CutoverCheck = func(_ context.Context, _ io.Writer, _ guidedRolloutOptions, requireAll bool) error {
+		if requireAll {
+			calls = append(calls, "cutover-all")
+		} else {
+			calls = append(calls, "cutover-smoke")
+		}
+		return nil
+	}
+
+	input := strings.Join([]string{
+		"START OVER",
+		"y",
+		"y",
+		"y",
+		"STOP jetmon-v1-a 0-4",
+		"DONE",
+		"START V2 jetmon-v1-a 0-4",
+		"DONE",
+		"y",
+		"READY",
+		"",
+	}, "\n")
+	var out bytes.Buffer
+	if err := runGuidedRollout(context.Background(), &out, strings.NewReader(input), opts, deps); err != nil {
+		t.Fatalf("runGuidedRollout: %v\n%s", err, out.String())
+	}
+	if got, want := strings.Join(calls, ","), "static,validate,preflight,cutover-smoke,cutover-all"; got != want {
+		t.Fatalf("calls = %s, want %s", got, want)
+	}
+	if !strings.Contains(out.String(), "WARN previous_state=discarded reason=operator_start_over") {
+		t.Fatalf("output missing start-over warning:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "SKIP step=static-plan-check") {
+		t.Fatalf("start-over reused previous completed step:\n%s", out.String())
+	}
+}
+
+func TestRunGuidedRolloutResumeSkipsAlreadyStoppedV1(t *testing.T) {
+	opts := guidedRolloutTestOptions(t)
+	normalized := normalizeGuidedOptionsForTest(t, opts)
+	state := newGuidedRolloutState(normalized, time.Date(2026, 4, 29, 17, 0, 0, 0, time.UTC))
+	state.CompletedSteps = []string{"static-plan-check", "validate-config", "host-preflight"}
+	state.LastCompletedStep = "host-preflight"
+	state.V1Stopped = true
+	state.V1StateKnown = true
+	writeGuidedStateForTest(t, normalized, state)
+
+	deps := guidedRolloutTestDeps(t)
+	var commands []string
+	deps.ExecCommand = func(_ context.Context, command string) (string, error) {
+		commands = append(commands, command)
+		return "", nil
+	}
+
+	input := strings.Join([]string{
+		"RESUME",
+		"START V2 jetmon-v1-a 0-4",
+		"DONE",
+		"y",
+		"READY",
+		"",
+	}, "\n")
+	var out bytes.Buffer
+	if err := runGuidedRollout(context.Background(), &out, strings.NewReader(input), opts, deps); err != nil {
+		t.Fatalf("runGuidedRollout: %v\n%s", err, out.String())
+	}
+	if strings.Contains(strings.Join(commands, ","), "systemctl stop jetmon") {
+		t.Fatalf("resume reran v1 stop command: %v", commands)
+	}
+	if !strings.Contains(out.String(), "SKIP step=stop-v1 reason=state_v1_already_stopped") {
+		t.Fatalf("output missing v1 stopped skip:\n%s", out.String())
+	}
+}
+
+func TestRunGuidedRolloutRollbackResumeSkipsAlreadyStoppedV2(t *testing.T) {
+	opts := guidedRolloutTestOptions(t)
+	opts.Rollback = true
+	normalized := normalizeGuidedOptionsForTest(t, opts)
+	state := newGuidedRolloutState(normalized, time.Date(2026, 4, 29, 17, 0, 0, 0, time.UTC))
+	state.V2Started = false
+	state.V2StateKnown = true
+	writeGuidedStateForTest(t, normalized, state)
+
+	deps := guidedRolloutTestDeps(t)
+	var commands []string
+	deps.ExecCommand = func(_ context.Context, command string) (string, error) {
+		commands = append(commands, command)
+		return "", nil
+	}
+
+	input := strings.Join([]string{
+		"RESUME",
+		"y",
+		"START V1 jetmon-v1-a 0-4",
+		"DONE",
+		"",
+	}, "\n")
+	var out bytes.Buffer
+	if err := runGuidedRollout(context.Background(), &out, strings.NewReader(input), opts, deps); err != nil {
+		t.Fatalf("runGuidedRollout: %v\n%s", err, out.String())
+	}
+	if strings.Contains(strings.Join(commands, ","), "systemctl stop jetmon2") {
+		t.Fatalf("resume reran v2 stop command: %v", commands)
+	}
+	if !strings.Contains(out.String(), "SKIP step=rollback-stop-v2 reason=state_v2_already_stopped") {
+		t.Fatalf("output missing v2 stopped skip:\n%s", out.String())
+	}
+}
+
+func guidedRolloutTestOptions(t *testing.T) guidedRolloutOptions {
+	t.Helper()
+	return guidedRolloutOptions{
+		Mode:        "same-server",
+		PlanFile:    "rollout-buckets.csv",
+		HostID:      "jetmon-v1-a",
+		RuntimeHost: "jetmon-v1-a",
+		BucketMin:   0,
+		BucketMax:   4,
+		BucketTotal: 10,
+		Service:     "jetmon2",
+		Since:       "15m",
+		V1StopCmd:   "systemctl stop jetmon",
+		V1StartCmd:  "systemctl start jetmon",
+		LogDir:      t.TempDir(),
+	}
+}
+
+func guidedRolloutTestDeps(t *testing.T) guidedRolloutDeps {
+	t.Helper()
+	return guidedRolloutDeps{
+		Now: func() time.Time {
+			return time.Date(2026, 4, 29, 17, 30, 0, 0, time.UTC)
+		},
+		ResolveBucketTotal: func(context.Context) (int, error) {
+			return 10, nil
+		},
+		StaticPlanCheck: func(context.Context, io.Writer, guidedRolloutOptions) error {
+			return nil
+		},
+		ValidateConfig: func(context.Context, io.Writer, guidedRolloutOptions) error {
+			return nil
+		},
+		HostPreflight: func(context.Context, io.Writer, guidedRolloutOptions) error {
+			return nil
+		},
+		CutoverCheck: func(context.Context, io.Writer, guidedRolloutOptions, bool) error {
+			return nil
+		},
+		RollbackCheck: func(context.Context, io.Writer, guidedRolloutOptions) error {
+			return nil
+		},
+		ExecCommand: func(context.Context, string) (string, error) {
+			return "", nil
+		},
+	}
+}
+
+func normalizeGuidedOptionsForTest(t *testing.T, opts guidedRolloutOptions) guidedRolloutOptions {
+	t.Helper()
+	normalized, err := normalizeGuidedRolloutOptions(opts)
+	if err != nil {
+		t.Fatalf("normalizeGuidedRolloutOptions: %v", err)
+	}
+	return normalized
+}
+
+func readGuidedStateForTest(t *testing.T, opts guidedRolloutOptions) guidedRolloutState {
+	t.Helper()
+	normalized := normalizeGuidedOptionsForTest(t, opts)
+	data, err := os.ReadFile(guidedRolloutStatePath(normalized))
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	var state guidedRolloutState
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatalf("decode state: %v", err)
+	}
+	return state
+}
+
+func writeGuidedStateForTest(t *testing.T, opts guidedRolloutOptions, state guidedRolloutState) {
+	t.Helper()
+	if err := os.MkdirAll(opts.LogDir, 0750); err != nil {
+		t.Fatalf("mkdir log dir: %v", err)
+	}
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		t.Fatalf("encode state: %v", err)
+	}
+	if err := os.WriteFile(guidedRolloutStatePath(opts), data, 0600); err != nil {
+		t.Fatalf("write state: %v", err)
 	}
 }
 

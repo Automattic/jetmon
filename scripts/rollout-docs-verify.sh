@@ -41,7 +41,9 @@ step "diff whitespace"
 git diff --check
 
 step "rollout command help"
+run_help_check "$jetmon_binary" rollout guided --help
 run_help_check "$jetmon_binary" rollout rehearsal-plan --help
+run_help_check "$jetmon_binary" rollout host-preflight --help
 run_help_check "$jetmon_binary" rollout static-plan-check --help
 run_help_check "$jetmon_binary" rollout pinned-check --help
 run_help_check "$jetmon_binary" rollout cutover-check --help
@@ -68,13 +70,54 @@ plan_output="$("$jetmon_binary" rollout rehearsal-plan \
 	--host jetmon-v1-a \
 	--bucket-min 0 \
 	--bucket-max 4 \
-	--mode same-server)"
+	--mode same-server \
+	--v1-stop-command 'systemctl stop jetmon' \
+	--v1-start-command 'systemctl start jetmon')"
 printf '%s\n' "$plan_output"
 grep -q 'rollout static-plan-check' <<<"$plan_output" || fail "rehearsal plan omitted static-plan-check"
-grep -q 'rollout pinned-check' <<<"$plan_output" || fail "rehearsal plan omitted pinned-check"
+grep -q 'rollout host-preflight' <<<"$plan_output" || fail "rehearsal plan omitted host-preflight"
 grep -q 'rollout cutover-check' <<<"$plan_output" || fail "rehearsal plan omitted cutover-check"
 grep -q 'rollout rollback-check' <<<"$plan_output" || fail "rehearsal plan omitted rollback-check"
 grep -q 'rollout dynamic-check' <<<"$plan_output" || fail "rehearsal plan omitted dynamic-check"
+grep -q -- '--bucket-total 10' <<<"$plan_output" || fail "rehearsal plan omitted bucket-total passthrough"
+grep -q 'same DB_\* environment' <<<"$plan_output" || fail "rehearsal plan omitted service environment reminder"
+grep -q 'Immediate smoke gate' <<<"$plan_output" || fail "rehearsal plan omitted immediate smoke gate note"
+grep -q 'systemctl stop jetmon' <<<"$plan_output" || fail "rehearsal plan omitted v1 stop command"
+grep -q 'systemctl start jetmon' <<<"$plan_output" || fail "rehearsal plan omitted v1 start command"
+if grep -q 'rollout pinned-check' <<<"$plan_output"; then
+	fail "rehearsal plan should not print redundant pinned-check after host-preflight"
+fi
+if grep -q 'systemd-analyze verify' <<<"$plan_output"; then
+	fail "rehearsal plan should not print redundant systemd-analyze after host-preflight"
+fi
+
+step "guided rollout dry-run smoke"
+guided_log_dir="${ROLLOUT_DOCS_GUIDED_LOG_DIR:-/tmp/jetmon-rollout-docs-guided}"
+guided_output="$("$jetmon_binary" rollout guided \
+	--dry-run \
+	--file "$plan_file" \
+	--bucket-total 10 \
+	--host jetmon-v1-a \
+	--runtime-host jetmon-v1-a \
+	--bucket-min 0 \
+	--bucket-max 4 \
+	--mode same-server \
+	--v1-stop-command 'systemctl stop jetmon' \
+	--v1-start-command 'systemctl start jetmon' \
+	--log-dir "$guided_log_dir")"
+printf '%s\n' "$guided_output"
+grep -q 'INFO rollout_log=' <<<"$guided_output" || fail "guided dry-run omitted rollout log path"
+grep -q 'INFO rollout_state=' <<<"$guided_output" || fail "guided dry-run omitted rollout state path"
+grep -q 'INFO dry_run=true' <<<"$guided_output" || fail "guided dry-run omitted dry-run marker"
+grep -q 'PASS rollout_log_dir_writable=' <<<"$guided_output" || fail "guided dry-run omitted log-dir write check"
+grep -q 'INFO guided_run_origin=runtime_host mode="same-server" v1_host="jetmon-v1-a" runtime_host="jetmon-v1-a"' <<<"$guided_output" || fail "guided dry-run omitted run origin"
+grep -q 'INFO run_this_command_from=runtime_host' <<<"$guided_output" || fail "guided dry-run omitted runtime-host execution note"
+grep -q 'INFO remote_v1_access_required=false reason=same_server' <<<"$guided_output" || fail "guided dry-run omitted same-server remote access note"
+grep -q 'INFO selected_path=forward' <<<"$guided_output" || fail "guided dry-run omitted selected path"
+grep -q 'PLAN path=FORWARD step=static-plan-check' <<<"$guided_output" || fail "guided dry-run omitted static-plan step"
+grep -q 'PLAN path=FORWARD step=stop-v1 command="systemctl stop jetmon"' <<<"$guided_output" || fail "guided dry-run omitted v1 stop command"
+grep -q 'PLAN path=FORWARD step=stop-v1 typed_confirmation="STOP jetmon-v1-a 0-4"' <<<"$guided_output" || fail "guided dry-run omitted v1 stop confirmation"
+grep -q 'PLAN path=ROLLBACK step=rollback-start-v1' <<<"$guided_output" || fail "guided dry-run omitted rollback step"
 
 step "rollout json smoke"
 json_output="$("$jetmon_binary" rollout static-plan-check \

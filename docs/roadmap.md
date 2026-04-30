@@ -47,6 +47,41 @@ preflight, deliverer hardening, and API CLI fixture workflow branches:
   coverage, drift, recent activity, delivery owner state, and suggested next
   action.
 
+### Rollout Host Preflight Polish TODO
+
+- [x] Add `jetmon2 rollout host-preflight` to bundle the pre-stop host gate:
+  static bucket plan match, config parse, DB connectivity, pinned safety
+  checks, and staged systemd validation.
+- [x] Let `rollout rehearsal-plan` accept explicit v1 stop/start commands so
+  generated plans do not leave the most stressful cutover and rollback actions
+  as comments.
+- [x] Make generated rollback blocks more explicit about hold points, stop-v2
+  confirmation, rollback-check success, and the no-schema-rollback rule.
+- [x] Update migration docs and quick reference so operators know which checks
+  are pre-stop gates, post-start gates, rollback gates, and fleet gates.
+- [x] Simplify generated rehearsal plans so `host-preflight` is the single
+  pre-stop gate, while preserving `--bucket-total` and custom systemd unit
+  choices in the printed commands.
+- [x] Clarify operator-facing docs around service environment setup, explicit
+  cutover/rollback ranges, and the difference between the immediate cutover
+  smoke gate and the full-round `--require-all` gate.
+- [x] Add `jetmon2 rollout guided` as an interactive, idempotent rollout and
+  rollback walkthrough with log-dir write checks, transcripts, resume state,
+  typed confirmations for destructive transitions, dry-run rehearsal, and
+  optional execution of operator commands.
+- [x] Rehearse the guided rollout UX with repeated dry-run simulations and
+  tighten the flow: richer dry-run plans with commands and confirmations,
+  state-aware resume skips for interrupted service transitions, and an explicit
+  resume/start-over prompt with no unsafe default.
+- [x] Extend targeted guided rollout flow coverage for fresh-server handoff,
+  execute-mode dry-runs, wrong typed confirmations, mismatched resume state,
+  explicit start-over, and rollback after a failed post-start gate.
+- [x] Make rollout run origin explicit in guided output and docs: run from the
+  staged v2 runtime host, and require SSH from that runtime host to the old v1
+  host when fresh-server v1 stop/start commands use SSH.
+- [x] Add fresh-server guided happy-path simulations for manual flow, execute
+  flow, and direct rollback command ordering.
+
 Recently completed candidate branches:
 
 - **`feature/rollout-preflight-hardening`** - merged rollout safety commands
@@ -85,10 +120,10 @@ Recently completed candidate branches:
   single-owner during migration from embedded to standalone delivery.
 - **Run a production rollout rehearsal pass.** Validate that README,
   `v1-to-v2-migration.md`, config samples, systemd units,
-  `validate-config`, `rollout static-plan-check`, `rollout pinned-check`,
-  `rollout cutover-check`, `rollout activity-check`, `rollout rollback-check`,
-  `rollout projection-drift`, and rollback steps line up exactly before the
-  first production host replacement.
+  `validate-config`, `rollout guided`, `rollout static-plan-check`,
+  `rollout host-preflight`, `rollout cutover-check`, `rollout activity-check`,
+  `rollout rollback-check`, `rollout projection-drift`, and rollback steps line
+  up exactly before the first production host replacement.
 - **Instrument the data needed for the v3 decision.** During v2 production,
   measure first-failure-to-`Seems Down`, `Seems Down`-to-`Down`, false alarm
   rate by failure class, Veriflier agreement/disagreement by region, Veriflier
@@ -697,9 +732,10 @@ where to look, and what each item unlocked.
 
 - **Pinned v1-to-v2 rollout mode.** v2 hosts can run pinned to the exact bucket
   range of the v1 host they replace.
-  Example: `./jetmon2 rollout pinned-check` verifies pinned config, projection
-  writes, dynamic-ownership absence, active-site coverage, and projection drift
-  before cutover.
+  Example: `./jetmon2 rollout guided` wraps static-plan validation,
+  host-preflight, cutover checks, and rollback gates with prompts, transcript
+  logging, and resume state; `./jetmon2 rollout host-preflight` is the direct
+  pre-stop gate for manual runs.
 - **Post-start cutover check.** `./jetmon2 rollout cutover-check` bundles the
   read-only pinned preflight, recent activity check, dashboard status check,
   and projection-drift report used after each v1 host replacement.
@@ -715,6 +751,10 @@ where to look, and what each item unlocked.
 - **Rollout state report.** `./jetmon2 rollout state-report` summarizes the
   current ownership mode, bucket coverage, recent activity, projection drift,
   delivery-owner state, and suggested next action for operator handoffs.
+- **Host preflight gate.** `./jetmon2 rollout host-preflight` bundles the
+  pre-stop static plan assertion, config/DB load, pinned safety checks, and
+  staged systemd validation. Rehearsal plans can now include exact v1 stop/start
+  commands and explicit rollback hold points.
 - **Dynamic ownership preflight.** `./jetmon2 rollout dynamic-check` verifies
   that pinned ranges are removed, `jetmon_hosts` rows cover the full bucket
   range without gaps/overlaps, heartbeats are fresh, and projection drift is

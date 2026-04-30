@@ -126,6 +126,8 @@ go run -race ./cmd/jetmon2/
 ./jetmon2 migrate
 ./jetmon2 status
 ./jetmon2 audit --blog-id 12345 --since 2h
+./jetmon2 rollout guided
+./jetmon2 rollout host-preflight
 ./jetmon2 rollout pinned-check
 ./jetmon2 rollout cutover-check
 ./jetmon2 rollout dynamic-check

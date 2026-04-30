@@ -15,10 +15,13 @@ Pinned mode still means:
 - keep `LEGACY_STATUS_PROJECTION_ENABLE=true`
 - keep `API_PORT=0` during initial production monitor replacement unless an API
   and delivery-owner plan has been approved
-- run `./jetmon2 validate-config`
-- run `./jetmon2 rollout pinned-check`
+- prefer `./jetmon2 rollout guided` during the production window so the
+  operator gets prompts, transcript logging, resume state, and guided rollback
+- when running manual gates, run `./jetmon2 validate-config`, then
+  `./jetmon2 rollout host-preflight` with the copied static bucket plan, v1
+  host, v2 runtime host, and bucket range before stopping v1
 - after v2 starts, run `./jetmon2 rollout cutover-check --since=15m`, then
-  rerun it with `--require-all` after one full expected check round
+  rerun it with `--require-all` after one full expected v2 check round
 
 The old detailed checklist was consolidated into
 [v1-to-v2-migration.md](v1-to-v2-migration.md) so migration guidance does not

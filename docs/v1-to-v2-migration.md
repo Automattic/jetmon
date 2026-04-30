@@ -114,10 +114,19 @@ approved plan:
 
 ```bash
 ./jetmon2 rollout static-plan-check --file rollout-buckets.csv \
-  --host=jetmon-v1-a --bucket-min=0 --bucket-max=99
+  --host=jetmon-v1-a --bucket-min=0 --bucket-max=99 --bucket-total=<total>
 ```
 
 Generate the host-specific command sequence operators will rehearse and run:
+
+Run the generated runbook and `rollout guided` from the staged v2 runtime host,
+not from a separate orchestration host. In same-server mode the v1 host and v2
+runtime host are normally the same machine. In fresh-server mode,
+`--host=<old-v1-hostname>` identifies the v1 host from the static plan and
+`--runtime-host=<new-v2-hostname>` identifies the new v2 machine where the
+guided command runs. If the v1 stop/start commands use `ssh`, the new v2
+runtime host must be able to SSH to the old v1 host before the production
+window starts.
 
 ```bash
 ./jetmon2 rollout rehearsal-plan \
@@ -125,12 +134,72 @@ Generate the host-specific command sequence operators will rehearse and run:
   --host=jetmon-v1-a \
   --bucket-min=0 \
   --bucket-max=99 \
-  --mode=same-server
+  --bucket-total=<total> \
+  --mode=same-server \
+  --v1-stop-command='<exact v1 stop command>' \
+  --v1-start-command='<exact v1 rollback start command>'
 ```
 
 For a fresh-server takeover where the v2 hostname differs from the v1 host in
 the static plan, add `--runtime-host=<new-v2-hostname>` and use
-`--mode=fresh-server`.
+`--mode=fresh-server`. Add `--systemd-unit=<path>` if the staged service unit
+is not `/etc/systemd/system/jetmon2.service`. Confirm SSH from the new v2
+runtime host to the old v1 host before relying on SSH-based
+`--v1-stop-command` or `--v1-start-command`.
+
+During the production window, prefer the guided command so operators do not
+need to copy/paste each command manually:
+
+```bash
+./jetmon2 rollout guided \
+  --file rollout-buckets.csv \
+  --host=jetmon-v1-a \
+  --runtime-host=jetmon-v1-a \
+  --bucket-min=0 \
+  --bucket-max=99 \
+  --bucket-total=<total> \
+  --mode=same-server \
+  --v1-stop-command='<exact v1 stop command>' \
+  --v1-start-command='<exact v1 rollback start command>' \
+  --log-dir=logs/rollout
+```
+
+`rollout guided` checks that the log directory is writable before it starts,
+writes a transcript plus `<runtime-host>-<min>-<max>.state.json` resume state,
+prints the expected run origin, explains each gate, asks before continuing, and
+stops on failed gates. It uses typed confirmations before stopping v1, starting
+v2, stopping v2 during rollback, or restarting v1. By default it prints
+service commands for the operator to run from the v2 runtime host and asks for
+`DONE`; add `--execute-operator-commands` only when the operator intentionally
+wants the guided command to execute those commands after confirmation.
+If the command is interrupted after a stop/start transition, rerun it with the
+same options and choose resume; saved service state prevents the command from
+asking the operator to repeat a transition that already completed. When resume
+state exists, there is no default choice; the operator must type `RESUME` or
+`START OVER`. Short `y` / `n` answers are rejected for this prompt.
+Dry-run mode prints the selected path, service commands, typed confirmation
+phrases, and manual `DONE` checkpoints without running rollout checks or
+service commands.
+
+If a rollout needs to return the range to v1, use the guided rollback path:
+
+```bash
+./jetmon2 rollout guided \
+  --rollback \
+  --file rollout-buckets.csv \
+  --host=jetmon-v1-a \
+  --runtime-host=jetmon-v1-a \
+  --bucket-min=0 \
+  --bucket-max=99 \
+  --bucket-total=<total> \
+  --v1-start-command='<exact v1 rollback start command>' \
+  --log-dir=logs/rollout
+```
+
+If a forward gate fails after v2 has started and the operator chooses rollback,
+the rollback path can complete successfully while the overall command exits
+non-zero. This is intentional: the host rollout did not complete, even though
+the range was returned to v1. Keep the transcript with the rollout record.
 
 ### Prepare Database And Rollback Safety
 
@@ -177,8 +246,10 @@ unless standalone delivery is part of the approved rollout plan. Use
 [`jetmon-deliverer-rollout.md`](jetmon-deliverer-rollout.md) for that separate
 process cutover.
 
-After the binary and service files are staged, verify the service definition
-from that staged host or deployment root:
+After the binary and service files are staged, the pre-stop
+`rollout host-preflight` gate verifies the installed service unit before v1 is
+stopped. If you want an earlier packaging check from that staged host or
+deployment root, run:
 
 ```bash
 systemd-analyze verify /etc/systemd/system/jetmon2.service
@@ -226,28 +297,31 @@ Confirm it reports:
 - `legacy_status_projection=enabled`
 - `bucket_ownership=pinned range=<min>-<max>`
 - `rollout_static_plan=./jetmon2 rollout static-plan-check --file=<ranges.csv>`
-- `rollout_preflight=./jetmon2 rollout pinned-check`
+- `rollout_preflight=` points at `./jetmon2 rollout host-preflight` with the
+  static plan file, v1 host, runtime v2 host, and pinned bucket range
 - `rollout_activity_check=./jetmon2 rollout activity-check --since=15m`
 - `rollout_cutover_check=./jetmon2 rollout cutover-check --since=15m`
 - `rollout_rollback_check=./jetmon2 rollout rollback-check`
 - `rollout_drift_report=./jetmon2 rollout projection-drift`
 
-Run the pinned preflight when the host identity and config are final:
+Run the host preflight when the host identity and config are final:
 
 ```bash
-./jetmon2 rollout pinned-check
+./jetmon2 rollout host-preflight \
+  --file=rollout-buckets.csv \
+  --host=<v1-hostname> \
+  --runtime-host=<v2-hostname> \
+  --bucket-min=<min> \
+  --bucket-max=<max> \
+  --bucket-total=<total>
 ```
 
-This check fails if pinned config is missing, legacy projection writes are
-disabled, the current host still owns a dynamic `jetmon_hosts` row, any dynamic
-`jetmon_hosts` row overlaps the pinned range, or projection drift exists.
-
-If checking a config before it is running on the final hostname, pass the
-expected host id:
-
-```bash
-./jetmon2 rollout pinned-check --host=<v2-hostname>
-```
+This gate fails if the copied static plan does not match the requested host
+range, the staged config cannot load, DB connectivity fails, pinned config is
+missing, the pinned config range does not match the requested range, legacy
+projection writes are disabled, the runtime v2 host still owns a dynamic
+`jetmon_hosts` row, any dynamic `jetmon_hosts` row overlaps the pinned range,
+projection drift exists, or the staged systemd unit fails validation.
 
 ### Rehearse API CLI Workflows Outside Production
 
@@ -298,10 +372,26 @@ simulation must also use `--batch`.
 Use this path when the same server currently running v1 will run v2 for the
 same bucket range.
 
+Preferred: run `./jetmon2 rollout guided ...` with the same host, range, stop,
+and rollback commands from the generated rehearsal plan. The manual steps below
+are the fallback/reference path and match what the guided command walks through.
+
 1. Confirm v2 files and config are staged beside, not on top of, v1.
-2. Confirm v1 service start commands and config are documented for rollback.
+2. Confirm v1 service stop/start commands and config are documented for
+   cutover and rollback.
 3. Run `./jetmon2 validate-config`.
-4. Run `./jetmon2 rollout pinned-check`.
+4. Run the pre-stop host gate:
+
+   ```bash
+   ./jetmon2 rollout host-preflight \
+     --file=rollout-buckets.csv \
+     --host=<v1-hostname> \
+     --runtime-host=<v2-hostname> \
+     --bucket-min=<min> \
+     --bucket-max=<max> \
+     --bucket-total=<total>
+   ```
+
 5. Start a terminal watching v1 logs and a terminal ready to watch v2 logs.
 6. Stop v1 cleanly with the existing production command.
 7. Confirm the v1 process is no longer running.
@@ -320,7 +410,11 @@ same bucket range.
 10. Run:
 
     ```bash
-    ./jetmon2 rollout cutover-check --since=15m
+    ./jetmon2 rollout cutover-check \
+      --host=<v2-hostname> \
+      --bucket-min=<min> \
+      --bucket-max=<max> \
+      --since=15m
     ```
 
     `cutover-check` runs the pinned preflight, recent activity check,
@@ -331,7 +425,12 @@ same bucket range.
 11. After one full expected round, run:
 
     ```bash
-    ./jetmon2 rollout cutover-check --since=15m --require-all
+    ./jetmon2 rollout cutover-check \
+      --host=<v2-hostname> \
+      --bucket-min=<min> \
+      --bucket-max=<max> \
+      --since=15m \
+      --require-all
     ```
 
 12. Watch one full check round before moving to the next host.
@@ -341,13 +440,28 @@ same bucket range.
 Use this path when a new server will take over a bucket range from an existing
 v1 server.
 
+Preferred: run `./jetmon2 rollout guided --mode=fresh-server ...` from the new
+v2 server, with `--host=<old-v1-hostname>` and
+`--runtime-host=<new-v2-hostname>`. The manual steps below are the
+fallback/reference path.
+
 1. Provision the new server and install v2 artifacts.
 2. Configure `PINNED_BUCKET_MIN` and `PINNED_BUCKET_MAX` to match the old v1
    host's `BUCKET_NO_MIN` and `BUCKET_NO_MAX`.
 3. Keep the v2 service stopped.
 4. Run `./jetmon2 validate-config` on the new server.
-5. Run `./jetmon2 rollout pinned-check --host=<new-v2-hostname>` if the final
-   hostname needs to be checked before service start.
+5. Run the pre-stop host gate from the new v2 server before stopping v1:
+
+   ```bash
+   ./jetmon2 rollout host-preflight \
+     --file=rollout-buckets.csv \
+     --host=<old-v1-hostname> \
+     --runtime-host=<new-v2-hostname> \
+     --bucket-min=<min> \
+     --bucket-max=<max> \
+     --bucket-total=<total>
+   ```
+
 6. Confirm network access from the new server to MySQL, Verifliers, WPCOM,
    StatsD, and log/stats directories.
 7. Stop v1 on the old server.
@@ -358,9 +472,26 @@ v1 server.
    systemctl enable --now jetmon2
    ```
 
-10. Run `./jetmon2 rollout cutover-check --since=15m` on the new server.
-11. After one full expected round, run
-    `./jetmon2 rollout cutover-check --since=15m --require-all`.
+10. Run the cutover smoke gate on the new server:
+
+    ```bash
+    ./jetmon2 rollout cutover-check \
+      --host=<new-v2-hostname> \
+      --bucket-min=<min> \
+      --bucket-max=<max> \
+      --since=15m
+    ```
+
+11. After one full expected v2 round, run the stronger gate:
+
+    ```bash
+    ./jetmon2 rollout cutover-check \
+      --host=<new-v2-hostname> \
+      --bucket-min=<min> \
+      --bucket-max=<max> \
+      --since=15m \
+      --require-all
+    ```
 12. Watch one full check round before moving to the next host.
 
 Do not leave the old v1 server running as a warm standby for the same range. A
@@ -383,28 +514,47 @@ For every replaced range, verify:
 - no projection drift is reported:
 
   ```bash
-  ./jetmon2 rollout projection-drift --limit=100
+  ./jetmon2 rollout projection-drift \
+    --bucket-min=<min> \
+    --bucket-max=<max> \
+    --limit=100
   ```
 
 - recent check activity exists for the pinned range:
 
   ```bash
-  ./jetmon2 rollout activity-check --since=15m
+  ./jetmon2 rollout activity-check \
+    --bucket-min=<min> \
+    --bucket-max=<max> \
+    --since=15m
   ```
 
   After a full expected round, require every active site in the range to have a
   fresh `last_checked_at`:
 
   ```bash
-  ./jetmon2 rollout activity-check --since=15m --require-all
+  ./jetmon2 rollout activity-check \
+    --bucket-min=<min> \
+    --bucket-max=<max> \
+    --since=15m \
+    --require-all
   ```
 
   The bundled cutover check runs the pinned preflight, activity check,
   dashboard status check, and projection-drift report together:
 
   ```bash
-  ./jetmon2 rollout cutover-check --since=15m
-  ./jetmon2 rollout cutover-check --since=15m --require-all
+  ./jetmon2 rollout cutover-check \
+    --host=<v2-hostname> \
+    --bucket-min=<min> \
+    --bucket-max=<max> \
+    --since=15m
+  ./jetmon2 rollout cutover-check \
+    --host=<v2-hostname> \
+    --bucket-min=<min> \
+    --bucket-max=<max> \
+    --since=15m \
+    --require-all
   ```
 
 If `DASHBOARD_PORT` is enabled, confirm:
@@ -434,17 +584,23 @@ cat stats/totals
 
 Use this when v2 replaced v1 on the same server.
 
+Preferred: run `./jetmon2 rollout guided --rollback ...` with the original v1
+start command. The manual steps below are the fallback/reference path.
+
 1. Stop v2:
 
    ```bash
    systemctl stop jetmon2
    ```
 
-2. Confirm the v2 process is stopped.
+2. Confirm the v2 process is stopped. Do not restart v1 until this is true.
 3. Run the rollback safety check before restarting v1:
 
    ```bash
-   ./jetmon2 rollout rollback-check --host=<v2-hostname>
+   ./jetmon2 rollout rollback-check \
+     --host=<v2-hostname> \
+     --bucket-min=<min> \
+     --bucket-max=<max>
    ```
 
    Pinned v2 hosts intentionally do not heartbeat `jetmon_hosts`, so this check
@@ -461,18 +617,25 @@ Use this when v2 replaced v1 on the same server.
 
 Use this when v2 was started on a new server and the old v1 server was stopped.
 
+Preferred: run `./jetmon2 rollout guided --rollback ...` from the new v2 server
+with `--host=<old-v1-hostname>` and `--runtime-host=<new-v2-hostname>`. The
+manual steps below are the fallback/reference path.
+
 1. Stop v2 on the new server:
 
    ```bash
    systemctl stop jetmon2
    ```
 
-2. Confirm the new v2 process is stopped.
+2. Confirm the new v2 process is stopped. Do not restart v1 until this is true.
 3. Run the rollback safety check from an operator shell with the stopped v2
    hostname:
 
    ```bash
-   ./jetmon2 rollout rollback-check --host=<new-v2-hostname>
+   ./jetmon2 rollout rollback-check \
+     --host=<new-v2-hostname> \
+     --bucket-min=<min> \
+     --bucket-max=<max>
    ```
 
 4. Restart v1 on the old server with its original bucket config.
@@ -541,6 +704,8 @@ Only remove v1 after rollout signoff.
 - [ ] additive migrations applied
 - [ ] pinned configs prepared for every range
 - [ ] rollback commands documented for every host
+- [ ] `rollout guided --dry-run` exercised for the first host
+- [ ] `rollout host-preflight` passes before each v1 host is stopped
 - [ ] first host cutover observed for one full round
 - [ ] `rollout cutover-check --require-all` passes for replaced ranges
 - [ ] `rollout rollback-check` exercised during rehearsal
