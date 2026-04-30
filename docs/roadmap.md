@@ -82,6 +82,33 @@ preflight, deliverer hardening, and API CLI fixture workflow branches:
 - [x] Add fresh-server guided happy-path simulations for manual flow, execute
   flow, and direct rollback command ordering.
 
+### Rollout VM Lab TODO
+
+- [x] Prepare an in-house KVM/libvirt host with passwordless sudo, QEMU,
+  libvirt, cloud-init tooling, Ansible, Expect, Go, MariaDB client tools, and a
+  dedicated `jetmon-rollout` storage pool.
+- [x] Add a repo-owned `scripts/rollout-vm-lab.sh` harness with host `doctor`,
+  image fetch, VM create/destroy, topology create, SSH wait, and offline
+  snapshot/revert primitives.
+- [x] Document the VM lab workflow, environment overrides, topology, and
+  planned rollout flow coverage.
+- [x] Seed the DB VM with v1-compatible Jetmon data and v2 additive migrations.
+- [x] Install built `jetmon2` artifacts and staged systemd units onto the v2 VM.
+- [x] Add a v1 simulator service that models static bucket ownership and safe
+  stop/start behavior for guided rollout tests.
+- [x] Wire VM lab smoke targets into Makefile or a dedicated operator script.
+- [x] Automate fresh-server execute-mode happy path and guided rollback smoke.
+- [x] Automate failed pre-stop dynamic-overlap and bad systemd-unit refusal
+  flows.
+- [x] Automate interrupted resume, failed post-start rollback, and bad SSH
+  flows.
+- [x] Add snapshot-backed VM flow runners for full execute-mode cutover and
+  rollback simulations.
+- [x] Automate v2 service start failure after v1 stops, unwritable rollout log
+  directory refusal, bad DB connection refusal, and real `last_checked_at`
+  activity from the `jetmon2` service.
+- [x] Add snapshot-backed replay for every named VM lab smoke flow.
+
 Recently completed candidate branches:
 
 - **`feature/rollout-preflight-hardening`** - merged rollout safety commands

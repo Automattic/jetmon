@@ -134,7 +134,7 @@ to v1" and keep the transcript with the incident record.
 3. Confirm the v1 process is stopped, then start v2:
 
    ```bash
-   systemctl enable --now jetmon2
+   systemctl enable --now jetmon2 && systemctl is-active --quiet jetmon2
    ```
 
 4. Immediately run the smoke gate:

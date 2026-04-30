@@ -16,6 +16,9 @@ API_CLI_TOKEN_SCOPE ?= admin
 API_CLI_TOKEN_CREATED_BY ?= docker-local
 API_CLI_TOKEN_TTL ?= 0
 API_CLI_TOKEN_ID ?=
+ROLLOUT_VM_LAB_HOST ?= jetmon-deploy-test
+ROLLOUT_VM_LAB_SSH ?= ssh -F $(HOME)/.ssh/config -o ControlMaster=no -o ControlPath=none -o BatchMode=yes -o ConnectTimeout=10
+ROLLOUT_VM_LAB_SNAPSHOT ?= pre-guided-flow
 GO          ?= $(shell if command -v go >/dev/null 2>&1; then command -v go; elif [ -x /usr/local/go/bin/go ]; then printf /usr/local/go/bin/go; else printf go; fi)
 GOCACHE     ?= /tmp/jetmon-go-cache
 GOMODCACHE  ?= /tmp/jetmon-gomod-cache
@@ -24,7 +27,7 @@ BUILD_FLAGS := -ldflags "-X main.version=$(shell git describe --tags --always --
                          -X main.buildDate=$(shell date -u +%Y-%m-%dT%H:%M:%SZ) \
                          -X main.goVersion=$(shell $(GO) version | awk '{print $$3}')"
 
-.PHONY: all build build-deliverer build-veriflier generate test test-race lint rollout-docs-verify api-cli-smoke api-cli-validate api-cli-token-create api-cli-token-list api-cli-token-revoke clean
+.PHONY: all build build-deliverer build-veriflier generate test test-race lint rollout-docs-verify rollout-vm-lab-sync rollout-vm-lab-sync-artifacts rollout-vm-lab-stage-v2 rollout-vm-lab-doctor rollout-vm-lab-prepare rollout-vm-lab-smoke rollout-vm-lab-execute-smoke rollout-vm-lab-failure-smoke rollout-vm-lab-resume-smoke rollout-vm-lab-post-start-rollback-smoke rollout-vm-lab-bad-ssh-smoke rollout-vm-lab-v2-start-failure-smoke rollout-vm-lab-runtime-guard-smoke rollout-vm-lab-real-activity-smoke rollout-vm-lab-snapshot-execute-smoke rollout-vm-lab-snapshot-all-smoke api-cli-smoke api-cli-validate api-cli-token-create api-cli-token-list api-cli-token-revoke clean
 
 all: build build-deliverer build-veriflier
 
@@ -57,6 +60,60 @@ lint:
 
 rollout-docs-verify: all test lint
 	scripts/rollout-docs-verify.sh
+
+rollout-vm-lab-sync:
+	$(ROLLOUT_VM_LAB_SSH) $(ROLLOUT_VM_LAB_HOST) 'mkdir -p ~/jetmon-rollout-tools/scripts ~/jetmon-rollout-tools/docs'
+	rsync -e "$(ROLLOUT_VM_LAB_SSH)" -a scripts/rollout-vm-lab.sh $(ROLLOUT_VM_LAB_HOST):~/jetmon-rollout-tools/scripts/
+	rsync -e "$(ROLLOUT_VM_LAB_SSH)" -a docs/rollout-vm-lab.md $(ROLLOUT_VM_LAB_HOST):~/jetmon-rollout-tools/docs/
+
+rollout-vm-lab-sync-artifacts: build rollout-vm-lab-sync
+	$(ROLLOUT_VM_LAB_SSH) $(ROLLOUT_VM_LAB_HOST) 'mkdir -p ~/jetmon-rollout-tools/bin ~/jetmon-rollout-tools/systemd ~/jetmon-rollout-tools/config'
+	rsync -e "$(ROLLOUT_VM_LAB_SSH)" -a bin/jetmon2 $(ROLLOUT_VM_LAB_HOST):~/jetmon-rollout-tools/bin/
+	rsync -e "$(ROLLOUT_VM_LAB_SSH)" -a systemd/jetmon2.service systemd/jetmon2-logrotate $(ROLLOUT_VM_LAB_HOST):~/jetmon-rollout-tools/systemd/
+	rsync -e "$(ROLLOUT_VM_LAB_SSH)" -a config/config-sample.json config/db-config-sample.conf $(ROLLOUT_VM_LAB_HOST):~/jetmon-rollout-tools/config/
+
+rollout-vm-lab-stage-v2: rollout-vm-lab-sync-artifacts
+	$(ROLLOUT_VM_LAB_SSH) $(ROLLOUT_VM_LAB_HOST) 'cd ~/jetmon-rollout-tools && scripts/rollout-vm-lab.sh install-v2'
+
+rollout-vm-lab-doctor: rollout-vm-lab-sync
+	$(ROLLOUT_VM_LAB_SSH) $(ROLLOUT_VM_LAB_HOST) 'cd ~/jetmon-rollout-tools && scripts/rollout-vm-lab.sh doctor'
+
+rollout-vm-lab-prepare: rollout-vm-lab-sync-artifacts
+	$(ROLLOUT_VM_LAB_SSH) $(ROLLOUT_VM_LAB_HOST) 'cd ~/jetmon-rollout-tools && scripts/rollout-vm-lab.sh prepare-topology'
+
+rollout-vm-lab-smoke: rollout-vm-lab-stage-v2
+	$(ROLLOUT_VM_LAB_SSH) $(ROLLOUT_VM_LAB_HOST) 'cd ~/jetmon-rollout-tools && scripts/rollout-vm-lab.sh smoke-preflight'
+	$(ROLLOUT_VM_LAB_SSH) $(ROLLOUT_VM_LAB_HOST) 'cd ~/jetmon-rollout-tools && scripts/rollout-vm-lab.sh smoke-guided-dry-run'
+
+rollout-vm-lab-execute-smoke: rollout-vm-lab-stage-v2
+	$(ROLLOUT_VM_LAB_SSH) $(ROLLOUT_VM_LAB_HOST) 'cd ~/jetmon-rollout-tools && scripts/rollout-vm-lab.sh smoke-guided-execute-rollback'
+
+rollout-vm-lab-failure-smoke: rollout-vm-lab-stage-v2
+	$(ROLLOUT_VM_LAB_SSH) $(ROLLOUT_VM_LAB_HOST) 'cd ~/jetmon-rollout-tools && scripts/rollout-vm-lab.sh smoke-failure-gates'
+
+rollout-vm-lab-resume-smoke: rollout-vm-lab-stage-v2
+	$(ROLLOUT_VM_LAB_SSH) $(ROLLOUT_VM_LAB_HOST) 'cd ~/jetmon-rollout-tools && scripts/rollout-vm-lab.sh smoke-interrupted-resume'
+
+rollout-vm-lab-post-start-rollback-smoke: rollout-vm-lab-stage-v2
+	$(ROLLOUT_VM_LAB_SSH) $(ROLLOUT_VM_LAB_HOST) 'cd ~/jetmon-rollout-tools && scripts/rollout-vm-lab.sh smoke-post-start-rollback'
+
+rollout-vm-lab-bad-ssh-smoke: rollout-vm-lab-stage-v2
+	$(ROLLOUT_VM_LAB_SSH) $(ROLLOUT_VM_LAB_HOST) 'cd ~/jetmon-rollout-tools && scripts/rollout-vm-lab.sh smoke-bad-ssh'
+
+rollout-vm-lab-v2-start-failure-smoke: rollout-vm-lab-stage-v2
+	$(ROLLOUT_VM_LAB_SSH) $(ROLLOUT_VM_LAB_HOST) 'cd ~/jetmon-rollout-tools && scripts/rollout-vm-lab.sh smoke-v2-start-failure'
+
+rollout-vm-lab-runtime-guard-smoke: rollout-vm-lab-stage-v2
+	$(ROLLOUT_VM_LAB_SSH) $(ROLLOUT_VM_LAB_HOST) 'cd ~/jetmon-rollout-tools && scripts/rollout-vm-lab.sh smoke-runtime-guards'
+
+rollout-vm-lab-real-activity-smoke: rollout-vm-lab-stage-v2
+	$(ROLLOUT_VM_LAB_SSH) $(ROLLOUT_VM_LAB_HOST) 'cd ~/jetmon-rollout-tools && scripts/rollout-vm-lab.sh smoke-real-activity'
+
+rollout-vm-lab-snapshot-execute-smoke: rollout-vm-lab-stage-v2
+	$(ROLLOUT_VM_LAB_SSH) $(ROLLOUT_VM_LAB_HOST) 'cd ~/jetmon-rollout-tools && scripts/rollout-vm-lab.sh snapshot-run $(ROLLOUT_VM_LAB_SNAPSHOT) execute-rollback'
+
+rollout-vm-lab-snapshot-all-smoke: rollout-vm-lab-stage-v2
+	$(ROLLOUT_VM_LAB_SSH) $(ROLLOUT_VM_LAB_HOST) 'cd ~/jetmon-rollout-tools && scripts/rollout-vm-lab.sh snapshot-run-all $(ROLLOUT_VM_LAB_SNAPSHOT)'
 
 api-cli-smoke: build
 	@test -n "$$JETMON_API_TOKEN" || { echo "JETMON_API_TOKEN is required"; exit 1; }

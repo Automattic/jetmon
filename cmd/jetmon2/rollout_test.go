@@ -372,7 +372,7 @@ jetmon-v1-b,5,9
 		"./jetmon2 rollout host-preflight --file rollout-buckets.csv --host jetmon-v1-a --runtime-host jetmon-v1-a --bucket-min 0 --bucket-max 4 --bucket-total 10 --service jetmon2",
 		"systemctl stop jetmon",
 		"# HOLD: confirm v1 is stopped before starting v2.",
-		"systemctl enable --now jetmon2",
+		"systemctl enable --now jetmon2 && systemctl is-active --quiet jetmon2",
 		"# Immediate smoke gate: checks startup and recent activity; recent writes can still include v1.",
 		"./jetmon2 rollout cutover-check --host jetmon-v1-a --bucket-min 0 --bucket-max 4 --since 15m",
 		"# Strong gate after one full v2 check round:",
@@ -756,7 +756,7 @@ func TestRunGuidedRolloutRollbackDryRunOnlyShowsRollbackPath(t *testing.T) {
 	}
 	for _, want := range []string{
 		"INFO selected_path=rollback",
-		`PLAN path=ROLLBACK step=rollback-stop-v2 command="systemctl stop jetmon2"`,
+		`PLAN path=ROLLBACK step=rollback-stop-v2 command="systemctl stop jetmon2 && ! systemctl is-active --quiet jetmon2"`,
 		`PLAN path=ROLLBACK step=rollback-start-v1 typed_confirmation="START V1 jetmon-v1-a 0-4"`,
 	} {
 		if !strings.Contains(out.String(), want) {
@@ -785,7 +785,7 @@ func TestRunGuidedRolloutDryRunExecuteModeDoesNotRunCommands(t *testing.T) {
 	for _, want := range []string{
 		"INFO operator_command_mode=execute-after-confirmation",
 		`PLAN path=FORWARD step=stop-v1 command="systemctl stop jetmon"`,
-		`PLAN path=FORWARD step=start-v2 command="systemctl enable --now jetmon2"`,
+		`PLAN path=FORWARD step=start-v2 command="systemctl enable --now jetmon2 && systemctl is-active --quiet jetmon2"`,
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("output missing %q:\n%s", want, out.String())
@@ -875,7 +875,7 @@ func TestRunGuidedRolloutForwardExecuteCommands(t *testing.T) {
 	if got, want := strings.Join(calls, ","), "static,validate,preflight,cutover-smoke,cutover-all"; got != want {
 		t.Fatalf("calls = %s, want %s", got, want)
 	}
-	if got, want := strings.Join(commands, ","), "systemctl stop jetmon,systemctl enable --now jetmon2"; got != want {
+	if got, want := strings.Join(commands, ","), "systemctl stop jetmon,systemctl enable --now jetmon2 && systemctl is-active --quiet jetmon2"; got != want {
 		t.Fatalf("commands = %s, want %s", got, want)
 	}
 	stopCommandAt := strings.Index(out.String(), "COMMAND systemctl stop jetmon")
@@ -927,7 +927,7 @@ func TestRunGuidedRolloutFreshServerManualFlowPrintsRemoteAndLocalCommands(t *te
 		`INFO guided_run_origin=runtime_host mode="fresh-server" v1_host="jetmon-v1-a" runtime_host="jetmon-v2-a"`,
 		`WARN remote_v1_access_required=true runtime_host="jetmon-v2-a" v1_host="jetmon-v1-a"`,
 		"COMMAND ssh jetmon-v1-a sudo systemctl stop jetmon",
-		"COMMAND systemctl enable --now jetmon2",
+		"COMMAND systemctl enable --now jetmon2 && systemctl is-active --quiet jetmon2",
 		"INFO executing_operator_command=false",
 		"PASS guided_rollout=complete",
 	} {
@@ -936,7 +936,7 @@ func TestRunGuidedRolloutFreshServerManualFlowPrintsRemoteAndLocalCommands(t *te
 		}
 	}
 	stopAt := strings.Index(out.String(), "COMMAND ssh jetmon-v1-a sudo systemctl stop jetmon")
-	startAt := strings.Index(out.String(), "COMMAND systemctl enable --now jetmon2")
+	startAt := strings.Index(out.String(), "COMMAND systemctl enable --now jetmon2 && systemctl is-active --quiet jetmon2")
 	if stopAt < 0 || startAt < 0 || stopAt > startAt {
 		t.Fatalf("fresh-server command order is wrong:\n%s", out.String())
 	}
@@ -974,7 +974,7 @@ func TestRunGuidedRolloutFreshServerExecuteFlowCommandOrder(t *testing.T) {
 	if err := runGuidedRollout(context.Background(), &out, strings.NewReader(input), opts, deps); err != nil {
 		t.Fatalf("runGuidedRollout: %v\n%s", err, out.String())
 	}
-	if got, want := strings.Join(commands, ","), "ssh jetmon-v1-a sudo systemctl stop jetmon,systemctl enable --now jetmon2"; got != want {
+	if got, want := strings.Join(commands, ","), "ssh jetmon-v1-a sudo systemctl stop jetmon,systemctl enable --now jetmon2 && systemctl is-active --quiet jetmon2"; got != want {
 		t.Fatalf("commands = %s, want %s", got, want)
 	}
 	if !strings.Contains(out.String(), "PASS guided_rollout=complete") {
@@ -1045,7 +1045,7 @@ func TestRunGuidedRolloutRollbackExecuteCommands(t *testing.T) {
 	if got, want := strings.Join(calls, ","), "rollback-check"; got != want {
 		t.Fatalf("calls = %s, want %s", got, want)
 	}
-	if got, want := strings.Join(commands, ","), "systemctl stop jetmon2,systemctl start jetmon"; got != want {
+	if got, want := strings.Join(commands, ","), "systemctl stop jetmon2 && ! systemctl is-active --quiet jetmon2,systemctl start jetmon"; got != want {
 		t.Fatalf("commands = %s, want %s", got, want)
 	}
 	if !strings.Contains(out.String(), "PASS guided_rollback=complete") {
@@ -1077,7 +1077,7 @@ func TestRunGuidedRolloutFreshServerRollbackExecuteCommands(t *testing.T) {
 	if err := runGuidedRollout(context.Background(), &out, strings.NewReader(input), opts, deps); err != nil {
 		t.Fatalf("runGuidedRollout: %v\n%s", err, out.String())
 	}
-	if got, want := strings.Join(commands, ","), "systemctl stop jetmon2,ssh jetmon-v1-a sudo systemctl start jetmon"; got != want {
+	if got, want := strings.Join(commands, ","), "systemctl stop jetmon2 && ! systemctl is-active --quiet jetmon2,ssh jetmon-v1-a sudo systemctl start jetmon"; got != want {
 		t.Fatalf("commands = %s, want %s", got, want)
 	}
 	if !strings.Contains(out.String(), `WARN remote_v1_access_required=true runtime_host="jetmon-v2-a" v1_host="jetmon-v1-a"`) {
