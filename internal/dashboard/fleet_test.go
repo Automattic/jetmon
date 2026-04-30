@@ -1,11 +1,13 @@
 package dashboard
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Automattic/jetmon/internal/fleethealth"
+	"github.com/DATA-DOG/go-sqlmock"
 )
 
 func TestSummarizeFleetFlagsStaleAndDrift(t *testing.T) {
@@ -174,6 +176,44 @@ func TestSummarizeFleetDeliveryPosture(t *testing.T) {
 	posture = summarizeFleetDeliveryPosture(nil, 3)
 	if posture.Status != "amber" || !strings.Contains(posture.Message, "queued") {
 		t.Fatalf("posture = %+v, want queued delivery warning", posture)
+	}
+}
+
+func TestQueryFleetDeliveryTableAggregatesInSingleQuery(t *testing.T) {
+	sqlDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer sqlDB.Close()
+
+	now := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
+	cutoff := now.Add(-15 * time.Minute)
+	rows := sqlmock.NewRows([]string{"metric", "count", "age_sec"}).
+		AddRow("pending", int64(4), int64(900)).
+		AddRow("due", int64(2), int64(120)).
+		AddRow("future", int64(1), int64(0)).
+		AddRow("delivered", int64(7), int64(0)).
+		AddRow("abandoned", int64(1), int64(0)).
+		AddRow("failed", int64(3), int64(0))
+	mock.ExpectQuery(`(?s)SELECT 'pending'.*FROM jetmon_webhook_deliveries.*UNION ALL.*SELECT 'failed'.*FROM jetmon_webhook_deliveries`).
+		WithArgs(now, now, now, now, cutoff, cutoff, cutoff, cutoff, cutoff).
+		WillReturnRows(rows)
+
+	summary, err := queryFleetDeliveryTable(context.Background(), sqlDB, "webhook", "jetmon_webhook_deliveries", now, cutoff)
+	if err != nil {
+		t.Fatalf("queryFleetDeliveryTable: %v", err)
+	}
+	if summary.Pending != 4 || summary.OldestPendingAgeSec != 900 {
+		t.Fatalf("pending summary = %+v, want count 4 age 900", summary)
+	}
+	if summary.DueNow != 2 || summary.OldestDueAgeSec != 120 {
+		t.Fatalf("due summary = %+v, want count 2 age 120", summary)
+	}
+	if summary.FutureRetry != 1 || summary.DeliveredSince != 7 || summary.AbandonedSince != 1 || summary.FailedSince != 3 {
+		t.Fatalf("summary = %+v, want all aggregate counts populated", summary)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet SQL expectations: %v", err)
 	}
 }
 

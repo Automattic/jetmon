@@ -474,15 +474,7 @@ func fleetBucketOwnershipMode(processes []FleetProcess) string {
 }
 
 func processActiveForFleetOwnership(process FleetProcess) bool {
-	if process.Stale {
-		return false
-	}
-	switch process.State {
-	case fleethealth.StateStopped, fleethealth.StateStopping:
-		return false
-	default:
-		return true
-	}
+	return processActiveForFleetRollup(process)
 }
 
 func validateFleetBucketCoverage(hosts []FleetBucketHost, bucketTotal int) error {
@@ -558,78 +550,92 @@ func queryFleetDeliveryTable(ctx context.Context, db *sql.DB, kind, table string
 		return FleetDeliveryTable{}, fmt.Errorf("unsupported delivery table %q", table)
 	}
 	summary := FleetDeliveryTable{Kind: kind}
-	pendingQuery := fmt.Sprintf(`
-		SELECT COUNT(*),
-		       COALESCE(TIMESTAMPDIFF(SECOND, MIN(created_at), ?), 0)
-		  FROM %s
-		 WHERE status = 'pending'`, table)
-	if err := db.QueryRowContext(ctx, pendingQuery, now).Scan(&summary.Pending, &summary.OldestPendingAgeSec); err != nil {
-		return FleetDeliveryTable{}, fmt.Errorf("%s pending delivery summary: %w", kind, err)
-	}
-	dueQuery := fmt.Sprintf(`
-		SELECT COUNT(*),
-		       COALESCE(TIMESTAMPDIFF(SECOND, MIN(COALESCE(next_attempt_at, created_at)), ?), 0)
+
+	query := fmt.Sprintf(`
+		SELECT 'pending' AS metric,
+		       COUNT(*) AS count,
+		       COALESCE(TIMESTAMPDIFF(SECOND, MIN(created_at), ?), 0) AS age_sec
 		  FROM %s
 		 WHERE status = 'pending'
-		   AND (next_attempt_at IS NULL OR next_attempt_at <= ?)`, table)
-	if err := db.QueryRowContext(ctx, dueQuery, now, now).Scan(&summary.DueNow, &summary.OldestDueAgeSec); err != nil {
-		return FleetDeliveryTable{}, fmt.Errorf("%s due delivery summary: %w", kind, err)
-	}
-	futureQuery := fmt.Sprintf(`
-		SELECT COUNT(*)
+		UNION ALL
+		SELECT 'due' AS metric,
+		       COUNT(*) AS count,
+		       COALESCE(TIMESTAMPDIFF(SECOND, MIN(COALESCE(next_attempt_at, created_at)), ?), 0) AS age_sec
 		  FROM %s
 		 WHERE status = 'pending'
-		   AND next_attempt_at > ?`, table)
-	if err := db.QueryRowContext(ctx, futureQuery, now).Scan(&summary.FutureRetry); err != nil {
-		return FleetDeliveryTable{}, fmt.Errorf("%s future delivery summary: %w", kind, err)
-	}
-	deliveredQuery := fmt.Sprintf(`
-		SELECT COUNT(*)
+		   AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+		UNION ALL
+		SELECT 'future' AS metric,
+		       COUNT(*) AS count,
+		       0 AS age_sec
+		  FROM %s
+		 WHERE status = 'pending'
+		   AND next_attempt_at > ?
+		UNION ALL
+		SELECT 'delivered' AS metric,
+		       COUNT(*) AS count,
+		       0 AS age_sec
 		  FROM %s
 		 WHERE status = 'delivered'
-		   AND delivered_at >= ?`, table)
-	if err := db.QueryRowContext(ctx, deliveredQuery, cutoff).Scan(&summary.DeliveredSince); err != nil {
-		return FleetDeliveryTable{}, fmt.Errorf("%s delivered summary: %w", kind, err)
-	}
-	abandoned, err := queryFleetRecentTerminalDeliveryCount(ctx, db, table, "abandoned", cutoff)
+		   AND delivered_at >= ?
+		UNION ALL
+		SELECT 'abandoned' AS metric,
+		       COUNT(*) AS count,
+		       0 AS age_sec
+		  FROM %s
+		 WHERE status = 'abandoned'
+		   AND (last_attempt_at >= ? OR (last_attempt_at IS NULL AND created_at >= ?))
+		UNION ALL
+		SELECT 'failed' AS metric,
+		       COUNT(*) AS count,
+		       0 AS age_sec
+		  FROM %s
+		 WHERE status = 'failed'
+		   AND (last_attempt_at >= ? OR (last_attempt_at IS NULL AND created_at >= ?))`,
+		table, table, table, table, table, table,
+	)
+	rows, err := db.QueryContext(ctx, query,
+		now,
+		now, now,
+		now,
+		cutoff,
+		cutoff, cutoff,
+		cutoff, cutoff,
+	)
 	if err != nil {
-		return FleetDeliveryTable{}, fmt.Errorf("%s abandoned summary: %w", kind, err)
+		return FleetDeliveryTable{}, fmt.Errorf("%s delivery summary: %w", kind, err)
 	}
-	failed, err := queryFleetRecentTerminalDeliveryCount(ctx, db, table, "failed", cutoff)
-	if err != nil {
-		return FleetDeliveryTable{}, fmt.Errorf("%s failed summary: %w", kind, err)
-	}
-	summary.AbandonedSince = abandoned
-	summary.FailedSince = failed
-	return summary, nil
-}
+	defer rows.Close()
 
-func queryFleetRecentTerminalDeliveryCount(ctx context.Context, db *sql.DB, table, status string, cutoff time.Time) (int64, error) {
-	switch status {
-	case "abandoned", "failed":
-	default:
-		return 0, fmt.Errorf("unsupported terminal status %q", status)
+	for rows.Next() {
+		var metric string
+		var count, ageSec int64
+		if err := rows.Scan(&metric, &count, &ageSec); err != nil {
+			return FleetDeliveryTable{}, fmt.Errorf("%s delivery summary scan: %w", kind, err)
+		}
+		switch metric {
+		case "pending":
+			summary.Pending = count
+			summary.OldestPendingAgeSec = ageSec
+		case "due":
+			summary.DueNow = count
+			summary.OldestDueAgeSec = ageSec
+		case "future":
+			summary.FutureRetry = count
+		case "delivered":
+			summary.DeliveredSince = count
+		case "abandoned":
+			summary.AbandonedSince = count
+		case "failed":
+			summary.FailedSince = count
+		default:
+			return FleetDeliveryTable{}, fmt.Errorf("%s delivery summary returned unknown metric %q", kind, metric)
+		}
 	}
-	withAttemptQuery := fmt.Sprintf(`
-		SELECT COUNT(*)
-		  FROM %s
-		 WHERE status = ?
-		   AND last_attempt_at >= ?`, table)
-	var withAttempt int64
-	if err := db.QueryRowContext(ctx, withAttemptQuery, status, cutoff).Scan(&withAttempt); err != nil {
-		return 0, err
+	if err := rows.Err(); err != nil {
+		return FleetDeliveryTable{}, fmt.Errorf("%s delivery summary iterate: %w", kind, err)
 	}
-	createdFallbackQuery := fmt.Sprintf(`
-		SELECT COUNT(*)
-		  FROM %s
-		 WHERE status = ?
-		   AND last_attempt_at IS NULL
-		   AND created_at >= ?`, table)
-	var createdFallback int64
-	if err := db.QueryRowContext(ctx, createdFallbackQuery, status, cutoff).Scan(&createdFallback); err != nil {
-		return 0, err
-	}
-	return withAttempt + createdFallback, nil
+	return summary, nil
 }
 
 func summarizeFleetDeliveryPosture(processes []FleetProcess, queuedDeliveries int64) FleetDeliveryPosture {
@@ -682,6 +688,10 @@ func summarizeFleetDeliveryPosture(processes []FleetProcess, queuedDeliveries in
 }
 
 func processActiveForDeliveryPosture(process FleetProcess) bool {
+	return processActiveForFleetRollup(process)
+}
+
+func processActiveForFleetRollup(process FleetProcess) bool {
 	if process.Stale {
 		return false
 	}
