@@ -130,6 +130,10 @@ func runServe() {
 	var dash *dashboard.Server
 	if cfg.DashboardPort > 0 {
 		dash = dashboard.New(hostname)
+		dash.SetFleetSource(dashboard.NewFleetStore(db.DB(), dashboard.FleetStoreOptions{
+			BucketTotal:    cfg.BucketTotal,
+			HeartbeatGrace: time.Duration(cfg.BucketHeartbeatGraceSec) * time.Second,
+		}))
 		go func() {
 			addr := dashboardListenAddr(cfg)
 			if err := dash.Listen(addr); err != nil {

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,15 @@ import (
 	"testing"
 	"time"
 )
+
+type fakeFleetSource struct {
+	snapshot FleetSnapshot
+	err      error
+}
+
+func (f fakeFleetSource) Snapshot(context.Context) (FleetSnapshot, error) {
+	return f.snapshot, f.err
+}
 
 func TestHandleState(t *testing.T) {
 	srv := New("test-host")
@@ -192,6 +202,69 @@ func TestHandleIndex(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "/api/host") {
 		t.Fatal("body does not fetch combined host snapshot")
+	}
+}
+
+func TestHandleFleetIndex(t *testing.T) {
+	srv := New("test-host")
+	r := httptest.NewRequest(http.MethodGet, "/fleet", nil)
+	w := httptest.NewRecorder()
+	srv.handleFleetIndex(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "/api/fleet") {
+		t.Fatal("body does not fetch fleet snapshot")
+	}
+	if !strings.Contains(w.Body.String(), "Fleet dashboard") {
+		t.Fatal("body does not contain fleet dashboard label")
+	}
+}
+
+func TestHandleFleetSnapshot(t *testing.T) {
+	srv := New("test-host")
+	srv.SetFleetSource(fakeFleetSource{
+		snapshot: FleetSnapshot{
+			GeneratedAt: time.Date(2026, 4, 30, 10, 0, 0, 0, time.UTC),
+			Summary:     FleetSummary{Status: "green", Message: "fleet checks are green"},
+			Processes:   []FleetProcess{{ProcessID: "host-a:monitor", HostID: "host-a", ProcessType: "monitor"}},
+		},
+	})
+
+	r := httptest.NewRequest(http.MethodGet, "/api/fleet", nil)
+	w := httptest.NewRecorder()
+	srv.handleFleet(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var snapshot FleetSnapshot
+	if err := json.NewDecoder(w.Body).Decode(&snapshot); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if snapshot.Summary.Status != "green" {
+		t.Fatalf("Summary.Status = %q, want green", snapshot.Summary.Status)
+	}
+	if len(snapshot.Processes) != 1 || snapshot.Processes[0].ProcessID != "host-a:monitor" {
+		t.Fatalf("Processes = %+v, want host-a monitor", snapshot.Processes)
+	}
+}
+
+func TestHandleFleetErrors(t *testing.T) {
+	srv := New("test-host")
+	r := httptest.NewRequest(http.MethodGet, "/api/fleet", nil)
+	w := httptest.NewRecorder()
+	srv.handleFleet(w, r)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status without source = %d, want 503", w.Code)
+	}
+
+	srv.SetFleetSource(fakeFleetSource{err: errors.New("db down")})
+	w = httptest.NewRecorder()
+	srv.handleFleet(w, r)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status with source error = %d, want 500", w.Code)
 	}
 }
 

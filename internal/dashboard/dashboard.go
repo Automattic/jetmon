@@ -71,12 +71,13 @@ type HostSummary struct {
 
 // Server is the operator dashboard HTTP server.
 type Server struct {
-	mu         sync.RWMutex
-	state      State
-	health     []HealthEntry
-	sseClients map[string]chan string
-	sseMu      sync.Mutex
-	hostname   string
+	mu          sync.RWMutex
+	state       State
+	health      []HealthEntry
+	sseClients  map[string]chan string
+	sseMu       sync.Mutex
+	hostname    string
+	fleetSource FleetSource
 }
 
 // New creates a new dashboard Server.
@@ -118,6 +119,8 @@ func (s *Server) Listen(addr string) error {
 	mux.HandleFunc("/api/state", s.handleState)
 	mux.HandleFunc("/api/health", s.handleHealth)
 	mux.HandleFunc("/api/host", s.handleHost)
+	mux.HandleFunc("/fleet", s.handleFleetIndex)
+	mux.HandleFunc("/api/fleet", s.handleFleet)
 
 	log.Printf("dashboard: listening on %s", addr)
 	srv := &http.Server{

@@ -65,7 +65,7 @@ The API can expose a derived `cli_batch` field for local API CLI test data when
 
 ## Process Health
 
-`jetmon_process_health` is the durable plumbing for fleet-level operator views.
+`jetmon_process_health` is the durable source for fleet-level operator views.
 Each long-running process owns one stable `process_id` such as
 `<host>:monitor` or `<host>:deliverer` and periodically upserts a compact
 snapshot:
@@ -83,6 +83,11 @@ snapshot:
 Fleet dashboards must treat stale `updated_at` values as unknown or unhealthy.
 The row says what the process last reported; it is not proof that the process is
 still alive after the heartbeat age exceeds the dashboard threshold.
+
+The fleet dashboard combines this table with `jetmon_hosts`, outbound delivery
+queues, and projection-drift counts. Dependency health stored in the process
+snapshot is also used to roll up shared dependencies such as Verifliers, MySQL,
+WPCOM, and StatsD across hosts.
 
 ## Event Source Of Truth
 

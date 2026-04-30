@@ -214,26 +214,36 @@ unauthenticated and exposes internal dependency details, rollout commands, host
 names, ports, and bucket ownership. Bind it to a remote address only behind
 trusted operator-network controls.
 
-The dashboard shows a red/amber/green host summary with named issues, worker
+The host dashboard shows a red/amber/green host summary with named issues, worker
 count, active checks, queue depth, retry queue depth, throughput, round time,
 owned buckets, rollout guard state, Go runtime system memory, WPCOM
 circuit-breaker state, dependency health for MySQL, Verifliers, WPCOM, StatsD,
 local log/stats writes, and the rollout commands an operator is most likely to
 need from that host.
 
-The dashboard exposes three local JSON endpoints:
+The fleet dashboard is available at `/fleet` on the same listener. It summarizes
+all rows in `jetmon_process_health` alongside `jetmon_hosts` dynamic bucket
+coverage, delivery backlog, delivery-owner posture, dependency rollups,
+Veriflier dependency health reported by monitor hosts, and global legacy
+projection drift. It uses stale heartbeat thresholds when deciding whether a
+process or dynamic bucket owner is healthy.
+
+The dashboard exposes these local JSON endpoints:
 
 ```text
 GET /api/state   # raw host state snapshot
 GET /api/health  # dependency health list
 GET /api/host    # combined host state, dependency health, and summary
+GET /api/fleet   # combined fleet rollup, process health, buckets, delivery, drift
 ```
 
 Long-running `jetmon2` and `jetmon-deliverer` processes also publish compact
 heartbeat snapshots to `jetmon_process_health`. That table is the durable data
-source for the planned fleet dashboard. Treat stale `updated_at` values as
+source for the fleet dashboard. Treat stale `updated_at` values as
 unknown/unhealthy; the row is the last reported process state, not proof that a
-host is still alive.
+host is still alive. The dashboard listener remains unauthenticated for both
+host and fleet views, so keep `DASHBOARD_BIND_ADDR` on loopback unless network
+access is restricted to trusted operator hosts.
 
 Bucket coverage can be inspected directly:
 

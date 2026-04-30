@@ -136,11 +136,11 @@ preflight, deliverer hardening, and API CLI fixture workflow branches:
   the dashboard instead of showing placeholder zero values.
 - [x] Label the dashboard memory value as Go runtime system memory so operators
   do not mistake `runtime.MemStats.Sys` for operating-system RSS.
-- [ ] Build the global fleet dashboard from `jetmon_process_health`,
+- [x] Build the global fleet dashboard from `jetmon_process_health`,
   `jetmon_hosts`, delivery queues, projection drift, and Veriflier health.
-- [ ] Add stale-heartbeat thresholds and fleet-level suggested next actions for
+- [x] Add stale-heartbeat thresholds and fleet-level suggested next actions for
   rollout handoffs.
-- [ ] Add explicit fleet delivery-ownership posture so operators can
+- [x] Add explicit fleet delivery-ownership posture so operators can
   distinguish intentional rollout-conservative `DELIVERY_OWNER_HOST` settings
   from accidental all-host delivery eligibility.
 - [ ] Consider collecting true process RSS for fleet and host dashboards if
