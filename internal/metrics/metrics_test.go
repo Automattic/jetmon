@@ -51,12 +51,12 @@ func TestClientSendsStatsDMessages(t *testing.T) {
 		conn:   clientConn,
 	}
 
-	lines := make(chan string, 5)
+	lines := make(chan string, 6)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		r := bufio.NewReader(serverConn)
-		for i := 0; i < 5; i++ {
+		for i := 0; i < 6; i++ {
 			line, err := r.ReadString('\n')
 			if err != nil {
 				return
@@ -70,8 +70,8 @@ func TestClientSendsStatsDMessages(t *testing.T) {
 	c.Timing("request.rtt", 1500*time.Millisecond)
 	c.EmitMemStats()
 
-	got := make([]string, 0, 5)
-	for len(got) < 5 {
+	got := make([]string, 0, 6)
+	for len(got) < 6 {
 		select {
 		case line := <-lines:
 			got = append(got, line)
@@ -84,16 +84,27 @@ func TestClientSendsStatsDMessages(t *testing.T) {
 
 	wantPrefix := "com.jetpack.jetmon.host_name."
 	expected := map[string]bool{
-		wantPrefix + "checks.total:2|c":    false,
-		wantPrefix + "queue.depth:7|g":     false,
-		wantPrefix + "request.rtt:1500|ms": false,
+		wantPrefix + "checks.total:2|c":       false,
+		wantPrefix + "queue.depth:7|g":        false,
+		wantPrefix + "request.rtt:1500|ms":    false,
+		wantPrefix + "process.rss_mb:":        false,
+		wantPrefix + "process.go_sys_mem_mb:": false,
+		wantPrefix + "process.heap_alloc_mb:": false,
 	}
 	for _, line := range got {
 		if _, ok := expected[line]; ok {
 			expected[line] = true
 			continue
 		}
-		if !strings.HasPrefix(line, wantPrefix+"process.") {
+		matchedDynamic := false
+		for prefix := range expected {
+			if strings.HasSuffix(prefix, ":") && strings.HasPrefix(line, prefix) {
+				expected[prefix] = true
+				matchedDynamic = true
+				break
+			}
+		}
+		if !matchedDynamic {
 			t.Fatalf("unexpected metric line %q in %v", line, got)
 		}
 	}

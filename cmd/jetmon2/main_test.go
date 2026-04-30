@@ -421,6 +421,7 @@ func TestMonitorProcessHealthSnapshot(t *testing.T) {
 		DeliveryOwnerHost:      "host-a",
 		WPCOMQueueDepth:        2,
 		GoSysMemMB:             88,
+		RSSMemMB:               99,
 	}
 	health := []dashboard.HealthEntry{{
 		Name:      "mysql",
@@ -443,6 +444,9 @@ func TestMonitorProcessHealthSnapshot(t *testing.T) {
 	}
 	if snapshot.HealthStatus != fleethealth.HealthGreen {
 		t.Fatalf("HealthStatus = %q, want green", snapshot.HealthStatus)
+	}
+	if snapshot.GoSysMemMB != 88 || snapshot.RSSMemMB != 99 {
+		t.Fatalf("memory fields = go=%d rss=%d, want go=88 rss=99", snapshot.GoSysMemMB, snapshot.RSSMemMB)
 	}
 	if len(snapshot.DependencyHealth) != 1 || snapshot.DependencyHealth[0].Name != "mysql" {
 		t.Fatalf("DependencyHealth = %+v, want mysql entry", snapshot.DependencyHealth)

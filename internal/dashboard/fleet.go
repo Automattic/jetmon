@@ -190,6 +190,7 @@ type FleetProcess struct {
 	WPCOMCircuitOpen       bool                           `json:"wpcom_circuit_open"`
 	WPCOMQueueDepth        int                            `json:"wpcom_queue_depth"`
 	GoSysMemMB             int                            `json:"go_sys_mem_mb"`
+	RSSMemMB               int                            `json:"rss_mem_mb"`
 	DependencyHealth       []fleethealth.DependencyHealth `json:"dependency_health,omitempty"`
 }
 
@@ -307,6 +308,7 @@ func summarizeFleetProcesses(rows []fleethealth.Snapshot, now time.Time, heartbe
 			WPCOMCircuitOpen:       row.WPCOMCircuitOpen,
 			WPCOMQueueDepth:        row.WPCOMQueueDepth,
 			GoSysMemMB:             row.GoSysMemMB,
+			RSSMemMB:               row.RSSMemMB,
 			DependencyHealth:       append([]fleethealth.DependencyHealth(nil), row.DependencyHealth...),
 		})
 	}

@@ -4,11 +4,12 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Automattic/jetmon/internal/processmetrics"
 )
 
 // Client sends StatsD metrics via UDP and writes stats files.
@@ -61,14 +62,19 @@ func (c *Client) send(msg string) {
 	_, _ = fmt.Fprintln(c.conn, msg)
 }
 
-// EmitMemStats emits legacy memory gauges. process.rss_mb is retained for
-// StatsD compatibility, but the value is Go runtime Sys memory rather than OS
-// resident set size.
+// EmitMemStats emits legacy memory gauges. process.rss_mb uses operating-system
+// resident set size when available and falls back to Go runtime Sys memory when
+// procfs is unavailable; process.go_sys_mem_mb keeps the runtime value visible.
 func (c *Client) EmitMemStats() {
-	var ms runtime.MemStats
-	runtime.ReadMemStats(&ms)
-	c.Gauge("process.rss_mb", int(ms.Sys/1024/1024))
-	c.Gauge("process.heap_alloc_mb", int(ms.HeapAlloc/1024/1024))
+	mem := processmetrics.CurrentMemory()
+	rssMB := mem.RSSMemMB
+	goSysMB := mem.GoSysMemMB
+	if rssMB <= 0 {
+		rssMB = goSysMB
+	}
+	c.Gauge("process.rss_mb", rssMB)
+	c.Gauge("process.go_sys_mem_mb", goSysMB)
+	c.Gauge("process.heap_alloc_mb", mem.HeapAllocMemMB)
 }
 
 // WriteStatsFiles writes sitespersec, sitesqueue, and totals to the stats/

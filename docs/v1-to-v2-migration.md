@@ -576,7 +576,8 @@ If `DASHBOARD_PORT` is enabled, confirm:
   Verifliers, WPCOM, StatsD, and log/stats directory writes
 - the host dashboard shows the WPCOM circuit breaker closed
 - retry queue depth is not growing unexpectedly
-- Go runtime system memory stays below the configured guardrail
+- Go runtime system memory stays below the configured guardrail and RSS stays
+  within host-level expectations
 - delivery workers are disabled unless explicitly approved
 - the fleet dashboard at `/fleet` shows the replaced host as fresh, and pinned
   bucket mode as an expected amber rollout state

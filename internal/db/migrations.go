@@ -428,6 +428,12 @@ var migrations = []migration{
 		ADD COLUMN health_status VARCHAR(16) NOT NULL DEFAULT 'green' AFTER state,
 		CHANGE COLUMN mem_rss_mb go_sys_mem_mb INT UNSIGNED NOT NULL DEFAULT 0,
 		ADD INDEX idx_health_status_updated (health_status, updated_at)`},
+
+	// Migration 26 adds true operating-system RSS beside Go runtime system
+	// memory so dashboards can show both the host-observed resident set and the
+	// runtime allocator footprint.
+	{26, `ALTER TABLE jetmon_process_health
+		ADD COLUMN rss_mem_mb INT UNSIGNED NOT NULL DEFAULT 0 AFTER go_sys_mem_mb`},
 }
 
 // Migrate applies all pending migrations idempotently.

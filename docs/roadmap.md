@@ -119,10 +119,10 @@ preflight, deliverer hardening, and API CLI fixture workflow branches:
   heartbeats and compact local health snapshots.
 - [x] Publish monitor-host health from `jetmon2`, including bucket ownership,
   worker queues, WPCOM circuit state, delivery-owner state, dependency health,
-  Go runtime system memory, version, and process lifecycle state.
+  RSS memory, Go runtime system memory, version, and process lifecycle state.
 - [x] Publish standalone `jetmon-deliverer` health, including active/idle
-  owner state, DB/StatsD health, Go runtime system memory, version, and process
-  lifecycle state.
+  owner state, DB/StatsD health, RSS memory, Go runtime system memory, version,
+  and process lifecycle state.
 - [x] Add a combined host-dashboard snapshot endpoint so host state, dependency
   health, and red/amber/green summary rules are available from one local API.
 - [x] Polish the existing host dashboard so rollout blockers, delivery-owner
@@ -145,8 +145,8 @@ preflight, deliverer hardening, and API CLI fixture workflow branches:
 - [x] Add explicit fleet delivery-ownership posture so operators can
   distinguish intentional rollout-conservative `DELIVERY_OWNER_HOST` settings
   from accidental all-host delivery eligibility.
-- [ ] Consider collecting true process RSS for fleet and host dashboards if
-  operators need OS-level memory accounting beyond Go runtime system memory.
+- [x] Collect true process RSS for fleet and host dashboards while retaining Go
+  runtime system memory as a separate allocator/guardrail signal.
 - [x] Document and test the fleet dashboard's safe network exposure model
   before exposing it beyond trusted operator networks.
 

@@ -62,6 +62,7 @@ type Snapshot struct {
 	WPCOMCircuitOpen       bool
 	WPCOMQueueDepth        int
 	GoSysMemMB             int
+	RSSMemMB               int
 	DependencyHealth       []DependencyHealth
 }
 
@@ -115,6 +116,7 @@ func Upsert(ctx context.Context, db *sql.DB, snapshot Snapshot) error {
 		boolInt(normalized.WPCOMCircuitOpen),
 		normalized.WPCOMQueueDepth,
 		normalized.GoSysMemMB,
+		normalized.RSSMemMB,
 		string(deps),
 	)
 	if err != nil {
@@ -181,6 +183,7 @@ func ListSnapshots(ctx context.Context, db *sql.DB) ([]Snapshot, error) {
 		       wpcom_circuit_open,
 		       wpcom_queue_depth,
 		       go_sys_mem_mb,
+		       rss_mem_mb,
 		       dependency_health
 		  FROM jetmon_process_health
 		 ORDER BY process_type, host_id, process_id`)
@@ -222,6 +225,7 @@ func ListSnapshots(ctx context.Context, db *sql.DB) ([]Snapshot, error) {
 			&wpcomCircuitOpen,
 			&snapshot.WPCOMQueueDepth,
 			&snapshot.GoSysMemMB,
+			&snapshot.RSSMemMB,
 			&dependencyHealth,
 		); err != nil {
 			return nil, fmt.Errorf("scan process health: %w", err)
@@ -378,8 +382,9 @@ INSERT INTO jetmon_process_health (
 	wpcom_circuit_open,
 	wpcom_queue_depth,
 	go_sys_mem_mb,
+	rss_mem_mb,
 	dependency_health
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON DUPLICATE KEY UPDATE
 	host_id = VALUES(host_id),
 	process_type = VALUES(process_type),
@@ -405,4 +410,5 @@ ON DUPLICATE KEY UPDATE
 	wpcom_circuit_open = VALUES(wpcom_circuit_open),
 	wpcom_queue_depth = VALUES(wpcom_queue_depth),
 	go_sys_mem_mb = VALUES(go_sys_mem_mb),
+	rss_mem_mb = VALUES(rss_mem_mb),
 	dependency_health = VALUES(dependency_health)`
