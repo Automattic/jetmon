@@ -189,6 +189,11 @@ function renderSummary(summary, generatedAt, processTotal) {
     item.textContent = issue;
     issues.appendChild(item);
   });
+  if ((summary.issues || []).length > 8) {
+    const item = document.createElement('li');
+    item.textContent = '+' + ((summary.issues || []).length - 8) + ' more issues in /api/fleet';
+    issues.appendChild(item);
+  }
 }
 
 function row(cells) {
@@ -210,6 +215,12 @@ function ageLabel(seconds) {
   return (seconds || 0) + 's ago';
 }
 
+function joinParts(parts) {
+  return parts.filter(function(part) {
+    return part !== undefined && part !== null && part !== '';
+  }).join(' · ');
+}
+
 function render(snapshot) {
   const summary = snapshot.summary || {};
   const processes = snapshot.processes || [];
@@ -218,7 +229,7 @@ function render(snapshot) {
   setText('deliverers', summary.deliverer_processes || 0);
   setText('stale', summary.stale_processes || 0);
   setText('bucket-status', (snapshot.bucket_coverage || {}).status || '-');
-  setText('bucket-detail', ((snapshot.bucket_coverage || {}).mode || '-') + ' · ' + ((snapshot.bucket_coverage || {}).host_count || 0) + ' hosts · ' + ((snapshot.bucket_coverage || {}).error || ''));
+  setText('bucket-detail', joinParts([((snapshot.bucket_coverage || {}).mode || '-'), ((snapshot.bucket_coverage || {}).host_count || 0) + ' hosts', (snapshot.bucket_coverage || {}).error]));
   setText('delivery-due', (snapshot.delivery || {}).due_now || 0);
   setText('delivery-detail', 'pending=' + ((snapshot.delivery || {}).pending || 0) + ' failed=' + ((snapshot.delivery || {}).failed_since || 0) + ' abandoned=' + ((snapshot.delivery || {}).abandoned_since || 0));
   setText('drift', (snapshot.projection_drift || {}).count || 0);
@@ -239,7 +250,7 @@ function render(snapshot) {
       table.delivered_since || 0,
       table.failed_since || 0,
       table.abandoned_since || 0,
-      ageLabel(table.oldest_due_age_sec)
+      table.due_now > 0 ? ageLabel(table.oldest_due_age_sec) : '-'
     ]));
   });
   if (((snapshot.delivery || {}).tables || []).length === 0) {

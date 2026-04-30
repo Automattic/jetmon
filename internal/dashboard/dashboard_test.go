@@ -158,6 +158,65 @@ func TestHandleHostSnapshot(t *testing.T) {
 	}
 }
 
+func TestDashboardReadHandlersSetNoStoreHeaders(t *testing.T) {
+	srv := New("test-host")
+	srv.SetFleetSource(fakeFleetSource{snapshot: FleetSnapshot{Summary: FleetSummary{Status: "green"}}})
+	handlers := map[string]http.HandlerFunc{
+		"/":           srv.handleIndex,
+		"/api/state":  srv.handleState,
+		"/api/health": srv.handleHealth,
+		"/api/host":   srv.handleHost,
+		"/fleet":      srv.handleFleetIndex,
+		"/api/fleet":  srv.handleFleet,
+	}
+	for path, handler := range handlers {
+		t.Run(path, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, path, nil)
+			w := httptest.NewRecorder()
+			handler(w, r)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", w.Code)
+			}
+			if got := w.Header().Get("Cache-Control"); got != "no-store" {
+				t.Fatalf("Cache-Control = %q, want no-store", got)
+			}
+			if got := w.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+				t.Fatalf("X-Content-Type-Options = %q, want nosniff", got)
+			}
+		})
+	}
+}
+
+func TestDashboardReadHandlersRejectWriteMethods(t *testing.T) {
+	srv := New("test-host")
+	srv.SetFleetSource(fakeFleetSource{snapshot: FleetSnapshot{Summary: FleetSummary{Status: "green"}}})
+	handlers := map[string]struct {
+		handler http.HandlerFunc
+		allow   string
+	}{
+		"/":           {handler: srv.handleIndex, allow: "GET, HEAD"},
+		"/api/state":  {handler: srv.handleState, allow: "GET, HEAD"},
+		"/api/health": {handler: srv.handleHealth, allow: "GET, HEAD"},
+		"/api/host":   {handler: srv.handleHost, allow: "GET, HEAD"},
+		"/fleet":      {handler: srv.handleFleetIndex, allow: "GET, HEAD"},
+		"/api/fleet":  {handler: srv.handleFleet, allow: "GET, HEAD"},
+		"/events":     {handler: srv.handleSSE, allow: "GET"},
+	}
+	for path, tc := range handlers {
+		t.Run(path, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, path, nil)
+			w := httptest.NewRecorder()
+			tc.handler(w, r)
+			if w.Code != http.StatusMethodNotAllowed {
+				t.Fatalf("status = %d, want 405", w.Code)
+			}
+			if got := w.Header().Get("Allow"); got != tc.allow {
+				t.Fatalf("Allow = %q, want %q", got, tc.allow)
+			}
+		})
+	}
+}
+
 func TestHandleIndex(t *testing.T) {
 	srv := New("test-host")
 	r := httptest.NewRequest(http.MethodGet, "/", nil)

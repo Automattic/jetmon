@@ -252,9 +252,15 @@ public interface:
 ssh -L 8080:127.0.0.1:8080 <jetmon-host>
 ```
 
-The fleet dashboard is read-only and unauthenticated. It accepts only `GET` and
-`HEAD` requests, and `/api/fleet` returns the same rollup as JSON for local
-operator scripts:
+The fleet dashboard is read-only and unauthenticated. It does not discover or
+scrape other hosts over HTTP; every `jetmon2` monitor dashboard reads the same
+shared MySQL state and can serve the fleet view if `DASHBOARD_PORT` is enabled.
+Standalone `jetmon-deliverer` processes do not serve a dashboard, but they do
+publish their own rows to `jetmon_process_health`.
+
+The dashboard accepts only `GET` and `HEAD` requests for static and JSON views,
+and `/api/fleet` returns the same complete snapshot the HTML page renders for
+local operator scripts:
 
 ```bash
 curl -sS http://127.0.0.1:8080/api/fleet

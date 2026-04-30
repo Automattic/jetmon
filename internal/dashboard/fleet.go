@@ -942,6 +942,7 @@ func (s *Server) handleFleet(w http.ResponseWriter, r *http.Request) {
 	if rejectNonGet(w, r) {
 		return
 	}
+	setDashboardNoStoreHeaders(w)
 	s.mu.RLock()
 	source := s.fleetSource
 	s.mu.RUnlock()
@@ -957,7 +958,7 @@ func (s *Server) handleFleet(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "fleet dashboard query failed", http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
+	setDashboardJSONHeaders(w)
 	_ = json.NewEncoder(w).Encode(snapshot)
 }
 
@@ -965,6 +966,6 @@ func (s *Server) handleFleetIndex(w http.ResponseWriter, r *http.Request) {
 	if rejectNonGet(w, r) {
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	setDashboardHTMLHeaders(w)
 	fmt.Fprint(w, fleetDashboardHTML)
 }
