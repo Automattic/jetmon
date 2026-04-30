@@ -17,6 +17,7 @@ type CheckRequest struct {
 	BodyReadMaxBytes    int64
 	BodyReadMaxMS       int32
 	KeywordReadMaxBytes int64
+	KeywordReadMaxMS    int32
 	Keyword             string
 	CustomHeaders       map[string]string
 	RedirectPolicy      string

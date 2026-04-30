@@ -265,6 +265,9 @@ func TestEscalateToVerifliersConfirmsWhenQuorumReached(t *testing.T) {
 		if req.KeywordReadMaxBytes != cfg.KeywordReadMaxBytes {
 			t.Fatalf("verifier req KeywordReadMaxBytes = %d, want %d", req.KeywordReadMaxBytes, cfg.KeywordReadMaxBytes)
 		}
+		if req.KeywordReadMaxMS != int32(cfg.KeywordReadMaxMS) {
+			t.Fatalf("verifier req KeywordReadMaxMS = %d, want %d", req.KeywordReadMaxMS, cfg.KeywordReadMaxMS)
+		}
 		return &veriflier.CheckResult{
 			BlogID:   req.BlogID,
 			Host:     c.Addr(),
@@ -376,6 +379,9 @@ func TestEscalateToVerifliersConfirmsDownOnPartialResponseFromLocalAndVerifier(t
 		}
 		if req.KeywordReadMaxBytes != cfg.KeywordReadMaxBytes {
 			t.Fatalf("verifier req KeywordReadMaxBytes = %d, want %d", req.KeywordReadMaxBytes, cfg.KeywordReadMaxBytes)
+		}
+		if req.KeywordReadMaxMS != int32(cfg.KeywordReadMaxMS) {
+			t.Fatalf("verifier req KeywordReadMaxMS = %d, want %d", req.KeywordReadMaxMS, cfg.KeywordReadMaxMS)
 		}
 		return &veriflier.CheckResult{
 			BlogID:    req.BlogID,
