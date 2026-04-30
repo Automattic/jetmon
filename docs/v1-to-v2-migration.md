@@ -225,8 +225,15 @@ make all
 make test
 make test-race
 make lint
+make rollout-rehearsal-verify
 make rollout-docs-verify
 ```
+
+`make rollout-rehearsal-verify` is a fast no-database check for the
+operator-facing same-server, fresh-server, and rollback dry-run flows. It
+verifies that generated plans, guided output, runtime-host warnings, typed
+confirmations, and rollback commands still match this runbook. The broader
+`make rollout-docs-verify` target also runs this rehearsal verifier.
 
 Stage these artifacts for each target host:
 

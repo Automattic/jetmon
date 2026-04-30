@@ -128,6 +128,9 @@ printf '%s\n' "$json_output"
 grep -q '"ok": true' <<<"$json_output" || fail "static-plan-check JSON did not report ok=true"
 grep -q '"command": "rollout static-plan-check"' <<<"$json_output" || fail "static-plan-check JSON omitted command name"
 
+step "operator rehearsal flow verification"
+ROLLOUT_REHEARSAL_JETMON2="$jetmon_binary" scripts/rollout-rehearsal-verify.sh
+
 step "staged systemd verify"
 if ! command -v systemd-analyze >/dev/null 2>&1; then
 	printf 'WARN systemd-analyze not found; skipping service-unit verification\n'
