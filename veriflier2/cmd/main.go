@@ -102,6 +102,7 @@ func performCheck(req veriflier.CheckRequest) veriflier.CheckResult {
 		BodyReadMaxBytes:    req.BodyReadMaxBytes,
 		BodyReadMaxMS:       int(req.BodyReadMaxMS),
 		KeywordReadMaxBytes: req.KeywordReadMaxBytes,
+		KeywordReadMaxMS:    int(req.KeywordReadMaxMS),
 		Keyword:             stringPtr(req.Keyword),
 		ForbiddenKeyword:    stringPtr(req.ForbiddenKeyword),
 		ForbiddenKeywords:   req.ForbiddenKeywords,

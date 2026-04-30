@@ -61,14 +61,18 @@ func newCheckTransport() *http.Transport {
 
 // Request holds the parameters for a single HTTP check.
 type Request struct {
-	BlogID            int64
-	URL               string
-	TimeoutSeconds    int
-	Keyword           *string
-	ForbiddenKeyword  *string
-	ForbiddenKeywords []string
-	CustomHeaders     map[string]string
-	RedirectPolicy    RedirectPolicy
+	BlogID              int64
+	URL                 string
+	TimeoutSeconds      int
+	BodyReadMaxBytes    int64
+	BodyReadMaxMS       int
+	KeywordReadMaxBytes int64
+	KeywordReadMaxMS    int
+	Keyword             *string
+	ForbiddenKeyword    *string
+	ForbiddenKeywords   []string
+	CustomHeaders       map[string]string
+	RedirectPolicy      RedirectPolicy
 }
 
 // Result holds the outcome of a single HTTP check.
@@ -264,7 +268,7 @@ func Check(ctx context.Context, req Request) Result {
 
 	forbiddenKeywords := collectForbiddenKeywords(req.ForbiddenKeyword, req.ForbiddenKeywords)
 	needsBody := (req.Keyword != nil && *req.Keyword != "") || len(forbiddenKeywords) > 0
-	body, bodyErr := readResponseBody(resp, needsBody)
+	body, bodyErr := readResponseBody(resp, needsBody, req)
 	if bodyErr != nil && res.HTTPCode < http.StatusBadRequest {
 		res.ErrorCode = ErrorBodyRead
 		return res
@@ -291,10 +295,16 @@ func Check(ctx context.Context, req Request) Result {
 	return res
 }
 
-func readResponseBody(resp *http.Response, needKeyword bool) ([]byte, error) {
+func readResponseBody(resp *http.Response, needKeyword bool, req Request) ([]byte, error) {
 	limit := maxBodyIntegrityBytes
+	if req.BodyReadMaxBytes > 0 {
+		limit = req.BodyReadMaxBytes
+	}
 	if needKeyword {
 		limit = maxKeywordBodyBytes
+		if req.KeywordReadMaxBytes > 0 {
+			limit = req.KeywordReadMaxBytes
+		}
 	} else if resp.ContentLength > limit && resp.ContentLength <= maxKeywordBodyBytes {
 		limit = resp.ContentLength
 	}
