@@ -157,7 +157,7 @@ preflight, deliverer hardening, and API CLI fixture workflow branches:
 - [x] Do a full read-through of the migration runbook and quick reference after
   the new rehearsal verifier lands, then tighten any remaining wording that
   could cause operator copy/paste mistakes.
-- [ ] Run the VM lab snapshot flow after the docs/tooling pass if the
+- [x] Run the VM lab snapshot flow after the docs/tooling pass if the
   `jetmon-deploy-test` host is available, and capture any mismatch between the
   text runbook and real guided execution.
 
