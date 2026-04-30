@@ -417,6 +417,7 @@ Database Tables
     state/updated_at      Lifecycle state and freshness marker
     health_status         Green/amber/red process health rollup
     go_sys_mem_mb         Go runtime system memory in MB
+    rss_mem_mb            Operating-system resident set size in MB
     dependency_health     JSON dependency health summary
 
   jetmon_events           Authoritative v2 incident current state

@@ -216,7 +216,7 @@ address only behind trusted operator-network controls.
 
 The host dashboard shows a red/amber/green host summary with named issues, worker
 count, active checks, queue depth, retry queue depth, throughput, round time,
-owned buckets, rollout guard state, Go runtime system memory, WPCOM
+owned buckets, rollout guard state, RSS memory, Go runtime system memory, WPCOM
 circuit-breaker state, dependency health for MySQL, Verifliers, WPCOM, StatsD,
 local log/stats writes, and the rollout commands an operator is most likely to
 need from that host.
@@ -337,7 +337,7 @@ ORDER BY process_type, host_id;
 For health rollups and memory:
 
 ```sql
-SELECT process_id, state, health_status, go_sys_mem_mb, updated_at
+SELECT process_id, state, health_status, rss_mem_mb, go_sys_mem_mb, updated_at
 FROM jetmon_process_health
 ORDER BY health_status DESC, updated_at;
 ```
@@ -376,7 +376,7 @@ Important metric groups include:
   recovery, or false alarm
 - Detection outcome counters by local failure class
 - Legacy projection drift
-- Memory usage
+- RSS and Go Sys memory usage
 
 StatsD is the primary metrics transport. Expose Graphite/StatsD data through the
 existing metrics pipeline when external systems need it.
@@ -402,8 +402,9 @@ go tool pprof heap.prof
 The debug listener binds to localhost only. Set `DEBUG_PORT` to 0 to disable it.
 
 If Go runtime memory exceeds `WORKER_MAX_MEM_MB`, the goroutine pool shrinks by
-10 percent via graceful drain. Sustained memory pressure should be investigated
-with pprof and operating-system RSS before increasing the limit.
+10 percent via graceful drain. Use the host/fleet dashboard RSS value to compare
+Jetmon's resident memory with operating-system tools, and use the Go Sys value
+with pprof when investigating sustained runtime memory pressure.
 
 ## Veriflier Health
 

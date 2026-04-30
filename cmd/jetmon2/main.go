@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,6 +30,7 @@ import (
 	"github.com/Automattic/jetmon/internal/fleethealth"
 	"github.com/Automattic/jetmon/internal/metrics"
 	"github.com/Automattic/jetmon/internal/orchestrator"
+	"github.com/Automattic/jetmon/internal/processmetrics"
 	"github.com/Automattic/jetmon/internal/veriflier"
 	"github.com/Automattic/jetmon/internal/wpcom"
 )
@@ -218,7 +218,7 @@ func runServe() {
 		}
 		bMin, bMax := orch.BucketRange()
 		sitesPerSec, roundDuration := orch.LastRoundStats()
-		goSysMemMB := currentGoSysMemMB()
+		mem := processmetrics.CurrentMemory()
 		deliveryConfigEligible := deliveryWorkersShouldStart(currentCfg, hostname)
 		st := dashboard.State{
 			WorkerCount:                   orch.WorkerCount(),
@@ -229,7 +229,8 @@ func runServe() {
 			RoundDurationMs:               roundDuration.Milliseconds(),
 			WPCOMCircuitOpen:              wp.IsCircuitOpen(),
 			WPCOMQueueDepth:               wp.QueueDepth(),
-			GoSysMemMB:                    goSysMemMB,
+			GoSysMemMB:                    mem.GoSysMemMB,
+			RSSMemMB:                      mem.RSSMemMB,
 			BucketMin:                     bMin,
 			BucketMax:                     bMax,
 			BucketOwnership:               bucketOwnershipLabel(currentCfg),
@@ -552,6 +553,7 @@ func monitorProcessHealthSnapshot(hostname string, startedAt time.Time, state st
 		WPCOMCircuitOpen:       st.WPCOMCircuitOpen,
 		WPCOMQueueDepth:        st.WPCOMQueueDepth,
 		GoSysMemMB:             st.GoSysMemMB,
+		RSSMemMB:               st.RSSMemMB,
 		DependencyHealth:       dashboardHealthToFleet(health),
 	}
 }
@@ -568,12 +570,6 @@ func dashboardHealthToFleet(entries []dashboard.HealthEntry) []fleethealth.Depen
 		})
 	}
 	return out
-}
-
-func currentGoSysMemMB() int {
-	var ms runtime.MemStats
-	runtime.ReadMemStats(&ms)
-	return int(ms.Sys / 1024 / 1024)
 }
 
 func mysqlHealthEntry(ctx context.Context, sqlDB *sql.DB, checkedAt time.Time) dashboard.HealthEntry {

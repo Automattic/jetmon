@@ -98,11 +98,14 @@ because it is intentionally **not** drop-in with the Jetmon 1 wire format
   `jetmon-deliverer` publish to for fleet dashboards.
 - Host dashboard exposure now defaults to localhost, host summaries include
   named red/amber issues, process lifecycle is stored separately from health
-  rollup, and memory is labeled as Go runtime system memory rather than RSS.
+  rollup, and the runtime memory value is clearly labeled as Go Sys memory.
 - Fleet dashboard now has `/fleet` and `/api/fleet` views backed by
   `jetmon_process_health`, `jetmon_hosts`, delivery queues, projection drift,
   and dependency rollups so operators can see stale heartbeats, bucket coverage,
   delivery-owner posture, and suggested next actions in one place.
+- Host and fleet dashboards now publish true process RSS beside Go runtime
+  system memory, and `process.rss_mb` again reports operating-system resident
+  memory when procfs is available.
 - `make all` now builds the currently implemented `jetmon2` and
   `veriflier2` binaries without requiring `protoc`; generated Veriflier
   gRPC stubs remain an explicit `make generate` step for the future

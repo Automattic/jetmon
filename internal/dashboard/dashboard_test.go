@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Automattic/jetmon/internal/processmetrics"
 )
 
 type fakeFleetSource struct {
@@ -47,8 +49,15 @@ func TestHandleState(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
+	body := w.Body.String()
+	if !strings.Contains(body, `"rss_mem_mb"`) {
+		t.Fatalf("state body missing rss_mem_mb: %s", body)
+	}
+	if !strings.Contains(body, `"go_sys_mem_mb"`) {
+		t.Fatalf("state body missing go_sys_mem_mb: %s", body)
+	}
 	var st State
-	if err := json.NewDecoder(w.Body).Decode(&st); err != nil {
+	if err := json.NewDecoder(strings.NewReader(body)).Decode(&st); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	if st.WorkerCount != 5 {
@@ -56,6 +65,12 @@ func TestHandleState(t *testing.T) {
 	}
 	if st.Hostname != "test-host" {
 		t.Fatalf("Hostname = %q, want test-host", st.Hostname)
+	}
+	if st.GoSysMemMB <= 0 {
+		t.Fatalf("GoSysMemMB = %d, want positive runtime memory", st.GoSysMemMB)
+	}
+	if processmetrics.CurrentMemory().RSSMemMB > 0 && st.RSSMemMB <= 0 {
+		t.Fatalf("RSSMemMB = %d, want positive RSS when procfs is available", st.RSSMemMB)
 	}
 	if st.BucketOwnership != "pinned range=0-99" {
 		t.Fatalf("BucketOwnership = %q, want pinned range=0-99", st.BucketOwnership)

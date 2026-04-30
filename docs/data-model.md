@@ -75,8 +75,8 @@ snapshot:
 - health rollup: `green`, `amber`, or `red`, derived from local dependency
   health and rollout-relevant warnings
 - monitor state: bucket range, ownership mode, worker counts, queue depths,
-  WPCOM circuit/queue state, delivery-owner state, API/dashboard ports, Go
-  runtime system memory
+  WPCOM circuit/queue state, delivery-owner state, API/dashboard ports, RSS
+  memory, and Go runtime system memory
 - dependency health JSON: MySQL, Verifliers, WPCOM, StatsD, and local writable
   directories where applicable
 

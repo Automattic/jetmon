@@ -281,7 +281,7 @@ function render(snapshot) {
       ageLabel(process.last_heartbeat_age_sec),
       rangeLabel(process),
       'active=' + (process.active_checks || 0) + ' queue=' + (process.queue_depth || 0) + ' retry=' + (process.retry_queue_size || 0),
-      (process.go_sys_mem_mb || 0) + 'MB'
+      'rss=' + formatMem(process.rss_mem_mb) + ' go=' + formatMem(process.go_sys_mem_mb)
     ]));
   });
   if (processes.length === 0) {
@@ -296,6 +296,10 @@ function render(snapshot) {
   if ((snapshot.dependencies || []).length === 0) {
     depBody.appendChild(row(['No dependency snapshots found', '', '', '', '', '', '']));
   }
+}
+
+function formatMem(value) {
+  return value > 0 ? value + 'MB' : 'n/a';
 }
 
 async function refresh() {

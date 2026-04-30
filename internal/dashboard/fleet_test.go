@@ -251,7 +251,7 @@ func TestSummarizeFleetProcessesOrdersUnhealthyFirst(t *testing.T) {
 	processes := summarizeFleetProcesses([]fleethealth.Snapshot{
 		{ProcessID: "host-c:monitor", HostID: "host-c", ProcessType: fleethealth.ProcessMonitor, HealthStatus: fleethealth.HealthGreen, UpdatedAt: now},
 		{ProcessID: "host-d:deliverer", HostID: "host-d", ProcessType: fleethealth.ProcessDeliverer, HealthStatus: fleethealth.HealthGreen, UpdatedAt: now},
-		{ProcessID: "host-b:monitor", HostID: "host-b", ProcessType: fleethealth.ProcessMonitor, HealthStatus: fleethealth.HealthAmber, UpdatedAt: now},
+		{ProcessID: "host-b:monitor", HostID: "host-b", ProcessType: fleethealth.ProcessMonitor, HealthStatus: fleethealth.HealthAmber, UpdatedAt: now, GoSysMemMB: 88, RSSMemMB: 99},
 		{ProcessID: "host-a:monitor", HostID: "host-a", ProcessType: fleethealth.ProcessMonitor, HealthStatus: fleethealth.HealthGreen, UpdatedAt: now.Add(-time.Hour)},
 	}, now, 10*time.Minute)
 	if got := processes[0].ProcessID; got != "host-a:monitor" {
@@ -262,6 +262,9 @@ func TestSummarizeFleetProcessesOrdersUnhealthyFirst(t *testing.T) {
 	}
 	if got := processes[2].ProcessID; got != "host-c:monitor" {
 		t.Fatalf("third process = %q, want healthy monitors before deliverers", got)
+	}
+	if processes[1].GoSysMemMB != 88 || processes[1].RSSMemMB != 99 {
+		t.Fatalf("memory fields = go=%d rss=%d, want go=88 rss=99", processes[1].GoSysMemMB, processes[1].RSSMemMB)
 	}
 }
 

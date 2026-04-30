@@ -6,9 +6,10 @@ import (
 	"log"
 	"net/http"
 	_ "net/http/pprof"
-	"runtime"
 	"sync"
 	"time"
+
+	"github.com/Automattic/jetmon/internal/processmetrics"
 )
 
 const maxSSEClients = 32
@@ -24,6 +25,7 @@ type State struct {
 	WPCOMCircuitOpen              bool      `json:"wpcom_circuit_open"`
 	WPCOMQueueDepth               int       `json:"wpcom_queue_depth"`
 	GoSysMemMB                    int       `json:"go_sys_mem_mb"`
+	RSSMemMB                      int       `json:"rss_mem_mb"`
 	BucketMin                     int       `json:"bucket_min"`
 	BucketMax                     int       `json:"bucket_max"`
 	BucketOwnership               string    `json:"bucket_ownership"`
@@ -93,9 +95,9 @@ func (s *Server) Update(st State) {
 	st.Hostname = s.hostname
 	st.UpdatedAt = time.Now()
 
-	var ms runtime.MemStats
-	runtime.ReadMemStats(&ms)
-	st.GoSysMemMB = int(ms.Sys / 1024 / 1024)
+	mem := processmetrics.CurrentMemory()
+	st.GoSysMemMB = mem.GoSysMemMB
+	st.RSSMemMB = mem.RSSMemMB
 
 	s.mu.Lock()
 	s.state = st
@@ -492,6 +494,7 @@ const dashboardHTML = `<!DOCTYPE html>
     <div class="card"><div class="label">Sites/Sec</div><div class="value" id="sps">-</div></div>
     <div class="card"><div class="label">Round Time</div><div class="value" id="round">-</div></div>
     <div class="card"><div class="label">Buckets</div><div class="value" id="buckets">-</div></div>
+    <div class="card"><div class="label">RSS Memory</div><div class="value" id="rss-mem">-</div></div>
     <div class="card"><div class="label">Go Sys Memory</div><div class="value" id="go-sys">-</div></div>
   </div>
 
@@ -538,7 +541,8 @@ function renderState(d) {
   setText('sps', d.sites_per_sec);
   setText('round', ((d.round_duration_ms || 0) / 1000).toFixed(1) + 's');
   setText('buckets', d.bucket_min + '-' + d.bucket_max);
-  setText('go-sys', d.go_sys_mem_mb + 'MB');
+  setText('rss-mem', formatMem(d.rss_mem_mb));
+  setText('go-sys', formatMem(d.go_sys_mem_mb));
   setText('ownership', d.bucket_ownership || '-');
   setText('projection', d.legacy_status_projection_enabled ? 'enabled' : 'disabled');
   setText('delivery', d.delivery_workers_enabled ? 'enabled' : 'disabled');
@@ -554,6 +558,10 @@ function renderState(d) {
   setText('wpcomq', d.wpcom_queue_depth);
   setText('updated', 'updated: ' + (d.updated_at ? new Date(d.updated_at).toLocaleTimeString() : 'never'));
   renderSummary();
+}
+
+function formatMem(value) {
+  return value > 0 ? value + 'MB' : 'n/a';
 }
 
 function renderSummary(summary) {

@@ -9,7 +9,6 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -20,6 +19,7 @@ import (
 	"github.com/Automattic/jetmon/internal/deliverer"
 	"github.com/Automattic/jetmon/internal/fleethealth"
 	"github.com/Automattic/jetmon/internal/metrics"
+	"github.com/Automattic/jetmon/internal/processmetrics"
 )
 
 const processHealthWriteTimeout = 2 * time.Second
@@ -257,6 +257,7 @@ func validateDelivererConfigRequirements(cfg *config.Config, hostname string, op
 }
 
 func delivererProcessHealthSnapshot(hostname string, startedAt time.Time, state string, cfg *config.Config, workersEnabled bool, health []fleethealth.DependencyHealth) fleethealth.Snapshot {
+	mem := processmetrics.CurrentMemory()
 	healthStatus := fleethealth.RollupHealthStatus(health)
 	if workersEnabled && strings.TrimSpace(cfg.DeliveryOwnerHost) == "" && healthStatus == fleethealth.HealthGreen {
 		healthStatus = fleethealth.HealthAmber
@@ -277,7 +278,8 @@ func delivererProcessHealthSnapshot(hostname string, startedAt time.Time, state 
 		UpdatedAt:              time.Now().UTC(),
 		DeliveryWorkersEnabled: workersEnabled,
 		DeliveryOwnerHost:      cfg.DeliveryOwnerHost,
-		GoSysMemMB:             currentGoSysMemMB(),
+		GoSysMemMB:             mem.GoSysMemMB,
+		RSSMemMB:               mem.RSSMemMB,
 		DependencyHealth:       health,
 	}
 }
@@ -319,12 +321,6 @@ func delivererStatsDHealth(ready bool, checkedAt time.Time) fleethealth.Dependen
 	}
 	entry.Status = "green"
 	return entry
-}
-
-func currentGoSysMemMB() int {
-	var ms runtime.MemStats
-	runtime.ReadMemStats(&ms)
-	return int(ms.Sys / 1024 / 1024)
 }
 
 func waitForShutdown() {

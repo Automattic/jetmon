@@ -57,6 +57,7 @@ func TestUpsertSnapshot(t *testing.T) {
 			0,
 			2,
 			88,
+			99,
 			`[{"name":"mysql","status":"green","checked_at":"2026-04-30T10:01:00Z"}]`,
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -85,6 +86,7 @@ func TestUpsertSnapshot(t *testing.T) {
 		RetryQueueSize:         5,
 		WPCOMQueueDepth:        2,
 		GoSysMemMB:             88,
+		RSSMemMB:               99,
 		DependencyHealth: []DependencyHealth{{
 			Name:      "mysql",
 			Status:    "green",
@@ -195,6 +197,7 @@ func TestListSnapshots(t *testing.T) {
 		"wpcom_circuit_open",
 		"wpcom_queue_depth",
 		"go_sys_mem_mb",
+		"rss_mem_mb",
 		"dependency_health",
 	}).AddRow(
 		"host-a:monitor",
@@ -222,6 +225,7 @@ func TestListSnapshots(t *testing.T) {
 		1,
 		2,
 		88,
+		99,
 		`[{"name":"mysql","status":"green","checked_at":"2026-04-30T10:01:00Z"}]`,
 	)
 	mock.ExpectQuery("SELECT process_id").WillReturnRows(rows)
@@ -239,6 +243,9 @@ func TestListSnapshots(t *testing.T) {
 	}
 	if got.BucketMin == nil || *got.BucketMin != 0 || got.APIPort == nil || *got.APIPort != 8090 {
 		t.Fatalf("nullable ints not decoded: BucketMin=%v APIPort=%v", got.BucketMin, got.APIPort)
+	}
+	if got.GoSysMemMB != 88 || got.RSSMemMB != 99 {
+		t.Fatalf("memory fields = go=%d rss=%d, want go=88 rss=99", got.GoSysMemMB, got.RSSMemMB)
 	}
 	if !got.DeliveryWorkersEnabled || !got.WPCOMCircuitOpen {
 		t.Fatalf("bools not decoded: delivery=%v wpcom=%v", got.DeliveryWorkersEnabled, got.WPCOMCircuitOpen)
