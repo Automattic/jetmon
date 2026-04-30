@@ -12,14 +12,15 @@ import (
 func TestValidate(t *testing.T) {
 	base := func() *Config {
 		return &Config{
-			AuthToken:        "token",
-			NumWorkers:       10,
-			BucketTotal:      100,
-			BucketTarget:     50,
-			NetCommsTimeout:  10,
-			BodyReadMaxBytes: 262144,
-			BodyReadMaxMS:    250,
-			LogFormat:        "text",
+			AuthToken:           "token",
+			NumWorkers:          10,
+			BucketTotal:         100,
+			BucketTarget:        50,
+			NetCommsTimeout:     10,
+			BodyReadMaxBytes:    262144,
+			BodyReadMaxMS:       250,
+			KeywordReadMaxBytes: 1048576,
+			LogFormat:           "text",
 		}
 	}
 
@@ -147,6 +148,11 @@ func TestValidate(t *testing.T) {
 		{
 			name:    "body read max ms zero",
 			mutate:  func(c *Config) { c.BodyReadMaxMS = 0 },
+			wantErr: true,
+		},
+		{
+			name:    "keyword read max bytes zero",
+			mutate:  func(c *Config) { c.KeywordReadMaxBytes = 0 },
 			wantErr: true,
 		},
 		{
@@ -309,6 +315,9 @@ func TestLoadAndGet(t *testing.T) {
 	}
 	if cfg.BodyReadMaxMS != 250 {
 		t.Fatalf("BodyReadMaxMS = %d, want 250", cfg.BodyReadMaxMS)
+	}
+	if cfg.KeywordReadMaxBytes != 1048576 {
+		t.Fatalf("KeywordReadMaxBytes = %d, want 1048576", cfg.KeywordReadMaxBytes)
 	}
 	if !cfg.LegacyStatusProjectionEnable {
 		t.Fatal("LegacyStatusProjectionEnable default should be true")

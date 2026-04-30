@@ -24,6 +24,7 @@ Key settings:
 | `NET_COMMS_TIMEOUT` | 10 | Default per-check HTTP timeout in seconds |
 | `BODY_READ_MAX_BYTES` | 262144 | Success-path body-read budget in bytes for unknown/large responses |
 | `BODY_READ_MAX_MS` | 250 | Success-path body-read budget in milliseconds for unknown/large responses |
+| `KEYWORD_READ_MAX_BYTES` | 1048576 | Max bytes scanned when keyword checks are enabled |
 | `PEER_OFFLINE_LIMIT` | 3 | Veriflier agreements required to confirm downtime |
 | `WORKER_MAX_MEM_MB` | 53 | RSS threshold that triggers worker-pool drain |
 | `BUCKET_TOTAL` | 1000 | Total bucket range across all hosts |

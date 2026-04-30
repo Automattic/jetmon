@@ -73,6 +73,9 @@ Maximum response-body bytes checker will read for success-path validation when C
 BODY_READ_MAX_MS
 Maximum time budget in milliseconds for response-body validation reads. When checker is in budgeted mode (unknown or large Content-Length), hitting this budget is non-fatal. Default: 250.
 
+KEYWORD_READ_MAX_BYTES
+Maximum response-body bytes checker will read when a keyword check is configured. This budget is separate from BODY_READ_MAX_BYTES so keyword checks can scan deeper without changing non-keyword body-read behavior. Default: 1048576.
+
 USE_VARIABLE_CHECK_INTERVALS
 Set to true to respect the check_interval column per site instead of running all sites every round. Default: false.
 

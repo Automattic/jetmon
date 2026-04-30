@@ -31,6 +31,7 @@
 	"NET_COMMS_TIMEOUT"            : 10,
 	"BODY_READ_MAX_BYTES"          : 262144,
 	"BODY_READ_MAX_MS"             : 250,
+	"KEYWORD_READ_MAX_BYTES"       : 1048576,
 	"USE_VARIABLE_CHECK_INTERVALS" : false,
 
 	"LOG_FORMAT"     : "text",
