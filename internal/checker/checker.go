@@ -40,19 +40,21 @@ const (
 
 // Request holds the parameters for a single HTTP check.
 type Request struct {
-	BlogID           int64
-	URL              string
-	TimeoutSeconds   int
-	BodyReadMaxBytes int64
-	BodyReadMaxMS    int
-	Keyword          *string
-	CustomHeaders    map[string]string
-	RedirectPolicy   RedirectPolicy
+	BlogID              int64
+	URL                 string
+	TimeoutSeconds      int
+	BodyReadMaxBytes    int64
+	BodyReadMaxMS       int
+	KeywordReadMaxBytes int64
+	Keyword             *string
+	CustomHeaders       map[string]string
+	RedirectPolicy      RedirectPolicy
 }
 
 const (
-	defaultBodyReadMaxBytes int64 = 256 * 1024
-	defaultBodyReadMaxMS          = 250
+	defaultBodyReadMaxBytes    int64 = 256 * 1024
+	defaultBodyReadMaxMS             = 250
+	defaultKeywordReadMaxBytes int64 = 1024 * 1024
 )
 
 var bodyReadCounters = struct {
@@ -347,7 +349,7 @@ func Check(ctx context.Context, req Request) Result {
 	return res
 }
 
-func validateBodyToEOF(body io.Reader, keyword *string) (bool, error) {
+func validateBodyToEOF(body io.ReadCloser, keyword *string) (bool, error) {
 	if keyword == nil || *keyword == "" {
 		_, err := io.Copy(io.Discard, body)
 		return true, err
@@ -398,15 +400,23 @@ func validateBody(resp *http.Response, req Request) (bool, error) {
 	if maxBytes <= 0 {
 		maxBytes = defaultBodyReadMaxBytes
 	}
+	keywordMaxBytes := req.KeywordReadMaxBytes
+	if keywordMaxBytes <= 0 {
+		keywordMaxBytes = defaultKeywordReadMaxBytes
+	}
 	maxDuration := time.Duration(req.BodyReadMaxMS) * time.Millisecond
 	if maxDuration <= 0 {
 		maxDuration = time.Duration(defaultBodyReadMaxMS) * time.Millisecond
 	}
 
 	policy := selectBodyReadPolicy(resp, maxBytes)
+	readBudgetBytes := maxBytes
+	if req.Keyword != nil && *req.Keyword != "" {
+		readBudgetBytes = keywordMaxBytes
+	}
 	switch policy {
 	case bodyPolicySkip:
-		return scanKeywordBudgeted(resp.Body, req.Keyword, maxBytes, maxDuration)
+		return scanKeywordBudgeted(resp.Body, req.Keyword, readBudgetBytes, maxDuration)
 	case bodyPolicyStrictEOF:
 		matched, outcome, err := scanBodyWithBudget(resp.Body, req.Keyword, 0, maxDuration)
 		switch outcome {
@@ -426,7 +436,7 @@ func validateBody(resp *http.Response, req Request) (bool, error) {
 			return matched, err
 		}
 	case bodyPolicyBudgeted:
-		matched, outcome, err := scanBodyWithBudget(resp.Body, req.Keyword, maxBytes, maxDuration)
+		matched, outcome, err := scanBodyWithBudget(resp.Body, req.Keyword, readBudgetBytes, maxDuration)
 		switch outcome {
 		case bodyReadEOF:
 			bodyReadCounters.budgetEOFSuccess.Add(1)
@@ -491,12 +501,12 @@ func isSSE(resp *http.Response) bool {
 	return strings.HasPrefix(ct, "text/event-stream")
 }
 
-func scanKeywordBudgeted(body io.Reader, keyword *string, maxBytes int64, maxDuration time.Duration) (bool, error) {
+func scanKeywordBudgeted(body io.ReadCloser, keyword *string, maxBytes int64, maxDuration time.Duration) (bool, error) {
 	matched, _, _ := scanBodyWithBudget(body, keyword, maxBytes, maxDuration)
 	return matched, nil
 }
 
-func scanBodyWithBudget(body io.Reader, keyword *string, maxBytes int64, maxDuration time.Duration) (bool, bodyReadOutcome, error) {
+func scanBodyWithBudget(body io.ReadCloser, keyword *string, maxBytes int64, maxDuration time.Duration) (bool, bodyReadOutcome, error) {
 	needle := []byte("")
 	if keyword != nil {
 		needle = []byte(*keyword)
@@ -513,10 +523,45 @@ func scanBodyWithBudget(body io.Reader, keyword *string, maxBytes int64, maxDura
 	start := time.Now()
 
 	for {
-		if maxDuration > 0 && time.Since(start) > maxDuration {
-			return found, bodyReadBudgetTimeExceeded, context.DeadlineExceeded
+		remaining := maxDuration
+		if maxDuration > 0 {
+			elapsed := time.Since(start)
+			remaining = maxDuration - elapsed
+			if remaining <= 0 {
+				_ = body.Close()
+				return found, bodyReadBudgetTimeExceeded, context.DeadlineExceeded
+			}
 		}
-		n, err := body.Read(buf)
+
+		type readResult struct {
+			n   int
+			err error
+		}
+		readCh := make(chan readResult, 1)
+		go func() {
+			n, err := body.Read(buf)
+			readCh <- readResult{n: n, err: err}
+		}()
+
+		var (
+			n   int
+			err error
+		)
+		if maxDuration > 0 {
+			select {
+			case rr := <-readCh:
+				n = rr.n
+				err = rr.err
+			case <-time.After(remaining):
+				_ = body.Close()
+				<-readCh
+				return found, bodyReadBudgetTimeExceeded, context.DeadlineExceeded
+			}
+		} else {
+			rr := <-readCh
+			n = rr.n
+			err = rr.err
+		}
 		if n > 0 {
 			readBytes += int64(n)
 			window := append(carry, buf[:n]...)

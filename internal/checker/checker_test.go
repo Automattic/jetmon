@@ -546,6 +546,80 @@ func TestCheckUnknownLengthBudgetExceedIsNonFatal(t *testing.T) {
 	}
 }
 
+func TestCheckContentLengthBoundaryUsesStrictEOFAtExactBudget(t *testing.T) {
+	body := strings.Repeat("b", 1024)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", "1024")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, body)
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{BlogID: 1, URL: srv.URL, TimeoutSeconds: 5, BodyReadMaxBytes: 1024, BodyReadMaxMS: 1000})
+	if !res.Success || res.ErrorCode != ErrorNone {
+		t.Fatalf("exact-budget content-length should succeed, got success=%v error=%d", res.Success, res.ErrorCode)
+	}
+}
+
+func TestCheckContentLengthBoundaryFallsBackToBudgetWhenJustOver(t *testing.T) {
+	body := strings.Repeat("c", 1025)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", "1025")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, body)
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{BlogID: 1, URL: srv.URL, TimeoutSeconds: 5, BodyReadMaxBytes: 1024, BodyReadMaxMS: 1000})
+	if !res.Success || res.ErrorCode != ErrorNone {
+		t.Fatalf("just-over-budget content-length should use budgeted path, got success=%v error=%d", res.Success, res.ErrorCode)
+	}
+}
+
+func TestCheckStalledBodyReadReturnsPromptlyAtReadBudget(t *testing.T) {
+	url, shutdown := startRawHTTPServer(t, func(conn net.Conn) {
+		_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n")
+		time.Sleep(2 * time.Second)
+	})
+	defer shutdown()
+
+	start := time.Now()
+	res := Check(context.Background(), Request{BlogID: 1, URL: url, TimeoutSeconds: 5, BodyReadMaxBytes: 1024, BodyReadMaxMS: 80})
+	elapsed := time.Since(start)
+
+	if res.ErrorCode != ErrorTimeout {
+		t.Fatalf("ErrorCode = %d, want ErrorTimeout", res.ErrorCode)
+	}
+	if elapsed > 600*time.Millisecond {
+		t.Fatalf("stalled body read returned too slowly: %v", elapsed)
+	}
+}
+
+func TestCheckKeywordReadBudgetAllowsOverBodyBudgetCompatibility(t *testing.T) {
+	prefix := strings.Repeat("x", 400*1024)
+	needle := "keyword-match"
+	body := prefix + needle + strings.Repeat("y", 8*1024)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, body)
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{
+		BlogID:              1,
+		URL:                 srv.URL,
+		TimeoutSeconds:      5,
+		BodyReadMaxBytes:    256 * 1024,
+		BodyReadMaxMS:       1000,
+		KeywordReadMaxBytes: 1024 * 1024,
+		Keyword:             &needle,
+	})
+	if !res.Success || res.ErrorCode != ErrorNone {
+		t.Fatalf("keyword compatibility read should succeed, got success=%v error=%d", res.Success, res.ErrorCode)
+	}
+}
+
 func startRawHTTPServer(t *testing.T, handler func(net.Conn)) (string, func()) {
 	t.Helper()
 
