@@ -46,6 +46,7 @@ type Request struct {
 	BodyReadMaxBytes    int64
 	BodyReadMaxMS       int
 	KeywordReadMaxBytes int64
+	KeywordReadMaxMS    int
 	Keyword             *string
 	CustomHeaders       map[string]string
 	RedirectPolicy      RedirectPolicy
@@ -330,7 +331,7 @@ func Check(ctx context.Context, req Request) Result {
 		return res
 	}
 
-	matchedKeyword, bodyErr := validateBody(resp, req)
+	matchedKeyword, bodyErr := validateBody(ctx, resp, req)
 	if bodyErr != nil {
 		if isTimeoutError(ctx, bodyErr) {
 			res.ErrorCode = ErrorTimeout
@@ -395,7 +396,7 @@ func validateBodyToEOF(body io.ReadCloser, keyword *string) (bool, error) {
 	}
 }
 
-func validateBody(resp *http.Response, req Request) (bool, error) {
+func validateBody(ctx context.Context, resp *http.Response, req Request) (bool, error) {
 	maxBytes := req.BodyReadMaxBytes
 	if maxBytes <= 0 {
 		maxBytes = defaultBodyReadMaxBytes
@@ -404,21 +405,42 @@ func validateBody(resp *http.Response, req Request) (bool, error) {
 	if keywordMaxBytes <= 0 {
 		keywordMaxBytes = defaultKeywordReadMaxBytes
 	}
-	maxDuration := time.Duration(req.BodyReadMaxMS) * time.Millisecond
-	if maxDuration <= 0 {
-		maxDuration = time.Duration(defaultBodyReadMaxMS) * time.Millisecond
+	bodyMaxDuration := time.Duration(req.BodyReadMaxMS) * time.Millisecond
+	if bodyMaxDuration <= 0 {
+		bodyMaxDuration = time.Duration(defaultBodyReadMaxMS) * time.Millisecond
+	}
+	hasKeyword := req.Keyword != nil && *req.Keyword != ""
+	keywordMaxDuration := time.Duration(req.KeywordReadMaxMS) * time.Millisecond
+	if hasKeyword && keywordMaxDuration < 0 {
+		keywordMaxDuration = 0
 	}
 
 	policy := selectBodyReadPolicy(resp, maxBytes)
 	readBudgetBytes := maxBytes
-	if req.Keyword != nil && *req.Keyword != "" {
+	if hasKeyword {
 		readBudgetBytes = keywordMaxBytes
 	}
 	switch policy {
 	case bodyPolicySkip:
-		return scanKeywordBudgeted(resp.Body, req.Keyword, readBudgetBytes, maxDuration)
+		if !hasKeyword {
+			return true, nil
+		}
+		return scanKeywordBudgeted(resp.Body, req.Keyword, readBudgetBytes, keywordMaxDuration)
 	case bodyPolicyStrictEOF:
-		matched, outcome, err := scanBodyWithBudget(resp.Body, req.Keyword, 0, maxDuration)
+		if !hasKeyword {
+			matched, err := validateBodyToEOF(resp.Body, nil)
+			if err != nil {
+				if isTimeoutError(ctx, err) {
+					bodyReadCounters.strictEOFTimeout.Add(1)
+				} else {
+					bodyReadCounters.strictEOFTruncated.Add(1)
+				}
+				return matched, err
+			}
+			bodyReadCounters.strictEOFSuccess.Add(1)
+			return matched, nil
+		}
+		matched, outcome, err := scanBodyWithBudget(resp.Body, req.Keyword, 0, keywordMaxDuration)
 		switch outcome {
 		case bodyReadEOF:
 			bodyReadCounters.strictEOFSuccess.Add(1)
@@ -436,6 +458,10 @@ func validateBody(resp *http.Response, req Request) (bool, error) {
 			return matched, err
 		}
 	case bodyPolicyBudgeted:
+		maxDuration := bodyMaxDuration
+		if hasKeyword {
+			maxDuration = keywordMaxDuration
+		}
 		matched, outcome, err := scanBodyWithBudget(resp.Body, req.Keyword, readBudgetBytes, maxDuration)
 		switch outcome {
 		case bodyReadEOF:
@@ -446,6 +472,12 @@ func validateBody(resp *http.Response, req Request) (bool, error) {
 			return matched, nil
 		case bodyReadBudgetTimeExceeded:
 			bodyReadCounters.budgetTimeExceeded.Add(1)
+			if hasKeyword {
+				if err == nil {
+					err = context.DeadlineExceeded
+				}
+				return matched, err
+			}
 			return matched, nil
 		case bodyReadTruncated:
 			bodyReadCounters.budgetTruncated.Add(1)
@@ -502,8 +534,11 @@ func isSSE(resp *http.Response) bool {
 }
 
 func scanKeywordBudgeted(body io.ReadCloser, keyword *string, maxBytes int64, maxDuration time.Duration) (bool, error) {
-	matched, _, _ := scanBodyWithBudget(body, keyword, maxBytes, maxDuration)
-	return matched, nil
+	matched, outcome, err := scanBodyWithBudget(body, keyword, maxBytes, maxDuration)
+	if outcome == bodyReadBudgetTimeExceeded {
+		return matched, context.DeadlineExceeded
+	}
+	return matched, err
 }
 
 func scanBodyWithBudget(body io.ReadCloser, keyword *string, maxBytes int64, maxDuration time.Duration) (bool, bodyReadOutcome, error) {

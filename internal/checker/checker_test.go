@@ -584,14 +584,79 @@ func TestCheckStalledBodyReadReturnsPromptlyAtReadBudget(t *testing.T) {
 	defer shutdown()
 
 	start := time.Now()
-	res := Check(context.Background(), Request{BlogID: 1, URL: url, TimeoutSeconds: 5, BodyReadMaxBytes: 1024, BodyReadMaxMS: 80})
+	res := Check(context.Background(), Request{BlogID: 1, URL: url, TimeoutSeconds: 1, BodyReadMaxBytes: 1024, BodyReadMaxMS: 80})
 	elapsed := time.Since(start)
 
 	if res.ErrorCode != ErrorTimeout {
 		t.Fatalf("ErrorCode = %d, want ErrorTimeout", res.ErrorCode)
 	}
-	if elapsed > 600*time.Millisecond {
+	if elapsed < 800*time.Millisecond || elapsed > 2*time.Second {
 		t.Fatalf("stalled body read returned too slowly: %v", elapsed)
+	}
+}
+
+func TestCheckStrictFiniteSlowBodyIgnoresBodyReadBudget(t *testing.T) {
+	url, shutdown := startRawHTTPServer(t, func(conn net.Conn) {
+		_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\n")
+		time.Sleep(250 * time.Millisecond)
+		_, _ = io.WriteString(conn, "hello world")
+	})
+	defer shutdown()
+
+	res := Check(context.Background(), Request{BlogID: 1, URL: url, TimeoutSeconds: 2, BodyReadMaxBytes: 1024, BodyReadMaxMS: 100})
+	if !res.Success || res.ErrorCode != ErrorNone {
+		t.Fatalf("strict finite slow body should succeed, got success=%v error=%d", res.Success, res.ErrorCode)
+	}
+}
+
+func TestCheckKeywordCanArriveAfterBodyReadBudget(t *testing.T) {
+	url, shutdown := startRawHTTPServer(t, func(conn net.Conn) {
+		_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n")
+		_, _ = io.WriteString(conn, "6\r\nhello \r\n")
+		time.Sleep(250 * time.Millisecond)
+		_, _ = io.WriteString(conn, "7\r\njetpack\r\n")
+		_, _ = io.WriteString(conn, "0\r\n\r\n")
+	})
+	defer shutdown()
+
+	kw := "jetpack"
+	res := Check(context.Background(), Request{BlogID: 1, URL: url, TimeoutSeconds: 2, BodyReadMaxBytes: 1024, BodyReadMaxMS: 100, Keyword: &kw})
+	if !res.Success || res.ErrorCode != ErrorNone {
+		t.Fatalf("slow keyword should succeed before request timeout, got success=%v error=%d", res.Success, res.ErrorCode)
+	}
+}
+
+func TestCheckKeywordTimeoutUsesTimeoutClassification(t *testing.T) {
+	url, shutdown := startRawHTTPServer(t, func(conn net.Conn) {
+		_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n")
+		_, _ = io.WriteString(conn, "6\r\nhello \r\n")
+		time.Sleep(300 * time.Millisecond)
+		_, _ = io.WriteString(conn, "7\r\njetpack\r\n")
+		_, _ = io.WriteString(conn, "0\r\n\r\n")
+	})
+	defer shutdown()
+
+	kw := "jetpack"
+	res := Check(context.Background(), Request{BlogID: 1, URL: url, TimeoutSeconds: 2, BodyReadMaxBytes: 1024, BodyReadMaxMS: 100, KeywordReadMaxMS: 120, Keyword: &kw})
+	if res.ErrorCode != ErrorTimeout {
+		t.Fatalf("ErrorCode = %d, want ErrorTimeout", res.ErrorCode)
+	}
+}
+
+func TestCheckUpgradeNoKeywordReturnsWithoutBodyWait(t *testing.T) {
+	url, shutdown := startRawHTTPServer(t, func(conn net.Conn) {
+		_, _ = io.WriteString(conn, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
+		time.Sleep(500 * time.Millisecond)
+	})
+	defer shutdown()
+
+	start := time.Now()
+	res := Check(context.Background(), Request{BlogID: 1, URL: url, TimeoutSeconds: 2, BodyReadMaxBytes: 1, BodyReadMaxMS: 300})
+	if !res.Success || res.ErrorCode != ErrorNone {
+		t.Fatalf("101 upgrade should be successful, got success=%v error=%d", res.Success, res.ErrorCode)
+	}
+	if time.Since(start) > 250*time.Millisecond {
+		t.Fatalf("upgrade no-keyword should return promptly")
 	}
 }
 
