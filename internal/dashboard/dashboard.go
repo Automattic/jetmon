@@ -249,6 +249,11 @@ func (s *Server) broadcast(st State) {
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		setDashboardNoStoreHeaders(w)
+		http.NotFound(w, r)
+		return
+	}
 	if rejectNonGet(w, r) {
 		return
 	}
@@ -271,7 +276,10 @@ func setDashboardReadHeaders(w http.ResponseWriter, contentType string) {
 
 func setDashboardNoStoreHeaders(w http.ResponseWriter) {
 	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; base-uri 'none'; connect-src 'self'; form-action 'none'; frame-ancestors 'none'; object-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'")
+	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "DENY")
 }
 
 func rejectNonGet(w http.ResponseWriter, r *http.Request) bool {

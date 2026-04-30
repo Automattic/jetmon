@@ -113,6 +113,16 @@ func TestSummarizeFleetBucketCoverage(t *testing.T) {
 	if coverage.Status != "amber" || coverage.Mode != "mixed" {
 		t.Fatalf("coverage = %+v, want mixed amber", coverage)
 	}
+
+	coverage = summarizeFleetBucketCoverage([]FleetBucketHost{
+		{HostID: "host-a", BucketMin: 0, BucketMax: 9, LastHeartbeat: now, Status: "active"},
+	}, 10, 30*time.Second, now, nil, []FleetProcess{
+		{ProcessType: fleethealth.ProcessMonitor, BucketOwnership: "pinned range=0-4", Stale: true},
+		{ProcessType: fleethealth.ProcessMonitor, BucketOwnership: "dynamic jetmon_hosts"},
+	})
+	if coverage.Status != "green" || coverage.Mode != "dynamic" {
+		t.Fatalf("coverage = %+v, want stale pinned snapshots ignored for ownership mode", coverage)
+	}
 }
 
 func TestSummarizeFleetDeliveryPosture(t *testing.T) {
@@ -200,6 +210,7 @@ func TestSummarizeFleetProcessesOrdersUnhealthyFirst(t *testing.T) {
 	now := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
 	processes := summarizeFleetProcesses([]fleethealth.Snapshot{
 		{ProcessID: "host-c:monitor", HostID: "host-c", ProcessType: fleethealth.ProcessMonitor, HealthStatus: fleethealth.HealthGreen, UpdatedAt: now},
+		{ProcessID: "host-d:deliverer", HostID: "host-d", ProcessType: fleethealth.ProcessDeliverer, HealthStatus: fleethealth.HealthGreen, UpdatedAt: now},
 		{ProcessID: "host-b:monitor", HostID: "host-b", ProcessType: fleethealth.ProcessMonitor, HealthStatus: fleethealth.HealthAmber, UpdatedAt: now},
 		{ProcessID: "host-a:monitor", HostID: "host-a", ProcessType: fleethealth.ProcessMonitor, HealthStatus: fleethealth.HealthGreen, UpdatedAt: now.Add(-time.Hour)},
 	}, now, 10*time.Minute)
@@ -208,6 +219,9 @@ func TestSummarizeFleetProcessesOrdersUnhealthyFirst(t *testing.T) {
 	}
 	if got := processes[1].ProcessID; got != "host-b:monitor" {
 		t.Fatalf("second process = %q, want amber host second", got)
+	}
+	if got := processes[2].ProcessID; got != "host-c:monitor" {
+		t.Fatalf("third process = %q, want healthy monitors before deliverers", got)
 	}
 }
 

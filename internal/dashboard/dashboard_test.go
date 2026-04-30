@@ -183,6 +183,15 @@ func TestDashboardReadHandlersSetNoStoreHeaders(t *testing.T) {
 			if got := w.Header().Get("X-Content-Type-Options"); got != "nosniff" {
 				t.Fatalf("X-Content-Type-Options = %q, want nosniff", got)
 			}
+			if got := w.Header().Get("X-Frame-Options"); got != "DENY" {
+				t.Fatalf("X-Frame-Options = %q, want DENY", got)
+			}
+			if got := w.Header().Get("Referrer-Policy"); got != "no-referrer" {
+				t.Fatalf("Referrer-Policy = %q, want no-referrer", got)
+			}
+			if got := w.Header().Get("Content-Security-Policy"); !strings.Contains(got, "frame-ancestors 'none'") {
+				t.Fatalf("Content-Security-Policy = %q, want frame-ancestors guard", got)
+			}
 		})
 	}
 }
@@ -214,6 +223,23 @@ func TestDashboardReadHandlersRejectWriteMethods(t *testing.T) {
 				t.Fatalf("Allow = %q, want %q", got, tc.allow)
 			}
 		})
+	}
+}
+
+func TestHandleIndexRejectsUnknownPaths(t *testing.T) {
+	srv := New("test-host")
+	r := httptest.NewRequest(http.MethodGet, "/api/unknown", nil)
+	w := httptest.NewRecorder()
+	srv.handleIndex(w, r)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", w.Code)
+	}
+	if strings.Contains(w.Body.String(), "Jetmon") {
+		t.Fatal("unknown path returned dashboard HTML")
+	}
+	if got := w.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
 	}
 }
 

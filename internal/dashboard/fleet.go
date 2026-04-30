@@ -315,8 +315,9 @@ func summarizeFleetProcesses(rows []fleethealth.Snapshot, now time.Time, heartbe
 		if left != right {
 			return left > right
 		}
-		if out[i].ProcessType != out[j].ProcessType {
-			return out[i].ProcessType < out[j].ProcessType
+		leftType, rightType := fleetProcessTypeRank(out[i].ProcessType), fleetProcessTypeRank(out[j].ProcessType)
+		if leftType != rightType {
+			return leftType < rightType
 		}
 		if out[i].HostID != out[j].HostID {
 			return out[i].HostID < out[j].HostID
@@ -337,6 +338,17 @@ func fleetProcessRank(process FleetProcess) int {
 		return 3
 	default:
 		return 1
+	}
+}
+
+func fleetProcessTypeRank(processType string) int {
+	switch processType {
+	case fleethealth.ProcessMonitor:
+		return 1
+	case fleethealth.ProcessDeliverer:
+		return 2
+	default:
+		return 99
 	}
 }
 
@@ -438,6 +450,9 @@ func fleetBucketOwnershipMode(processes []FleetProcess) string {
 		if process.ProcessType != fleethealth.ProcessMonitor {
 			continue
 		}
+		if !processActiveForFleetOwnership(process) {
+			continue
+		}
 		ownership := strings.ToLower(strings.TrimSpace(process.BucketOwnership))
 		switch {
 		case strings.Contains(ownership, "pinned"):
@@ -455,6 +470,18 @@ func fleetBucketOwnershipMode(processes []FleetProcess) string {
 		return "dynamic"
 	default:
 		return "unknown"
+	}
+}
+
+func processActiveForFleetOwnership(process FleetProcess) bool {
+	if process.Stale {
+		return false
+	}
+	switch process.State {
+	case fleethealth.StateStopped, fleethealth.StateStopping:
+		return false
+	default:
+		return true
 	}
 }
 
