@@ -214,9 +214,11 @@ Supported snapshot flow names are `execute-rollback`, `interrupted-resume`,
 `post-start-rollback`, `bad-ssh`, `v2-start-failure`, `runtime-guards`,
 `real-activity`, and `failure-gates`. Snapshot runners are useful when
 iterating on guided behavior because each run starts from the same VM, DB,
-service, and log state. At the end, the runner reverts to the snapshot and
-enforces the safe lab state: v1 simulator active, v2 `jetmon2` stopped and
-disabled. `snapshot-run-all` replays every named flow from the same snapshot.
+service, and log state. After each revert, the runner stages the current local
+`jetmon2` artifact into the v2 guest so snapshot-backed flows do not silently
+test an old binary. At the end, the runner reverts to the snapshot and enforces
+the safe lab state: v1 simulator active, v2 `jetmon2` stopped and disabled.
+`snapshot-run-all` replays every named flow from the same snapshot.
 
 Destroy the topology and its lab volumes:
 

@@ -519,8 +519,8 @@ write_v2_lab_files() {
 	cat >"$LAB_DIR/work/config.json" <<JSON
 {
 	"AUTH_TOKEN": "jetmon-rollout-lab",
-	"NUM_WORKERS": 2,
-	"NUM_TO_PROCESS": 2,
+	"NUM_WORKERS": 10,
+	"NUM_TO_PROCESS": 10,
 	"DATASET_SIZE": 25,
 	"WORKER_MAX_MEM_MB": 256,
 	"LEGACY_STATUS_PROJECTION_ENABLE": true,
@@ -1314,6 +1314,7 @@ snapshot_run() {
 	trap cleanup_snapshot_run EXIT
 	revert_all "$snapshot"
 	wait_topology_ssh
+	install_v2
 	run_flow_by_name "$flow"
 	revert_all "$snapshot"
 	wait_topology_ssh
