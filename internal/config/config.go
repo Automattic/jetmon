@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"sync"
 )
 
@@ -82,10 +83,11 @@ type Config struct {
 	NetCommsTimeout           int  `json:"NET_COMMS_TIMEOUT"`
 	UseVariableCheckIntervals bool `json:"USE_VARIABLE_CHECK_INTERVALS"`
 
-	LogFormat     string `json:"LOG_FORMAT"`
-	DashboardPort int    `json:"DASHBOARD_PORT"`
-	DebugPort     int    `json:"DEBUG_PORT"`
-	APIPort       int    `json:"API_PORT"` // 0 = API server disabled
+	LogFormat         string `json:"LOG_FORMAT"`
+	DashboardPort     int    `json:"DASHBOARD_PORT"`
+	DashboardBindAddr string `json:"DASHBOARD_BIND_ADDR"`
+	DebugPort         int    `json:"DEBUG_PORT"`
+	APIPort           int    `json:"API_PORT"` // 0 = API server disabled
 
 	// DeliveryOwnerHost constrains webhook and alert-contact delivery workers
 	// to a single named host while the v2 single-binary deployment still uses
@@ -213,6 +215,7 @@ func defaults() *Config {
 		NetCommsTimeout:              10,
 		LogFormat:                    "text",
 		DashboardPort:                8080,
+		DashboardBindAddr:            "127.0.0.1",
 		DebugPort:                    6060,
 		EmailTransport:               "stub",
 		EmailFrom:                    "jetmon@noreply.invalid",
@@ -280,6 +283,9 @@ func validate(cfg *Config) error {
 	}
 	if cfg.LogFormat != "text" && cfg.LogFormat != "json" {
 		return fmt.Errorf("LOG_FORMAT must be 'text' or 'json'")
+	}
+	if strings.TrimSpace(cfg.DashboardBindAddr) == "" {
+		cfg.DashboardBindAddr = "127.0.0.1"
 	}
 	switch cfg.EmailTransport {
 	case "", "stub":

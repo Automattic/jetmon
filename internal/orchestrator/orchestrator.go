@@ -95,6 +95,9 @@ type Orchestrator struct {
 
 	totalChecked int
 	roundStart   time.Time
+	statsMu      sync.RWMutex
+	lastRoundSPS int
+	lastRoundDur time.Duration
 
 	ctx    stdctx.Context
 	cancel stdctx.CancelFunc
@@ -293,6 +296,15 @@ process:
 
 	// Emit metrics and update stats files.
 	roundDuration := time.Since(o.roundStart)
+	sps := 0
+	if roundDuration.Seconds() > 0 {
+		sps = int(float64(len(results)) / roundDuration.Seconds())
+	}
+	o.statsMu.Lock()
+	o.lastRoundSPS = sps
+	o.lastRoundDur = roundDuration
+	o.statsMu.Unlock()
+
 	m := metricsClientFunc()
 	if m != nil {
 		m.Timing("round.complete.time", roundDuration)
@@ -300,11 +312,6 @@ process:
 		m.Gauge("worker.queue.queue_size", o.pool.QueueDepth())
 		m.Gauge("retry.queue.size", o.retries.size())
 		m.Increment("round.sites.count", len(results))
-
-		sps := 0
-		if roundDuration.Seconds() > 0 {
-			sps = int(float64(len(results)) / roundDuration.Seconds())
-		}
 		m.Gauge("round.sps.count", sps)
 
 		if cfg.StatsdSendMemUsage {
@@ -879,6 +886,13 @@ func (o *Orchestrator) ActiveChecks() int {
 // QueueDepth returns the work queue depth.
 func (o *Orchestrator) QueueDepth() int {
 	return o.pool.QueueDepth()
+}
+
+// LastRoundStats returns the latest completed round's throughput and duration.
+func (o *Orchestrator) LastRoundStats() (int, time.Duration) {
+	o.statsMu.RLock()
+	defer o.statsMu.RUnlock()
+	return o.lastRoundSPS, o.lastRoundDur
 }
 
 func (o *Orchestrator) auditLog(e audit.Entry) {

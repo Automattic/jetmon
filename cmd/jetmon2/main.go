@@ -7,11 +7,16 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -23,11 +28,14 @@ import (
 	"github.com/Automattic/jetmon/internal/dashboard"
 	"github.com/Automattic/jetmon/internal/db"
 	"github.com/Automattic/jetmon/internal/deliverer"
+	"github.com/Automattic/jetmon/internal/fleethealth"
 	"github.com/Automattic/jetmon/internal/metrics"
 	"github.com/Automattic/jetmon/internal/orchestrator"
 	"github.com/Automattic/jetmon/internal/veriflier"
 	"github.com/Automattic/jetmon/internal/wpcom"
 )
+
+const processHealthWriteTimeout = 2 * time.Second
 
 // Injected at build time via -ldflags.
 var (
@@ -84,6 +92,11 @@ func runServe() {
 	if !emailTransportDelivers(cfg) {
 		log.Printf("WARN: email_transport=%s — alert-contact emails will be logged but not delivered", emailTransportLabel(cfg))
 	}
+	if cfg.DashboardPort > 0 {
+		if msg := dashboardBindWarning(cfg.DashboardBindAddr); msg != "" {
+			log.Printf("WARN: %s", msg)
+		}
+	}
 
 	config.LoadDB()
 	if err := db.ConnectWithRetry(10); err != nil {
@@ -103,7 +116,11 @@ func runServe() {
 		log.Printf("warning: statsd init failed: %v", err)
 	}
 
-	wp := wpcom.New(cfg.AuthToken, db.Hostname())
+	hostname := db.Hostname()
+	processStartedAt := time.Now().UTC()
+	processID := fleethealth.ProcessID(hostname, fleethealth.ProcessMonitor)
+
+	wp := wpcom.New(cfg.AuthToken, hostname)
 
 	orch := orchestrator.New(cfg, wp)
 	if err := orch.ClaimBuckets(); err != nil {
@@ -112,9 +129,9 @@ func runServe() {
 
 	var dash *dashboard.Server
 	if cfg.DashboardPort > 0 {
-		dash = dashboard.New(db.Hostname())
+		dash = dashboard.New(hostname)
 		go func() {
-			addr := fmt.Sprintf(":%d", cfg.DashboardPort)
+			addr := dashboardListenAddr(cfg)
 			if err := dash.Listen(addr); err != nil {
 				log.Printf("dashboard: %v", err)
 			}
@@ -135,7 +152,7 @@ func runServe() {
 	// jetmon_api_keys; key management is CLI-only (`./jetmon2 keys`).
 	var apiSrv *api.Server
 	if cfg.APIPort > 0 {
-		apiSrv = api.New(fmt.Sprintf(":%d", cfg.APIPort), db.DB(), db.Hostname())
+		apiSrv = api.New(fmt.Sprintf(":%d", cfg.APIPort), db.DB(), hostname)
 		go func() {
 			if err := apiSrv.Listen(); err != nil && !api.IsServerClosed(err) {
 				log.Printf("api: %v", err)
@@ -143,14 +160,14 @@ func runServe() {
 		}()
 	}
 
-	if level, msg := deliveryOwnerStatus(cfg, db.Hostname()); msg != "" {
+	if level, msg := deliveryOwnerStatus(cfg, hostname); msg != "" {
 		if level == "WARN" {
 			log.Printf("WARN: %s", msg)
 		} else {
 			log.Printf("config: %s", msg)
 		}
 	}
-	deliveryWorkersEnabled := deliveryWorkersShouldStart(cfg, db.Hostname())
+	deliveryWorkersEnabled := deliveryWorkersShouldStart(cfg, hostname)
 
 	var alertDispatchers map[alerting.Transport]alerting.Dispatcher
 	if cfg.APIPort > 0 {
@@ -167,49 +184,97 @@ func runServe() {
 	if deliveryWorkersEnabled {
 		deliveryRuntime = deliverer.Start(deliverer.Config{
 			DB:          db.DB(),
-			InstanceID:  db.Hostname(),
+			InstanceID:  hostname,
 			Dispatchers: alertDispatchers,
 		})
 	}
 
-	// Push dashboard state every stats interval.
-	if dash != nil {
-		publishDashboardHealth(dash, wp)
-		go func() {
-			ticker := time.NewTicker(time.Duration(cfg.StatsUpdateIntervalMS) * time.Millisecond)
-			defer ticker.Stop()
-			for range ticker.C {
-				bMin, bMax := orch.BucketRange()
-				currentCfg := config.Get()
-				dash.Update(dashboard.State{
-					WorkerCount:                   orch.WorkerCount(),
-					ActiveChecks:                  orch.ActiveChecks(),
-					QueueDepth:                    orch.QueueDepth(),
-					RetryQueueSize:                orch.RetryQueueSize(),
-					SitesPerSec:                   0,
-					WPCOMCircuitOpen:              wp.IsCircuitOpen(),
-					WPCOMQueueDepth:               wp.QueueDepth(),
-					BucketMin:                     bMin,
-					BucketMax:                     bMax,
-					BucketOwnership:               bucketOwnershipLabel(currentCfg),
-					LegacyStatusProjectionEnabled: currentCfg.LegacyStatusProjectionEnable,
-					DeliveryWorkersEnabled:        deliveryWorkersEnabled,
-					DeliveryOwnerHost:             currentCfg.DeliveryOwnerHost,
-					RolloutPreflightCommand:       rolloutPreflightCommand(currentCfg),
-					RolloutActivityCommand:        rolloutActivityCommand(),
-					RolloutRollbackCommand:        rollbackCheckCommand(currentCfg),
-					ProjectionDriftCommand:        projectionDriftCommand(),
-				})
+	var healthMu sync.RWMutex
+	var publishMu sync.Mutex
+	var shuttingDown atomic.Bool
+	var lastHealth []dashboard.HealthEntry
+	publishHostSnapshot := func(state string, refreshDependencies bool) {
+		publishMu.Lock()
+		defer publishMu.Unlock()
+		if shuttingDown.Load() && state == fleethealth.StateRunning {
+			return
+		}
+		currentCfg := config.Get()
+		if currentCfg == nil {
+			currentCfg = cfg
+		}
+		checkedAt := time.Now().UTC()
+		var health []dashboard.HealthEntry
+		if refreshDependencies {
+			health = dashboardHealthEntries(context.Background(), currentCfg, db.DB(), wp, metrics.Global() != nil, checkedAt)
+			healthMu.Lock()
+			lastHealth = append([]dashboard.HealthEntry(nil), health...)
+			healthMu.Unlock()
+		} else {
+			healthMu.RLock()
+			health = append([]dashboard.HealthEntry(nil), lastHealth...)
+			healthMu.RUnlock()
+		}
+		bMin, bMax := orch.BucketRange()
+		sitesPerSec, roundDuration := orch.LastRoundStats()
+		goSysMemMB := currentGoSysMemMB()
+		deliveryConfigEligible := deliveryWorkersShouldStart(currentCfg, hostname)
+		st := dashboard.State{
+			WorkerCount:                   orch.WorkerCount(),
+			ActiveChecks:                  orch.ActiveChecks(),
+			QueueDepth:                    orch.QueueDepth(),
+			RetryQueueSize:                orch.RetryQueueSize(),
+			SitesPerSec:                   sitesPerSec,
+			RoundDurationMs:               roundDuration.Milliseconds(),
+			WPCOMCircuitOpen:              wp.IsCircuitOpen(),
+			WPCOMQueueDepth:               wp.QueueDepth(),
+			GoSysMemMB:                    goSysMemMB,
+			BucketMin:                     bMin,
+			BucketMax:                     bMax,
+			BucketOwnership:               bucketOwnershipLabel(currentCfg),
+			LegacyStatusProjectionEnabled: currentCfg.LegacyStatusProjectionEnable,
+			DeliveryWorkersEnabled:        deliveryWorkersEnabled,
+			DeliveryConfigEligible:        deliveryConfigEligible,
+			DeliveryOwnerHost:             currentCfg.DeliveryOwnerHost,
+			RolloutPreflightCommand:       rolloutPreflightCommand(currentCfg),
+			RolloutCutoverCommand:         cutoverCheckCommand(currentCfg),
+			RolloutActivityCommand:        rolloutActivityCommand(),
+			RolloutRollbackCommand:        rollbackCheckCommand(currentCfg),
+			RolloutStateReportCommand:     stateReportCommand(),
+			ProjectionDriftCommand:        projectionDriftCommand(),
+		}
+		st.Hostname = hostname
+		st.UpdatedAt = checkedAt
+		if dash != nil {
+			if refreshDependencies {
+				dash.UpdateHealth(health)
 			}
-		}()
-		go func() {
-			ticker := time.NewTicker(time.Duration(cfg.StatsUpdateIntervalMS) * time.Millisecond)
-			defer ticker.Stop()
-			for range ticker.C {
-				publishDashboardHealth(dash, wp)
-			}
-		}()
+			dash.Update(st)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), processHealthWriteTimeout)
+		if err := fleethealth.Upsert(ctx, db.DB(), monitorProcessHealthSnapshot(hostname, processStartedAt, state, currentCfg, st, health)); err != nil {
+			log.Printf("process health: %v", err)
+		}
+		cancel()
 	}
+
+	// Publish both host-dashboard state and the durable fleet-health heartbeat.
+	publishHostSnapshot(fleethealth.StateRunning, false)
+	stopHostPublisher := make(chan struct{})
+	var stopHostPublisherOnce sync.Once
+	go func() {
+		ticker := time.NewTicker(time.Duration(cfg.StatsUpdateIntervalMS) * time.Millisecond)
+		defer ticker.Stop()
+		publishHostSnapshot(fleethealth.StateRunning, true)
+		for {
+			select {
+			case <-ticker.C:
+				publishHostSnapshot(fleethealth.StateRunning, true)
+			case <-stopHostPublisher:
+				return
+			}
+		}
+	}()
 
 	// Signal handling.
 	sigCh := make(chan os.Signal, 1)
@@ -227,6 +292,9 @@ func runServe() {
 				}
 			case syscall.SIGINT, syscall.SIGTERM:
 				log.Println("received shutdown signal, draining")
+				shuttingDown.Store(true)
+				stopHostPublisherOnce.Do(func() { close(stopHostPublisher) })
+				publishHostSnapshot(fleethealth.StateStopping, false)
 				if apiSrv != nil {
 					ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 					if err := apiSrv.Shutdown(ctx); err != nil {
@@ -248,6 +316,14 @@ func runServe() {
 	}()
 
 	orch.Run()
+	shuttingDown.Store(true)
+	stopHostPublisherOnce.Do(func() { close(stopHostPublisher) })
+	publishHostSnapshot(fleethealth.StateStopping, false)
+	ctx, cancel := context.WithTimeout(context.Background(), processHealthWriteTimeout)
+	if err := fleethealth.MarkStopped(ctx, db.DB(), processID, time.Now().UTC()); err != nil {
+		log.Printf("process health: %v", err)
+	}
+	cancel()
 	log.Println("jetmon2: shutdown complete")
 }
 
@@ -286,6 +362,11 @@ func cmdValidateConfig() {
 	fmt.Printf("INFO email_transport=%s\n", emailTransportLabel(cfg))
 	if !emailTransportDelivers(cfg) {
 		fmt.Printf("WARN email_transport=%s — alert-contact emails will be logged but not delivered\n", emailTransportLabel(cfg))
+	}
+	if cfg.DashboardPort > 0 {
+		if msg := dashboardBindWarning(cfg.DashboardBindAddr); msg != "" {
+			fmt.Printf("WARN %s\n", msg)
+		}
 	}
 	if level, msg := deliveryOwnerStatus(cfg, db.Hostname()); msg != "" {
 		fmt.Printf("%s %s\n", level, msg)
@@ -328,6 +409,7 @@ func rolloutAdviceLines(cfg *config.Config) []string {
 	if cmd := rollbackCheckCommand(cfg); cmd != "" {
 		lines = append(lines, "INFO rollout_rollback_check="+cmd)
 	}
+	lines = append(lines, "INFO rollout_state_report="+stateReportCommand())
 	lines = append(lines, "INFO rollout_drift_report="+projectionDriftCommand())
 	return lines
 }
@@ -369,14 +451,39 @@ func projectionDriftCommand() string {
 	return "./jetmon2 rollout projection-drift"
 }
 
-const dashboardHealthTimeout = 2 * time.Second
-
-func publishDashboardHealth(dash *dashboard.Server, wp *wpcom.Client) {
-	if dash == nil {
-		return
-	}
-	dash.UpdateHealth(dashboardHealthEntries(context.Background(), config.Get(), db.DB(), wp, metrics.Global() != nil, time.Now().UTC()))
+func stateReportCommand() string {
+	return "./jetmon2 rollout state-report --since=15m"
 }
+
+func dashboardListenAddr(cfg *config.Config) string {
+	bindAddr := "127.0.0.1"
+	port := 0
+	if cfg != nil {
+		if strings.TrimSpace(cfg.DashboardBindAddr) != "" {
+			bindAddr = strings.TrimSpace(cfg.DashboardBindAddr)
+		}
+		port = cfg.DashboardPort
+	}
+	return net.JoinHostPort(bindAddr, strconv.Itoa(port))
+}
+
+func dashboardBindWarning(bindAddr string) string {
+	bindAddr = strings.TrimSpace(bindAddr)
+	if bindAddr == "" {
+		bindAddr = "127.0.0.1"
+	}
+	host := strings.Trim(bindAddr, "[]")
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return ""
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return ""
+	}
+	return fmt.Sprintf("DASHBOARD_BIND_ADDR=%q exposes the unauthenticated host dashboard; restrict access to trusted operator networks", bindAddr)
+}
+
+const dashboardHealthTimeout = 2 * time.Second
 
 func dashboardHealthEntries(ctx context.Context, cfg *config.Config, sqlDB *sql.DB, wp *wpcom.Client, statsdReady bool, checkedAt time.Time) []dashboard.HealthEntry {
 	entries := []dashboard.HealthEntry{
@@ -388,6 +495,65 @@ func dashboardHealthEntries(ctx context.Context, cfg *config.Config, sqlDB *sql.
 	}
 	entries = append(entries, veriflierHealthEntries(ctx, cfg, checkedAt)...)
 	return entries
+}
+
+func monitorProcessHealthSnapshot(hostname string, startedAt time.Time, state string, cfg *config.Config, st dashboard.State, health []dashboard.HealthEntry) fleethealth.Snapshot {
+	if st.UpdatedAt.IsZero() {
+		st.UpdatedAt = time.Now().UTC()
+	}
+	bucketMin, bucketMax := st.BucketMin, st.BucketMax
+	apiPort, dashboardPort := cfg.APIPort, cfg.DashboardPort
+	healthStatus := dashboard.SummarizeHost(st, health).Status
+	if state == fleethealth.StateStopping || state == fleethealth.StateStopped {
+		healthStatus = fleethealth.HealthAmber
+	}
+	return fleethealth.Snapshot{
+		HostID:                 hostname,
+		ProcessType:            fleethealth.ProcessMonitor,
+		PID:                    os.Getpid(),
+		Version:                version,
+		BuildDate:              buildDate,
+		GoVersion:              goVersion,
+		State:                  state,
+		HealthStatus:           healthStatus,
+		StartedAt:              startedAt,
+		UpdatedAt:              time.Now().UTC(),
+		BucketMin:              &bucketMin,
+		BucketMax:              &bucketMax,
+		BucketOwnership:        st.BucketOwnership,
+		APIPort:                &apiPort,
+		DashboardPort:          &dashboardPort,
+		DeliveryWorkersEnabled: st.DeliveryWorkersEnabled,
+		DeliveryOwnerHost:      st.DeliveryOwnerHost,
+		WorkerCount:            st.WorkerCount,
+		ActiveChecks:           st.ActiveChecks,
+		QueueDepth:             st.QueueDepth,
+		RetryQueueSize:         st.RetryQueueSize,
+		WPCOMCircuitOpen:       st.WPCOMCircuitOpen,
+		WPCOMQueueDepth:        st.WPCOMQueueDepth,
+		GoSysMemMB:             st.GoSysMemMB,
+		DependencyHealth:       dashboardHealthToFleet(health),
+	}
+}
+
+func dashboardHealthToFleet(entries []dashboard.HealthEntry) []fleethealth.DependencyHealth {
+	out := make([]fleethealth.DependencyHealth, 0, len(entries))
+	for _, entry := range entries {
+		out = append(out, fleethealth.DependencyHealth{
+			Name:      entry.Name,
+			Status:    entry.Status,
+			LatencyMS: entry.Latency,
+			LastError: entry.LastError,
+			CheckedAt: entry.CheckedAt,
+		})
+	}
+	return out
+}
+
+func currentGoSysMemMB() int {
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+	return int(ms.Sys / 1024 / 1024)
 }
 
 func mysqlHealthEntry(ctx context.Context, sqlDB *sql.DB, checkedAt time.Time) dashboard.HealthEntry {
@@ -570,7 +736,11 @@ func deliveryOwnerStatus(cfg *config.Config, hostname string) (string, string) {
 func cmdStatus() {
 	// Connect to the running instance's internal API.
 	port := envOrDefault("DASHBOARD_PORT", "8080")
-	resp, err := httpGet(fmt.Sprintf("http://localhost:%s/api/state", port))
+	host := envOrDefault("DASHBOARD_HOST", envOrDefault("DASHBOARD_BIND_ADDR", "localhost"))
+	if host == "0.0.0.0" || host == "::" {
+		host = "localhost"
+	}
+	resp, err := httpGet(fmt.Sprintf("http://%s/api/state", net.JoinHostPort(host, port)))
 	if err != nil {
 		log.Fatalf("status: %v", err)
 	}

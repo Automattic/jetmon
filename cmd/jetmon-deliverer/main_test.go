@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Automattic/jetmon/internal/config"
+	"github.com/Automattic/jetmon/internal/fleethealth"
+	"github.com/DATA-DOG/go-sqlmock"
 )
 
 func TestDeliveryWorkersShouldStart(t *testing.T) {
@@ -195,6 +199,59 @@ func TestEmailTransportLabelAndDelivery(t *testing.T) {
 				t.Fatalf("emailTransportDelivers() = %v, want %v", got, tt.delivers)
 			}
 		})
+	}
+}
+
+func TestDelivererProcessHealthSnapshot(t *testing.T) {
+	started := time.Date(2026, 4, 30, 11, 0, 0, 0, time.UTC)
+	cfg := &config.Config{DeliveryOwnerHost: "deliverer-1"}
+	snapshot := delivererProcessHealthSnapshot("deliverer-1", started, fleethealth.StateRunning, cfg, true, []fleethealth.DependencyHealth{{
+		Name:      "mysql",
+		Status:    "green",
+		CheckedAt: started,
+	}})
+
+	if snapshot.HostID != "deliverer-1" {
+		t.Fatalf("HostID = %q, want deliverer-1", snapshot.HostID)
+	}
+	if snapshot.ProcessType != fleethealth.ProcessDeliverer {
+		t.Fatalf("ProcessType = %q, want deliverer", snapshot.ProcessType)
+	}
+	if !snapshot.DeliveryWorkersEnabled {
+		t.Fatal("DeliveryWorkersEnabled = false, want true")
+	}
+	if snapshot.DeliveryOwnerHost != "deliverer-1" {
+		t.Fatalf("DeliveryOwnerHost = %q, want deliverer-1", snapshot.DeliveryOwnerHost)
+	}
+	if snapshot.HealthStatus != fleethealth.HealthGreen {
+		t.Fatalf("HealthStatus = %q, want green", snapshot.HealthStatus)
+	}
+	if len(snapshot.DependencyHealth) != 1 {
+		t.Fatalf("DependencyHealth len = %d, want 1", len(snapshot.DependencyHealth))
+	}
+}
+
+func TestDelivererDependencyHealth(t *testing.T) {
+	sqlDB, mock, err := sqlmock.New(sqlmock.MonitorPingsOption(true))
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer sqlDB.Close()
+	mock.ExpectPing()
+
+	checkedAt := time.Date(2026, 4, 30, 11, 1, 0, 0, time.UTC)
+	entries := delivererDependencyHealth(context.Background(), sqlDB, false, checkedAt)
+	if len(entries) != 2 {
+		t.Fatalf("entries len = %d, want 2", len(entries))
+	}
+	if entries[0].Name != "mysql" || entries[0].Status != "green" {
+		t.Fatalf("mysql entry = %+v, want green", entries[0])
+	}
+	if entries[1].Name != "statsd" || entries[1].Status != "amber" {
+		t.Fatalf("statsd entry = %+v, want amber", entries[1])
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
 	}
 }
 

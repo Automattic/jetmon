@@ -147,6 +147,14 @@ func TestValidate(t *testing.T) {
 			mutate: func(c *Config) { c.LogFormat = "json" },
 		},
 		{
+			name:   "empty dashboard bind address falls back to localhost",
+			mutate: func(c *Config) { c.DashboardBindAddr = "" },
+		},
+		{
+			name:   "remote dashboard bind address is explicit and valid",
+			mutate: func(c *Config) { c.DashboardBindAddr = "0.0.0.0" },
+		},
+		{
 			name:   "stub email transport is valid",
 			mutate: func(c *Config) { c.EmailTransport = "stub" },
 		},
@@ -230,6 +238,23 @@ func TestPinnedBucketRange(t *testing.T) {
 	min, max, ok = cfg.PinnedBucketRange()
 	if !ok || min != 20 || max != 29 {
 		t.Fatalf("PinnedBucketRange legacy = %d-%d ok=%v, want 20-29 true", min, max, ok)
+	}
+}
+
+func TestValidateDefaultsDashboardBindAddr(t *testing.T) {
+	cfg := &Config{
+		AuthToken:       "token",
+		NumWorkers:      10,
+		BucketTotal:     100,
+		BucketTarget:    50,
+		NetCommsTimeout: 10,
+		LogFormat:       "text",
+	}
+	if err := validate(cfg); err != nil {
+		t.Fatalf("validate() error = %v", err)
+	}
+	if cfg.DashboardBindAddr != "127.0.0.1" {
+		t.Fatalf("DashboardBindAddr = %q, want 127.0.0.1", cfg.DashboardBindAddr)
 	}
 }
 

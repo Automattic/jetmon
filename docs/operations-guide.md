@@ -23,7 +23,7 @@ Key settings:
 | `MIN_TIME_BETWEEN_ROUNDS_SEC` | 300 | Minimum seconds between check rounds |
 | `NET_COMMS_TIMEOUT` | 10 | Default per-check HTTP timeout in seconds |
 | `PEER_OFFLINE_LIMIT` | 3 | Veriflier agreements required to confirm downtime |
-| `WORKER_MAX_MEM_MB` | 53 | RSS threshold that triggers worker-pool drain |
+| `WORKER_MAX_MEM_MB` | 53 | Go runtime memory threshold that triggers worker-pool drain |
 | `BUCKET_TOTAL` | 1000 | Total bucket range across all hosts |
 | `BUCKET_TARGET` | 500 | Maximum buckets this host should own |
 | `BUCKET_HEARTBEAT_GRACE_SEC` | 600 | Seconds before a silent host's buckets are reclaimed |
@@ -32,6 +32,7 @@ Key settings:
 | `LEGACY_STATUS_PROJECTION_ENABLE` | true | Keep v1 status fields projected during the [v1-to-v2 migration](v1-to-v2-migration.md) |
 | `LOG_FORMAT` | `text` | `text` or `json` |
 | `DASHBOARD_PORT` | 8080 | Internal operator dashboard port, 0 disables it |
+| `DASHBOARD_BIND_ADDR` | 127.0.0.1 | Dashboard listener address; keep localhost unless a trusted management network requires remote access |
 | `API_PORT` | 0 | Internal REST API port, 0 disables it |
 | `DELIVERY_OWNER_HOST` | empty | Optional host allowed to run embedded delivery workers |
 | `DEBUG_PORT` | 6060 | localhost-only pprof port, 0 disables it |
@@ -207,11 +208,32 @@ Status and reload commands:
 ./jetmon2 drain
 ```
 
-The operator dashboard is available on `DASHBOARD_PORT` when enabled. It shows
-worker count, active checks, queue depth, retry queue depth, throughput, round
-time, owned buckets, rollout guard state, RSS, WPCOM circuit-breaker state, and
-dependency health for MySQL, Verifliers, WPCOM, StatsD, and local log/stats
-writes.
+The host operator dashboard is available on `DASHBOARD_BIND_ADDR:DASHBOARD_PORT`
+when enabled. It defaults to `127.0.0.1`, because the host dashboard is
+unauthenticated and exposes internal dependency details, rollout commands, host
+names, ports, and bucket ownership. Bind it to a remote address only behind
+trusted operator-network controls.
+
+The dashboard shows a red/amber/green host summary with named issues, worker
+count, active checks, queue depth, retry queue depth, throughput, round time,
+owned buckets, rollout guard state, Go runtime system memory, WPCOM
+circuit-breaker state, dependency health for MySQL, Verifliers, WPCOM, StatsD,
+local log/stats writes, and the rollout commands an operator is most likely to
+need from that host.
+
+The dashboard exposes three local JSON endpoints:
+
+```text
+GET /api/state   # raw host state snapshot
+GET /api/health  # dependency health list
+GET /api/host    # combined host state, dependency health, and summary
+```
+
+Long-running `jetmon2` and `jetmon-deliverer` processes also publish compact
+heartbeat snapshots to `jetmon_process_health`. That table is the durable data
+source for the planned fleet dashboard. Treat stale `updated_at` values as
+unknown/unhealthy; the row is the last reported process state, not proof that a
+host is still alive.
 
 Bucket coverage can be inspected directly:
 
@@ -219,6 +241,22 @@ Bucket coverage can be inspected directly:
 SELECT host_id, bucket_min, bucket_max, last_heartbeat, status
 FROM jetmon_hosts
 ORDER BY bucket_min;
+```
+
+Process health can be inspected directly:
+
+```sql
+SELECT process_id, host_id, process_type, state, updated_at
+FROM jetmon_process_health
+ORDER BY process_type, host_id;
+```
+
+For health rollups and memory:
+
+```sql
+SELECT process_id, state, health_status, go_sys_mem_mb, updated_at
+FROM jetmon_process_health
+ORDER BY health_status DESC, updated_at;
 ```
 
 A host whose heartbeat is older than `BUCKET_HEARTBEAT_GRACE_SEC` will have its
@@ -268,9 +306,9 @@ go tool pprof heap.prof
 
 The debug listener binds to localhost only. Set `DEBUG_PORT` to 0 to disable it.
 
-If RSS exceeds `WORKER_MAX_MEM_MB`, the goroutine pool shrinks by 10 percent via
-graceful drain. Sustained memory pressure should be investigated with pprof
-before increasing the limit.
+If Go runtime memory exceeds `WORKER_MAX_MEM_MB`, the goroutine pool shrinks by
+10 percent via graceful drain. Sustained memory pressure should be investigated
+with pprof and operating-system RSS before increasing the limit.
 
 ## Veriflier Health
 

@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHandleState(t *testing.T) {
@@ -18,10 +20,13 @@ func TestHandleState(t *testing.T) {
 		BucketOwnership:               "pinned range=0-99",
 		LegacyStatusProjectionEnabled: true,
 		DeliveryWorkersEnabled:        true,
+		DeliveryConfigEligible:        true,
 		DeliveryOwnerHost:             "api-1",
 		RolloutPreflightCommand:       "./jetmon2 rollout pinned-check",
+		RolloutCutoverCommand:         "./jetmon2 rollout cutover-check --since=15m",
 		RolloutActivityCommand:        "./jetmon2 rollout activity-check --since=15m",
 		RolloutRollbackCommand:        "./jetmon2 rollout rollback-check",
+		RolloutStateReportCommand:     "./jetmon2 rollout state-report --since=15m",
 		ProjectionDriftCommand:        "./jetmon2 rollout projection-drift",
 	})
 
@@ -51,17 +56,26 @@ func TestHandleState(t *testing.T) {
 	if !st.DeliveryWorkersEnabled {
 		t.Fatal("DeliveryWorkersEnabled = false, want true")
 	}
+	if !st.DeliveryConfigEligible {
+		t.Fatal("DeliveryConfigEligible = false, want true")
+	}
 	if st.DeliveryOwnerHost != "api-1" {
 		t.Fatalf("DeliveryOwnerHost = %q, want api-1", st.DeliveryOwnerHost)
 	}
 	if st.RolloutPreflightCommand != "./jetmon2 rollout pinned-check" {
 		t.Fatalf("RolloutPreflightCommand = %q", st.RolloutPreflightCommand)
 	}
+	if st.RolloutCutoverCommand != "./jetmon2 rollout cutover-check --since=15m" {
+		t.Fatalf("RolloutCutoverCommand = %q", st.RolloutCutoverCommand)
+	}
 	if st.RolloutActivityCommand != "./jetmon2 rollout activity-check --since=15m" {
 		t.Fatalf("RolloutActivityCommand = %q", st.RolloutActivityCommand)
 	}
 	if st.RolloutRollbackCommand != "./jetmon2 rollout rollback-check" {
 		t.Fatalf("RolloutRollbackCommand = %q", st.RolloutRollbackCommand)
+	}
+	if st.RolloutStateReportCommand != "./jetmon2 rollout state-report --since=15m" {
+		t.Fatalf("RolloutStateReportCommand = %q", st.RolloutStateReportCommand)
 	}
 	if st.ProjectionDriftCommand != "./jetmon2 rollout projection-drift" {
 		t.Fatalf("ProjectionDriftCommand = %q", st.ProjectionDriftCommand)
@@ -94,6 +108,46 @@ func TestHandleHealth(t *testing.T) {
 	}
 }
 
+func TestHandleHostSnapshot(t *testing.T) {
+	srv := New("test-host")
+	srv.Update(State{
+		WorkerCount:            5,
+		WPCOMCircuitOpen:       true,
+		DeliveryWorkersEnabled: true,
+	})
+	srv.UpdateHealth([]HealthEntry{
+		{Name: "mysql", Status: "green"},
+		{Name: "statsd", Status: "amber"},
+	})
+
+	r := httptest.NewRequest(http.MethodGet, "/api/host", nil)
+	w := httptest.NewRecorder()
+	srv.handleHost(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var snapshot HostSnapshot
+	if err := json.NewDecoder(w.Body).Decode(&snapshot); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if snapshot.State.Hostname != "test-host" {
+		t.Fatalf("Hostname = %q, want test-host", snapshot.State.Hostname)
+	}
+	if len(snapshot.Health) != 2 {
+		t.Fatalf("health len = %d, want 2", len(snapshot.Health))
+	}
+	if snapshot.Summary.Status != "red" {
+		t.Fatalf("summary status = %q, want red", snapshot.Summary.Status)
+	}
+	if snapshot.Summary.RedCount == 0 {
+		t.Fatalf("summary red count = %d, want non-zero", snapshot.Summary.RedCount)
+	}
+	if len(snapshot.Summary.Issues) == 0 || !strings.Contains(snapshot.Summary.Issues[0], "wpcom") {
+		t.Fatalf("summary issues = %#v, want wpcom issue first", snapshot.Summary.Issues)
+	}
+}
+
 func TestHandleIndex(t *testing.T) {
 	srv := New("test-host")
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -112,6 +166,12 @@ func TestHandleIndex(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "id=\"preflight\"") {
 		t.Fatal("body does not contain rollout preflight card")
 	}
+	if !strings.Contains(w.Body.String(), "id=\"cutover\"") {
+		t.Fatal("body does not contain rollout cutover command")
+	}
+	if !strings.Contains(w.Body.String(), "id=\"state-report\"") {
+		t.Fatal("body does not contain rollout state report command")
+	}
 	if !strings.Contains(w.Body.String(), "id=\"activity\"") {
 		t.Fatal("body does not contain rollout activity card")
 	}
@@ -121,8 +181,59 @@ func TestHandleIndex(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "id=\"delivery-owner\"") {
 		t.Fatal("body does not contain delivery owner card")
 	}
+	if !strings.Contains(w.Body.String(), "id=\"delivery-eligible\"") {
+		t.Fatal("body does not contain delivery config eligibility card")
+	}
+	if !strings.Contains(w.Body.String(), "id=\"go-sys\"") {
+		t.Fatal("body does not contain Go system memory card")
+	}
 	if !strings.Contains(w.Body.String(), "id=\"health\"") {
 		t.Fatal("body does not contain dependency health grid")
+	}
+	if !strings.Contains(w.Body.String(), "/api/host") {
+		t.Fatal("body does not fetch combined host snapshot")
+	}
+}
+
+func TestSummarizeHost(t *testing.T) {
+	waiting := SummarizeHost(State{UpdatedAt: time.Now()}, nil)
+	if waiting.Status != "amber" {
+		t.Fatalf("waiting summary status = %q, want amber", waiting.Status)
+	}
+	if waiting.AmberCount == 0 || len(waiting.Issues) == 0 || !strings.Contains(waiting.Issues[0], "dependency health") {
+		t.Fatalf("waiting summary = %+v, want dependency health issue", waiting)
+	}
+
+	st := State{UpdatedAt: time.Now(), DeliveryWorkersEnabled: true, DeliveryConfigEligible: true}
+	summary := SummarizeHost(st, []HealthEntry{{Name: "mysql", Status: "green"}})
+	if summary.Status != "amber" {
+		t.Fatalf("summary status = %q, want amber for unset delivery owner", summary.Status)
+	}
+	if len(summary.Issues) == 0 || !strings.Contains(summary.Issues[0], "DELIVERY_OWNER_HOST") {
+		t.Fatalf("summary issues = %#v, want delivery owner issue", summary.Issues)
+	}
+
+	st.DeliveryOwnerHost = "host-a"
+	summary = SummarizeHost(st, []HealthEntry{{Name: "statsd", Status: "amber", LastError: "not initialized"}, {Name: "mysql", Status: "red", LastError: "access denied"}})
+	if summary.Status != "red" {
+		t.Fatalf("summary status = %q, want red for dependency failure", summary.Status)
+	}
+	if len(summary.Issues) < 2 || !strings.HasPrefix(summary.Issues[0], "mysql red") || !strings.HasPrefix(summary.Issues[1], "statsd amber") {
+		t.Fatalf("summary issues = %#v, want red issues before amber issues", summary.Issues)
+	}
+
+	summary = SummarizeHost(st, []HealthEntry{{Name: "mysql", Status: "green"}})
+	if summary.Status != "green" {
+		t.Fatalf("summary status = %q, want green", summary.Status)
+	}
+	if len(summary.Issues) != 0 {
+		t.Fatalf("summary issues = %#v, want none", summary.Issues)
+	}
+
+	st.DeliveryConfigEligible = false
+	summary = SummarizeHost(st, []HealthEntry{{Name: "mysql", Status: "green"}})
+	if summary.Status != "amber" || len(summary.Issues) == 0 {
+		t.Fatalf("summary = %+v, want amber config mismatch issue", summary)
 	}
 }
 
@@ -220,6 +331,21 @@ func TestHandleSSESendsInitialStateAndCleanup(t *testing.T) {
 
 	// Disconnect the client — handleSSE should return via r.Context().Done().
 	cancel()
+}
+
+func TestHandleSSERejectsExcessClients(t *testing.T) {
+	srv := New("test-host")
+	for i := 0; i < maxSSEClients; i++ {
+		srv.sseClients[fmt.Sprintf("client-%d", i)] = make(chan string, 1)
+	}
+
+	r := httptest.NewRequest(http.MethodGet, "/events", nil)
+	w := httptest.NewRecorder()
+	srv.handleSSE(w, r)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", w.Code)
+	}
 }
 
 func TestBroadcastDropsOnSlowClient(t *testing.T) {

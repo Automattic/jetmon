@@ -564,7 +564,7 @@ If `DASHBOARD_PORT` is enabled, confirm:
   and log/stats directory writes
 - WPCOM circuit breaker is closed
 - retry queue depth is not growing unexpectedly
-- RSS stays below the configured guardrail
+- Go runtime system memory stays below the configured guardrail
 - delivery workers are disabled unless explicitly approved
 
 Useful direct checks:

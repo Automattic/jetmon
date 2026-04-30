@@ -61,6 +61,28 @@ The API can expose a derived `cli_batch` field for local API CLI test data when
 | `jetmon_alert_deliveries` | Outbound alert-contact attempts and retry state |
 | `jetmon_alert_dispatch_progress` | Alert worker high-water marks over transitions |
 | `jetmon_site_tenants` | Tenant-to-site mapping for gateway-scoped API access |
+| `jetmon_process_health` | Durable per-process heartbeat snapshots for host and fleet dashboards |
+
+## Process Health
+
+`jetmon_process_health` is the durable plumbing for fleet-level operator views.
+Each long-running process owns one stable `process_id` such as
+`<host>:monitor` or `<host>:deliverer` and periodically upserts a compact
+snapshot:
+
+- process identity: host, process type, PID, version, build date, Go version
+- lifecycle state: `running`, `idle`, `stopping`, or `stopped`
+- health rollup: `green`, `amber`, or `red`, derived from local dependency
+  health and rollout-relevant warnings
+- monitor state: bucket range, ownership mode, worker counts, queue depths,
+  WPCOM circuit/queue state, delivery-owner state, API/dashboard ports, Go
+  runtime system memory
+- dependency health JSON: MySQL, Verifliers, WPCOM, StatsD, and local writable
+  directories where applicable
+
+Fleet dashboards must treat stale `updated_at` values as unknown or unhealthy.
+The row says what the process last reported; it is not proof that the process is
+still alive after the heartbeat age exceeds the dashboard threshold.
 
 ## Event Source Of Truth
 
