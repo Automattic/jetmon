@@ -71,9 +71,12 @@ Each long-running process owns one stable `process_id` such as
 snapshot:
 
 - process identity: host, process type, PID, version, build date, Go version
-- lifecycle state: `healthy`, `idle`, `degraded`, `stopping`, or `stopped`
+- lifecycle state: `running`, `idle`, `stopping`, or `stopped`
+- health rollup: `green`, `amber`, or `red`, derived from local dependency
+  health and rollout-relevant warnings
 - monitor state: bucket range, ownership mode, worker counts, queue depths,
-  WPCOM circuit/queue state, delivery-owner state, API/dashboard ports, RSS
+  WPCOM circuit/queue state, delivery-owner state, API/dashboard ports, Go
+  runtime system memory
 - dependency health JSON: MySQL, Verifliers, WPCOM, StatsD, and local writable
   directories where applicable
 

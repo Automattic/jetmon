@@ -33,6 +33,7 @@
 
 	"LOG_FORMAT"     : "text",
 	"DASHBOARD_PORT" : 8080,
+	"DASHBOARD_BIND_ADDR" : "127.0.0.1",
 	"API_PORT"       : 0,
 	"DELIVERY_OWNER_HOST": "",
 	"DEBUG_PORT"     : 6060,

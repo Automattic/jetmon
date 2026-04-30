@@ -420,6 +420,14 @@ var migrations = []migration{
 		INDEX idx_host_updated (host_id, updated_at),
 		INDEX idx_state_updated (state, updated_at)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
+
+	// Migration 25 splits process lifecycle from health rollup and renames
+	// the memory column to the metric it actually stores. The value comes from
+	// runtime.MemStats.Sys, not operating-system RSS.
+	{25, `ALTER TABLE jetmon_process_health
+		ADD COLUMN health_status VARCHAR(16) NOT NULL DEFAULT 'green' AFTER state,
+		CHANGE COLUMN mem_rss_mb go_sys_mem_mb INT UNSIGNED NOT NULL DEFAULT 0,
+		ADD INDEX idx_health_status_updated (health_status, updated_at)`},
 }
 
 // Migrate applies all pending migrations idempotently.

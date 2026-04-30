@@ -39,7 +39,8 @@ func TestUpsertSnapshot(t *testing.T) {
 			"abc123",
 			"2026-04-30T10:00:00Z",
 			"go1.26.2",
-			StateHealthy,
+			StateRunning,
+			HealthGreen,
 			started,
 			updated,
 			bucketMin,
@@ -67,7 +68,8 @@ func TestUpsertSnapshot(t *testing.T) {
 		Version:                "abc123",
 		BuildDate:              "2026-04-30T10:00:00Z",
 		GoVersion:              "go1.26.2",
-		State:                  StateHealthy,
+		State:                  StateRunning,
+		HealthStatus:           HealthGreen,
 		StartedAt:              started,
 		UpdatedAt:              updated,
 		BucketMin:              &bucketMin,
@@ -82,7 +84,7 @@ func TestUpsertSnapshot(t *testing.T) {
 		QueueDepth:             4,
 		RetryQueueSize:         5,
 		WPCOMQueueDepth:        2,
-		MemRSSMB:               88,
+		GoSysMemMB:             88,
 		DependencyHealth: []DependencyHealth{{
 			Name:      "mysql",
 			Status:    "green",
@@ -119,7 +121,7 @@ func TestMarkStopped(t *testing.T) {
 
 	when := time.Date(2026, 4, 30, 10, 2, 0, 0, time.UTC)
 	mock.ExpectExec("UPDATE jetmon_process_health").
-		WithArgs(StateStopped, when, "host-a:deliverer").
+		WithArgs(StateStopped, HealthAmber, when, "host-a:deliverer").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	if err := MarkStopped(context.Background(), sqlDB, "host-a:deliverer", when); err != nil {
@@ -127,5 +129,26 @@ func TestMarkStopped(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestRollupHealthStatus(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []DependencyHealth
+		want string
+	}{
+		{name: "empty is green", want: HealthGreen},
+		{name: "green entries are green", in: []DependencyHealth{{Status: HealthGreen}}, want: HealthGreen},
+		{name: "amber wins over green", in: []DependencyHealth{{Status: HealthGreen}, {Status: HealthAmber}}, want: HealthAmber},
+		{name: "red wins", in: []DependencyHealth{{Status: HealthAmber}, {Status: HealthRed}}, want: HealthRed},
+		{name: "unknown status is amber", in: []DependencyHealth{{Status: "unknown"}}, want: HealthAmber},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := RollupHealthStatus(tt.in); got != tt.want {
+				t.Fatalf("RollupHealthStatus() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

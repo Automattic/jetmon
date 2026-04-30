@@ -225,7 +225,7 @@ A lightweight web UI served by the binary itself (no separate process) on a conf
 - Owned bucket range
 - Bucket ownership mode, legacy projection mode, delivery-worker ownership, and
   rollout preflight / projection-drift commands
-- RSS memory usage
+- Go runtime system memory usage
 - WPCOM circuit-breaker state and queued notification depth
 - Live dependency health for MySQL, configured Verifliers, WPCOM, StatsD, and
   log/stats directory writes
@@ -251,7 +251,8 @@ on.
 Long-running `jetmon2` and `jetmon-deliverer` processes also publish compact
 heartbeat snapshots into `jetmon_process_health`. That table is the foundation
 for a fleet dashboard that can summarize monitor hosts, standalone deliverers,
-stale process heartbeats, delivery-owner state, and local dependency health
+stale process heartbeats, lifecycle state, red/amber/green health rollups,
+delivery-owner state, Go runtime system memory, and local dependency health
 without polling every host dashboard directly.
 
 **False Positive Tracker**
@@ -347,7 +348,7 @@ Benefits over the current static configuration:
 - **Veriflier unreachable**: A Veriflier that fails to respond is marked unhealthy and excluded from confirmation requests. Remaining healthy Verifliers continue; the `PEER_OFFLINE_LIMIT` threshold adjusts dynamically to the number of healthy Verifliers (with a floor to prevent false confirmations).
 - **WPCOM API failures**: Circuit breaker pattern. After N consecutive failures the circuit opens, pending notifications are queued in memory with timestamps, and the circuit is retried on a backoff schedule. Queue is bounded; oldest entries are dropped with an error log if it fills.
 - **Stuck check goroutine**: A watchdog goroutine tracks the last activity time of each check. A goroutine that exceeds `NET_COMMS_TIMEOUT * 2` without completing is cancelled via context cancellation, its result counted as a timeout, and a new goroutine is allocated to replace it.
-- **Memory pressure**: The binary exposes its RSS via the health endpoint. If RSS exceeds a configurable threshold, the pool size is reduced by 10% via graceful drain until pressure eases — the equivalent of the current worker recycling mechanism, but without process death.
+- **Memory pressure**: The binary exposes Go runtime system memory via the health endpoint. If that exceeds a configurable threshold, the pool size is reduced by 10% via graceful drain until pressure eases — the equivalent of the current worker recycling mechanism, but without process death. True operating-system RSS can still be checked with host tooling when investigating sustained memory pressure.
 
 ---
 

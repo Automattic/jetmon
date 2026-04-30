@@ -19,6 +19,7 @@ func TestHandleState(t *testing.T) {
 		BucketOwnership:               "pinned range=0-99",
 		LegacyStatusProjectionEnabled: true,
 		DeliveryWorkersEnabled:        true,
+		DeliveryConfigEligible:        true,
 		DeliveryOwnerHost:             "api-1",
 		RolloutPreflightCommand:       "./jetmon2 rollout pinned-check",
 		RolloutCutoverCommand:         "./jetmon2 rollout cutover-check --since=15m",
@@ -53,6 +54,9 @@ func TestHandleState(t *testing.T) {
 	}
 	if !st.DeliveryWorkersEnabled {
 		t.Fatal("DeliveryWorkersEnabled = false, want true")
+	}
+	if !st.DeliveryConfigEligible {
+		t.Fatal("DeliveryConfigEligible = false, want true")
 	}
 	if st.DeliveryOwnerHost != "api-1" {
 		t.Fatalf("DeliveryOwnerHost = %q, want api-1", st.DeliveryOwnerHost)
@@ -138,6 +142,9 @@ func TestHandleHostSnapshot(t *testing.T) {
 	if snapshot.Summary.RedCount == 0 {
 		t.Fatalf("summary red count = %d, want non-zero", snapshot.Summary.RedCount)
 	}
+	if len(snapshot.Summary.Issues) == 0 || !strings.Contains(snapshot.Summary.Issues[0], "wpcom") {
+		t.Fatalf("summary issues = %#v, want wpcom issue first", snapshot.Summary.Issues)
+	}
 }
 
 func TestHandleIndex(t *testing.T) {
@@ -173,6 +180,12 @@ func TestHandleIndex(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "id=\"delivery-owner\"") {
 		t.Fatal("body does not contain delivery owner card")
 	}
+	if !strings.Contains(w.Body.String(), "id=\"delivery-eligible\"") {
+		t.Fatal("body does not contain delivery config eligibility card")
+	}
+	if !strings.Contains(w.Body.String(), "id=\"go-sys\"") {
+		t.Fatal("body does not contain Go system memory card")
+	}
 	if !strings.Contains(w.Body.String(), "id=\"health\"") {
 		t.Fatal("body does not contain dependency health grid")
 	}
@@ -182,21 +195,36 @@ func TestHandleIndex(t *testing.T) {
 }
 
 func TestSummarizeHost(t *testing.T) {
-	st := State{UpdatedAt: time.Now(), DeliveryWorkersEnabled: true}
+	st := State{UpdatedAt: time.Now(), DeliveryWorkersEnabled: true, DeliveryConfigEligible: true}
 	summary := SummarizeHost(st, []HealthEntry{{Name: "mysql", Status: "green"}})
 	if summary.Status != "amber" {
 		t.Fatalf("summary status = %q, want amber for unset delivery owner", summary.Status)
 	}
+	if len(summary.Issues) == 0 || !strings.Contains(summary.Issues[0], "DELIVERY_OWNER_HOST") {
+		t.Fatalf("summary issues = %#v, want delivery owner issue", summary.Issues)
+	}
 
 	st.DeliveryOwnerHost = "host-a"
-	summary = SummarizeHost(st, []HealthEntry{{Name: "mysql", Status: "red"}})
+	summary = SummarizeHost(st, []HealthEntry{{Name: "statsd", Status: "amber", LastError: "not initialized"}, {Name: "mysql", Status: "red", LastError: "access denied"}})
 	if summary.Status != "red" {
 		t.Fatalf("summary status = %q, want red for dependency failure", summary.Status)
+	}
+	if len(summary.Issues) < 2 || !strings.HasPrefix(summary.Issues[0], "mysql red") || !strings.HasPrefix(summary.Issues[1], "statsd amber") {
+		t.Fatalf("summary issues = %#v, want red issues before amber issues", summary.Issues)
 	}
 
 	summary = SummarizeHost(st, []HealthEntry{{Name: "mysql", Status: "green"}})
 	if summary.Status != "green" {
 		t.Fatalf("summary status = %q, want green", summary.Status)
+	}
+	if len(summary.Issues) != 0 {
+		t.Fatalf("summary issues = %#v, want none", summary.Issues)
+	}
+
+	st.DeliveryConfigEligible = false
+	summary = SummarizeHost(st, []HealthEntry{{Name: "mysql", Status: "green"}})
+	if summary.Status != "amber" || len(summary.Issues) == 0 {
+		t.Fatalf("summary = %+v, want amber config mismatch issue", summary)
 	}
 }
 

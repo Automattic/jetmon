@@ -224,7 +224,7 @@ orchestrator.Run()
           │     │     └─ handleRecovery() or handleFailure()
           │     │
           │     ├─ emit StatsD metrics
-          │     └─ applyMemoryPressure()       // drain workers if RSS > limit
+          │     └─ applyMemoryPressure()       // drain workers if Go runtime memory > limit
           │
           └─ sleep to enforce MinTimeBetweenRoundsSec
 ```
@@ -415,6 +415,8 @@ Database Tables
     process_id            Stable key such as <host>:monitor or <host>:deliverer
     host_id/process_type  Fleet grouping dimensions
     state/updated_at      Lifecycle state and freshness marker
+    health_status         Green/amber/red process health rollup
+    go_sys_mem_mb         Go runtime system memory in MB
     dependency_health     JSON dependency health summary
 
   jetmon_events           Authoritative v2 incident current state

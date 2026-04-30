@@ -205,7 +205,7 @@ func TestEmailTransportLabelAndDelivery(t *testing.T) {
 func TestDelivererProcessHealthSnapshot(t *testing.T) {
 	started := time.Date(2026, 4, 30, 11, 0, 0, 0, time.UTC)
 	cfg := &config.Config{DeliveryOwnerHost: "deliverer-1"}
-	snapshot := delivererProcessHealthSnapshot("deliverer-1", started, fleethealth.StateHealthy, cfg, true, []fleethealth.DependencyHealth{{
+	snapshot := delivererProcessHealthSnapshot("deliverer-1", started, fleethealth.StateRunning, cfg, true, []fleethealth.DependencyHealth{{
 		Name:      "mysql",
 		Status:    "green",
 		CheckedAt: started,
@@ -222,6 +222,9 @@ func TestDelivererProcessHealthSnapshot(t *testing.T) {
 	}
 	if snapshot.DeliveryOwnerHost != "deliverer-1" {
 		t.Fatalf("DeliveryOwnerHost = %q, want deliverer-1", snapshot.DeliveryOwnerHost)
+	}
+	if snapshot.HealthStatus != fleethealth.HealthGreen {
+		t.Fatalf("HealthStatus = %q, want green", snapshot.HealthStatus)
 	}
 	if len(snapshot.DependencyHealth) != 1 {
 		t.Fatalf("DependencyHealth len = %d, want 1", len(snapshot.DependencyHealth))

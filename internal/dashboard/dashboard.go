@@ -21,12 +21,13 @@ type State struct {
 	RoundDurationMs               int64     `json:"round_duration_ms"`
 	WPCOMCircuitOpen              bool      `json:"wpcom_circuit_open"`
 	WPCOMQueueDepth               int       `json:"wpcom_queue_depth"`
-	MemRSSMB                      int       `json:"mem_rss_mb"`
+	GoSysMemMB                    int       `json:"go_sys_mem_mb"`
 	BucketMin                     int       `json:"bucket_min"`
 	BucketMax                     int       `json:"bucket_max"`
 	BucketOwnership               string    `json:"bucket_ownership"`
 	LegacyStatusProjectionEnabled bool      `json:"legacy_status_projection_enabled"`
 	DeliveryWorkersEnabled        bool      `json:"delivery_workers_enabled"`
+	DeliveryConfigEligible        bool      `json:"delivery_config_eligible"`
 	DeliveryOwnerHost             string    `json:"delivery_owner_host"`
 	RolloutPreflightCommand       string    `json:"rollout_preflight_command"`
 	RolloutCutoverCommand         string    `json:"rollout_cutover_command"`
@@ -58,11 +59,12 @@ type HostSnapshot struct {
 // HostSummary gives callers an immediate status without reimplementing the
 // dashboard's red/amber/green rules.
 type HostSummary struct {
-	Status     string `json:"status"`
-	Message    string `json:"message"`
-	RedCount   int    `json:"red_count"`
-	AmberCount int    `json:"amber_count"`
-	GreenCount int    `json:"green_count"`
+	Status     string   `json:"status"`
+	Message    string   `json:"message"`
+	Issues     []string `json:"issues,omitempty"`
+	RedCount   int      `json:"red_count"`
+	AmberCount int      `json:"amber_count"`
+	GreenCount int      `json:"green_count"`
 }
 
 // Server is the operator dashboard HTTP server.
@@ -90,7 +92,7 @@ func (s *Server) Update(st State) {
 
 	var ms runtime.MemStats
 	runtime.ReadMemStats(&ms)
-	st.MemRSSMB = int(ms.Sys / 1024 / 1024)
+	st.GoSysMemMB = int(ms.Sys / 1024 / 1024)
 
 	s.mu.Lock()
 	s.state = st
@@ -116,7 +118,13 @@ func (s *Server) Listen(addr string) error {
 	mux.HandleFunc("/api/host", s.handleHost)
 
 	log.Printf("dashboard: listening on %s", addr)
-	return http.ListenAndServe(addr, mux)
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+	return srv.ListenAndServe()
 }
 
 // ListenDebug starts a localhost-only pprof/debug server on the given address.
@@ -227,30 +235,42 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 // operator attention, green means no local blocker is visible.
 func SummarizeHost(st State, health []HealthEntry) HostSummary {
 	summary := HostSummary{Status: "green", Message: "host checks are green"}
+	redIssues := []string{}
+	amberIssues := []string{}
 	if st.UpdatedAt.IsZero() {
 		summary.Status = "amber"
 		summary.Message = "waiting for host state"
+		amberIssues = append(amberIssues, "host state has not been published yet")
 	}
 	wpcomAlreadyRed := false
 	for _, entry := range health {
 		switch entry.Status {
 		case "red":
 			summary.RedCount++
+			redIssues = append(redIssues, issueText(entry))
 			if entry.Name == "wpcom" {
 				wpcomAlreadyRed = true
 			}
 		case "amber":
 			summary.AmberCount++
+			amberIssues = append(amberIssues, issueText(entry))
 		case "green":
 			summary.GreenCount++
 		}
 	}
 	if st.WPCOMCircuitOpen && !wpcomAlreadyRed {
 		summary.RedCount++
+		redIssues = append(redIssues, "wpcom red: circuit open")
 	}
 	if st.DeliveryWorkersEnabled && st.DeliveryOwnerHost == "" {
 		summary.AmberCount++
+		amberIssues = append(amberIssues, "delivery amber: runtime workers are enabled without DELIVERY_OWNER_HOST")
 	}
+	if st.DeliveryWorkersEnabled != st.DeliveryConfigEligible {
+		summary.AmberCount++
+		amberIssues = append(amberIssues, "delivery amber: runtime worker state differs from current config; restart to apply ownership changes")
+	}
+	summary.Issues = append(redIssues, amberIssues...)
 	switch {
 	case summary.RedCount > 0:
 		summary.Status = "red"
@@ -262,6 +282,14 @@ func SummarizeHost(st State, health []HealthEntry) HostSummary {
 		summary.Message = "host checks are green"
 	}
 	return summary
+}
+
+func issueText(entry HealthEntry) string {
+	detail := entry.LastError
+	if detail == "" {
+		detail = "no detail reported"
+	}
+	return fmt.Sprintf("%s %s: %s", entry.Name, entry.Status, detail)
 }
 
 const dashboardHTML = `<!DOCTYPE html>
@@ -315,6 +343,8 @@ const dashboardHTML = `<!DOCTYPE html>
   .summary.red { border-left-color: var(--red); }
   .summary-title { font-size: 1.25rem; margin-bottom: 6px; }
   .summary-detail { color: var(--muted); font-size: 0.9rem; }
+  .summary-issues { margin: 10px 0 0; padding-left: 18px; color: var(--text); font-size: 0.86rem; line-height: 1.45; }
+  .summary-issues:empty { display: none; }
   .summary-meta { display: grid; gap: 6px; justify-items: end; color: var(--muted); font-size: 0.8rem; }
   .status-pill {
     display: inline-flex;
@@ -366,6 +396,7 @@ const dashboardHTML = `<!DOCTYPE html>
     <div>
       <div class="summary-title" id="summary-title">Waiting for host state</div>
       <div class="summary-detail" id="summary-detail">No dashboard update has been received yet.</div>
+      <ul class="summary-issues" id="summary-issues"></ul>
     </div>
     <div class="summary-meta">
       <span id="host">host: unknown</span>
@@ -386,14 +417,15 @@ const dashboardHTML = `<!DOCTYPE html>
     <div class="card"><div class="label">Sites/Sec</div><div class="value" id="sps">-</div></div>
     <div class="card"><div class="label">Round Time</div><div class="value" id="round">-</div></div>
     <div class="card"><div class="label">Buckets</div><div class="value" id="buckets">-</div></div>
-    <div class="card"><div class="label">RSS</div><div class="value" id="rss">-</div></div>
+    <div class="card"><div class="label">Go Sys Memory</div><div class="value" id="go-sys">-</div></div>
   </div>
 
   <h2>Rollout State</h2>
   <div class="grid">
     <div class="card"><div class="label">Ownership</div><div class="value" id="ownership">-</div></div>
     <div class="card"><div class="label">Legacy Projection</div><div class="value" id="projection">-</div></div>
-    <div class="card"><div class="label">Delivery Workers</div><div class="value" id="delivery">-</div></div>
+    <div class="card"><div class="label">Delivery Runtime</div><div class="value" id="delivery">-</div></div>
+    <div class="card"><div class="label">Config Eligibility</div><div class="value" id="delivery-eligible">-</div></div>
     <div class="card"><div class="label">Delivery Owner</div><div class="value" id="delivery-owner">-</div></div>
     <div class="card"><div class="label">WPCOM Circuit</div><div class="value" id="wpcom">-</div></div>
     <div class="card"><div class="label">WPCOM Queue</div><div class="value" id="wpcomq">-</div></div>
@@ -431,10 +463,11 @@ function renderState(d) {
   setText('sps', d.sites_per_sec);
   setText('round', ((d.round_duration_ms || 0) / 1000).toFixed(1) + 's');
   setText('buckets', d.bucket_min + '-' + d.bucket_max);
-  setText('rss', d.mem_rss_mb + 'MB');
+  setText('go-sys', d.go_sys_mem_mb + 'MB');
   setText('ownership', d.bucket_ownership || '-');
   setText('projection', d.legacy_status_projection_enabled ? 'enabled' : 'disabled');
   setText('delivery', d.delivery_workers_enabled ? 'enabled' : 'disabled');
+  setText('delivery-eligible', d.delivery_config_eligible ? 'eligible' : 'not eligible');
   setText('delivery-owner', d.delivery_owner_host || 'unset');
   setText('state-report', d.rollout_state_report_command);
   setText('preflight', d.rollout_preflight_command);
@@ -460,26 +493,55 @@ function renderSummary(summary) {
   pill.textContent = status;
   setText('summary-title', summary.message || 'host status unavailable');
   setText('summary-detail', 'dependencies green=' + (summary.green_count || 0) + ' amber=' + (summary.amber_count || 0) + ' red=' + (summary.red_count || 0));
+  const issues = document.getElementById('summary-issues');
+  issues.textContent = '';
+  (summary.issues || []).slice(0, 5).forEach(function(issue) {
+    const item = document.createElement('li');
+    item.textContent = issue;
+    issues.appendChild(item);
+  });
 }
 
 function summarizeLocal() {
   let red = 0;
   let amber = currentState ? 0 : 1;
   let green = 0;
+  let redIssues = [];
+  let amberIssues = currentState ? [] : ['host state has not been published yet'];
   let wpcomAlreadyRed = false;
   currentHealth.forEach(function(entry) {
     if (entry.status === 'red') {
       red++;
+      redIssues.push(issueText(entry));
       if (entry.name === 'wpcom') wpcomAlreadyRed = true;
     }
-    else if (entry.status === 'amber') amber++;
+    else if (entry.status === 'amber') {
+      amber++;
+      amberIssues.push(issueText(entry));
+    }
     else if (entry.status === 'green') green++;
   });
-  if (currentState && currentState.wpcom_circuit_open && !wpcomAlreadyRed) red++;
-  if (currentState && currentState.delivery_workers_enabled && !currentState.delivery_owner_host) amber++;
-  if (red > 0) return { status: 'red', message: 'rollout-blocking dependency or circuit issue', red_count: red, amber_count: amber, green_count: green };
-  if (amber > 0) return { status: 'amber', message: 'operator attention needed before rollout', red_count: red, amber_count: amber, green_count: green };
-  return { status: 'green', message: 'host checks are green', red_count: red, amber_count: amber, green_count: green };
+  if (currentState && currentState.wpcom_circuit_open && !wpcomAlreadyRed) {
+    red++;
+    redIssues.push('wpcom red: circuit open');
+  }
+  if (currentState && currentState.delivery_workers_enabled && !currentState.delivery_owner_host) {
+    amber++;
+    amberIssues.push('delivery amber: runtime workers are enabled without DELIVERY_OWNER_HOST');
+  }
+  if (currentState && currentState.delivery_workers_enabled !== currentState.delivery_config_eligible) {
+    amber++;
+    amberIssues.push('delivery amber: runtime worker state differs from current config; restart to apply ownership changes');
+  }
+  const issues = redIssues.concat(amberIssues);
+  if (red > 0) return { status: 'red', message: 'rollout-blocking dependency or circuit issue', issues: issues, red_count: red, amber_count: amber, green_count: green };
+  if (amber > 0) return { status: 'amber', message: 'operator attention needed before rollout', issues: issues, red_count: red, amber_count: amber, green_count: green };
+  return { status: 'green', message: 'host checks are green', issues: [], red_count: red, amber_count: amber, green_count: green };
+}
+
+function issueText(entry) {
+  const detail = entry.last_error || 'no detail reported';
+  return entry.name + ' ' + entry.status + ': ' + detail;
 }
 
 const src = new EventSource('/events');

@@ -417,9 +417,10 @@ func TestMonitorProcessHealthSnapshot(t *testing.T) {
 		BucketMax:              99,
 		BucketOwnership:        "pinned range=0-99",
 		DeliveryWorkersEnabled: true,
+		DeliveryConfigEligible: true,
 		DeliveryOwnerHost:      "host-a",
 		WPCOMQueueDepth:        2,
-		MemRSSMB:               88,
+		GoSysMemMB:             88,
 	}
 	health := []dashboard.HealthEntry{{
 		Name:      "mysql",
@@ -427,7 +428,7 @@ func TestMonitorProcessHealthSnapshot(t *testing.T) {
 		CheckedAt: started,
 	}}
 
-	snapshot := monitorProcessHealthSnapshot("host-a", started, fleethealth.StateHealthy, cfg, st, health)
+	snapshot := monitorProcessHealthSnapshot("host-a", started, fleethealth.StateRunning, cfg, st, health)
 	if snapshot.HostID != "host-a" {
 		t.Fatalf("HostID = %q, want host-a", snapshot.HostID)
 	}
@@ -440,8 +441,23 @@ func TestMonitorProcessHealthSnapshot(t *testing.T) {
 	if snapshot.APIPort == nil || *snapshot.APIPort != 8090 {
 		t.Fatalf("APIPort = %v, want 8090", snapshot.APIPort)
 	}
+	if snapshot.HealthStatus != fleethealth.HealthGreen {
+		t.Fatalf("HealthStatus = %q, want green", snapshot.HealthStatus)
+	}
 	if len(snapshot.DependencyHealth) != 1 || snapshot.DependencyHealth[0].Name != "mysql" {
 		t.Fatalf("DependencyHealth = %+v, want mysql entry", snapshot.DependencyHealth)
+	}
+}
+
+func TestDashboardListenAddrDefaultsLocalhost(t *testing.T) {
+	cfg := &config.Config{DashboardPort: 8080}
+	if got := dashboardListenAddr(cfg); got != "127.0.0.1:8080" {
+		t.Fatalf("dashboardListenAddr() = %q, want 127.0.0.1:8080", got)
+	}
+
+	cfg.DashboardBindAddr = "0.0.0.0"
+	if got := dashboardListenAddr(cfg); got != "0.0.0.0:8080" {
+		t.Fatalf("dashboardListenAddr() = %q, want 0.0.0.0:8080", got)
 	}
 }
 

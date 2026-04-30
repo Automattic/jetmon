@@ -61,7 +61,9 @@ func (c *Client) send(msg string) {
 	_, _ = fmt.Fprintln(c.conn, msg)
 }
 
-// EmitMemStats optionally sends process RSS as a gauge.
+// EmitMemStats emits legacy memory gauges. process.rss_mb is retained for
+// StatsD compatibility, but the value is Go runtime Sys memory rather than OS
+// resident set size.
 func (c *Client) EmitMemStats() {
 	var ms runtime.MemStats
 	runtime.ReadMemStats(&ms)

@@ -120,23 +120,24 @@ preflight, deliverer hardening, and API CLI fixture workflow branches:
   heartbeats and compact local health snapshots.
 - [x] Publish monitor-host health from `jetmon2`, including bucket ownership,
   worker queues, WPCOM circuit state, delivery-owner state, dependency health,
-  RSS, version, and process lifecycle state.
+  Go runtime system memory, version, and process lifecycle state.
 - [x] Publish standalone `jetmon-deliverer` health, including active/idle
-  owner state, DB/StatsD health, RSS, version, and process lifecycle state.
+  owner state, DB/StatsD health, Go runtime system memory, version, and process
+  lifecycle state.
 - [x] Add a combined host-dashboard snapshot endpoint so host state, dependency
   health, and red/amber/green summary rules are available from one local API.
 - [x] Polish the existing host dashboard so rollout blockers, delivery-owner
   warnings, dependency health, and operator commands are easier to scan.
-- [ ] Harden host dashboard exposure by binding to localhost by default, with
+- [x] Harden host dashboard exposure by binding to localhost by default, with
   an explicit operator-controlled bind address for trusted remote access.
-- [ ] Add a compact host-summary issue list so amber/red dashboard states name
+- [x] Add a compact host-summary issue list so amber/red dashboard states name
   the highest-priority blockers instead of only showing aggregate counts.
-- [ ] Split process lifecycle state from health rollup state in
+- [x] Split process lifecycle state from health rollup state in
   `jetmon_process_health` so a running process can still report degraded or red
   dependencies without overloading a single field.
-- [ ] Wire real per-host sites-per-second and last-round duration values into
+- [x] Wire real per-host sites-per-second and last-round duration values into
   the dashboard instead of showing placeholder zero values.
-- [ ] Label the dashboard memory value as Go runtime system memory so operators
+- [x] Label the dashboard memory value as Go runtime system memory so operators
   do not mistake `runtime.MemStats.Sys` for operating-system RSS.
 - [ ] Build the global fleet dashboard from `jetmon_process_health`,
   `jetmon_hosts`, delivery queues, projection drift, and Veriflier health.

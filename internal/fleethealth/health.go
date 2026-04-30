@@ -15,11 +15,14 @@ const (
 	ProcessMonitor   = "monitor"
 	ProcessDeliverer = "deliverer"
 
-	StateHealthy  = "healthy"
-	StateIdle     = "idle"
-	StateDegraded = "degraded"
+	StateRunning  = "running"
 	StateStopping = "stopping"
 	StateStopped  = "stopped"
+	StateIdle     = "idle"
+
+	HealthGreen = "green"
+	HealthAmber = "amber"
+	HealthRed   = "red"
 )
 
 // DependencyHealth is a compact dependency status snapshot suitable for JSON
@@ -42,6 +45,7 @@ type Snapshot struct {
 	BuildDate              string
 	GoVersion              string
 	State                  string
+	HealthStatus           string
 	StartedAt              time.Time
 	UpdatedAt              time.Time
 	BucketMin              *int
@@ -57,7 +61,7 @@ type Snapshot struct {
 	RetryQueueSize         int
 	WPCOMCircuitOpen       bool
 	WPCOMQueueDepth        int
-	MemRSSMB               int
+	GoSysMemMB             int
 	DependencyHealth       []DependencyHealth
 }
 
@@ -94,6 +98,7 @@ func Upsert(ctx context.Context, db *sql.DB, snapshot Snapshot) error {
 		normalized.BuildDate,
 		normalized.GoVersion,
 		normalized.State,
+		normalized.HealthStatus,
 		normalized.StartedAt,
 		normalized.UpdatedAt,
 		nullableInt(normalized.BucketMin),
@@ -109,7 +114,7 @@ func Upsert(ctx context.Context, db *sql.DB, snapshot Snapshot) error {
 		normalized.RetryQueueSize,
 		boolInt(normalized.WPCOMCircuitOpen),
 		normalized.WPCOMQueueDepth,
-		normalized.MemRSSMB,
+		normalized.GoSysMemMB,
 		string(deps),
 	)
 	if err != nil {
@@ -132,9 +137,10 @@ func MarkStopped(ctx context.Context, db *sql.DB, processID string, when time.Ti
 	}
 	_, err := db.ExecContext(ctx,
 		`UPDATE jetmon_process_health
-		   SET state = ?, updated_at = ?
+		   SET state = ?, health_status = ?, updated_at = ?
 		 WHERE process_id = ?`,
 		StateStopped,
+		HealthAmber,
 		when.UTC(),
 		processID,
 	)
@@ -162,7 +168,11 @@ func normalizeSnapshot(snapshot Snapshot) (Snapshot, error) {
 	}
 	snapshot.State = strings.TrimSpace(snapshot.State)
 	if snapshot.State == "" {
-		snapshot.State = StateHealthy
+		snapshot.State = StateRunning
+	}
+	snapshot.HealthStatus = strings.TrimSpace(snapshot.HealthStatus)
+	if snapshot.HealthStatus == "" {
+		snapshot.HealthStatus = RollupHealthStatus(snapshot.DependencyHealth)
 	}
 	if snapshot.StartedAt.IsZero() {
 		snapshot.StartedAt = time.Now().UTC()
@@ -173,6 +183,27 @@ func normalizeSnapshot(snapshot Snapshot) (Snapshot, error) {
 	snapshot.StartedAt = snapshot.StartedAt.UTC()
 	snapshot.UpdatedAt = snapshot.UpdatedAt.UTC()
 	return snapshot, nil
+}
+
+// RollupHealthStatus reduces dependency snapshots into a green/amber/red health
+// status. Unknown dependency status is treated as amber because it needs
+// operator attention but is not itself proof of failure.
+func RollupHealthStatus(entries []DependencyHealth) string {
+	status := HealthGreen
+	for _, entry := range entries {
+		switch entry.Status {
+		case HealthRed:
+			return HealthRed
+		case HealthAmber:
+			status = HealthAmber
+		case HealthGreen:
+		default:
+			if status == HealthGreen {
+				status = HealthAmber
+			}
+		}
+	}
+	return status
 }
 
 func nullableInt(value *int) any {
@@ -199,6 +230,7 @@ INSERT INTO jetmon_process_health (
 	build_date,
 	go_version,
 	state,
+	health_status,
 	started_at,
 	updated_at,
 	bucket_min,
@@ -214,9 +246,9 @@ INSERT INTO jetmon_process_health (
 	retry_queue_size,
 	wpcom_circuit_open,
 	wpcom_queue_depth,
-	mem_rss_mb,
+	go_sys_mem_mb,
 	dependency_health
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON DUPLICATE KEY UPDATE
 	host_id = VALUES(host_id),
 	process_type = VALUES(process_type),
@@ -225,6 +257,7 @@ ON DUPLICATE KEY UPDATE
 	build_date = VALUES(build_date),
 	go_version = VALUES(go_version),
 	state = VALUES(state),
+	health_status = VALUES(health_status),
 	started_at = VALUES(started_at),
 	updated_at = VALUES(updated_at),
 	bucket_min = VALUES(bucket_min),
@@ -240,5 +273,5 @@ ON DUPLICATE KEY UPDATE
 	retry_queue_size = VALUES(retry_queue_size),
 	wpcom_circuit_open = VALUES(wpcom_circuit_open),
 	wpcom_queue_depth = VALUES(wpcom_queue_depth),
-	mem_rss_mb = VALUES(mem_rss_mb),
+	go_sys_mem_mb = VALUES(go_sys_mem_mb),
 	dependency_health = VALUES(dependency_health)`

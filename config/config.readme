@@ -76,6 +76,12 @@ Log output format. Set to "json" for structured logging (e.g. for log aggregator
 DASHBOARD_PORT
 Port for the operator dashboard. Set to 0 to disable. Default: 8080.
 
+DASHBOARD_BIND_ADDR
+Address for the operator dashboard listener. Defaults to 127.0.0.1 so the
+unauthenticated host dashboard is local-only unless an operator explicitly binds
+it to a trusted management interface. Use 0.0.0.0 only behind network controls
+that limit access to trusted operator hosts. Default: 127.0.0.1.
+
 API_PORT
 Port for the internal REST API. Set to 0 to disable. In the embedded v2 deployment, API_PORT also controls whether webhook and alert-contact delivery workers are eligible to run inside jetmon2. The standalone jetmon-deliverer binary does not start the API and does not require API_PORT. Default: 0.
 
