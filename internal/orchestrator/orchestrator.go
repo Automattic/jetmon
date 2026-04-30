@@ -247,12 +247,14 @@ func (o *Orchestrator) runRound() {
 		}
 
 		req := checker.Request{
-			BlogID:         site.BlogID,
-			URL:            site.MonitorURL,
-			TimeoutSeconds: timeout,
-			Keyword:        site.CheckKeyword,
-			CustomHeaders:  checker.ParseCustomHeaders(site.CustomHeaders),
-			RedirectPolicy: checker.RedirectPolicy(site.RedirectPolicy),
+			BlogID:           site.BlogID,
+			URL:              site.MonitorURL,
+			TimeoutSeconds:   timeout,
+			BodyReadMaxBytes: cfg.BodyReadMaxBytes,
+			BodyReadMaxMS:    cfg.BodyReadMaxMS,
+			Keyword:          site.CheckKeyword,
+			CustomHeaders:    checker.ParseCustomHeaders(site.CustomHeaders),
+			RedirectPolicy:   checker.RedirectPolicy(site.RedirectPolicy),
 		}
 		if req.RedirectPolicy == "" {
 			req.RedirectPolicy = checker.RedirectFollow

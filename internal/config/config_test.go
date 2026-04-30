@@ -12,12 +12,14 @@ import (
 func TestValidate(t *testing.T) {
 	base := func() *Config {
 		return &Config{
-			AuthToken:       "token",
-			NumWorkers:      10,
-			BucketTotal:     100,
-			BucketTarget:    50,
-			NetCommsTimeout: 10,
-			LogFormat:       "text",
+			AuthToken:        "token",
+			NumWorkers:       10,
+			BucketTotal:      100,
+			BucketTarget:     50,
+			NetCommsTimeout:  10,
+			BodyReadMaxBytes: 262144,
+			BodyReadMaxMS:    250,
+			LogFormat:        "text",
 		}
 	}
 
@@ -135,6 +137,16 @@ func TestValidate(t *testing.T) {
 		{
 			name:    "net comms timeout negative",
 			mutate:  func(c *Config) { c.NetCommsTimeout = -1 },
+			wantErr: true,
+		},
+		{
+			name:    "body read max bytes zero",
+			mutate:  func(c *Config) { c.BodyReadMaxBytes = 0 },
+			wantErr: true,
+		},
+		{
+			name:    "body read max ms zero",
+			mutate:  func(c *Config) { c.BodyReadMaxMS = 0 },
 			wantErr: true,
 		},
 		{
@@ -291,6 +303,12 @@ func TestLoadAndGet(t *testing.T) {
 	}
 	if cfg.DeliveryOwnerHost != "jetmon-api-1" {
 		t.Fatalf("DeliveryOwnerHost = %q, want jetmon-api-1", cfg.DeliveryOwnerHost)
+	}
+	if cfg.BodyReadMaxBytes != 262144 {
+		t.Fatalf("BodyReadMaxBytes = %d, want 262144", cfg.BodyReadMaxBytes)
+	}
+	if cfg.BodyReadMaxMS != 250 {
+		t.Fatalf("BodyReadMaxMS = %d, want 250", cfg.BodyReadMaxMS)
 	}
 	if !cfg.LegacyStatusProjectionEnable {
 		t.Fatal("LegacyStatusProjectionEnable default should be true")
