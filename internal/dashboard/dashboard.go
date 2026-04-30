@@ -11,6 +11,8 @@ import (
 	"time"
 )
 
+const maxSSEClients = 32
+
 // State holds the real-time metrics snapshot served by the dashboard.
 type State struct {
 	WorkerCount                   int       `json:"worker_count"`
@@ -171,16 +173,21 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-
 	ch := make(chan string, 16)
 	id := fmt.Sprintf("%p", ch)
 
 	s.sseMu.Lock()
+	if len(s.sseClients) >= maxSSEClients {
+		s.sseMu.Unlock()
+		http.Error(w, "too many dashboard event clients", http.StatusServiceUnavailable)
+		return
+	}
 	s.sseClients[id] = ch
 	s.sseMu.Unlock()
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
 
 	defer func() {
 		s.sseMu.Lock()
@@ -241,6 +248,10 @@ func SummarizeHost(st State, health []HealthEntry) HostSummary {
 		summary.Status = "amber"
 		summary.Message = "waiting for host state"
 		amberIssues = append(amberIssues, "host state has not been published yet")
+	}
+	if len(health) == 0 {
+		summary.AmberCount++
+		amberIssues = append(amberIssues, "dependency health has not been published yet")
 	}
 	wpcomAlreadyRed := false
 	for _, entry := range health {
@@ -509,6 +520,10 @@ function summarizeLocal() {
   let redIssues = [];
   let amberIssues = currentState ? [] : ['host state has not been published yet'];
   let wpcomAlreadyRed = false;
+  if (currentHealth.length === 0) {
+    amber++;
+    amberIssues.push('dependency health has not been published yet');
+  }
   currentHealth.forEach(function(entry) {
     if (entry.status === 'red') {
       red++;

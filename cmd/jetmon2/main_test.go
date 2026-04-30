@@ -461,6 +461,34 @@ func TestDashboardListenAddrDefaultsLocalhost(t *testing.T) {
 	}
 }
 
+func TestDashboardBindWarning(t *testing.T) {
+	tests := []struct {
+		name string
+		addr string
+		want bool
+	}{
+		{name: "empty defaults local", addr: "", want: false},
+		{name: "ipv4 loopback", addr: "127.0.0.1", want: false},
+		{name: "ipv6 loopback", addr: "::1", want: false},
+		{name: "localhost", addr: "localhost", want: false},
+		{name: "wildcard", addr: "0.0.0.0", want: true},
+		{name: "private address", addr: "10.0.0.5", want: true},
+		{name: "hostname", addr: "dashboard.internal", want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := dashboardBindWarning(tt.addr)
+			if tt.want && got == "" {
+				t.Fatalf("dashboardBindWarning(%q) = empty, want warning", tt.addr)
+			}
+			if !tt.want && got != "" {
+				t.Fatalf("dashboardBindWarning(%q) = %q, want empty", tt.addr, got)
+			}
+		})
+	}
+}
+
 func TestCheckWritableDirReportsMissingDirectory(t *testing.T) {
 	err := checkWritableDir(filepath.Join(t.TempDir(), "missing"))
 	if err == nil {

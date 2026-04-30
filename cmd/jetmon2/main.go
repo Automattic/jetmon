@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -90,6 +91,11 @@ func runServe() {
 	log.Printf("config: email_transport=%s", emailTransportLabel(cfg))
 	if !emailTransportDelivers(cfg) {
 		log.Printf("WARN: email_transport=%s — alert-contact emails will be logged but not delivered", emailTransportLabel(cfg))
+	}
+	if cfg.DashboardPort > 0 {
+		if msg := dashboardBindWarning(cfg.DashboardBindAddr); msg != "" {
+			log.Printf("WARN: %s", msg)
+		}
 	}
 
 	config.LoadDB()
@@ -184,8 +190,15 @@ func runServe() {
 	}
 
 	var healthMu sync.RWMutex
+	var publishMu sync.Mutex
+	var shuttingDown atomic.Bool
 	var lastHealth []dashboard.HealthEntry
 	publishHostSnapshot := func(state string, refreshDependencies bool) {
+		publishMu.Lock()
+		defer publishMu.Unlock()
+		if shuttingDown.Load() && state == fleethealth.StateRunning {
+			return
+		}
 		currentCfg := config.Get()
 		if currentCfg == nil {
 			currentCfg = cfg
@@ -279,8 +292,9 @@ func runServe() {
 				}
 			case syscall.SIGINT, syscall.SIGTERM:
 				log.Println("received shutdown signal, draining")
-				publishHostSnapshot(fleethealth.StateStopping, false)
+				shuttingDown.Store(true)
 				stopHostPublisherOnce.Do(func() { close(stopHostPublisher) })
+				publishHostSnapshot(fleethealth.StateStopping, false)
 				if apiSrv != nil {
 					ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 					if err := apiSrv.Shutdown(ctx); err != nil {
@@ -302,7 +316,9 @@ func runServe() {
 	}()
 
 	orch.Run()
+	shuttingDown.Store(true)
 	stopHostPublisherOnce.Do(func() { close(stopHostPublisher) })
+	publishHostSnapshot(fleethealth.StateStopping, false)
 	ctx, cancel := context.WithTimeout(context.Background(), processHealthWriteTimeout)
 	if err := fleethealth.MarkStopped(ctx, db.DB(), processID, time.Now().UTC()); err != nil {
 		log.Printf("process health: %v", err)
@@ -346,6 +362,11 @@ func cmdValidateConfig() {
 	fmt.Printf("INFO email_transport=%s\n", emailTransportLabel(cfg))
 	if !emailTransportDelivers(cfg) {
 		fmt.Printf("WARN email_transport=%s — alert-contact emails will be logged but not delivered\n", emailTransportLabel(cfg))
+	}
+	if cfg.DashboardPort > 0 {
+		if msg := dashboardBindWarning(cfg.DashboardBindAddr); msg != "" {
+			fmt.Printf("WARN %s\n", msg)
+		}
 	}
 	if level, msg := deliveryOwnerStatus(cfg, db.Hostname()); msg != "" {
 		fmt.Printf("%s %s\n", level, msg)
@@ -444,6 +465,22 @@ func dashboardListenAddr(cfg *config.Config) string {
 		port = cfg.DashboardPort
 	}
 	return net.JoinHostPort(bindAddr, strconv.Itoa(port))
+}
+
+func dashboardBindWarning(bindAddr string) string {
+	bindAddr = strings.TrimSpace(bindAddr)
+	if bindAddr == "" {
+		bindAddr = "127.0.0.1"
+	}
+	host := strings.Trim(bindAddr, "[]")
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return ""
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return ""
+	}
+	return fmt.Sprintf("DASHBOARD_BIND_ADDR=%q exposes the unauthenticated host dashboard; restrict access to trusted operator networks", bindAddr)
 }
 
 const dashboardHealthTimeout = 2 * time.Second

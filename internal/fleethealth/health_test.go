@@ -112,6 +112,34 @@ func TestUpsertValidatesRequiredFields(t *testing.T) {
 	}
 }
 
+func TestUpsertValidatesStateAndHealthStatus(t *testing.T) {
+	sqlDB, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer sqlDB.Close()
+
+	err = Upsert(context.Background(), sqlDB, Snapshot{
+		HostID:       "host-a",
+		ProcessType:  ProcessMonitor,
+		State:        "starting",
+		HealthStatus: HealthGreen,
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid process state") {
+		t.Fatalf("Upsert() error = %v, want invalid process state validation", err)
+	}
+
+	err = Upsert(context.Background(), sqlDB, Snapshot{
+		HostID:       "host-a",
+		ProcessType:  ProcessMonitor,
+		State:        StateRunning,
+		HealthStatus: "blue",
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid health status") {
+		t.Fatalf("Upsert() error = %v, want invalid health status validation", err)
+	}
+}
+
 func TestMarkStopped(t *testing.T) {
 	sqlDB, mock, err := sqlmock.New()
 	if err != nil {

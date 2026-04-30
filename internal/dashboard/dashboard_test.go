@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -195,6 +196,14 @@ func TestHandleIndex(t *testing.T) {
 }
 
 func TestSummarizeHost(t *testing.T) {
+	waiting := SummarizeHost(State{UpdatedAt: time.Now()}, nil)
+	if waiting.Status != "amber" {
+		t.Fatalf("waiting summary status = %q, want amber", waiting.Status)
+	}
+	if waiting.AmberCount == 0 || len(waiting.Issues) == 0 || !strings.Contains(waiting.Issues[0], "dependency health") {
+		t.Fatalf("waiting summary = %+v, want dependency health issue", waiting)
+	}
+
 	st := State{UpdatedAt: time.Now(), DeliveryWorkersEnabled: true, DeliveryConfigEligible: true}
 	summary := SummarizeHost(st, []HealthEntry{{Name: "mysql", Status: "green"}})
 	if summary.Status != "amber" {
@@ -322,6 +331,21 @@ func TestHandleSSESendsInitialStateAndCleanup(t *testing.T) {
 
 	// Disconnect the client — handleSSE should return via r.Context().Done().
 	cancel()
+}
+
+func TestHandleSSERejectsExcessClients(t *testing.T) {
+	srv := New("test-host")
+	for i := 0; i < maxSSEClients; i++ {
+		srv.sseClients[fmt.Sprintf("client-%d", i)] = make(chan string, 1)
+	}
+
+	r := httptest.NewRequest(http.MethodGet, "/events", nil)
+	w := httptest.NewRecorder()
+	srv.handleSSE(w, r)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", w.Code)
+	}
 }
 
 func TestBroadcastDropsOnSlowClient(t *testing.T) {

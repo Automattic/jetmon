@@ -170,9 +170,15 @@ func normalizeSnapshot(snapshot Snapshot) (Snapshot, error) {
 	if snapshot.State == "" {
 		snapshot.State = StateRunning
 	}
+	if !validState(snapshot.State) {
+		return Snapshot{}, fmt.Errorf("invalid process state %q", snapshot.State)
+	}
 	snapshot.HealthStatus = strings.TrimSpace(snapshot.HealthStatus)
 	if snapshot.HealthStatus == "" {
 		snapshot.HealthStatus = RollupHealthStatus(snapshot.DependencyHealth)
+	}
+	if !validHealthStatus(snapshot.HealthStatus) {
+		return Snapshot{}, fmt.Errorf("invalid health status %q", snapshot.HealthStatus)
 	}
 	if snapshot.StartedAt.IsZero() {
 		snapshot.StartedAt = time.Now().UTC()
@@ -183,6 +189,24 @@ func normalizeSnapshot(snapshot Snapshot) (Snapshot, error) {
 	snapshot.StartedAt = snapshot.StartedAt.UTC()
 	snapshot.UpdatedAt = snapshot.UpdatedAt.UTC()
 	return snapshot, nil
+}
+
+func validState(state string) bool {
+	switch state {
+	case StateRunning, StateStopping, StateStopped, StateIdle:
+		return true
+	default:
+		return false
+	}
+}
+
+func validHealthStatus(status string) bool {
+	switch status {
+	case HealthGreen, HealthAmber, HealthRed:
+		return true
+	default:
+		return false
+	}
 }
 
 // RollupHealthStatus reduces dependency snapshots into a green/amber/red health
