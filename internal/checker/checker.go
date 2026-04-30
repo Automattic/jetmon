@@ -443,10 +443,22 @@ func selectBodyReadPolicy(resp *http.Response, maxBytes int64) bodyReadPolicy {
 		bodyReadCounters.skippedSSE.Add(1)
 		return bodyPolicySkip
 	}
+	// Unknown Content-Length (including chunked responses) stays in the
+	// budgeted path: budget exceed is non-fatal, explicit truncation fails.
+	_ = isChunkedResponse(resp)
 	if resp.ContentLength >= 0 && resp.ContentLength <= maxBytes {
 		return bodyPolicyStrictEOF
 	}
 	return bodyPolicyBudgeted
+}
+
+func isChunkedResponse(resp *http.Response) bool {
+	for _, v := range resp.TransferEncoding {
+		if strings.EqualFold(v, "chunked") {
+			return true
+		}
+	}
+	return false
 }
 
 func isUpgradeResponse(resp *http.Response) bool {
