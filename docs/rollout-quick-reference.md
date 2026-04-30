@@ -72,7 +72,19 @@ to v1" and keep the transcript with the incident record.
 
 ## Before The First Host
 
-1. Confirm the approved static bucket plan exists as a reusable CSV:
+1. Verify that the documented operator flow still matches the CLI output:
+
+   ```bash
+   make rollout-rehearsal-verify
+   ```
+
+   This is a no-database dry-run gate for the generated same-server,
+   fresh-server, and rollback flows. The broader `make rollout-docs-verify`
+   target also runs it after build, test, lint, command-help, JSON, and staged
+   systemd checks. It uses a disposable sample bucket plan and does not replace
+   the real `host-preflight` gate or VM lab rehearsal.
+
+2. Confirm the approved static bucket plan exists as a reusable CSV:
 
    ```bash
    ./jetmon2 rollout static-plan-check \
@@ -83,7 +95,7 @@ to v1" and keep the transcript with the incident record.
      --bucket-total=<total>
    ```
 
-2. Generate the exact host command sequence:
+3. Generate the exact host command sequence:
 
    ```bash
    ./jetmon2 rollout rehearsal-plan \
@@ -101,7 +113,7 @@ to v1" and keep the transcript with the incident record.
    server taking over from an existing v1 server. Add `--systemd-unit=<path>`
    when the staged service unit is not `/etc/systemd/system/jetmon2.service`.
 
-3. Validate config, migrations, static plan match, pinned safety, and the
+4. Validate config, migrations, static plan match, pinned safety, and the
    staged systemd service:
 
    ```bash
@@ -186,6 +198,10 @@ After every monitor host is stable on v2 pinned mode:
 ```bash
 ./jetmon2 rollout cutover-check --since=15m --require-all
 ```
+
+Run that pinned `cutover-check` from each v2 runtime host, or pass that host's
+explicit `--host`, `--bucket-min`, and `--bucket-max`. It is a per-range
+signoff, not the dynamic fleet-wide coverage check.
 
 Then remove `PINNED_BUCKET_MIN` / `PINNED_BUCKET_MAX` and legacy
 `BUCKET_NO_MIN` / `BUCKET_NO_MAX` aliases from every v2 monitor config,

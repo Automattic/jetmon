@@ -145,6 +145,22 @@ preflight, deliverer hardening, and API CLI fixture workflow branches:
 - [x] Document and test the fleet dashboard's safe network exposure model
   before exposing it beyond trusted operator networks.
 
+### v2 Rollout Docs Rehearsal TODO
+
+- [x] Add a dedicated `make rollout-rehearsal-verify` target that exercises the
+  operator-facing same-server, fresh-server, and rollback dry-run flows without
+  requiring a database or VM lab.
+- [x] Keep the rehearsal verifier inside `make rollout-docs-verify` so rollout
+  docs, CLI output, and generated command plans cannot drift independently.
+- [x] Cover fresh-server SSH/run-origin warnings in automated rehearsal checks
+  so the runtime-host versus v1-host distinction stays explicit.
+- [x] Do a full read-through of the migration runbook and quick reference after
+  the new rehearsal verifier lands, then tighten any remaining wording that
+  could cause operator copy/paste mistakes.
+- [x] Run the VM lab snapshot flow after the docs/tooling pass if the
+  `jetmon-deploy-test` host is available, and capture any mismatch between the
+  text runbook and real guided execution.
+
 Recently completed candidate branches:
 
 - **`feature/fleet-dashboard`** - adds `/fleet` and `/api/fleet` global

@@ -221,12 +221,19 @@ the range was returned to v1. Keep the transcript with the rollout record.
 Build and verify the release:
 
 ```bash
-make all
-make test
 make test-race
-make lint
 make rollout-docs-verify
 ```
+
+`make rollout-docs-verify` builds all binaries, runs the standard test suite
+and `go vet`, checks rollout command help, verifies JSON output and staged
+systemd units, and runs the operator rehearsal verifier. `make test-race` is
+kept separate because it is slower. For a faster no-database check while
+editing the runbook, run `make rollout-rehearsal-verify`; it verifies that
+generated plans, guided output, runtime-host warnings, typed confirmations, and
+rollback commands still match this runbook. That target uses a disposable
+sample bucket plan and does not replace the real `host-preflight` gate or VM
+lab rehearsal.
 
 Stage these artifacts for each target host:
 
