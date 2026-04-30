@@ -26,7 +26,8 @@ No active candidate branch is queued here right now.
   false-alarm classes, WPCOM parity, and operator explanation gaps in one
   repeatable text/JSON command.
 - [x] Keep the report safe for production use by avoiding payload/credential
-  dumps and reporting only aggregate counts, durations, classes, and gap names.
+  dumps, bounding query runtime, using half-open report windows, and reporting
+  only aggregate counts, durations, classes, and gap names.
 - [ ] Revisit report thresholds and suggested actions after v2 has enough real
   production traffic to show which rates should be considered normal.
 

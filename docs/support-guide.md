@@ -39,7 +39,9 @@ This summarizes detection timings, Veriflier agreement, false-alarm classes,
 WPCOM attempt parity, and explanation gaps across the selected window. Use it
 to decide whether an incident looks like an isolated site issue, a noisy class
 of local failures, a verifier disagreement pattern, or an instrumentation gap
-that needs engineering follow-up.
+that needs engineering follow-up. The first lines show an overall `pass`,
+`warn`, or `fail` status for the telemetry itself before the detailed timing and
+parity sections.
 
 ## Explain The Incident State
 

@@ -72,6 +72,9 @@ func TestBuildTelemetryReport(t *testing.T) {
 	if len(report.ExplanationGaps) != 0 {
 		t.Fatalf("ExplanationGaps = %+v, want none", report.ExplanationGaps)
 	}
+	if report.Status != "pass" || len(report.Highlights) == 0 {
+		t.Fatalf("Status/Highlights = %q/%+v, want pass with highlights", report.Status, report.Highlights)
+	}
 	if len(report.SuggestedNextActions) == 0 || !strings.Contains(report.SuggestedNextActions[0], "consistent") {
 		t.Fatalf("SuggestedNextActions = %+v, want consistency guidance", report.SuggestedNextActions)
 	}
@@ -87,7 +90,9 @@ func TestRenderTelemetryReportText(t *testing.T) {
 			Since: time.Date(2026, 4, 30, 16, 0, 0, 0, time.UTC),
 			Until: time.Date(2026, 4, 30, 18, 0, 0, 0, time.UTC),
 		},
-		Summary: telemetrySummary{Opened: 5, ConfirmedDown: 2, ProbeCleared: 1},
+		Status:     "pass",
+		Highlights: []string{"Telemetry looks internally consistent for this window."},
+		Summary:    telemetrySummary{Opened: 5, ConfirmedDown: 2, ProbeCleared: 1},
 		Timings: []telemetryTiming{{
 			Name:  "first_failure_to_down",
 			Count: 2,
@@ -116,6 +121,9 @@ func TestRenderTelemetryReportText(t *testing.T) {
 	got := out.String()
 	for _, want := range []string{
 		"## Production Telemetry Report",
+		"PASS status=pass explanation_gaps=0",
+		"INFO highlight=\"Telemetry looks internally consistent for this window.\"",
+		"window_end=exclusive",
 		"INFO events opened=5 confirmed_down=2",
 		"INFO timing=first_failure_to_down count=2 avg_ms=1500 max_ms=2500",
 		"INFO verifier_replies=6 confirm_down=4 disagree=2",
@@ -150,15 +158,18 @@ func TestRenderTelemetryReportJSON(t *testing.T) {
 	if got.Command != "telemetry report" || got.Summary.ConfirmedDown != 2 {
 		t.Fatalf("decoded report = %+v, want telemetry report with confirmed_down=2", got)
 	}
+	if err := renderTelemetryReport(&out, report, "yaml"); err == nil {
+		t.Fatal("renderTelemetryReport(yaml) error = nil, want error")
+	}
 }
 
 func TestTelemetryFlagUsageUsesLongDashes(t *testing.T) {
-	opts := telemetryReportOptions{Since: "24h", Output: "text", Limit: 10}
+	opts := telemetryReportOptions{Since: "24h", Output: "text", Limit: 10, QueryTimeout: 30 * time.Second}
 	var out bytes.Buffer
 	fs := newTelemetryReportFlagSet(&opts, &out)
 	fs.Usage()
 	got := out.String()
-	for _, want := range []string{"--limit", "--output", "--since", "--until"} {
+	for _, want := range []string{"--limit", "--output", "--query-timeout", "--since", "--until"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("usage missing %q:\n%s", want, got)
 		}
@@ -177,6 +188,12 @@ func TestTelemetryValidation(t *testing.T) {
 	}
 	if err := validateTelemetryLimit(101); err == nil {
 		t.Fatal("validateTelemetryLimit(101) error = nil, want error")
+	}
+	if err := validateTelemetryQueryTimeout(-time.Second); err == nil {
+		t.Fatal("validateTelemetryQueryTimeout(-1s) error = nil, want error")
+	}
+	if err := validateTelemetryQueryTimeout(maxTelemetryQueryTimeout + time.Second); err == nil {
+		t.Fatal("validateTelemetryQueryTimeout(too long) error = nil, want error")
 	}
 }
 

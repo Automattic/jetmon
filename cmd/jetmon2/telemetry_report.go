@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sort"
 	"strings"
 	"time"
 
@@ -20,11 +19,17 @@ import (
 	"github.com/Automattic/jetmon/internal/eventstore"
 )
 
+const (
+	defaultTelemetryQueryTimeout = 30 * time.Second
+	maxTelemetryQueryTimeout     = 5 * time.Minute
+)
+
 type telemetryReportOptions struct {
-	Since  string
-	Until  string
-	Output string
-	Limit  int
+	Since        string
+	Until        string
+	Output       string
+	Limit        int
+	QueryTimeout time.Duration
 }
 
 type telemetryWindow struct {
@@ -36,6 +41,8 @@ type telemetryReport struct {
 	Command              string                  `json:"command"`
 	GeneratedAt          time.Time               `json:"generated_at"`
 	Window               telemetryWindow         `json:"window"`
+	Status               string                  `json:"status"`
+	Highlights           []string                `json:"highlights,omitempty"`
 	Summary              telemetrySummary        `json:"summary"`
 	Timings              []telemetryTiming       `json:"timings"`
 	Verifier             telemetryVerifierReport `json:"verifier"`
@@ -122,9 +129,10 @@ func cmdTelemetry(args []string) {
 
 func cmdTelemetryReport(args []string) {
 	opts := telemetryReportOptions{
-		Since:  "24h",
-		Output: "text",
-		Limit:  10,
+		Since:        "24h",
+		Output:       "text",
+		Limit:        10,
+		QueryTimeout: defaultTelemetryQueryTimeout,
 	}
 	fs := newTelemetryReportFlagSet(&opts, os.Stderr)
 	if err := fs.Parse(args); err != nil {
@@ -135,7 +143,7 @@ func cmdTelemetryReport(args []string) {
 		os.Exit(2)
 	}
 	if fs.NArg() != 0 {
-		fmt.Fprintln(os.Stderr, "usage: jetmon2 telemetry report [--since=24h] [--until=<RFC3339>] [--output=text|json] [--limit=N]")
+		fmt.Fprintln(os.Stderr, "usage: jetmon2 telemetry report [--since=24h] [--until=<RFC3339>] [--output=text|json] [--limit=N] [--query-timeout=30s]")
 		os.Exit(1)
 	}
 
@@ -146,6 +154,10 @@ func cmdTelemetryReport(args []string) {
 	}
 	opts.Output = outputFormat
 	if err := validateTelemetryLimit(opts.Limit); err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL %v\n", err)
+		os.Exit(2)
+	}
+	if err := validateTelemetryQueryTimeout(opts.QueryTimeout); err != nil {
 		fmt.Fprintf(os.Stderr, "FAIL %v\n", err)
 		os.Exit(2)
 	}
@@ -176,6 +188,7 @@ func newTelemetryReportFlagSet(opts *telemetryReportOptions, out io.Writer) *fla
 	fs.StringVar(&opts.Until, "until", opts.Until, "report end as RFC3339 timestamp (default now)")
 	fs.StringVar(&opts.Output, "output", opts.Output, "output format: text or json")
 	fs.IntVar(&opts.Limit, "limit", opts.Limit, "maximum verifier hosts and false-alarm classes to show")
+	fs.DurationVar(&opts.QueryTimeout, "query-timeout", opts.QueryTimeout, "maximum time for the report query set")
 	fs.Usage = func() {
 		printAPIFlagUsage(fs.Output(), fs)
 	}
@@ -203,6 +216,16 @@ func validateTelemetryLimit(limit int) error {
 	return nil
 }
 
+func validateTelemetryQueryTimeout(timeout time.Duration) error {
+	if timeout < 0 {
+		return errors.New("--query-timeout must be >= 0")
+	}
+	if timeout > maxTelemetryQueryTimeout {
+		return fmt.Errorf("--query-timeout must be <= %s", maxTelemetryQueryTimeout)
+	}
+	return nil
+}
+
 func buildTelemetryReport(ctx context.Context, conn *sql.DB, now time.Time, opts telemetryReportOptions) (telemetryReport, error) {
 	if conn == nil {
 		return telemetryReport{}, errors.New("database pool is not initialized")
@@ -210,6 +233,17 @@ func buildTelemetryReport(ctx context.Context, conn *sql.DB, now time.Time, opts
 	if err := validateTelemetryLimit(opts.Limit); err != nil {
 		return telemetryReport{}, err
 	}
+	if err := validateTelemetryQueryTimeout(opts.QueryTimeout); err != nil {
+		return telemetryReport{}, err
+	}
+	queryTimeout := opts.QueryTimeout
+	if queryTimeout == 0 {
+		queryTimeout = defaultTelemetryQueryTimeout
+	}
+	var cancel context.CancelFunc
+	ctx, cancel = context.WithTimeout(ctx, queryTimeout)
+	defer cancel()
+
 	window, err := resolveTelemetryWindow(now, opts.Since, opts.Until)
 	if err != nil {
 		return telemetryReport{}, err
@@ -252,6 +286,8 @@ func buildTelemetryReport(ctx context.Context, conn *sql.DB, now time.Time, opts
 		WPCOM:             wpcom,
 		ExplanationGaps:   gaps,
 	}
+	report.Status = telemetryReportStatus(report.ExplanationGaps)
+	report.Highlights = telemetryReportHighlights(report)
 	report.SuggestedNextActions = suggestTelemetryNextActions(report)
 	return report, nil
 }
@@ -283,7 +319,7 @@ func queryTelemetryReasonCounts(ctx context.Context, conn *sql.DB, window teleme
 		SELECT reason, COUNT(*)
 		  FROM jetmon_event_transitions
 		 WHERE changed_at >= ?
-		   AND changed_at <= ?
+		   AND changed_at < ?
 		 GROUP BY reason`,
 		window.Since, window.Until,
 	)
@@ -332,7 +368,7 @@ func queryTelemetryTimings(ctx context.Context, conn *sql.DB, window telemetryWi
 			   AND opened.reason = ?
 			 WHERE outcome.reason = ?
 			   AND outcome.changed_at >= ?
-			   AND outcome.changed_at <= ?`,
+			   AND outcome.changed_at < ?`,
 			eventstore.ReasonOpened, item.reason, window.Since, window.Until,
 		).Scan(&timing.Count, &timing.AvgMS, &timing.MaxMS)
 		if err != nil {
@@ -354,7 +390,7 @@ func queryTelemetryVerifier(ctx context.Context, conn *sql.DB, window telemetryW
 		 WHERE event_type = ?
 		   AND detail = 'veriflier reply'
 		   AND created_at >= ?
-		   AND created_at <= ?`,
+		   AND created_at < ?`,
 		audit.EventVeriflierSent, window.Since, window.Until,
 	).Scan(&summary.Replies, &summary.ConfirmDown, &summary.Disagree, &summary.MissingOutcome)
 	if err != nil {
@@ -374,7 +410,7 @@ func queryTelemetryVerifier(ctx context.Context, conn *sql.DB, window telemetryW
 		 WHERE event_type = ?
 		   AND detail = 'veriflier reply'
 		   AND created_at >= ?
-		   AND created_at <= ?
+		   AND created_at < ?
 		 GROUP BY source
 		 ORDER BY COUNT(*) DESC, source
 		 LIMIT %d`, limit)
@@ -420,7 +456,7 @@ func queryTelemetryFalseAlarmClasses(ctx context.Context, conn *sql.DB, window t
 		   AND opened.reason = ?
 		 WHERE outcome.reason IN (?, ?)
 		   AND outcome.changed_at >= ?
-		   AND outcome.changed_at <= ?
+		   AND outcome.changed_at < ?
 		 GROUP BY outcome.reason, class
 		 ORDER BY count DESC, outcome, class
 		 LIMIT %d`,
@@ -469,7 +505,7 @@ func queryTelemetryWPCOM(ctx context.Context, conn *sql.DB, window telemetryWind
 		  FROM jetmon_audit_log
 		 WHERE event_type = ?
 		   AND created_at >= ?
-		   AND created_at <= ?`,
+		   AND created_at < ?`,
 		audit.EventWPCOMSent, window.Since, window.Until,
 	).Scan(&report.Attempts, &report.DownAttempts, &report.RecoveryAttempts)
 	if err != nil {
@@ -481,7 +517,7 @@ func queryTelemetryWPCOM(ctx context.Context, conn *sql.DB, window telemetryWind
 		  FROM jetmon_audit_log
 		 WHERE event_type = ?
 		   AND created_at >= ?
-		   AND created_at <= ?`,
+		   AND created_at < ?`,
 		audit.EventWPCOMRetry, window.Since, window.Until,
 	).Scan(&report.Retries)
 	if err != nil {
@@ -493,7 +529,7 @@ func queryTelemetryWPCOM(ctx context.Context, conn *sql.DB, window telemetryWind
 		  FROM jetmon_audit_log
 		 WHERE event_type IN (?, ?)
 		   AND created_at >= ?
-		   AND created_at <= ?`,
+		   AND created_at < ?`,
 		audit.EventMaintenanceActive, audit.EventAlertSuppressed, window.Since, window.Until,
 	).Scan(&report.Suppressed)
 	if err != nil {
@@ -525,7 +561,7 @@ func queryTelemetryExplanationGaps(ctx context.Context, conn *sql.DB, window tel
 				  FROM jetmon_event_transitions
 				 WHERE reason = ?
 				   AND changed_at >= ?
-				   AND changed_at <= ?
+				   AND changed_at < ?
 				   AND (metadata IS NULL
 				    OR (JSON_EXTRACT(metadata, '$.http_code') IS NULL AND JSON_EXTRACT(metadata, '$.error_code') IS NULL)
 				    OR JSON_EXTRACT(metadata, '$.rtt_ms') IS NULL)`,
@@ -540,7 +576,7 @@ func queryTelemetryExplanationGaps(ctx context.Context, conn *sql.DB, window tel
 				  FROM jetmon_event_transitions
 				 WHERE reason = ?
 				   AND changed_at >= ?
-				   AND changed_at <= ?
+				   AND changed_at < ?
 				   AND (metadata IS NULL OR JSON_EXTRACT(metadata, '$.verifier_results') IS NULL)`,
 			args: []any{eventstore.ReasonVerifierConfirmed, window.Since, window.Until},
 		},
@@ -553,7 +589,7 @@ func queryTelemetryExplanationGaps(ctx context.Context, conn *sql.DB, window tel
 				  FROM jetmon_event_transitions
 				 WHERE reason = ?
 				   AND changed_at >= ?
-				   AND changed_at <= ?
+				   AND changed_at < ?
 				   AND (metadata IS NULL
 				    OR JSON_EXTRACT(metadata, '$.verifier_healthy') IS NULL
 				    OR JSON_EXTRACT(metadata, '$.verifier_confirmed') IS NULL)`,
@@ -569,7 +605,7 @@ func queryTelemetryExplanationGaps(ctx context.Context, conn *sql.DB, window tel
 				 WHERE event_type = ?
 				   AND detail = 'veriflier reply'
 				   AND created_at >= ?
-				   AND created_at <= ?
+				   AND created_at < ?
 				   AND (metadata IS NULL OR JSON_EXTRACT(metadata, '$.success') IS NULL)`,
 			args: []any{audit.EventVeriflierSent, window.Since, window.Until},
 		},
@@ -626,6 +662,39 @@ func derivedTelemetryGaps(wpcom telemetryWPCOMReport, verifier telemetryVerifier
 	return gaps
 }
 
+func telemetryReportStatus(gaps []telemetryGap) string {
+	status := "pass"
+	for _, gap := range gaps {
+		if gap.Severity == "red" {
+			return "fail"
+		}
+		if gap.Count > 0 {
+			status = "warn"
+		}
+	}
+	return status
+}
+
+func telemetryReportHighlights(report telemetryReport) []string {
+	var highlights []string
+	if len(report.ExplanationGaps) > 0 {
+		highlights = append(highlights, fmt.Sprintf("%d explanation gap(s) need follow-up before using this report for customer-facing explanations.", len(report.ExplanationGaps)))
+	}
+	if report.WPCOM.AttemptDelta != 0 {
+		highlights = append(highlights, fmt.Sprintf("WPCOM attempt delta is %d after expected suppressions.", report.WPCOM.AttemptDelta))
+	}
+	if report.Verifier.Replies > 0 {
+		highlights = append(highlights, fmt.Sprintf("Verifier agreement is %.1f%% across %d replies.", report.Verifier.ConfirmPercent, report.Verifier.Replies))
+	}
+	if report.Summary.Opened == 0 {
+		highlights = append(highlights, "No events opened in this window; widen --since before drawing production conclusions.")
+	}
+	if len(highlights) == 0 {
+		highlights = append(highlights, "Telemetry looks internally consistent for this window.")
+	}
+	return uniqueStrings(highlights)
+}
+
 func suggestTelemetryNextActions(report telemetryReport) []string {
 	var actions []string
 	for _, gap := range report.ExplanationGaps {
@@ -656,13 +725,26 @@ func renderTelemetryReport(out io.Writer, report telemetryReport, output string)
 		enc.SetIndent("", "  ")
 		return enc.Encode(report)
 	}
-	renderTelemetryReportText(out, report)
-	return nil
+	if output == "text" {
+		renderTelemetryReportText(out, report)
+		return nil
+	}
+	return fmt.Errorf("unsupported telemetry output %q", output)
 }
 
 func renderTelemetryReportText(out io.Writer, report telemetryReport) {
 	fmt.Fprintf(out, "## Production Telemetry Report\n")
-	fmt.Fprintf(out, "INFO generated_at=%s window=%s..%s\n",
+	statusLevel := telemetryReportStatusLevel(report.Status)
+	fmt.Fprintf(out, "%s status=%s explanation_gaps=%d suggested_actions=%d\n",
+		statusLevel,
+		report.Status,
+		len(report.ExplanationGaps),
+		len(report.SuggestedNextActions),
+	)
+	for _, highlight := range report.Highlights {
+		fmt.Fprintf(out, "INFO highlight=%q\n", highlight)
+	}
+	fmt.Fprintf(out, "INFO generated_at=%s window=%s..%s window_end=exclusive\n",
 		report.GeneratedAt.Format(time.RFC3339),
 		report.Window.Since.Format(time.RFC3339),
 		report.Window.Until.Format(time.RFC3339),
@@ -738,6 +820,17 @@ func renderTelemetryReportText(out io.Writer, report telemetryReport) {
 	}
 }
 
+func telemetryReportStatusLevel(status string) string {
+	switch status {
+	case "fail":
+		return "FAIL"
+	case "warn":
+		return "WARN"
+	default:
+		return "PASS"
+	}
+}
+
 func uniqueStrings(values []string) []string {
 	seen := map[string]struct{}{}
 	var out []string
@@ -752,7 +845,6 @@ func uniqueStrings(values []string) []string {
 		seen[value] = struct{}{}
 		out = append(out, value)
 	}
-	sort.Strings(out)
 	return out
 }
 
