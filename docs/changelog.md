@@ -106,6 +106,13 @@ because it is intentionally **not** drop-in with the Jetmon 1 wire format
 - Host and fleet dashboards now publish true process RSS beside Go runtime
   system memory, and `process.rss_mb` again reports operating-system resident
   memory when procfs is available.
+- Added `jetmon2 telemetry report`, a read-only production report that
+  summarizes event lifecycle counts, detection timing, verifier agreement,
+  false-alarm classes, WPCOM parity, and operator explanation gaps from durable
+  event/audit tables. The report starts with an explicit `telemetry_status`,
+  explanation-gap type/row counts, window-edge context for WPCOM parity, and
+  bounded, half-open query windows so scheduled runs are safer and easier to
+  compare.
 - `make all` now builds the currently implemented `jetmon2` and
   `veriflier2` binaries without requiring `protoc`; generated Veriflier
   gRPC stubs remain an explicit `make generate` step for the future

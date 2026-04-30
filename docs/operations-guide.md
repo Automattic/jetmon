@@ -381,6 +381,29 @@ Important metric groups include:
 StatsD is the primary metrics transport. Expose Graphite/StatsD data through the
 existing metrics pipeline when external systems need it.
 
+For repeatable production summaries from durable Jetmon tables, use:
+
+```bash
+./jetmon2 telemetry report --since=24h
+./jetmon2 telemetry report --since=2026-04-30T00:00:00Z --until=2026-05-01T00:00:00Z --output=json
+./jetmon2 telemetry report --since=6h --query-timeout=45s
+```
+
+The report is read-only and runs with a bounded query timeout by default
+(`--query-timeout` is capped at 5 minutes). The time window is half-open
+(`since <= row time < until`) so adjacent scheduled reports do not double-count
+boundary rows. It summarizes event lifecycle counts, first-failure timings,
+verifier agreement, false-alarm classes, WPCOM attempt parity, and metadata gaps
+that would make operator or customer explanations weaker. It reports aggregate
+counts and classes rather than raw payloads or credentials.
+
+The top line reports `telemetry_status`, `explanation_gap_types`, and
+`explanation_gap_rows`. Treat `warn` or `fail` as a signal that the report found
+missing or inconsistent telemetry, not as a site-availability rollup.
+The `window_edge_lookback` line calls out transition rows at the end of the
+window that can make WPCOM parity look temporarily incomplete; rerun with a
+later `--until` before treating those edge deltas as missing audit data.
+
 Use `LOG_FORMAT=json` for structured logs during investigations.
 
 ## Debugging
