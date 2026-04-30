@@ -22,6 +22,8 @@ Key settings:
 | `TIME_BETWEEN_CHECKS_SEC` | 30 | Delay between local retry checks |
 | `MIN_TIME_BETWEEN_ROUNDS_SEC` | 300 | Minimum seconds between check rounds |
 | `NET_COMMS_TIMEOUT` | 10 | Default per-check HTTP timeout in seconds |
+| `BODY_READ_MAX_BYTES` | 262144 | Success-path body-read budget in bytes for unknown/large responses |
+| `BODY_READ_MAX_MS` | 250 | Success-path body-read budget in milliseconds for unknown/large responses |
 | `PEER_OFFLINE_LIMIT` | 3 | Veriflier agreements required to confirm downtime |
 | `WORKER_MAX_MEM_MB` | 53 | RSS threshold that triggers worker-pool drain |
 | `BUCKET_TOTAL` | 1000 | Total bucket range across all hosts |
@@ -39,6 +41,11 @@ Key settings:
 
 See [../config/config.readme](../config/config.readme) for the full option
 reference.
+
+Checker policy note: HTTP `>= 400` responses are classified immediately by status
+code and do not depend on body drain completion. Strict EOF/truncation validation
+applies only to eligible successful finite responses and is skipped for `101`,
+upgrade handshakes, and `text/event-stream`.
 
 ## Production Host Setup
 
