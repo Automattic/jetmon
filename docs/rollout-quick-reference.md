@@ -72,7 +72,7 @@ to v1" and keep the transcript with the incident record.
 
 ## Before The First Host
 
-0. Verify that the documented operator flow still matches the CLI output:
+1. Verify that the documented operator flow still matches the CLI output:
 
    ```bash
    make rollout-rehearsal-verify
@@ -83,7 +83,7 @@ to v1" and keep the transcript with the incident record.
    target also runs it after build, test, lint, command-help, JSON, and staged
    systemd checks.
 
-1. Confirm the approved static bucket plan exists as a reusable CSV:
+2. Confirm the approved static bucket plan exists as a reusable CSV:
 
    ```bash
    ./jetmon2 rollout static-plan-check \
@@ -94,7 +94,7 @@ to v1" and keep the transcript with the incident record.
      --bucket-total=<total>
    ```
 
-2. Generate the exact host command sequence:
+3. Generate the exact host command sequence:
 
    ```bash
    ./jetmon2 rollout rehearsal-plan \
@@ -112,7 +112,7 @@ to v1" and keep the transcript with the incident record.
    server taking over from an existing v1 server. Add `--systemd-unit=<path>`
    when the staged service unit is not `/etc/systemd/system/jetmon2.service`.
 
-3. Validate config, migrations, static plan match, pinned safety, and the
+4. Validate config, migrations, static plan match, pinned safety, and the
    staged systemd service:
 
    ```bash

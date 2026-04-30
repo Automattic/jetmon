@@ -221,19 +221,17 @@ the range was returned to v1. Keep the transcript with the rollout record.
 Build and verify the release:
 
 ```bash
-make all
-make test
 make test-race
-make lint
-make rollout-rehearsal-verify
 make rollout-docs-verify
 ```
 
-`make rollout-rehearsal-verify` is a fast no-database check for the
-operator-facing same-server, fresh-server, and rollback dry-run flows. It
-verifies that generated plans, guided output, runtime-host warnings, typed
-confirmations, and rollback commands still match this runbook. The broader
-`make rollout-docs-verify` target also runs this rehearsal verifier.
+`make rollout-docs-verify` builds all binaries, runs the standard test suite
+and `go vet`, checks rollout command help, verifies JSON output and staged
+systemd units, and runs the operator rehearsal verifier. `make test-race` is
+kept separate because it is slower. For a faster no-database check while
+editing the runbook, run `make rollout-rehearsal-verify`; it verifies that
+generated plans, guided output, runtime-host warnings, typed confirmations, and
+rollback commands still match this runbook.
 
 Stage these artifacts for each target host:
 

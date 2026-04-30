@@ -5,8 +5,21 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
 jetmon_binary="${ROLLOUT_REHEARSAL_JETMON2:-./bin/jetmon2}"
-work_dir="${ROLLOUT_REHEARSAL_WORK_DIR:-/tmp/jetmon-rollout-rehearsal-$$}"
+cleanup_work_dir=0
+if [[ -n "${ROLLOUT_REHEARSAL_WORK_DIR:-}" ]]; then
+	work_dir="$ROLLOUT_REHEARSAL_WORK_DIR"
+else
+	work_dir="$(mktemp -d "${TMPDIR:-/tmp}/jetmon-rollout-rehearsal.XXXXXXXXXX")"
+	cleanup_work_dir=1
+fi
 plan_file="${ROLLOUT_REHEARSAL_PLAN_FILE:-$work_dir/ranges.csv}"
+
+cleanup() {
+	if [[ "$cleanup_work_dir" -eq 1 && -n "${work_dir:-}" ]]; then
+		rm -rf "$work_dir"
+	fi
+}
+trap cleanup EXIT
 
 step() {
 	printf '\n== %s ==\n' "$1"
@@ -35,7 +48,13 @@ require_absent() {
 	fi
 }
 
+if [[ ! -x "$jetmon_binary" ]]; then
+	fail "jetmon binary is not executable: $jetmon_binary"
+fi
+
 mkdir -p "$work_dir"
+mkdir -p "$(dirname "$plan_file")"
+printf 'INFO rehearsal_work_dir=%s\n' "$work_dir"
 printf '%s\n' \
 	'host,bucket_min,bucket_max' \
 	'jetmon-v1-a,0,4' \
