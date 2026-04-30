@@ -98,6 +98,23 @@ func BodyReadCounters() BodyReadCounterSnapshot {
 	}
 }
 
+// BodyReadCountersMap returns the same counters in a metric-friendly map.
+func BodyReadCountersMap() map[string]uint64 {
+	s := BodyReadCounters()
+	return map[string]uint64{
+		"strict_eof_success":     s.StrictEOFSuccess,
+		"strict_eof_truncated":   s.StrictEOFTruncated,
+		"strict_eof_timeout":     s.StrictEOFTimeout,
+		"budget_bytes_exceeded":  s.BudgetBytesExceeded,
+		"budget_time_exceeded":   s.BudgetTimeExceeded,
+		"budget_eof_success":     s.BudgetEOFSuccess,
+		"budget_truncated":       s.BudgetTruncated,
+		"skipped_status_code":    s.SkippedStatusCode,
+		"skipped_upgrade_or_101": s.SkippedUpgradeOr101,
+		"skipped_sse":            s.SkippedSSE,
+	}
+}
+
 type bodyReadPolicy int
 
 const (
