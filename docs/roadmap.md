@@ -127,10 +127,26 @@ preflight, deliverer hardening, and API CLI fixture workflow branches:
   health, and red/amber/green summary rules are available from one local API.
 - [x] Polish the existing host dashboard so rollout blockers, delivery-owner
   warnings, dependency health, and operator commands are easier to scan.
+- [ ] Harden host dashboard exposure by binding to localhost by default, with
+  an explicit operator-controlled bind address for trusted remote access.
+- [ ] Add a compact host-summary issue list so amber/red dashboard states name
+  the highest-priority blockers instead of only showing aggregate counts.
+- [ ] Split process lifecycle state from health rollup state in
+  `jetmon_process_health` so a running process can still report degraded or red
+  dependencies without overloading a single field.
+- [ ] Wire real per-host sites-per-second and last-round duration values into
+  the dashboard instead of showing placeholder zero values.
+- [ ] Label the dashboard memory value as Go runtime system memory so operators
+  do not mistake `runtime.MemStats.Sys` for operating-system RSS.
 - [ ] Build the global fleet dashboard from `jetmon_process_health`,
   `jetmon_hosts`, delivery queues, projection drift, and Veriflier health.
 - [ ] Add stale-heartbeat thresholds and fleet-level suggested next actions for
   rollout handoffs.
+- [ ] Add explicit fleet delivery-ownership posture so operators can
+  distinguish intentional rollout-conservative `DELIVERY_OWNER_HOST` settings
+  from accidental all-host delivery eligibility.
+- [ ] Consider collecting true process RSS for fleet and host dashboards if
+  operators need OS-level memory accounting beyond Go runtime system memory.
 - [ ] Document and test the fleet dashboard's safe network exposure model
   before exposing it beyond trusted operator networks.
 
