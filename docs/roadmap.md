@@ -15,9 +15,6 @@ migration and the operating data needed to make larger architecture decisions.
 These are scoped branches worth considering after the merged API CLI, rollout
 preflight, deliverer hardening, and API CLI fixture workflow branches:
 
-- **`feature/fleet-dashboard`** - add a global dashboard for monitor hosts,
-  standalone deliverers, Verifliers, bucket coverage, stale heartbeats,
-  delivery backlog, projection drift, and fleet-level rollout blockers.
 - **`feature/projection-drift-tooling`** - expand drift diagnostics beyond
   count/list output with range summaries, likely causes, rehearsal reports, and
   dry-run repair guidance if repair becomes safe enough to automate.
@@ -150,6 +147,10 @@ preflight, deliverer hardening, and API CLI fixture workflow branches:
 
 Recently completed candidate branches:
 
+- **`feature/fleet-dashboard`** - adds `/fleet` and `/api/fleet` global
+  dashboard views for monitor hosts, standalone deliverers, bucket coverage,
+  stale heartbeats, delivery backlog, delivery-owner posture, projection drift,
+  dependency rollups, and fleet-level rollout blockers.
 - **`feature/host-dashboard-fleet-plumbing`** - improved each host dashboard as
   a clearer production rollout cockpit while publishing monitor and deliverer
   process health into MySQL for the later fleet dashboard.
