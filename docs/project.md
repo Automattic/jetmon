@@ -288,7 +288,7 @@ Queryable by `blog_id` and time range via a CLI tool (`jetmon2 audit --blog-id 1
 - `jetmon2 rollout activity-check` — verifies recent check activity for a bucket range after cutover
 - `jetmon2 rollout rollback-check` — verifies a pinned v2 range is safe to hand back to v1
 - `jetmon2 rollout dynamic-check` — validates full `jetmon_hosts` coverage after the fleet transitions from pinned to dynamic ownership
-- `jetmon2 rollout projection-drift` — lists active sites whose legacy `site_status` projection disagrees with the authoritative event state
+- `jetmon2 rollout projection-drift` — summarizes and lists active sites whose legacy `site_status` projection disagrees with the authoritative event state
 - `jetmon2 rollout state-report` — summarizes ownership mode, bucket coverage, recent activity, projection drift, delivery-owner state, and the suggested next action
 - `jetmon2 drain --worker N` — gracefully removes one worker pool slot, waiting for in-flight checks to complete before reducing concurrency
 - `jetmon2 reload` — sends SIGHUP to the running process (convenience wrapper)

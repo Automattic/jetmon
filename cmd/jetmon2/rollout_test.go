@@ -1902,6 +1902,11 @@ func TestRunCutoverCheckFailures(t *testing.T) {
 				deps.Projection.CountLegacyProjectionDrift = func(context.Context, int, int) (int, error) {
 					return 2, nil
 				}
+				deps.Projection.SummarizeLegacyProjectionDrift = func(context.Context, int, int, int) ([]db.ProjectionDriftSummaryRow, error) {
+					return []db.ProjectionDriftSummaryRow{
+						{BucketNo: 0, SiteStatus: 1, ExpectedStatus: 2, DriftCount: 2, SampleBlogID: 42},
+					}, nil
+				}
 				deps.Projection.ListLegacyProjectionDrift = func(context.Context, int, int, int) ([]db.ProjectionDriftRow, error) {
 					return nil, nil
 				}
@@ -2757,12 +2762,20 @@ func TestRunProjectionDriftReportListsRowsAndFails(t *testing.T) {
 		CountLegacyProjectionDrift: func(context.Context, int, int) (int, error) {
 			return 2, nil
 		},
+		SummarizeLegacyProjectionDrift: func(_ context.Context, min, max, limit int) ([]db.ProjectionDriftSummaryRow, error) {
+			if min != 2 || max != 4 || limit != defaultProjectionDriftSummaryLimit {
+				t.Fatalf("summary args = %d-%d limit=%d, want 2-4 limit=%d", min, max, limit, defaultProjectionDriftSummaryLimit)
+			}
+			return []db.ProjectionDriftSummaryRow{
+				{BucketNo: 3, SiteStatus: 1, ExpectedStatus: 2, EventState: &eventState, MaxOpenEventCount: 1, DriftCount: 2, SampleBlogID: 42},
+			}, nil
+		},
 		ListLegacyProjectionDrift: func(_ context.Context, min, max, limit int) ([]db.ProjectionDriftRow, error) {
 			if min != 2 || max != 4 || limit != 1 {
 				t.Fatalf("list args = %d-%d limit=%d, want 2-4 limit=1", min, max, limit)
 			}
 			return []db.ProjectionDriftRow{
-				{BlogID: 42, BucketNo: 3, SiteStatus: 1, ExpectedStatus: 2, EventID: &eventID, EventState: &eventState},
+				{BlogID: 42, BucketNo: 3, SiteStatus: 1, ExpectedStatus: 2, EventID: &eventID, EventState: &eventState, OpenEventCount: 1},
 			}, nil
 		},
 	}
@@ -2776,14 +2789,44 @@ func TestRunProjectionDriftReportListsRowsAndFails(t *testing.T) {
 		t.Fatalf("error = %q, want drift count", err.Error())
 	}
 	for _, want := range []string{
+		"SAMPLE_BLOG",
+		"missing_confirmed_down_projection",
+		"projection_drift_cause=missing_confirmed_down_projection count=2",
 		"BLOG_ID",
 		"42",
 		"Down",
 		"INFO projection_drift_rows_truncated=1",
+		"INFO projection_drift_repair=manual_confirmation_required",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("output missing %q:\n%s", want, out.String())
 		}
+	}
+}
+
+func TestClassifyProjectionDriftCause(t *testing.T) {
+	eventState := "Down"
+	tests := []struct {
+		name       string
+		status     int
+		expected   int
+		state      *string
+		openEvents int
+		want       string
+	}{
+		{name: "legacy down but no open event", status: 2, expected: 1, want: "stale_legacy_down_projection"},
+		{name: "running with open down", status: 1, expected: 2, state: &eventState, openEvents: 1, want: "missing_confirmed_down_projection"},
+		{name: "seems down not promoted", status: 0, expected: 2, state: &eventState, openEvents: 1, want: "missing_confirmed_promotion"},
+		{name: "duplicate open events", status: 1, expected: 2, state: &eventState, openEvents: 2, want: "multiple_open_http_events"},
+		{name: "unknown status", status: 9, expected: 1, want: "unexpected_projection_value"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyProjectionDriftCause(tt.status, tt.expected, tt.state, tt.openEvents)
+			if got.Code != tt.want {
+				t.Fatalf("cause = %q, want %q", got.Code, tt.want)
+			}
+		})
 	}
 }
 

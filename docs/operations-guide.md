@@ -229,6 +229,11 @@ projection drift. It also shows per-table delivery queue counts and per-host
 bucket-owner rows for diagnosis. It uses stale heartbeat thresholds when
 deciding whether a process or dynamic bucket owner is healthy.
 
+When fleet projection drift is red, run `./jetmon2 rollout projection-drift
+--limit=100` on an operator host. The command reports bucket/status summaries,
+likely causes, and sample rows before listing individual mismatches, and it
+does not repair the legacy projection automatically.
+
 Fleet snapshots are cached briefly by the dashboard process so multiple open
 operator tabs do not run the full fleet query set on every refresh.
 
