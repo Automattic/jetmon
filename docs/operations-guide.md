@@ -234,6 +234,11 @@ When fleet projection drift is red, run `./jetmon2 rollout projection-drift
 likely causes, and sample rows before listing individual mismatches, and it
 does not repair the legacy projection automatically.
 
+Capture the cause labels from rehearsal and early production incidents. A
+future dry-run repair planner should be based on those observed patterns, not
+on assumed failure modes, because the unsafe case is repairing `site_status`
+while the event rows or transitions still need investigation.
+
 Fleet snapshots are cached briefly by the dashboard process so multiple open
 operator tabs do not run the full fleet query set on every refresh.
 
