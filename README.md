@@ -143,6 +143,9 @@ one-page command checklist during rehearsals and rollout windows:
   the v2 API or event tables.
 - Use `SIGINT` or `./jetmon2 drain` for graceful shutdown.
 - Use `SIGHUP` or `./jetmon2 reload` for config reload without restart.
+- Use the host dashboard at `/` and the fleet dashboard at `/fleet` during
+  rollout windows. Keep `DASHBOARD_BIND_ADDR` on loopback unless the listener is
+  protected by trusted operator-network controls.
 
 After the fleet is fully on v2, dynamic bucket ownership lets surviving hosts
 absorb work during rolling updates.

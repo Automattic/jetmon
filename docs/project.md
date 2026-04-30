@@ -249,11 +249,12 @@ thresholds once production operating data shows which signals are worth paging
 on.
 
 Long-running `jetmon2` and `jetmon-deliverer` processes also publish compact
-heartbeat snapshots into `jetmon_process_health`. That table is the foundation
-for a fleet dashboard that can summarize monitor hosts, standalone deliverers,
-stale process heartbeats, lifecycle state, red/amber/green health rollups,
-delivery-owner state, Go runtime system memory, and local dependency health
-without polling every host dashboard directly.
+heartbeat snapshots into `jetmon_process_health`. The `/fleet` dashboard uses
+those snapshots alongside `jetmon_hosts`, outbound delivery queues, projection
+drift, and dependency rollups to summarize monitor hosts, standalone
+deliverers, stale process heartbeats, lifecycle state, red/amber/green health
+rollups, delivery-owner posture, Go runtime system memory, and local dependency
+health without polling every host dashboard directly.
 
 **False Positive Tracker**
 Every time the system escalates a site to Veriflier confirmation and the Verifliers do NOT confirm it as down (i.e., the queue entry times out or all Verifliers report the site as up), the event is recorded in a `jetmon_false_positives` table with timestamp, site, HTTP code, error code, and RTT from the local check. A view in the operator dashboard surfaces sites with high false positive rates, helping operators tune per-site `NUM_OF_CHECKS` or `TIME_BETWEEN_CHECKS_SEC` settings.

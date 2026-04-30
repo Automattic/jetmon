@@ -161,8 +161,9 @@ to v1" and keep the transcript with the incident record.
      --require-all
    ```
 
-6. Watch logs, dashboard health, WPCOM notification parity, event rows, and
-   projection drift before moving to the next host.
+6. Watch logs, the host dashboard, `/fleet`, WPCOM notification parity, event
+   rows, and projection drift before moving to the next host. In pinned rollout,
+   `/fleet` should show pinned bucket mode as amber rather than dynamic green.
 
 ## Rollback Gate
 

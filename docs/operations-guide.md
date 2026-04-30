@@ -208,32 +208,105 @@ Status and reload commands:
 ./jetmon2 drain
 ```
 
-The host operator dashboard is available on `DASHBOARD_BIND_ADDR:DASHBOARD_PORT`
-when enabled. It defaults to `127.0.0.1`, because the host dashboard is
-unauthenticated and exposes internal dependency details, rollout commands, host
-names, ports, and bucket ownership. Bind it to a remote address only behind
-trusted operator-network controls.
+The operator dashboard is available on `DASHBOARD_BIND_ADDR:DASHBOARD_PORT`
+when enabled. It defaults to `127.0.0.1`, because the host and fleet dashboards
+are unauthenticated and expose internal dependency details, rollout commands,
+host names, ports, bucket ownership, and delivery posture. Bind it to a remote
+address only behind trusted operator-network controls.
 
-The dashboard shows a red/amber/green host summary with named issues, worker
+The host dashboard shows a red/amber/green host summary with named issues, worker
 count, active checks, queue depth, retry queue depth, throughput, round time,
 owned buckets, rollout guard state, Go runtime system memory, WPCOM
 circuit-breaker state, dependency health for MySQL, Verifliers, WPCOM, StatsD,
 local log/stats writes, and the rollout commands an operator is most likely to
 need from that host.
 
-The dashboard exposes three local JSON endpoints:
+The fleet dashboard is available at `/fleet` on the same listener. It summarizes
+all rows in `jetmon_process_health` alongside `jetmon_hosts` dynamic bucket
+coverage, delivery backlog, delivery-owner posture, dependency rollups,
+Veriflier dependency health reported by monitor hosts, and global legacy
+projection drift. It also shows per-table delivery queue counts and per-host
+bucket-owner rows for diagnosis. It uses stale heartbeat thresholds when
+deciding whether a process or dynamic bucket owner is healthy.
+
+Fleet snapshots are cached briefly by the dashboard process so multiple open
+operator tabs do not run the full fleet query set on every refresh.
+
+### Fleet Dashboard Operation
+
+Enable the dashboards with:
+
+```json
+{
+  "DASHBOARD_PORT": 8080,
+  "DASHBOARD_BIND_ADDR": "127.0.0.1"
+}
+```
+
+Open the host dashboard at `http://127.0.0.1:8080/` and the fleet dashboard at
+`http://127.0.0.1:8080/fleet`. If an operator needs remote access, prefer an SSH
+tunnel or a trusted management network instead of binding the dashboard to a
+public interface:
+
+```bash
+ssh -L 8080:127.0.0.1:8080 <jetmon-host>
+```
+
+The fleet dashboard is read-only and unauthenticated. It does not discover or
+scrape other hosts over HTTP; every `jetmon2` monitor dashboard reads the same
+shared MySQL state and can serve the fleet view if `DASHBOARD_PORT` is enabled.
+Standalone `jetmon-deliverer` processes do not serve a dashboard, but they do
+publish their own rows to `jetmon_process_health`.
+
+The dashboard accepts only `GET` and `HEAD` requests for static and JSON views,
+and `/api/fleet` returns the same complete snapshot the HTML page renders for
+local operator scripts:
+
+```bash
+curl -sS http://127.0.0.1:8080/api/fleet
+```
+
+Read the top summary first:
+
+- **Red**: do not advance rollout. Typical causes are stale process heartbeats,
+  broken dynamic bucket coverage, projection drift, failed/abandoned delivery
+  rows, or red process dependency health.
+- **Amber**: operator attention needed before the next change. Typical causes
+  are pinned or mixed bucket ownership during rollout, due delivery rows,
+  delivery workers without a clear owner, no process snapshots yet, or amber
+  dependency health.
+- **Green**: no fleet-level blocker is visible. Continue normal monitoring or
+  the next approved rollout step.
+
+During the v1-to-v2 rollout, pinned monitor hosts should make bucket coverage
+show `mode=pinned` and amber. After the final dynamic-ownership cutover,
+`mode=dynamic` should be green with fresh `jetmon_hosts` coverage and no gaps or
+overlaps. A `mode=mixed` result means some monitor hosts still report pinned
+ownership while others report dynamic ownership; treat that as a rollout state
+to resolve intentionally.
+
+For delivery ownership, green means the visible fresh delivery-capable process
+set has a consistent owner posture. Amber means the fleet either has queued
+delivery rows with no fresh worker, multiple owner values, enabled workers
+without `DELIVERY_OWNER_HOST`, or a mix of explicit and unset ownership. Fix the
+delivery-owner plan before moving outbound delivery responsibility.
+
+The dashboard exposes these local JSON endpoints:
 
 ```text
 GET /api/state   # raw host state snapshot
 GET /api/health  # dependency health list
 GET /api/host    # combined host state, dependency health, and summary
+GET /api/fleet   # combined fleet rollup, process health, buckets, delivery, drift
 ```
 
 Long-running `jetmon2` and `jetmon-deliverer` processes also publish compact
 heartbeat snapshots to `jetmon_process_health`. That table is the durable data
-source for the planned fleet dashboard. Treat stale `updated_at` values as
+source for the fleet dashboard. Treat stale `updated_at` values as
 unknown/unhealthy; the row is the last reported process state, not proof that a
-host is still alive.
+host is still alive. The dashboard listener remains unauthenticated for both
+host and fleet views, so keep `DASHBOARD_BIND_ADDR` on loopback unless network
+access is restricted to trusted operator hosts.
 
 Bucket coverage can be inspected directly:
 
@@ -257,6 +330,18 @@ For health rollups and memory:
 SELECT process_id, state, health_status, go_sys_mem_mb, updated_at
 FROM jetmon_process_health
 ORDER BY health_status DESC, updated_at;
+```
+
+Delivery queues can be inspected directly:
+
+```sql
+SELECT status, COUNT(*), MIN(COALESCE(next_attempt_at, created_at))
+FROM jetmon_webhook_deliveries
+GROUP BY status;
+
+SELECT status, COUNT(*), MIN(COALESCE(next_attempt_at, created_at))
+FROM jetmon_alert_deliveries
+GROUP BY status;
 ```
 
 A host whose heartbeat is older than `BUCKET_HEARTBEAT_GRACE_SEC` will have its

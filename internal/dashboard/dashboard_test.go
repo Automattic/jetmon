@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,15 @@ import (
 	"testing"
 	"time"
 )
+
+type fakeFleetSource struct {
+	snapshot FleetSnapshot
+	err      error
+}
+
+func (f fakeFleetSource) Snapshot(context.Context) (FleetSnapshot, error) {
+	return f.snapshot, f.err
+}
 
 func TestHandleState(t *testing.T) {
 	srv := New("test-host")
@@ -148,6 +158,91 @@ func TestHandleHostSnapshot(t *testing.T) {
 	}
 }
 
+func TestDashboardReadHandlersSetNoStoreHeaders(t *testing.T) {
+	srv := New("test-host")
+	srv.SetFleetSource(fakeFleetSource{snapshot: FleetSnapshot{Summary: FleetSummary{Status: "green"}}})
+	handlers := map[string]http.HandlerFunc{
+		"/":           srv.handleIndex,
+		"/api/state":  srv.handleState,
+		"/api/health": srv.handleHealth,
+		"/api/host":   srv.handleHost,
+		"/fleet":      srv.handleFleetIndex,
+		"/api/fleet":  srv.handleFleet,
+	}
+	for path, handler := range handlers {
+		t.Run(path, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, path, nil)
+			w := httptest.NewRecorder()
+			handler(w, r)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", w.Code)
+			}
+			if got := w.Header().Get("Cache-Control"); got != "no-store" {
+				t.Fatalf("Cache-Control = %q, want no-store", got)
+			}
+			if got := w.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+				t.Fatalf("X-Content-Type-Options = %q, want nosniff", got)
+			}
+			if got := w.Header().Get("X-Frame-Options"); got != "DENY" {
+				t.Fatalf("X-Frame-Options = %q, want DENY", got)
+			}
+			if got := w.Header().Get("Referrer-Policy"); got != "no-referrer" {
+				t.Fatalf("Referrer-Policy = %q, want no-referrer", got)
+			}
+			if got := w.Header().Get("Content-Security-Policy"); !strings.Contains(got, "frame-ancestors 'none'") {
+				t.Fatalf("Content-Security-Policy = %q, want frame-ancestors guard", got)
+			}
+		})
+	}
+}
+
+func TestDashboardReadHandlersRejectWriteMethods(t *testing.T) {
+	srv := New("test-host")
+	srv.SetFleetSource(fakeFleetSource{snapshot: FleetSnapshot{Summary: FleetSummary{Status: "green"}}})
+	handlers := map[string]struct {
+		handler http.HandlerFunc
+		allow   string
+	}{
+		"/":           {handler: srv.handleIndex, allow: "GET, HEAD"},
+		"/api/state":  {handler: srv.handleState, allow: "GET, HEAD"},
+		"/api/health": {handler: srv.handleHealth, allow: "GET, HEAD"},
+		"/api/host":   {handler: srv.handleHost, allow: "GET, HEAD"},
+		"/fleet":      {handler: srv.handleFleetIndex, allow: "GET, HEAD"},
+		"/api/fleet":  {handler: srv.handleFleet, allow: "GET, HEAD"},
+		"/events":     {handler: srv.handleSSE, allow: "GET"},
+	}
+	for path, tc := range handlers {
+		t.Run(path, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, path, nil)
+			w := httptest.NewRecorder()
+			tc.handler(w, r)
+			if w.Code != http.StatusMethodNotAllowed {
+				t.Fatalf("status = %d, want 405", w.Code)
+			}
+			if got := w.Header().Get("Allow"); got != tc.allow {
+				t.Fatalf("Allow = %q, want %q", got, tc.allow)
+			}
+		})
+	}
+}
+
+func TestHandleIndexRejectsUnknownPaths(t *testing.T) {
+	srv := New("test-host")
+	r := httptest.NewRequest(http.MethodGet, "/api/unknown", nil)
+	w := httptest.NewRecorder()
+	srv.handleIndex(w, r)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", w.Code)
+	}
+	if strings.Contains(w.Body.String(), "Jetmon") {
+		t.Fatal("unknown path returned dashboard HTML")
+	}
+	if got := w.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
+}
+
 func TestHandleIndex(t *testing.T) {
 	srv := New("test-host")
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -192,6 +287,91 @@ func TestHandleIndex(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "/api/host") {
 		t.Fatal("body does not fetch combined host snapshot")
+	}
+	if !strings.Contains(w.Body.String(), "/fleet") {
+		t.Fatal("body does not link to fleet dashboard")
+	}
+}
+
+func TestHandleFleetIndex(t *testing.T) {
+	srv := New("test-host")
+	r := httptest.NewRequest(http.MethodGet, "/fleet", nil)
+	w := httptest.NewRecorder()
+	srv.handleFleetIndex(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "/api/fleet") {
+		t.Fatal("body does not fetch fleet snapshot")
+	}
+	if !strings.Contains(w.Body.String(), "Fleet dashboard") {
+		t.Fatal("body does not contain fleet dashboard label")
+	}
+}
+
+func TestHandleFleetSnapshot(t *testing.T) {
+	srv := New("test-host")
+	srv.SetFleetSource(fakeFleetSource{
+		snapshot: FleetSnapshot{
+			GeneratedAt: time.Date(2026, 4, 30, 10, 0, 0, 0, time.UTC),
+			Summary:     FleetSummary{Status: "green", Message: "fleet checks are green"},
+			Processes:   []FleetProcess{{ProcessID: "host-a:monitor", HostID: "host-a", ProcessType: "monitor"}},
+		},
+	})
+
+	r := httptest.NewRequest(http.MethodGet, "/api/fleet", nil)
+	w := httptest.NewRecorder()
+	srv.handleFleet(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var snapshot FleetSnapshot
+	if err := json.NewDecoder(w.Body).Decode(&snapshot); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if snapshot.Summary.Status != "green" {
+		t.Fatalf("Summary.Status = %q, want green", snapshot.Summary.Status)
+	}
+	if len(snapshot.Processes) != 1 || snapshot.Processes[0].ProcessID != "host-a:monitor" {
+		t.Fatalf("Processes = %+v, want host-a monitor", snapshot.Processes)
+	}
+}
+
+func TestHandleFleetRejectsNonGet(t *testing.T) {
+	srv := New("test-host")
+	srv.SetFleetSource(fakeFleetSource{snapshot: FleetSnapshot{Summary: FleetSummary{Status: "green"}}})
+
+	r := httptest.NewRequest(http.MethodPost, "/api/fleet", nil)
+	w := httptest.NewRecorder()
+	srv.handleFleet(w, r)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", w.Code)
+	}
+	if got := w.Header().Get("Allow"); got != "GET, HEAD" {
+		t.Fatalf("Allow = %q, want GET, HEAD", got)
+	}
+}
+
+func TestHandleFleetErrors(t *testing.T) {
+	srv := New("test-host")
+	r := httptest.NewRequest(http.MethodGet, "/api/fleet", nil)
+	w := httptest.NewRecorder()
+	srv.handleFleet(w, r)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status without source = %d, want 503", w.Code)
+	}
+
+	srv.SetFleetSource(fakeFleetSource{err: errors.New("db down")})
+	w = httptest.NewRecorder()
+	srv.handleFleet(w, r)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status with source error = %d, want 500", w.Code)
+	}
+	if strings.Contains(w.Body.String(), "db down") {
+		t.Fatalf("error body = %q, leaked backend error", w.Body.String())
 	}
 }
 

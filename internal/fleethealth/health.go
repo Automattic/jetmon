@@ -150,6 +150,113 @@ func MarkStopped(ctx context.Context, db *sql.DB, processID string, when time.Ti
 	return nil
 }
 
+// ListSnapshots returns durable process-health rows ordered for operator views.
+func ListSnapshots(ctx context.Context, db *sql.DB) ([]Snapshot, error) {
+	if db == nil {
+		return nil, errors.New("database pool is not initialized")
+	}
+	rows, err := db.QueryContext(ctx, `
+		SELECT process_id,
+		       host_id,
+		       process_type,
+		       pid,
+		       version,
+		       build_date,
+		       go_version,
+		       state,
+		       health_status,
+		       started_at,
+		       updated_at,
+		       bucket_min,
+		       bucket_max,
+		       bucket_ownership,
+		       api_port,
+		       dashboard_port,
+		       delivery_workers_enabled,
+		       delivery_owner_host,
+		       worker_count,
+		       active_checks,
+		       queue_depth,
+		       retry_queue_size,
+		       wpcom_circuit_open,
+		       wpcom_queue_depth,
+		       go_sys_mem_mb,
+		       dependency_health
+		  FROM jetmon_process_health
+		 ORDER BY process_type, host_id, process_id`)
+	if err != nil {
+		return nil, fmt.Errorf("query process health: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Snapshot
+	for rows.Next() {
+		var snapshot Snapshot
+		var startedAt sql.NullTime
+		var bucketMin, bucketMax, apiPort, dashboardPort sql.NullInt64
+		var deliveryWorkersEnabled, wpcomCircuitOpen int
+		var dependencyHealth sql.NullString
+		if err := rows.Scan(
+			&snapshot.ProcessID,
+			&snapshot.HostID,
+			&snapshot.ProcessType,
+			&snapshot.PID,
+			&snapshot.Version,
+			&snapshot.BuildDate,
+			&snapshot.GoVersion,
+			&snapshot.State,
+			&snapshot.HealthStatus,
+			&startedAt,
+			&snapshot.UpdatedAt,
+			&bucketMin,
+			&bucketMax,
+			&snapshot.BucketOwnership,
+			&apiPort,
+			&dashboardPort,
+			&deliveryWorkersEnabled,
+			&snapshot.DeliveryOwnerHost,
+			&snapshot.WorkerCount,
+			&snapshot.ActiveChecks,
+			&snapshot.QueueDepth,
+			&snapshot.RetryQueueSize,
+			&wpcomCircuitOpen,
+			&snapshot.WPCOMQueueDepth,
+			&snapshot.GoSysMemMB,
+			&dependencyHealth,
+		); err != nil {
+			return nil, fmt.Errorf("scan process health: %w", err)
+		}
+		if startedAt.Valid {
+			snapshot.StartedAt = startedAt.Time.UTC()
+		}
+		snapshot.UpdatedAt = snapshot.UpdatedAt.UTC()
+		snapshot.BucketMin = nullableIntPtr(bucketMin)
+		snapshot.BucketMax = nullableIntPtr(bucketMax)
+		snapshot.APIPort = nullableIntPtr(apiPort)
+		snapshot.DashboardPort = nullableIntPtr(dashboardPort)
+		snapshot.DeliveryWorkersEnabled = deliveryWorkersEnabled != 0
+		snapshot.WPCOMCircuitOpen = wpcomCircuitOpen != 0
+		if dependencyHealth.Valid && strings.TrimSpace(dependencyHealth.String) != "" {
+			if err := json.Unmarshal([]byte(dependencyHealth.String), &snapshot.DependencyHealth); err != nil {
+				return nil, fmt.Errorf("decode dependency health for %s: %w", snapshot.ProcessID, err)
+			}
+		}
+		out = append(out, snapshot)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate process health: %w", err)
+	}
+	return out, nil
+}
+
+func nullableIntPtr(value sql.NullInt64) *int {
+	if !value.Valid {
+		return nil
+	}
+	v := int(value.Int64)
+	return &v
+}
+
 func normalizeSnapshot(snapshot Snapshot) (Snapshot, error) {
 	snapshot.HostID = strings.TrimSpace(snapshot.HostID)
 	snapshot.ProcessType = strings.TrimSpace(snapshot.ProcessType)

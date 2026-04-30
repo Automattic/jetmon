@@ -95,10 +95,14 @@ because it is intentionally **not** drop-in with the Jetmon 1 wire format
 - Host dashboard now has a combined `/api/host` snapshot endpoint, stronger
   red/amber/green summary behavior, clearer rollout-command visibility, and a
   durable `jetmon_process_health` heartbeat table that `jetmon2` and
-  `jetmon-deliverer` publish to for future fleet dashboards.
+  `jetmon-deliverer` publish to for fleet dashboards.
 - Host dashboard exposure now defaults to localhost, host summaries include
   named red/amber issues, process lifecycle is stored separately from health
   rollup, and memory is labeled as Go runtime system memory rather than RSS.
+- Fleet dashboard now has `/fleet` and `/api/fleet` views backed by
+  `jetmon_process_health`, `jetmon_hosts`, delivery queues, projection drift,
+  and dependency rollups so operators can see stale heartbeats, bucket coverage,
+  delivery-owner posture, and suggested next actions in one place.
 - `make all` now builds the currently implemented `jetmon2` and
   `veriflier2` binaries without requiring `protoc`; generated Veriflier
   gRPC stubs remain an explicit `make generate` step for the future

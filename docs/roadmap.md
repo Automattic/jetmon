@@ -15,9 +15,6 @@ migration and the operating data needed to make larger architecture decisions.
 These are scoped branches worth considering after the merged API CLI, rollout
 preflight, deliverer hardening, and API CLI fixture workflow branches:
 
-- **`feature/fleet-dashboard`** - add a global dashboard for monitor hosts,
-  standalone deliverers, Verifliers, bucket coverage, stale heartbeats,
-  delivery backlog, projection drift, and fleet-level rollout blockers.
 - **`feature/projection-drift-tooling`** - expand drift diagnostics beyond
   count/list output with range summaries, likely causes, rehearsal reports, and
   dry-run repair guidance if repair becomes safe enough to automate.
@@ -136,20 +133,24 @@ preflight, deliverer hardening, and API CLI fixture workflow branches:
   the dashboard instead of showing placeholder zero values.
 - [x] Label the dashboard memory value as Go runtime system memory so operators
   do not mistake `runtime.MemStats.Sys` for operating-system RSS.
-- [ ] Build the global fleet dashboard from `jetmon_process_health`,
+- [x] Build the global fleet dashboard from `jetmon_process_health`,
   `jetmon_hosts`, delivery queues, projection drift, and Veriflier health.
-- [ ] Add stale-heartbeat thresholds and fleet-level suggested next actions for
+- [x] Add stale-heartbeat thresholds and fleet-level suggested next actions for
   rollout handoffs.
-- [ ] Add explicit fleet delivery-ownership posture so operators can
+- [x] Add explicit fleet delivery-ownership posture so operators can
   distinguish intentional rollout-conservative `DELIVERY_OWNER_HOST` settings
   from accidental all-host delivery eligibility.
 - [ ] Consider collecting true process RSS for fleet and host dashboards if
   operators need OS-level memory accounting beyond Go runtime system memory.
-- [ ] Document and test the fleet dashboard's safe network exposure model
+- [x] Document and test the fleet dashboard's safe network exposure model
   before exposing it beyond trusted operator networks.
 
 Recently completed candidate branches:
 
+- **`feature/fleet-dashboard`** - adds `/fleet` and `/api/fleet` global
+  dashboard views for monitor hosts, standalone deliverers, bucket coverage,
+  stale heartbeats, delivery backlog, delivery-owner posture, projection drift,
+  dependency rollups, and fleet-level rollout blockers.
 - **`feature/host-dashboard-fleet-plumbing`** - improved each host dashboard as
   a clearer production rollout cockpit while publishing monitor and deliverer
   process health into MySQL for the later fleet dashboard.

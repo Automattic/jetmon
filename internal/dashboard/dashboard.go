@@ -71,12 +71,13 @@ type HostSummary struct {
 
 // Server is the operator dashboard HTTP server.
 type Server struct {
-	mu         sync.RWMutex
-	state      State
-	health     []HealthEntry
-	sseClients map[string]chan string
-	sseMu      sync.Mutex
-	hostname   string
+	mu          sync.RWMutex
+	state       State
+	health      []HealthEntry
+	sseClients  map[string]chan string
+	sseMu       sync.Mutex
+	hostname    string
+	fleetSource FleetSource
 }
 
 // New creates a new dashboard Server.
@@ -118,6 +119,8 @@ func (s *Server) Listen(addr string) error {
 	mux.HandleFunc("/api/state", s.handleState)
 	mux.HandleFunc("/api/health", s.handleHealth)
 	mux.HandleFunc("/api/host", s.handleHost)
+	mux.HandleFunc("/fleet", s.handleFleetIndex)
+	mux.HandleFunc("/api/fleet", s.handleFleet)
 
 	log.Printf("dashboard: listening on %s", addr)
 	srv := &http.Server{
@@ -138,27 +141,36 @@ func ListenDebug(addr string) error {
 }
 
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
+	if rejectNonGet(w, r) {
+		return
+	}
 	s.mu.RLock()
 	st := s.state
 	s.mu.RUnlock()
-	w.Header().Set("Content-Type", "application/json")
+	setDashboardJSONHeaders(w)
 	_ = json.NewEncoder(w).Encode(st)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if rejectNonGet(w, r) {
+		return
+	}
 	s.mu.RLock()
 	h := append([]HealthEntry(nil), s.health...)
 	s.mu.RUnlock()
-	w.Header().Set("Content-Type", "application/json")
+	setDashboardJSONHeaders(w)
 	_ = json.NewEncoder(w).Encode(h)
 }
 
 func (s *Server) handleHost(w http.ResponseWriter, r *http.Request) {
+	if rejectNonGet(w, r) {
+		return
+	}
 	s.mu.RLock()
 	st := s.state
 	h := append([]HealthEntry(nil), s.health...)
 	s.mu.RUnlock()
-	w.Header().Set("Content-Type", "application/json")
+	setDashboardJSONHeaders(w)
 	_ = json.NewEncoder(w).Encode(HostSnapshot{
 		State:   st,
 		Health:  h,
@@ -167,6 +179,9 @@ func (s *Server) handleHost(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
+	if rejectNonGetOnly(w, r) {
+		return
+	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
@@ -186,8 +201,9 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	s.sseMu.Unlock()
 
 	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Cache-Control", "no-cache, no-store")
 	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 
 	defer func() {
 		s.sseMu.Lock()
@@ -233,8 +249,55 @@ func (s *Server) broadcast(st State) {
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if r.URL.Path != "/" {
+		setDashboardNoStoreHeaders(w)
+		http.NotFound(w, r)
+		return
+	}
+	if rejectNonGet(w, r) {
+		return
+	}
+	setDashboardHTMLHeaders(w)
 	fmt.Fprint(w, dashboardHTML)
+}
+
+func setDashboardHTMLHeaders(w http.ResponseWriter) {
+	setDashboardReadHeaders(w, "text/html; charset=utf-8")
+}
+
+func setDashboardJSONHeaders(w http.ResponseWriter) {
+	setDashboardReadHeaders(w, "application/json")
+}
+
+func setDashboardReadHeaders(w http.ResponseWriter, contentType string) {
+	w.Header().Set("Content-Type", contentType)
+	setDashboardNoStoreHeaders(w)
+}
+
+func setDashboardNoStoreHeaders(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; base-uri 'none'; connect-src 'self'; form-action 'none'; frame-ancestors 'none'; object-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "DENY")
+}
+
+func rejectNonGet(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+		return false
+	}
+	w.Header().Set("Allow", "GET, HEAD")
+	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	return true
+}
+
+func rejectNonGetOnly(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method == http.MethodGet {
+		return false
+	}
+	w.Header().Set("Allow", "GET")
+	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	return true
 }
 
 // SummarizeHost reduces local state and dependency health into a dashboard
@@ -336,6 +399,7 @@ const dashboardHTML = `<!DOCTYPE html>
   main { max-width: 1400px; margin: 0 auto; }
   h1 { margin: 0; font-size: 1.65rem; color: var(--text); }
   h2 { margin: 28px 0 12px; font-size: 0.85rem; color: var(--muted); letter-spacing: 0; text-transform: uppercase; }
+  a { color: var(--accent); }
   .topline { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
   .subtle { color: var(--muted); font-size: 0.85rem; }
   .summary {
@@ -398,7 +462,7 @@ const dashboardHTML = `<!DOCTYPE html>
   <div class="topline">
     <div>
       <h1>Jetmon 2</h1>
-      <div class="subtle">Host dashboard</div>
+      <div class="subtle">Host dashboard · <a href="/fleet">fleet dashboard</a></div>
     </div>
     <span class="status-pill amber" id="summary-pill">waiting</span>
   </div>
