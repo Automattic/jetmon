@@ -90,6 +90,7 @@ func TestRenderTelemetryReportText(t *testing.T) {
 			Since: time.Date(2026, 4, 30, 16, 0, 0, 0, time.UTC),
 			Until: time.Date(2026, 4, 30, 18, 0, 0, 0, time.UTC),
 		},
+		WindowEdge:      telemetryWindowEdge{LookbackSeconds: 60},
 		TelemetryStatus: "pass",
 		Highlights:      []string{"Telemetry looks internally consistent for this window."},
 		Summary:         telemetrySummary{Opened: 5, ConfirmedDown: 2, ProbeCleared: 1},
@@ -124,6 +125,7 @@ func TestRenderTelemetryReportText(t *testing.T) {
 		"PASS telemetry_status=pass explanation_gap_types=0 explanation_gap_rows=0",
 		"INFO highlight=\"Telemetry looks internally consistent for this window.\"",
 		"window_end=exclusive",
+		"INFO window_edge_lookback=60s wpcom_eligible_transitions=0 verifier_outcome_transitions=0",
 		"INFO events opened=5 confirmed_down=2",
 		"INFO timing=first_failure_to_down count=2 avg_ms=1500 max_ms=2500",
 		"INFO verifier_replies=6 confirm_down=4 disagree=2",
@@ -143,6 +145,10 @@ func TestRenderTelemetryReportWarnTextSimulation(t *testing.T) {
 		Window: telemetryWindow{
 			Since: time.Date(2026, 4, 30, 16, 0, 0, 0, time.UTC),
 			Until: time.Date(2026, 4, 30, 18, 0, 0, 0, time.UTC),
+		},
+		WindowEdge: telemetryWindowEdge{
+			LookbackSeconds:          60,
+			WPCOMEligibleTransitions: 1,
 		},
 		Summary: telemetrySummary{Opened: 3, ConfirmedDown: 2},
 		Verifier: telemetryVerifierReport{
@@ -175,9 +181,11 @@ func TestRenderTelemetryReportWarnTextSimulation(t *testing.T) {
 	for _, want := range []string{
 		"WARN telemetry_status=warn explanation_gap_types=2 explanation_gap_rows=7",
 		"INFO highlight=\"WPCOM attempt delta is 1 after expected suppressions.\"",
+		"INFO highlight=\"1 WPCOM-eligible transition(s) landed in the final 60s of the window; rerun with a later --until before treating the delta as missing telemetry.\"",
 		"INFO highlight=\"Verifier reply outcome is missing for 6 audit row(s).\"",
 		"WARN gap=wpcom_attempt_delta count=1",
 		"WARN gap=verifier_reply_missing_outcome count=6",
+		"INFO suggested_next_action=\"Rerun the report with a later --until to rule out window-edge WPCOM audit lag before investigating missing notifications.\"",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("warn simulation missing %q:\n%s", want, got)
@@ -219,6 +227,41 @@ func TestRenderTelemetryReportJSON(t *testing.T) {
 	}
 	if err := renderTelemetryReport(&out, report, "yaml"); err == nil {
 		t.Fatal("renderTelemetryReport(yaml) error = nil, want error")
+	}
+}
+
+func TestQueryTelemetryWindowEdgeUsesActualShortWindowLookback(t *testing.T) {
+	sqlDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer sqlDB.Close()
+
+	window := telemetryWindow{
+		Since: time.Date(2026, 4, 30, 17, 59, 30, 0, time.UTC),
+		Until: time.Date(2026, 4, 30, 18, 0, 0, 0, time.UTC),
+	}
+	mock.ExpectQuery(`(?s)SELECT COALESCE\(SUM\(CASE WHEN reason IN.*changed_at >= \?.*changed_at < \?`).
+		WithArgs(
+			eventstore.ReasonVerifierConfirmed,
+			eventstore.ReasonVerifierCleared,
+			eventstore.ReasonProbeCleared,
+			eventstore.ReasonVerifierConfirmed,
+			eventstore.ReasonFalseAlarm,
+			window.Since,
+			window.Until,
+		).
+		WillReturnRows(sqlmock.NewRows([]string{"wpcom_eligible", "verifier_outcomes"}).AddRow(int64(2), int64(1)))
+
+	edge, err := queryTelemetryWindowEdge(context.Background(), sqlDB, window, telemetryWindowEdgeLookback)
+	if err != nil {
+		t.Fatalf("queryTelemetryWindowEdge() error = %v", err)
+	}
+	if edge.LookbackSeconds != 30 || edge.WPCOMEligibleTransitions != 2 || edge.VerifierOutcomeTransitions != 1 {
+		t.Fatalf("edge = %+v, want 30s actual lookback with counts 2/1", edge)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
 	}
 }
 
@@ -308,6 +351,18 @@ func expectTelemetryReportQueries(t *testing.T, mock sqlmock.Sqlmock, start, end
 	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\).*event_type IN.*created_at >= \?.*created_at < \?`).
 		WithArgs(audit.EventMaintenanceActive, audit.EventAlertSuppressed, start, end).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(int64(1)))
+
+	mock.ExpectQuery(`(?s)SELECT COALESCE\(SUM\(CASE WHEN reason IN.*changed_at >= \?.*changed_at < \?`).
+		WithArgs(
+			eventstore.ReasonVerifierConfirmed,
+			eventstore.ReasonVerifierCleared,
+			eventstore.ReasonProbeCleared,
+			eventstore.ReasonVerifierConfirmed,
+			eventstore.ReasonFalseAlarm,
+			end.Add(-telemetryWindowEdgeLookback),
+			end,
+		).
+		WillReturnRows(sqlmock.NewRows([]string{"wpcom_eligible", "verifier_outcomes"}).AddRow(int64(0), int64(0)))
 
 	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\).*reason = \?.*changed_at >= \?.*changed_at < \?.*http_code`).
 		WithArgs(eventstore.ReasonOpened, start, end).

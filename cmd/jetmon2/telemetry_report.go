@@ -22,6 +22,7 @@ import (
 const (
 	defaultTelemetryQueryTimeout = 30 * time.Second
 	maxTelemetryQueryTimeout     = 5 * time.Minute
+	telemetryWindowEdgeLookback  = time.Minute
 )
 
 type telemetryReportOptions struct {
@@ -37,10 +38,17 @@ type telemetryWindow struct {
 	Until time.Time `json:"until"`
 }
 
+type telemetryWindowEdge struct {
+	LookbackSeconds            int64 `json:"lookback_seconds"`
+	WPCOMEligibleTransitions   int64 `json:"wpcom_eligible_transitions"`
+	VerifierOutcomeTransitions int64 `json:"verifier_outcome_transitions"`
+}
+
 type telemetryReport struct {
 	Command              string                  `json:"command"`
 	GeneratedAt          time.Time               `json:"generated_at"`
 	Window               telemetryWindow         `json:"window"`
+	WindowEdge           telemetryWindowEdge     `json:"window_edge"`
 	TelemetryStatus      string                  `json:"telemetry_status"`
 	Highlights           []string                `json:"highlights,omitempty"`
 	ExplanationGapRows   int64                   `json:"explanation_gap_rows"`
@@ -270,6 +278,10 @@ func buildTelemetryReport(ctx context.Context, conn *sql.DB, now time.Time, opts
 	if err != nil {
 		return telemetryReport{}, err
 	}
+	windowEdge, err := queryTelemetryWindowEdge(ctx, conn, window, telemetryWindowEdgeLookback)
+	if err != nil {
+		return telemetryReport{}, err
+	}
 	gaps, err := queryTelemetryExplanationGaps(ctx, conn, window)
 	if err != nil {
 		return telemetryReport{}, err
@@ -280,6 +292,7 @@ func buildTelemetryReport(ctx context.Context, conn *sql.DB, now time.Time, opts
 		Command:           "telemetry report",
 		GeneratedAt:       now.UTC(),
 		Window:            window,
+		WindowEdge:        windowEdge,
 		Summary:           telemetrySummaryFromReasons(reasonCounts),
 		Timings:           timings,
 		Verifier:          verifier,
@@ -546,6 +559,36 @@ func queryTelemetryWPCOM(ctx context.Context, conn *sql.DB, window telemetryWind
 	return report, nil
 }
 
+func queryTelemetryWindowEdge(ctx context.Context, conn *sql.DB, window telemetryWindow, lookback time.Duration) (telemetryWindowEdge, error) {
+	if lookback <= 0 {
+		lookback = telemetryWindowEdgeLookback
+	}
+	edgeStart := window.Until.Add(-lookback)
+	if edgeStart.Before(window.Since) {
+		edgeStart = window.Since
+	}
+
+	edge := telemetryWindowEdge{LookbackSeconds: int64(window.Until.Sub(edgeStart) / time.Second)}
+	err := conn.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(CASE WHEN reason IN (?, ?, ?) THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN reason IN (?, ?) THEN 1 ELSE 0 END), 0)
+		  FROM jetmon_event_transitions
+		 WHERE changed_at >= ?
+		   AND changed_at < ?`,
+		eventstore.ReasonVerifierConfirmed,
+		eventstore.ReasonVerifierCleared,
+		eventstore.ReasonProbeCleared,
+		eventstore.ReasonVerifierConfirmed,
+		eventstore.ReasonFalseAlarm,
+		edgeStart,
+		window.Until,
+	).Scan(&edge.WPCOMEligibleTransitions, &edge.VerifierOutcomeTransitions)
+	if err != nil {
+		return telemetryWindowEdge{}, fmt.Errorf("query telemetry window edge: %w", err)
+	}
+	return edge, nil
+}
+
 func queryTelemetryExplanationGaps(ctx context.Context, conn *sql.DB, window telemetryWindow) ([]telemetryGap, error) {
 	gapQueries := []struct {
 		name     string
@@ -689,6 +732,9 @@ func telemetryReportHighlights(report telemetryReport) []string {
 	var highlights []string
 	if report.WPCOM.AttemptDelta != 0 {
 		highlights = append(highlights, fmt.Sprintf("WPCOM attempt delta is %d after expected suppressions.", report.WPCOM.AttemptDelta))
+		if report.WindowEdge.WPCOMEligibleTransitions > 0 {
+			highlights = append(highlights, fmt.Sprintf("%d WPCOM-eligible transition(s) landed in the final %ds of the window; rerun with a later --until before treating the delta as missing telemetry.", report.WindowEdge.WPCOMEligibleTransitions, report.WindowEdge.LookbackSeconds))
+		}
 	}
 	for _, gap := range report.ExplanationGaps {
 		switch gap.Name {
@@ -718,6 +764,9 @@ func suggestTelemetryNextActions(report telemetryReport) []string {
 	for _, gap := range report.ExplanationGaps {
 		switch gap.Name {
 		case "wpcom_attempt_delta":
+			if report.WindowEdge.WPCOMEligibleTransitions > 0 {
+				actions = append(actions, "Rerun the report with a later --until to rule out window-edge WPCOM audit lag before investigating missing notifications.")
+			}
 			actions = append(actions, "Review WPCOM audit rows against event transitions for the same window; suppressions or missing audit writes may explain the delta.")
 		case "opened_missing_failure_metadata", "confirmed_down_missing_verifier_results", "false_alarm_missing_verifier_counts", "verifier_reply_missing_outcome":
 			actions = append(actions, "Fix telemetry metadata gaps before relying on this report for customer-facing explanations.")
@@ -767,6 +816,11 @@ func renderTelemetryReportText(out io.Writer, report telemetryReport) {
 		report.GeneratedAt.Format(time.RFC3339),
 		report.Window.Since.Format(time.RFC3339),
 		report.Window.Until.Format(time.RFC3339),
+	)
+	fmt.Fprintf(out, "INFO window_edge_lookback=%ds wpcom_eligible_transitions=%d verifier_outcome_transitions=%d\n",
+		report.WindowEdge.LookbackSeconds,
+		report.WindowEdge.WPCOMEligibleTransitions,
+		report.WindowEdge.VerifierOutcomeTransitions,
 	)
 	fmt.Fprintf(out, "INFO events opened=%d confirmed_down=%d verifier_cleared=%d probe_cleared=%d false_alarm=%d manual_override=%d auto_timeout=%d\n",
 		report.Summary.Opened,
