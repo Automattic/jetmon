@@ -55,6 +55,10 @@ fi
 mkdir -p "$work_dir"
 mkdir -p "$(dirname "$plan_file")"
 printf 'INFO rehearsal_work_dir=%s\n' "$work_dir"
+printf 'INFO rehearsal_plan_file=%s\n' "$plan_file"
+if [[ (-e "$plan_file" || -L "$plan_file") && "${ROLLOUT_REHEARSAL_OVERWRITE_PLAN:-}" != "1" ]]; then
+	fail "rehearsal plan file already exists: $plan_file (set ROLLOUT_REHEARSAL_OVERWRITE_PLAN=1 to replace it)"
+fi
 printf '%s\n' \
 	'host,bucket_min,bucket_max' \
 	'jetmon-v1-a,0,4' \

@@ -81,7 +81,8 @@ to v1" and keep the transcript with the incident record.
    This is a no-database dry-run gate for the generated same-server,
    fresh-server, and rollback flows. The broader `make rollout-docs-verify`
    target also runs it after build, test, lint, command-help, JSON, and staged
-   systemd checks.
+   systemd checks. It uses a disposable sample bucket plan and does not replace
+   the real `host-preflight` gate or VM lab rehearsal.
 
 2. Confirm the approved static bucket plan exists as a reusable CSV:
 
