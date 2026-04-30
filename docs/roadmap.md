@@ -13,12 +13,22 @@ migration and the operating data needed to make larger architecture decisions.
 ### Candidate follow-up branches
 
 These are scoped branches worth considering after the merged API CLI, rollout
-preflight, deliverer hardening, and API CLI fixture workflow branches:
+preflight, deliverer hardening, API CLI fixture workflow, dashboard, and
+production telemetry branches:
 
-- **`feature/production-telemetry-reports`** - turn existing StatsD and event
-  data into repeatable reports for first-failure timing, verifier agreement,
-  false-alarm classes, WPCOM parity, and operator explanation gaps after v2 has
-  enough traffic.
+No active candidate branch is queued here right now.
+
+### Production Telemetry Reports TODO
+
+- [x] Add `jetmon2 telemetry report` as a read-only production report over
+  existing event, transition, audit, and verifier telemetry tables.
+- [x] Summarize event lifecycle counts, detection timings, verifier agreement,
+  false-alarm classes, WPCOM parity, and operator explanation gaps in one
+  repeatable text/JSON command.
+- [x] Keep the report safe for production use by avoiding payload/credential
+  dumps and reporting only aggregate counts, durations, classes, and gap names.
+- [ ] Revisit report thresholds and suggested actions after v2 has enough real
+  production traffic to show which rates should be considered normal.
 
 ### Projection Drift Tooling TODO
 
@@ -168,6 +178,9 @@ preflight, deliverer hardening, and API CLI fixture workflow branches:
 
 Recently completed candidate branches:
 
+- **`feature/production-telemetry-reports`** - adds `jetmon2 telemetry report`
+  for repeatable production summaries of lifecycle timing, verifier agreement,
+  false-alarm classes, WPCOM parity, and operator explanation gaps.
 - **`feature/fleet-dashboard`** - adds `/fleet` and `/api/fleet` global
   dashboard views for monitor hosts, standalone deliverers, bucket coverage,
   stale heartbeats, delivery backlog, delivery-owner posture, projection drift,
@@ -223,8 +236,9 @@ Recently completed candidate branches:
   notification parity. StatsD now emits the core detection timings, outcome
   counters split by local failure class, and per-Veriflier-host RPC/vote
   counters, plus legacy WPCOM notification attempt/delivered/retry/error/failed
-  counters split by status. Durable report queries should wait until v2 has
-  enough real traffic to prove which questions operators actually need to ask.
+  counters split by status. `jetmon2 telemetry report` now provides the first
+  durable report surface for these questions; tune thresholds and suggested
+  actions after v2 has enough real traffic to prove which rates are normal.
 - **Watch projection drift as a production bug.** While the legacy projection
   is enabled, event mutations, transition rows, and the site-row projection
   must remain transactionally consistent. `jetmon2 rollout projection-drift`

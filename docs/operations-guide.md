@@ -381,6 +381,18 @@ Important metric groups include:
 StatsD is the primary metrics transport. Expose Graphite/StatsD data through the
 existing metrics pipeline when external systems need it.
 
+For repeatable production summaries from durable Jetmon tables, use:
+
+```bash
+./jetmon2 telemetry report --since=24h
+./jetmon2 telemetry report --since=2026-04-30T00:00:00Z --until=2026-05-01T00:00:00Z --output=json
+```
+
+The report is read-only. It summarizes event lifecycle counts, first-failure
+timings, verifier agreement, false-alarm classes, WPCOM attempt parity, and
+metadata gaps that would make operator or customer explanations weaker. It
+reports aggregate counts and classes rather than raw payloads or credentials.
+
 Use `LOG_FORMAT=json` for structured logs during investigations.
 
 ## Debugging
