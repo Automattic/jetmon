@@ -229,6 +229,8 @@ A lightweight web UI served by the binary itself (no separate process) on a conf
 - WPCOM circuit-breaker state and queued notification depth
 - Live dependency health for MySQL, configured Verifliers, WPCOM, StatsD, and
   log/stats directory writes
+- Combined `/api/host` snapshot with local state, dependency health, and a
+  red/amber/green host summary for operator tooling
 
 Updates via server-sent events and lightweight JSON polling — no WebSocket library needed, no JavaScript framework. A plain HTML page with `<EventSource>` and `fetch` is sufficient and has no build toolchain dependency.
 
@@ -245,6 +247,12 @@ Future refinements can add primary/replica breakdowns, last successful
 orchestrator batch, WPCOM request error-rate windows, and disk free-space
 thresholds once production operating data shows which signals are worth paging
 on.
+
+Long-running `jetmon2` and `jetmon-deliverer` processes also publish compact
+heartbeat snapshots into `jetmon_process_health`. That table is the foundation
+for a fleet dashboard that can summarize monitor hosts, standalone deliverers,
+stale process heartbeats, delivery-owner state, and local dependency health
+without polling every host dashboard directly.
 
 **False Positive Tracker**
 Every time the system escalates a site to Veriflier confirmation and the Verifliers do NOT confirm it as down (i.e., the queue entry times out or all Verifliers report the site as up), the event is recorded in a `jetmon_false_positives` table with timestamp, site, HTTP code, error code, and RTT from the local check. A view in the operator dashboard surfaces sites with high false positive rates, helping operators tune per-site `NUM_OF_CHECKS` or `TIME_BETWEEN_CHECKS_SEC` settings.

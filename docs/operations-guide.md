@@ -207,11 +207,26 @@ Status and reload commands:
 ./jetmon2 drain
 ```
 
-The operator dashboard is available on `DASHBOARD_PORT` when enabled. It shows
-worker count, active checks, queue depth, retry queue depth, throughput, round
-time, owned buckets, rollout guard state, RSS, WPCOM circuit-breaker state, and
-dependency health for MySQL, Verifliers, WPCOM, StatsD, and local log/stats
-writes.
+The host operator dashboard is available on `DASHBOARD_PORT` when enabled. It
+shows a red/amber/green host summary, worker count, active checks, queue depth,
+retry queue depth, throughput, round time, owned buckets, rollout guard state,
+RSS, WPCOM circuit-breaker state, dependency health for MySQL, Verifliers,
+WPCOM, StatsD, local log/stats writes, and the rollout commands an operator is
+most likely to need from that host.
+
+The dashboard exposes three local JSON endpoints:
+
+```text
+GET /api/state   # raw host state snapshot
+GET /api/health  # dependency health list
+GET /api/host    # combined host state, dependency health, and summary
+```
+
+Long-running `jetmon2` and `jetmon-deliverer` processes also publish compact
+heartbeat snapshots to `jetmon_process_health`. That table is the durable data
+source for the planned fleet dashboard. Treat stale `updated_at` values as
+unknown/unhealthy; the row is the last reported process state, not proof that a
+host is still alive.
 
 Bucket coverage can be inspected directly:
 
@@ -219,6 +234,14 @@ Bucket coverage can be inspected directly:
 SELECT host_id, bucket_min, bucket_max, last_heartbeat, status
 FROM jetmon_hosts
 ORDER BY bucket_min;
+```
+
+Process health can be inspected directly:
+
+```sql
+SELECT process_id, host_id, process_type, state, updated_at
+FROM jetmon_process_health
+ORDER BY process_type, host_id;
 ```
 
 A host whose heartbeat is older than `BUCKET_HEARTBEAT_GRACE_SEC` will have its

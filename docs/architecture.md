@@ -411,6 +411,12 @@ Database Tables
     last_heartbeat        Updated every round; expiry triggers rebalance
     status                active / draining
 
+  jetmon_process_health   Durable process heartbeat snapshots for dashboards
+    process_id            Stable key such as <host>:monitor or <host>:deliverer
+    host_id/process_type  Fleet grouping dimensions
+    state/updated_at      Lifecycle state and freshness marker
+    dependency_health     JSON dependency health summary
+
   jetmon_events           Authoritative v2 incident current state
     id                    Incident identifier
     blog_id               Site identifier

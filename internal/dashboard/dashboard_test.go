@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHandleState(t *testing.T) {
@@ -20,8 +21,10 @@ func TestHandleState(t *testing.T) {
 		DeliveryWorkersEnabled:        true,
 		DeliveryOwnerHost:             "api-1",
 		RolloutPreflightCommand:       "./jetmon2 rollout pinned-check",
+		RolloutCutoverCommand:         "./jetmon2 rollout cutover-check --since=15m",
 		RolloutActivityCommand:        "./jetmon2 rollout activity-check --since=15m",
 		RolloutRollbackCommand:        "./jetmon2 rollout rollback-check",
+		RolloutStateReportCommand:     "./jetmon2 rollout state-report --since=15m",
 		ProjectionDriftCommand:        "./jetmon2 rollout projection-drift",
 	})
 
@@ -57,11 +60,17 @@ func TestHandleState(t *testing.T) {
 	if st.RolloutPreflightCommand != "./jetmon2 rollout pinned-check" {
 		t.Fatalf("RolloutPreflightCommand = %q", st.RolloutPreflightCommand)
 	}
+	if st.RolloutCutoverCommand != "./jetmon2 rollout cutover-check --since=15m" {
+		t.Fatalf("RolloutCutoverCommand = %q", st.RolloutCutoverCommand)
+	}
 	if st.RolloutActivityCommand != "./jetmon2 rollout activity-check --since=15m" {
 		t.Fatalf("RolloutActivityCommand = %q", st.RolloutActivityCommand)
 	}
 	if st.RolloutRollbackCommand != "./jetmon2 rollout rollback-check" {
 		t.Fatalf("RolloutRollbackCommand = %q", st.RolloutRollbackCommand)
+	}
+	if st.RolloutStateReportCommand != "./jetmon2 rollout state-report --since=15m" {
+		t.Fatalf("RolloutStateReportCommand = %q", st.RolloutStateReportCommand)
 	}
 	if st.ProjectionDriftCommand != "./jetmon2 rollout projection-drift" {
 		t.Fatalf("ProjectionDriftCommand = %q", st.ProjectionDriftCommand)
@@ -94,6 +103,43 @@ func TestHandleHealth(t *testing.T) {
 	}
 }
 
+func TestHandleHostSnapshot(t *testing.T) {
+	srv := New("test-host")
+	srv.Update(State{
+		WorkerCount:            5,
+		WPCOMCircuitOpen:       true,
+		DeliveryWorkersEnabled: true,
+	})
+	srv.UpdateHealth([]HealthEntry{
+		{Name: "mysql", Status: "green"},
+		{Name: "statsd", Status: "amber"},
+	})
+
+	r := httptest.NewRequest(http.MethodGet, "/api/host", nil)
+	w := httptest.NewRecorder()
+	srv.handleHost(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var snapshot HostSnapshot
+	if err := json.NewDecoder(w.Body).Decode(&snapshot); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if snapshot.State.Hostname != "test-host" {
+		t.Fatalf("Hostname = %q, want test-host", snapshot.State.Hostname)
+	}
+	if len(snapshot.Health) != 2 {
+		t.Fatalf("health len = %d, want 2", len(snapshot.Health))
+	}
+	if snapshot.Summary.Status != "red" {
+		t.Fatalf("summary status = %q, want red", snapshot.Summary.Status)
+	}
+	if snapshot.Summary.RedCount == 0 {
+		t.Fatalf("summary red count = %d, want non-zero", snapshot.Summary.RedCount)
+	}
+}
+
 func TestHandleIndex(t *testing.T) {
 	srv := New("test-host")
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -112,6 +158,12 @@ func TestHandleIndex(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "id=\"preflight\"") {
 		t.Fatal("body does not contain rollout preflight card")
 	}
+	if !strings.Contains(w.Body.String(), "id=\"cutover\"") {
+		t.Fatal("body does not contain rollout cutover command")
+	}
+	if !strings.Contains(w.Body.String(), "id=\"state-report\"") {
+		t.Fatal("body does not contain rollout state report command")
+	}
 	if !strings.Contains(w.Body.String(), "id=\"activity\"") {
 		t.Fatal("body does not contain rollout activity card")
 	}
@@ -123,6 +175,28 @@ func TestHandleIndex(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "id=\"health\"") {
 		t.Fatal("body does not contain dependency health grid")
+	}
+	if !strings.Contains(w.Body.String(), "/api/host") {
+		t.Fatal("body does not fetch combined host snapshot")
+	}
+}
+
+func TestSummarizeHost(t *testing.T) {
+	st := State{UpdatedAt: time.Now(), DeliveryWorkersEnabled: true}
+	summary := SummarizeHost(st, []HealthEntry{{Name: "mysql", Status: "green"}})
+	if summary.Status != "amber" {
+		t.Fatalf("summary status = %q, want amber for unset delivery owner", summary.Status)
+	}
+
+	st.DeliveryOwnerHost = "host-a"
+	summary = SummarizeHost(st, []HealthEntry{{Name: "mysql", Status: "red"}})
+	if summary.Status != "red" {
+		t.Fatalf("summary status = %q, want red for dependency failure", summary.Status)
+	}
+
+	summary = SummarizeHost(st, []HealthEntry{{Name: "mysql", Status: "green"}})
+	if summary.Status != "green" {
+		t.Fatalf("summary status = %q, want green", summary.Status)
 	}
 }
 

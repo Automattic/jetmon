@@ -15,9 +15,12 @@ migration and the operating data needed to make larger architecture decisions.
 These are scoped branches worth considering after the merged API CLI, rollout
 preflight, deliverer hardening, and API CLI fixture workflow branches:
 
-- **`feature/operator-dashboard-polish`** - turn the dashboard into a clearer
-  production rollout cockpit: stronger warning states, dependency health
-  details, rollout-command visibility, and event/API pointers for operators.
+- **`feature/host-dashboard-fleet-plumbing`** - improve each host dashboard as
+  a clearer production rollout cockpit while publishing process health into
+  MySQL so a later fleet dashboard has a durable data source.
+- **`feature/fleet-dashboard`** - add a global dashboard for monitor hosts,
+  standalone deliverers, Verifliers, bucket coverage, stale heartbeats,
+  delivery backlog, projection drift, and fleet-level rollout blockers.
 - **`feature/projection-drift-tooling`** - expand drift diagnostics beyond
   count/list output with range summaries, likely causes, rehearsal reports, and
   dry-run repair guidance if repair becomes safe enough to automate.
@@ -85,8 +88,8 @@ preflight, deliverer hardening, and API CLI fixture workflow branches:
 ### Rollout VM Lab TODO
 
 - [x] Prepare an in-house KVM/libvirt host with passwordless sudo, QEMU,
-  libvirt, cloud-init tooling, Ansible, Expect, Go, MariaDB client tools, and a
-  dedicated `jetmon-rollout` storage pool.
+  libvirt, cloud-init tooling, Go, MariaDB client tools, and a dedicated
+  `jetmon-rollout` storage pool.
 - [x] Add a repo-owned `scripts/rollout-vm-lab.sh` harness with host `doctor`,
   image fetch, VM create/destroy, topology create, SSH wait, and offline
   snapshot/revert primitives.
@@ -108,6 +111,28 @@ preflight, deliverer hardening, and API CLI fixture workflow branches:
   directory refusal, bad DB connection refusal, and real `last_checked_at`
   activity from the `jetmon2` service.
 - [x] Add snapshot-backed replay for every named VM lab smoke flow.
+
+### Dashboard and Fleet Health TODO
+
+- [x] Split dashboard work into two PRs: first improve host dashboards and add
+  fleet-dashboard plumbing, then build the global fleet dashboard on top.
+- [x] Add a durable `jetmon_process_health` table for long-running process
+  heartbeats and compact local health snapshots.
+- [x] Publish monitor-host health from `jetmon2`, including bucket ownership,
+  worker queues, WPCOM circuit state, delivery-owner state, dependency health,
+  RSS, version, and process lifecycle state.
+- [x] Publish standalone `jetmon-deliverer` health, including active/idle
+  owner state, DB/StatsD health, RSS, version, and process lifecycle state.
+- [x] Add a combined host-dashboard snapshot endpoint so host state, dependency
+  health, and red/amber/green summary rules are available from one local API.
+- [x] Polish the existing host dashboard so rollout blockers, delivery-owner
+  warnings, dependency health, and operator commands are easier to scan.
+- [ ] Build the global fleet dashboard from `jetmon_process_health`,
+  `jetmon_hosts`, delivery queues, projection drift, and Veriflier health.
+- [ ] Add stale-heartbeat thresholds and fleet-level suggested next actions for
+  rollout handoffs.
+- [ ] Document and test the fleet dashboard's safe network exposure model
+  before exposing it beyond trusted operator networks.
 
 Recently completed candidate branches:
 

@@ -383,6 +383,43 @@ var migrations = []migration{
 		ADD INDEX idx_status_delivered_at (status, delivered_at),
 		ADD INDEX idx_status_last_attempt_at (status, last_attempt_at),
 		ADD INDEX idx_status_created_at (status, created_at)`},
+
+	// Migration 24 creates the durable process heartbeat table used as the
+	// foundation for fleet-wide operator dashboards. Each long-running Jetmon
+	// process owns one process_id and periodically upserts a compact snapshot of
+	// its local state. Fleet views should treat stale updated_at values as
+	// unknown/unhealthy rather than assuming the last state is still current.
+	{24, `CREATE TABLE IF NOT EXISTS jetmon_process_health (
+		process_id               VARCHAR(255) NOT NULL PRIMARY KEY,
+		host_id                  VARCHAR(255) NOT NULL,
+		process_type             VARCHAR(64) NOT NULL,
+		pid                      INT UNSIGNED NOT NULL DEFAULT 0,
+		version                  VARCHAR(64) NOT NULL DEFAULT '',
+		build_date               VARCHAR(64) NOT NULL DEFAULT '',
+		go_version               VARCHAR(64) NOT NULL DEFAULT '',
+		state                    VARCHAR(32) NOT NULL DEFAULT 'starting',
+		started_at               TIMESTAMP NULL,
+		updated_at               TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+		bucket_min               SMALLINT UNSIGNED NULL,
+		bucket_max               SMALLINT UNSIGNED NULL,
+		bucket_ownership         VARCHAR(128) NOT NULL DEFAULT '',
+		api_port                 INT UNSIGNED NULL,
+		dashboard_port           INT UNSIGNED NULL,
+		delivery_workers_enabled TINYINT UNSIGNED NOT NULL DEFAULT 0,
+		delivery_owner_host      VARCHAR(255) NOT NULL DEFAULT '',
+		worker_count             INT UNSIGNED NOT NULL DEFAULT 0,
+		active_checks            INT UNSIGNED NOT NULL DEFAULT 0,
+		queue_depth              INT UNSIGNED NOT NULL DEFAULT 0,
+		retry_queue_size         INT UNSIGNED NOT NULL DEFAULT 0,
+		wpcom_circuit_open       TINYINT UNSIGNED NOT NULL DEFAULT 0,
+		wpcom_queue_depth        INT UNSIGNED NOT NULL DEFAULT 0,
+		mem_rss_mb               INT UNSIGNED NOT NULL DEFAULT 0,
+		dependency_health        JSON NULL,
+		created_at               TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		INDEX idx_process_type_updated (process_type, updated_at),
+		INDEX idx_host_updated (host_id, updated_at),
+		INDEX idx_state_updated (state, updated_at)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
 }
 
 // Migrate applies all pending migrations idempotently.

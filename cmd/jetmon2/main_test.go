@@ -14,7 +14,9 @@ import (
 
 	"github.com/Automattic/jetmon/internal/alerting"
 	"github.com/Automattic/jetmon/internal/config"
+	"github.com/Automattic/jetmon/internal/dashboard"
 	"github.com/Automattic/jetmon/internal/deliverer"
+	"github.com/Automattic/jetmon/internal/fleethealth"
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
@@ -267,8 +269,8 @@ func TestBucketOwnershipLabel(t *testing.T) {
 
 func TestRolloutAdviceLines(t *testing.T) {
 	dynamic := rolloutAdviceLines(&config.Config{})
-	if len(dynamic) != 3 {
-		t.Fatalf("dynamic advice len = %d, want 3", len(dynamic))
+	if len(dynamic) != 4 {
+		t.Fatalf("dynamic advice len = %d, want 4", len(dynamic))
 	}
 	if !strings.Contains(dynamic[0], "rollout dynamic-check") {
 		t.Fatalf("dynamic preflight advice = %q", dynamic[0])
@@ -276,14 +278,17 @@ func TestRolloutAdviceLines(t *testing.T) {
 	if !strings.Contains(dynamic[1], "rollout activity-check") {
 		t.Fatalf("dynamic activity advice = %q", dynamic[1])
 	}
-	if !strings.Contains(dynamic[2], "rollout projection-drift") {
-		t.Fatalf("dynamic drift advice = %q", dynamic[2])
+	if !strings.Contains(dynamic[2], "rollout state-report") {
+		t.Fatalf("dynamic state report advice = %q", dynamic[2])
+	}
+	if !strings.Contains(dynamic[3], "rollout projection-drift") {
+		t.Fatalf("dynamic drift advice = %q", dynamic[3])
 	}
 
 	min, max := 12, 34
 	pinned := rolloutAdviceLines(&config.Config{PinnedBucketMin: &min, PinnedBucketMax: &max})
-	if len(pinned) != 6 {
-		t.Fatalf("pinned advice len = %d, want 6", len(pinned))
+	if len(pinned) != 7 {
+		t.Fatalf("pinned advice len = %d, want 7", len(pinned))
 	}
 	if !strings.Contains(pinned[0], "rollout static-plan-check") {
 		t.Fatalf("pinned static-plan advice = %q", pinned[0])
@@ -300,8 +305,11 @@ func TestRolloutAdviceLines(t *testing.T) {
 	if !strings.Contains(pinned[4], "rollout rollback-check") {
 		t.Fatalf("pinned rollback advice = %q", pinned[4])
 	}
-	if !strings.Contains(pinned[5], "rollout projection-drift") {
-		t.Fatalf("pinned drift advice = %q", pinned[5])
+	if !strings.Contains(pinned[5], "rollout state-report") {
+		t.Fatalf("pinned state report advice = %q", pinned[5])
+	}
+	if !strings.Contains(pinned[6], "rollout projection-drift") {
+		t.Fatalf("pinned drift advice = %q", pinned[6])
 	}
 }
 
@@ -335,6 +343,9 @@ func TestRolloutCommandHelpers(t *testing.T) {
 	}
 	if got := projectionDriftCommand(); got != "./jetmon2 rollout projection-drift" {
 		t.Fatalf("projectionDriftCommand() = %q", got)
+	}
+	if got := stateReportCommand(); got != "./jetmon2 rollout state-report --since=15m" {
+		t.Fatalf("stateReportCommand() = %q", got)
 	}
 }
 
@@ -391,6 +402,46 @@ func TestDashboardHealthEntriesReportsCoreDependencies(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestMonitorProcessHealthSnapshot(t *testing.T) {
+	started := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
+	cfg := &config.Config{APIPort: 8090, DashboardPort: 8080, DeliveryOwnerHost: "host-a"}
+	st := dashboard.State{
+		WorkerCount:            12,
+		ActiveChecks:           3,
+		QueueDepth:             4,
+		RetryQueueSize:         5,
+		BucketMin:              0,
+		BucketMax:              99,
+		BucketOwnership:        "pinned range=0-99",
+		DeliveryWorkersEnabled: true,
+		DeliveryOwnerHost:      "host-a",
+		WPCOMQueueDepth:        2,
+		MemRSSMB:               88,
+	}
+	health := []dashboard.HealthEntry{{
+		Name:      "mysql",
+		Status:    "green",
+		CheckedAt: started,
+	}}
+
+	snapshot := monitorProcessHealthSnapshot("host-a", started, fleethealth.StateHealthy, cfg, st, health)
+	if snapshot.HostID != "host-a" {
+		t.Fatalf("HostID = %q, want host-a", snapshot.HostID)
+	}
+	if snapshot.ProcessType != fleethealth.ProcessMonitor {
+		t.Fatalf("ProcessType = %q, want monitor", snapshot.ProcessType)
+	}
+	if snapshot.BucketMin == nil || *snapshot.BucketMin != 0 {
+		t.Fatalf("BucketMin = %v, want 0", snapshot.BucketMin)
+	}
+	if snapshot.APIPort == nil || *snapshot.APIPort != 8090 {
+		t.Fatalf("APIPort = %v, want 8090", snapshot.APIPort)
+	}
+	if len(snapshot.DependencyHealth) != 1 || snapshot.DependencyHealth[0].Name != "mysql" {
+		t.Fatalf("DependencyHealth = %+v, want mysql entry", snapshot.DependencyHealth)
 	}
 }
 

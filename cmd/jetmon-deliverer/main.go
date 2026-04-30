@@ -1,19 +1,24 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/Automattic/jetmon/internal/audit"
 	"github.com/Automattic/jetmon/internal/config"
 	"github.com/Automattic/jetmon/internal/db"
 	"github.com/Automattic/jetmon/internal/deliverer"
+	"github.com/Automattic/jetmon/internal/fleethealth"
 	"github.com/Automattic/jetmon/internal/metrics"
 )
 
@@ -141,6 +146,15 @@ func run() {
 	}
 
 	hostname := db.Hostname()
+	processStartedAt := time.Now().UTC()
+	processID := fleethealth.ProcessID(hostname, fleethealth.ProcessDeliverer)
+	workersEnabled := deliveryWorkersShouldStart(cfg, hostname)
+	publishProcessHealth := func(state string) {
+		snapshot := delivererProcessHealthSnapshot(hostname, processStartedAt, state, cfg, workersEnabled, delivererDependencyHealth(context.Background(), db.DB(), metrics.Global() != nil, time.Now().UTC()))
+		if err := fleethealth.Upsert(context.Background(), db.DB(), snapshot); err != nil {
+			log.Printf("process health: %v", err)
+		}
+	}
 	if level, msg := deliveryOwnerStatus(cfg, hostname); msg != "" {
 		if level == "WARN" {
 			log.Printf("WARN: %s", msg)
@@ -148,8 +162,32 @@ func run() {
 			log.Printf("config: %s", msg)
 		}
 	}
-	if !deliveryWorkersShouldStart(cfg, hostname) {
+	initialState := fleethealth.StateHealthy
+	if !workersEnabled {
+		initialState = fleethealth.StateIdle
+	}
+	publishProcessHealth(initialState)
+	stopHealth := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				publishProcessHealth(initialState)
+			case <-stopHealth:
+				return
+			}
+		}
+	}()
+
+	if !workersEnabled {
 		waitForShutdown()
+		close(stopHealth)
+		publishProcessHealth(fleethealth.StateStopping)
+		if err := fleethealth.MarkStopped(context.Background(), db.DB(), processID, time.Now().UTC()); err != nil {
+			log.Printf("process health: %v", err)
+		}
 		log.Println("jetmon-deliverer: shutdown complete")
 		return
 	}
@@ -160,7 +198,12 @@ func run() {
 		Dispatchers: deliverer.BuildAlertDispatchers(cfg),
 	})
 	waitForShutdown()
+	close(stopHealth)
+	publishProcessHealth(fleethealth.StateStopping)
 	runtime.Stop()
+	if err := fleethealth.MarkStopped(context.Background(), db.DB(), processID, time.Now().UTC()); err != nil {
+		log.Printf("process health: %v", err)
+	}
 	log.Println("jetmon-deliverer: shutdown complete")
 }
 
@@ -203,6 +246,69 @@ func validateDelivererConfigRequirements(cfg *config.Config, hostname string, op
 		failures = append(failures, fmt.Sprintf("API_PORT=%d must be 0 for standalone deliverer config", cfg.APIPort))
 	}
 	return failures
+}
+
+func delivererProcessHealthSnapshot(hostname string, startedAt time.Time, state string, cfg *config.Config, workersEnabled bool, health []fleethealth.DependencyHealth) fleethealth.Snapshot {
+	return fleethealth.Snapshot{
+		HostID:                 hostname,
+		ProcessType:            fleethealth.ProcessDeliverer,
+		PID:                    os.Getpid(),
+		Version:                version,
+		BuildDate:              buildDate,
+		GoVersion:              goVersion,
+		State:                  state,
+		StartedAt:              startedAt,
+		UpdatedAt:              time.Now().UTC(),
+		DeliveryWorkersEnabled: workersEnabled,
+		DeliveryOwnerHost:      cfg.DeliveryOwnerHost,
+		MemRSSMB:               currentMemRSSMB(),
+		DependencyHealth:       health,
+	}
+}
+
+func delivererDependencyHealth(ctx context.Context, sqlDB *sql.DB, statsdReady bool, checkedAt time.Time) []fleethealth.DependencyHealth {
+	return []fleethealth.DependencyHealth{
+		delivererMySQLHealth(ctx, sqlDB, checkedAt),
+		delivererStatsDHealth(statsdReady, checkedAt),
+	}
+}
+
+func delivererMySQLHealth(ctx context.Context, sqlDB *sql.DB, checkedAt time.Time) fleethealth.DependencyHealth {
+	entry := fleethealth.DependencyHealth{Name: "mysql", CheckedAt: checkedAt}
+	if sqlDB == nil {
+		entry.Status = "red"
+		entry.LastError = "database pool is not initialized"
+		return entry
+	}
+	pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	start := time.Now()
+	if err := sqlDB.PingContext(pingCtx); err != nil {
+		entry.Status = "red"
+		entry.LatencyMS = time.Since(start).Milliseconds()
+		entry.LastError = err.Error()
+		return entry
+	}
+	entry.Status = "green"
+	entry.LatencyMS = time.Since(start).Milliseconds()
+	return entry
+}
+
+func delivererStatsDHealth(ready bool, checkedAt time.Time) fleethealth.DependencyHealth {
+	entry := fleethealth.DependencyHealth{Name: "statsd", CheckedAt: checkedAt}
+	if !ready {
+		entry.Status = "amber"
+		entry.LastError = "statsd client is not initialized"
+		return entry
+	}
+	entry.Status = "green"
+	return entry
+}
+
+func currentMemRSSMB() int {
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+	return int(ms.Sys / 1024 / 1024)
 }
 
 func waitForShutdown() {
