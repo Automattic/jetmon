@@ -20,6 +20,7 @@ func TestValidate(t *testing.T) {
 			BodyReadMaxBytes:    262144,
 			BodyReadMaxMS:       250,
 			KeywordReadMaxBytes: 1048576,
+			KeywordReadMaxMS:    0,
 			LogFormat:           "text",
 		}
 	}
@@ -153,6 +154,11 @@ func TestValidate(t *testing.T) {
 		{
 			name:    "keyword read max bytes zero",
 			mutate:  func(c *Config) { c.KeywordReadMaxBytes = 0 },
+			wantErr: true,
+		},
+		{
+			name:    "keyword read max ms negative",
+			mutate:  func(c *Config) { c.KeywordReadMaxMS = -1 },
 			wantErr: true,
 		},
 		{
@@ -318,6 +324,9 @@ func TestLoadAndGet(t *testing.T) {
 	}
 	if cfg.KeywordReadMaxBytes != 1048576 {
 		t.Fatalf("KeywordReadMaxBytes = %d, want 1048576", cfg.KeywordReadMaxBytes)
+	}
+	if cfg.KeywordReadMaxMS != 0 {
+		t.Fatalf("KeywordReadMaxMS = %d, want 0", cfg.KeywordReadMaxMS)
 	}
 	if !cfg.LegacyStatusProjectionEnable {
 		t.Fatal("LegacyStatusProjectionEnable default should be true")
