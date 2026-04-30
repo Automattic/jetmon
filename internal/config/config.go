@@ -84,6 +84,7 @@ type Config struct {
 	BodyReadMaxBytes          int64 `json:"BODY_READ_MAX_BYTES"`
 	BodyReadMaxMS             int   `json:"BODY_READ_MAX_MS"`
 	KeywordReadMaxBytes       int64 `json:"KEYWORD_READ_MAX_BYTES"`
+	KeywordReadMaxMS          int   `json:"KEYWORD_READ_MAX_MS"`
 	UseVariableCheckIntervals bool  `json:"USE_VARIABLE_CHECK_INTERVALS"`
 
 	LogFormat         string `json:"LOG_FORMAT"`
@@ -219,6 +220,7 @@ func defaults() *Config {
 		BodyReadMaxBytes:             262144,
 		BodyReadMaxMS:                250,
 		KeywordReadMaxBytes:          1048576,
+		KeywordReadMaxMS:             0,
 		LogFormat:                    "text",
 		DashboardPort:                8080,
 		DashboardBindAddr:            "127.0.0.1",
@@ -298,6 +300,10 @@ func validate(cfg *Config) error {
 	}
 	if cfg.KeywordReadMaxBytes <= 0 {
 		return fmt.Errorf("KEYWORD_READ_MAX_BYTES must be > 0")
+	}
+<<<<<<< HEAD
+	if cfg.KeywordReadMaxMS < 0 {
+		return fmt.Errorf("KEYWORD_READ_MAX_MS must be >= 0")
 	}
 	if cfg.MinTimeBetweenRoundsSec < 0 {
 		return fmt.Errorf("MIN_TIME_BETWEEN_ROUNDS_SEC must be >= 0")
