@@ -145,7 +145,7 @@ preflight, deliverer hardening, and API CLI fixture workflow branches:
   from accidental all-host delivery eligibility.
 - [ ] Consider collecting true process RSS for fleet and host dashboards if
   operators need OS-level memory accounting beyond Go runtime system memory.
-- [ ] Document and test the fleet dashboard's safe network exposure model
+- [x] Document and test the fleet dashboard's safe network exposure model
   before exposing it beyond trusted operator networks.
 
 Recently completed candidate branches:

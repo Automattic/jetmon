@@ -203,6 +203,9 @@ func TestHandleIndex(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "/api/host") {
 		t.Fatal("body does not fetch combined host snapshot")
 	}
+	if !strings.Contains(w.Body.String(), "/fleet") {
+		t.Fatal("body does not link to fleet dashboard")
+	}
 }
 
 func TestHandleFleetIndex(t *testing.T) {
@@ -251,6 +254,22 @@ func TestHandleFleetSnapshot(t *testing.T) {
 	}
 }
 
+func TestHandleFleetRejectsNonGet(t *testing.T) {
+	srv := New("test-host")
+	srv.SetFleetSource(fakeFleetSource{snapshot: FleetSnapshot{Summary: FleetSummary{Status: "green"}}})
+
+	r := httptest.NewRequest(http.MethodPost, "/api/fleet", nil)
+	w := httptest.NewRecorder()
+	srv.handleFleet(w, r)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", w.Code)
+	}
+	if got := w.Header().Get("Allow"); got != "GET, HEAD" {
+		t.Fatalf("Allow = %q, want GET, HEAD", got)
+	}
+}
+
 func TestHandleFleetErrors(t *testing.T) {
 	srv := New("test-host")
 	r := httptest.NewRequest(http.MethodGet, "/api/fleet", nil)
@@ -265,6 +284,9 @@ func TestHandleFleetErrors(t *testing.T) {
 	srv.handleFleet(w, r)
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("status with source error = %d, want 500", w.Code)
+	}
+	if strings.Contains(w.Body.String(), "db down") {
+		t.Fatalf("error body = %q, leaked backend error", w.Body.String())
 	}
 }
 

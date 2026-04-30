@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Automattic/jetmon/internal/fleethealth"
@@ -29,6 +31,7 @@ type FleetStoreOptions struct {
 	BucketTotal    int
 	HeartbeatGrace time.Duration
 	RecentWindow   time.Duration
+	CacheTTL       time.Duration
 	Now            func() time.Time
 }
 
@@ -39,7 +42,11 @@ type FleetStore struct {
 	bucketTotal    int
 	heartbeatGrace time.Duration
 	recentWindow   time.Duration
+	cacheTTL       time.Duration
 	now            func() time.Time
+	cacheMu        sync.Mutex
+	cacheSnapshot  FleetSnapshot
+	cacheUntil     time.Time
 }
 
 // NewFleetStore creates a MySQL-backed fleet dashboard source.
@@ -50,6 +57,9 @@ func NewFleetStore(db *sql.DB, opts FleetStoreOptions) *FleetStore {
 	if opts.RecentWindow <= 0 {
 		opts.RecentWindow = defaultFleetRecentWindow
 	}
+	if opts.CacheTTL == 0 {
+		opts.CacheTTL = 5 * time.Second
+	}
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
@@ -58,6 +68,7 @@ func NewFleetStore(db *sql.DB, opts FleetStoreOptions) *FleetStore {
 		bucketTotal:    opts.BucketTotal,
 		heartbeatGrace: opts.HeartbeatGrace,
 		recentWindow:   opts.RecentWindow,
+		cacheTTL:       opts.CacheTTL,
 		now:            opts.Now,
 	}
 }
@@ -68,6 +79,9 @@ func (s *FleetStore) Snapshot(ctx context.Context) (FleetSnapshot, error) {
 		return FleetSnapshot{}, errors.New("fleet dashboard database source is not configured")
 	}
 	now := s.now().UTC()
+	if cached, ok := s.cachedSnapshot(now); ok {
+		return cached, nil
+	}
 	processRows, err := fleethealth.ListSnapshots(ctx, s.db)
 	if err != nil {
 		return FleetSnapshot{}, err
@@ -75,10 +89,10 @@ func (s *FleetStore) Snapshot(ctx context.Context) (FleetSnapshot, error) {
 	processes := summarizeFleetProcesses(processRows, now, s.heartbeatGrace)
 
 	hosts, hostErr := queryFleetBucketHosts(ctx, s.db)
-	bucketCoverage := summarizeFleetBucketCoverage(hosts, s.bucketTotal, s.heartbeatGrace, now, hostErr)
+	bucketCoverage := summarizeFleetBucketCoverage(hosts, s.bucketTotal, s.heartbeatGrace, now, hostErr, processes)
 
 	delivery := queryFleetDelivery(ctx, s.db, now, s.recentWindow)
-	delivery.Posture = summarizeFleetDeliveryPosture(processes)
+	delivery.Posture = summarizeFleetDeliveryPosture(processes, delivery.Pending)
 
 	projectionDrift := queryFleetProjectionDrift(ctx, s.db, s.bucketTotal)
 	dependencies := summarizeFleetDependencies(processes)
@@ -93,7 +107,30 @@ func (s *FleetStore) Snapshot(ctx context.Context) (FleetSnapshot, error) {
 		Dependencies:    dependencies,
 	}
 	snapshot.Summary = summarizeFleet(snapshot)
+	s.storeCachedSnapshot(snapshot)
 	return snapshot, nil
+}
+
+func (s *FleetStore) cachedSnapshot(now time.Time) (FleetSnapshot, bool) {
+	if s.cacheTTL < 0 {
+		return FleetSnapshot{}, false
+	}
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	if s.cacheUntil.IsZero() || !now.Before(s.cacheUntil) {
+		return FleetSnapshot{}, false
+	}
+	return cloneFleetSnapshot(s.cacheSnapshot), true
+}
+
+func (s *FleetStore) storeCachedSnapshot(snapshot FleetSnapshot) {
+	if s.cacheTTL < 0 {
+		return
+	}
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	s.cacheSnapshot = cloneFleetSnapshot(snapshot)
+	s.cacheUntil = snapshot.GeneratedAt.Add(s.cacheTTL)
 }
 
 // FleetSnapshot is the JSON model for the global dashboard.
@@ -159,6 +196,7 @@ type FleetProcess struct {
 // FleetBucketCoverage summarizes jetmon_hosts dynamic bucket ownership.
 type FleetBucketCoverage struct {
 	Status      string            `json:"status"`
+	Mode        string            `json:"mode"`
 	BucketTotal int               `json:"bucket_total"`
 	HostCount   int               `json:"host_count"`
 	Error       string            `json:"error,omitempty"`
@@ -272,7 +310,34 @@ func summarizeFleetProcesses(rows []fleethealth.Snapshot, now time.Time, heartbe
 			DependencyHealth:       append([]fleethealth.DependencyHealth(nil), row.DependencyHealth...),
 		})
 	}
+	sort.Slice(out, func(i, j int) bool {
+		left, right := fleetProcessRank(out[i]), fleetProcessRank(out[j])
+		if left != right {
+			return left > right
+		}
+		if out[i].ProcessType != out[j].ProcessType {
+			return out[i].ProcessType < out[j].ProcessType
+		}
+		if out[i].HostID != out[j].HostID {
+			return out[i].HostID < out[j].HostID
+		}
+		return out[i].ProcessID < out[j].ProcessID
+	})
 	return out
+}
+
+func fleetProcessRank(process FleetProcess) int {
+	if process.Stale {
+		return 5
+	}
+	switch process.HealthStatus {
+	case fleethealth.HealthRed:
+		return 4
+	case fleethealth.HealthAmber:
+		return 3
+	default:
+		return 1
+	}
 }
 
 func queryFleetBucketHosts(ctx context.Context, db *sql.DB) ([]FleetBucketHost, error) {
@@ -300,26 +365,28 @@ func queryFleetBucketHosts(ctx context.Context, db *sql.DB) ([]FleetBucketHost, 
 	return hosts, nil
 }
 
-func summarizeFleetBucketCoverage(hosts []FleetBucketHost, bucketTotal int, heartbeatGrace time.Duration, now time.Time, queryErr error) FleetBucketCoverage {
+func summarizeFleetBucketCoverage(hosts []FleetBucketHost, bucketTotal int, heartbeatGrace time.Duration, now time.Time, queryErr error, processes []FleetProcess) FleetBucketCoverage {
+	mode := fleetBucketOwnershipMode(processes)
+	if mode == "unknown" && len(hosts) > 0 {
+		mode = "dynamic"
+	}
 	coverage := FleetBucketCoverage{
 		Status:      "green",
+		Mode:        mode,
 		BucketTotal: bucketTotal,
 		HostCount:   len(hosts),
 		Hosts:       append([]FleetBucketHost(nil), hosts...),
 	}
 	if queryErr != nil {
 		coverage.Status = "red"
+		coverage.Mode = "unknown"
 		coverage.Error = queryErr.Error()
 		return coverage
 	}
 	if bucketTotal <= 0 {
 		coverage.Status = "amber"
+		coverage.Mode = "unknown"
 		coverage.Error = "BUCKET_TOTAL is not configured"
-		return coverage
-	}
-	if len(hosts) == 0 {
-		coverage.Status = "amber"
-		coverage.Error = "jetmon_hosts has no dynamic ownership rows"
 		return coverage
 	}
 	for i := range coverage.Hosts {
@@ -329,6 +396,21 @@ func summarizeFleetBucketCoverage(hosts []FleetBucketHost, bucketTotal int, hear
 		}
 		coverage.Hosts[i].LastHeartbeatAgeSec = int64(age.Round(time.Second) / time.Second)
 		coverage.Hosts[i].Stale = age > heartbeatGrace
+	}
+	if mode == "pinned" {
+		coverage.Status = "amber"
+		coverage.Error = "monitor process snapshots report pinned bucket ranges; dynamic jetmon_hosts coverage is not active"
+		return coverage
+	}
+	if mode == "mixed" {
+		coverage.Status = "amber"
+		coverage.Error = "monitor process snapshots report mixed pinned and dynamic bucket ownership"
+		return coverage
+	}
+	if len(hosts) == 0 {
+		coverage.Status = "amber"
+		coverage.Error = "jetmon_hosts has no dynamic ownership rows"
+		return coverage
 	}
 	if err := validateFleetBucketCoverage(coverage.Hosts, bucketTotal); err != nil {
 		coverage.Status = "red"
@@ -348,6 +430,32 @@ func summarizeFleetBucketCoverage(hosts []FleetBucketHost, bucketTotal int, hear
 		}
 	}
 	return coverage
+}
+
+func fleetBucketOwnershipMode(processes []FleetProcess) string {
+	hasPinned, hasDynamic := false, false
+	for _, process := range processes {
+		if process.ProcessType != fleethealth.ProcessMonitor {
+			continue
+		}
+		ownership := strings.ToLower(strings.TrimSpace(process.BucketOwnership))
+		switch {
+		case strings.Contains(ownership, "pinned"):
+			hasPinned = true
+		case strings.Contains(ownership, "dynamic"):
+			hasDynamic = true
+		}
+	}
+	switch {
+	case hasPinned && hasDynamic:
+		return "mixed"
+	case hasPinned:
+		return "pinned"
+	case hasDynamic:
+		return "dynamic"
+	default:
+		return "unknown"
+	}
 }
 
 func validateFleetBucketCoverage(hosts []FleetBucketHost, bucketTotal int) error {
@@ -497,19 +605,25 @@ func queryFleetRecentTerminalDeliveryCount(ctx context.Context, db *sql.DB, tabl
 	return withAttempt + createdFallback, nil
 }
 
-func summarizeFleetDeliveryPosture(processes []FleetProcess) FleetDeliveryPosture {
+func summarizeFleetDeliveryPosture(processes []FleetProcess, queuedDeliveries int64) FleetDeliveryPosture {
 	enabledHosts := map[string]struct{}{}
 	ownerHosts := map[string]struct{}{}
 	enabledCount := 0
+	enabledWithoutOwner := 0
 	for _, process := range processes {
-		if owner := strings.TrimSpace(process.DeliveryOwnerHost); owner != "" {
-			ownerHosts[owner] = struct{}{}
+		if !processActiveForDeliveryPosture(process) {
+			continue
 		}
 		if !process.DeliveryWorkersEnabled {
 			continue
 		}
 		enabledCount++
 		enabledHosts[process.HostID] = struct{}{}
+		if owner := strings.TrimSpace(process.DeliveryOwnerHost); owner != "" {
+			ownerHosts[owner] = struct{}{}
+		} else {
+			enabledWithoutOwner++
+		}
 	}
 	posture := FleetDeliveryPosture{
 		Status:              "green",
@@ -518,12 +632,17 @@ func summarizeFleetDeliveryPosture(processes []FleetProcess) FleetDeliveryPostur
 		OwnerHosts:          sortedStringKeys(ownerHosts),
 	}
 	switch {
+	case enabledCount == 0 && queuedDeliveries > 0:
+		posture.Status = "amber"
+		posture.Message = "delivery rows are queued but no fresh process snapshot reports delivery workers enabled"
 	case enabledCount == 0:
+		posture.Message = "no fresh process snapshot reports delivery workers enabled; delivery queues are empty"
+	case enabledWithoutOwner > 0 && len(posture.OwnerHosts) > 0:
 		posture.Status = "amber"
-		posture.Message = "no process snapshot reports delivery workers enabled"
-	case len(posture.OwnerHosts) == 0 && enabledCount > 1:
+		posture.Message = "delivery-capable processes mix explicit DELIVERY_OWNER_HOST and unset ownership"
+	case enabledWithoutOwner > 0:
 		posture.Status = "amber"
-		posture.Message = "multiple delivery-capable processes are enabled without DELIVERY_OWNER_HOST"
+		posture.Message = "delivery workers are enabled without DELIVERY_OWNER_HOST"
 	case len(posture.OwnerHosts) > 1:
 		posture.Status = "amber"
 		posture.Message = "multiple DELIVERY_OWNER_HOST values are visible across process snapshots"
@@ -533,6 +652,18 @@ func summarizeFleetDeliveryPosture(processes []FleetProcess) FleetDeliveryPostur
 		posture.Message = "delivery workers are enabled without an explicit owner"
 	}
 	return posture
+}
+
+func processActiveForDeliveryPosture(process FleetProcess) bool {
+	if process.Stale {
+		return false
+	}
+	switch process.State {
+	case fleethealth.StateStopped, fleethealth.StateStopping:
+		return false
+	default:
+		return true
+	}
 }
 
 func queryFleetProjectionDrift(ctx context.Context, db *sql.DB, bucketTotal int) FleetProjectionDrift {
@@ -635,7 +766,9 @@ func summarizeFleet(snapshot FleetSnapshot) FleetSummary {
 		}
 		if process.Stale {
 			summary.StaleProcesses++
+			summary.RedProcesses++
 			redIssues = append(redIssues, fmt.Sprintf("%s heartbeat stale age=%ds", process.ProcessID, process.LastHeartbeatAgeSec))
+			continue
 		}
 		switch process.HealthStatus {
 		case fleethealth.HealthRed:
@@ -661,9 +794,6 @@ func summarizeFleet(snapshot FleetSnapshot) FleetSummary {
 	}
 	if summary.MonitorProcesses == 0 {
 		amberIssues = append(amberIssues, "no monitor process snapshots found")
-	}
-	if summary.DelivererProcesses == 0 {
-		amberIssues = append(amberIssues, "no standalone deliverer process snapshots found")
 	}
 	appendStatusIssue := func(prefix, status, detail string) {
 		if status == "red" {
@@ -730,13 +860,30 @@ func suggestFleetNextAction(snapshot FleetSnapshot, summary FleetSummary) string
 		return "Confirm whether the fleet is still in pinned rollout before expecting dynamic bucket coverage."
 	case summary.MonitorProcesses == 0:
 		return "Confirm monitor processes are publishing jetmon_process_health snapshots."
-	case summary.DelivererProcesses == 0:
-		return "Confirm whether standalone delivery is deployed yet; embedded delivery may still be active."
 	case summary.AmberProcesses > 0:
 		return "Open amber host dashboards and clear dependency warnings before the next rollout step."
 	default:
 		return "Fleet checks look healthy; continue normal monitoring and rollout validation."
 	}
+}
+
+func cloneFleetSnapshot(in FleetSnapshot) FleetSnapshot {
+	out := in
+	out.Summary.Issues = append([]string(nil), in.Summary.Issues...)
+	out.Processes = append([]FleetProcess(nil), in.Processes...)
+	for i := range out.Processes {
+		out.Processes[i].DependencyHealth = append([]fleethealth.DependencyHealth(nil), in.Processes[i].DependencyHealth...)
+	}
+	out.ProcessCounts = make(map[string]int, len(in.ProcessCounts))
+	for key, value := range in.ProcessCounts {
+		out.ProcessCounts[key] = value
+	}
+	out.BucketCoverage.Hosts = append([]FleetBucketHost(nil), in.BucketCoverage.Hosts...)
+	out.Delivery.Tables = append([]FleetDeliveryTable(nil), in.Delivery.Tables...)
+	out.Delivery.Posture.EnabledHosts = append([]string(nil), in.Delivery.Posture.EnabledHosts...)
+	out.Delivery.Posture.OwnerHosts = append([]string(nil), in.Delivery.Posture.OwnerHosts...)
+	out.Dependencies = append([]FleetDependencySummary(nil), in.Dependencies...)
+	return out
 }
 
 func countFleetProcesses(processes []FleetProcess) map[string]int {
@@ -792,6 +939,9 @@ func (s *Server) SetFleetSource(source FleetSource) {
 }
 
 func (s *Server) handleFleet(w http.ResponseWriter, r *http.Request) {
+	if rejectNonGet(w, r) {
+		return
+	}
 	s.mu.RLock()
 	source := s.fleetSource
 	s.mu.RUnlock()
@@ -803,7 +953,8 @@ func (s *Server) handleFleet(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	snapshot, err := source.Snapshot(ctx)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("fleet dashboard: %v", err)
+		http.Error(w, "fleet dashboard query failed", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -811,6 +962,9 @@ func (s *Server) handleFleet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleFleetIndex(w http.ResponseWriter, r *http.Request) {
+	if rejectNonGet(w, r) {
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprint(w, fleetDashboardHTML)
 }

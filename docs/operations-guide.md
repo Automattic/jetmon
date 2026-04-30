@@ -208,11 +208,11 @@ Status and reload commands:
 ./jetmon2 drain
 ```
 
-The host operator dashboard is available on `DASHBOARD_BIND_ADDR:DASHBOARD_PORT`
-when enabled. It defaults to `127.0.0.1`, because the host dashboard is
-unauthenticated and exposes internal dependency details, rollout commands, host
-names, ports, and bucket ownership. Bind it to a remote address only behind
-trusted operator-network controls.
+The operator dashboard is available on `DASHBOARD_BIND_ADDR:DASHBOARD_PORT`
+when enabled. It defaults to `127.0.0.1`, because the host and fleet dashboards
+are unauthenticated and expose internal dependency details, rollout commands,
+host names, ports, bucket ownership, and delivery posture. Bind it to a remote
+address only behind trusted operator-network controls.
 
 The host dashboard shows a red/amber/green host summary with named issues, worker
 count, active checks, queue depth, retry queue depth, throughput, round time,
@@ -225,8 +225,12 @@ The fleet dashboard is available at `/fleet` on the same listener. It summarizes
 all rows in `jetmon_process_health` alongside `jetmon_hosts` dynamic bucket
 coverage, delivery backlog, delivery-owner posture, dependency rollups,
 Veriflier dependency health reported by monitor hosts, and global legacy
-projection drift. It uses stale heartbeat thresholds when deciding whether a
-process or dynamic bucket owner is healthy.
+projection drift. It also shows per-table delivery queue counts and per-host
+bucket-owner rows for diagnosis. It uses stale heartbeat thresholds when
+deciding whether a process or dynamic bucket owner is healthy.
+
+Fleet snapshots are cached briefly by the dashboard process so multiple open
+operator tabs do not run the full fleet query set on every refresh.
 
 The dashboard exposes these local JSON endpoints:
 

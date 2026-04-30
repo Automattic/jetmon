@@ -50,6 +50,9 @@ func TestSummarizeFleetFlagsStaleAndDrift(t *testing.T) {
 	if summary.StaleProcesses != 1 {
 		t.Fatalf("StaleProcesses = %d, want 1", summary.StaleProcesses)
 	}
+	if summary.RedProcesses != 1 {
+		t.Fatalf("RedProcesses = %d, want stale process counted as red", summary.RedProcesses)
+	}
 	if summary.MonitorProcesses != 1 || summary.DelivererProcesses != 1 {
 		t.Fatalf("process counts = monitor %d deliverer %d, want 1/1", summary.MonitorProcesses, summary.DelivererProcesses)
 	}
@@ -69,17 +72,46 @@ func TestSummarizeFleetBucketCoverage(t *testing.T) {
 	coverage := summarizeFleetBucketCoverage([]FleetBucketHost{
 		{HostID: "host-a", BucketMin: 0, BucketMax: 4, LastHeartbeat: now.Add(-time.Second), Status: "active"},
 		{HostID: "host-b", BucketMin: 5, BucketMax: 9, LastHeartbeat: now.Add(-2 * time.Second), Status: "active"},
-	}, 10, 30*time.Second, now, nil)
+	}, 10, 30*time.Second, now, nil, nil)
 	if coverage.Status != "green" {
 		t.Fatalf("coverage status = %q, want green (%s)", coverage.Status, coverage.Error)
+	}
+	if coverage.Mode != "dynamic" {
+		t.Fatalf("coverage mode = %q, want dynamic", coverage.Mode)
 	}
 
 	coverage = summarizeFleetBucketCoverage([]FleetBucketHost{
 		{HostID: "host-a", BucketMin: 0, BucketMax: 3, LastHeartbeat: now, Status: "active"},
 		{HostID: "host-b", BucketMin: 5, BucketMax: 9, LastHeartbeat: now, Status: "active"},
-	}, 10, 30*time.Second, now, nil)
+	}, 10, 30*time.Second, now, nil, nil)
 	if coverage.Status != "red" || !strings.Contains(coverage.Error, "gap") {
 		t.Fatalf("coverage = %+v, want gap error", coverage)
+	}
+
+	coverage = summarizeFleetBucketCoverage(nil, 10, 30*time.Second, now, nil, []FleetProcess{{
+		ProcessType:     fleethealth.ProcessMonitor,
+		BucketOwnership: "pinned range=0-4",
+	}})
+	if coverage.Status != "amber" || coverage.Mode != "pinned" {
+		t.Fatalf("coverage = %+v, want pinned amber", coverage)
+	}
+
+	coverage = summarizeFleetBucketCoverage([]FleetBucketHost{
+		{HostID: "host-a", BucketMin: 0, BucketMax: 9, LastHeartbeat: now.Add(-time.Hour), Status: "active"},
+	}, 10, 30*time.Second, now, nil, []FleetProcess{{
+		ProcessType:     fleethealth.ProcessMonitor,
+		BucketOwnership: "pinned range=0-9",
+	}})
+	if coverage.Status != "amber" || coverage.Mode != "pinned" || strings.Contains(coverage.Error, "stale") {
+		t.Fatalf("coverage = %+v, want pinned mode to ignore stale dynamic rows", coverage)
+	}
+
+	coverage = summarizeFleetBucketCoverage(nil, 10, 30*time.Second, now, nil, []FleetProcess{
+		{ProcessType: fleethealth.ProcessMonitor, BucketOwnership: "pinned range=0-4"},
+		{ProcessType: fleethealth.ProcessMonitor, BucketOwnership: "dynamic jetmon_hosts"},
+	})
+	if coverage.Status != "amber" || coverage.Mode != "mixed" {
+		t.Fatalf("coverage = %+v, want mixed amber", coverage)
 	}
 }
 
@@ -87,7 +119,7 @@ func TestSummarizeFleetDeliveryPosture(t *testing.T) {
 	posture := summarizeFleetDeliveryPosture([]FleetProcess{
 		{HostID: "host-a", DeliveryWorkersEnabled: true},
 		{HostID: "host-b", DeliveryWorkersEnabled: true},
-	})
+	}, 0)
 	if posture.Status != "amber" {
 		t.Fatalf("posture status = %q, want amber", posture.Status)
 	}
@@ -98,12 +130,40 @@ func TestSummarizeFleetDeliveryPosture(t *testing.T) {
 	posture = summarizeFleetDeliveryPosture([]FleetProcess{
 		{HostID: "host-a", DeliveryWorkersEnabled: true, DeliveryOwnerHost: "host-a"},
 		{HostID: "host-b", DeliveryOwnerHost: "host-a"},
-	})
+	}, 0)
 	if posture.Status != "green" {
 		t.Fatalf("posture status = %q, want green", posture.Status)
 	}
 	if len(posture.OwnerHosts) != 1 || posture.OwnerHosts[0] != "host-a" {
 		t.Fatalf("OwnerHosts = %#v, want host-a", posture.OwnerHosts)
+	}
+
+	posture = summarizeFleetDeliveryPosture([]FleetProcess{
+		{HostID: "host-a", DeliveryWorkersEnabled: true},
+	}, 0)
+	if posture.Status != "amber" || !strings.Contains(posture.Message, "without DELIVERY_OWNER_HOST") {
+		t.Fatalf("posture = %+v, want unset owner warning", posture)
+	}
+
+	posture = summarizeFleetDeliveryPosture([]FleetProcess{
+		{HostID: "host-a", DeliveryWorkersEnabled: true, DeliveryOwnerHost: "host-a"},
+		{HostID: "host-b", DeliveryWorkersEnabled: true},
+	}, 0)
+	if posture.Status != "amber" || !strings.Contains(posture.Message, "mix") {
+		t.Fatalf("posture = %+v, want mixed owner warning", posture)
+	}
+
+	posture = summarizeFleetDeliveryPosture([]FleetProcess{
+		{HostID: "host-a", State: fleethealth.StateStopped, DeliveryWorkersEnabled: true, DeliveryOwnerHost: "host-a"},
+		{HostID: "host-b", Stale: true, DeliveryWorkersEnabled: true, DeliveryOwnerHost: "host-b"},
+	}, 0)
+	if posture.Status != "green" || posture.EnabledProcessCount != 0 {
+		t.Fatalf("posture = %+v, want inactive processes ignored", posture)
+	}
+
+	posture = summarizeFleetDeliveryPosture(nil, 3)
+	if posture.Status != "amber" || !strings.Contains(posture.Message, "queued") {
+		t.Fatalf("posture = %+v, want queued delivery warning", posture)
 	}
 }
 
@@ -133,6 +193,79 @@ func TestSummarizeFleetDependencies(t *testing.T) {
 	}
 	if deps[1].Name != "mysql" || deps[1].Status != "amber" || deps[1].StaleCount != 1 {
 		t.Fatalf("deps[1] = %+v, want amber mysql with stale count", deps[1])
+	}
+}
+
+func TestSummarizeFleetProcessesOrdersUnhealthyFirst(t *testing.T) {
+	now := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
+	processes := summarizeFleetProcesses([]fleethealth.Snapshot{
+		{ProcessID: "host-c:monitor", HostID: "host-c", ProcessType: fleethealth.ProcessMonitor, HealthStatus: fleethealth.HealthGreen, UpdatedAt: now},
+		{ProcessID: "host-b:monitor", HostID: "host-b", ProcessType: fleethealth.ProcessMonitor, HealthStatus: fleethealth.HealthAmber, UpdatedAt: now},
+		{ProcessID: "host-a:monitor", HostID: "host-a", ProcessType: fleethealth.ProcessMonitor, HealthStatus: fleethealth.HealthGreen, UpdatedAt: now.Add(-time.Hour)},
+	}, now, 10*time.Minute)
+	if got := processes[0].ProcessID; got != "host-a:monitor" {
+		t.Fatalf("first process = %q, want stale host first", got)
+	}
+	if got := processes[1].ProcessID; got != "host-b:monitor" {
+		t.Fatalf("second process = %q, want amber host second", got)
+	}
+}
+
+func TestFleetStoreCachedSnapshotIsCloned(t *testing.T) {
+	now := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
+	store := NewFleetStore(nil, FleetStoreOptions{CacheTTL: time.Minute})
+	store.storeCachedSnapshot(FleetSnapshot{
+		GeneratedAt:   now,
+		Summary:       FleetSummary{Issues: []string{"first issue"}},
+		ProcessCounts: map[string]int{fleethealth.ProcessMonitor: 1},
+		Processes: []FleetProcess{{
+			ProcessID: "host-a:monitor",
+			DependencyHealth: []fleethealth.DependencyHealth{{
+				Name:   "mysql",
+				Status: fleethealth.HealthGreen,
+			}},
+		}},
+		BucketCoverage: FleetBucketCoverage{Hosts: []FleetBucketHost{{HostID: "host-a"}}},
+		Delivery: FleetDeliverySummary{
+			Tables:  []FleetDeliveryTable{{Kind: "webhook", Pending: 1}},
+			Posture: FleetDeliveryPosture{EnabledHosts: []string{"host-a"}, OwnerHosts: []string{"host-a"}},
+		},
+		Dependencies: []FleetDependencySummary{{Name: "mysql", Status: "green"}},
+	})
+
+	cached, ok := store.cachedSnapshot(now.Add(time.Second))
+	if !ok {
+		t.Fatal("cachedSnapshot() missed")
+	}
+	cached.Summary.Issues[0] = "mutated"
+	cached.ProcessCounts[fleethealth.ProcessMonitor] = 99
+	cached.Processes[0].DependencyHealth[0].Status = fleethealth.HealthRed
+	cached.BucketCoverage.Hosts[0].HostID = "mutated"
+	cached.Delivery.Tables[0].Pending = 99
+	cached.Delivery.Posture.EnabledHosts[0] = "mutated"
+	cached.Dependencies[0].Status = "red"
+
+	cachedAgain, ok := store.cachedSnapshot(now.Add(2 * time.Second))
+	if !ok {
+		t.Fatal("cachedSnapshot() second read missed")
+	}
+	if cachedAgain.Summary.Issues[0] != "first issue" {
+		t.Fatalf("Summary.Issues = %#v, cache was mutated", cachedAgain.Summary.Issues)
+	}
+	if cachedAgain.ProcessCounts[fleethealth.ProcessMonitor] != 1 {
+		t.Fatalf("ProcessCounts = %#v, cache was mutated", cachedAgain.ProcessCounts)
+	}
+	if cachedAgain.Processes[0].DependencyHealth[0].Status != fleethealth.HealthGreen {
+		t.Fatalf("DependencyHealth = %#v, cache was mutated", cachedAgain.Processes[0].DependencyHealth)
+	}
+	if cachedAgain.BucketCoverage.Hosts[0].HostID != "host-a" {
+		t.Fatalf("BucketCoverage.Hosts = %#v, cache was mutated", cachedAgain.BucketCoverage.Hosts)
+	}
+	if cachedAgain.Delivery.Tables[0].Pending != 1 || cachedAgain.Delivery.Posture.EnabledHosts[0] != "host-a" {
+		t.Fatalf("Delivery = %+v, cache was mutated", cachedAgain.Delivery)
+	}
+	if cachedAgain.Dependencies[0].Status != "green" {
+		t.Fatalf("Dependencies = %#v, cache was mutated", cachedAgain.Dependencies)
 	}
 }
 

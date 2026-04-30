@@ -126,6 +126,22 @@ const fleetDashboardHTML = `<!DOCTYPE html>
     <div class="card"><div class="label">Owner Hosts</div><div class="value" id="delivery-owners">-</div></div>
   </div>
 
+  <h2>Delivery Queues</h2>
+  <table>
+    <thead>
+      <tr><th>Kind</th><th>Pending</th><th>Due</th><th>Future Retry</th><th>Delivered</th><th>Failed</th><th>Abandoned</th><th>Oldest Due</th></tr>
+    </thead>
+    <tbody id="delivery-tables"></tbody>
+  </table>
+
+  <h2>Bucket Owners</h2>
+  <table>
+    <thead>
+      <tr><th>Host</th><th>Range</th><th>Status</th><th>Heartbeat</th></tr>
+    </thead>
+    <tbody id="bucket-hosts"></tbody>
+  </table>
+
   <h2>Processes</h2>
   <table>
     <thead>
@@ -190,6 +206,10 @@ function rangeLabel(item) {
   return item.bucket_min + '-' + item.bucket_max;
 }
 
+function ageLabel(seconds) {
+  return (seconds || 0) + 's ago';
+}
+
 function render(snapshot) {
   const summary = snapshot.summary || {};
   const processes = snapshot.processes || [];
@@ -198,7 +218,7 @@ function render(snapshot) {
   setText('deliverers', summary.deliverer_processes || 0);
   setText('stale', summary.stale_processes || 0);
   setText('bucket-status', (snapshot.bucket_coverage || {}).status || '-');
-  setText('bucket-detail', ((snapshot.bucket_coverage || {}).host_count || 0) + ' hosts · ' + ((snapshot.bucket_coverage || {}).error || ''));
+  setText('bucket-detail', ((snapshot.bucket_coverage || {}).mode || '-') + ' · ' + ((snapshot.bucket_coverage || {}).host_count || 0) + ' hosts · ' + ((snapshot.bucket_coverage || {}).error || ''));
   setText('delivery-due', (snapshot.delivery || {}).due_now || 0);
   setText('delivery-detail', 'pending=' + ((snapshot.delivery || {}).pending || 0) + ' failed=' + ((snapshot.delivery || {}).failed_since || 0) + ' abandoned=' + ((snapshot.delivery || {}).abandoned_since || 0));
   setText('drift', (snapshot.projection_drift || {}).count || 0);
@@ -208,6 +228,38 @@ function render(snapshot) {
   setText('delivery-enabled', (posture.enabled_hosts || []).join(', '));
   setText('delivery-owners', (posture.owner_hosts || []).join(', '));
 
+  const deliveryBody = document.getElementById('delivery-tables');
+  deliveryBody.textContent = '';
+  ((snapshot.delivery || {}).tables || []).forEach(function(table) {
+    deliveryBody.appendChild(row([
+      table.kind,
+      table.pending || 0,
+      table.due_now || 0,
+      table.future_retry || 0,
+      table.delivered_since || 0,
+      table.failed_since || 0,
+      table.abandoned_since || 0,
+      ageLabel(table.oldest_due_age_sec)
+    ]));
+  });
+  if (((snapshot.delivery || {}).tables || []).length === 0) {
+    deliveryBody.appendChild(row(['No delivery queue summaries found', '', '', '', '', '', '', '']));
+  }
+
+  const bucketBody = document.getElementById('bucket-hosts');
+  bucketBody.textContent = '';
+  ((snapshot.bucket_coverage || {}).hosts || []).forEach(function(host) {
+    bucketBody.appendChild(row([
+      host.host_id,
+      rangeLabel(host),
+      host.status + (host.stale ? ' stale' : ''),
+      ageLabel(host.last_heartbeat_age_sec)
+    ]));
+  });
+  if (((snapshot.bucket_coverage || {}).hosts || []).length === 0) {
+    bucketBody.appendChild(row(['No dynamic bucket-owner rows found', '', '', '']));
+  }
+
   const processBody = document.getElementById('processes');
   processBody.textContent = '';
   processes.forEach(function(process) {
@@ -215,7 +267,7 @@ function render(snapshot) {
       process.process_id,
       process.health_status + (process.stale ? ' stale' : ''),
       process.state,
-      (process.last_heartbeat_age_sec || 0) + 's ago',
+      ageLabel(process.last_heartbeat_age_sec),
       rangeLabel(process),
       'active=' + (process.active_checks || 0) + ' queue=' + (process.queue_depth || 0) + ' retry=' + (process.retry_queue_size || 0),
       (process.go_sys_mem_mb || 0) + 'MB'

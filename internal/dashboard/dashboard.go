@@ -240,6 +240,15 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, dashboardHTML)
 }
 
+func rejectNonGet(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+		return false
+	}
+	w.Header().Set("Allow", "GET, HEAD")
+	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	return true
+}
+
 // SummarizeHost reduces local state and dependency health into a dashboard
 // status. It deliberately stays simple: red blocks rollout, amber needs
 // operator attention, green means no local blocker is visible.
@@ -339,6 +348,7 @@ const dashboardHTML = `<!DOCTYPE html>
   main { max-width: 1400px; margin: 0 auto; }
   h1 { margin: 0; font-size: 1.65rem; color: var(--text); }
   h2 { margin: 28px 0 12px; font-size: 0.85rem; color: var(--muted); letter-spacing: 0; text-transform: uppercase; }
+  a { color: var(--accent); }
   .topline { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
   .subtle { color: var(--muted); font-size: 0.85rem; }
   .summary {
@@ -401,7 +411,7 @@ const dashboardHTML = `<!DOCTYPE html>
   <div class="topline">
     <div>
       <h1>Jetmon 2</h1>
-      <div class="subtle">Host dashboard</div>
+      <div class="subtle">Host dashboard · <a href="/fleet">fleet dashboard</a></div>
     </div>
     <span class="status-pill amber" id="summary-pill">waiting</span>
   </div>

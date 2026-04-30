@@ -130,10 +130,7 @@ func runServe() {
 	var dash *dashboard.Server
 	if cfg.DashboardPort > 0 {
 		dash = dashboard.New(hostname)
-		dash.SetFleetSource(dashboard.NewFleetStore(db.DB(), dashboard.FleetStoreOptions{
-			BucketTotal:    cfg.BucketTotal,
-			HeartbeatGrace: time.Duration(cfg.BucketHeartbeatGraceSec) * time.Second,
-		}))
+		dash.SetFleetSource(newFleetDashboardStore(cfg))
 		go func() {
 			addr := dashboardListenAddr(cfg)
 			if err := dash.Listen(addr); err != nil {
@@ -292,6 +289,9 @@ func runServe() {
 				if err := config.Reload(); err != nil {
 					log.Printf("config reload failed: %v", err)
 				} else {
+					if dash != nil {
+						dash.SetFleetSource(newFleetDashboardStore(config.Get()))
+					}
 					log.Println("config reloaded")
 				}
 			case syscall.SIGINT, syscall.SIGTERM:
@@ -484,7 +484,23 @@ func dashboardBindWarning(bindAddr string) string {
 	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
 		return ""
 	}
-	return fmt.Sprintf("DASHBOARD_BIND_ADDR=%q exposes the unauthenticated host dashboard; restrict access to trusted operator networks", bindAddr)
+	return fmt.Sprintf("DASHBOARD_BIND_ADDR=%q exposes unauthenticated operator dashboards; restrict access to trusted operator networks", bindAddr)
+}
+
+func newFleetDashboardStore(cfg *config.Config) *dashboard.FleetStore {
+	if cfg == nil {
+		cfg = config.Get()
+	}
+	bucketTotal := 0
+	heartbeatGrace := 0
+	if cfg != nil {
+		bucketTotal = cfg.BucketTotal
+		heartbeatGrace = cfg.BucketHeartbeatGraceSec
+	}
+	return dashboard.NewFleetStore(db.DB(), dashboard.FleetStoreOptions{
+		BucketTotal:    bucketTotal,
+		HeartbeatGrace: time.Duration(heartbeatGrace) * time.Second,
+	})
 }
 
 const dashboardHealthTimeout = 2 * time.Second
