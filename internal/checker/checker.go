@@ -22,6 +22,12 @@ const (
 	ErrorKeyword       = 5
 	ErrorTLSExpired    = 6
 	ErrorTLSDeprecated = 7
+	ErrorBodyRead      = 8
+)
+
+const (
+	maxBodyIntegrityBytes int64 = 64 << 10
+	maxKeywordBodyBytes   int64 = 1 << 20
 )
 
 // RedirectPolicy controls how redirect responses are handled.
@@ -71,7 +77,7 @@ func (r *Result) StatusType() string {
 		return "success"
 	case r.ErrorCode == ErrorSSL || r.ErrorCode == ErrorTLSExpired:
 		return "https"
-	case r.ErrorCode == ErrorTimeout:
+	case r.ErrorCode == ErrorTimeout || r.ErrorCode == ErrorBodyRead:
 		return "intermittent"
 	case r.ErrorCode == ErrorRedirect:
 		return "redirect"
@@ -233,9 +239,14 @@ func Check(ctx context.Context, req Request) Result {
 		res.RedirectChanged = true
 	}
 
-	// Keyword check — read body only if keyword is configured.
+	body, bodyErr := readResponseBody(resp, req.Keyword != nil && *req.Keyword != "")
+	if bodyErr != nil && res.HTTPCode < http.StatusBadRequest {
+		res.ErrorCode = ErrorBodyRead
+		return res
+	}
+
+	// Keyword check uses the same bounded body read as integrity checks.
 	if req.Keyword != nil && *req.Keyword != "" {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		if !strings.Contains(string(body), *req.Keyword) {
 			res.ErrorCode = ErrorKeyword
 			return res
@@ -244,6 +255,27 @@ func Check(ctx context.Context, req Request) Result {
 
 	res.Success = res.HTTPCode > 0 && res.HTTPCode < 400
 	return res
+}
+
+func readResponseBody(resp *http.Response, needKeyword bool) ([]byte, error) {
+	limit := maxBodyIntegrityBytes
+	if needKeyword {
+		limit = maxKeywordBodyBytes
+	} else if resp.ContentLength > limit && resp.ContentLength <= maxKeywordBodyBytes {
+		limit = resp.ContentLength
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return body, err
+	}
+	if int64(len(body)) > limit {
+		return body[:limit], nil
+	}
+	if resp.ContentLength >= 0 && resp.ContentLength <= limit && int64(len(body)) != resp.ContentLength {
+		return body, io.ErrUnexpectedEOF
+	}
+	return body, nil
 }
 
 // ParseCustomHeaders deserialises a JSON custom headers string into a map.

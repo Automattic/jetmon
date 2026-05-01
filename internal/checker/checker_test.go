@@ -18,6 +18,7 @@ func TestResultStatusType(t *testing.T) {
 		{name: "ssl error", res: Result{ErrorCode: ErrorSSL}, want: "https"},
 		{name: "tls expired", res: Result{ErrorCode: ErrorTLSExpired}, want: "https"},
 		{name: "timeout", res: Result{ErrorCode: ErrorTimeout}, want: "intermittent"},
+		{name: "body read", res: Result{ErrorCode: ErrorBodyRead}, want: "intermittent"},
 		{name: "redirect", res: Result{ErrorCode: ErrorRedirect}, want: "redirect"},
 		{name: "403 blocked", res: Result{HTTPCode: 403}, want: "blocked"},
 		{name: "500 server error", res: Result{HTTPCode: 500}, want: "server"},
@@ -80,6 +81,11 @@ func TestResultIsFailure(t *testing.T) {
 		{
 			name: "keyword failure is hard failure",
 			res:  Result{Success: true, ErrorCode: ErrorKeyword},
+			want: true,
+		},
+		{
+			name: "body read failure is hard failure",
+			res:  Result{Success: false, ErrorCode: ErrorBodyRead},
 			want: true,
 		},
 		{
@@ -305,6 +311,36 @@ func TestCheckKeywordMiss(t *testing.T) {
 	}
 }
 
+func TestCheckTruncatedBodyFailsWithoutKeyword(t *testing.T) {
+	srv := truncatedBodyServer(t, "partial response")
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{BlogID: 1, URL: srv.URL, TimeoutSeconds: 5})
+	if res.Success {
+		t.Fatalf("Success = true for truncated body, want false; result=%+v", res)
+	}
+	if res.HTTPCode != http.StatusOK {
+		t.Fatalf("HTTPCode = %d, want %d", res.HTTPCode, http.StatusOK)
+	}
+	if res.ErrorCode != ErrorBodyRead {
+		t.Fatalf("ErrorCode = %d, want ErrorBodyRead", res.ErrorCode)
+	}
+}
+
+func TestCheckTruncatedBodyFailsEvenWhenKeywordIsPresent(t *testing.T) {
+	srv := truncatedBodyServer(t, "needle but incomplete")
+	defer srv.Close()
+
+	kw := "needle"
+	res := Check(context.Background(), Request{BlogID: 1, URL: srv.URL, TimeoutSeconds: 5, Keyword: &kw})
+	if res.Success {
+		t.Fatalf("Success = true for truncated body, want false; result=%+v", res)
+	}
+	if res.ErrorCode != ErrorBodyRead {
+		t.Fatalf("ErrorCode = %d, want ErrorBodyRead", res.ErrorCode)
+	}
+}
+
 func TestCheckRedirectFail(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
@@ -396,6 +432,30 @@ func TestCheckConnectionRefused(t *testing.T) {
 	if res.DNS < 0 {
 		t.Errorf("DNS duration is negative (%v); zero-time underflow", res.DNS)
 	}
+}
+
+func truncatedBodyServer(t *testing.T, body string) *httptest.Server {
+	t.Helper()
+
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", "1024")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(body))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			t.Error("response writer does not support hijacking")
+			return
+		}
+		conn, _, err := hijacker.Hijack()
+		if err != nil {
+			t.Errorf("Hijack: %v", err)
+			return
+		}
+		_ = conn.Close()
+	}))
 }
 
 // --- Pool scale(), Results(), QueueDepth(), ActiveCount() ---

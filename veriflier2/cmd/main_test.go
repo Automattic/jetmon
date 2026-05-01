@@ -146,3 +146,49 @@ func TestPerformCheckKeywordFailure(t *testing.T) {
 		t.Fatalf("error code = %d, want %d", res.ErrorCode, checker.ErrorKeyword)
 	}
 }
+
+func TestPerformCheckTruncatedBodyFailure(t *testing.T) {
+	srv := truncatedBodyServer(t, "needle but incomplete")
+	defer srv.Close()
+
+	res := performCheck(veriflier.CheckRequest{
+		BlogID:         44,
+		URL:            srv.URL,
+		TimeoutSeconds: 2,
+		Keyword:        "needle",
+		RedirectPolicy: string(checker.RedirectFollow),
+	})
+	if res.Success {
+		t.Fatalf("performCheck success = true for truncated body; result=%+v", res)
+	}
+	if res.HTTPCode != http.StatusOK {
+		t.Fatalf("http code = %d, want %d", res.HTTPCode, http.StatusOK)
+	}
+	if res.ErrorCode != int32(checker.ErrorBodyRead) {
+		t.Fatalf("error code = %d, want %d", res.ErrorCode, checker.ErrorBodyRead)
+	}
+}
+
+func truncatedBodyServer(t *testing.T, body string) *httptest.Server {
+	t.Helper()
+
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", "1024")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(body))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			t.Error("response writer does not support hijacking")
+			return
+		}
+		conn, _, err := hijacker.Hijack()
+		if err != nil {
+			t.Errorf("Hijack: %v", err)
+			return
+		}
+		_ = conn.Close()
+	}))
+}
