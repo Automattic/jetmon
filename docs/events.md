@@ -35,7 +35,7 @@ The events row is the authoritative current-state projection. The transitions ta
 | `id`                 | BIGINT UNSIGNED  | Primary key.                                                             |
 | `blog_id`            | BIGINT UNSIGNED  | The site this event is about. (`site_id` in taxonomy.md terms.)          |
 | `endpoint_id`        | BIGINT UNSIGNED, null | The endpoint, when applicable. Null for site-level events.          |
-| `check_type`         | VARCHAR(64)      | Which probe observed this — `http`, `dns`, `tls_expiry`, etc.            |
+| `check_type`         | VARCHAR(64)      | Which probe observed this — `http`, `dns`, `tls_expiry`, `tls_deprecated`, etc. |
 | `discriminator`      | VARCHAR(128), null | Optional tiebreaker for tuples that can have multiple concurrent failures (e.g. multiple keyword checks on the same endpoint). |
 | `severity`           | TINYINT UNSIGNED | Ordered, suitable for thresholds and escalation.                         |
 | `state`              | VARCHAR(32)      | Human-readable lifecycle label.                                          |

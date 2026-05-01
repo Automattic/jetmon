@@ -65,6 +65,7 @@ type Result struct {
 
 	SSLExpiry       *time.Time
 	TLSVersion      uint16
+	CipherSuite     uint16
 	RedirectChanged bool
 
 	Timestamp time.Time
@@ -150,7 +151,10 @@ func Check(ctx context.Context, req Request) Result {
 	}
 
 	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: false},
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: false,
+			MinVersion:         tls.VersionTLS10,
+		},
 	}
 
 	client := &http.Client{
@@ -220,6 +224,7 @@ func Check(ctx context.Context, req Request) Result {
 	// Inspect TLS state if available.
 	if resp.TLS != nil {
 		res.TLSVersion = resp.TLS.Version
+		res.CipherSuite = resp.TLS.CipherSuite
 		if len(resp.TLS.PeerCertificates) > 0 {
 			cert := resp.TLS.PeerCertificates[0]
 			expiry := cert.NotAfter

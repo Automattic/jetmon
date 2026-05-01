@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -11,8 +12,10 @@ import (
 	"github.com/Automattic/jetmon/internal/checker"
 	"github.com/Automattic/jetmon/internal/config"
 	"github.com/Automattic/jetmon/internal/db"
+	"github.com/Automattic/jetmon/internal/eventstore"
 	"github.com/Automattic/jetmon/internal/veriflier"
 	"github.com/Automattic/jetmon/internal/wpcom"
+	"github.com/DATA-DOG/go-sqlmock"
 )
 
 var orchestratorConfigTestMu sync.Mutex
@@ -669,6 +672,103 @@ func TestProcessResultsUpdatesSSLExpiry(t *testing.T) {
 
 	if updatedExpiry.IsZero() {
 		t.Fatal("UpdateSSLExpiry not called")
+	}
+}
+
+func TestProcessResultsTLSDeprecatedIsAdvisory(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig(t)
+
+	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error {
+		t.Fatal("deprecated TLS advisory should not send a downtime notification")
+		return nil
+	}
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local",
+		ctx:      context.Background(),
+	}
+
+	res := checkerResultSuccess(72)
+	res.HTTPCode = 200
+	res.ErrorCode = checker.ErrorTLSDeprecated
+	res.TLSVersion = tls.VersionTLS11
+
+	sites := map[int64]db.Site{72: {BlogID: 72, SiteStatus: statusRunning}}
+	o.processResults(map[int64]checker.Result{72: res}, sites)
+
+	if o.retries.get(72) != nil {
+		t.Fatal("deprecated TLS advisory should not enter the downtime retry queue")
+	}
+}
+
+func TestCheckTLSDeprecatedOpensWarningEvent(t *testing.T) {
+	sqlDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer sqlDB.Close()
+
+	mock.ExpectBegin()
+	mock.ExpectExec("INSERT INTO jetmon_events").
+		WithArgs(int64(72), nil, checkTypeTLSDeprecated, nil, eventstore.SeverityWarning, eventstore.StateWarning, sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(101, 1))
+	mock.ExpectExec("INSERT INTO jetmon_event_transitions").
+		WithArgs(int64(101), int64(72), nil, eventstore.SeverityWarning, nil, eventstore.StateWarning, eventstore.ReasonOpened, "local-host", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	o := &Orchestrator{
+		events:   eventstore.New(sqlDB),
+		hostname: "local-host",
+		ctx:      context.Background(),
+	}
+	o.checkTLSDeprecated(db.Site{BlogID: 72}, checker.Result{
+		TLSVersion:  tls.VersionTLS11,
+		CipherSuite: tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+	})
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestCheckTLSDeprecatedClosesWarningOnModernTLS(t *testing.T) {
+	sqlDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer sqlDB.Close()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT id, severity, state FROM jetmon_events").
+		WithArgs(int64(73), checkTypeTLSDeprecated).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "severity", "state"}).
+			AddRow(int64(202), eventstore.SeverityWarning, eventstore.StateWarning))
+	mock.ExpectQuery("SELECT blog_id, severity, state, ended_at, cause_event_id").
+		WithArgs(int64(202)).
+		WillReturnRows(sqlmock.NewRows([]string{"blog_id", "severity", "state", "ended_at", "cause_event_id"}).
+			AddRow(int64(73), eventstore.SeverityWarning, eventstore.StateWarning, nil, nil))
+	mock.ExpectExec("UPDATE jetmon_events").
+		WithArgs(eventstore.ReasonVerifierCleared, int64(202)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO jetmon_event_transitions").
+		WithArgs(int64(202), int64(73), eventstore.SeverityWarning, nil, eventstore.StateWarning, eventstore.StateResolved, eventstore.ReasonVerifierCleared, "local-host", nil).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	o := &Orchestrator{
+		events:   eventstore.New(sqlDB),
+		hostname: "local-host",
+		ctx:      context.Background(),
+	}
+	o.checkTLSDeprecated(db.Site{BlogID: 73}, checker.Result{TLSVersion: tls.VersionTLS12})
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
 	}
 }
 

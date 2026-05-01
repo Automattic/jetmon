@@ -86,6 +86,11 @@ not exercise.
 | `keyword_missing` | Response body did not contain the expected keyword |
 | `success` | Site recovered |
 
+`tls_deprecated` is advisory-only: it does not mark the site down. Jetmon still
+has to negotiate the deprecated protocol to classify the site accurately, so
+avoid sensitive custom check headers on sites that only support TLS 1.0 or 1.1
+until the site is upgraded.
+
 ## Check SSL Certificate Status
 
 ```sql

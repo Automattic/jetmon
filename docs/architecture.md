@@ -507,3 +507,5 @@ expected by the WPCOM API (e.g. "https", "intermittent", "redirect").
 Body integrity reads are capped to a bounded prefix so Jetmon can catch
 truncated successful GET responses without buffering unbounded response
 bodies. Keyword checks retain their larger bounded body window.
+Deprecated TLS opens a separate `tls_deprecated` warning event and does not
+project the legacy site status down.
