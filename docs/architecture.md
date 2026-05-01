@@ -220,8 +220,8 @@ orchestrator.Run()
           │     │     ├─ dbMarkSiteChecked()
           │     │     ├─ dbRecordCheckHistory()
           │     │     ├─ dbUpdateSSLExpiry() + checkSSLAlerts()
-          │     │     ├─ auditLog(EventCheck)
-          │     │     └─ handleRecovery() or handleFailure()
+          │     │     └─ handleRecovery(), handleFailure(),
+          │     │        or maintenance-swallow the failure
           │     │
           │     ├─ emit StatsD metrics
           │     └─ applyMemoryPressure()       // drain workers if Go runtime memory > limit
