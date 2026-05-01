@@ -36,6 +36,7 @@ Commands:
   fetch-image                    Download the configured Ubuntu cloud image.
   create <role> [name]           Create one VM. Roles: db, v1, v2, generic.
   create-topology                Create db, v1, and v2 lab VMs.
+  start-topology                 Start db, v1, and v2 lab VMs if needed.
   seed-db                        Seed v1-compatible site data into the DB VM.
   install-v1-sim                 Install/start the v1 simulator service.
   install-v2                     Stage jetmon2, config, and systemd unit on v2.
@@ -310,6 +311,58 @@ create_topology() {
 	create_vm db db
 	create_vm v1 v1
 	create_vm v2 v2
+}
+
+require_vm_domain() {
+	local vm="$1"
+	if ! virsh_cmd dominfo "$vm" >/dev/null 2>&1; then
+		fail "missing VM domain: $vm; run create-topology first or check JETMON_ROLLOUT_PREFIX=$PREFIX"
+	fi
+}
+
+topology_vms() {
+	printf '%s\n' "$(vm_name db)" "$(vm_name v1)" "$(vm_name v2)"
+}
+
+require_topology_domains() {
+	local vm missing=0
+	while IFS= read -r vm; do
+		if ! virsh_cmd dominfo "$vm" >/dev/null 2>&1; then
+			warn "missing_vm_domain=$vm"
+			missing=1
+		fi
+	done < <(topology_vms)
+	[[ "$missing" == "0" ]] || fail "topology is incomplete; run create-topology first or check JETMON_ROLLOUT_PREFIX=$PREFIX"
+}
+
+start_vm() {
+	local vm="$1"
+	local state
+	require_vm_domain "$vm"
+	state="$(virsh_cmd domstate "$vm" 2>/dev/null || true)"
+	case "$state" in
+	running | blocked)
+		pass "vm_running=$vm state=\"$state\""
+		;;
+	"shut off")
+		virsh_cmd start "$vm" >/dev/null
+		pass "vm_started=$vm previous_state=\"$state\""
+		;;
+	"")
+		fail "could not determine VM state: $vm"
+		;;
+	*)
+		fail "VM is not in a safe auto-start state: $vm state=\"$state\""
+		;;
+	esac
+}
+
+start_topology() {
+	log "start_topology prefix=$PREFIX vms=$(vm_name db),$(vm_name v1),$(vm_name v2)"
+	require_topology_domains
+	while IFS= read -r vm; do
+		start_vm "$vm"
+	done < <(topology_vms)
 }
 
 vm_ip() {
@@ -587,6 +640,7 @@ install_v2() {
 	[[ -x "$JETMON2_BINARY" ]] || fail "missing executable jetmon2 binary: $JETMON2_BINARY"
 	[[ -f "$JETMON2_SERVICE" ]] || fail "missing systemd unit: $JETMON2_SERVICE"
 	[[ -f "$JETMON2_LOGROTATE" ]] || fail "missing logrotate file: $JETMON2_LOGROTATE"
+	start_topology
 	wait_ssh "$v2_vm"
 	wait_ssh "$v1_vm"
 	wait_ssh "$db_vm"
@@ -1432,6 +1486,7 @@ main() {
 		create_vm "$@"
 		;;
 	create-topology) create_topology "$@" ;;
+	start-topology) start_topology "$@" ;;
 	seed-db) seed_db "$@" ;;
 	install-v1-sim) install_v1_sim "$@" ;;
 	install-v2) install_v2 "$@" ;;
