@@ -50,6 +50,7 @@ Create the baseline topology:
 
 ```bash
 scripts/rollout-vm-lab.sh create-topology
+scripts/rollout-vm-lab.sh start-topology
 scripts/rollout-vm-lab.sh wait-ssh db
 scripts/rollout-vm-lab.sh wait-ssh v1
 scripts/rollout-vm-lab.sh wait-ssh v2
@@ -90,7 +91,7 @@ files. It:
 - runs `rollout host-preflight` and a guided fresh-server dry-run from the v2 VM
 
 From the local workstation, the Makefile wraps artifact sync, v2 VM artifact
-staging, and remote execution:
+staging, VM startup, and remote execution:
 
 ```bash
 make rollout-vm-lab-doctor
@@ -152,6 +153,7 @@ scripts/rollout-vm-lab.sh ssh db 'sudo systemctl status mariadb --no-pager'
 Run only the v2-side rollout smoke checks:
 
 ```bash
+scripts/rollout-vm-lab.sh start-topology
 scripts/rollout-vm-lab.sh smoke-preflight
 scripts/rollout-vm-lab.sh smoke-guided-dry-run
 ```
@@ -216,7 +218,9 @@ Supported snapshot flow names are `execute-rollback`, `interrupted-resume`,
 iterating on guided behavior because each run starts from the same VM, DB,
 service, and log state. After each revert, the runner stages the current local
 `jetmon2` artifact into the v2 guest so snapshot-backed flows do not silently
-test an old binary. At the end, the runner reverts to the snapshot and enforces
+test an old binary. The staging step starts shut-off lab VMs before waiting for
+SSH, so `make rollout-vm-lab-snapshot-all-smoke` can be run directly after an
+offline snapshot. At the end, the runner reverts to the snapshot and enforces
 the safe lab state: v1 simulator active, v2 `jetmon2` stopped and disabled.
 `snapshot-run-all` replays every named flow from the same snapshot.
 

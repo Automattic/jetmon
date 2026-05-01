@@ -36,6 +36,7 @@ Commands:
   fetch-image                    Download the configured Ubuntu cloud image.
   create <role> [name]           Create one VM. Roles: db, v1, v2, generic.
   create-topology                Create db, v1, and v2 lab VMs.
+  start-topology                 Start db, v1, and v2 lab VMs if needed.
   seed-db                        Seed v1-compatible site data into the DB VM.
   install-v1-sim                 Install/start the v1 simulator service.
   install-v2                     Stage jetmon2, config, and systemd unit on v2.
@@ -310,6 +311,25 @@ create_topology() {
 	create_vm db db
 	create_vm v1 v1
 	create_vm v2 v2
+}
+
+start_vm() {
+	local vm="$1"
+	local state
+	virsh_cmd dominfo "$vm" >/dev/null
+	state="$(virsh_cmd domstate "$vm" 2>/dev/null || true)"
+	if [[ "$state" == "running" ]]; then
+		pass "vm_running=$vm"
+		return 0
+	fi
+	virsh_cmd start "$vm" >/dev/null
+	pass "vm_started=$vm"
+}
+
+start_topology() {
+	start_vm "$(vm_name db)"
+	start_vm "$(vm_name v1)"
+	start_vm "$(vm_name v2)"
 }
 
 vm_ip() {
@@ -587,6 +607,7 @@ install_v2() {
 	[[ -x "$JETMON2_BINARY" ]] || fail "missing executable jetmon2 binary: $JETMON2_BINARY"
 	[[ -f "$JETMON2_SERVICE" ]] || fail "missing systemd unit: $JETMON2_SERVICE"
 	[[ -f "$JETMON2_LOGROTATE" ]] || fail "missing logrotate file: $JETMON2_LOGROTATE"
+	start_topology
 	wait_ssh "$v2_vm"
 	wait_ssh "$v1_vm"
 	wait_ssh "$db_vm"
@@ -1432,6 +1453,7 @@ main() {
 		create_vm "$@"
 		;;
 	create-topology) create_topology "$@" ;;
+	start-topology) start_topology "$@" ;;
 	seed-db) seed_db "$@" ;;
 	install-v1-sim) install_v1_sim "$@" ;;
 	install-v2) install_v2 "$@" ;;
