@@ -212,7 +212,7 @@ Every transition row records *why* the change happened. The seeded vocabulary, i
 - `probe_cleared` — site returns to Up while still in Seems Down (verifier was never invoked or never confirmed); closes the event. Count of these per site over time is the false-positive rate of local detection.
 - `false_alarm` — verifier disagreed with the initial failure signal; closes the event.
 - `manual_override` — an operator changed state or closed the event.
-- `maintenance_swallowed` — event closed because a maintenance window started.
+- `maintenance_swallowed` — event closed because a maintenance window started; failures detected inside the active window are recorded operationally but do not open a downtime event.
 - `superseded` — closed because a broader event subsumed it.
 - `auto_timeout` — event aged out per retention/timeout policy.
 - `cause_linked` / `cause_unlinked` — `cause_event_id` was set or cleared on an open event.

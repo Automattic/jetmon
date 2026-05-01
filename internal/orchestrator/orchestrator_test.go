@@ -51,7 +51,11 @@ func TestTimeoutForSite(t *testing.T) {
 }
 
 func TestInMaintenance(t *testing.T) {
-	now := time.Now()
+	origNow := nowFunc
+	defer func() { nowFunc = origNow }()
+
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	nowFunc = func() time.Time { return now }
 	past := now.Add(-1 * time.Hour)
 	future := now.Add(1 * time.Hour)
 
@@ -434,6 +438,18 @@ func checkerResultFailure(blogID int64) checker.Result {
 		ErrorCode: checker.ErrorConnect,
 		RTT:       100 * time.Millisecond,
 		Timestamp: time.Now().UTC(),
+	}
+}
+
+func maintenanceSite(blogID int64, now time.Time) db.Site {
+	start := now.Add(-1 * time.Hour)
+	end := now.Add(1 * time.Hour)
+	return db.Site{
+		BlogID:           blogID,
+		MonitorURL:       "https://example.com",
+		SiteStatus:       statusRunning,
+		MaintenanceStart: &start,
+		MaintenanceEnd:   &end,
 	}
 }
 
@@ -1017,6 +1033,81 @@ func TestEscalateToVerifliersNoClients(t *testing.T) {
 
 	if !confirmed {
 		t.Fatal("expected confirmDown (and notification) when no verifliers are configured")
+	}
+}
+
+func TestHandleFailureSwallowsFailureDuringMaintenance(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+
+	cfg := setTestConfig(t)
+	cfg.NumOfChecks = 1
+
+	fixedNow := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	nowFunc = func() time.Time { return fixedNow }
+
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+
+	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error {
+		t.Fatal("notification should not be sent during maintenance")
+		return nil
+	}
+	veriflierCheckFunc = func(_ *veriflier.VeriflierClient, _ context.Context, _ veriflier.CheckRequest) (*veriflier.CheckResult, error) {
+		t.Fatal("failure during maintenance should not escalate to verifliers")
+		return nil, nil
+	}
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		ctx:      context.Background(),
+		hostname: "local",
+		veriflierClients: []*veriflier.VeriflierClient{
+			veriflier.NewVeriflierClient("v1", ""),
+		},
+	}
+
+	o.handleFailure(maintenanceSite(88, fixedNow), checkerResultFailure(88))
+
+	if o.retries.get(88) != nil {
+		t.Fatal("retry entry should not be retained for maintenance-swallowed failure")
+	}
+	if got := rec.counter("detection.maintenance.swallowed.count"); got != 1 {
+		t.Fatalf("maintenance swallowed counter = %d, want 1", got)
+	}
+	if got := rec.counter("detection.maintenance.swallowed.server.count"); got != 1 {
+		t.Fatalf("maintenance swallowed server counter = %d, want 1", got)
+	}
+	if got := rec.counter("detection.failure.server.count"); got != 0 {
+		t.Fatalf("failure server counter = %d, want 0 for maintenance-swallowed failure", got)
+	}
+}
+
+func TestHandleFailureClearsExistingRetryWhenMaintenanceStarts(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig(t)
+
+	fixedNow := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	nowFunc = func() time.Time { return fixedNow }
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		ctx:      context.Background(),
+		hostname: "local",
+	}
+
+	fail := checkerResultFailure(89)
+	o.retries.record(fail)
+	entry := o.retries.get(89)
+	entry.eventID = 123
+
+	o.handleFailure(maintenanceSite(89, fixedNow), fail)
+
+	if o.retries.get(89) != nil {
+		t.Fatal("retry entry should be cleared when maintenance swallows an existing failure")
 	}
 }
 

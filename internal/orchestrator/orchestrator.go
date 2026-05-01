@@ -409,6 +409,11 @@ func (o *Orchestrator) handleRecovery(site db.Site, res checker.Result) {
 }
 
 func (o *Orchestrator) handleFailure(site db.Site, res checker.Result) {
+	if inMaintenance(site) {
+		o.swallowMaintenanceFailure(site, res)
+		return
+	}
+
 	entry := o.retries.record(res)
 	class := failureClass(res)
 	emitCounter("detection.failure."+class+".count", 1)
@@ -603,6 +608,13 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 }
 
 func (o *Orchestrator) confirmDown(site db.Site, entry *retryEntry, vResults []veriflier.CheckResult) {
+	if inMaintenance(site) {
+		if entry != nil {
+			o.swallowMaintenanceFailure(site, entry.lastResult)
+		}
+		return
+	}
+
 	newStatus := statusConfirmedDown
 	changeTime := nowFunc().UTC()
 	emitCounter("detection.down.confirmed.count", 1)
@@ -646,6 +658,44 @@ func (o *Orchestrator) confirmDown(site db.Site, entry *retryEntry, vResults []v
 	}
 
 	o.retries.clear(site.BlogID)
+}
+
+func (o *Orchestrator) swallowMaintenanceFailure(site db.Site, res checker.Result) {
+	entry := o.retries.get(site.BlogID)
+	knownEventID := int64(0)
+	if entry != nil {
+		knownEventID = entry.eventID
+	}
+
+	class := failureClass(res)
+	emitCounter("detection.maintenance.swallowed.count", 1)
+	emitCounter("detection.maintenance.swallowed."+class+".count", 1)
+
+	meta, _ := json.Marshal(map[string]any{
+		"http_code":         res.HTTPCode,
+		"error_code":        res.ErrorCode,
+		"rtt_ms":            res.RTT.Milliseconds(),
+		"maintenance_start": site.MaintenanceStart,
+		"maintenance_end":   site.MaintenanceEnd,
+		"event_id":          knownEventID,
+	})
+
+	if entry != nil || site.SiteStatus != statusRunning {
+		if err := o.closeMaintenanceEvent(site.BlogID, knownEventID, nowFunc().UTC(), meta); err != nil {
+			log.Printf("orchestrator: close maintenance-swallowed event blog_id=%d event_id=%d: %v",
+				site.BlogID, knownEventID, err)
+		}
+	}
+	o.retries.clear(site.BlogID)
+
+	o.auditLog(audit.Entry{
+		BlogID:    site.BlogID,
+		EventID:   knownEventID,
+		EventType: audit.EventMaintenanceActive,
+		Source:    "local",
+		Detail:    "failure swallowed during maintenance",
+		Metadata:  meta,
+	})
 }
 
 func (o *Orchestrator) sendNotification(site db.Site, res checker.Result, status int, changeTime time.Time, vResults []veriflier.CheckResult) {
@@ -1111,6 +1161,46 @@ func (o *Orchestrator) closeRecoveredEvent(blogID, knownEventID int64, changeTim
 	return tx.Commit()
 }
 
+func (o *Orchestrator) closeMaintenanceEvent(blogID, knownEventID int64, changeTime time.Time, meta json.RawMessage) error {
+	tx, err := o.ev().Begin(o.ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var eventID int64
+	switch {
+	case knownEventID > 0 && tx.Tx() != nil:
+		eventID = knownEventID
+	case tx.Tx() != nil:
+		ae, err := tx.FindActiveByBlog(o.ctx, blogID, checkTypeHTTP)
+		if err != nil {
+			if errors.Is(err, eventstore.ErrEventNotFound) {
+				if config.LegacyStatusProjectionEnabled() {
+					if err := db.UpdateSiteStatusTx(o.ctx, tx.Tx(), blogID, statusRunning, changeTime); err != nil {
+						return fmt.Errorf("project site_status: %w", err)
+					}
+				}
+				return tx.Commit()
+			}
+			return err
+		}
+		eventID = ae.ID
+	default:
+		return tx.Commit()
+	}
+
+	if err := tx.Close(o.ctx, eventID, eventstore.ReasonMaintenanceSwallowed, o.hostname, meta); err != nil {
+		return fmt.Errorf("close event: %w", err)
+	}
+	if config.LegacyStatusProjectionEnabled() && tx.Tx() != nil {
+		if err := db.UpdateSiteStatusTx(o.ctx, tx.Tx(), blogID, statusRunning, changeTime); err != nil {
+			return fmt.Errorf("project site_status: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
 // summarizeVerifierResults extracts a small JSON-friendly summary of verifier
 // replies for storage in transition metadata. We don't store the full result
 // list — the per-RPC details are already in jetmon_audit_log under
@@ -1129,7 +1219,7 @@ func summarizeVerifierResults(vResults []veriflier.CheckResult) []map[string]any
 }
 
 func inMaintenance(site db.Site) bool {
-	now := time.Now()
+	now := nowFunc()
 	if site.MaintenanceStart == nil || site.MaintenanceEnd == nil {
 		return false
 	}
