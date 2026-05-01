@@ -69,9 +69,10 @@ the dedicated lab SSH key. The DB guest also installs MariaDB, listens on the
 libvirt network, creates `jetmon_db`, and grants `jetmon` / `jetmon`.
 `start-topology` only starts the three lab domains derived from
 `JETMON_ROLLOUT_PREFIX`: `<prefix>-db`, `<prefix>-v1`, and `<prefix>-v2`. It
-starts guests that are shut off or crashed, treats already-running guests as OK,
-and refuses ambiguous states such as paused or suspended so an operator can
-inspect libvirt before continuing.
+starts guests that are cleanly shut off, treats already-running guests as OK,
+and refuses unexpected states such as crashed, paused, or suspended so an
+operator can inspect libvirt before continuing. If the prefix does not match
+the complete db/v1/v2 lab topology, the command fails before starting anything.
 
 ## Prepare The Rollout Lab
 

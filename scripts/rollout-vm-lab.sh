@@ -313,16 +313,38 @@ create_topology() {
 	create_vm v2 v2
 }
 
+require_vm_domain() {
+	local vm="$1"
+	if ! virsh_cmd dominfo "$vm" >/dev/null 2>&1; then
+		fail "missing VM domain: $vm; run create-topology first or check JETMON_ROLLOUT_PREFIX=$PREFIX"
+	fi
+}
+
+topology_vms() {
+	printf '%s\n' "$(vm_name db)" "$(vm_name v1)" "$(vm_name v2)"
+}
+
+require_topology_domains() {
+	local vm missing=0
+	while IFS= read -r vm; do
+		if ! virsh_cmd dominfo "$vm" >/dev/null 2>&1; then
+			warn "missing_vm_domain=$vm"
+			missing=1
+		fi
+	done < <(topology_vms)
+	[[ "$missing" == "0" ]] || fail "topology is incomplete; run create-topology first or check JETMON_ROLLOUT_PREFIX=$PREFIX"
+}
+
 start_vm() {
 	local vm="$1"
 	local state
-	virsh_cmd dominfo "$vm" >/dev/null
+	require_vm_domain "$vm"
 	state="$(virsh_cmd domstate "$vm" 2>/dev/null || true)"
 	case "$state" in
 	running | blocked)
 		pass "vm_running=$vm state=\"$state\""
 		;;
-	"shut off" | crashed)
+	"shut off")
 		virsh_cmd start "$vm" >/dev/null
 		pass "vm_started=$vm previous_state=\"$state\""
 		;;
@@ -337,9 +359,10 @@ start_vm() {
 
 start_topology() {
 	log "start_topology prefix=$PREFIX vms=$(vm_name db),$(vm_name v1),$(vm_name v2)"
-	start_vm "$(vm_name db)"
-	start_vm "$(vm_name v1)"
-	start_vm "$(vm_name v2)"
+	require_topology_domains
+	while IFS= read -r vm; do
+		start_vm "$vm"
+	done < <(topology_vms)
 }
 
 vm_ip() {
