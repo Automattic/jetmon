@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	stdctx "context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,8 +36,9 @@ const (
 // check types (DNS, TLS expiry, keyword, redirect, etc.) get their own
 // constants alongside.
 const (
-	checkTypeHTTP      = "http"
-	checkTypeTLSExpiry = "tls_expiry"
+	checkTypeHTTP          = "http"
+	checkTypeTLSExpiry     = "tls_expiry"
+	checkTypeTLSDeprecated = "tls_deprecated"
 )
 
 // verifierRPCHeadroom is added to the per-site check timeout when computing
@@ -348,6 +350,9 @@ func (o *Orchestrator) processResults(results map[int64]checker.Result, sites ma
 		}
 
 		// Update SSL expiry if available.
+		if res.TLSVersion != 0 {
+			o.checkTLSDeprecated(site, res)
+		}
 		if res.SSLExpiry != nil {
 			if err := dbUpdateSSLExpiry(o.ctx, blogID, *res.SSLExpiry); err != nil {
 				log.Printf("orchestrator: update ssl expiry blog_id=%d: %v", blogID, err)
@@ -824,6 +829,83 @@ func (o *Orchestrator) closeSSLExpiryIfOpen(blogID int64) error {
 		return fmt.Errorf("close tls_expiry: %w", err)
 	}
 	return tx.Commit()
+}
+
+func (o *Orchestrator) checkTLSDeprecated(site db.Site, res checker.Result) {
+	if res.TLSVersion <= tls.VersionTLS11 {
+		meta, _ := json.Marshal(map[string]any{
+			"tls_version":      tlsVersionName(res.TLSVersion),
+			"tls_version_code": fmt.Sprintf("0x%04x", res.TLSVersion),
+			"cipher_suite":     tls.CipherSuiteName(res.CipherSuite),
+			"cipher_suite_id":  fmt.Sprintf("0x%04x", res.CipherSuite),
+		})
+		if err := o.openTLSDeprecated(site.BlogID, meta); err != nil {
+			log.Printf("orchestrator: tls_deprecated event blog_id=%d version=%s: %v",
+				site.BlogID, tlsVersionName(res.TLSVersion), err)
+		}
+		return
+	}
+
+	if err := o.closeTLSDeprecatedIfOpen(site.BlogID); err != nil {
+		log.Printf("orchestrator: close tls_deprecated event blog_id=%d: %v", site.BlogID, err)
+	}
+}
+
+func (o *Orchestrator) openTLSDeprecated(blogID int64, meta json.RawMessage) error {
+	tx, err := o.ev().Begin(o.ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.Open(o.ctx, eventstore.OpenInput{
+		Identity: eventstore.Identity{BlogID: blogID, CheckType: checkTypeTLSDeprecated},
+		Severity: eventstore.SeverityWarning,
+		State:    eventstore.StateWarning,
+		Source:   o.hostname,
+		Metadata: meta,
+	}); err != nil {
+		return fmt.Errorf("open tls_deprecated: %w", err)
+	}
+	return tx.Commit()
+}
+
+func (o *Orchestrator) closeTLSDeprecatedIfOpen(blogID int64) error {
+	tx, err := o.ev().Begin(o.ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if tx.Tx() == nil {
+		return tx.Commit()
+	}
+	ae, err := tx.FindActiveByBlog(o.ctx, blogID, checkTypeTLSDeprecated)
+	if err != nil {
+		if errors.Is(err, eventstore.ErrEventNotFound) {
+			return tx.Commit()
+		}
+		return err
+	}
+	if err := tx.Close(o.ctx, ae.ID, eventstore.ReasonVerifierCleared, o.hostname, nil); err != nil {
+		return fmt.Errorf("close tls_deprecated: %w", err)
+	}
+	return tx.Commit()
+}
+
+func tlsVersionName(version uint16) string {
+	switch version {
+	case tls.VersionTLS10:
+		return "TLS 1.0"
+	case tls.VersionTLS11:
+		return "TLS 1.1"
+	case tls.VersionTLS12:
+		return "TLS 1.2"
+	case tls.VersionTLS13:
+		return "TLS 1.3"
+	default:
+		return fmt.Sprintf("0x%04x", version)
+	}
 }
 
 func (o *Orchestrator) isAlertSuppressed(site db.Site) bool {

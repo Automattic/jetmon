@@ -491,15 +491,17 @@ Error Codes (checker.ErrorCode)
 
 ```
   ErrorNone          0   Success, no error
-  ErrorConnect       1   TCP connection refused or DNS failure
-  ErrorTimeout       2   Context deadline exceeded
+  ErrorTimeout       1   Context deadline exceeded
+  ErrorConnect       2   TCP connection refused or DNS failure
   ErrorSSL           3   TLS handshake error (invalid cert, mismatch)
-  ErrorTLSExpired    4   Certificate has passed NotAfter date
-  ErrorTLSDeprecated 5   TLS 1.0 or 1.1 detected (advisory only, not a failure)
-  ErrorRedirect      6   Redirect when RedirectPolicy=fail
-  ErrorKeyword       7   Body did not contain required keyword
+  ErrorRedirect      4   Redirect when RedirectPolicy=fail
+  ErrorKeyword       5   Body did not contain required keyword
+  ErrorTLSExpired    6   Certificate has passed NotAfter date
+  ErrorTLSDeprecated 7   TLS 1.0 or 1.1 detected (advisory only, not a failure)
 ```
 
 `IsFailure()` returns true for all codes except `ErrorNone` and
 `ErrorTLSDeprecated`. `StatusType()` maps codes to the string values
 expected by the WPCOM API (e.g. "https", "intermittent", "redirect").
+Deprecated TLS opens a separate `tls_deprecated` warning event and does not
+project the legacy site status down.
