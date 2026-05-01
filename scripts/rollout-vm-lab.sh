@@ -318,15 +318,25 @@ start_vm() {
 	local state
 	virsh_cmd dominfo "$vm" >/dev/null
 	state="$(virsh_cmd domstate "$vm" 2>/dev/null || true)"
-	if [[ "$state" == "running" ]]; then
-		pass "vm_running=$vm"
-		return 0
-	fi
-	virsh_cmd start "$vm" >/dev/null
-	pass "vm_started=$vm"
+	case "$state" in
+	running | blocked)
+		pass "vm_running=$vm state=\"$state\""
+		;;
+	"shut off" | crashed)
+		virsh_cmd start "$vm" >/dev/null
+		pass "vm_started=$vm previous_state=\"$state\""
+		;;
+	"")
+		fail "could not determine VM state: $vm"
+		;;
+	*)
+		fail "VM is not in a safe auto-start state: $vm state=\"$state\""
+		;;
+	esac
 }
 
 start_topology() {
+	log "start_topology prefix=$PREFIX vms=$(vm_name db),$(vm_name v1),$(vm_name v2)"
 	start_vm "$(vm_name db)"
 	start_vm "$(vm_name v1)"
 	start_vm "$(vm_name v2)"

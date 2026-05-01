@@ -67,6 +67,11 @@ This creates:
 The guests use cloud-init to create a `jetmon` user with passwordless sudo and
 the dedicated lab SSH key. The DB guest also installs MariaDB, listens on the
 libvirt network, creates `jetmon_db`, and grants `jetmon` / `jetmon`.
+`start-topology` only starts the three lab domains derived from
+`JETMON_ROLLOUT_PREFIX`: `<prefix>-db`, `<prefix>-v1`, and `<prefix>-v2`. It
+starts guests that are shut off or crashed, treats already-running guests as OK,
+and refuses ambiguous states such as paused or suspended so an operator can
+inspect libvirt before continuing.
 
 ## Prepare The Rollout Lab
 
@@ -91,7 +96,7 @@ files. It:
 - runs `rollout host-preflight` and a guided fresh-server dry-run from the v2 VM
 
 From the local workstation, the Makefile wraps artifact sync, v2 VM artifact
-staging, VM startup, and remote execution:
+staging, VM startup for the three lab domains, and remote execution:
 
 ```bash
 make rollout-vm-lab-doctor
