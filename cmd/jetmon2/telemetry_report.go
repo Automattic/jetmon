@@ -455,7 +455,7 @@ func queryTelemetryFalseAlarmClasses(ctx context.Context, conn *sql.DB, window t
 		SELECT outcome.reason AS outcome,
 		       CASE
 		         WHEN CAST(JSON_UNQUOTE(JSON_EXTRACT(opened.metadata, '$.error_code')) AS SIGNED) IN (%d, %d) THEN 'https'
-		         WHEN CAST(JSON_UNQUOTE(JSON_EXTRACT(opened.metadata, '$.error_code')) AS SIGNED) = %d THEN 'intermittent'
+		         WHEN CAST(JSON_UNQUOTE(JSON_EXTRACT(opened.metadata, '$.error_code')) AS SIGNED) IN (%d, %d) THEN 'intermittent'
 		         WHEN CAST(JSON_UNQUOTE(JSON_EXTRACT(opened.metadata, '$.error_code')) AS SIGNED) = %d THEN 'redirect'
 		         WHEN CAST(JSON_UNQUOTE(JSON_EXTRACT(opened.metadata, '$.error_code')) AS SIGNED) = %d THEN 'keyword'
 		         WHEN CAST(JSON_UNQUOTE(JSON_EXTRACT(opened.metadata, '$.http_code')) AS SIGNED) >= 500 THEN 'server'
@@ -478,6 +478,7 @@ func queryTelemetryFalseAlarmClasses(ctx context.Context, conn *sql.DB, window t
 		checker.ErrorSSL,
 		checker.ErrorTLSExpired,
 		checker.ErrorTimeout,
+		checker.ErrorBodyRead,
 		checker.ErrorRedirect,
 		checker.ErrorKeyword,
 		limit,
