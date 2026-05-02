@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -552,12 +553,24 @@ func RecordFalsePositive(blogID int64, httpCode, errorCode int, rttMs int64) err
 }
 
 // RecordCheckHistory inserts a check timing sample.
-func RecordCheckHistory(blogID int64, httpCode, errorCode int, rttMs, dnsMs, tcpMs, tlsMs, ttfbMs int64) error {
+func RecordCheckHistory(blogID int64, requestMethod string, httpCode, errorCode int, rttMs, dnsMs, tcpMs, tlsMs, ttfbMs int64) error {
+	requestMethod = normalizeHistoryMethod(requestMethod)
 	_, err := db.Exec(
 		`INSERT INTO jetmon_check_history
-		    (blog_id, http_code, error_code, rtt_ms, dns_ms, tcp_ms, tls_ms, ttfb_ms, checked_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
-		blogID, httpCode, errorCode, rttMs, dnsMs, tcpMs, tlsMs, ttfbMs,
+		    (blog_id, request_method, http_code, error_code, rtt_ms, dns_ms, tcp_ms, tls_ms, ttfb_ms, checked_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+		blogID, requestMethod, httpCode, errorCode, rttMs, dnsMs, tcpMs, tlsMs, ttfbMs,
 	)
 	return err
+}
+
+func normalizeHistoryMethod(method string) string {
+	method = strings.ToUpper(strings.TrimSpace(method))
+	if method == "" {
+		return "GET"
+	}
+	if len(method) > 16 {
+		return method[:16]
+	}
+	return method
 }

@@ -340,6 +340,7 @@ func (o *Orchestrator) processResults(results map[int64]checker.Result, sites ma
 		// Log timing data.
 		if err := dbRecordCheckHistory(
 			blogID,
+			res.Method,
 			res.HTTPCode, res.ErrorCode,
 			res.RTT.Milliseconds(),
 			res.DNS.Milliseconds(),
