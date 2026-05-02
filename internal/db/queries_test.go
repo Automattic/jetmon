@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -66,6 +67,25 @@ func TestAssignBucketRanges(t *testing.T) {
 			got := assignBucketRanges(tt.hostIDs, tt.bucketTotal, tt.bucketTarget)
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("assignBucketRanges() = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeHistoryMethod(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "empty defaults to GET", in: "", want: "GET"},
+		{name: "trims and uppercases", in: " get ", want: "GET"},
+		{name: "bounds long values", in: strings.Repeat("x", 20), want: strings.Repeat("X", 16)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeHistoryMethod(tt.in); got != tt.want {
+				t.Fatalf("normalizeHistoryMethod(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
 	}
@@ -211,7 +231,7 @@ func TestSimpleMutationQueries(t *testing.T) {
 		WithArgs(int64(42), 500, 1, int64(123)).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("INSERT INTO jetmon_check_history").
-		WithArgs(int64(42), 200, 0, int64(100), int64(1), int64(2), int64(3), int64(4)).
+		WithArgs(int64(42), "GET", 200, 0, int64(100), int64(1), int64(2), int64(3), int64(4)).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	if err := UpdateSiteStatus(context.Background(), 42, 2, now); err != nil {
@@ -238,7 +258,7 @@ func TestSimpleMutationQueries(t *testing.T) {
 	if err := RecordFalsePositive(42, 500, 1, 123); err != nil {
 		t.Fatalf("RecordFalsePositive: %v", err)
 	}
-	if err := RecordCheckHistory(42, 200, 0, 100, 1, 2, 3, 4); err != nil {
+	if err := RecordCheckHistory(42, "GET", 200, 0, 100, 1, 2, 3, 4); err != nil {
 		t.Fatalf("RecordCheckHistory: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {

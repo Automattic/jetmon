@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS jetmon_audit_log (
 CREATE TABLE IF NOT EXISTS jetmon_check_history (
     id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
     blog_id    BIGINT UNSIGNED NOT NULL,
+    request_method VARCHAR(16) NOT NULL DEFAULT 'GET',
     http_code  SMALLINT NULL,
     error_code TINYINT NULL,
     rtt_ms     INT NULL,

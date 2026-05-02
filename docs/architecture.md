@@ -442,8 +442,8 @@ Database Tables
                           alert_suppressed | api_access | config_reload
     blog_id, source, http_code, error_code, rtt_ms
 
-  jetmon_check_history    Per-check timing samples
-    rtt_ms, dns_ms, tcp_ms, tls_ms, ttfb_ms
+  jetmon_check_history    Per-check method and timing samples
+    request_method, rtt_ms, dns_ms, tcp_ms, tls_ms, ttfb_ms
 
   jetmon_false_positives  Checks local failed but verifliers passed
     blog_id, http_code, error_code, rtt_ms

@@ -379,7 +379,7 @@ func stubOrchestratorDeps() func() {
 	dbUpdateLastAlertSent = func(context.Context, int64, time.Time) error { return nil }
 	dbRecordFalsePositive = func(int64, int, int, int64) error { return nil }
 	dbMarkSiteChecked = func(context.Context, int64, time.Time) error { return nil }
-	dbRecordCheckHistory = func(int64, int, int, int64, int64, int64, int64, int64) error { return nil }
+	dbRecordCheckHistory = func(int64, string, int, int, int64, int64, int64, int64, int64) error { return nil }
 	dbUpdateSSLExpiry = func(context.Context, int64, time.Time) error { return nil }
 	dbCountProjectionDrift = func(context.Context, int, int) (int, error) { return 0, nil }
 	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error { return nil }
@@ -1285,7 +1285,7 @@ func TestProcessResultsLogsErrorsFromDB(t *testing.T) {
 	dbMarkSiteChecked = func(context.Context, int64, time.Time) error {
 		return fmt.Errorf("mark checked error")
 	}
-	dbRecordCheckHistory = func(int64, int, int, int64, int64, int64, int64, int64) error {
+	dbRecordCheckHistory = func(int64, string, int, int, int64, int64, int64, int64, int64) error {
 		return fmt.Errorf("history error")
 	}
 	dbUpdateSSLExpiry = func(context.Context, int64, time.Time) error {

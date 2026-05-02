@@ -65,6 +65,7 @@ var migrations = []migration{
 	{6, `CREATE TABLE IF NOT EXISTS jetmon_check_history (
 		id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
 		blog_id    BIGINT UNSIGNED NOT NULL,
+		request_method VARCHAR(16) NOT NULL DEFAULT 'GET',
 		http_code  SMALLINT NULL,
 		error_code TINYINT NULL,
 		rtt_ms     INT NULL,
@@ -441,6 +442,13 @@ var migrations = []migration{
 	// absent".
 	{27, `ALTER TABLE jetpack_monitor_sites
 		ADD COLUMN forbidden_keyword VARCHAR(500) NULL AFTER check_keyword`},
+
+	// Migration 28 records the actual HTTP method used for each timing sample.
+	// This keeps the high-volume check history compact while giving operators
+	// durable evidence that v2 probes are exercising the GET path rather than
+	// the HEAD-only behavior that caused v1 false positives and false negatives.
+	{28, `ALTER TABLE jetmon_check_history
+		ADD COLUMN request_method VARCHAR(16) NOT NULL DEFAULT 'GET' AFTER blog_id`},
 }
 
 // Migrate applies all pending migrations idempotently.
