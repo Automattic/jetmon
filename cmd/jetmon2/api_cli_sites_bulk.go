@@ -324,6 +324,7 @@ func planAPIBulkSiteCreates(entries []apiBulkSiteEntry, opts apiSitesBulkAddOpti
 			MonitorURL:           entry.MonitorURL,
 			MonitorActive:        opts.monitorActive.ptr(),
 			CheckKeyword:         entry.CheckKeyword,
+			ForbiddenKeyword:     entry.ForbiddenKeyword,
 			RedirectPolicy:       entry.RedirectPolicy,
 			TimeoutSeconds:       entry.TimeoutSeconds,
 			AlertCooldownMinutes: entry.AlertCooldownMinutes,
