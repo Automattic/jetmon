@@ -31,6 +31,34 @@ No active candidate branch is queued here right now.
 - [ ] Revisit report thresholds and suggested actions after v2 has enough real
   production traffic to show which rates should be considered normal.
 
+### Uptime-Bench Scenario Coverage TODO
+
+- [ ] Wire uptime-bench's inverted keyword scenarios through Jetmon v2's
+  existing `forbidden_keyword` support so cases such as
+  `content-keyword-injected` can be provisioned and scored instead of skipped
+  or reported as unsupported adapter capability.
+- [ ] Add multi-pattern body-content checks for scenarios where the page still
+  contains the required canary but also includes known-bad content, such as
+  injected scripts, spam links, parked-domain text, maintenance banners, and
+  upstream error templates. Keep this distinct from broad visual/content
+  baselining: operators need explicit, auditable rules before Jetmon can safely
+  declare customer content wrong.
+- [ ] Design a content-integrity baseline mode separately from explicit
+  forbidden patterns. Benchmark variants such as defacement and ransomware can
+  be caught by required keywords today, but production users will eventually
+  need a controlled way to detect large unexpected body changes without
+  hard-coding every bad string.
+- [ ] Validate geo-scoped benchmark assumptions before changing Jetmon
+  production behavior for `http-geo-503`. Confirm the probe source ranges,
+  intended Jetmon region semantics, and support story for partial regional
+  failures; if Jetmon remains single-region until the probe-agent work, document
+  that this benchmark class is not directly comparable yet.
+- [ ] Track DNS-specific benchmark scenarios separately from HTTP DNS failures.
+  Jetmon records DNS timing and classifies HTTP lookup failures today, but
+  explicit DNS-record, DNSSEC, split-horizon, and nameserver-behavior monitors
+  need a dedicated check type and event taxonomy before they should be exposed
+  as production uptime signals.
+
 ### Projection Drift Tooling TODO
 
 - [x] Compare legacy projection status against a per-blog rollup of open HTTP
