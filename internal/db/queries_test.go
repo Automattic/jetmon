@@ -534,3 +534,27 @@ func TestMigrateAppliesOnlyPendingMigrations(t *testing.T) {
 		t.Fatalf("unmet sql expectations: %v", err)
 	}
 }
+
+func TestCheckHistoryRequestMethodAddedOnlyByMigration28(t *testing.T) {
+	var createHistory, addMethod migration
+	for _, m := range migrations {
+		switch m.id {
+		case 6:
+			createHistory = m
+		case 28:
+			addMethod = m
+		}
+	}
+	if createHistory.sql == "" {
+		t.Fatal("migration 6 not found")
+	}
+	if addMethod.sql == "" {
+		t.Fatal("migration 28 not found")
+	}
+	if strings.Contains(createHistory.sql, "request_method") {
+		t.Fatalf("migration 6 creates request_method; fresh databases would fail when migration 28 adds it again")
+	}
+	if !strings.Contains(addMethod.sql, "ADD COLUMN request_method") {
+		t.Fatalf("migration 28 should add request_method; sql=%q", addMethod.sql)
+	}
+}
