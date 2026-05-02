@@ -35,6 +35,7 @@ type createSiteRequest struct {
 	MonitorActive        *bool              `json:"monitor_active"`
 	BucketNo             *int               `json:"bucket_no"`
 	CheckKeyword         *string            `json:"check_keyword"`
+	ForbiddenKeyword     *string            `json:"forbidden_keyword"`
 	RedirectPolicy       *string            `json:"redirect_policy"`
 	TimeoutSeconds       *int               `json:"timeout_seconds"`
 	CustomHeaders        *map[string]string `json:"custom_headers"`
@@ -118,6 +119,7 @@ func (s *Server) handleCreateSite(w http.ResponseWriter, r *http.Request) {
 	insertArgs := []any{
 		*body.BlogID, bucketNo, body.MonitorURL, boolToTinyint(monitorActive), checkInterval,
 		nullableStringPtr(body.CheckKeyword),
+		nullableStringPtr(body.ForbiddenKeyword),
 		redirectPolicy,
 		nullableIntPtr(body.TimeoutSeconds),
 		customHeadersJSON,
@@ -134,9 +136,9 @@ func (s *Server) handleCreateSite(w http.ResponseWriter, r *http.Request) {
 		if _, err := tx.ExecContext(ctx, `
 		INSERT INTO jetpack_monitor_sites
 			(blog_id, bucket_no, monitor_url, monitor_active, site_status, check_interval,
-			 check_keyword, redirect_policy, timeout_seconds, custom_headers,
+			 check_keyword, forbidden_keyword, redirect_policy, timeout_seconds, custom_headers,
 			 alert_cooldown_minutes)
-		VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)`, insertArgs...); err != nil {
+		VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)`, insertArgs...); err != nil {
 			writeError(w, r, http.StatusInternalServerError, "db_error",
 				"site insert failed: "+err.Error())
 			return
@@ -154,9 +156,9 @@ func (s *Server) handleCreateSite(w http.ResponseWriter, r *http.Request) {
 	} else if _, err = s.db.ExecContext(ctx, `
 		INSERT INTO jetpack_monitor_sites
 			(blog_id, bucket_no, monitor_url, monitor_active, site_status, check_interval,
-			 check_keyword, redirect_policy, timeout_seconds, custom_headers,
+			 check_keyword, forbidden_keyword, redirect_policy, timeout_seconds, custom_headers,
 			 alert_cooldown_minutes)
-		VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)`,
 		insertArgs...); err != nil {
 		writeError(w, r, http.StatusInternalServerError, "db_error",
 			"site insert failed: "+err.Error())
@@ -181,6 +183,7 @@ type updateSiteRequest struct {
 	MonitorActive        *bool              `json:"monitor_active"`
 	BucketNo             *int               `json:"bucket_no"`
 	CheckKeyword         *string            `json:"check_keyword"`
+	ForbiddenKeyword     *string            `json:"forbidden_keyword"`
 	RedirectPolicy       *string            `json:"redirect_policy"`
 	TimeoutSeconds       *int               `json:"timeout_seconds"`
 	CustomHeaders        *map[string]string `json:"custom_headers"`
@@ -559,6 +562,10 @@ func buildUpdateSetClause(body updateSiteRequest) ([]string, []any, error) {
 	if body.CheckKeyword != nil {
 		clauses = append(clauses, "check_keyword = ?")
 		args = append(args, nullableEmpty(*body.CheckKeyword))
+	}
+	if body.ForbiddenKeyword != nil {
+		clauses = append(clauses, "forbidden_keyword = ?")
+		args = append(args, nullableEmpty(*body.ForbiddenKeyword))
 	}
 	if body.RedirectPolicy != nil {
 		clauses = append(clauses, "redirect_policy = ?")

@@ -121,7 +121,7 @@ During each HTTPS check, inspect the peer certificate chain via Go's `tls.Connec
 Jetmon 1's HEAD-only verification was a major source of customer-visible false positives and false negatives because many production stacks block, special-case, or incorrectly implement HEAD. Jetmon 2 uses GET requests for local monitor checks and Veriflier checks so uptime decisions are based on the same class of request a browser and customer-facing uptime product normally make.
 
 **Keyword / Content Checking**
-For sites with a `check_keyword` value set in the database, perform a GET request and search the response body for the configured string. A missing keyword on an otherwise-200 response counts as a failure and enters the same retry and confirmation pipeline as an HTTP error. Builds directly on the GET request mode used by v2 checks.
+For sites with a `check_keyword` value set in the database, perform a GET request and search the response body for the configured string. A missing keyword on an otherwise-200 response counts as a failure and enters the same retry and confirmation pipeline as an HTTP error. Sites can also set `forbidden_keyword` to fail when known bad body text appears, such as an injected maintenance banner, parked-domain page, compromised-content marker, or upstream error template. Both checks build directly on the GET request mode used by v2 checks.
 
 **Maintenance Windows**
 Add `maintenance_start` and `maintenance_end` (nullable `DATETIME`) columns to `jetpack_monitor_sites`. During a maintenance window, checks continue and RTT data is collected, but status-change notifications are suppressed. The check result is logged internally so the audit trail is complete, but no alert fires. Configurable via the WPCOM API or direct DB write.

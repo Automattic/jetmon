@@ -398,6 +398,7 @@ Database Tables
     last_checked_at       Used to order fetch by least-recently-checked
     ssl_expiry_date       Updated after each TLS handshake
     check_keyword         Optional body text to require
+    forbidden_keyword     Optional body text that must not appear
     maintenance_start/end Suppress alerts during scheduled maintenance
     custom_headers        JSON blob of extra HTTP headers
     timeout_seconds       Per-site timeout override
@@ -491,13 +492,13 @@ Error Codes (checker.ErrorCode)
 
 ```
   ErrorNone          0   Success, no error
-  ErrorConnect       1   TCP connection refused or DNS failure
-  ErrorTimeout       2   Context deadline exceeded
+  ErrorTimeout       1   Context deadline exceeded
+  ErrorConnect       2   TCP connection refused or DNS failure
   ErrorSSL           3   TLS handshake error (invalid cert, mismatch)
-  ErrorTLSExpired    4   Certificate has passed NotAfter date
-  ErrorTLSDeprecated 5   TLS 1.0 or 1.1 detected (advisory only, not a failure)
-  ErrorRedirect      6   Redirect when RedirectPolicy=fail
-  ErrorKeyword       7   Body did not contain required keyword
+  ErrorRedirect      4   Redirect when RedirectPolicy=fail
+  ErrorKeyword       5   Required keyword missing or forbidden keyword present
+  ErrorTLSExpired    6   Certificate has passed NotAfter date
+  ErrorTLSDeprecated 7   TLS 1.0 or 1.1 detected (advisory only, not a failure)
 ```
 
 `IsFailure()` returns true for all codes except `ErrorNone` and

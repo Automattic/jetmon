@@ -84,6 +84,7 @@ not exercise.
 | `ssl_expiry` | Certificate expires within the configured threshold |
 | `tls_deprecated` | Site is serving TLS 1.0 or 1.1 |
 | `keyword_missing` | Response body did not contain the expected keyword |
+| `keyword_forbidden` | Response body contained configured forbidden text |
 | `success` | Site recovered |
 
 ## Check SSL Certificate Status

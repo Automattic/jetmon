@@ -162,6 +162,7 @@ maintenance windows:
 ./bin/jetmon2 api sites update \
   --url https://example.com/health \
   --check-keyword Example \
+  --forbidden-keyword 'database error' \
   --custom-header 'X-Jetmon-Test: api-cli' \
   --maintenance-start 2026-04-28T18:00:00Z \
   --maintenance-end 2026-04-28T19:00:00Z \
@@ -220,8 +221,8 @@ Use your own source list when needed:
 
 Accepted source formats are newline URLs, CSV with a `url` or `monitor_url`
 column, or JSON objects using fields such as `monitor_url`, `check_keyword`,
-`redirect_policy`, `timeout_seconds`, `custom_headers`, `alert_cooldown_minutes`,
-and `check_interval`.
+`forbidden_keyword`, `redirect_policy`, `timeout_seconds`, `custom_headers`,
+`alert_cooldown_minutes`, and `check_interval`.
 
 Clean up a batch after testing:
 

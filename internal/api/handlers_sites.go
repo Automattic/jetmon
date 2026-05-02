@@ -34,6 +34,7 @@ type siteResponse struct {
 	LastStatusChangeAt   *string `json:"last_status_change_at"`
 	SSLExpiryDate        *string `json:"ssl_expiry_date"`
 	CheckKeyword         *string `json:"check_keyword"`
+	ForbiddenKeyword     *string `json:"forbidden_keyword"`
 	RedirectPolicy       string  `json:"redirect_policy"`
 	MaintenanceStart     *string `json:"maintenance_start"`
 	MaintenanceEnd       *string `json:"maintenance_end"`
@@ -302,6 +303,7 @@ func siteSelectColumns(prefix string, includeCLIMetadata bool) string {
 		prefix + "last_status_change",
 		prefix + "ssl_expiry_date",
 		prefix + "check_keyword",
+		prefix + "forbidden_keyword",
 		prefix + "redirect_policy",
 		prefix + "maintenance_start",
 		prefix + "maintenance_end",
@@ -440,22 +442,23 @@ type rowScanner interface {
 // fallback for sites with no active v2 event during the shadow migration.
 func scanSiteRow(s rowScanner, includeCLIMetadata bool) (siteResponse, error) {
 	var (
-		out            siteResponse
-		monitorActive  uint8
-		siteStatus     int
-		lastCheckedAt  sql.NullTime
-		lastStatusChg  sql.NullTime
-		sslExpiry      sql.NullTime
-		checkKeyword   sql.NullString
-		redirectPolicy sql.NullString
-		maintStart     sql.NullTime
-		maintEnd       sql.NullTime
-		alertCooldown  sql.NullInt64
+		out              siteResponse
+		monitorActive    uint8
+		siteStatus       int
+		lastCheckedAt    sql.NullTime
+		lastStatusChg    sql.NullTime
+		sslExpiry        sql.NullTime
+		checkKeyword     sql.NullString
+		forbiddenKeyword sql.NullString
+		redirectPolicy   sql.NullString
+		maintStart       sql.NullTime
+		maintEnd         sql.NullTime
+		alertCooldown    sql.NullInt64
 	)
 	dest := []any{
 		&out.ID, &out.BlogID, &out.MonitorURL, &monitorActive,
 		&out.BucketNo, &out.CheckInterval, &siteStatus,
-		&lastCheckedAt, &lastStatusChg, &sslExpiry, &checkKeyword,
+		&lastCheckedAt, &lastStatusChg, &sslExpiry, &checkKeyword, &forbiddenKeyword,
 		&redirectPolicy, &maintStart, &maintEnd, &alertCooldown,
 	}
 	var customHeaders sql.NullString
@@ -485,6 +488,9 @@ func scanSiteRow(s rowScanner, includeCLIMetadata bool) (siteResponse, error) {
 	}
 	if checkKeyword.Valid {
 		out.CheckKeyword = &checkKeyword.String
+	}
+	if forbiddenKeyword.Valid {
+		out.ForbiddenKeyword = &forbiddenKeyword.String
 	}
 	if redirectPolicy.Valid {
 		out.RedirectPolicy = redirectPolicy.String
