@@ -126,7 +126,8 @@ This is the end-to-end path from database query to WPCOM notification.
 │ PHASE 3 — Collect (deadline: NetCommsTimeout + 5 s)                  │
 │                                                                      │
 │  Drain pool.Results() until all dispatched results arrive or         │
-│  deadline fires (partial results processed, rest logged as dropped)  │
+│  deadline fires (partial results processed, remaining work stays      │
+│  visible through outstanding/due-remaining scheduler metrics)         │
 └──────────────────────────────────────────────────────────────────────┘
                   │
           ┌───────┴───────┐

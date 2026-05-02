@@ -16,6 +16,12 @@ orchestrator keeps fetching additional pages until due work is drained, so this
 is a database/query guardrail rather than a cap on total checks per round.
 Default: 100.
 
+WORKER_MAX_MEM_MB
+Go runtime memory threshold that triggers worker-pool drain. This is a safety
+guardrail, not a scheduler sizing target; if capacity tests show memory-pressure
+drain logs, investigate runtime memory and pprof data before raising it.
+Default: 53.
+
 LEGACY_STATUS_PROJECTION_ENABLE
 Set to true while Jetmon v2 is running in shadow-v2-state migration mode. When enabled, v2 writes its authoritative incident state to jetmon_events / jetmon_event_transitions and also projects v1-compatible site_status + last_status_change values back into jetpack_monitor_sites for legacy consumers. Set to false only after downstream readers have moved to the v2 event/API surface. Default: true.
 
@@ -38,13 +44,17 @@ BUCKET_NO_MIN / BUCKET_NO_MAX
 Deprecated v1 names accepted as aliases for PINNED_BUCKET_MIN / PINNED_BUCKET_MAX. They must be set together and must match PINNED_BUCKET_* if both forms are present.
 
 BATCH_SIZE
-Number of buckets fetched per database query when loading sites. Default: 32.
+Legacy compatibility setting retained so copied v1-style configs continue to
+parse. It is not used by the Go scheduler; scheduler DB paging is controlled by
+DATASET_SIZE. Default: 32.
 
 AUTH_TOKEN
 Shared secret used to authenticate outbound WPCOM API calls. Required.
 
 VERIFLIER_BATCH_SIZE
-Maximum number of sites sent to each veriflier per verification request. Default: 200.
+Legacy compatibility setting retained for verifier batching compatibility. The
+current JSON-over-HTTP verifier path sends one verification request per site
+escalation. Default: 200.
 
 PEER_OFFLINE_LIMIT
 Minimum number of verifliers that must confirm a site is down before it is declared confirmed-down. Default: 3.

@@ -174,9 +174,10 @@ In the Jetmon repo (`/home/gaarai/code/jetmon`):
    - `internal/checker/checker.go`
    - This likely contributes to the rising open FD count.
 
-## Likely Root Cause
+## Likely Root Cause Before Remediation
 
-The scheduler appears to be doing exactly what it was configured to do:
+At the time of the failed run, the scheduler appears to have been doing exactly
+what it was configured to do:
 
 1. Select up to `DATASET_SIZE` active sites.
 2. Check that slice.
@@ -186,6 +187,11 @@ With `DATASET_SIZE=100` and `MIN_TIME_BETWEEN_ROUNDS_SEC=300`, 1,000 active
 sites require roughly 10 rounds, or about 50 minutes, before every site gets
 checked once. The benchmark's 5-minute freshness window therefore fails
 predictably.
+
+The first remediation pass changed this behavior. `DATASET_SIZE=100` is now a
+fetch page size, not a total work cap, so a 1,000-site batch should drain across
+multiple scheduler pages in one pass unless real worker, timeout, DB, or host
+pressure prevents that from happening.
 
 This is not currently evidence that the verifier hosts are overloaded. The
 benchmark targets were healthy, so verifiers should not be heavily involved in
