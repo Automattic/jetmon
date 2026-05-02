@@ -12,6 +12,7 @@ ALTER TABLE jetpack_monitor_sites
     ADD COLUMN IF NOT EXISTS ssl_expiry_date        DATE NULL,
     ADD COLUMN IF NOT EXISTS check_keyword          VARCHAR(500) NULL,
     ADD COLUMN IF NOT EXISTS forbidden_keyword      VARCHAR(500) NULL,
+    ADD COLUMN IF NOT EXISTS forbidden_keywords     JSON NULL,
     ADD COLUMN IF NOT EXISTS maintenance_start      DATETIME NULL,
     ADD COLUMN IF NOT EXISTS maintenance_end        DATETIME NULL,
     ADD COLUMN IF NOT EXISTS custom_headers         JSON NULL,

@@ -133,12 +133,12 @@ func TestGetSitesForBucketScansRowsAndDefaultRedirectPolicy(t *testing.T) {
 	rows := sqlmock.NewRows([]string{
 		"jetpack_monitor_site_id", "blog_id", "bucket_no", "monitor_url",
 		"monitor_active", "site_status", "last_status_change", "check_interval", "last_checked_at",
-		"ssl_expiry_date", "check_keyword", "forbidden_keyword", "maintenance_start", "maintenance_end",
+		"ssl_expiry_date", "check_keyword", "forbidden_keyword", "forbidden_keywords", "maintenance_start", "maintenance_end",
 		"custom_headers", "timeout_seconds", "redirect_policy", "alert_cooldown_minutes", "last_alert_sent_at",
 	}).AddRow(
 		int64(1), int64(42), 7, "https://site.example",
 		true, 1, now, 5, now,
-		nil, nil, nil, nil, nil,
+		nil, nil, nil, nil, nil, nil,
 		nil, nil, nil, nil, nil,
 	)
 	mock.ExpectQuery("SELECT").

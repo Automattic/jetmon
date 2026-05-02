@@ -9,7 +9,7 @@ import (
 func TestParseAPIBulkJSONSiteEntries(t *testing.T) {
 	entries, err := parseAPIBulkSiteEntries([]byte(`[
 		"https://example.com/",
-		{"url":"https://wordpress.com/","check_keyword":"WordPress","forbidden_keyword":"database error","redirect_policy":"follow","timeout_seconds":5}
+		{"url":"https://wordpress.com/","check_keyword":"WordPress","forbidden_keyword":"database error","forbidden_keywords":["metrics.evil-cdn.example/collect.js","buy cheap viagra"],"redirect_policy":"follow","timeout_seconds":5}
 	]`))
 	if err != nil {
 		t.Fatalf("parseAPIBulkSiteEntries() error = %v", err)
@@ -29,13 +29,16 @@ func TestParseAPIBulkJSONSiteEntries(t *testing.T) {
 	if entries[1].ForbiddenKeyword == nil || *entries[1].ForbiddenKeyword != "database error" {
 		t.Fatalf("forbidden_keyword = %#v, want database error", entries[1].ForbiddenKeyword)
 	}
+	if len(entries[1].ForbiddenKeywords) != 2 || entries[1].ForbiddenKeywords[0] != "metrics.evil-cdn.example/collect.js" {
+		t.Fatalf("forbidden_keywords = %#v", entries[1].ForbiddenKeywords)
+	}
 	if entries[1].TimeoutSeconds == nil || *entries[1].TimeoutSeconds != 5 {
 		t.Fatalf("timeout_seconds = %#v, want 5", entries[1].TimeoutSeconds)
 	}
 }
 
 func TestParseAPIBulkCSVSiteEntries(t *testing.T) {
-	source := strings.NewReader("monitor_url,check_keyword,forbidden_keyword,redirect_policy,check_interval\nhttps://example.com/,Example Domain,database error,follow,5\n")
+	source := strings.NewReader("monitor_url,check_keyword,forbidden_keyword,forbidden_keywords,redirect_policy,check_interval\nhttps://example.com/,Example Domain,database error,\"metrics.evil-cdn.example/collect.js,buy cheap viagra\",follow,5\n")
 	entries, err := loadAPIBulkSiteEntries(apiSitesBulkAddOptions{source: "stdin"}, source)
 	if err != nil {
 		t.Fatalf("loadAPIBulkSiteEntries() error = %v", err)
@@ -51,6 +54,9 @@ func TestParseAPIBulkCSVSiteEntries(t *testing.T) {
 	}
 	if entries[0].ForbiddenKeyword == nil || *entries[0].ForbiddenKeyword != "database error" {
 		t.Fatalf("forbidden_keyword = %#v, want database error", entries[0].ForbiddenKeyword)
+	}
+	if len(entries[0].ForbiddenKeywords) != 2 || entries[0].ForbiddenKeywords[1] != "buy cheap viagra" {
+		t.Fatalf("forbidden_keywords = %#v", entries[0].ForbiddenKeywords)
 	}
 	if entries[0].CheckInterval == nil || *entries[0].CheckInterval != 5 {
 		t.Fatalf("check_interval = %#v, want 5", entries[0].CheckInterval)
@@ -74,8 +80,9 @@ func TestPlanAPIBulkSiteCreatesCyclesFixtureEntries(t *testing.T) {
 	var active apiOptionalBoolFlag
 	setTestFlag(t, &active, "false")
 	forbidden := "database error"
+	forbiddenKeywords := []string{"metrics.evil-cdn.example/collect.js", "buy cheap viagra"}
 	entries := []apiBulkSiteEntry{
-		{MonitorURL: "https://example.com/", ForbiddenKeyword: &forbidden},
+		{MonitorURL: "https://example.com/", ForbiddenKeyword: &forbidden, ForbiddenKeywords: forbiddenKeywords},
 		{MonitorURL: "https://wordpress.com/"},
 	}
 	planned, err := planAPIBulkSiteCreates(entries, apiSitesBulkAddOptions{
@@ -97,6 +104,9 @@ func TestPlanAPIBulkSiteCreatesCyclesFixtureEntries(t *testing.T) {
 	}
 	if planned[2].ForbiddenKeyword == nil || *planned[2].ForbiddenKeyword != "database error" {
 		t.Fatalf("cycled forbidden_keyword = %#v, want database error", planned[2].ForbiddenKeyword)
+	}
+	if planned[2].ForbiddenKeywords == nil || len(*planned[2].ForbiddenKeywords) != 2 {
+		t.Fatalf("cycled forbidden_keywords = %#v, want two values", planned[2].ForbiddenKeywords)
 	}
 	if planned[0].MonitorActive == nil || *planned[0].MonitorActive {
 		t.Fatalf("monitor_active = %#v, want false", planned[0].MonitorActive)
@@ -145,10 +155,11 @@ func TestMarshalAPIBulkSiteRequests(t *testing.T) {
 	keyword := "Example Domain"
 	forbidden := "database error"
 	requests := []apiSiteCreateRequest{{
-		BlogID:           900,
-		MonitorURL:       "https://example.com/",
-		CheckKeyword:     &keyword,
-		ForbiddenKeyword: &forbidden,
+		BlogID:            900,
+		MonitorURL:        "https://example.com/",
+		CheckKeyword:      &keyword,
+		ForbiddenKeyword:  &forbidden,
+		ForbiddenKeywords: &[]string{"metrics.evil-cdn.example/collect.js", "buy cheap viagra"},
 	}}
 	raw, err := marshalAPIBulkSiteRequests(requests)
 	if err != nil {
@@ -167,4 +178,5 @@ func TestMarshalAPIBulkSiteRequests(t *testing.T) {
 	if got["forbidden_keyword"] != "database error" {
 		t.Fatalf("forbidden_keyword = %#v, want database error", got["forbidden_keyword"])
 	}
+	assertStringArray(t, got["forbidden_keywords"], []string{"metrics.evil-cdn.example/collect.js", "buy cheap viagra"})
 }

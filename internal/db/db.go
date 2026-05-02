@@ -29,6 +29,7 @@ type Site struct {
 	SSLExpiryDate        *time.Time
 	CheckKeyword         *string
 	ForbiddenKeyword     *string
+	ForbiddenKeywords    *string // raw JSON array
 	MaintenanceStart     *time.Time
 	MaintenanceEnd       *time.Time
 	CustomHeaders        *string // raw JSON

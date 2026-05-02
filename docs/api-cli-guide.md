@@ -163,6 +163,8 @@ maintenance windows:
   --url https://example.com/health \
   --check-keyword Example \
   --forbidden-keyword 'database error' \
+  --forbidden-keyword-list 'metrics.evil-cdn.example/collect.js' \
+  --forbidden-keyword-list 'buy cheap viagra' \
   --custom-header 'X-Jetmon-Test: api-cli' \
   --maintenance-start 2026-04-28T18:00:00Z \
   --maintenance-end 2026-04-28T19:00:00Z \
@@ -221,8 +223,10 @@ Use your own source list when needed:
 
 Accepted source formats are newline URLs, CSV with a `url` or `monitor_url`
 column, or JSON objects using fields such as `monitor_url`, `check_keyword`,
-`forbidden_keyword`, `redirect_policy`, `timeout_seconds`, `custom_headers`,
-`alert_cooldown_minutes`, and `check_interval`.
+`forbidden_keyword`, `forbidden_keywords`, `redirect_policy`,
+`timeout_seconds`, `custom_headers`, `alert_cooldown_minutes`, and
+`check_interval`. In CSV, `forbidden_keywords` is a comma-separated list inside
+one field; quote the field when a value contains commas.
 
 Clean up a batch after testing:
 

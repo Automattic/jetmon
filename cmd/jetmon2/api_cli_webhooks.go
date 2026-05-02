@@ -365,6 +365,14 @@ func (f apiStringSliceFlags) valuesOrEmpty() []string {
 	return out
 }
 
+func (f apiStringSliceFlags) ptr() *[]string {
+	if !f.set {
+		return nil
+	}
+	out := f.valuesOrEmpty()
+	return &out
+}
+
 type apiInt64SliceFlags struct {
 	values []int64
 	set    bool

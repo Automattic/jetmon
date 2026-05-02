@@ -218,13 +218,14 @@ func (s *Server) handleTriggerNow(w http.ResponseWriter, r *http.Request) {
 	}
 
 	res := checker.Check(ctx, checker.Request{
-		BlogID:           siteID,
-		URL:              site.monitorURL,
-		TimeoutSeconds:   timeoutSec,
-		Keyword:          site.checkKeywordPtr(),
-		ForbiddenKeyword: site.forbiddenKeywordPtr(),
-		CustomHeaders:    headers,
-		RedirectPolicy:   checker.RedirectPolicy(redirectPolicy),
+		BlogID:            siteID,
+		URL:               site.monitorURL,
+		TimeoutSeconds:    timeoutSec,
+		Keyword:           site.checkKeywordPtr(),
+		ForbiddenKeyword:  site.forbiddenKeywordPtr(),
+		ForbiddenKeywords: checker.ParseForbiddenKeywords(site.forbiddenKeywordsPtr()),
+		CustomHeaders:     headers,
+		RedirectPolicy:    checker.RedirectPolicy(redirectPolicy),
 	})
 
 	payload := checkResultPayload{
@@ -309,6 +310,7 @@ type siteForCheck struct {
 	timeoutSeconds    int
 	checkKeyword      sql.NullString
 	forbiddenKeyword  sql.NullString
+	forbiddenKeywords sql.NullString
 	customHeadersJSON string
 	redirectPolicy    string
 	siteStatus        int
@@ -328,6 +330,13 @@ func (s siteForCheck) forbiddenKeywordPtr() *string {
 	return &s.forbiddenKeyword.String
 }
 
+func (s siteForCheck) forbiddenKeywordsPtr() *string {
+	if !s.forbiddenKeywords.Valid || s.forbiddenKeywords.String == "" {
+		return nil
+	}
+	return &s.forbiddenKeywords.String
+}
+
 func (s siteForCheck) deriveState() string {
 	state, _ := deriveStateFromSiteStatus(s.siteStatus)
 	return state
@@ -341,11 +350,11 @@ func (s *Server) readSiteForCheck(ctx context.Context, blogID int64) (siteForChe
 		redirectPolicy sql.NullString
 	)
 	err := s.db.QueryRowContext(ctx, `
-		SELECT monitor_url, timeout_seconds, check_keyword, forbidden_keyword, custom_headers,
+		SELECT monitor_url, timeout_seconds, check_keyword, forbidden_keyword, forbidden_keywords, custom_headers,
 		       redirect_policy, site_status
 		  FROM jetpack_monitor_sites
 		 WHERE blog_id = ?`, blogID,
-	).Scan(&out.monitorURL, &timeoutSeconds, &out.checkKeyword, &out.forbiddenKeyword, &customHeaders,
+	).Scan(&out.monitorURL, &timeoutSeconds, &out.checkKeyword, &out.forbiddenKeyword, &out.forbiddenKeywords, &customHeaders,
 		&redirectPolicy, &out.siteStatus)
 	if err != nil {
 		return out, err

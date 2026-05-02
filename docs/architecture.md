@@ -399,6 +399,7 @@ Database Tables
     ssl_expiry_date       Updated after each TLS handshake
     check_keyword         Optional body text to require
     forbidden_keyword     Optional body text that must not appear
+    forbidden_keywords    JSON array of body text that must not appear
     maintenance_start/end Suppress alerts during scheduled maintenance
     custom_headers        JSON blob of extra HTTP headers
     timeout_seconds       Per-site timeout override

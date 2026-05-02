@@ -12,7 +12,7 @@ import (
 
 const siteExistsCheckSQL = `SELECT 1 FROM jetpack_monitor_sites WHERE blog_id = ? LIMIT 1`
 
-const insertSiteSQL = ` INSERT INTO jetpack_monitor_sites (blog_id, bucket_no, monitor_url, monitor_active, site_status, check_interval, check_keyword, forbidden_keyword, redirect_policy, timeout_seconds, custom_headers, alert_cooldown_minutes) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)`
+const insertSiteSQL = ` INSERT INTO jetpack_monitor_sites (blog_id, bucket_no, monitor_url, monitor_active, site_status, check_interval, check_keyword, forbidden_keyword, forbidden_keywords, redirect_policy, timeout_seconds, custom_headers, alert_cooldown_minutes) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 func newPOSTWithBody(target string, body []byte) *http.Request {
 	req := httptest.NewRequest("POST", target, bytes.NewReader(body))
@@ -45,6 +45,33 @@ func TestParseMaintenanceTime(t *testing.T) {
 	}
 }
 
+func TestEncodeForbiddenKeywords(t *testing.T) {
+	values := []string{"metrics.evil-cdn.example/collect.js", "buy cheap viagra", "buy cheap viagra"}
+	got, err := encodeForbiddenKeywords(&values)
+	if err != nil {
+		t.Fatalf("encodeForbiddenKeywords() error = %v", err)
+	}
+	if got != `["metrics.evil-cdn.example/collect.js","buy cheap viagra"]` {
+		t.Fatalf("encoded forbidden_keywords = %#v", got)
+	}
+
+	empty := []string{}
+	got, err = encodeForbiddenKeywords(&empty)
+	if err != nil {
+		t.Fatalf("encodeForbiddenKeywords(empty) error = %v", err)
+	}
+	if got != nil {
+		t.Fatalf("encodeForbiddenKeywords(empty) = %#v, want nil", got)
+	}
+}
+
+func TestEncodeForbiddenKeywordsRejectsEmptyValue(t *testing.T) {
+	values := []string{"ok", ""}
+	if _, err := encodeForbiddenKeywords(&values); err == nil {
+		t.Fatal("encodeForbiddenKeywords() error = nil, want empty value error")
+	}
+}
+
 func TestCreateSiteHappyPath(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
@@ -55,7 +82,7 @@ func TestCreateSiteHappyPath(t *testing.T) {
 	// insert
 	mock.ExpectExec(insertSiteSQL).
 		WithArgs(int64(12345), 12, "https://example.com", 1, 9,
-			nil, nil, "follow", nil, nil, nil).
+			nil, nil, nil, "follow", nil, nil, nil).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	// read-back
 	mock.ExpectQuery(singleSiteSQL).WithArgs(int64(12345)).
@@ -88,7 +115,7 @@ func TestCreateSiteWithGatewayTenantAssignsMapping(t *testing.T) {
 	mock.ExpectBegin()
 	mock.ExpectExec(insertSiteSQL).
 		WithArgs(int64(12345), 0, "https://example.com", 1, 5,
-			nil, nil, "follow", nil, nil, nil).
+			nil, nil, nil, "follow", nil, nil, nil).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(insertSiteTenantTestSQL).
 		WithArgs("tenant-a", int64(12345)).
@@ -432,6 +459,7 @@ func TestBuildUpdateSetClauseHandlesAllFields(t *testing.T) {
 	active := true
 	bucket := 5
 	keyword := "ok"
+	forbiddenKeywords := []string{"metrics.evil-cdn.example/collect.js", "buy cheap viagra"}
 	policy := "alert"
 	timeout := 30
 	headers := map[string]string{"X-A": "1"}
@@ -442,6 +470,7 @@ func TestBuildUpdateSetClauseHandlesAllFields(t *testing.T) {
 		MonitorActive:        &active,
 		BucketNo:             &bucket,
 		CheckKeyword:         &keyword,
+		ForbiddenKeywords:    &forbiddenKeywords,
 		RedirectPolicy:       &policy,
 		TimeoutSeconds:       &timeout,
 		CustomHeaders:        &headers,
@@ -451,7 +480,7 @@ func TestBuildUpdateSetClauseHandlesAllFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	if len(clauses) != 9 || len(args) != 9 {
-		t.Errorf("expected 9 clauses, got clauses=%d args=%d", len(clauses), len(args))
+	if len(clauses) != 10 || len(args) != 10 {
+		t.Errorf("expected 10 clauses, got clauses=%d args=%d", len(clauses), len(args))
 	}
 }

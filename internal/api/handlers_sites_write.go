@@ -22,6 +22,11 @@ var validRedirectPolicies = map[string]struct{}{
 	"fail":   {},
 }
 
+const (
+	maxForbiddenKeywords     = 20
+	maxForbiddenKeywordBytes = 500
+)
+
 // createSiteRequest is the body shape for POST /api/v1/sites.
 //
 // Fields use pointers where "absent in JSON" needs to be distinguishable
@@ -36,6 +41,7 @@ type createSiteRequest struct {
 	BucketNo             *int               `json:"bucket_no"`
 	CheckKeyword         *string            `json:"check_keyword"`
 	ForbiddenKeyword     *string            `json:"forbidden_keyword"`
+	ForbiddenKeywords    *[]string          `json:"forbidden_keywords"`
 	RedirectPolicy       *string            `json:"redirect_policy"`
 	TimeoutSeconds       *int               `json:"timeout_seconds"`
 	CustomHeaders        *map[string]string `json:"custom_headers"`
@@ -115,11 +121,18 @@ func (s *Server) handleCreateSite(w http.ResponseWriter, r *http.Request) {
 			err.Error())
 		return
 	}
+	forbiddenKeywordsJSON, err := encodeForbiddenKeywords(body.ForbiddenKeywords)
+	if err != nil {
+		writeError(w, r, http.StatusUnprocessableEntity, "invalid_forbidden_keywords",
+			err.Error())
+		return
+	}
 
 	insertArgs := []any{
 		*body.BlogID, bucketNo, body.MonitorURL, boolToTinyint(monitorActive), checkInterval,
 		nullableStringPtr(body.CheckKeyword),
 		nullableStringPtr(body.ForbiddenKeyword),
+		forbiddenKeywordsJSON,
 		redirectPolicy,
 		nullableIntPtr(body.TimeoutSeconds),
 		customHeadersJSON,
@@ -136,9 +149,9 @@ func (s *Server) handleCreateSite(w http.ResponseWriter, r *http.Request) {
 		if _, err := tx.ExecContext(ctx, `
 		INSERT INTO jetpack_monitor_sites
 			(blog_id, bucket_no, monitor_url, monitor_active, site_status, check_interval,
-			 check_keyword, forbidden_keyword, redirect_policy, timeout_seconds, custom_headers,
+			 check_keyword, forbidden_keyword, forbidden_keywords, redirect_policy, timeout_seconds, custom_headers,
 			 alert_cooldown_minutes)
-		VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)`, insertArgs...); err != nil {
+		VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)`, insertArgs...); err != nil {
 			writeError(w, r, http.StatusInternalServerError, "db_error",
 				"site insert failed: "+err.Error())
 			return
@@ -156,9 +169,9 @@ func (s *Server) handleCreateSite(w http.ResponseWriter, r *http.Request) {
 	} else if _, err = s.db.ExecContext(ctx, `
 		INSERT INTO jetpack_monitor_sites
 			(blog_id, bucket_no, monitor_url, monitor_active, site_status, check_interval,
-			 check_keyword, forbidden_keyword, redirect_policy, timeout_seconds, custom_headers,
+			 check_keyword, forbidden_keyword, forbidden_keywords, redirect_policy, timeout_seconds, custom_headers,
 			 alert_cooldown_minutes)
-		VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		insertArgs...); err != nil {
 		writeError(w, r, http.StatusInternalServerError, "db_error",
 			"site insert failed: "+err.Error())
@@ -184,6 +197,7 @@ type updateSiteRequest struct {
 	BucketNo             *int               `json:"bucket_no"`
 	CheckKeyword         *string            `json:"check_keyword"`
 	ForbiddenKeyword     *string            `json:"forbidden_keyword"`
+	ForbiddenKeywords    *[]string          `json:"forbidden_keywords"`
 	RedirectPolicy       *string            `json:"redirect_policy"`
 	TimeoutSeconds       *int               `json:"timeout_seconds"`
 	CustomHeaders        *map[string]string `json:"custom_headers"`
@@ -540,6 +554,40 @@ func encodeCustomHeaders(h *map[string]string) (any, error) {
 	return string(b), nil
 }
 
+// encodeForbiddenKeywords marshals explicit bad-content body strings into the
+// JSON array stored in forbidden_keywords. Empty arrays clear the column.
+func encodeForbiddenKeywords(values *[]string) (any, error) {
+	if values == nil || len(*values) == 0 {
+		return nil, nil
+	}
+	if len(*values) > maxForbiddenKeywords {
+		return nil, fmt.Errorf("forbidden_keywords supports at most %d entries", maxForbiddenKeywords)
+	}
+	out := make([]string, 0, len(*values))
+	seen := make(map[string]struct{}, len(*values))
+	for _, value := range *values {
+		if value == "" {
+			return nil, errors.New("forbidden_keywords must not contain empty strings")
+		}
+		if len([]byte(value)) > maxForbiddenKeywordBytes {
+			return nil, fmt.Errorf("forbidden_keywords entries must be %d bytes or fewer", maxForbiddenKeywordBytes)
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return nil, fmt.Errorf("encode forbidden_keywords: %v", err)
+	}
+	return string(b), nil
+}
+
 // buildUpdateSetClause turns a sparse updateSiteRequest into SQL fragments.
 // Returned slices are aligned: setClauses[i] applies args[i].
 func buildUpdateSetClause(body updateSiteRequest) ([]string, []any, error) {
@@ -566,6 +614,14 @@ func buildUpdateSetClause(body updateSiteRequest) ([]string, []any, error) {
 	if body.ForbiddenKeyword != nil {
 		clauses = append(clauses, "forbidden_keyword = ?")
 		args = append(args, nullableEmpty(*body.ForbiddenKeyword))
+	}
+	if body.ForbiddenKeywords != nil {
+		v, err := encodeForbiddenKeywords(body.ForbiddenKeywords)
+		if err != nil {
+			return nil, nil, err
+		}
+		clauses = append(clauses, "forbidden_keywords = ?")
+		args = append(args, v)
 	}
 	if body.RedirectPolicy != nil {
 		clauses = append(clauses, "redirect_policy = ?")

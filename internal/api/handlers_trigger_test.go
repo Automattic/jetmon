@@ -9,7 +9,9 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
-const readSiteForCheckSQL = ` SELECT monitor_url, timeout_seconds, check_keyword, forbidden_keyword, custom_headers, redirect_policy, site_status FROM jetpack_monitor_sites WHERE blog_id = ?`
+const readSiteForCheckSQL = ` SELECT monitor_url, timeout_seconds, check_keyword, forbidden_keyword, forbidden_keywords, custom_headers, redirect_policy, site_status FROM jetpack_monitor_sites WHERE blog_id = ?`
+
+var columnsSiteForCheck = []string{"monitor_url", "timeout_seconds", "check_keyword", "forbidden_keyword", "forbidden_keywords", "custom_headers", "redirect_policy", "site_status"}
 
 func TestTriggerNowSiteNotFound(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
@@ -17,7 +19,7 @@ func TestTriggerNowSiteNotFound(t *testing.T) {
 
 	// readSiteForCheck returns no rows.
 	mock.ExpectQuery(readSiteForCheckSQL).WithArgs(int64(99)).
-		WillReturnRows(sqlmock.NewRows([]string{"monitor_url", "timeout_seconds", "check_keyword", "forbidden_keyword", "custom_headers", "redirect_policy", "site_status"}))
+		WillReturnRows(sqlmock.NewRows(columnsSiteForCheck))
 
 	req := httptest.NewRequest("POST", "/api/v1/sites/99/trigger-now", nil)
 	req.SetPathValue("id", "99")
@@ -44,8 +46,8 @@ func TestTriggerNowSuccessNoActiveEvents(t *testing.T) {
 	defer cleanup()
 
 	mock.ExpectQuery(readSiteForCheckSQL).WithArgs(int64(42)).
-		WillReturnRows(sqlmock.NewRows([]string{"monitor_url", "timeout_seconds", "check_keyword", "forbidden_keyword", "custom_headers", "redirect_policy", "site_status"}).
-			AddRow(target.URL, nil, nil, nil, nil, "follow", 1))
+		WillReturnRows(sqlmock.NewRows(columnsSiteForCheck).
+			AddRow(target.URL, nil, nil, nil, nil, nil, "follow", 1))
 	mock.ExpectQuery(`SELECT id FROM jetmon_events WHERE blog_id = ? AND ended_at IS NULL`).
 		WithArgs(int64(42)).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
@@ -82,8 +84,8 @@ func TestTriggerNowForbiddenKeywordFailsCheck(t *testing.T) {
 	defer cleanup()
 
 	mock.ExpectQuery(readSiteForCheckSQL).WithArgs(int64(42)).
-		WillReturnRows(sqlmock.NewRows([]string{"monitor_url", "timeout_seconds", "check_keyword", "forbidden_keyword", "custom_headers", "redirect_policy", "site_status"}).
-			AddRow(target.URL, nil, nil, "FORBIDDEN", nil, "follow", 1))
+		WillReturnRows(sqlmock.NewRows(columnsSiteForCheck).
+			AddRow(target.URL, nil, nil, "FORBIDDEN", nil, nil, "follow", 1))
 
 	req := httptest.NewRequest("POST", "/api/v1/sites/42/trigger-now", nil)
 	req.SetPathValue("id", "42")
@@ -119,8 +121,8 @@ func TestTriggerNowWithGatewayTenantAllowsMappedSite(t *testing.T) {
 		WithArgs("tenant-a", int64(42)).
 		WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
 	mock.ExpectQuery(readSiteForCheckSQL).WithArgs(int64(42)).
-		WillReturnRows(sqlmock.NewRows([]string{"monitor_url", "timeout_seconds", "check_keyword", "forbidden_keyword", "custom_headers", "redirect_policy", "site_status"}).
-			AddRow(target.URL, nil, nil, nil, nil, "follow", 1))
+		WillReturnRows(sqlmock.NewRows(columnsSiteForCheck).
+			AddRow(target.URL, nil, nil, nil, nil, nil, "follow", 1))
 	mock.ExpectQuery(`SELECT id FROM jetmon_events WHERE blog_id = ? AND ended_at IS NULL`).
 		WithArgs(int64(42)).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
@@ -155,8 +157,8 @@ func TestTriggerNowSuccessClosesActiveEvent(t *testing.T) {
 	defer cleanup()
 
 	mock.ExpectQuery(readSiteForCheckSQL).WithArgs(int64(42)).
-		WillReturnRows(sqlmock.NewRows([]string{"monitor_url", "timeout_seconds", "check_keyword", "forbidden_keyword", "custom_headers", "redirect_policy", "site_status"}).
-			AddRow(target.URL, nil, nil, nil, nil, "follow", 2))
+		WillReturnRows(sqlmock.NewRows(columnsSiteForCheck).
+			AddRow(target.URL, nil, nil, nil, nil, nil, "follow", 2))
 	mock.ExpectQuery(`SELECT id FROM jetmon_events WHERE blog_id = ? AND ended_at IS NULL`).
 		WithArgs(int64(42)).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(7)))
