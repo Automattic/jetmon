@@ -34,6 +34,7 @@ type apiBulkSiteEntry struct {
 	MonitorURL           string            `json:"monitor_url"`
 	CheckKeyword         *string           `json:"check_keyword,omitempty"`
 	ForbiddenKeyword     *string           `json:"forbidden_keyword,omitempty"`
+	ForbiddenKeywords    []string          `json:"forbidden_keywords,omitempty"`
 	RedirectPolicy       *string           `json:"redirect_policy,omitempty"`
 	TimeoutSeconds       *int              `json:"timeout_seconds,omitempty"`
 	CustomHeaders        map[string]string `json:"custom_headers,omitempty"`
@@ -258,6 +259,9 @@ func apiBulkSiteEntryFromCSVRecord(header map[string]int, record []string) (apiB
 	if v := csvField(header, record, "forbidden_keyword"); v != "" {
 		entry.ForbiddenKeyword = &v
 	}
+	if v := csvField(header, record, "forbidden_keywords"); v != "" {
+		entry.ForbiddenKeywords = splitAPIBulkStringList(v)
+	}
 	if v := csvField(header, record, "redirect_policy"); v != "" {
 		entry.RedirectPolicy = &v
 	}
@@ -325,6 +329,7 @@ func planAPIBulkSiteCreates(entries []apiBulkSiteEntry, opts apiSitesBulkAddOpti
 			MonitorActive:        opts.monitorActive.ptr(),
 			CheckKeyword:         entry.CheckKeyword,
 			ForbiddenKeyword:     entry.ForbiddenKeyword,
+			ForbiddenKeywords:    forbiddenKeywordsPtr(entry.ForbiddenKeywords),
 			RedirectPolicy:       entry.RedirectPolicy,
 			TimeoutSeconds:       entry.TimeoutSeconds,
 			AlertCooldownMinutes: entry.AlertCooldownMinutes,
@@ -355,6 +360,27 @@ func marshalAPIBulkSiteRequests(requests []apiSiteCreateRequest) ([]json.RawMess
 		out = append(out, json.RawMessage(b))
 	}
 	return out, nil
+}
+
+func splitAPIBulkStringList(raw string) []string {
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func forbiddenKeywordsPtr(values []string) *[]string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, len(values))
+	copy(out, values)
+	return &out
 }
 
 func (e *apiBulkSiteEntry) UnmarshalJSON(data []byte) error {

@@ -21,24 +21,25 @@ const cliBatchHeader = "X-Jetmon-CLI-Batch"
 // Field ordering kept human-friendly (id and url first, configuration fields
 // after, computed fields last). See docs/internal-api-reference.md "Family 1: Sites and current state".
 type siteResponse struct {
-	ID                   int64   `json:"id"`
-	BlogID               int64   `json:"blog_id"`
-	MonitorURL           string  `json:"monitor_url"`
-	MonitorActive        bool    `json:"monitor_active"`
-	BucketNo             int     `json:"bucket_no"`
-	CheckInterval        int     `json:"check_interval"`
-	CurrentState         string  `json:"current_state"`
-	CurrentSeverity      uint8   `json:"current_severity"`
-	ActiveEventID        *int64  `json:"active_event_id"`
-	LastCheckedAt        *string `json:"last_checked_at"`
-	LastStatusChangeAt   *string `json:"last_status_change_at"`
-	SSLExpiryDate        *string `json:"ssl_expiry_date"`
-	CheckKeyword         *string `json:"check_keyword"`
-	ForbiddenKeyword     *string `json:"forbidden_keyword"`
-	RedirectPolicy       string  `json:"redirect_policy"`
-	MaintenanceStart     *string `json:"maintenance_start"`
-	MaintenanceEnd       *string `json:"maintenance_end"`
-	AlertCooldownMinutes *int    `json:"alert_cooldown_minutes"`
+	ID                   int64    `json:"id"`
+	BlogID               int64    `json:"blog_id"`
+	MonitorURL           string   `json:"monitor_url"`
+	MonitorActive        bool     `json:"monitor_active"`
+	BucketNo             int      `json:"bucket_no"`
+	CheckInterval        int      `json:"check_interval"`
+	CurrentState         string   `json:"current_state"`
+	CurrentSeverity      uint8    `json:"current_severity"`
+	ActiveEventID        *int64   `json:"active_event_id"`
+	LastCheckedAt        *string  `json:"last_checked_at"`
+	LastStatusChangeAt   *string  `json:"last_status_change_at"`
+	SSLExpiryDate        *string  `json:"ssl_expiry_date"`
+	CheckKeyword         *string  `json:"check_keyword"`
+	ForbiddenKeyword     *string  `json:"forbidden_keyword"`
+	ForbiddenKeywords    []string `json:"forbidden_keywords"`
+	RedirectPolicy       string   `json:"redirect_policy"`
+	MaintenanceStart     *string  `json:"maintenance_start"`
+	MaintenanceEnd       *string  `json:"maintenance_end"`
+	AlertCooldownMinutes *int     `json:"alert_cooldown_minutes"`
 	cliBatch             string
 }
 
@@ -304,6 +305,7 @@ func siteSelectColumns(prefix string, includeCLIMetadata bool) string {
 		prefix + "ssl_expiry_date",
 		prefix + "check_keyword",
 		prefix + "forbidden_keyword",
+		prefix + "forbidden_keywords",
 		prefix + "redirect_policy",
 		prefix + "maintenance_start",
 		prefix + "maintenance_end",
@@ -442,23 +444,24 @@ type rowScanner interface {
 // fallback for sites with no active v2 event during the shadow migration.
 func scanSiteRow(s rowScanner, includeCLIMetadata bool) (siteResponse, error) {
 	var (
-		out              siteResponse
-		monitorActive    uint8
-		siteStatus       int
-		lastCheckedAt    sql.NullTime
-		lastStatusChg    sql.NullTime
-		sslExpiry        sql.NullTime
-		checkKeyword     sql.NullString
-		forbiddenKeyword sql.NullString
-		redirectPolicy   sql.NullString
-		maintStart       sql.NullTime
-		maintEnd         sql.NullTime
-		alertCooldown    sql.NullInt64
+		out               siteResponse
+		monitorActive     uint8
+		siteStatus        int
+		lastCheckedAt     sql.NullTime
+		lastStatusChg     sql.NullTime
+		sslExpiry         sql.NullTime
+		checkKeyword      sql.NullString
+		forbiddenKeyword  sql.NullString
+		forbiddenKeywords sql.NullString
+		redirectPolicy    sql.NullString
+		maintStart        sql.NullTime
+		maintEnd          sql.NullTime
+		alertCooldown     sql.NullInt64
 	)
 	dest := []any{
 		&out.ID, &out.BlogID, &out.MonitorURL, &monitorActive,
 		&out.BucketNo, &out.CheckInterval, &siteStatus,
-		&lastCheckedAt, &lastStatusChg, &sslExpiry, &checkKeyword, &forbiddenKeyword,
+		&lastCheckedAt, &lastStatusChg, &sslExpiry, &checkKeyword, &forbiddenKeyword, &forbiddenKeywords,
 		&redirectPolicy, &maintStart, &maintEnd, &alertCooldown,
 	}
 	var customHeaders sql.NullString
@@ -491,6 +494,13 @@ func scanSiteRow(s rowScanner, includeCLIMetadata bool) (siteResponse, error) {
 	}
 	if forbiddenKeyword.Valid {
 		out.ForbiddenKeyword = &forbiddenKeyword.String
+	}
+	if forbiddenKeywords.Valid {
+		keywords, err := decodeForbiddenKeywords(forbiddenKeywords.String)
+		if err != nil {
+			return out, fmt.Errorf("decode forbidden_keywords: %w", err)
+		}
+		out.ForbiddenKeywords = keywords
 	}
 	if redirectPolicy.Valid {
 		out.RedirectPolicy = redirectPolicy.String
@@ -529,6 +539,20 @@ func cliBatchFromCustomHeaders(raw string) string {
 		}
 	}
 	return ""
+}
+
+func decodeForbiddenKeywords(raw string) ([]string, error) {
+	var values []string
+	if err := json.Unmarshal([]byte(raw), &values); err != nil {
+		return nil, err
+	}
+	out := values[:0]
+	for _, value := range values {
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return out, nil
 }
 
 // deriveStateFromSiteStatus maps the v1 site_status integer to the v2

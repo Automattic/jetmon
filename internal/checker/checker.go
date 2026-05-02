@@ -41,13 +41,14 @@ const (
 
 // Request holds the parameters for a single HTTP check.
 type Request struct {
-	BlogID           int64
-	URL              string
-	TimeoutSeconds   int
-	Keyword          *string
-	ForbiddenKeyword *string
-	CustomHeaders    map[string]string
-	RedirectPolicy   RedirectPolicy
+	BlogID            int64
+	URL               string
+	TimeoutSeconds    int
+	Keyword           *string
+	ForbiddenKeyword  *string
+	ForbiddenKeywords []string
+	CustomHeaders     map[string]string
+	RedirectPolicy    RedirectPolicy
 }
 
 // Result holds the outcome of a single HTTP check.
@@ -248,8 +249,8 @@ func Check(ctx context.Context, req Request) Result {
 		res.RedirectChanged = true
 	}
 
-	needsBody := (req.Keyword != nil && *req.Keyword != "") ||
-		(req.ForbiddenKeyword != nil && *req.ForbiddenKeyword != "")
+	forbiddenKeywords := collectForbiddenKeywords(req.ForbiddenKeyword, req.ForbiddenKeywords)
+	needsBody := (req.Keyword != nil && *req.Keyword != "") || len(forbiddenKeywords) > 0
 	body, bodyErr := readResponseBody(resp, needsBody)
 	if bodyErr != nil && res.HTTPCode < http.StatusBadRequest {
 		res.ErrorCode = ErrorBodyRead
@@ -265,10 +266,12 @@ func Check(ctx context.Context, req Request) Result {
 			return res
 		}
 	}
-	if req.ForbiddenKeyword != nil && *req.ForbiddenKeyword != "" && strings.Contains(bodyText, *req.ForbiddenKeyword) {
-		res.KeywordRule = "forbidden"
-		res.ErrorCode = ErrorKeyword
-		return res
+	for _, keyword := range forbiddenKeywords {
+		if strings.Contains(bodyText, keyword) {
+			res.KeywordRule = "forbidden"
+			res.ErrorCode = ErrorKeyword
+			return res
+		}
 	}
 
 	res.Success = res.HTTPCode > 0 && res.HTTPCode < 400
@@ -296,6 +299,19 @@ func readResponseBody(resp *http.Response, needKeyword bool) ([]byte, error) {
 	return body, nil
 }
 
+func collectForbiddenKeywords(single *string, many []string) []string {
+	out := make([]string, 0, 1+len(many))
+	if single != nil && *single != "" {
+		out = append(out, *single)
+	}
+	for _, keyword := range many {
+		if keyword != "" {
+			out = append(out, keyword)
+		}
+	}
+	return out
+}
+
 // ParseCustomHeaders deserialises a JSON custom headers string into a map.
 func ParseCustomHeaders(raw *string) map[string]string {
 	if raw == nil || *raw == "" {
@@ -304,4 +320,23 @@ func ParseCustomHeaders(raw *string) map[string]string {
 	var m map[string]string
 	_ = json.Unmarshal([]byte(*raw), &m)
 	return m
+}
+
+// ParseForbiddenKeywords deserialises a JSON array of body strings that must
+// not appear in the response.
+func ParseForbiddenKeywords(raw *string) []string {
+	if raw == nil || *raw == "" {
+		return nil
+	}
+	var values []string
+	if err := json.Unmarshal([]byte(*raw), &values); err != nil {
+		return nil
+	}
+	out := values[:0]
+	for _, value := range values {
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }

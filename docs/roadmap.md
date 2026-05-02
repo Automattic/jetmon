@@ -33,11 +33,11 @@ No active candidate branch is queued here right now.
 
 ### Uptime-Bench Scenario Coverage TODO
 
-- [ ] Wire uptime-bench's inverted keyword scenarios through Jetmon v2's
+- [x] Wire uptime-bench's inverted keyword scenarios through Jetmon v2's
   existing `forbidden_keyword` support so cases such as
   `content-keyword-injected` can be provisioned and scored instead of skipped
   or reported as unsupported adapter capability.
-- [ ] Add multi-pattern body-content checks for scenarios where the page still
+- [x] Add multi-pattern body-content checks for scenarios where the page still
   contains the required canary but also includes known-bad content, such as
   injected scripts, spam links, parked-domain text, maintenance banners, and
   upstream error templates. Keep this distinct from broad visual/content

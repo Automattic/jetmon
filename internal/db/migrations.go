@@ -448,6 +448,13 @@ var migrations = []migration{
 	// the HEAD-only behavior that caused v1 false positives and false negatives.
 	{28, `ALTER TABLE jetmon_check_history
 		ADD COLUMN request_method VARCHAR(16) NOT NULL DEFAULT 'GET' AFTER blog_id`},
+
+	// Migration 29 adds an array form for explicit forbidden body-content
+	// checks. forbidden_keyword remains for compatibility and simple one-off
+	// rules; forbidden_keywords lets operators provision multiple known-bad
+	// strings without overloading one column.
+	{29, `ALTER TABLE jetpack_monitor_sites
+		ADD COLUMN forbidden_keywords JSON NULL AFTER forbidden_keyword`},
 }
 
 // Migrate applies all pending migrations idempotently.

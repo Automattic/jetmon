@@ -32,6 +32,7 @@ Jetmon 2 adds these columns:
 | `ssl_expiry_date` | `DATE NULL` | Last observed HTTPS certificate expiry |
 | `check_keyword` | `VARCHAR(500) NULL` | Required response-body string |
 | `forbidden_keyword` | `VARCHAR(500) NULL` | Response-body string that must not appear |
+| `forbidden_keywords` | `JSON NULL` | Response-body strings that must not appear |
 | `maintenance_start` | `DATETIME NULL` | Maintenance window start |
 | `maintenance_end` | `DATETIME NULL` | Maintenance window end |
 | `custom_headers` | `JSON NULL` | Per-site request headers |

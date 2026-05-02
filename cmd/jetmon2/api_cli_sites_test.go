@@ -69,14 +69,18 @@ func TestMarshalAPISiteCreateBody(t *testing.T) {
 	setTestFlag(t, &redirect, "alert")
 	var headers apiStringMapFlags
 	setTestFlag(t, &headers, "X-Jetmon-Test: yes")
+	var forbiddenKeywords apiStringSliceFlags
+	setTestFlag(t, &forbiddenKeywords, "metrics.evil-cdn.example/collect.js")
+	setTestFlag(t, &forbiddenKeywords, "buy cheap viagra")
 
 	body, err := marshalAPISiteCreateBody(apiSiteCreateOptions{
-		blogID:         12345,
-		monitorURL:     "https://example.com",
-		monitorActive:  active,
-		bucketNo:       bucket,
-		redirectPolicy: redirect,
-		customHeaders:  headers,
+		blogID:            12345,
+		monitorURL:        "https://example.com",
+		monitorActive:     active,
+		bucketNo:          bucket,
+		forbiddenKeywords: forbiddenKeywords,
+		redirectPolicy:    redirect,
+		customHeaders:     headers,
 	})
 	if err != nil {
 		t.Fatalf("marshalAPISiteCreateBody() error = %v", err)
@@ -100,6 +104,7 @@ func TestMarshalAPISiteCreateBody(t *testing.T) {
 	if got["redirect_policy"] != "alert" {
 		t.Fatalf("redirect_policy = %#v, want alert", got["redirect_policy"])
 	}
+	assertStringArray(t, got["forbidden_keywords"], []string{"metrics.evil-cdn.example/collect.js", "buy cheap viagra"})
 	custom, ok := got["custom_headers"].(map[string]any)
 	if !ok {
 		t.Fatalf("custom_headers = %#v, want object", got["custom_headers"])
@@ -116,9 +121,10 @@ func TestMarshalAPISiteUpdateBodySupportsClears(t *testing.T) {
 	setTestFlag(t, &maintenanceEnd, "")
 
 	body, err := marshalAPISiteUpdateBody(apiSiteUpdateOptions{
-		checkKeyword:       keyword,
-		clearCustomHeaders: true,
-		maintenanceEnd:     maintenanceEnd,
+		checkKeyword:           keyword,
+		clearCustomHeaders:     true,
+		clearForbiddenKeywords: true,
+		maintenanceEnd:         maintenanceEnd,
 	})
 	if err != nil {
 		t.Fatalf("marshalAPISiteUpdateBody() error = %v", err)
@@ -140,6 +146,7 @@ func TestMarshalAPISiteUpdateBodySupportsClears(t *testing.T) {
 	if len(custom) != 0 {
 		t.Fatalf("custom_headers = %#v, want empty object", custom)
 	}
+	assertStringArray(t, got["forbidden_keywords"], []string{})
 }
 
 func TestMarshalAPISiteUpdateBodyRejectsCustomHeaderConflict(t *testing.T) {
@@ -148,6 +155,18 @@ func TestMarshalAPISiteUpdateBodyRejectsCustomHeaderConflict(t *testing.T) {
 	_, err := marshalAPISiteUpdateBody(apiSiteUpdateOptions{
 		customHeaders:      headers,
 		clearCustomHeaders: true,
+	})
+	if err == nil {
+		t.Fatal("marshalAPISiteUpdateBody() error = nil, want conflict error")
+	}
+}
+
+func TestMarshalAPISiteUpdateBodyRejectsForbiddenKeywordConflict(t *testing.T) {
+	var forbiddenKeywords apiStringSliceFlags
+	setTestFlag(t, &forbiddenKeywords, "bad")
+	_, err := marshalAPISiteUpdateBody(apiSiteUpdateOptions{
+		forbiddenKeywords:      forbiddenKeywords,
+		clearForbiddenKeywords: true,
 	})
 	if err == nil {
 		t.Fatal("marshalAPISiteUpdateBody() error = nil, want conflict error")
