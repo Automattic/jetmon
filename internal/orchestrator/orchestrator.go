@@ -252,12 +252,13 @@ func (o *Orchestrator) runRound() {
 		}
 
 		req := checker.Request{
-			BlogID:         site.BlogID,
-			URL:            site.MonitorURL,
-			TimeoutSeconds: timeout,
-			Keyword:        site.CheckKeyword,
-			CustomHeaders:  checker.ParseCustomHeaders(site.CustomHeaders),
-			RedirectPolicy: checker.RedirectPolicy(site.RedirectPolicy),
+			BlogID:           site.BlogID,
+			URL:              site.MonitorURL,
+			TimeoutSeconds:   timeout,
+			Keyword:          site.CheckKeyword,
+			ForbiddenKeyword: site.ForbiddenKeyword,
+			CustomHeaders:    checker.ParseCustomHeaders(site.CustomHeaders),
+			RedirectPolicy:   checker.RedirectPolicy(site.RedirectPolicy),
 		}
 		if req.RedirectPolicy == "" {
 			req.RedirectPolicy = checker.RedirectFollow
@@ -476,13 +477,14 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 	}
 
 	req := veriflier.CheckRequest{
-		BlogID:         site.BlogID,
-		URL:            site.MonitorURL,
-		TimeoutSeconds: int32(timeoutForSite(config.Get(), site)),
-		Keyword:        stringPtrValue(site.CheckKeyword),
-		CustomHeaders:  checker.ParseCustomHeaders(site.CustomHeaders),
-		RedirectPolicy: site.RedirectPolicy,
-		RequestID:      veriflier.NewRequestID(),
+		BlogID:           site.BlogID,
+		URL:              site.MonitorURL,
+		TimeoutSeconds:   int32(timeoutForSite(config.Get(), site)),
+		Keyword:          stringPtrValue(site.CheckKeyword),
+		ForbiddenKeyword: stringPtrValue(site.ForbiddenKeyword),
+		CustomHeaders:    checker.ParseCustomHeaders(site.CustomHeaders),
+		RedirectPolicy:   site.RedirectPolicy,
+		RequestID:        veriflier.NewRequestID(),
 	}
 
 	escalateMeta, _ := json.Marshal(map[string]any{
@@ -1104,11 +1106,12 @@ func (o *Orchestrator) openSeemsDown(site db.Site, res checker.Result) (int64, e
 	defer func() { _ = tx.Rollback() }()
 
 	meta, _ := json.Marshal(map[string]any{
-		"http_code":  res.HTTPCode,
-		"error_code": res.ErrorCode,
-		"method":     res.Method,
-		"rtt_ms":     res.RTT.Milliseconds(),
-		"url":        site.MonitorURL,
+		"http_code":    res.HTTPCode,
+		"error_code":   res.ErrorCode,
+		"keyword_rule": res.KeywordRule,
+		"method":       res.Method,
+		"rtt_ms":       res.RTT.Milliseconds(),
+		"url":          site.MonitorURL,
 	})
 
 	out, err := tx.Open(o.ctx, eventstore.OpenInput{

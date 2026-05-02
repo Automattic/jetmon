@@ -360,6 +360,43 @@ func TestCheckKeywordMiss(t *testing.T) {
 	if res.ErrorCode != ErrorKeyword {
 		t.Fatalf("ErrorCode = %d, want ErrorKeyword", res.ErrorCode)
 	}
+	if res.KeywordRule != "required" {
+		t.Fatalf("KeywordRule = %q, want required", res.KeywordRule)
+	}
+}
+
+func TestCheckForbiddenKeywordAbsent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("hello world"))
+	}))
+	defer srv.Close()
+
+	forbidden := "malware"
+	res := Check(context.Background(), Request{BlogID: 1, URL: srv.URL, TimeoutSeconds: 5, ForbiddenKeyword: &forbidden})
+	if !res.Success {
+		t.Fatalf("Success = false when forbidden keyword absent, want true; result=%+v", res)
+	}
+}
+
+func TestCheckForbiddenKeywordPresent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("hello malware world"))
+	}))
+	defer srv.Close()
+
+	forbidden := "malware"
+	res := Check(context.Background(), Request{BlogID: 1, URL: srv.URL, TimeoutSeconds: 5, ForbiddenKeyword: &forbidden})
+	if res.Success {
+		t.Fatal("Success = true for forbidden keyword present, want false")
+	}
+	if res.ErrorCode != ErrorKeyword {
+		t.Fatalf("ErrorCode = %d, want ErrorKeyword", res.ErrorCode)
+	}
+	if res.KeywordRule != "forbidden" {
+		t.Fatalf("KeywordRule = %q, want forbidden", res.KeywordRule)
+	}
 }
 
 func TestCheckTruncatedBodyFailsWithoutKeyword(t *testing.T) {

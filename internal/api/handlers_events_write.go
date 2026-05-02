@@ -218,12 +218,13 @@ func (s *Server) handleTriggerNow(w http.ResponseWriter, r *http.Request) {
 	}
 
 	res := checker.Check(ctx, checker.Request{
-		BlogID:         siteID,
-		URL:            site.monitorURL,
-		TimeoutSeconds: timeoutSec,
-		Keyword:        site.checkKeywordPtr(),
-		CustomHeaders:  headers,
-		RedirectPolicy: checker.RedirectPolicy(redirectPolicy),
+		BlogID:           siteID,
+		URL:              site.monitorURL,
+		TimeoutSeconds:   timeoutSec,
+		Keyword:          site.checkKeywordPtr(),
+		ForbiddenKeyword: site.forbiddenKeywordPtr(),
+		CustomHeaders:    headers,
+		RedirectPolicy:   checker.RedirectPolicy(redirectPolicy),
 	})
 
 	payload := checkResultPayload{
@@ -307,6 +308,7 @@ type siteForCheck struct {
 	monitorURL        string
 	timeoutSeconds    int
 	checkKeyword      sql.NullString
+	forbiddenKeyword  sql.NullString
 	customHeadersJSON string
 	redirectPolicy    string
 	siteStatus        int
@@ -317,6 +319,13 @@ func (s siteForCheck) checkKeywordPtr() *string {
 		return nil
 	}
 	return &s.checkKeyword.String
+}
+
+func (s siteForCheck) forbiddenKeywordPtr() *string {
+	if !s.forbiddenKeyword.Valid || s.forbiddenKeyword.String == "" {
+		return nil
+	}
+	return &s.forbiddenKeyword.String
 }
 
 func (s siteForCheck) deriveState() string {
@@ -332,11 +341,11 @@ func (s *Server) readSiteForCheck(ctx context.Context, blogID int64) (siteForChe
 		redirectPolicy sql.NullString
 	)
 	err := s.db.QueryRowContext(ctx, `
-		SELECT monitor_url, timeout_seconds, check_keyword, custom_headers,
+		SELECT monitor_url, timeout_seconds, check_keyword, forbidden_keyword, custom_headers,
 		       redirect_policy, site_status
 		  FROM jetpack_monitor_sites
 		 WHERE blog_id = ?`, blogID,
-	).Scan(&out.monitorURL, &timeoutSeconds, &out.checkKeyword, &customHeaders,
+	).Scan(&out.monitorURL, &timeoutSeconds, &out.checkKeyword, &out.forbiddenKeyword, &customHeaders,
 		&redirectPolicy, &out.siteStatus)
 	if err != nil {
 		return out, err

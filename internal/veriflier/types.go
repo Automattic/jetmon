@@ -11,13 +11,14 @@ package veriflier
 // that "the orchestrator escalated → this verifier observed → this audit row
 // in the monitor DB" can be reconstructed without timestamp matching.
 type CheckRequest struct {
-	BlogID         int64
-	URL            string
-	TimeoutSeconds int32
-	Keyword        string
-	CustomHeaders  map[string]string
-	RedirectPolicy string
-	RequestID      string
+	BlogID           int64
+	URL              string
+	TimeoutSeconds   int32
+	Keyword          string
+	ForbiddenKeyword string
+	CustomHeaders    map[string]string
+	RedirectPolicy   string
+	RequestID        string
 }
 
 // CheckResult is a single check outcome returned by the Veriflier.

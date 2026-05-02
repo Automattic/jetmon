@@ -15,7 +15,7 @@ func GetSitesForBucket(ctx context.Context, bucketMin, bucketMax, batchSize int,
 		SELECT
 			jetpack_monitor_site_id, blog_id, bucket_no, monitor_url,
 			monitor_active, site_status, last_status_change, check_interval, last_checked_at,
-			ssl_expiry_date, check_keyword, maintenance_start, maintenance_end,
+			ssl_expiry_date, check_keyword, forbidden_keyword, maintenance_start, maintenance_end,
 			custom_headers, timeout_seconds, redirect_policy, alert_cooldown_minutes, last_alert_sent_at
 		FROM jetpack_monitor_sites
 		WHERE monitor_active = 1
@@ -46,7 +46,7 @@ func GetSitesForBucket(ctx context.Context, bucketMin, bucketMax, batchSize int,
 		err := rows.Scan(
 			&s.ID, &s.BlogID, &s.BucketNo, &s.MonitorURL,
 			&s.MonitorActive, &s.SiteStatus, &s.LastStatusChange, &s.CheckInterval, &s.LastCheckedAt,
-			&s.SSLExpiryDate, &s.CheckKeyword, &s.MaintenanceStart, &s.MaintenanceEnd,
+			&s.SSLExpiryDate, &s.CheckKeyword, &s.ForbiddenKeyword, &s.MaintenanceStart, &s.MaintenanceEnd,
 			&s.CustomHeaders, &s.TimeoutSeconds, &redirectPolicy, &s.AlertCooldownMinutes, &s.LastAlertSentAt,
 		)
 		if err != nil {

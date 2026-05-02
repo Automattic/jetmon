@@ -12,9 +12,11 @@ service Veriflier {
 }
 
 message CheckRequest {
-    int64  blog_id          = 1;
-    string url              = 2;
-    int32  timeout_seconds  = 3;
+    int64  blog_id           = 1;
+    string url               = 2;
+    int32  timeout_seconds   = 3;
+    string keyword           = 4;
+    string forbidden_keyword = 5;
 }
 
 message CheckBatch {

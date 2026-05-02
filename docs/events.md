@@ -120,6 +120,11 @@ A probe has failed but the verifier has not yet confirmed. This is a **real stat
 
 The first failure writes both an event row (`state = Seems Down`, `severity = 3`, `started_at = now`) and an `opened` transition row in one transaction.
 
+HTTP failure metadata includes `http_code`, `error_code`, `rtt_ms`, `url`, and
+`keyword_rule` when a content rule failed. `keyword_rule` is `required` for a
+missing `check_keyword` and `forbidden` when `forbidden_keyword` appears in the
+response body.
+
 Three outcomes from Seems Down:
 
 - **Local probe recovers** before reaching verifier escalation → event closes with `resolution_reason = probe_cleared`. No verifier was involved; this is the "transient blip the local retry caught" path. The count of these is itself a useful signal — a baseline rate of probe-cleared closes tells you how noisy your detection is.

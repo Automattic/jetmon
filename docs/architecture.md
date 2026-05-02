@@ -398,6 +398,7 @@ Database Tables
     last_checked_at       Used to order fetch by least-recently-checked
     ssl_expiry_date       Updated after each TLS handshake
     check_keyword         Optional body text to require
+    forbidden_keyword     Optional body text that must not appear
     maintenance_start/end Suppress alerts during scheduled maintenance
     custom_headers        JSON blob of extra HTTP headers
     timeout_seconds       Per-site timeout override
@@ -495,7 +496,7 @@ Error Codes (checker.ErrorCode)
   ErrorConnect       2   TCP connection refused or DNS failure
   ErrorSSL           3   TLS handshake error (invalid cert, mismatch)
   ErrorRedirect      4   Redirect when RedirectPolicy=fail
-  ErrorKeyword       5   Body did not contain required keyword
+  ErrorKeyword       5   Required keyword missing or forbidden keyword present
   ErrorTLSExpired    6   Certificate has passed NotAfter date
   ErrorTLSDeprecated 7   TLS 1.0 or 1.1 detected (advisory only, not a failure)
   ErrorBodyRead      8   GET response body closed early or could not be read

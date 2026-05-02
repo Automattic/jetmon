@@ -41,12 +41,13 @@ const (
 
 // Request holds the parameters for a single HTTP check.
 type Request struct {
-	BlogID         int64
-	URL            string
-	TimeoutSeconds int
-	Keyword        *string
-	CustomHeaders  map[string]string
-	RedirectPolicy RedirectPolicy
+	BlogID           int64
+	URL              string
+	TimeoutSeconds   int
+	Keyword          *string
+	ForbiddenKeyword *string
+	CustomHeaders    map[string]string
+	RedirectPolicy   RedirectPolicy
 }
 
 // Result holds the outcome of a single HTTP check.
@@ -68,6 +69,7 @@ type Result struct {
 	TLSVersion      uint16
 	CipherSuite     uint16
 	RedirectChanged bool
+	KeywordRule     string
 
 	Timestamp time.Time
 }
@@ -246,18 +248,27 @@ func Check(ctx context.Context, req Request) Result {
 		res.RedirectChanged = true
 	}
 
-	body, bodyErr := readResponseBody(resp, req.Keyword != nil && *req.Keyword != "")
+	needsBody := (req.Keyword != nil && *req.Keyword != "") ||
+		(req.ForbiddenKeyword != nil && *req.ForbiddenKeyword != "")
+	body, bodyErr := readResponseBody(resp, needsBody)
 	if bodyErr != nil && res.HTTPCode < http.StatusBadRequest {
 		res.ErrorCode = ErrorBodyRead
 		return res
 	}
 
 	// Keyword check uses the same bounded body read as integrity checks.
+	bodyText := string(body)
 	if req.Keyword != nil && *req.Keyword != "" {
-		if !strings.Contains(string(body), *req.Keyword) {
+		if !strings.Contains(bodyText, *req.Keyword) {
+			res.KeywordRule = "required"
 			res.ErrorCode = ErrorKeyword
 			return res
 		}
+	}
+	if req.ForbiddenKeyword != nil && *req.ForbiddenKeyword != "" && strings.Contains(bodyText, *req.ForbiddenKeyword) {
+		res.KeywordRule = "forbidden"
+		res.ErrorCode = ErrorKeyword
+		return res
 	}
 
 	res.Success = res.HTTPCode > 0 && res.HTTPCode < 400

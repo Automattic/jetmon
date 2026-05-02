@@ -30,6 +30,7 @@ type apiSiteCreateOptions struct {
 	monitorActive        apiOptionalBoolFlag
 	bucketNo             apiOptionalIntFlag
 	checkKeyword         apiOptionalStringFlag
+	forbiddenKeyword     apiOptionalStringFlag
 	redirectPolicy       apiOptionalStringFlag
 	timeoutSeconds       apiOptionalIntFlag
 	customHeaders        apiStringMapFlags
@@ -42,6 +43,7 @@ type apiSiteUpdateOptions struct {
 	monitorActive        apiOptionalBoolFlag
 	bucketNo             apiOptionalIntFlag
 	checkKeyword         apiOptionalStringFlag
+	forbiddenKeyword     apiOptionalStringFlag
 	redirectPolicy       apiOptionalStringFlag
 	timeoutSeconds       apiOptionalIntFlag
 	customHeaders        apiStringMapFlags
@@ -58,6 +60,7 @@ type apiSiteCreateRequest struct {
 	MonitorActive        *bool              `json:"monitor_active,omitempty"`
 	BucketNo             *int               `json:"bucket_no,omitempty"`
 	CheckKeyword         *string            `json:"check_keyword,omitempty"`
+	ForbiddenKeyword     *string            `json:"forbidden_keyword,omitempty"`
 	RedirectPolicy       *string            `json:"redirect_policy,omitempty"`
 	TimeoutSeconds       *int               `json:"timeout_seconds,omitempty"`
 	CustomHeaders        *map[string]string `json:"custom_headers,omitempty"`
@@ -70,6 +73,7 @@ type apiSiteUpdateRequest struct {
 	MonitorActive        *bool              `json:"monitor_active,omitempty"`
 	BucketNo             *int               `json:"bucket_no,omitempty"`
 	CheckKeyword         *string            `json:"check_keyword,omitempty"`
+	ForbiddenKeyword     *string            `json:"forbidden_keyword,omitempty"`
 	RedirectPolicy       *string            `json:"redirect_policy,omitempty"`
 	TimeoutSeconds       *int               `json:"timeout_seconds,omitempty"`
 	CustomHeaders        *map[string]string `json:"custom_headers,omitempty"`
@@ -168,6 +172,7 @@ func cmdAPISitesCreate(args []string) error {
 	fs.Var(&create.monitorActive, "monitor-active", "monitoring enabled: true or false")
 	fs.Var(&create.bucketNo, "bucket-no", "bucket number")
 	fs.Var(&create.checkKeyword, "check-keyword", "keyword required in response body")
+	fs.Var(&create.forbiddenKeyword, "forbidden-keyword", "keyword forbidden in response body")
 	fs.Var(&create.redirectPolicy, "redirect-policy", "redirect policy: follow, alert, or fail")
 	fs.Var(&create.timeoutSeconds, "timeout-seconds", "per-site timeout in seconds")
 	fs.Var(&create.customHeaders, "custom-header", "site custom header in Name: Value form (repeatable)")
@@ -194,6 +199,7 @@ func cmdAPISitesUpdate(args []string) error {
 	fs.Var(&update.monitorActive, "monitor-active", "monitoring enabled: true or false")
 	fs.Var(&update.bucketNo, "bucket-no", "bucket number")
 	fs.Var(&update.checkKeyword, "check-keyword", "keyword required in response body; empty clears it")
+	fs.Var(&update.forbiddenKeyword, "forbidden-keyword", "keyword forbidden in response body; empty clears it")
 	fs.Var(&update.redirectPolicy, "redirect-policy", "redirect policy: follow, alert, or fail")
 	fs.Var(&update.timeoutSeconds, "timeout-seconds", "per-site timeout in seconds")
 	fs.Var(&update.customHeaders, "custom-header", "site custom header in Name: Value form (repeatable)")
@@ -326,6 +332,7 @@ func marshalAPISiteCreateBody(opts apiSiteCreateOptions) ([]byte, error) {
 		MonitorActive:        opts.monitorActive.ptr(),
 		BucketNo:             opts.bucketNo.ptr(),
 		CheckKeyword:         opts.checkKeyword.ptr(),
+		ForbiddenKeyword:     opts.forbiddenKeyword.ptr(),
 		RedirectPolicy:       opts.redirectPolicy.ptr(),
 		TimeoutSeconds:       opts.timeoutSeconds.ptr(),
 		CustomHeaders:        opts.customHeaders.ptr(),
@@ -345,6 +352,7 @@ func marshalAPISiteUpdateBody(opts apiSiteUpdateOptions) ([]byte, error) {
 		MonitorActive:        opts.monitorActive.ptr(),
 		BucketNo:             opts.bucketNo.ptr(),
 		CheckKeyword:         opts.checkKeyword.ptr(),
+		ForbiddenKeyword:     opts.forbiddenKeyword.ptr(),
 		RedirectPolicy:       opts.redirectPolicy.ptr(),
 		TimeoutSeconds:       opts.timeoutSeconds.ptr(),
 		CustomHeaders:        opts.customHeaders.ptr(),

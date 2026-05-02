@@ -33,6 +33,7 @@ type apiSitesBulkAddOptions struct {
 type apiBulkSiteEntry struct {
 	MonitorURL           string            `json:"monitor_url"`
 	CheckKeyword         *string           `json:"check_keyword,omitempty"`
+	ForbiddenKeyword     *string           `json:"forbidden_keyword,omitempty"`
 	RedirectPolicy       *string           `json:"redirect_policy,omitempty"`
 	TimeoutSeconds       *int              `json:"timeout_seconds,omitempty"`
 	CustomHeaders        map[string]string `json:"custom_headers,omitempty"`
@@ -253,6 +254,9 @@ func apiBulkSiteEntryFromCSVRecord(header map[string]int, record []string) (apiB
 	}
 	if v := csvField(header, record, "check_keyword"); v != "" {
 		entry.CheckKeyword = &v
+	}
+	if v := csvField(header, record, "forbidden_keyword"); v != "" {
+		entry.ForbiddenKeyword = &v
 	}
 	if v := csvField(header, record, "redirect_policy"); v != "" {
 		entry.RedirectPolicy = &v

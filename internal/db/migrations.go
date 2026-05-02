@@ -434,6 +434,13 @@ var migrations = []migration{
 	// runtime allocator footprint.
 	{26, `ALTER TABLE jetmon_process_health
 		ADD COLUMN rss_mem_mb INT UNSIGNED NOT NULL DEFAULT 0 AFTER go_sys_mem_mb`},
+
+	// Migration 27 adds an explicit forbidden-content check alongside the
+	// existing required keyword. The two columns intentionally stay separate:
+	// check_keyword means "must be present"; forbidden_keyword means "must be
+	// absent".
+	{27, `ALTER TABLE jetpack_monitor_sites
+		ADD COLUMN forbidden_keyword VARCHAR(500) NULL AFTER check_keyword`},
 }
 
 // Migrate applies all pending migrations idempotently.
