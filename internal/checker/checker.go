@@ -47,6 +47,7 @@ type Request struct {
 type Result struct {
 	BlogID    int64
 	URL       string
+	Method    string
 	Success   bool
 	HTTPCode  int
 	ErrorCode int
@@ -104,6 +105,7 @@ func Check(ctx context.Context, req Request) Result {
 	res := Result{
 		BlogID:    req.BlogID,
 		URL:       req.URL,
+		Method:    http.MethodGet,
 		Timestamp: time.Now(),
 	}
 

@@ -241,6 +241,57 @@ func TestCheckHTTP200(t *testing.T) {
 	if res.ErrorCode != ErrorNone {
 		t.Fatalf("ErrorCode = %d, want ErrorNone", res.ErrorCode)
 	}
+	if res.Method != http.MethodGet {
+		t.Fatalf("Method = %q, want GET", res.Method)
+	}
+}
+
+func TestCheckUsesGETWhenHEADWouldFail(t *testing.T) {
+	var sawGET bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodHead:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		case http.MethodGet:
+			sawGET = true
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected method %q", r.Method)
+		}
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{BlogID: 1, URL: srv.URL, TimeoutSeconds: 5})
+	if !sawGET {
+		t.Fatal("server did not receive GET")
+	}
+	if !res.Success {
+		t.Fatalf("Success = false when GET is healthy and HEAD would fail; result=%+v", res)
+	}
+}
+
+func TestCheckUsesGETWhenHEADWouldTimeout(t *testing.T) {
+	var sawGET bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodHead:
+			time.Sleep(5 * time.Second)
+		case http.MethodGet:
+			sawGET = true
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected method %q", r.Method)
+		}
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{BlogID: 1, URL: srv.URL, TimeoutSeconds: 1})
+	if !sawGET {
+		t.Fatal("server did not receive GET")
+	}
+	if !res.Success {
+		t.Fatalf("Success = false when GET is healthy and HEAD would timeout; result=%+v", res)
+	}
 }
 
 func TestCheckHTTP500(t *testing.T) {

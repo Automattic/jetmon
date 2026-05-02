@@ -974,6 +974,7 @@ func (o *Orchestrator) openSeemsDown(site db.Site, res checker.Result) (int64, e
 	meta, _ := json.Marshal(map[string]any{
 		"http_code":  res.HTTPCode,
 		"error_code": res.ErrorCode,
+		"method":     res.Method,
 		"rtt_ms":     res.RTT.Milliseconds(),
 		"url":        site.MonitorURL,
 	})
