@@ -46,6 +46,16 @@ const (
 // failure on a truly wedged verifier rather than letting the call hang.
 const verifierRPCHeadroom = 5 * time.Second
 
+const schedulerBackpressurePollInterval = 10 * time.Millisecond
+const schedulerVariableIntervalPollInterval = 5 * time.Second
+
+// VariableIntervalPollInterval returns the idle scheduler poll interval used
+// when per-site check intervals are enabled. The SQL due predicate prevents
+// early checks; this only controls how quickly newly due work is discovered.
+func VariableIntervalPollInterval() time.Duration {
+	return schedulerVariableIntervalPollInterval
+}
+
 var (
 	nowFunc                = time.Now
 	dbClaimBuckets         = db.ClaimBuckets
@@ -59,6 +69,7 @@ var (
 	dbUpdateSiteStatus     = db.UpdateSiteStatus
 	dbRecordFalsePositive  = db.RecordFalsePositive
 	dbUpdateLastAlertSent  = db.UpdateLastAlertSent
+	dbCountDueSites        = db.CountDueSitesForBucketRange
 	dbCountProjectionDrift = db.CountLegacyProjectionDrift
 	veriflierCheckFunc     = func(c *veriflier.VeriflierClient, ctx stdctx.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
 		return c.Check(ctx, req)
@@ -78,6 +89,44 @@ type metricsClient interface {
 	Gauge(stat string, value int)
 	Timing(stat string, d time.Duration)
 	EmitMemStats()
+}
+
+type roundSummary struct {
+	pagesFetched      int
+	selected          int
+	dispatched        int
+	completed         int
+	outstanding       int
+	backpressureWaits int
+	staleResults      int
+	duplicateResults  int
+	neverChecked      int
+	oldestSelectedAge time.Duration
+	dueAtStart        int
+	dueRemaining      int
+	dueCountErrors    int
+	fetchErrors       int
+	interrupted       bool
+}
+
+func (s *roundSummary) add(other roundSummary) {
+	s.pagesFetched += other.pagesFetched
+	s.selected += other.selected
+	s.dispatched += other.dispatched
+	s.completed += other.completed
+	s.outstanding += other.outstanding
+	s.backpressureWaits += other.backpressureWaits
+	s.staleResults += other.staleResults
+	s.duplicateResults += other.duplicateResults
+	s.neverChecked += other.neverChecked
+	s.dueCountErrors += other.dueCountErrors
+	s.fetchErrors += other.fetchErrors
+	if other.oldestSelectedAge > s.oldestSelectedAge {
+		s.oldestSelectedAge = other.oldestSelectedAge
+	}
+	if other.interrupted {
+		s.interrupted = true
+	}
 }
 
 // Orchestrator drives the main check loop.
@@ -190,13 +239,13 @@ func (o *Orchestrator) Run() {
 		o.refreshVeriflierClients(cfg)
 
 		o.roundStart = time.Now()
-		o.runRound()
+		summary := o.runRound()
 
 		elapsed := time.Since(o.roundStart)
-		minInterval := time.Duration(cfg.MinTimeBetweenRoundsSec) * time.Second
-		if elapsed < minInterval {
+		sleepFor := schedulerSleepDuration(cfg, summary, elapsed)
+		if sleepFor > 0 {
 			select {
-			case <-time.After(minInterval - elapsed):
+			case <-time.After(sleepFor):
 			case <-o.ctx.Done():
 			}
 		}
@@ -208,8 +257,12 @@ func (o *Orchestrator) Stop() {
 	o.cancel()
 }
 
-func (o *Orchestrator) runRound() {
+func (o *Orchestrator) runRound() roundSummary {
 	cfg := config.Get()
+	summary := roundSummary{}
+	if o.roundStart.IsZero() {
+		o.roundStart = time.Now()
+	}
 
 	if o.usesPinnedBuckets(cfg) {
 		if err := o.ClaimBuckets(); err != nil {
@@ -228,77 +281,216 @@ func (o *Orchestrator) runRound() {
 	}
 	o.checkLegacyProjectionDrift(cfg)
 
-	// Fetch sites.
-	sites, err := dbGetSitesForBucket(o.ctx, o.bucketMin, o.bucketMax, cfg.DatasetSize, cfg.UseVariableCheckIntervals)
-	if err != nil {
-		log.Printf("orchestrator: fetch sites failed: %v", err)
-		return
+	if due, err := dbCountDueSites(o.ctx, o.bucketMin, o.bucketMax, cfg.UseVariableCheckIntervals); err != nil {
+		summary.dueCountErrors++
+		log.Printf("orchestrator: count due sites failed: %v", err)
+	} else {
+		summary.dueAtStart = due
 	}
 
-	if len(sites) == 0 {
-		return
+	pageSize := cfg.DatasetSize
+	if pageSize < 1 {
+		pageSize = 1
 	}
-
-	log.Printf("orchestrator: checking %d sites", len(sites))
-
-	// Dispatch checks.
-	dispatched := 0
-	for _, site := range sites {
-		timeout := cfg.NetCommsTimeout
-		if site.TimeoutSeconds != nil {
-			timeout = *site.TimeoutSeconds
-		}
-
-		req := checker.Request{
-			BlogID:         site.BlogID,
-			URL:            site.MonitorURL,
-			TimeoutSeconds: timeout,
-			Keyword:        site.CheckKeyword,
-			CustomHeaders:  checker.ParseCustomHeaders(site.CustomHeaders),
-			RedirectPolicy: checker.RedirectPolicy(site.RedirectPolicy),
-		}
-		if req.RedirectPolicy == "" {
-			req.RedirectPolicy = checker.RedirectFollow
-		}
-
-		if o.pool.Submit(req) {
-			dispatched++
-		} else {
-			log.Printf("orchestrator: dropped check blog_id=%d queue_depth=%d", site.BlogID, o.pool.QueueDepth())
-		}
-	}
-
-	// Collect results with a deadline.
-	deadline := time.NewTimer(time.Duration(cfg.NetCommsTimeout+5) * time.Second)
-	defer deadline.Stop()
-
-	results := make(map[int64]checker.Result, dispatched)
-	for len(results) < dispatched {
+	seen := make(map[int64]struct{}, pageSize)
+	for {
 		select {
-		case res := <-o.pool.Results():
-			results[res.BlogID] = res
-		case <-deadline.C:
-			log.Printf("orchestrator: round deadline reached, %d results outstanding", dispatched-len(results))
-			goto process
 		case <-o.ctx.Done():
-			return
+			summary.interrupted = true
+			o.finishRound(cfg, summary)
+			return summary
+		default:
+		}
+
+		sites, err := dbGetSitesForBucket(o.ctx, o.bucketMin, o.bucketMax, pageSize, cfg.UseVariableCheckIntervals)
+		if err != nil {
+			summary.fetchErrors++
+			log.Printf("orchestrator: fetch sites failed: %v", err)
+			break
+		}
+		page := filterUnseenSites(sites, seen)
+		if len(page) == 0 {
+			break
+		}
+
+		summary.pagesFetched++
+		summary.selected += len(page)
+		summary.add(selectedSiteSummary(page))
+		log.Printf("orchestrator: checking %d sites (scheduler page %d)", len(page), summary.pagesFetched)
+
+		pageSummary := o.checkSitesPage(cfg, page)
+		summary.add(pageSummary)
+		if pageSummary.interrupted || pageSummary.outstanding > 0 {
+			break
+		}
+		if len(sites) < pageSize {
+			break
 		}
 	}
 
-process:
+	if cfg.UseVariableCheckIntervals {
+		if due, err := dbCountDueSites(o.ctx, o.bucketMin, o.bucketMax, true); err != nil {
+			summary.dueCountErrors++
+			log.Printf("orchestrator: count remaining due sites failed: %v", err)
+		} else {
+			summary.dueRemaining = due
+		}
+	} else {
+		summary.dueRemaining = max(0, summary.dueAtStart-summary.completed)
+	}
+
+	o.finishRound(cfg, summary)
+	o.applyMemoryPressure(cfg)
+	return summary
+}
+
+func (o *Orchestrator) checkSitesPage(cfg *config.Config, sites []db.Site) roundSummary {
+	summary := roundSummary{}
 	siteMap := make(map[int64]db.Site, len(sites))
+	results := make(map[int64]checker.Result, len(sites))
 	for _, s := range sites {
 		siteMap[s.BlogID] = s
 	}
 
+	for _, site := range sites {
+		req := checkRequestForSite(cfg, site)
+		for {
+			if o.pool.Submit(req) {
+				summary.dispatched++
+				break
+			}
+			summary.backpressureWaits++
+			if !o.waitForPageResult(siteMap, results, &summary, schedulerBackpressurePollInterval) {
+				summary.interrupted = true
+				return summary
+			}
+		}
+	}
+
+	deadline := time.NewTimer(collectionDeadlineForSites(cfg, sites))
+	defer deadline.Stop()
+	for len(results) < summary.dispatched {
+		select {
+		case res := <-o.pool.Results():
+			recordPageResult(siteMap, results, res, &summary)
+		case <-deadline.C:
+			summary.outstanding = summary.dispatched - len(results)
+			log.Printf("orchestrator: round deadline reached, %d results outstanding", summary.outstanding)
+			goto process
+		case <-o.ctx.Done():
+			summary.interrupted = true
+			return summary
+		}
+	}
+
+process:
 	o.processResults(results, siteMap)
 	o.totalChecked += len(results)
+	summary.completed += len(results)
+	return summary
+}
 
+func (o *Orchestrator) waitForPageResult(siteMap map[int64]db.Site, results map[int64]checker.Result, summary *roundSummary, maxWait time.Duration) bool {
+	timer := time.NewTimer(maxWait)
+	defer timer.Stop()
+	select {
+	case res := <-o.pool.Results():
+		recordPageResult(siteMap, results, res, summary)
+		return true
+	case <-timer.C:
+		return true
+	case <-o.ctx.Done():
+		return false
+	}
+}
+
+func filterUnseenSites(sites []db.Site, seen map[int64]struct{}) []db.Site {
+	filtered := make([]db.Site, 0, len(sites))
+	for _, site := range sites {
+		if _, ok := seen[site.BlogID]; ok {
+			continue
+		}
+		seen[site.BlogID] = struct{}{}
+		filtered = append(filtered, site)
+	}
+	return filtered
+}
+
+func selectedSiteSummary(sites []db.Site) roundSummary {
+	summary := roundSummary{}
+	now := nowFunc().UTC()
+	for _, site := range sites {
+		if site.LastCheckedAt == nil {
+			summary.neverChecked++
+			continue
+		}
+		age := now.Sub(site.LastCheckedAt.UTC())
+		if age > summary.oldestSelectedAge {
+			summary.oldestSelectedAge = age
+		}
+	}
+	return summary
+}
+
+func checkRequestForSite(cfg *config.Config, site db.Site) checker.Request {
+	req := checker.Request{
+		BlogID:         site.BlogID,
+		URL:            site.MonitorURL,
+		TimeoutSeconds: timeoutForSite(cfg, site),
+		Keyword:        site.CheckKeyword,
+		CustomHeaders:  checker.ParseCustomHeaders(site.CustomHeaders),
+		RedirectPolicy: checker.RedirectPolicy(site.RedirectPolicy),
+	}
+	if req.RedirectPolicy == "" {
+		req.RedirectPolicy = checker.RedirectFollow
+	}
+	return req
+}
+
+func collectionDeadlineForSites(cfg *config.Config, sites []db.Site) time.Duration {
+	timeout := cfg.NetCommsTimeout
+	for _, site := range sites {
+		if siteTimeout := timeoutForSite(cfg, site); siteTimeout > timeout {
+			timeout = siteTimeout
+		}
+	}
+	return time.Duration(timeout+5) * time.Second
+}
+
+func recordPageResult(siteMap map[int64]db.Site, results map[int64]checker.Result, res checker.Result, summary *roundSummary) {
+	if _, ok := siteMap[res.BlogID]; !ok {
+		summary.staleResults++
+		log.Printf("orchestrator: ignored stale check result blog_id=%d", res.BlogID)
+		return
+	}
+	if _, ok := results[res.BlogID]; ok {
+		summary.duplicateResults++
+		log.Printf("orchestrator: ignored duplicate check result blog_id=%d", res.BlogID)
+		return
+	}
+	results[res.BlogID] = res
+}
+
+func schedulerSleepDuration(cfg *config.Config, summary roundSummary, elapsed time.Duration) time.Duration {
+	if summary.interrupted {
+		return 0
+	}
+	if cfg.UseVariableCheckIntervals {
+		return schedulerVariableIntervalPollInterval
+	}
+	minInterval := time.Duration(cfg.MinTimeBetweenRoundsSec) * time.Second
+	if elapsed >= minInterval {
+		return 0
+	}
+	return minInterval - elapsed
+}
+
+func (o *Orchestrator) finishRound(cfg *config.Config, summary roundSummary) {
 	// Emit metrics and update stats files.
 	roundDuration := time.Since(o.roundStart)
 	sps := 0
 	if roundDuration.Seconds() > 0 {
-		sps = int(float64(len(results)) / roundDuration.Seconds())
+		sps = int(float64(summary.completed) / roundDuration.Seconds())
 	}
 	o.statsMu.Lock()
 	o.lastRoundSPS = sps
@@ -307,21 +499,43 @@ process:
 
 	m := metricsClientFunc()
 	if m != nil {
+		activeChecks := 0
+		queueDepth := 0
+		if o.pool != nil {
+			activeChecks = o.pool.ActiveCount()
+			queueDepth = o.pool.QueueDepth()
+		}
+		retryQueueSize := 0
+		if o.retries != nil {
+			retryQueueSize = o.retries.size()
+		}
 		m.Timing("round.complete.time", roundDuration)
-		m.Gauge("worker.queue.active", o.pool.ActiveCount())
-		m.Gauge("worker.queue.queue_size", o.pool.QueueDepth())
-		m.Gauge("retry.queue.size", o.retries.size())
-		m.Increment("round.sites.count", len(results))
+		m.Gauge("worker.queue.active", activeChecks)
+		m.Gauge("worker.queue.queue_size", queueDepth)
+		m.Gauge("retry.queue.size", retryQueueSize)
+		m.Increment("round.sites.count", summary.completed)
 		m.Gauge("round.sps.count", sps)
+		m.Gauge("scheduler.round.pages.count", summary.pagesFetched)
+		m.Gauge("scheduler.round.selected.count", summary.selected)
+		m.Gauge("scheduler.round.dispatched.count", summary.dispatched)
+		m.Gauge("scheduler.round.completed.count", summary.completed)
+		m.Gauge("scheduler.round.outstanding.count", summary.outstanding)
+		m.Gauge("scheduler.round.due_start.count", summary.dueAtStart)
+		m.Gauge("scheduler.round.due_remaining.count", summary.dueRemaining)
+		m.Gauge("scheduler.round.selected_never_checked.count", summary.neverChecked)
+		m.Gauge("scheduler.round.selected_oldest_age_sec", int(summary.oldestSelectedAge.Seconds()))
+		m.Increment("scheduler.dispatch.backpressure_wait.count", summary.backpressureWaits)
+		m.Increment("scheduler.result.stale.count", summary.staleResults)
+		m.Increment("scheduler.result.duplicate.count", summary.duplicateResults)
+		m.Increment("scheduler.due_count.error.count", summary.dueCountErrors)
+		m.Increment("scheduler.fetch.error.count", summary.fetchErrors)
 
 		if cfg.StatsdSendMemUsage {
 			m.EmitMemStats()
 		}
 
-		metrics.WriteStatsFiles(sps, o.pool.QueueDepth(), o.totalChecked)
+		metrics.WriteStatsFiles(sps, queueDepth, o.totalChecked)
 	}
-
-	o.applyMemoryPressure(cfg)
 }
 
 func (o *Orchestrator) processResults(results map[int64]checker.Result, sites map[int64]db.Site) {
@@ -1216,7 +1430,7 @@ func stringPtrValue(s *string) string {
 }
 
 func (o *Orchestrator) applyMemoryPressure(cfg *config.Config) {
-	if cfg.WorkerMaxMemMB <= 0 {
+	if cfg.WorkerMaxMemMB <= 0 || o.pool == nil {
 		return
 	}
 

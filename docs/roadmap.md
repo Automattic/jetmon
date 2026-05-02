@@ -31,6 +31,26 @@ No active candidate branch is queued here right now.
 - [ ] Revisit report thresholds and suggested actions after v2 has enough real
   production traffic to show which rates should be considered normal.
 
+### Capacity Scheduler TODO
+
+- [x] Treat `DATASET_SIZE` as a database fetch page size rather than a total
+  per-round work cap, so low page sizes do not leave due sites unchecked.
+- [x] Keep fetching scheduler pages until due work is drained or the process
+  hits explicit shutdown/deadline pressure.
+- [x] Treat a full worker queue as backpressure by waiting and collecting
+  available results instead of dropping checks.
+- [x] Add scheduler metrics for due-start, selected, dispatched, completed,
+  outstanding, due-remaining, page count, backpressure waits, stale results,
+  duplicate results, never-checked selections, and oldest selected age.
+- [ ] After the next capacity retest, add validate-config sizing advice that
+  explains expected throughput from active site count, check interval,
+  `NUM_WORKERS`, and timeout settings. This is deferred until the retest shows
+  which sizing formula best matches real Jetmon v2 behavior.
+- [ ] Evaluate replacing per-check HTTP transports with a reused transport or
+  bounded client pool if the retest still shows open file descriptor growth.
+  This is deferred behind the scheduler fix because the 1,000-site miss matched
+  the scheduler cap exactly, while FD growth was only a watch item.
+
 ### Projection Drift Tooling TODO
 
 - [x] Compare legacy projection status against a per-blog rollup of open HTTP

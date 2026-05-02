@@ -17,10 +17,11 @@ Key settings:
 | Key | Default | Description |
 |---|---:|---|
 | `NUM_WORKERS` | 60 | Goroutine pool size |
-| `NUM_TO_PROCESS` | 40 | Parallel checks per pool slot |
+| `NUM_TO_PROCESS` | 40 | Legacy compatibility setting; does not cap Go scheduler throughput |
+| `DATASET_SIZE` | 100 | Database fetch page size for scheduler work; not a total round cap |
 | `NUM_OF_CHECKS` | 3 | Local failures before Veriflier escalation |
 | `TIME_BETWEEN_CHECKS_SEC` | 30 | Delay between local retry checks |
-| `MIN_TIME_BETWEEN_ROUNDS_SEC` | 300 | Minimum seconds between check rounds |
+| `MIN_TIME_BETWEEN_ROUNDS_SEC` | 300 | Fixed-cadence full-fleet pass interval when variable intervals are disabled |
 | `NET_COMMS_TIMEOUT` | 10 | Default per-check HTTP timeout in seconds |
 | `PEER_OFFLINE_LIMIT` | 3 | Veriflier agreements required to confirm downtime |
 | `WORKER_MAX_MEM_MB` | 53 | Go runtime memory threshold that triggers worker-pool drain |
@@ -37,6 +38,20 @@ Key settings:
 | `DELIVERY_OWNER_HOST` | empty | Optional host allowed to run embedded delivery workers |
 | `DEBUG_PORT` | 6060 | localhost-only pprof port, 0 disables it |
 | `EMAIL_TRANSPORT` | `stub` | `stub`, `smtp`, or `wpcom` |
+
+Scheduler behavior:
+
+- `DATASET_SIZE` limits one database page. Jetmon continues fetching pages until
+  due work is drained, so a low value should not cause unchecked sites by itself.
+- A full worker queue applies backpressure; checks remain pending instead of
+  being dropped.
+- With `USE_VARIABLE_CHECK_INTERVALS=true`, Jetmon polls for newly due work on a
+  short idle interval and uses each site's `check_interval` to decide what to
+  check. `MIN_TIME_BETWEEN_ROUNDS_SEC` is only the fixed-cadence pass interval
+  when variable intervals are disabled.
+- Watch the `scheduler.round.*` StatsD metrics during capacity tests. In
+  particular, `due_start`, `selected`, `completed`, `outstanding`, and
+  `due_remaining` show whether freshness pressure is clearing or building.
 
 See [../config/config.readme](../config/config.readme) for the full option
 reference.

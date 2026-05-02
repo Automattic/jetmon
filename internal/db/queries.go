@@ -98,6 +98,31 @@ func CountRecentlyCheckedActiveSitesForBucketRange(ctx context.Context, bucketMi
 	return count, nil
 }
 
+// CountDueSitesForBucketRange returns the number of active rows currently due
+// for checking in the inclusive bucket range. When variable intervals are
+// disabled, every active row is considered due for the fixed round cadence.
+func CountDueSitesForBucketRange(ctx context.Context, bucketMin, bucketMax int, useVariableIntervals bool) (int, error) {
+	query := `
+		SELECT COUNT(*)
+		  FROM jetpack_monitor_sites
+		 WHERE monitor_active = 1
+		   AND bucket_no BETWEEN ? AND ?`
+	if useVariableIntervals {
+		query += `
+		   AND (
+			last_checked_at IS NULL
+			OR DATE_ADD(last_checked_at, INTERVAL GREATEST(check_interval, 1) MINUTE) <= NOW()
+		   )`
+	}
+
+	var count int
+	err := db.QueryRowContext(ctx, query, bucketMin, bucketMax).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count due sites: %w", err)
+	}
+	return count, nil
+}
+
 // UpdateSiteStatus updates site_status and last_status_change for a site.
 func UpdateSiteStatus(ctx context.Context, blogID int64, status int, changedAt time.Time) error {
 	_, err := db.ExecContext(ctx,

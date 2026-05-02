@@ -5,10 +5,16 @@ NUM_WORKERS
 Initial number of goroutines in the check pool. The pool auto-scales between 1 and NUM_WORKERS based on queue depth. Default: 60.
 
 NUM_TO_PROCESS
-Number of sites to dispatch per round. Default: 40.
+Legacy compatibility setting retained so copied v1-style configs continue to
+parse. The Go scheduler uses DATASET_SIZE as the fetch page and NUM_WORKERS as
+the concurrency guardrail; NUM_TO_PROCESS does not cap scheduler throughput.
+Default: 40.
 
 DATASET_SIZE
-Maximum number of sites to fetch from the database per batch. Default: 100.
+Maximum number of sites to fetch from the database per scheduler page. The
+orchestrator keeps fetching additional pages until due work is drained, so this
+is a database/query guardrail rather than a cap on total checks per round.
+Default: 100.
 
 LEGACY_STATUS_PROJECTION_ENABLE
 Set to true while Jetmon v2 is running in shadow-v2-state migration mode. When enabled, v2 writes its authoritative incident state to jetmon_events / jetmon_event_transitions and also projects v1-compatible site_status + last_status_change values back into jetpack_monitor_sites for legacy consumers. Set to false only after downstream readers have moved to the v2 event/API surface. Default: true.
@@ -62,13 +68,19 @@ TIME_BETWEEN_NOTICES_MIN
 Minimum minutes between a site going down and a confirmed-down notification being sent. Default: 59.
 
 MIN_TIME_BETWEEN_ROUNDS_SEC
-Minimum seconds between check rounds. Has no effect when USE_VARIABLE_CHECK_INTERVALS is true. Default: 300.
+Minimum seconds between fixed-cadence full-fleet passes when
+USE_VARIABLE_CHECK_INTERVALS is false. When USE_VARIABLE_CHECK_INTERVALS is
+true, the scheduler uses a short idle poll and the SQL due predicate decides
+which sites are ready to check. Default: 300.
 
 NET_COMMS_TIMEOUT
 Default HTTP request timeout in seconds. Can be overridden per-site via timeout_seconds column. Default: 10.
 
 USE_VARIABLE_CHECK_INTERVALS
-Set to true to respect the check_interval column per site instead of running all sites every round. Default: false.
+Set to true to respect the check_interval column per site instead of running
+all sites every fixed-cadence pass. Recommended for production freshness
+testing because newly due sites are discovered without waiting for
+MIN_TIME_BETWEEN_ROUNDS_SEC. Default: false.
 
 LOG_FORMAT
 Log output format. Set to "json" for structured logging (e.g. for log aggregators), or "text" for human-readable output. Default: "text".

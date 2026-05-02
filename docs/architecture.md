@@ -209,10 +209,10 @@ orchestrator.Run()
           │     │
           │     ├─ dbHeartbeat()
           │     ├─ ClaimBuckets()             // rebalance every round
-          │     ├─ dbGetSitesForBucket()      // fetch least-recently-checked first
+          │     ├─ dbGetSitesForBucket()      // fetch due work in DATASET_SIZE pages
           │     │
-          │     ├─ for each site:
-          │     │     pool.Submit(checker.Request)  // non-blocking; drops if full
+          │     ├─ for each scheduler page:
+          │     │     pool.Submit(checker.Request)  // waits/collects on backpressure
           │     │
           │     ├─ collect results (deadline-bounded)
           │     │
@@ -226,7 +226,7 @@ orchestrator.Run()
           │     ├─ emit StatsD metrics
           │     └─ applyMemoryPressure()       // drain workers if Go runtime memory > limit
           │
-          └─ sleep to enforce MinTimeBetweenRoundsSec
+          └─ sleep to enforce fixed cadence or short variable-interval poll
 ```
 
 
@@ -480,7 +480,7 @@ Key Concurrency Patterns
   pool.closed          sync/atomic.Bool   CAS for idempotent Drain()
   pool.workMu          sync.RWMutex       RLock on Submit; Lock on close(work)
   pool.wg              sync.WaitGroup     Drain() blocks until wg reaches 0
-  pool.work            chan Request        cap = maxSize×2; non-blocking Submit
+  pool.work            chan Request        cap = maxSize×2; scheduler waits when full
   pool.retire          chan struct{}       Signals individual workers to exit
   dashboard.sseClients sync.RWMutex       One channel per connected SSE client
 ```

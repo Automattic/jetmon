@@ -3,6 +3,8 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -357,6 +359,7 @@ func stubOrchestratorDeps() func() {
 	origDBMarkSiteChecked := dbMarkSiteChecked
 	origDBRecordCheckHistory := dbRecordCheckHistory
 	origDBUpdateSSLExpiry := dbUpdateSSLExpiry
+	origDBCountDueSites := dbCountDueSites
 	origDBCountProjectionDrift := dbCountProjectionDrift
 	origNotify := wpcomNotifyFunc
 	origVeriflierCheck := veriflierCheckFunc
@@ -374,6 +377,7 @@ func stubOrchestratorDeps() func() {
 	dbMarkSiteChecked = func(context.Context, int64, time.Time) error { return nil }
 	dbRecordCheckHistory = func(int64, int, int, int64, int64, int64, int64, int64) error { return nil }
 	dbUpdateSSLExpiry = func(context.Context, int64, time.Time) error { return nil }
+	dbCountDueSites = func(context.Context, int, int, bool) (int, error) { return 0, nil }
 	dbCountProjectionDrift = func(context.Context, int, int) (int, error) { return 0, nil }
 	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error { return nil }
 	veriflierCheckFunc = func(c *veriflier.VeriflierClient, ctx context.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
@@ -393,6 +397,7 @@ func stubOrchestratorDeps() func() {
 		dbMarkSiteChecked = origDBMarkSiteChecked
 		dbRecordCheckHistory = origDBRecordCheckHistory
 		dbUpdateSSLExpiry = origDBUpdateSSLExpiry
+		dbCountDueSites = origDBCountDueSites
 		dbCountProjectionDrift = origDBCountProjectionDrift
 		wpcomNotifyFunc = origNotify
 		veriflierCheckFunc = origVeriflierCheck
@@ -826,6 +831,217 @@ func TestRunRoundSkipsHeartbeatWhenPinned(t *testing.T) {
 	if heartbeatCalled {
 		t.Fatal("runRound updated jetmon_hosts heartbeat in pinned mode")
 	}
+}
+
+func TestRunRoundDrainsAllPagesUntilWorkWraps(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	cfg := setTestConfig(t)
+	cfg.DatasetSize = 2
+	cfg.NetCommsTimeout = 1
+	cfg.MinTimeBetweenRoundsSec = 0
+	cfg.WorkerMaxMemMB = 0
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	sites := []db.Site{
+		{BlogID: 1, MonitorURL: srv.URL},
+		{BlogID: 2, MonitorURL: srv.URL},
+		{BlogID: 3, MonitorURL: srv.URL},
+		{BlogID: 4, MonitorURL: srv.URL},
+		{BlogID: 5, MonitorURL: srv.URL},
+	}
+
+	checked := make(map[int64]bool)
+	var marked []int64
+	var queries int
+	dbGetSitesForBucket = func(_ context.Context, _, _ int, batchSize int, useVariableIntervals bool) ([]db.Site, error) {
+		if batchSize != 2 {
+			t.Fatalf("batch size = %d, want 2", batchSize)
+		}
+		if useVariableIntervals {
+			t.Fatal("useVariableIntervals = true, want false")
+		}
+		queries++
+		return nextSchedulerTestPage(sites, checked, batchSize, false), nil
+	}
+	dbMarkSiteChecked = func(_ context.Context, blogID int64, _ time.Time) error {
+		checked[blogID] = true
+		marked = append(marked, blogID)
+		return nil
+	}
+	dbCountDueSites = func(_ context.Context, _, _ int, useVariableIntervals bool) (int, error) {
+		if useVariableIntervals {
+			t.Fatal("count due useVariableIntervals = true, want false")
+		}
+		return len(sites), nil
+	}
+
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+
+	p := checker.NewPool(2, 1, 2)
+	defer p.Drain()
+	o := &Orchestrator{
+		pool:       p,
+		retries:    newRetryQueue(),
+		ctx:        context.Background(),
+		hostname:   "host-a",
+		roundStart: time.Now(),
+	}
+
+	summary := o.runRound()
+	if summary.selected != 5 || summary.dispatched != 5 || summary.completed != 5 {
+		t.Fatalf("summary selected/dispatched/completed = %d/%d/%d, want 5/5/5", summary.selected, summary.dispatched, summary.completed)
+	}
+	if summary.pagesFetched != 3 {
+		t.Fatalf("pages fetched = %d, want 3", summary.pagesFetched)
+	}
+	if len(marked) != 5 {
+		t.Fatalf("marked checked = %d, want 5", len(marked))
+	}
+	if queries < 4 {
+		t.Fatalf("queries = %d, want at least 4 including wrap-stop query", queries)
+	}
+	if got := rec.gauge("scheduler.round.selected.count"); got != 5 {
+		t.Fatalf("selected metric = %d, want 5", got)
+	}
+	if got := rec.gauge("scheduler.round.completed.count"); got != 5 {
+		t.Fatalf("completed metric = %d, want 5", got)
+	}
+	if got := rec.gauge("scheduler.round.due_remaining.count"); got != 0 {
+		t.Fatalf("due remaining metric = %d, want 0", got)
+	}
+}
+
+func TestRunRoundWaitsUnderPoolBackpressureInsteadOfDropping(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	cfg := setTestConfig(t)
+	cfg.DatasetSize = 5
+	cfg.NetCommsTimeout = 1
+	cfg.MinTimeBetweenRoundsSec = 0
+	cfg.UseVariableCheckIntervals = true
+	cfg.WorkerMaxMemMB = 0
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(25 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	sites := []db.Site{
+		{BlogID: 1, MonitorURL: srv.URL},
+		{BlogID: 2, MonitorURL: srv.URL},
+		{BlogID: 3, MonitorURL: srv.URL},
+		{BlogID: 4, MonitorURL: srv.URL},
+		{BlogID: 5, MonitorURL: srv.URL},
+	}
+
+	checked := make(map[int64]bool)
+	dbGetSitesForBucket = func(_ context.Context, _, _ int, batchSize int, useVariableIntervals bool) ([]db.Site, error) {
+		if batchSize != 5 {
+			t.Fatalf("batch size = %d, want 5", batchSize)
+		}
+		if !useVariableIntervals {
+			t.Fatal("useVariableIntervals = false, want true")
+		}
+		return nextSchedulerTestPage(sites, checked, batchSize, true), nil
+	}
+	dbMarkSiteChecked = func(_ context.Context, blogID int64, _ time.Time) error {
+		checked[blogID] = true
+		return nil
+	}
+	dbCountDueSites = func(_ context.Context, _, _ int, useVariableIntervals bool) (int, error) {
+		if !useVariableIntervals {
+			t.Fatal("count due useVariableIntervals = false, want true")
+		}
+		count := 0
+		for _, site := range sites {
+			if !checked[site.BlogID] {
+				count++
+			}
+		}
+		return count, nil
+	}
+
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+
+	p := checker.NewPool(1, 1, 1)
+	defer p.Drain()
+	o := &Orchestrator{
+		pool:       p,
+		retries:    newRetryQueue(),
+		ctx:        context.Background(),
+		hostname:   "host-a",
+		roundStart: time.Now(),
+	}
+
+	summary := o.runRound()
+	if summary.selected != 5 || summary.dispatched != 5 || summary.completed != 5 {
+		t.Fatalf("summary selected/dispatched/completed = %d/%d/%d, want 5/5/5", summary.selected, summary.dispatched, summary.completed)
+	}
+	if summary.backpressureWaits == 0 {
+		t.Fatal("backpressure waits = 0, want > 0")
+	}
+	if got := rec.counter("scheduler.dispatch.backpressure_wait.count"); got == 0 {
+		t.Fatal("backpressure metric = 0, want > 0")
+	}
+	if got := rec.gauge("scheduler.round.outstanding.count"); got != 0 {
+		t.Fatalf("outstanding metric = %d, want 0", got)
+	}
+	if got := rec.gauge("scheduler.round.due_remaining.count"); got != 0 {
+		t.Fatalf("due remaining metric = %d, want 0", got)
+	}
+}
+
+func TestSchedulerSleepDurationUsesShortPollForVariableIntervals(t *testing.T) {
+	cfg := &config.Config{
+		MinTimeBetweenRoundsSec:   300,
+		UseVariableCheckIntervals: true,
+	}
+	if got := schedulerSleepDuration(cfg, roundSummary{}, time.Second); got != schedulerVariableIntervalPollInterval {
+		t.Fatalf("schedulerSleepDuration(variable) = %v, want %v", got, schedulerVariableIntervalPollInterval)
+	}
+
+	cfg.UseVariableCheckIntervals = false
+	if got := schedulerSleepDuration(cfg, roundSummary{}, time.Second); got != 299*time.Second {
+		t.Fatalf("schedulerSleepDuration(fixed) = %v, want 299s", got)
+	}
+
+	if got := schedulerSleepDuration(cfg, roundSummary{}, 301*time.Second); got != 0 {
+		t.Fatalf("schedulerSleepDuration(elapsed) = %v, want 0", got)
+	}
+}
+
+func nextSchedulerTestPage(sites []db.Site, checked map[int64]bool, batchSize int, dueOnly bool) []db.Site {
+	out := make([]db.Site, 0, batchSize)
+	for _, site := range sites {
+		if checked[site.BlogID] {
+			continue
+		}
+		out = append(out, site)
+		if len(out) == batchSize {
+			return out
+		}
+	}
+	if dueOnly {
+		return out
+	}
+	for _, site := range sites {
+		if !checked[site.BlogID] {
+			continue
+		}
+		out = append(out, site)
+		if len(out) == batchSize {
+			return out
+		}
+	}
+	return out
 }
 
 func TestRetryQueueAllBlogIDs(t *testing.T) {
