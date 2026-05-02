@@ -43,7 +43,7 @@ The events row is the authoritative current-state projection. The transitions ta
 | `ended_at`           | TIMESTAMP(3), null | When the condition resolved. Null while active.                        |
 | `resolution_reason`  | VARCHAR(64), null | Why the event ended. Null while active.                                 |
 | `cause_event_id`     | BIGINT UNSIGNED, null | Causal link to a root-cause event (separate from rollup).           |
-| `metadata`           | JSON, null       | Check-type-specific payload (HTTP code, RTT, days-to-expiry, etc.).      |
+| `metadata`           | JSON, null       | Check-type-specific payload (HTTP method, code, RTT, days-to-expiry, etc.). |
 | `updated_at`         | TIMESTAMP(3)     | ON UPDATE CURRENT_TIMESTAMP — convenience for the dedup path.            |
 | `dedup_key`          | VARCHAR generated | Stored generated column carrying the identity tuple while the event is open, NULL once closed. Backed by a unique index — see "Identity and idempotency". |
 
