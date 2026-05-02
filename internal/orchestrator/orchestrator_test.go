@@ -1013,6 +1013,10 @@ func TestSchedulerSleepDurationUsesShortPollForVariableIntervals(t *testing.T) {
 		t.Fatalf("schedulerSleepDuration(fixed) = %v, want 299s", got)
 	}
 
+	if got := schedulerSleepDuration(cfg, roundSummary{dueRemaining: 1}, time.Second); got != schedulerBacklogPollInterval {
+		t.Fatalf("schedulerSleepDuration(backlog) = %v, want %v", got, schedulerBacklogPollInterval)
+	}
+
 	if got := schedulerSleepDuration(cfg, roundSummary{}, 301*time.Second); got != 0 {
 		t.Fatalf("schedulerSleepDuration(elapsed) = %v, want 0", got)
 	}

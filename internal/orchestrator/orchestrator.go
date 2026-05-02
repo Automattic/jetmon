@@ -48,6 +48,7 @@ const verifierRPCHeadroom = 5 * time.Second
 
 const schedulerBackpressurePollInterval = 10 * time.Millisecond
 const schedulerVariableIntervalPollInterval = 5 * time.Second
+const schedulerBacklogPollInterval = 5 * time.Second
 
 // VariableIntervalPollInterval returns the idle scheduler poll interval used
 // when per-site check intervals are enabled. The SQL due predicate prevents
@@ -475,6 +476,9 @@ func schedulerSleepDuration(cfg *config.Config, summary roundSummary, elapsed ti
 	if summary.interrupted {
 		return 0
 	}
+	if summary.dueRemaining > 0 || summary.outstanding > 0 || summary.fetchErrors > 0 {
+		return schedulerBacklogPollInterval
+	}
 	if cfg.UseVariableCheckIntervals {
 		return schedulerVariableIntervalPollInterval
 	}
@@ -536,6 +540,35 @@ func (o *Orchestrator) finishRound(cfg *config.Config, summary roundSummary) {
 
 		metrics.WriteStatsFiles(sps, queueDepth, o.totalChecked)
 	}
+	logRoundSummary(summary, roundDuration, sps)
+}
+
+func logRoundSummary(summary roundSummary, roundDuration time.Duration, sps int) {
+	if summary.selected == 0 &&
+		summary.dueRemaining == 0 &&
+		summary.outstanding == 0 &&
+		summary.backpressureWaits == 0 &&
+		summary.fetchErrors == 0 &&
+		summary.dueCountErrors == 0 {
+		return
+	}
+	log.Printf(
+		"orchestrator: round summary pages=%d due_start=%d selected=%d dispatched=%d completed=%d outstanding=%d due_remaining=%d backpressure_waits=%d stale_results=%d duplicate_results=%d never_checked=%d oldest_selected_age_sec=%d duration=%s sps=%d",
+		summary.pagesFetched,
+		summary.dueAtStart,
+		summary.selected,
+		summary.dispatched,
+		summary.completed,
+		summary.outstanding,
+		summary.dueRemaining,
+		summary.backpressureWaits,
+		summary.staleResults,
+		summary.duplicateResults,
+		summary.neverChecked,
+		int(summary.oldestSelectedAge.Seconds()),
+		roundDuration.Round(time.Millisecond),
+		sps,
+	)
 }
 
 func (o *Orchestrator) processResults(results map[int64]checker.Result, sites map[int64]db.Site) {
