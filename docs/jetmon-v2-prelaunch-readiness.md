@@ -191,11 +191,11 @@ Evidence:
 
 ### 4. Operational Rollout Rehearsal
 
-- [ ] Owner: `Jetmon`, `Systems` - Run `make rollout-docs-verify`.
-- [ ] Owner: `Jetmon`, `Systems` - Run same-server dry-run rehearsal.
-- [ ] Owner: `Jetmon`, `Systems` - Run fresh-server dry-run rehearsal if that
+- [x] Owner: `Jetmon`, `Systems` - Run `make rollout-docs-verify`.
+- [x] Owner: `Jetmon`, `Systems` - Run same-server dry-run rehearsal.
+- [x] Owner: `Jetmon`, `Systems` - Run fresh-server dry-run rehearsal if that
   path remains an option.
-- [ ] Owner: `Jetmon`, `Systems` - Run rollback dry-run rehearsal.
+- [x] Owner: `Jetmon`, `Systems` - Run rollback dry-run rehearsal.
 - [ ] Owner: `Jetmon`, `Systems` - Run VM lab snapshot flow if the lab host is
   available.
 - [ ] Owner: `Jetmon`, `Systems` - Confirm `DELIVERY_OWNER_HOST` posture is
@@ -207,6 +207,12 @@ Evidence:
 - `make rollout-rehearsal-verify` output
 - VM lab transcript
 - Generated rehearsal plan for the actual rollout mode
+
+Local dry-run evidence:
+
+- `make rollout-docs-verify` passed on 2026-05-03T03:17Z.
+- The verifier generated and checked same-server, fresh-server, and guided
+  rollback dry-run plans.
 
 ### 5. Production Observability And Hold Points
 

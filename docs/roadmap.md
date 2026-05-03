@@ -52,8 +52,10 @@ No active candidate branch is queued here right now.
 - [x] Update support and allowlist guidance for v2 `GET` checks,
   `jetmon/2.0`, blocked/WAF cases, false positives, maintenance windows, and
   `Unknown` as monitor-side uncertainty rather than downtime.
-- [ ] Run rollout and rollback rehearsals, including VM lab snapshot flow when
-  available, and attach the generated command plan for the chosen rollout mode.
+- [x] Run local rollout docs verification plus same-server, fresh-server, and
+  rollback dry-run rehearsals with `make rollout-docs-verify`.
+- [ ] Run VM lab snapshot rollout/rollback flow when available, and attach the
+  generated command plan for the chosen rollout mode.
 - [x] Draft canary cohort matrix and expansion/rollback threshold prompts for
   WPCOM, Atomic, self-hosted Jetpack, agency, WAF/security-plugin,
   historically noisy, high-traffic, and multi-endpoint sites.
