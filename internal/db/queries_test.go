@@ -112,12 +112,12 @@ func TestGetSitesForBucketScansRowsAndDefaultRedirectPolicy(t *testing.T) {
 	now := time.Now().UTC()
 	rows := sqlmock.NewRows([]string{
 		"jetpack_monitor_site_id", "blog_id", "bucket_no", "monitor_url",
-		"monitor_active", "site_status", "last_status_change", "check_interval", "last_checked_at",
+		"monitor_active", "site_status", "last_status_change", "check_interval", "last_checked_at", "next_check_at",
 		"ssl_expiry_date", "check_keyword", "maintenance_start", "maintenance_end",
 		"custom_headers", "timeout_seconds", "redirect_policy", "alert_cooldown_minutes", "last_alert_sent_at",
 	}).AddRow(
 		int64(1), int64(42), 7, "https://site.example",
-		true, 1, now, 5, now,
+		true, 1, now, 5, now, now.Add(5*time.Minute),
 		nil, nil, nil, nil,
 		nil, nil, nil, nil, nil,
 	)
@@ -140,6 +140,28 @@ func TestGetSitesForBucketScansRowsAndDefaultRedirectPolicy(t *testing.T) {
 	}
 }
 
+func TestGetSitesForBucketVariableIntervalsUsesNextCheckAt(t *testing.T) {
+	mock, cleanup := withMockDB(t)
+	defer cleanup()
+
+	rows := sqlmock.NewRows([]string{
+		"jetpack_monitor_site_id", "blog_id", "bucket_no", "monitor_url",
+		"monitor_active", "site_status", "last_status_change", "check_interval", "last_checked_at", "next_check_at",
+		"ssl_expiry_date", "check_keyword", "maintenance_start", "maintenance_end",
+		"custom_headers", "timeout_seconds", "redirect_policy", "alert_cooldown_minutes", "last_alert_sent_at",
+	})
+	mock.ExpectQuery("next_check_at").
+		WithArgs(0, 99, 50).
+		WillReturnRows(rows)
+
+	if _, err := GetSitesForBucket(context.Background(), 0, 99, 50, true); err != nil {
+		t.Fatalf("GetSitesForBucket: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestCountActiveSitesForBucketRange(t *testing.T) {
 	mock, cleanup := withMockDB(t)
 	defer cleanup()
@@ -154,6 +176,26 @@ func TestCountActiveSitesForBucketRange(t *testing.T) {
 	}
 	if count != 42 {
 		t.Fatalf("CountActiveSitesForBucketRange = %d, want 42", count)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestCountDueSitesForBucketRangeVariableIntervalsUsesNextCheckAt(t *testing.T) {
+	mock, cleanup := withMockDB(t)
+	defer cleanup()
+
+	mock.ExpectQuery("next_check_at").
+		WithArgs(10, 19).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(9))
+
+	count, err := CountDueSitesForBucketRange(context.Background(), 10, 19, true)
+	if err != nil {
+		t.Fatalf("CountDueSitesForBucketRange: %v", err)
+	}
+	if count != 9 {
+		t.Fatalf("CountDueSitesForBucketRange = %d, want 9", count)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)
@@ -189,8 +231,8 @@ func TestSimpleMutationQueries(t *testing.T) {
 	mock.ExpectExec("UPDATE jetpack_monitor_sites SET site_status").
 		WithArgs(2, now, int64(42)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("UPDATE jetpack_monitor_sites SET last_checked_at").
-		WithArgs(now, int64(42)).
+	mock.ExpectExec("UPDATE jetpack_monitor_sites").
+		WithArgs(now, now, int64(42)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("UPDATE jetpack_monitor_sites SET last_alert_sent_at").
 		WithArgs(now, int64(42)).
@@ -253,7 +295,11 @@ func TestMarkSitesCheckedBatchesUpdates(t *testing.T) {
 	first := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
 	second := first.Add(time.Minute)
 	mock.ExpectExec("UPDATE jetpack_monitor_sites SET last_checked_at = CASE blog_id").
-		WithArgs(int64(7), first, int64(42), second, int64(7), int64(42)).
+		WithArgs(
+			int64(7), first, int64(42), second,
+			int64(7), first, int64(42), second,
+			int64(7), int64(42),
+		).
 		WillReturnResult(sqlmock.NewResult(0, 2))
 
 	err := MarkSitesChecked(context.Background(), []SiteCheck{

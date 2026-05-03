@@ -159,7 +159,7 @@ Copy `config/config-sample.json` to `config/config.json`. All keys from the orig
 - `ALERT_COOLDOWN_MINUTES`: Default cooldown between repeated alerts for the same site
 - `LEGACY_STATUS_PROJECTION_ENABLE`: Keep v1 `site_status` / `last_status_change` projection updated during shadow-v2-state migration
 - `LOG_FORMAT`: `text` (default, drop-in compatible) or `json` (structured logging)
-- `USE_VARIABLE_CHECK_INTERVALS`: Respect per-site `check_interval`; the scheduler uses a short idle poll and the SQL due predicate controls which sites are ready
+- `USE_VARIABLE_CHECK_INTERVALS`: Respect per-site `check_interval`; the scheduler uses a short idle poll and maintained `next_check_at` timestamps control which sites are ready
 - `DASHBOARD_PORT`: Internal port for the operator dashboard (0 to disable)
 - `DEBUG_PORT`: localhost-only pprof port, default 6060 (0 to disable; never exposed remotely)
 
@@ -238,6 +238,7 @@ Sites are stored in `jetpack_monitor_sites` with bucket-based sharding. The `buc
 | Column | Type | Purpose |
 |--------|------|---------|
 | `ssl_expiry_date` | DATE NULL | Updated each HTTPS check |
+| `next_check_at` | DATETIME NULL | Maintained due timestamp for variable-interval scheduling |
 | `check_keyword` | VARCHAR(500) NULL | String to verify in response body |
 | `maintenance_start` | DATETIME NULL | Maintenance window start |
 | `maintenance_end` | DATETIME NULL | Maintenance window end |

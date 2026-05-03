@@ -442,6 +442,27 @@ var migrations = []migration{
 	// a full scan/filesort at larger table sizes.
 	{27, `ALTER TABLE jetpack_monitor_sites
 		ADD INDEX idx_monitor_last_checked_blog_bucket (monitor_active, last_checked_at, blog_id, bucket_no)`},
+
+	// Migration 28 adds a maintained due timestamp for variable-interval
+	// scheduling. This lets the scheduler use a simple indexed range predicate
+	// instead of computing DATE_ADD(last_checked_at, INTERVAL check_interval)
+	// for every candidate row on every poll.
+	{28, `ALTER TABLE jetpack_monitor_sites
+		ADD COLUMN next_check_at DATETIME NULL AFTER last_checked_at`},
+
+	// Migration 29 backfills next_check_at for already-checked rows. Rows that
+	// have never been checked stay NULL and are due immediately, matching the
+	// existing last_checked_at IS NULL behavior.
+	{29, `UPDATE jetpack_monitor_sites
+		SET next_check_at = DATE_ADD(last_checked_at, INTERVAL GREATEST(check_interval, 1) MINUTE)
+		WHERE last_checked_at IS NOT NULL
+		  AND next_check_at IS NULL`},
+
+	// Migration 30 supports variable-interval scheduling's hot path:
+	// active rows whose maintained due timestamp is NULL or due now, ordered by
+	// next_check_at and blog_id.
+	{30, `ALTER TABLE jetpack_monitor_sites
+		ADD INDEX idx_monitor_next_check_blog_bucket (monitor_active, next_check_at, blog_id, bucket_no)`},
 }
 
 // Migrate applies all pending migrations idempotently.

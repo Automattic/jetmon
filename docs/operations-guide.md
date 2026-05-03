@@ -46,10 +46,12 @@ Scheduler behavior:
 - A full worker queue applies backpressure; checks remain pending instead of
   being dropped.
 - With `USE_VARIABLE_CHECK_INTERVALS=true`, Jetmon polls for newly due work on a
-  short idle interval and uses each site's `check_interval` to decide what to
-  check. `MIN_TIME_BETWEEN_ROUNDS_SEC` is only the fixed-cadence pass interval
-  when variable intervals are disabled. Use this mode for production-like
-  freshness and capacity tests.
+  short idle interval and uses each site's maintained `next_check_at` timestamp
+  to decide what to check. `next_check_at` is recalculated from
+  `last_checked_at + check_interval` whenever a check completes or
+  `check_interval` changes. `MIN_TIME_BETWEEN_ROUNDS_SEC` is only the
+  fixed-cadence pass interval when variable intervals are disabled. Use this
+  mode for production-like freshness and capacity tests.
 - Watch the `scheduler.round.*` StatsD metrics during capacity tests. In
   particular, `due_start`, `selected`, `completed`, `outstanding`, and
   `due_remaining` show whether freshness pressure is clearing or building.

@@ -73,10 +73,12 @@ No active candidate branch is queued here right now.
 - [ ] If MySQL CPU remains the limiting factor after batched writes, evaluate
   an asynchronous bounded check-history writer or lower-resolution history
   retention for healthy probes while keeping `last_checked_at` synchronous.
-- [ ] Add a maintained `next_check_at` column and scheduler index so variable
+- [x] Add a maintained `next_check_at` column and scheduler index so variable
   interval due selection uses a simple indexed range predicate instead of
   computing `DATE_ADD(last_checked_at, INTERVAL GREATEST(check_interval, 1)
-  MINUTE)` during every scheduler fetch.
+  MINUTE)` during every scheduler fetch. The scheduler now recalculates
+  `next_check_at` when checks complete or `check_interval` changes, and
+  migration backfills existing rows before adding the index.
 - [ ] Move exact due-count and projection-drift checks out of the hot scheduler
   loop, or run them on a slower background cadence, so operator reporting does
   not add broad database reads to every 5-second variable-interval pass.

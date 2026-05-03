@@ -92,8 +92,11 @@ USE_VARIABLE_CHECK_INTERVALS
 Set to true to respect the check_interval column per site instead of running
 all sites every fixed-cadence pass. Recommended for production freshness
 testing because newly due sites are discovered without waiting for
-MIN_TIME_BETWEEN_ROUNDS_SEC. Default in the sample config: true. Minimal configs
-that omit the key retain the compatibility default of false.
+MIN_TIME_BETWEEN_ROUNDS_SEC. Jetmon maintains next_check_at after each completed
+check so due-site selection can use an indexed timestamp range instead of
+recomputing each row's interval on every poll. Default in the sample config:
+true. Minimal configs that omit the key retain the compatibility default of
+false.
 
 LOG_FORMAT
 Log output format. Set to "json" for structured logging (e.g. for log aggregators), or "text" for human-readable output. Default: "text".
