@@ -116,7 +116,7 @@ No active candidate branch is queued here right now.
   15,000-site failure matched the old page-at-a-time shape: 150 DB pages of 100
   sites each, with each page waiting for its own slowest result before the next
   page could be fetched. The new derived batch window uses worker capacity and
-  the configured timeout / round-cadence budget, capped at 10,000, so the
+  the configured timeout / round-cadence budget, now capped at 25,000, so the
   default 60-worker setup amortizes the slow-tail wait across roughly 1,800
   sites instead of 100 while avoiding very long processing windows during broad
   timeout scenarios.
@@ -158,6 +158,13 @@ No active candidate branch is queued here right now.
   already-dispatched failed checks could be processed after uptime-bench closed
   the existing events and disabled the rows. Failure processing now rechecks
   `monitor_active` before recording retry state or opening Seems Down events.
+- [x] Raise the scheduler's derived batch cap from 10,000 to 25,000 sites for
+  high-worker capacity tests. The `25,000,30,000,40,000` worker-ceiling retest
+  passed with 40,000 active sites and clean post-deactivate event cleanup, but
+  40,000-site rounds still hit the 480-worker ceiling and required four 10k
+  scheduler batches. A higher batch cap lets larger worker ceilings amortize
+  slow-tail waits and write processing over fewer scheduler windows as tests
+  climb toward 100k sites.
 - [ ] Retest the event-queue branch with a clean `20,000,22,500,25,000` ladder
   after uptime-bench confirms no failed-preflight scheduler work is still
   in-flight and the `blog_id` write-path index is present. Compare freshness

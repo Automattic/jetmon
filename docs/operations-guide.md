@@ -48,7 +48,7 @@ Scheduler behavior:
   paying one slow-tail wait per `DATASET_SIZE` page. The batch target is derived
   from worker capacity (`NUM_WORKERS * 100`) and the configured timeout /
   round-cadence budget (`NUM_WORKERS * MIN_TIME_BETWEEN_ROUNDS_SEC /
-  NET_COMMS_TIMEOUT`), capped at 10,000 sites. Operators usually should not
+  NET_COMMS_TIMEOUT`), capped at 25,000 sites. Operators usually should not
   raise `DATASET_SIZE` just to improve throughput.
 - A full worker queue applies backpressure; checks remain pending instead of
   being dropped.
