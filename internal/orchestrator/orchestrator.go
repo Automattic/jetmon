@@ -633,6 +633,13 @@ func dueForOperatorReport(last, now time.Time) bool {
 	return last.IsZero() || !now.Before(last.Add(schedulerOperatorReportInterval))
 }
 
+func boolMetric(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
+}
+
 func (o *Orchestrator) finishRound(cfg *config.Config, summary roundSummary) {
 	// Emit metrics and update stats files.
 	roundDuration := time.Since(o.roundStart)
@@ -668,6 +675,7 @@ func (o *Orchestrator) finishRound(cfg *config.Config, summary roundSummary) {
 		m.Gauge("scheduler.round.dispatched.count", summary.dispatched)
 		m.Gauge("scheduler.round.completed.count", summary.completed)
 		m.Gauge("scheduler.round.outstanding.count", summary.outstanding)
+		m.Gauge("scheduler.round.due_count_sampled.count", boolMetric(summary.dueCountSampled))
 		if summary.dueCountSampled {
 			m.Gauge("scheduler.round.due_start.count", summary.dueAtStart)
 			m.Gauge("scheduler.round.due_remaining.count", summary.dueRemaining)

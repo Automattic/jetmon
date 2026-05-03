@@ -198,7 +198,7 @@ These interfaces must remain identical to the original Jetmon. Do not change the
 - Per-site custom headers merged from `custom_headers` JSON column
 
 **Timing Breakdown (via `net/http/httptrace`):**
-Every check records: DNS lookup, TCP connect, TLS handshake, request sent, first response byte (TTFB). All six timings are stored in the audit log and emitted as StatsD metrics. The composite RTT is retained for backwards compatibility.
+Every check records composite RTT plus DNS lookup, TCP connect, TLS handshake, and first response byte (TTFB) timings. These samples are stored in `jetmon_check_history` for trending and API statistics. Scheduler-level StatsD metrics expose phase timing and write volume so capacity tests can separate check execution, freshness writes, check-history inserts, SSL expiry updates, and event handling.
 
 **SSL Monitoring:**
 Every HTTPS check inspects `tls.ConnectionState` for:

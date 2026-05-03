@@ -218,10 +218,9 @@ orchestrator.Run()
           │     ├─ collect results (deadline-bounded)
           │     │
           │     ├─ processResults()
-          │     │     ├─ dbMarkSiteChecked()
-          │     │     ├─ dbRecordCheckHistory()
-          │     │     ├─ dbUpdateSSLExpiry() + checkSSLAlerts()
-          │     │     ├─ auditLog(EventCheck)
+          │     │     ├─ dbMarkSitesChecked()       // last_checked_at + next_check_at
+          │     │     ├─ dbRecordCheckHistories()   // RTT + DNS/TCP/TLS/TTFB samples
+          │     │     ├─ dbUpdateSSLExpiries() + checkSSLAlerts()
           │     │     └─ handleRecovery() or handleFailure()
           │     │
           │     ├─ emit StatsD metrics

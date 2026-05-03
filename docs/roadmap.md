@@ -41,7 +41,8 @@ No active candidate branch is queued here right now.
   available results instead of dropping checks.
 - [x] Add scheduler metrics for due-start, selected, dispatched, completed,
   outstanding, due-remaining, page count, backpressure waits, stale results,
-  duplicate results, never-checked selections, and oldest selected age.
+  duplicate results, never-checked selections, oldest selected age, and whether
+  exact due-count gauges were sampled on this variable-interval poll.
 - [x] Add per-page scheduler phase timings for dispatch, wait, result
   processing, `last_checked_at` writes, check-history writes, SSL updates, and
   event handling so the next capacity retest can identify the exact slow

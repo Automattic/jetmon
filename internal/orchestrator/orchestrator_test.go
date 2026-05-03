@@ -1113,6 +1113,8 @@ func TestRunRoundSamplesBroadOperatorCountsOnCadence(t *testing.T) {
 		driftCalls++
 		return 0, nil
 	}
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
 
 	o := &Orchestrator{
 		ctx:        context.Background(),
@@ -1126,6 +1128,9 @@ func TestRunRoundSamplesBroadOperatorCountsOnCadence(t *testing.T) {
 	if driftCalls != 1 {
 		t.Fatalf("first round drift calls = %d, want 1", driftCalls)
 	}
+	if got := rec.gauge("scheduler.round.due_count_sampled.count"); got != 1 {
+		t.Fatalf("first round due_count_sampled metric = %d, want 1", got)
+	}
 
 	base = base.Add(5 * time.Second)
 	o.runRound()
@@ -1135,6 +1140,9 @@ func TestRunRoundSamplesBroadOperatorCountsOnCadence(t *testing.T) {
 	if driftCalls != 1 {
 		t.Fatalf("second round drift calls = %d, want still 1", driftCalls)
 	}
+	if got := rec.gauge("scheduler.round.due_count_sampled.count"); got != 0 {
+		t.Fatalf("second round due_count_sampled metric = %d, want 0", got)
+	}
 
 	base = base.Add(schedulerOperatorReportInterval)
 	o.runRound()
@@ -1143,6 +1151,9 @@ func TestRunRoundSamplesBroadOperatorCountsOnCadence(t *testing.T) {
 	}
 	if driftCalls != 2 {
 		t.Fatalf("cadence round drift calls = %d, want 2", driftCalls)
+	}
+	if got := rec.gauge("scheduler.round.due_count_sampled.count"); got != 1 {
+		t.Fatalf("cadence round due_count_sampled metric = %d, want 1", got)
 	}
 }
 
