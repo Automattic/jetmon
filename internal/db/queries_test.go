@@ -246,6 +246,53 @@ func TestSimpleMutationQueries(t *testing.T) {
 	}
 }
 
+func TestMarkSitesCheckedBatchesUpdates(t *testing.T) {
+	mock, cleanup := withMockDB(t)
+	defer cleanup()
+
+	first := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
+	second := first.Add(time.Minute)
+	mock.ExpectExec("UPDATE jetpack_monitor_sites SET last_checked_at = CASE blog_id").
+		WithArgs(int64(7), first, int64(42), second, int64(7), int64(42)).
+		WillReturnResult(sqlmock.NewResult(0, 2))
+
+	err := MarkSitesChecked(context.Background(), []SiteCheck{
+		{BlogID: 42, CheckedAt: second},
+		{BlogID: 7, CheckedAt: first},
+	})
+	if err != nil {
+		t.Fatalf("MarkSitesChecked: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordCheckHistoriesBatchesInserts(t *testing.T) {
+	mock, cleanup := withMockDB(t)
+	defer cleanup()
+
+	first := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
+	second := first.Add(time.Minute)
+	mock.ExpectExec("INSERT INTO jetmon_check_history").
+		WithArgs(
+			int64(7), 201, 1, int64(10), int64(1), int64(2), int64(3), int64(4), first,
+			int64(42), 200, 0, int64(100), int64(5), int64(6), int64(7), int64(8), second,
+		).
+		WillReturnResult(sqlmock.NewResult(1, 2))
+
+	err := RecordCheckHistories(context.Background(), []CheckHistoryRow{
+		{BlogID: 42, HTTPCode: 200, ErrorCode: 0, RTTMs: 100, DNSMs: 5, TCPMs: 6, TLSMs: 7, TTFBMs: 8, CheckedAt: second},
+		{BlogID: 7, HTTPCode: 201, ErrorCode: 1, RTTMs: 10, DNSMs: 1, TCPMs: 2, TLSMs: 3, TTFBMs: 4, CheckedAt: first},
+	})
+	if err != nil {
+		t.Fatalf("RecordCheckHistories: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestUpdateSiteStatusTx(t *testing.T) {
 	mock, cleanup := withMockDB(t)
 	defer cleanup()
