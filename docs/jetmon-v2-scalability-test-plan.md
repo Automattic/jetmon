@@ -114,10 +114,15 @@ Freshness and scheduler pressure:
 
 - `scheduler.round.pages.count`
 - `scheduler.round.batches.count`
+- `scheduler.round.batch_target.count`
 - `scheduler.round.selected.count`
 - `scheduler.round.dispatched.count`
 - `scheduler.round.completed.count`
 - `scheduler.round.outstanding.count`
+- `scheduler.round.pool.workers.max`
+- `scheduler.round.pool.active.max`
+- `scheduler.round.pool.queue_depth.max`
+- `scheduler.round.pool.queue_capacity.max`
 - `scheduler.round.due_count_sampled.count`
 - `scheduler.round.due_start.count`
 - `scheduler.round.due_remaining.count`
@@ -139,6 +144,10 @@ represent one scheduler check batch, which may contain multiple DB pages:
 - `scheduler.page.history.time`
 - `scheduler.page.ssl.time`
 - `scheduler.page.events.time`
+- `scheduler.page.pool.workers.max`
+- `scheduler.page.pool.active.max`
+- `scheduler.page.pool.queue_depth.max`
+- `scheduler.page.pool.queue_capacity.max`
 - `scheduler.page.mark_checked.row.count`
 - `scheduler.page.history.row.count`
 - `scheduler.page.ssl.row.count`
@@ -219,15 +228,26 @@ Dependency signals:
 - If MySQL CPU remains high while freshness is good, compare
   `history.row.count`, `history.time`, and table growth before implementing
   async or lower-resolution history storage.
+- If `pool.active.max` stays close to `NUM_WORKERS` and CPU / FD usage remains
+  low, the worker ceiling is probably the immediate throughput limiter. Run a
+  controlled higher-worker batch before designing the adaptive worker ceiling.
+- If `pool.queue_depth.max` stays near `pool.queue_capacity.max` and
+  `dispatch.time` remains high, the scheduler is spending significant time
+  backpressured by the check pool. Higher concurrency, larger queue capacity, or
+  streaming result processing are the likely next levers.
 
 ## Next Capacity Ladder
 
 Run each step for the same duration and compare against the latest successful
-1,000-site baseline:
+baseline. The immediate follow-up after the 20,000-site pass is a controlled
+worker-ceiling experiment: keep the same 10-minute window, raise `NUM_WORKERS`
+on the v2 test host to 240, and repeat `20,000` before trying `25,000`. That
+should show whether the fixed 60-worker ceiling is the next limiter or whether
+write/event stages dominate even with more check concurrency.
 
-1. 1,000 sites after this branch to isolate regressions.
-2. 5,000 sites to find the next visible bottleneck.
-3. 10,000 sites if freshness, FD count, and MySQL CPU remain healthy.
+1. 20,000 sites with `NUM_WORKERS=240` to measure worker-ceiling impact.
+2. 25,000 sites if the 20,000 repeat keeps a healthy freshness margin.
+3. 22,500/25,000/27,500 narrower ladder if 25,000 is near the margin.
 
 For each step, preserve:
 

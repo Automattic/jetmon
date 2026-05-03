@@ -122,6 +122,21 @@ No active candidate branch is queued here right now.
   timeout scenarios.
 - [ ] Retest a single 15,000-site batch against the scheduler-batch branch. If
   it passes, run a `15,000,20,000,25,000` ladder to find the next boundary.
+- [x] Capture the first scheduler-batch retest results. The May 3, 2026
+  `12,500,15,000,20,000` v2fix run passed all selected batches and moved the
+  known-clean point to 20,000 active sites, but the 20,000-site batch had only a
+  27% freshness throughput margin. Host CPU and `jetmon2` CPU stayed low, and
+  the logs showed 60-worker check concurrency plus substantial dispatch,
+  mark-checked, and event-processing time.
+- [x] Add scheduler pool-pressure diagnostics for the next capacity run. Batch
+  and round summaries now report max worker count, active checks, queue depth,
+  queue capacity, and batch target so we can distinguish a worker-ceiling limit
+  from DB writes or event-processing bottlenecks.
+- [ ] Run a controlled worker-ceiling experiment with `NUM_WORKERS=240` on the
+  v2 test host. Repeat the 20,000-site batch before trying 25,000; if CPU/FDs
+  remain low and freshness margin grows, prioritize adaptive concurrency. If
+  margin stays tight, prioritize streaming result processing and moving
+  event/freshness persistence off the scheduler hot path.
 - [ ] Add a 5k/10k capacity ladder that records freshness, p95 age, MySQL CPU,
   MySQL I/O/network, `jetmon2` CPU/RSS/FDs, StatsD CPU, Veriflier CPU, and
   check-history row growth after each major scalability change.

@@ -72,6 +72,11 @@ func (p *Pool) QueueDepth() int {
 	return len(p.work)
 }
 
+// QueueCapacity returns the fixed pending-work channel capacity.
+func (p *Pool) QueueCapacity() int {
+	return cap(p.work)
+}
+
 // ActiveCount returns the number of goroutines currently running a check.
 func (p *Pool) ActiveCount() int {
 	return int(p.active.Load())

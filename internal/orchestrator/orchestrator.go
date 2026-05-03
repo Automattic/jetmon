@@ -122,6 +122,12 @@ type roundSummary struct {
 	fetchErrors       int
 	interrupted       bool
 
+	batchTarget          int
+	poolWorkerCountMax   int
+	poolActiveChecksMax  int
+	poolQueueDepthMax    int
+	poolQueueCapacityMax int
+
 	dispatchDuration    time.Duration
 	waitDuration        time.Duration
 	processDuration     time.Duration
@@ -188,6 +194,21 @@ func (s *roundSummary) add(other roundSummary) {
 	s.checkTLSDeprecated += other.checkTLSDeprecated
 	if other.oldestSelectedAge > s.oldestSelectedAge {
 		s.oldestSelectedAge = other.oldestSelectedAge
+	}
+	if other.batchTarget > s.batchTarget {
+		s.batchTarget = other.batchTarget
+	}
+	if other.poolWorkerCountMax > s.poolWorkerCountMax {
+		s.poolWorkerCountMax = other.poolWorkerCountMax
+	}
+	if other.poolActiveChecksMax > s.poolActiveChecksMax {
+		s.poolActiveChecksMax = other.poolActiveChecksMax
+	}
+	if other.poolQueueDepthMax > s.poolQueueDepthMax {
+		s.poolQueueDepthMax = other.poolQueueDepthMax
+	}
+	if other.poolQueueCapacityMax > s.poolQueueCapacityMax {
+		s.poolQueueCapacityMax = other.poolQueueCapacityMax
 	}
 	if other.interrupted {
 		s.interrupted = true
@@ -399,10 +420,12 @@ func (o *Orchestrator) runRound() roundSummary {
 		pageSize = 1
 	}
 	batchTarget := schedulerBatchTargetSites(cfg, pageSize)
+	summary.batchTarget = batchTarget
 	seen := make(map[int64]struct{}, batchTarget)
 	cursor := db.SitePageCursor{}
 	doneFetching := false
 	schedulerBatch := 0
+	o.capturePoolStats(&summary)
 	for {
 		select {
 		case <-o.ctx.Done():
@@ -512,6 +535,28 @@ func schedulerCursorFromSite(site db.Site, useVariableIntervals bool) db.SitePag
 	return cursor
 }
 
+func (o *Orchestrator) capturePoolStats(summary *roundSummary) {
+	if o == nil || o.pool == nil || summary == nil {
+		return
+	}
+	workers := o.pool.WorkerCount()
+	active := o.pool.ActiveCount()
+	queueDepth := o.pool.QueueDepth()
+	queueCapacity := o.pool.QueueCapacity()
+	if workers > summary.poolWorkerCountMax {
+		summary.poolWorkerCountMax = workers
+	}
+	if active > summary.poolActiveChecksMax {
+		summary.poolActiveChecksMax = active
+	}
+	if queueDepth > summary.poolQueueDepthMax {
+		summary.poolQueueDepthMax = queueDepth
+	}
+	if queueCapacity > summary.poolQueueCapacityMax {
+		summary.poolQueueCapacityMax = queueCapacity
+	}
+}
+
 func (o *Orchestrator) checkSitesPage(cfg *config.Config, sites []db.Site, pageNumber int) roundSummary {
 	summary := roundSummary{}
 	siteMap := make(map[int64]db.Site, len(sites))
@@ -520,23 +565,28 @@ func (o *Orchestrator) checkSitesPage(cfg *config.Config, sites []db.Site, pageN
 		siteMap[s.BlogID] = s
 	}
 
+	o.capturePoolStats(&summary)
 	dispatchStart := time.Now()
 	for _, site := range sites {
 		req := checkRequestForSite(cfg, site)
 		for {
 			if o.pool.Submit(req) {
 				summary.dispatched++
+				o.capturePoolStats(&summary)
 				break
 			}
 			summary.backpressureWaits++
 			if !o.waitForPageResult(siteMap, results, &summary, schedulerBackpressurePollInterval) {
 				summary.interrupted = true
 				summary.dispatchDuration += time.Since(dispatchStart)
+				o.capturePoolStats(&summary)
 				return summary
 			}
+			o.capturePoolStats(&summary)
 		}
 	}
 	summary.dispatchDuration += time.Since(dispatchStart)
+	o.capturePoolStats(&summary)
 
 	deadline := time.NewTimer(collectionDeadlineForSites(cfg, sites))
 	defer deadline.Stop()
@@ -545,6 +595,7 @@ func (o *Orchestrator) checkSitesPage(cfg *config.Config, sites []db.Site, pageN
 		select {
 		case res := <-o.pool.Results():
 			recordPageResult(siteMap, results, res, &summary)
+			o.capturePoolStats(&summary)
 		case <-deadline.C:
 			summary.outstanding = summary.dispatched - len(results)
 			log.Printf("orchestrator: round deadline reached, %d results outstanding", summary.outstanding)
@@ -552,12 +603,14 @@ func (o *Orchestrator) checkSitesPage(cfg *config.Config, sites []db.Site, pageN
 		case <-o.ctx.Done():
 			summary.interrupted = true
 			summary.waitDuration += time.Since(waitStart)
+			o.capturePoolStats(&summary)
 			return summary
 		}
 	}
 
 process:
 	summary.waitDuration += time.Since(waitStart)
+	o.capturePoolStats(&summary)
 	processStart := time.Now()
 	processSummary := o.processResults(results, siteMap)
 	summary.processDuration += time.Since(processStart)
@@ -599,6 +652,10 @@ func emitPageMetrics(summary roundSummary) {
 	m.Timing("scheduler.page.history.time", summary.historyDuration)
 	m.Timing("scheduler.page.ssl.time", summary.sslDuration)
 	m.Timing("scheduler.page.events.time", summary.eventDuration)
+	m.Gauge("scheduler.page.pool.workers.max", summary.poolWorkerCountMax)
+	m.Gauge("scheduler.page.pool.active.max", summary.poolActiveChecksMax)
+	m.Gauge("scheduler.page.pool.queue_depth.max", summary.poolQueueDepthMax)
+	m.Gauge("scheduler.page.pool.queue_capacity.max", summary.poolQueueCapacityMax)
 	m.Increment("scheduler.page.mark_checked.row.count", summary.markCheckedRows)
 	m.Increment("scheduler.page.history.row.count", summary.historyRows)
 	m.Increment("scheduler.page.ssl.row.count", summary.sslRows)
@@ -618,12 +675,16 @@ func emitPageMetrics(summary roundSummary) {
 
 func logPageSummary(pageNumber, sites int, summary roundSummary) {
 	log.Printf(
-		"orchestrator: batch summary batch=%d sites=%d dispatched=%d completed=%d outstanding=%d dispatch=%s wait=%s process=%s mark_checked=%s history=%s ssl=%s events=%s checks_success=%d checks_failure=%d checks_http_failure=%d checks_timeout=%d checks_connect_error=%d checks_ssl_error=%d checks_redirect=%d checks_keyword=%d checks_tls_deprecated=%d mark_checked_rows=%d history_rows=%d ssl_rows=%d mark_checked_errors=%d history_errors=%d ssl_errors=%d",
+		"orchestrator: batch summary batch=%d sites=%d dispatched=%d completed=%d outstanding=%d pool_workers_max=%d pool_active_max=%d pool_queue_depth_max=%d pool_queue_capacity=%d dispatch=%s wait=%s process=%s mark_checked=%s history=%s ssl=%s events=%s checks_success=%d checks_failure=%d checks_http_failure=%d checks_timeout=%d checks_connect_error=%d checks_ssl_error=%d checks_redirect=%d checks_keyword=%d checks_tls_deprecated=%d mark_checked_rows=%d history_rows=%d ssl_rows=%d mark_checked_errors=%d history_errors=%d ssl_errors=%d",
 		pageNumber,
 		sites,
 		summary.dispatched,
 		summary.completed,
 		summary.outstanding,
+		summary.poolWorkerCountMax,
+		summary.poolActiveChecksMax,
+		summary.poolQueueDepthMax,
+		summary.poolQueueCapacityMax,
 		summary.dispatchDuration.Round(time.Millisecond),
 		summary.waitDuration.Round(time.Millisecond),
 		summary.processDuration.Round(time.Millisecond),
@@ -805,10 +866,15 @@ func (o *Orchestrator) finishRound(cfg *config.Config, summary roundSummary) {
 		m.Gauge("round.sps.count", sps)
 		m.Gauge("scheduler.round.pages.count", summary.pagesFetched)
 		m.Gauge("scheduler.round.batches.count", summary.batchesProcessed)
+		m.Gauge("scheduler.round.batch_target.count", summary.batchTarget)
 		m.Gauge("scheduler.round.selected.count", summary.selected)
 		m.Gauge("scheduler.round.dispatched.count", summary.dispatched)
 		m.Gauge("scheduler.round.completed.count", summary.completed)
 		m.Gauge("scheduler.round.outstanding.count", summary.outstanding)
+		m.Gauge("scheduler.round.pool.workers.max", summary.poolWorkerCountMax)
+		m.Gauge("scheduler.round.pool.active.max", summary.poolActiveChecksMax)
+		m.Gauge("scheduler.round.pool.queue_depth.max", summary.poolQueueDepthMax)
+		m.Gauge("scheduler.round.pool.queue_capacity.max", summary.poolQueueCapacityMax)
 		m.Gauge("scheduler.round.due_count_sampled.count", boolInt(summary.dueCountsSampled))
 		if summary.dueCountsSampled {
 			m.Gauge("scheduler.round.due_start.count", summary.dueAtStart)
@@ -863,9 +929,10 @@ func logRoundSummary(summary roundSummary, roundDuration time.Duration, sps int)
 		return
 	}
 	log.Printf(
-		"orchestrator: round summary pages=%d batches=%d due_count_sampled=%t due_start=%d selected=%d dispatched=%d completed=%d outstanding=%d due_remaining=%d backpressure_waits=%d stale_results=%d duplicate_results=%d never_checked=%d oldest_selected_age_sec=%d dispatch=%s wait=%s process=%s mark_checked=%s history=%s ssl=%s events=%s checks_success=%d checks_failure=%d checks_http_failure=%d checks_timeout=%d checks_connect_error=%d checks_ssl_error=%d checks_redirect=%d checks_keyword=%d checks_tls_deprecated=%d mark_checked_rows=%d history_rows=%d ssl_rows=%d mark_checked_errors=%d history_errors=%d ssl_errors=%d duration=%s sps=%d",
+		"orchestrator: round summary pages=%d batches=%d batch_target=%d due_count_sampled=%t due_start=%d selected=%d dispatched=%d completed=%d outstanding=%d due_remaining=%d backpressure_waits=%d pool_workers_max=%d pool_active_max=%d pool_queue_depth_max=%d pool_queue_capacity=%d stale_results=%d duplicate_results=%d never_checked=%d oldest_selected_age_sec=%d dispatch=%s wait=%s process=%s mark_checked=%s history=%s ssl=%s events=%s checks_success=%d checks_failure=%d checks_http_failure=%d checks_timeout=%d checks_connect_error=%d checks_ssl_error=%d checks_redirect=%d checks_keyword=%d checks_tls_deprecated=%d mark_checked_rows=%d history_rows=%d ssl_rows=%d mark_checked_errors=%d history_errors=%d ssl_errors=%d duration=%s sps=%d",
 		summary.pagesFetched,
 		summary.batchesProcessed,
+		summary.batchTarget,
 		summary.dueCountsSampled,
 		summary.dueAtStart,
 		summary.selected,
@@ -874,6 +941,10 @@ func logRoundSummary(summary roundSummary, roundDuration time.Duration, sps int)
 		summary.outstanding,
 		summary.dueRemaining,
 		summary.backpressureWaits,
+		summary.poolWorkerCountMax,
+		summary.poolActiveChecksMax,
+		summary.poolQueueDepthMax,
+		summary.poolQueueCapacityMax,
 		summary.staleResults,
 		summary.duplicateResults,
 		summary.neverChecked,

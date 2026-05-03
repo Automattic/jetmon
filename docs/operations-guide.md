@@ -64,6 +64,10 @@ Scheduler behavior:
   `due_remaining` show whether freshness pressure is clearing or building.
   `pages` counts database pages fetched; `batches` counts larger scheduler check
   windows processed from those pages.
+  `pool.workers.max`, `pool.active.max`, `pool.queue_depth.max`, and
+  `pool.queue_capacity.max` show whether the check pool is saturated. If active
+  checks sit near `NUM_WORKERS` while CPU, memory, and file descriptors remain
+  low, the worker ceiling is likely too conservative for the active site count.
   Exact `due_start` / `due_remaining` and legacy projection-drift checks are
   sampled about once per minute in variable-interval mode so broad operator
   reporting queries do not run on every short scheduler poll. Use
