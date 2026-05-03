@@ -367,22 +367,20 @@ func SummarizeLegacyProjectionDrift(ctx context.Context, bucketMin, bucketMax, l
 	return out, rows.Err()
 }
 
-// MarkSiteChecked records when a site was last checked.
-func MarkSiteChecked(ctx context.Context, blogID int64, checkedAt time.Time) error {
+// MarkSiteChecked records when a site was last checked and when it is next due.
+func MarkSiteChecked(ctx context.Context, blogID int64, checkedAt, nextCheckAt time.Time) error {
 	_, err := db.ExecContext(ctx,
-		`UPDATE jetpack_monitor_sites
-		    SET last_checked_at = ?,
-		        next_check_at = DATE_ADD(?, INTERVAL GREATEST(check_interval, 1) MINUTE)
-		  WHERE blog_id = ?`,
-		checkedAt.UTC(), checkedAt.UTC(), blogID,
+		`UPDATE jetpack_monitor_sites SET last_checked_at = ?, next_check_at = ? WHERE blog_id = ?`,
+		checkedAt.UTC(), nextCheckAt.UTC(), blogID,
 	)
 	return err
 }
 
 // SiteCheck records one site freshness update.
 type SiteCheck struct {
-	BlogID    int64
-	CheckedAt time.Time
+	BlogID      int64
+	CheckedAt   time.Time
+	NextCheckAt time.Time
 }
 
 // MarkSitesChecked records last_checked_at for a batch of sites. Batching this
@@ -413,12 +411,12 @@ func markSitesCheckedChunk(ctx context.Context, checks []SiteCheck) error {
 		query.WriteString(" WHEN ? THEN ?")
 		args = append(args, check.BlogID, check.CheckedAt.UTC())
 	}
-	query.WriteString(" END, next_check_at = DATE_ADD(CASE blog_id")
+	query.WriteString(" END, next_check_at = CASE blog_id")
 	for _, check := range checks {
 		query.WriteString(" WHEN ? THEN ?")
-		args = append(args, check.BlogID, check.CheckedAt.UTC())
+		args = append(args, check.BlogID, check.NextCheckAt.UTC())
 	}
-	query.WriteString(" END, INTERVAL GREATEST(check_interval, 1) MINUTE) WHERE blog_id IN (")
+	query.WriteString(" END WHERE blog_id IN (")
 	for i, check := range checks {
 		if i > 0 {
 			query.WriteByte(',')

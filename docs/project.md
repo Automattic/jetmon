@@ -147,6 +147,8 @@ Each check result — including the granular DNS/TCP/TLS/TTFB breakdown — is w
 **Alert Deduplication and Cooldown**
 Add a `alert_cooldown_minutes` column to `jetpack_monitor_sites`, defaulting to a global `ALERT_COOLDOWN_MINUTES` config value. After an alert fires for a site, subsequent alerts for the same site are suppressed until the cooldown expires, even if the site flaps up and down repeatedly. The suppression is recorded in the audit log. Prevents alert fatigue on flapping sites without requiring manual maintenance window configuration.
 
+Add a `next_check_at` column to `jetpack_monitor_sites` for variable-interval scheduling. Jetmon maintains it after every check from `last_checked_at + max(check_interval, 1) minutes`, allowing due-site selection to use an indexed range predicate instead of recalculating the interval expression for every active row.
+
 **TLS Version and Cipher Reporting**
 Alongside SSL certificate expiry monitoring, inspect `tls.ConnectionState` for the negotiated TLS version and cipher suite. Flag sites still serving TLS 1.0 or TLS 1.1 (deprecated) via a dedicated alert threshold, and record the TLS version and cipher in the audit log. Zero additional network requests — this data is present in every existing HTTPS connection alongside the certificate chain.
 
