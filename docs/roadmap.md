@@ -54,6 +54,10 @@ No active candidate branch is queued here right now.
 - [x] Remove the `COALESCE(last_checked_at, ...)` scheduler ordering expression
   so MySQL can use the nullable `last_checked_at` ordering more directly while
   preserving NULL-first behavior.
+- [x] Update capacity-test config posture so `WORKER_MAX_MEM_MB=0` disables the
+  artificial memory-drain cap by default, `USE_VARIABLE_CHECK_INTERVALS=true`
+  is the sample freshness mode, and API-enabled test hosts use an explicit
+  `DELIVERY_OWNER_HOST`.
 - [ ] Run a 1,000-site capacity retest against the batched-write branch and
   compare freshness, scheduler page timings, MySQL CPU, monitor CPU, and
   check-history volume against the previous 17-minute sweep.

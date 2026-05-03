@@ -911,6 +911,7 @@ func TestRunRoundDrainsAllPagesUntilWorkWraps(t *testing.T) {
 	cfg.DatasetSize = 2
 	cfg.NetCommsTimeout = 1
 	cfg.MinTimeBetweenRoundsSec = 0
+	cfg.UseVariableCheckIntervals = false
 	cfg.WorkerMaxMemMB = 0
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

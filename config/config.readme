@@ -17,10 +17,12 @@ is a database/query guardrail rather than a cap on total checks per round.
 Default: 100.
 
 WORKER_MAX_MEM_MB
-Go runtime memory threshold that triggers worker-pool drain. This is a safety
-guardrail, not a scheduler sizing target; if capacity tests show memory-pressure
-drain logs, investigate runtime memory and pprof data before raising it.
-Default: 53.
+Optional Go runtime memory threshold that triggers worker-pool drain. Set to 0
+to disable the artificial drain guardrail and let the host/container memory
+limit be the real ceiling. This avoids silently reducing check throughput during
+capacity tests and production runs unless an operator has intentionally set a
+local safety cap. If capacity tests show memory-pressure drain logs, investigate
+runtime memory and pprof data before raising or re-enabling the cap. Default: 0.
 
 LEGACY_STATUS_PROJECTION_ENABLE
 Set to true while Jetmon v2 is running in shadow-v2-state migration mode. When enabled, v2 writes its authoritative incident state to jetmon_events / jetmon_event_transitions and also projects v1-compatible site_status + last_status_change values back into jetpack_monitor_sites for legacy consumers. Set to false only after downstream readers have moved to the v2 event/API surface. Default: true.
@@ -90,7 +92,8 @@ USE_VARIABLE_CHECK_INTERVALS
 Set to true to respect the check_interval column per site instead of running
 all sites every fixed-cadence pass. Recommended for production freshness
 testing because newly due sites are discovered without waiting for
-MIN_TIME_BETWEEN_ROUNDS_SEC. Default: false.
+MIN_TIME_BETWEEN_ROUNDS_SEC. Default in the sample config: true. Minimal configs
+that omit the key retain the compatibility default of false.
 
 LOG_FORMAT
 Log output format. Set to "json" for structured logging (e.g. for log aggregators), or "text" for human-readable output. Default: "text".

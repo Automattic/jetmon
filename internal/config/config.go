@@ -196,7 +196,7 @@ func defaults() *Config {
 		NumWorkers:                   60,
 		NumToProcess:                 40,
 		DatasetSize:                  100,
-		WorkerMaxMemMB:               53,
+		WorkerMaxMemMB:               0,
 		LegacyStatusProjectionEnable: true,
 		BucketTotal:                  1000,
 		BucketTarget:                 500,
