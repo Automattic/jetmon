@@ -18,6 +18,32 @@ production telemetry branches:
 
 No active candidate branch is queued here right now.
 
+### v2 Prelaunch Readiness TODO
+
+- [x] Bring the service handoff recommendations and rollout prelaunch checklist
+  into the repo as `docs/jetmon-v2-prelaunch-readiness.md`, linked from the
+  docs index and migration runbook.
+- [ ] Write the launch posture statement: v2 rollout is a backend replacement,
+  not a new customer-facing Monitor product launch.
+- [ ] Complete the legacy consumer inventory for WPCOM, Jetpack, Activity Log,
+  Elasticsearch, support tools, hooks, and XML-RPC monitor paths that still
+  depend on legacy monitor fields or notification behavior.
+- [ ] Define rollout stop/go thresholds for projection drift, missed checks,
+  oldest selected age, stale heartbeats, WPCOM notification failures, delivery
+  backlog, API errors, MySQL errors, and verifier agreement.
+- [ ] Record projection drift and telemetry parity evidence on
+  production-like data before first canary.
+- [ ] Add or run WPCOM notification parity tests for down, confirmed down,
+  recovery, inactive site, URL mismatch, and blacklisted site behavior.
+- [ ] Update support and allowlist guidance for v2 `GET` checks,
+  `jetmon/2.0`, blocked/WAF cases, false positives, maintenance windows, and
+  `Unknown` as monitor-side uncertainty rather than downtime.
+- [ ] Run rollout and rollback rehearsals, including VM lab snapshot flow when
+  available, and attach the generated command plan for the chosen rollout mode.
+- [ ] Create canary cohort matrix and expansion/rollback thresholds for WPCOM,
+  Atomic, self-hosted Jetpack, agency, WAF/security-plugin, historically noisy,
+  high-traffic, and multi-endpoint sites.
+
 ### Production Telemetry Reports TODO
 
 - [x] Add `jetmon2 telemetry report` as a read-only production report over

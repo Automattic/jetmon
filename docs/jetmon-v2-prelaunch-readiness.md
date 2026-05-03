@@ -1,0 +1,296 @@
+# Jetmon v2 Prelaunch Readiness
+
+This tracker captures the service-side work needed before attempting the
+production Jetmon v2 rollout as a drop-in replacement for Jetmon v1.
+
+The launch posture is intentionally conservative: this rollout upgrades the
+monitoring backend. It does not launch a new customer-facing Monitor product,
+public API, paid reporting surface, customer-managed alerting, or customer
+webhook self-service unless those are explicitly enabled through a separate
+WPCOM/Product canary.
+
+## Status Key
+
+- `[ ]` not started
+- `[~]` in progress
+- `[x]` complete
+- `[!]` blocker or unresolved launch risk
+
+## Owner Key
+
+- `Jetmon`: Jetmon v2 service, rollout tooling, and service documentation
+- `Systems`: production deployment, host, DB, and observability ownership
+- `WPCOM`: WordPress.com Monitor/API/platform ownership
+- `Jetpack`: Jetpack Monitor ownership
+- `Support`: support documentation, support tooling, and frontline readiness
+- `Product`: customer-facing semantics, packaging, and launch language
+
+## Launch Posture Gate
+
+Hard gate.
+
+- [ ] Owner: `Jetmon`, `WPCOM`, `Product` - Write down that the first rollout
+  is a backend replacement with current customer-facing behavior preserved by
+  default.
+- [ ] Owner: `Jetmon` - Keep `LEGACY_STATUS_PROJECTION_ENABLE=true` for the
+  rollout.
+- [ ] Owner: `WPCOM` - Keep the existing customer-facing status and
+  notification behavior as the default.
+- [ ] Owner: `Jetmon`, `WPCOM` - Keep v2 alert contacts, customer webhooks,
+  public API access, and paid-reporting surfaces disabled or inaccessible by
+  default.
+- [ ] Owner: `Product`, `Support` - Confirm launch language such as
+  "monitoring backend upgrade" rather than "new Monitor product".
+
+Exit criteria:
+
+- One written rollout posture statement exists.
+- Every team knows which v2 features are hidden during the drop-in rollout.
+
+## Hard Gates
+
+### 1. Legacy Status And Projection Parity
+
+- [ ] Owner: `Jetmon` - Run projection drift checks against production-like data
+  and record the output.
+- [ ] Owner: `Jetmon` - Verify `Seems Down` projects to legacy status `0`,
+  confirmed `Down` projects to `2`, and closed/up projects to `1`.
+- [ ] Owner: `Jetmon` - Verify `last_status_change` remains compatible with
+  WPCOM expectations.
+- [ ] Owner: `WPCOM` - Inventory endpoints, hooks, jobs, support tools, and
+  hidden consumers that still read `jetpack_monitor_sites.site_status`.
+- [ ] Owner: `Jetpack` - Inventory module/UI paths that still depend on legacy
+  WPCOM status or XML-RPC monitor methods.
+- [ ] Owner: `Jetmon`, `WPCOM` - Sample recent v1 incidents and verify v2 would
+  produce the same customer-visible up/down result.
+- [ ] Owner: `Jetmon`, `WPCOM` - Decide the acceptable projection drift
+  threshold for canary and broad rollout.
+
+Evidence:
+
+- `jetmon2 rollout projection-drift`
+- `jetmon2 telemetry report`
+- Sampled incident comparison table
+- Legacy reader inventory
+
+### 2. WPCOM Notification Parity
+
+- [ ] Owner: `Jetmon` - Verify the legacy WPCOM notification payload shape is
+  unchanged.
+- [ ] Owner: `Jetmon`, `WPCOM` - Test WPCOM notification handling for site down,
+  confirmed down, recovery, inactive site, URL mismatch, and blacklisted site
+  behavior.
+- [ ] Owner: `WPCOM` - Confirm existing WPCOM notification hooks still fire from
+  the legacy `/jetmon/` path.
+- [ ] Owner: `WPCOM` - Confirm current home-URL-only notification behavior is
+  preserved unless explicitly changed.
+- [ ] Owner: `Jetmon`, `WPCOM` - Add or run parity reporting between v2 event
+  transitions and WPCOM notification actions.
+- [ ] Owner: `Jetmon`, `WPCOM` - Confirm v2 alert contacts and v2 customer
+  webhooks cannot duplicate current WPCOM notifications during rollout.
+
+Evidence:
+
+- Golden WPCOM payload sample
+- Notification parity report
+- Manual or automated down/confirmed-down/recovery test log
+
+### 3. Support, WAF, And Allowlist Readiness
+
+- [ ] Owner: `Support`, `Jetmon` - Update support guidance from v1 `HEAD`
+  assumptions to v2 `GET` checks.
+- [ ] Owner: `Support`, `Jetmon` - Update allowlist guidance for
+  `jetmon/2.0`.
+- [ ] Owner: `Support`, `Jetmon` - Explain customer-safe meanings for blocked
+  requests, verifier confirmation, false positives, maintenance windows, and
+  monitor-side uncertainty.
+- [ ] Owner: `Support`, `WPCOM` - Update support macros/playbooks for
+  firewall, WAF, bot-block, and security-plugin cases.
+- [ ] Owner: `Support`, `WPCOM` - Update support guidance for `Unknown` so it
+  is not treated as confirmed downtime.
+- [ ] Owner: `Jetmon` - Verify blocked/security-plugin failures have enough
+  classification evidence for support to diagnose.
+
+Evidence:
+
+- Links to support docs/playbooks
+- Sample WAF-blocked incident explanation
+- Sample false-positive incident explanation
+
+### 4. Operational Rollout Rehearsal
+
+- [ ] Owner: `Jetmon`, `Systems` - Run `make rollout-docs-verify`.
+- [ ] Owner: `Jetmon`, `Systems` - Run same-server dry-run rehearsal.
+- [ ] Owner: `Jetmon`, `Systems` - Run fresh-server dry-run rehearsal if that
+  path remains an option.
+- [ ] Owner: `Jetmon`, `Systems` - Run rollback dry-run rehearsal.
+- [ ] Owner: `Jetmon`, `Systems` - Run VM lab snapshot flow if the lab host is
+  available.
+- [ ] Owner: `Jetmon`, `Systems` - Confirm `DELIVERY_OWNER_HOST` posture is
+  intentional for rollout.
+
+Evidence:
+
+- `make rollout-docs-verify` output
+- `make rollout-rehearsal-verify` output
+- VM lab transcript
+- Generated rehearsal plan for the actual rollout mode
+
+### 5. Production Observability And Hold Points
+
+- [ ] Owner: `Jetmon`, `Systems` - Define go/no-go thresholds for projection
+  drift, missed checks, oldest selected age, stale heartbeats, WPCOM
+  notification failures, delivery backlog, API errors, MySQL errors, and
+  verifier agreement.
+- [ ] Owner: `Jetmon`, `Systems` - Confirm host and fleet dashboards expose the
+  needed rollout signals.
+- [ ] Owner: `Jetmon`, `Systems` - Confirm StatsD metrics and log paths remain
+  compatible with existing monitoring.
+- [ ] Owner: `Jetmon`, `Systems` - Confirm `jetmon_process_health` heartbeats
+  are visible and stale thresholds are understood.
+- [ ] Owner: `Jetmon`, `Systems` - Define a written pause protocol.
+- [ ] Owner: `Jetmon`, `Systems` - Define a written rollback-now protocol.
+
+Evidence:
+
+- Dashboard links or screenshots
+- Threshold table
+- Rollout room checklist
+- Alert names and owners
+
+### 6. Internal Consumer Inventory
+
+- [ ] Owner: `WPCOM` - Inventory code paths reading
+  `jetpack_monitor_sites.site_status`, `last_status_change`, monitor URL, or
+  active state.
+- [ ] Owner: `WPCOM` - Inventory WPCOM REST endpoints exposing monitor status,
+  settings, incidents, and uptime.
+- [ ] Owner: `WPCOM` - Inventory Activity Log and Elasticsearch consumers of
+  monitor incidents.
+- [ ] Owner: `WPCOM` - Inventory hooks such as
+  `jetpack_monitor_site_status_change` and consumers attached to them.
+- [ ] Owner: `Jetpack` - Inventory XML-RPC monitor methods used by Jetpack.
+- [ ] Owner: `Support` - Inventory support tools that display monitor status,
+  incidents, or notification state.
+- [ ] Owner: `WPCOM`, `Jetmon` - Mark which consumers require legacy projection
+  to stay enabled.
+
+Evidence:
+
+- Consumer inventory table with path, owner, data source, customer-visible
+  impact, and migration status.
+
+### 7. Failure-Mode Drills
+
+- [ ] Owner: `Jetmon`, `Systems` - Drill Jetmon API unavailable while monitor
+  checks continue.
+- [ ] Owner: `Jetmon`, `Systems` - Drill Veriflier unavailable or degraded.
+- [ ] Owner: `Jetmon`, `WPCOM` - Drill WPCOM notification endpoint failing or
+  circuit breaker open.
+- [ ] Owner: `Jetmon`, `Systems` - Drill MySQL lag or temporary DB errors.
+- [ ] Owner: `Jetmon`, `Systems` - Drill delivery backlog growth.
+- [ ] Owner: `Jetmon`, `Systems` - Drill stale host heartbeat and bucket
+  ownership handoff.
+- [ ] Owner: `Jetmon`, `Systems` - Drill bad deploy and rollback.
+- [ ] Owner: `Jetmon`, `Support` - Drill a false-positive incident caused by
+  customer WAF/bot blocking.
+- [ ] Owner: `Jetmon`, `Support` - Drill `Unknown` or monitor-side uncertainty
+  and verify it is not presented as confirmed downtime.
+
+Evidence:
+
+- Drill notes with command sequence, expected behavior, observed behavior, and
+  follow-up items.
+
+## Early Canary Gates
+
+These should be ready before broad rollout and, where feasible, before the
+first controlled canary.
+
+- [ ] Owner: `WPCOM`, `Jetmon` - Build the canary cohort matrix: WPCOM-hosted,
+  Atomic, self-hosted Jetpack, agency-managed, WAF/security-plugin, historically
+  noisy/flaky, high-traffic, and multi-endpoint sites.
+- [ ] Owner: `Jetmon`, `Systems` - Define canary size, duration, rollback
+  threshold, and expansion threshold.
+- [ ] Owner: `WPCOM` - Build or script read-only shadow comparisons for v2
+  status, event list/detail, and uptime summary while customers still see
+  legacy output.
+- [ ] Owner: `Product`, `Support`, `WPCOM`, `Jetmon` - Define customer-facing
+  language for `Up`, `Seems Down`, `Down`, `Degraded`, `Warning`,
+  `Maintenance`, `Paused`, `Unknown`, and `Resolved`.
+- [ ] Owner: `Product`, `WPCOM`, `Jetmon` - Draft SLA/reporting semantics for
+  `Seems Down`, `Degraded`, `Warning`, `Maintenance`, and `Unknown`.
+- [ ] Owner: `WPCOM`, `Jetmon` - Decide whether trigger-now is available during
+  rollout and to whom.
+- [ ] Owner: `WPCOM` - Add per-site, per-actor, per-tenant, and per-plan
+  trigger-now quotas before customer exposure.
+
+## Explicit Non-Blockers For Drop-In Rollout
+
+These remain important but should not block the v1 replacement unless the
+launch scope changes:
+
+- Full WPCOM gateway productization
+- Paid Monitor packaging
+- Rich Jetpack Monitor UI
+- Alert-contact self-service
+- Customer webhook self-service
+- Slack, Teams, and PagerDuty customer launch
+- Public/customer monitoring API
+- Jetpack reverse checks
+- Domain/DNS monitoring expansion
+- Quiet hours, digests, grouping, acknowledgements
+- Long-range paid SLA/reporting surfaces
+- v3 probe-agent/per-vantage architecture
+- Legacy projection retirement
+
+## Service-Side Hardening Map
+
+These recommendations should remain Jetmon-owned even when WPCOM owns public
+customer surfaces.
+
+| Priority | Work | Rollout Blocker? | Existing Tracker |
+| --- | --- | --- | --- |
+| 1 | Compatibility and parity gates | yes | this doc, migration runbook, telemetry report |
+| 2 | Gateway-routed API invariant tests | before gateway canary | `public-api-gateway-tenant-contract.md` |
+| 3 | Reporting rollups and retention policy | before paid reports | `roadmap.md` |
+| 4 | Outbound credential encryption | before broad self-service alerts/webhooks | `outbound-credential-encryption-plan.md` |
+| 5 | Delivery consolidation and notification dedupe | before customer alert-contact launch | `jetmon-deliverer-rollout.md`, `roadmap.md` |
+| 6 | Customer-routed target/destination safety controls | before public target/destination management | `roadmap.md` |
+| 7 | Capacity ladder and storage optimization | before larger cohorts | `roadmap.md` |
+| 8 | Alert/webhook lifecycle polish | before self-service launch | `roadmap.md` |
+| 9 | Public-safe state and error metadata | before public API beta | `roadmap.md` |
+| 10 | Reverse checks, DNS/domain incidents, rollup, suppression | post-rollout product expansion | `taxonomy.md`, `roadmap.md` |
+| 11 | v3 probe-agent/per-vantage readiness | post-v2 production evidence | `v3-probe-agent-architecture-options.md` |
+
+## Launch-Day Readiness Card
+
+Fill this out before the rollout attempt.
+
+| Question | Answer |
+| --- | --- |
+| Rollout mode | TBD |
+| First cohort/bucket range | TBD |
+| Rollout owner | TBD |
+| WPCOM owner | TBD |
+| Systems owner | TBD |
+| Support contact | TBD |
+| Start time | TBD |
+| First hold point | TBD |
+| Expected first full-round duration | TBD |
+| Projection drift threshold | TBD |
+| WPCOM notification failure threshold | TBD |
+| Missed check threshold | TBD |
+| Oldest selected age threshold | TBD |
+| Delivery backlog threshold | TBD |
+| Rollback command source | TBD |
+| Customer/support comms status | TBD |
+
+## Recommended First Sprint
+
+1. Create the legacy consumer inventory.
+2. Run projection drift and telemetry parity reports.
+3. Test WPCOM notification parity.
+4. Update support/allowlist guidance for v2 `GET` and `jetmon/2.0`.
+5. Run rollout and rollback rehearsals.
+6. Define canary cohort and stop/go thresholds.

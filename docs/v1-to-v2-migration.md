@@ -7,6 +7,11 @@ Use [rollout-quick-reference.md](rollout-quick-reference.md) as the condensed
 command checklist during rehearsals and rollout windows. If it conflicts with
 this runbook, this runbook wins.
 
+Use [jetmon-v2-prelaunch-readiness.md](jetmon-v2-prelaunch-readiness.md) before
+attempting the rollout to track launch posture, parity gates, support/WAF
+readiness, rehearsal evidence, observability thresholds, consumer inventory, and
+failure-mode drills.
+
 Use this document for:
 
 - preparing the fleet before any production change
