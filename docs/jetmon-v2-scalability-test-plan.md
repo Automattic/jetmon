@@ -28,6 +28,13 @@ these changes from the previous successful 1,000-site baseline.
    testing memory-pressure drain.
 5. Confirm `USE_VARIABLE_CHECK_INTERVALS=true`.
 6. Confirm API-enabled test hosts set `DELIVERY_OWNER_HOST` explicitly.
+7. Confirm the exact activated `monitor_url` pattern resolves and returns HTTP
+   200 from the Jetmon service host and the Veriflier host. Do not test a
+   similar hostname by hand; query one activated row from
+   `jetpack_monitor_sites`, then run `dig` and `curl` for that exact hostname.
+   A mismatch between the capacity runner URL pattern and the target DNS
+   `generated_sites.host_pattern` will look like a Jetmon false-down storm and
+   will make event handling, not checking, dominate the run.
 
 ## Query Plan Checks
 
@@ -99,6 +106,15 @@ Phase timing and write volume:
 - `scheduler.page.mark_checked.error.count`
 - `scheduler.page.history.error.count`
 - `scheduler.page.ssl.error.count`
+- `scheduler.page.check.success.count`
+- `scheduler.page.check.failure.count`
+- `scheduler.page.check.http_failure.count`
+- `scheduler.page.check.timeout.count`
+- `scheduler.page.check.connect_error.count`
+- `scheduler.page.check.ssl_error.count`
+- `scheduler.page.check.redirect.count`
+- `scheduler.page.check.keyword.count`
+- `scheduler.page.check.tls_deprecated.count`
 - `scheduler.round.dispatch.time`
 - `scheduler.round.wait.time`
 - `scheduler.round.process.time`
@@ -112,6 +128,16 @@ Phase timing and write volume:
 - `scheduler.round.mark_checked.error.count`
 - `scheduler.round.history.error.count`
 - `scheduler.round.ssl.error.count`
+- `scheduler.round.check.success.count`
+- `scheduler.round.check.failure.count`
+- `scheduler.round.check.http_failure.count`
+- `scheduler.round.check.timeout.count`
+- `scheduler.round.check.connect_error.count`
+- `scheduler.round.check.ssl_error.count`
+- `scheduler.round.check.redirect.count`
+- `scheduler.round.check.keyword.count`
+- `scheduler.round.check.tls_deprecated.count`
+- `eventstore.mutation.retry.count`
 
 Host/process signals:
 
@@ -142,6 +168,13 @@ Dependency signals:
 - `ssl.row.count` should be high only during initial certificate backfills or
   real renewal waves. Sustained high SSL rows means certificate dates are
   changing or stored with incompatible precision.
+- Healthy capacity targets should have `check.success.count` close to
+  `completed.count`. A high `check.connect_error.count` means the monitor could
+  not connect to the activated URLs; first verify the exact DB URL pattern and
+  DNS delegation before treating it as a Jetmon throughput regression.
+- `eventstore.mutation.retry.count` should normally be zero. Any non-zero value
+  means MySQL returned a deadlock or lock-wait timeout and Jetmon retried the
+  event mutation; sustained retries point to event/projection write contention.
 - Shared HTTP transport impact should show up in process FD count, monitor CPU,
   DNS/TCP/TLS timing, and check latency rather than in scheduler row counts.
 - If MySQL CPU remains high while freshness is good, compare

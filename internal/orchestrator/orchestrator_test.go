@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-sql-driver/mysql"
+
 	"github.com/Automattic/jetmon/internal/checker"
 	"github.com/Automattic/jetmon/internal/config"
 	"github.com/Automattic/jetmon/internal/db"
@@ -617,6 +619,61 @@ func TestProcessResultsMarksChecked(t *testing.T) {
 	}
 }
 
+func TestProcessResultsReportsCheckOutcomes(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig(t)
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local",
+		ctx:      context.Background(),
+	}
+
+	success := checkerResultSuccess(1)
+	timeout := checkerResultFailure(2)
+	timeout.HTTPCode = 0
+	timeout.ErrorCode = checker.ErrorTimeout
+	connect := checkerResultFailure(3)
+	connect.HTTPCode = 0
+	connect.ErrorCode = checker.ErrorConnect
+	server := checkerResultFailure(4)
+	server.HTTPCode = 500
+	server.ErrorCode = checker.ErrorNone
+	deprecatedTLS := checkerResultSuccess(5)
+	deprecatedTLS.ErrorCode = checker.ErrorTLSDeprecated
+
+	summary := o.processResults(
+		map[int64]checker.Result{
+			1: success,
+			2: timeout,
+			3: connect,
+			4: server,
+			5: deprecatedTLS,
+		},
+		map[int64]db.Site{
+			1: {BlogID: 1, SiteStatus: statusRunning},
+			2: {BlogID: 2, SiteStatus: statusRunning},
+			3: {BlogID: 3, SiteStatus: statusRunning},
+			4: {BlogID: 4, SiteStatus: statusRunning},
+			5: {BlogID: 5, SiteStatus: statusRunning},
+		},
+	)
+
+	if summary.checkSuccesses != 2 || summary.checkFailures != 3 {
+		t.Fatalf("success/failure counts = %d/%d, want 2/3", summary.checkSuccesses, summary.checkFailures)
+	}
+	if summary.checkTimeouts != 1 || summary.checkConnectErrors != 1 || summary.checkHTTPFailures != 1 || summary.checkTLSDeprecated != 1 {
+		t.Fatalf("outcome counts timeout/connect/http/tls = %d/%d/%d/%d, want 1/1/1/1",
+			summary.checkTimeouts,
+			summary.checkConnectErrors,
+			summary.checkHTTPFailures,
+			summary.checkTLSDeprecated,
+		)
+	}
+}
+
 func TestProcessResultsFallsBackWhenBatchWritesFail(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
@@ -671,6 +728,46 @@ func TestProcessResultsFallsBackWhenBatchWritesFail(t *testing.T) {
 	}
 	if summary.markCheckedErrors != 1 || summary.historyErrors != 1 || summary.sslErrors != 1 {
 		t.Fatalf("batch errors = %d/%d/%d, want 1/1/1", summary.markCheckedErrors, summary.historyErrors, summary.sslErrors)
+	}
+}
+
+func TestEventMutationRetryRetriesDeadlocks(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig(t)
+
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+
+	o := &Orchestrator{ctx: context.Background()}
+	attempts := 0
+	err := o.withEventMutationRetry(42, "open_seems_down", func() error {
+		attempts++
+		if attempts == 1 {
+			return fmt.Errorf("wrapped: %w", &mysql.MySQLError{Number: 1213, Message: "deadlock"})
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("withEventMutationRetry: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	if got := rec.counter("eventstore.mutation.retry.count"); got != 1 {
+		t.Fatalf("retry metric = %d, want 1", got)
+	}
+}
+
+func TestIsRetryableMySQLError(t *testing.T) {
+	if !isRetryableMySQLError(fmt.Errorf("wrapped: %w", &mysql.MySQLError{Number: 1205, Message: "lock wait"})) {
+		t.Fatal("lock wait timeout should be retryable")
+	}
+	if !isRetryableMySQLError(&mysql.MySQLError{Number: 1213, Message: "deadlock"}) {
+		t.Fatal("deadlock should be retryable")
+	}
+	if isRetryableMySQLError(&mysql.MySQLError{Number: 1062, Message: "duplicate"}) {
+		t.Fatal("duplicate key should not be retryable")
 	}
 }
 

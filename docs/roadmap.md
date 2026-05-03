@@ -97,6 +97,15 @@ No active candidate branch is queued here right now.
   timing visibility for uptime diagnostics. The checker now shares one bounded
   `http.Transport` across checks while keeping each check's timeout and
   redirect policy scoped to its own `http.Client`.
+- [x] Add scheduler outcome counters and event-mutation deadlock/lock-wait
+  retry instrumentation so capacity runs can distinguish true Jetmon
+  throughput regressions from target setup failures such as DNS/URL-pattern
+  mismatches.
+- [ ] Retest the scalability-efficiency branch after the capacity harness
+  verifies the exact activated `monitor_url` samples from Monitor and Veriflier
+  hosts, then compare freshness, check outcome mix, event mutation retries,
+  MySQL CPU/I/O, Jetmon CPU/RSS/FDs, and Veriflier resource usage against the
+  prior successful 1,000-site baseline.
 - [ ] Add a 5k/10k capacity ladder that records freshness, p95 age, MySQL CPU,
   MySQL I/O/network, `jetmon2` CPU/RSS/FDs, StatsD CPU, Veriflier CPU, and
   check-history row growth after each major scalability change.
