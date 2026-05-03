@@ -68,6 +68,13 @@ Scheduler behavior:
   `pool.queue_capacity.max` show whether the check pool is saturated. If active
   checks sit near `NUM_WORKERS` while CPU, memory, and file descriptors remain
   low, the worker ceiling is likely too conservative for the active site count.
+  Failure/recovery event handling runs through a bounded sharded background
+  queue after freshness and check-history writes complete. Watch
+  `scheduler.round.event_queue.job.count`,
+  `scheduler.round.event_queue.depth.max`,
+  `scheduler.round.event_queue.capacity`, and `scheduler.event_worker.*` during
+  failure-heavy tests. Rising queue depth means event/projection work is
+  falling behind even if the scheduler is still keeping check freshness current.
   Exact `due_start` / `due_remaining` and legacy projection-drift checks are
   sampled about once per minute in variable-interval mode so broad operator
   reporting queries do not run on every short scheduler poll. Use

@@ -31,10 +31,19 @@ useful for healthy high-scale checks without creating a long processing delay
 during broad timeout scenarios. `last_checked_at` and `next_check_at` are still
 written only after completed checks.
 
+The branch now also moves site-state event handling onto a bounded sharded
+background queue after `last_checked_at` and `jetmon_check_history` have been
+written. This was added after the 22,500-site retry run showed a polluted
+preflight overlap but still isolated a scheduler freeze: a 7,200-site selected
+batch wrote freshness data quickly, then spent `13m15s` in failure/event
+handling after 732 connect errors. The event queue preserves per-site ordering
+by hashing each blog ID to one worker, while keeping slow event/projection work
+from blocking fresh checks for unrelated sites.
+
 Do not stack larger persistence changes, such as async check-history writes or
-DNS caching, on top of this branch before a real capacity run. The next test
-should isolate the scheduler-batch change from the last 12,500-clean /
-15,000-failed baseline.
+DNS caching, on top of this branch before another real capacity run. The next
+test should isolate the scheduler-batch, worker-ceiling, and event-queue
+changes before adding another variable.
 
 ## Pre-Test Checks
 
@@ -123,6 +132,9 @@ Freshness and scheduler pressure:
 - `scheduler.round.pool.active.max`
 - `scheduler.round.pool.queue_depth.max`
 - `scheduler.round.pool.queue_capacity.max`
+- `scheduler.round.event_queue.job.count`
+- `scheduler.round.event_queue.depth.max`
+- `scheduler.round.event_queue.capacity`
 - `scheduler.round.due_count_sampled.count`
 - `scheduler.round.due_start.count`
 - `scheduler.round.due_remaining.count`
@@ -148,6 +160,9 @@ represent one scheduler check batch, which may contain multiple DB pages:
 - `scheduler.page.pool.active.max`
 - `scheduler.page.pool.queue_depth.max`
 - `scheduler.page.pool.queue_capacity.max`
+- `scheduler.page.event_queue.job.count`
+- `scheduler.page.event_queue.depth.max`
+- `scheduler.page.event_queue.capacity`
 - `scheduler.page.mark_checked.row.count`
 - `scheduler.page.history.row.count`
 - `scheduler.page.ssl.row.count`
@@ -170,6 +185,8 @@ represent one scheduler check batch, which may contain multiple DB pages:
 - `scheduler.round.history.time`
 - `scheduler.round.ssl.time`
 - `scheduler.round.events.time`
+- `scheduler.event_worker.process.count`
+- `scheduler.event_worker.process.time`
 - `scheduler.round.mark_checked.row.count`
 - `scheduler.round.history.row.count`
 - `scheduler.round.ssl.row.count`
@@ -223,6 +240,11 @@ Dependency signals:
 - `eventstore.mutation.retry.count` should normally be zero. Any non-zero value
   means MySQL returned a deadlock or lock-wait timeout and Jetmon retried the
   event mutation; sustained retries point to event/projection write contention.
+- `scheduler.round.events.time` now measures event queueing time on the
+  scheduler path, not full event mutation time. If it rises with
+  `event_queue.depth.max`, event workers are falling behind and the queue is
+  becoming the next bottleneck. Compare with `scheduler.event_worker.*` timings
+  and `retry.queue.size`.
 - Shared HTTP transport impact should show up in process FD count, monitor CPU,
   DNS/TCP/TLS timing, and check latency rather than in scheduler row counts.
 - If MySQL CPU remains high while freshness is good, compare
@@ -239,15 +261,16 @@ Dependency signals:
 ## Next Capacity Ladder
 
 Run each step for the same duration and compare against the latest successful
-baseline. The immediate follow-up after the 20,000-site pass is a controlled
-worker-ceiling experiment: keep the same 10-minute window, raise `NUM_WORKERS`
-on the v2 test host to 240, and repeat `20,000` before trying `25,000`. That
-should show whether the fixed 60-worker ceiling is the next limiter or whether
-write/event stages dominate even with more check concurrency.
+baseline. The 22,500-site retry run was not a clean capacity datapoint because
+it overlapped an in-flight scheduler round from a failed preflight attempt, but
+it did prove that event/projection work could block freshness. After deploying
+the event queue, re-establish a clean point before climbing.
 
-1. 20,000 sites with `NUM_WORKERS=240` to measure worker-ceiling impact.
-2. 25,000 sites if the 20,000 repeat keeps a healthy freshness margin.
-3. 22,500/25,000/27,500 narrower ladder if 25,000 is near the margin.
+1. 20,000 sites with `NUM_WORKERS=240` and event queue enabled.
+2. 22,500 sites if 20,000 keeps a healthy freshness margin.
+3. 25,000 sites if 22,500 is clean.
+4. Continue in 5k steps while freshness margin remains comfortable; narrow the
+   ladder if p95 age approaches the 5-minute freshness window.
 
 For each step, preserve:
 

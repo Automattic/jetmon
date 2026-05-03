@@ -55,6 +55,10 @@ const schedulerBacklogPollInterval = 5 * time.Second
 const schedulerBroadReportInterval = time.Minute
 const schedulerBatchSitesPerWorker = 100
 const schedulerMaxBatchSites = 10000
+const eventWorkerMinCount = 1
+const eventWorkerMaxCount = 8
+const eventWorkerScaleSites = 60
+const eventQueueBatches = 4
 const eventMutationMaxAttempts = 3
 const eventMutationRetryBaseDelay = 25 * time.Millisecond
 
@@ -127,6 +131,9 @@ type roundSummary struct {
 	poolActiveChecksMax  int
 	poolQueueDepthMax    int
 	poolQueueCapacityMax int
+	eventJobsQueued      int
+	eventQueueDepthMax   int
+	eventQueueCapacity   int
 
 	dispatchDuration    time.Duration
 	waitDuration        time.Duration
@@ -210,6 +217,13 @@ func (s *roundSummary) add(other roundSummary) {
 	if other.poolQueueCapacityMax > s.poolQueueCapacityMax {
 		s.poolQueueCapacityMax = other.poolQueueCapacityMax
 	}
+	s.eventJobsQueued += other.eventJobsQueued
+	if other.eventQueueDepthMax > s.eventQueueDepthMax {
+		s.eventQueueDepthMax = other.eventQueueDepthMax
+	}
+	if other.eventQueueCapacity > s.eventQueueCapacity {
+		s.eventQueueCapacity = other.eventQueueCapacity
+	}
 	if other.interrupted {
 		s.interrupted = true
 	}
@@ -234,6 +248,10 @@ type resultProcessSummary struct {
 	checkKeywords      int
 	checkTLSDeprecated int
 
+	eventJobsQueued    int
+	eventQueueDepthMax int
+	eventQueueCapacity int
+
 	markCheckedDuration time.Duration
 	historyDuration     time.Duration
 	sslDuration         time.Duration
@@ -255,6 +273,9 @@ type Orchestrator struct {
 	veriflierClients []*veriflier.VeriflierClient
 	veriflierAddrs   []string // parallel slice of "addr|token" for change detection
 	veriflierMu      sync.RWMutex
+	eventWork        []chan siteCheckResult
+	eventWG          sync.WaitGroup
+	eventStopOnce    sync.Once
 	hostname         string
 	bucketMin        int
 	bucketMax        int
@@ -287,6 +308,7 @@ func New(cfg *config.Config, wp *wpcom.Client) *Orchestrator {
 		cancel:   cancel,
 	}
 
+	o.startEventWorkers(eventWorkerCountForConfig(cfg), eventQueueCapacityForConfig(cfg))
 	o.refreshVeriflierClients(cfg)
 	if len(o.veriflierClients) == 0 {
 		log.Println("orchestrator: warning: no verifliers configured — down confirmations rely on local checks only")
@@ -345,6 +367,7 @@ func (o *Orchestrator) Run() {
 				}
 			}
 			o.pool.Drain()
+			o.stopEventWorkers()
 			if o.usesPinnedBuckets(config.Get()) {
 				log.Println("orchestrator: pinned bucket mode active; no jetmon_hosts row to release")
 			} else if err := dbReleaseHost(stdctx.Background(), o.hostname); err != nil {
@@ -522,6 +545,71 @@ func schedulerBatchTargetSites(cfg *config.Config, pageSize int) int {
 	return target
 }
 
+func eventWorkerCountForConfig(cfg *config.Config) int {
+	if cfg == nil || cfg.NumWorkers <= 0 {
+		return eventWorkerMinCount
+	}
+	workers := cfg.NumWorkers / eventWorkerScaleSites
+	if workers < eventWorkerMinCount {
+		workers = eventWorkerMinCount
+	}
+	if workers > eventWorkerMaxCount {
+		workers = eventWorkerMaxCount
+	}
+	return workers
+}
+
+func eventQueueCapacityForConfig(cfg *config.Config) int {
+	if cfg == nil {
+		return schedulerMaxBatchSites
+	}
+	pageSize := 1
+	if cfg.DatasetSize > 0 {
+		pageSize = cfg.DatasetSize
+	}
+	return schedulerBatchTargetSites(cfg, pageSize) * eventQueueBatches
+}
+
+func (o *Orchestrator) startEventWorkers(count, queueCapacity int) {
+	if o == nil || count <= 0 {
+		return
+	}
+	if queueCapacity < count {
+		queueCapacity = count
+	}
+	o.eventWork = make([]chan siteCheckResult, count)
+	for i := range count {
+		ch := make(chan siteCheckResult, queueCapacity)
+		o.eventWork[i] = ch
+		o.eventWG.Add(1)
+		go o.eventWorker(i, ch)
+	}
+	log.Printf("orchestrator: event workers started workers=%d queue_capacity_per_worker=%d", count, queueCapacity)
+}
+
+func (o *Orchestrator) stopEventWorkers() {
+	if o == nil {
+		return
+	}
+	o.eventStopOnce.Do(func() {
+		for _, ch := range o.eventWork {
+			close(ch)
+		}
+		o.eventWG.Wait()
+	})
+}
+
+func (o *Orchestrator) eventWorker(workerID int, ch <-chan siteCheckResult) {
+	defer o.eventWG.Done()
+	for record := range ch {
+		start := time.Now()
+		o.processResultEvent(record)
+		emitTiming("scheduler.event_worker.process.time", time.Since(start))
+		emitCounter("scheduler.event_worker.process.count", 1)
+		emitCounter(fmt.Sprintf("scheduler.event_worker.%d.process.count", workerID+1), 1)
+	}
+}
+
 func schedulerCursorFromSite(site db.Site, useVariableIntervals bool) db.SitePageCursor {
 	cursor := db.SitePageCursor{
 		HasCursor: true,
@@ -634,6 +722,13 @@ process:
 	summary.historyDuration += processSummary.historyDuration
 	summary.sslDuration += processSummary.sslDuration
 	summary.eventDuration += processSummary.eventDuration
+	summary.eventJobsQueued += processSummary.eventJobsQueued
+	if processSummary.eventQueueDepthMax > summary.eventQueueDepthMax {
+		summary.eventQueueDepthMax = processSummary.eventQueueDepthMax
+	}
+	if processSummary.eventQueueCapacity > summary.eventQueueCapacity {
+		summary.eventQueueCapacity = processSummary.eventQueueCapacity
+	}
 	o.totalChecked += processSummary.processed
 	emitPageMetrics(summary)
 	logPageSummary(pageNumber, len(sites), summary)
@@ -656,9 +751,12 @@ func emitPageMetrics(summary roundSummary) {
 	m.Gauge("scheduler.page.pool.active.max", summary.poolActiveChecksMax)
 	m.Gauge("scheduler.page.pool.queue_depth.max", summary.poolQueueDepthMax)
 	m.Gauge("scheduler.page.pool.queue_capacity.max", summary.poolQueueCapacityMax)
+	m.Gauge("scheduler.page.event_queue.depth.max", summary.eventQueueDepthMax)
+	m.Gauge("scheduler.page.event_queue.capacity", summary.eventQueueCapacity)
 	m.Increment("scheduler.page.mark_checked.row.count", summary.markCheckedRows)
 	m.Increment("scheduler.page.history.row.count", summary.historyRows)
 	m.Increment("scheduler.page.ssl.row.count", summary.sslRows)
+	m.Increment("scheduler.page.event_queue.job.count", summary.eventJobsQueued)
 	m.Increment("scheduler.page.mark_checked.error.count", summary.markCheckedErrors)
 	m.Increment("scheduler.page.history.error.count", summary.historyErrors)
 	m.Increment("scheduler.page.ssl.error.count", summary.sslErrors)
@@ -675,7 +773,7 @@ func emitPageMetrics(summary roundSummary) {
 
 func logPageSummary(pageNumber, sites int, summary roundSummary) {
 	log.Printf(
-		"orchestrator: batch summary batch=%d sites=%d dispatched=%d completed=%d outstanding=%d pool_workers_max=%d pool_active_max=%d pool_queue_depth_max=%d pool_queue_capacity=%d dispatch=%s wait=%s process=%s mark_checked=%s history=%s ssl=%s events=%s checks_success=%d checks_failure=%d checks_http_failure=%d checks_timeout=%d checks_connect_error=%d checks_ssl_error=%d checks_redirect=%d checks_keyword=%d checks_tls_deprecated=%d mark_checked_rows=%d history_rows=%d ssl_rows=%d mark_checked_errors=%d history_errors=%d ssl_errors=%d",
+		"orchestrator: batch summary batch=%d sites=%d dispatched=%d completed=%d outstanding=%d pool_workers_max=%d pool_active_max=%d pool_queue_depth_max=%d pool_queue_capacity=%d event_jobs_queued=%d event_queue_depth_max=%d event_queue_capacity=%d dispatch=%s wait=%s process=%s mark_checked=%s history=%s ssl=%s events=%s checks_success=%d checks_failure=%d checks_http_failure=%d checks_timeout=%d checks_connect_error=%d checks_ssl_error=%d checks_redirect=%d checks_keyword=%d checks_tls_deprecated=%d mark_checked_rows=%d history_rows=%d ssl_rows=%d mark_checked_errors=%d history_errors=%d ssl_errors=%d",
 		pageNumber,
 		sites,
 		summary.dispatched,
@@ -685,6 +783,9 @@ func logPageSummary(pageNumber, sites int, summary roundSummary) {
 		summary.poolActiveChecksMax,
 		summary.poolQueueDepthMax,
 		summary.poolQueueCapacityMax,
+		summary.eventJobsQueued,
+		summary.eventQueueDepthMax,
+		summary.eventQueueCapacity,
 		summary.dispatchDuration.Round(time.Millisecond),
 		summary.waitDuration.Round(time.Millisecond),
 		summary.processDuration.Round(time.Millisecond),
@@ -875,6 +976,8 @@ func (o *Orchestrator) finishRound(cfg *config.Config, summary roundSummary) {
 		m.Gauge("scheduler.round.pool.active.max", summary.poolActiveChecksMax)
 		m.Gauge("scheduler.round.pool.queue_depth.max", summary.poolQueueDepthMax)
 		m.Gauge("scheduler.round.pool.queue_capacity.max", summary.poolQueueCapacityMax)
+		m.Gauge("scheduler.round.event_queue.depth.max", summary.eventQueueDepthMax)
+		m.Gauge("scheduler.round.event_queue.capacity", summary.eventQueueCapacity)
 		m.Gauge("scheduler.round.due_count_sampled.count", boolInt(summary.dueCountsSampled))
 		if summary.dueCountsSampled {
 			m.Gauge("scheduler.round.due_start.count", summary.dueAtStart)
@@ -894,6 +997,7 @@ func (o *Orchestrator) finishRound(cfg *config.Config, summary roundSummary) {
 		m.Timing("scheduler.round.history.time", summary.historyDuration)
 		m.Timing("scheduler.round.ssl.time", summary.sslDuration)
 		m.Timing("scheduler.round.events.time", summary.eventDuration)
+		m.Increment("scheduler.round.event_queue.job.count", summary.eventJobsQueued)
 		m.Increment("scheduler.round.mark_checked.row.count", summary.markCheckedRows)
 		m.Increment("scheduler.round.history.row.count", summary.historyRows)
 		m.Increment("scheduler.round.ssl.row.count", summary.sslRows)
@@ -929,7 +1033,7 @@ func logRoundSummary(summary roundSummary, roundDuration time.Duration, sps int)
 		return
 	}
 	log.Printf(
-		"orchestrator: round summary pages=%d batches=%d batch_target=%d due_count_sampled=%t due_start=%d selected=%d dispatched=%d completed=%d outstanding=%d due_remaining=%d backpressure_waits=%d pool_workers_max=%d pool_active_max=%d pool_queue_depth_max=%d pool_queue_capacity=%d stale_results=%d duplicate_results=%d never_checked=%d oldest_selected_age_sec=%d dispatch=%s wait=%s process=%s mark_checked=%s history=%s ssl=%s events=%s checks_success=%d checks_failure=%d checks_http_failure=%d checks_timeout=%d checks_connect_error=%d checks_ssl_error=%d checks_redirect=%d checks_keyword=%d checks_tls_deprecated=%d mark_checked_rows=%d history_rows=%d ssl_rows=%d mark_checked_errors=%d history_errors=%d ssl_errors=%d duration=%s sps=%d",
+		"orchestrator: round summary pages=%d batches=%d batch_target=%d due_count_sampled=%t due_start=%d selected=%d dispatched=%d completed=%d outstanding=%d due_remaining=%d backpressure_waits=%d pool_workers_max=%d pool_active_max=%d pool_queue_depth_max=%d pool_queue_capacity=%d event_jobs_queued=%d event_queue_depth_max=%d event_queue_capacity=%d stale_results=%d duplicate_results=%d never_checked=%d oldest_selected_age_sec=%d dispatch=%s wait=%s process=%s mark_checked=%s history=%s ssl=%s events=%s checks_success=%d checks_failure=%d checks_http_failure=%d checks_timeout=%d checks_connect_error=%d checks_ssl_error=%d checks_redirect=%d checks_keyword=%d checks_tls_deprecated=%d mark_checked_rows=%d history_rows=%d ssl_rows=%d mark_checked_errors=%d history_errors=%d ssl_errors=%d duration=%s sps=%d",
 		summary.pagesFetched,
 		summary.batchesProcessed,
 		summary.batchTarget,
@@ -945,6 +1049,9 @@ func logRoundSummary(summary roundSummary, roundDuration time.Duration, sps int)
 		summary.poolActiveChecksMax,
 		summary.poolQueueDepthMax,
 		summary.poolQueueCapacityMax,
+		summary.eventJobsQueued,
+		summary.eventQueueDepthMax,
+		summary.eventQueueCapacity,
 		summary.staleResults,
 		summary.duplicateResults,
 		summary.neverChecked,
@@ -1007,17 +1114,66 @@ func (o *Orchestrator) processResults(results map[int64]checker.Result, sites ma
 	summary.sslDuration += time.Since(sslStart)
 
 	eventStart := time.Now()
+	o.processResultEvents(records, &summary)
+	summary.eventDuration += time.Since(eventStart)
+	return summary
+}
+
+func (o *Orchestrator) processResultEvents(records []siteCheckResult, summary *resultProcessSummary) {
 	for _, record := range records {
 		// Per-check data is recorded in jetmon_check_history (above); duplicating
 		// it in jetmon_audit_log was retired with the operational/site-state split.
-		if !record.res.IsFailure() {
-			o.handleRecovery(record.site, record.res)
-		} else {
-			o.handleFailure(record.site, record.res)
+		if !o.shouldProcessResultEvent(record) {
+			continue
 		}
+		if o.enqueueResultEvent(record, summary) {
+			continue
+		}
+		o.processResultEvent(record)
 	}
-	summary.eventDuration += time.Since(eventStart)
-	return summary
+}
+
+func (o *Orchestrator) shouldProcessResultEvent(record siteCheckResult) bool {
+	if record.res.IsFailure() {
+		return true
+	}
+	if record.site.SiteStatus != statusRunning {
+		return true
+	}
+	return o != nil && o.retries != nil && o.retries.get(record.blogID) != nil
+}
+
+func (o *Orchestrator) enqueueResultEvent(record siteCheckResult, summary *resultProcessSummary) bool {
+	if o == nil || len(o.eventWork) == 0 {
+		return false
+	}
+	worker := int(record.blogID % int64(len(o.eventWork)))
+	if worker < 0 {
+		worker = -worker
+	}
+	ch := o.eventWork[worker]
+	select {
+	case ch <- record:
+		summary.eventJobsQueued++
+		depth := len(ch)
+		if depth > summary.eventQueueDepthMax {
+			summary.eventQueueDepthMax = depth
+		}
+		if cap(ch) > summary.eventQueueCapacity {
+			summary.eventQueueCapacity = cap(ch)
+		}
+		return true
+	case <-o.ctx.Done():
+		return true
+	}
+}
+
+func (o *Orchestrator) processResultEvent(record siteCheckResult) {
+	if !record.res.IsFailure() {
+		o.handleRecovery(record.site, record.res)
+		return
+	}
+	o.handleFailure(record.site, record.res)
 }
 
 func addCheckOutcome(summary *resultProcessSummary, res checker.Result) {

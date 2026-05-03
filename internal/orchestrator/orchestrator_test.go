@@ -687,6 +687,65 @@ func TestProcessResultsReportsCheckOutcomes(t *testing.T) {
 	}
 }
 
+func TestProcessResultsQueuesFailureEventsWhenWorkersEnabled(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig(t)
+
+	ch := make(chan siteCheckResult, 2)
+	o := &Orchestrator{
+		retries:   newRetryQueue(),
+		wpcom:     &wpcom.Client{},
+		hostname:  "local",
+		ctx:       context.Background(),
+		eventWork: []chan siteCheckResult{ch},
+	}
+
+	res := checkerResultFailure(42)
+	summary := o.processResults(
+		map[int64]checker.Result{42: res},
+		map[int64]db.Site{42: {BlogID: 42, SiteStatus: statusRunning}},
+	)
+
+	if summary.eventJobsQueued != 1 {
+		t.Fatalf("eventJobsQueued = %d, want 1", summary.eventJobsQueued)
+	}
+	if len(ch) != 1 {
+		t.Fatalf("queued event jobs = %d, want 1", len(ch))
+	}
+	if entry := o.retries.get(42); entry != nil {
+		t.Fatal("failure event was processed inline; want queued for background worker")
+	}
+}
+
+func TestProcessResultsSkipsNoopSuccessEventsWhenWorkersEnabled(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig(t)
+
+	ch := make(chan siteCheckResult, 2)
+	o := &Orchestrator{
+		retries:   newRetryQueue(),
+		wpcom:     &wpcom.Client{},
+		hostname:  "local",
+		ctx:       context.Background(),
+		eventWork: []chan siteCheckResult{ch},
+	}
+
+	res := checkerResultSuccess(42)
+	summary := o.processResults(
+		map[int64]checker.Result{42: res},
+		map[int64]db.Site{42: {BlogID: 42, SiteStatus: statusRunning}},
+	)
+
+	if summary.eventJobsQueued != 0 {
+		t.Fatalf("eventJobsQueued = %d, want 0", summary.eventJobsQueued)
+	}
+	if len(ch) != 0 {
+		t.Fatalf("queued event jobs = %d, want 0", len(ch))
+	}
+}
+
 func TestProcessResultsFallsBackWhenBatchWritesFail(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()

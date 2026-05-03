@@ -132,11 +132,23 @@ No active candidate branch is queued here right now.
   and round summaries now report max worker count, active checks, queue depth,
   queue capacity, and batch target so we can distinguish a worker-ceiling limit
   from DB writes or event-processing bottlenecks.
-- [ ] Run a controlled worker-ceiling experiment with `NUM_WORKERS=240` on the
-  v2 test host. Repeat the 20,000-site batch before trying 25,000; if CPU/FDs
-  remain low and freshness margin grows, prioritize adaptive concurrency. If
-  margin stays tight, prioritize streaming result processing and moving
-  event/freshness persistence off the scheduler hot path.
+- [x] Run a controlled worker-ceiling experiment with `NUM_WORKERS=240` on the
+  v2 test host. The May 3, 2026 22,500-site retry run was polluted by overlap
+  from a failed preflight attempt, so it is not a clean capacity ceiling, but
+  the new scheduler diagnostics still isolated the next bottleneck: check pool
+  active/queue counts hit the new ceiling, then a 7,200-site selected batch
+  spent `13m15s` in event handling after 732 connect errors while CPU/RSS stayed
+  low.
+- [x] Move failure/recovery event handling off the scheduler freshness path.
+  Jetmon now writes `last_checked_at`, `next_check_at`, and
+  `jetmon_check_history` before queueing event work to bounded sharded workers.
+  The queue preserves per-site ordering by blog ID while preventing a broad
+  event/projection storm from blocking fresh checks for unrelated sites.
+- [ ] Retest the event-queue branch with a clean `20,000,22,500,25,000` ladder
+  after uptime-bench confirms no failed-preflight scheduler work is still
+  in-flight. Compare freshness margin, event queue depth, event worker timings,
+  retry queue size, event mutation retries, open benchmark events after cleanup,
+  MySQL CPU/I/O, and Jetmon CPU/RSS/FDs.
 - [ ] Add a 5k/10k capacity ladder that records freshness, p95 age, MySQL CPU,
   MySQL I/O/network, `jetmon2` CPU/RSS/FDs, StatsD CPU, Veriflier CPU, and
   check-history row growth after each major scalability change.
