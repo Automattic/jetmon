@@ -97,8 +97,8 @@ This is the end-to-end path from database query to WPCOM notification.
 │  orchestrator.runRound()                                             │
 │    dbHeartbeat()          ── UPDATE jetmon_hosts SET last_heartbeat  │
 │    ClaimBuckets()         ── rebalance bucket ranges (each round)    │
-│    dbGetSitesForBucket()  ── SELECT sites WHERE bucket IN [min,max]  │
-│                              ORDER BY last_checked_at ASC            │
+│    dbGetSitesForBucket()  ── SELECT due sites in DATASET_SIZE pages  │
+│                              ORDER BY next_check_at or last_checked_at│
 └──────────────────────────────────────────────────────────────────────┘
                   │  []db.Site
                   ▼
@@ -218,10 +218,9 @@ orchestrator.Run()
           │     ├─ collect results (deadline-bounded)
           │     │
           │     ├─ processResults()
-          │     │     ├─ dbMarkSiteChecked()
-          │     │     ├─ dbRecordCheckHistory()
-          │     │     ├─ dbUpdateSSLExpiry() + checkSSLAlerts()
-          │     │     ├─ auditLog(EventCheck)
+          │     │     ├─ dbMarkSitesChecked()       // last_checked_at + next_check_at
+          │     │     ├─ dbRecordCheckHistories()   // RTT + DNS/TCP/TLS/TTFB samples
+          │     │     ├─ dbUpdateSSLExpiries() + checkSSLAlerts()
           │     │     └─ handleRecovery() or handleFailure()
           │     │
           │     ├─ emit StatsD metrics
@@ -396,7 +395,8 @@ Database Tables
     monitor_url           URL to check
     site_status           Legacy v1 projection; derived from v2 events
     last_status_change    Legacy v1 projection; derived from v2 transitions
-    last_checked_at       Used to order fetch by least-recently-checked
+    last_checked_at       Last completed local check timestamp
+    next_check_at         Maintained due timestamp for variable-interval checks
     ssl_expiry_date       Updated after each TLS handshake
     check_keyword         Optional body text to require
     maintenance_start/end Suppress alerts during scheduled maintenance

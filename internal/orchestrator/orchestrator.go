@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-sql-driver/mysql"
+
 	"github.com/Automattic/jetmon/internal/audit"
 	"github.com/Automattic/jetmon/internal/checker"
 	"github.com/Automattic/jetmon/internal/config"
@@ -50,6 +52,9 @@ const verifierRPCHeadroom = 5 * time.Second
 const schedulerBackpressurePollInterval = 10 * time.Millisecond
 const schedulerVariableIntervalPollInterval = 5 * time.Second
 const schedulerBacklogPollInterval = 5 * time.Second
+const schedulerOperatorReportInterval = time.Minute
+const eventMutationMaxAttempts = 3
+const eventMutationRetryBaseDelay = 25 * time.Millisecond
 
 // VariableIntervalPollInterval returns the idle scheduler poll interval used
 // when per-site check intervals are enabled. The SQL due predicate prevents
@@ -70,6 +75,7 @@ var (
 	dbRecordCheckHistory   = db.RecordCheckHistory
 	dbRecordCheckHistories = db.RecordCheckHistories
 	dbUpdateSSLExpiry      = db.UpdateSSLExpiry
+	dbUpdateSSLExpiries    = db.UpdateSSLExpiries
 	dbUpdateSiteStatus     = db.UpdateSiteStatus
 	dbRecordFalsePositive  = db.RecordFalsePositive
 	dbUpdateLastAlertSent  = db.UpdateLastAlertSent
@@ -108,6 +114,7 @@ type roundSummary struct {
 	oldestSelectedAge time.Duration
 	dueAtStart        int
 	dueRemaining      int
+	dueCountSampled   bool
 	dueCountErrors    int
 	fetchErrors       int
 	interrupted       bool
@@ -122,8 +129,20 @@ type roundSummary struct {
 
 	markCheckedRows   int
 	historyRows       int
+	sslRows           int
 	markCheckedErrors int
 	historyErrors     int
+	sslErrors         int
+
+	checkSuccesses     int
+	checkFailures      int
+	checkHTTPFailures  int
+	checkTimeouts      int
+	checkConnectErrors int
+	checkSSLErrors     int
+	checkRedirects     int
+	checkKeywords      int
+	checkTLSDeprecated int
 }
 
 func (s *roundSummary) add(other roundSummary) {
@@ -138,6 +157,9 @@ func (s *roundSummary) add(other roundSummary) {
 	s.neverChecked += other.neverChecked
 	s.dueCountErrors += other.dueCountErrors
 	s.fetchErrors += other.fetchErrors
+	if other.dueCountSampled {
+		s.dueCountSampled = true
+	}
 	s.dispatchDuration += other.dispatchDuration
 	s.waitDuration += other.waitDuration
 	s.processDuration += other.processDuration
@@ -147,8 +169,19 @@ func (s *roundSummary) add(other roundSummary) {
 	s.eventDuration += other.eventDuration
 	s.markCheckedRows += other.markCheckedRows
 	s.historyRows += other.historyRows
+	s.sslRows += other.sslRows
 	s.markCheckedErrors += other.markCheckedErrors
 	s.historyErrors += other.historyErrors
+	s.sslErrors += other.sslErrors
+	s.checkSuccesses += other.checkSuccesses
+	s.checkFailures += other.checkFailures
+	s.checkHTTPFailures += other.checkHTTPFailures
+	s.checkTimeouts += other.checkTimeouts
+	s.checkConnectErrors += other.checkConnectErrors
+	s.checkSSLErrors += other.checkSSLErrors
+	s.checkRedirects += other.checkRedirects
+	s.checkKeywords += other.checkKeywords
+	s.checkTLSDeprecated += other.checkTLSDeprecated
 	if other.oldestSelectedAge > s.oldestSelectedAge {
 		s.oldestSelectedAge = other.oldestSelectedAge
 	}
@@ -158,11 +191,24 @@ func (s *roundSummary) add(other roundSummary) {
 }
 
 type resultProcessSummary struct {
-	processed           int
-	markCheckedRows     int
-	historyRows         int
-	markCheckedErrors   int
-	historyErrors       int
+	processed         int
+	markCheckedRows   int
+	historyRows       int
+	sslRows           int
+	markCheckedErrors int
+	historyErrors     int
+	sslErrors         int
+
+	checkSuccesses     int
+	checkFailures      int
+	checkHTTPFailures  int
+	checkTimeouts      int
+	checkConnectErrors int
+	checkSSLErrors     int
+	checkRedirects     int
+	checkKeywords      int
+	checkTLSDeprecated int
+
 	markCheckedDuration time.Duration
 	historyDuration     time.Duration
 	sslDuration         time.Duration
@@ -193,6 +239,9 @@ type Orchestrator struct {
 	statsMu      sync.RWMutex
 	lastRoundSPS int
 	lastRoundDur time.Duration
+
+	lastDueCountAt        time.Time
+	lastProjectionDriftAt time.Time
 
 	ctx    stdctx.Context
 	cancel stdctx.CancelFunc
@@ -306,6 +355,7 @@ func (o *Orchestrator) Stop() {
 func (o *Orchestrator) runRound() roundSummary {
 	cfg := config.Get()
 	summary := roundSummary{}
+	reportNow := nowFunc().UTC()
 	if o.roundStart.IsZero() {
 		o.roundStart = time.Now()
 	}
@@ -325,13 +375,18 @@ func (o *Orchestrator) runRound() roundSummary {
 			log.Printf("orchestrator: bucket rebalance failed: %v", err)
 		}
 	}
-	o.checkLegacyProjectionDrift(cfg)
+	o.checkLegacyProjectionDrift(cfg, reportNow)
 
-	if due, err := dbCountDueSites(o.ctx, o.bucketMin, o.bucketMax, cfg.UseVariableCheckIntervals); err != nil {
-		summary.dueCountErrors++
-		log.Printf("orchestrator: count due sites failed: %v", err)
-	} else {
-		summary.dueAtStart = due
+	sampleDueCount := !cfg.UseVariableCheckIntervals || o.shouldSampleDueCount(reportNow)
+	if sampleDueCount {
+		o.lastDueCountAt = reportNow
+		if due, err := dbCountDueSites(o.ctx, o.bucketMin, o.bucketMax, cfg.UseVariableCheckIntervals); err != nil {
+			summary.dueCountErrors++
+			log.Printf("orchestrator: count due sites failed: %v", err)
+		} else {
+			summary.dueAtStart = due
+			summary.dueCountSampled = true
+		}
 	}
 
 	pageSize := cfg.DatasetSize
@@ -375,7 +430,9 @@ func (o *Orchestrator) runRound() roundSummary {
 	}
 
 	if cfg.UseVariableCheckIntervals {
-		if due, err := dbCountDueSites(o.ctx, o.bucketMin, o.bucketMax, true); err != nil {
+		if !sampleDueCount {
+			summary.dueRemaining = 0
+		} else if due, err := dbCountDueSites(o.ctx, o.bucketMin, o.bucketMax, true); err != nil {
 			summary.dueCountErrors++
 			log.Printf("orchestrator: count remaining due sites failed: %v", err)
 		} else {
@@ -442,8 +499,19 @@ process:
 	summary.completed += processSummary.processed
 	summary.markCheckedRows += processSummary.markCheckedRows
 	summary.historyRows += processSummary.historyRows
+	summary.sslRows += processSummary.sslRows
 	summary.markCheckedErrors += processSummary.markCheckedErrors
 	summary.historyErrors += processSummary.historyErrors
+	summary.sslErrors += processSummary.sslErrors
+	summary.checkSuccesses += processSummary.checkSuccesses
+	summary.checkFailures += processSummary.checkFailures
+	summary.checkHTTPFailures += processSummary.checkHTTPFailures
+	summary.checkTimeouts += processSummary.checkTimeouts
+	summary.checkConnectErrors += processSummary.checkConnectErrors
+	summary.checkSSLErrors += processSummary.checkSSLErrors
+	summary.checkRedirects += processSummary.checkRedirects
+	summary.checkKeywords += processSummary.checkKeywords
+	summary.checkTLSDeprecated += processSummary.checkTLSDeprecated
 	summary.markCheckedDuration += processSummary.markCheckedDuration
 	summary.historyDuration += processSummary.historyDuration
 	summary.sslDuration += processSummary.sslDuration
@@ -468,13 +536,24 @@ func emitPageMetrics(summary roundSummary) {
 	m.Timing("scheduler.page.events.time", summary.eventDuration)
 	m.Increment("scheduler.page.mark_checked.row.count", summary.markCheckedRows)
 	m.Increment("scheduler.page.history.row.count", summary.historyRows)
+	m.Increment("scheduler.page.ssl.row.count", summary.sslRows)
 	m.Increment("scheduler.page.mark_checked.error.count", summary.markCheckedErrors)
 	m.Increment("scheduler.page.history.error.count", summary.historyErrors)
+	m.Increment("scheduler.page.ssl.error.count", summary.sslErrors)
+	m.Increment("scheduler.page.check.success.count", summary.checkSuccesses)
+	m.Increment("scheduler.page.check.failure.count", summary.checkFailures)
+	m.Increment("scheduler.page.check.http_failure.count", summary.checkHTTPFailures)
+	m.Increment("scheduler.page.check.timeout.count", summary.checkTimeouts)
+	m.Increment("scheduler.page.check.connect_error.count", summary.checkConnectErrors)
+	m.Increment("scheduler.page.check.ssl_error.count", summary.checkSSLErrors)
+	m.Increment("scheduler.page.check.redirect.count", summary.checkRedirects)
+	m.Increment("scheduler.page.check.keyword.count", summary.checkKeywords)
+	m.Increment("scheduler.page.check.tls_deprecated.count", summary.checkTLSDeprecated)
 }
 
 func logPageSummary(pageNumber, sites int, summary roundSummary) {
 	log.Printf(
-		"orchestrator: page summary page=%d sites=%d dispatched=%d completed=%d outstanding=%d dispatch=%s wait=%s process=%s mark_checked=%s history=%s ssl=%s events=%s mark_checked_rows=%d history_rows=%d mark_checked_errors=%d history_errors=%d",
+		"orchestrator: page summary page=%d sites=%d dispatched=%d completed=%d outstanding=%d dispatch=%s wait=%s process=%s mark_checked=%s history=%s ssl=%s events=%s checks_success=%d checks_failure=%d checks_http_failure=%d checks_timeout=%d checks_connect_error=%d checks_ssl_error=%d checks_redirect=%d checks_keyword=%d checks_tls_deprecated=%d mark_checked_rows=%d history_rows=%d ssl_rows=%d mark_checked_errors=%d history_errors=%d ssl_errors=%d",
 		pageNumber,
 		sites,
 		summary.dispatched,
@@ -487,10 +566,21 @@ func logPageSummary(pageNumber, sites int, summary roundSummary) {
 		summary.historyDuration.Round(time.Millisecond),
 		summary.sslDuration.Round(time.Millisecond),
 		summary.eventDuration.Round(time.Millisecond),
+		summary.checkSuccesses,
+		summary.checkFailures,
+		summary.checkHTTPFailures,
+		summary.checkTimeouts,
+		summary.checkConnectErrors,
+		summary.checkSSLErrors,
+		summary.checkRedirects,
+		summary.checkKeywords,
+		summary.checkTLSDeprecated,
 		summary.markCheckedRows,
 		summary.historyRows,
+		summary.sslRows,
 		summary.markCheckedErrors,
 		summary.historyErrors,
+		summary.sslErrors,
 	)
 }
 
@@ -592,6 +682,25 @@ func schedulerSleepDuration(cfg *config.Config, summary roundSummary, elapsed ti
 	return minInterval - elapsed
 }
 
+func (o *Orchestrator) shouldSampleDueCount(now time.Time) bool {
+	return dueForOperatorReport(o.lastDueCountAt, now)
+}
+
+func (o *Orchestrator) shouldCheckProjectionDrift(now time.Time) bool {
+	return dueForOperatorReport(o.lastProjectionDriftAt, now)
+}
+
+func dueForOperatorReport(last, now time.Time) bool {
+	return last.IsZero() || !now.Before(last.Add(schedulerOperatorReportInterval))
+}
+
+func boolMetric(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
+}
+
 func (o *Orchestrator) finishRound(cfg *config.Config, summary roundSummary) {
 	// Emit metrics and update stats files.
 	roundDuration := time.Since(o.roundStart)
@@ -627,8 +736,11 @@ func (o *Orchestrator) finishRound(cfg *config.Config, summary roundSummary) {
 		m.Gauge("scheduler.round.dispatched.count", summary.dispatched)
 		m.Gauge("scheduler.round.completed.count", summary.completed)
 		m.Gauge("scheduler.round.outstanding.count", summary.outstanding)
-		m.Gauge("scheduler.round.due_start.count", summary.dueAtStart)
-		m.Gauge("scheduler.round.due_remaining.count", summary.dueRemaining)
+		m.Gauge("scheduler.round.due_count_sampled.count", boolMetric(summary.dueCountSampled))
+		if summary.dueCountSampled {
+			m.Gauge("scheduler.round.due_start.count", summary.dueAtStart)
+			m.Gauge("scheduler.round.due_remaining.count", summary.dueRemaining)
+		}
 		m.Gauge("scheduler.round.selected_never_checked.count", summary.neverChecked)
 		m.Gauge("scheduler.round.selected_oldest_age_sec", int(summary.oldestSelectedAge.Seconds()))
 		m.Increment("scheduler.dispatch.backpressure_wait.count", summary.backpressureWaits)
@@ -645,8 +757,19 @@ func (o *Orchestrator) finishRound(cfg *config.Config, summary roundSummary) {
 		m.Timing("scheduler.round.events.time", summary.eventDuration)
 		m.Increment("scheduler.round.mark_checked.row.count", summary.markCheckedRows)
 		m.Increment("scheduler.round.history.row.count", summary.historyRows)
+		m.Increment("scheduler.round.ssl.row.count", summary.sslRows)
 		m.Increment("scheduler.round.mark_checked.error.count", summary.markCheckedErrors)
 		m.Increment("scheduler.round.history.error.count", summary.historyErrors)
+		m.Increment("scheduler.round.ssl.error.count", summary.sslErrors)
+		m.Increment("scheduler.round.check.success.count", summary.checkSuccesses)
+		m.Increment("scheduler.round.check.failure.count", summary.checkFailures)
+		m.Increment("scheduler.round.check.http_failure.count", summary.checkHTTPFailures)
+		m.Increment("scheduler.round.check.timeout.count", summary.checkTimeouts)
+		m.Increment("scheduler.round.check.connect_error.count", summary.checkConnectErrors)
+		m.Increment("scheduler.round.check.ssl_error.count", summary.checkSSLErrors)
+		m.Increment("scheduler.round.check.redirect.count", summary.checkRedirects)
+		m.Increment("scheduler.round.check.keyword.count", summary.checkKeywords)
+		m.Increment("scheduler.round.check.tls_deprecated.count", summary.checkTLSDeprecated)
 
 		if cfg.StatsdSendMemUsage {
 			m.EmitMemStats()
@@ -667,8 +790,9 @@ func logRoundSummary(summary roundSummary, roundDuration time.Duration, sps int)
 		return
 	}
 	log.Printf(
-		"orchestrator: round summary pages=%d due_start=%d selected=%d dispatched=%d completed=%d outstanding=%d due_remaining=%d backpressure_waits=%d stale_results=%d duplicate_results=%d never_checked=%d oldest_selected_age_sec=%d dispatch=%s wait=%s process=%s mark_checked=%s history=%s ssl=%s events=%s mark_checked_rows=%d history_rows=%d mark_checked_errors=%d history_errors=%d duration=%s sps=%d",
+		"orchestrator: round summary pages=%d due_count_sampled=%t due_start=%d selected=%d dispatched=%d completed=%d outstanding=%d due_remaining=%d backpressure_waits=%d stale_results=%d duplicate_results=%d never_checked=%d oldest_selected_age_sec=%d dispatch=%s wait=%s process=%s mark_checked=%s history=%s ssl=%s events=%s checks_success=%d checks_failure=%d checks_http_failure=%d checks_timeout=%d checks_connect_error=%d checks_ssl_error=%d checks_redirect=%d checks_keyword=%d checks_tls_deprecated=%d mark_checked_rows=%d history_rows=%d ssl_rows=%d mark_checked_errors=%d history_errors=%d ssl_errors=%d duration=%s sps=%d",
 		summary.pagesFetched,
+		summary.dueCountSampled,
 		summary.dueAtStart,
 		summary.selected,
 		summary.dispatched,
@@ -687,10 +811,21 @@ func logRoundSummary(summary roundSummary, roundDuration time.Duration, sps int)
 		summary.historyDuration.Round(time.Millisecond),
 		summary.sslDuration.Round(time.Millisecond),
 		summary.eventDuration.Round(time.Millisecond),
+		summary.checkSuccesses,
+		summary.checkFailures,
+		summary.checkHTTPFailures,
+		summary.checkTimeouts,
+		summary.checkConnectErrors,
+		summary.checkSSLErrors,
+		summary.checkRedirects,
+		summary.checkKeywords,
+		summary.checkTLSDeprecated,
 		summary.markCheckedRows,
 		summary.historyRows,
+		summary.sslRows,
 		summary.markCheckedErrors,
 		summary.historyErrors,
+		summary.sslErrors,
 		roundDuration.Round(time.Millisecond),
 		sps,
 	)
@@ -702,22 +837,28 @@ func (o *Orchestrator) processResults(results map[int64]checker.Result, sites ma
 	if len(records) == 0 {
 		return summary
 	}
+	for _, record := range records {
+		addCheckOutcome(&summary, record.res)
+	}
 
 	o.markResultsChecked(records, &summary)
 	o.recordResultHistories(records, &summary)
 
 	sslStart := time.Now()
+	sslUpdates := make([]db.SiteSSLExpiry, 0)
 	for _, record := range records {
 		// Update SSL expiry if available.
 		if record.res.SSLExpiry != nil {
 			if shouldUpdateSSLExpiry(record.site.SSLExpiryDate, *record.res.SSLExpiry) {
-				if err := dbUpdateSSLExpiry(o.ctx, record.blogID, *record.res.SSLExpiry); err != nil {
-					log.Printf("orchestrator: update ssl expiry blog_id=%d: %v", record.blogID, err)
-				}
+				sslUpdates = append(sslUpdates, db.SiteSSLExpiry{
+					BlogID: record.blogID,
+					Expiry: *record.res.SSLExpiry,
+				})
 			}
 			o.checkSSLAlerts(record.site, *record.res.SSLExpiry)
 		}
 	}
+	o.updateSSLExpiries(sslUpdates, &summary)
 	summary.sslDuration += time.Since(sslStart)
 
 	eventStart := time.Now()
@@ -732,6 +873,52 @@ func (o *Orchestrator) processResults(results map[int64]checker.Result, sites ma
 	}
 	summary.eventDuration += time.Since(eventStart)
 	return summary
+}
+
+func addCheckOutcome(summary *resultProcessSummary, res checker.Result) {
+	if res.Success {
+		summary.checkSuccesses++
+	} else {
+		summary.checkFailures++
+	}
+
+	if !res.Success && res.HTTPCode >= 400 {
+		summary.checkHTTPFailures++
+	}
+	switch res.ErrorCode {
+	case checker.ErrorTimeout:
+		summary.checkTimeouts++
+	case checker.ErrorConnect:
+		summary.checkConnectErrors++
+	case checker.ErrorSSL, checker.ErrorTLSExpired:
+		summary.checkSSLErrors++
+	case checker.ErrorRedirect:
+		summary.checkRedirects++
+	case checker.ErrorKeyword:
+		summary.checkKeywords++
+	case checker.ErrorTLSDeprecated:
+		summary.checkTLSDeprecated++
+	}
+}
+
+func (o *Orchestrator) updateSSLExpiries(updates []db.SiteSSLExpiry, summary *resultProcessSummary) {
+	if len(updates) == 0 {
+		return
+	}
+	if err := dbUpdateSSLExpiries(o.ctx, updates); err != nil {
+		summary.sslErrors++
+		log.Printf("orchestrator: batch update ssl expiries rows=%d: %v", len(updates), err)
+		for _, update := range updates {
+			if err := dbUpdateSSLExpiry(o.ctx, update.BlogID, update.Expiry); err != nil {
+				summary.sslErrors++
+				log.Printf("orchestrator: update ssl expiry blog_id=%d: %v", update.BlogID, err)
+				continue
+			}
+			summary.sslRows++
+		}
+		return
+	}
+	summary.sslRows += len(updates)
 }
 
 func knownSiteResults(results map[int64]checker.Result, sites map[int64]db.Site) []siteCheckResult {
@@ -897,12 +1084,12 @@ func (o *Orchestrator) handleFailure(site db.Site, res checker.Result) {
 	// failure would update the same row, so this is also a self-healing retry
 	// path if a previous Open failed to commit.
 	if entry.eventID == 0 {
-		id, err := o.openSeemsDown(site, res)
+		id, opened, err := o.openSeemsDown(site, res)
 		if err != nil {
 			log.Printf("orchestrator: open seems-down event blog_id=%d: %v", site.BlogID, err)
 		} else {
 			entry.eventID = id
-			if entry.failCount == 1 {
+			if opened || entry.failCount == 1 {
 				emitCounter("detection.seems_down.open.count", 1)
 				emitCounter("detection.seems_down.open."+class+".count", 1)
 				emitTimingSince("detection.first_failure_to_seems_down.time", entry.firstFailAt, nowFunc().UTC())
@@ -1249,6 +1436,12 @@ func (o *Orchestrator) checkSSLAlerts(site db.Site, expiry time.Time) {
 // warnings don't affect the Up/Down state of the site (Layer 2 issue, not a
 // Layer 4 outage).
 func (o *Orchestrator) openOrUpdateSSLExpiry(blogID int64, severity uint8, state string, daysUntil int, meta json.RawMessage) error {
+	return o.withEventMutationRetry(blogID, "open_update_ssl_expiry", func() error {
+		return o.openOrUpdateSSLExpiryOnce(blogID, severity, state, daysUntil, meta)
+	})
+}
+
+func (o *Orchestrator) openOrUpdateSSLExpiryOnce(blogID int64, severity uint8, state string, daysUntil int, meta json.RawMessage) error {
 	tx, err := o.ev().Begin(o.ctx)
 	if err != nil {
 		return err
@@ -1283,6 +1476,12 @@ func (o *Orchestrator) openOrUpdateSSLExpiry(blogID int64, severity uint8, state
 // closeSSLExpiryIfOpen closes an open tls_expiry event for the site, if any.
 // No-op if no event exists.
 func (o *Orchestrator) closeSSLExpiryIfOpen(blogID int64) error {
+	return o.withEventMutationRetry(blogID, "close_ssl_expiry", func() error {
+		return o.closeSSLExpiryIfOpenOnce(blogID)
+	})
+}
+
+func (o *Orchestrator) closeSSLExpiryIfOpenOnce(blogID int64) error {
 	tx, err := o.ev().Begin(o.ctx)
 	if err != nil {
 		return err
@@ -1320,10 +1519,14 @@ func (o *Orchestrator) isAlertSuppressed(site db.Site) bool {
 	return time.Since(*site.LastAlertSentAt) < time.Duration(cooldown)*time.Minute
 }
 
-func (o *Orchestrator) checkLegacyProjectionDrift(cfg *config.Config) {
+func (o *Orchestrator) checkLegacyProjectionDrift(cfg *config.Config, now time.Time) {
 	if !cfg.LegacyStatusProjectionEnable {
 		return
 	}
+	if !o.shouldCheckProjectionDrift(now) {
+		return
+	}
+	o.lastProjectionDriftAt = now
 	count, err := dbCountProjectionDrift(o.ctx, o.bucketMin, o.bucketMax)
 	if err != nil {
 		log.Printf("orchestrator: legacy projection drift check failed: %v", err)
@@ -1439,14 +1642,74 @@ func metricSegment(s string) string {
 	return out
 }
 
+func (o *Orchestrator) withEventMutationRetry(blogID int64, operation string, fn func() error) error {
+	ctx := o.ctx
+	if ctx == nil {
+		ctx = stdctx.Background()
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= eventMutationMaxAttempts; attempt++ {
+		err := fn()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !isRetryableMySQLError(err) || attempt == eventMutationMaxAttempts {
+			return err
+		}
+		emitCounter("eventstore.mutation.retry.count", 1)
+		emitCounter("eventstore.mutation."+metricSegment(operation)+".retry.count", 1)
+		wait := time.Duration(attempt) * eventMutationRetryBaseDelay
+		log.Printf("orchestrator: retrying event mutation blog_id=%d operation=%s attempt=%d/%d wait=%s err=%v",
+			blogID, operation, attempt+1, eventMutationMaxAttempts, wait, err)
+		timer := time.NewTimer(wait)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		}
+	}
+	return lastErr
+}
+
+func isRetryableMySQLError(err error) bool {
+	var mysqlErr *mysql.MySQLError
+	if !errors.As(err, &mysqlErr) {
+		return false
+	}
+	switch mysqlErr.Number {
+	case 1205, 1213:
+		return true
+	default:
+		return false
+	}
+}
+
 // openSeemsDown opens (or re-detects) a Seems Down event for an HTTP-failing
 // site and projects v1 site_status=SITE_DOWN in the same transaction. Returns
 // the event id. Idempotent: a re-detection of the same identity returns the
 // existing event's id with no transition row written and no projection update.
-func (o *Orchestrator) openSeemsDown(site db.Site, res checker.Result) (int64, error) {
+func (o *Orchestrator) openSeemsDown(site db.Site, res checker.Result) (int64, bool, error) {
+	var eventID int64
+	var opened bool
+	err := o.withEventMutationRetry(site.BlogID, "open_seems_down", func() error {
+		id, didOpen, err := o.openSeemsDownOnce(site, res)
+		if err != nil {
+			return err
+		}
+		eventID = id
+		opened = didOpen
+		return nil
+	})
+	return eventID, opened, err
+}
+
+func (o *Orchestrator) openSeemsDownOnce(site db.Site, res checker.Result) (int64, bool, error) {
 	tx, err := o.ev().Begin(o.ctx)
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
@@ -1465,7 +1728,7 @@ func (o *Orchestrator) openSeemsDown(site db.Site, res checker.Result) (int64, e
 		Metadata: meta,
 	})
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 
 	// Project v1 site_status=SITE_DOWN only on the actual insert. A re-detection
@@ -1473,19 +1736,25 @@ func (o *Orchestrator) openSeemsDown(site db.Site, res checker.Result) (int64, e
 	// was already projected when the event first opened.
 	if out.Opened && config.LegacyStatusProjectionEnabled() && tx.Tx() != nil {
 		if err := db.UpdateSiteStatusTx(o.ctx, tx.Tx(), site.BlogID, statusDown, nowFunc().UTC()); err != nil {
-			return 0, fmt.Errorf("project site_status: %w", err)
+			return 0, false, fmt.Errorf("project site_status: %w", err)
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("commit: %w", err)
+		return 0, false, fmt.Errorf("commit: %w", err)
 	}
-	return out.EventID, nil
+	return out.EventID, out.Opened, nil
 }
 
 // promoteToDown bumps an open Seems Down event to Down (severity 4) and
 // projects site_status=SITE_CONFIRMED_DOWN in the same transaction.
 func (o *Orchestrator) promoteToDown(blogID, eventID int64, changeTime time.Time, meta json.RawMessage) error {
+	return o.withEventMutationRetry(blogID, "promote_to_down", func() error {
+		return o.promoteToDownOnce(blogID, eventID, changeTime, meta)
+	})
+}
+
+func (o *Orchestrator) promoteToDownOnce(blogID, eventID int64, changeTime time.Time, meta json.RawMessage) error {
 	tx, err := o.ev().Begin(o.ctx)
 	if err != nil {
 		return err
@@ -1509,6 +1778,12 @@ func (o *Orchestrator) promoteToDown(blogID, eventID int64, changeTime time.Time
 // closeEvent closes an open event with the given resolution reason and projects
 // site_status to the given v1 value in the same transaction.
 func (o *Orchestrator) closeEvent(blogID, eventID int64, reason string, projectedStatus int, changeTime time.Time, meta json.RawMessage) error {
+	return o.withEventMutationRetry(blogID, "close_event", func() error {
+		return o.closeEventOnce(blogID, eventID, reason, projectedStatus, changeTime, meta)
+	})
+}
+
+func (o *Orchestrator) closeEventOnce(blogID, eventID int64, reason string, projectedStatus int, changeTime time.Time, meta json.RawMessage) error {
 	tx, err := o.ev().Begin(o.ctx)
 	if err != nil {
 		return err
@@ -1534,6 +1809,12 @@ func (o *Orchestrator) closeEvent(blogID, eventID int64, reason string, projecte
 // inside the transaction. site_status is projected back to SITE_RUNNING in the
 // same tx.
 func (o *Orchestrator) closeRecoveredEvent(blogID, knownEventID int64, changeTime time.Time) error {
+	return o.withEventMutationRetry(blogID, "close_recovered_event", func() error {
+		return o.closeRecoveredEventOnce(blogID, knownEventID, changeTime)
+	})
+}
+
+func (o *Orchestrator) closeRecoveredEventOnce(blogID, knownEventID int64, changeTime time.Time) error {
 	tx, err := o.ev().Begin(o.ctx)
 	if err != nil {
 		return err

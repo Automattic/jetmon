@@ -37,6 +37,8 @@ Jetmon 2 adds these columns:
 | `timeout_seconds` | `TINYINT NULL` | Per-site timeout override |
 | `redirect_policy` | `ENUM NULL` | `follow`, `alert`, or `fail` |
 | `alert_cooldown_minutes` | `SMALLINT NULL` | Per-site alert cooldown override |
+| `last_checked_at` | `DATETIME NULL` | Last completed local check timestamp |
+| `next_check_at` | `DATETIME NULL` | Maintained due timestamp for variable-interval scheduler selection |
 
 The API can expose a derived `cli_batch` field for local API CLI test data when
 `include_cli_metadata=true` is requested and `custom_headers` contains

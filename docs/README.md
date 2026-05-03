@@ -49,3 +49,4 @@ accepted architecture decisions.
 | Document | Purpose |
 |---|---|
 | [`jetmon-v2-capacity-1000-report.md`](jetmon-v2-capacity-1000-report.md) | Capacity-benchmark report comparing the latest successful 1,000-site Jetmon v2 run with the previous failed 1,000-site run. |
+| [`jetmon-v2-scalability-test-plan.md`](jetmon-v2-scalability-test-plan.md) | Repeatable checklist for validating scheduler and check-path efficiency changes at 1k, 5k, and 10k site counts. |
