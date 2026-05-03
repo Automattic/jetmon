@@ -10,7 +10,7 @@ The lab harness is [`scripts/rollout-vm-lab.sh`](../scripts/rollout-vm-lab.sh).
 Run it on the virtualization host itself. For the current in-house lab host:
 
 ```bash
-ssh jetmon-deploy-test
+ssh jetmon-vm-host-1
 cd /path/to/jetmon
 scripts/rollout-vm-lab.sh doctor
 ```

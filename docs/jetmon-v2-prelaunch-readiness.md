@@ -196,7 +196,7 @@ Evidence:
 - [x] Owner: `Jetmon`, `Systems` - Run fresh-server dry-run rehearsal if that
   path remains an option.
 - [x] Owner: `Jetmon`, `Systems` - Run rollback dry-run rehearsal.
-- [ ] Owner: `Jetmon`, `Systems` - Run VM lab snapshot flow if the lab host is
+- [x] Owner: `Jetmon`, `Systems` - Run VM lab snapshot flow if the lab host is
   available.
 - [ ] Owner: `Jetmon`, `Systems` - Confirm `DELIVERY_OWNER_HOST` posture is
   intentional for rollout.
@@ -214,6 +214,10 @@ Local dry-run evidence:
 - `make rollout-docs-verify` passed on 2026-05-03T03:17Z.
 - The verifier generated and checked same-server, fresh-server, and guided
   rollback dry-run plans.
+- `make rollout-vm-lab-snapshot-all-smoke` passed on 2026-05-03T05:32Z
+  against `jetmon-vm-host-1` using snapshot `pre-guided-flow`. Covered
+  execute/rollback, interrupted resume, post-start rollback, bad SSH, v2 start
+  failure, runtime guards, real activity, and failure gates.
 
 ### 5. Production Observability And Hold Points
 

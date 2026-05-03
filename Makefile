@@ -16,7 +16,7 @@ API_CLI_TOKEN_SCOPE ?= admin
 API_CLI_TOKEN_CREATED_BY ?= docker-local
 API_CLI_TOKEN_TTL ?= 0
 API_CLI_TOKEN_ID ?=
-ROLLOUT_VM_LAB_HOST ?= jetmon-deploy-test
+ROLLOUT_VM_LAB_HOST ?= jetmon-vm-host-1
 ROLLOUT_VM_LAB_SSH ?= ssh -F $(HOME)/.ssh/config -o ControlMaster=no -o ControlPath=none -o BatchMode=yes -o ConnectTimeout=10
 ROLLOUT_VM_LAB_SNAPSHOT ?= pre-guided-flow
 GO          ?= $(shell if command -v go >/dev/null 2>&1; then command -v go; elif [ -x /usr/local/go/bin/go ]; then printf /usr/local/go/bin/go; else printf go; fi)

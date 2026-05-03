@@ -54,7 +54,7 @@ No active candidate branch is queued here right now.
   `Unknown` as monitor-side uncertainty rather than downtime.
 - [x] Run local rollout docs verification plus same-server, fresh-server, and
   rollback dry-run rehearsals with `make rollout-docs-verify`.
-- [ ] Run VM lab snapshot rollout/rollback flow when available, and attach the
+- [x] Run VM lab snapshot rollout/rollback flow when available, and attach the
   generated command plan for the chosen rollout mode.
 - [x] Draft canary cohort matrix and expansion/rollback threshold prompts for
   WPCOM, Atomic, self-hosted Jetpack, agency, WAF/security-plugin,
@@ -289,7 +289,7 @@ No active candidate branch is queued here right now.
   the new rehearsal verifier lands, then tighten any remaining wording that
   could cause operator copy/paste mistakes.
 - [x] Run the VM lab snapshot flow after the docs/tooling pass if the
-  `jetmon-deploy-test` host is available, and capture any mismatch between the
+  `jetmon-vm-host-1` host is available, and capture any mismatch between the
   text runbook and real guided execution.
 
 Recently completed candidate branches:
