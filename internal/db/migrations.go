@@ -442,6 +442,13 @@ var migrations = []migration{
 	// a full scan/filesort at larger table sizes.
 	{27, `ALTER TABLE jetpack_monitor_sites
 		ADD INDEX idx_monitor_last_checked_blog_bucket (monitor_active, last_checked_at, blog_id, bucket_no)`},
+
+	// Migration 28 materializes the next variable-interval due time so the
+	// scheduler no longer computes DATE_ADD(last_checked_at, INTERVAL
+	// check_interval MINUTE) for every active row during every fetch.
+	{28, `ALTER TABLE jetpack_monitor_sites
+		ADD COLUMN next_check_at DATETIME NULL AFTER last_checked_at,
+		ADD INDEX idx_monitor_next_check_blog_bucket (monitor_active, next_check_at, blog_id, bucket_no)`},
 }
 
 // Migrate applies all pending migrations idempotently.

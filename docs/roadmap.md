@@ -73,7 +73,7 @@ No active candidate branch is queued here right now.
 - [ ] If MySQL CPU remains the limiting factor after batched writes, evaluate
   an asynchronous bounded check-history writer or lower-resolution history
   retention for healthy probes while keeping `last_checked_at` synchronous.
-- [ ] Add a maintained `next_check_at` column and scheduler index so variable
+- [x] Add a maintained `next_check_at` column and scheduler index so variable
   interval due selection uses a simple indexed range predicate instead of
   computing `DATE_ADD(last_checked_at, INTERVAL GREATEST(check_interval, 1)
   MINUTE)` during every scheduler fetch.

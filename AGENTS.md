@@ -238,6 +238,7 @@ Sites are stored in `jetpack_monitor_sites` with bucket-based sharding. The `buc
 | Column | Type | Purpose |
 |--------|------|---------|
 | `ssl_expiry_date` | DATE NULL | Updated each HTTPS check |
+| `next_check_at` | DATETIME NULL | Materialized variable-interval due time maintained after each check |
 | `check_keyword` | VARCHAR(500) NULL | String to verify in response body |
 | `maintenance_start` | DATETIME NULL | Maintenance window start |
 | `maintenance_end` | DATETIME NULL | Maintenance window end |

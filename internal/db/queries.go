@@ -17,7 +17,7 @@ func GetSitesForBucket(ctx context.Context, bucketMin, bucketMax, batchSize int,
 	query := `
 		SELECT
 			jetpack_monitor_site_id, blog_id, bucket_no, monitor_url,
-			monitor_active, site_status, last_status_change, check_interval, last_checked_at,
+			monitor_active, site_status, last_status_change, check_interval, last_checked_at, next_check_at,
 			ssl_expiry_date, check_keyword, maintenance_start, maintenance_end,
 			custom_headers, timeout_seconds, redirect_policy, alert_cooldown_minutes, last_alert_sent_at
 		FROM jetpack_monitor_sites
@@ -26,15 +26,19 @@ func GetSitesForBucket(ctx context.Context, bucketMin, bucketMax, batchSize int,
 	if useVariableIntervals {
 		query += `
 		  AND (
-			last_checked_at IS NULL
-			OR DATE_ADD(last_checked_at, INTERVAL GREATEST(check_interval, 1) MINUTE) <= NOW()
+			next_check_at IS NULL
+			OR next_check_at <= NOW()
 		  )`
 	}
-	query += `
+	orderColumn := "last_checked_at"
+	if useVariableIntervals {
+		orderColumn = "next_check_at"
+	}
+	query += fmt.Sprintf(`
 		ORDER BY
-			last_checked_at ASC,
+			%s ASC,
 			blog_id ASC
-		LIMIT ?`
+		LIMIT ?`, orderColumn)
 
 	rows, err := db.QueryContext(ctx, query, bucketMin, bucketMax, batchSize)
 	if err != nil {
@@ -48,7 +52,7 @@ func GetSitesForBucket(ctx context.Context, bucketMin, bucketMax, batchSize int,
 		var redirectPolicy sql.NullString
 		err := rows.Scan(
 			&s.ID, &s.BlogID, &s.BucketNo, &s.MonitorURL,
-			&s.MonitorActive, &s.SiteStatus, &s.LastStatusChange, &s.CheckInterval, &s.LastCheckedAt,
+			&s.MonitorActive, &s.SiteStatus, &s.LastStatusChange, &s.CheckInterval, &s.LastCheckedAt, &s.NextCheckAt,
 			&s.SSLExpiryDate, &s.CheckKeyword, &s.MaintenanceStart, &s.MaintenanceEnd,
 			&s.CustomHeaders, &s.TimeoutSeconds, &redirectPolicy, &s.AlertCooldownMinutes, &s.LastAlertSentAt,
 		)
@@ -113,8 +117,8 @@ func CountDueSitesForBucketRange(ctx context.Context, bucketMin, bucketMax int, 
 	if useVariableIntervals {
 		query += `
 		   AND (
-			last_checked_at IS NULL
-			OR DATE_ADD(last_checked_at, INTERVAL GREATEST(check_interval, 1) MINUTE) <= NOW()
+			next_check_at IS NULL
+			OR next_check_at <= NOW()
 		   )`
 	}
 
@@ -361,19 +365,20 @@ func SummarizeLegacyProjectionDrift(ctx context.Context, bucketMin, bucketMax, l
 	return out, rows.Err()
 }
 
-// MarkSiteChecked records when a site was last checked.
-func MarkSiteChecked(ctx context.Context, blogID int64, checkedAt time.Time) error {
+// MarkSiteChecked records when a site was last checked and when it is next due.
+func MarkSiteChecked(ctx context.Context, blogID int64, checkedAt, nextCheckAt time.Time) error {
 	_, err := db.ExecContext(ctx,
-		`UPDATE jetpack_monitor_sites SET last_checked_at = ? WHERE blog_id = ?`,
-		checkedAt.UTC(), blogID,
+		`UPDATE jetpack_monitor_sites SET last_checked_at = ?, next_check_at = ? WHERE blog_id = ?`,
+		checkedAt.UTC(), nextCheckAt.UTC(), blogID,
 	)
 	return err
 }
 
 // SiteCheck records one site freshness update.
 type SiteCheck struct {
-	BlogID    int64
-	CheckedAt time.Time
+	BlogID      int64
+	CheckedAt   time.Time
+	NextCheckAt time.Time
 }
 
 // MarkSitesChecked records last_checked_at for a batch of sites. Batching this
@@ -399,10 +404,15 @@ func MarkSitesChecked(ctx context.Context, checks []SiteCheck) error {
 func markSitesCheckedChunk(ctx context.Context, checks []SiteCheck) error {
 	var query strings.Builder
 	query.WriteString("UPDATE jetpack_monitor_sites SET last_checked_at = CASE blog_id")
-	args := make([]any, 0, len(checks)*3)
+	args := make([]any, 0, len(checks)*5)
 	for _, check := range checks {
 		query.WriteString(" WHEN ? THEN ?")
 		args = append(args, check.BlogID, check.CheckedAt.UTC())
+	}
+	query.WriteString(" END, next_check_at = CASE blog_id")
+	for _, check := range checks {
+		query.WriteString(" WHEN ? THEN ?")
+		args = append(args, check.BlogID, check.NextCheckAt.UTC())
 	}
 	query.WriteString(" END WHERE blog_id IN (")
 	for i, check := range checks {

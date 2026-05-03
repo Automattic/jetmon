@@ -98,7 +98,7 @@ This is the end-to-end path from database query to WPCOM notification.
 │    dbHeartbeat()          ── UPDATE jetmon_hosts SET last_heartbeat  │
 │    ClaimBuckets()         ── rebalance bucket ranges (each round)    │
 │    dbGetSitesForBucket()  ── SELECT sites WHERE bucket IN [min,max]  │
-│                              ORDER BY last_checked_at ASC            │
+│                              ORDER BY next_check_at / last_checked_at │
 └──────────────────────────────────────────────────────────────────────┘
                   │  []db.Site
                   ▼
@@ -396,7 +396,8 @@ Database Tables
     monitor_url           URL to check
     site_status           Legacy v1 projection; derived from v2 events
     last_status_change    Legacy v1 projection; derived from v2 transitions
-    last_checked_at       Used to order fetch by least-recently-checked
+    last_checked_at       Freshness timestamp written after every check
+    next_check_at         Materialized variable-interval due time
     ssl_expiry_date       Updated after each TLS handshake
     check_keyword         Optional body text to require
     maintenance_start/end Suppress alerts during scheduled maintenance

@@ -762,8 +762,9 @@ func (o *Orchestrator) markResultsChecked(records []siteCheckResult, summary *re
 	checks := make([]db.SiteCheck, 0, len(records))
 	for _, record := range records {
 		checks = append(checks, db.SiteCheck{
-			BlogID:    record.blogID,
-			CheckedAt: resultCheckedAt(record.res),
+			BlogID:      record.blogID,
+			CheckedAt:   resultCheckedAt(record.res),
+			NextCheckAt: nextCheckAt(record.site, record.res),
 		})
 	}
 
@@ -772,7 +773,7 @@ func (o *Orchestrator) markResultsChecked(records []siteCheckResult, summary *re
 		summary.markCheckedErrors++
 		log.Printf("orchestrator: batch mark checked sites=%d: %v", len(checks), err)
 		for _, check := range checks {
-			if err := dbMarkSiteChecked(o.ctx, check.BlogID, check.CheckedAt); err != nil {
+			if err := dbMarkSiteChecked(o.ctx, check.BlogID, check.CheckedAt, check.NextCheckAt); err != nil {
 				summary.markCheckedErrors++
 				log.Printf("orchestrator: mark checked blog_id=%d: %v", check.BlogID, err)
 				continue
@@ -834,6 +835,14 @@ func resultCheckedAt(res checker.Result) time.Time {
 		return nowFunc().UTC()
 	}
 	return res.Timestamp.UTC()
+}
+
+func nextCheckAt(site db.Site, res checker.Result) time.Time {
+	interval := site.CheckInterval
+	if interval < 1 {
+		interval = 1
+	}
+	return resultCheckedAt(res).Add(time.Duration(interval) * time.Minute)
 }
 
 func shouldUpdateSSLExpiry(stored *time.Time, observed time.Time) bool {

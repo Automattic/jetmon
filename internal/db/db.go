@@ -25,6 +25,7 @@ type Site struct {
 	LastStatusChange *time.Time
 	CheckInterval    int
 	LastCheckedAt    *time.Time
+	NextCheckAt      *time.Time
 
 	SSLExpiryDate        *time.Time
 	CheckKeyword         *string

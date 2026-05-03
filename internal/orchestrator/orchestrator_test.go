@@ -376,7 +376,7 @@ func stubOrchestratorDeps() func() {
 	dbUpdateSiteStatus = func(context.Context, int64, int, time.Time) error { return nil }
 	dbUpdateLastAlertSent = func(context.Context, int64, time.Time) error { return nil }
 	dbRecordFalsePositive = func(int64, int, int, int64) error { return nil }
-	dbMarkSiteChecked = func(context.Context, int64, time.Time) error { return nil }
+	dbMarkSiteChecked = func(context.Context, int64, time.Time, time.Time) error { return nil }
 	dbMarkSitesChecked = func(context.Context, []db.SiteCheck) error { return nil }
 	dbRecordCheckHistory = func(int64, int, int, int64, int64, int64, int64, int64) error { return nil }
 	dbRecordCheckHistories = func(context.Context, []db.CheckHistoryRow) error { return nil }
@@ -590,11 +590,15 @@ func TestProcessResultsMarksChecked(t *testing.T) {
 	setTestConfig(t)
 
 	var markedBlogID int64
+	var markedAt time.Time
+	var markedNext time.Time
 	dbMarkSitesChecked = func(_ context.Context, checks []db.SiteCheck) error {
 		if len(checks) != 1 {
 			t.Fatalf("batch checks = %d, want 1", len(checks))
 		}
 		markedBlogID = checks[0].BlogID
+		markedAt = checks[0].CheckedAt
+		markedNext = checks[0].NextCheckAt
 		return nil
 	}
 
@@ -606,11 +610,18 @@ func TestProcessResultsMarksChecked(t *testing.T) {
 	}
 
 	res := checkerResultSuccess(42)
-	sites := map[int64]db.Site{42: {BlogID: 42, SiteStatus: statusRunning}}
+	res.Timestamp = time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
+	sites := map[int64]db.Site{42: {BlogID: 42, SiteStatus: statusRunning, CheckInterval: 7}}
 	o.processResults(map[int64]checker.Result{42: res}, sites)
 
 	if markedBlogID != 42 {
 		t.Fatalf("MarkSitesChecked blog_id = %d, want 42", markedBlogID)
+	}
+	if !markedAt.Equal(res.Timestamp) {
+		t.Fatalf("MarkSitesChecked checked_at = %s, want %s", markedAt, res.Timestamp)
+	}
+	if want := res.Timestamp.Add(7 * time.Minute); !markedNext.Equal(want) {
+		t.Fatalf("MarkSitesChecked next_check_at = %s, want %s", markedNext, want)
 	}
 }
 
@@ -627,7 +638,7 @@ func TestProcessResultsFallsBackWhenBatchWritesFail(t *testing.T) {
 	}
 
 	var fallbackMarked int64
-	dbMarkSiteChecked = func(_ context.Context, blogID int64, _ time.Time) error {
+	dbMarkSiteChecked = func(_ context.Context, blogID int64, _, _ time.Time) error {
 		fallbackMarked = blogID
 		return nil
 	}
@@ -1390,7 +1401,7 @@ func TestProcessResultsLogsErrorsFromDB(t *testing.T) {
 	dbMarkSitesChecked = func(context.Context, []db.SiteCheck) error {
 		return fmt.Errorf("batch mark checked error")
 	}
-	dbMarkSiteChecked = func(context.Context, int64, time.Time) error {
+	dbMarkSiteChecked = func(context.Context, int64, time.Time, time.Time) error {
 		return fmt.Errorf("mark checked error")
 	}
 	dbRecordCheckHistories = func(context.Context, []db.CheckHistoryRow) error {
