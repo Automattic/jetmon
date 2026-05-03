@@ -79,9 +79,12 @@ No active candidate branch is queued here right now.
   MINUTE)` during every scheduler fetch. The scheduler now recalculates
   `next_check_at` when checks complete or `check_interval` changes, and
   migration backfills existing rows before adding the index.
-- [ ] Move exact due-count and projection-drift checks out of the hot scheduler
+- [x] Move exact due-count and projection-drift checks out of the hot scheduler
   loop, or run them on a slower background cadence, so operator reporting does
-  not add broad database reads to every 5-second variable-interval pass.
+  not add broad database reads to every 5-second variable-interval pass. In
+  variable-interval mode, exact due counts and projection-drift counts are now
+  sampled on a slower operator-reporting cadence while fixed-cadence mode keeps
+  exact per-round counts.
 - [ ] Prototype a bounded asynchronous check-history writer and rollup model:
   keep `last_checked_at` synchronous, preserve raw rows for failures/recent
   windows, and store long-term latency/error aggregates to avoid raw history

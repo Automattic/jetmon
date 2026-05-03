@@ -50,6 +50,7 @@ const verifierRPCHeadroom = 5 * time.Second
 const schedulerBackpressurePollInterval = 10 * time.Millisecond
 const schedulerVariableIntervalPollInterval = 5 * time.Second
 const schedulerBacklogPollInterval = 5 * time.Second
+const schedulerOperatorReportInterval = time.Minute
 
 // VariableIntervalPollInterval returns the idle scheduler poll interval used
 // when per-site check intervals are enabled. The SQL due predicate prevents
@@ -108,6 +109,7 @@ type roundSummary struct {
 	oldestSelectedAge time.Duration
 	dueAtStart        int
 	dueRemaining      int
+	dueCountSampled   bool
 	dueCountErrors    int
 	fetchErrors       int
 	interrupted       bool
@@ -138,6 +140,9 @@ func (s *roundSummary) add(other roundSummary) {
 	s.neverChecked += other.neverChecked
 	s.dueCountErrors += other.dueCountErrors
 	s.fetchErrors += other.fetchErrors
+	if other.dueCountSampled {
+		s.dueCountSampled = true
+	}
 	s.dispatchDuration += other.dispatchDuration
 	s.waitDuration += other.waitDuration
 	s.processDuration += other.processDuration
@@ -193,6 +198,9 @@ type Orchestrator struct {
 	statsMu      sync.RWMutex
 	lastRoundSPS int
 	lastRoundDur time.Duration
+
+	lastDueCountAt        time.Time
+	lastProjectionDriftAt time.Time
 
 	ctx    stdctx.Context
 	cancel stdctx.CancelFunc
@@ -306,6 +314,7 @@ func (o *Orchestrator) Stop() {
 func (o *Orchestrator) runRound() roundSummary {
 	cfg := config.Get()
 	summary := roundSummary{}
+	reportNow := nowFunc().UTC()
 	if o.roundStart.IsZero() {
 		o.roundStart = time.Now()
 	}
@@ -325,13 +334,18 @@ func (o *Orchestrator) runRound() roundSummary {
 			log.Printf("orchestrator: bucket rebalance failed: %v", err)
 		}
 	}
-	o.checkLegacyProjectionDrift(cfg)
+	o.checkLegacyProjectionDrift(cfg, reportNow)
 
-	if due, err := dbCountDueSites(o.ctx, o.bucketMin, o.bucketMax, cfg.UseVariableCheckIntervals); err != nil {
-		summary.dueCountErrors++
-		log.Printf("orchestrator: count due sites failed: %v", err)
-	} else {
-		summary.dueAtStart = due
+	sampleDueCount := !cfg.UseVariableCheckIntervals || o.shouldSampleDueCount(reportNow)
+	if sampleDueCount {
+		o.lastDueCountAt = reportNow
+		if due, err := dbCountDueSites(o.ctx, o.bucketMin, o.bucketMax, cfg.UseVariableCheckIntervals); err != nil {
+			summary.dueCountErrors++
+			log.Printf("orchestrator: count due sites failed: %v", err)
+		} else {
+			summary.dueAtStart = due
+			summary.dueCountSampled = true
+		}
 	}
 
 	pageSize := cfg.DatasetSize
@@ -375,7 +389,9 @@ func (o *Orchestrator) runRound() roundSummary {
 	}
 
 	if cfg.UseVariableCheckIntervals {
-		if due, err := dbCountDueSites(o.ctx, o.bucketMin, o.bucketMax, true); err != nil {
+		if !sampleDueCount {
+			summary.dueRemaining = 0
+		} else if due, err := dbCountDueSites(o.ctx, o.bucketMin, o.bucketMax, true); err != nil {
 			summary.dueCountErrors++
 			log.Printf("orchestrator: count remaining due sites failed: %v", err)
 		} else {
@@ -592,6 +608,18 @@ func schedulerSleepDuration(cfg *config.Config, summary roundSummary, elapsed ti
 	return minInterval - elapsed
 }
 
+func (o *Orchestrator) shouldSampleDueCount(now time.Time) bool {
+	return dueForOperatorReport(o.lastDueCountAt, now)
+}
+
+func (o *Orchestrator) shouldCheckProjectionDrift(now time.Time) bool {
+	return dueForOperatorReport(o.lastProjectionDriftAt, now)
+}
+
+func dueForOperatorReport(last, now time.Time) bool {
+	return last.IsZero() || !now.Before(last.Add(schedulerOperatorReportInterval))
+}
+
 func (o *Orchestrator) finishRound(cfg *config.Config, summary roundSummary) {
 	// Emit metrics and update stats files.
 	roundDuration := time.Since(o.roundStart)
@@ -627,8 +655,10 @@ func (o *Orchestrator) finishRound(cfg *config.Config, summary roundSummary) {
 		m.Gauge("scheduler.round.dispatched.count", summary.dispatched)
 		m.Gauge("scheduler.round.completed.count", summary.completed)
 		m.Gauge("scheduler.round.outstanding.count", summary.outstanding)
-		m.Gauge("scheduler.round.due_start.count", summary.dueAtStart)
-		m.Gauge("scheduler.round.due_remaining.count", summary.dueRemaining)
+		if summary.dueCountSampled {
+			m.Gauge("scheduler.round.due_start.count", summary.dueAtStart)
+			m.Gauge("scheduler.round.due_remaining.count", summary.dueRemaining)
+		}
 		m.Gauge("scheduler.round.selected_never_checked.count", summary.neverChecked)
 		m.Gauge("scheduler.round.selected_oldest_age_sec", int(summary.oldestSelectedAge.Seconds()))
 		m.Increment("scheduler.dispatch.backpressure_wait.count", summary.backpressureWaits)
@@ -667,8 +697,9 @@ func logRoundSummary(summary roundSummary, roundDuration time.Duration, sps int)
 		return
 	}
 	log.Printf(
-		"orchestrator: round summary pages=%d due_start=%d selected=%d dispatched=%d completed=%d outstanding=%d due_remaining=%d backpressure_waits=%d stale_results=%d duplicate_results=%d never_checked=%d oldest_selected_age_sec=%d dispatch=%s wait=%s process=%s mark_checked=%s history=%s ssl=%s events=%s mark_checked_rows=%d history_rows=%d mark_checked_errors=%d history_errors=%d duration=%s sps=%d",
+		"orchestrator: round summary pages=%d due_count_sampled=%t due_start=%d selected=%d dispatched=%d completed=%d outstanding=%d due_remaining=%d backpressure_waits=%d stale_results=%d duplicate_results=%d never_checked=%d oldest_selected_age_sec=%d dispatch=%s wait=%s process=%s mark_checked=%s history=%s ssl=%s events=%s mark_checked_rows=%d history_rows=%d mark_checked_errors=%d history_errors=%d duration=%s sps=%d",
 		summary.pagesFetched,
+		summary.dueCountSampled,
 		summary.dueAtStart,
 		summary.selected,
 		summary.dispatched,
@@ -1320,10 +1351,14 @@ func (o *Orchestrator) isAlertSuppressed(site db.Site) bool {
 	return time.Since(*site.LastAlertSentAt) < time.Duration(cooldown)*time.Minute
 }
 
-func (o *Orchestrator) checkLegacyProjectionDrift(cfg *config.Config) {
+func (o *Orchestrator) checkLegacyProjectionDrift(cfg *config.Config, now time.Time) {
 	if !cfg.LegacyStatusProjectionEnable {
 		return
 	}
+	if !o.shouldCheckProjectionDrift(now) {
+		return
+	}
+	o.lastProjectionDriftAt = now
 	count, err := dbCountProjectionDrift(o.ctx, o.bucketMin, o.bucketMax)
 	if err != nil {
 		log.Printf("orchestrator: legacy projection drift check failed: %v", err)

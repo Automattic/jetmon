@@ -55,6 +55,9 @@ Scheduler behavior:
 - Watch the `scheduler.round.*` StatsD metrics during capacity tests. In
   particular, `due_start`, `selected`, `completed`, `outstanding`, and
   `due_remaining` show whether freshness pressure is clearing or building.
+  Exact `due_start` / `due_remaining` and legacy projection-drift checks are
+  sampled about once per minute in variable-interval mode so broad operator
+  reporting queries do not run on every short scheduler poll.
 
 See [../config/config.readme](../config/config.readme) for the full option
 reference.

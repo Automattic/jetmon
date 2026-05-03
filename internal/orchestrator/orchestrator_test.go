@@ -1075,6 +1075,60 @@ func TestRunRoundWaitsUnderPoolBackpressureInsteadOfDropping(t *testing.T) {
 	}
 }
 
+func TestRunRoundSamplesBroadOperatorCountsOnCadence(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	cfg := setTestConfig(t)
+	cfg.UseVariableCheckIntervals = true
+	cfg.LegacyStatusProjectionEnable = true
+	cfg.WorkerMaxMemMB = 0
+
+	base := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
+	nowFunc = func() time.Time { return base }
+
+	var dueCountCalls int
+	dbCountDueSites = func(context.Context, int, int, bool) (int, error) {
+		dueCountCalls++
+		return 0, nil
+	}
+	var driftCalls int
+	dbCountProjectionDrift = func(context.Context, int, int) (int, error) {
+		driftCalls++
+		return 0, nil
+	}
+
+	o := &Orchestrator{
+		ctx:        context.Background(),
+		hostname:   "host-a",
+		roundStart: base,
+	}
+	o.runRound()
+	if dueCountCalls != 2 {
+		t.Fatalf("first round due count calls = %d, want 2", dueCountCalls)
+	}
+	if driftCalls != 1 {
+		t.Fatalf("first round drift calls = %d, want 1", driftCalls)
+	}
+
+	base = base.Add(5 * time.Second)
+	o.runRound()
+	if dueCountCalls != 2 {
+		t.Fatalf("second round due count calls = %d, want still 2", dueCountCalls)
+	}
+	if driftCalls != 1 {
+		t.Fatalf("second round drift calls = %d, want still 1", driftCalls)
+	}
+
+	base = base.Add(schedulerOperatorReportInterval)
+	o.runRound()
+	if dueCountCalls != 4 {
+		t.Fatalf("cadence round due count calls = %d, want 4", dueCountCalls)
+	}
+	if driftCalls != 2 {
+		t.Fatalf("cadence round drift calls = %d, want 2", driftCalls)
+	}
+}
+
 func TestSchedulerSleepDurationUsesShortPollForVariableIntervals(t *testing.T) {
 	cfg := &config.Config{
 		MinTimeBetweenRoundsSec:   300,
@@ -1189,7 +1243,7 @@ func TestCheckLegacyProjectionDriftEmitsGaugeAndWarningCounter(t *testing.T) {
 	}
 
 	o := &Orchestrator{ctx: context.Background(), bucketMin: 10, bucketMax: 20}
-	o.checkLegacyProjectionDrift(cfg)
+	o.checkLegacyProjectionDrift(cfg, time.Now())
 
 	if got := rec.gauge("projection.drift.count"); got != 3 {
 		t.Fatalf("projection.drift.count = %d, want 3", got)
@@ -1212,7 +1266,7 @@ func TestCheckLegacyProjectionDriftSkipsWhenProjectionDisabled(t *testing.T) {
 	}
 
 	o := &Orchestrator{ctx: context.Background()}
-	o.checkLegacyProjectionDrift(cfg)
+	o.checkLegacyProjectionDrift(cfg, time.Now())
 	if called {
 		t.Fatal("drift check should be skipped when legacy projection is disabled")
 	}
@@ -1231,7 +1285,7 @@ func TestCheckLegacyProjectionDriftEmitsErrorCounter(t *testing.T) {
 	}
 
 	o := &Orchestrator{ctx: context.Background()}
-	o.checkLegacyProjectionDrift(cfg)
+	o.checkLegacyProjectionDrift(cfg, time.Now())
 	if got := rec.counter("projection.drift.check_error.count"); got != 1 {
 		t.Fatalf("projection.drift.check_error.count = %d, want 1", got)
 	}
