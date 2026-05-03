@@ -97,8 +97,9 @@ This is the end-to-end path from database query to WPCOM notification.
 │  orchestrator.runRound()                                             │
 │    dbHeartbeat()          ── UPDATE jetmon_hosts SET last_heartbeat  │
 │    ClaimBuckets()         ── rebalance bucket ranges (each round)    │
-│    dbGetSitesForBucket()  ── SELECT due sites in DATASET_SIZE pages  │
-│                              ORDER BY next_check_at / last_checked_at │
+│    dbGetSitesForBucketPage() ─ SELECT due sites in DATASET_SIZE pages │
+│                                with a keyset cursor over               │
+│                                next_check_at / last_checked_at         │
 └──────────────────────────────────────────────────────────────────────┘
                   │  []db.Site
                   ▼
@@ -210,9 +211,9 @@ orchestrator.Run()
           │     │
           │     ├─ dbHeartbeat()
           │     ├─ ClaimBuckets()             // rebalance every round
-          │     ├─ dbGetSitesForBucket()      // fetch due work in DATASET_SIZE pages
+          │     ├─ dbGetSitesForBucketPage()  // fetch due work in DATASET_SIZE pages
           │     │
-          │     ├─ for each scheduler page:
+          │     ├─ for each scheduler batch built from multiple DB pages:
           │     │     pool.Submit(checker.Request)  // waits/collects on backpressure
           │     │
           │     ├─ collect results (deadline-bounded)

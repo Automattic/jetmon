@@ -354,7 +354,7 @@ func stubOrchestratorDeps() func() {
 	origDBHeartbeat := dbHeartbeat
 	origDBReleaseHost := dbReleaseHost
 	origDBMarkHostDraining := dbMarkHostDraining
-	origDBGetSites := dbGetSitesForBucket
+	origDBGetSitesPage := dbGetSitesForBucketPage
 	origDBUpdateStatus := dbUpdateSiteStatus
 	origDBUpdateLastAlert := dbUpdateLastAlertSent
 	origDBRecordFalsePositive := dbRecordFalsePositive
@@ -375,7 +375,9 @@ func stubOrchestratorDeps() func() {
 	dbHeartbeat = func(context.Context, string) error { return nil }
 	dbReleaseHost = func(context.Context, string) error { return nil }
 	dbMarkHostDraining = func(context.Context, string) error { return nil }
-	dbGetSitesForBucket = func(context.Context, int, int, int, bool) ([]db.Site, error) { return nil, nil }
+	dbGetSitesForBucketPage = func(context.Context, int, int, int, bool, db.SitePageCursor) ([]db.Site, error) {
+		return nil, nil
+	}
 	dbUpdateSiteStatus = func(context.Context, int64, int, time.Time) error { return nil }
 	dbUpdateLastAlertSent = func(context.Context, int64, time.Time) error { return nil }
 	dbRecordFalsePositive = func(int64, int, int, int64) error { return nil }
@@ -398,7 +400,7 @@ func stubOrchestratorDeps() func() {
 		dbHeartbeat = origDBHeartbeat
 		dbReleaseHost = origDBReleaseHost
 		dbMarkHostDraining = origDBMarkHostDraining
-		dbGetSitesForBucket = origDBGetSites
+		dbGetSitesForBucketPage = origDBGetSitesPage
 		dbUpdateSiteStatus = origDBUpdateStatus
 		dbUpdateLastAlertSent = origDBUpdateLastAlert
 		dbRecordFalsePositive = origDBRecordFalsePositive
@@ -1014,7 +1016,7 @@ func TestRunRoundSkipsHeartbeatWhenPinned(t *testing.T) {
 		heartbeatCalled = true
 		return nil
 	}
-	dbGetSitesForBucket = func(_ context.Context, gotMin, gotMax, _ int, _ bool) ([]db.Site, error) {
+	dbGetSitesForBucketPage = func(_ context.Context, gotMin, gotMax, _ int, _ bool, _ db.SitePageCursor) ([]db.Site, error) {
 		if gotMin != 12 || gotMax != 34 {
 			t.Fatalf("fetch buckets = %d-%d, want 12-34", gotMin, gotMax)
 		}
@@ -1052,10 +1054,9 @@ func TestRunRoundDrainsAllPagesUntilWorkWraps(t *testing.T) {
 		{BlogID: 5, MonitorURL: srv.URL},
 	}
 
-	checked := make(map[int64]bool)
 	var marked []int64
 	var queries int
-	dbGetSitesForBucket = func(_ context.Context, _, _ int, batchSize int, useVariableIntervals bool) ([]db.Site, error) {
+	dbGetSitesForBucketPage = func(_ context.Context, _, _ int, batchSize int, useVariableIntervals bool, cursor db.SitePageCursor) ([]db.Site, error) {
 		if batchSize != 2 {
 			t.Fatalf("batch size = %d, want 2", batchSize)
 		}
@@ -1063,11 +1064,10 @@ func TestRunRoundDrainsAllPagesUntilWorkWraps(t *testing.T) {
 			t.Fatal("useVariableIntervals = true, want false")
 		}
 		queries++
-		return nextSchedulerTestPage(sites, checked, batchSize, false), nil
+		return nextSchedulerTestPageAfter(sites, cursor, batchSize), nil
 	}
 	dbMarkSitesChecked = func(_ context.Context, checks []db.SiteCheck) error {
 		for _, check := range checks {
-			checked[check.BlogID] = true
 			marked = append(marked, check.BlogID)
 		}
 		return nil
@@ -1102,8 +1102,8 @@ func TestRunRoundDrainsAllPagesUntilWorkWraps(t *testing.T) {
 	if len(marked) != 5 {
 		t.Fatalf("marked checked = %d, want 5", len(marked))
 	}
-	if queries < 4 {
-		t.Fatalf("queries = %d, want at least 4 including wrap-stop query", queries)
+	if queries != 3 {
+		t.Fatalf("queries = %d, want 3 keyset pages", queries)
 	}
 	if got := rec.gauge("scheduler.round.selected.count"); got != 5 {
 		t.Fatalf("selected metric = %d, want 5", got)
@@ -1141,14 +1141,14 @@ func TestRunRoundWaitsUnderPoolBackpressureInsteadOfDropping(t *testing.T) {
 	}
 
 	checked := make(map[int64]bool)
-	dbGetSitesForBucket = func(_ context.Context, _, _ int, batchSize int, useVariableIntervals bool) ([]db.Site, error) {
+	dbGetSitesForBucketPage = func(_ context.Context, _, _ int, batchSize int, useVariableIntervals bool, cursor db.SitePageCursor) ([]db.Site, error) {
 		if batchSize != 5 {
 			t.Fatalf("batch size = %d, want 5", batchSize)
 		}
 		if !useVariableIntervals {
 			t.Fatal("useVariableIntervals = false, want true")
 		}
-		return nextSchedulerTestPage(sites, checked, batchSize, true), nil
+		return nextSchedulerTestPageAfter(sites, cursor, batchSize), nil
 	}
 	dbMarkSitesChecked = func(_ context.Context, checks []db.SiteCheck) error {
 		for _, check := range checks {
@@ -1214,7 +1214,7 @@ func TestRunRoundSamplesBroadReportsOnCadence(t *testing.T) {
 
 	var dueCalls int
 	var driftCalls int
-	dbGetSitesForBucket = func(context.Context, int, int, int, bool) ([]db.Site, error) {
+	dbGetSitesForBucketPage = func(context.Context, int, int, int, bool, db.SitePageCursor) ([]db.Site, error) {
 		return nil, nil
 	}
 	dbCountDueSites = func(context.Context, int, int, bool) (int, error) {
@@ -1295,22 +1295,26 @@ func TestSchedulerSleepDurationUsesShortPollForVariableIntervals(t *testing.T) {
 	}
 }
 
-func nextSchedulerTestPage(sites []db.Site, checked map[int64]bool, batchSize int, dueOnly bool) []db.Site {
+func TestSchedulerBatchTargetSitesDerivesFromWorkers(t *testing.T) {
+	defaultCfg := &config.Config{NumWorkers: 60, MinTimeBetweenRoundsSec: 300, NetCommsTimeout: 10}
+	if got := schedulerBatchTargetSites(defaultCfg, 100); got != 1800 {
+		t.Fatalf("schedulerBatchTargetSites(default) = %d, want 1800", got)
+	}
+	if got := schedulerBatchTargetSites(&config.Config{NumWorkers: 60}, 100); got != 6000 {
+		t.Fatalf("schedulerBatchTargetSites(no timeout budget) = %d, want 6000", got)
+	}
+	if got := schedulerBatchTargetSites(&config.Config{NumWorkers: 1, MinTimeBetweenRoundsSec: 300, NetCommsTimeout: 10}, 500); got != 500 {
+		t.Fatalf("schedulerBatchTargetSites(page floor) = %d, want 500", got)
+	}
+	if got := schedulerBatchTargetSites(&config.Config{NumWorkers: 1000}, 100); got != schedulerMaxBatchSites {
+		t.Fatalf("schedulerBatchTargetSites(cap) = %d, want %d", got, schedulerMaxBatchSites)
+	}
+}
+
+func nextSchedulerTestPageAfter(sites []db.Site, cursor db.SitePageCursor, batchSize int) []db.Site {
 	out := make([]db.Site, 0, batchSize)
 	for _, site := range sites {
-		if checked[site.BlogID] {
-			continue
-		}
-		out = append(out, site)
-		if len(out) == batchSize {
-			return out
-		}
-	}
-	if dueOnly {
-		return out
-	}
-	for _, site := range sites {
-		if !checked[site.BlogID] {
+		if cursor.HasCursor && site.BlogID <= cursor.BlogID {
 			continue
 		}
 		out = append(out, site)

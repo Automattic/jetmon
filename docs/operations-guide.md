@@ -43,6 +43,13 @@ Scheduler behavior:
 
 - `DATASET_SIZE` limits one database page. Jetmon continues fetching pages until
   due work is drained, so a low value should not cause unchecked sites by itself.
+- Jetmon groups multiple ordered database pages into each scheduler check batch
+  before waiting for the batch's slowest result. This prevents large fleets from
+  paying one slow-tail wait per `DATASET_SIZE` page. The batch target is derived
+  from worker capacity (`NUM_WORKERS * 100`) and the configured timeout /
+  round-cadence budget (`NUM_WORKERS * MIN_TIME_BETWEEN_ROUNDS_SEC /
+  NET_COMMS_TIMEOUT`), capped at 10,000 sites. Operators usually should not
+  raise `DATASET_SIZE` just to improve throughput.
 - A full worker queue applies backpressure; checks remain pending instead of
   being dropped.
 - With `USE_VARIABLE_CHECK_INTERVALS=true`, Jetmon polls for newly due work on a
@@ -55,6 +62,8 @@ Scheduler behavior:
 - Watch the `scheduler.round.*` StatsD metrics during capacity tests. In
   particular, `due_start`, `selected`, `completed`, `outstanding`, and
   `due_remaining` show whether freshness pressure is clearing or building.
+  `pages` counts database pages fetched; `batches` counts larger scheduler check
+  windows processed from those pages.
   Exact `due_start` / `due_remaining` and legacy projection-drift checks are
   sampled about once per minute in variable-interval mode so broad operator
   reporting queries do not run on every short scheduler poll. Use

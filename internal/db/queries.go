@@ -12,8 +12,24 @@ import (
 
 const batchWriteChunkSize = 500
 
+// SitePageCursor identifies the last row from a scheduler page. It lets the
+// orchestrator fetch several stable DB pages before completed checks update
+// last_checked_at / next_check_at and change the query's ordering.
+type SitePageCursor struct {
+	HasCursor     bool
+	BlogID        int64
+	LastCheckedAt *time.Time
+	NextCheckAt   *time.Time
+}
+
 // GetSitesForBucket fetches active sites within the given bucket range.
 func GetSitesForBucket(ctx context.Context, bucketMin, bucketMax, batchSize int, useVariableIntervals bool) ([]Site, error) {
+	return GetSitesForBucketPage(ctx, bucketMin, bucketMax, batchSize, useVariableIntervals, SitePageCursor{})
+}
+
+// GetSitesForBucketPage fetches active sites within the given bucket range
+// after cursor in scheduler order.
+func GetSitesForBucketPage(ctx context.Context, bucketMin, bucketMax, batchSize int, useVariableIntervals bool, cursor SitePageCursor) ([]Site, error) {
 	query := `
 		SELECT
 			jetpack_monitor_site_id, blog_id, bucket_no, monitor_url,
@@ -23,17 +39,54 @@ func GetSitesForBucket(ctx context.Context, bucketMin, bucketMax, batchSize int,
 		FROM jetpack_monitor_sites
 		WHERE monitor_active = 1
 		  AND bucket_no BETWEEN ? AND ?`
+	args := []any{bucketMin, bucketMax}
 	if useVariableIntervals {
 		query += `
 		  AND (
 			next_check_at IS NULL
 			OR next_check_at <= NOW()
 		  )`
+		if cursor.HasCursor {
+			if cursor.NextCheckAt == nil {
+				query += `
+		  AND (
+			(next_check_at IS NULL AND blog_id > ?)
+			OR next_check_at IS NOT NULL
+		  )`
+				args = append(args, cursor.BlogID)
+			} else {
+				query += `
+		  AND (
+			next_check_at > ?
+			OR (next_check_at = ? AND blog_id > ?)
+		  )`
+				nextCheckAt := cursor.NextCheckAt.UTC()
+				args = append(args, nextCheckAt, nextCheckAt, cursor.BlogID)
+			}
+		}
 		query += `
 		ORDER BY
 			next_check_at ASC,
 			blog_id ASC`
 	} else {
+		if cursor.HasCursor {
+			if cursor.LastCheckedAt == nil {
+				query += `
+		  AND (
+			(last_checked_at IS NULL AND blog_id > ?)
+			OR last_checked_at IS NOT NULL
+		  )`
+				args = append(args, cursor.BlogID)
+			} else {
+				query += `
+		  AND (
+			last_checked_at > ?
+			OR (last_checked_at = ? AND blog_id > ?)
+		  )`
+				lastCheckedAt := cursor.LastCheckedAt.UTC()
+				args = append(args, lastCheckedAt, lastCheckedAt, cursor.BlogID)
+			}
+		}
 		query += `
 		ORDER BY
 			last_checked_at ASC,
@@ -41,8 +94,9 @@ func GetSitesForBucket(ctx context.Context, bucketMin, bucketMax, batchSize int,
 	}
 	query += `
 		LIMIT ?`
+	args = append(args, batchSize)
 
-	rows, err := db.QueryContext(ctx, query, bucketMin, bucketMax, batchSize)
+	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query sites: %w", err)
 	}

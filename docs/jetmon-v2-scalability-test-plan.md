@@ -5,8 +5,14 @@ efficiency changes after the successful 1,000-site capacity run.
 
 ## Current Branch Under Test
 
-`feature/jetmon-v2-scalability-efficiency` adds these scaling changes on top of
-the completed 1,000-site capacity branch:
+`feature/jetmon-v2-15k-scaling-efficiency` builds on the completed
+scalability-efficiency work and targets the May 3, 2026 capacity boundary:
+12,500 active sites passed, while 15,000 active sites missed 1,100 checks
+inside the 5-minute freshness window. The stale rows were evenly distributed
+across all 100 active buckets, and host CPU/RSS stayed low, which pointed at
+scheduler pacing rather than resource exhaustion.
+
+The branch includes the previous scaling changes:
 
 - Maintained `next_check_at` timestamps for indexed variable-interval due
   selection.
@@ -15,9 +21,20 @@ the completed 1,000-site capacity branch:
 - Shared bounded HTTP transport for local site checks.
 - Batched `ssl_expiry_date` writes when observed certificate dates change.
 
-Do not stack larger persistence changes, such as async check-history writes, on
-top of this branch before a real capacity run. The next test should isolate
-these changes from the previous successful 1,000-site baseline.
+It also adds scheduler batch windows: Jetmon fetches several ordered DB pages
+with a keyset cursor, then dispatches that larger batch as one check window.
+With the default 60 workers and `DATASET_SIZE=100`, this changes the common
+capacity-test shape from roughly 150 independent 100-site tail waits at 15,000
+active sites to about nine 1,800-site windows. The 1,800 default comes from the
+worker count, request timeout, and 5-minute round target so the batch remains
+useful for healthy high-scale checks without creating a long processing delay
+during broad timeout scenarios. `last_checked_at` and `next_check_at` are still
+written only after completed checks.
+
+Do not stack larger persistence changes, such as async check-history writes or
+DNS caching, on top of this branch before a real capacity run. The next test
+should isolate the scheduler-batch change from the last 12,500-clean /
+15,000-failed baseline.
 
 ## Pre-Test Checks
 
@@ -38,7 +55,9 @@ these changes from the previous successful 1,000-site baseline.
 
 ## Query Plan Checks
 
-Capture `EXPLAIN` for both scheduler modes before the capacity run.
+Capture `EXPLAIN` for both scheduler modes before the capacity run. Also
+capture keyset-cursor variants because this branch fetches follow-on DB pages
+before the previous batch has updated completed-check timestamps.
 
 Variable-interval selection should use `idx_monitor_next_check_blog_bucket` and
 should not show `Using filesort`:
@@ -52,6 +71,24 @@ SELECT jetpack_monitor_site_id, blog_id, bucket_no, monitor_url,
  WHERE monitor_active = 1
    AND bucket_no BETWEEN 0 AND 999
    AND (next_check_at IS NULL OR next_check_at <= NOW())
+ ORDER BY next_check_at ASC, blog_id ASC
+LIMIT 100;
+```
+
+Variable-interval follow-on pages should still use
+`idx_monitor_next_check_blog_bucket`:
+
+```sql
+EXPLAIN
+SELECT jetpack_monitor_site_id, blog_id, bucket_no, monitor_url,
+       monitor_active, site_status, last_status_change, check_interval,
+       last_checked_at, next_check_at
+  FROM jetpack_monitor_sites
+ WHERE monitor_active = 1
+   AND bucket_no BETWEEN 0 AND 999
+   AND (next_check_at IS NULL OR next_check_at <= NOW())
+   AND (next_check_at > '2026-05-03 16:07:00'
+        OR (next_check_at = '2026-05-03 16:07:00' AND blog_id > 8000000000009999))
  ORDER BY next_check_at ASC, blog_id ASC
  LIMIT 100;
 ```
@@ -76,6 +113,7 @@ SELECT jetpack_monitor_site_id, blog_id, bucket_no, monitor_url,
 Freshness and scheduler pressure:
 
 - `scheduler.round.pages.count`
+- `scheduler.round.batches.count`
 - `scheduler.round.selected.count`
 - `scheduler.round.dispatched.count`
 - `scheduler.round.completed.count`
@@ -91,7 +129,8 @@ Freshness and scheduler pressure:
 - `scheduler.fetch.error.count`
 - `scheduler.due_count.error.count`
 
-Phase timing and write volume:
+Phase timing and write volume. The legacy `scheduler.page.*` metric names now
+represent one scheduler check batch, which may contain multiple DB pages:
 
 - `scheduler.page.dispatch.time`
 - `scheduler.page.wait.time`

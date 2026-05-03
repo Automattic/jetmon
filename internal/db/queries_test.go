@@ -165,6 +165,59 @@ func TestGetSitesForBucketVariableIntervalsUsesNextCheckAt(t *testing.T) {
 	}
 }
 
+func TestGetSitesForBucketPageVariableCursorAfterNullDueTime(t *testing.T) {
+	mock, cleanup := withMockDB(t)
+	defer cleanup()
+
+	rows := sqlmock.NewRows([]string{
+		"jetpack_monitor_site_id", "blog_id", "bucket_no", "monitor_url",
+		"monitor_active", "site_status", "last_status_change", "check_interval", "last_checked_at", "next_check_at",
+		"ssl_expiry_date", "check_keyword", "maintenance_start", "maintenance_end",
+		"custom_headers", "timeout_seconds", "redirect_policy", "alert_cooldown_minutes", "last_alert_sent_at",
+	})
+	mock.ExpectQuery("next_check_at IS NULL AND blog_id >").
+		WithArgs(0, 99, int64(42), 50).
+		WillReturnRows(rows)
+
+	if _, err := GetSitesForBucketPage(context.Background(), 0, 99, 50, true, SitePageCursor{
+		HasCursor:   true,
+		BlogID:      42,
+		NextCheckAt: nil,
+	}); err != nil {
+		t.Fatalf("GetSitesForBucketPage: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestGetSitesForBucketPageVariableCursorAfterDueTime(t *testing.T) {
+	mock, cleanup := withMockDB(t)
+	defer cleanup()
+
+	next := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
+	rows := sqlmock.NewRows([]string{
+		"jetpack_monitor_site_id", "blog_id", "bucket_no", "monitor_url",
+		"monitor_active", "site_status", "last_status_change", "check_interval", "last_checked_at", "next_check_at",
+		"ssl_expiry_date", "check_keyword", "maintenance_start", "maintenance_end",
+		"custom_headers", "timeout_seconds", "redirect_policy", "alert_cooldown_minutes", "last_alert_sent_at",
+	})
+	mock.ExpectQuery("next_check_at >").
+		WithArgs(0, 99, next, next, int64(42), 50).
+		WillReturnRows(rows)
+
+	if _, err := GetSitesForBucketPage(context.Background(), 0, 99, 50, true, SitePageCursor{
+		HasCursor:   true,
+		BlogID:      42,
+		NextCheckAt: &next,
+	}); err != nil {
+		t.Fatalf("GetSitesForBucketPage: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestCountActiveSitesForBucketRange(t *testing.T) {
 	mock, cleanup := withMockDB(t)
 	defer cleanup()

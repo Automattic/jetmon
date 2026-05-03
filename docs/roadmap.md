@@ -103,14 +103,37 @@ No active candidate branch is queued here right now.
   retry instrumentation so capacity runs can distinguish true Jetmon
   throughput regressions from target setup failures such as DNS/URL-pattern
   mismatches.
-- [ ] Retest the scalability-efficiency branch after the capacity harness
+- [x] Retest the scalability-efficiency branch after the capacity harness
   verifies the exact activated `monitor_url` samples from Monitor and Veriflier
   hosts, then compare freshness, check outcome mix, event mutation retries,
   MySQL CPU/I/O, Jetmon CPU/RSS/FDs, and Veriflier resource usage against the
-  prior successful 1,000-site baseline.
+  prior successful 1,000-site baseline. The `12,500,15,000,20,000` ladder run
+  on May 3, 2026 found 12,500 clean and 15,000 over the freshness threshold:
+  1,100 stale rows, 7.33% missed checks, p95 check age 321s, oldest age 332s,
+  and uniform staleness across all 100 active buckets.
+- [x] Batch multiple scheduler DB pages into one check window using a keyset
+  cursor over `next_check_at`/`blog_id` or `last_checked_at`/`blog_id`. The
+  15,000-site failure matched the old page-at-a-time shape: 150 DB pages of 100
+  sites each, with each page waiting for its own slowest result before the next
+  page could be fetched. The new derived batch window uses worker capacity and
+  the configured timeout / round-cadence budget, capped at 10,000, so the
+  default 60-worker setup amortizes the slow-tail wait across roughly 1,800
+  sites instead of 100 while avoiding very long processing windows during broad
+  timeout scenarios.
+- [ ] Retest a single 15,000-site batch against the scheduler-batch branch. If
+  it passes, run a `15,000,20,000,25,000` ladder to find the next boundary.
 - [ ] Add a 5k/10k capacity ladder that records freshness, p95 age, MySQL CPU,
   MySQL I/O/network, `jetmon2` CPU/RSS/FDs, StatsD CPU, Veriflier CPU, and
   check-history row growth after each major scalability change.
+- [ ] Evaluate an adaptive worker ceiling that derives safe concurrency from
+  due-site count, observed RTT, freshness target, file-descriptor budget, and
+  host resource pressure. This should reduce manual `NUM_WORKERS` tuning while
+  retaining guardrails against accidentally overloading customer sites,
+  Verifliers, DNS resolvers, or the database.
+- [ ] Evaluate DNS-resolution cost and cache options after the next capacity
+  run. The synthetic capacity targets use many hostnames, and production also
+  checks many unique domains; any cache must respect TTLs and preserve
+  diagnostics for NXDOMAIN/SERVFAIL/timeouts.
 - [ ] After the next capacity retest, add validate-config sizing advice that
   explains expected throughput from active site count, check interval,
   `NUM_WORKERS`, and timeout settings. This is deferred until the retest shows

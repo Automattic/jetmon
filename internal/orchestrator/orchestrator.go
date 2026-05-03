@@ -53,6 +53,8 @@ const schedulerBackpressurePollInterval = 10 * time.Millisecond
 const schedulerVariableIntervalPollInterval = 5 * time.Second
 const schedulerBacklogPollInterval = 5 * time.Second
 const schedulerBroadReportInterval = time.Minute
+const schedulerBatchSitesPerWorker = 100
+const schedulerMaxBatchSites = 10000
 const eventMutationMaxAttempts = 3
 const eventMutationRetryBaseDelay = 25 * time.Millisecond
 
@@ -64,24 +66,24 @@ func VariableIntervalPollInterval() time.Duration {
 }
 
 var (
-	nowFunc                = time.Now
-	dbClaimBuckets         = db.ClaimBuckets
-	dbHeartbeat            = db.Heartbeat
-	dbReleaseHost          = db.ReleaseHost
-	dbMarkHostDraining     = db.MarkHostDraining
-	dbGetSitesForBucket    = db.GetSitesForBucket
-	dbMarkSiteChecked      = db.MarkSiteChecked
-	dbMarkSitesChecked     = db.MarkSitesChecked
-	dbRecordCheckHistory   = db.RecordCheckHistory
-	dbRecordCheckHistories = db.RecordCheckHistories
-	dbUpdateSSLExpiry      = db.UpdateSSLExpiry
-	dbUpdateSSLExpiries    = db.UpdateSSLExpiries
-	dbUpdateSiteStatus     = db.UpdateSiteStatus
-	dbRecordFalsePositive  = db.RecordFalsePositive
-	dbUpdateLastAlertSent  = db.UpdateLastAlertSent
-	dbCountDueSites        = db.CountDueSitesForBucketRange
-	dbCountProjectionDrift = db.CountLegacyProjectionDrift
-	veriflierCheckFunc     = func(c *veriflier.VeriflierClient, ctx stdctx.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
+	nowFunc                 = time.Now
+	dbClaimBuckets          = db.ClaimBuckets
+	dbHeartbeat             = db.Heartbeat
+	dbReleaseHost           = db.ReleaseHost
+	dbMarkHostDraining      = db.MarkHostDraining
+	dbGetSitesForBucketPage = db.GetSitesForBucketPage
+	dbMarkSiteChecked       = db.MarkSiteChecked
+	dbMarkSitesChecked      = db.MarkSitesChecked
+	dbRecordCheckHistory    = db.RecordCheckHistory
+	dbRecordCheckHistories  = db.RecordCheckHistories
+	dbUpdateSSLExpiry       = db.UpdateSSLExpiry
+	dbUpdateSSLExpiries     = db.UpdateSSLExpiries
+	dbUpdateSiteStatus      = db.UpdateSiteStatus
+	dbRecordFalsePositive   = db.RecordFalsePositive
+	dbUpdateLastAlertSent   = db.UpdateLastAlertSent
+	dbCountDueSites         = db.CountDueSitesForBucketRange
+	dbCountProjectionDrift  = db.CountLegacyProjectionDrift
+	veriflierCheckFunc      = func(c *veriflier.VeriflierClient, ctx stdctx.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
 		return c.Check(ctx, req)
 	}
 	metricsClientFunc = func() metricsClient {
@@ -103,6 +105,7 @@ type metricsClient interface {
 
 type roundSummary struct {
 	pagesFetched      int
+	batchesProcessed  int
 	selected          int
 	dispatched        int
 	completed         int
@@ -147,6 +150,7 @@ type roundSummary struct {
 
 func (s *roundSummary) add(other roundSummary) {
 	s.pagesFetched += other.pagesFetched
+	s.batchesProcessed += other.batchesProcessed
 	s.selected += other.selected
 	s.dispatched += other.dispatched
 	s.completed += other.completed
@@ -394,7 +398,11 @@ func (o *Orchestrator) runRound() roundSummary {
 	if pageSize < 1 {
 		pageSize = 1
 	}
-	seen := make(map[int64]struct{}, pageSize)
+	batchTarget := schedulerBatchTargetSites(cfg, pageSize)
+	seen := make(map[int64]struct{}, batchTarget)
+	cursor := db.SitePageCursor{}
+	doneFetching := false
+	schedulerBatch := 0
 	for {
 		select {
 		case <-o.ctx.Done():
@@ -404,28 +412,53 @@ func (o *Orchestrator) runRound() roundSummary {
 		default:
 		}
 
-		sites, err := dbGetSitesForBucket(o.ctx, o.bucketMin, o.bucketMax, pageSize, cfg.UseVariableCheckIntervals)
-		if err != nil {
-			summary.fetchErrors++
-			log.Printf("orchestrator: fetch sites failed: %v", err)
-			break
+		batch := make([]db.Site, 0, batchTarget)
+		for len(batch) < batchTarget && !doneFetching {
+			sites, err := dbGetSitesForBucketPage(o.ctx, o.bucketMin, o.bucketMax, pageSize, cfg.UseVariableCheckIntervals, cursor)
+			if err != nil {
+				summary.fetchErrors++
+				log.Printf("orchestrator: fetch sites failed: %v", err)
+				doneFetching = true
+				break
+			}
+			if len(sites) == 0 {
+				doneFetching = true
+				break
+			}
+
+			cursor = schedulerCursorFromSite(sites[len(sites)-1], cfg.UseVariableCheckIntervals)
+			page := filterUnseenSites(sites, seen)
+			if len(page) > 0 {
+				summary.pagesFetched++
+				summary.selected += len(page)
+				summary.add(selectedSiteSummary(page))
+				batch = append(batch, page...)
+			}
+			if len(sites) < pageSize {
+				doneFetching = true
+				break
+			}
 		}
-		page := filterUnseenSites(sites, seen)
-		if len(page) == 0 {
+
+		if len(batch) == 0 {
 			break
 		}
 
-		summary.pagesFetched++
-		summary.selected += len(page)
-		summary.add(selectedSiteSummary(page))
-		log.Printf("orchestrator: checking %d sites (scheduler page %d)", len(page), summary.pagesFetched)
+		schedulerBatch++
+		summary.batchesProcessed++
+		log.Printf(
+			"orchestrator: checking %d sites (scheduler batch %d, db pages fetched=%d)",
+			len(batch),
+			schedulerBatch,
+			summary.pagesFetched,
+		)
 
-		pageSummary := o.checkSitesPage(cfg, page, summary.pagesFetched)
+		pageSummary := o.checkSitesPage(cfg, batch, schedulerBatch)
 		summary.add(pageSummary)
 		if pageSummary.interrupted || pageSummary.outstanding > 0 {
 			break
 		}
-		if len(sites) < pageSize {
+		if doneFetching {
 			break
 		}
 	}
@@ -444,6 +477,39 @@ func (o *Orchestrator) runRound() roundSummary {
 	o.finishRound(cfg, summary)
 	o.applyMemoryPressure(cfg)
 	return summary
+}
+
+func schedulerBatchTargetSites(cfg *config.Config, pageSize int) int {
+	if pageSize < 1 {
+		pageSize = 1
+	}
+	target := cfg.NumWorkers * schedulerBatchSitesPerWorker
+	if cfg.MinTimeBetweenRoundsSec > 0 && cfg.NetCommsTimeout > 0 {
+		timeoutBound := cfg.NumWorkers * cfg.MinTimeBetweenRoundsSec / cfg.NetCommsTimeout
+		if timeoutBound > 0 && timeoutBound < target {
+			target = timeoutBound
+		}
+	}
+	if target < pageSize {
+		target = pageSize
+	}
+	if target > schedulerMaxBatchSites {
+		target = schedulerMaxBatchSites
+	}
+	return target
+}
+
+func schedulerCursorFromSite(site db.Site, useVariableIntervals bool) db.SitePageCursor {
+	cursor := db.SitePageCursor{
+		HasCursor: true,
+		BlogID:    site.BlogID,
+	}
+	if useVariableIntervals {
+		cursor.NextCheckAt = site.NextCheckAt
+	} else {
+		cursor.LastCheckedAt = site.LastCheckedAt
+	}
+	return cursor
 }
 
 func (o *Orchestrator) checkSitesPage(cfg *config.Config, sites []db.Site, pageNumber int) roundSummary {
@@ -552,7 +618,7 @@ func emitPageMetrics(summary roundSummary) {
 
 func logPageSummary(pageNumber, sites int, summary roundSummary) {
 	log.Printf(
-		"orchestrator: page summary page=%d sites=%d dispatched=%d completed=%d outstanding=%d dispatch=%s wait=%s process=%s mark_checked=%s history=%s ssl=%s events=%s checks_success=%d checks_failure=%d checks_http_failure=%d checks_timeout=%d checks_connect_error=%d checks_ssl_error=%d checks_redirect=%d checks_keyword=%d checks_tls_deprecated=%d mark_checked_rows=%d history_rows=%d ssl_rows=%d mark_checked_errors=%d history_errors=%d ssl_errors=%d",
+		"orchestrator: batch summary batch=%d sites=%d dispatched=%d completed=%d outstanding=%d dispatch=%s wait=%s process=%s mark_checked=%s history=%s ssl=%s events=%s checks_success=%d checks_failure=%d checks_http_failure=%d checks_timeout=%d checks_connect_error=%d checks_ssl_error=%d checks_redirect=%d checks_keyword=%d checks_tls_deprecated=%d mark_checked_rows=%d history_rows=%d ssl_rows=%d mark_checked_errors=%d history_errors=%d ssl_errors=%d",
 		pageNumber,
 		sites,
 		summary.dispatched,
@@ -738,6 +804,7 @@ func (o *Orchestrator) finishRound(cfg *config.Config, summary roundSummary) {
 		m.Increment("round.sites.count", summary.completed)
 		m.Gauge("round.sps.count", sps)
 		m.Gauge("scheduler.round.pages.count", summary.pagesFetched)
+		m.Gauge("scheduler.round.batches.count", summary.batchesProcessed)
 		m.Gauge("scheduler.round.selected.count", summary.selected)
 		m.Gauge("scheduler.round.dispatched.count", summary.dispatched)
 		m.Gauge("scheduler.round.completed.count", summary.completed)
@@ -796,8 +863,9 @@ func logRoundSummary(summary roundSummary, roundDuration time.Duration, sps int)
 		return
 	}
 	log.Printf(
-		"orchestrator: round summary pages=%d due_count_sampled=%t due_start=%d selected=%d dispatched=%d completed=%d outstanding=%d due_remaining=%d backpressure_waits=%d stale_results=%d duplicate_results=%d never_checked=%d oldest_selected_age_sec=%d dispatch=%s wait=%s process=%s mark_checked=%s history=%s ssl=%s events=%s checks_success=%d checks_failure=%d checks_http_failure=%d checks_timeout=%d checks_connect_error=%d checks_ssl_error=%d checks_redirect=%d checks_keyword=%d checks_tls_deprecated=%d mark_checked_rows=%d history_rows=%d ssl_rows=%d mark_checked_errors=%d history_errors=%d ssl_errors=%d duration=%s sps=%d",
+		"orchestrator: round summary pages=%d batches=%d due_count_sampled=%t due_start=%d selected=%d dispatched=%d completed=%d outstanding=%d due_remaining=%d backpressure_waits=%d stale_results=%d duplicate_results=%d never_checked=%d oldest_selected_age_sec=%d dispatch=%s wait=%s process=%s mark_checked=%s history=%s ssl=%s events=%s checks_success=%d checks_failure=%d checks_http_failure=%d checks_timeout=%d checks_connect_error=%d checks_ssl_error=%d checks_redirect=%d checks_keyword=%d checks_tls_deprecated=%d mark_checked_rows=%d history_rows=%d ssl_rows=%d mark_checked_errors=%d history_errors=%d ssl_errors=%d duration=%s sps=%d",
 		summary.pagesFetched,
+		summary.batchesProcessed,
 		summary.dueCountsSampled,
 		summary.dueAtStart,
 		summary.selected,
