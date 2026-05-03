@@ -12,6 +12,16 @@ import (
 	"time"
 )
 
+var sharedTransport = &http.Transport{
+	Proxy:                 http.ProxyFromEnvironment,
+	TLSClientConfig:       &tls.Config{InsecureSkipVerify: false},
+	MaxIdleConns:          256,
+	MaxIdleConnsPerHost:   16,
+	IdleConnTimeout:       90 * time.Second,
+	TLSHandshakeTimeout:   10 * time.Second,
+	ExpectContinueTimeout: time.Second,
+}
+
 // ErrorCode mirrors the status change email types from the original Jetmon.
 const (
 	ErrorNone          = 0
@@ -132,23 +142,14 @@ func Check(ctx context.Context, req Request) Result {
 	}
 	ctx = httptrace.WithClientTrace(ctx, trace)
 
-	headers := make(map[string]string)
-	for k, v := range req.CustomHeaders {
-		headers[k] = v
-	}
-
 	redirectCount := 0
 	redirectPolicyStr := string(req.RedirectPolicy)
 	if redirectPolicyStr == "" {
 		redirectPolicyStr = string(RedirectFollow)
 	}
 
-	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: false},
-	}
-
 	client := &http.Client{
-		Transport: transport,
+		Transport: sharedTransport,
 		CheckRedirect: func(r *http.Request, via []*http.Request) error {
 			redirectCount++
 			if redirectPolicyStr == string(RedirectFail) {
@@ -169,7 +170,7 @@ func Check(ctx context.Context, req Request) Result {
 	}
 
 	httpReq.Header.Set("User-Agent", "jetmon/2.0 (Jetpack Site Uptime Monitor by WordPress.com)")
-	for k, v := range headers {
+	for k, v := range req.CustomHeaders {
 		httpReq.Header.Set(k, v)
 	}
 
