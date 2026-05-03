@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	runtimemetrics "runtime/metrics"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -65,7 +66,9 @@ var (
 	dbMarkHostDraining     = db.MarkHostDraining
 	dbGetSitesForBucket    = db.GetSitesForBucket
 	dbMarkSiteChecked      = db.MarkSiteChecked
+	dbMarkSitesChecked     = db.MarkSitesChecked
 	dbRecordCheckHistory   = db.RecordCheckHistory
+	dbRecordCheckHistories = db.RecordCheckHistories
 	dbUpdateSSLExpiry      = db.UpdateSSLExpiry
 	dbUpdateSiteStatus     = db.UpdateSiteStatus
 	dbRecordFalsePositive  = db.RecordFalsePositive
@@ -108,6 +111,19 @@ type roundSummary struct {
 	dueCountErrors    int
 	fetchErrors       int
 	interrupted       bool
+
+	dispatchDuration    time.Duration
+	waitDuration        time.Duration
+	processDuration     time.Duration
+	markCheckedDuration time.Duration
+	historyDuration     time.Duration
+	sslDuration         time.Duration
+	eventDuration       time.Duration
+
+	markCheckedRows   int
+	historyRows       int
+	markCheckedErrors int
+	historyErrors     int
 }
 
 func (s *roundSummary) add(other roundSummary) {
@@ -122,12 +138,41 @@ func (s *roundSummary) add(other roundSummary) {
 	s.neverChecked += other.neverChecked
 	s.dueCountErrors += other.dueCountErrors
 	s.fetchErrors += other.fetchErrors
+	s.dispatchDuration += other.dispatchDuration
+	s.waitDuration += other.waitDuration
+	s.processDuration += other.processDuration
+	s.markCheckedDuration += other.markCheckedDuration
+	s.historyDuration += other.historyDuration
+	s.sslDuration += other.sslDuration
+	s.eventDuration += other.eventDuration
+	s.markCheckedRows += other.markCheckedRows
+	s.historyRows += other.historyRows
+	s.markCheckedErrors += other.markCheckedErrors
+	s.historyErrors += other.historyErrors
 	if other.oldestSelectedAge > s.oldestSelectedAge {
 		s.oldestSelectedAge = other.oldestSelectedAge
 	}
 	if other.interrupted {
 		s.interrupted = true
 	}
+}
+
+type resultProcessSummary struct {
+	processed           int
+	markCheckedRows     int
+	historyRows         int
+	markCheckedErrors   int
+	historyErrors       int
+	markCheckedDuration time.Duration
+	historyDuration     time.Duration
+	sslDuration         time.Duration
+	eventDuration       time.Duration
+}
+
+type siteCheckResult struct {
+	blogID int64
+	site   db.Site
+	res    checker.Result
 }
 
 // Orchestrator drives the main check loop.
@@ -319,7 +364,7 @@ func (o *Orchestrator) runRound() roundSummary {
 		summary.add(selectedSiteSummary(page))
 		log.Printf("orchestrator: checking %d sites (scheduler page %d)", len(page), summary.pagesFetched)
 
-		pageSummary := o.checkSitesPage(cfg, page)
+		pageSummary := o.checkSitesPage(cfg, page, summary.pagesFetched)
 		summary.add(pageSummary)
 		if pageSummary.interrupted || pageSummary.outstanding > 0 {
 			break
@@ -345,7 +390,7 @@ func (o *Orchestrator) runRound() roundSummary {
 	return summary
 }
 
-func (o *Orchestrator) checkSitesPage(cfg *config.Config, sites []db.Site) roundSummary {
+func (o *Orchestrator) checkSitesPage(cfg *config.Config, sites []db.Site, pageNumber int) roundSummary {
 	summary := roundSummary{}
 	siteMap := make(map[int64]db.Site, len(sites))
 	results := make(map[int64]checker.Result, len(sites))
@@ -353,6 +398,7 @@ func (o *Orchestrator) checkSitesPage(cfg *config.Config, sites []db.Site) round
 		siteMap[s.BlogID] = s
 	}
 
+	dispatchStart := time.Now()
 	for _, site := range sites {
 		req := checkRequestForSite(cfg, site)
 		for {
@@ -363,13 +409,16 @@ func (o *Orchestrator) checkSitesPage(cfg *config.Config, sites []db.Site) round
 			summary.backpressureWaits++
 			if !o.waitForPageResult(siteMap, results, &summary, schedulerBackpressurePollInterval) {
 				summary.interrupted = true
+				summary.dispatchDuration += time.Since(dispatchStart)
 				return summary
 			}
 		}
 	}
+	summary.dispatchDuration += time.Since(dispatchStart)
 
 	deadline := time.NewTimer(collectionDeadlineForSites(cfg, sites))
 	defer deadline.Stop()
+	waitStart := time.Now()
 	for len(results) < summary.dispatched {
 		select {
 		case res := <-o.pool.Results():
@@ -380,15 +429,69 @@ func (o *Orchestrator) checkSitesPage(cfg *config.Config, sites []db.Site) round
 			goto process
 		case <-o.ctx.Done():
 			summary.interrupted = true
+			summary.waitDuration += time.Since(waitStart)
 			return summary
 		}
 	}
 
 process:
-	o.processResults(results, siteMap)
-	o.totalChecked += len(results)
-	summary.completed += len(results)
+	summary.waitDuration += time.Since(waitStart)
+	processStart := time.Now()
+	processSummary := o.processResults(results, siteMap)
+	summary.processDuration += time.Since(processStart)
+	summary.completed += processSummary.processed
+	summary.markCheckedRows += processSummary.markCheckedRows
+	summary.historyRows += processSummary.historyRows
+	summary.markCheckedErrors += processSummary.markCheckedErrors
+	summary.historyErrors += processSummary.historyErrors
+	summary.markCheckedDuration += processSummary.markCheckedDuration
+	summary.historyDuration += processSummary.historyDuration
+	summary.sslDuration += processSummary.sslDuration
+	summary.eventDuration += processSummary.eventDuration
+	o.totalChecked += processSummary.processed
+	emitPageMetrics(summary)
+	logPageSummary(pageNumber, len(sites), summary)
 	return summary
+}
+
+func emitPageMetrics(summary roundSummary) {
+	m := metricsClientFunc()
+	if m == nil {
+		return
+	}
+	m.Timing("scheduler.page.dispatch.time", summary.dispatchDuration)
+	m.Timing("scheduler.page.wait.time", summary.waitDuration)
+	m.Timing("scheduler.page.process.time", summary.processDuration)
+	m.Timing("scheduler.page.mark_checked.time", summary.markCheckedDuration)
+	m.Timing("scheduler.page.history.time", summary.historyDuration)
+	m.Timing("scheduler.page.ssl.time", summary.sslDuration)
+	m.Timing("scheduler.page.events.time", summary.eventDuration)
+	m.Increment("scheduler.page.mark_checked.row.count", summary.markCheckedRows)
+	m.Increment("scheduler.page.history.row.count", summary.historyRows)
+	m.Increment("scheduler.page.mark_checked.error.count", summary.markCheckedErrors)
+	m.Increment("scheduler.page.history.error.count", summary.historyErrors)
+}
+
+func logPageSummary(pageNumber, sites int, summary roundSummary) {
+	log.Printf(
+		"orchestrator: page summary page=%d sites=%d dispatched=%d completed=%d outstanding=%d dispatch=%s wait=%s process=%s mark_checked=%s history=%s ssl=%s events=%s mark_checked_rows=%d history_rows=%d mark_checked_errors=%d history_errors=%d",
+		pageNumber,
+		sites,
+		summary.dispatched,
+		summary.completed,
+		summary.outstanding,
+		summary.dispatchDuration.Round(time.Millisecond),
+		summary.waitDuration.Round(time.Millisecond),
+		summary.processDuration.Round(time.Millisecond),
+		summary.markCheckedDuration.Round(time.Millisecond),
+		summary.historyDuration.Round(time.Millisecond),
+		summary.sslDuration.Round(time.Millisecond),
+		summary.eventDuration.Round(time.Millisecond),
+		summary.markCheckedRows,
+		summary.historyRows,
+		summary.markCheckedErrors,
+		summary.historyErrors,
+	)
 }
 
 func (o *Orchestrator) waitForPageResult(siteMap map[int64]db.Site, results map[int64]checker.Result, summary *roundSummary, maxWait time.Duration) bool {
@@ -533,6 +636,17 @@ func (o *Orchestrator) finishRound(cfg *config.Config, summary roundSummary) {
 		m.Increment("scheduler.result.duplicate.count", summary.duplicateResults)
 		m.Increment("scheduler.due_count.error.count", summary.dueCountErrors)
 		m.Increment("scheduler.fetch.error.count", summary.fetchErrors)
+		m.Timing("scheduler.round.dispatch.time", summary.dispatchDuration)
+		m.Timing("scheduler.round.wait.time", summary.waitDuration)
+		m.Timing("scheduler.round.process.time", summary.processDuration)
+		m.Timing("scheduler.round.mark_checked.time", summary.markCheckedDuration)
+		m.Timing("scheduler.round.history.time", summary.historyDuration)
+		m.Timing("scheduler.round.ssl.time", summary.sslDuration)
+		m.Timing("scheduler.round.events.time", summary.eventDuration)
+		m.Increment("scheduler.round.mark_checked.row.count", summary.markCheckedRows)
+		m.Increment("scheduler.round.history.row.count", summary.historyRows)
+		m.Increment("scheduler.round.mark_checked.error.count", summary.markCheckedErrors)
+		m.Increment("scheduler.round.history.error.count", summary.historyErrors)
 
 		if cfg.StatsdSendMemUsage {
 			m.EmitMemStats()
@@ -553,7 +667,7 @@ func logRoundSummary(summary roundSummary, roundDuration time.Duration, sps int)
 		return
 	}
 	log.Printf(
-		"orchestrator: round summary pages=%d due_start=%d selected=%d dispatched=%d completed=%d outstanding=%d due_remaining=%d backpressure_waits=%d stale_results=%d duplicate_results=%d never_checked=%d oldest_selected_age_sec=%d duration=%s sps=%d",
+		"orchestrator: round summary pages=%d due_start=%d selected=%d dispatched=%d completed=%d outstanding=%d due_remaining=%d backpressure_waits=%d stale_results=%d duplicate_results=%d never_checked=%d oldest_selected_age_sec=%d dispatch=%s wait=%s process=%s mark_checked=%s history=%s ssl=%s events=%s mark_checked_rows=%d history_rows=%d mark_checked_errors=%d history_errors=%d duration=%s sps=%d",
 		summary.pagesFetched,
 		summary.dueAtStart,
 		summary.selected,
@@ -566,51 +680,169 @@ func logRoundSummary(summary roundSummary, roundDuration time.Duration, sps int)
 		summary.duplicateResults,
 		summary.neverChecked,
 		int(summary.oldestSelectedAge.Seconds()),
+		summary.dispatchDuration.Round(time.Millisecond),
+		summary.waitDuration.Round(time.Millisecond),
+		summary.processDuration.Round(time.Millisecond),
+		summary.markCheckedDuration.Round(time.Millisecond),
+		summary.historyDuration.Round(time.Millisecond),
+		summary.sslDuration.Round(time.Millisecond),
+		summary.eventDuration.Round(time.Millisecond),
+		summary.markCheckedRows,
+		summary.historyRows,
+		summary.markCheckedErrors,
+		summary.historyErrors,
 		roundDuration.Round(time.Millisecond),
 		sps,
 	)
 }
 
-func (o *Orchestrator) processResults(results map[int64]checker.Result, sites map[int64]db.Site) {
-	for blogID, res := range results {
+func (o *Orchestrator) processResults(results map[int64]checker.Result, sites map[int64]db.Site) resultProcessSummary {
+	records := knownSiteResults(results, sites)
+	summary := resultProcessSummary{processed: len(records)}
+	if len(records) == 0 {
+		return summary
+	}
+
+	o.markResultsChecked(records, &summary)
+	o.recordResultHistories(records, &summary)
+
+	sslStart := time.Now()
+	for _, record := range records {
+		// Update SSL expiry if available.
+		if record.res.SSLExpiry != nil {
+			if shouldUpdateSSLExpiry(record.site.SSLExpiryDate, *record.res.SSLExpiry) {
+				if err := dbUpdateSSLExpiry(o.ctx, record.blogID, *record.res.SSLExpiry); err != nil {
+					log.Printf("orchestrator: update ssl expiry blog_id=%d: %v", record.blogID, err)
+				}
+			}
+			o.checkSSLAlerts(record.site, *record.res.SSLExpiry)
+		}
+	}
+	summary.sslDuration += time.Since(sslStart)
+
+	eventStart := time.Now()
+	for _, record := range records {
+		// Per-check data is recorded in jetmon_check_history (above); duplicating
+		// it in jetmon_audit_log was retired with the operational/site-state split.
+		if !record.res.IsFailure() {
+			o.handleRecovery(record.site, record.res)
+		} else {
+			o.handleFailure(record.site, record.res)
+		}
+	}
+	summary.eventDuration += time.Since(eventStart)
+	return summary
+}
+
+func knownSiteResults(results map[int64]checker.Result, sites map[int64]db.Site) []siteCheckResult {
+	blogIDs := make([]int64, 0, len(results))
+	for blogID := range results {
+		blogIDs = append(blogIDs, blogID)
+	}
+	sort.Slice(blogIDs, func(i, j int) bool {
+		return blogIDs[i] < blogIDs[j]
+	})
+
+	records := make([]siteCheckResult, 0, len(results))
+	for _, blogID := range blogIDs {
 		site, ok := sites[blogID]
 		if !ok {
 			continue
 		}
-		if err := dbMarkSiteChecked(o.ctx, blogID, res.Timestamp); err != nil {
-			log.Printf("orchestrator: mark checked blog_id=%d: %v", blogID, err)
-		}
-
-		// Log timing data.
-		if err := dbRecordCheckHistory(
-			blogID,
-			res.HTTPCode, res.ErrorCode,
-			res.RTT.Milliseconds(),
-			res.DNS.Milliseconds(),
-			res.TCP.Milliseconds(),
-			res.TLS.Milliseconds(),
-			res.TTFB.Milliseconds(),
-		); err != nil {
-			log.Printf("orchestrator: record history blog_id=%d: %v", blogID, err)
-		}
-
-		// Update SSL expiry if available.
-		if res.SSLExpiry != nil {
-			if err := dbUpdateSSLExpiry(o.ctx, blogID, *res.SSLExpiry); err != nil {
-				log.Printf("orchestrator: update ssl expiry blog_id=%d: %v", blogID, err)
-			}
-			o.checkSSLAlerts(site, *res.SSLExpiry)
-		}
-
-		// Per-check data is recorded in jetmon_check_history (above); duplicating
-		// it in jetmon_audit_log was retired with the operational/site-state split.
-
-		if !res.IsFailure() {
-			o.handleRecovery(site, res)
-		} else {
-			o.handleFailure(site, res)
-		}
+		records = append(records, siteCheckResult{
+			blogID: blogID,
+			site:   site,
+			res:    results[blogID],
+		})
 	}
+	return records
+}
+
+func (o *Orchestrator) markResultsChecked(records []siteCheckResult, summary *resultProcessSummary) {
+	checks := make([]db.SiteCheck, 0, len(records))
+	for _, record := range records {
+		checks = append(checks, db.SiteCheck{
+			BlogID:    record.blogID,
+			CheckedAt: resultCheckedAt(record.res),
+		})
+	}
+
+	start := time.Now()
+	if err := dbMarkSitesChecked(o.ctx, checks); err != nil {
+		summary.markCheckedErrors++
+		log.Printf("orchestrator: batch mark checked sites=%d: %v", len(checks), err)
+		for _, check := range checks {
+			if err := dbMarkSiteChecked(o.ctx, check.BlogID, check.CheckedAt); err != nil {
+				summary.markCheckedErrors++
+				log.Printf("orchestrator: mark checked blog_id=%d: %v", check.BlogID, err)
+				continue
+			}
+			summary.markCheckedRows++
+		}
+	} else {
+		summary.markCheckedRows += len(checks)
+	}
+	summary.markCheckedDuration += time.Since(start)
+}
+
+func (o *Orchestrator) recordResultHistories(records []siteCheckResult, summary *resultProcessSummary) {
+	histories := make([]db.CheckHistoryRow, 0, len(records))
+	for _, record := range records {
+		res := record.res
+		histories = append(histories, db.CheckHistoryRow{
+			BlogID:    record.blogID,
+			HTTPCode:  res.HTTPCode,
+			ErrorCode: res.ErrorCode,
+			RTTMs:     res.RTT.Milliseconds(),
+			DNSMs:     res.DNS.Milliseconds(),
+			TCPMs:     res.TCP.Milliseconds(),
+			TLSMs:     res.TLS.Milliseconds(),
+			TTFBMs:    res.TTFB.Milliseconds(),
+			CheckedAt: resultCheckedAt(res),
+		})
+	}
+
+	start := time.Now()
+	if err := dbRecordCheckHistories(o.ctx, histories); err != nil {
+		summary.historyErrors++
+		log.Printf("orchestrator: batch record check history rows=%d: %v", len(histories), err)
+		for _, row := range histories {
+			if err := dbRecordCheckHistory(
+				row.BlogID,
+				row.HTTPCode,
+				row.ErrorCode,
+				row.RTTMs,
+				row.DNSMs,
+				row.TCPMs,
+				row.TLSMs,
+				row.TTFBMs,
+			); err != nil {
+				summary.historyErrors++
+				log.Printf("orchestrator: record history blog_id=%d: %v", row.BlogID, err)
+				continue
+			}
+			summary.historyRows++
+		}
+	} else {
+		summary.historyRows += len(histories)
+	}
+	summary.historyDuration += time.Since(start)
+}
+
+func resultCheckedAt(res checker.Result) time.Time {
+	if res.Timestamp.IsZero() {
+		return nowFunc().UTC()
+	}
+	return res.Timestamp.UTC()
+}
+
+func shouldUpdateSSLExpiry(stored *time.Time, observed time.Time) bool {
+	if stored == nil {
+		return true
+	}
+	storedYear, storedMonth, storedDay := stored.UTC().Date()
+	observedYear, observedMonth, observedDay := observed.UTC().Date()
+	return storedYear != observedYear || storedMonth != observedMonth || storedDay != observedDay
 }
 
 func (o *Orchestrator) handleRecovery(site db.Site, res checker.Result) {

@@ -42,6 +42,28 @@ No active candidate branch is queued here right now.
 - [x] Add scheduler metrics for due-start, selected, dispatched, completed,
   outstanding, due-remaining, page count, backpressure waits, stale results,
   duplicate results, never-checked selections, and oldest selected age.
+- [x] Add per-page scheduler phase timings for dispatch, wait, result
+  processing, `last_checked_at` writes, check-history writes, SSL updates, and
+  event handling so the next capacity retest can identify the exact slow
+  stage.
+- [x] Batch passive per-check DB writes for `last_checked_at` freshness updates
+  and `jetmon_check_history` timing samples so healthy high-volume sweeps are
+  not dominated by one UPDATE plus one INSERT per site.
+- [x] Avoid rewriting unchanged `ssl_expiry_date` values on every HTTPS check
+  while still evaluating TLS-expiry alert state for each observed certificate.
+- [x] Remove the `COALESCE(last_checked_at, ...)` scheduler ordering expression
+  so MySQL can use the nullable `last_checked_at` ordering more directly while
+  preserving NULL-first behavior.
+- [ ] Run a 1,000-site capacity retest against the batched-write branch and
+  compare freshness, scheduler page timings, MySQL CPU, monitor CPU, and
+  check-history volume against the previous 17-minute sweep.
+- [ ] Capture live `EXPLAIN` output for fixed-round and variable-interval site
+  selection after the order-by simplification; decide whether a new
+  `(monitor_active, last_checked_at, blog_id, bucket_no)` style index or a
+  maintained `next_check_at` column is justified by real plans.
+- [ ] If MySQL CPU remains the limiting factor after batched writes, evaluate
+  an asynchronous bounded check-history writer or lower-resolution history
+  retention for healthy probes while keeping `last_checked_at` synchronous.
 - [ ] After the next capacity retest, add validate-config sizing advice that
   explains expected throughput from active site count, check interval,
   `NUM_WORKERS`, and timeout settings. This is deferred until the retest shows

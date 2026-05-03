@@ -357,7 +357,9 @@ func stubOrchestratorDeps() func() {
 	origDBUpdateLastAlert := dbUpdateLastAlertSent
 	origDBRecordFalsePositive := dbRecordFalsePositive
 	origDBMarkSiteChecked := dbMarkSiteChecked
+	origDBMarkSitesChecked := dbMarkSitesChecked
 	origDBRecordCheckHistory := dbRecordCheckHistory
+	origDBRecordCheckHistories := dbRecordCheckHistories
 	origDBUpdateSSLExpiry := dbUpdateSSLExpiry
 	origDBCountDueSites := dbCountDueSites
 	origDBCountProjectionDrift := dbCountProjectionDrift
@@ -375,7 +377,9 @@ func stubOrchestratorDeps() func() {
 	dbUpdateLastAlertSent = func(context.Context, int64, time.Time) error { return nil }
 	dbRecordFalsePositive = func(int64, int, int, int64) error { return nil }
 	dbMarkSiteChecked = func(context.Context, int64, time.Time) error { return nil }
+	dbMarkSitesChecked = func(context.Context, []db.SiteCheck) error { return nil }
 	dbRecordCheckHistory = func(int64, int, int, int64, int64, int64, int64, int64) error { return nil }
+	dbRecordCheckHistories = func(context.Context, []db.CheckHistoryRow) error { return nil }
 	dbUpdateSSLExpiry = func(context.Context, int64, time.Time) error { return nil }
 	dbCountDueSites = func(context.Context, int, int, bool) (int, error) { return 0, nil }
 	dbCountProjectionDrift = func(context.Context, int, int) (int, error) { return 0, nil }
@@ -395,7 +399,9 @@ func stubOrchestratorDeps() func() {
 		dbUpdateLastAlertSent = origDBUpdateLastAlert
 		dbRecordFalsePositive = origDBRecordFalsePositive
 		dbMarkSiteChecked = origDBMarkSiteChecked
+		dbMarkSitesChecked = origDBMarkSitesChecked
 		dbRecordCheckHistory = origDBRecordCheckHistory
+		dbRecordCheckHistories = origDBRecordCheckHistories
 		dbUpdateSSLExpiry = origDBUpdateSSLExpiry
 		dbCountDueSites = origDBCountDueSites
 		dbCountProjectionDrift = origDBCountProjectionDrift
@@ -584,8 +590,11 @@ func TestProcessResultsMarksChecked(t *testing.T) {
 	setTestConfig(t)
 
 	var markedBlogID int64
-	dbMarkSiteChecked = func(_ context.Context, blogID int64, _ time.Time) error {
-		markedBlogID = blogID
+	dbMarkSitesChecked = func(_ context.Context, checks []db.SiteCheck) error {
+		if len(checks) != 1 {
+			t.Fatalf("batch checks = %d, want 1", len(checks))
+		}
+		markedBlogID = checks[0].BlogID
 		return nil
 	}
 
@@ -601,7 +610,53 @@ func TestProcessResultsMarksChecked(t *testing.T) {
 	o.processResults(map[int64]checker.Result{42: res}, sites)
 
 	if markedBlogID != 42 {
-		t.Fatalf("MarkSiteChecked blog_id = %d, want 42", markedBlogID)
+		t.Fatalf("MarkSitesChecked blog_id = %d, want 42", markedBlogID)
+	}
+}
+
+func TestProcessResultsFallsBackWhenBatchWritesFail(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig(t)
+
+	dbMarkSitesChecked = func(context.Context, []db.SiteCheck) error {
+		return fmt.Errorf("batch mark failed")
+	}
+	dbRecordCheckHistories = func(context.Context, []db.CheckHistoryRow) error {
+		return fmt.Errorf("batch history failed")
+	}
+
+	var fallbackMarked int64
+	dbMarkSiteChecked = func(_ context.Context, blogID int64, _ time.Time) error {
+		fallbackMarked = blogID
+		return nil
+	}
+	var fallbackHistory int64
+	dbRecordCheckHistory = func(blogID int64, _ int, _ int, _ int64, _ int64, _ int64, _ int64, _ int64) error {
+		fallbackHistory = blogID
+		return nil
+	}
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local",
+		ctx:      context.Background(),
+	}
+
+	summary := o.processResults(
+		map[int64]checker.Result{42: checkerResultSuccess(42)},
+		map[int64]db.Site{42: {BlogID: 42, SiteStatus: statusRunning}},
+	)
+
+	if fallbackMarked != 42 || fallbackHistory != 42 {
+		t.Fatalf("fallback marked/history = %d/%d, want 42/42", fallbackMarked, fallbackHistory)
+	}
+	if summary.markCheckedRows != 1 || summary.historyRows != 1 {
+		t.Fatalf("fallback rows = %d/%d, want 1/1", summary.markCheckedRows, summary.historyRows)
+	}
+	if summary.markCheckedErrors != 1 || summary.historyErrors != 1 {
+		t.Fatalf("batch errors = %d/%d, want 1/1", summary.markCheckedErrors, summary.historyErrors)
 	}
 }
 
@@ -611,7 +666,7 @@ func TestProcessResultsSkipsUnknownSite(t *testing.T) {
 	setTestConfig(t)
 
 	var markCalled bool
-	dbMarkSiteChecked = func(_ context.Context, _ int64, _ time.Time) error {
+	dbMarkSitesChecked = func(_ context.Context, _ []db.SiteCheck) error {
 		markCalled = true
 		return nil
 	}
@@ -627,7 +682,7 @@ func TestProcessResultsSkipsUnknownSite(t *testing.T) {
 	o.processResults(map[int64]checker.Result{99: res}, map[int64]db.Site{})
 
 	if markCalled {
-		t.Fatal("MarkSiteChecked called for unknown blog_id, want skipped")
+		t.Fatal("MarkSitesChecked called for unknown blog_id, want skipped")
 	}
 }
 
@@ -658,6 +713,22 @@ func TestProcessResultsUpdatesSSLExpiry(t *testing.T) {
 
 	if updatedExpiry.IsZero() {
 		t.Fatal("UpdateSSLExpiry not called")
+	}
+}
+
+func TestShouldUpdateSSLExpiryComparesStoredDate(t *testing.T) {
+	stored := time.Date(2026, 5, 2, 0, 0, 0, 0, time.UTC)
+	sameDate := time.Date(2026, 5, 2, 23, 59, 0, 0, time.UTC)
+	nextDate := time.Date(2026, 5, 3, 0, 0, 0, 0, time.UTC)
+
+	if !shouldUpdateSSLExpiry(nil, sameDate) {
+		t.Fatal("nil stored expiry should update")
+	}
+	if shouldUpdateSSLExpiry(&stored, sameDate) {
+		t.Fatal("same stored expiry date should not update")
+	}
+	if !shouldUpdateSSLExpiry(&stored, nextDate) {
+		t.Fatal("different stored expiry date should update")
 	}
 }
 
@@ -868,9 +939,11 @@ func TestRunRoundDrainsAllPagesUntilWorkWraps(t *testing.T) {
 		queries++
 		return nextSchedulerTestPage(sites, checked, batchSize, false), nil
 	}
-	dbMarkSiteChecked = func(_ context.Context, blogID int64, _ time.Time) error {
-		checked[blogID] = true
-		marked = append(marked, blogID)
+	dbMarkSitesChecked = func(_ context.Context, checks []db.SiteCheck) error {
+		for _, check := range checks {
+			checked[check.BlogID] = true
+			marked = append(marked, check.BlogID)
+		}
 		return nil
 	}
 	dbCountDueSites = func(_ context.Context, _, _ int, useVariableIntervals bool) (int, error) {
@@ -951,8 +1024,10 @@ func TestRunRoundWaitsUnderPoolBackpressureInsteadOfDropping(t *testing.T) {
 		}
 		return nextSchedulerTestPage(sites, checked, batchSize, true), nil
 	}
-	dbMarkSiteChecked = func(_ context.Context, blogID int64, _ time.Time) error {
-		checked[blogID] = true
+	dbMarkSitesChecked = func(_ context.Context, checks []db.SiteCheck) error {
+		for _, check := range checks {
+			checked[check.BlogID] = true
+		}
 		return nil
 	}
 	dbCountDueSites = func(_ context.Context, _, _ int, useVariableIntervals bool) (int, error) {
@@ -1311,8 +1386,14 @@ func TestProcessResultsLogsErrorsFromDB(t *testing.T) {
 	setTestConfig(t)
 
 	// Make all DB calls return errors to exercise the log.Printf branches in processResults.
+	dbMarkSitesChecked = func(context.Context, []db.SiteCheck) error {
+		return fmt.Errorf("batch mark checked error")
+	}
 	dbMarkSiteChecked = func(context.Context, int64, time.Time) error {
 		return fmt.Errorf("mark checked error")
+	}
+	dbRecordCheckHistories = func(context.Context, []db.CheckHistoryRow) error {
+		return fmt.Errorf("batch history error")
 	}
 	dbRecordCheckHistory = func(int64, int, int, int64, int64, int64, int64, int64) error {
 		return fmt.Errorf("history error")
