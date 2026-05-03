@@ -77,9 +77,9 @@ No active candidate branch is queued here right now.
   interval due selection uses a simple indexed range predicate instead of
   computing `DATE_ADD(last_checked_at, INTERVAL GREATEST(check_interval, 1)
   MINUTE)` during every scheduler fetch.
-- [ ] Move exact due-count and projection-drift checks out of the hot scheduler
-  loop, or run them on a slower background cadence, so operator reporting does
-  not add broad database reads to every 5-second variable-interval pass.
+- [x] Move exact due-count and projection-drift checks onto a slower scheduler
+  reporting cadence so operator diagnostics do not add broad database reads to
+  every 5-second variable-interval pass.
 - [ ] Prototype a bounded asynchronous check-history writer and rollup model:
   keep `last_checked_at` synchronous, preserve raw rows for failures/recent
   windows, and store long-term latency/error aggregates to avoid raw history

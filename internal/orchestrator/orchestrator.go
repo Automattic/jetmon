@@ -50,6 +50,7 @@ const verifierRPCHeadroom = 5 * time.Second
 const schedulerBackpressurePollInterval = 10 * time.Millisecond
 const schedulerVariableIntervalPollInterval = 5 * time.Second
 const schedulerBacklogPollInterval = 5 * time.Second
+const schedulerBroadReportInterval = time.Minute
 
 // VariableIntervalPollInterval returns the idle scheduler poll interval used
 // when per-site check intervals are enabled. The SQL due predicate prevents
@@ -108,6 +109,7 @@ type roundSummary struct {
 	oldestSelectedAge time.Duration
 	dueAtStart        int
 	dueRemaining      int
+	dueCountsSampled  bool
 	dueCountErrors    int
 	fetchErrors       int
 	interrupted       bool
@@ -193,6 +195,9 @@ type Orchestrator struct {
 	statsMu      sync.RWMutex
 	lastRoundSPS int
 	lastRoundDur time.Duration
+
+	lastDueCountAt        time.Time
+	lastProjectionDriftAt time.Time
 
 	ctx    stdctx.Context
 	cancel stdctx.CancelFunc
@@ -325,13 +330,20 @@ func (o *Orchestrator) runRound() roundSummary {
 			log.Printf("orchestrator: bucket rebalance failed: %v", err)
 		}
 	}
-	o.checkLegacyProjectionDrift(cfg)
+	now := nowFunc()
+	dueCountsSampled := o.shouldSampleDueCounts(now)
+	if o.shouldSampleProjectionDrift(cfg, now) {
+		o.checkLegacyProjectionDrift(cfg)
+	}
 
-	if due, err := dbCountDueSites(o.ctx, o.bucketMin, o.bucketMax, cfg.UseVariableCheckIntervals); err != nil {
-		summary.dueCountErrors++
-		log.Printf("orchestrator: count due sites failed: %v", err)
-	} else {
-		summary.dueAtStart = due
+	if dueCountsSampled {
+		summary.dueCountsSampled = true
+		if due, err := dbCountDueSites(o.ctx, o.bucketMin, o.bucketMax, cfg.UseVariableCheckIntervals); err != nil {
+			summary.dueCountErrors++
+			log.Printf("orchestrator: count due sites failed: %v", err)
+		} else {
+			summary.dueAtStart = due
+		}
 	}
 
 	pageSize := cfg.DatasetSize
@@ -374,14 +386,14 @@ func (o *Orchestrator) runRound() roundSummary {
 		}
 	}
 
-	if cfg.UseVariableCheckIntervals {
+	if cfg.UseVariableCheckIntervals && dueCountsSampled {
 		if due, err := dbCountDueSites(o.ctx, o.bucketMin, o.bucketMax, true); err != nil {
 			summary.dueCountErrors++
 			log.Printf("orchestrator: count remaining due sites failed: %v", err)
 		} else {
 			summary.dueRemaining = due
 		}
-	} else {
+	} else if !cfg.UseVariableCheckIntervals {
 		summary.dueRemaining = max(0, summary.dueAtStart-summary.completed)
 	}
 
@@ -575,6 +587,32 @@ func recordPageResult(siteMap map[int64]db.Site, results map[int64]checker.Resul
 	results[res.BlogID] = res
 }
 
+func (o *Orchestrator) shouldSampleDueCounts(now time.Time) bool {
+	if o.lastDueCountAt.IsZero() || now.Before(o.lastDueCountAt) || now.Sub(o.lastDueCountAt) >= schedulerBroadReportInterval {
+		o.lastDueCountAt = now
+		return true
+	}
+	return false
+}
+
+func (o *Orchestrator) shouldSampleProjectionDrift(cfg *config.Config, now time.Time) bool {
+	if !cfg.LegacyStatusProjectionEnable {
+		return false
+	}
+	if o.lastProjectionDriftAt.IsZero() || now.Before(o.lastProjectionDriftAt) || now.Sub(o.lastProjectionDriftAt) >= schedulerBroadReportInterval {
+		o.lastProjectionDriftAt = now
+		return true
+	}
+	return false
+}
+
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
+}
+
 func schedulerSleepDuration(cfg *config.Config, summary roundSummary, elapsed time.Duration) time.Duration {
 	if summary.interrupted {
 		return 0
@@ -627,8 +665,11 @@ func (o *Orchestrator) finishRound(cfg *config.Config, summary roundSummary) {
 		m.Gauge("scheduler.round.dispatched.count", summary.dispatched)
 		m.Gauge("scheduler.round.completed.count", summary.completed)
 		m.Gauge("scheduler.round.outstanding.count", summary.outstanding)
-		m.Gauge("scheduler.round.due_start.count", summary.dueAtStart)
-		m.Gauge("scheduler.round.due_remaining.count", summary.dueRemaining)
+		m.Gauge("scheduler.round.due_count_sampled.count", boolInt(summary.dueCountsSampled))
+		if summary.dueCountsSampled {
+			m.Gauge("scheduler.round.due_start.count", summary.dueAtStart)
+			m.Gauge("scheduler.round.due_remaining.count", summary.dueRemaining)
+		}
 		m.Gauge("scheduler.round.selected_never_checked.count", summary.neverChecked)
 		m.Gauge("scheduler.round.selected_oldest_age_sec", int(summary.oldestSelectedAge.Seconds()))
 		m.Increment("scheduler.dispatch.backpressure_wait.count", summary.backpressureWaits)
@@ -667,8 +708,9 @@ func logRoundSummary(summary roundSummary, roundDuration time.Duration, sps int)
 		return
 	}
 	log.Printf(
-		"orchestrator: round summary pages=%d due_start=%d selected=%d dispatched=%d completed=%d outstanding=%d due_remaining=%d backpressure_waits=%d stale_results=%d duplicate_results=%d never_checked=%d oldest_selected_age_sec=%d dispatch=%s wait=%s process=%s mark_checked=%s history=%s ssl=%s events=%s mark_checked_rows=%d history_rows=%d mark_checked_errors=%d history_errors=%d duration=%s sps=%d",
+		"orchestrator: round summary pages=%d due_count_sampled=%t due_start=%d selected=%d dispatched=%d completed=%d outstanding=%d due_remaining=%d backpressure_waits=%d stale_results=%d duplicate_results=%d never_checked=%d oldest_selected_age_sec=%d dispatch=%s wait=%s process=%s mark_checked=%s history=%s ssl=%s events=%s mark_checked_rows=%d history_rows=%d mark_checked_errors=%d history_errors=%d duration=%s sps=%d",
 		summary.pagesFetched,
+		summary.dueCountsSampled,
 		summary.dueAtStart,
 		summary.selected,
 		summary.dispatched,

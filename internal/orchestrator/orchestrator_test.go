@@ -1075,6 +1075,78 @@ func TestRunRoundWaitsUnderPoolBackpressureInsteadOfDropping(t *testing.T) {
 	}
 }
 
+func TestRunRoundSamplesBroadReportsOnCadence(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	cfg := setTestConfig(t)
+	cfg.DatasetSize = 10
+	cfg.UseVariableCheckIntervals = true
+	cfg.LegacyStatusProjectionEnable = true
+	cfg.WorkerMaxMemMB = 0
+
+	now := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
+	nowFunc = func() time.Time { return now }
+
+	var dueCalls int
+	var driftCalls int
+	dbGetSitesForBucket = func(context.Context, int, int, int, bool) ([]db.Site, error) {
+		return nil, nil
+	}
+	dbCountDueSites = func(context.Context, int, int, bool) (int, error) {
+		dueCalls++
+		return 0, nil
+	}
+	dbCountProjectionDrift = func(context.Context, int, int) (int, error) {
+		driftCalls++
+		return 0, nil
+	}
+
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+
+	o := &Orchestrator{ctx: context.Background(), hostname: "host-a", roundStart: now}
+
+	first := o.runRound()
+	if !first.dueCountsSampled {
+		t.Fatal("first round dueCountsSampled = false, want true")
+	}
+	if dueCalls != 2 {
+		t.Fatalf("due count calls after first round = %d, want 2", dueCalls)
+	}
+	if driftCalls != 1 {
+		t.Fatalf("projection drift calls after first round = %d, want 1", driftCalls)
+	}
+	if got := rec.gauge("scheduler.round.due_count_sampled.count"); got != 1 {
+		t.Fatalf("due_count_sampled metric after first round = %d, want 1", got)
+	}
+
+	second := o.runRound()
+	if second.dueCountsSampled {
+		t.Fatal("second round dueCountsSampled = true before cadence elapsed, want false")
+	}
+	if dueCalls != 2 {
+		t.Fatalf("due count calls after second round = %d, want still 2", dueCalls)
+	}
+	if driftCalls != 1 {
+		t.Fatalf("projection drift calls after second round = %d, want still 1", driftCalls)
+	}
+	if got := rec.gauge("scheduler.round.due_count_sampled.count"); got != 0 {
+		t.Fatalf("due_count_sampled metric after skipped round = %d, want 0", got)
+	}
+
+	now = now.Add(schedulerBroadReportInterval)
+	third := o.runRound()
+	if !third.dueCountsSampled {
+		t.Fatal("third round dueCountsSampled = false after cadence elapsed, want true")
+	}
+	if dueCalls != 4 {
+		t.Fatalf("due count calls after third round = %d, want 4", dueCalls)
+	}
+	if driftCalls != 2 {
+		t.Fatalf("projection drift calls after third round = %d, want 2", driftCalls)
+	}
+}
+
 func TestSchedulerSleepDurationUsesShortPollForVariableIntervals(t *testing.T) {
 	cfg := &config.Config{
 		MinTimeBetweenRoundsSec:   300,
