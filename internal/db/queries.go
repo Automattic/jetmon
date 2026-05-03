@@ -430,6 +430,21 @@ func MarkSiteChecked(ctx context.Context, blogID int64, checkedAt, nextCheckAt t
 	return err
 }
 
+// SiteMonitorActive reports whether a monitor site is still active. Missing
+// rows are treated as inactive so stale in-flight check results cannot open new
+// downtime events after a site has been removed.
+func SiteMonitorActive(ctx context.Context, blogID int64) (bool, error) {
+	var active bool
+	err := db.QueryRowContext(ctx,
+		`SELECT monitor_active FROM jetpack_monitor_sites WHERE blog_id = ? LIMIT 1`,
+		blogID,
+	).Scan(&active)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return active, err
+}
+
 // SiteCheck records one site freshness update.
 type SiteCheck struct {
 	BlogID      int64

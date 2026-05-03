@@ -362,6 +362,7 @@ func stubOrchestratorDeps() func() {
 	origDBMarkSitesChecked := dbMarkSitesChecked
 	origDBRecordCheckHistory := dbRecordCheckHistory
 	origDBRecordCheckHistories := dbRecordCheckHistories
+	origDBSiteMonitorActive := dbSiteMonitorActive
 	origDBUpdateSSLExpiry := dbUpdateSSLExpiry
 	origDBUpdateSSLExpiries := dbUpdateSSLExpiries
 	origDBCountDueSites := dbCountDueSites
@@ -385,6 +386,7 @@ func stubOrchestratorDeps() func() {
 	dbMarkSitesChecked = func(context.Context, []db.SiteCheck) error { return nil }
 	dbRecordCheckHistory = func(int64, int, int, int64, int64, int64, int64, int64) error { return nil }
 	dbRecordCheckHistories = func(context.Context, []db.CheckHistoryRow) error { return nil }
+	dbSiteMonitorActive = func(context.Context, int64) (bool, error) { return true, nil }
 	dbUpdateSSLExpiry = func(context.Context, int64, time.Time) error { return nil }
 	dbUpdateSSLExpiries = func(context.Context, []db.SiteSSLExpiry) error { return nil }
 	dbCountDueSites = func(context.Context, int, int, bool) (int, error) { return 0, nil }
@@ -408,6 +410,7 @@ func stubOrchestratorDeps() func() {
 		dbMarkSitesChecked = origDBMarkSitesChecked
 		dbRecordCheckHistory = origDBRecordCheckHistory
 		dbRecordCheckHistories = origDBRecordCheckHistories
+		dbSiteMonitorActive = origDBSiteMonitorActive
 		dbUpdateSSLExpiry = origDBUpdateSSLExpiry
 		dbUpdateSSLExpiries = origDBUpdateSSLExpiries
 		dbCountDueSites = origDBCountDueSites
@@ -588,6 +591,36 @@ func TestHandleFailureBelowThresholdDoesNotEscalate(t *testing.T) {
 	}
 	if o.retries.get(1) == nil {
 		t.Fatal("retry entry should exist after first failure")
+	}
+}
+
+func TestHandleFailureSkipsInactiveSite(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig(t)
+
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+	dbSiteMonitorActive = func(context.Context, int64) (bool, error) { return false, nil }
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local",
+		ctx:      context.Background(),
+	}
+	o.retries.record(checkerResultFailure(1))
+
+	o.handleFailure(db.Site{BlogID: 1, SiteStatus: statusRunning}, checkerResultFailure(1))
+
+	if o.retries.get(1) != nil {
+		t.Fatal("retry entry should be cleared for inactive site")
+	}
+	if got := rec.counter("detection.inactive_site_failure.skipped.count"); got != 1 {
+		t.Fatalf("inactive-site skip counter = %d, want 1", got)
+	}
+	if got := rec.counter("detection.failure.server.count"); got != 0 {
+		t.Fatalf("failure counter = %d, want 0 for skipped inactive site", got)
 	}
 }
 

@@ -389,6 +389,46 @@ func TestMarkSitesCheckedBatchesUpdates(t *testing.T) {
 	}
 }
 
+func TestSiteMonitorActive(t *testing.T) {
+	mock, cleanup := withMockDB(t)
+	defer cleanup()
+
+	mock.ExpectQuery("SELECT monitor_active FROM jetpack_monitor_sites").
+		WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"monitor_active"}).AddRow(true))
+
+	active, err := SiteMonitorActive(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("SiteMonitorActive: %v", err)
+	}
+	if !active {
+		t.Fatal("SiteMonitorActive = false, want true")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestSiteMonitorActiveMissingRowIsInactive(t *testing.T) {
+	mock, cleanup := withMockDB(t)
+	defer cleanup()
+
+	mock.ExpectQuery("SELECT monitor_active FROM jetpack_monitor_sites").
+		WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"monitor_active"}))
+
+	active, err := SiteMonitorActive(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("SiteMonitorActive: %v", err)
+	}
+	if active {
+		t.Fatal("SiteMonitorActive = true for missing row, want false")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestRecordCheckHistoriesBatchesInserts(t *testing.T) {
 	mock, cleanup := withMockDB(t)
 	defer cleanup()

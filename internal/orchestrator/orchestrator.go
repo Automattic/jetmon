@@ -80,6 +80,7 @@ var (
 	dbMarkSitesChecked      = db.MarkSitesChecked
 	dbRecordCheckHistory    = db.RecordCheckHistory
 	dbRecordCheckHistories  = db.RecordCheckHistories
+	dbSiteMonitorActive     = db.SiteMonitorActive
 	dbUpdateSSLExpiry       = db.UpdateSSLExpiry
 	dbUpdateSSLExpiries     = db.UpdateSSLExpiries
 	dbUpdateSiteStatus      = db.UpdateSiteStatus
@@ -1385,6 +1386,16 @@ func (o *Orchestrator) handleRecovery(site db.Site, res checker.Result) {
 }
 
 func (o *Orchestrator) handleFailure(site db.Site, res checker.Result) {
+	active, err := dbSiteMonitorActive(o.ctx, site.BlogID)
+	if err != nil {
+		emitCounter("detection.inactive_site_guard.error.count", 1)
+		log.Printf("orchestrator: check monitor_active blog_id=%d: %v", site.BlogID, err)
+	} else if !active {
+		o.retries.clear(site.BlogID)
+		emitCounter("detection.inactive_site_failure.skipped.count", 1)
+		return
+	}
+
 	entry := o.retries.record(res)
 	class := failureClass(res)
 	emitCounter("detection.failure."+class+".count", 1)

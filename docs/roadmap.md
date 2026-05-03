@@ -152,6 +152,12 @@ No active candidate branch is queued here right now.
   a primary-key index scan over roughly 1,001,165 rows because the scheduler
   read indexes only contain `blog_id` after `monitor_active` and due-time
   prefixes.
+- [x] Guard failure event creation against stale in-flight checks for inactive
+  sites. The `20,000,22,500` index-fix retest passed freshness with wide
+  margins but still left open benchmark events after bulk deactivate because
+  already-dispatched failed checks could be processed after uptime-bench closed
+  the existing events and disabled the rows. Failure processing now rechecks
+  `monitor_active` before recording retry state or opening Seems Down events.
 - [ ] Retest the event-queue branch with a clean `20,000,22,500,25,000` ladder
   after uptime-bench confirms no failed-preflight scheduler work is still
   in-flight and the `blog_id` write-path index is present. Compare freshness
