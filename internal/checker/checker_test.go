@@ -468,6 +468,46 @@ func TestScaleUpWhenQueueDeep(t *testing.T) {
 	}
 }
 
+func TestScaleUpWhenQueueFullAtCurrentWorkerCount(t *testing.T) {
+	orig := poolCheckFunc
+	block := make(chan struct{})
+	poolCheckFunc = func(_ context.Context, req Request) Result {
+		<-block
+		return Result{BlogID: req.BlogID}
+	}
+	t.Cleanup(func() {
+		poolCheckFunc = orig
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	p := &Pool{
+		work:    make(chan Request, 4),
+		results: make(chan Result, 4),
+		retire:  make(chan struct{}, 8),
+		cancel:  cancel,
+		ctx:     ctx,
+		minSize: 1,
+		maxSize: 8,
+	}
+	p.size.Store(4)
+	for i := 0; i < cap(p.work); i++ {
+		p.work <- Request{BlogID: int64(i), URL: "x"}
+	}
+	t.Cleanup(func() {
+		p.closed.Store(true)
+		cancel()
+		close(block)
+		p.wg.Wait()
+	})
+
+	before := p.WorkerCount()
+	p.scale()
+
+	if p.WorkerCount() <= before {
+		t.Fatalf("WorkerCount = %d after full-queue scale-up, want > %d", p.WorkerCount(), before)
+	}
+}
+
 func TestScaleDownGraduallyWhenIdle(t *testing.T) {
 	p := NewPool(3, 1, 3)
 	t.Cleanup(p.Drain)

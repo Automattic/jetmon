@@ -2,12 +2,19 @@ DEBUG
 Set to true to enable more verbose log messages. Default: false.
 
 NUM_WORKERS
-Initial number of goroutines in the check pool. The pool auto-scales between 1 and NUM_WORKERS based on queue depth. Default: 60.
+Baseline number of goroutines for the check pool. The pool starts below this
+number and auto-scales up as queue depth grows. In variable-interval mode,
+Jetmon can temporarily raise the pool ceiling above NUM_WORKERS when the due
+backlog cannot fit inside the configured freshness window at the current
+ceiling. Adaptive growth is bounded by the host file-descriptor budget and is
+reported through scheduler pool metrics. Default: 60.
 
 NUM_TO_PROCESS
 Legacy compatibility setting retained so copied v1-style configs continue to
 parse. The Go scheduler uses DATASET_SIZE as the fetch page and NUM_WORKERS as
-the concurrency guardrail; NUM_TO_PROCESS does not cap scheduler throughput.
+the baseline concurrency setting; adaptive pool growth may raise the active
+ceiling when due backlog requires it. NUM_TO_PROCESS does not cap scheduler
+throughput.
 Default: 40.
 
 DATASET_SIZE

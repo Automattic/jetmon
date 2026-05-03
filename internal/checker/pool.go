@@ -95,8 +95,8 @@ func (p *Pool) Drain() {
 	p.workMu.Lock()
 	close(p.work)
 	p.workMu.Unlock()
-	p.wg.Wait()
 	p.cancel()
+	p.wg.Wait()
 }
 
 func (p *Pool) spawnWorker() {
@@ -125,8 +125,6 @@ func (p *Pool) spawnWorker() {
 				case p.results <- res:
 				case <-p.ctx.Done():
 					return
-				default:
-					// Avoid deadlocking shutdown if the result consumer has stopped.
 				}
 			}
 		}
@@ -157,10 +155,15 @@ func (p *Pool) scale() {
 
 	current := int(p.size.Load())
 	queue := len(p.work)
+	queueCap := cap(p.work)
 
 	// Scale up: queue depth exceeds current worker count.
-	if queue > current && current < p.maxSize {
-		add := min(queue-current, p.maxSize-current)
+	target := queue
+	if queueCap > 0 && queue >= queueCap && current > 0 {
+		target = max(target, current*2)
+	}
+	if target > current && current < p.maxSize {
+		add := min(target-current, p.maxSize-current)
 		for range add {
 			p.spawnWorker()
 		}

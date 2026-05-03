@@ -6,11 +6,14 @@ efficiency changes after the successful 1,000-site capacity run.
 ## Current Branch Under Test
 
 `feature/jetmon-v2-15k-scaling-efficiency` builds on the completed
-scalability-efficiency work and targets the May 3, 2026 capacity boundary:
-12,500 active sites passed, while 15,000 active sites missed 1,100 checks
-inside the 5-minute freshness window. The stale rows were evenly distributed
-across all 100 active buckets, and host CPU/RSS stayed low, which pointed at
-scheduler pacing rather than resource exhaustion.
+scalability-efficiency work and targets the May 3, 2026 capacity boundary.
+Successive capacity runs moved the clean point from 20,000 to 75,000 active
+sites. The latest run passed 50,000 and 75,000 sites, then failed at 100,000:
+Jetmon v2 needed 20,000 recent checks/minute and observed about 15,758/minute.
+The 100,000-site stale rows were evenly distributed across buckets, while host
+CPU/RSS, MySQL CPU, and file descriptors remained below alert thresholds. The
+logs showed the check pool pinned at the 960-worker ceiling with a full queue,
+which points at check-pool backpressure rather than database or host saturation.
 
 The branch includes the previous scaling changes:
 
@@ -23,13 +26,11 @@ The branch includes the previous scaling changes:
 
 It also adds scheduler batch windows: Jetmon fetches several ordered DB pages
 with a keyset cursor, then dispatches that larger batch as one check window.
-With the default 60 workers and `DATASET_SIZE=100`, this changes the common
-capacity-test shape from roughly 150 independent 100-site tail waits at 15,000
-active sites to about nine 1,800-site windows. The 1,800 default comes from the
-worker count, request timeout, and 5-minute round target so the batch remains
-useful for healthy high-scale checks without creating a long processing delay
-during broad timeout scenarios. `last_checked_at` and `next_check_at` are still
-written only after completed checks.
+The batch target comes from the current check-pool ceiling, request timeout, and
+freshness target. The per-batch result window is capped at 100,000 sites to
+avoid unbounded in-process maps, but the cap does not limit total checks per
+round. `last_checked_at` and `next_check_at` are still written only after
+completed checks.
 
 The branch now also moves site-state event handling onto a bounded sharded
 background queue after `last_checked_at` and `jetmon_check_history` have been
@@ -40,14 +41,21 @@ handling after 732 connect errors. The event queue preserves per-site ordering
 by hashing each blog ID to one worker, while keeping slow event/projection work
 from blocking fresh checks for unrelated sites.
 
+The current iteration adds adaptive worker-ceiling growth for variable-interval
+mode. `NUM_WORKERS` is treated as the baseline; if the current due backlog
+cannot fit inside `MIN_TIME_BETWEEN_ROUNDS_SEC` at the configured
+`NET_COMMS_TIMEOUT`, Jetmon raises the pool ceiling with 20% headroom, bounded
+by the host file-descriptor budget. The pool scaler also grows beyond a full
+queue when the queue capacity is already at or below the active worker count.
+
 Do not stack larger persistence changes, such as async check-history writes or
-DNS caching, on top of this branch before another real capacity run. The next
-test should isolate the scheduler-batch, worker-ceiling, and event-queue
-changes before adding another variable.
+DNS caching, on top of this branch before the next real capacity run. The next
+test should isolate adaptive check concurrency and the larger scheduler batch
+window before adding another variable.
 
 ## Pre-Test Checks
 
-1. Confirm migrations have run through migration 30.
+1. Confirm migrations have run through migration 31.
 2. Confirm the test service is running this branch's `jetmon2` binary.
 3. Confirm the Veriflier service is reachable from the monitor host.
 4. Confirm `WORKER_MAX_MEM_MB=0` for capacity tests unless intentionally
@@ -234,7 +242,9 @@ Dependency signals:
 
 - `due_count_sampled.count=0` means exact due-count gauges were intentionally
   skipped on that short variable-interval poll. It does not mean no sites were
-  due.
+  due. If a skipped poll still finds a full first DB page, Jetmon samples due
+  count for adaptive worker sizing before continuing to fill the scheduler
+  batch.
 - `due_remaining` should only be interpreted on polls where
   `due_count_sampled.count=1`.
 - `ssl.row.count` should be high only during initial certificate backfills or
@@ -257,27 +267,30 @@ Dependency signals:
 - If MySQL CPU remains high while freshness is good, compare
   `history.row.count`, `history.time`, and table growth before implementing
   async or lower-resolution history storage.
-- If `pool.active.max` stays close to `NUM_WORKERS` and CPU / FD usage remains
-  low, the worker ceiling is probably the immediate throughput limiter. Run a
-  controlled higher-worker batch before designing the adaptive worker ceiling.
+- If `pool.active.max` stays close to the adaptive worker ceiling and CPU usage
+  remains low, inspect process FD usage and the host `ulimit -n`. The adaptive
+  ceiling is intentionally bounded by the file-descriptor budget.
 - If `pool.queue_depth.max` stays near `pool.queue_capacity.max` and
   `dispatch.time` remains high, the scheduler is spending significant time
-  backpressured by the check pool. Higher concurrency, larger queue capacity, or
-  streaming result processing are the likely next levers.
+  backpressured by the check pool. If `pool.workers.max` is also below the
+  adaptive ceiling, investigate pool scaling. If workers reach the adaptive
+  ceiling, the next levers are host FD limits, bucket splitting, or a deeper
+  streaming dispatch/result-processing redesign.
 
 ## Next Capacity Ladder
 
 Run each step for the same duration and compare against the latest successful
-baseline. The 22,500-site retry run was not a clean capacity datapoint because
-it overlapped an in-flight scheduler round from a failed preflight attempt, but
-it did prove that event/projection work could block freshness. After deploying
-the event queue, re-establish a clean point before climbing.
+baseline. The latest clean point is 75,000 active sites, but it had effectively
+zero throughput margin. After deploying adaptive worker-ceiling growth, use a
+boundary-plus-growth ladder:
 
-1. 20,000 sites with `NUM_WORKERS=240` and event queue enabled.
-2. 22,500 sites if 20,000 keeps a healthy freshness margin.
-3. 25,000 sites if 22,500 is clean.
-4. Continue in 5k steps while freshness margin remains comfortable; narrow the
-   ladder if p95 age approaches the 5-minute freshness window.
+1. 80,000 sites to confirm the adaptive ceiling restores margin above the prior
+   thin 75,000-site pass.
+2. 100,000 sites to retest the previously failing point.
+3. 125,000 sites if 100,000 is clean with enough freshness margin.
+4. Continue in 25k steps while freshness margin remains comfortable; narrow the
+   ladder if p95 age approaches the 5-minute freshness window or if FD usage
+   climbs toward the adaptive worker cap.
 
 For each step, preserve:
 

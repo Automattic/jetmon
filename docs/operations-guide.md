@@ -16,7 +16,7 @@ Key settings:
 
 | Key | Default | Description |
 |---|---:|---|
-| `NUM_WORKERS` | 60 | Goroutine pool size |
+| `NUM_WORKERS` | 60 | Baseline check-pool size; adaptive scheduling can raise the active ceiling when due backlog requires it |
 | `NUM_TO_PROCESS` | 40 | Legacy compatibility setting; does not cap Go scheduler throughput |
 | `DATASET_SIZE` | 100 | Database fetch page size for scheduler work; not a total round cap |
 | `NUM_OF_CHECKS` | 3 | Local failures before Veriflier escalation |
@@ -46,10 +46,16 @@ Scheduler behavior:
 - Jetmon groups multiple ordered database pages into each scheduler check batch
   before waiting for the batch's slowest result. This prevents large fleets from
   paying one slow-tail wait per `DATASET_SIZE` page. The batch target is derived
-  from worker capacity (`NUM_WORKERS * 100`) and the configured timeout /
-  round-cadence budget (`NUM_WORKERS * MIN_TIME_BETWEEN_ROUNDS_SEC /
-  NET_COMMS_TIMEOUT`), capped at 25,000 sites. Operators usually should not
-  raise `DATASET_SIZE` just to improve throughput.
+  from worker capacity and the configured timeout / round-cadence budget, capped
+  at 100,000 sites as a memory guard for one in-process result window. Operators
+  usually should not raise `DATASET_SIZE` just to improve throughput.
+- With `USE_VARIABLE_CHECK_INTERVALS=true`, Jetmon estimates the check-pool
+  ceiling needed to clear the current due backlog inside the freshness window.
+  `NUM_WORKERS` remains the baseline, but the scheduler can temporarily raise
+  the ceiling above it when the due backlog, `NET_COMMS_TIMEOUT`, and
+  `MIN_TIME_BETWEEN_ROUNDS_SEC` show the baseline would miss freshness. The
+  adaptive ceiling uses a 20% headroom factor and is bounded by the host's
+  file-descriptor budget, so a low `ulimit -n` becomes a real capacity limit.
 - A full worker queue applies backpressure; checks remain pending instead of
   being dropped.
 - With `USE_VARIABLE_CHECK_INTERVALS=true`, Jetmon polls for newly due work on a
@@ -66,8 +72,9 @@ Scheduler behavior:
   windows processed from those pages.
   `pool.workers.max`, `pool.active.max`, `pool.queue_depth.max`, and
   `pool.queue_capacity.max` show whether the check pool is saturated. If active
-  checks sit near `NUM_WORKERS` while CPU, memory, and file descriptors remain
-  low, the worker ceiling is likely too conservative for the active site count.
+  checks sit near the adaptive ceiling while CPU and memory remain low, check
+  file-descriptor headroom and the current due-backlog estimate before raising
+  host-level limits or splitting buckets across more monitor hosts.
   Failure/recovery event handling runs through a bounded sharded background
   queue after freshness and check-history writes complete. Watch
   `scheduler.round.event_queue.job.count`,

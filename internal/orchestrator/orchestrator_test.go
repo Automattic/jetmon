@@ -1389,17 +1389,78 @@ func TestSchedulerSleepDurationUsesShortPollForVariableIntervals(t *testing.T) {
 
 func TestSchedulerBatchTargetSitesDerivesFromWorkers(t *testing.T) {
 	defaultCfg := &config.Config{NumWorkers: 60, MinTimeBetweenRoundsSec: 300, NetCommsTimeout: 10}
-	if got := schedulerBatchTargetSites(defaultCfg, 100); got != 1800 {
+	if got := schedulerBatchTargetSites(defaultCfg, 100, defaultCfg.NumWorkers); got != 1800 {
 		t.Fatalf("schedulerBatchTargetSites(default) = %d, want 1800", got)
 	}
-	if got := schedulerBatchTargetSites(&config.Config{NumWorkers: 60}, 100); got != 6000 {
+	if got := schedulerBatchTargetSites(&config.Config{NumWorkers: 60}, 100, 60); got != 6000 {
 		t.Fatalf("schedulerBatchTargetSites(no timeout budget) = %d, want 6000", got)
 	}
-	if got := schedulerBatchTargetSites(&config.Config{NumWorkers: 1, MinTimeBetweenRoundsSec: 300, NetCommsTimeout: 10}, 500); got != 500 {
+	if got := schedulerBatchTargetSites(&config.Config{NumWorkers: 1, MinTimeBetweenRoundsSec: 300, NetCommsTimeout: 10}, 500, 1); got != 500 {
 		t.Fatalf("schedulerBatchTargetSites(page floor) = %d, want 500", got)
 	}
-	if got := schedulerBatchTargetSites(&config.Config{NumWorkers: 1000}, 100); got != schedulerMaxBatchSites {
+	if got := schedulerBatchTargetSites(&config.Config{NumWorkers: 1000}, 100, 1000); got != schedulerMaxBatchSites {
 		t.Fatalf("schedulerBatchTargetSites(cap) = %d, want %d", got, schedulerMaxBatchSites)
+	}
+	if got := schedulerBatchTargetSites(defaultCfg, 100, 4000); got != schedulerMaxBatchSites {
+		t.Fatalf("schedulerBatchTargetSites(adaptive cap) = %d, want %d", got, schedulerMaxBatchSites)
+	}
+}
+
+func TestSchedulerAdaptiveWorkerMaxFromDueBacklog(t *testing.T) {
+	orig := workerResourceCapFunc
+	workerResourceCapFunc = func() int { return 10000 }
+	t.Cleanup(func() { workerResourceCapFunc = orig })
+
+	cfg := &config.Config{
+		NumWorkers:                960,
+		MinTimeBetweenRoundsSec:   300,
+		NetCommsTimeout:           10,
+		UseVariableCheckIntervals: true,
+	}
+
+	if got := schedulerAdaptiveWorkerMax(cfg, 100000); got != 4000 {
+		t.Fatalf("schedulerAdaptiveWorkerMax(100k due) = %d, want 4000", got)
+	}
+	if got := schedulerAdaptiveWorkerMax(cfg, 1000); got != 960 {
+		t.Fatalf("schedulerAdaptiveWorkerMax(small backlog) = %d, want base 960", got)
+	}
+}
+
+func TestSchedulerAdaptiveWorkerMaxHonorsResourceCapAboveBase(t *testing.T) {
+	orig := workerResourceCapFunc
+	workerResourceCapFunc = func() int { return 2000 }
+	t.Cleanup(func() { workerResourceCapFunc = orig })
+
+	cfg := &config.Config{
+		NumWorkers:                960,
+		MinTimeBetweenRoundsSec:   300,
+		NetCommsTimeout:           10,
+		UseVariableCheckIntervals: true,
+	}
+
+	if got := schedulerAdaptiveWorkerMax(cfg, 100000); got != 2000 {
+		t.Fatalf("schedulerAdaptiveWorkerMax(resource cap) = %d, want 2000", got)
+	}
+
+	workerResourceCapFunc = func() int { return 500 }
+	if got := schedulerAdaptiveWorkerMax(cfg, 100000); got != 4000 {
+		t.Fatalf("schedulerAdaptiveWorkerMax(cap below base) = %d, want uncapped adaptive 4000", got)
+	}
+}
+
+func TestSchedulerAdaptiveWorkerMaxDisabledForFixedCadence(t *testing.T) {
+	orig := workerResourceCapFunc
+	workerResourceCapFunc = func() int { return 10000 }
+	t.Cleanup(func() { workerResourceCapFunc = orig })
+
+	cfg := &config.Config{
+		NumWorkers:              960,
+		MinTimeBetweenRoundsSec: 300,
+		NetCommsTimeout:         10,
+	}
+
+	if got := schedulerAdaptiveWorkerMax(cfg, 100000); got != 960 {
+		t.Fatalf("schedulerAdaptiveWorkerMax(fixed cadence) = %d, want base 960", got)
 	}
 }
 

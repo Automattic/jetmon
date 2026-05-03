@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
@@ -54,7 +55,12 @@ const schedulerVariableIntervalPollInterval = 5 * time.Second
 const schedulerBacklogPollInterval = 5 * time.Second
 const schedulerBroadReportInterval = time.Minute
 const schedulerBatchSitesPerWorker = 100
-const schedulerMaxBatchSites = 25000
+const schedulerMaxBatchSites = 100000
+const schedulerAdaptiveWorkerSafetyNumerator = 6
+const schedulerAdaptiveWorkerSafetyDenominator = 5
+const schedulerWorkerFDReserve = 256
+const schedulerWorkerFDUseNumerator = 8
+const schedulerWorkerFDUseDenominator = 10
 const eventWorkerMinCount = 1
 const eventWorkerMaxCount = 8
 const eventWorkerScaleSites = 60
@@ -97,8 +103,9 @@ var (
 		}
 		return nil
 	}
-	wpcomNotifyFunc     = func(c *wpcom.Client, n wpcom.Notification) error { return c.Notify(n) }
-	currentMemoryMBFunc = currentMemoryMB
+	wpcomNotifyFunc       = func(c *wpcom.Client, n wpcom.Notification) error { return c.Notify(n) }
+	currentMemoryMBFunc   = currentMemoryMB
+	workerResourceCapFunc = schedulerWorkerResourceCap
 )
 
 type metricsClient interface {
@@ -429,13 +436,10 @@ func (o *Orchestrator) runRound() roundSummary {
 		o.checkLegacyProjectionDrift(cfg)
 	}
 
+	workerMax := cfg.NumWorkers
 	if dueCountsSampled {
-		summary.dueCountsSampled = true
-		if due, err := dbCountDueSites(o.ctx, o.bucketMin, o.bucketMax, cfg.UseVariableCheckIntervals); err != nil {
-			summary.dueCountErrors++
-			log.Printf("orchestrator: count due sites failed: %v", err)
-		} else {
-			summary.dueAtStart = due
+		if due, ok := o.sampleDueSites(cfg, &summary); ok {
+			workerMax = o.applyAdaptiveWorkerCeiling(cfg, due)
 		}
 	}
 
@@ -443,7 +447,7 @@ func (o *Orchestrator) runRound() roundSummary {
 	if pageSize < 1 {
 		pageSize = 1
 	}
-	batchTarget := schedulerBatchTargetSites(cfg, pageSize)
+	batchTarget := schedulerBatchTargetSites(cfg, pageSize, workerMax)
 	summary.batchTarget = batchTarget
 	seen := make(map[int64]struct{}, batchTarget)
 	cursor := db.SitePageCursor{}
@@ -471,6 +475,15 @@ func (o *Orchestrator) runRound() roundSummary {
 			if len(sites) == 0 {
 				doneFetching = true
 				break
+			}
+			if cfg.UseVariableCheckIntervals && !summary.dueCountsSampled && len(sites) == pageSize {
+				if due, ok := o.sampleDueSites(cfg, &summary); ok {
+					workerMax = o.applyAdaptiveWorkerCeiling(cfg, due)
+					if target := schedulerBatchTargetSites(cfg, pageSize, workerMax); target > batchTarget {
+						batchTarget = target
+						summary.batchTarget = batchTarget
+					}
+				}
 			}
 
 			cursor = schedulerCursorFromSite(sites[len(sites)-1], cfg.UseVariableCheckIntervals)
@@ -526,13 +539,54 @@ func (o *Orchestrator) runRound() roundSummary {
 	return summary
 }
 
-func schedulerBatchTargetSites(cfg *config.Config, pageSize int) int {
+func (o *Orchestrator) sampleDueSites(cfg *config.Config, summary *roundSummary) (int, bool) {
+	if summary == nil {
+		return 0, false
+	}
+	summary.dueCountsSampled = true
+	if cfg == nil {
+		return 0, false
+	}
+	ctx := stdctx.Background()
+	bucketMin, bucketMax := 0, 0
+	if o != nil && o.ctx != nil {
+		ctx = o.ctx
+	}
+	if o != nil {
+		bucketMin = o.bucketMin
+		bucketMax = o.bucketMax
+	}
+	due, err := dbCountDueSites(ctx, bucketMin, bucketMax, cfg.UseVariableCheckIntervals)
+	if err != nil {
+		summary.dueCountErrors++
+		log.Printf("orchestrator: count due sites failed: %v", err)
+		return 0, false
+	}
+	summary.dueAtStart = due
+	return due, true
+}
+
+func (o *Orchestrator) applyAdaptiveWorkerCeiling(cfg *config.Config, dueSites int) int {
+	workerMax := schedulerAdaptiveWorkerMax(cfg, dueSites)
+	if o != nil && o.pool != nil {
+		o.pool.SetMaxSize(workerMax)
+	}
+	return workerMax
+}
+
+func schedulerBatchTargetSites(cfg *config.Config, pageSize, workerMax int) int {
 	if pageSize < 1 {
 		pageSize = 1
 	}
-	target := cfg.NumWorkers * schedulerBatchSitesPerWorker
-	if cfg.MinTimeBetweenRoundsSec > 0 && cfg.NetCommsTimeout > 0 {
-		timeoutBound := cfg.NumWorkers * cfg.MinTimeBetweenRoundsSec / cfg.NetCommsTimeout
+	if workerMax < 1 && cfg != nil {
+		workerMax = cfg.NumWorkers
+	}
+	if workerMax < 1 {
+		workerMax = 1
+	}
+	target := workerMax * schedulerBatchSitesPerWorker
+	if cfg != nil && cfg.MinTimeBetweenRoundsSec > 0 && cfg.NetCommsTimeout > 0 {
+		timeoutBound := workerMax * cfg.MinTimeBetweenRoundsSec / cfg.NetCommsTimeout
 		if timeoutBound > 0 && timeoutBound < target {
 			target = timeoutBound
 		}
@@ -544,6 +598,69 @@ func schedulerBatchTargetSites(cfg *config.Config, pageSize int) int {
 		target = schedulerMaxBatchSites
 	}
 	return target
+}
+
+func schedulerAdaptiveWorkerMax(cfg *config.Config, dueSites int) int {
+	base := 1
+	if cfg != nil && cfg.NumWorkers > 0 {
+		base = cfg.NumWorkers
+	}
+	desired := base
+	if cfg != nil &&
+		cfg.UseVariableCheckIntervals &&
+		dueSites > 0 &&
+		cfg.MinTimeBetweenRoundsSec > 0 &&
+		cfg.NetCommsTimeout > 0 {
+		numerator := int64(dueSites) *
+			int64(cfg.NetCommsTimeout) *
+			int64(schedulerAdaptiveWorkerSafetyNumerator)
+		denominator := int64(cfg.MinTimeBetweenRoundsSec) *
+			int64(schedulerAdaptiveWorkerSafetyDenominator)
+		if denominator > 0 {
+			needed := ceilDivInt64(numerator, denominator)
+			if needed > int64(maxInt()) {
+				desired = maxInt()
+			} else if int(needed) > desired {
+				desired = int(needed)
+			}
+		}
+	}
+	if resourceCap := workerResourceCapFunc(); resourceCap > base && desired > resourceCap {
+		desired = resourceCap
+	}
+	if desired < 1 {
+		return 1
+	}
+	return desired
+}
+
+func schedulerWorkerResourceCap() int {
+	var limit syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &limit); err != nil {
+		return 0
+	}
+	maximum := maxInt()
+	softLimit := maximum
+	if limit.Cur < uint64(maximum) {
+		softLimit = int(limit.Cur)
+	}
+	if softLimit <= schedulerWorkerFDReserve {
+		return 0
+	}
+	return (softLimit - schedulerWorkerFDReserve) *
+		schedulerWorkerFDUseNumerator /
+		schedulerWorkerFDUseDenominator
+}
+
+func ceilDivInt64(numerator, denominator int64) int64 {
+	if numerator <= 0 || denominator <= 0 {
+		return 0
+	}
+	return (numerator + denominator - 1) / denominator
+}
+
+func maxInt() int {
+	return int(^uint(0) >> 1)
 }
 
 func eventWorkerCountForConfig(cfg *config.Config) int {
@@ -568,7 +685,7 @@ func eventQueueCapacityForConfig(cfg *config.Config) int {
 	if cfg.DatasetSize > 0 {
 		pageSize = cfg.DatasetSize
 	}
-	return schedulerBatchTargetSites(cfg, pageSize) * eventQueueBatches
+	return schedulerBatchTargetSites(cfg, pageSize, cfg.NumWorkers) * eventQueueBatches
 }
 
 func (o *Orchestrator) startEventWorkers(count, queueCapacity int) {
