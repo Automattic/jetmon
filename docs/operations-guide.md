@@ -46,13 +46,20 @@ Scheduler behavior:
 - A full worker queue applies backpressure; checks remain pending instead of
   being dropped.
 - With `USE_VARIABLE_CHECK_INTERVALS=true`, Jetmon polls for newly due work on a
-  short idle interval and uses each site's `check_interval` to decide what to
-  check. `MIN_TIME_BETWEEN_ROUNDS_SEC` is only the fixed-cadence pass interval
-  when variable intervals are disabled. Use this mode for production-like
-  freshness and capacity tests.
+  short idle interval and uses each site's maintained `next_check_at` timestamp
+  to decide what to check. `next_check_at` is recalculated from
+  `last_checked_at + check_interval` whenever a check completes or
+  `check_interval` changes. `MIN_TIME_BETWEEN_ROUNDS_SEC` is only the
+  fixed-cadence pass interval when variable intervals are disabled. Use this
+  mode for production-like freshness and capacity tests.
 - Watch the `scheduler.round.*` StatsD metrics during capacity tests. In
   particular, `due_start`, `selected`, `completed`, `outstanding`, and
   `due_remaining` show whether freshness pressure is clearing or building.
+  Exact `due_start` / `due_remaining` and legacy projection-drift checks are
+  sampled about once per minute in variable-interval mode so broad operator
+  reporting queries do not run on every short scheduler poll. Use
+  `scheduler.round.due_count_sampled.count` to distinguish sampled polls from
+  intentionally skipped reporting polls.
 
 See [../config/config.readme](../config/config.readme) for the full option
 reference.
@@ -386,6 +393,13 @@ Important metric groups include:
 - Worker pool capacity and active goroutines
 - Sites processed per second
 - Round completion time
+- Scheduler page count, selected/dispatched/completed rows, outstanding checks,
+  backpressure waits, stale/duplicate results, and sampled due backlog
+- Scheduler phase timings for dispatch, wait, result processing,
+  `last_checked_at`/`next_check_at` writes, check-history inserts, SSL expiry
+  writes, and event handling
+- Scheduler write row/error counters for freshness, check history, and SSL
+  expiry updates
 - WPCOM API attempts, deliveries, retries, errors, and failures
 - Veriflier response times and vote counters
 - Detection flow timing from first failure to escalation, confirmation,
@@ -396,6 +410,9 @@ Important metric groups include:
 
 StatsD is the primary metrics transport. Expose Graphite/StatsD data through the
 existing metrics pipeline when external systems need it.
+
+For repeatable capacity and scalability tests, use
+[`jetmon-v2-scalability-test-plan.md`](jetmon-v2-scalability-test-plan.md).
 
 For repeatable production summaries from durable Jetmon tables, use:
 

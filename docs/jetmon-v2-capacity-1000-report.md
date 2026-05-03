@@ -132,14 +132,10 @@ the active count grows:
 1. Run the same 30-minute test at 5,000 active sites before changing code again.
    At 1,000 sites the measured bottleneck is no longer correctness, and the CPU
    profile has enough headroom to justify the next batch.
-2. Add or expose per-round scheduler metrics in Jetmon v2:
-   - due rows selected per round;
-   - DB fetch duration and rows returned;
-   - checks dispatched, completed, failed, and skipped;
-   - check queue depth and worker utilization;
-   - DB write duration for site updates and check history inserts;
-   - round duration and idle time;
-   - stale/due backlog by bucket.
+2. Use [`jetmon-v2-scalability-test-plan.md`](jetmon-v2-scalability-test-plan.md)
+   for the next 1k/5k/10k runs. It lists the scheduler metrics, EXPLAIN checks,
+   host/process counters, and dependency metrics needed to compare this branch
+   against the successful 1,000-site baseline.
 3. Keep watching DB CPU before app CPU. `jetmon2` p95 CPU is only about 4% of a
    core, but MySQL p95 counter-rate is already about 34% of a core at 1,000
    active sites. If DB CPU scales linearly, it will become limiting before the Go

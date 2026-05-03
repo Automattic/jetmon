@@ -124,10 +124,10 @@ Jetmon 1's HEAD-only verification was a major source of customer-visible false p
 For sites with a `check_keyword` value set in the database, perform a GET request and search the response body for the configured string. A missing keyword on an otherwise-200 response counts as a failure and enters the same retry and confirmation pipeline as an HTTP error. Builds directly on the GET request mode used by v2 checks.
 
 **Maintenance Windows**
-Add `maintenance_start` and `maintenance_end` (nullable `DATETIME`) columns to `jetpack_monitor_sites`. During a maintenance window, checks continue and RTT data is collected, but status-change notifications are suppressed. The check result is logged internally so the audit trail is complete, but no alert fires. Configurable via the WPCOM API or direct DB write.
+Add `maintenance_start` and `maintenance_end` (nullable `DATETIME`) columns to `jetpack_monitor_sites`. During a maintenance window, checks continue and RTT data is collected, but status-change notifications are suppressed. Check-history samples and suppression audit entries remain available so operators can explain what happened, but no alert fires. Configurable via the WPCOM API or direct DB write.
 
 **Granular Timing Breakdown**
-Go's `net/http/httptrace` provides discrete callbacks for DNS start/done, TCP connect start/done, TLS handshake start/done, request written, and first response byte. Each check records all six timings at no additional cost. The single composite "RTT" is retained for backwards compatibility; the component timings are emitted as new StatsD metrics and stored for the operator dashboard and audit log.
+Go's `net/http/httptrace` provides discrete callbacks for DNS start/done, TCP connect start/done, TLS handshake start/done, request written, and first response byte. Each check records composite RTT plus DNS, TCP, TLS, and TTFB timings. The raw samples are stored in `jetmon_check_history` for response-time trending and API statistics; scheduler-level StatsD metrics report round/page phase timing and write volume.
 
 **Per-Site Request Headers**
 Add a `custom_headers` JSON column to `jetpack_monitor_sites`. The check engine merges these into the outgoing request, allowing sites that require an `Authorization` header or a specific `Host` value to be checked correctly.
@@ -146,6 +146,8 @@ Each check result — including the granular DNS/TCP/TLS/TTFB breakdown — is w
 
 **Alert Deduplication and Cooldown**
 Add a `alert_cooldown_minutes` column to `jetpack_monitor_sites`, defaulting to a global `ALERT_COOLDOWN_MINUTES` config value. After an alert fires for a site, subsequent alerts for the same site are suppressed until the cooldown expires, even if the site flaps up and down repeatedly. The suppression is recorded in the audit log. Prevents alert fatigue on flapping sites without requiring manual maintenance window configuration.
+
+Add a `next_check_at` column to `jetpack_monitor_sites` for variable-interval scheduling. Jetmon maintains it after every check from `last_checked_at + max(check_interval, 1) minutes`, allowing due-site selection to use an indexed range predicate instead of recalculating the interval expression for every active row.
 
 **TLS Version and Cipher Reporting**
 Alongside SSL certificate expiry monitoring, inspect `tls.ConnectionState` for the negotiated TLS version and cipher suite. Flag sites still serving TLS 1.0 or TLS 1.1 (deprecated) via a dedicated alert threshold, and record the TLS version and cipher in the audit log. Zero additional network requests — this data is present in every existing HTTPS connection alongside the certificate chain.

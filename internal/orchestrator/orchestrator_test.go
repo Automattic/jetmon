@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-sql-driver/mysql"
+
 	"github.com/Automattic/jetmon/internal/checker"
 	"github.com/Automattic/jetmon/internal/config"
 	"github.com/Automattic/jetmon/internal/db"
@@ -361,6 +363,7 @@ func stubOrchestratorDeps() func() {
 	origDBRecordCheckHistory := dbRecordCheckHistory
 	origDBRecordCheckHistories := dbRecordCheckHistories
 	origDBUpdateSSLExpiry := dbUpdateSSLExpiry
+	origDBUpdateSSLExpiries := dbUpdateSSLExpiries
 	origDBCountDueSites := dbCountDueSites
 	origDBCountProjectionDrift := dbCountProjectionDrift
 	origNotify := wpcomNotifyFunc
@@ -376,11 +379,12 @@ func stubOrchestratorDeps() func() {
 	dbUpdateSiteStatus = func(context.Context, int64, int, time.Time) error { return nil }
 	dbUpdateLastAlertSent = func(context.Context, int64, time.Time) error { return nil }
 	dbRecordFalsePositive = func(int64, int, int, int64) error { return nil }
-	dbMarkSiteChecked = func(context.Context, int64, time.Time) error { return nil }
+	dbMarkSiteChecked = func(context.Context, int64, time.Time, time.Time) error { return nil }
 	dbMarkSitesChecked = func(context.Context, []db.SiteCheck) error { return nil }
 	dbRecordCheckHistory = func(int64, int, int, int64, int64, int64, int64, int64) error { return nil }
 	dbRecordCheckHistories = func(context.Context, []db.CheckHistoryRow) error { return nil }
 	dbUpdateSSLExpiry = func(context.Context, int64, time.Time) error { return nil }
+	dbUpdateSSLExpiries = func(context.Context, []db.SiteSSLExpiry) error { return nil }
 	dbCountDueSites = func(context.Context, int, int, bool) (int, error) { return 0, nil }
 	dbCountProjectionDrift = func(context.Context, int, int) (int, error) { return 0, nil }
 	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error { return nil }
@@ -403,6 +407,7 @@ func stubOrchestratorDeps() func() {
 		dbRecordCheckHistory = origDBRecordCheckHistory
 		dbRecordCheckHistories = origDBRecordCheckHistories
 		dbUpdateSSLExpiry = origDBUpdateSSLExpiry
+		dbUpdateSSLExpiries = origDBUpdateSSLExpiries
 		dbCountDueSites = origDBCountDueSites
 		dbCountProjectionDrift = origDBCountProjectionDrift
 		wpcomNotifyFunc = origNotify
@@ -590,11 +595,15 @@ func TestProcessResultsMarksChecked(t *testing.T) {
 	setTestConfig(t)
 
 	var markedBlogID int64
+	var markedAt time.Time
+	var markedNext time.Time
 	dbMarkSitesChecked = func(_ context.Context, checks []db.SiteCheck) error {
 		if len(checks) != 1 {
 			t.Fatalf("batch checks = %d, want 1", len(checks))
 		}
 		markedBlogID = checks[0].BlogID
+		markedAt = checks[0].CheckedAt
+		markedNext = checks[0].NextCheckAt
 		return nil
 	}
 
@@ -606,11 +615,73 @@ func TestProcessResultsMarksChecked(t *testing.T) {
 	}
 
 	res := checkerResultSuccess(42)
-	sites := map[int64]db.Site{42: {BlogID: 42, SiteStatus: statusRunning}}
+	res.Timestamp = time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
+	sites := map[int64]db.Site{42: {BlogID: 42, SiteStatus: statusRunning, CheckInterval: 7}}
 	o.processResults(map[int64]checker.Result{42: res}, sites)
 
 	if markedBlogID != 42 {
 		t.Fatalf("MarkSitesChecked blog_id = %d, want 42", markedBlogID)
+	}
+	if !markedAt.Equal(res.Timestamp) {
+		t.Fatalf("MarkSitesChecked checked_at = %s, want %s", markedAt, res.Timestamp)
+	}
+	if want := res.Timestamp.Add(7 * time.Minute); !markedNext.Equal(want) {
+		t.Fatalf("MarkSitesChecked next_check_at = %s, want %s", markedNext, want)
+	}
+}
+
+func TestProcessResultsReportsCheckOutcomes(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig(t)
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local",
+		ctx:      context.Background(),
+	}
+
+	success := checkerResultSuccess(1)
+	timeout := checkerResultFailure(2)
+	timeout.HTTPCode = 0
+	timeout.ErrorCode = checker.ErrorTimeout
+	connect := checkerResultFailure(3)
+	connect.HTTPCode = 0
+	connect.ErrorCode = checker.ErrorConnect
+	server := checkerResultFailure(4)
+	server.HTTPCode = 500
+	server.ErrorCode = checker.ErrorNone
+	deprecatedTLS := checkerResultSuccess(5)
+	deprecatedTLS.ErrorCode = checker.ErrorTLSDeprecated
+
+	summary := o.processResults(
+		map[int64]checker.Result{
+			1: success,
+			2: timeout,
+			3: connect,
+			4: server,
+			5: deprecatedTLS,
+		},
+		map[int64]db.Site{
+			1: {BlogID: 1, SiteStatus: statusRunning},
+			2: {BlogID: 2, SiteStatus: statusRunning},
+			3: {BlogID: 3, SiteStatus: statusRunning},
+			4: {BlogID: 4, SiteStatus: statusRunning},
+			5: {BlogID: 5, SiteStatus: statusRunning},
+		},
+	)
+
+	if summary.checkSuccesses != 2 || summary.checkFailures != 3 {
+		t.Fatalf("success/failure counts = %d/%d, want 2/3", summary.checkSuccesses, summary.checkFailures)
+	}
+	if summary.checkTimeouts != 1 || summary.checkConnectErrors != 1 || summary.checkHTTPFailures != 1 || summary.checkTLSDeprecated != 1 {
+		t.Fatalf("outcome counts timeout/connect/http/tls = %d/%d/%d/%d, want 1/1/1/1",
+			summary.checkTimeouts,
+			summary.checkConnectErrors,
+			summary.checkHTTPFailures,
+			summary.checkTLSDeprecated,
+		)
 	}
 }
 
@@ -625,15 +696,23 @@ func TestProcessResultsFallsBackWhenBatchWritesFail(t *testing.T) {
 	dbRecordCheckHistories = func(context.Context, []db.CheckHistoryRow) error {
 		return fmt.Errorf("batch history failed")
 	}
+	dbUpdateSSLExpiries = func(context.Context, []db.SiteSSLExpiry) error {
+		return fmt.Errorf("batch ssl failed")
+	}
 
 	var fallbackMarked int64
-	dbMarkSiteChecked = func(_ context.Context, blogID int64, _ time.Time) error {
+	dbMarkSiteChecked = func(_ context.Context, blogID int64, _, _ time.Time) error {
 		fallbackMarked = blogID
 		return nil
 	}
 	var fallbackHistory int64
 	dbRecordCheckHistory = func(blogID int64, _ int, _ int, _ int64, _ int64, _ int64, _ int64, _ int64) error {
 		fallbackHistory = blogID
+		return nil
+	}
+	var fallbackSSL int64
+	dbUpdateSSLExpiry = func(_ context.Context, blogID int64, _ time.Time) error {
+		fallbackSSL = blogID
 		return nil
 	}
 
@@ -644,19 +723,62 @@ func TestProcessResultsFallsBackWhenBatchWritesFail(t *testing.T) {
 		ctx:      context.Background(),
 	}
 
+	res := checkerResultSuccess(42)
+	expiry := time.Now().UTC().AddDate(0, 1, 0)
+	res.SSLExpiry = &expiry
 	summary := o.processResults(
-		map[int64]checker.Result{42: checkerResultSuccess(42)},
+		map[int64]checker.Result{42: res},
 		map[int64]db.Site{42: {BlogID: 42, SiteStatus: statusRunning}},
 	)
 
-	if fallbackMarked != 42 || fallbackHistory != 42 {
-		t.Fatalf("fallback marked/history = %d/%d, want 42/42", fallbackMarked, fallbackHistory)
+	if fallbackMarked != 42 || fallbackHistory != 42 || fallbackSSL != 42 {
+		t.Fatalf("fallback marked/history/ssl = %d/%d/%d, want 42/42/42", fallbackMarked, fallbackHistory, fallbackSSL)
 	}
-	if summary.markCheckedRows != 1 || summary.historyRows != 1 {
-		t.Fatalf("fallback rows = %d/%d, want 1/1", summary.markCheckedRows, summary.historyRows)
+	if summary.markCheckedRows != 1 || summary.historyRows != 1 || summary.sslRows != 1 {
+		t.Fatalf("fallback rows = %d/%d/%d, want 1/1/1", summary.markCheckedRows, summary.historyRows, summary.sslRows)
 	}
-	if summary.markCheckedErrors != 1 || summary.historyErrors != 1 {
-		t.Fatalf("batch errors = %d/%d, want 1/1", summary.markCheckedErrors, summary.historyErrors)
+	if summary.markCheckedErrors != 1 || summary.historyErrors != 1 || summary.sslErrors != 1 {
+		t.Fatalf("batch errors = %d/%d/%d, want 1/1/1", summary.markCheckedErrors, summary.historyErrors, summary.sslErrors)
+	}
+}
+
+func TestEventMutationRetryRetriesDeadlocks(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig(t)
+
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+
+	o := &Orchestrator{ctx: context.Background()}
+	attempts := 0
+	err := o.withEventMutationRetry(42, "open_seems_down", func() error {
+		attempts++
+		if attempts == 1 {
+			return fmt.Errorf("wrapped: %w", &mysql.MySQLError{Number: 1213, Message: "deadlock"})
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("withEventMutationRetry: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	if got := rec.counter("eventstore.mutation.retry.count"); got != 1 {
+		t.Fatalf("retry metric = %d, want 1", got)
+	}
+}
+
+func TestIsRetryableMySQLError(t *testing.T) {
+	if !isRetryableMySQLError(fmt.Errorf("wrapped: %w", &mysql.MySQLError{Number: 1205, Message: "lock wait"})) {
+		t.Fatal("lock wait timeout should be retryable")
+	}
+	if !isRetryableMySQLError(&mysql.MySQLError{Number: 1213, Message: "deadlock"}) {
+		t.Fatal("deadlock should be retryable")
+	}
+	if isRetryableMySQLError(&mysql.MySQLError{Number: 1062, Message: "duplicate"}) {
+		t.Fatal("duplicate key should not be retryable")
 	}
 }
 
@@ -692,8 +814,11 @@ func TestProcessResultsUpdatesSSLExpiry(t *testing.T) {
 	setTestConfig(t)
 
 	var updatedExpiry time.Time
-	dbUpdateSSLExpiry = func(_ context.Context, _ int64, expiry time.Time) error {
-		updatedExpiry = expiry
+	dbUpdateSSLExpiries = func(_ context.Context, updates []db.SiteSSLExpiry) error {
+		if len(updates) != 1 {
+			t.Fatalf("ssl expiry updates = %d, want 1", len(updates))
+		}
+		updatedExpiry = updates[0].Expiry
 		return nil
 	}
 
@@ -1075,6 +1200,78 @@ func TestRunRoundWaitsUnderPoolBackpressureInsteadOfDropping(t *testing.T) {
 	}
 }
 
+func TestRunRoundSamplesBroadReportsOnCadence(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	cfg := setTestConfig(t)
+	cfg.DatasetSize = 10
+	cfg.UseVariableCheckIntervals = true
+	cfg.LegacyStatusProjectionEnable = true
+	cfg.WorkerMaxMemMB = 0
+
+	now := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
+	nowFunc = func() time.Time { return now }
+
+	var dueCalls int
+	var driftCalls int
+	dbGetSitesForBucket = func(context.Context, int, int, int, bool) ([]db.Site, error) {
+		return nil, nil
+	}
+	dbCountDueSites = func(context.Context, int, int, bool) (int, error) {
+		dueCalls++
+		return 0, nil
+	}
+	dbCountProjectionDrift = func(context.Context, int, int) (int, error) {
+		driftCalls++
+		return 0, nil
+	}
+
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+
+	o := &Orchestrator{ctx: context.Background(), hostname: "host-a", roundStart: now}
+
+	first := o.runRound()
+	if !first.dueCountsSampled {
+		t.Fatal("first round dueCountsSampled = false, want true")
+	}
+	if dueCalls != 2 {
+		t.Fatalf("due count calls after first round = %d, want 2", dueCalls)
+	}
+	if driftCalls != 1 {
+		t.Fatalf("projection drift calls after first round = %d, want 1", driftCalls)
+	}
+	if got := rec.gauge("scheduler.round.due_count_sampled.count"); got != 1 {
+		t.Fatalf("due_count_sampled metric after first round = %d, want 1", got)
+	}
+
+	second := o.runRound()
+	if second.dueCountsSampled {
+		t.Fatal("second round dueCountsSampled = true before cadence elapsed, want false")
+	}
+	if dueCalls != 2 {
+		t.Fatalf("due count calls after second round = %d, want still 2", dueCalls)
+	}
+	if driftCalls != 1 {
+		t.Fatalf("projection drift calls after second round = %d, want still 1", driftCalls)
+	}
+	if got := rec.gauge("scheduler.round.due_count_sampled.count"); got != 0 {
+		t.Fatalf("due_count_sampled metric after skipped round = %d, want 0", got)
+	}
+
+	now = now.Add(schedulerBroadReportInterval)
+	third := o.runRound()
+	if !third.dueCountsSampled {
+		t.Fatal("third round dueCountsSampled = false after cadence elapsed, want true")
+	}
+	if dueCalls != 4 {
+		t.Fatalf("due count calls after third round = %d, want 4", dueCalls)
+	}
+	if driftCalls != 2 {
+		t.Fatalf("projection drift calls after third round = %d, want 2", driftCalls)
+	}
+}
+
 func TestSchedulerSleepDurationUsesShortPollForVariableIntervals(t *testing.T) {
 	cfg := &config.Config{
 		MinTimeBetweenRoundsSec:   300,
@@ -1390,7 +1587,7 @@ func TestProcessResultsLogsErrorsFromDB(t *testing.T) {
 	dbMarkSitesChecked = func(context.Context, []db.SiteCheck) error {
 		return fmt.Errorf("batch mark checked error")
 	}
-	dbMarkSiteChecked = func(context.Context, int64, time.Time) error {
+	dbMarkSiteChecked = func(context.Context, int64, time.Time, time.Time) error {
 		return fmt.Errorf("mark checked error")
 	}
 	dbRecordCheckHistories = func(context.Context, []db.CheckHistoryRow) error {
@@ -1398,6 +1595,9 @@ func TestProcessResultsLogsErrorsFromDB(t *testing.T) {
 	}
 	dbRecordCheckHistory = func(int64, int, int, int64, int64, int64, int64, int64) error {
 		return fmt.Errorf("history error")
+	}
+	dbUpdateSSLExpiries = func(context.Context, []db.SiteSSLExpiry) error {
+		return fmt.Errorf("batch ssl expiry error")
 	}
 	dbUpdateSSLExpiry = func(context.Context, int64, time.Time) error {
 		return fmt.Errorf("ssl expiry error")
