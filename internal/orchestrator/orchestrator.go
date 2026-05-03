@@ -52,7 +52,7 @@ const verifierRPCHeadroom = 5 * time.Second
 const schedulerBackpressurePollInterval = 10 * time.Millisecond
 const schedulerVariableIntervalPollInterval = 5 * time.Second
 const schedulerBacklogPollInterval = 5 * time.Second
-const schedulerOperatorReportInterval = time.Minute
+const schedulerBroadReportInterval = time.Minute
 const eventMutationMaxAttempts = 3
 const eventMutationRetryBaseDelay = 25 * time.Millisecond
 
@@ -114,7 +114,7 @@ type roundSummary struct {
 	oldestSelectedAge time.Duration
 	dueAtStart        int
 	dueRemaining      int
-	dueCountSampled   bool
+	dueCountsSampled  bool
 	dueCountErrors    int
 	fetchErrors       int
 	interrupted       bool
@@ -157,8 +157,8 @@ func (s *roundSummary) add(other roundSummary) {
 	s.neverChecked += other.neverChecked
 	s.dueCountErrors += other.dueCountErrors
 	s.fetchErrors += other.fetchErrors
-	if other.dueCountSampled {
-		s.dueCountSampled = true
+	if other.dueCountsSampled {
+		s.dueCountsSampled = true
 	}
 	s.dispatchDuration += other.dispatchDuration
 	s.waitDuration += other.waitDuration
@@ -375,17 +375,18 @@ func (o *Orchestrator) runRound() roundSummary {
 			log.Printf("orchestrator: bucket rebalance failed: %v", err)
 		}
 	}
-	o.checkLegacyProjectionDrift(cfg, reportNow)
+	dueCountsSampled := !cfg.UseVariableCheckIntervals || o.shouldSampleDueCounts(reportNow)
+	if o.shouldSampleProjectionDrift(cfg, reportNow) {
+		o.checkLegacyProjectionDrift(cfg)
+	}
 
-	sampleDueCount := !cfg.UseVariableCheckIntervals || o.shouldSampleDueCount(reportNow)
-	if sampleDueCount {
-		o.lastDueCountAt = reportNow
+	if dueCountsSampled {
+		summary.dueCountsSampled = true
 		if due, err := dbCountDueSites(o.ctx, o.bucketMin, o.bucketMax, cfg.UseVariableCheckIntervals); err != nil {
 			summary.dueCountErrors++
 			log.Printf("orchestrator: count due sites failed: %v", err)
 		} else {
 			summary.dueAtStart = due
-			summary.dueCountSampled = true
 		}
 	}
 
@@ -429,16 +430,14 @@ func (o *Orchestrator) runRound() roundSummary {
 		}
 	}
 
-	if cfg.UseVariableCheckIntervals {
-		if !sampleDueCount {
-			summary.dueRemaining = 0
-		} else if due, err := dbCountDueSites(o.ctx, o.bucketMin, o.bucketMax, true); err != nil {
+	if cfg.UseVariableCheckIntervals && dueCountsSampled {
+		if due, err := dbCountDueSites(o.ctx, o.bucketMin, o.bucketMax, true); err != nil {
 			summary.dueCountErrors++
 			log.Printf("orchestrator: count remaining due sites failed: %v", err)
 		} else {
 			summary.dueRemaining = due
 		}
-	} else {
+	} else if !cfg.UseVariableCheckIntervals {
 		summary.dueRemaining = max(0, summary.dueAtStart-summary.completed)
 	}
 
@@ -665,6 +664,32 @@ func recordPageResult(siteMap map[int64]db.Site, results map[int64]checker.Resul
 	results[res.BlogID] = res
 }
 
+func (o *Orchestrator) shouldSampleDueCounts(now time.Time) bool {
+	if o.lastDueCountAt.IsZero() || now.Before(o.lastDueCountAt) || now.Sub(o.lastDueCountAt) >= schedulerBroadReportInterval {
+		o.lastDueCountAt = now
+		return true
+	}
+	return false
+}
+
+func (o *Orchestrator) shouldSampleProjectionDrift(cfg *config.Config, now time.Time) bool {
+	if !cfg.LegacyStatusProjectionEnable {
+		return false
+	}
+	if o.lastProjectionDriftAt.IsZero() || now.Before(o.lastProjectionDriftAt) || now.Sub(o.lastProjectionDriftAt) >= schedulerBroadReportInterval {
+		o.lastProjectionDriftAt = now
+		return true
+	}
+	return false
+}
+
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
+}
+
 func schedulerSleepDuration(cfg *config.Config, summary roundSummary, elapsed time.Duration) time.Duration {
 	if summary.interrupted {
 		return 0
@@ -680,25 +705,6 @@ func schedulerSleepDuration(cfg *config.Config, summary roundSummary, elapsed ti
 		return 0
 	}
 	return minInterval - elapsed
-}
-
-func (o *Orchestrator) shouldSampleDueCount(now time.Time) bool {
-	return dueForOperatorReport(o.lastDueCountAt, now)
-}
-
-func (o *Orchestrator) shouldCheckProjectionDrift(now time.Time) bool {
-	return dueForOperatorReport(o.lastProjectionDriftAt, now)
-}
-
-func dueForOperatorReport(last, now time.Time) bool {
-	return last.IsZero() || !now.Before(last.Add(schedulerOperatorReportInterval))
-}
-
-func boolMetric(v bool) int {
-	if v {
-		return 1
-	}
-	return 0
 }
 
 func (o *Orchestrator) finishRound(cfg *config.Config, summary roundSummary) {
@@ -736,8 +742,8 @@ func (o *Orchestrator) finishRound(cfg *config.Config, summary roundSummary) {
 		m.Gauge("scheduler.round.dispatched.count", summary.dispatched)
 		m.Gauge("scheduler.round.completed.count", summary.completed)
 		m.Gauge("scheduler.round.outstanding.count", summary.outstanding)
-		m.Gauge("scheduler.round.due_count_sampled.count", boolMetric(summary.dueCountSampled))
-		if summary.dueCountSampled {
+		m.Gauge("scheduler.round.due_count_sampled.count", boolInt(summary.dueCountsSampled))
+		if summary.dueCountsSampled {
 			m.Gauge("scheduler.round.due_start.count", summary.dueAtStart)
 			m.Gauge("scheduler.round.due_remaining.count", summary.dueRemaining)
 		}
@@ -792,7 +798,7 @@ func logRoundSummary(summary roundSummary, roundDuration time.Duration, sps int)
 	log.Printf(
 		"orchestrator: round summary pages=%d due_count_sampled=%t due_start=%d selected=%d dispatched=%d completed=%d outstanding=%d due_remaining=%d backpressure_waits=%d stale_results=%d duplicate_results=%d never_checked=%d oldest_selected_age_sec=%d dispatch=%s wait=%s process=%s mark_checked=%s history=%s ssl=%s events=%s checks_success=%d checks_failure=%d checks_http_failure=%d checks_timeout=%d checks_connect_error=%d checks_ssl_error=%d checks_redirect=%d checks_keyword=%d checks_tls_deprecated=%d mark_checked_rows=%d history_rows=%d ssl_rows=%d mark_checked_errors=%d history_errors=%d ssl_errors=%d duration=%s sps=%d",
 		summary.pagesFetched,
-		summary.dueCountSampled,
+		summary.dueCountsSampled,
 		summary.dueAtStart,
 		summary.selected,
 		summary.dispatched,
@@ -1519,14 +1525,10 @@ func (o *Orchestrator) isAlertSuppressed(site db.Site) bool {
 	return time.Since(*site.LastAlertSentAt) < time.Duration(cooldown)*time.Minute
 }
 
-func (o *Orchestrator) checkLegacyProjectionDrift(cfg *config.Config, now time.Time) {
+func (o *Orchestrator) checkLegacyProjectionDrift(cfg *config.Config) {
 	if !cfg.LegacyStatusProjectionEnable {
 		return
 	}
-	if !o.shouldCheckProjectionDrift(now) {
-		return
-	}
-	o.lastProjectionDriftAt = now
 	count, err := dbCountProjectionDrift(o.ctx, o.bucketMin, o.bucketMax)
 	if err != nil {
 		log.Printf("orchestrator: legacy projection drift check failed: %v", err)
