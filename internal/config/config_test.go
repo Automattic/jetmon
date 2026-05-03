@@ -14,6 +14,7 @@ func TestValidate(t *testing.T) {
 		return &Config{
 			AuthToken:       "token",
 			NumWorkers:      10,
+			DatasetSize:     100,
 			BucketTotal:     100,
 			BucketTarget:    50,
 			NetCommsTimeout: 10,
@@ -43,6 +44,16 @@ func TestValidate(t *testing.T) {
 		{
 			name:    "num workers negative",
 			mutate:  func(c *Config) { c.NumWorkers = -1 },
+			wantErr: true,
+		},
+		{
+			name:    "dataset size zero",
+			mutate:  func(c *Config) { c.DatasetSize = 0 },
+			wantErr: true,
+		},
+		{
+			name:    "dataset size negative",
+			mutate:  func(c *Config) { c.DatasetSize = -1 },
 			wantErr: true,
 		},
 		{
@@ -135,6 +146,11 @@ func TestValidate(t *testing.T) {
 		{
 			name:    "net comms timeout negative",
 			mutate:  func(c *Config) { c.NetCommsTimeout = -1 },
+			wantErr: true,
+		},
+		{
+			name:    "min time between rounds negative",
+			mutate:  func(c *Config) { c.MinTimeBetweenRoundsSec = -1 },
 			wantErr: true,
 		},
 		{
@@ -245,6 +261,7 @@ func TestValidateDefaultsDashboardBindAddr(t *testing.T) {
 	cfg := &Config{
 		AuthToken:       "token",
 		NumWorkers:      10,
+		DatasetSize:     100,
 		BucketTotal:     100,
 		BucketTarget:    50,
 		NetCommsTimeout: 10,

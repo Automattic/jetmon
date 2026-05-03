@@ -196,7 +196,7 @@ func defaults() *Config {
 		NumWorkers:                   60,
 		NumToProcess:                 40,
 		DatasetSize:                  100,
-		WorkerMaxMemMB:               53,
+		WorkerMaxMemMB:               0,
 		LegacyStatusProjectionEnable: true,
 		BucketTotal:                  1000,
 		BucketTarget:                 500,
@@ -269,6 +269,9 @@ func validate(cfg *Config) error {
 	if cfg.NumWorkers <= 0 {
 		return fmt.Errorf("NUM_WORKERS must be > 0")
 	}
+	if cfg.DatasetSize <= 0 {
+		return fmt.Errorf("DATASET_SIZE must be > 0")
+	}
 	if cfg.BucketTotal <= 0 {
 		return fmt.Errorf("BUCKET_TOTAL must be > 0")
 	}
@@ -280,6 +283,9 @@ func validate(cfg *Config) error {
 	}
 	if cfg.NetCommsTimeout <= 0 {
 		return fmt.Errorf("NET_COMMS_TIMEOUT must be > 0")
+	}
+	if cfg.MinTimeBetweenRoundsSec < 0 {
+		return fmt.Errorf("MIN_TIME_BETWEEN_ROUNDS_SEC must be >= 0")
 	}
 	if cfg.LogFormat != "text" && cfg.LogFormat != "json" {
 		return fmt.Errorf("LOG_FORMAT must be 'text' or 'json'")

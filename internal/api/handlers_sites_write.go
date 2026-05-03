@@ -646,6 +646,8 @@ func buildUpdateSetClause(body updateSiteRequest) ([]string, []any, error) {
 	if body.CheckInterval != nil {
 		clauses = append(clauses, "check_interval = ?")
 		args = append(args, *body.CheckInterval)
+		clauses = append(clauses, "next_check_at = CASE WHEN last_checked_at IS NULL THEN NULL ELSE DATE_ADD(last_checked_at, INTERVAL GREATEST(?, 1) MINUTE) END")
+		args = append(args, *body.CheckInterval)
 	}
 	if body.MaintenanceStart != nil {
 		t, err := parseMaintenanceTime(*body.MaintenanceStart, "maintenance_start")

@@ -435,25 +435,54 @@ var migrations = []migration{
 	{26, `ALTER TABLE jetmon_process_health
 		ADD COLUMN rss_mem_mb INT UNSIGNED NOT NULL DEFAULT 0 AFTER go_sys_mem_mb`},
 
-	// Migration 27 adds an explicit forbidden-content check alongside the
+	// Migration 27 supports the scheduler's hot path: fetch the least recently
+	// checked active rows for a host's bucket range. The previous bucket-first
+	// index is still useful for bucket coverage/count queries, but the
+	// scheduler ORDER BY starts with last_checked_at and otherwise falls back to
+	// a full scan/filesort at larger table sizes.
+	{27, `ALTER TABLE jetpack_monitor_sites
+		ADD INDEX idx_monitor_last_checked_blog_bucket (monitor_active, last_checked_at, blog_id, bucket_no)`},
+
+	// Migration 28 adds a maintained due timestamp for variable-interval
+	// scheduling. This lets the scheduler use a simple indexed range predicate
+	// instead of computing DATE_ADD(last_checked_at, INTERVAL check_interval)
+	// for every candidate row on every poll.
+	{28, `ALTER TABLE jetpack_monitor_sites
+		ADD COLUMN next_check_at DATETIME NULL AFTER last_checked_at`},
+
+	// Migration 29 backfills next_check_at for already-checked rows. Rows that
+	// have never been checked stay NULL and are due immediately, matching the
+	// existing last_checked_at IS NULL behavior.
+	{29, `UPDATE jetpack_monitor_sites
+		SET next_check_at = DATE_ADD(last_checked_at, INTERVAL GREATEST(check_interval, 1) MINUTE)
+		WHERE last_checked_at IS NOT NULL
+		  AND next_check_at IS NULL`},
+
+	// Migration 30 supports variable-interval scheduling's hot path:
+	// active rows whose maintained due timestamp is NULL or due now, ordered by
+	// next_check_at and blog_id.
+	{30, `ALTER TABLE jetpack_monitor_sites
+		ADD INDEX idx_monitor_next_check_blog_bucket (monitor_active, next_check_at, blog_id, bucket_no)`},
+
+	// Migration 31 adds an explicit forbidden-content check alongside the
 	// existing required keyword. The two columns intentionally stay separate:
 	// check_keyword means "must be present"; forbidden_keyword means "must be
 	// absent".
-	{27, `ALTER TABLE jetpack_monitor_sites
+	{31, `ALTER TABLE jetpack_monitor_sites
 		ADD COLUMN forbidden_keyword VARCHAR(500) NULL AFTER check_keyword`},
 
-	// Migration 28 records the actual HTTP method used for each timing sample.
+	// Migration 32 records the actual HTTP method used for each timing sample.
 	// This keeps the high-volume check history compact while giving operators
 	// durable evidence that v2 probes are exercising the GET path rather than
 	// the HEAD-only behavior that caused v1 false positives and false negatives.
-	{28, `ALTER TABLE jetmon_check_history
+	{32, `ALTER TABLE jetmon_check_history
 		ADD COLUMN request_method VARCHAR(16) NOT NULL DEFAULT 'GET' AFTER blog_id`},
 
-	// Migration 29 adds an array form for explicit forbidden body-content
+	// Migration 33 adds an array form for explicit forbidden body-content
 	// checks. forbidden_keyword remains for compatibility and simple one-off
 	// rules; forbidden_keywords lets operators provision multiple known-bad
 	// strings without overloading one column.
-	{29, `ALTER TABLE jetpack_monitor_sites
+	{33, `ALTER TABLE jetpack_monitor_sites
 		ADD COLUMN forbidden_keywords JSON NULL AFTER forbidden_keyword`},
 }
 

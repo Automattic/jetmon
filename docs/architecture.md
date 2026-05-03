@@ -97,8 +97,8 @@ This is the end-to-end path from database query to WPCOM notification.
 │  orchestrator.runRound()                                             │
 │    dbHeartbeat()          ── UPDATE jetmon_hosts SET last_heartbeat  │
 │    ClaimBuckets()         ── rebalance bucket ranges (each round)    │
-│    dbGetSitesForBucket()  ── SELECT sites WHERE bucket IN [min,max]  │
-│                              ORDER BY last_checked_at ASC            │
+│    dbGetSitesForBucket()  ── SELECT due sites in DATASET_SIZE pages  │
+│                              ORDER BY next_check_at / last_checked_at │
 └──────────────────────────────────────────────────────────────────────┘
                   │  []db.Site
                   ▼
@@ -126,7 +126,8 @@ This is the end-to-end path from database query to WPCOM notification.
 │ PHASE 3 — Collect (deadline: NetCommsTimeout + 5 s)                  │
 │                                                                      │
 │  Drain pool.Results() until all dispatched results arrive or         │
-│  deadline fires (partial results processed, rest logged as dropped)  │
+│  deadline fires (partial results processed, remaining work stays      │
+│  visible through outstanding/due-remaining scheduler metrics)         │
 └──────────────────────────────────────────────────────────────────────┘
                   │
           ┌───────┴───────┐
@@ -209,24 +210,24 @@ orchestrator.Run()
           │     │
           │     ├─ dbHeartbeat()
           │     ├─ ClaimBuckets()             // rebalance every round
-          │     ├─ dbGetSitesForBucket()      // fetch least-recently-checked first
+          │     ├─ dbGetSitesForBucket()      // fetch due work in DATASET_SIZE pages
           │     │
-          │     ├─ for each site:
-          │     │     pool.Submit(checker.Request)  // non-blocking; drops if full
+          │     ├─ for each scheduler page:
+          │     │     pool.Submit(checker.Request)  // waits/collects on backpressure
           │     │
           │     ├─ collect results (deadline-bounded)
           │     │
           │     ├─ processResults()
-          │     │     ├─ dbMarkSiteChecked()
-          │     │     ├─ dbRecordCheckHistory()
-          │     │     ├─ dbUpdateSSLExpiry() + checkSSLAlerts()
+          │     │     ├─ dbMarkSitesChecked()       // last_checked_at + next_check_at
+          │     │     ├─ dbRecordCheckHistories()   // method + RTT + DNS/TCP/TLS/TTFB
+          │     │     ├─ dbUpdateSSLExpiries() + checkSSLAlerts()
           │     │     └─ handleRecovery(), handleFailure(),
           │     │        or maintenance-swallow the failure
           │     │
           │     ├─ emit StatsD metrics
           │     └─ applyMemoryPressure()       // drain workers if Go runtime memory > limit
           │
-          └─ sleep to enforce MinTimeBetweenRoundsSec
+          └─ sleep to enforce fixed cadence or short variable-interval poll
 ```
 
 
@@ -395,7 +396,8 @@ Database Tables
     monitor_url           URL to check
     site_status           Legacy v1 projection; derived from v2 events
     last_status_change    Legacy v1 projection; derived from v2 transitions
-    last_checked_at       Used to order fetch by least-recently-checked
+    last_checked_at       Last completed local check timestamp
+    next_check_at         Materialized variable-interval due time
     ssl_expiry_date       Updated after each TLS handshake
     check_keyword         Optional body text to require
     forbidden_keyword     Optional body text that must not appear
@@ -482,7 +484,7 @@ Key Concurrency Patterns
   pool.closed          sync/atomic.Bool   CAS for idempotent Drain()
   pool.workMu          sync.RWMutex       RLock on Submit; Lock on close(work)
   pool.wg              sync.WaitGroup     Drain() blocks until wg reaches 0
-  pool.work            chan Request        cap = maxSize×2; non-blocking Submit
+  pool.work            chan Request        cap = maxSize×2; scheduler waits when full
   pool.retire          chan struct{}       Signals individual workers to exit
   dashboard.sseClients sync.RWMutex       One channel per connected SSE client
 ```

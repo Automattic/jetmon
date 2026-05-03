@@ -480,7 +480,7 @@ func TestBuildUpdateSetClauseHandlesAllFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	if len(clauses) != 10 || len(args) != 10 {
-		t.Errorf("expected 10 clauses, got clauses=%d args=%d", len(clauses), len(args))
+	if len(clauses) != 11 || len(args) != 11 {
+		t.Errorf("expected 11 clauses, got clauses=%d args=%d", len(clauses), len(args))
 	}
 }
