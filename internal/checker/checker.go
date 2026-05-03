@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptrace"
 	"strings"
@@ -32,6 +33,25 @@ const (
 	RedirectAlert  RedirectPolicy = "alert"
 	RedirectFail   RedirectPolicy = "fail"
 )
+
+// defaultTransport is shared across checks so the checker does not allocate a
+// fresh connection pool for every probe. The http.Client stays per request so
+// timeout and redirect policy remain isolated to that site check.
+var defaultTransport = newCheckTransport()
+
+func newCheckTransport() *http.Transport {
+	return &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		TLSClientConfig:     &tls.Config{InsecureSkipVerify: false},
+		TLSHandshakeTimeout: 10 * time.Second,
+		IdleConnTimeout:     30 * time.Second,
+		MaxIdleConns:        1024,
+		MaxIdleConnsPerHost: 8,
+	}
+}
 
 // Request holds the parameters for a single HTTP check.
 type Request struct {
@@ -143,12 +163,8 @@ func Check(ctx context.Context, req Request) Result {
 		redirectPolicyStr = string(RedirectFollow)
 	}
 
-	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: false},
-	}
-
 	client := &http.Client{
-		Transport: transport,
+		Transport: defaultTransport,
 		CheckRedirect: func(r *http.Request, via []*http.Request) error {
 			redirectCount++
 			if redirectPolicyStr == string(RedirectFail) {

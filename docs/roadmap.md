@@ -84,9 +84,11 @@ No active candidate branch is queued here right now.
   keep `last_checked_at` synchronous, preserve raw rows for failures/recent
   windows, and store long-term latency/error aggregates to avoid raw history
   becoming the 10k/100k-site storage and I/O wall.
-- [ ] Prototype a shared or per-worker HTTP transport/client pool that reduces
-  allocation, socket, DNS, TCP, and TLS churn while preserving enough probe
-  timing visibility for uptime diagnostics.
+- [x] Replace per-check HTTP transport allocation with a shared bounded
+  transport while keeping per-check clients for timeout and redirect-policy
+  isolation. This is the conservative first step: connection reuse is available
+  when the response body is consumed, but the checker still avoids reading full
+  customer pages only to preserve keep-alives.
 - [ ] Add a 5k/10k capacity ladder that records freshness, p95 age, MySQL CPU,
   MySQL I/O/network, `jetmon2` CPU/RSS/FDs, StatsD CPU, Veriflier CPU, and
   check-history row growth after each major scalability change.
@@ -94,10 +96,10 @@ No active candidate branch is queued here right now.
   explains expected throughput from active site count, check interval,
   `NUM_WORKERS`, and timeout settings. This is deferred until the retest shows
   which sizing formula best matches real Jetmon v2 behavior.
-- [ ] Evaluate replacing per-check HTTP transports with a reused transport or
-  bounded client pool if the retest still shows open file descriptor growth.
-  This is deferred behind the scheduler fix because the 1,000-site miss matched
-  the scheduler cap exactly, while FD growth was only a watch item.
+- [ ] After the next capacity retest, evaluate whether checker idle-connection
+  limits, response-body draining, or keep-alive policy need additional tuning.
+  This remains data-dependent because more aggressive connection reuse can hide
+  DNS/TCP/TLS failure modes or add page-body I/O.
 
 ### Projection Drift Tooling TODO
 
