@@ -449,6 +449,54 @@ func UpdateSSLExpiry(ctx context.Context, blogID int64, expiry time.Time) error 
 	return err
 }
 
+// SiteSSLExpiry records one observed certificate expiry update.
+type SiteSSLExpiry struct {
+	BlogID int64
+	Expiry time.Time
+}
+
+// UpdateSSLExpiries records observed certificate expiry dates for a batch of
+// sites. Certificate expiry changes are usually sparse after warm-up, but
+// batching prevents first-run or certificate-churn sweeps from issuing one
+// UPDATE per HTTPS site.
+func UpdateSSLExpiries(ctx context.Context, expiries []SiteSSLExpiry) error {
+	if len(expiries) == 0 {
+		return nil
+	}
+	expiries = append([]SiteSSLExpiry(nil), expiries...)
+	sort.Slice(expiries, func(i, j int) bool {
+		return expiries[i].BlogID < expiries[j].BlogID
+	})
+	for start := 0; start < len(expiries); start += batchWriteChunkSize {
+		end := min(start+batchWriteChunkSize, len(expiries))
+		if err := updateSSLExpiriesChunk(ctx, expiries[start:end]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func updateSSLExpiriesChunk(ctx context.Context, expiries []SiteSSLExpiry) error {
+	var query strings.Builder
+	query.WriteString("UPDATE jetpack_monitor_sites SET ssl_expiry_date = CASE blog_id")
+	args := make([]any, 0, len(expiries)*3)
+	for _, expiry := range expiries {
+		query.WriteString(" WHEN ? THEN ?")
+		args = append(args, expiry.BlogID, expiry.Expiry)
+	}
+	query.WriteString(" END WHERE blog_id IN (")
+	for i, expiry := range expiries {
+		if i > 0 {
+			query.WriteByte(',')
+		}
+		query.WriteByte('?')
+		args = append(args, expiry.BlogID)
+	}
+	query.WriteByte(')')
+	_, err := db.ExecContext(ctx, query.String(), args...)
+	return err
+}
+
 // ClaimBuckets registers this host in jetmon_hosts, claiming uncovered bucket
 // ranges from expired peers. Returns the claimed min/max bucket numbers.
 func ClaimBuckets(hostID string, bucketTotal, bucketTarget int, graceSec int) (int, int, error) {

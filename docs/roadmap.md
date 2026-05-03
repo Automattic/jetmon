@@ -51,6 +51,8 @@ No active candidate branch is queued here right now.
   not dominated by one UPDATE plus one INSERT per site.
 - [x] Avoid rewriting unchanged `ssl_expiry_date` values on every HTTPS check
   while still evaluating TLS-expiry alert state for each observed certificate.
+- [x] Batch changed `ssl_expiry_date` writes so first-run certificate backfills
+  and certificate-renewal waves do not issue one UPDATE per HTTPS site.
 - [x] Remove the `COALESCE(last_checked_at, ...)` scheduler ordering expression
   so MySQL can use the nullable `last_checked_at` ordering more directly while
   preserving NULL-first behavior.

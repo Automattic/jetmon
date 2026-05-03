@@ -339,6 +339,28 @@ func TestRecordCheckHistoriesBatchesInserts(t *testing.T) {
 	}
 }
 
+func TestUpdateSSLExpiriesBatchesUpdates(t *testing.T) {
+	mock, cleanup := withMockDB(t)
+	defer cleanup()
+
+	first := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	second := first.AddDate(0, 1, 0)
+	mock.ExpectExec("UPDATE jetpack_monitor_sites SET ssl_expiry_date = CASE blog_id").
+		WithArgs(int64(7), first, int64(42), second, int64(7), int64(42)).
+		WillReturnResult(sqlmock.NewResult(0, 2))
+
+	err := UpdateSSLExpiries(context.Background(), []SiteSSLExpiry{
+		{BlogID: 42, Expiry: second},
+		{BlogID: 7, Expiry: first},
+	})
+	if err != nil {
+		t.Fatalf("UpdateSSLExpiries: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestUpdateSiteStatusTx(t *testing.T) {
 	mock, cleanup := withMockDB(t)
 	defer cleanup()
