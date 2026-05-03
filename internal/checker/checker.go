@@ -6,21 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptrace"
 	"strings"
 	"time"
 )
-
-var sharedTransport = &http.Transport{
-	Proxy:                 http.ProxyFromEnvironment,
-	TLSClientConfig:       &tls.Config{InsecureSkipVerify: false},
-	MaxIdleConns:          256,
-	MaxIdleConnsPerHost:   16,
-	IdleConnTimeout:       90 * time.Second,
-	TLSHandshakeTimeout:   10 * time.Second,
-	ExpectContinueTimeout: time.Second,
-}
 
 // ErrorCode mirrors the status change email types from the original Jetmon.
 const (
@@ -42,6 +33,25 @@ const (
 	RedirectAlert  RedirectPolicy = "alert"
 	RedirectFail   RedirectPolicy = "fail"
 )
+
+// defaultTransport is shared across checks so the checker does not allocate a
+// fresh connection pool for every probe. The http.Client stays per request so
+// timeout and redirect policy remain isolated to that site check.
+var defaultTransport = newCheckTransport()
+
+func newCheckTransport() *http.Transport {
+	return &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		TLSClientConfig:     &tls.Config{InsecureSkipVerify: false},
+		TLSHandshakeTimeout: 10 * time.Second,
+		IdleConnTimeout:     30 * time.Second,
+		MaxIdleConns:        1024,
+		MaxIdleConnsPerHost: 8,
+	}
+}
 
 // Request holds the parameters for a single HTTP check.
 type Request struct {
@@ -142,6 +152,11 @@ func Check(ctx context.Context, req Request) Result {
 	}
 	ctx = httptrace.WithClientTrace(ctx, trace)
 
+	headers := make(map[string]string)
+	for k, v := range req.CustomHeaders {
+		headers[k] = v
+	}
+
 	redirectCount := 0
 	redirectPolicyStr := string(req.RedirectPolicy)
 	if redirectPolicyStr == "" {
@@ -149,7 +164,7 @@ func Check(ctx context.Context, req Request) Result {
 	}
 
 	client := &http.Client{
-		Transport: sharedTransport,
+		Transport: defaultTransport,
 		CheckRedirect: func(r *http.Request, via []*http.Request) error {
 			redirectCount++
 			if redirectPolicyStr == string(RedirectFail) {
@@ -170,7 +185,7 @@ func Check(ctx context.Context, req Request) Result {
 	}
 
 	httpReq.Header.Set("User-Agent", "jetmon/2.0 (Jetpack Site Uptime Monitor by WordPress.com)")
-	for k, v := range req.CustomHeaders {
+	for k, v := range headers {
 		httpReq.Header.Set(k, v)
 	}
 

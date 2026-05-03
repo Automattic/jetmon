@@ -96,7 +96,9 @@ No active candidate branch is queued here right now.
   allocation, socket, DNS, TCP, and TLS churn while preserving enough probe
   timing visibility for uptime diagnostics. The checker now shares one bounded
   `http.Transport` across checks while keeping each check's timeout and
-  redirect policy scoped to its own `http.Client`.
+  redirect policy scoped to its own `http.Client`. Connection reuse is
+  available when the response body is consumed, but the checker still avoids
+  reading full customer pages only to preserve keep-alives.
 - [x] Add scheduler outcome counters and event-mutation deadlock/lock-wait
   retry instrumentation so capacity runs can distinguish true Jetmon
   throughput regressions from target setup failures such as DNS/URL-pattern
@@ -113,10 +115,10 @@ No active candidate branch is queued here right now.
   explains expected throughput from active site count, check interval,
   `NUM_WORKERS`, and timeout settings. This is deferred until the retest shows
   which sizing formula best matches real Jetmon v2 behavior.
-- [x] Evaluate replacing per-check HTTP transports with a reused transport or
-  bounded client pool if the retest still shows open file descriptor growth.
-  The checker now uses a shared bounded transport; capacity tests still need to
-  confirm FD, CPU, and latency impact under 5k/10k site loads.
+- [ ] After the next capacity retest, evaluate whether checker idle-connection
+  limits, response-body draining, or keep-alive policy need additional tuning.
+  This remains data-dependent because more aggressive connection reuse can hide
+  DNS/TCP/TLS failure modes or add page-body I/O.
 
 ### Projection Drift Tooling TODO
 

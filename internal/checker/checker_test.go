@@ -2,8 +2,10 @@ package checker
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -340,6 +342,40 @@ func TestCheckCustomHeadersForwarded(t *testing.T) {
 	}
 	if receivedHeader != "hello" {
 		t.Fatalf("X-Custom-Test = %q, want hello", receivedHeader)
+	}
+}
+
+func TestCheckReusesSharedTransportForReadableResponses(t *testing.T) {
+	oldTransport := defaultTransport
+	defaultTransport = newCheckTransport()
+	t.Cleanup(func() {
+		defaultTransport.CloseIdleConnections()
+		defaultTransport = oldTransport
+	})
+
+	var newConns atomic.Int64
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	srv.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			newConns.Add(1)
+		}
+	}
+	srv.Start()
+	defer srv.Close()
+
+	kw := "ok"
+	for i := 0; i < 2; i++ {
+		res := Check(context.Background(), Request{BlogID: int64(i + 1), URL: srv.URL, TimeoutSeconds: 5, Keyword: &kw})
+		if !res.Success {
+			t.Fatalf("check %d Success = false, want true (error_code=%d)", i+1, res.ErrorCode)
+		}
+	}
+
+	if got := newConns.Load(); got != 1 {
+		t.Fatalf("new connections = %d, want 1 from shared transport reuse", got)
 	}
 }
 
