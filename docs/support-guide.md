@@ -36,10 +36,12 @@ For a broader production-window view, use the telemetry report:
 ```
 
 This summarizes detection timings, Veriflier agreement, false-alarm classes,
-WPCOM attempt parity, and explanation gaps across the selected window. Use it
-to decide whether an incident looks like an isolated site issue, a noisy class
-of local failures, a verifier disagreement pattern, or an instrumentation gap
-that needs engineering follow-up. The first lines show an overall
+WPCOM attempt parity, and explanation gaps across the selected window. WPCOM
+parity is split between confirmed-down and recovery attempts so a clean total
+does not hide a mismatch in one direction. Use it to decide whether an incident
+looks like an isolated site issue, a noisy class of local failures, a verifier
+disagreement pattern, or an instrumentation gap that needs engineering
+follow-up. The first lines show an overall
 `telemetry_status` of `pass`, `warn`, or `fail` before the detailed timing and
 parity sections. If the report highlights window-edge WPCOM transitions, rerun
 with a later `--until` before treating the parity delta as a missing

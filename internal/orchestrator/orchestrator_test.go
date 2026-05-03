@@ -11,11 +11,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automattic/jetmon/internal/audit"
 	"github.com/Automattic/jetmon/internal/checker"
 	"github.com/Automattic/jetmon/internal/config"
 	"github.com/Automattic/jetmon/internal/db"
 	"github.com/Automattic/jetmon/internal/veriflier"
 	"github.com/Automattic/jetmon/internal/wpcom"
+	"github.com/DATA-DOG/go-sqlmock"
 )
 
 var orchestratorConfigTestMu sync.Mutex
@@ -1452,6 +1454,47 @@ func TestHandleRecoveryInMaintenance(t *testing.T) {
 		MaintenanceStart: &past,
 		MaintenanceEnd:   &future,
 	}, checkerResultSuccess(1))
+}
+
+func TestHandleRecoveryCooldownSuppressionIsAudited(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig(t)
+
+	sqlDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer sqlDB.Close()
+	audit.Init(sqlDB)
+	t.Cleanup(func() { audit.Init(nil) })
+
+	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error {
+		t.Fatal("notification should not be sent during cooldown")
+		return nil
+	}
+
+	recent := time.Now().UTC().Add(-5 * time.Minute)
+	mock.ExpectExec(`INSERT INTO jetmon_audit_log`).
+		WithArgs(int64(1), nil, audit.EventAlertSuppressed, "local", "recovery cooldown active", nil).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		ctx:      context.Background(),
+		hostname: "local",
+	}
+
+	o.handleRecovery(db.Site{
+		BlogID:          1,
+		SiteStatus:      statusConfirmedDown,
+		LastAlertSentAt: &recent,
+	}, checkerResultSuccess(1))
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
 }
 
 func TestProcessResultsLogsErrorsFromDB(t *testing.T) {

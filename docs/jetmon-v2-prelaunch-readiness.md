@@ -162,6 +162,7 @@ Jetmon-owned parity coverage:
 | Seems Down does not notify before Veriflier confirmation | Jetmon | covered | `internal/orchestrator` unit test |
 | False alarm does not notify WPCOM | Jetmon | covered | `internal/orchestrator` unit test |
 | Maintenance and cooldown suppression do not duplicate WPCOM notifications | Jetmon | covered | `internal/orchestrator` unit tests |
+| Down and recovery WPCOM parity deltas are reported separately | Jetmon | covered | `cmd/jetmon2` telemetry report unit test |
 | Inactive site behavior | WPCOM, Jetmon | needs external acceptance | Jetmon only selects `monitor_active=1`; WPCOM should confirm customer-visible inactive-site semantics |
 | URL mismatch behavior | WPCOM | needs external acceptance | WPCOM owns current home-URL-only handling |
 | Blacklisted site behavior | WPCOM | needs external acceptance | WPCOM owns blacklist/filter response semantics |

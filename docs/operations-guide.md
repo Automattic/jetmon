@@ -410,8 +410,11 @@ The report is read-only and runs with a bounded query timeout by default
 (`since <= row time < until`) so adjacent scheduled reports do not double-count
 boundary rows. It summarizes event lifecycle counts, first-failure timings,
 verifier agreement, false-alarm classes, WPCOM attempt parity, and metadata gaps
-that would make operator or customer explanations weaker. It reports aggregate
-counts and classes rather than raw payloads or credentials.
+that would make operator or customer explanations weaker. WPCOM parity is split
+between confirmed-down and recovery attempts, with maintenance/cooldown
+suppressions separated the same way, so one side cannot mask a mismatch on the
+other. It reports aggregate counts and classes rather than raw payloads or
+credentials.
 
 The top line reports `telemetry_status`, `explanation_gap_types`, and
 `explanation_gap_rows`. Treat `warn` or `fail` as a signal that the report found
