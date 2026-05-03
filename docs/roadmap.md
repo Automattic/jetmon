@@ -58,19 +58,38 @@ No active candidate branch is queued here right now.
   artificial memory-drain cap by default, `USE_VARIABLE_CHECK_INTERVALS=true`
   is the sample freshness mode, and API-enabled test hosts use an explicit
   `DELIVERY_OWNER_HOST`.
-- [ ] Run a 1,000-site capacity retest against the batched-write branch and
+- [x] Run a 1,000-site capacity retest against the batched-write branch and
   compare freshness, scheduler page timings, MySQL CPU, monitor CPU, and
-  check-history volume against the previous 17-minute sweep.
+  check-history volume against the previous 17-minute sweep. The retest moved
+  Jetmon v2 from 74.70% missed checks to 0.00% missed checks while lowering host
+  CPU and MySQL CPU.
 - [x] Capture live `EXPLAIN` output for fixed-round and variable-interval site
   selection; both plans scanned roughly 995k rows with `Using filesort`, so add
   a scheduler-oriented `(monitor_active, last_checked_at, blog_id, bucket_no)`
   index migration.
-- [ ] After applying the scheduler index migration in a test environment,
+- [x] After applying the scheduler index migration in a test environment,
   capture `EXPLAIN` again and confirm the hot site-selection query no longer
   falls back to a full scan/filesort before running the full capacity retest.
 - [ ] If MySQL CPU remains the limiting factor after batched writes, evaluate
   an asynchronous bounded check-history writer or lower-resolution history
   retention for healthy probes while keeping `last_checked_at` synchronous.
+- [ ] Add a maintained `next_check_at` column and scheduler index so variable
+  interval due selection uses a simple indexed range predicate instead of
+  computing `DATE_ADD(last_checked_at, INTERVAL GREATEST(check_interval, 1)
+  MINUTE)` during every scheduler fetch.
+- [ ] Move exact due-count and projection-drift checks out of the hot scheduler
+  loop, or run them on a slower background cadence, so operator reporting does
+  not add broad database reads to every 5-second variable-interval pass.
+- [ ] Prototype a bounded asynchronous check-history writer and rollup model:
+  keep `last_checked_at` synchronous, preserve raw rows for failures/recent
+  windows, and store long-term latency/error aggregates to avoid raw history
+  becoming the 10k/100k-site storage and I/O wall.
+- [ ] Prototype a shared or per-worker HTTP transport/client pool that reduces
+  allocation, socket, DNS, TCP, and TLS churn while preserving enough probe
+  timing visibility for uptime diagnostics.
+- [ ] Add a 5k/10k capacity ladder that records freshness, p95 age, MySQL CPU,
+  MySQL I/O/network, `jetmon2` CPU/RSS/FDs, StatsD CPU, Veriflier CPU, and
+  check-history row growth after each major scalability change.
 - [ ] After the next capacity retest, add validate-config sizing advice that
   explains expected throughput from active site count, check interval,
   `NUM_WORKERS`, and timeout settings. This is deferred until the retest shows

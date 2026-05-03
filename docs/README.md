@@ -43,3 +43,9 @@ accepted architecture decisions.
 | [`public-api-gateway-tenant-contract.md`](public-api-gateway-tenant-contract.md) | Gateway boundary contract, implemented Jetmon-side tenant ownership checks, and remaining public-exposure prerequisites. |
 | [`v1-to-v2-pinned-rollout.md`](v1-to-v2-pinned-rollout.md) | Compatibility pointer to the consolidated v1-to-v2 migration runbook. |
 | [`v3-probe-agent-architecture-options.md`](v3-probe-agent-architecture-options.md) | Post-v2 architecture options for evolving from main servers plus Verifliers toward a probe-agent architecture. |
+
+## Benchmark Reports
+
+| Document | Purpose |
+|---|---|
+| [`jetmon-v2-capacity-1000-report.md`](jetmon-v2-capacity-1000-report.md) | Capacity-benchmark report comparing the latest successful 1,000-site Jetmon v2 run with the previous failed 1,000-site run. |
