@@ -72,6 +72,9 @@ No active candidate branch is queued here right now.
 - [x] Keep the report safe for production use by avoiding payload/credential
   dumps, bounding query runtime, using half-open report windows, and reporting
   only aggregate counts, durations, classes, and gap names.
+- [x] Include `jetmon2 telemetry report` in guided rollout, generated rehearsal
+  plans, and operator runbooks as read-only WPCOM parity evidence after the
+  full-round cutover gate and at fleet completion.
 - [ ] Revisit report thresholds and suggested actions after v2 has enough real
   production traffic to show which rates should be considered normal.
 

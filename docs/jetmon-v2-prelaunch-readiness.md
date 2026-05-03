@@ -206,7 +206,8 @@ Evidence:
 - `make rollout-docs-verify` output
 - `make rollout-rehearsal-verify` output
 - VM lab transcript
-- Generated rehearsal plan for the actual rollout mode
+- Generated rehearsal plan for the actual rollout mode, including the
+  post-cutover `jetmon2 telemetry report` parity evidence command
 
 Local dry-run evidence:
 

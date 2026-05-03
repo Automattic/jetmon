@@ -377,6 +377,8 @@ jetmon-v1-b,5,9
 		"./jetmon2 rollout cutover-check --host jetmon-v1-a --bucket-min 0 --bucket-max 4 --since 15m",
 		"# Strong gate after one full v2 check round:",
 		"./jetmon2 rollout cutover-check --host jetmon-v1-a --bucket-min 0 --bucket-max 4 --since 15m --require-all",
+		"# Window-level WPCOM down/recovery parity and explanation evidence:",
+		"./jetmon2 telemetry report --since 15m",
 		"# HOLD: confirm the v2 process is stopped before restarting v1.",
 		"./jetmon2 rollout rollback-check --host jetmon-v1-a --bucket-min 0 --bucket-max 4",
 		"# HOLD: do not restart v1 unless rollback-check passes.",
@@ -434,6 +436,7 @@ jetmon-v1-a,0,9
 		"ssh jetmon-v1-a sudo systemctl stop jetmon",
 		"# HOLD: confirm v1 on jetmon-v1-a is stopped before starting v2 on jetmon-v2-a.",
 		"/opt/jetmon2/jetmon2 rollout cutover-check --host jetmon-v2-a --bucket-min 0 --bucket-max 9 --since 20m",
+		"/opt/jetmon2/jetmon2 telemetry report --since 20m",
 		"/opt/jetmon2/jetmon2 rollout rollback-check --host jetmon-v2-a --bucket-min 0 --bucket-max 9",
 		"ssh jetmon-v1-a sudo systemctl start jetmon",
 	} {
@@ -711,6 +714,7 @@ func TestRunGuidedRolloutDryRunChecksLogDir(t *testing.T) {
 		"INFO remote_v1_access_required=false reason=same_server",
 		"INFO selected_path=forward",
 		`PLAN path=FORWARD step=static-plan-check`,
+		`PLAN path=FORWARD step=telemetry-report command="./jetmon2 telemetry report --since 15m"`,
 		`PLAN path=FORWARD step=stop-v1 command="systemctl stop jetmon"`,
 		`PLAN path=FORWARD step=stop-v1 typed_confirmation="STOP jetmon-v1-a 0-4"`,
 		`PLAN path=FORWARD step=stop-v1 manual_checkpoint="DONE after v1 is stopped and the process is no longer running"`,
@@ -852,6 +856,10 @@ func TestRunGuidedRolloutForwardExecuteCommands(t *testing.T) {
 		}
 		return nil
 	}
+	deps.TelemetryReport = func(context.Context, io.Writer, guidedRolloutOptions) error {
+		calls = append(calls, "telemetry")
+		return nil
+	}
 	var commands []string
 	deps.ExecCommand = func(_ context.Context, command string) (string, error) {
 		commands = append(commands, command)
@@ -866,13 +874,14 @@ func TestRunGuidedRolloutForwardExecuteCommands(t *testing.T) {
 		"START V2 jetmon-v1-a 0-4",
 		"y",
 		"READY",
+		"y",
 		"",
 	}, "\n")
 	var out bytes.Buffer
 	if err := runGuidedRollout(context.Background(), &out, strings.NewReader(input), opts, deps); err != nil {
 		t.Fatalf("runGuidedRollout: %v\n%s", err, out.String())
 	}
-	if got, want := strings.Join(calls, ","), "static,validate,preflight,cutover-smoke,cutover-all"; got != want {
+	if got, want := strings.Join(calls, ","), "static,validate,preflight,cutover-smoke,cutover-all,telemetry"; got != want {
 		t.Fatalf("calls = %s, want %s", got, want)
 	}
 	if got, want := strings.Join(commands, ","), "systemctl stop jetmon,systemctl enable --now jetmon2 && systemctl is-active --quiet jetmon2"; got != want {
@@ -887,7 +896,7 @@ func TestRunGuidedRolloutForwardExecuteCommands(t *testing.T) {
 		t.Fatalf("output missing completion:\n%s", out.String())
 	}
 	state := readGuidedStateForTest(t, opts)
-	if state.LastCompletedStep != "cutover-require-all" || !state.V1Stopped || !state.V2Started {
+	if state.LastCompletedStep != "telemetry-report" || !state.V1Stopped || !state.V2Started {
 		t.Fatalf("state = %+v", state)
 	}
 	if !state.V1StateKnown || !state.V2StateKnown {
@@ -917,6 +926,7 @@ func TestRunGuidedRolloutFreshServerManualFlowPrintsRemoteAndLocalCommands(t *te
 		"DONE",
 		"y",
 		"READY",
+		"y",
 		"",
 	}, "\n")
 	var out bytes.Buffer
@@ -968,6 +978,7 @@ func TestRunGuidedRolloutFreshServerExecuteFlowCommandOrder(t *testing.T) {
 		"START V2 jetmon-v2-a 0-4",
 		"y",
 		"READY",
+		"y",
 		"",
 	}, "\n")
 	var out bytes.Buffer
@@ -1191,6 +1202,10 @@ func TestRunGuidedRolloutResumeSkipsCompletedSteps(t *testing.T) {
 		}
 		return nil
 	}
+	deps.TelemetryReport = func(context.Context, io.Writer, guidedRolloutOptions) error {
+		calls = append(calls, "telemetry")
+		return nil
+	}
 
 	input := strings.Join([]string{
 		"RESUME",
@@ -1201,6 +1216,7 @@ func TestRunGuidedRolloutResumeSkipsCompletedSteps(t *testing.T) {
 		"DONE",
 		"y",
 		"READY",
+		"y",
 		"",
 	}, "\n")
 	var out bytes.Buffer
@@ -1210,7 +1226,7 @@ func TestRunGuidedRolloutResumeSkipsCompletedSteps(t *testing.T) {
 	if strings.Contains(strings.Join(calls, ","), "static") || strings.Contains(strings.Join(calls, ","), "validate") {
 		t.Fatalf("resume reran completed calls: %v", calls)
 	}
-	if got, want := strings.Join(calls, ","), "preflight,cutover-smoke,cutover-all"; got != want {
+	if got, want := strings.Join(calls, ","), "preflight,cutover-smoke,cutover-all,telemetry"; got != want {
 		t.Fatalf("calls = %s, want %s", got, want)
 	}
 	if !strings.Contains(out.String(), "SKIP step=static-plan-check reason=completed_from_state") {
@@ -1230,8 +1246,9 @@ func TestRunGuidedRolloutResumeStateRequiresExplicitChoice(t *testing.T) {
 		"start-v2",
 		"cutover-smoke",
 		"cutover-require-all",
+		"telemetry-report",
 	}
-	state.LastCompletedStep = "cutover-require-all"
+	state.LastCompletedStep = "telemetry-report"
 	state.V1Stopped = true
 	state.V1StateKnown = true
 	state.V2Started = true
@@ -1263,8 +1280,9 @@ func TestRunGuidedRolloutResumeStateRejectsYNAliases(t *testing.T) {
 		"start-v2",
 		"cutover-smoke",
 		"cutover-require-all",
+		"telemetry-report",
 	}
-	state.LastCompletedStep = "cutover-require-all"
+	state.LastCompletedStep = "telemetry-report"
 	state.V1Stopped = true
 	state.V1StateKnown = true
 	state.V2Started = true
@@ -1346,6 +1364,7 @@ func TestRunGuidedRolloutStartOverDiscardsPreviousState(t *testing.T) {
 		"DONE",
 		"y",
 		"READY",
+		"y",
 		"",
 	}, "\n")
 	var out bytes.Buffer
@@ -1386,6 +1405,7 @@ func TestRunGuidedRolloutResumeSkipsAlreadyStoppedV1(t *testing.T) {
 		"DONE",
 		"y",
 		"READY",
+		"y",
 		"",
 	}, "\n")
 	var out bytes.Buffer
@@ -1472,6 +1492,9 @@ func guidedRolloutTestDeps(t *testing.T) guidedRolloutDeps {
 			return nil
 		},
 		CutoverCheck: func(context.Context, io.Writer, guidedRolloutOptions, bool) error {
+			return nil
+		},
+		TelemetryReport: func(context.Context, io.Writer, guidedRolloutOptions) error {
 			return nil
 		},
 		RollbackCheck: func(context.Context, io.Writer, guidedRolloutOptions) error {

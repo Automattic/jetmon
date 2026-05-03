@@ -445,7 +445,17 @@ are the fallback/reference path and match what the guided command walks through.
       --require-all
     ```
 
-12. Watch one full check round before moving to the next host.
+12. Capture WPCOM parity and explanation evidence for this hold point:
+
+    ```bash
+    ./jetmon2 telemetry report --since=15m
+    ```
+
+    This report is read-only and window-level. Treat warnings as hold points,
+    and widen `--since` when the range is too quiet to prove WPCOM down/recovery
+    parity.
+
+13. Watch one full check round before moving to the next host.
 
 ## Phase 1B: Move A v1 Range To A Fresh Server
 
@@ -572,7 +582,13 @@ For every replaced range, verify:
     --bucket-max=<max> \
     --since=15m \
     --require-all
+  ./jetmon2 telemetry report --since=15m
   ```
+
+  The telemetry report is not a per-range hard gate like `cutover-check`; it is
+  evidence that the rollout window still has WPCOM notification parity and
+  enough metadata for support explanations. Widen `--since` if the current
+  window has too few incidents to prove parity.
 
 If `DASHBOARD_PORT` is enabled, confirm:
 
@@ -690,6 +706,7 @@ After every monitor host is on v2 and stable in pinned mode:
    ./jetmon2 rollout dynamic-check
    ./jetmon2 rollout activity-check --since=15m --require-all
    ./jetmon2 rollout projection-drift --limit=100
+   ./jetmon2 telemetry report --since=15m
    ```
 
 8. Confirm `jetmon_hosts` coverage is active, fresh, gap-free, and
@@ -733,6 +750,7 @@ Only remove v1 after rollout signoff.
 - [ ] `rollout host-preflight` passes before each v1 host is stopped
 - [ ] first host cutover observed for one full round
 - [ ] `rollout cutover-check --require-all` passes for replaced ranges
+- [ ] `telemetry report` captured for WPCOM parity and explanation evidence
 - [ ] `rollout rollback-check` exercised during rehearsal
 - [ ] all hosts running v2 pinned
 - [ ] dynamic ownership cutover completed
