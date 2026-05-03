@@ -23,19 +23,24 @@ No active candidate branch is queued here right now.
 - [x] Bring the service handoff recommendations and rollout prelaunch checklist
   into the repo as `docs/jetmon-v2-prelaunch-readiness.md`, linked from the
   docs index and migration runbook.
-- [ ] Write the launch posture statement: v2 rollout is a backend replacement,
+- [x] Draft the launch posture statement: v2 rollout is a backend replacement,
   not a new customer-facing Monitor product launch.
+- [ ] Get WPCOM/Product approval for the launch posture statement before using
+  it as rollout-room or support language.
 - [ ] Complete the legacy consumer inventory for WPCOM, Jetpack, Activity Log,
   Elasticsearch, support tools, hooks, and XML-RPC monitor paths that still
   depend on legacy monitor fields or notification behavior.
-- [ ] Define rollout stop/go thresholds for projection drift, missed checks,
-  oldest selected age, stale heartbeats, WPCOM notification failures, delivery
-  backlog, API errors, MySQL errors, and verifier agreement.
+- [x] Add a legacy consumer inventory template to the prelaunch tracker.
+- [x] Draft rollout stop/go threshold worksheet for projection drift, missed
+  checks, oldest selected age, stale heartbeats, WPCOM notification failures,
+  delivery backlog, API errors, MySQL errors, and verifier agreement.
+- [ ] Get Systems/Jetmon approval for exact rollout stop/go thresholds after
+  production-like rehearsal data is available.
 - [ ] Record projection drift and telemetry parity evidence on
   production-like data before first canary.
 - [ ] Add or run WPCOM notification parity tests for down, confirmed down,
   recovery, inactive site, URL mismatch, and blacklisted site behavior.
-- [ ] Update support and allowlist guidance for v2 `GET` checks,
+- [x] Update support and allowlist guidance for v2 `GET` checks,
   `jetmon/2.0`, blocked/WAF cases, false positives, maintenance windows, and
   `Unknown` as monitor-side uncertainty rather than downtime.
 - [ ] Run rollout and rollback rehearsals, including VM lab snapshot flow when

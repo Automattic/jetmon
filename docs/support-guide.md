@@ -71,6 +71,29 @@ When an alert differs from old v1 behavior, this is often the first thing to
 check: v2 may be surfacing a real GET-path issue that v1's HEAD-only probe did
 not exercise.
 
+## Allowlist And WAF Guidance
+
+Jetmon 2 identifies itself with the `jetmon/2.0` user agent and performs `GET`
+requests against the monitored URL. Customer firewalls, WAFs, bot controls, and
+security plugins should allow Jetmon checks to reach the same application path a
+normal visitor would reach. Do not ask a customer to broadly disable security
+rules; the safer path is to allow the published Jetmon source hosts or IP
+ranges and the `jetmon/2.0` user agent.
+
+Blocked monitoring can show up in a few different ways:
+
+| Symptom | Likely explanation |
+|---|---|
+| `blocked` / HTTP 403 | The site or edge layer rejected the monitor request |
+| Captcha, bot challenge, or security page | The request reached a protection layer instead of the customer site |
+| `keyword_missing` | The monitor received a page, but not the expected customer content |
+| Redirect failure | The monitor was sent to a login, challenge, canonical URL, or unexpected host |
+| Local failure but Verifliers disagree | The block may be regional, source-specific, intermittent, or edge-specific |
+
+For customer explanations, separate "the site was down for visitors" from "the
+monitor could not verify the visitor path." A WAF block is real monitor
+evidence, but it is not automatically proof that all visitors saw downtime.
+
 ## Understand Alert Types
 
 | Type | Meaning |
@@ -111,6 +134,18 @@ A false positive is recorded when Jetmon escalates a local failure to Veriflier
 confirmation and the Verifliers do not confirm the site as down. A high rate for
 one site usually means the site has transient network, redirect, firewall, or
 performance behavior worth tuning.
+
+## Monitor-Side Uncertainty
+
+Treat `Unknown` or monitor-side uncertainty as an operational state, not as
+confirmed customer-site downtime. Use this framing when Jetmon cannot produce a
+trustworthy site verdict because of monitor infrastructure issues such as
+checker failure, verifier unavailability, database errors, missing telemetry, or
+an unhealthy quorum.
+
+Customer-facing downtime should require site evidence. If the monitor itself is
+uncertain, explain what Jetmon could not verify, what evidence is missing, and
+what follow-up is needed before calling the site down.
 
 ## Maintenance Windows
 
@@ -181,5 +216,9 @@ Each `checks` entry includes:
 - "The alert was suppressed because a maintenance window was active."
 - "The site blocked the monitor with a 403, which is different from the site
   being down for visitors."
+- "Jetmon v2 uses GET checks, so it tests the visitor path more closely than the
+  v1 HEAD-only check did."
+- "Jetmon could not produce a trustworthy verdict because monitor-side
+  telemetry was incomplete; that is not the same thing as confirmed downtime."
 - "The audit trail shows exactly which checkers saw the failure and what status
   code or timeout they received."

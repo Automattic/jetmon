@@ -9,6 +9,21 @@ public API, paid reporting surface, customer-managed alerting, or customer
 webhook self-service unless those are explicitly enabled through a separate
 WPCOM/Product canary.
 
+## Draft Launch Posture Statement
+
+Jetmon v2 should launch first as a backend replacement for the existing
+WordPress.com Monitor service. The rollout should preserve current
+customer-facing behavior, WPCOM notification semantics, legacy status
+projection, support workflows, and allowlist expectations unless a specific
+customer-visible change has an owner, a canary plan, support language, and a
+rollback path.
+
+During the drop-in rollout, v2-only surfaces such as alert contacts, customer
+webhooks, public API access, paid reporting, trigger-now, and richer customer
+state labels should remain hidden, internal-only, or disabled by default. Those
+features can move forward in separate WPCOM/Product canaries after the backend
+replacement is stable.
+
 ## Status Key
 
 - `[ ]` not started
@@ -29,9 +44,11 @@ WPCOM/Product canary.
 
 Hard gate.
 
-- [ ] Owner: `Jetmon`, `WPCOM`, `Product` - Write down that the first rollout
+- [x] Owner: `Jetmon`, `WPCOM`, `Product` - Draft that the first rollout
   is a backend replacement with current customer-facing behavior preserved by
   default.
+- [ ] Owner: `WPCOM`, `Product` - Approve or revise the draft launch posture
+  statement for the rollout room and support handoff.
 - [ ] Owner: `Jetmon` - Keep `LEGACY_STATUS_PROJECTION_ENABLE=true` for the
   rollout.
 - [ ] Owner: `WPCOM` - Keep the existing customer-facing status and
@@ -72,6 +89,16 @@ Evidence:
 - `jetmon2 telemetry report`
 - Sampled incident comparison table
 - Legacy reader inventory
+
+Consumer inventory template:
+
+| Consumer | Owner | Data source | Customer-visible impact | Needs legacy projection? | Migration status |
+| --- | --- | --- | --- | --- | --- |
+| WPCOM Monitor status endpoint | WPCOM | TBD | TBD | TBD | TBD |
+| WPCOM notification hook consumers | WPCOM | TBD | TBD | TBD | TBD |
+| Jetpack XML-RPC monitor methods | Jetpack | TBD | TBD | TBD | TBD |
+| Activity Log / Elasticsearch incident readers | WPCOM | TBD | TBD | TBD | TBD |
+| Support tooling | Support | TBD | TBD | TBD | TBD |
 
 ### 2. WPCOM Notification Parity
 
@@ -158,6 +185,20 @@ Evidence:
 - Rollout room checklist
 - Alert names and owners
 
+Initial stop/go threshold worksheet:
+
+| Signal | Proposed canary starting point | Hold action |
+| --- | --- | --- |
+| Projection drift | 0 unexpected drift rows in the canary bucket range after the first full v2 round | Pause expansion; compare event rows, projection rows, and v1 expectations before continuing |
+| Missed checks | 0 missed checks for the canary range after the first full expected interval; any broader threshold needs explicit Systems/Jetmon approval | Pause expansion; inspect scheduler selected/completed/outstanding metrics |
+| Oldest selected age | No selected site older than 2x its expected check interval plus timeout/retry buffer | Hold at current cohort; inspect scheduler queue depth and DB selection latency |
+| Stale host heartbeat | 0 active rollout hosts stale beyond `BUCKET_HEARTBEAT_GRACE_SEC` | Stop host expansion; confirm bucket ownership before touching more hosts |
+| WPCOM notification failures | 0 unexpected failures for down/confirmed-down/recovery canary events; circuit breaker must stay closed | Pause; keep v1-compatible projection active and resolve WPCOM/API failure |
+| Delivery backlog | Stable or decreasing backlog; oldest due delivery within the agreed retry ladder for enabled delivery workers | Hold delivery-owner changes; verify `DELIVERY_OWNER_HOST` and deliverer health |
+| API errors | Health, dashboard, and required API smoke checks pass with no sustained 5xx responses | Keep API internal; investigate before any gateway or automation dependency |
+| MySQL errors | No sustained connection failures, query errors, or lock wait spikes during the rollout window | Pause host changes; review DB health before retrying |
+| Veriflier agreement | Quorum floor remains intact and verifier health loss is explained | Pause confirmed-down expansion; avoid customer-visible downtime notifications from degraded quorum |
+
 ### 6. Internal Consumer Inventory
 
 - [ ] Owner: `WPCOM` - Inventory code paths reading
@@ -179,6 +220,10 @@ Evidence:
 
 - Consumer inventory table with path, owner, data source, customer-visible
   impact, and migration status.
+
+Use the inventory template in the projection parity gate. Do not disable legacy
+projection until every customer-visible reader has either migrated to v2 event
+data or explicitly accepted the old projection contract no longer being present.
 
 ### 7. Failure-Mode Drills
 
@@ -224,6 +269,60 @@ first controlled canary.
   rollout and to whom.
 - [ ] Owner: `WPCOM` - Add per-site, per-actor, per-tenant, and per-plan
   trigger-now quotas before customer exposure.
+
+## Decision Options To Resolve
+
+### Rollout Scope
+
+Option A: backend replacement only.
+
+- Pros: lowest customer-facing risk, keeps parity measurable, and gives
+  Systems/Support one change to reason about.
+- Cons: delays visible product wins from v2 until after the service is stable.
+- Recommendation: use Option A for the first production rollout.
+
+Option B: backend replacement plus customer-visible feature canary.
+
+- Pros: proves v2 value earlier.
+- Cons: mixes service migration risk with product semantics, support language,
+  and WPCOM gateway readiness.
+
+### Customer-Facing State Semantics
+
+Option A: keep current customer-facing states and treat richer v2 labels as
+internal during the drop-in rollout.
+
+- Pros: avoids surprise support changes and keeps v1/v2 parity measurable.
+- Cons: customers do not immediately see `Seems Down`, `Unknown`, or richer
+  degradation states.
+- Recommendation: use Option A until Product, WPCOM, and Support agree on the
+  public state model.
+
+Option B: expose richer v2 state labels during the first rollout.
+
+- Pros: makes v2 behavior more transparent.
+- Cons: requires UI, copy, support macros, reporting semantics, and customer
+  expectation work before backend stability is proven.
+
+### Gateway And Public API Exposure
+
+Option A: keep all v2 API access internal during the drop-in rollout.
+
+- Pros: protects the backend migration from tenant-safety and quota concerns.
+- Cons: WPCOM cannot validate customer-routed read paths with real traffic.
+
+Option B: allow WPCOM-owned read-only shadow comparisons while customers still
+see legacy output.
+
+- Pros: validates gateway routing, tenant scoping, and data shape before
+  customer exposure.
+- Cons: requires clear WPCOM ownership and comparison tooling.
+- Recommendation: use Option B after backend parity gates pass.
+
+Option C: expose customer-facing API reads during the first rollout.
+
+- Pros: accelerates product API validation.
+- Cons: too much customer-facing blast radius for a backend replacement.
 
 ## Explicit Non-Blockers For Drop-In Rollout
 
