@@ -27,10 +27,14 @@ No active candidate branch is queued here right now.
   not a new customer-facing Monitor product launch.
 - [ ] Get WPCOM/Product approval for the launch posture statement before using
   it as rollout-room or support language.
-- [ ] Complete the legacy consumer inventory for WPCOM, Jetpack, Activity Log,
-  Elasticsearch, support tools, hooks, and XML-RPC monitor paths that still
-  depend on legacy monitor fields or notification behavior.
-- [x] Add a legacy consumer inventory template to the prelaunch tracker.
+- [x] Add first-pass local-search consumer inventory candidates for WPCOM,
+  Jetpack, Activity Log, Elasticsearch, support/explanation tools, hooks, and
+  XML-RPC monitor paths that still depend on legacy monitor fields or
+  notification behavior.
+- [ ] Get WPCOM/Jetpack/Support owner confirmation for the legacy consumer
+  inventory, including hidden consumers not present in the local sibling
+  checkouts and which paths still require legacy projection during rollout.
+- [x] Add a legacy consumer inventory table to the prelaunch tracker.
 - [x] Draft rollout stop/go threshold worksheet for projection drift, missed
   checks, oldest selected age, stale heartbeats, WPCOM notification failures,
   delivery backlog, API errors, MySQL errors, and verifier agreement.
@@ -38,16 +42,23 @@ No active candidate branch is queued here right now.
   production-like rehearsal data is available.
 - [ ] Record projection drift and telemetry parity evidence on
   production-like data before first canary.
-- [ ] Add or run WPCOM notification parity tests for down, confirmed down,
-  recovery, inactive site, URL mismatch, and blacklisted site behavior.
+- [x] Add Jetmon-owned WPCOM notification parity tests for legacy payload shape,
+  confirmed-down payloads, recovery notifications, Seems Down no-notify
+  behavior, false-alarm no-notify behavior, and suppression no-duplicate
+  behavior.
+- [ ] Get WPCOM acceptance for WPCOM-owned notification parity cases: inactive
+  site behavior, URL mismatch behavior, blacklisted site behavior, current
+  home-URL-only handling, and legacy hook consumers.
 - [x] Update support and allowlist guidance for v2 `GET` checks,
   `jetmon/2.0`, blocked/WAF cases, false positives, maintenance windows, and
   `Unknown` as monitor-side uncertainty rather than downtime.
 - [ ] Run rollout and rollback rehearsals, including VM lab snapshot flow when
   available, and attach the generated command plan for the chosen rollout mode.
-- [ ] Create canary cohort matrix and expansion/rollback thresholds for WPCOM,
-  Atomic, self-hosted Jetpack, agency, WAF/security-plugin, historically noisy,
-  high-traffic, and multi-endpoint sites.
+- [x] Draft canary cohort matrix and expansion/rollback threshold prompts for
+  WPCOM, Atomic, self-hosted Jetpack, agency, WAF/security-plugin,
+  historically noisy, high-traffic, and multi-endpoint sites.
+- [ ] Get WPCOM/Product/Support approval for the canary cohort matrix and exact
+  expansion/rollback thresholds.
 
 ### Production Telemetry Reports TODO
 

@@ -74,6 +74,8 @@ Exit criteria:
   confirmed `Down` projects to `2`, and closed/up projects to `1`.
 - [ ] Owner: `Jetmon` - Verify `last_status_change` remains compatible with
   WPCOM expectations.
+- [x] Owner: `Jetmon` - Perform a first-pass local-search inventory of known
+  WPCOM and Jetpack monitor consumers from the sibling code checkouts.
 - [ ] Owner: `WPCOM` - Inventory endpoints, hooks, jobs, support tools, and
   hidden consumers that still read `jetpack_monitor_sites.site_status`.
 - [ ] Owner: `Jetpack` - Inventory module/UI paths that still depend on legacy
@@ -90,19 +92,47 @@ Evidence:
 - Sampled incident comparison table
 - Legacy reader inventory
 
-Consumer inventory template:
+Consumer inventory status:
+
+The table below is a first-pass local-search inventory from the sibling
+`../wpcom` and `../jetpack` checkouts. It is useful for rollout planning, but it
+is not owner-approved. WPCOM, Jetpack, and Support owners still need to confirm
+the list, identify hidden consumers not present in the local checkout, and mark
+which paths must keep using the legacy projection during the drop-in rollout.
 
 | Consumer | Owner | Data source | Customer-visible impact | Needs legacy projection? | Migration status |
 | --- | --- | --- | --- | --- | --- |
-| WPCOM Monitor status endpoint | WPCOM | TBD | TBD | TBD | TBD |
-| WPCOM notification hook consumers | WPCOM | TBD | TBD | TBD | TBD |
-| Jetpack XML-RPC monitor methods | Jetpack | TBD | TBD | TBD | TBD |
-| Activity Log / Elasticsearch incident readers | WPCOM | TBD | TBD | TBD | TBD |
-| Support tooling | Support | TBD | TBD | TBD | TBD |
+| WPCOM Monitor library: `../wpcom/wp-content/lib/jetpack-monitor/` | WPCOM | `jetpack_monitor_sites.site_status`, `last_status_change`, monitor URL, incidents | Source of truth for current WPCOM Monitor status and incident helpers | yes | first-pass candidate; needs WPCOM confirmation |
+| WPCOM REST status endpoint: `../wpcom/wp-content/rest-api-plugins/endpoints/jetpack-monitor-status.php` | WPCOM | `JP_Monitor` status, monitor URL, last downtime | Customer/API-visible monitor status | yes | first-pass candidate; needs WPCOM confirmation |
+| WPCOM REST incidents/uptime/settings endpoints: `../wpcom/wp-content/rest-api-plugins/endpoints/jetpack-monitor-{incidents,uptime,settings}.php` | WPCOM | `JP_Monitor`, `JP_Monitor_Incidents`, monitor URLs, notification settings, uptime windows | Customer/API-visible incidents, uptime, monitored URLs, and notification settings | yes | first-pass candidate; needs WPCOM confirmation |
+| WPCOM notification hook consumers: `../wpcom/wp-content/mu-plugins/jetpack/class.jetpack-monitor-consumer-hooks.php` | WPCOM | `jetpack_monitor_site_status_change` payload, `JP_Monitor` status constants | Email/mobile notification dispatch, hosting-provider stats, status-down webhook | yes | first-pass candidate; needs WPCOM confirmation |
+| WPCOM notification senders: `../wpcom/wp-content/lib/jetpack-monitor-notifications/` | WPCOM | `JP_Monitor::get_site_status_raw()`, `last_status_change`, checks payload | Email, SMS, and note content shown to customers | yes | first-pass candidate; needs WPCOM confirmation |
+| Activity Log monitor up/down activities: `../wpcom/wp-content/lib/action-to-activity-log/activities/class.activity-monitor-site-{down,up}--jetpack-monitor-site-status-change.php` | WPCOM | `jetpack_monitor_site_status_change.status_id` | Activity Log entries for monitor down/up events | yes | first-pass candidate; needs WPCOM confirmation |
+| Jetpack Agency Elasticsearch repository: `../wpcom/wp-content/lib/jetpack-agency/repository/class-jetpack-agency-elastic-search-repository.php` | WPCOM | `monitor_site_status_raw`, `monitor_site_status`, `monitor_last_status_change` | Agency dashboard/search status visibility | yes | first-pass candidate; needs WPCOM confirmation |
+| WPCOM support/explanation helpers: `../wpcom/wp-content/lib/class.jetpack-monitor-explanations.php`, `../wpcom/wp-content/lib/ai/tools/ability.jetpack-monitor.php`, `../wpcom/wp-content/lib/guides/observer-modules/jetpack-site-down-no-jetmon/observer.php` | Support, WPCOM | Monitor status, incidents, explanation data | HE/customer explanations for why a site was or was not marked down | likely | first-pass candidate; needs Support/WPCOM confirmation |
+| Jetpack plugin monitor module: `../jetpack/projects/plugins/jetpack/modules/monitor.php` | Jetpack | WPCOM XML-RPC methods `jetpack.monitor.setNotifications`, `jetpack.monitor.isUserInNotifications`, `jetpack.monitor.getLastDowntime`; local option `monitor_receive_notifications` | Site-side notification settings and last-downtime data | yes for current WPCOM responses | first-pass candidate; needs Jetpack confirmation |
+| Jetpack Sync defaults: `../jetpack/projects/packages/sync/src/class-defaults.php` | Jetpack | `monitor_receive_notifications` option | Sync behavior for monitor notification preference | maybe | first-pass candidate; needs Jetpack confirmation |
+| Jetpack customer UI: `../jetpack/projects/plugins/jetpack/_inc/client/security/monitor.jsx`, `../jetpack/projects/plugins/jetpack/_inc/client/at-a-glance/monitor.jsx` | Jetpack | Monitor module state and WPCOM-provided status/settings | Customer-facing Monitor status and settings UI | maybe | first-pass candidate; needs Jetpack confirmation |
+
+Search evidence reviewed:
+
+- `../wpcom/wp-content/lib/jetpack-monitor/`
+- `../wpcom/wp-content/rest-api-plugins/endpoints/jetpack-monitor-*.php`
+- `../wpcom/wp-content/mu-plugins/jetpack/class.jetpack-monitor-consumer-hooks.php`
+- `../wpcom/wp-content/lib/jetpack-monitor-notifications/`
+- `../wpcom/wp-content/lib/action-to-activity-log/activities/*jetpack-monitor-site-status-change.php`
+- `../wpcom/wp-content/lib/jetpack-agency/repository/class-jetpack-agency-elastic-search-repository.php`
+- `../wpcom/wp-content/lib/class.jetpack-monitor-explanations.php`
+- `../wpcom/wp-content/lib/ai/tools/ability.jetpack-monitor.php`
+- `../wpcom/wp-content/lib/guides/observer-modules/jetpack-site-down-no-jetmon/observer.php`
+- `../jetpack/projects/plugins/jetpack/modules/monitor.php`
+- `../jetpack/projects/packages/sync/src/class-defaults.php`
+- `../jetpack/projects/plugins/jetpack/_inc/client/security/monitor.jsx`
+- `../jetpack/projects/plugins/jetpack/_inc/client/at-a-glance/monitor.jsx`
 
 ### 2. WPCOM Notification Parity
 
-- [ ] Owner: `Jetmon` - Verify the legacy WPCOM notification payload shape is
+- [x] Owner: `Jetmon` - Verify the legacy WPCOM notification payload shape is
   unchanged.
 - [ ] Owner: `Jetmon`, `WPCOM` - Test WPCOM notification handling for site down,
   confirmed down, recovery, inactive site, URL mismatch, and blacklisted site
@@ -122,13 +152,27 @@ Evidence:
 - Notification parity report
 - Manual or automated down/confirmed-down/recovery test log
 
+Jetmon-owned parity coverage:
+
+| Case | Owner | Status | Evidence |
+| --- | --- | --- | --- |
+| Legacy JSON field names and auth/header shape | Jetmon | covered | `internal/wpcom` unit test |
+| Confirmed-down payload with local and Veriflier checks | Jetmon | covered | `internal/orchestrator` unit test |
+| Recovery notification uses legacy running status | Jetmon | covered | `internal/orchestrator` unit test |
+| Seems Down does not notify before Veriflier confirmation | Jetmon | covered | `internal/orchestrator` unit test |
+| False alarm does not notify WPCOM | Jetmon | covered | `internal/orchestrator` unit test |
+| Maintenance and cooldown suppression do not duplicate WPCOM notifications | Jetmon | covered | `internal/orchestrator` unit tests |
+| Inactive site behavior | WPCOM, Jetmon | needs external acceptance | Jetmon only selects `monitor_active=1`; WPCOM should confirm customer-visible inactive-site semantics |
+| URL mismatch behavior | WPCOM | needs external acceptance | WPCOM owns current home-URL-only handling |
+| Blacklisted site behavior | WPCOM | needs external acceptance | WPCOM owns blacklist/filter response semantics |
+
 ### 3. Support, WAF, And Allowlist Readiness
 
-- [ ] Owner: `Support`, `Jetmon` - Update support guidance from v1 `HEAD`
+- [x] Owner: `Support`, `Jetmon` - Update support guidance from v1 `HEAD`
   assumptions to v2 `GET` checks.
-- [ ] Owner: `Support`, `Jetmon` - Update allowlist guidance for
+- [x] Owner: `Support`, `Jetmon` - Update allowlist guidance for
   `jetmon/2.0`.
-- [ ] Owner: `Support`, `Jetmon` - Explain customer-safe meanings for blocked
+- [x] Owner: `Support`, `Jetmon` - Explain customer-safe meanings for blocked
   requests, verifier confirmation, false positives, maintenance windows, and
   monitor-side uncertainty.
 - [ ] Owner: `Support`, `WPCOM` - Update support macros/playbooks for
@@ -201,17 +245,19 @@ Initial stop/go threshold worksheet:
 
 ### 6. Internal Consumer Inventory
 
-- [ ] Owner: `WPCOM` - Inventory code paths reading
+- [x] Owner: `Jetmon` - Add first-pass local-search candidates from the sibling
+  WPCOM and Jetpack code checkouts.
+- [ ] Owner: `WPCOM` - Confirm code paths reading
   `jetpack_monitor_sites.site_status`, `last_status_change`, monitor URL, or
   active state.
-- [ ] Owner: `WPCOM` - Inventory WPCOM REST endpoints exposing monitor status,
+- [ ] Owner: `WPCOM` - Confirm WPCOM REST endpoints exposing monitor status,
   settings, incidents, and uptime.
-- [ ] Owner: `WPCOM` - Inventory Activity Log and Elasticsearch consumers of
+- [ ] Owner: `WPCOM` - Confirm Activity Log and Elasticsearch consumers of
   monitor incidents.
-- [ ] Owner: `WPCOM` - Inventory hooks such as
+- [ ] Owner: `WPCOM` - Confirm hooks such as
   `jetpack_monitor_site_status_change` and consumers attached to them.
-- [ ] Owner: `Jetpack` - Inventory XML-RPC monitor methods used by Jetpack.
-- [ ] Owner: `Support` - Inventory support tools that display monitor status,
+- [ ] Owner: `Jetpack` - Confirm XML-RPC monitor methods used by Jetpack.
+- [ ] Owner: `Support` - Confirm support tools that display monitor status,
   incidents, or notification state.
 - [ ] Owner: `WPCOM`, `Jetmon` - Mark which consumers require legacy projection
   to stay enabled.
@@ -221,7 +267,7 @@ Evidence:
 - Consumer inventory table with path, owner, data source, customer-visible
   impact, and migration status.
 
-Use the inventory template in the projection parity gate. Do not disable legacy
+Use the inventory table in the projection parity gate. Do not disable legacy
 projection until every customer-visible reader has either migrated to v2 event
 data or explicitly accepted the old projection contract no longer being present.
 
@@ -252,9 +298,11 @@ Evidence:
 These should be ready before broad rollout and, where feasible, before the
 first controlled canary.
 
-- [ ] Owner: `WPCOM`, `Jetmon` - Build the canary cohort matrix: WPCOM-hosted,
+- [x] Owner: `WPCOM`, `Jetmon` - Draft the canary cohort matrix: WPCOM-hosted,
   Atomic, self-hosted Jetpack, agency-managed, WAF/security-plugin, historically
   noisy/flaky, high-traffic, and multi-endpoint sites.
+- [ ] Owner: `WPCOM`, `Product`, `Support`, `Jetmon` - Approve the canary
+  cohort matrix and exact expansion/rollback thresholds.
 - [ ] Owner: `Jetmon`, `Systems` - Define canary size, duration, rollback
   threshold, and expansion threshold.
 - [ ] Owner: `WPCOM` - Build or script read-only shadow comparisons for v2
@@ -269,6 +317,23 @@ first controlled canary.
   rollout and to whom.
 - [ ] Owner: `WPCOM` - Add per-site, per-actor, per-tenant, and per-plan
   trigger-now quotas before customer exposure.
+
+Canary cohort matrix:
+
+| Cohort | Why It Matters | Starting Signal | Rollback Trigger |
+| --- | --- | --- | --- |
+| WPCOM-hosted | Lowest external-network variability; validates core parity first | Projection drift, WPCOM notification parity, scheduler freshness | Any unexplained drift, notification delta, or missed-check pattern |
+| Atomic | Exercises managed hosting plus customer-specific layers | WAF/edge blocks, GET-path behavior, false positives | Repeated blocked/redirect classes without support-ready explanation |
+| Self-hosted Jetpack | Highest network/plugin variability | Veriflier agreement, timeout classes, support explanations | Unexplained verifier disagreement or customer-facing notification mismatch |
+| Agency-managed | High support impact and strong sensitivity to false positives | Incident explanations, WAF allowlist readiness | Any repeated false-positive class that support cannot explain |
+| WAF/security-plugin | Validates v2 GET allowlist language | 403/challenge/keyword-missing classes | Any broad block caused by v2 UA/source not being allowlisted |
+| Historically noisy/flaky | Tests retry and verifier value against known difficult sites | Seems Down false-alarm rate, cooldown behavior | Regression versus v1/v2 baseline for noisy classes |
+| High-traffic | Catches performance-sensitive GET-path behavior | RTT, timeout, customer reports | Sustained timeout/intermittent class not explained by site telemetry |
+| Multi-endpoint | Exercises event identity and rollup expectations | Per-endpoint status, duplicate event count | Duplicate customer-visible incidents or unclear support explanation |
+
+Treat the first canary as a parity canary, not a feature canary. Do not expand
+because v2-only features look useful; expand only when the backend replacement
+signals stay inside the approved thresholds.
 
 ## Decision Options To Resolve
 
@@ -387,7 +452,7 @@ Fill this out before the rollout attempt.
 
 ## Recommended First Sprint
 
-1. Create the legacy consumer inventory.
+1. Get owner confirmation for the first-pass legacy consumer inventory.
 2. Run projection drift and telemetry parity reports.
 3. Test WPCOM notification parity.
 4. Update support/allowlist guidance for v2 `GET` and `jetmon/2.0`.

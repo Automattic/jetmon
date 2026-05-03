@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -41,6 +42,74 @@ func TestNotifySuccess(t *testing.T) {
 	}
 	if c.failures != 0 {
 		t.Fatalf("failures = %d, want 0", c.failures)
+	}
+}
+
+func TestNotifySendsLegacyPayloadShape(t *testing.T) {
+	var got map[string]json.RawMessage
+	c, close := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		if r.Header.Get("Content-Type") != "application/json" {
+			t.Errorf("Content-Type = %q, want application/json", r.Header.Get("Content-Type"))
+		}
+		if r.Header.Get("Authorization") != "Bearer test-token" {
+			t.Errorf("Authorization header = %q, want Bearer test-token", r.Header.Get("Authorization"))
+		}
+		defer r.Body.Close()
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	defer close()
+
+	notification := Notification{
+		BlogID:           12345,
+		MonitorURL:       "https://example.com/",
+		StatusID:         2,
+		LastCheck:        "2026-05-03T03:00:00Z",
+		LastStatusChange: "2026-05-03T03:01:00Z",
+		StatusType:       "server",
+		Checks: []CheckEntry{
+			{Type: 1, Host: "monitor-a", Status: 0, RTT: 123, Code: 500},
+			{Type: 2, Host: "verifier-us", Status: 0, RTT: 456, Code: 500},
+		},
+	}
+
+	if err := c.Notify(notification); err != nil {
+		t.Fatalf("Notify() error = %v", err)
+	}
+
+	wantKeys := []string{
+		"blog_id",
+		"checks",
+		"last_check",
+		"last_status_change",
+		"monitor_url",
+		"status_id",
+		"status_type",
+	}
+	var gotKeys []string
+	for key := range got {
+		gotKeys = append(gotKeys, key)
+	}
+	slices.Sort(gotKeys)
+	if !reflect.DeepEqual(gotKeys, wantKeys) {
+		t.Fatalf("payload keys = %v, want %v", gotKeys, wantKeys)
+	}
+
+	var decoded Notification
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("remarshal payload: %v", err)
+	}
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("decode payload into Notification: %v", err)
+	}
+	if !reflect.DeepEqual(decoded, notification) {
+		t.Fatalf("payload = %+v, want %+v", decoded, notification)
 	}
 }
 
