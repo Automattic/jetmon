@@ -90,6 +90,7 @@ func runServe() {
 	cfg := config.Get()
 	log.Printf("config: legacy_status_projection=%s", enabledLabel(cfg.LegacyStatusProjectionEnable))
 	log.Printf("config: bucket_ownership=%s", bucketOwnershipLabel(cfg))
+	log.Printf("config: scheduler=%s", schedulerConfigLabel(cfg))
 	log.Printf("config: email_transport=%s", emailTransportLabel(cfg))
 	if !emailTransportDelivers(cfg) {
 		log.Printf("WARN: email_transport=%s — alert-contact emails will be logged but not delivered", emailTransportLabel(cfg))
@@ -363,6 +364,7 @@ func cmdValidateConfig() {
 	cfg := config.Get()
 	fmt.Printf("INFO legacy_status_projection=%s\n", enabledLabel(cfg.LegacyStatusProjectionEnable))
 	fmt.Printf("INFO bucket_ownership=%s\n", bucketOwnershipLabel(cfg))
+	fmt.Printf("INFO scheduler=%s\n", schedulerConfigLabel(cfg))
 	for _, line := range rolloutAdviceLines(cfg) {
 		fmt.Println(line)
 	}
@@ -724,6 +726,21 @@ func emailTransportLabel(cfg *config.Config) string {
 // silently disappear into the logs in that mode.
 func emailTransportDelivers(cfg *config.Config) bool {
 	return cfg.EmailTransport == "smtp" || cfg.EmailTransport == "wpcom"
+}
+
+func schedulerConfigLabel(cfg *config.Config) string {
+	if cfg.UseVariableCheckIntervals {
+		return fmt.Sprintf(
+			"variable_intervals fetch_page_size=%d idle_poll=%s",
+			cfg.DatasetSize,
+			orchestrator.VariableIntervalPollInterval(),
+		)
+	}
+	return fmt.Sprintf(
+		"fixed_rounds fetch_page_size=%d min_round_interval=%s",
+		cfg.DatasetSize,
+		time.Duration(cfg.MinTimeBetweenRoundsSec)*time.Second,
+	)
 }
 
 func deliveryWorkersShouldStart(cfg *config.Config, hostname string) bool {

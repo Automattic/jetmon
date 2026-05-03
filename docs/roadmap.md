@@ -31,6 +31,74 @@ No active candidate branch is queued here right now.
 - [ ] Revisit report thresholds and suggested actions after v2 has enough real
   production traffic to show which rates should be considered normal.
 
+### Capacity Scheduler TODO
+
+- [x] Treat `DATASET_SIZE` as a database fetch page size rather than a total
+  per-round work cap, so low page sizes do not leave due sites unchecked.
+- [x] Keep fetching scheduler pages until due work is drained or the process
+  hits explicit shutdown/deadline pressure.
+- [x] Treat a full worker queue as backpressure by waiting and collecting
+  available results instead of dropping checks.
+- [x] Add scheduler metrics for due-start, selected, dispatched, completed,
+  outstanding, due-remaining, page count, backpressure waits, stale results,
+  duplicate results, never-checked selections, and oldest selected age.
+- [x] Add per-page scheduler phase timings for dispatch, wait, result
+  processing, `last_checked_at` writes, check-history writes, SSL updates, and
+  event handling so the next capacity retest can identify the exact slow
+  stage.
+- [x] Batch passive per-check DB writes for `last_checked_at` freshness updates
+  and `jetmon_check_history` timing samples so healthy high-volume sweeps are
+  not dominated by one UPDATE plus one INSERT per site.
+- [x] Avoid rewriting unchanged `ssl_expiry_date` values on every HTTPS check
+  while still evaluating TLS-expiry alert state for each observed certificate.
+- [x] Remove the `COALESCE(last_checked_at, ...)` scheduler ordering expression
+  so MySQL can use the nullable `last_checked_at` ordering more directly while
+  preserving NULL-first behavior.
+- [x] Update capacity-test config posture so `WORKER_MAX_MEM_MB=0` disables the
+  artificial memory-drain cap by default, `USE_VARIABLE_CHECK_INTERVALS=true`
+  is the sample freshness mode, and API-enabled test hosts use an explicit
+  `DELIVERY_OWNER_HOST`.
+- [x] Run a 1,000-site capacity retest against the batched-write branch and
+  compare freshness, scheduler page timings, MySQL CPU, monitor CPU, and
+  check-history volume against the previous 17-minute sweep. The retest moved
+  Jetmon v2 from 74.70% missed checks to 0.00% missed checks while lowering host
+  CPU and MySQL CPU.
+- [x] Capture live `EXPLAIN` output for fixed-round and variable-interval site
+  selection; both plans scanned roughly 995k rows with `Using filesort`, so add
+  a scheduler-oriented `(monitor_active, last_checked_at, blog_id, bucket_no)`
+  index migration.
+- [x] After applying the scheduler index migration in a test environment,
+  capture `EXPLAIN` again and confirm the hot site-selection query no longer
+  falls back to a full scan/filesort before running the full capacity retest.
+- [ ] If MySQL CPU remains the limiting factor after batched writes, evaluate
+  an asynchronous bounded check-history writer or lower-resolution history
+  retention for healthy probes while keeping `last_checked_at` synchronous.
+- [ ] Add a maintained `next_check_at` column and scheduler index so variable
+  interval due selection uses a simple indexed range predicate instead of
+  computing `DATE_ADD(last_checked_at, INTERVAL GREATEST(check_interval, 1)
+  MINUTE)` during every scheduler fetch.
+- [ ] Move exact due-count and projection-drift checks out of the hot scheduler
+  loop, or run them on a slower background cadence, so operator reporting does
+  not add broad database reads to every 5-second variable-interval pass.
+- [ ] Prototype a bounded asynchronous check-history writer and rollup model:
+  keep `last_checked_at` synchronous, preserve raw rows for failures/recent
+  windows, and store long-term latency/error aggregates to avoid raw history
+  becoming the 10k/100k-site storage and I/O wall.
+- [ ] Prototype a shared or per-worker HTTP transport/client pool that reduces
+  allocation, socket, DNS, TCP, and TLS churn while preserving enough probe
+  timing visibility for uptime diagnostics.
+- [ ] Add a 5k/10k capacity ladder that records freshness, p95 age, MySQL CPU,
+  MySQL I/O/network, `jetmon2` CPU/RSS/FDs, StatsD CPU, Veriflier CPU, and
+  check-history row growth after each major scalability change.
+- [ ] After the next capacity retest, add validate-config sizing advice that
+  explains expected throughput from active site count, check interval,
+  `NUM_WORKERS`, and timeout settings. This is deferred until the retest shows
+  which sizing formula best matches real Jetmon v2 behavior.
+- [ ] Evaluate replacing per-check HTTP transports with a reused transport or
+  bounded client pool if the retest still shows open file descriptor growth.
+  This is deferred behind the scheduler fix because the 1,000-site miss matched
+  the scheduler cap exactly, while FD growth was only a watch item.
+
 ### Projection Drift Tooling TODO
 
 - [x] Compare legacy projection status against a per-blog rollup of open HTTP

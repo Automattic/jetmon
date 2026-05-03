@@ -6,8 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
+
+const batchWriteChunkSize = 500
 
 // GetSitesForBucket fetches active sites within the given bucket range.
 func GetSitesForBucket(ctx context.Context, bucketMin, bucketMax, batchSize int, useVariableIntervals bool) ([]Site, error) {
@@ -29,7 +32,7 @@ func GetSitesForBucket(ctx context.Context, bucketMin, bucketMax, batchSize int,
 	}
 	query += `
 		ORDER BY
-			COALESCE(last_checked_at, TIMESTAMP('1970-01-01 00:00:00')) ASC,
+			last_checked_at ASC,
 			blog_id ASC
 		LIMIT ?`
 
@@ -94,6 +97,31 @@ func CountRecentlyCheckedActiveSitesForBucketRange(ctx context.Context, bucketMi
 	).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("count recently checked active sites: %w", err)
+	}
+	return count, nil
+}
+
+// CountDueSitesForBucketRange returns the number of active rows currently due
+// for checking in the inclusive bucket range. When variable intervals are
+// disabled, every active row is considered due for the fixed round cadence.
+func CountDueSitesForBucketRange(ctx context.Context, bucketMin, bucketMax int, useVariableIntervals bool) (int, error) {
+	query := `
+		SELECT COUNT(*)
+		  FROM jetpack_monitor_sites
+		 WHERE monitor_active = 1
+		   AND bucket_no BETWEEN ? AND ?`
+	if useVariableIntervals {
+		query += `
+		   AND (
+			last_checked_at IS NULL
+			OR DATE_ADD(last_checked_at, INTERVAL GREATEST(check_interval, 1) MINUTE) <= NOW()
+		   )`
+	}
+
+	var count int
+	err := db.QueryRowContext(ctx, query, bucketMin, bucketMax).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count due sites: %w", err)
 	}
 	return count, nil
 }
@@ -342,6 +370,53 @@ func MarkSiteChecked(ctx context.Context, blogID int64, checkedAt time.Time) err
 	return err
 }
 
+// SiteCheck records one site freshness update.
+type SiteCheck struct {
+	BlogID    int64
+	CheckedAt time.Time
+}
+
+// MarkSitesChecked records last_checked_at for a batch of sites. Batching this
+// passive freshness update keeps scheduler throughput from being dominated by
+// one UPDATE per healthy site.
+func MarkSitesChecked(ctx context.Context, checks []SiteCheck) error {
+	if len(checks) == 0 {
+		return nil
+	}
+	checks = append([]SiteCheck(nil), checks...)
+	sort.Slice(checks, func(i, j int) bool {
+		return checks[i].BlogID < checks[j].BlogID
+	})
+	for start := 0; start < len(checks); start += batchWriteChunkSize {
+		end := min(start+batchWriteChunkSize, len(checks))
+		if err := markSitesCheckedChunk(ctx, checks[start:end]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func markSitesCheckedChunk(ctx context.Context, checks []SiteCheck) error {
+	var query strings.Builder
+	query.WriteString("UPDATE jetpack_monitor_sites SET last_checked_at = CASE blog_id")
+	args := make([]any, 0, len(checks)*3)
+	for _, check := range checks {
+		query.WriteString(" WHEN ? THEN ?")
+		args = append(args, check.BlogID, check.CheckedAt.UTC())
+	}
+	query.WriteString(" END WHERE blog_id IN (")
+	for i, check := range checks {
+		if i > 0 {
+			query.WriteByte(',')
+		}
+		query.WriteByte('?')
+		args = append(args, check.BlogID)
+	}
+	query.WriteByte(')')
+	_, err := db.ExecContext(ctx, query.String(), args...)
+	return err
+}
+
 // UpdateLastAlertSent records when an alert was last sent for a site.
 func UpdateLastAlertSent(ctx context.Context, blogID int64, sentAt time.Time) error {
 	_, err := db.ExecContext(ctx,
@@ -559,5 +634,69 @@ func RecordCheckHistory(blogID int64, httpCode, errorCode int, rttMs, dnsMs, tcp
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
 		blogID, httpCode, errorCode, rttMs, dnsMs, tcpMs, tlsMs, ttfbMs,
 	)
+	return err
+}
+
+// CheckHistoryRow is one check timing sample for jetmon_check_history.
+type CheckHistoryRow struct {
+	BlogID    int64
+	HTTPCode  int
+	ErrorCode int
+	RTTMs     int64
+	DNSMs     int64
+	TCPMs     int64
+	TLSMs     int64
+	TTFBMs    int64
+	CheckedAt time.Time
+}
+
+// RecordCheckHistories inserts check timing samples in batches. This retains
+// the same table contract as RecordCheckHistory while avoiding one INSERT per
+// healthy site during high-volume sweeps.
+func RecordCheckHistories(ctx context.Context, rows []CheckHistoryRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	rows = append([]CheckHistoryRow(nil), rows...)
+	sort.Slice(rows, func(i, j int) bool {
+		return rows[i].BlogID < rows[j].BlogID
+	})
+	for start := 0; start < len(rows); start += batchWriteChunkSize {
+		end := min(start+batchWriteChunkSize, len(rows))
+		if err := recordCheckHistoriesChunk(ctx, rows[start:end]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func recordCheckHistoriesChunk(ctx context.Context, rows []CheckHistoryRow) error {
+	var query strings.Builder
+	query.WriteString(`INSERT INTO jetmon_check_history
+		(blog_id, http_code, error_code, rtt_ms, dns_ms, tcp_ms, tls_ms, ttfb_ms, checked_at)
+		VALUES `)
+	args := make([]any, 0, len(rows)*9)
+	for i, row := range rows {
+		if i > 0 {
+			query.WriteByte(',')
+		}
+		query.WriteString("(?, ?, ?, ?, ?, ?, ?, ?, ?)")
+		checkedAt := row.CheckedAt
+		if checkedAt.IsZero() {
+			checkedAt = time.Now().UTC()
+		}
+		args = append(args,
+			row.BlogID,
+			row.HTTPCode,
+			row.ErrorCode,
+			row.RTTMs,
+			row.DNSMs,
+			row.TCPMs,
+			row.TLSMs,
+			row.TTFBMs,
+			checkedAt.UTC(),
+		)
+	}
+	_, err := db.ExecContext(ctx, query.String(), args...)
 	return err
 }

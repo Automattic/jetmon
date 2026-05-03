@@ -17,13 +17,14 @@ Key settings:
 | Key | Default | Description |
 |---|---:|---|
 | `NUM_WORKERS` | 60 | Goroutine pool size |
-| `NUM_TO_PROCESS` | 40 | Parallel checks per pool slot |
+| `NUM_TO_PROCESS` | 40 | Legacy compatibility setting; does not cap Go scheduler throughput |
+| `DATASET_SIZE` | 100 | Database fetch page size for scheduler work; not a total round cap |
 | `NUM_OF_CHECKS` | 3 | Local failures before Veriflier escalation |
 | `TIME_BETWEEN_CHECKS_SEC` | 30 | Delay between local retry checks |
-| `MIN_TIME_BETWEEN_ROUNDS_SEC` | 300 | Minimum seconds between check rounds |
+| `MIN_TIME_BETWEEN_ROUNDS_SEC` | 300 | Fixed-cadence full-fleet pass interval when variable intervals are disabled |
 | `NET_COMMS_TIMEOUT` | 10 | Default per-check HTTP timeout in seconds |
 | `PEER_OFFLINE_LIMIT` | 3 | Veriflier agreements required to confirm downtime |
-| `WORKER_MAX_MEM_MB` | 53 | Go runtime memory threshold that triggers worker-pool drain |
+| `WORKER_MAX_MEM_MB` | 0 | Optional Go runtime memory threshold that triggers worker-pool drain; 0 disables the artificial cap |
 | `BUCKET_TOTAL` | 1000 | Total bucket range across all hosts |
 | `BUCKET_TARGET` | 500 | Maximum buckets this host should own |
 | `BUCKET_HEARTBEAT_GRACE_SEC` | 600 | Seconds before a silent host's buckets are reclaimed |
@@ -37,6 +38,21 @@ Key settings:
 | `DELIVERY_OWNER_HOST` | empty | Optional host allowed to run embedded delivery workers |
 | `DEBUG_PORT` | 6060 | localhost-only pprof port, 0 disables it |
 | `EMAIL_TRANSPORT` | `stub` | `stub`, `smtp`, or `wpcom` |
+
+Scheduler behavior:
+
+- `DATASET_SIZE` limits one database page. Jetmon continues fetching pages until
+  due work is drained, so a low value should not cause unchecked sites by itself.
+- A full worker queue applies backpressure; checks remain pending instead of
+  being dropped.
+- With `USE_VARIABLE_CHECK_INTERVALS=true`, Jetmon polls for newly due work on a
+  short idle interval and uses each site's `check_interval` to decide what to
+  check. `MIN_TIME_BETWEEN_ROUNDS_SEC` is only the fixed-cadence pass interval
+  when variable intervals are disabled. Use this mode for production-like
+  freshness and capacity tests.
+- Watch the `scheduler.round.*` StatsD metrics during capacity tests. In
+  particular, `due_start`, `selected`, `completed`, `outstanding`, and
+  `due_remaining` show whether freshness pressure is clearing or building.
 
 See [../config/config.readme](../config/config.readme) for the full option
 reference.
@@ -424,10 +440,12 @@ go tool pprof heap.prof
 
 The debug listener binds to localhost only. Set `DEBUG_PORT` to 0 to disable it.
 
-If Go runtime memory exceeds `WORKER_MAX_MEM_MB`, the goroutine pool shrinks by
-10 percent via graceful drain. Use the host/fleet dashboard RSS value to compare
-Jetmon's resident memory with operating-system tools, and use the Go Sys value
-with pprof when investigating sustained runtime memory pressure.
+If `WORKER_MAX_MEM_MB` is greater than 0 and Go runtime memory exceeds that
+threshold, the goroutine pool shrinks by 10 percent via graceful drain. The
+default is 0 so Jetmon does not silently trade away check throughput because of
+a legacy memory cap. Use the host/fleet dashboard RSS value to compare Jetmon's
+resident memory with operating-system tools, and use the Go Sys value with
+pprof when investigating sustained runtime memory pressure.
 
 ## Veriflier Health
 
