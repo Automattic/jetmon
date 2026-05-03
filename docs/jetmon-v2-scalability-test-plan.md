@@ -204,6 +204,13 @@ represent one scheduler check batch, which may contain multiple DB pages:
 - `scheduler.round.check.tls_deprecated.count`
 - `eventstore.mutation.retry.count`
 
+For the `last_checked_at` / `next_check_at` write path, confirm the database has
+`idx_monitor_blog_id` on `jetpack_monitor_sites(blog_id)`. The scheduler read
+indexes are optimized for due-site selection, but they cannot support batched
+`UPDATE ... WHERE blog_id IN (...)` efficiently because `blog_id` is not their
+leftmost column. A missing `blog_id` index makes freshness writes look like a
+service throughput problem even when CPU and event handling are healthy.
+
 Host/process signals:
 
 - `round.complete.time`

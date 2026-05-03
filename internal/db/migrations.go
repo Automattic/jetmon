@@ -463,6 +463,13 @@ var migrations = []migration{
 	// next_check_at and blog_id.
 	{30, `ALTER TABLE jetpack_monitor_sites
 		ADD INDEX idx_monitor_next_check_blog_bucket (monitor_active, next_check_at, blog_id, bucket_no)`},
+
+	// Migration 31 supports scheduler freshness writes and point lookups by
+	// blog_id. The scheduler read indexes include blog_id only after
+	// monitor_active / timestamp prefixes, so batched UPDATE ... WHERE blog_id
+	// IN (...) cannot use them efficiently and falls back to broad table scans.
+	{31, `ALTER TABLE jetpack_monitor_sites
+		ADD INDEX idx_monitor_blog_id (blog_id)`},
 }
 
 // Migrate applies all pending migrations idempotently.

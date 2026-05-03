@@ -20,6 +20,7 @@ ALTER TABLE jetpack_monitor_sites
     ADD COLUMN IF NOT EXISTS last_checked_at        DATETIME NULL,
     ADD COLUMN IF NOT EXISTS next_check_at          DATETIME NULL,
     ADD COLUMN IF NOT EXISTS last_alert_sent_at     DATETIME NULL,
+    ADD INDEX IF NOT EXISTS idx_monitor_blog_id (blog_id),
     ADD INDEX IF NOT EXISTS idx_bucket_monitor_last_checked (bucket_no, monitor_active, last_checked_at),
     ADD INDEX IF NOT EXISTS idx_monitor_next_check_blog_bucket (monitor_active, next_check_at, blog_id, bucket_no);
 

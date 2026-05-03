@@ -144,11 +144,20 @@ No active candidate branch is queued here right now.
   `jetmon_check_history` before queueing event work to bounded sharded workers.
   The queue preserves per-site ordering by blog ID while preventing a broad
   event/projection storm from blocking fresh checks for unrelated sites.
+- [x] Add a dedicated `jetpack_monitor_sites(blog_id)` index for scheduler
+  freshness writes and point lookups. A clean 20,000-site retest after the
+  event queue change showed event handling down to milliseconds, but each full
+  round still spent roughly 3m33s in `last_checked_at` / `next_check_at`
+  updates. Live `EXPLAIN UPDATE ... WHERE blog_id IN (...)` showed MySQL using
+  a primary-key index scan over roughly 1,001,165 rows because the scheduler
+  read indexes only contain `blog_id` after `monitor_active` and due-time
+  prefixes.
 - [ ] Retest the event-queue branch with a clean `20,000,22,500,25,000` ladder
   after uptime-bench confirms no failed-preflight scheduler work is still
-  in-flight. Compare freshness margin, event queue depth, event worker timings,
-  retry queue size, event mutation retries, open benchmark events after cleanup,
-  MySQL CPU/I/O, and Jetmon CPU/RSS/FDs.
+  in-flight and the `blog_id` write-path index is present. Compare freshness
+  margin, `scheduler.round.mark_checked.time`, event queue depth, event worker
+  timings, retry queue size, event mutation retries, open benchmark events
+  after cleanup, MySQL CPU/I/O, and Jetmon CPU/RSS/FDs.
 - [ ] Add a 5k/10k capacity ladder that records freshness, p95 age, MySQL CPU,
   MySQL I/O/network, `jetmon2` CPU/RSS/FDs, StatsD CPU, Veriflier CPU, and
   check-history row growth after each major scalability change.
