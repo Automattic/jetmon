@@ -434,6 +434,14 @@ var migrations = []migration{
 	// runtime allocator footprint.
 	{26, `ALTER TABLE jetmon_process_health
 		ADD COLUMN rss_mem_mb INT UNSIGNED NOT NULL DEFAULT 0 AFTER go_sys_mem_mb`},
+
+	// Migration 27 supports the scheduler's hot path: fetch the least recently
+	// checked active rows for a host's bucket range. The previous bucket-first
+	// index is still useful for bucket coverage/count queries, but the
+	// scheduler ORDER BY starts with last_checked_at and otherwise falls back to
+	// a full scan/filesort at larger table sizes.
+	{27, `ALTER TABLE jetpack_monitor_sites
+		ADD INDEX idx_monitor_last_checked_blog_bucket (monitor_active, last_checked_at, blog_id, bucket_no)`},
 }
 
 // Migrate applies all pending migrations idempotently.

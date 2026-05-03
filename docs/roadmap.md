@@ -57,10 +57,13 @@ No active candidate branch is queued here right now.
 - [ ] Run a 1,000-site capacity retest against the batched-write branch and
   compare freshness, scheduler page timings, MySQL CPU, monitor CPU, and
   check-history volume against the previous 17-minute sweep.
-- [ ] Capture live `EXPLAIN` output for fixed-round and variable-interval site
-  selection after the order-by simplification; decide whether a new
-  `(monitor_active, last_checked_at, blog_id, bucket_no)` style index or a
-  maintained `next_check_at` column is justified by real plans.
+- [x] Capture live `EXPLAIN` output for fixed-round and variable-interval site
+  selection; both plans scanned roughly 995k rows with `Using filesort`, so add
+  a scheduler-oriented `(monitor_active, last_checked_at, blog_id, bucket_no)`
+  index migration.
+- [ ] After applying the scheduler index migration in a test environment,
+  capture `EXPLAIN` again and confirm the hot site-selection query no longer
+  falls back to a full scan/filesort before running the full capacity retest.
 - [ ] If MySQL CPU remains the limiting factor after batched writes, evaluate
   an asynchronous bounded check-history writer or lower-resolution history
   retention for healthy probes while keeping `last_checked_at` synchronous.
