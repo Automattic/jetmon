@@ -245,6 +245,35 @@ func TestCheckHTTP200(t *testing.T) {
 	}
 }
 
+func TestCheckTimestampReflectsCompletedObservation(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(started)
+		<-release
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	resCh := make(chan Result, 1)
+	go func() {
+		resCh <- Check(context.Background(), Request{BlogID: 1, URL: srv.URL, TimeoutSeconds: 5})
+	}()
+
+	<-started
+	releasedAt := time.Now().UTC()
+	close(release)
+
+	select {
+	case res := <-resCh:
+		if res.Timestamp.Before(releasedAt) {
+			t.Fatalf("Timestamp = %s, want at or after response release %s", res.Timestamp, releasedAt)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Check did not complete")
+	}
+}
+
 func TestCheckHTTP500(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)

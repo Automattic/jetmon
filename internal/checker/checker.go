@@ -120,12 +120,15 @@ func (r *Result) IsFailure() bool {
 }
 
 // Check performs an HTTP check and returns the result.
-func Check(ctx context.Context, req Request) Result {
-	res := Result{
+func Check(ctx context.Context, req Request) (res Result) {
+	res = Result{
 		BlogID:    req.BlogID,
 		URL:       req.URL,
 		Timestamp: time.Now(),
 	}
+	defer func() {
+		res.Timestamp = time.Now().UTC()
+	}()
 
 	timeout := time.Duration(req.TimeoutSeconds) * time.Second
 	if timeout <= 0 {

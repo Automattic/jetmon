@@ -95,6 +95,15 @@ disabled, restores the 2x adaptive worker ceiling, and uses a compact freshness
 update that records one checked timestamp per scheduler processing chunk while
 preserving exact per-check timestamps in `jetmon_check_history`.
 
+The compact freshness retest passed 90,000 with 13% throughput margin but failed
+100,000 with 30% stale active sites. Logs showed the process was still near one
+full CPU core, several `mark_checked` chunks took tens of seconds, and completed
+checks were timestamped at probe start rather than probe completion. The next
+iteration records the completed-observation time in checker results so
+`last_checked_at` and `next_check_at` reflect when Jetmon actually learned the
+site state. This avoids immediately re-queuing checks that started early in a
+long round and makes freshness reporting match completed observations.
+
 ## Pre-Test Checks
 
 1. Confirm migrations have run through migration 31.
@@ -332,13 +341,15 @@ Run each step for the same duration and compare against the latest successful
 baseline. The latest clean point is 100,000 active sites, but it had 0.00%
 throughput margin: exactly 20,000 recent checks/minute against 20,000
 required/minute. The 125,000 step failed with 48,740 stale active sites and
-15,952 recent checks/minute against 25,000 required/minute, and the 3x worker
-headroom retest then failed 100,000 with 25,000 stale active sites. After
-restoring 2x worker headroom and switching to compact freshness writes, rerun a
-conservative boundary ladder:
+15,952 recent checks/minute against 25,000 required/minute, the 3x worker
+headroom retest failed 100,000 with 25,000 stale active sites, and the compact
+freshness-write retest failed 100,000 with 30,000 stale active sites. After
+switching check timestamps from probe start to completed observation time, rerun
+the conservative boundary ladder:
 
 1. 90,000 sites to confirm the service still clears the previous comfortable
-   pass with WPCOM disabled and compact freshness writes.
+   pass with WPCOM disabled, compact freshness writes, and completed-observation
+   timestamps.
 2. 100,000 sites if 90,000 is clean with enough freshness margin.
 3. 110,000 sites if 100,000 is clean and event queue depth does not trend toward
    saturation.

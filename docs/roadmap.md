@@ -240,10 +240,21 @@ No active candidate branch is queued here right now.
   `check_interval`. Exact per-check timestamps stay in `jetmon_check_history`;
   the hot scheduler update no longer needs two large `CASE blog_id` expressions
   for every 500-row DB write.
-- [ ] Run a `90,000,100,000,110,000` capacity ladder after WPCOM test isolation,
-  restored 2x adaptive worker headroom, and compact freshness writes. Compare
-  freshness margin, event queue depth, slow write counters, MySQL CPU/I/O,
-  Jetmon CPU/RSS/FDs, open FDs, and cleanup open-event residue.
+- [x] Run the first `90,000,100,000,110,000` compact-freshness ladder. The
+  90,000 step passed with 13.06% throughput margin, but 100,000 failed with
+  30,000 stale active sites. Logs showed several slow `mark_checked` chunks and
+  confirmed that checker results were timestamped at probe start, causing
+  long-round checks to age out and become due again before Jetmon finished
+  processing the completed observation.
+- [x] Timestamp checker results at completed-observation time instead of probe
+  start time. `last_checked_at`, `next_check_at`, check history, and incident
+  timestamps now reflect when Jetmon actually received the outcome. This should
+  reduce premature re-queuing during long capacity rounds and make freshness
+  reports match completed checks.
+- [ ] Rerun a `90,000,100,000,110,000` capacity ladder after completed-observation
+  timestamps. Compare freshness margin, event queue depth, slow write counters,
+  MySQL CPU/I/O, Jetmon CPU/RSS/FDs, open FDs, cleanup open-event residue, and
+  whether `oldest_selected_age_sec` stays below the 5-minute freshness window.
 - [ ] After the adaptive retest, decide whether to incorporate observed RTT into
   the worker-ceiling formula. The first implementation uses the configured
   timeout as the conservative sizing input; observed RTT could reduce
