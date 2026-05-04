@@ -1418,8 +1418,8 @@ func TestSchedulerAdaptiveWorkerMaxFromDueBacklog(t *testing.T) {
 		UseVariableCheckIntervals: true,
 	}
 
-	if got := schedulerAdaptiveWorkerMax(cfg, 100000); got != 4000 {
-		t.Fatalf("schedulerAdaptiveWorkerMax(100k due) = %d, want 4000", got)
+	if got := schedulerAdaptiveWorkerMax(cfg, 100000); got != 1920 {
+		t.Fatalf("schedulerAdaptiveWorkerMax(100k due) = %d, want 1920", got)
 	}
 	if got := schedulerAdaptiveWorkerMax(cfg, 1000); got != 960 {
 		t.Fatalf("schedulerAdaptiveWorkerMax(small backlog) = %d, want base 960", got)
@@ -1428,7 +1428,7 @@ func TestSchedulerAdaptiveWorkerMaxFromDueBacklog(t *testing.T) {
 
 func TestSchedulerAdaptiveWorkerMaxHonorsResourceCapAboveBase(t *testing.T) {
 	orig := workerResourceCapFunc
-	workerResourceCapFunc = func() int { return 2000 }
+	workerResourceCapFunc = func() int { return 1200 }
 	t.Cleanup(func() { workerResourceCapFunc = orig })
 
 	cfg := &config.Config{
@@ -1438,13 +1438,13 @@ func TestSchedulerAdaptiveWorkerMaxHonorsResourceCapAboveBase(t *testing.T) {
 		UseVariableCheckIntervals: true,
 	}
 
-	if got := schedulerAdaptiveWorkerMax(cfg, 100000); got != 2000 {
-		t.Fatalf("schedulerAdaptiveWorkerMax(resource cap) = %d, want 2000", got)
+	if got := schedulerAdaptiveWorkerMax(cfg, 100000); got != 1200 {
+		t.Fatalf("schedulerAdaptiveWorkerMax(resource cap) = %d, want 1200", got)
 	}
 
 	workerResourceCapFunc = func() int { return 500 }
-	if got := schedulerAdaptiveWorkerMax(cfg, 100000); got != 4000 {
-		t.Fatalf("schedulerAdaptiveWorkerMax(cap below base) = %d, want uncapped adaptive 4000", got)
+	if got := schedulerAdaptiveWorkerMax(cfg, 100000); got != 1920 {
+		t.Fatalf("schedulerAdaptiveWorkerMax(cap below base) = %d, want burst-capped adaptive 1920", got)
 	}
 }
 

@@ -6,8 +6,9 @@ Baseline number of goroutines for the check pool. The pool starts below this
 number and auto-scales up as queue depth grows. In variable-interval mode,
 Jetmon can temporarily raise the pool ceiling above NUM_WORKERS when the due
 backlog cannot fit inside the configured freshness window at the current
-ceiling. Adaptive growth is bounded by the host file-descriptor budget and is
-reported through scheduler pool metrics. Default: 60.
+ceiling. Adaptive growth is bounded to 2x NUM_WORKERS and by the host
+file-descriptor budget, and is reported through scheduler pool metrics.
+Default: 60.
 
 NUM_TO_PROCESS
 Legacy compatibility setting retained so copied v1-style configs continue to

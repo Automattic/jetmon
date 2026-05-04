@@ -27,10 +27,11 @@ The branch includes the previous scaling changes:
 It also adds scheduler batch windows: Jetmon fetches several ordered DB pages
 with a keyset cursor, then dispatches that larger batch as one check window.
 The batch target comes from the current check-pool ceiling, request timeout, and
-freshness target. The per-batch result window is capped at 100,000 sites to
-avoid unbounded in-process maps, but the cap does not limit total checks per
-round. `last_checked_at` and `next_check_at` are still written only after
-completed checks.
+freshness target. The per-batch result window is capped at 25,000 sites to
+avoid unbounded in-process maps and to keep freshness writes staggered across a
+large active fleet; the cap does not limit total checks per round.
+`last_checked_at` and `next_check_at` are still written only after completed
+checks.
 
 The branch now also moves site-state event handling onto a bounded sharded
 background queue after `last_checked_at` and `jetmon_check_history` have been
@@ -41,17 +42,19 @@ handling after 732 connect errors. The event queue preserves per-site ordering
 by hashing each blog ID to one worker, while keeping slow event/projection work
 from blocking fresh checks for unrelated sites.
 
-The current iteration adds adaptive worker-ceiling growth for variable-interval
-mode. `NUM_WORKERS` is treated as the baseline; if the current due backlog
-cannot fit inside `MIN_TIME_BETWEEN_ROUNDS_SEC` at the configured
-`NET_COMMS_TIMEOUT`, Jetmon raises the pool ceiling with 20% headroom, bounded
-by the host file-descriptor budget. The pool scaler also grows beyond a full
-queue when the queue capacity is already at or below the active worker count.
+The current iteration adds bounded adaptive worker-ceiling growth for
+variable-interval mode. `NUM_WORKERS` is treated as the baseline; if the
+current due backlog cannot fit inside `MIN_TIME_BETWEEN_ROUNDS_SEC` at the
+configured `NET_COMMS_TIMEOUT`, Jetmon raises the pool ceiling with 20%
+headroom, bounded to 2x `NUM_WORKERS` and by the host file-descriptor budget.
+The pool scaler also grows beyond a full queue when the queue capacity is
+already at or below the active worker count.
 
 Do not stack larger persistence changes, such as async check-history writes or
 DNS caching, on top of this branch before the next real capacity run. The next
-test should isolate adaptive check concurrency and the larger scheduler batch
-window before adding another variable.
+test should isolate bounded adaptive check concurrency while preserving the
+25,000-site scheduler result window that previously staggered freshness writes
+better than one large 80k/100k window.
 
 ## Pre-Test Checks
 
@@ -281,14 +284,16 @@ Dependency signals:
 
 Run each step for the same duration and compare against the latest successful
 baseline. The latest clean point is 75,000 active sites, but it had effectively
-zero throughput margin. After deploying adaptive worker-ceiling growth, use a
-boundary-plus-growth ladder:
+zero throughput margin. An initial unbounded adaptive run failed at 80,000 after
+raising workers into the 2.5k-3.2k range and pushing host CPU close to the
+capacity threshold. After restoring the 25,000-site result window and bounding
+adaptive growth to 2x `NUM_WORKERS`, use a narrower confirmation ladder:
 
-1. 80,000 sites to confirm the adaptive ceiling restores margin above the prior
+1. 75,000 sites to confirm the branch still matches the prior clean point.
+2. 80,000 sites to confirm the adaptive ceiling restores margin above the prior
    thin 75,000-site pass.
-2. 100,000 sites to retest the previously failing point.
-3. 125,000 sites if 100,000 is clean with enough freshness margin.
-4. Continue in 25k steps while freshness margin remains comfortable; narrow the
+3. 90,000 sites if 80,000 is clean with enough freshness margin.
+4. Continue in 10k steps while freshness margin remains comfortable; narrow the
    ladder if p95 age approaches the 5-minute freshness window or if FD usage
    climbs toward the adaptive worker cap.
 

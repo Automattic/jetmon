@@ -164,16 +164,19 @@ No active candidate branch is queued here right now.
   scheduler batches. A higher batch cap lets larger worker ceilings amortize
   slow-tail waits and write processing over fewer scheduler windows as tests
   climb toward 100k sites.
-- [x] Raise the scheduler batch result-window cap from 25,000 to 100,000 sites
-  after the `50,000,75,000,100,000` run showed the next boundary was check-pool
-  backpressure, not MySQL or event processing. The 100,000 cap is a per-window
-  memory guard for in-process result maps, not a total round cap.
-- [x] Add adaptive worker-ceiling growth for variable-interval mode. The
-  scheduler now treats `NUM_WORKERS` as the baseline, samples due backlog when
-  active work is found, derives the concurrency needed to fit that backlog
-  inside the freshness window with 20% headroom, and bounds growth by the host
-  file-descriptor budget. The checker pool can also scale beyond a full queue
-  when queue capacity is already at or below the active worker count.
+- [x] Test and revert a 100,000-site scheduler result-window cap. The
+  `50,000,75,000,100,000` run showed the next boundary was check-pool
+  backpressure, not MySQL or event processing, but the follow-up 80,000-site
+  adaptive run showed that one large result window made freshness writes too
+  lumpy and pushed CPU toward the capacity threshold. Keep the per-window cap at
+  25,000 while pursuing streaming result processing as a separate design.
+- [x] Add bounded adaptive worker-ceiling growth for variable-interval mode.
+  The scheduler now treats `NUM_WORKERS` as the baseline, samples due backlog
+  when active work is found, derives the concurrency needed to fit that backlog
+  inside the freshness window with 20% headroom, and bounds growth to 2x
+  `NUM_WORKERS` plus the host file-descriptor budget. The checker pool can also
+  scale beyond a full queue when queue capacity is already at or below the
+  active worker count.
 - [ ] Retest the event-queue branch with a clean `20,000,22,500,25,000` ladder
   after uptime-bench confirms no failed-preflight scheduler work is still
   in-flight and the `blog_id` write-path index is present. Compare freshness
@@ -183,12 +186,12 @@ No active candidate branch is queued here right now.
 - [ ] Add a 5k/10k capacity ladder that records freshness, p95 age, MySQL CPU,
   MySQL I/O/network, `jetmon2` CPU/RSS/FDs, StatsD CPU, Veriflier CPU, and
   check-history row growth after each major scalability change.
-- [ ] Retest adaptive worker-ceiling growth with an `80,000,100,000,125,000`
+- [ ] Retest bounded adaptive worker-ceiling growth with a `75,000,80,000,90,000`
   ladder. The prior `50,000,75,000,100,000` run passed 75,000 with no
-  throughput margin and failed 100,000 at roughly 15,758 recent checks/minute
-  against a 20,000/minute requirement while CPU/RSS/MySQL remained healthy.
-  Compare adaptive worker max, active checks, queue depth, dispatch time,
-  process FDs, and freshness margin.
+  throughput margin and failed 100,000 at roughly 15,758 recent checks/minute.
+  The first adaptive attempt failed at 80,000 after growing workers into the
+  2.5k-3.2k range, so the next test should confirm whether a 2x ceiling and
+  restored 25k result window improve freshness without CPU pressure.
 - [ ] After the adaptive retest, decide whether to incorporate observed RTT into
   the worker-ceiling formula. The first implementation uses the configured
   timeout as the conservative sizing input; observed RTT could reduce

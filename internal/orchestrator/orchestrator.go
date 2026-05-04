@@ -55,9 +55,10 @@ const schedulerVariableIntervalPollInterval = 5 * time.Second
 const schedulerBacklogPollInterval = 5 * time.Second
 const schedulerBroadReportInterval = time.Minute
 const schedulerBatchSitesPerWorker = 100
-const schedulerMaxBatchSites = 100000
+const schedulerMaxBatchSites = 25000
 const schedulerAdaptiveWorkerSafetyNumerator = 6
 const schedulerAdaptiveWorkerSafetyDenominator = 5
+const schedulerAdaptiveWorkerMaxMultiplier = 2
 const schedulerWorkerFDReserve = 256
 const schedulerWorkerFDUseNumerator = 8
 const schedulerWorkerFDUseDenominator = 10
@@ -627,6 +628,9 @@ func schedulerAdaptiveWorkerMax(cfg *config.Config, dueSites int) int {
 	}
 	if resourceCap := workerResourceCapFunc(); resourceCap > base && desired > resourceCap {
 		desired = resourceCap
+	}
+	if adaptiveCap := base * schedulerAdaptiveWorkerMaxMultiplier; adaptiveCap > base && desired > adaptiveCap {
+		desired = adaptiveCap
 	}
 	if desired < 1 {
 		return 1
