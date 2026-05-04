@@ -349,6 +349,13 @@ No active candidate branch is queued here right now.
   freshness window. Batched freshness/history/SSL writes now retry deadlock and
   lock-timeout errors at the chunk level, and the scheduler collection deadline
   pauses while already-collected result chunks are being persisted.
+- [x] Avoid per-site check-history writes for suppressed monitor-side transport
+  storms. The `e170224` run moved the clean point to 125,000 but 150,000 still
+  exceeded CPU/freshness thresholds while writing tens of thousands of
+  timeout/connect samples that had already been classified as local monitor
+  uncertainty. Freshness still updates for every completed check, while
+  `jetmon_check_history` skips those suppressed transport-failure rows and
+  emits `scheduler.check_history.suppressed_transport_storm.count`.
 - [x] Reduce storm-time bookkeeping that does not improve check quality:
   WPCOM-disabled notifications no longer write one audit row per skipped
   synthetic notification, per-site recovery success logs are suppressed, and

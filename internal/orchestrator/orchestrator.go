@@ -1443,7 +1443,12 @@ func (o *Orchestrator) processResults(results map[int64]checker.Result, sites ma
 
 	o.withSchedulerDBWrite(func() {
 		o.markResultsChecked(records, &summary)
-		o.recordResultHistories(records, &summary)
+	})
+
+	storm := o.assessFailureStorm(records)
+
+	o.withSchedulerDBWrite(func() {
+		o.recordResultHistories(records, &summary, storm)
 
 		sslStart := time.Now()
 		sslUpdates := make([]db.SiteSSLExpiry, 0)
@@ -1464,13 +1469,12 @@ func (o *Orchestrator) processResults(results map[int64]checker.Result, sites ma
 	})
 
 	eventStart := time.Now()
-	o.processResultEvents(records, &summary)
+	o.processResultEvents(records, &summary, storm)
 	summary.eventDuration += time.Since(eventStart)
 	return summary
 }
 
-func (o *Orchestrator) processResultEvents(records []siteCheckResult, summary *resultProcessSummary) {
-	storm := o.assessFailureStorm(records)
+func (o *Orchestrator) processResultEvents(records []siteCheckResult, summary *resultProcessSummary, storm failureStormAssessment) {
 	if storm.suppress {
 		summary.failureStormSuppressed += storm.transportFailures
 		emitCounter("detection.failure_storm.suppressed.count", storm.transportFailures)
@@ -1863,9 +1867,14 @@ func (o *Orchestrator) markResultsChecked(records []siteCheckResult, summary *re
 	}
 }
 
-func (o *Orchestrator) recordResultHistories(records []siteCheckResult, summary *resultProcessSummary) {
+func (o *Orchestrator) recordResultHistories(records []siteCheckResult, summary *resultProcessSummary, storm failureStormAssessment) {
 	histories := make([]db.CheckHistoryRow, 0, len(records))
+	suppressedTransportFailures := 0
 	for _, record := range records {
+		if storm.suppress && isTransportFailure(record.res) {
+			suppressedTransportFailures++
+			continue
+		}
 		res := record.res
 		histories = append(histories, db.CheckHistoryRow{
 			BlogID:    record.blogID,
@@ -1878,6 +1887,12 @@ func (o *Orchestrator) recordResultHistories(records []siteCheckResult, summary 
 			TTFBMs:    res.TTFB.Milliseconds(),
 			CheckedAt: resultCheckedAt(res),
 		})
+	}
+	if suppressedTransportFailures > 0 {
+		emitCounter("scheduler.check_history.suppressed_transport_storm.count", suppressedTransportFailures)
+	}
+	if len(histories) == 0 {
+		return
 	}
 
 	start := time.Now()

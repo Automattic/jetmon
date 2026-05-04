@@ -908,6 +908,11 @@ func TestProcessResultsSuppressesBroadTransportFailureStormWhenVerifiersDisagree
 
 	rec := newRecordingMetrics()
 	metricsClientFunc = func() metricsClient { return rec }
+	var historyRows atomic.Int64
+	dbRecordCheckHistories = func(_ context.Context, rows []db.CheckHistoryRow) error {
+		historyRows.Add(int64(len(rows)))
+		return nil
+	}
 
 	var verifierCalls atomic.Int64
 	veriflierCheckFunc = func(_ *veriflier.VeriflierClient, _ context.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
@@ -943,6 +948,12 @@ func TestProcessResultsSuppressesBroadTransportFailureStormWhenVerifiersDisagree
 	}
 	if got := rec.counter("detection.failure_storm.suppressed.count"); got != 1200 {
 		t.Fatalf("failure storm suppressed counter = %d, want 1200", got)
+	}
+	if got := rec.counter("scheduler.check_history.suppressed_transport_storm.count"); got != 1200 {
+		t.Fatalf("suppressed transport history counter = %d, want 1200", got)
+	}
+	if got := historyRows.Load(); got != 0 {
+		t.Fatalf("history rows = %d, want 0 for suppressed transport storm", got)
 	}
 	if got := rec.counter("detection.seems_down.open.count"); got != 0 {
 		t.Fatalf("seems-down opens = %d, want 0", got)

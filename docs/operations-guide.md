@@ -127,6 +127,12 @@ Scheduler behavior:
   `scheduler.mark_checked.slow.count` and the round `mark_checked` duration if
   a capacity run suddenly accumulates stale sites while host CPU remains below
   threshold.
+- When broad timeout/connect-error chunks are suppressed as monitor-side
+  uncertainty, Jetmon still updates freshness for every completed check but
+  skips per-site `jetmon_check_history` rows for those suppressed transport
+  failures. Use `scheduler.check_history.suppressed_transport_storm.count`
+  alongside `detection.failure_storm.suppressed.count` to understand how much
+  history write load was avoided during a local transport storm.
 
 See [../config/config.readme](../config/config.readme) for the full option
 reference.

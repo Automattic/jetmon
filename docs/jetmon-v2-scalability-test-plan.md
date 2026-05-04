@@ -214,6 +214,15 @@ back, and it pauses the scheduler collection deadline while already-collected
 result chunks are being persisted so a DB write stall does not make completed
 checks look like missing checker results.
 
+That iteration (`e170224`) moved the clean point to 125,000 and made 150,000 the
+new failure point. Event depth and stale result handling remained controlled,
+but full 150,000-site rounds were still longer than the five-minute freshness
+window. The next optimization keeps freshness writes for every completed check
+but suppresses per-site `jetmon_check_history` rows for transport failures that
+have already been classified as monitor-side uncertainty by the broad-storm
+Veriflier guard. Those suppressed history rows are counted with
+`scheduler.check_history.suppressed_transport_storm.count`.
+
 ## Pre-Test Checks
 
 1. Confirm migrations have run through migration 31.
