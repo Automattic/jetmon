@@ -947,7 +947,8 @@ func (o *Orchestrator) checkSitesPage(cfg *config.Config, sites []db.Site, pageN
 	summary.dispatchDuration += time.Since(dispatchStart)
 	o.capturePoolStats(&summary)
 
-	deadline := time.NewTimer(collectionDeadlineForSites(cfg, sites, o.pool.MaxSize()))
+	collectionDeadlineAt := time.Now().Add(collectionDeadlineForSites(cfg, sites, o.pool.MaxSize()))
+	deadline := time.NewTimer(time.Until(collectionDeadlineAt))
 	defer deadline.Stop()
 	waitStart := time.Now()
 	for results.received < summary.dispatched {
@@ -956,8 +957,16 @@ func (o *Orchestrator) checkSitesPage(cfg *config.Config, sites []db.Site, pageN
 			results.record(res, &summary)
 			if len(results.pending) >= schedulerResultProcessChunkSites {
 				summary.waitDuration += time.Since(waitStart)
+				processStart := time.Now()
+				stopAndDrainTimer(deadline)
 				o.flushPageResults(&results, &summary)
+				collectionDeadlineAt = collectionDeadlineAt.Add(time.Since(processStart))
 				waitStart = time.Now()
+				if !resetTimerUntil(deadline, collectionDeadlineAt) {
+					summary.outstanding = summary.dispatched - results.received
+					log.Printf("orchestrator: round deadline reached, %d results outstanding", summary.outstanding)
+					goto process
+				}
 			}
 			o.capturePoolStats(&summary)
 		case <-deadline.C:
@@ -1139,6 +1148,30 @@ func collectionDeadlineForSites(cfg *config.Config, sites []db.Site, workers int
 		waves = 1
 	}
 	return time.Duration(int64(timeout)*waves+5) * time.Second
+}
+
+func stopAndDrainTimer(timer *time.Timer) {
+	if timer == nil {
+		return
+	}
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+}
+
+func resetTimerUntil(timer *time.Timer, deadline time.Time) bool {
+	if timer == nil {
+		return false
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return false
+	}
+	timer.Reset(remaining)
+	return true
 }
 
 func (r *pageResultBuffer) record(res checker.Result, summary *roundSummary) {

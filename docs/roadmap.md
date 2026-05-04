@@ -342,6 +342,13 @@ No active candidate branch is queued here right now.
   samples are now cached briefly, and suppressed retry cleanup happens in one
   batch lock pass, so repeated 5,000-site chunks in the same local transport
   wave spend less time on verifier timeouts and retry-queue bookkeeping.
+- [x] Make scheduler freshness persistence resilient to transient MySQL write
+  conflicts. The first storm-cache run (`f74f088`) improved CPU but hit a
+  transient `mark_checked` deadlock at 125,000 sites; the old fallback expanded
+  that one chunk into thousands of single-row updates and caused a missed
+  freshness window. Batched freshness/history/SSL writes now retry deadlock and
+  lock-timeout errors at the chunk level, and the scheduler collection deadline
+  pauses while already-collected result chunks are being persisted.
 - [x] Reduce storm-time bookkeeping that does not improve check quality:
   WPCOM-disabled notifications no longer write one audit row per skipped
   synthetic notification, per-site recovery success logs are suppressed, and

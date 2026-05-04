@@ -205,6 +205,15 @@ chunk in the same local transport wave does not repeat the same verifier sample
 timeout. Suppressed chunks also clear retry bookkeeping in one batch pass
 instead of taking the retry queue lock per failed site.
 
+The first storm-cache run (`f74f088`) improved 110,000-site CPU and throughput
+and kept 125,000-site CPU under the suite threshold, but a transient MySQL
+deadlock on one 5,000-result freshness chunk forced the old per-row fallback and
+spent more than two minutes in `mark_checked`. The next iteration retries
+deadlock / lock-timeout errors at the batch-write chunk level before falling
+back, and it pauses the scheduler collection deadline while already-collected
+result chunks are being persisted so a DB write stall does not make completed
+checks look like missing checker results.
+
 ## Pre-Test Checks
 
 1. Confirm migrations have run through migration 31.

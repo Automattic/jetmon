@@ -8,9 +8,13 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/go-sql-driver/mysql"
 )
 
 const batchWriteChunkSize = 1000
+const batchWriteMaxAttempts = 3
+const batchWriteRetryBaseDelay = 10 * time.Millisecond
 
 // MarkSitesCheckedAt records last_checked_at for a batch of sites that were
 // observed in one scheduler processing chunk. The exact per-check timestamp is
@@ -51,8 +55,7 @@ func markSitesCheckedAtChunk(ctx context.Context, blogIDs []int64, checkedAt tim
 		args = append(args, blogID)
 	}
 	query.WriteByte(')')
-	_, err := db.ExecContext(ctx, query.String(), args...)
-	return err
+	return execBatchWrite(ctx, query.String(), args...)
 }
 
 // SitePageCursor identifies the last row from a scheduler page. It lets the
@@ -537,8 +540,7 @@ func markSitesCheckedChunk(ctx context.Context, checks []SiteCheck) error {
 		args = append(args, check.BlogID)
 	}
 	query.WriteByte(')')
-	_, err := db.ExecContext(ctx, query.String(), args...)
-	return err
+	return execBatchWrite(ctx, query.String(), args...)
 }
 
 // UpdateLastAlertSent records when an alert was last sent for a site.
@@ -603,8 +605,7 @@ func updateSSLExpiriesChunk(ctx context.Context, expiries []SiteSSLExpiry) error
 		args = append(args, expiry.BlogID)
 	}
 	query.WriteByte(')')
-	_, err := db.ExecContext(ctx, query.String(), args...)
-	return err
+	return execBatchWrite(ctx, query.String(), args...)
 }
 
 // ClaimBuckets registers this host in jetmon_hosts, claiming uncovered bucket
@@ -869,6 +870,47 @@ func recordCheckHistoriesChunk(ctx context.Context, rows []CheckHistoryRow) erro
 			checkedAt.UTC(),
 		)
 	}
-	_, err := db.ExecContext(ctx, query.String(), args...)
+	return execBatchWrite(ctx, query.String(), args...)
+}
+
+func execBatchWrite(ctx context.Context, query string, args ...any) error {
+	var err error
+	for attempt := 1; attempt <= batchWriteMaxAttempts; attempt++ {
+		_, err = db.ExecContext(ctx, query, args...)
+		if err == nil {
+			return nil
+		}
+		if !isRetryableBatchWriteError(err) || attempt == batchWriteMaxAttempts {
+			return err
+		}
+		if waitErr := waitForBatchWriteRetry(ctx, attempt); waitErr != nil {
+			return waitErr
+		}
+	}
 	return err
+}
+
+func waitForBatchWriteRetry(ctx context.Context, attempt int) error {
+	delay := time.Duration(attempt) * batchWriteRetryBaseDelay
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func isRetryableBatchWriteError(err error) bool {
+	var mysqlErr *mysql.MySQLError
+	if !errors.As(err, &mysqlErr) {
+		return false
+	}
+	switch mysqlErr.Number {
+	case 1205, 1213:
+		return true
+	default:
+		return false
+	}
 }

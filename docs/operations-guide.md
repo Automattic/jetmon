@@ -84,7 +84,9 @@ Scheduler behavior:
   for the batch, so larger adaptive ceilings do not make queued checks look
   stale simply because the static timeout expired before they could run. A
   non-zero `outstanding` count means checks still failed to return inside that
-  worker-wave budget.
+  worker-wave budget. The deadline pauses while already-collected result chunks
+  are being persisted, so `outstanding` should point to checker tail latency
+  rather than slow `mark_checked` / history writes.
   `pool.workers.max`, `pool.active.max`, `pool.queue_depth.max`, and
   `pool.queue_capacity.max` show whether the check pool is saturated. If active
   checks sit near the adaptive ceiling while CPU and memory remain low, check
@@ -119,6 +121,12 @@ Scheduler behavior:
   reporting queries do not run on every short scheduler poll. Use
   `scheduler.round.due_count_sampled.count` to distinguish sampled polls from
   intentionally skipped reporting polls.
+- Batched freshness, history, and SSL writes retry transient MySQL deadlock
+  (`1213`) and lock wait timeout (`1205`) errors at the chunk level before
+  falling back to slower recovery paths. Watch
+  `scheduler.mark_checked.slow.count` and the round `mark_checked` duration if
+  a capacity run suddenly accumulates stale sites while host CPU remains below
+  threshold.
 
 See [../config/config.readme](../config/config.readme) for the full option
 reference.
