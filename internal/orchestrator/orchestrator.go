@@ -547,7 +547,7 @@ func (o *Orchestrator) runRound() roundSummary {
 
 		pageSummary := o.checkSitesPage(cfg, batch, schedulerBatch)
 		summary.add(pageSummary)
-		if pageSummary.interrupted || pageSummary.outstanding > 0 {
+		if pageSummary.interrupted {
 			break
 		}
 		if doneFetching {
@@ -1019,12 +1019,10 @@ func (r *pageResultBuffer) record(res checker.Result, summary *roundSummary) {
 	}
 	if _, ok := r.siteMap[res.BlogID]; !ok {
 		summary.staleResults++
-		log.Printf("orchestrator: ignored stale check result blog_id=%d", res.BlogID)
 		return
 	}
 	if _, ok := r.seen[res.BlogID]; ok {
 		summary.duplicateResults++
-		log.Printf("orchestrator: ignored duplicate check result blog_id=%d", res.BlogID)
 		return
 	}
 	r.seen[res.BlogID] = struct{}{}

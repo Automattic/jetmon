@@ -128,6 +128,16 @@ left outstanding results, and stopped rounds before remaining due work was
 drained. The follow-up narrows adaptive windows to 30,000 sites while keeping
 the larger checker buffer isolated for one retest.
 
+The 30,000-window / 4x-buffer retest regressed further, failing the first
+90,000-site step with 6.42% stale rows. Logs showed the same deadline-tail
+pattern: most 30,000-site windows left a small number of outstanding results,
+and the round stopped instead of draining the remaining 60,000 due rows. The
+next iteration restores the checker channel buffer to the proven 2x baseline,
+keeps the 30,000 adaptive window, lets a round continue to later due batches
+after a page deadline tail, suppresses per-result stale/duplicate log spam, and
+raises the internal DB write chunk from 500 to 1,000 rows to reduce hot-path
+freshness/history write round trips.
+
 ## Pre-Test Checks
 
 1. Confirm migrations have run through migration 31.

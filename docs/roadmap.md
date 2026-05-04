@@ -275,14 +275,24 @@ No active candidate branch is queued here right now.
   repeated tail waits while the worker pool is otherwise saturated. The first
   50,000-site adaptive-window attempt improved 90,000 but regressed 100,000 to
   45% stale because large windows repeatedly hit collection deadlines and
-  stopped rounds with due work still waiting. The next retest narrows adaptive
-  windows to 30,000 sites while retaining 5,000-site result chunks.
-- [x] Increase checker pool pending/result channel buffers from 2x to 4x the
-  configured worker baseline. The adaptive ceiling can grow to 2x
-  `NUM_WORKERS`, so the old fixed channel size became only one adaptive wave and
-  showed full-queue backpressure throughout the failed 100,000-site run. The
-  larger buffer gives dispatch more room without changing the worker ceiling or
-  dropping checks.
+  stopped rounds with due work still waiting. The 30,000-site / 4x-buffer
+  follow-up then failed 90,000 with 6.42% stale rows because page-deadline tails
+  still stopped the round after only one window. The next iteration keeps the
+  30,000-site adaptive window but restores the proven 2x checker buffer and
+  lets rounds continue to later due batches after deadline-tail results.
+- [x] Revert the checker pending/result channel buffer experiment from 4x back
+  to 2x the configured worker baseline. The larger queue increased memory
+  pressure and let more work sit behind active checks, which made page
+  collection deadlines more likely without improving the 100,000-site result.
+- [x] Continue draining due scheduler batches after a page has deadline-tail
+  outstanding results. Late results were already ignored safely as stale in
+  later buffers; stopping the whole round after a tiny tail left tens of
+  thousands of due sites unchecked. Per-result stale/duplicate log lines are
+  now suppressed because the round summary already reports those counts.
+- [x] Raise the internal DB write chunk size from 500 to 1,000 rows for hot
+  scheduler freshness, SSL, and check-history writes. This reduces SQL round
+  trips during large capacity runs while keeping individual statements well
+  below packet-size risk.
 - [ ] After the adaptive retest, decide whether to incorporate observed RTT into
   the worker-ceiling formula. The first implementation uses the configured
   timeout as the conservative sizing input; observed RTT could reduce

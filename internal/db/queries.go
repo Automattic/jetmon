@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const batchWriteChunkSize = 500
+const batchWriteChunkSize = 1000
 
 // MarkSitesCheckedAt records last_checked_at for a batch of sites that were
 // observed in one scheduler processing chunk. The exact per-check timestamp is

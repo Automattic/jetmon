@@ -77,7 +77,10 @@ Scheduler behavior:
   scheduler window instead of one large freshness-write wave. Baseline runs cap
   windows at 25,000 sites, while adaptive high-backlog runs can use 30,000-site
   windows to reduce repeated slow-tail waits without repeating the large-window
-  deadline behavior seen with 50,000-site windows.
+  deadline behavior seen with 50,000-site windows. A non-zero `outstanding`
+  count means some results arrived after the per-window collection deadline;
+  those late results are summarized in round metrics instead of logged one by
+  one, and the scheduler continues draining later due batches when possible.
   `pool.workers.max`, `pool.active.max`, `pool.queue_depth.max`, and
   `pool.queue_capacity.max` show whether the check pool is saturated. If active
   checks sit near the adaptive ceiling while CPU and memory remain low, check
