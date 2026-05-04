@@ -59,10 +59,22 @@ queue, but the orchestrator no longer retries immediately when the client has
 already queued a notification because the circuit is open. Queue-full logs are
 coalesced so failure storms do not dominate log I/O.
 
+The chunked-result retest passed 75,000, 80,000, and 90,000 sites. It also
+showed the next bottleneck clearly: synthetic benchmark blog IDs can return
+WPCOM 404s forever, and those per-site permanent failures should not poison the
+global WPCOM circuit breaker or fill its bounded queue. Jetmon now treats WPCOM
+404/410 responses as terminal per-notification failures, skips the immediate
+retry for those responses, and leaves the circuit breaker available for real
+transport/service failures. Permanent-failure logs are coalesced so synthetic
+ID storms do not dominate log I/O. Event workers also have more headroom, and
+slow freshness/history write logs now identify DB persistence stalls without
+changing the scheduler's checking behavior.
+
 Do not stack DNS caching or async check-history writes on top of this branch
-before the next real capacity run. The next test should isolate chunked result
-processing and WPCOM storm hygiene while preserving the 2x adaptive worker
-ceiling and 25,000-site dispatch window.
+before the next real capacity run. The next test should isolate permanent WPCOM
+failure classification, event-worker headroom, and slow-write instrumentation
+while preserving the 2x adaptive worker ceiling, 25,000-site dispatch window,
+and 5,000-site result-processing chunks.
 
 ## Pre-Test Checks
 
@@ -294,19 +306,21 @@ Dependency signals:
 ## Next Capacity Ladder
 
 Run each step for the same duration and compare against the latest successful
-baseline. The latest clean point is 75,000 active sites with 6.58% throughput
-margin. The bounded adaptive run failed at 80,000 with 5.89% stale active sites
-while host CPU, memory, MySQL CPU, and file descriptors stayed below alert
-thresholds. After adding chunked result processing and WPCOM storm hygiene, use
-a narrow confirmation ladder:
+baseline. The latest clean point is 90,000 active sites with 10.85% throughput
+margin, `p95` freshness age of 218 seconds, and no stale or missed active sites.
+Host CPU, memory, MySQL CPU, and file descriptors stayed below alert thresholds,
+but event queue depth rose past 50,000 and some freshness writes spiked late in
+the run. After adding permanent WPCOM failure classification, event-worker
+headroom, and slow-write instrumentation, use a ceiling-discovery ladder:
 
-1. 75,000 sites to confirm the branch still matches the prior clean point.
-2. 80,000 sites to confirm chunked processing restores margin above the prior
-   failure point.
-3. 90,000 sites if 80,000 is clean with enough freshness margin.
-4. Continue in 10k steps while freshness margin remains comfortable; narrow the
-   ladder if p95 age approaches the 5-minute freshness window or if FD usage
-   climbs toward the adaptive worker cap.
+1. 100,000 sites to confirm the service clears the original six-figure target.
+2. 125,000 sites if 100,000 is clean with enough freshness margin.
+3. 150,000 sites if 125,000 is clean and event queue depth does not trend toward
+   saturation.
+4. Narrow the ladder if `p95` age approaches the 5-minute freshness window, if
+   `scheduler.mark_checked.slow.count` or `scheduler.history.slow.count` rises,
+   if event queue depth remains high after a batch, or if FD usage climbs toward
+   the adaptive worker cap.
 
 For each step, preserve:
 

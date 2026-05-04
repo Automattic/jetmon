@@ -63,12 +63,14 @@ const schedulerAdaptiveWorkerMaxMultiplier = 2
 const schedulerWorkerFDReserve = 256
 const schedulerWorkerFDUseNumerator = 8
 const schedulerWorkerFDUseDenominator = 10
+const schedulerSlowWriteLogThreshold = 10 * time.Second
 const eventWorkerMinCount = 1
-const eventWorkerMaxCount = 8
+const eventWorkerMaxCount = 16
 const eventWorkerScaleSites = 60
 const eventQueueBatches = 4
 const eventMutationMaxAttempts = 3
 const eventMutationRetryBaseDelay = 25 * time.Millisecond
+const wpcomPermanentFailureLogInterval = 10 * time.Second
 
 // VariableIntervalPollInterval returns the idle scheduler poll interval used
 // when per-site check intervals are enabled. The SQL due predicate prevents
@@ -320,6 +322,10 @@ type Orchestrator struct {
 
 	lastDueCountAt        time.Time
 	lastProjectionDriftAt time.Time
+
+	wpcomPermanentMu            sync.Mutex
+	wpcomPermanentLastLog       time.Time
+	wpcomPermanentLogSuppressed int
 
 	ctx    stdctx.Context
 	cancel stdctx.CancelFunc
@@ -1447,7 +1453,16 @@ func (o *Orchestrator) markResultsChecked(records []siteCheckResult, summary *re
 	} else {
 		summary.markCheckedRows += len(checks)
 	}
-	summary.markCheckedDuration += time.Since(start)
+	elapsed := time.Since(start)
+	summary.markCheckedDuration += elapsed
+	if elapsed >= schedulerSlowWriteLogThreshold && len(checks) > 0 {
+		emitCounter("scheduler.mark_checked.slow.count", 1)
+		log.Printf(
+			"orchestrator: slow batch mark checked sites=%d duration=%s",
+			len(checks),
+			elapsed.Round(time.Millisecond),
+		)
+	}
 }
 
 func (o *Orchestrator) recordResultHistories(records []siteCheckResult, summary *resultProcessSummary) {
@@ -1491,7 +1506,16 @@ func (o *Orchestrator) recordResultHistories(records []siteCheckResult, summary 
 	} else {
 		summary.historyRows += len(histories)
 	}
-	summary.historyDuration += time.Since(start)
+	elapsed := time.Since(start)
+	summary.historyDuration += elapsed
+	if elapsed >= schedulerSlowWriteLogThreshold && len(histories) > 0 {
+		emitCounter("scheduler.history.slow.count", 1)
+		log.Printf(
+			"orchestrator: slow batch record check history rows=%d duration=%s",
+			len(histories),
+			elapsed.Round(time.Millisecond),
+		)
+	}
 }
 
 func resultCheckedAt(res checker.Result) time.Time {
@@ -1858,6 +1882,17 @@ func (o *Orchestrator) sendNotification(site db.Site, res checker.Result, status
 			emitCounter("wpcom.notification.status."+wpcomStatus+".queued.count", 1)
 			return
 		}
+		if wpcom.IsPermanentStatusError(err) {
+			emitCounter("wpcom.notification.permanent_failure.count", 1)
+			emitCounter("wpcom.notification.status."+wpcomStatus+".permanent_failure.count", 1)
+			if statusCode, ok := wpcom.HTTPStatusCode(err); ok {
+				emitCounter(fmt.Sprintf("wpcom.notification.http.%d.permanent_failure.count", statusCode), 1)
+			}
+			emitCounter("wpcom.notification.failed.count", 1)
+			emitCounter("wpcom.notification.status."+wpcomStatus+".failed.count", 1)
+			o.logWPCOMPermanentFailure(site.BlogID, err)
+			return
+		}
 
 		// Single retry.
 		emitCounter("wpcom.notification.retry.count", 1)
@@ -1888,6 +1923,33 @@ func (o *Orchestrator) sendNotification(site db.Site, res checker.Result, status
 	if err := dbUpdateLastAlertSent(o.ctx, site.BlogID, nowFunc().UTC()); err != nil {
 		log.Printf("orchestrator: update last alert sent blog_id=%d: %v", site.BlogID, err)
 	}
+}
+
+func (o *Orchestrator) logWPCOMPermanentFailure(blogID int64, err error) {
+	if o == nil {
+		log.Printf("orchestrator: wpcom notify permanent failure for blog_id=%d: %v", blogID, err)
+		return
+	}
+	o.wpcomPermanentMu.Lock()
+	defer o.wpcomPermanentMu.Unlock()
+
+	now := nowFunc()
+	if o.wpcomPermanentLastLog.IsZero() || now.Sub(o.wpcomPermanentLastLog) >= wpcomPermanentFailureLogInterval {
+		if o.wpcomPermanentLogSuppressed > 0 {
+			log.Printf(
+				"orchestrator: wpcom notify permanent failure for blog_id=%d: %v (suppressed %d similar permanent failures)",
+				blogID,
+				err,
+				o.wpcomPermanentLogSuppressed,
+			)
+		} else {
+			log.Printf("orchestrator: wpcom notify permanent failure for blog_id=%d: %v", blogID, err)
+		}
+		o.wpcomPermanentLastLog = now
+		o.wpcomPermanentLogSuppressed = 0
+		return
+	}
+	o.wpcomPermanentLogSuppressed++
 }
 
 // checkSSLAlerts manages a site-level tls_expiry event that tracks the cert's

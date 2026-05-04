@@ -202,6 +202,22 @@ No active candidate branch is queued here right now.
   circuit-breaker queue and emitting per-notification queue-drop logs. Jetmon
   now treats circuit-open notifications as queued instead of immediately
   retrying them, and coalesces queue-full logs.
+- [x] Classify permanent WPCOM 404/410 notification failures outside the global
+  circuit breaker. The 90,000-site retest passed with no missed checks, but
+  synthetic benchmark blog IDs still produced permanent WPCOM 404s that could
+  open the global circuit, fill the queue, and delay event workers. Jetmon now
+  records those responses as terminal per-notification failures, does not retry
+  them, coalesces their logs, and does not let them poison the transport/service
+  circuit breaker.
+- [x] Add event-worker headroom and slow scheduler write instrumentation after
+  the 90,000-site pass. Event queue depth rose above 50,000 and late
+  `mark_checked` writes showed intermittent stalls, so the event-worker cap is
+  raised from 8 to 16 and slow freshness/history write logs plus StatsD counters
+  identify whether DB persistence stalls are the next six-figure bottleneck.
+- [ ] Run a `100,000,125,000,150,000` capacity ladder after permanent WPCOM
+  failure classification and event-worker headroom. Compare freshness margin,
+  event queue depth, slow write counters, WPCOM permanent failure counts, MySQL
+  CPU/I/O, Jetmon CPU/RSS/FDs, and cleanup open-event residue.
 - [ ] After the adaptive retest, decide whether to incorporate observed RTT into
   the worker-ceiling formula. The first implementation uses the configured
   timeout as the conservative sizing input; observed RTT could reduce

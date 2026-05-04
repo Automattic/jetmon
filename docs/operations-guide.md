@@ -432,7 +432,8 @@ Important metric groups include:
   writes, and event handling
 - Scheduler write row/error counters for freshness, check history, and SSL
   expiry updates
-- WPCOM API attempts, deliveries, retries, errors, and failures
+- WPCOM API attempts, deliveries, retries, errors, queued notifications,
+  permanent 404/410 notification failures, and terminal failures
 - Veriflier response times and vote counters
 - Detection flow timing from first failure to escalation, confirmation,
   recovery, or false alarm

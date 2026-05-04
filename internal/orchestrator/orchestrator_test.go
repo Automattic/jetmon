@@ -262,6 +262,62 @@ func TestSendNotificationDoesNotRetryWhenWPCOMCircuitOpen(t *testing.T) {
 	}
 }
 
+func TestSendNotificationDoesNotRetryPermanentWPCOMFailure(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+
+	setTestConfig(t)
+
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+
+	var notifyCalls int
+	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error {
+		notifyCalls++
+		return wpcom.StatusError{StatusCode: http.StatusNotFound}
+	}
+
+	var updateAlertCalled bool
+	dbUpdateLastAlertSent = func(context.Context, int64, time.Time) error {
+		updateAlertCalled = true
+		return nil
+	}
+
+	o := &Orchestrator{
+		wpcom:    &wpcom.Client{},
+		hostname: "local-host",
+		ctx:      context.Background(),
+	}
+
+	res := checkerResultFailure(123)
+	o.sendNotification(db.Site{BlogID: 123, MonitorURL: "https://example.com"}, res, statusConfirmedDown, res.Timestamp, nil)
+
+	if notifyCalls != 1 {
+		t.Fatalf("notify calls = %d, want 1 for permanent failure", notifyCalls)
+	}
+	if updateAlertCalled {
+		t.Fatal("dbUpdateLastAlertSent should not be called for permanent failure")
+	}
+	for stat, want := range map[string]int{
+		"wpcom.notification.attempt.count":                                 1,
+		"wpcom.notification.status.confirmed_down.attempt.count":           1,
+		"wpcom.notification.error.count":                                   1,
+		"wpcom.notification.status.confirmed_down.error.count":             1,
+		"wpcom.notification.permanent_failure.count":                       1,
+		"wpcom.notification.status.confirmed_down.permanent_failure.count": 1,
+		"wpcom.notification.http.404.permanent_failure.count":              1,
+		"wpcom.notification.failed.count":                                  1,
+		"wpcom.notification.status.confirmed_down.failed.count":            1,
+		"wpcom.notification.retry.count":                                   0,
+		"wpcom.notification.delivered.count":                               0,
+		"wpcom.notification.status.confirmed_down.delivered.count":         0,
+	} {
+		if got := rec.counter(stat); got != want {
+			t.Fatalf("%s = %d, want %d", stat, got, want)
+		}
+	}
+}
+
 func TestConfirmDownSuppressedDuringCooldown(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()

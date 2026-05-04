@@ -84,6 +84,52 @@ func TestNotifyOpensCircuitAfterMaxFailures(t *testing.T) {
 	}
 }
 
+func TestNotifyPermanentNotFoundDoesNotOpenCircuit(t *testing.T) {
+	c, close := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	defer close()
+
+	for range cbMaxFailures + 2 {
+		err := c.Notify(testNotification(1))
+		if err == nil {
+			t.Fatal("Notify() expected not-found error")
+		}
+		if !IsPermanentStatusError(err) {
+			t.Fatalf("Notify() error = %v, want permanent status error", err)
+		}
+		status, ok := HTTPStatusCode(err)
+		if !ok || status != http.StatusNotFound {
+			t.Fatalf("HTTPStatusCode() = %d, %v; want %d, true", status, ok, http.StatusNotFound)
+		}
+	}
+
+	if c.IsCircuitOpen() {
+		t.Fatal("circuit should stay closed for permanent per-notification failures")
+	}
+	if c.failures != 0 {
+		t.Fatalf("failures = %d after permanent failures, want 0", c.failures)
+	}
+	if c.QueueDepth() != 0 {
+		t.Fatalf("QueueDepth() = %d after permanent failures, want 0", c.QueueDepth())
+	}
+}
+
+func TestNotifyGoneIsPermanent(t *testing.T) {
+	c, close := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusGone)
+	})
+	defer close()
+
+	err := c.Notify(testNotification(1))
+	if err == nil {
+		t.Fatal("Notify() expected gone error")
+	}
+	if !IsPermanentStatusError(err) {
+		t.Fatalf("Notify() error = %v, want permanent status error", err)
+	}
+}
+
 func TestNotifyQueuesAndReturnsErrorWhenCircuitOpen(t *testing.T) {
 	c, close := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
