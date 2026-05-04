@@ -102,6 +102,14 @@ Scheduler behavior:
   incident/projection mutation during broad synthetic or regional failure
   storms. Watch `scheduler.event_worker.scheduler_write_wait.*` if event
   delivery appears delayed during a high-failure run.
+  Broad timeout/connect-error waves are also sampled through the configured
+  Verifliers before Jetmon opens per-site failure events. If the Verifliers can
+  reach those samples, Jetmon treats the chunk as monitor-side uncertainty and
+  suppresses per-site failure events/retries for that chunk. Watch
+  `detection.failure_storm.suppressed.count`,
+  `detection.failure_storm.sample.count`, and
+  `detection.failure_storm.verifier_*` when investigating capacity tests or
+  regional network incidents.
   Exact `due_start` / `due_remaining` and legacy projection-drift checks are
   sampled about once per minute in variable-interval mode so broad operator
   reporting queries do not run on every short scheduler poll. Use

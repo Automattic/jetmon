@@ -327,6 +327,15 @@ No active candidate branch is queued here right now.
   operator-visible context. Legacy `detection.failure.<class>` StatsD metrics
   are still emitted under the same names, but once per processed chunk with an
   aggregate count instead of one UDP packet per failed probe.
+- [x] Add a Veriflier-sampled guard for broad monitor-side transport storms.
+  The `c65d0a8` run proved the 110,000-site CPU regression was fixed, but the
+  125,000-site run still opened tens of thousands of false-alarm events from
+  local timeout/connect-error waves. Large chunks dominated by transport
+  failures now sample failed URLs through the configured Verifliers; if the
+  Verifliers can reach the samples, Jetmon treats the chunk as monitor-side
+  uncertainty and suppresses per-site failure events/retries for that chunk.
+  This improves correctness ("Unknown is not downtime") and removes a major
+  event/projection/log write storm from synthetic capacity runs.
 - [x] Reduce storm-time bookkeeping that does not improve check quality:
   WPCOM-disabled notifications no longer write one audit row per skipped
   synthetic notification, per-site recovery success logs are suppressed, and

@@ -185,6 +185,18 @@ write `retry_dispatched` audit rows, and legacy `detection.failure.<class>`
 StatsD counters are emitted as chunk aggregates instead of one UDP packet per
 failed probe.
 
+The next run (`c65d0a8`) passed the 110,000-site regression point but failed at
+125,000 with 7,000 stale sites and host CPU above the suite threshold. Its raw
+journal captured more than 40,000 false-alarm Veriflier disagreements, which
+means local transport failures were opening per-site Seems Down events even
+though the Veriflier could reach sampled sites. The follow-up change adds a
+storm-aware guard: when a result chunk has a broad timeout/connect-error wave,
+Jetmon samples the failed URLs through the configured Verifliers. If those
+samples are reachable, the chunk is treated as monitor-side uncertainty and
+Jetmon suppresses per-site failure events/retries for that chunk. Small outages,
+HTTP/SSL/content failures, and Veriflier-confirmed broad outages still use the
+normal Seems Down -> Veriflier path.
+
 ## Pre-Test Checks
 
 1. Confirm migrations have run through migration 31.

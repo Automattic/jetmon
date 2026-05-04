@@ -72,6 +72,12 @@ const eventWorkerScaleSites = 60
 const eventQueueBatches = 4
 const eventMutationMaxAttempts = 3
 const eventMutationRetryBaseDelay = 25 * time.Millisecond
+const failureStormMinFailures = 1000
+const failureStormMinPercent = 25
+const failureStormTransportPercent = 80
+const failureStormVerifierSamples = 5
+const failureStormVerifierSuccessPercent = 80
+const failureStormVerifierSampleTimeout = 2 * time.Second
 const wpcomPermanentFailureLogInterval = 10 * time.Second
 
 // VariableIntervalPollInterval returns the idle scheduler poll interval used
@@ -267,9 +273,10 @@ type resultProcessSummary struct {
 	checkTLSDeprecated int
 	failureClassCounts map[string]int
 
-	eventJobsQueued    int
-	eventQueueDepthMax int
-	eventQueueCapacity int
+	eventJobsQueued        int
+	eventQueueDepthMax     int
+	eventQueueCapacity     int
+	failureStormSuppressed int
 
 	markCheckedDuration time.Duration
 	historyDuration     time.Duration
@@ -281,6 +288,18 @@ type siteCheckResult struct {
 	blogID int64
 	site   db.Site
 	res    checker.Result
+}
+
+type failureStormAssessment struct {
+	suppress bool
+
+	failures          int
+	transportFailures int
+	samples           int
+	verifierResponses int
+	verifierSuccesses int
+	verifierFailures  int
+	verifierErrors    int
 }
 
 type pageResultBuffer struct {
@@ -1405,9 +1424,35 @@ func (o *Orchestrator) processResults(results map[int64]checker.Result, sites ma
 }
 
 func (o *Orchestrator) processResultEvents(records []siteCheckResult, summary *resultProcessSummary) {
+	storm := o.assessFailureStorm(records)
+	if storm.suppress {
+		summary.failureStormSuppressed += storm.transportFailures
+		emitCounter("detection.failure_storm.suppressed.count", storm.transportFailures)
+		emitCounter("detection.failure_storm.sample.count", storm.samples)
+		emitCounter("detection.failure_storm.verifier_response.count", storm.verifierResponses)
+		emitCounter("detection.failure_storm.verifier_success.count", storm.verifierSuccesses)
+		emitCounter("detection.failure_storm.verifier_failure.count", storm.verifierFailures)
+		emitCounter("detection.failure_storm.verifier_error.count", storm.verifierErrors)
+		log.Printf(
+			"orchestrator: suppressing broad local failure storm records=%d failures=%d transport_failures=%d verifier_samples=%d verifier_responses=%d verifier_successes=%d verifier_failures=%d verifier_errors=%d",
+			len(records),
+			storm.failures,
+			storm.transportFailures,
+			storm.samples,
+			storm.verifierResponses,
+			storm.verifierSuccesses,
+			storm.verifierFailures,
+			storm.verifierErrors,
+		)
+	}
+
 	for _, record := range records {
 		// Per-check data is recorded in jetmon_check_history (above); duplicating
 		// it in jetmon_audit_log was retired with the operational/site-state split.
+		if storm.suppress && isTransportFailure(record.res) {
+			o.clearSuppressedFailureRetry(record.blogID)
+			continue
+		}
 		if !o.shouldProcessResultEvent(record) {
 			continue
 		}
@@ -1496,6 +1541,138 @@ func emitDetectionFailureCounters(counts map[string]int) {
 		if count > 0 {
 			emitCounter("detection.failure."+class+".count", count)
 		}
+	}
+}
+
+func (o *Orchestrator) assessFailureStorm(records []siteCheckResult) failureStormAssessment {
+	var assessment failureStormAssessment
+	if len(records) == 0 {
+		return assessment
+	}
+
+	transportRecords := make([]siteCheckResult, 0, min(len(records), failureStormVerifierSamples))
+	for _, record := range records {
+		if !record.res.IsFailure() {
+			continue
+		}
+		assessment.failures++
+		if !isTransportFailure(record.res) {
+			continue
+		}
+		assessment.transportFailures++
+		if len(transportRecords) < failureStormVerifierSamples {
+			transportRecords = append(transportRecords, record)
+		}
+	}
+
+	if assessment.transportFailures < failureStormMinFailures {
+		return assessment
+	}
+	if assessment.failures*100 < len(records)*failureStormMinPercent {
+		return assessment
+	}
+	if assessment.transportFailures*100 < assessment.failures*failureStormTransportPercent {
+		return assessment
+	}
+
+	clients := o.veriflierSnapshot()
+	if len(clients) == 0 || len(transportRecords) == 0 {
+		return assessment
+	}
+
+	assessment.samples = len(transportRecords)
+	assessment.verifierResponses, assessment.verifierSuccesses, assessment.verifierFailures, assessment.verifierErrors =
+		o.sampleVerifiersForFailureStorm(transportRecords, clients)
+	if assessment.verifierResponses == 0 {
+		return assessment
+	}
+	if assessment.verifierSuccesses*100 >= assessment.verifierResponses*failureStormVerifierSuccessPercent {
+		assessment.suppress = true
+	}
+	return assessment
+}
+
+func isTransportFailure(res checker.Result) bool {
+	if !res.IsFailure() {
+		return false
+	}
+	switch res.ErrorCode {
+	case checker.ErrorTimeout, checker.ErrorConnect:
+		return true
+	default:
+		return false
+	}
+}
+
+func (o *Orchestrator) sampleVerifiersForFailureStorm(records []siteCheckResult, clients []*veriflier.VeriflierClient) (responses, successes, failures, errorsCount int) {
+	if len(records) == 0 || len(clients) == 0 {
+		return 0, 0, 0, 0
+	}
+
+	parent := o.ctx
+	if parent == nil {
+		parent = stdctx.Background()
+	}
+	ctx, cancel := stdctx.WithTimeout(parent, failureStormVerifierSampleTimeout)
+	defer cancel()
+
+	type sampleResult struct {
+		success bool
+		err     error
+	}
+	total := len(records) * len(clients)
+	ch := make(chan sampleResult, total)
+	for _, record := range records {
+		req := veriflier.CheckRequest{
+			BlogID:         record.blogID,
+			URL:            record.site.MonitorURL,
+			TimeoutSeconds: int32(timeoutForSite(config.Get(), record.site)),
+			Keyword:        stringPtrValue(record.site.CheckKeyword),
+			CustomHeaders:  checker.ParseCustomHeaders(record.site.CustomHeaders),
+			RedirectPolicy: record.site.RedirectPolicy,
+			RequestID:      veriflier.NewRequestID(),
+		}
+		for _, client := range clients {
+			c := client
+			go func() {
+				res, err := veriflierCheckFunc(c, ctx, req)
+				if err != nil {
+					ch <- sampleResult{err: err}
+					return
+				}
+				ch <- sampleResult{success: res != nil && res.Success}
+			}()
+		}
+	}
+
+	for range total {
+		select {
+		case result := <-ch:
+			if result.err != nil {
+				errorsCount++
+				continue
+			}
+			responses++
+			if result.success {
+				successes++
+			} else {
+				failures++
+			}
+		case <-ctx.Done():
+			errorsCount += total - responses - errorsCount
+			return responses, successes, failures, errorsCount
+		}
+	}
+	return responses, successes, failures, errorsCount
+}
+
+func (o *Orchestrator) clearSuppressedFailureRetry(blogID int64) {
+	if o == nil || o.retries == nil {
+		return
+	}
+	entry := o.retries.get(blogID)
+	if entry == nil || entry.eventID == 0 {
+		o.retries.clear(blogID)
 	}
 }
 
@@ -1875,7 +2052,6 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 	} else {
 		// Verifliers did not confirm — false positive. Close the Seems Down
 		// event with reason=false_alarm and reset site_status in the same tx.
-		log.Printf("orchestrator: blog_id=%d verifliers did not confirm down (%d/%d)", site.BlogID, confirmations, quorum)
 		emitCounter("detection.verifier.false_alarm.count", 1)
 		emitCounter("detection.verifier.false_alarm."+failureClass(entry.lastResult)+".count", 1)
 		emitTimingSince("detection.seems_down_to_false_alarm.time", entry.firstFailAt, nowFunc().UTC())
@@ -1888,9 +2064,14 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 				"verifier_healthy":   healthyVerifliers,
 				"verifier_disagreed": healthyVerifliers - confirmations,
 				"verifier_confirmed": confirmations,
+				"verifier_results":   summarizeVerifierResults(vResults),
 			})
 			if err := o.closeEvent(site.BlogID, entry.eventID,
 				eventstore.ReasonFalseAlarm, statusRunning, nowFunc().UTC(), meta); err != nil {
+				if errors.Is(err, eventstore.ErrEventClosed) {
+					o.retries.clear(site.BlogID)
+					return
+				}
 				log.Printf("orchestrator: close false-alarm event blog_id=%d event_id=%d: %v",
 					site.BlogID, entry.eventID, err)
 			}

@@ -166,6 +166,12 @@ Failure Escalation Detail
 ```
   Local check fails (N times)
           │
+          │  Broad timeout/connect-error storm and
+          │  Veriflier samples can reach affected URLs?
+          ├──────────────────────────► suppress per-site failure events
+          │                            for that chunk; count as
+          │                            monitor-side uncertainty
+          │
           │  failCount < NumOfChecks?
           ├──────────────────────────► queue in retryQueue, retry next round
           │

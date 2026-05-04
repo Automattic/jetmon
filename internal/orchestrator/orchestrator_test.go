@@ -617,6 +617,24 @@ func checkerResultFailure(blogID int64) checker.Result {
 	}
 }
 
+func broadTransportFailureResults(count int) (map[int64]checker.Result, map[int64]db.Site) {
+	results := make(map[int64]checker.Result, count)
+	sites := make(map[int64]db.Site, count)
+	for i := 0; i < count; i++ {
+		blogID := int64(i + 1)
+		res := checkerResultFailure(blogID)
+		res.HTTPCode = 0
+		res.ErrorCode = checker.ErrorConnect
+		results[blogID] = res
+		sites[blogID] = db.Site{
+			BlogID:     blogID,
+			MonitorURL: fmt.Sprintf("https://site-%d.example.com", blogID),
+			SiteStatus: statusRunning,
+		}
+	}
+	return results, sites
+}
+
 func TestHandleRecoverySendsNotificationWhenSiteWasDown(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
@@ -880,6 +898,93 @@ func TestProcessResultsReportsCheckOutcomes(t *testing.T) {
 	}
 	if got := rec.counter("detection.failure.server.count"); got != 1 {
 		t.Fatalf("aggregated server failure counter = %d, want 1", got)
+	}
+}
+
+func TestProcessResultsSuppressesBroadTransportFailureStormWhenVerifiersDisagree(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig(t)
+
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+
+	var verifierCalls atomic.Int64
+	veriflierCheckFunc = func(_ *veriflier.VeriflierClient, _ context.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
+		verifierCalls.Add(1)
+		return &veriflier.CheckResult{
+			BlogID:   req.BlogID,
+			Success:  true,
+			HTTPCode: 200,
+		}, nil
+	}
+
+	results, sites := broadTransportFailureResults(1200)
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local",
+		ctx:      context.Background(),
+		veriflierClients: []*veriflier.VeriflierClient{
+			veriflier.NewVeriflierClient("verifier", ""),
+		},
+	}
+
+	summary := o.processResults(results, sites)
+
+	if summary.failureStormSuppressed != 1200 {
+		t.Fatalf("failureStormSuppressed = %d, want 1200", summary.failureStormSuppressed)
+	}
+	if o.RetryQueueSize() != 0 {
+		t.Fatalf("RetryQueueSize() = %d, want 0", o.RetryQueueSize())
+	}
+	if got := verifierCalls.Load(); got != failureStormVerifierSamples {
+		t.Fatalf("verifier calls = %d, want %d", got, failureStormVerifierSamples)
+	}
+	if got := rec.counter("detection.failure_storm.suppressed.count"); got != 1200 {
+		t.Fatalf("failure storm suppressed counter = %d, want 1200", got)
+	}
+	if got := rec.counter("detection.seems_down.open.count"); got != 0 {
+		t.Fatalf("seems-down opens = %d, want 0", got)
+	}
+}
+
+func TestProcessResultsKeepsBroadTransportFailureStormWhenVerifiersConfirm(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig(t)
+
+	var verifierCalls atomic.Int64
+	veriflierCheckFunc = func(_ *veriflier.VeriflierClient, _ context.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
+		verifierCalls.Add(1)
+		return &veriflier.CheckResult{
+			BlogID:   req.BlogID,
+			Success:  false,
+			HTTPCode: 500,
+		}, nil
+	}
+
+	results, sites := broadTransportFailureResults(1200)
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local",
+		ctx:      context.Background(),
+		veriflierClients: []*veriflier.VeriflierClient{
+			veriflier.NewVeriflierClient("verifier", ""),
+		},
+	}
+
+	summary := o.processResults(results, sites)
+
+	if summary.failureStormSuppressed != 0 {
+		t.Fatalf("failureStormSuppressed = %d, want 0", summary.failureStormSuppressed)
+	}
+	if o.RetryQueueSize() != 1200 {
+		t.Fatalf("RetryQueueSize() = %d, want 1200", o.RetryQueueSize())
+	}
+	if got := verifierCalls.Load(); got != failureStormVerifierSamples {
+		t.Fatalf("verifier calls = %d, want %d", got, failureStormVerifierSamples)
 	}
 }
 

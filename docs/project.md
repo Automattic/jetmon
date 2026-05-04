@@ -261,6 +261,14 @@ local dependency health without polling every host dashboard directly.
 **False Positive Tracker**
 Every time the system escalates a site to Veriflier confirmation and the Verifliers do NOT confirm it as down (i.e., the queue entry times out or all Verifliers report the site as up), the event is recorded in a `jetmon_false_positives` table with timestamp, site, HTTP code, error code, and RTT from the local check. A view in the operator dashboard surfaces sites with high false positive rates, helping operators tune per-site `NUM_OF_CHECKS` or `TIME_BETWEEN_CHECKS_SEC` settings.
 
+Broad local timeout/connect-error storms are handled before that per-site
+escalation path when possible. If a result chunk is dominated by transport
+failures, Jetmon samples the failed URLs through the configured Verifliers. If
+those samples are reachable from the Verifliers, Jetmon treats the chunk as
+monitor-side uncertainty and suppresses per-site Seems Down events/retries for
+that chunk. Smaller failures, HTTP/SSL/content failures, and Veriflier-confirmed
+broad outages still follow the normal event and false-positive flow.
+
 **Internal Audit Log**
 Operational activity for every site is written to a `jetmon_audit_log` table:
 
