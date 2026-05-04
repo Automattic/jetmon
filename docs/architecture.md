@@ -142,8 +142,7 @@ This is the end-to-end path from database query to WPCOM notification.
 │ retries     │   │ Stage 1 — Local retry                           │
 │  .clear()   │   │   retries.record(res) → failCount++             │
 │             │   │   if failCount < NumOfChecks (default 3):       │
-│ if site was │   │     auditLog("retry_dispatched")                │
-│ previously  │   │     ← return; retry next round                  │
+│ if site was │   │     ← return; retry next round                  │
 │ down:       │   │                                                 │
 │  dbUpdate   │   │ Stage 2 — Veriflier escalation                  │
 │  Status()   │   │   if failCount >= NumOfChecks:                  │
@@ -438,8 +437,8 @@ Database Tables
 
   jetmon_audit_log        Operational trail for compliance/debugging
     event_type            check | wpcom_sent | wpcom_retry |
-                          retry_dispatched | veriflier_sent |
-                          veriflier_result | maintenance_active |
+                          veriflier_sent | veriflier_result |
+                          maintenance_active |
                           alert_suppressed | api_access | config_reload
     blog_id, source, http_code, error_code, rtt_ms
 

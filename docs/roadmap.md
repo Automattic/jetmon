@@ -320,6 +320,13 @@ No active candidate branch is queued here right now.
   open. Event workers now yield during scheduler freshness/history/SSL write
   batches, and the failure path trusts the scheduler's active-row snapshot
   instead of issuing one `monitor_active` SELECT per failed probe.
+- [x] Reduce per-site failure-path CPU and audit write volume after the
+  `15ac9dc` run passed freshness at 110,000 but crossed the host CPU threshold.
+  Local retry attempts no longer write `retry_dispatched` audit rows, because
+  `jetmon_check_history`, `jetmon_events`, and transitions already preserve the
+  operator-visible context. Legacy `detection.failure.<class>` StatsD metrics
+  are still emitted under the same names, but once per processed chunk with an
+  aggregate count instead of one UDP packet per failed probe.
 - [x] Reduce storm-time bookkeeping that does not improve check quality:
   WPCOM-disabled notifications no longer write one audit row per skipped
   synthetic notification, per-site recovery success logs are suppressed, and

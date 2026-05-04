@@ -177,6 +177,14 @@ freshness/history/SSL batches are being written, and the hot failure path trusts
 the scheduler's active-row snapshot instead of issuing one `monitor_active`
 SELECT per failed probe.
 
+That persistence-priority iteration (`15ac9dc`) passed 90,000 and 100,000 with
+zero stale sites, then stopped at 110,000 only because host CPU crossed the
+suite threshold while freshness remained clean. The next iteration reduces
+per-site CPU and DB chatter in the failure path: local retry attempts no longer
+write `retry_dispatched` audit rows, and legacy `detection.failure.<class>`
+StatsD counters are emitted as chunk aggregates instead of one UDP packet per
+failed probe.
+
 ## Pre-Test Checks
 
 1. Confirm migrations have run through migration 31.

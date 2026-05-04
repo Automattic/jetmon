@@ -824,6 +824,9 @@ func TestProcessResultsReportsCheckOutcomes(t *testing.T) {
 	defer restore()
 	setTestConfig(t)
 
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+
 	o := &Orchestrator{
 		retries:  newRetryQueue(),
 		wpcom:    &wpcom.Client{},
@@ -871,6 +874,12 @@ func TestProcessResultsReportsCheckOutcomes(t *testing.T) {
 			summary.checkHTTPFailures,
 			summary.checkTLSDeprecated,
 		)
+	}
+	if got := rec.counter("detection.failure.intermittent.count"); got != 2 {
+		t.Fatalf("aggregated intermittent failure counter = %d, want 2", got)
+	}
+	if got := rec.counter("detection.failure.server.count"); got != 1 {
+		t.Fatalf("aggregated server failure counter = %d, want 1", got)
 	}
 }
 
@@ -2100,8 +2109,8 @@ func TestHandleFailureEmitsSeemsDownMetrics(t *testing.T) {
 	if got := rec.counter("detection.seems_down.open.count"); got != 1 {
 		t.Fatalf("seems-down open counter = %d, want 1", got)
 	}
-	if got := rec.counter("detection.failure.server.count"); got != 1 {
-		t.Fatalf("failure class counter = %d, want 1", got)
+	if got := rec.counter("detection.failure.server.count"); got != 0 {
+		t.Fatalf("failure class counter from handleFailure = %d, want 0; processResults emits this aggregate", got)
 	}
 	if got := rec.counter("detection.seems_down.open.server.count"); got != 1 {
 		t.Fatalf("seems-down class counter = %d, want 1", got)

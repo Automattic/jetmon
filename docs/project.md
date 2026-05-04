@@ -264,14 +264,18 @@ Every time the system escalates a site to Veriflier confirmation and the Verifli
 **Internal Audit Log**
 Operational activity for every site is written to a `jetmon_audit_log` table:
 
-- Check performed: timestamp, source (local/veriflier name), result (HTTP code, error code, RTT)
 - WPCOM notification sent: timestamp, payload hash, response code
 - WPCOM notification retry: timestamp, reason
-- Local retry dispatched: timestamp, retry count
 - Veriflier request sent: timestamp, which verifliers
 - Veriflier result received: timestamp, veriflier name, result
 - Maintenance window active: timestamp, window end
 - Config change: timestamp, which keys changed
+
+Routine local check samples and local retry attempts are intentionally kept out
+of the audit log at high scale. Per-check timing and error details live in
+`jetmon_check_history`, while retry and incident lifecycle state live in
+`jetmon_events` / `jetmon_event_transitions`. This keeps broad failures from
+turning the audit table into the dominant write path.
 
 Authoritative incident state transitions live in `jetmon_event_transitions`, written by the `eventstore` package in the same transaction as the matching `jetmon_events` mutation. The audit log is intentionally operational context, not the source of truth for site state.
 

@@ -265,6 +265,7 @@ type resultProcessSummary struct {
 	checkRedirects     int
 	checkKeywords      int
 	checkTLSDeprecated int
+	failureClassCounts map[string]int
 
 	eventJobsQueued    int
 	eventQueueDepthMax int
@@ -1373,6 +1374,7 @@ func (o *Orchestrator) processResults(results map[int64]checker.Result, sites ma
 	for _, record := range records {
 		addCheckOutcome(&summary, record.res)
 	}
+	emitDetectionFailureCounters(summary.failureClassCounts)
 
 	o.withSchedulerDBWrite(func() {
 		o.markResultsChecked(records, &summary)
@@ -1464,6 +1466,10 @@ func addCheckOutcome(summary *resultProcessSummary, res checker.Result) {
 		summary.checkSuccesses++
 	} else {
 		summary.checkFailures++
+		if summary.failureClassCounts == nil {
+			summary.failureClassCounts = make(map[string]int)
+		}
+		summary.failureClassCounts[failureClass(res)]++
 	}
 
 	if !res.Success && res.HTTPCode >= 400 {
@@ -1482,6 +1488,14 @@ func addCheckOutcome(summary *resultProcessSummary, res checker.Result) {
 		summary.checkKeywords++
 	case checker.ErrorTLSDeprecated:
 		summary.checkTLSDeprecated++
+	}
+}
+
+func emitDetectionFailureCounters(counts map[string]int) {
+	for class, count := range counts {
+		if count > 0 {
+			emitCounter("detection.failure."+class+".count", count)
+		}
 	}
 }
 
@@ -1708,7 +1722,6 @@ func (o *Orchestrator) handleFailure(site db.Site, res checker.Result) {
 
 	entry := o.retries.record(res)
 	class := failureClass(res)
-	emitCounter("detection.failure."+class+".count", 1)
 
 	// Open a Seems Down event on the first failure we don't already have an
 	// id for. The schema's idempotent dedup_key means re-detecting the same
@@ -1729,22 +1742,9 @@ func (o *Orchestrator) handleFailure(site db.Site, res checker.Result) {
 	}
 
 	if entry.failCount < config.Get().NumOfChecks {
-		meta, _ := json.Marshal(map[string]any{
-			"http_code":  res.HTTPCode,
-			"error_code": res.ErrorCode,
-			"rtt_ms":     res.RTT.Milliseconds(),
-			"attempt":    entry.failCount,
-			"of":         config.Get().NumOfChecks,
-			"event_id":   entry.eventID,
-		})
-		o.auditLog(audit.Entry{
-			BlogID:    site.BlogID,
-			EventID:   entry.eventID,
-			EventType: audit.EventRetryDispatched,
-			Source:    o.hostname,
-			Detail:    fmt.Sprintf("retry %d of %d", entry.failCount, config.Get().NumOfChecks),
-			Metadata:  meta,
-		})
+		// The open event, transition metadata, retry queue, and check-history
+		// sample preserve the local retry context. Avoid writing one audit row
+		// per failed probe; broad outages turn that into the dominant DB load.
 		return
 	}
 
