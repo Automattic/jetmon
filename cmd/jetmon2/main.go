@@ -89,6 +89,7 @@ func runServe() {
 	}
 	cfg := config.Get()
 	log.Printf("config: legacy_status_projection=%s", enabledLabel(cfg.LegacyStatusProjectionEnable))
+	log.Printf("config: wpcom_notify=%s", enabledLabel(cfg.WPCOMNotifyEnable))
 	log.Printf("config: bucket_ownership=%s", bucketOwnershipLabel(cfg))
 	log.Printf("config: scheduler=%s", schedulerConfigLabel(cfg))
 	log.Printf("config: email_transport=%s", emailTransportLabel(cfg))
@@ -363,6 +364,7 @@ func cmdValidateConfig() {
 
 	cfg := config.Get()
 	fmt.Printf("INFO legacy_status_projection=%s\n", enabledLabel(cfg.LegacyStatusProjectionEnable))
+	fmt.Printf("INFO wpcom_notify=%s\n", enabledLabel(cfg.WPCOMNotifyEnable))
 	fmt.Printf("INFO bucket_ownership=%s\n", bucketOwnershipLabel(cfg))
 	fmt.Printf("INFO scheduler=%s\n", schedulerConfigLabel(cfg))
 	for _, line := range rolloutAdviceLines(cfg) {

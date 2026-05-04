@@ -61,6 +61,12 @@ DATASET_SIZE. Default: 32.
 AUTH_TOKEN
 Shared secret used to authenticate outbound WPCOM API calls. Required.
 
+WPCOM_NOTIFY_ENABLE
+Controls the legacy v1-compatible WPCOM status-change notification path. Keep
+enabled in production so Jetmon v2 remains a drop-in replacement for the v1
+notification contract. Set to false in synthetic capacity, local, or isolated
+test services so fake benchmark blog IDs do not contact WPCOM. Default: true.
+
 VERIFLIER_BATCH_SIZE
 Legacy compatibility setting retained for verifier batching compatibility. The
 current JSON-over-HTTP verifier path sends one verification request per site

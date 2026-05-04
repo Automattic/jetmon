@@ -433,7 +433,8 @@ Important metric groups include:
 - Scheduler write row/error counters for freshness, check history, and SSL
   expiry updates
 - WPCOM API attempts, deliveries, retries, errors, queued notifications,
-  permanent 404/410 notification failures, and terminal failures
+  permanent 404/410 notification failures, skipped notifications when
+  `WPCOM_NOTIFY_ENABLE=false`, and terminal failures
 - Veriflier response times and vote counters
 - Detection flow timing from first failure to escalation, confirmation,
   recovery, or false alarm

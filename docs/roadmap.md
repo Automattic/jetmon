@@ -218,6 +218,21 @@ No active candidate branch is queued here right now.
   failure classification and event-worker headroom. Compare freshness margin,
   event queue depth, slow write counters, WPCOM permanent failure counts, MySQL
   CPU/I/O, Jetmon CPU/RSS/FDs, and cleanup open-event residue.
+- [x] Disable legacy WPCOM notification attempts in synthetic capacity
+  environments. The 100k/125k retest showed the v2 test service still contacting
+  WPCOM for fake benchmark blog IDs, adding DNS/network/log noise and reaching a
+  real external service. `WPCOM_NOTIFY_ENABLE` now defaults to true for
+  production drop-in compatibility but can be set false for synthetic or
+  isolated test services.
+- [x] Raise adaptive worker headroom from 2x to 3x for the six-figure capacity
+  boundary. The 100k pass had no throughput margin and 125k failed while host
+  CPU, memory, MySQL CPU, and file descriptors stayed below thresholds. The
+  increased ceiling lets the next ladder determine whether more in-flight checks
+  are useful before pursuing deeper scheduler/write-path redesign.
+- [ ] Run a `100,000,110,000,115,000` capacity ladder after WPCOM test isolation
+  and 3x adaptive worker headroom. Compare freshness margin, event queue depth,
+  slow write counters, MySQL CPU/I/O, Jetmon CPU/RSS/FDs, open FDs, and cleanup
+  open-event residue.
 - [ ] After the adaptive retest, decide whether to incorporate observed RTT into
   the worker-ceiling formula. The first implementation uses the configured
   timeout as the conservative sizing input; observed RTT could reduce

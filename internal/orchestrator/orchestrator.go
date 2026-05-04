@@ -59,7 +59,7 @@ const schedulerMaxBatchSites = 25000
 const schedulerResultProcessChunkSites = 5000
 const schedulerAdaptiveWorkerSafetyNumerator = 6
 const schedulerAdaptiveWorkerSafetyDenominator = 5
-const schedulerAdaptiveWorkerMaxMultiplier = 2
+const schedulerAdaptiveWorkerMaxMultiplier = 3
 const schedulerWorkerFDReserve = 256
 const schedulerWorkerFDUseNumerator = 8
 const schedulerWorkerFDUseDenominator = 10
@@ -1835,6 +1835,19 @@ func (o *Orchestrator) confirmDown(site db.Site, entry *retryEntry, vResults []v
 }
 
 func (o *Orchestrator) sendNotification(site db.Site, res checker.Result, status int, changeTime time.Time, vResults []veriflier.CheckResult) {
+	wpcomStatus := wpcomStatusMetricSegment(status)
+	if cfg := config.Get(); cfg != nil && !cfg.WPCOMNotifyEnable {
+		emitCounter("wpcom.notification.skipped.count", 1)
+		emitCounter("wpcom.notification.status."+wpcomStatus+".skipped.count", 1)
+		o.auditLog(audit.Entry{
+			BlogID:    site.BlogID,
+			EventType: audit.EventWPCOMSkipped,
+			Source:    "local",
+			Detail:    fmt.Sprintf("status=%d type=%s reason=disabled_by_config", status, res.StatusType()),
+		})
+		return
+	}
+
 	checks := []wpcom.CheckEntry{
 		{
 			Type:   1,
@@ -1871,7 +1884,6 @@ func (o *Orchestrator) sendNotification(site db.Site, res checker.Result, status
 		Detail:    fmt.Sprintf("status=%d type=%s", status, n.StatusType),
 	})
 
-	wpcomStatus := wpcomStatusMetricSegment(status)
 	emitCounter("wpcom.notification.attempt.count", 1)
 	emitCounter("wpcom.notification.status."+wpcomStatus+".attempt.count", 1)
 	if err := wpcomNotifyFunc(o.wpcom, n); err != nil {

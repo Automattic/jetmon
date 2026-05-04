@@ -318,6 +318,53 @@ func TestSendNotificationDoesNotRetryPermanentWPCOMFailure(t *testing.T) {
 	}
 }
 
+func TestSendNotificationSkipsWhenWPCOMDisabled(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+
+	cfg := setTestConfig(t)
+	cfg.WPCOMNotifyEnable = false
+
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+
+	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error {
+		t.Fatal("wpcomNotifyFunc should not be called when WPCOM_NOTIFY_ENABLE=false")
+		return nil
+	}
+
+	var updateAlertCalled bool
+	dbUpdateLastAlertSent = func(context.Context, int64, time.Time) error {
+		updateAlertCalled = true
+		return nil
+	}
+
+	o := &Orchestrator{
+		wpcom:    &wpcom.Client{},
+		hostname: "local-host",
+		ctx:      context.Background(),
+	}
+
+	res := checkerResultFailure(123)
+	o.sendNotification(db.Site{BlogID: 123, MonitorURL: "https://example.com"}, res, statusConfirmedDown, res.Timestamp, nil)
+
+	if updateAlertCalled {
+		t.Fatal("dbUpdateLastAlertSent should not be called when notification is skipped")
+	}
+	for stat, want := range map[string]int{
+		"wpcom.notification.skipped.count":                         1,
+		"wpcom.notification.status.confirmed_down.skipped.count":   1,
+		"wpcom.notification.attempt.count":                         0,
+		"wpcom.notification.status.confirmed_down.attempt.count":   0,
+		"wpcom.notification.delivered.count":                       0,
+		"wpcom.notification.status.confirmed_down.delivered.count": 0,
+	} {
+		if got := rec.counter(stat); got != want {
+			t.Fatalf("%s = %d, want %d", stat, got, want)
+		}
+	}
+}
+
 func TestConfirmDownSuppressedDuringCooldown(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
@@ -1587,8 +1634,8 @@ func TestSchedulerAdaptiveWorkerMaxFromDueBacklog(t *testing.T) {
 		UseVariableCheckIntervals: true,
 	}
 
-	if got := schedulerAdaptiveWorkerMax(cfg, 100000); got != 1920 {
-		t.Fatalf("schedulerAdaptiveWorkerMax(100k due) = %d, want 1920", got)
+	if got := schedulerAdaptiveWorkerMax(cfg, 100000); got != 2880 {
+		t.Fatalf("schedulerAdaptiveWorkerMax(100k due) = %d, want 2880", got)
 	}
 	if got := schedulerAdaptiveWorkerMax(cfg, 1000); got != 960 {
 		t.Fatalf("schedulerAdaptiveWorkerMax(small backlog) = %d, want base 960", got)
@@ -1612,8 +1659,8 @@ func TestSchedulerAdaptiveWorkerMaxHonorsResourceCapAboveBase(t *testing.T) {
 	}
 
 	workerResourceCapFunc = func() int { return 500 }
-	if got := schedulerAdaptiveWorkerMax(cfg, 100000); got != 1920 {
-		t.Fatalf("schedulerAdaptiveWorkerMax(cap below base) = %d, want burst-capped adaptive 1920", got)
+	if got := schedulerAdaptiveWorkerMax(cfg, 100000); got != 2880 {
+		t.Fatalf("schedulerAdaptiveWorkerMax(cap below base) = %d, want burst-capped adaptive 2880", got)
 	}
 }
 

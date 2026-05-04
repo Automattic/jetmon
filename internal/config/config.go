@@ -76,6 +76,12 @@ type Config struct {
 
 	AlertCooldownMinutes int `json:"ALERT_COOLDOWN_MINUTES"`
 
+	// WPCOMNotifyEnable controls the legacy v1-compatible WPCOM notification
+	// path. It defaults to true for production/drop-in compatibility. Synthetic
+	// capacity environments should set it false so benchmark blog IDs do not
+	// contact WPCOM.
+	WPCOMNotifyEnable bool `json:"WPCOM_NOTIFY_ENABLE"`
+
 	StatsUpdateIntervalMS     int  `json:"STATS_UPDATE_INTERVAL_MS"`
 	StatsdSendMemUsage        bool `json:"STATSD_SEND_MEM_USAGE"`
 	TimeBetweenNoticesMin     int  `json:"TIME_BETWEEN_NOTICES_MIN"`
@@ -209,6 +215,7 @@ func defaults() *Config {
 		NumOfChecks:                  3,
 		TimeBetweenChecksSec:         30,
 		AlertCooldownMinutes:         30,
+		WPCOMNotifyEnable:            true,
 		StatsUpdateIntervalMS:        10000,
 		TimeBetweenNoticesMin:        59,
 		MinTimeBetweenRoundsSec:      300,

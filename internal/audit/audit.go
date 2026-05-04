@@ -22,6 +22,7 @@ import (
 const (
 	EventWPCOMSent         = "wpcom_sent"
 	EventWPCOMRetry        = "wpcom_retry"
+	EventWPCOMSkipped      = "wpcom_skipped"
 	EventRetryDispatched   = "retry_dispatched"
 	EventVeriflierSent     = "veriflier_sent"
 	EventMaintenanceActive = "maintenance_active"

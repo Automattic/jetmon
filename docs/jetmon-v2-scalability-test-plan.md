@@ -71,10 +71,20 @@ slow freshness/history write logs now identify DB persistence stalls without
 changing the scheduler's checking behavior.
 
 Do not stack DNS caching or async check-history writes on top of this branch
-before the next real capacity run. The next test should isolate permanent WPCOM
-failure classification, event-worker headroom, and slow-write instrumentation
-while preserving the 2x adaptive worker ceiling, 25,000-site dispatch window,
-and 5,000-site result-processing chunks.
+before the next real capacity run. The 90,000-site retest isolated permanent
+WPCOM failure classification, event-worker headroom, and slow-write
+instrumentation while preserving the 2x adaptive worker ceiling, 25,000-site
+dispatch window, and 5,000-site result-processing chunks.
+
+The `100,000,125,000,150,000` retest raised the clean point to 100,000 active
+sites but exposed two remaining issues. First, the test service was still
+attempting legacy WPCOM notifications for synthetic blog IDs; capacity test
+configs must set `WPCOM_NOTIFY_ENABLE=false` so fake sites never contact WPCOM.
+Second, 100,000 passed with no throughput margin and 125,000 failed by a wide
+margin while host CPU, memory, MySQL CPU, and file descriptors stayed below
+thresholds. The next iteration disables legacy WPCOM notification attempts in
+the test service and raises the adaptive worker ceiling from 2x to 3x the
+configured `NUM_WORKERS`, still bounded by the host file-descriptor budget.
 
 ## Pre-Test Checks
 
@@ -84,8 +94,12 @@ and 5,000-site result-processing chunks.
 4. Confirm `WORKER_MAX_MEM_MB=0` for capacity tests unless intentionally
    testing memory-pressure drain.
 5. Confirm `USE_VARIABLE_CHECK_INTERVALS=true`.
-6. Confirm API-enabled test hosts set `DELIVERY_OWNER_HOST` explicitly.
-7. Confirm the exact activated `monitor_url` pattern resolves and returns HTTP
+6. Confirm `WPCOM_NOTIFY_ENABLE=false` for synthetic capacity tests. These test
+   blog IDs are not real WPCOM sites, and allowing legacy notifications to
+   leave the test environment adds DNS/network noise while contacting a real
+   external service.
+7. Confirm API-enabled test hosts set `DELIVERY_OWNER_HOST` explicitly.
+8. Confirm the exact activated `monitor_url` pattern resolves and returns HTTP
    200 from the Jetmon service host and the Veriflier host. Do not test a
    similar hostname by hand; query one activated row from
    `jetpack_monitor_sites`, then run `dig` and `curl` for that exact hostname.
@@ -306,16 +320,17 @@ Dependency signals:
 ## Next Capacity Ladder
 
 Run each step for the same duration and compare against the latest successful
-baseline. The latest clean point is 90,000 active sites with 10.85% throughput
-margin, `p95` freshness age of 218 seconds, and no stale or missed active sites.
-Host CPU, memory, MySQL CPU, and file descriptors stayed below alert thresholds,
-but event queue depth rose past 50,000 and some freshness writes spiked late in
-the run. After adding permanent WPCOM failure classification, event-worker
-headroom, and slow-write instrumentation, use a ceiling-discovery ladder:
+baseline. The latest clean point is 100,000 active sites, but it had 0.00%
+throughput margin: exactly 20,000 recent checks/minute against 20,000
+required/minute. The 125,000 step failed with 48,740 stale active sites and
+15,952 recent checks/minute against 25,000 required/minute. After disabling
+legacy WPCOM notifications for the test service and raising adaptive worker
+headroom to 3x, use a tighter confirmation ladder:
 
-1. 100,000 sites to confirm the service clears the original six-figure target.
-2. 125,000 sites if 100,000 is clean with enough freshness margin.
-3. 150,000 sites if 125,000 is clean and event queue depth does not trend toward
+1. 100,000 sites to confirm WPCOM isolation and worker headroom create real
+   margin above the current boundary pass.
+2. 110,000 sites if 100,000 is clean with enough freshness margin.
+3. 115,000 sites if 110,000 is clean and event queue depth does not trend toward
    saturation.
 4. Narrow the ladder if `p95` age approaches the 5-minute freshness window, if
    `scheduler.mark_checked.slow.count` or `scheduler.history.slow.count` rises,

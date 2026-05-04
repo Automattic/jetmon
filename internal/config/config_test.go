@@ -596,4 +596,7 @@ func TestDefaults(t *testing.T) {
 	if cfg.LogFormat != "text" && cfg.LogFormat != "json" {
 		t.Fatalf("defaults().LogFormat = %q, want text or json", cfg.LogFormat)
 	}
+	if !cfg.WPCOMNotifyEnable {
+		t.Fatal("defaults().WPCOMNotifyEnable should be true")
+	}
 }
