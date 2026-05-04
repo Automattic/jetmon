@@ -57,6 +57,7 @@ const schedulerBroadReportInterval = time.Minute
 const schedulerBatchSitesPerWorker = 100
 const schedulerBaseMaxBatchSites = 25000
 const schedulerBatchWorkersMultiplier = 2
+const schedulerPoolQueueBufferMultiplier = 2
 const schedulerResultProcessChunkSites = 5000
 const schedulerAdaptiveWorkerSafetyNumerator = 6
 const schedulerAdaptiveWorkerSafetyDenominator = 5
@@ -343,7 +344,7 @@ func New(cfg *config.Config, wp *wpcom.Client) *Orchestrator {
 	if initialWorkers > poolMax {
 		initialWorkers = poolMax
 	}
-	pool := checker.NewPool(initialWorkers, 1, poolMax)
+	pool := checker.NewPoolWithQueueCapacity(initialWorkers, 1, poolMax, schedulerPoolQueueCapacity(cfg))
 
 	o := &Orchestrator{
 		pool:     pool,
@@ -705,6 +706,21 @@ func schedulerPoolMax(cfg *config.Config) int {
 	return poolMax
 }
 
+func schedulerPoolQueueCapacity(cfg *config.Config) int {
+	base := 1
+	if cfg != nil && cfg.NumWorkers > 0 {
+		base = cfg.NumWorkers
+	}
+	if poolMax := schedulerPoolMax(cfg); poolMax > 0 && base > poolMax {
+		base = poolMax
+	}
+	capacity := base * schedulerPoolQueueBufferMultiplier
+	if capacity < 1 {
+		return 1
+	}
+	return capacity
+}
+
 func schedulerWorkerResourceCap() int {
 	var limit syscall.Rlimit
 	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &limit); err != nil {
@@ -861,7 +877,7 @@ func (o *Orchestrator) checkSitesPage(cfg *config.Config, sites []db.Site, pageN
 	summary.dispatchDuration += time.Since(dispatchStart)
 	o.capturePoolStats(&summary)
 
-	deadline := time.NewTimer(collectionDeadlineForSites(cfg, sites))
+	deadline := time.NewTimer(collectionDeadlineForSites(cfg, sites, o.pool.MaxSize()))
 	defer deadline.Stop()
 	waitStart := time.Now()
 	for results.received < summary.dispatched {
@@ -1035,14 +1051,24 @@ func checkRequestForSite(cfg *config.Config, site db.Site) checker.Request {
 	return req
 }
 
-func collectionDeadlineForSites(cfg *config.Config, sites []db.Site) time.Duration {
+func collectionDeadlineForSites(cfg *config.Config, sites []db.Site, workers int) time.Duration {
 	timeout := cfg.NetCommsTimeout
 	for _, site := range sites {
 		if siteTimeout := timeoutForSite(cfg, site); siteTimeout > timeout {
 			timeout = siteTimeout
 		}
 	}
-	return time.Duration(timeout+5) * time.Second
+	if timeout < 1 {
+		timeout = 1
+	}
+	if workers < 1 {
+		workers = 1
+	}
+	waves := ceilDivInt64(int64(len(sites)), int64(workers))
+	if waves < 1 {
+		waves = 1
+	}
+	return time.Duration(int64(timeout)*waves+5) * time.Second
 }
 
 func (r *pageResultBuffer) record(res checker.Result, summary *roundSummary) {

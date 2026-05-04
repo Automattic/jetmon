@@ -56,6 +56,10 @@ Scheduler behavior:
   `MIN_TIME_BETWEEN_ROUNDS_SEC` show the baseline would miss freshness. The
   adaptive ceiling uses a 20% headroom factor and is bounded by the host's
   file-descriptor budget, so a low `ulimit -n` becomes a real capacity limit.
+- The pending-work queue stays bounded from the configured worker baseline even
+  when the adaptive worker ceiling grows. This keeps queue pressure visible to
+  the scheduler and prevents a resource-rich host from accepting a huge backlog
+  of checks that cannot be collected inside the freshness window.
 - A full worker queue applies backpressure; checks remain pending instead of
   being dropped.
 - With `USE_VARIABLE_CHECK_INTERVALS=true`, Jetmon polls for newly due work on a
@@ -76,10 +80,11 @@ Scheduler behavior:
   use a resource-derived cap: at smaller worker ceilings the historical
   25,000-site guardrail still applies, while much larger adaptive ceilings can
   raise the window to keep enough work in flight without a manual config cap.
-  A non-zero `outstanding` count means some results arrived after the per-window
-  collection deadline;
-  those late results are summarized in round metrics instead of logged one by
-  one, and the scheduler continues draining later due batches when possible.
+  The per-window collection deadline scales by the number of worker waves needed
+  for the batch, so larger adaptive ceilings do not make queued checks look
+  stale simply because the static timeout expired before they could run. A
+  non-zero `outstanding` count means checks still failed to return inside that
+  worker-wave budget.
   `pool.workers.max`, `pool.active.max`, `pool.queue_depth.max`, and
   `pool.queue_capacity.max` show whether the check pool is saturated. If active
   checks sit near the adaptive ceiling while CPU and memory remain low, check

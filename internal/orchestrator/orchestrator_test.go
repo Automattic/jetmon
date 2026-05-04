@@ -1682,6 +1682,35 @@ func TestSchedulerPoolMaxUsesResourceBudget(t *testing.T) {
 	}
 }
 
+func TestSchedulerPoolQueueCapacityUsesBaselineNotResourceMax(t *testing.T) {
+	orig := workerResourceCapFunc
+	t.Cleanup(func() { workerResourceCapFunc = orig })
+
+	cfg := &config.Config{NumWorkers: 960}
+
+	workerResourceCapFunc = func() int { return 10000 }
+	if got := schedulerPoolQueueCapacity(cfg); got != 1920 {
+		t.Fatalf("schedulerPoolQueueCapacity(high resource cap) = %d, want baseline buffer 1920", got)
+	}
+
+	workerResourceCapFunc = func() int { return 500 }
+	if got := schedulerPoolQueueCapacity(cfg); got != 1000 {
+		t.Fatalf("schedulerPoolQueueCapacity(low resource cap) = %d, want resource buffer 1000", got)
+	}
+}
+
+func TestCollectionDeadlineAccountsForWorkerWaves(t *testing.T) {
+	sites := make([]db.Site, 25000)
+	cfg := &config.Config{NetCommsTimeout: 10}
+
+	if got := collectionDeadlineForSites(cfg, sites, 3600); got != 75*time.Second {
+		t.Fatalf("collectionDeadlineForSites(25k/3600) = %v, want 75s", got)
+	}
+	if got := collectionDeadlineForSites(cfg, sites, 960); got != 275*time.Second {
+		t.Fatalf("collectionDeadlineForSites(25k/960) = %v, want 275s", got)
+	}
+}
+
 func TestSchedulerAdaptiveWorkerMaxDisabledForFixedCadence(t *testing.T) {
 	orig := workerResourceCapFunc
 	workerResourceCapFunc = func() int { return 10000 }

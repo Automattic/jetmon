@@ -155,11 +155,18 @@ showed the first full pass completed in 4m30s, but the next passes ran through a
 failure/recovery storm and `mark_checked` stretched from roughly 13s/round to
 90s/round while host CPU and MySQL CPU were still below thresholds. The next
 iteration expands the goal toward 1,000,000 sites by removing the artificial
-2x-`NUM_WORKERS` burst ceiling, sizing the checker queue from the host resource
-budget, reducing per-site recovery/WPCOM-disabled logging, and making closed
-event recovery idempotent. Deeper follow-up work should decouple check dispatch
-from freshness/history persistence so event/projection write storms cannot age
-out otherwise completed checks.
+2x-`NUM_WORKERS` burst ceiling, reducing per-site recovery/WPCOM-disabled
+logging, and making closed event recovery idempotent.
+
+The first 1,000,000-target iteration (`e04bc11`) overcorrected the pool queue:
+the resource-derived worker ceiling created a 104,448-entry pending/result
+buffer, the scheduler accepted 90,000 checks faster than the result collector
+could own them, and late results were discarded as stale by later batches. The
+next iteration keeps resource-derived worker ceilings but restores a
+baseline-derived pending-work queue and scales the collection deadline by worker
+waves so queued checks have time to complete. Deeper follow-up work should
+decouple check dispatch from freshness/history persistence so
+event/projection write storms cannot age out otherwise completed checks.
 
 ## Pre-Test Checks
 

@@ -6,7 +6,9 @@ Baseline number of goroutines for the check pool. Jetmon starts at this level
 and auto-scales up when due backlog cannot fit inside the configured freshness
 window. NUM_WORKERS is not the burst ceiling in variable-interval mode; the
 adaptive ceiling is derived from due-site count, timeout, round freshness
-budget, and the host file-descriptor budget. Watch scheduler pool metrics and
+budget, and the host file-descriptor budget. The pending-work queue remains
+bounded from this baseline so the scheduler applies backpressure instead of
+building a very large stale-result backlog. Watch scheduler pool metrics and
 host FD limits rather than manually raising NUM_WORKERS for each fleet size.
 Default: 60.
 

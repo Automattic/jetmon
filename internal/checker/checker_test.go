@@ -119,6 +119,18 @@ func TestPoolDrainWorkers(t *testing.T) {
 	t.Fatalf("worker count = %d, want 1 after retirement", p.WorkerCount())
 }
 
+func TestNewPoolWithQueueCapacity(t *testing.T) {
+	p := NewPoolWithQueueCapacity(1, 1, 10, 3)
+	t.Cleanup(p.Drain)
+
+	if got := p.QueueCapacity(); got != 3 {
+		t.Fatalf("QueueCapacity() = %d, want 3", got)
+	}
+	if got := p.MaxSize(); got != 10 {
+		t.Fatalf("MaxSize() = %d, want 10", got)
+	}
+}
+
 func TestPoolDrainWaitsForInflightCheck(t *testing.T) {
 	orig := poolCheckFunc
 	started := make(chan struct{})

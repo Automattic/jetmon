@@ -303,10 +303,16 @@ No active candidate branch is queued here right now.
   removing the artificial 2x-`NUM_WORKERS` adaptive worker cap. `NUM_WORKERS`
   remains a startup baseline, while burst concurrency now comes from due-site
   count, timeout, freshness window, and host file-descriptor budget.
-- [x] Size the checker pool's pending/result buffers from the resource-derived
-  pool ceiling instead of the configured baseline. This prevents `NUM_WORKERS`
-  from silently capping burst dispatch and lets the autoscaler grow when the
-  host has FD headroom.
+- [x] Keep the checker pool's pending/result buffers bounded from the configured
+  baseline even while the worker ceiling grows from host resource budget. The
+  first 1,000,000-target attempt (`e04bc11`) proved the opposite approach was
+  unsafe: a 104,448-entry pool queue let the scheduler accept 90,000 checks,
+  then discard late results as stale after the static collection windows
+  expired.
+- [x] Scale scheduler result-collection deadlines by worker waves instead of
+  using one static `NET_COMMS_TIMEOUT+5s` window for every batch. This preserves
+  the per-check timeout while accounting for checks that wait behind the
+  bounded pool queue before a worker starts them.
 - [x] Reduce storm-time bookkeeping that does not improve check quality:
   WPCOM-disabled notifications no longer write one audit row per skipped
   synthetic notification, per-site recovery success logs are suppressed, and

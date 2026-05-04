@@ -30,8 +30,16 @@ type Pool struct {
 
 // NewPool creates a Pool with the given initial, min, and max worker counts.
 func NewPool(initial, min, max int) *Pool {
+	return NewPoolWithQueueCapacity(initial, min, max, max*2)
+}
+
+// NewPoolWithQueueCapacity creates a Pool with an explicit pending/result
+// buffer size. The autoscaler max can be much larger than the queue; keeping
+// the queue bounded lets callers apply backpressure without sacrificing the
+// ability to grow workers when sustained demand is present.
+func NewPoolWithQueueCapacity(initial, min, max, queueCapacity int) *Pool {
 	ctx, cancel := context.WithCancel(context.Background())
-	buffer := max * 2
+	buffer := queueCapacity
 	if buffer < 1 {
 		buffer = 1
 	}
