@@ -260,6 +260,12 @@ No active candidate branch is queued here right now.
   `last_checked_at`. The `3a288ca` interrupted run exposed that benchmark
   activation can otherwise carry Jetmon v2 due-state across batches/runs because
   the scheduler keys off `next_check_at` when variable intervals are enabled.
+- [x] Analyze the outage-interrupted `3a288ca` capacity report. Treat only the
+  90,000 step as clean: it passed with 10.54% throughput margin and improved
+  p95/oldest check age versus `3f0e239`. Treat the 100,000 recovery data as
+  debugging evidence only because the runner never reached normal window-end
+  verification. No Jetmon code change is justified before a clean rerun with
+  uptime-bench's `next_check_at` reset and stale-session preflight fix.
 - [ ] After the adaptive retest, decide whether to incorporate observed RTT into
   the worker-ceiling formula. The first implementation uses the configured
   timeout as the conservative sizing input; observed RTT could reduce

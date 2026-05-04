@@ -104,6 +104,14 @@ iteration records the completed-observation time in checker results so
 site state. This avoids immediately re-queuing checks that started early in a
 long round and makes freshness reporting match completed observations.
 
+The completed-observation timestamp retest was interrupted by a power outage
+during the 100,000 step, so only the 90,000 step is a clean capacity sample.
+That clean 90,000 result improved p95 age from 268s to 242s and oldest age from
+285s to 254s compared with the previous 90,000 pass. The interrupted 100,000
+recovery sample is not a valid capacity score. Before rerunning, ensure the
+uptime-bench activation SQL reset for `next_check_at` is deployed and preflight
+checks confirm no stale Jetmon DB sessions survived an outage.
+
 ## Pre-Test Checks
 
 1. Confirm migrations have run through migration 31.
