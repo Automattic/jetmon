@@ -1610,8 +1610,11 @@ func TestSchedulerBatchTargetSitesDerivesFromWorkers(t *testing.T) {
 	if got := schedulerBatchTargetSites(&config.Config{NumWorkers: 1000}, 100, 1000); got != schedulerBaseMaxBatchSites {
 		t.Fatalf("schedulerBatchTargetSites(cap) = %d, want %d", got, schedulerBaseMaxBatchSites)
 	}
-	if got := schedulerBatchTargetSites(defaultCfg, 100, 4000); got != schedulerAdaptiveMaxBatchSites {
-		t.Fatalf("schedulerBatchTargetSites(adaptive cap) = %d, want %d", got, schedulerAdaptiveMaxBatchSites)
+	if got := schedulerBatchTargetSites(defaultCfg, 100, 4000); got != schedulerBaseMaxBatchSites {
+		t.Fatalf("schedulerBatchTargetSites(adaptive cap) = %d, want %d", got, schedulerBaseMaxBatchSites)
+	}
+	if got := schedulerBatchTargetSites(defaultCfg, 100, 40000); got != 80000 {
+		t.Fatalf("schedulerBatchTargetSites(resource-derived cap) = %d, want 80000", got)
 	}
 }
 
@@ -1627,8 +1630,8 @@ func TestSchedulerAdaptiveWorkerMaxFromDueBacklog(t *testing.T) {
 		UseVariableCheckIntervals: true,
 	}
 
-	if got := schedulerAdaptiveWorkerMax(cfg, 100000); got != 1920 {
-		t.Fatalf("schedulerAdaptiveWorkerMax(100k due) = %d, want 1920", got)
+	if got := schedulerAdaptiveWorkerMax(cfg, 100000); got != 4000 {
+		t.Fatalf("schedulerAdaptiveWorkerMax(100k due) = %d, want 4000", got)
 	}
 	if got := schedulerAdaptiveWorkerMax(cfg, 1000); got != 960 {
 		t.Fatalf("schedulerAdaptiveWorkerMax(small backlog) = %d, want base 960", got)
@@ -1652,8 +1655,30 @@ func TestSchedulerAdaptiveWorkerMaxHonorsResourceCapAboveBase(t *testing.T) {
 	}
 
 	workerResourceCapFunc = func() int { return 500 }
-	if got := schedulerAdaptiveWorkerMax(cfg, 100000); got != 1920 {
-		t.Fatalf("schedulerAdaptiveWorkerMax(cap below base) = %d, want burst-capped adaptive 1920", got)
+	if got := schedulerAdaptiveWorkerMax(cfg, 100000); got != 500 {
+		t.Fatalf("schedulerAdaptiveWorkerMax(cap below base) = %d, want resource cap 500", got)
+	}
+}
+
+func TestSchedulerPoolMaxUsesResourceBudget(t *testing.T) {
+	orig := workerResourceCapFunc
+	t.Cleanup(func() { workerResourceCapFunc = orig })
+
+	cfg := &config.Config{NumWorkers: 960}
+
+	workerResourceCapFunc = func() int { return 10000 }
+	if got := schedulerPoolMax(cfg); got != 10000 {
+		t.Fatalf("schedulerPoolMax(high resource cap) = %d, want 10000", got)
+	}
+
+	workerResourceCapFunc = func() int { return 500 }
+	if got := schedulerPoolMax(cfg); got != 500 {
+		t.Fatalf("schedulerPoolMax(low resource cap) = %d, want 500", got)
+	}
+
+	workerResourceCapFunc = func() int { return 0 }
+	if got := schedulerPoolMax(cfg); got != 960 {
+		t.Fatalf("schedulerPoolMax(unknown resource cap) = %d, want baseline 960", got)
 	}
 }
 

@@ -56,11 +56,10 @@ const schedulerBacklogPollInterval = 5 * time.Second
 const schedulerBroadReportInterval = time.Minute
 const schedulerBatchSitesPerWorker = 100
 const schedulerBaseMaxBatchSites = 25000
-const schedulerAdaptiveMaxBatchSites = 25000
+const schedulerBatchWorkersMultiplier = 2
 const schedulerResultProcessChunkSites = 5000
 const schedulerAdaptiveWorkerSafetyNumerator = 6
 const schedulerAdaptiveWorkerSafetyDenominator = 5
-const schedulerAdaptiveWorkerMaxMultiplier = 2
 const schedulerWorkerFDReserve = 256
 const schedulerWorkerFDUseNumerator = 8
 const schedulerWorkerFDUseDenominator = 10
@@ -336,7 +335,15 @@ type Orchestrator struct {
 // New creates an Orchestrator. Call Run to start the check loop.
 func New(cfg *config.Config, wp *wpcom.Client) *Orchestrator {
 	ctx, cancel := stdctx.WithCancel(stdctx.Background())
-	pool := checker.NewPool(cfg.NumWorkers/2, 1, cfg.NumWorkers)
+	poolMax := schedulerPoolMax(cfg)
+	initialWorkers := cfg.NumWorkers
+	if initialWorkers < 1 {
+		initialWorkers = 1
+	}
+	if initialWorkers > poolMax {
+		initialWorkers = poolMax
+	}
+	pool := checker.NewPool(initialWorkers, 1, poolMax)
 
 	o := &Orchestrator{
 		pool:     pool,
@@ -418,7 +425,6 @@ func (o *Orchestrator) Run() {
 		}
 
 		cfg := config.Get()
-		o.pool.SetMaxSize(cfg.NumWorkers)
 		o.refreshVeriflierClients(cfg)
 
 		o.roundStart = time.Now()
@@ -469,6 +475,9 @@ func (o *Orchestrator) runRound() roundSummary {
 	}
 
 	workerMax := cfg.NumWorkers
+	if o.pool != nil {
+		workerMax = max(workerMax, o.pool.MaxSize())
+	}
 	if dueCountsSampled {
 		if due, ok := o.sampleDueSites(cfg, &summary); ok {
 			workerMax = o.applyAdaptiveWorkerCeiling(cfg, due)
@@ -626,14 +635,22 @@ func schedulerBatchTargetSites(cfg *config.Config, pageSize, workerMax int) int 
 	if target < pageSize {
 		target = pageSize
 	}
-	capacityCap := schedulerBaseMaxBatchSites
-	if cfg != nil && cfg.NumWorkers > 0 && workerMax > cfg.NumWorkers {
-		capacityCap = schedulerAdaptiveMaxBatchSites
-	}
+	capacityCap := schedulerBatchCapacityCap(workerMax)
 	if target > capacityCap {
 		target = capacityCap
 	}
 	return target
+}
+
+func schedulerBatchCapacityCap(workerMax int) int {
+	if workerMax < 1 {
+		workerMax = 1
+	}
+	capacityCap := workerMax * schedulerBatchWorkersMultiplier
+	if capacityCap < schedulerBaseMaxBatchSites {
+		return schedulerBaseMaxBatchSites
+	}
+	return capacityCap
 }
 
 func schedulerAdaptiveWorkerMax(cfg *config.Config, dueSites int) int {
@@ -661,16 +678,31 @@ func schedulerAdaptiveWorkerMax(cfg *config.Config, dueSites int) int {
 			}
 		}
 	}
-	if resourceCap := workerResourceCapFunc(); resourceCap > base && desired > resourceCap {
+	if resourceCap := workerResourceCapFunc(); resourceCap > 0 && desired > resourceCap {
 		desired = resourceCap
 	}
-	if adaptiveCap := base * schedulerAdaptiveWorkerMaxMultiplier; adaptiveCap > base && desired > adaptiveCap {
-		desired = adaptiveCap
+	if poolMax := schedulerPoolMax(cfg); poolMax > 0 && desired > poolMax {
+		desired = poolMax
 	}
 	if desired < 1 {
 		return 1
 	}
 	return desired
+}
+
+func schedulerPoolMax(cfg *config.Config) int {
+	base := 1
+	if cfg != nil && cfg.NumWorkers > 0 {
+		base = cfg.NumWorkers
+	}
+	poolMax := base
+	if resourceCap := workerResourceCapFunc(); resourceCap > 0 {
+		poolMax = resourceCap
+	}
+	if poolMax < 1 {
+		return 1
+	}
+	return poolMax
 }
 
 func schedulerWorkerResourceCap() int {
@@ -1565,9 +1597,8 @@ func (o *Orchestrator) handleRecovery(site db.Site, res checker.Result) {
 	}
 	o.retries.clear(site.BlogID)
 
-	if site.SiteStatus != statusRunning {
+	if entry != nil || site.SiteStatus != statusRunning {
 		changeTime := nowFunc().UTC()
-		log.Printf("orchestrator: blog_id=%d recovered", site.BlogID)
 		if entry != nil && site.SiteStatus == statusDown {
 			emitCounter("detection.probe_cleared.count", 1)
 			emitCounter("detection.probe_cleared."+failureClass(entry.lastResult)+".count", 1)
@@ -1582,6 +1613,9 @@ func (o *Orchestrator) handleRecovery(site db.Site, res checker.Result) {
 			log.Printf("orchestrator: close recovered event blog_id=%d: %v", site.BlogID, err)
 		}
 
+		if site.SiteStatus == statusRunning {
+			return
+		}
 		if inMaintenance(site) {
 			o.auditLog(audit.Entry{
 				BlogID:    site.BlogID,
@@ -1850,12 +1884,6 @@ func (o *Orchestrator) sendNotification(site db.Site, res checker.Result, status
 	if cfg := config.Get(); cfg != nil && !cfg.WPCOMNotifyEnable {
 		emitCounter("wpcom.notification.skipped.count", 1)
 		emitCounter("wpcom.notification.status."+wpcomStatus+".skipped.count", 1)
-		o.auditLog(audit.Entry{
-			BlogID:    site.BlogID,
-			EventType: audit.EventWPCOMSkipped,
-			Source:    "local",
-			Detail:    fmt.Sprintf("status=%d type=%s reason=disabled_by_config", status, res.StatusType()),
-		})
 		return
 	}
 
@@ -2448,6 +2476,14 @@ func (o *Orchestrator) closeRecoveredEventOnce(blogID, knownEventID int64, chang
 	}
 
 	if err := tx.Close(o.ctx, eventID, reason, o.hostname, nil); err != nil {
+		if errors.Is(err, eventstore.ErrEventClosed) {
+			if config.LegacyStatusProjectionEnabled() && tx.Tx() != nil {
+				if err := db.UpdateSiteStatusTx(o.ctx, tx.Tx(), blogID, statusRunning, changeTime); err != nil {
+					return fmt.Errorf("project site_status: %w", err)
+				}
+			}
+			return tx.Commit()
+		}
 		return fmt.Errorf("close event: %w", err)
 	}
 	if config.LegacyStatusProjectionEnabled() && tx.Tx() != nil {

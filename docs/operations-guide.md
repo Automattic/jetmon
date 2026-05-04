@@ -16,7 +16,7 @@ Key settings:
 
 | Key | Default | Description |
 |---|---:|---|
-| `NUM_WORKERS` | 60 | Baseline check-pool size; adaptive scheduling can raise the active ceiling when due backlog requires it |
+| `NUM_WORKERS` | 60 | Baseline check-pool size; adaptive scheduling raises the active ceiling from due backlog and host resource budget |
 | `NUM_TO_PROCESS` | 40 | Legacy compatibility setting; does not cap Go scheduler throughput |
 | `DATASET_SIZE` | 100 | Database fetch page size for scheduler work; not a total round cap |
 | `NUM_OF_CHECKS` | 3 | Local failures before Veriflier escalation |
@@ -46,18 +46,16 @@ Scheduler behavior:
 - Jetmon groups multiple ordered database pages into each scheduler check batch
   before waiting for the batch's slowest result. This prevents large fleets from
   paying one slow-tail wait per `DATASET_SIZE` page. The batch target is derived
-  from worker capacity and the configured timeout / round-cadence budget, capped
-  at 25,000 sites as a guard against overly lumpy freshness writes and
-  unbounded in-process result maps. Operators usually should not raise
-  `DATASET_SIZE` just to improve throughput.
+  from worker capacity and the configured timeout / round-cadence budget, then
+  bounded by a resource-derived in-flight target rather than a config knob.
+  Operators usually should not raise `DATASET_SIZE` just to improve throughput.
 - With `USE_VARIABLE_CHECK_INTERVALS=true`, Jetmon estimates the check-pool
   ceiling needed to clear the current due backlog inside the freshness window.
   `NUM_WORKERS` remains the baseline, but the scheduler can temporarily raise
   the ceiling above it when the due backlog, `NET_COMMS_TIMEOUT`, and
   `MIN_TIME_BETWEEN_ROUNDS_SEC` show the baseline would miss freshness. The
-  adaptive ceiling uses a 20% headroom factor and is bounded to 2x
-  `NUM_WORKERS` and by the host's file-descriptor budget, so a low `ulimit -n`
-  becomes a real capacity limit.
+  adaptive ceiling uses a 20% headroom factor and is bounded by the host's
+  file-descriptor budget, so a low `ulimit -n` becomes a real capacity limit.
 - A full worker queue applies backpressure; checks remain pending instead of
   being dropped.
 - With `USE_VARIABLE_CHECK_INTERVALS=true`, Jetmon polls for newly due work on a
@@ -75,9 +73,9 @@ Scheduler behavior:
   `process.chunk.count` shows how many result-processing chunks were flushed
   inside those windows; high-capacity runs should show multiple chunks per
   scheduler window instead of one large freshness-write wave. Scheduler windows
-  currently cap at 25,000 sites in both baseline and adaptive high-backlog mode.
-  Larger 50,000-site and 30,000-site adaptive-window experiments made missed
-  freshness align with whole windows when page collection or DB writes stalled.
+  use a resource-derived cap: at smaller worker ceilings the historical
+  25,000-site guardrail still applies, while much larger adaptive ceilings can
+  raise the window to keep enough work in flight without a manual config cap.
   A non-zero `outstanding` count means some results arrived after the per-window
   collection deadline;
   those late results are summarized in round metrics instead of logged one by

@@ -299,6 +299,33 @@ No active candidate branch is queued here right now.
   after due-batch continuation, but 100,000 failed with 30,000 stale rows,
   indicating misses can still align with a whole oversized window when
   `mark_checked` or history writes stall.
+- [x] Expand the scaling target from 100,000 toward 1,000,000 active sites by
+  removing the artificial 2x-`NUM_WORKERS` adaptive worker cap. `NUM_WORKERS`
+  remains a startup baseline, while burst concurrency now comes from due-site
+  count, timeout, freshness window, and host file-descriptor budget.
+- [x] Size the checker pool's pending/result buffers from the resource-derived
+  pool ceiling instead of the configured baseline. This prevents `NUM_WORKERS`
+  from silently capping burst dispatch and lets the autoscaler grow when the
+  host has FD headroom.
+- [x] Reduce storm-time bookkeeping that does not improve check quality:
+  WPCOM-disabled notifications no longer write one audit row per skipped
+  synthetic notification, per-site recovery success logs are suppressed, and
+  already-closed recovery events are treated as idempotent cleanup.
+- [ ] Replace scheduler batch windows with a continuous bounded in-flight
+  dispatcher/result-drain pipeline. The latest reports show static window
+  sizing keeps moving the bottleneck: 25k, 30k, and 50k windows each failed in
+  different ways. A 1,000,000-site monitor needs dispatch, result collection,
+  freshness persistence, history inserts, and event/projection mutation to run
+  as separate backpressured stages with metrics for each queue.
+- [ ] Move legacy status projection writes off the check-freshness critical path
+  once migration consumers can tolerate it. Event rows and transitions should
+  remain authoritative, but bulk failures currently cause event workers to
+  update `jetpack_monitor_sites.site_status` while the scheduler is also
+  updating `last_checked_at` / `next_check_at` on the same table.
+- [ ] Add pprof/profile capture to each large capacity run before the next
+  250,000+ ladder. The current Prometheus data proves the host is not saturated,
+  but CPU profiles, block profiles, mutex profiles, and DB wait/lock sampling
+  are needed to distinguish Go scheduler overhead from MySQL row-lock stalls.
 - [ ] After the adaptive retest, decide whether to incorporate observed RTT into
   the worker-ceiling formula. The first implementation uses the configured
   timeout as the conservative sizing input; observed RTT could reduce

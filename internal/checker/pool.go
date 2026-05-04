@@ -51,6 +51,13 @@ func NewPool(initial, min, max int) *Pool {
 	return p
 }
 
+// MaxSize returns the current autoscaler ceiling.
+func (p *Pool) MaxSize() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.maxSize
+}
+
 // Submit enqueues a check request. Non-blocking; drops if queue is full.
 func (p *Pool) Submit(req Request) bool {
 	p.workMu.RLock()

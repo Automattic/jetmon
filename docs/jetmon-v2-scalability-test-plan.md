@@ -30,10 +30,12 @@ The batch target comes from the current check-pool ceiling, request timeout, and
 freshness target. Normal baseline runs cap the per-batch result window at
 25,000 sites to avoid unbounded in-process maps and to keep freshness writes
 staggered across a large active fleet. When adaptive worker growth is active,
-Jetmon keeps the same 25,000-site cap. Larger adaptive windows were tested at
-50,000 and 30,000 sites, but both made freshness misses lumpier when DB writes
-or page collection tails appeared. The cap does not limit total checks per
-round.
+Jetmon derives the ceiling from due backlog and the host file-descriptor budget
+instead of treating `NUM_WORKERS` as a hard burst cap. Scheduler windows also
+derive their upper bound from the active worker ceiling: small fleets keep the
+25,000-site guardrail, while large fleets can keep enough work in flight for
+100,000+ and eventually 1,000,000-site tests without adding another manual
+batch-size knob.
 `last_checked_at` and `next_check_at` are still written only after completed
 checks.
 
@@ -146,6 +148,18 @@ scheduler windows when `mark_checked` or history writes stalled. The next run
 keeps the restored 2x checker buffers, due-batch continuation, stale/duplicate
 log suppression, and 1,000-row DB write chunks, but returns adaptive windows to
 the proven 25,000-site cap before deeper DB-write decoupling work.
+
+The 25,000-window follow-up (`b36ecae`) regressed the first 90,000-site step:
+15,005 active rows were stale, an even one-sixth tranche across buckets. Logs
+showed the first full pass completed in 4m30s, but the next passes ran through a
+failure/recovery storm and `mark_checked` stretched from roughly 13s/round to
+90s/round while host CPU and MySQL CPU were still below thresholds. The next
+iteration expands the goal toward 1,000,000 sites by removing the artificial
+2x-`NUM_WORKERS` burst ceiling, sizing the checker queue from the host resource
+budget, reducing per-site recovery/WPCOM-disabled logging, and making closed
+event recovery idempotent. Deeper follow-up work should decouple check dispatch
+from freshness/history persistence so event/projection write storms cannot age
+out otherwise completed checks.
 
 ## Pre-Test Checks
 
