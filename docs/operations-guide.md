@@ -74,11 +74,12 @@ Scheduler behavior:
   windows processed from those pages.
   `process.chunk.count` shows how many result-processing chunks were flushed
   inside those windows; high-capacity runs should show multiple chunks per
-  scheduler window instead of one large freshness-write wave. Baseline runs cap
-  windows at 25,000 sites, while adaptive high-backlog runs can use 30,000-site
-  windows to reduce repeated slow-tail waits without repeating the large-window
-  deadline behavior seen with 50,000-site windows. A non-zero `outstanding`
-  count means some results arrived after the per-window collection deadline;
+  scheduler window instead of one large freshness-write wave. Scheduler windows
+  currently cap at 25,000 sites in both baseline and adaptive high-backlog mode.
+  Larger 50,000-site and 30,000-site adaptive-window experiments made missed
+  freshness align with whole windows when page collection or DB writes stalled.
+  A non-zero `outstanding` count means some results arrived after the per-window
+  collection deadline;
   those late results are summarized in round metrics instead of logged one by
   one, and the scheduler continues draining later due batches when possible.
   `pool.workers.max`, `pool.active.max`, `pool.queue_depth.max`, and

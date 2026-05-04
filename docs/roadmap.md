@@ -277,9 +277,10 @@ No active candidate branch is queued here right now.
   45% stale because large windows repeatedly hit collection deadlines and
   stopped rounds with due work still waiting. The 30,000-site / 4x-buffer
   follow-up then failed 90,000 with 6.42% stale rows because page-deadline tails
-  still stopped the round after only one window. The next iteration keeps the
-  30,000-site adaptive window but restores the proven 2x checker buffer and
-  lets rounds continue to later due batches after deadline-tail results.
+  still stopped the round after only one window. Restoring the 2x checker buffer
+  and continuing later due batches brought 90,000 back to a narrow pass, but
+  100,000 failed with a whole 30,000-site stale block. Adaptive windows are back
+  to the proven 25,000-site cap while deeper DB-write decoupling is evaluated.
 - [x] Revert the checker pending/result channel buffer experiment from 4x back
   to 2x the configured worker baseline. The larger queue increased memory
   pressure and let more work sit behind active checks, which made page
@@ -293,6 +294,11 @@ No active candidate branch is queued here right now.
   scheduler freshness, SSL, and check-history writes. This reduces SQL round
   trips during large capacity runs while keeping individual statements well
   below packet-size risk.
+- [x] Return adaptive scheduler windows to the 25,000-site cap after the
+  30,000-window retest. The 30,000-window run restored 90,000-site capacity
+  after due-batch continuation, but 100,000 failed with 30,000 stale rows,
+  indicating misses can still align with a whole oversized window when
+  `mark_checked` or history writes stall.
 - [ ] After the adaptive retest, decide whether to incorporate observed RTT into
   the worker-ceiling formula. The first implementation uses the configured
   timeout as the conservative sizing input; observed RTT could reduce

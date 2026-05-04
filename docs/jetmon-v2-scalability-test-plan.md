@@ -30,9 +30,10 @@ The batch target comes from the current check-pool ceiling, request timeout, and
 freshness target. Normal baseline runs cap the per-batch result window at
 25,000 sites to avoid unbounded in-process maps and to keep freshness writes
 staggered across a large active fleet. When adaptive worker growth is active,
-the cap rises to 30,000 sites so high-backlog capacity runs pay slightly fewer
-per-window slow-tail waits while retaining 5,000-site persistence chunks. The
-cap does not limit total checks per round.
+Jetmon keeps the same 25,000-site cap. Larger adaptive windows were tested at
+50,000 and 30,000 sites, but both made freshness misses lumpier when DB writes
+or page collection tails appeared. The cap does not limit total checks per
+round.
 `last_checked_at` and `next_check_at` are still written only after completed
 checks.
 
@@ -125,7 +126,7 @@ The next iteration tried 50,000-site adaptive scheduler windows and a larger
 checker pool pending/result buffer. That improved the 90,000 margin but
 regressed 100,000 badly: large windows repeatedly hit the collection deadline,
 left outstanding results, and stopped rounds before remaining due work was
-drained. The follow-up narrows adaptive windows to 30,000 sites while keeping
+drained. The follow-up narrowed adaptive windows to 30,000 sites while keeping
 the larger checker buffer isolated for one retest.
 
 The 30,000-window / 4x-buffer retest regressed further, failing the first
@@ -137,6 +138,14 @@ keeps the 30,000 adaptive window, lets a round continue to later due batches
 after a page deadline tail, suppresses per-result stale/duplicate log spam, and
 raises the internal DB write chunk from 500 to 1,000 rows to reduce hot-path
 freshness/history write round trips.
+
+That follow-up restored 90,000-site capacity, but with almost no margin, and
+100,000 active sites still failed with 30,000 stale rows. The 30,000-row stale
+block suggests the larger adaptive window made misses align with whole
+scheduler windows when `mark_checked` or history writes stalled. The next run
+keeps the restored 2x checker buffers, due-batch continuation, stale/duplicate
+log suppression, and 1,000-row DB write chunks, but returns adaptive windows to
+the proven 25,000-site cap before deeper DB-write decoupling work.
 
 ## Pre-Test Checks
 
