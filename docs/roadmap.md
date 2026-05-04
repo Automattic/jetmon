@@ -269,12 +269,14 @@ No active candidate branch is queued here right now.
   debugging evidence only because the runner never reached normal window-end
   verification. No Jetmon code change is justified before a clean rerun with
   uptime-bench's `next_check_at` reset and stale-session preflight fix.
-- [x] Raise adaptive scheduler windows to 50,000 sites while keeping baseline
-  windows at 25,000. The clean `3a288ca` rerun showed the 100,000-site boundary
-  is cadence, not host exhaustion: four 25,000-site windows per full pass add
-  repeated tail waits while the worker pool is otherwise saturated. Adaptive
-  high-backlog runs now use fewer larger scheduler windows, but still flush
-  completed results in 5,000-site chunks to avoid lumpy DB writes.
+- [x] Test larger adaptive scheduler windows while keeping baseline windows at
+  25,000. The clean `3a288ca` rerun showed the 100,000-site boundary is
+  cadence, not host exhaustion: four 25,000-site windows per full pass add
+  repeated tail waits while the worker pool is otherwise saturated. The first
+  50,000-site adaptive-window attempt improved 90,000 but regressed 100,000 to
+  45% stale because large windows repeatedly hit collection deadlines and
+  stopped rounds with due work still waiting. The next retest narrows adaptive
+  windows to 30,000 sites while retaining 5,000-site result chunks.
 - [x] Increase checker pool pending/result channel buffers from 2x to 4x the
   configured worker baseline. The adaptive ceiling can grow to 2x
   `NUM_WORKERS`, so the old fixed channel size became only one adaptive wave and

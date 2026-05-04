@@ -30,7 +30,7 @@ The batch target comes from the current check-pool ceiling, request timeout, and
 freshness target. Normal baseline runs cap the per-batch result window at
 25,000 sites to avoid unbounded in-process maps and to keep freshness writes
 staggered across a large active fleet. When adaptive worker growth is active,
-the cap rises to 50,000 sites so high-backlog capacity runs pay fewer
+the cap rises to 30,000 sites so high-backlog capacity runs pay slightly fewer
 per-window slow-tail waits while retaining 5,000-site persistence chunks. The
 cap does not limit total checks per round.
 `last_checked_at` and `next_check_at` are still written only after completed
@@ -121,9 +121,12 @@ The clean completed-observation rerun, with uptime-bench resetting
 host/MySQL resource threshold failures. Jetmon completed full 100,000-site
 rounds, but the four 25,000-site scheduler windows introduced enough repeated
 slow-tail waits that early-window results aged out before the measurement ended.
-The next iteration keeps the 2x adaptive worker ceiling, but lets adaptive
-capacity runs use 50,000-site scheduler windows and gives the checker pool a
-larger pending/result channel buffer so the pool stays fed between windows.
+The next iteration tried 50,000-site adaptive scheduler windows and a larger
+checker pool pending/result buffer. That improved the 90,000 margin but
+regressed 100,000 badly: large windows repeatedly hit the collection deadline,
+left outstanding results, and stopped rounds before remaining due work was
+drained. The follow-up narrows adaptive windows to 30,000 sites while keeping
+the larger checker buffer isolated for one retest.
 
 ## Pre-Test Checks
 
