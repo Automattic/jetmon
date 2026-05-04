@@ -255,6 +255,11 @@ No active candidate branch is queued here right now.
   timestamps. Compare freshness margin, event queue depth, slow write counters,
   MySQL CPU/I/O, Jetmon CPU/RSS/FDs, open FDs, cleanup open-event residue, and
   whether `oldest_selected_age_sec` stays below the 5-minute freshness window.
+- [ ] Before interpreting the next post-outage capacity result, verify the
+  uptime-bench activation SQL clears `next_check_at` wherever it clears
+  `last_checked_at`. The `3a288ca` interrupted run exposed that benchmark
+  activation can otherwise carry Jetmon v2 due-state across batches/runs because
+  the scheduler keys off `next_check_at` when variable intervals are enabled.
 - [ ] After the adaptive retest, decide whether to incorporate observed RTT into
   the worker-ceiling formula. The first implementation uses the configured
   timeout as the conservative sizing input; observed RTT could reduce

@@ -124,6 +124,11 @@ long round and makes freshness reporting match completed observations.
    A mismatch between the capacity runner URL pattern and the target DNS
    `generated_sites.host_pattern` will look like a Jetmon false-down storm and
    will make event handling, not checking, dominate the run.
+9. Confirm synthetic activation and cleanup reset both `last_checked_at` and
+   `next_check_at` for the benchmark blog ID range. Jetmon v2 uses
+   `next_check_at` as the variable-interval due predicate; clearing only
+   `last_checked_at` can leak scheduler timing state across batches or across an
+   interrupted run.
 
 ## Query Plan Checks
 
