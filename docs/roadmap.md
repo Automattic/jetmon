@@ -303,12 +303,15 @@ No active candidate branch is queued here right now.
   removing the artificial 2x-`NUM_WORKERS` adaptive worker cap. `NUM_WORKERS`
   remains a startup baseline, while burst concurrency now comes from due-site
   count, timeout, freshness window, and host file-descriptor budget.
-- [x] Keep the checker pool's pending/result buffers bounded from the configured
-  baseline even while the worker ceiling grows from host resource budget. The
-  first 1,000,000-target attempt (`e04bc11`) proved the opposite approach was
-  unsafe: a 104,448-entry pool queue let the scheduler accept 90,000 checks,
-  then discard late results as stale after the static collection windows
-  expired.
+- [x] Bound the checker pool's pending/result buffers while the worker ceiling
+  grows from host resource budget. The first 1,000,000-target attempt
+  (`e04bc11`) proved the default `poolMax*2` approach was unsafe: a
+  104,448-entry pool queue let the scheduler accept 90,000 checks, then discard
+  late results as stale after the static collection windows expired. The queue
+  was first restored to the baseline cushion; after the `7eb4e55` run proved
+  stale/outstanding results were controlled but dispatch was bottlenecked by a
+  full 1,920-entry buffer, the current sizing grows to one adaptive worker wave
+  while keeping bounded scheduler windows and worker-wave collection deadlines.
 - [x] Scale scheduler result-collection deadlines by worker waves instead of
   using one static `NET_COMMS_TIMEOUT+5s` window for every batch. This preserves
   the per-check timeout while accounting for checks that wait behind the
@@ -356,6 +359,12 @@ No active candidate branch is queued here right now.
   uncertainty. Freshness still updates for every completed check, while
   `jetmon_check_history` skips those suppressed transport-failure rows and
   emits `scheduler.check_history.suppressed_transport_storm.count`.
+- [x] Reduce scheduler dispatch overhead after the first `7eb4e55` 1M ladder
+  attempt. That run passed 125,000 and completed every 150,000-site check, but
+  missed the freshness budget by a narrow margin while the check pool sat on a
+  full 1,920-request queue. The checker queue now grows to at least one
+  adaptive worker wave when the host file-descriptor budget allows it, and the
+  scheduler drains ready results before allocating a backpressure sleep timer.
 - [x] Reduce storm-time bookkeeping that does not improve check quality:
   WPCOM-disabled notifications no longer write one audit row per skipped
   synthetic notification, per-site recovery success logs are suppressed, and

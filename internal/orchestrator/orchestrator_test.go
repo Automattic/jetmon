@@ -1935,15 +1935,15 @@ func TestSchedulerPoolMaxUsesResourceBudget(t *testing.T) {
 	}
 }
 
-func TestSchedulerPoolQueueCapacityUsesBaselineNotResourceMax(t *testing.T) {
+func TestSchedulerPoolQueueCapacityFollowsAdaptiveResourceCeiling(t *testing.T) {
 	orig := workerResourceCapFunc
 	t.Cleanup(func() { workerResourceCapFunc = orig })
 
 	cfg := &config.Config{NumWorkers: 960}
 
 	workerResourceCapFunc = func() int { return 10000 }
-	if got := schedulerPoolQueueCapacity(cfg); got != 1920 {
-		t.Fatalf("schedulerPoolQueueCapacity(high resource cap) = %d, want baseline buffer 1920", got)
+	if got := schedulerPoolQueueCapacity(cfg); got != 10000 {
+		t.Fatalf("schedulerPoolQueueCapacity(high resource cap) = %d, want adaptive worker-wave buffer 10000", got)
 	}
 
 	workerResourceCapFunc = func() int { return 500 }

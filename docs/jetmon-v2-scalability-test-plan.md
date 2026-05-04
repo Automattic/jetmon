@@ -8,12 +8,12 @@ efficiency changes after the successful 1,000-site capacity run.
 `feature/jetmon-v2-15k-scaling-efficiency` builds on the completed
 scalability-efficiency work and targets the May 3, 2026 capacity boundary.
 Successive capacity runs moved the clean point from 20,000 to 75,000 active
-sites. The latest run passed 50,000 and 75,000 sites, then failed at 100,000:
-Jetmon v2 needed 20,000 recent checks/minute and observed about 15,758/minute.
-The 100,000-site stale rows were evenly distributed across buckets, while host
-CPU/RSS, MySQL CPU, and file descriptors remained below alert thresholds. The
-logs showed the check pool pinned at the 960-worker ceiling with a full queue,
-which points at check-pool backpressure rather than database or host saturation.
+sites, then through 100,000 and 125,000. The latest run passed 125,000 sites
+and failed at 150,000: every selected check completed, but the round finished
+slightly outside the five-minute freshness budget and crossed the host CPU
+threshold. Check-history suppression reduced database write pressure, so the
+current bottleneck is scheduler/checker dispatch overhead and pool
+backpressure.
 
 The branch includes the previous scaling changes:
 
@@ -35,7 +35,11 @@ instead of treating `NUM_WORKERS` as a hard burst cap. Scheduler windows also
 derive their upper bound from the active worker ceiling: small fleets keep the
 25,000-site guardrail, while large fleets can keep enough work in flight for
 100,000+ and eventually 1,000,000-site tests without adding another manual
-batch-size knob.
+batch-size knob. The checker pending/result buffers keep the configured
+baseline cushion at small scale, then grow to at least one adaptive worker wave
+when the host resource budget allows it. During backpressure, the scheduler
+drains ready results before sleeping so completed checks can be persisted
+without one timer allocation per queue-full loop.
 `last_checked_at` and `next_check_at` are still written only after completed
 checks.
 
@@ -162,11 +166,15 @@ The first 1,000,000-target iteration (`e04bc11`) overcorrected the pool queue:
 the resource-derived worker ceiling created a 104,448-entry pending/result
 buffer, the scheduler accepted 90,000 checks faster than the result collector
 could own them, and late results were discarded as stale by later batches. The
-next iteration keeps resource-derived worker ceilings but restores a
-baseline-derived pending-work queue and scales the collection deadline by worker
-waves so queued checks have time to complete. Deeper follow-up work should
-decouple check dispatch from freshness/history persistence so
-event/projection write storms cannot age out otherwise completed checks.
+next iteration kept resource-derived worker ceilings but restored a
+baseline-derived pending-work queue and scaled the collection deadline by worker
+waves so queued checks had time to complete. After `7eb4e55` showed no
+stale/outstanding/duplicate results at 150,000 but still spent too much time in
+queue-full dispatch loops, the current iteration keeps the bounded scheduler
+windows and worker-wave deadlines while growing the checker buffer to at least
+one adaptive worker wave. Deeper follow-up work should decouple check dispatch
+from freshness/history persistence so event/projection write storms cannot age
+out otherwise completed checks.
 
 The bounded-queue follow-up (`60c099f`) restored throughput and eliminated stale
 result discards, but still failed 90,000 sites with 22.22% stale. Service logs

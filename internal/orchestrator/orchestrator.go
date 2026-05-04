@@ -746,10 +746,14 @@ func schedulerPoolQueueCapacity(cfg *config.Config) int {
 	if cfg != nil && cfg.NumWorkers > 0 {
 		base = cfg.NumWorkers
 	}
-	if poolMax := schedulerPoolMax(cfg); poolMax > 0 && base > poolMax {
+	poolMax := schedulerPoolMax(cfg)
+	if poolMax > 0 && base > poolMax {
 		base = poolMax
 	}
 	capacity := base * schedulerPoolQueueBufferMultiplier
+	if poolMax > capacity {
+		capacity = poolMax
+	}
 	if capacity < 1 {
 		return 1
 	}
@@ -954,19 +958,15 @@ func (o *Orchestrator) checkSitesPage(cfg *config.Config, sites []db.Site, pageN
 	for results.received < summary.dispatched {
 		select {
 		case res := <-o.pool.Results():
-			results.record(res, &summary)
-			if len(results.pending) >= schedulerResultProcessChunkSites {
-				summary.waitDuration += time.Since(waitStart)
-				processStart := time.Now()
-				stopAndDrainTimer(deadline)
-				o.flushPageResults(&results, &summary)
-				collectionDeadlineAt = collectionDeadlineAt.Add(time.Since(processStart))
-				waitStart = time.Now()
-				if !resetTimerUntil(deadline, collectionDeadlineAt) {
-					summary.outstanding = summary.dispatched - results.received
-					log.Printf("orchestrator: round deadline reached, %d results outstanding", summary.outstanding)
-					goto process
-				}
+			if !o.recordCollectionResult(&results, &summary, deadline, &collectionDeadlineAt, &waitStart, res) {
+				summary.outstanding = summary.dispatched - results.received
+				log.Printf("orchestrator: round deadline reached, %d results outstanding", summary.outstanding)
+				goto process
+			}
+			if !o.drainAvailableCollectionResults(&results, &summary, deadline, &collectionDeadlineAt, &waitStart) {
+				summary.outstanding = summary.dispatched - results.received
+				log.Printf("orchestrator: round deadline reached, %d results outstanding", summary.outstanding)
+				goto process
 			}
 			o.capturePoolStats(&summary)
 		case <-deadline.C:
@@ -988,6 +988,34 @@ process:
 	emitPageMetrics(summary)
 	logPageSummary(pageNumber, len(sites), summary)
 	return summary
+}
+
+func (o *Orchestrator) recordCollectionResult(results *pageResultBuffer, summary *roundSummary, deadline *time.Timer, collectionDeadlineAt *time.Time, waitStart *time.Time, res checker.Result) bool {
+	results.record(res, summary)
+	if len(results.pending) < schedulerResultProcessChunkSites {
+		return true
+	}
+	summary.waitDuration += time.Since(*waitStart)
+	processStart := time.Now()
+	stopAndDrainTimer(deadline)
+	o.flushPageResults(results, summary)
+	*collectionDeadlineAt = collectionDeadlineAt.Add(time.Since(processStart))
+	*waitStart = time.Now()
+	return resetTimerUntil(deadline, *collectionDeadlineAt)
+}
+
+func (o *Orchestrator) drainAvailableCollectionResults(results *pageResultBuffer, summary *roundSummary, deadline *time.Timer, collectionDeadlineAt *time.Time, waitStart *time.Time) bool {
+	for results.received < summary.dispatched {
+		select {
+		case res := <-o.pool.Results():
+			if !o.recordCollectionResult(results, summary, deadline, collectionDeadlineAt, waitStart, res) {
+				return false
+			}
+		default:
+			return true
+		}
+	}
+	return true
 }
 
 func emitPageMetrics(summary roundSummary) {
@@ -1069,22 +1097,43 @@ func logPageSummary(pageNumber, sites int, summary roundSummary) {
 }
 
 func (o *Orchestrator) waitForPageResult(results *pageResultBuffer, summary *roundSummary, phaseStart *time.Time, phaseDuration *time.Duration, maxWait time.Duration) bool {
+	if o.drainAvailablePageResults(results, summary, phaseStart, phaseDuration) > 0 {
+		return true
+	}
 	timer := time.NewTimer(maxWait)
 	defer timer.Stop()
 	select {
 	case res := <-o.pool.Results():
-		results.record(res, summary)
-		if len(results.pending) >= schedulerResultProcessChunkSites {
-			*phaseDuration += time.Since(*phaseStart)
-			o.flushPageResults(results, summary)
-			*phaseStart = time.Now()
-		}
+		o.recordPageResultForPhase(results, summary, phaseStart, phaseDuration, res)
 		return true
 	case <-timer.C:
 		return true
 	case <-o.ctx.Done():
 		return false
 	}
+}
+
+func (o *Orchestrator) drainAvailablePageResults(results *pageResultBuffer, summary *roundSummary, phaseStart *time.Time, phaseDuration *time.Duration) int {
+	drained := 0
+	for {
+		select {
+		case res := <-o.pool.Results():
+			o.recordPageResultForPhase(results, summary, phaseStart, phaseDuration, res)
+			drained++
+		default:
+			return drained
+		}
+	}
+}
+
+func (o *Orchestrator) recordPageResultForPhase(results *pageResultBuffer, summary *roundSummary, phaseStart *time.Time, phaseDuration *time.Duration, res checker.Result) {
+	results.record(res, summary)
+	if len(results.pending) < schedulerResultProcessChunkSites {
+		return
+	}
+	*phaseDuration += time.Since(*phaseStart)
+	o.flushPageResults(results, summary)
+	*phaseStart = time.Now()
 }
 
 func filterUnseenSites(sites []db.Site, seen map[int64]struct{}) []db.Site {

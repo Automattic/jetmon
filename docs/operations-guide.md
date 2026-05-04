@@ -56,12 +56,14 @@ Scheduler behavior:
   `MIN_TIME_BETWEEN_ROUNDS_SEC` show the baseline would miss freshness. The
   adaptive ceiling uses a 20% headroom factor and is bounded by the host's
   file-descriptor budget, so a low `ulimit -n` becomes a real capacity limit.
-- The pending-work queue stays bounded from the configured worker baseline even
-  when the adaptive worker ceiling grows. This keeps queue pressure visible to
-  the scheduler and prevents a resource-rich host from accepting a huge backlog
-  of checks that cannot be collected inside the freshness window.
+- The pending-work queue keeps the configured baseline cushion at small scale
+  but grows to at least one adaptive worker wave when host resources allow a
+  higher ceiling. This keeps queue pressure visible to the scheduler without
+  forcing a resource-rich host to dispatch through a 960-worker-era buffer.
 - A full worker queue applies backpressure; checks remain pending instead of
-  being dropped.
+  being dropped. Before sleeping on backpressure, the scheduler drains any
+  already-completed results and flushes full result chunks so timer churn and
+  pending result buffers do not become their own capacity limit.
 - With `USE_VARIABLE_CHECK_INTERVALS=true`, Jetmon polls for newly due work on a
   short idle interval and uses each site's maintained `next_check_at` timestamp
   to decide what to check. `next_check_at` is recalculated from
