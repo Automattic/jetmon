@@ -42,7 +42,9 @@ tracks the current adaptive worker ceiling so queue depth grows with the
 intended burst size rather than the host's absolute file-descriptor ceiling.
 During backpressure, the scheduler drains ready results before sleeping so
 completed checks can be persisted without one timer allocation per queue-full
-loop.
+loop. After the `32bca7c` retest passed 150,000-site freshness but failed the
+CPU threshold, adaptive worker headroom was reduced from 20% to 10% to preserve
+a small freshness cushion while lowering simultaneous checker/network pressure.
 `last_checked_at` and `next_check_at` are still written only after completed
 checks.
 

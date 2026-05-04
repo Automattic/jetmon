@@ -373,6 +373,12 @@ No active candidate branch is queued here right now.
   applying a soft submit limit from the current adaptive worker ceiling, so
   queue depth follows actual burst size rather than the host's absolute
   file-descriptor-derived maximum.
+- [x] Tune adaptive worker headroom after the `32bca7c` retest. That run was
+  the first 150,000-site freshness pass in this loop (`0` missed checks), but
+  host CPU still peaked near 90% with almost no freshness margin. The adaptive
+  worker ceiling now uses 10% headroom instead of 20%, reducing simultaneous
+  checker/network pressure while retaining a small cushion over the exact
+  freshness-window calculation.
 - [x] Reduce storm-time bookkeeping that does not improve check quality:
   WPCOM-disabled notifications no longer write one audit row per skipped
   synthetic notification, per-site recovery success logs are suppressed, and

@@ -1883,8 +1883,8 @@ func TestSchedulerAdaptiveWorkerMaxFromDueBacklog(t *testing.T) {
 		UseVariableCheckIntervals: true,
 	}
 
-	if got := schedulerAdaptiveWorkerMax(cfg, 100000); got != 4000 {
-		t.Fatalf("schedulerAdaptiveWorkerMax(100k due) = %d, want 4000", got)
+	if got := schedulerAdaptiveWorkerMax(cfg, 100000); got != 3667 {
+		t.Fatalf("schedulerAdaptiveWorkerMax(100k due) = %d, want 3667", got)
 	}
 	if got := schedulerAdaptiveWorkerMax(cfg, 1000); got != 960 {
 		t.Fatalf("schedulerAdaptiveWorkerMax(small backlog) = %d, want base 960", got)

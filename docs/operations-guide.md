@@ -54,7 +54,7 @@ Scheduler behavior:
   `NUM_WORKERS` remains the baseline, but the scheduler can temporarily raise
   the ceiling above it when the due backlog, `NET_COMMS_TIMEOUT`, and
   `MIN_TIME_BETWEEN_ROUNDS_SEC` show the baseline would miss freshness. The
-  adaptive ceiling uses a 20% headroom factor and is bounded by the host's
+  adaptive ceiling uses a 10% headroom factor and is bounded by the host's
   file-descriptor budget, so a low `ulimit -n` becomes a real capacity limit.
 - The pending-work queue keeps the configured baseline cushion at small scale
   but grows to at least one adaptive worker wave when host resources allow a
