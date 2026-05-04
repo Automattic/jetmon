@@ -389,6 +389,24 @@ func TestMarkSitesCheckedBatchesUpdates(t *testing.T) {
 	}
 }
 
+func TestMarkSitesCheckedAtBatchesUniformFreshnessUpdate(t *testing.T) {
+	mock, cleanup := withMockDB(t)
+	defer cleanup()
+
+	checkedAt := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
+	mock.ExpectExec("UPDATE jetpack_monitor_sites").
+		WithArgs(checkedAt, checkedAt, int64(7), int64(42)).
+		WillReturnResult(sqlmock.NewResult(0, 2))
+
+	err := MarkSitesCheckedAt(context.Background(), []int64{42, 7}, checkedAt)
+	if err != nil {
+		t.Fatalf("MarkSitesCheckedAt: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestSiteMonitorActive(t *testing.T) {
 	mock, cleanup := withMockDB(t)
 	defer cleanup()

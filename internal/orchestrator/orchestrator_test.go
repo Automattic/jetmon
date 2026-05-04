@@ -515,6 +515,7 @@ func stubOrchestratorDeps() func() {
 	origDBUpdateLastAlert := dbUpdateLastAlertSent
 	origDBRecordFalsePositive := dbRecordFalsePositive
 	origDBMarkSiteChecked := dbMarkSiteChecked
+	origDBMarkSitesCheckedAt := dbMarkSitesCheckedAt
 	origDBMarkSitesChecked := dbMarkSitesChecked
 	origDBRecordCheckHistory := dbRecordCheckHistory
 	origDBRecordCheckHistories := dbRecordCheckHistories
@@ -539,6 +540,7 @@ func stubOrchestratorDeps() func() {
 	dbUpdateLastAlertSent = func(context.Context, int64, time.Time) error { return nil }
 	dbRecordFalsePositive = func(int64, int, int, int64) error { return nil }
 	dbMarkSiteChecked = func(context.Context, int64, time.Time, time.Time) error { return nil }
+	dbMarkSitesCheckedAt = func(context.Context, []int64, time.Time) error { return nil }
 	dbMarkSitesChecked = func(context.Context, []db.SiteCheck) error { return nil }
 	dbRecordCheckHistory = func(int64, int, int, int64, int64, int64, int64, int64) error { return nil }
 	dbRecordCheckHistories = func(context.Context, []db.CheckHistoryRow) error { return nil }
@@ -563,6 +565,7 @@ func stubOrchestratorDeps() func() {
 		dbUpdateLastAlertSent = origDBUpdateLastAlert
 		dbRecordFalsePositive = origDBRecordFalsePositive
 		dbMarkSiteChecked = origDBMarkSiteChecked
+		dbMarkSitesCheckedAt = origDBMarkSitesCheckedAt
 		dbMarkSitesChecked = origDBMarkSitesChecked
 		dbRecordCheckHistory = origDBRecordCheckHistory
 		dbRecordCheckHistories = origDBRecordCheckHistories
@@ -787,14 +790,12 @@ func TestProcessResultsMarksChecked(t *testing.T) {
 
 	var markedBlogID int64
 	var markedAt time.Time
-	var markedNext time.Time
-	dbMarkSitesChecked = func(_ context.Context, checks []db.SiteCheck) error {
-		if len(checks) != 1 {
-			t.Fatalf("batch checks = %d, want 1", len(checks))
+	dbMarkSitesCheckedAt = func(_ context.Context, blogIDs []int64, checkedAt time.Time) error {
+		if len(blogIDs) != 1 {
+			t.Fatalf("batch blog IDs = %d, want 1", len(blogIDs))
 		}
-		markedBlogID = checks[0].BlogID
-		markedAt = checks[0].CheckedAt
-		markedNext = checks[0].NextCheckAt
+		markedBlogID = blogIDs[0]
+		markedAt = checkedAt
 		return nil
 	}
 
@@ -815,9 +816,6 @@ func TestProcessResultsMarksChecked(t *testing.T) {
 	}
 	if !markedAt.Equal(res.Timestamp) {
 		t.Fatalf("MarkSitesChecked checked_at = %s, want %s", markedAt, res.Timestamp)
-	}
-	if want := res.Timestamp.Add(7 * time.Minute); !markedNext.Equal(want) {
-		t.Fatalf("MarkSitesChecked next_check_at = %s, want %s", markedNext, want)
 	}
 }
 
@@ -961,8 +959,8 @@ func TestFlushPageResultsAddsSummaryAndClearsPending(t *testing.T) {
 	setTestConfig(t)
 
 	var markedRows int
-	dbMarkSitesChecked = func(_ context.Context, checks []db.SiteCheck) error {
-		markedRows += len(checks)
+	dbMarkSitesCheckedAt = func(_ context.Context, blogIDs []int64, _ time.Time) error {
+		markedRows += len(blogIDs)
 		return nil
 	}
 
@@ -1000,7 +998,7 @@ func TestProcessResultsFallsBackWhenBatchWritesFail(t *testing.T) {
 	defer restore()
 	setTestConfig(t)
 
-	dbMarkSitesChecked = func(context.Context, []db.SiteCheck) error {
+	dbMarkSitesCheckedAt = func(context.Context, []int64, time.Time) error {
 		return fmt.Errorf("batch mark failed")
 	}
 	dbRecordCheckHistories = func(context.Context, []db.CheckHistoryRow) error {
@@ -1098,7 +1096,7 @@ func TestProcessResultsSkipsUnknownSite(t *testing.T) {
 	setTestConfig(t)
 
 	var markCalled bool
-	dbMarkSitesChecked = func(_ context.Context, _ []db.SiteCheck) error {
+	dbMarkSitesCheckedAt = func(_ context.Context, _ []int64, _ time.Time) error {
 		markCalled = true
 		return nil
 	}
@@ -1374,10 +1372,8 @@ func TestRunRoundDrainsAllPagesUntilWorkWraps(t *testing.T) {
 		queries++
 		return nextSchedulerTestPageAfter(sites, cursor, batchSize), nil
 	}
-	dbMarkSitesChecked = func(_ context.Context, checks []db.SiteCheck) error {
-		for _, check := range checks {
-			marked = append(marked, check.BlogID)
-		}
+	dbMarkSitesCheckedAt = func(_ context.Context, blogIDs []int64, _ time.Time) error {
+		marked = append(marked, blogIDs...)
 		return nil
 	}
 	dbCountDueSites = func(_ context.Context, _, _ int, useVariableIntervals bool) (int, error) {
@@ -1458,9 +1454,9 @@ func TestRunRoundWaitsUnderPoolBackpressureInsteadOfDropping(t *testing.T) {
 		}
 		return nextSchedulerTestPageAfter(sites, cursor, batchSize), nil
 	}
-	dbMarkSitesChecked = func(_ context.Context, checks []db.SiteCheck) error {
-		for _, check := range checks {
-			checked[check.BlogID] = true
+	dbMarkSitesCheckedAt = func(_ context.Context, blogIDs []int64, _ time.Time) error {
+		for _, blogID := range blogIDs {
+			checked[blogID] = true
 		}
 		return nil
 	}
@@ -1634,8 +1630,8 @@ func TestSchedulerAdaptiveWorkerMaxFromDueBacklog(t *testing.T) {
 		UseVariableCheckIntervals: true,
 	}
 
-	if got := schedulerAdaptiveWorkerMax(cfg, 100000); got != 2880 {
-		t.Fatalf("schedulerAdaptiveWorkerMax(100k due) = %d, want 2880", got)
+	if got := schedulerAdaptiveWorkerMax(cfg, 100000); got != 1920 {
+		t.Fatalf("schedulerAdaptiveWorkerMax(100k due) = %d, want 1920", got)
 	}
 	if got := schedulerAdaptiveWorkerMax(cfg, 1000); got != 960 {
 		t.Fatalf("schedulerAdaptiveWorkerMax(small backlog) = %d, want base 960", got)
@@ -1659,8 +1655,8 @@ func TestSchedulerAdaptiveWorkerMaxHonorsResourceCapAboveBase(t *testing.T) {
 	}
 
 	workerResourceCapFunc = func() int { return 500 }
-	if got := schedulerAdaptiveWorkerMax(cfg, 100000); got != 2880 {
-		t.Fatalf("schedulerAdaptiveWorkerMax(cap below base) = %d, want burst-capped adaptive 2880", got)
+	if got := schedulerAdaptiveWorkerMax(cfg, 100000); got != 1920 {
+		t.Fatalf("schedulerAdaptiveWorkerMax(cap below base) = %d, want burst-capped adaptive 1920", got)
 	}
 }
 
@@ -1957,7 +1953,7 @@ func TestProcessResultsLogsErrorsFromDB(t *testing.T) {
 	setTestConfig(t)
 
 	// Make all DB calls return errors to exercise the log.Printf branches in processResults.
-	dbMarkSitesChecked = func(context.Context, []db.SiteCheck) error {
+	dbMarkSitesCheckedAt = func(context.Context, []int64, time.Time) error {
 		return fmt.Errorf("batch mark checked error")
 	}
 	dbMarkSiteChecked = func(context.Context, int64, time.Time, time.Time) error {

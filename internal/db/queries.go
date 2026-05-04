@@ -12,6 +12,49 @@ import (
 
 const batchWriteChunkSize = 500
 
+// MarkSitesCheckedAt records last_checked_at for a batch of sites that were
+// observed in one scheduler processing chunk. The exact per-check timestamp is
+// still kept in jetmon_check_history; using one freshness timestamp here keeps
+// the hot scheduler update compact while preserving per-site check_interval
+// scheduling through the row's own check_interval value.
+func MarkSitesCheckedAt(ctx context.Context, blogIDs []int64, checkedAt time.Time) error {
+	if len(blogIDs) == 0 {
+		return nil
+	}
+	blogIDs = append([]int64(nil), blogIDs...)
+	sort.Slice(blogIDs, func(i, j int) bool {
+		return blogIDs[i] < blogIDs[j]
+	})
+	checkedAt = checkedAt.UTC()
+	for start := 0; start < len(blogIDs); start += batchWriteChunkSize {
+		end := min(start+batchWriteChunkSize, len(blogIDs))
+		if err := markSitesCheckedAtChunk(ctx, blogIDs[start:end], checkedAt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func markSitesCheckedAtChunk(ctx context.Context, blogIDs []int64, checkedAt time.Time) error {
+	var query strings.Builder
+	query.WriteString(`UPDATE jetpack_monitor_sites
+		SET last_checked_at = ?,
+		    next_check_at = DATE_ADD(?, INTERVAL GREATEST(check_interval, 1) MINUTE)
+		WHERE blog_id IN (`)
+	args := make([]any, 0, len(blogIDs)+2)
+	args = append(args, checkedAt, checkedAt)
+	for i, blogID := range blogIDs {
+		if i > 0 {
+			query.WriteByte(',')
+		}
+		query.WriteByte('?')
+		args = append(args, blogID)
+	}
+	query.WriteByte(')')
+	_, err := db.ExecContext(ctx, query.String(), args...)
+	return err
+}
+
 // SitePageCursor identifies the last row from a scheduler page. It lets the
 // orchestrator fetch several stable DB pages before completed checks update
 // last_checked_at / next_check_at and change the query's ordering.

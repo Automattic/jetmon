@@ -229,10 +229,21 @@ No active candidate branch is queued here right now.
   CPU, memory, MySQL CPU, and file descriptors stayed below thresholds. The
   increased ceiling lets the next ladder determine whether more in-flight checks
   are useful before pursuing deeper scheduler/write-path redesign.
-- [ ] Run a `100,000,110,000,115,000` capacity ladder after WPCOM test isolation
-  and 3x adaptive worker headroom. Compare freshness margin, event queue depth,
-  slow write counters, MySQL CPU/I/O, Jetmon CPU/RSS/FDs, open FDs, and cleanup
-  open-event residue.
+- [x] Revert 3x adaptive worker headroom after the wpcom-off retest showed
+  worse 100k freshness. The extra concurrency reduced dispatch time but pushed
+  `jetmon2` over one full core and made `mark_checked` writes lumpy enough for
+  the final 25k chunk to miss the measurement window. Keep the WPCOM isolation
+  but return to the prior 2x cap while optimizing the write path.
+- [x] Add a compact scheduler freshness write path. `last_checked_at` /
+  `next_check_at` updates now use one checked timestamp per scheduler result
+  chunk and let MySQL compute `next_check_at` from each row's own
+  `check_interval`. Exact per-check timestamps stay in `jetmon_check_history`;
+  the hot scheduler update no longer needs two large `CASE blog_id` expressions
+  for every 500-row DB write.
+- [ ] Run a `90,000,100,000,110,000` capacity ladder after WPCOM test isolation,
+  restored 2x adaptive worker headroom, and compact freshness writes. Compare
+  freshness margin, event queue depth, slow write counters, MySQL CPU/I/O,
+  Jetmon CPU/RSS/FDs, open FDs, and cleanup open-event residue.
 - [ ] After the adaptive retest, decide whether to incorporate observed RTT into
   the worker-ceiling formula. The first implementation uses the configured
   timeout as the conservative sizing input; observed RTT could reduce

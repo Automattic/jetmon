@@ -86,6 +86,15 @@ thresholds. The next iteration disables legacy WPCOM notification attempts in
 the test service and raises the adaptive worker ceiling from 2x to 3x the
 configured `NUM_WORKERS`, still bounded by the host file-descriptor budget.
 
+The `100,000,110,000,115,000` retest with WPCOM disabled and 3x adaptive worker
+headroom regressed at 100,000 active sites. Dispatch became faster, but
+`last_checked_at` persistence became much lumpier under the higher concurrency:
+one 100k round spent 1m26s in `mark_checked`, and the final 25k chunk finished
+after the measurement window. The next iteration keeps `WPCOM_NOTIFY_ENABLE`
+disabled, restores the 2x adaptive worker ceiling, and uses a compact freshness
+update that records one checked timestamp per scheduler processing chunk while
+preserving exact per-check timestamps in `jetmon_check_history`.
+
 ## Pre-Test Checks
 
 1. Confirm migrations have run through migration 31.
@@ -323,14 +332,15 @@ Run each step for the same duration and compare against the latest successful
 baseline. The latest clean point is 100,000 active sites, but it had 0.00%
 throughput margin: exactly 20,000 recent checks/minute against 20,000
 required/minute. The 125,000 step failed with 48,740 stale active sites and
-15,952 recent checks/minute against 25,000 required/minute. After disabling
-legacy WPCOM notifications for the test service and raising adaptive worker
-headroom to 3x, use a tighter confirmation ladder:
+15,952 recent checks/minute against 25,000 required/minute, and the 3x worker
+headroom retest then failed 100,000 with 25,000 stale active sites. After
+restoring 2x worker headroom and switching to compact freshness writes, rerun a
+conservative boundary ladder:
 
-1. 100,000 sites to confirm WPCOM isolation and worker headroom create real
-   margin above the current boundary pass.
-2. 110,000 sites if 100,000 is clean with enough freshness margin.
-3. 115,000 sites if 110,000 is clean and event queue depth does not trend toward
+1. 90,000 sites to confirm the service still clears the previous comfortable
+   pass with WPCOM disabled and compact freshness writes.
+2. 100,000 sites if 90,000 is clean with enough freshness margin.
+3. 110,000 sites if 100,000 is clean and event queue depth does not trend toward
    saturation.
 4. Narrow the ladder if `p95` age approaches the 5-minute freshness window, if
    `scheduler.mark_checked.slow.count` or `scheduler.history.slow.count` rises,

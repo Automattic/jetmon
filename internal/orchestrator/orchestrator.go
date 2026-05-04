@@ -59,7 +59,7 @@ const schedulerMaxBatchSites = 25000
 const schedulerResultProcessChunkSites = 5000
 const schedulerAdaptiveWorkerSafetyNumerator = 6
 const schedulerAdaptiveWorkerSafetyDenominator = 5
-const schedulerAdaptiveWorkerMaxMultiplier = 3
+const schedulerAdaptiveWorkerMaxMultiplier = 2
 const schedulerWorkerFDReserve = 256
 const schedulerWorkerFDUseNumerator = 8
 const schedulerWorkerFDUseDenominator = 10
@@ -87,6 +87,7 @@ var (
 	dbMarkHostDraining      = db.MarkHostDraining
 	dbGetSitesForBucketPage = db.GetSitesForBucketPage
 	dbMarkSiteChecked       = db.MarkSiteChecked
+	dbMarkSitesCheckedAt    = db.MarkSitesCheckedAt
 	dbMarkSitesChecked      = db.MarkSitesChecked
 	dbRecordCheckHistory    = db.RecordCheckHistory
 	dbRecordCheckHistories  = db.RecordCheckHistories
@@ -1429,17 +1430,24 @@ func knownSiteResults(results map[int64]checker.Result, sites map[int64]db.Site)
 }
 
 func (o *Orchestrator) markResultsChecked(records []siteCheckResult, summary *resultProcessSummary) {
+	blogIDs := make([]int64, 0, len(records))
 	checks := make([]db.SiteCheck, 0, len(records))
+	var chunkCheckedAt time.Time
 	for _, record := range records {
+		checkedAt := resultCheckedAt(record.res)
+		if checkedAt.After(chunkCheckedAt) {
+			chunkCheckedAt = checkedAt
+		}
+		blogIDs = append(blogIDs, record.blogID)
 		checks = append(checks, db.SiteCheck{
 			BlogID:      record.blogID,
-			CheckedAt:   resultCheckedAt(record.res),
+			CheckedAt:   checkedAt,
 			NextCheckAt: nextCheckAt(record.site, record.res),
 		})
 	}
 
 	start := time.Now()
-	if err := dbMarkSitesChecked(o.ctx, checks); err != nil {
+	if err := dbMarkSitesCheckedAt(o.ctx, blogIDs, chunkCheckedAt); err != nil {
 		summary.markCheckedErrors++
 		log.Printf("orchestrator: batch mark checked sites=%d: %v", len(checks), err)
 		for _, check := range checks {
