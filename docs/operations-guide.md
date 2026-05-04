@@ -72,6 +72,9 @@ Scheduler behavior:
   `due_remaining` show whether freshness pressure is clearing or building.
   `pages` counts database pages fetched; `batches` counts larger scheduler check
   windows processed from those pages.
+  `process.chunk.count` shows how many result-processing chunks were flushed
+  inside those windows; high-capacity runs should show multiple chunks per
+  25,000-site window instead of one large freshness-write wave.
   `pool.workers.max`, `pool.active.max`, `pool.queue_depth.max`, and
   `pool.queue_capacity.max` show whether the check pool is saturated. If active
   checks sit near the adaptive ceiling while CPU and memory remain low, check

@@ -2,6 +2,7 @@ package wpcom
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -95,6 +96,9 @@ func TestNotifyQueuesAndReturnsErrorWhenCircuitOpen(t *testing.T) {
 	err := c.Notify(testNotification(42))
 	if err == nil {
 		t.Fatal("Notify() expected error when circuit is open")
+	}
+	if !errors.Is(err, ErrCircuitOpen) {
+		t.Fatalf("Notify() error = %v, want ErrCircuitOpen", err)
 	}
 	if c.QueueDepth() != 1 {
 		t.Fatalf("QueueDepth() = %d, want 1", c.QueueDepth())

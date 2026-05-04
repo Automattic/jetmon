@@ -209,6 +209,59 @@ func TestSendNotificationRetriesAndUpdatesAlertTimestamp(t *testing.T) {
 	}
 }
 
+func TestSendNotificationDoesNotRetryWhenWPCOMCircuitOpen(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+
+	setTestConfig(t)
+
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+
+	var notifyCalls int
+	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error {
+		notifyCalls++
+		return fmt.Errorf("%w, notification queued", wpcom.ErrCircuitOpen)
+	}
+
+	var updatedBlogID int64
+	dbUpdateLastAlertSent = func(_ context.Context, blogID int64, _ time.Time) error {
+		updatedBlogID = blogID
+		return nil
+	}
+
+	o := &Orchestrator{
+		wpcom:    &wpcom.Client{},
+		hostname: "local-host",
+		ctx:      context.Background(),
+	}
+
+	res := checkerResultSuccess(123)
+	o.sendNotification(db.Site{BlogID: 123, MonitorURL: "https://example.com"}, res, statusRunning, res.Timestamp, nil)
+
+	if notifyCalls != 1 {
+		t.Fatalf("notify calls = %d, want 1 when circuit is already open", notifyCalls)
+	}
+	if updatedBlogID != 0 {
+		t.Fatalf("updated blog_id = %d, want 0 for queued notification", updatedBlogID)
+	}
+	for stat, want := range map[string]int{
+		"wpcom.notification.attempt.count":                  1,
+		"wpcom.notification.status.running.attempt.count":   1,
+		"wpcom.notification.error.count":                    1,
+		"wpcom.notification.status.running.error.count":     1,
+		"wpcom.notification.queued.count":                   1,
+		"wpcom.notification.status.running.queued.count":    1,
+		"wpcom.notification.retry.count":                    0,
+		"wpcom.notification.delivered.count":                0,
+		"wpcom.notification.status.running.delivered.count": 0,
+	} {
+		if got := rec.counter(stat); got != want {
+			t.Fatalf("%s = %d, want %d", stat, got, want)
+		}
+	}
+}
+
 func TestConfirmDownSuppressedDuringCooldown(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
@@ -776,6 +829,66 @@ func TestProcessResultsSkipsNoopSuccessEventsWhenWorkersEnabled(t *testing.T) {
 	}
 	if len(ch) != 0 {
 		t.Fatalf("queued event jobs = %d, want 0", len(ch))
+	}
+}
+
+func TestPageResultBufferTracksDuplicatesAcrossFlushes(t *testing.T) {
+	sites := []db.Site{{BlogID: 42}}
+	buf := newPageResultBuffer(sites)
+	summary := roundSummary{}
+
+	buf.record(checkerResultSuccess(42), &summary)
+	if buf.received != 1 || len(buf.pending) != 1 {
+		t.Fatalf("after first record received=%d pending=%d, want 1/1", buf.received, len(buf.pending))
+	}
+
+	clear(buf.pending)
+	buf.record(checkerResultSuccess(42), &summary)
+	if buf.received != 1 {
+		t.Fatalf("received after duplicate = %d, want 1", buf.received)
+	}
+	if summary.duplicateResults != 1 {
+		t.Fatalf("duplicate results = %d, want 1", summary.duplicateResults)
+	}
+}
+
+func TestFlushPageResultsAddsSummaryAndClearsPending(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig(t)
+
+	var markedRows int
+	dbMarkSitesChecked = func(_ context.Context, checks []db.SiteCheck) error {
+		markedRows += len(checks)
+		return nil
+	}
+
+	sites := []db.Site{
+		{BlogID: 1, SiteStatus: statusRunning},
+		{BlogID: 2, SiteStatus: statusRunning},
+	}
+	buf := newPageResultBuffer(sites)
+	summary := roundSummary{}
+	buf.record(checkerResultSuccess(1), &summary)
+	buf.record(checkerResultSuccess(2), &summary)
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local",
+		ctx:      context.Background(),
+	}
+	o.flushPageResults(&buf, &summary)
+
+	if summary.completed != 2 || summary.markCheckedRows != 2 || summary.processChunks != 1 {
+		t.Fatalf("summary completed/marked/chunks = %d/%d/%d, want 2/2/1",
+			summary.completed, summary.markCheckedRows, summary.processChunks)
+	}
+	if markedRows != 2 {
+		t.Fatalf("marked rows = %d, want 2", markedRows)
+	}
+	if len(buf.pending) != 0 {
+		t.Fatalf("pending after flush = %d, want 0", len(buf.pending))
 	}
 }
 

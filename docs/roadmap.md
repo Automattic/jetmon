@@ -186,12 +186,22 @@ No active candidate branch is queued here right now.
 - [ ] Add a 5k/10k capacity ladder that records freshness, p95 age, MySQL CPU,
   MySQL I/O/network, `jetmon2` CPU/RSS/FDs, StatsD CPU, Veriflier CPU, and
   check-history row growth after each major scalability change.
-- [ ] Retest bounded adaptive worker-ceiling growth with a `75,000,80,000,90,000`
-  ladder. The prior `50,000,75,000,100,000` run passed 75,000 with no
-  throughput margin and failed 100,000 at roughly 15,758 recent checks/minute.
-  The first adaptive attempt failed at 80,000 after growing workers into the
-  2.5k-3.2k range, so the next test should confirm whether a 2x ceiling and
-  restored 25k result window improve freshness without CPU pressure.
+- [x] Retest bounded adaptive worker-ceiling growth with a `75,000,80,000,90,000`
+  ladder. The 2x ceiling and restored 25k result window improved the boundary:
+  75,000 passed with 6.58% throughput margin, but 80,000 still failed with
+  5.89% stale active sites. Host CPU, memory, MySQL CPU, and file descriptors
+  stayed below alert thresholds, so the next bottleneck is still scheduler
+  throughput and freshness smoothing rather than host exhaustion.
+- [x] Add chunked scheduler result processing inside each 25,000-site dispatch
+  window. Completed checks are now persisted in 5,000-site chunks while the
+  scheduler continues collecting the window, smoothing `last_checked_at`,
+  check-history, event enqueueing, and per-window memory without reducing the
+  dispatch window size.
+- [x] Reduce WPCOM failure-storm log and retry amplification. The bounded
+  adaptive retest showed synthetic failure/recovery waves filling the WPCOM
+  circuit-breaker queue and emitting per-notification queue-drop logs. Jetmon
+  now treats circuit-open notifications as queued instead of immediately
+  retrying them, and coalesces queue-full logs.
 - [ ] After the adaptive retest, decide whether to incorporate observed RTT into
   the worker-ceiling formula. The first implementation uses the configured
   timeout as the conservative sizing input; observed RTT could reduce

@@ -3,6 +3,7 @@ package wpcom
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -13,10 +14,13 @@ import (
 const (
 	notifyEndpoint = "https://public-api.wordpress.com/wpcom/v2/jetpack-monitor/status-change"
 
-	cbMaxFailures  = 5
-	cbResetTimeout = 60 * time.Second
-	queueMaxSize   = 1000
+	cbMaxFailures        = 5
+	cbResetTimeout       = 60 * time.Second
+	queueMaxSize         = 1000
+	queueDropLogInterval = 10 * time.Second
 )
+
+var ErrCircuitOpen = errors.New("wpcom circuit open")
 
 // CheckEntry represents a single check result included in a notification.
 type CheckEntry struct {
@@ -50,6 +54,9 @@ type Client struct {
 	circuitOpen   bool
 	circuitOpenAt time.Time
 	queue         []queuedNotification
+
+	lastQueueDropLog    time.Time
+	queueDropSuppressed int
 }
 
 type queuedNotification struct {
@@ -87,7 +94,7 @@ func (c *Client) Notify(n Notification) error {
 		} else {
 			c.enqueue(n)
 			c.mu.Unlock()
-			return fmt.Errorf("wpcom circuit open, notification queued")
+			return fmt.Errorf("%w, notification queued", ErrCircuitOpen)
 		}
 	} else {
 		c.mu.Unlock()
@@ -95,11 +102,15 @@ func (c *Client) Notify(n Notification) error {
 
 	if err := c.send(n); err != nil {
 		c.mu.Lock()
-		c.failures++
-		if c.failures >= cbMaxFailures {
-			c.circuitOpen = true
-			c.circuitOpenAt = time.Now()
-			log.Printf("wpcom: circuit breaker opened after %d failures", c.failures)
+		if c.circuitOpen {
+			c.failures++
+		} else {
+			c.failures++
+			if c.failures >= cbMaxFailures {
+				c.circuitOpen = true
+				c.circuitOpenAt = time.Now()
+				log.Printf("wpcom: circuit breaker opened after %d failures", c.failures)
+			}
 		}
 		c.mu.Unlock()
 		return err
@@ -142,10 +153,29 @@ func (c *Client) send(n Notification) error {
 
 func (c *Client) enqueue(n Notification) {
 	if len(c.queue) >= queueMaxSize {
-		log.Printf("wpcom: queue full, dropping oldest notification for blog_id=%d", c.queue[0].n.BlogID)
+		c.logQueueDrop(c.queue[0].n.BlogID)
 		c.queue = c.queue[1:]
 	}
 	c.queue = append(c.queue, queuedNotification{n: n, queuedAt: time.Now()})
+}
+
+func (c *Client) logQueueDrop(blogID int64) {
+	now := time.Now()
+	if c.lastQueueDropLog.IsZero() || now.Sub(c.lastQueueDropLog) >= queueDropLogInterval {
+		if c.queueDropSuppressed > 0 {
+			log.Printf(
+				"wpcom: queue full, dropping oldest notification for blog_id=%d (suppressed %d similar drops)",
+				blogID,
+				c.queueDropSuppressed,
+			)
+		} else {
+			log.Printf("wpcom: queue full, dropping oldest notification for blog_id=%d", blogID)
+		}
+		c.lastQueueDropLog = now
+		c.queueDropSuppressed = 0
+		return
+	}
+	c.queueDropSuppressed++
 }
 
 // sendFlush sends previously queued notifications without holding the mutex.

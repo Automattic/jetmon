@@ -42,19 +42,27 @@ handling after 732 connect errors. The event queue preserves per-site ordering
 by hashing each blog ID to one worker, while keeping slow event/projection work
 from blocking fresh checks for unrelated sites.
 
-The current iteration adds bounded adaptive worker-ceiling growth for
-variable-interval mode. `NUM_WORKERS` is treated as the baseline; if the
-current due backlog cannot fit inside `MIN_TIME_BETWEEN_ROUNDS_SEC` at the
-configured `NET_COMMS_TIMEOUT`, Jetmon raises the pool ceiling with 20%
-headroom, bounded to 2x `NUM_WORKERS` and by the host file-descriptor budget.
-The pool scaler also grows beyond a full queue when the queue capacity is
-already at or below the active worker count.
+The bounded adaptive retest passed 75,000 sites with margin, then failed at
+80,000 sites. That run kept host CPU, memory, MySQL CPU, and file descriptors
+below alert thresholds, but scheduler logs still showed full check-pool
+utilization, full pending-work queues, and 25,000-result persistence waves.
+The next iteration keeps the 25,000-site dispatch window, but processes
+completed results in 5,000-site chunks while dispatching and collecting the
+window. This should smooth `last_checked_at` writes, `jetmon_check_history`
+inserts, event enqueueing, and per-window memory without reducing the worker
+pool's ability to keep checks in flight.
 
-Do not stack larger persistence changes, such as async check-history writes or
-DNS caching, on top of this branch before the next real capacity run. The next
-test should isolate bounded adaptive check concurrency while preserving the
-25,000-site scheduler result window that previously staggered freshness writes
-better than one large 80k/100k window.
+The same run also showed failure-heavy synthetic sites opening and recovering
+large numbers of events, which drove WPCOM circuit-breaker and queue-full log
+storms. WPCOM notifications still use the existing circuit breaker and bounded
+queue, but the orchestrator no longer retries immediately when the client has
+already queued a notification because the circuit is open. Queue-full logs are
+coalesced so failure storms do not dominate log I/O.
+
+Do not stack DNS caching or async check-history writes on top of this branch
+before the next real capacity run. The next test should isolate chunked result
+processing and WPCOM storm hygiene while preserving the 2x adaptive worker
+ceiling and 25,000-site dispatch window.
 
 ## Pre-Test Checks
 
@@ -139,6 +147,7 @@ Freshness and scheduler pressure:
 - `scheduler.round.dispatched.count`
 - `scheduler.round.completed.count`
 - `scheduler.round.outstanding.count`
+- `scheduler.round.process.chunk.count`
 - `scheduler.round.pool.workers.max`
 - `scheduler.round.pool.active.max`
 - `scheduler.round.pool.queue_depth.max`
@@ -167,6 +176,7 @@ represent one scheduler check batch, which may contain multiple DB pages:
 - `scheduler.page.history.time`
 - `scheduler.page.ssl.time`
 - `scheduler.page.events.time`
+- `scheduler.page.process.chunk.count`
 - `scheduler.page.pool.workers.max`
 - `scheduler.page.pool.active.max`
 - `scheduler.page.pool.queue_depth.max`
@@ -196,6 +206,7 @@ represent one scheduler check batch, which may contain multiple DB pages:
 - `scheduler.round.history.time`
 - `scheduler.round.ssl.time`
 - `scheduler.round.events.time`
+- `scheduler.round.process.chunk.count`
 - `scheduler.event_worker.process.count`
 - `scheduler.event_worker.process.time`
 - `scheduler.round.mark_checked.row.count`
@@ -283,15 +294,15 @@ Dependency signals:
 ## Next Capacity Ladder
 
 Run each step for the same duration and compare against the latest successful
-baseline. The latest clean point is 75,000 active sites, but it had effectively
-zero throughput margin. An initial unbounded adaptive run failed at 80,000 after
-raising workers into the 2.5k-3.2k range and pushing host CPU close to the
-capacity threshold. After restoring the 25,000-site result window and bounding
-adaptive growth to 2x `NUM_WORKERS`, use a narrower confirmation ladder:
+baseline. The latest clean point is 75,000 active sites with 6.58% throughput
+margin. The bounded adaptive run failed at 80,000 with 5.89% stale active sites
+while host CPU, memory, MySQL CPU, and file descriptors stayed below alert
+thresholds. After adding chunked result processing and WPCOM storm hygiene, use
+a narrow confirmation ladder:
 
 1. 75,000 sites to confirm the branch still matches the prior clean point.
-2. 80,000 sites to confirm the adaptive ceiling restores margin above the prior
-   thin 75,000-site pass.
+2. 80,000 sites to confirm chunked processing restores margin above the prior
+   failure point.
 3. 90,000 sites if 80,000 is clean with enough freshness margin.
 4. Continue in 10k steps while freshness margin remains comfortable; narrow the
    ladder if p95 age approaches the 5-minute freshness window or if FD usage
