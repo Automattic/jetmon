@@ -27,9 +27,12 @@ The branch includes the previous scaling changes:
 It also adds scheduler batch windows: Jetmon fetches several ordered DB pages
 with a keyset cursor, then dispatches that larger batch as one check window.
 The batch target comes from the current check-pool ceiling, request timeout, and
-freshness target. The per-batch result window is capped at 25,000 sites to
-avoid unbounded in-process maps and to keep freshness writes staggered across a
-large active fleet; the cap does not limit total checks per round.
+freshness target. Normal baseline runs cap the per-batch result window at
+25,000 sites to avoid unbounded in-process maps and to keep freshness writes
+staggered across a large active fleet. When adaptive worker growth is active,
+the cap rises to 50,000 sites so high-backlog capacity runs pay fewer
+per-window slow-tail waits while retaining 5,000-site persistence chunks. The
+cap does not limit total checks per round.
 `last_checked_at` and `next_check_at` are still written only after completed
 checks.
 
@@ -111,6 +114,16 @@ That clean 90,000 result improved p95 age from 268s to 242s and oldest age from
 recovery sample is not a valid capacity score. Before rerunning, ensure the
 uptime-bench activation SQL reset for `next_check_at` is deployed and preflight
 checks confirm no stale Jetmon DB sessions survived an outage.
+
+The clean completed-observation rerun, with uptime-bench resetting
+`next_check_at`, passed 90,000 sites narrowly and failed 100,000 sites with
+14% stale active sites. Logs showed uniformly distributed stale buckets and no
+host/MySQL resource threshold failures. Jetmon completed full 100,000-site
+rounds, but the four 25,000-site scheduler windows introduced enough repeated
+slow-tail waits that early-window results aged out before the measurement ended.
+The next iteration keeps the 2x adaptive worker ceiling, but lets adaptive
+capacity runs use 50,000-site scheduler windows and gives the checker pool a
+larger pending/result channel buffer so the pool stays fed between windows.
 
 ## Pre-Test Checks
 

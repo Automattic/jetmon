@@ -74,7 +74,9 @@ Scheduler behavior:
   windows processed from those pages.
   `process.chunk.count` shows how many result-processing chunks were flushed
   inside those windows; high-capacity runs should show multiple chunks per
-  25,000-site window instead of one large freshness-write wave.
+  scheduler window instead of one large freshness-write wave. Baseline runs cap
+  windows at 25,000 sites, while adaptive high-backlog runs can use 50,000-site
+  windows to reduce repeated slow-tail waits.
   `pool.workers.max`, `pool.active.max`, `pool.queue_depth.max`, and
   `pool.queue_capacity.max` show whether the check pool is saturated. If active
   checks sit near the adaptive ceiling while CPU and memory remain low, check

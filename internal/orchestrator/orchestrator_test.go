@@ -1436,12 +1436,9 @@ func TestRunRoundWaitsUnderPoolBackpressureInsteadOfDropping(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	sites := []db.Site{
-		{BlogID: 1, MonitorURL: srv.URL},
-		{BlogID: 2, MonitorURL: srv.URL},
-		{BlogID: 3, MonitorURL: srv.URL},
-		{BlogID: 4, MonitorURL: srv.URL},
-		{BlogID: 5, MonitorURL: srv.URL},
+	sites := make([]db.Site, 0, 10)
+	for i := 1; i <= 10; i++ {
+		sites = append(sites, db.Site{BlogID: int64(i), MonitorURL: srv.URL})
 	}
 
 	checked := make(map[int64]bool)
@@ -1487,8 +1484,8 @@ func TestRunRoundWaitsUnderPoolBackpressureInsteadOfDropping(t *testing.T) {
 	}
 
 	summary := o.runRound()
-	if summary.selected != 5 || summary.dispatched != 5 || summary.completed != 5 {
-		t.Fatalf("summary selected/dispatched/completed = %d/%d/%d, want 5/5/5", summary.selected, summary.dispatched, summary.completed)
+	if summary.selected != 10 || summary.dispatched != 10 || summary.completed != 10 {
+		t.Fatalf("summary selected/dispatched/completed = %d/%d/%d, want 10/10/10", summary.selected, summary.dispatched, summary.completed)
 	}
 	if summary.backpressureWaits == 0 {
 		t.Fatal("backpressure waits = 0, want > 0")
@@ -1610,11 +1607,11 @@ func TestSchedulerBatchTargetSitesDerivesFromWorkers(t *testing.T) {
 	if got := schedulerBatchTargetSites(&config.Config{NumWorkers: 1, MinTimeBetweenRoundsSec: 300, NetCommsTimeout: 10}, 500, 1); got != 500 {
 		t.Fatalf("schedulerBatchTargetSites(page floor) = %d, want 500", got)
 	}
-	if got := schedulerBatchTargetSites(&config.Config{NumWorkers: 1000}, 100, 1000); got != schedulerMaxBatchSites {
-		t.Fatalf("schedulerBatchTargetSites(cap) = %d, want %d", got, schedulerMaxBatchSites)
+	if got := schedulerBatchTargetSites(&config.Config{NumWorkers: 1000}, 100, 1000); got != schedulerBaseMaxBatchSites {
+		t.Fatalf("schedulerBatchTargetSites(cap) = %d, want %d", got, schedulerBaseMaxBatchSites)
 	}
-	if got := schedulerBatchTargetSites(defaultCfg, 100, 4000); got != schedulerMaxBatchSites {
-		t.Fatalf("schedulerBatchTargetSites(adaptive cap) = %d, want %d", got, schedulerMaxBatchSites)
+	if got := schedulerBatchTargetSites(defaultCfg, 100, 4000); got != schedulerAdaptiveMaxBatchSites {
+		t.Fatalf("schedulerBatchTargetSites(adaptive cap) = %d, want %d", got, schedulerAdaptiveMaxBatchSites)
 	}
 }
 

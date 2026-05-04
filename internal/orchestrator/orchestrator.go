@@ -55,7 +55,8 @@ const schedulerVariableIntervalPollInterval = 5 * time.Second
 const schedulerBacklogPollInterval = 5 * time.Second
 const schedulerBroadReportInterval = time.Minute
 const schedulerBatchSitesPerWorker = 100
-const schedulerMaxBatchSites = 25000
+const schedulerBaseMaxBatchSites = 25000
+const schedulerAdaptiveMaxBatchSites = 50000
 const schedulerResultProcessChunkSites = 5000
 const schedulerAdaptiveWorkerSafetyNumerator = 6
 const schedulerAdaptiveWorkerSafetyDenominator = 5
@@ -625,8 +626,12 @@ func schedulerBatchTargetSites(cfg *config.Config, pageSize, workerMax int) int 
 	if target < pageSize {
 		target = pageSize
 	}
-	if target > schedulerMaxBatchSites {
-		target = schedulerMaxBatchSites
+	capacityCap := schedulerBaseMaxBatchSites
+	if cfg != nil && cfg.NumWorkers > 0 && workerMax > cfg.NumWorkers {
+		capacityCap = schedulerAdaptiveMaxBatchSites
+	}
+	if target > capacityCap {
+		target = capacityCap
 	}
 	return target
 }
@@ -713,7 +718,7 @@ func eventWorkerCountForConfig(cfg *config.Config) int {
 
 func eventQueueCapacityForConfig(cfg *config.Config) int {
 	if cfg == nil {
-		return schedulerMaxBatchSites
+		return schedulerBaseMaxBatchSites
 	}
 	pageSize := 1
 	if cfg.DatasetSize > 0 {

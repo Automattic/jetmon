@@ -251,11 +251,14 @@ No active candidate branch is queued here right now.
   timestamps now reflect when Jetmon actually received the outcome. This should
   reduce premature re-queuing during long capacity rounds and make freshness
   reports match completed checks.
-- [ ] Rerun a `90,000,100,000,110,000` capacity ladder after completed-observation
+- [x] Rerun a `90,000,100,000,110,000` capacity ladder after completed-observation
   timestamps. Compare freshness margin, event queue depth, slow write counters,
   MySQL CPU/I/O, Jetmon CPU/RSS/FDs, open FDs, cleanup open-event residue, and
   whether `oldest_selected_age_sec` stays below the 5-minute freshness window.
-- [ ] Before interpreting the next post-outage capacity result, verify the
+  The clean rerun passed 90,000 narrowly, failed 100,000 with 14% stale active
+  sites, and showed a global throughput/cadence ceiling rather than a bad
+  bucket range.
+- [x] Before interpreting the next post-outage capacity result, verify the
   uptime-bench activation SQL clears `next_check_at` wherever it clears
   `last_checked_at`. The `3a288ca` interrupted run exposed that benchmark
   activation can otherwise carry Jetmon v2 due-state across batches/runs because
@@ -266,6 +269,18 @@ No active candidate branch is queued here right now.
   debugging evidence only because the runner never reached normal window-end
   verification. No Jetmon code change is justified before a clean rerun with
   uptime-bench's `next_check_at` reset and stale-session preflight fix.
+- [x] Raise adaptive scheduler windows to 50,000 sites while keeping baseline
+  windows at 25,000. The clean `3a288ca` rerun showed the 100,000-site boundary
+  is cadence, not host exhaustion: four 25,000-site windows per full pass add
+  repeated tail waits while the worker pool is otherwise saturated. Adaptive
+  high-backlog runs now use fewer larger scheduler windows, but still flush
+  completed results in 5,000-site chunks to avoid lumpy DB writes.
+- [x] Increase checker pool pending/result channel buffers from 2x to 4x the
+  configured worker baseline. The adaptive ceiling can grow to 2x
+  `NUM_WORKERS`, so the old fixed channel size became only one adaptive wave and
+  showed full-queue backpressure throughout the failed 100,000-site run. The
+  larger buffer gives dispatch more room without changing the worker ceiling or
+  dropping checks.
 - [ ] After the adaptive retest, decide whether to incorporate observed RTT into
   the worker-ceiling formula. The first implementation uses the configured
   timeout as the conservative sizing input; observed RTT could reduce

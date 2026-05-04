@@ -31,9 +31,13 @@ type Pool struct {
 // NewPool creates a Pool with the given initial, min, and max worker counts.
 func NewPool(initial, min, max int) *Pool {
 	ctx, cancel := context.WithCancel(context.Background())
+	buffer := max * 4
+	if buffer < 1 {
+		buffer = 1
+	}
 	p := &Pool{
-		work:    make(chan Request, max*2),
-		results: make(chan Result, max*2),
+		work:    make(chan Request, buffer),
+		results: make(chan Result, buffer),
 		retire:  make(chan struct{}, max),
 		cancel:  cancel,
 		ctx:     ctx,

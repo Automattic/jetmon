@@ -189,11 +189,11 @@ func TestDrainCalledTwice(t *testing.T) {
 }
 
 func TestSubmitDropsWhenQueueFull(t *testing.T) {
-	// Zero workers means nothing drains the channel. Channel capacity = max*2 = 4.
+	// Zero workers means nothing drains the channel. Channel capacity = max*4.
 	p := NewPool(0, 0, 2)
 	t.Cleanup(p.Drain)
 
-	const cap = 4 // max*2
+	const cap = 8 // max*4
 	for i := range cap {
 		if !p.Submit(Request{BlogID: int64(i), URL: "x"}) {
 			t.Fatalf("Submit %d returned false on non-full queue", i)
