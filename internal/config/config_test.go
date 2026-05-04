@@ -283,13 +283,17 @@ func TestPinnedBucketRange(t *testing.T) {
 
 func TestValidateDefaultsDashboardBindAddr(t *testing.T) {
 	cfg := &Config{
-		AuthToken:       "token",
-		NumWorkers:      10,
-		DatasetSize:     100,
-		BucketTotal:     100,
-		BucketTarget:    50,
-		NetCommsTimeout: 10,
-		LogFormat:       "text",
+		AuthToken:           "token",
+		NumWorkers:          10,
+		DatasetSize:         100,
+		BucketTotal:         100,
+		BucketTarget:        50,
+		NetCommsTimeout:     10,
+		BodyReadMaxBytes:    262144,
+		BodyReadMaxMS:       250,
+		KeywordReadMaxBytes: 1048576,
+		KeywordReadMaxMS:    0,
+		LogFormat:           "text",
 	}
 	if err := validate(cfg); err != nil {
 		t.Fatalf("validate() error = %v", err)

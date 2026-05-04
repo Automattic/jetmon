@@ -301,7 +301,6 @@ func validate(cfg *Config) error {
 	if cfg.KeywordReadMaxBytes <= 0 {
 		return fmt.Errorf("KEYWORD_READ_MAX_BYTES must be > 0")
 	}
-<<<<<<< HEAD
 	if cfg.KeywordReadMaxMS < 0 {
 		return fmt.Errorf("KEYWORD_READ_MAX_MS must be >= 0")
 	}

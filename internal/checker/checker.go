@@ -24,6 +24,7 @@ const (
 	ErrorTLSExpired    = 6
 	ErrorTLSDeprecated = 7
 	ErrorBodyRead      = 8
+	ErrorBodyTruncated = ErrorBodyRead
 )
 
 const (
