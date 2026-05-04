@@ -97,6 +97,11 @@ Scheduler behavior:
   `scheduler.round.event_queue.capacity`, and `scheduler.event_worker.*` during
   failure-heavy tests. Rising queue depth means event/projection work is
   falling behind even if the scheduler is still keeping check freshness current.
+  Event workers yield while the scheduler is actively writing freshness,
+  history, or SSL projection batches, which gives check freshness priority over
+  incident/projection mutation during broad synthetic or regional failure
+  storms. Watch `scheduler.event_worker.scheduler_write_wait.*` if event
+  delivery appears delayed during a high-failure run.
   Exact `due_start` / `due_remaining` and legacy projection-drift checks are
   sampled about once per minute in variable-interval mode so broad operator
   reporting queries do not run on every short scheduler poll. Use

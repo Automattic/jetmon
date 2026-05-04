@@ -168,6 +168,15 @@ waves so queued checks have time to complete. Deeper follow-up work should
 decouple check dispatch from freshness/history persistence so
 event/projection write storms cannot age out otherwise completed checks.
 
+The bounded-queue follow-up (`60c099f`) restored throughput and eliminated stale
+result discards, but still failed 90,000 sites with 22.22% stale. Service logs
+showed every selected result completed, while later rounds spent up to 1m39s in
+freshness writes and 58s in check-history inserts. The next iteration gives
+scheduler persistence priority during failure storms: event workers yield while
+freshness/history/SSL batches are being written, and the hot failure path trusts
+the scheduler's active-row snapshot instead of issuing one `monitor_active`
+SELECT per failed probe.
+
 ## Pre-Test Checks
 
 1. Confirm migrations have run through migration 31.

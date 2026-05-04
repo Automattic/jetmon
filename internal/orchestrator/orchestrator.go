@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -312,6 +313,7 @@ type Orchestrator struct {
 	eventWork        []chan siteCheckResult
 	eventWG          sync.WaitGroup
 	eventStopOnce    sync.Once
+	schedulerDBWrite atomic.Bool
 	hostname         string
 	bucketMin        int
 	bucketMax        int
@@ -807,12 +809,47 @@ func (o *Orchestrator) stopEventWorkers() {
 func (o *Orchestrator) eventWorker(workerID int, ch <-chan siteCheckResult) {
 	defer o.eventWG.Done()
 	for record := range ch {
+		if waited := o.waitForSchedulerDBWrites(); waited > 0 {
+			emitTiming("scheduler.event_worker.scheduler_write_wait.time", waited)
+			emitCounter("scheduler.event_worker.scheduler_write_wait.count", 1)
+		}
 		start := time.Now()
 		o.processResultEvent(record)
 		emitTiming("scheduler.event_worker.process.time", time.Since(start))
 		emitCounter("scheduler.event_worker.process.count", 1)
 		emitCounter(fmt.Sprintf("scheduler.event_worker.%d.process.count", workerID+1), 1)
 	}
+}
+
+func (o *Orchestrator) waitForSchedulerDBWrites() time.Duration {
+	if o == nil || !o.schedulerDBWrite.Load() {
+		return 0
+	}
+	ctx := o.ctx
+	if ctx == nil {
+		ctx = stdctx.Background()
+	}
+	start := time.Now()
+	ticker := time.NewTicker(schedulerBackpressurePollInterval)
+	defer ticker.Stop()
+	for o.schedulerDBWrite.Load() {
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			return time.Since(start)
+		}
+	}
+	return time.Since(start)
+}
+
+func (o *Orchestrator) withSchedulerDBWrite(fn func()) {
+	if o == nil {
+		fn()
+		return
+	}
+	o.schedulerDBWrite.Store(true)
+	defer o.schedulerDBWrite.Store(false)
+	fn()
 }
 
 func schedulerCursorFromSite(site db.Site, useVariableIntervals bool) db.SitePageCursor {
@@ -1337,25 +1374,27 @@ func (o *Orchestrator) processResults(results map[int64]checker.Result, sites ma
 		addCheckOutcome(&summary, record.res)
 	}
 
-	o.markResultsChecked(records, &summary)
-	o.recordResultHistories(records, &summary)
+	o.withSchedulerDBWrite(func() {
+		o.markResultsChecked(records, &summary)
+		o.recordResultHistories(records, &summary)
 
-	sslStart := time.Now()
-	sslUpdates := make([]db.SiteSSLExpiry, 0)
-	for _, record := range records {
-		// Update SSL expiry if available.
-		if record.res.SSLExpiry != nil {
-			if shouldUpdateSSLExpiry(record.site.SSLExpiryDate, *record.res.SSLExpiry) {
-				sslUpdates = append(sslUpdates, db.SiteSSLExpiry{
-					BlogID: record.blogID,
-					Expiry: *record.res.SSLExpiry,
-				})
+		sslStart := time.Now()
+		sslUpdates := make([]db.SiteSSLExpiry, 0)
+		for _, record := range records {
+			// Update SSL expiry if available.
+			if record.res.SSLExpiry != nil {
+				if shouldUpdateSSLExpiry(record.site.SSLExpiryDate, *record.res.SSLExpiry) {
+					sslUpdates = append(sslUpdates, db.SiteSSLExpiry{
+						BlogID: record.blogID,
+						Expiry: *record.res.SSLExpiry,
+					})
+				}
+				o.checkSSLAlerts(record.site, *record.res.SSLExpiry)
 			}
-			o.checkSSLAlerts(record.site, *record.res.SSLExpiry)
 		}
-	}
-	o.updateSSLExpiries(sslUpdates, &summary)
-	summary.sslDuration += time.Since(sslStart)
+		o.updateSSLExpiries(sslUpdates, &summary)
+		summary.sslDuration += time.Since(sslStart)
+	})
 
 	eventStart := time.Now()
 	o.processResultEvents(records, &summary)
@@ -1656,11 +1695,12 @@ func (o *Orchestrator) handleRecovery(site db.Site, res checker.Result) {
 }
 
 func (o *Orchestrator) handleFailure(site db.Site, res checker.Result) {
-	active, err := dbSiteMonitorActive(o.ctx, site.BlogID)
-	if err != nil {
-		emitCounter("detection.inactive_site_guard.error.count", 1)
-		log.Printf("orchestrator: check monitor_active blog_id=%d: %v", site.BlogID, err)
-	} else if !active {
+	// The scheduler fetches only active rows. Re-querying monitor_active for
+	// every failed probe turns broad outages into tens of thousands of extra
+	// SELECTs that contend with freshness writes. If a caller passes a concrete
+	// inactive row, still honor it; otherwise trust the selected scheduler
+	// snapshot and let normal deactivation cleanup close any rare race.
+	if site.ID != 0 && !site.MonitorActive {
 		o.retries.clear(site.BlogID)
 		emitCounter("detection.inactive_site_failure.skipped.count", 1)
 		return

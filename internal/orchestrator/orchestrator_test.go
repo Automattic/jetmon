@@ -770,7 +770,7 @@ func TestHandleFailureSkipsInactiveSite(t *testing.T) {
 	}
 	o.retries.record(checkerResultFailure(1))
 
-	o.handleFailure(db.Site{BlogID: 1, SiteStatus: statusRunning}, checkerResultFailure(1))
+	o.handleFailure(db.Site{ID: 1, BlogID: 1, MonitorActive: false, SiteStatus: statusRunning}, checkerResultFailure(1))
 
 	if o.retries.get(1) != nil {
 		t.Fatal("retry entry should be cleared for inactive site")

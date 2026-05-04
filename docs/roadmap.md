@@ -313,6 +313,13 @@ No active candidate branch is queued here right now.
   using one static `NET_COMMS_TIMEOUT+5s` window for every batch. This preserves
   the per-check timeout while accounting for checks that wait behind the
   bounded pool queue before a worker starts them.
+- [x] Prioritize scheduler persistence over failure-event mutation during broad
+  failure storms. The `60c099f` run proved the bounded queue worked
+  (`stale_results=0`, all selected results completed) but later rounds spent up
+  to 1m39s in freshness writes and 58s in history inserts while 65k events were
+  open. Event workers now yield during scheduler freshness/history/SSL write
+  batches, and the failure path trusts the scheduler's active-row snapshot
+  instead of issuing one `monitor_active` SELECT per failed probe.
 - [x] Reduce storm-time bookkeeping that does not improve check quality:
   WPCOM-disabled notifications no longer write one audit row per skipped
   synthetic notification, per-site recovery success logs are suppressed, and
