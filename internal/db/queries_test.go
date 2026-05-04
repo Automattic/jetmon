@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -71,6 +72,25 @@ func TestAssignBucketRanges(t *testing.T) {
 	}
 }
 
+func TestNormalizeHistoryMethod(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "empty defaults to GET", in: "", want: "GET"},
+		{name: "trims and uppercases", in: " get ", want: "GET"},
+		{name: "bounds long values", in: strings.Repeat("x", 20), want: strings.Repeat("X", 16)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeHistoryMethod(tt.in); got != tt.want {
+				t.Fatalf("normalizeHistoryMethod(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 func withMockDB(t *testing.T) (sqlmock.Sqlmock, func()) {
 	t.Helper()
 	mockDB, mock, err := sqlmock.New(sqlmock.MonitorPingsOption(true))
@@ -113,12 +133,12 @@ func TestGetSitesForBucketScansRowsAndDefaultRedirectPolicy(t *testing.T) {
 	rows := sqlmock.NewRows([]string{
 		"jetpack_monitor_site_id", "blog_id", "bucket_no", "monitor_url",
 		"monitor_active", "site_status", "last_status_change", "check_interval", "last_checked_at", "next_check_at",
-		"ssl_expiry_date", "check_keyword", "maintenance_start", "maintenance_end",
+		"ssl_expiry_date", "check_keyword", "forbidden_keyword", "forbidden_keywords", "maintenance_start", "maintenance_end",
 		"custom_headers", "timeout_seconds", "redirect_policy", "alert_cooldown_minutes", "last_alert_sent_at",
 	}).AddRow(
 		int64(1), int64(42), 7, "https://site.example",
 		true, 1, now, 5, now, now.Add(5*time.Minute),
-		nil, nil, nil, nil,
+		nil, nil, nil, nil, nil, nil,
 		nil, nil, nil, nil, nil,
 	)
 	mock.ExpectQuery("SELECT").
@@ -150,7 +170,7 @@ func TestGetSitesForBucketVariableIntervalsUsesNextCheckAt(t *testing.T) {
 	rows := sqlmock.NewRows([]string{
 		"jetpack_monitor_site_id", "blog_id", "bucket_no", "monitor_url",
 		"monitor_active", "site_status", "last_status_change", "check_interval", "last_checked_at", "next_check_at",
-		"ssl_expiry_date", "check_keyword", "maintenance_start", "maintenance_end",
+		"ssl_expiry_date", "check_keyword", "forbidden_keyword", "forbidden_keywords", "maintenance_start", "maintenance_end",
 		"custom_headers", "timeout_seconds", "redirect_policy", "alert_cooldown_minutes", "last_alert_sent_at",
 	})
 	mock.ExpectQuery("next_check_at").
@@ -277,7 +297,7 @@ func TestSimpleMutationQueries(t *testing.T) {
 		WithArgs(int64(42), 500, 1, int64(123)).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("INSERT INTO jetmon_check_history").
-		WithArgs(int64(42), 200, 0, int64(100), int64(1), int64(2), int64(3), int64(4)).
+		WithArgs(int64(42), "GET", 200, 0, int64(100), int64(1), int64(2), int64(3), int64(4)).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	if err := UpdateSiteStatus(context.Background(), 42, 2, now); err != nil {
@@ -304,7 +324,7 @@ func TestSimpleMutationQueries(t *testing.T) {
 	if err := RecordFalsePositive(42, 500, 1, 123); err != nil {
 		t.Fatalf("RecordFalsePositive: %v", err)
 	}
-	if err := RecordCheckHistory(42, 200, 0, 100, 1, 2, 3, 4); err != nil {
+	if err := RecordCheckHistory(42, "GET", 200, 0, 100, 1, 2, 3, 4); err != nil {
 		t.Fatalf("RecordCheckHistory: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -344,13 +364,13 @@ func TestRecordCheckHistoriesBatchesInserts(t *testing.T) {
 	second := first.Add(time.Minute)
 	mock.ExpectExec("INSERT INTO jetmon_check_history").
 		WithArgs(
-			int64(7), 201, 1, int64(10), int64(1), int64(2), int64(3), int64(4), first,
-			int64(42), 200, 0, int64(100), int64(5), int64(6), int64(7), int64(8), second,
+			int64(7), "GET", 201, 1, int64(10), int64(1), int64(2), int64(3), int64(4), first,
+			int64(42), "POST", 200, 0, int64(100), int64(5), int64(6), int64(7), int64(8), second,
 		).
 		WillReturnResult(sqlmock.NewResult(1, 2))
 
 	err := RecordCheckHistories(context.Background(), []CheckHistoryRow{
-		{BlogID: 42, HTTPCode: 200, ErrorCode: 0, RTTMs: 100, DNSMs: 5, TCPMs: 6, TLSMs: 7, TTFBMs: 8, CheckedAt: second},
+		{BlogID: 42, RequestMethod: "post", HTTPCode: 200, ErrorCode: 0, RTTMs: 100, DNSMs: 5, TCPMs: 6, TLSMs: 7, TTFBMs: 8, CheckedAt: second},
 		{BlogID: 7, HTTPCode: 201, ErrorCode: 1, RTTMs: 10, DNSMs: 1, TCPMs: 2, TLSMs: 3, TTFBMs: 4, CheckedAt: first},
 	})
 	if err != nil {
@@ -649,5 +669,29 @@ func TestMigrateAppliesOnlyPendingMigrations(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestCheckHistoryRequestMethodAddedOnlyByMigration32(t *testing.T) {
+	var createHistory, addMethod migration
+	for _, m := range migrations {
+		switch m.id {
+		case 6:
+			createHistory = m
+		case 32:
+			addMethod = m
+		}
+	}
+	if createHistory.sql == "" {
+		t.Fatal("migration 6 not found")
+	}
+	if addMethod.sql == "" {
+		t.Fatal("migration 32 not found")
+	}
+	if strings.Contains(createHistory.sql, "request_method") {
+		t.Fatalf("migration 6 creates request_method; fresh databases would fail when migration 32 adds it again")
+	}
+	if !strings.Contains(addMethod.sql, "ADD COLUMN request_method") {
+		t.Fatalf("migration 32 should add request_method; sql=%q", addMethod.sql)
 	}
 }

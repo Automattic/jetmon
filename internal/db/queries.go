@@ -18,7 +18,7 @@ func GetSitesForBucket(ctx context.Context, bucketMin, bucketMax, batchSize int,
 		SELECT
 			jetpack_monitor_site_id, blog_id, bucket_no, monitor_url,
 			monitor_active, site_status, last_status_change, check_interval, last_checked_at, next_check_at,
-			ssl_expiry_date, check_keyword, maintenance_start, maintenance_end,
+			ssl_expiry_date, check_keyword, forbidden_keyword, forbidden_keywords, maintenance_start, maintenance_end,
 			custom_headers, timeout_seconds, redirect_policy, alert_cooldown_minutes, last_alert_sent_at
 		FROM jetpack_monitor_sites
 		WHERE monitor_active = 1
@@ -55,7 +55,7 @@ func GetSitesForBucket(ctx context.Context, bucketMin, bucketMax, batchSize int,
 		err := rows.Scan(
 			&s.ID, &s.BlogID, &s.BucketNo, &s.MonitorURL,
 			&s.MonitorActive, &s.SiteStatus, &s.LastStatusChange, &s.CheckInterval, &s.LastCheckedAt, &s.NextCheckAt,
-			&s.SSLExpiryDate, &s.CheckKeyword, &s.MaintenanceStart, &s.MaintenanceEnd,
+			&s.SSLExpiryDate, &s.CheckKeyword, &s.ForbiddenKeyword, &s.ForbiddenKeywords, &s.MaintenanceStart, &s.MaintenanceEnd,
 			&s.CustomHeaders, &s.TimeoutSeconds, &redirectPolicy, &s.AlertCooldownMinutes, &s.LastAlertSentAt,
 		)
 		if err != nil {
@@ -687,27 +687,40 @@ func RecordFalsePositive(blogID int64, httpCode, errorCode int, rttMs int64) err
 }
 
 // RecordCheckHistory inserts a check timing sample.
-func RecordCheckHistory(blogID int64, httpCode, errorCode int, rttMs, dnsMs, tcpMs, tlsMs, ttfbMs int64) error {
+func RecordCheckHistory(blogID int64, requestMethod string, httpCode, errorCode int, rttMs, dnsMs, tcpMs, tlsMs, ttfbMs int64) error {
+	requestMethod = normalizeHistoryMethod(requestMethod)
 	_, err := db.Exec(
 		`INSERT INTO jetmon_check_history
-		    (blog_id, http_code, error_code, rtt_ms, dns_ms, tcp_ms, tls_ms, ttfb_ms, checked_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
-		blogID, httpCode, errorCode, rttMs, dnsMs, tcpMs, tlsMs, ttfbMs,
+		    (blog_id, request_method, http_code, error_code, rtt_ms, dns_ms, tcp_ms, tls_ms, ttfb_ms, checked_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+		blogID, requestMethod, httpCode, errorCode, rttMs, dnsMs, tcpMs, tlsMs, ttfbMs,
 	)
 	return err
 }
 
+func normalizeHistoryMethod(method string) string {
+	method = strings.ToUpper(strings.TrimSpace(method))
+	if method == "" {
+		return "GET"
+	}
+	if len(method) > 16 {
+		return method[:16]
+	}
+	return method
+}
+
 // CheckHistoryRow is one check timing sample for jetmon_check_history.
 type CheckHistoryRow struct {
-	BlogID    int64
-	HTTPCode  int
-	ErrorCode int
-	RTTMs     int64
-	DNSMs     int64
-	TCPMs     int64
-	TLSMs     int64
-	TTFBMs    int64
-	CheckedAt time.Time
+	BlogID        int64
+	RequestMethod string
+	HTTPCode      int
+	ErrorCode     int
+	RTTMs         int64
+	DNSMs         int64
+	TCPMs         int64
+	TLSMs         int64
+	TTFBMs        int64
+	CheckedAt     time.Time
 }
 
 // RecordCheckHistories inserts check timing samples in batches. This retains
@@ -733,20 +746,21 @@ func RecordCheckHistories(ctx context.Context, rows []CheckHistoryRow) error {
 func recordCheckHistoriesChunk(ctx context.Context, rows []CheckHistoryRow) error {
 	var query strings.Builder
 	query.WriteString(`INSERT INTO jetmon_check_history
-		(blog_id, http_code, error_code, rtt_ms, dns_ms, tcp_ms, tls_ms, ttfb_ms, checked_at)
+		(blog_id, request_method, http_code, error_code, rtt_ms, dns_ms, tcp_ms, tls_ms, ttfb_ms, checked_at)
 		VALUES `)
-	args := make([]any, 0, len(rows)*9)
+	args := make([]any, 0, len(rows)*10)
 	for i, row := range rows {
 		if i > 0 {
 			query.WriteByte(',')
 		}
-		query.WriteString("(?, ?, ?, ?, ?, ?, ?, ?, ?)")
+		query.WriteString("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 		checkedAt := row.CheckedAt
 		if checkedAt.IsZero() {
 			checkedAt = time.Now().UTC()
 		}
 		args = append(args,
 			row.BlogID,
+			normalizeHistoryMethod(row.RequestMethod),
 			row.HTTPCode,
 			row.ErrorCode,
 			row.RTTMs,

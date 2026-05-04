@@ -219,9 +219,10 @@ orchestrator.Run()
           │     │
           │     ├─ processResults()
           │     │     ├─ dbMarkSitesChecked()       // last_checked_at + next_check_at
-          │     │     ├─ dbRecordCheckHistories()   // RTT + DNS/TCP/TLS/TTFB samples
+          │     │     ├─ dbRecordCheckHistories()   // method + RTT + DNS/TCP/TLS/TTFB
           │     │     ├─ dbUpdateSSLExpiries() + checkSSLAlerts()
-          │     │     └─ handleRecovery() or handleFailure()
+          │     │     └─ handleRecovery(), handleFailure(),
+          │     │        or maintenance-swallow the failure
           │     │
           │     ├─ emit StatsD metrics
           │     └─ applyMemoryPressure()       // drain workers if Go runtime memory > limit
@@ -399,6 +400,8 @@ Database Tables
     next_check_at         Materialized variable-interval due time
     ssl_expiry_date       Updated after each TLS handshake
     check_keyword         Optional body text to require
+    forbidden_keyword     Optional body text that must not appear
+    forbidden_keywords    JSON array of body text that must not appear
     maintenance_start/end Suppress alerts during scheduled maintenance
     custom_headers        JSON blob of extra HTTP headers
     timeout_seconds       Per-site timeout override
@@ -442,8 +445,8 @@ Database Tables
                           alert_suppressed | api_access | config_reload
     blog_id, source, http_code, error_code, rtt_ms
 
-  jetmon_check_history    Per-check timing samples
-    rtt_ms, dns_ms, tcp_ms, tls_ms, ttfb_ms
+  jetmon_check_history    Per-check method and timing samples
+    request_method, rtt_ms, dns_ms, tcp_ms, tls_ms, ttfb_ms
 
   jetmon_false_positives  Checks local failed but verifliers passed
     blog_id, http_code, error_code, rtt_ms
@@ -492,15 +495,21 @@ Error Codes (checker.ErrorCode)
 
 ```
   ErrorNone          0   Success, no error
-  ErrorConnect       1   TCP connection refused or DNS failure
-  ErrorTimeout       2   Context deadline exceeded
+  ErrorTimeout       1   Context deadline exceeded
+  ErrorConnect       2   TCP connection refused or DNS failure
   ErrorSSL           3   TLS handshake error (invalid cert, mismatch)
-  ErrorTLSExpired    4   Certificate has passed NotAfter date
-  ErrorTLSDeprecated 5   TLS 1.0 or 1.1 detected (advisory only, not a failure)
-  ErrorRedirect      6   Redirect when RedirectPolicy=fail
-  ErrorKeyword       7   Body did not contain required keyword
+  ErrorRedirect      4   Redirect when RedirectPolicy=fail
+  ErrorKeyword       5   Required keyword missing or forbidden keyword present
+  ErrorTLSExpired    6   Certificate has passed NotAfter date
+  ErrorTLSDeprecated 7   TLS 1.0 or 1.1 detected (advisory only, not a failure)
+  ErrorBodyRead      8   GET response body closed early or could not be read
 ```
 
 `IsFailure()` returns true for all codes except `ErrorNone` and
 `ErrorTLSDeprecated`. `StatusType()` maps codes to the string values
 expected by the WPCOM API (e.g. "https", "intermittent", "redirect").
+Body integrity reads are capped to a bounded prefix so Jetmon can catch
+truncated successful GET responses without buffering unbounded response
+bodies. Keyword checks retain their larger bounded body window.
+Deprecated TLS opens a separate `tls_deprecated` warning event and does not
+project the legacy site status down.

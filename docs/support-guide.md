@@ -84,7 +84,13 @@ not exercise.
 | `ssl_expiry` | Certificate expires within the configured threshold |
 | `tls_deprecated` | Site is serving TLS 1.0 or 1.1 |
 | `keyword_missing` | Response body did not contain the expected keyword |
+| `keyword_forbidden` | Response body contained text from `forbidden_keyword` or `forbidden_keywords` |
 | `success` | Site recovered |
+
+`tls_deprecated` is advisory-only: it does not mark the site down. Jetmon still
+has to negotiate the deprecated protocol to classify the site accurately, so
+avoid sensitive custom check headers on sites that only support TLS 1.0 or 1.1
+until the site is upgraded.
 
 ## Check SSL Certificate Status
 
@@ -123,8 +129,11 @@ SET maintenance_start = '2026-04-20 02:00:00',
 WHERE blog_id = 12345;
 ```
 
-Checks continue and results are recorded during the window, but alerts are
-suppressed. Always set an explicit `maintenance_end`; an open-ended window can
+Checks continue and results are recorded during the window, but failing checks
+are swallowed before they open or promote downtime incidents. If an HTTP failure
+was already in local retry when the window started, Jetmon closes that event
+with `maintenance_swallowed` and keeps the legacy site-status projection
+running. Always set an explicit `maintenance_end`; an open-ended window can
 silently suppress alerts indefinitely.
 
 Clear a window after maintenance:
