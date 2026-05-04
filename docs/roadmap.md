@@ -365,6 +365,14 @@ No active candidate branch is queued here right now.
   full 1,920-request queue. The checker queue now grows to at least one
   adaptive worker wave when the host file-descriptor budget allows it, and the
   scheduler drains ready results before allocating a backpressure sleep timer.
+- [x] Smooth adaptive-queue dispatch after the `0e78a10` retest. That run
+  proved the larger checker channel removed the 1,920-entry bottleneck
+  (`backpressure_waits=0`, dispatch about 33s) but widened the active/queued
+  wave enough to worsen host CPU and checker wait time at 150,000 sites. The
+  scheduler now keeps the larger channel capacity for future scale while
+  applying a soft submit limit from the current adaptive worker ceiling, so
+  queue depth follows actual burst size rather than the host's absolute
+  file-descriptor-derived maximum.
 - [x] Reduce storm-time bookkeeping that does not improve check quality:
   WPCOM-disabled notifications no longer write one audit row per skipped
   synthetic notification, per-site recovery success logs are suppressed, and

@@ -37,9 +37,12 @@ derive their upper bound from the active worker ceiling: small fleets keep the
 100,000+ and eventually 1,000,000-site tests without adding another manual
 batch-size knob. The checker pending/result buffers keep the configured
 baseline cushion at small scale, then grow to at least one adaptive worker wave
-when the host resource budget allows it. During backpressure, the scheduler
-drains ready results before sleeping so completed checks can be persisted
-without one timer allocation per queue-full loop.
+when the host resource budget allows it. A scheduler-side soft submit limit
+tracks the current adaptive worker ceiling so queue depth grows with the
+intended burst size rather than the host's absolute file-descriptor ceiling.
+During backpressure, the scheduler drains ready results before sleeping so
+completed checks can be persisted without one timer allocation per queue-full
+loop.
 `last_checked_at` and `next_check_at` are still written only after completed
 checks.
 
@@ -172,9 +175,13 @@ waves so queued checks had time to complete. After `7eb4e55` showed no
 stale/outstanding/duplicate results at 150,000 but still spent too much time in
 queue-full dispatch loops, the current iteration keeps the bounded scheduler
 windows and worker-wave deadlines while growing the checker buffer to at least
-one adaptive worker wave. Deeper follow-up work should decouple check dispatch
-from freshness/history persistence so event/projection write storms cannot age
-out otherwise completed checks.
+one adaptive worker wave. The `0e78a10` retest showed that a large channel with
+no soft submit limit removed backpressure but worsened CPU and checker wait
+time at 150,000 sites, so the current iteration caps submitted queue depth to
+the current adaptive worker ceiling while retaining the larger channel for
+future 100k+ bursts. Deeper follow-up work should decouple check dispatch from
+freshness/history persistence so event/projection write storms cannot age out
+otherwise completed checks.
 
 The bounded-queue follow-up (`60c099f`) restored throughput and eliminated stale
 result discards, but still failed 90,000 sites with 22.22% stale. Service logs

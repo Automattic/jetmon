@@ -58,8 +58,10 @@ Scheduler behavior:
   file-descriptor budget, so a low `ulimit -n` becomes a real capacity limit.
 - The pending-work queue keeps the configured baseline cushion at small scale
   but grows to at least one adaptive worker wave when host resources allow a
-  higher ceiling. This keeps queue pressure visible to the scheduler without
-  forcing a resource-rich host to dispatch through a 960-worker-era buffer.
+  higher ceiling. The scheduler also applies a soft submit limit based on the
+  current adaptive worker ceiling, so a resource-rich host has room for future
+  100k+ bursts without letting one scheduler window enqueue far more work than
+  the active pool can smooth through CPU and network limits.
 - A full worker queue applies backpressure; checks remain pending instead of
   being dropped. Before sleeping on backpressure, the scheduler drains any
   already-completed results and flushes full result chunks so timer churn and

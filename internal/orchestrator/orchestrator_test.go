@@ -1952,6 +1952,23 @@ func TestSchedulerPoolQueueCapacityFollowsAdaptiveResourceCeiling(t *testing.T) 
 	}
 }
 
+func TestSchedulerPoolQueueSoftLimitTracksCurrentAdaptiveCeiling(t *testing.T) {
+	cfg := &config.Config{NumWorkers: 960}
+
+	if got := schedulerPoolQueueSoftLimit(cfg, 6000, 52224); got != 6000 {
+		t.Fatalf("schedulerPoolQueueSoftLimit(6000 workers) = %d, want one worker wave 6000", got)
+	}
+	if got := schedulerPoolQueueSoftLimit(cfg, 960, 52224); got != 1920 {
+		t.Fatalf("schedulerPoolQueueSoftLimit(baseline workers) = %d, want baseline cushion 1920", got)
+	}
+	if got := schedulerPoolQueueSoftLimit(cfg, 6000, 3000); got != 3000 {
+		t.Fatalf("schedulerPoolQueueSoftLimit(channel cap) = %d, want channel cap 3000", got)
+	}
+	if got := schedulerPoolQueueSoftLimit(nil, 0, 0); got != 2 {
+		t.Fatalf("schedulerPoolQueueSoftLimit(nil) = %d, want default cushion 2", got)
+	}
+}
+
 func TestCollectionDeadlineAccountsForWorkerWaves(t *testing.T) {
 	sites := make([]db.Site, 25000)
 	cfg := &config.Config{NetCommsTimeout: 10}

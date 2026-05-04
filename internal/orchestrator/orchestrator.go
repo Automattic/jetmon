@@ -760,6 +760,24 @@ func schedulerPoolQueueCapacity(cfg *config.Config) int {
 	return capacity
 }
 
+func schedulerPoolQueueSoftLimit(cfg *config.Config, workerMax, queueCapacity int) int {
+	base := 1
+	if cfg != nil && cfg.NumWorkers > 0 {
+		base = cfg.NumWorkers
+	}
+	limit := base * schedulerPoolQueueBufferMultiplier
+	if workerMax > limit {
+		limit = workerMax
+	}
+	if queueCapacity > 0 && limit > queueCapacity {
+		limit = queueCapacity
+	}
+	if limit < 1 {
+		return 1
+	}
+	return limit
+}
+
 func schedulerWorkerResourceCap() int {
 	var limit syscall.Rlimit
 	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &limit); err != nil {
@@ -929,11 +947,12 @@ func (o *Orchestrator) checkSitesPage(cfg *config.Config, sites []db.Site, pageN
 	results := newPageResultBuffer(sites)
 
 	o.capturePoolStats(&summary)
+	queueSoftLimit := schedulerPoolQueueSoftLimit(cfg, o.pool.MaxSize(), o.pool.QueueCapacity())
 	dispatchStart := time.Now()
 	for _, site := range sites {
 		req := checkRequestForSite(cfg, site)
 		for {
-			if o.pool.Submit(req) {
+			if o.pool.QueueDepth() < queueSoftLimit && o.pool.Submit(req) {
 				summary.dispatched++
 				o.capturePoolStats(&summary)
 				break
