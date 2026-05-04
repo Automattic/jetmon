@@ -949,6 +949,134 @@ func TestProcessResultsSuppressesBroadTransportFailureStormWhenVerifiersDisagree
 	}
 }
 
+func TestProcessResultsReusesBroadTransportFailureStormSuppressionCache(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig(t)
+
+	now := time.Date(2026, 5, 4, 19, 0, 0, 0, time.UTC)
+	nowFunc = func() time.Time { return now }
+
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+
+	var verifierCalls atomic.Int64
+	veriflierCheckFunc = func(_ *veriflier.VeriflierClient, _ context.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
+		verifierCalls.Add(1)
+		return &veriflier.CheckResult{
+			BlogID:   req.BlogID,
+			Success:  true,
+			HTTPCode: 200,
+		}, nil
+	}
+
+	results, sites := broadTransportFailureResults(1200)
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local",
+		ctx:      context.Background(),
+		veriflierClients: []*veriflier.VeriflierClient{
+			veriflier.NewVeriflierClient("verifier", ""),
+		},
+	}
+
+	first := o.processResults(results, sites)
+	now = now.Add(10 * time.Second)
+	second := o.processResults(results, sites)
+
+	if first.failureStormSuppressed != 1200 || second.failureStormSuppressed != 1200 {
+		t.Fatalf("failureStormSuppressed first/second = %d/%d, want 1200/1200", first.failureStormSuppressed, second.failureStormSuppressed)
+	}
+	if got := verifierCalls.Load(); got != failureStormVerifierSamples {
+		t.Fatalf("verifier calls = %d, want %d", got, failureStormVerifierSamples)
+	}
+	if got := rec.counter("detection.failure_storm.cache_hit.count"); got != 1 {
+		t.Fatalf("failure storm cache hits = %d, want 1", got)
+	}
+}
+
+func TestProcessResultsRefreshesBroadTransportFailureStormSuppressionCacheAfterTTL(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig(t)
+
+	now := time.Date(2026, 5, 4, 19, 0, 0, 0, time.UTC)
+	nowFunc = func() time.Time { return now }
+
+	var verifierCalls atomic.Int64
+	veriflierCheckFunc = func(_ *veriflier.VeriflierClient, _ context.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
+		verifierCalls.Add(1)
+		return &veriflier.CheckResult{
+			BlogID:   req.BlogID,
+			Success:  true,
+			HTTPCode: 200,
+		}, nil
+	}
+
+	results, sites := broadTransportFailureResults(1200)
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local",
+		ctx:      context.Background(),
+		veriflierClients: []*veriflier.VeriflierClient{
+			veriflier.NewVeriflierClient("verifier", ""),
+		},
+	}
+
+	first := o.processResults(results, sites)
+	now = now.Add(failureStormVerifierCacheTTL + time.Second)
+	second := o.processResults(results, sites)
+
+	if first.failureStormSuppressed != 1200 || second.failureStormSuppressed != 1200 {
+		t.Fatalf("failureStormSuppressed first/second = %d/%d, want 1200/1200", first.failureStormSuppressed, second.failureStormSuppressed)
+	}
+	if got := verifierCalls.Load(); got != failureStormVerifierSamples*2 {
+		t.Fatalf("verifier calls = %d, want %d", got, failureStormVerifierSamples*2)
+	}
+}
+
+func TestProcessResultsBatchClearsSuppressedFailureRetriesWithoutDroppingOpenEvents(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig(t)
+
+	veriflierCheckFunc = func(_ *veriflier.VeriflierClient, _ context.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
+		return &veriflier.CheckResult{
+			BlogID:   req.BlogID,
+			Success:  true,
+			HTTPCode: 200,
+		}, nil
+	}
+
+	results, sites := broadTransportFailureResults(1200)
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local",
+		ctx:      context.Background(),
+		veriflierClients: []*veriflier.VeriflierClient{
+			veriflier.NewVeriflierClient("verifier", ""),
+		},
+	}
+	o.retries.record(results[1])
+	entryWithEvent := o.retries.record(results[2])
+	entryWithEvent.eventID = 99
+
+	summary := o.processResults(results, sites)
+
+	if summary.failureStormSuppressed != 1200 {
+		t.Fatalf("failureStormSuppressed = %d, want 1200", summary.failureStormSuppressed)
+	}
+	if o.retries.get(1) != nil {
+		t.Fatal("retry without an open event should be cleared")
+	}
+	if o.retries.get(2) == nil {
+		t.Fatal("retry with an open event should be preserved")
+	}
+}
+
 func TestProcessResultsKeepsBroadTransportFailureStormWhenVerifiersConfirm(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()

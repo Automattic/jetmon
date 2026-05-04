@@ -78,6 +78,7 @@ const failureStormTransportPercent = 80
 const failureStormVerifierSamples = 5
 const failureStormVerifierSuccessPercent = 80
 const failureStormVerifierSampleTimeout = 2 * time.Second
+const failureStormVerifierCacheTTL = 30 * time.Second
 const wpcomPermanentFailureLogInterval = 10 * time.Second
 
 // VariableIntervalPollInterval returns the idle scheduler poll interval used
@@ -292,10 +293,19 @@ type siteCheckResult struct {
 
 type failureStormAssessment struct {
 	suppress bool
+	cached   bool
 
 	failures          int
 	transportFailures int
 	samples           int
+	verifierResponses int
+	verifierSuccesses int
+	verifierFailures  int
+	verifierErrors    int
+}
+
+type failureStormVerifierCache struct {
+	expiresAt         time.Time
 	verifierResponses int
 	verifierSuccesses int
 	verifierFailures  int
@@ -350,6 +360,9 @@ type Orchestrator struct {
 	wpcomPermanentMu            sync.Mutex
 	wpcomPermanentLastLog       time.Time
 	wpcomPermanentLogSuppressed int
+
+	failureStormMu    sync.Mutex
+	failureStormCache failureStormVerifierCache
 
 	ctx    stdctx.Context
 	cancel stdctx.CancelFunc
@@ -1428,29 +1441,34 @@ func (o *Orchestrator) processResultEvents(records []siteCheckResult, summary *r
 	if storm.suppress {
 		summary.failureStormSuppressed += storm.transportFailures
 		emitCounter("detection.failure_storm.suppressed.count", storm.transportFailures)
-		emitCounter("detection.failure_storm.sample.count", storm.samples)
-		emitCounter("detection.failure_storm.verifier_response.count", storm.verifierResponses)
-		emitCounter("detection.failure_storm.verifier_success.count", storm.verifierSuccesses)
-		emitCounter("detection.failure_storm.verifier_failure.count", storm.verifierFailures)
-		emitCounter("detection.failure_storm.verifier_error.count", storm.verifierErrors)
+		if storm.cached {
+			emitCounter("detection.failure_storm.cache_hit.count", 1)
+		} else {
+			emitCounter("detection.failure_storm.sample.count", storm.samples)
+			emitCounter("detection.failure_storm.verifier_response.count", storm.verifierResponses)
+			emitCounter("detection.failure_storm.verifier_success.count", storm.verifierSuccesses)
+			emitCounter("detection.failure_storm.verifier_failure.count", storm.verifierFailures)
+			emitCounter("detection.failure_storm.verifier_error.count", storm.verifierErrors)
+		}
 		log.Printf(
-			"orchestrator: suppressing broad local failure storm records=%d failures=%d transport_failures=%d verifier_samples=%d verifier_responses=%d verifier_successes=%d verifier_failures=%d verifier_errors=%d",
+			"orchestrator: suppressing broad local failure storm records=%d failures=%d transport_failures=%d verifier_cache_hit=%t verifier_samples=%d verifier_responses=%d verifier_successes=%d verifier_failures=%d verifier_errors=%d",
 			len(records),
 			storm.failures,
 			storm.transportFailures,
+			storm.cached,
 			storm.samples,
 			storm.verifierResponses,
 			storm.verifierSuccesses,
 			storm.verifierFailures,
 			storm.verifierErrors,
 		)
+		o.clearSuppressedFailureRetries(records)
 	}
 
 	for _, record := range records {
 		// Per-check data is recorded in jetmon_check_history (above); duplicating
 		// it in jetmon_audit_log was retired with the operational/site-state split.
 		if storm.suppress && isTransportFailure(record.res) {
-			o.clearSuppressedFailureRetry(record.blogID)
 			continue
 		}
 		if !o.shouldProcessResultEvent(record) {
@@ -1580,6 +1598,16 @@ func (o *Orchestrator) assessFailureStorm(records []siteCheckResult) failureStor
 		return assessment
 	}
 
+	if cached, ok := o.cachedFailureStormSuppression(nowFunc()); ok {
+		assessment.suppress = true
+		assessment.cached = true
+		assessment.verifierResponses = cached.verifierResponses
+		assessment.verifierSuccesses = cached.verifierSuccesses
+		assessment.verifierFailures = cached.verifierFailures
+		assessment.verifierErrors = cached.verifierErrors
+		return assessment
+	}
+
 	assessment.samples = len(transportRecords)
 	assessment.verifierResponses, assessment.verifierSuccesses, assessment.verifierFailures, assessment.verifierErrors =
 		o.sampleVerifiersForFailureStorm(transportRecords, clients)
@@ -1588,8 +1616,36 @@ func (o *Orchestrator) assessFailureStorm(records []siteCheckResult) failureStor
 	}
 	if assessment.verifierSuccesses*100 >= assessment.verifierResponses*failureStormVerifierSuccessPercent {
 		assessment.suppress = true
+		o.rememberFailureStormSuppression(nowFunc(), assessment)
 	}
 	return assessment
+}
+
+func (o *Orchestrator) cachedFailureStormSuppression(now time.Time) (failureStormVerifierCache, bool) {
+	if o == nil {
+		return failureStormVerifierCache{}, false
+	}
+	o.failureStormMu.Lock()
+	defer o.failureStormMu.Unlock()
+	if o.failureStormCache.expiresAt.IsZero() || !now.Before(o.failureStormCache.expiresAt) {
+		return failureStormVerifierCache{}, false
+	}
+	return o.failureStormCache, true
+}
+
+func (o *Orchestrator) rememberFailureStormSuppression(now time.Time, assessment failureStormAssessment) {
+	if o == nil || !assessment.suppress || assessment.cached {
+		return
+	}
+	o.failureStormMu.Lock()
+	defer o.failureStormMu.Unlock()
+	o.failureStormCache = failureStormVerifierCache{
+		expiresAt:         now.Add(failureStormVerifierCacheTTL),
+		verifierResponses: assessment.verifierResponses,
+		verifierSuccesses: assessment.verifierSuccesses,
+		verifierFailures:  assessment.verifierFailures,
+		verifierErrors:    assessment.verifierErrors,
+	}
 }
 
 func isTransportFailure(res checker.Result) bool {
@@ -1666,13 +1722,23 @@ func (o *Orchestrator) sampleVerifiersForFailureStorm(records []siteCheckResult,
 	return responses, successes, failures, errorsCount
 }
 
-func (o *Orchestrator) clearSuppressedFailureRetry(blogID int64) {
+func (o *Orchestrator) clearSuppressedFailureRetries(records []siteCheckResult) {
 	if o == nil || o.retries == nil {
 		return
 	}
-	entry := o.retries.get(blogID)
-	if entry == nil || entry.eventID == 0 {
-		o.retries.clear(blogID)
+	o.retries.mu.Lock()
+	defer o.retries.mu.Unlock()
+	if len(o.retries.entries) == 0 {
+		return
+	}
+	for _, record := range records {
+		if !isTransportFailure(record.res) {
+			continue
+		}
+		entry := o.retries.entries[record.blogID]
+		if entry == nil || entry.eventID == 0 {
+			delete(o.retries.entries, record.blogID)
+		}
 	}
 }
 

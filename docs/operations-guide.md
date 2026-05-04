@@ -109,7 +109,11 @@ Scheduler behavior:
   `detection.failure_storm.suppressed.count`,
   `detection.failure_storm.sample.count`, and
   `detection.failure_storm.verifier_*` when investigating capacity tests or
-  regional network incidents.
+  regional network incidents. During sustained local transport waves, a short
+  suppression cache avoids re-sampling every result chunk; watch
+  `detection.failure_storm.cache_hit.count` to confirm that repeated chunks are
+  reusing a recent Veriflier verdict instead of spending extra verifier timeout
+  budget.
   Exact `due_start` / `due_remaining` and legacy projection-drift checks are
   sampled about once per minute in variable-interval mode so broad operator
   reporting queries do not run on every short scheduler poll. Use

@@ -197,6 +197,14 @@ Jetmon suppresses per-site failure events/retries for that chunk. Small outages,
 HTTP/SSL/content failures, and Veriflier-confirmed broad outages still use the
 normal Seems Down -> Veriflier path.
 
+The `6c65d27` run proved that guard controlled stale results and event queue
+depth at 125,000 sites, but the monitor still missed the throughput and CPU
+thresholds by a narrow margin. The follow-up change caches a positive
+Veriflier storm-suppression verdict for a short interval so every 5,000-result
+chunk in the same local transport wave does not repeat the same verifier sample
+timeout. Suppressed chunks also clear retry bookkeeping in one batch pass
+instead of taking the retry queue lock per failed site.
+
 ## Pre-Test Checks
 
 1. Confirm migrations have run through migration 31.

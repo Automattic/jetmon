@@ -267,7 +267,9 @@ failures, Jetmon samples the failed URLs through the configured Verifliers. If
 those samples are reachable from the Verifliers, Jetmon treats the chunk as
 monitor-side uncertainty and suppresses per-site Seems Down events/retries for
 that chunk. Smaller failures, HTTP/SSL/content failures, and Veriflier-confirmed
-broad outages still follow the normal event and false-positive flow.
+broad outages still follow the normal event and false-positive flow. Positive
+storm-suppression verdicts are cached briefly so a sustained local transport
+wave does not repeat the same verifier sampling work for every result chunk.
 
 **Internal Audit Log**
 Operational activity for every site is written to a `jetmon_audit_log` table:

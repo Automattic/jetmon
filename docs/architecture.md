@@ -171,6 +171,8 @@ Failure Escalation Detail
           ├──────────────────────────► suppress per-site failure events
           │                            for that chunk; count as
           │                            monitor-side uncertainty
+          │                            (short-lived cached verdict
+          │                             covers repeated chunks)
           │
           │  failCount < NumOfChecks?
           ├──────────────────────────► queue in retryQueue, retry next round

@@ -336,6 +336,12 @@ No active candidate branch is queued here right now.
   uncertainty and suppresses per-site failure events/retries for that chunk.
   This improves correctness ("Unknown is not downtime") and removes a major
   event/projection/log write storm from synthetic capacity runs.
+- [x] Reduce repeated work inside sustained monitor-side transport storms. The
+  `6c65d27` run kept event depth and stale results controlled at 125,000 sites
+  but still missed CPU/throughput thresholds narrowly. Positive Veriflier storm
+  samples are now cached briefly, and suppressed retry cleanup happens in one
+  batch lock pass, so repeated 5,000-site chunks in the same local transport
+  wave spend less time on verifier timeouts and retry-queue bookkeeping.
 - [x] Reduce storm-time bookkeeping that does not improve check quality:
   WPCOM-disabled notifications no longer write one audit row per skipped
   synthetic notification, per-site recovery success logs are suppressed, and
