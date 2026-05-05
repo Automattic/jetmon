@@ -18,7 +18,7 @@ func TestValidate(t *testing.T) {
 			BucketTotal:         100,
 			BucketTarget:        50,
 			NetCommsTimeout:     10,
-			BodyReadMaxBytes:    262144,
+			BodyReadMaxBytes:    1048576,
 			BodyReadMaxMS:       250,
 			KeywordReadMaxBytes: 1048576,
 			KeywordReadMaxMS:    0,
@@ -289,7 +289,7 @@ func TestValidateDefaultsDashboardBindAddr(t *testing.T) {
 		BucketTotal:         100,
 		BucketTarget:        50,
 		NetCommsTimeout:     10,
-		BodyReadMaxBytes:    262144,
+		BodyReadMaxBytes:    1048576,
 		BodyReadMaxMS:       250,
 		KeywordReadMaxBytes: 1048576,
 		KeywordReadMaxMS:    0,
@@ -362,8 +362,8 @@ func TestLoadAndGet(t *testing.T) {
 	if cfg.DeliveryOwnerHost != "jetmon-api-1" {
 		t.Fatalf("DeliveryOwnerHost = %q, want jetmon-api-1", cfg.DeliveryOwnerHost)
 	}
-	if cfg.BodyReadMaxBytes != 262144 {
-		t.Fatalf("BodyReadMaxBytes = %d, want 262144", cfg.BodyReadMaxBytes)
+	if cfg.BodyReadMaxBytes != 1048576 {
+		t.Fatalf("BodyReadMaxBytes = %d, want 1048576", cfg.BodyReadMaxBytes)
 	}
 	if cfg.BodyReadMaxMS != 250 {
 		t.Fatalf("BodyReadMaxMS = %d, want 250", cfg.BodyReadMaxMS)

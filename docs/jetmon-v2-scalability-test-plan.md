@@ -181,6 +181,33 @@ Dependency signals:
   `history.row.count`, `history.time`, and table growth before implementing
   async or lower-resolution history storage.
 
+## Body-Read Budget Change Verification Thresholds
+
+Use this section only when the candidate differs from baseline by changing
+`BODY_READ_MAX_BYTES` from `262144` to `1048576`.
+
+- Body-read failure rate (`error_code=8` with HTTP `2xx`/`3xx`) must be less
+  than or equal to `max(0.30%, baseline * 0.75)` and must not exceed baseline
+  by more than `0.05` percentage points.
+- Timeout pressure primary check requires candidate ratio less than or equal to
+  baseline ratio * `1.15`, where ratio is
+  `scheduler.round.check.timeout.count / scheduler.round.check.failure.count`.
+  If either baseline or candidate failure count is too small for a stable ratio
+  (for example `<100` failures in the window), use fallback absolute timeout
+  rate `scheduler.round.check.timeout.count /
+  scheduler.round.completed.count`, and require candidate not worse than
+  baseline by more than `0.05` percentage points.
+- Throughput must hold with `round.sps.count` p50 at least `90%` of baseline
+  and p95 at least `85%` of baseline.
+- Backpressure/freshness must hold with `worker.queue.queue_size` p95 less than
+  or equal to `1.25x` baseline, and `due_remaining` must not stay elevated for
+  more than `3` consecutive sampled rounds.
+- Memory must hold with jetmon2 RSS p95 less than or equal to `1.20x`
+  baseline, with no monotonic leak trend across the window.
+
+Run baseline and candidate windows with the same duration, the same site mix,
+and only this config delta.
+
 ## Next Capacity Ladder
 
 Run each step for the same duration and compare against the latest successful

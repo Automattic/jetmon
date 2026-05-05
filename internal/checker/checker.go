@@ -275,20 +275,22 @@ func Check(ctx context.Context, req Request) Result {
 		return res
 	}
 
-	// Keyword check uses the same bounded body read as integrity checks.
-	bodyText := string(body)
-	if req.Keyword != nil && *req.Keyword != "" {
-		if !strings.Contains(bodyText, *req.Keyword) {
-			res.KeywordRule = "required"
-			res.ErrorCode = ErrorKeyword
-			return res
+	if needsBody {
+		// Keyword check uses the same bounded body read as integrity checks.
+		bodyText := string(body)
+		if req.Keyword != nil && *req.Keyword != "" {
+			if !strings.Contains(bodyText, *req.Keyword) {
+				res.KeywordRule = "required"
+				res.ErrorCode = ErrorKeyword
+				return res
+			}
 		}
-	}
-	for _, keyword := range forbiddenKeywords {
-		if strings.Contains(bodyText, keyword) {
-			res.KeywordRule = "forbidden"
-			res.ErrorCode = ErrorKeyword
-			return res
+		for _, keyword := range forbiddenKeywords {
+			if strings.Contains(bodyText, keyword) {
+				res.KeywordRule = "forbidden"
+				res.ErrorCode = ErrorKeyword
+				return res
+			}
 		}
 	}
 

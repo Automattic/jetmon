@@ -217,7 +217,7 @@ func defaults() *Config {
 		TimeBetweenNoticesMin:        59,
 		MinTimeBetweenRoundsSec:      300,
 		NetCommsTimeout:              10,
-		BodyReadMaxBytes:             262144,
+		BodyReadMaxBytes:             1048576,
 		BodyReadMaxMS:                250,
 		KeywordReadMaxBytes:          1048576,
 		KeywordReadMaxMS:             0,

@@ -23,7 +23,7 @@ Key settings:
 | `TIME_BETWEEN_CHECKS_SEC` | 30 | Delay between local retry checks |
 | `MIN_TIME_BETWEEN_ROUNDS_SEC` | 300 | Fixed-cadence full-fleet pass interval when variable intervals are disabled |
 | `NET_COMMS_TIMEOUT` | 10 | Default per-check HTTP timeout in seconds |
-| `BODY_READ_MAX_BYTES` | 262144 | Success-path body-read budget in bytes for unknown/large responses |
+| `BODY_READ_MAX_BYTES` | 1048576 | Success-path body-read budget in bytes for unknown/large responses |
 | `BODY_READ_MAX_MS` | 250 | Post-header body-phase budget in milliseconds for budgeted reads (unknown/large responses) |
 | `KEYWORD_READ_MAX_BYTES` | 1048576 | Max bytes scanned when keyword checks are enabled |
 | `KEYWORD_READ_MAX_MS` | 0 | Keyword read budget in milliseconds, 0 inherits full request timeout envelope |
