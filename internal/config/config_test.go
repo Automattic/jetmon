@@ -12,13 +12,17 @@ import (
 func TestValidate(t *testing.T) {
 	base := func() *Config {
 		return &Config{
-			AuthToken:       "token",
-			NumWorkers:      10,
-			DatasetSize:     100,
-			BucketTotal:     100,
-			BucketTarget:    50,
-			NetCommsTimeout: 10,
-			LogFormat:       "text",
+			AuthToken:           "token",
+			NumWorkers:          10,
+			DatasetSize:         100,
+			BucketTotal:         100,
+			BucketTarget:        50,
+			NetCommsTimeout:     10,
+			BodyReadMaxBytes:    1048576,
+			BodyReadMaxMS:       250,
+			KeywordReadMaxBytes: 1048576,
+			KeywordReadMaxMS:    0,
+			LogFormat:           "text",
 		}
 	}
 
@@ -149,6 +153,26 @@ func TestValidate(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "body read max bytes zero",
+			mutate:  func(c *Config) { c.BodyReadMaxBytes = 0 },
+			wantErr: true,
+		},
+		{
+			name:    "body read max ms zero",
+			mutate:  func(c *Config) { c.BodyReadMaxMS = 0 },
+			wantErr: true,
+		},
+		{
+			name:    "keyword read max bytes zero",
+			mutate:  func(c *Config) { c.KeywordReadMaxBytes = 0 },
+			wantErr: true,
+		},
+		{
+			name:    "keyword read max ms negative",
+			mutate:  func(c *Config) { c.KeywordReadMaxMS = -1 },
+			wantErr: true,
+		},
+		{
 			name:    "min time between rounds negative",
 			mutate:  func(c *Config) { c.MinTimeBetweenRoundsSec = -1 },
 			wantErr: true,
@@ -259,13 +283,17 @@ func TestPinnedBucketRange(t *testing.T) {
 
 func TestValidateDefaultsDashboardBindAddr(t *testing.T) {
 	cfg := &Config{
-		AuthToken:       "token",
-		NumWorkers:      10,
-		DatasetSize:     100,
-		BucketTotal:     100,
-		BucketTarget:    50,
-		NetCommsTimeout: 10,
-		LogFormat:       "text",
+		AuthToken:           "token",
+		NumWorkers:          10,
+		DatasetSize:         100,
+		BucketTotal:         100,
+		BucketTarget:        50,
+		NetCommsTimeout:     10,
+		BodyReadMaxBytes:    1048576,
+		BodyReadMaxMS:       250,
+		KeywordReadMaxBytes: 1048576,
+		KeywordReadMaxMS:    0,
+		LogFormat:           "text",
 	}
 	if err := validate(cfg); err != nil {
 		t.Fatalf("validate() error = %v", err)
@@ -333,6 +361,18 @@ func TestLoadAndGet(t *testing.T) {
 	}
 	if cfg.DeliveryOwnerHost != "jetmon-api-1" {
 		t.Fatalf("DeliveryOwnerHost = %q, want jetmon-api-1", cfg.DeliveryOwnerHost)
+	}
+	if cfg.BodyReadMaxBytes != 1048576 {
+		t.Fatalf("BodyReadMaxBytes = %d, want 1048576", cfg.BodyReadMaxBytes)
+	}
+	if cfg.BodyReadMaxMS != 250 {
+		t.Fatalf("BodyReadMaxMS = %d, want 250", cfg.BodyReadMaxMS)
+	}
+	if cfg.KeywordReadMaxBytes != 1048576 {
+		t.Fatalf("KeywordReadMaxBytes = %d, want 1048576", cfg.KeywordReadMaxBytes)
+	}
+	if cfg.KeywordReadMaxMS != 0 {
+		t.Fatalf("KeywordReadMaxMS = %d, want 0", cfg.KeywordReadMaxMS)
 	}
 	if !cfg.LegacyStatusProjectionEnable {
 		t.Fatal("LegacyStatusProjectionEnable default should be true")
