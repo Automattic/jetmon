@@ -2,9 +2,11 @@ package checker
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -469,6 +471,15 @@ func TestCheckRedirectFail(t *testing.T) {
 	if res.ErrorCode != ErrorRedirect {
 		t.Fatalf("ErrorCode = %d, want ErrorRedirect", res.ErrorCode)
 	}
+	if res.RedirectCount != 1 {
+		t.Fatalf("RedirectCount = %d, want 1", res.RedirectCount)
+	}
+	if len(res.RedirectChain) != 1 || !strings.HasSuffix(res.RedirectChain[0], "/final") {
+		t.Fatalf("RedirectChain = %#v, want one /final hop", res.RedirectChain)
+	}
+	if res.ErrorDetail == "" {
+		t.Fatal("ErrorDetail is empty, want redirect diagnostic context")
+	}
 }
 
 func TestCheckCustomHeadersForwarded(t *testing.T) {
@@ -546,12 +557,21 @@ func TestCheckRedirectAlert(t *testing.T) {
 	if !res.RedirectChanged {
 		t.Fatal("RedirectChanged = false for redirect-alert policy, want true")
 	}
+	if res.RedirectCount != 1 {
+		t.Fatalf("RedirectCount = %d, want 1", res.RedirectCount)
+	}
+	if !strings.HasSuffix(res.FinalURL, "/final") {
+		t.Fatalf("FinalURL = %q, want /final", res.FinalURL)
+	}
 }
 
 func TestCheckInvalidURL(t *testing.T) {
 	res := Check(context.Background(), Request{BlogID: 1, URL: "://invalid-url", TimeoutSeconds: 5})
 	if res.ErrorCode != ErrorConnect {
 		t.Fatalf("ErrorCode = %d, want ErrorConnect for invalid URL", res.ErrorCode)
+	}
+	if res.ErrorDetail == "" {
+		t.Fatal("ErrorDetail is empty, want invalid-url diagnostic context")
 	}
 }
 
@@ -579,6 +599,16 @@ func TestCheckConnectionRefused(t *testing.T) {
 	}
 	if res.DNS < 0 {
 		t.Errorf("DNS duration is negative (%v); zero-time underflow", res.DNS)
+	}
+}
+
+func TestBoundedErrorDetailTruncatesLongErrors(t *testing.T) {
+	detail := boundedErrorDetail(errors.New(strings.Repeat("x", 600)))
+	if len(detail) != 503 {
+		t.Fatalf("len(ErrorDetail) = %d, want 503", len(detail))
+	}
+	if !strings.HasSuffix(detail, "...") {
+		t.Fatalf("ErrorDetail suffix = %q, want ellipsis", detail[len(detail)-3:])
 	}
 }
 

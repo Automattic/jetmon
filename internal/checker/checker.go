@@ -79,6 +79,9 @@ type Result struct {
 	Success   bool
 	HTTPCode  int
 	ErrorCode int
+	// ErrorDetail is bounded diagnostic context from the checker. It is meant
+	// for operator-facing event metadata, not matching logic.
+	ErrorDetail string
 
 	RTT  time.Duration
 	DNS  time.Duration
@@ -90,6 +93,9 @@ type Result struct {
 	TLSVersion      uint16
 	CipherSuite     uint16
 	RedirectChanged bool
+	RedirectCount   int
+	RedirectChain   []string
+	FinalURL        string
 	KeywordRule     string
 
 	Timestamp time.Time
@@ -169,7 +175,7 @@ func Check(ctx context.Context, req Request) Result {
 		headers[k] = v
 	}
 
-	redirectCount := 0
+	redirectChain := []string{}
 	redirectPolicyStr := string(req.RedirectPolicy)
 	if redirectPolicyStr == "" {
 		redirectPolicyStr = string(RedirectFollow)
@@ -178,11 +184,11 @@ func Check(ctx context.Context, req Request) Result {
 	client := &http.Client{
 		Transport: defaultTransport,
 		CheckRedirect: func(r *http.Request, via []*http.Request) error {
-			redirectCount++
+			redirectChain = append(redirectChain, r.URL.String())
 			if redirectPolicyStr == string(RedirectFail) {
 				return fmt.Errorf("redirect policy: fail")
 			}
-			if redirectCount > 10 {
+			if len(redirectChain) > 10 {
 				return fmt.Errorf("too many redirects")
 			}
 			return nil
@@ -193,6 +199,7 @@ func Check(ctx context.Context, req Request) Result {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, req.URL, nil)
 	if err != nil {
 		res.ErrorCode = ErrorConnect
+		res.ErrorDetail = boundedErrorDetail(err)
 		return res
 	}
 
@@ -204,6 +211,13 @@ func Check(ctx context.Context, req Request) Result {
 	start := time.Now()
 	resp, err := client.Do(httpReq)
 	res.RTT = time.Since(start)
+	res.RedirectCount = len(redirectChain)
+	if len(redirectChain) > 0 {
+		res.RedirectChain = append([]string(nil), redirectChain...)
+	}
+	if resp != nil && resp.Request != nil && resp.Request.URL != nil {
+		res.FinalURL = resp.Request.URL.String()
+	}
 
 	// Only record a phase duration when BOTH start and end fired. If a
 	// connection errors mid-handshake the DNSStart / ConnectStart / TLS
@@ -224,6 +238,7 @@ func Check(ctx context.Context, req Request) Result {
 	}
 
 	if err != nil {
+		res.ErrorDetail = boundedErrorDetail(err)
 		if ctx.Err() != nil {
 			res.ErrorCode = ErrorTimeout
 		} else if strings.Contains(err.Error(), "redirect") {
@@ -258,7 +273,7 @@ func Check(ctx context.Context, req Request) Result {
 		}
 	}
 
-	if redirectPolicyStr == string(RedirectAlert) && redirectCount > 0 {
+	if redirectPolicyStr == string(RedirectAlert) && res.RedirectCount > 0 {
 		res.RedirectChanged = true
 	}
 
@@ -289,6 +304,18 @@ func Check(ctx context.Context, req Request) Result {
 
 	res.Success = res.HTTPCode > 0 && res.HTTPCode < 400
 	return res
+}
+
+func boundedErrorDetail(err error) string {
+	if err == nil {
+		return ""
+	}
+	const maxErrorDetail = 500
+	detail := err.Error()
+	if len(detail) <= maxErrorDetail {
+		return detail
+	}
+	return detail[:maxErrorDetail] + "..."
 }
 
 func readResponseBody(resp *http.Response, needKeyword bool) ([]byte, error) {

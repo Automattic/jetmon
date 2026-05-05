@@ -155,9 +155,13 @@ SET alert_cooldown_minutes = 60
 WHERE blog_id = 12345;
 ```
 
-Global retry behavior is controlled by `NUM_OF_CHECKS` and
-`TIME_BETWEEN_CHECKS_SEC`. Per-site retry overrides are planned separately; do
-not promise per-site retry tuning unless the deployed schema includes it.
+Global promotion behavior is controlled by `NUM_OF_CHECKS`: that many
+consecutive local failures are required before Veriflier escalation. In
+variable-interval mode, failed probes are scheduled for a bounded one-minute
+follow-up when the site's normal check interval is longer, so transient
+incidents get rechecked sooner without per-site retry tuning.
+`TIME_BETWEEN_CHECKS_SEC` is retained for v1 config compatibility; do not
+promise per-site retry tuning unless the deployed schema includes it.
 
 ## WPCOM Notification Data
 

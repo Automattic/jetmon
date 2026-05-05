@@ -139,7 +139,7 @@ Add a `timeout_seconds` column, defaulting to the global `NET_COMMS_TIMEOUT`. Pr
 The goroutine scheduler handles arbitrary intervals natively. A dedicated premium worker pool with its own configuration runs at high frequency without affecting the general pool. Routing is via the existing bucket range mechanism — premium buckets are assigned to the premium pool configuration.
 
 **False Positive Suppression Tuning**
-Expose `NUM_OF_CHECKS` and `TIME_BETWEEN_CHECKS_SEC` as per-site overrides in the database. Sites with a history of transient failures can be tuned to require more local confirmations before escalating to Verifliers, without changing the global defaults.
+Expose `NUM_OF_CHECKS` as a per-site override in the database. Sites with a history of transient failures can be tuned to require more local confirmations before escalating to Verifliers, without changing the global default. Failed probes already get a bounded one-minute follow-up when the normal check interval is longer, so retry cadence should stay scheduler-owned unless production evidence shows a need for explicit per-site retry timing.
 
 **Response Time History**
 Each check result — including the HTTP request method and granular DNS/TCP/TLS/TTFB breakdown — is written to a `jetmon_check_history` table with a timestamp. This enables response time trending over configurable windows (1h, 24h, 30d) queryable via the operator dashboard and the audit CLI. The request method gives operators durable evidence that v2 probes are exercising the GET path instead of v1's HEAD-only behavior. The data is already being collected as part of the granular timing breakdown; this feature is purely a storage and query layer on top of it. Provides the response time graphs that customers expect from competing services.
@@ -147,7 +147,7 @@ Each check result — including the HTTP request method and granular DNS/TCP/TLS
 **Alert Deduplication and Cooldown**
 Add a `alert_cooldown_minutes` column to `jetpack_monitor_sites`, defaulting to a global `ALERT_COOLDOWN_MINUTES` config value. After an alert fires for a site, subsequent alerts for the same site are suppressed until the cooldown expires, even if the site flaps up and down repeatedly. The suppression is recorded in the audit log. Prevents alert fatigue on flapping sites without requiring manual maintenance window configuration.
 
-Add a `next_check_at` column to `jetpack_monitor_sites` for variable-interval scheduling. Jetmon maintains it after every check from `last_checked_at + max(check_interval, 1) minutes`, allowing due-site selection to use an indexed range predicate instead of recalculating the interval expression for every active row.
+Add a `next_check_at` column to `jetpack_monitor_sites` for variable-interval scheduling. Jetmon maintains it after every check, using `last_checked_at + max(check_interval, 1) minutes` for successful probes and a bounded one-minute follow-up for failed probes when the normal interval is longer. This allows due-site selection to use an indexed range predicate instead of recalculating the interval expression for every active row while keeping open incidents from waiting a full normal interval before the next local observation.
 
 **TLS Version and Cipher Reporting**
 Alongside SSL certificate expiry monitoring, inspect `tls.ConnectionState` for the negotiated TLS version and cipher suite. Sites still serving TLS 1.0 or TLS 1.1 open a `tls_deprecated` warning event, but this advisory does not enter the downtime retry pipeline or project the legacy site status down. Jetmon permits the deprecated handshake long enough to classify the site accurately and records the TLS version and cipher in event metadata. Zero additional network requests — this data is present in every existing HTTPS connection alongside the certificate chain.
@@ -259,7 +259,7 @@ rollups, delivery-owner posture, RSS memory, Go runtime system memory, and
 local dependency health without polling every host dashboard directly.
 
 **False Positive Tracker**
-Every time the system escalates a site to Veriflier confirmation and the Verifliers do NOT confirm it as down (i.e., the queue entry times out or all Verifliers report the site as up), the event is recorded in a `jetmon_false_positives` table with timestamp, site, HTTP code, error code, and RTT from the local check. A view in the operator dashboard surfaces sites with high false positive rates, helping operators tune per-site `NUM_OF_CHECKS` or `TIME_BETWEEN_CHECKS_SEC` settings.
+Every time the system escalates a site to Veriflier confirmation and the Verifliers do NOT confirm it as down (i.e., the queue entry times out or all Verifliers report the site as up), the event is recorded in a `jetmon_false_positives` table with timestamp, site, HTTP code, error code, and RTT from the local check. A view in the operator dashboard surfaces sites with high false positive rates, helping operators tune per-site `NUM_OF_CHECKS` settings and review whether the site's content/timeout rules are too sensitive.
 
 **Internal Audit Log**
 Operational activity for every site is written to a `jetmon_audit_log` table:

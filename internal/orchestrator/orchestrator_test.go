@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -460,6 +461,84 @@ func checkerResultFailure(blogID int64) checker.Result {
 	}
 }
 
+func TestCheckResultMetadataIncludesObservationAndDiagnostics(t *testing.T) {
+	previous := time.Date(2026, 5, 3, 11, 57, 0, 0, time.UTC)
+	firstFail := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
+	res := checkerResultFailure(42)
+	res.Timestamp = firstFail.Add(5 * time.Second)
+	res.Method = "GET"
+	res.ErrorDetail = "dial tcp: connection refused"
+	res.RedirectCount = 1
+	res.RedirectChain = []string{"https://example.com/final"}
+	res.FinalURL = "https://example.com/final"
+	res.TLSVersion = tls.VersionTLS12
+	res.CipherSuite = tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+
+	meta := checkResultMetadata(db.Site{
+		BlogID:         42,
+		MonitorURL:     "https://example.com",
+		SiteStatus:     statusRunning,
+		CheckInterval:  7,
+		LastCheckedAt:  &previous,
+		RedirectPolicy: "alert",
+	}, res, firstFail)
+
+	if meta["error_detail"] != res.ErrorDetail {
+		t.Fatalf("error_detail = %v, want %q", meta["error_detail"], res.ErrorDetail)
+	}
+	if meta["redirect_policy"] != "alert" || meta["redirect_count"] != 1 {
+		t.Fatalf("redirect metadata = policy:%v count:%v, want alert/1", meta["redirect_policy"], meta["redirect_count"])
+	}
+	if meta["final_url"] != res.FinalURL {
+		t.Fatalf("final_url = %v, want %q", meta["final_url"], res.FinalURL)
+	}
+	if meta["tls_version"] == "" || meta["cipher_suite"] == "" {
+		t.Fatalf("TLS metadata missing: %+v", meta)
+	}
+
+	obs, ok := meta["observation"].(map[string]any)
+	if !ok {
+		t.Fatalf("observation = %T, want map[string]any", meta["observation"])
+	}
+	if obs["first_failed_at"] != firstFail.Format(time.RFC3339Nano) {
+		t.Fatalf("first_failed_at = %v, want %s", obs["first_failed_at"], firstFail.Format(time.RFC3339Nano))
+	}
+	if obs["previous_known_good_at"] != previous.Format(time.RFC3339Nano) {
+		t.Fatalf("previous_known_good_at = %v, want %s", obs["previous_known_good_at"], previous.Format(time.RFC3339Nano))
+	}
+	if obs["normal_check_interval_seconds"] != int64(420) {
+		t.Fatalf("normal_check_interval_seconds = %v, want 420", obs["normal_check_interval_seconds"])
+	}
+	if obs["next_check_interval_seconds"] != int64(60) {
+		t.Fatalf("next_check_interval_seconds = %v, want 60", obs["next_check_interval_seconds"])
+	}
+}
+
+func TestRecoveryResultMetadataMarshalsObservation(t *testing.T) {
+	res := checkerResultSuccess(42)
+	res.Timestamp = time.Date(2026, 5, 3, 12, 4, 0, 0, time.UTC)
+	changeTime := time.Date(2026, 5, 3, 12, 4, 2, 0, time.UTC)
+
+	raw, err := json.Marshal(recoveryResultMetadata(res, changeTime))
+	if err != nil {
+		t.Fatalf("marshal recovery metadata: %v", err)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		t.Fatalf("unmarshal recovery metadata: %v", err)
+	}
+	obs, ok := meta["observation"].(map[string]any)
+	if !ok {
+		t.Fatalf("observation = %T, want map[string]any", meta["observation"])
+	}
+	if obs["first_recovered_at"] != res.Timestamp.Format(time.RFC3339Nano) {
+		t.Fatalf("first_recovered_at = %v, want %s", obs["first_recovered_at"], res.Timestamp.Format(time.RFC3339Nano))
+	}
+	if obs["closed_at"] != changeTime.Format(time.RFC3339Nano) {
+		t.Fatalf("closed_at = %v, want %s", obs["closed_at"], changeTime.Format(time.RFC3339Nano))
+	}
+}
+
 func maintenanceSite(blogID int64, now time.Time) db.Site {
 	start := now.Add(-1 * time.Hour)
 	end := now.Add(1 * time.Hour)
@@ -646,6 +725,37 @@ func TestProcessResultsMarksChecked(t *testing.T) {
 	}
 	if want := res.Timestamp.Add(7 * time.Minute); !markedNext.Equal(want) {
 		t.Fatalf("MarkSitesChecked next_check_at = %s, want %s", markedNext, want)
+	}
+}
+
+func TestProcessResultsSchedulesFailedChecksSoonerThanNormalInterval(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig(t)
+
+	var markedNext time.Time
+	dbMarkSitesChecked = func(_ context.Context, checks []db.SiteCheck) error {
+		if len(checks) != 1 {
+			t.Fatalf("batch checks = %d, want 1", len(checks))
+		}
+		markedNext = checks[0].NextCheckAt
+		return nil
+	}
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local",
+		ctx:      context.Background(),
+	}
+
+	res := checkerResultFailure(42)
+	res.Timestamp = time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
+	sites := map[int64]db.Site{42: {BlogID: 42, SiteStatus: statusRunning, CheckInterval: 7}}
+	o.processResults(map[int64]checker.Result{42: res}, sites)
+
+	if want := res.Timestamp.Add(time.Minute); !markedNext.Equal(want) {
+		t.Fatalf("failed check next_check_at = %s, want %s", markedNext, want)
 	}
 }
 

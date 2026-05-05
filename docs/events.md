@@ -120,10 +120,22 @@ A probe has failed but the verifier has not yet confirmed. This is a **real stat
 
 The first failure writes both an event row (`state = Seems Down`, `severity = 3`, `started_at = now`) and an `opened` transition row in one transaction.
 
-HTTP failure metadata includes `http_code`, `error_code`, `rtt_ms`, `url`, and
-`keyword_rule` when a content rule failed. `keyword_rule` is `required` for a
-missing `check_keyword` and `forbidden` when `forbidden_keyword` appears in the
-response body.
+HTTP failure metadata includes `http_code`, `error_code`, `failure_class`,
+`method`, `rtt_ms`, `url`, and `keyword_rule` when a content rule failed.
+`keyword_rule` is `required` for a missing `check_keyword` and `forbidden` when
+`forbidden_keyword` appears in the response body. Jetmon also records bounded
+operator diagnostics such as `error_detail`, redirect policy/count/chain/final
+URL, TLS version, and cipher suite when those facts are available. Response
+bodies are not stored in event metadata.
+
+Each HTTP failure also stores `metadata.observation` with timing bounds:
+`checked_at`, `first_failed_at`, `previous_observed_at`,
+`previous_known_good_at`, `normal_check_interval_seconds`, and
+`next_check_interval_seconds`. The exact customer failure may have started any
+time after the previous known-good probe and no later than `first_failed_at`;
+recovery transitions similarly store `first_recovered_at` and `closed_at` in
+their transition metadata. This keeps incident durations honest while giving
+operators enough context to explain the observation window.
 
 Three outcomes from Seems Down:
 
