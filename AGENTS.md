@@ -159,7 +159,7 @@ Copy `config/config-sample.json` to `config/config.json`. All keys from the orig
 - `ALERT_COOLDOWN_MINUTES`: Default cooldown between repeated alerts for the same site
 - `LEGACY_STATUS_PROJECTION_ENABLE`: Keep v1 `site_status` / `last_status_change` projection updated during shadow-v2-state migration
 - `LOG_FORMAT`: `text` (default, drop-in compatible) or `json` (structured logging)
-- `USE_VARIABLE_CHECK_INTERVALS`: Respect per-site `check_interval`; the scheduler uses a short idle poll and the SQL due predicate controls which sites are ready
+- `USE_VARIABLE_CHECK_INTERVALS`: Respect per-site `check_interval`; the scheduler uses a short idle poll and maintained `next_check_at` timestamps control which sites are ready
 - `DASHBOARD_PORT`: Internal port for the operator dashboard (0 to disable)
 - `DEBUG_PORT`: localhost-only pprof port, default 6060 (0 to disable; never exposed remotely)
 
@@ -198,7 +198,7 @@ These interfaces must remain identical to the original Jetmon. Do not change the
 - Per-site custom headers merged from `custom_headers` JSON column
 
 **Timing Breakdown (via `net/http/httptrace`):**
-Every check records: DNS lookup, TCP connect, TLS handshake, request sent, first response byte (TTFB). All six timings are stored in the audit log and emitted as StatsD metrics. The composite RTT is retained for backwards compatibility.
+Every check records composite RTT plus DNS lookup, TCP connect, TLS handshake, and first response byte (TTFB) timings. These samples are stored in `jetmon_check_history` for trending and API statistics. Scheduler-level StatsD metrics expose phase timing and write volume so capacity tests can separate check execution, freshness writes, check-history inserts, SSL expiry updates, and event handling.
 
 **SSL Monitoring:**
 Every HTTPS check inspects `tls.ConnectionState` for:
@@ -238,6 +238,7 @@ Sites are stored in `jetpack_monitor_sites` with bucket-based sharding. The `buc
 | Column | Type | Purpose |
 |--------|------|---------|
 | `ssl_expiry_date` | DATE NULL | Updated each HTTPS check |
+| `next_check_at` | DATETIME NULL | Materialized variable-interval due time maintained after each check |
 | `check_keyword` | VARCHAR(500) NULL | String to verify in response body |
 | `maintenance_start` | DATETIME NULL | Maintenance window start |
 | `maintenance_end` | DATETIME NULL | Maintenance window end |
@@ -325,3 +326,19 @@ Up → Seems Down → Down → Resolved
 **Maintenance Windows:** Checks continue during a maintenance window and data is recorded in the audit log, but no alerts fire. Verify that `maintenance_end` is correctly set — an open-ended maintenance window silently suppresses all alerts for that site indefinitely.
 
 **Memory Pressure Drain:** If RSS exceeds the configured threshold, the goroutine pool shrinks by 10% via graceful drain. This reduces throughput temporarily. If memory pressure is sustained, investigate for goroutine leaks using the pprof endpoint at `http://localhost:<DEBUG_PORT>/debug/pprof/` (localhost only) before increasing `WORKER_MAX_MEM_MB`.
+
+## Agent Workflow Notes
+
+These notes are for Codex and other coding agents working for Chris.
+
+- If uptime-bench or Jetmon capacity tests are running, do not change deployed
+  services, support hosts, databases, provider state, fleet config, or runtime
+  config without explicit permission.
+- When a request could touch both `jetmon` and `uptime-bench`, state the repo
+  path before acting. Treat "this repo" as ambiguous when multiple agents or
+  worktrees are active.
+- Prefer local analysis, agent files, branch inspection, code review, and
+  handoff preparation while tests are active.
+- Project-local agent playbooks live under `.agents/skills`.
+- For uptime-bench-specific report or fleet rules, also read
+  `/home/gaarai/code/uptime-bench/AGENTS.md`.

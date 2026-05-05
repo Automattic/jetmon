@@ -17,8 +17,8 @@ func GetSitesForBucket(ctx context.Context, bucketMin, bucketMax, batchSize int,
 	query := `
 		SELECT
 			jetpack_monitor_site_id, blog_id, bucket_no, monitor_url,
-			monitor_active, site_status, last_status_change, check_interval, last_checked_at,
-			ssl_expiry_date, check_keyword, maintenance_start, maintenance_end,
+			monitor_active, site_status, last_status_change, check_interval, last_checked_at, next_check_at,
+			ssl_expiry_date, check_keyword, forbidden_keyword, forbidden_keywords, maintenance_start, maintenance_end,
 			custom_headers, timeout_seconds, redirect_policy, alert_cooldown_minutes, last_alert_sent_at
 		FROM jetpack_monitor_sites
 		WHERE monitor_active = 1
@@ -26,14 +26,20 @@ func GetSitesForBucket(ctx context.Context, bucketMin, bucketMax, batchSize int,
 	if useVariableIntervals {
 		query += `
 		  AND (
-			last_checked_at IS NULL
-			OR DATE_ADD(last_checked_at, INTERVAL GREATEST(check_interval, 1) MINUTE) <= NOW()
+			next_check_at IS NULL
+			OR next_check_at <= NOW()
 		  )`
-	}
-	query += `
+		query += `
+		ORDER BY
+			next_check_at ASC,
+			blog_id ASC`
+	} else {
+		query += `
 		ORDER BY
 			last_checked_at ASC,
-			blog_id ASC
+			blog_id ASC`
+	}
+	query += `
 		LIMIT ?`
 
 	rows, err := db.QueryContext(ctx, query, bucketMin, bucketMax, batchSize)
@@ -48,8 +54,8 @@ func GetSitesForBucket(ctx context.Context, bucketMin, bucketMax, batchSize int,
 		var redirectPolicy sql.NullString
 		err := rows.Scan(
 			&s.ID, &s.BlogID, &s.BucketNo, &s.MonitorURL,
-			&s.MonitorActive, &s.SiteStatus, &s.LastStatusChange, &s.CheckInterval, &s.LastCheckedAt,
-			&s.SSLExpiryDate, &s.CheckKeyword, &s.MaintenanceStart, &s.MaintenanceEnd,
+			&s.MonitorActive, &s.SiteStatus, &s.LastStatusChange, &s.CheckInterval, &s.LastCheckedAt, &s.NextCheckAt,
+			&s.SSLExpiryDate, &s.CheckKeyword, &s.ForbiddenKeyword, &s.ForbiddenKeywords, &s.MaintenanceStart, &s.MaintenanceEnd,
 			&s.CustomHeaders, &s.TimeoutSeconds, &redirectPolicy, &s.AlertCooldownMinutes, &s.LastAlertSentAt,
 		)
 		if err != nil {
@@ -113,8 +119,8 @@ func CountDueSitesForBucketRange(ctx context.Context, bucketMin, bucketMax int, 
 	if useVariableIntervals {
 		query += `
 		   AND (
-			last_checked_at IS NULL
-			OR DATE_ADD(last_checked_at, INTERVAL GREATEST(check_interval, 1) MINUTE) <= NOW()
+			next_check_at IS NULL
+			OR next_check_at <= NOW()
 		   )`
 	}
 
@@ -361,19 +367,20 @@ func SummarizeLegacyProjectionDrift(ctx context.Context, bucketMin, bucketMax, l
 	return out, rows.Err()
 }
 
-// MarkSiteChecked records when a site was last checked.
-func MarkSiteChecked(ctx context.Context, blogID int64, checkedAt time.Time) error {
+// MarkSiteChecked records when a site was last checked and when it is next due.
+func MarkSiteChecked(ctx context.Context, blogID int64, checkedAt, nextCheckAt time.Time) error {
 	_, err := db.ExecContext(ctx,
-		`UPDATE jetpack_monitor_sites SET last_checked_at = ? WHERE blog_id = ?`,
-		checkedAt.UTC(), blogID,
+		`UPDATE jetpack_monitor_sites SET last_checked_at = ?, next_check_at = ? WHERE blog_id = ?`,
+		checkedAt.UTC(), nextCheckAt.UTC(), blogID,
 	)
 	return err
 }
 
 // SiteCheck records one site freshness update.
 type SiteCheck struct {
-	BlogID    int64
-	CheckedAt time.Time
+	BlogID      int64
+	CheckedAt   time.Time
+	NextCheckAt time.Time
 }
 
 // MarkSitesChecked records last_checked_at for a batch of sites. Batching this
@@ -399,10 +406,15 @@ func MarkSitesChecked(ctx context.Context, checks []SiteCheck) error {
 func markSitesCheckedChunk(ctx context.Context, checks []SiteCheck) error {
 	var query strings.Builder
 	query.WriteString("UPDATE jetpack_monitor_sites SET last_checked_at = CASE blog_id")
-	args := make([]any, 0, len(checks)*3)
+	args := make([]any, 0, len(checks)*5)
 	for _, check := range checks {
 		query.WriteString(" WHEN ? THEN ?")
 		args = append(args, check.BlogID, check.CheckedAt.UTC())
+	}
+	query.WriteString(" END, next_check_at = CASE blog_id")
+	for _, check := range checks {
+		query.WriteString(" WHEN ? THEN ?")
+		args = append(args, check.BlogID, check.NextCheckAt.UTC())
 	}
 	query.WriteString(" END WHERE blog_id IN (")
 	for i, check := range checks {
@@ -432,6 +444,54 @@ func UpdateSSLExpiry(ctx context.Context, blogID int64, expiry time.Time) error 
 		`UPDATE jetpack_monitor_sites SET ssl_expiry_date = ? WHERE blog_id = ?`,
 		expiry, blogID,
 	)
+	return err
+}
+
+// SiteSSLExpiry records one observed certificate expiry update.
+type SiteSSLExpiry struct {
+	BlogID int64
+	Expiry time.Time
+}
+
+// UpdateSSLExpiries records observed certificate expiry dates for a batch of
+// sites. Certificate expiry changes are usually sparse after warm-up, but
+// batching prevents first-run or certificate-churn sweeps from issuing one
+// UPDATE per HTTPS site.
+func UpdateSSLExpiries(ctx context.Context, expiries []SiteSSLExpiry) error {
+	if len(expiries) == 0 {
+		return nil
+	}
+	expiries = append([]SiteSSLExpiry(nil), expiries...)
+	sort.Slice(expiries, func(i, j int) bool {
+		return expiries[i].BlogID < expiries[j].BlogID
+	})
+	for start := 0; start < len(expiries); start += batchWriteChunkSize {
+		end := min(start+batchWriteChunkSize, len(expiries))
+		if err := updateSSLExpiriesChunk(ctx, expiries[start:end]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func updateSSLExpiriesChunk(ctx context.Context, expiries []SiteSSLExpiry) error {
+	var query strings.Builder
+	query.WriteString("UPDATE jetpack_monitor_sites SET ssl_expiry_date = CASE blog_id")
+	args := make([]any, 0, len(expiries)*3)
+	for _, expiry := range expiries {
+		query.WriteString(" WHEN ? THEN ?")
+		args = append(args, expiry.BlogID, expiry.Expiry)
+	}
+	query.WriteString(" END WHERE blog_id IN (")
+	for i, expiry := range expiries {
+		if i > 0 {
+			query.WriteByte(',')
+		}
+		query.WriteByte('?')
+		args = append(args, expiry.BlogID)
+	}
+	query.WriteByte(')')
+	_, err := db.ExecContext(ctx, query.String(), args...)
 	return err
 }
 
@@ -627,27 +687,40 @@ func RecordFalsePositive(blogID int64, httpCode, errorCode int, rttMs int64) err
 }
 
 // RecordCheckHistory inserts a check timing sample.
-func RecordCheckHistory(blogID int64, httpCode, errorCode int, rttMs, dnsMs, tcpMs, tlsMs, ttfbMs int64) error {
+func RecordCheckHistory(blogID int64, requestMethod string, httpCode, errorCode int, rttMs, dnsMs, tcpMs, tlsMs, ttfbMs int64) error {
+	requestMethod = normalizeHistoryMethod(requestMethod)
 	_, err := db.Exec(
 		`INSERT INTO jetmon_check_history
-		    (blog_id, http_code, error_code, rtt_ms, dns_ms, tcp_ms, tls_ms, ttfb_ms, checked_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
-		blogID, httpCode, errorCode, rttMs, dnsMs, tcpMs, tlsMs, ttfbMs,
+		    (blog_id, request_method, http_code, error_code, rtt_ms, dns_ms, tcp_ms, tls_ms, ttfb_ms, checked_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+		blogID, requestMethod, httpCode, errorCode, rttMs, dnsMs, tcpMs, tlsMs, ttfbMs,
 	)
 	return err
 }
 
+func normalizeHistoryMethod(method string) string {
+	method = strings.ToUpper(strings.TrimSpace(method))
+	if method == "" {
+		return "GET"
+	}
+	if len(method) > 16 {
+		return method[:16]
+	}
+	return method
+}
+
 // CheckHistoryRow is one check timing sample for jetmon_check_history.
 type CheckHistoryRow struct {
-	BlogID    int64
-	HTTPCode  int
-	ErrorCode int
-	RTTMs     int64
-	DNSMs     int64
-	TCPMs     int64
-	TLSMs     int64
-	TTFBMs    int64
-	CheckedAt time.Time
+	BlogID        int64
+	RequestMethod string
+	HTTPCode      int
+	ErrorCode     int
+	RTTMs         int64
+	DNSMs         int64
+	TCPMs         int64
+	TLSMs         int64
+	TTFBMs        int64
+	CheckedAt     time.Time
 }
 
 // RecordCheckHistories inserts check timing samples in batches. This retains
@@ -673,20 +746,21 @@ func RecordCheckHistories(ctx context.Context, rows []CheckHistoryRow) error {
 func recordCheckHistoriesChunk(ctx context.Context, rows []CheckHistoryRow) error {
 	var query strings.Builder
 	query.WriteString(`INSERT INTO jetmon_check_history
-		(blog_id, http_code, error_code, rtt_ms, dns_ms, tcp_ms, tls_ms, ttfb_ms, checked_at)
+		(blog_id, request_method, http_code, error_code, rtt_ms, dns_ms, tcp_ms, tls_ms, ttfb_ms, checked_at)
 		VALUES `)
-	args := make([]any, 0, len(rows)*9)
+	args := make([]any, 0, len(rows)*10)
 	for i, row := range rows {
 		if i > 0 {
 			query.WriteByte(',')
 		}
-		query.WriteString("(?, ?, ?, ?, ?, ?, ?, ?, ?)")
+		query.WriteString("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 		checkedAt := row.CheckedAt
 		if checkedAt.IsZero() {
 			checkedAt = time.Now().UTC()
 		}
 		args = append(args,
 			row.BlogID,
+			normalizeHistoryMethod(row.RequestMethod),
 			row.HTTPCode,
 			row.ErrorCode,
 			row.RTTMs,

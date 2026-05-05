@@ -25,9 +25,12 @@ type Site struct {
 	LastStatusChange *time.Time
 	CheckInterval    int
 	LastCheckedAt    *time.Time
+	NextCheckAt      *time.Time
 
 	SSLExpiryDate        *time.Time
 	CheckKeyword         *string
+	ForbiddenKeyword     *string
+	ForbiddenKeywords    *string // raw JSON array
 	MaintenanceStart     *time.Time
 	MaintenanceEnd       *time.Time
 	CustomHeaders        *string // raw JSON

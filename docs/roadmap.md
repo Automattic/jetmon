@@ -78,6 +78,57 @@ No active candidate branch is queued here right now.
 - [ ] Revisit report thresholds and suggested actions after v2 has enough real
   production traffic to show which rates should be considered normal.
 
+### Uptime-Bench Scenario Coverage TODO
+
+- [x] Wire uptime-bench's inverted keyword scenarios through Jetmon v2's
+  existing `forbidden_keyword` support so cases such as
+  `content-keyword-injected` can be provisioned and scored instead of skipped
+  or reported as unsupported adapter capability.
+- [x] Add multi-pattern body-content checks for scenarios where the page still
+  contains the required canary but also includes known-bad content, such as
+  injected scripts, spam links, parked-domain text, maintenance banners, and
+  upstream error templates. Keep this distinct from broad visual/content
+  baselining: operators need explicit, auditable rules before Jetmon can safely
+  declare customer content wrong.
+- [ ] Add a conservative body-size / near-empty body detector as a scoped
+  follow-up before full content baselining. This should catch white-screen and
+  empty-body failures while keeping alerts explainable. Defer until after the
+  current explicit keyword / forbidden-keyword work has benchmark and operator
+  data, because per-site thresholds can otherwise create false positives for
+  intentionally tiny health pages.
+- [ ] Design a content-integrity baseline mode separately from explicit
+  forbidden patterns. Benchmark variants such as defacement and ransomware can
+  be caught by required keywords today, but production users will eventually
+  need a controlled way to detect large unexpected body changes without
+  hard-coding every bad string. Defer full baseline/diff mode until after v2 is
+  stable in production because dynamic WordPress pages need normalization,
+  training, approval/reset workflows, and operator-visible evidence before
+  Jetmon can safely alert on "content changed unexpectedly."
+- [ ] Improve DNS diagnostics on HTTP lookup failures before building explicit
+  DNS monitors. The v2 HTTP checker already records DNS timing and classifies
+  lookup failures as connect failures; add event metadata that distinguishes
+  NXDOMAIN, SERVFAIL, timeout, and resolver errors where Go/runtime resolver
+  data can support it. This is the recommended near-term step because it helps
+  HEs explain failures without creating a new monitor type.
+- [ ] Track DNS-specific benchmark scenarios separately from HTTP DNS failures.
+  Explicit DNS-record, DNSSEC, split-horizon, CNAME-chain, authoritative
+  nameserver, and DNS-latency monitors need a dedicated check type and event
+  taxonomy before they should be exposed as production uptime signals. Defer
+  this larger feature until the product semantics are designed: some DNS
+  failures should be `Warning` or `Degraded`, some should roll up to site-level
+  `Down`, and monitor-side resolver impairment must remain `Unknown`.
+- [ ] Validate geo-scoped benchmark assumptions before changing Jetmon
+  production behavior for `http-geo-503`. Confirm the probe source ranges,
+  intended Jetmon region semantics, and support story for partial regional
+  failures; if Jetmon remains single-region until the probe-agent work, document
+  that this benchmark class is not directly comparable yet.
+- [ ] Preserve Veriflier vote evidence as an interim regional-diagnostics aid
+  without exposing customer-visible regional state. A small v2 follow-up can
+  store/report which Veriflier locations observed success, failure, timeout, or
+  mixed outcomes. Defer customer-facing regional classifications until the
+  probe-agent architecture exists because current Verifliers are confirmation
+  probes after local failure, not continuous per-vantage primary checks.
+
 ### Capacity Scheduler TODO
 
 - [x] Treat `DATASET_SIZE` as a database fetch page size rather than a total
@@ -88,7 +139,8 @@ No active candidate branch is queued here right now.
   available results instead of dropping checks.
 - [x] Add scheduler metrics for due-start, selected, dispatched, completed,
   outstanding, due-remaining, page count, backpressure waits, stale results,
-  duplicate results, never-checked selections, and oldest selected age.
+  duplicate results, never-checked selections, oldest selected age, and whether
+  exact due-count gauges were sampled on this variable-interval poll.
 - [x] Add per-page scheduler phase timings for dispatch, wait, result
   processing, `last_checked_at` writes, check-history writes, SSL updates, and
   event handling so the next capacity retest can identify the exact slow
@@ -98,6 +150,8 @@ No active candidate branch is queued here right now.
   not dominated by one UPDATE plus one INSERT per site.
 - [x] Avoid rewriting unchanged `ssl_expiry_date` values on every HTTPS check
   while still evaluating TLS-expiry alert state for each observed certificate.
+- [x] Batch changed `ssl_expiry_date` writes so first-run certificate backfills
+  and certificate-renewal waves do not issue one UPDATE per HTTPS site.
 - [x] Remove the `COALESCE(last_checked_at, ...)` scheduler ordering expression
   so MySQL can use the nullable `last_checked_at` ordering more directly while
   preserving NULL-first behavior.
@@ -120,20 +174,38 @@ No active candidate branch is queued here right now.
 - [ ] If MySQL CPU remains the limiting factor after batched writes, evaluate
   an asynchronous bounded check-history writer or lower-resolution history
   retention for healthy probes while keeping `last_checked_at` synchronous.
-- [ ] Add a maintained `next_check_at` column and scheduler index so variable
+- [x] Add a maintained `next_check_at` column and scheduler index so variable
   interval due selection uses a simple indexed range predicate instead of
   computing `DATE_ADD(last_checked_at, INTERVAL GREATEST(check_interval, 1)
-  MINUTE)` during every scheduler fetch.
-- [ ] Move exact due-count and projection-drift checks out of the hot scheduler
+  MINUTE)` during every scheduler fetch. The scheduler now recalculates
+  `next_check_at` when checks complete or `check_interval` changes, and
+  migration backfills existing rows before adding the index.
+- [x] Move exact due-count and projection-drift checks out of the hot scheduler
   loop, or run them on a slower background cadence, so operator reporting does
-  not add broad database reads to every 5-second variable-interval pass.
+  not add broad database reads to every 5-second variable-interval pass. In
+  variable-interval mode, exact due counts and projection-drift counts are now
+  sampled on a slower operator-reporting cadence while fixed-cadence mode keeps
+  exact per-round counts.
 - [ ] Prototype a bounded asynchronous check-history writer and rollup model:
   keep `last_checked_at` synchronous, preserve raw rows for failures/recent
   windows, and store long-term latency/error aggregates to avoid raw history
   becoming the 10k/100k-site storage and I/O wall.
-- [ ] Prototype a shared or per-worker HTTP transport/client pool that reduces
+- [x] Prototype a shared or per-worker HTTP transport/client pool that reduces
   allocation, socket, DNS, TCP, and TLS churn while preserving enough probe
-  timing visibility for uptime diagnostics.
+  timing visibility for uptime diagnostics. The checker now shares one bounded
+  `http.Transport` across checks while keeping each check's timeout and
+  redirect policy scoped to its own `http.Client`. Connection reuse is
+  available when the response body is consumed, but the checker still avoids
+  reading full customer pages only to preserve keep-alives.
+- [x] Add scheduler outcome counters and event-mutation deadlock/lock-wait
+  retry instrumentation so capacity runs can distinguish true Jetmon
+  throughput regressions from target setup failures such as DNS/URL-pattern
+  mismatches.
+- [ ] Retest the scalability-efficiency branch after the capacity harness
+  verifies the exact activated `monitor_url` samples from Monitor and Veriflier
+  hosts, then compare freshness, check outcome mix, event mutation retries,
+  MySQL CPU/I/O, Jetmon CPU/RSS/FDs, and Veriflier resource usage against the
+  prior successful 1,000-site baseline.
 - [ ] Add a 5k/10k capacity ladder that records freshness, p95 age, MySQL CPU,
   MySQL I/O/network, `jetmon2` CPU/RSS/FDs, StatsD CPU, Veriflier CPU, and
   check-history row growth after each major scalability change.
@@ -141,10 +213,10 @@ No active candidate branch is queued here right now.
   explains expected throughput from active site count, check interval,
   `NUM_WORKERS`, and timeout settings. This is deferred until the retest shows
   which sizing formula best matches real Jetmon v2 behavior.
-- [ ] Evaluate replacing per-check HTTP transports with a reused transport or
-  bounded client pool if the retest still shows open file descriptor growth.
-  This is deferred behind the scheduler fix because the 1,000-site miss matched
-  the scheduler cap exactly, while FD growth was only a watch item.
+- [ ] After the next capacity retest, evaluate whether checker idle-connection
+  limits, response-body draining, or keep-alive policy need additional tuning.
+  This remains data-dependent because more aggressive connection reuse can hide
+  DNS/TCP/TLS failure modes or add page-body I/O.
 
 ### Projection Drift Tooling TODO
 

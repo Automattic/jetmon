@@ -35,7 +35,7 @@ The events row is the authoritative current-state projection. The transitions ta
 | `id`                 | BIGINT UNSIGNED  | Primary key.                                                             |
 | `blog_id`            | BIGINT UNSIGNED  | The site this event is about. (`site_id` in taxonomy.md terms.)          |
 | `endpoint_id`        | BIGINT UNSIGNED, null | The endpoint, when applicable. Null for site-level events.          |
-| `check_type`         | VARCHAR(64)      | Which probe observed this — `http`, `dns`, `tls_expiry`, etc.            |
+| `check_type`         | VARCHAR(64)      | Which probe observed this — `http`, `dns`, `tls_expiry`, `tls_deprecated`, etc. |
 | `discriminator`      | VARCHAR(128), null | Optional tiebreaker for tuples that can have multiple concurrent failures (e.g. multiple keyword checks on the same endpoint). |
 | `severity`           | TINYINT UNSIGNED | Ordered, suitable for thresholds and escalation.                         |
 | `state`              | VARCHAR(32)      | Human-readable lifecycle label.                                          |
@@ -43,7 +43,7 @@ The events row is the authoritative current-state projection. The transitions ta
 | `ended_at`           | TIMESTAMP(3), null | When the condition resolved. Null while active.                        |
 | `resolution_reason`  | VARCHAR(64), null | Why the event ended. Null while active.                                 |
 | `cause_event_id`     | BIGINT UNSIGNED, null | Causal link to a root-cause event (separate from rollup).           |
-| `metadata`           | JSON, null       | Check-type-specific payload (HTTP code, RTT, days-to-expiry, etc.).      |
+| `metadata`           | JSON, null       | Check-type-specific payload (HTTP method, code, RTT, days-to-expiry, etc.). |
 | `updated_at`         | TIMESTAMP(3)     | ON UPDATE CURRENT_TIMESTAMP — convenience for the dedup path.            |
 | `dedup_key`          | VARCHAR generated | Stored generated column carrying the identity tuple while the event is open, NULL once closed. Backed by a unique index — see "Identity and idempotency". |
 
@@ -119,6 +119,11 @@ A probe has failed but the verifier has not yet confirmed. This is a **real stat
 **The event opens on the first local failure**, not when the local retry queue eventually escalates to verifiers. This is non-negotiable: `started_at` must equal "first time we saw something wrong" so incident duration is honest. Subsequent local-retry failures are no-ops on the events table — the schema's idempotent `dedup_key` collapses them into the same row, and the `eventstore` writer skips a transition row when severity and state are unchanged.
 
 The first failure writes both an event row (`state = Seems Down`, `severity = 3`, `started_at = now`) and an `opened` transition row in one transaction.
+
+HTTP failure metadata includes `http_code`, `error_code`, `rtt_ms`, `url`, and
+`keyword_rule` when a content rule failed. `keyword_rule` is `required` for a
+missing `check_keyword` and `forbidden` when `forbidden_keyword` appears in the
+response body.
 
 Three outcomes from Seems Down:
 
@@ -212,7 +217,7 @@ Every transition row records *why* the change happened. The seeded vocabulary, i
 - `probe_cleared` — site returns to Up while still in Seems Down (verifier was never invoked or never confirmed); closes the event. Count of these per site over time is the false-positive rate of local detection.
 - `false_alarm` — verifier disagreed with the initial failure signal; closes the event.
 - `manual_override` — an operator changed state or closed the event.
-- `maintenance_swallowed` — event closed because a maintenance window started.
+- `maintenance_swallowed` — event closed because a maintenance window started; failures detected inside the active window are recorded operationally but do not open a downtime event.
 - `superseded` — closed because a broader event subsumed it.
 - `auto_timeout` — event aged out per retention/timeout policy.
 - `cause_linked` / `cause_unlinked` — `cause_event_id` was set or cleared on an open event.

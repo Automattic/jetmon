@@ -30,6 +30,8 @@ type apiSiteCreateOptions struct {
 	monitorActive        apiOptionalBoolFlag
 	bucketNo             apiOptionalIntFlag
 	checkKeyword         apiOptionalStringFlag
+	forbiddenKeyword     apiOptionalStringFlag
+	forbiddenKeywords    apiStringSliceFlags
 	redirectPolicy       apiOptionalStringFlag
 	timeoutSeconds       apiOptionalIntFlag
 	customHeaders        apiStringMapFlags
@@ -38,18 +40,21 @@ type apiSiteCreateOptions struct {
 }
 
 type apiSiteUpdateOptions struct {
-	monitorURL           apiOptionalStringFlag
-	monitorActive        apiOptionalBoolFlag
-	bucketNo             apiOptionalIntFlag
-	checkKeyword         apiOptionalStringFlag
-	redirectPolicy       apiOptionalStringFlag
-	timeoutSeconds       apiOptionalIntFlag
-	customHeaders        apiStringMapFlags
-	clearCustomHeaders   bool
-	alertCooldownMinutes apiOptionalIntFlag
-	checkInterval        apiOptionalIntFlag
-	maintenanceStart     apiOptionalStringFlag
-	maintenanceEnd       apiOptionalStringFlag
+	monitorURL             apiOptionalStringFlag
+	monitorActive          apiOptionalBoolFlag
+	bucketNo               apiOptionalIntFlag
+	checkKeyword           apiOptionalStringFlag
+	forbiddenKeyword       apiOptionalStringFlag
+	forbiddenKeywords      apiStringSliceFlags
+	clearForbiddenKeywords bool
+	redirectPolicy         apiOptionalStringFlag
+	timeoutSeconds         apiOptionalIntFlag
+	customHeaders          apiStringMapFlags
+	clearCustomHeaders     bool
+	alertCooldownMinutes   apiOptionalIntFlag
+	checkInterval          apiOptionalIntFlag
+	maintenanceStart       apiOptionalStringFlag
+	maintenanceEnd         apiOptionalStringFlag
 }
 
 type apiSiteCreateRequest struct {
@@ -58,6 +63,8 @@ type apiSiteCreateRequest struct {
 	MonitorActive        *bool              `json:"monitor_active,omitempty"`
 	BucketNo             *int               `json:"bucket_no,omitempty"`
 	CheckKeyword         *string            `json:"check_keyword,omitempty"`
+	ForbiddenKeyword     *string            `json:"forbidden_keyword,omitempty"`
+	ForbiddenKeywords    *[]string          `json:"forbidden_keywords,omitempty"`
 	RedirectPolicy       *string            `json:"redirect_policy,omitempty"`
 	TimeoutSeconds       *int               `json:"timeout_seconds,omitempty"`
 	CustomHeaders        *map[string]string `json:"custom_headers,omitempty"`
@@ -70,6 +77,8 @@ type apiSiteUpdateRequest struct {
 	MonitorActive        *bool              `json:"monitor_active,omitempty"`
 	BucketNo             *int               `json:"bucket_no,omitempty"`
 	CheckKeyword         *string            `json:"check_keyword,omitempty"`
+	ForbiddenKeyword     *string            `json:"forbidden_keyword,omitempty"`
+	ForbiddenKeywords    *[]string          `json:"forbidden_keywords,omitempty"`
 	RedirectPolicy       *string            `json:"redirect_policy,omitempty"`
 	TimeoutSeconds       *int               `json:"timeout_seconds,omitempty"`
 	CustomHeaders        *map[string]string `json:"custom_headers,omitempty"`
@@ -168,6 +177,8 @@ func cmdAPISitesCreate(args []string) error {
 	fs.Var(&create.monitorActive, "monitor-active", "monitoring enabled: true or false")
 	fs.Var(&create.bucketNo, "bucket-no", "bucket number")
 	fs.Var(&create.checkKeyword, "check-keyword", "keyword required in response body")
+	fs.Var(&create.forbiddenKeyword, "forbidden-keyword", "keyword forbidden in response body")
+	fs.Var(&create.forbiddenKeywords, "forbidden-keyword-list", "additional forbidden body keyword (repeatable or comma-separated)")
 	fs.Var(&create.redirectPolicy, "redirect-policy", "redirect policy: follow, alert, or fail")
 	fs.Var(&create.timeoutSeconds, "timeout-seconds", "per-site timeout in seconds")
 	fs.Var(&create.customHeaders, "custom-header", "site custom header in Name: Value form (repeatable)")
@@ -194,6 +205,9 @@ func cmdAPISitesUpdate(args []string) error {
 	fs.Var(&update.monitorActive, "monitor-active", "monitoring enabled: true or false")
 	fs.Var(&update.bucketNo, "bucket-no", "bucket number")
 	fs.Var(&update.checkKeyword, "check-keyword", "keyword required in response body; empty clears it")
+	fs.Var(&update.forbiddenKeyword, "forbidden-keyword", "keyword forbidden in response body; empty clears it")
+	fs.Var(&update.forbiddenKeywords, "forbidden-keyword-list", "replacement forbidden body keyword list (repeatable or comma-separated)")
+	fs.BoolVar(&update.clearForbiddenKeywords, "clear-forbidden-keywords", false, "clear the forbidden body keyword list")
 	fs.Var(&update.redirectPolicy, "redirect-policy", "redirect policy: follow, alert, or fail")
 	fs.Var(&update.timeoutSeconds, "timeout-seconds", "per-site timeout in seconds")
 	fs.Var(&update.customHeaders, "custom-header", "site custom header in Name: Value form (repeatable)")
@@ -326,6 +340,8 @@ func marshalAPISiteCreateBody(opts apiSiteCreateOptions) ([]byte, error) {
 		MonitorActive:        opts.monitorActive.ptr(),
 		BucketNo:             opts.bucketNo.ptr(),
 		CheckKeyword:         opts.checkKeyword.ptr(),
+		ForbiddenKeyword:     opts.forbiddenKeyword.ptr(),
+		ForbiddenKeywords:    opts.forbiddenKeywords.ptr(),
 		RedirectPolicy:       opts.redirectPolicy.ptr(),
 		TimeoutSeconds:       opts.timeoutSeconds.ptr(),
 		CustomHeaders:        opts.customHeaders.ptr(),
@@ -339,12 +355,17 @@ func marshalAPISiteUpdateBody(opts apiSiteUpdateOptions) ([]byte, error) {
 	if opts.clearCustomHeaders && opts.customHeaders.set {
 		return nil, errors.New("use --custom-header or --clear-custom-headers, not both")
 	}
+	if opts.clearForbiddenKeywords && opts.forbiddenKeywords.set {
+		return nil, errors.New("use --forbidden-keyword-list or --clear-forbidden-keywords, not both")
+	}
 
 	req := apiSiteUpdateRequest{
 		MonitorURL:           opts.monitorURL.ptr(),
 		MonitorActive:        opts.monitorActive.ptr(),
 		BucketNo:             opts.bucketNo.ptr(),
 		CheckKeyword:         opts.checkKeyword.ptr(),
+		ForbiddenKeyword:     opts.forbiddenKeyword.ptr(),
+		ForbiddenKeywords:    opts.forbiddenKeywords.ptr(),
 		RedirectPolicy:       opts.redirectPolicy.ptr(),
 		TimeoutSeconds:       opts.timeoutSeconds.ptr(),
 		CustomHeaders:        opts.customHeaders.ptr(),
@@ -356,6 +377,10 @@ func marshalAPISiteUpdateBody(opts apiSiteUpdateOptions) ([]byte, error) {
 	if opts.clearCustomHeaders {
 		empty := map[string]string{}
 		req.CustomHeaders = &empty
+	}
+	if opts.clearForbiddenKeywords {
+		empty := []string{}
+		req.ForbiddenKeywords = &empty
 	}
 	return json.Marshal(req)
 }
