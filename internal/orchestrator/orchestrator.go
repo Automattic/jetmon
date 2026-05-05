@@ -2657,7 +2657,24 @@ func emitTimingSince(stat string, start, end time.Time) {
 }
 
 func failureClass(res checker.Result) string {
-	return metricSegment((&res).StatusType())
+	switch {
+	case res.Success:
+		return "success"
+	case res.ErrorCode == checker.ErrorSSL || res.ErrorCode == checker.ErrorTLSExpired:
+		return "https"
+	case res.ErrorCode == checker.ErrorTimeout:
+		return "intermittent"
+	case res.ErrorCode == checker.ErrorRedirect:
+		return "redirect"
+	case res.HTTPCode == 403:
+		return "blocked"
+	case res.HTTPCode >= 500:
+		return "server"
+	case res.HTTPCode >= 400:
+		return "client"
+	default:
+		return "intermittent"
+	}
 }
 
 func metricSegment(s string) string {

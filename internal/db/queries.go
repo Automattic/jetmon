@@ -12,7 +12,7 @@ import (
 	"github.com/go-sql-driver/mysql"
 )
 
-const batchWriteChunkSize = 5000
+const batchWriteChunkSize = 1000
 const batchWriteMaxAttempts = 3
 const batchWriteRetryBaseDelay = 10 * time.Millisecond
 

@@ -128,8 +128,8 @@ Scheduler behavior:
 - Batched freshness, history, and SSL writes retry transient MySQL deadlock
   (`1213`) and lock wait timeout (`1205`) errors at the chunk level before
   falling back to slower recovery paths. Hot scheduler writes are grouped in
-  5,000-row chunks to keep SQL round trips low during six-figure sweeps while
-  staying below prepared-statement and packet-size limits. Watch
+  1,000-row chunks to balance SQL round trips with row-lock duration during
+  six-figure sweeps. Watch
   `scheduler.mark_checked.slow.count` and the round `mark_checked` duration if
   a capacity run suddenly accumulates stale sites while host CPU remains below
   threshold.

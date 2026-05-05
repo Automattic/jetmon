@@ -2607,6 +2607,27 @@ func TestMetricSegment(t *testing.T) {
 	}
 }
 
+func TestFailureClassMatchesStatusTypeMetricSegment(t *testing.T) {
+	tests := []checker.Result{
+		{Success: true},
+		{Success: false, ErrorCode: checker.ErrorSSL},
+		{Success: false, ErrorCode: checker.ErrorTLSExpired},
+		{Success: false, ErrorCode: checker.ErrorTimeout},
+		{Success: false, ErrorCode: checker.ErrorRedirect},
+		{Success: false, HTTPCode: 403},
+		{Success: false, HTTPCode: 500},
+		{Success: false, HTTPCode: 404},
+		{Success: false, HTTPCode: 0, ErrorCode: checker.ErrorConnect},
+	}
+
+	for _, tt := range tests {
+		want := metricSegment((&tt).StatusType())
+		if got := failureClass(tt); got != want {
+			t.Fatalf("failureClass(%+v) = %q, want %q", tt, got, want)
+		}
+	}
+}
+
 func TestWPCOMStatusMetricSegment(t *testing.T) {
 	tests := []struct {
 		status int
