@@ -379,6 +379,12 @@ No active candidate branch is queued here right now.
   worker ceiling now uses 10% headroom instead of 20%, reducing simultaneous
   checker/network pressure while retaining a small cushion over the exact
   freshness-window calculation.
+- [x] Remove duplicate checker timeout timers after the `2530c05` retest.
+  That run preserved zero missed checks and lowered CPU to 87.46%, but still
+  exceeded the 85% threshold. Each HTTP check already runs under a per-request
+  context deadline; `http.Client.Timeout` added a second timeout timer per
+  check. The checker now relies on the context deadline only and avoids an
+  unnecessary custom-header map copy on the hot path.
 - [x] Reduce storm-time bookkeeping that does not improve check quality:
   WPCOM-disabled notifications no longer write one audit row per skipped
   synthetic notification, per-site recovery success logs are suppressed, and

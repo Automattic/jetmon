@@ -155,11 +155,6 @@ func Check(ctx context.Context, req Request) (res Result) {
 	}
 	ctx = httptrace.WithClientTrace(ctx, trace)
 
-	headers := make(map[string]string)
-	for k, v := range req.CustomHeaders {
-		headers[k] = v
-	}
-
 	redirectCount := 0
 	redirectPolicyStr := string(req.RedirectPolicy)
 	if redirectPolicyStr == "" {
@@ -178,7 +173,6 @@ func Check(ctx context.Context, req Request) (res Result) {
 			}
 			return nil
 		},
-		Timeout: timeout,
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, req.URL, nil)
@@ -188,7 +182,7 @@ func Check(ctx context.Context, req Request) (res Result) {
 	}
 
 	httpReq.Header.Set("User-Agent", "jetmon/2.0 (Jetpack Site Uptime Monitor by WordPress.com)")
-	for k, v := range headers {
+	for k, v := range req.CustomHeaders {
 		httpReq.Header.Set(k, v)
 	}
 
