@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	stdctx "context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,8 +41,9 @@ const (
 // check types (DNS, TLS expiry, keyword, redirect, etc.) get their own
 // constants alongside.
 const (
-	checkTypeHTTP      = "http"
-	checkTypeTLSExpiry = "tls_expiry"
+	checkTypeHTTP          = "http"
+	checkTypeTLSExpiry     = "tls_expiry"
+	checkTypeTLSDeprecated = "tls_deprecated"
 )
 
 // verifierRPCHeadroom is added to the per-site check timeout when computing
@@ -1185,12 +1187,14 @@ func selectedSiteSummary(sites []db.Site) roundSummary {
 
 func checkRequestForSite(cfg *config.Config, site db.Site) checker.Request {
 	req := checker.Request{
-		BlogID:         site.BlogID,
-		URL:            site.MonitorURL,
-		TimeoutSeconds: timeoutForSite(cfg, site),
-		Keyword:        site.CheckKeyword,
-		CustomHeaders:  checker.ParseCustomHeaders(site.CustomHeaders),
-		RedirectPolicy: checker.RedirectPolicy(site.RedirectPolicy),
+		BlogID:            site.BlogID,
+		URL:               site.MonitorURL,
+		TimeoutSeconds:    timeoutForSite(cfg, site),
+		Keyword:           site.CheckKeyword,
+		ForbiddenKeyword:  site.ForbiddenKeyword,
+		ForbiddenKeywords: checker.ParseForbiddenKeywords(site.ForbiddenKeywords),
+		CustomHeaders:     checker.ParseCustomHeaders(site.CustomHeaders),
+		RedirectPolicy:    checker.RedirectPolicy(site.RedirectPolicy),
 	}
 	if req.RedirectPolicy == "" {
 		req.RedirectPolicy = checker.RedirectFollow
@@ -1521,6 +1525,9 @@ func (o *Orchestrator) processResults(results map[int64]checker.Result, sites ma
 		sslStart := time.Now()
 		sslUpdates := make([]db.SiteSSLExpiry, 0)
 		for _, record := range records {
+			if record.res.TLSVersion != 0 {
+				o.checkTLSDeprecated(record.site, record.res)
+			}
 			// Update SSL expiry if available.
 			if record.res.SSLExpiry != nil {
 				if shouldUpdateSSLExpiry(record.site.SSLExpiryDate, *record.res.SSLExpiry) {
@@ -1946,15 +1953,16 @@ func (o *Orchestrator) recordResultHistories(records []siteCheckResult, summary 
 		}
 		res := record.res
 		histories = append(histories, db.CheckHistoryRow{
-			BlogID:    record.blogID,
-			HTTPCode:  res.HTTPCode,
-			ErrorCode: res.ErrorCode,
-			RTTMs:     res.RTT.Milliseconds(),
-			DNSMs:     res.DNS.Milliseconds(),
-			TCPMs:     res.TCP.Milliseconds(),
-			TLSMs:     res.TLS.Milliseconds(),
-			TTFBMs:    res.TTFB.Milliseconds(),
-			CheckedAt: resultCheckedAt(res),
+			BlogID:        record.blogID,
+			RequestMethod: res.Method,
+			HTTPCode:      res.HTTPCode,
+			ErrorCode:     res.ErrorCode,
+			RTTMs:         res.RTT.Milliseconds(),
+			DNSMs:         res.DNS.Milliseconds(),
+			TCPMs:         res.TCP.Milliseconds(),
+			TLSMs:         res.TLS.Milliseconds(),
+			TTFBMs:        res.TTFB.Milliseconds(),
+			CheckedAt:     resultCheckedAt(res),
 		})
 	}
 	if suppressedTransportFailures > 0 {
@@ -1971,6 +1979,7 @@ func (o *Orchestrator) recordResultHistories(records []siteCheckResult, summary 
 		for _, row := range histories {
 			if err := dbRecordCheckHistory(
 				row.BlogID,
+				row.RequestMethod,
 				row.HTTPCode,
 				row.ErrorCode,
 				row.RTTMs,
@@ -2080,6 +2089,11 @@ func (o *Orchestrator) handleFailure(site db.Site, res checker.Result) {
 		return
 	}
 
+	if inMaintenance(site) {
+		o.swallowMaintenanceFailure(site, res)
+		return
+	}
+
 	entry := o.retries.record(res)
 	class := failureClass(res)
 
@@ -2123,13 +2137,15 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 	}
 
 	req := veriflier.CheckRequest{
-		BlogID:         site.BlogID,
-		URL:            site.MonitorURL,
-		TimeoutSeconds: int32(timeoutForSite(config.Get(), site)),
-		Keyword:        stringPtrValue(site.CheckKeyword),
-		CustomHeaders:  checker.ParseCustomHeaders(site.CustomHeaders),
-		RedirectPolicy: site.RedirectPolicy,
-		RequestID:      veriflier.NewRequestID(),
+		BlogID:            site.BlogID,
+		URL:               site.MonitorURL,
+		TimeoutSeconds:    int32(timeoutForSite(config.Get(), site)),
+		Keyword:           stringPtrValue(site.CheckKeyword),
+		ForbiddenKeyword:  stringPtrValue(site.ForbiddenKeyword),
+		ForbiddenKeywords: checker.ParseForbiddenKeywords(site.ForbiddenKeywords),
+		CustomHeaders:     checker.ParseCustomHeaders(site.CustomHeaders),
+		RedirectPolicy:    site.RedirectPolicy,
+		RequestID:         veriflier.NewRequestID(),
 	}
 
 	escalateMeta, _ := json.Marshal(map[string]any{
@@ -2264,6 +2280,13 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 }
 
 func (o *Orchestrator) confirmDown(site db.Site, entry *retryEntry, vResults []veriflier.CheckResult) {
+	if inMaintenance(site) {
+		if entry != nil {
+			o.swallowMaintenanceFailure(site, entry.lastResult)
+		}
+		return
+	}
+
 	newStatus := statusConfirmedDown
 	changeTime := nowFunc().UTC()
 	emitCounter("detection.down.confirmed.count", 1)
@@ -2307,6 +2330,44 @@ func (o *Orchestrator) confirmDown(site db.Site, entry *retryEntry, vResults []v
 	}
 
 	o.retries.clear(site.BlogID)
+}
+
+func (o *Orchestrator) swallowMaintenanceFailure(site db.Site, res checker.Result) {
+	entry := o.retries.get(site.BlogID)
+	knownEventID := int64(0)
+	if entry != nil {
+		knownEventID = entry.eventID
+	}
+
+	class := failureClass(res)
+	emitCounter("detection.maintenance.swallowed.count", 1)
+	emitCounter("detection.maintenance.swallowed."+class+".count", 1)
+
+	meta, _ := json.Marshal(map[string]any{
+		"http_code":         res.HTTPCode,
+		"error_code":        res.ErrorCode,
+		"rtt_ms":            res.RTT.Milliseconds(),
+		"maintenance_start": site.MaintenanceStart,
+		"maintenance_end":   site.MaintenanceEnd,
+		"event_id":          knownEventID,
+	})
+
+	if entry != nil || site.SiteStatus != statusRunning {
+		if err := o.closeMaintenanceEvent(site.BlogID, knownEventID, nowFunc().UTC(), meta); err != nil {
+			log.Printf("orchestrator: close maintenance-swallowed event blog_id=%d event_id=%d: %v",
+				site.BlogID, knownEventID, err)
+		}
+	}
+	o.retries.clear(site.BlogID)
+
+	o.auditLog(audit.Entry{
+		BlogID:    site.BlogID,
+		EventID:   knownEventID,
+		EventType: audit.EventMaintenanceActive,
+		Source:    "local",
+		Detail:    "failure swallowed during maintenance",
+		Metadata:  meta,
+	})
 }
 
 func (o *Orchestrator) sendNotification(site db.Site, res checker.Result, status int, changeTime time.Time, vResults []veriflier.CheckResult) {
@@ -2553,6 +2614,83 @@ func (o *Orchestrator) closeSSLExpiryIfOpenOnce(blogID int64) error {
 	return tx.Commit()
 }
 
+func (o *Orchestrator) checkTLSDeprecated(site db.Site, res checker.Result) {
+	if res.TLSVersion <= tls.VersionTLS11 {
+		meta, _ := json.Marshal(map[string]any{
+			"tls_version":      tlsVersionName(res.TLSVersion),
+			"tls_version_code": fmt.Sprintf("0x%04x", res.TLSVersion),
+			"cipher_suite":     tls.CipherSuiteName(res.CipherSuite),
+			"cipher_suite_id":  fmt.Sprintf("0x%04x", res.CipherSuite),
+		})
+		if err := o.openTLSDeprecated(site.BlogID, meta); err != nil {
+			log.Printf("orchestrator: tls_deprecated event blog_id=%d version=%s: %v",
+				site.BlogID, tlsVersionName(res.TLSVersion), err)
+		}
+		return
+	}
+
+	if err := o.closeTLSDeprecatedIfOpen(site.BlogID); err != nil {
+		log.Printf("orchestrator: close tls_deprecated event blog_id=%d: %v", site.BlogID, err)
+	}
+}
+
+func (o *Orchestrator) openTLSDeprecated(blogID int64, meta json.RawMessage) error {
+	tx, err := o.ev().Begin(o.ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.Open(o.ctx, eventstore.OpenInput{
+		Identity: eventstore.Identity{BlogID: blogID, CheckType: checkTypeTLSDeprecated},
+		Severity: eventstore.SeverityWarning,
+		State:    eventstore.StateWarning,
+		Source:   o.hostname,
+		Metadata: meta,
+	}); err != nil {
+		return fmt.Errorf("open tls_deprecated: %w", err)
+	}
+	return tx.Commit()
+}
+
+func (o *Orchestrator) closeTLSDeprecatedIfOpen(blogID int64) error {
+	tx, err := o.ev().Begin(o.ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if tx.Tx() == nil {
+		return tx.Commit()
+	}
+	ae, err := tx.FindActiveByBlog(o.ctx, blogID, checkTypeTLSDeprecated)
+	if err != nil {
+		if errors.Is(err, eventstore.ErrEventNotFound) {
+			return tx.Commit()
+		}
+		return err
+	}
+	if err := tx.Close(o.ctx, ae.ID, eventstore.ReasonVerifierCleared, o.hostname, nil); err != nil {
+		return fmt.Errorf("close tls_deprecated: %w", err)
+	}
+	return tx.Commit()
+}
+
+func tlsVersionName(version uint16) string {
+	switch version {
+	case tls.VersionTLS10:
+		return "TLS 1.0"
+	case tls.VersionTLS11:
+		return "TLS 1.1"
+	case tls.VersionTLS12:
+		return "TLS 1.2"
+	case tls.VersionTLS13:
+		return "TLS 1.3"
+	default:
+		return fmt.Sprintf("0x%04x", version)
+	}
+}
+
 func (o *Orchestrator) isAlertSuppressed(site db.Site) bool {
 	cfg := config.Get()
 	cooldown := cfg.AlertCooldownMinutes
@@ -2776,10 +2914,12 @@ func (o *Orchestrator) openSeemsDownOnce(site db.Site, res checker.Result) (int6
 	defer func() { _ = tx.Rollback() }()
 
 	meta, _ := json.Marshal(map[string]any{
-		"http_code":  res.HTTPCode,
-		"error_code": res.ErrorCode,
-		"rtt_ms":     res.RTT.Milliseconds(),
-		"url":        site.MonitorURL,
+		"http_code":    res.HTTPCode,
+		"error_code":   res.ErrorCode,
+		"keyword_rule": res.KeywordRule,
+		"method":       res.Method,
+		"rtt_ms":       res.RTT.Milliseconds(),
+		"url":          site.MonitorURL,
 	})
 
 	out, err := tx.Open(o.ctx, eventstore.OpenInput{
@@ -2941,6 +3081,46 @@ func (o *Orchestrator) closeRecoveredEventOnce(blogID, knownEventID int64, chang
 	return tx.Commit()
 }
 
+func (o *Orchestrator) closeMaintenanceEvent(blogID, knownEventID int64, changeTime time.Time, meta json.RawMessage) error {
+	tx, err := o.ev().Begin(o.ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var eventID int64
+	switch {
+	case knownEventID > 0 && tx.Tx() != nil:
+		eventID = knownEventID
+	case tx.Tx() != nil:
+		ae, err := tx.FindActiveByBlog(o.ctx, blogID, checkTypeHTTP)
+		if err != nil {
+			if errors.Is(err, eventstore.ErrEventNotFound) {
+				if config.LegacyStatusProjectionEnabled() {
+					if err := db.UpdateSiteStatusTx(o.ctx, tx.Tx(), blogID, statusRunning, changeTime); err != nil {
+						return fmt.Errorf("project site_status: %w", err)
+					}
+				}
+				return tx.Commit()
+			}
+			return err
+		}
+		eventID = ae.ID
+	default:
+		return tx.Commit()
+	}
+
+	if err := tx.Close(o.ctx, eventID, eventstore.ReasonMaintenanceSwallowed, o.hostname, meta); err != nil {
+		return fmt.Errorf("close event: %w", err)
+	}
+	if config.LegacyStatusProjectionEnabled() && tx.Tx() != nil {
+		if err := db.UpdateSiteStatusTx(o.ctx, tx.Tx(), blogID, statusRunning, changeTime); err != nil {
+			return fmt.Errorf("project site_status: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
 // summarizeVerifierResults extracts a small JSON-friendly summary of verifier
 // replies for storage in transition metadata. We don't store the full result
 // list — the per-RPC details are already in jetmon_audit_log under
@@ -2959,7 +3139,7 @@ func summarizeVerifierResults(vResults []veriflier.CheckResult) []map[string]any
 }
 
 func inMaintenance(site db.Site) bool {
-	now := time.Now()
+	now := nowFunc()
 	if site.MaintenanceStart == nil || site.MaintenanceEnd == nil {
 		return false
 	}

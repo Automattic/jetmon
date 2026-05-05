@@ -31,6 +31,8 @@ Jetmon 2 adds these columns:
 |---|---|---|
 | `ssl_expiry_date` | `DATE NULL` | Last observed HTTPS certificate expiry |
 | `check_keyword` | `VARCHAR(500) NULL` | Required response-body string |
+| `forbidden_keyword` | `VARCHAR(500) NULL` | Response-body string that must not appear |
+| `forbidden_keywords` | `JSON NULL` | Response-body strings that must not appear |
 | `maintenance_start` | `DATETIME NULL` | Maintenance window start |
 | `maintenance_end` | `DATETIME NULL` | Maintenance window end |
 | `custom_headers` | `JSON NULL` | Per-site request headers |
@@ -53,7 +55,7 @@ The API can expose a derived `cli_batch` field for local API CLI test data when
 | `jetmon_events` | Authoritative current state of every incident |
 | `jetmon_event_transitions` | Append-only mutation history for events |
 | `jetmon_audit_log` | Operational trail for checks, retries, WPCOM calls, suppression, API access, and reloads |
-| `jetmon_check_history` | RTT and timing samples for trending |
+| `jetmon_check_history` | Request method plus RTT and timing samples for trending |
 | `jetmon_false_positives` | Veriflier non-confirmation records |
 | `jetmon_api_keys` | Internal REST API Bearer-token registry |
 | `jetmon_webhooks` | Webhook registrations and HMAC signing secrets |
@@ -90,6 +92,14 @@ The fleet dashboard combines this table with `jetmon_hosts`, outbound delivery
 queues, and projection-drift counts. Dependency health stored in the process
 snapshot is also used to roll up shared dependencies such as Verifliers, MySQL,
 WPCOM, and StatsD across hosts.
+
+## Check History
+
+`jetmon_check_history` records one compact timing sample per local check. The
+`request_method` column records the actual HTTP method used by the probe. This
+is primarily operational evidence for v2 rollout and uptime-bench review: v2
+should show `GET`, not the v1 HEAD-only behavior. Failure events carry richer
+per-incident metadata such as URL and error reason.
 
 ## Event Source Of Truth
 
@@ -173,6 +183,7 @@ Failure classifications:
 | `ssl_expiry` | Certificate expiration threshold crossed |
 | `tls_deprecated` | TLS 1.0 or 1.1 |
 | `keyword_missing` | Required keyword was not present |
+| `keyword_forbidden` | Forbidden keyword was present |
 | `success` | Recovery |
 
 ## Tenant Mapping

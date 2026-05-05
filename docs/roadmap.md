@@ -31,6 +31,57 @@ No active candidate branch is queued here right now.
 - [ ] Revisit report thresholds and suggested actions after v2 has enough real
   production traffic to show which rates should be considered normal.
 
+### Uptime-Bench Scenario Coverage TODO
+
+- [x] Wire uptime-bench's inverted keyword scenarios through Jetmon v2's
+  existing `forbidden_keyword` support so cases such as
+  `content-keyword-injected` can be provisioned and scored instead of skipped
+  or reported as unsupported adapter capability.
+- [x] Add multi-pattern body-content checks for scenarios where the page still
+  contains the required canary but also includes known-bad content, such as
+  injected scripts, spam links, parked-domain text, maintenance banners, and
+  upstream error templates. Keep this distinct from broad visual/content
+  baselining: operators need explicit, auditable rules before Jetmon can safely
+  declare customer content wrong.
+- [ ] Add a conservative body-size / near-empty body detector as a scoped
+  follow-up before full content baselining. This should catch white-screen and
+  empty-body failures while keeping alerts explainable. Defer until after the
+  current explicit keyword / forbidden-keyword work has benchmark and operator
+  data, because per-site thresholds can otherwise create false positives for
+  intentionally tiny health pages.
+- [ ] Design a content-integrity baseline mode separately from explicit
+  forbidden patterns. Benchmark variants such as defacement and ransomware can
+  be caught by required keywords today, but production users will eventually
+  need a controlled way to detect large unexpected body changes without
+  hard-coding every bad string. Defer full baseline/diff mode until after v2 is
+  stable in production because dynamic WordPress pages need normalization,
+  training, approval/reset workflows, and operator-visible evidence before
+  Jetmon can safely alert on "content changed unexpectedly."
+- [ ] Improve DNS diagnostics on HTTP lookup failures before building explicit
+  DNS monitors. The v2 HTTP checker already records DNS timing and classifies
+  lookup failures as connect failures; add event metadata that distinguishes
+  NXDOMAIN, SERVFAIL, timeout, and resolver errors where Go/runtime resolver
+  data can support it. This is the recommended near-term step because it helps
+  HEs explain failures without creating a new monitor type.
+- [ ] Track DNS-specific benchmark scenarios separately from HTTP DNS failures.
+  Explicit DNS-record, DNSSEC, split-horizon, CNAME-chain, authoritative
+  nameserver, and DNS-latency monitors need a dedicated check type and event
+  taxonomy before they should be exposed as production uptime signals. Defer
+  this larger feature until the product semantics are designed: some DNS
+  failures should be `Warning` or `Degraded`, some should roll up to site-level
+  `Down`, and monitor-side resolver impairment must remain `Unknown`.
+- [ ] Validate geo-scoped benchmark assumptions before changing Jetmon
+  production behavior for `http-geo-503`. Confirm the probe source ranges,
+  intended Jetmon region semantics, and support story for partial regional
+  failures; if Jetmon remains single-region until the probe-agent work, document
+  that this benchmark class is not directly comparable yet.
+- [ ] Preserve Veriflier vote evidence as an interim regional-diagnostics aid
+  without exposing customer-visible regional state. A small v2 follow-up can
+  store/report which Veriflier locations observed success, failure, timeout, or
+  mixed outcomes. Defer customer-facing regional classifications until the
+  probe-agent architecture exists because current Verifliers are confirmation
+  probes after local failure, not continuous per-vantage primary checks.
+
 ### Capacity Scheduler TODO
 
 - [x] Treat `DATASET_SIZE` as a database fetch page size rather than a total

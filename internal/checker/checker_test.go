@@ -20,6 +20,7 @@ func TestResultStatusType(t *testing.T) {
 		{name: "ssl error", res: Result{ErrorCode: ErrorSSL}, want: "https"},
 		{name: "tls expired", res: Result{ErrorCode: ErrorTLSExpired}, want: "https"},
 		{name: "timeout", res: Result{ErrorCode: ErrorTimeout}, want: "intermittent"},
+		{name: "body read", res: Result{ErrorCode: ErrorBodyRead}, want: "intermittent"},
 		{name: "redirect", res: Result{ErrorCode: ErrorRedirect}, want: "redirect"},
 		{name: "403 blocked", res: Result{HTTPCode: 403}, want: "blocked"},
 		{name: "500 server error", res: Result{HTTPCode: 500}, want: "server"},
@@ -82,6 +83,11 @@ func TestResultIsFailure(t *testing.T) {
 		{
 			name: "keyword failure is hard failure",
 			res:  Result{Success: true, ErrorCode: ErrorKeyword},
+			want: true,
+		},
+		{
+			name: "body read failure is hard failure",
+			res:  Result{Success: false, ErrorCode: ErrorBodyRead},
 			want: true,
 		},
 		{
@@ -255,6 +261,57 @@ func TestCheckHTTP200(t *testing.T) {
 	if res.ErrorCode != ErrorNone {
 		t.Fatalf("ErrorCode = %d, want ErrorNone", res.ErrorCode)
 	}
+	if res.Method != http.MethodGet {
+		t.Fatalf("Method = %q, want GET", res.Method)
+	}
+}
+
+func TestCheckUsesGETWhenHEADWouldFail(t *testing.T) {
+	var sawGET bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodHead:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		case http.MethodGet:
+			sawGET = true
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected method %q", r.Method)
+		}
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{BlogID: 1, URL: srv.URL, TimeoutSeconds: 5})
+	if !sawGET {
+		t.Fatal("server did not receive GET")
+	}
+	if !res.Success {
+		t.Fatalf("Success = false when GET is healthy and HEAD would fail; result=%+v", res)
+	}
+}
+
+func TestCheckUsesGETWhenHEADWouldTimeout(t *testing.T) {
+	var sawGET bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodHead:
+			time.Sleep(5 * time.Second)
+		case http.MethodGet:
+			sawGET = true
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected method %q", r.Method)
+		}
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{BlogID: 1, URL: srv.URL, TimeoutSeconds: 1})
+	if !sawGET {
+		t.Fatal("server did not receive GET")
+	}
+	if !res.Success {
+		t.Fatalf("Success = false when GET is healthy and HEAD would timeout; result=%+v", res)
+	}
 }
 
 func TestCheckTimestampReflectsCompletedObservation(t *testing.T) {
@@ -345,6 +402,97 @@ func TestCheckKeywordMiss(t *testing.T) {
 	res := Check(context.Background(), Request{BlogID: 1, URL: srv.URL, TimeoutSeconds: 5, Keyword: &kw})
 	if res.ErrorCode != ErrorKeyword {
 		t.Fatalf("ErrorCode = %d, want ErrorKeyword", res.ErrorCode)
+	}
+	if res.KeywordRule != "required" {
+		t.Fatalf("KeywordRule = %q, want required", res.KeywordRule)
+	}
+}
+
+func TestCheckForbiddenKeywordAbsent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("hello world"))
+	}))
+	defer srv.Close()
+
+	forbidden := "malware"
+	res := Check(context.Background(), Request{BlogID: 1, URL: srv.URL, TimeoutSeconds: 5, ForbiddenKeyword: &forbidden})
+	if !res.Success {
+		t.Fatalf("Success = false when forbidden keyword absent, want true; result=%+v", res)
+	}
+}
+
+func TestCheckForbiddenKeywordPresent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("hello malware world"))
+	}))
+	defer srv.Close()
+
+	forbidden := "malware"
+	res := Check(context.Background(), Request{BlogID: 1, URL: srv.URL, TimeoutSeconds: 5, ForbiddenKeyword: &forbidden})
+	if res.Success {
+		t.Fatal("Success = true for forbidden keyword present, want false")
+	}
+	if res.ErrorCode != ErrorKeyword {
+		t.Fatalf("ErrorCode = %d, want ErrorKeyword", res.ErrorCode)
+	}
+	if res.KeywordRule != "forbidden" {
+		t.Fatalf("KeywordRule = %q, want forbidden", res.KeywordRule)
+	}
+}
+
+func TestCheckForbiddenKeywordsPresent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("hello <script src=\"https://metrics.evil-cdn.example/collect.js\"></script> world"))
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{
+		BlogID:            1,
+		URL:               srv.URL,
+		TimeoutSeconds:    5,
+		ForbiddenKeywords: []string{"buy cheap viagra", "metrics.evil-cdn.example/collect.js"},
+	})
+	if res.Success {
+		t.Fatal("Success = true for forbidden keyword list match, want false")
+	}
+	if res.ErrorCode != ErrorKeyword {
+		t.Fatalf("ErrorCode = %d, want ErrorKeyword", res.ErrorCode)
+	}
+	if res.KeywordRule != "forbidden" {
+		t.Fatalf("KeywordRule = %q, want forbidden", res.KeywordRule)
+	}
+}
+
+func TestCheckTruncatedBodyFailsWithoutKeyword(t *testing.T) {
+	srv := truncatedBodyServer(t, "partial response")
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{BlogID: 1, URL: srv.URL, TimeoutSeconds: 5})
+	if res.Success {
+		t.Fatalf("Success = true for truncated body, want false; result=%+v", res)
+	}
+	if res.HTTPCode != http.StatusOK {
+		t.Fatalf("HTTPCode = %d, want %d", res.HTTPCode, http.StatusOK)
+	}
+	if res.ErrorCode != ErrorBodyRead {
+		t.Fatalf("ErrorCode = %d, want ErrorBodyRead", res.ErrorCode)
+	}
+}
+
+func TestCheckTruncatedBodyFailsEvenWhenKeywordIsPresent(t *testing.T) {
+	srv := truncatedBodyServer(t, "needle but incomplete")
+	defer srv.Close()
+
+	kw := "needle"
+	res := Check(context.Background(), Request{BlogID: 1, URL: srv.URL, TimeoutSeconds: 5, Keyword: &kw})
+	if res.Success {
+		t.Fatalf("Success = true for truncated body, want false; result=%+v", res)
+	}
+	if res.ErrorCode != ErrorBodyRead {
+		t.Fatalf("ErrorCode = %d, want ErrorBodyRead", res.ErrorCode)
 	}
 }
 
@@ -473,6 +621,30 @@ func TestCheckConnectionRefused(t *testing.T) {
 	if res.DNS < 0 {
 		t.Errorf("DNS duration is negative (%v); zero-time underflow", res.DNS)
 	}
+}
+
+func truncatedBodyServer(t *testing.T, body string) *httptest.Server {
+	t.Helper()
+
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", "1024")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(body))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			t.Error("response writer does not support hijacking")
+			return
+		}
+		conn, _, err := hijacker.Hijack()
+		if err != nil {
+			t.Errorf("Hijack: %v", err)
+			return
+		}
+		_ = conn.Close()
+	}))
 }
 
 // --- Pool scale(), Results(), QueueDepth(), ActiveCount() ---

@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -15,8 +16,10 @@ import (
 	"github.com/Automattic/jetmon/internal/checker"
 	"github.com/Automattic/jetmon/internal/config"
 	"github.com/Automattic/jetmon/internal/db"
+	"github.com/Automattic/jetmon/internal/eventstore"
 	"github.com/Automattic/jetmon/internal/veriflier"
 	"github.com/Automattic/jetmon/internal/wpcom"
+	"github.com/DATA-DOG/go-sqlmock"
 )
 
 var orchestratorConfigTestMu sync.Mutex
@@ -55,7 +58,11 @@ func TestTimeoutForSite(t *testing.T) {
 }
 
 func TestInMaintenance(t *testing.T) {
-	now := time.Now()
+	origNow := nowFunc
+	defer func() { nowFunc = origNow }()
+
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	nowFunc = func() time.Time { return now }
 	past := now.Add(-1 * time.Hour)
 	future := now.Add(1 * time.Hour)
 
@@ -542,7 +549,7 @@ func stubOrchestratorDeps() func() {
 	dbMarkSiteChecked = func(context.Context, int64, time.Time, time.Time) error { return nil }
 	dbMarkSitesCheckedAt = func(context.Context, []int64, time.Time) error { return nil }
 	dbMarkSitesChecked = func(context.Context, []db.SiteCheck) error { return nil }
-	dbRecordCheckHistory = func(int64, int, int, int64, int64, int64, int64, int64) error { return nil }
+	dbRecordCheckHistory = func(int64, string, int, int, int64, int64, int64, int64, int64) error { return nil }
 	dbRecordCheckHistories = func(context.Context, []db.CheckHistoryRow) error { return nil }
 	dbSiteMonitorActive = func(context.Context, int64) (bool, error) { return true, nil }
 	dbUpdateSSLExpiry = func(context.Context, int64, time.Time) error { return nil }
@@ -657,6 +664,18 @@ func mixedTransportFailureResults(failures, successes int) (map[int64]checker.Re
 		}
 	}
 	return results, sites
+}
+
+func maintenanceSite(blogID int64, now time.Time) db.Site {
+	start := now.Add(-1 * time.Hour)
+	end := now.Add(1 * time.Hour)
+	return db.Site{
+		BlogID:           blogID,
+		MonitorURL:       "https://example.com",
+		SiteStatus:       statusRunning,
+		MaintenanceStart: &start,
+		MaintenanceEnd:   &end,
+	}
 }
 
 func TestHandleRecoverySendsNotificationWhenSiteWasDown(t *testing.T) {
@@ -1351,7 +1370,7 @@ func TestProcessResultsFallsBackWhenBatchWritesFail(t *testing.T) {
 		return nil
 	}
 	var fallbackHistory int64
-	dbRecordCheckHistory = func(blogID int64, _ int, _ int, _ int64, _ int64, _ int64, _ int64, _ int64) error {
+	dbRecordCheckHistory = func(blogID int64, _ string, _ int, _ int, _ int64, _ int64, _ int64, _ int64, _ int64) error {
 		fallbackHistory = blogID
 		return nil
 	}
@@ -1483,6 +1502,103 @@ func TestProcessResultsUpdatesSSLExpiry(t *testing.T) {
 
 	if updatedExpiry.IsZero() {
 		t.Fatal("UpdateSSLExpiry not called")
+	}
+}
+
+func TestProcessResultsTLSDeprecatedIsAdvisory(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig(t)
+
+	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error {
+		t.Fatal("deprecated TLS advisory should not send a downtime notification")
+		return nil
+	}
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local",
+		ctx:      context.Background(),
+	}
+
+	res := checkerResultSuccess(72)
+	res.HTTPCode = 200
+	res.ErrorCode = checker.ErrorTLSDeprecated
+	res.TLSVersion = tls.VersionTLS11
+
+	sites := map[int64]db.Site{72: {BlogID: 72, SiteStatus: statusRunning}}
+	o.processResults(map[int64]checker.Result{72: res}, sites)
+
+	if o.retries.get(72) != nil {
+		t.Fatal("deprecated TLS advisory should not enter the downtime retry queue")
+	}
+}
+
+func TestCheckTLSDeprecatedOpensWarningEvent(t *testing.T) {
+	sqlDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer sqlDB.Close()
+
+	mock.ExpectBegin()
+	mock.ExpectExec("INSERT INTO jetmon_events").
+		WithArgs(int64(72), nil, checkTypeTLSDeprecated, nil, eventstore.SeverityWarning, eventstore.StateWarning, sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(101, 1))
+	mock.ExpectExec("INSERT INTO jetmon_event_transitions").
+		WithArgs(int64(101), int64(72), nil, eventstore.SeverityWarning, nil, eventstore.StateWarning, eventstore.ReasonOpened, "local-host", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	o := &Orchestrator{
+		events:   eventstore.New(sqlDB),
+		hostname: "local-host",
+		ctx:      context.Background(),
+	}
+	o.checkTLSDeprecated(db.Site{BlogID: 72}, checker.Result{
+		TLSVersion:  tls.VersionTLS11,
+		CipherSuite: tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+	})
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestCheckTLSDeprecatedClosesWarningOnModernTLS(t *testing.T) {
+	sqlDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer sqlDB.Close()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT id, severity, state FROM jetmon_events").
+		WithArgs(int64(73), checkTypeTLSDeprecated).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "severity", "state"}).
+			AddRow(int64(202), eventstore.SeverityWarning, eventstore.StateWarning))
+	mock.ExpectQuery("SELECT blog_id, severity, state, ended_at, cause_event_id").
+		WithArgs(int64(202)).
+		WillReturnRows(sqlmock.NewRows([]string{"blog_id", "severity", "state", "ended_at", "cause_event_id"}).
+			AddRow(int64(73), eventstore.SeverityWarning, eventstore.StateWarning, nil, nil))
+	mock.ExpectExec("UPDATE jetmon_events").
+		WithArgs(eventstore.ReasonVerifierCleared, int64(202)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO jetmon_event_transitions").
+		WithArgs(int64(202), int64(73), eventstore.SeverityWarning, nil, eventstore.StateWarning, eventstore.StateResolved, eventstore.ReasonVerifierCleared, "local-host", nil).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	o := &Orchestrator{
+		events:   eventstore.New(sqlDB),
+		hostname: "local-host",
+		ctx:      context.Background(),
+	}
+	o.checkTLSDeprecated(db.Site{BlogID: 73}, checker.Result{TLSVersion: tls.VersionTLS12})
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
 	}
 }
 
@@ -2287,6 +2403,81 @@ func TestEscalateToVerifliersNoClients(t *testing.T) {
 	}
 }
 
+func TestHandleFailureSwallowsFailureDuringMaintenance(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+
+	cfg := setTestConfig(t)
+	cfg.NumOfChecks = 1
+
+	fixedNow := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	nowFunc = func() time.Time { return fixedNow }
+
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+
+	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error {
+		t.Fatal("notification should not be sent during maintenance")
+		return nil
+	}
+	veriflierCheckFunc = func(_ *veriflier.VeriflierClient, _ context.Context, _ veriflier.CheckRequest) (*veriflier.CheckResult, error) {
+		t.Fatal("failure during maintenance should not escalate to verifliers")
+		return nil, nil
+	}
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		ctx:      context.Background(),
+		hostname: "local",
+		veriflierClients: []*veriflier.VeriflierClient{
+			veriflier.NewVeriflierClient("v1", ""),
+		},
+	}
+
+	o.handleFailure(maintenanceSite(88, fixedNow), checkerResultFailure(88))
+
+	if o.retries.get(88) != nil {
+		t.Fatal("retry entry should not be retained for maintenance-swallowed failure")
+	}
+	if got := rec.counter("detection.maintenance.swallowed.count"); got != 1 {
+		t.Fatalf("maintenance swallowed counter = %d, want 1", got)
+	}
+	if got := rec.counter("detection.maintenance.swallowed.server.count"); got != 1 {
+		t.Fatalf("maintenance swallowed server counter = %d, want 1", got)
+	}
+	if got := rec.counter("detection.failure.server.count"); got != 0 {
+		t.Fatalf("failure server counter = %d, want 0 for maintenance-swallowed failure", got)
+	}
+}
+
+func TestHandleFailureClearsExistingRetryWhenMaintenanceStarts(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig(t)
+
+	fixedNow := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	nowFunc = func() time.Time { return fixedNow }
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		ctx:      context.Background(),
+		hostname: "local",
+	}
+
+	fail := checkerResultFailure(89)
+	o.retries.record(fail)
+	entry := o.retries.get(89)
+	entry.eventID = 123
+
+	o.handleFailure(maintenanceSite(89, fixedNow), fail)
+
+	if o.retries.get(89) != nil {
+		t.Fatal("retry entry should be cleared when maintenance swallows an existing failure")
+	}
+}
+
 func TestConfirmDownInMaintenance(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
@@ -2367,7 +2558,7 @@ func TestProcessResultsLogsErrorsFromDB(t *testing.T) {
 	dbRecordCheckHistories = func(context.Context, []db.CheckHistoryRow) error {
 		return fmt.Errorf("batch history error")
 	}
-	dbRecordCheckHistory = func(int64, int, int, int64, int64, int64, int64, int64) error {
+	dbRecordCheckHistory = func(int64, string, int, int, int64, int64, int64, int64, int64) error {
 		return fmt.Errorf("history error")
 	}
 	dbUpdateSSLExpiries = func(context.Context, []db.SiteSSLExpiry) error {

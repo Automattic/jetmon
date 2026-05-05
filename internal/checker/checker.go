@@ -23,6 +23,12 @@ const (
 	ErrorKeyword       = 5
 	ErrorTLSExpired    = 6
 	ErrorTLSDeprecated = 7
+	ErrorBodyRead      = 8
+)
+
+const (
+	maxBodyIntegrityBytes int64 = 64 << 10
+	maxKeywordBodyBytes   int64 = 1 << 20
 )
 
 // RedirectPolicy controls how redirect responses are handled.
@@ -55,18 +61,21 @@ func newCheckTransport() *http.Transport {
 
 // Request holds the parameters for a single HTTP check.
 type Request struct {
-	BlogID         int64
-	URL            string
-	TimeoutSeconds int
-	Keyword        *string
-	CustomHeaders  map[string]string
-	RedirectPolicy RedirectPolicy
+	BlogID            int64
+	URL               string
+	TimeoutSeconds    int
+	Keyword           *string
+	ForbiddenKeyword  *string
+	ForbiddenKeywords []string
+	CustomHeaders     map[string]string
+	RedirectPolicy    RedirectPolicy
 }
 
 // Result holds the outcome of a single HTTP check.
 type Result struct {
 	BlogID    int64
 	URL       string
+	Method    string
 	Success   bool
 	HTTPCode  int
 	ErrorCode int
@@ -79,7 +88,9 @@ type Result struct {
 
 	SSLExpiry       *time.Time
 	TLSVersion      uint16
+	CipherSuite     uint16
 	RedirectChanged bool
+	KeywordRule     string
 
 	Timestamp time.Time
 }
@@ -91,7 +102,7 @@ func (r *Result) StatusType() string {
 		return "success"
 	case r.ErrorCode == ErrorSSL || r.ErrorCode == ErrorTLSExpired:
 		return "https"
-	case r.ErrorCode == ErrorTimeout:
+	case r.ErrorCode == ErrorTimeout || r.ErrorCode == ErrorBodyRead:
 		return "intermittent"
 	case r.ErrorCode == ErrorRedirect:
 		return "redirect"
@@ -124,6 +135,7 @@ func Check(ctx context.Context, req Request) (res Result) {
 	res = Result{
 		BlogID:    req.BlogID,
 		URL:       req.URL,
+		Method:    http.MethodGet,
 		Timestamp: time.Now(),
 	}
 	defer func() {
@@ -227,6 +239,7 @@ func Check(ctx context.Context, req Request) (res Result) {
 	// Inspect TLS state if available.
 	if resp.TLS != nil {
 		res.TLSVersion = resp.TLS.Version
+		res.CipherSuite = resp.TLS.CipherSuite
 		if len(resp.TLS.PeerCertificates) > 0 {
 			cert := resp.TLS.PeerCertificates[0]
 			expiry := cert.NotAfter
@@ -246,10 +259,26 @@ func Check(ctx context.Context, req Request) (res Result) {
 		res.RedirectChanged = true
 	}
 
-	// Keyword check — read body only if keyword is configured.
+	forbiddenKeywords := collectForbiddenKeywords(req.ForbiddenKeyword, req.ForbiddenKeywords)
+	needsBody := (req.Keyword != nil && *req.Keyword != "") || len(forbiddenKeywords) > 0
+	body, bodyErr := readResponseBody(resp, needsBody)
+	if bodyErr != nil && res.HTTPCode < http.StatusBadRequest {
+		res.ErrorCode = ErrorBodyRead
+		return res
+	}
+
+	// Keyword check uses the same bounded body read as integrity checks.
+	bodyText := string(body)
 	if req.Keyword != nil && *req.Keyword != "" {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		if !strings.Contains(string(body), *req.Keyword) {
+		if !strings.Contains(bodyText, *req.Keyword) {
+			res.KeywordRule = "required"
+			res.ErrorCode = ErrorKeyword
+			return res
+		}
+	}
+	for _, keyword := range forbiddenKeywords {
+		if strings.Contains(bodyText, keyword) {
+			res.KeywordRule = "forbidden"
 			res.ErrorCode = ErrorKeyword
 			return res
 		}
@@ -257,6 +286,40 @@ func Check(ctx context.Context, req Request) (res Result) {
 
 	res.Success = res.HTTPCode > 0 && res.HTTPCode < 400
 	return res
+}
+
+func readResponseBody(resp *http.Response, needKeyword bool) ([]byte, error) {
+	limit := maxBodyIntegrityBytes
+	if needKeyword {
+		limit = maxKeywordBodyBytes
+	} else if resp.ContentLength > limit && resp.ContentLength <= maxKeywordBodyBytes {
+		limit = resp.ContentLength
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return body, err
+	}
+	if int64(len(body)) > limit {
+		return body[:limit], nil
+	}
+	if resp.ContentLength >= 0 && resp.ContentLength <= limit && int64(len(body)) != resp.ContentLength {
+		return body, io.ErrUnexpectedEOF
+	}
+	return body, nil
+}
+
+func collectForbiddenKeywords(single *string, many []string) []string {
+	out := make([]string, 0, 1+len(many))
+	if single != nil && *single != "" {
+		out = append(out, *single)
+	}
+	for _, keyword := range many {
+		if keyword != "" {
+			out = append(out, keyword)
+		}
+	}
+	return out
 }
 
 // ParseCustomHeaders deserialises a JSON custom headers string into a map.
@@ -267,4 +330,23 @@ func ParseCustomHeaders(raw *string) map[string]string {
 	var m map[string]string
 	_ = json.Unmarshal([]byte(*raw), &m)
 	return m
+}
+
+// ParseForbiddenKeywords deserialises a JSON array of body strings that must
+// not appear in the response.
+func ParseForbiddenKeywords(raw *string) []string {
+	if raw == nil || *raw == "" {
+		return nil
+	}
+	var values []string
+	if err := json.Unmarshal([]byte(*raw), &values); err != nil {
+		return nil
+	}
+	out := values[:0]
+	for _, value := range values {
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }

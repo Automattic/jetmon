@@ -464,11 +464,32 @@ var migrations = []migration{
 	{30, `ALTER TABLE jetpack_monitor_sites
 		ADD INDEX idx_monitor_next_check_blog_bucket (monitor_active, next_check_at, blog_id, bucket_no)`},
 
-	// Migration 31 supports scheduler freshness writes and point lookups by
+	// Migration 31 adds an explicit forbidden-content check alongside the
+	// existing required keyword. The two columns intentionally stay separate:
+	// check_keyword means "must be present"; forbidden_keyword means "must be
+	// absent".
+	{31, `ALTER TABLE jetpack_monitor_sites
+		ADD COLUMN forbidden_keyword VARCHAR(500) NULL AFTER check_keyword`},
+
+	// Migration 32 records the actual HTTP method used for each timing sample.
+	// This keeps the high-volume check history compact while giving operators
+	// durable evidence that v2 probes are exercising the GET path rather than
+	// the HEAD-only behavior that caused v1 false positives and false negatives.
+	{32, `ALTER TABLE jetmon_check_history
+		ADD COLUMN request_method VARCHAR(16) NOT NULL DEFAULT 'GET' AFTER blog_id`},
+
+	// Migration 33 adds an array form for explicit forbidden body-content
+	// checks. forbidden_keyword remains for compatibility and simple one-off
+	// rules; forbidden_keywords lets operators provision multiple known-bad
+	// strings without overloading one column.
+	{33, `ALTER TABLE jetpack_monitor_sites
+		ADD COLUMN forbidden_keywords JSON NULL AFTER forbidden_keyword`},
+
+	// Migration 34 supports scheduler freshness writes and point lookups by
 	// blog_id. The scheduler read indexes include blog_id only after
 	// monitor_active / timestamp prefixes, so batched UPDATE ... WHERE blog_id
 	// IN (...) cannot use them efficiently and falls back to broad table scans.
-	{31, `ALTER TABLE jetpack_monitor_sites
+	{34, `ALTER TABLE jetpack_monitor_sites
 		ADD INDEX idx_monitor_blog_id (blog_id)`},
 }
 

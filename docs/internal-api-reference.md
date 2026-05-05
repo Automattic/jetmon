@@ -368,6 +368,8 @@ see rows mapped to `X-Jetmon-Tenant-ID` in `jetmon_site_tenants`.
       "last_status_change_at": "2026-04-21T09:14:00.000Z",
       "ssl_expiry_date": "2026-08-12",
       "check_keyword": null,
+      "forbidden_keyword": null,
+      "forbidden_keywords": null,
       "redirect_policy": "follow",
       "maintenance_start": null,
       "maintenance_end": null,
@@ -443,6 +445,11 @@ Create a site.
   "monitor_active": true,
   "bucket_no": 0,
   "check_keyword": null,
+  "forbidden_keyword": null,
+  "forbidden_keywords": [
+    "metrics.evil-cdn.example/collect.js",
+    "buy cheap viagra"
+  ],
   "redirect_policy": "follow",
   "timeout_seconds": null,
   "custom_headers": {},
@@ -465,11 +472,15 @@ creates without tenant context keep the existing unscoped behavior.
 | `invalid_url` | `monitor_url` doesn't parse |
 | `invalid_redirect_policy` | `redirect_policy` is not `follow`, `alert`, or `fail` |
 | `invalid_custom_headers` | `custom_headers` is not a valid string map |
+| `invalid_forbidden_keywords` | `forbidden_keywords` is too large or contains invalid entries |
 | `site_exists` | A site with this `blog_id` already exists |
 
 #### `PATCH /api/v1/sites/{id}`
 
 Partial update. Send only the fields you want to change.
+Send `"forbidden_keywords": []` to clear the multi-keyword forbidden-content
+list. The legacy `forbidden_keyword` string remains supported for simple
+one-off rules and compatibility.
 
 #### `DELETE /api/v1/sites/{id}`
 

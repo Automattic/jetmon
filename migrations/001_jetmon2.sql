@@ -11,6 +11,8 @@ CREATE TABLE IF NOT EXISTS jetmon_schema_migrations (
 ALTER TABLE jetpack_monitor_sites
     ADD COLUMN IF NOT EXISTS ssl_expiry_date        DATE NULL,
     ADD COLUMN IF NOT EXISTS check_keyword          VARCHAR(500) NULL,
+    ADD COLUMN IF NOT EXISTS forbidden_keyword      VARCHAR(500) NULL,
+    ADD COLUMN IF NOT EXISTS forbidden_keywords     JSON NULL,
     ADD COLUMN IF NOT EXISTS maintenance_start      DATETIME NULL,
     ADD COLUMN IF NOT EXISTS maintenance_end        DATETIME NULL,
     ADD COLUMN IF NOT EXISTS custom_headers         JSON NULL,
@@ -22,6 +24,7 @@ ALTER TABLE jetpack_monitor_sites
     ADD COLUMN IF NOT EXISTS last_alert_sent_at     DATETIME NULL,
     ADD INDEX IF NOT EXISTS idx_monitor_blog_id (blog_id),
     ADD INDEX IF NOT EXISTS idx_bucket_monitor_last_checked (bucket_no, monitor_active, last_checked_at),
+    ADD INDEX IF NOT EXISTS idx_monitor_last_checked_blog_bucket (monitor_active, last_checked_at, blog_id, bucket_no),
     ADD INDEX IF NOT EXISTS idx_monitor_next_check_blog_bucket (monitor_active, next_check_at, blog_id, bucket_no);
 
 -- MySQL-coordinated bucket ownership.
@@ -53,6 +56,7 @@ CREATE TABLE IF NOT EXISTS jetmon_audit_log (
 CREATE TABLE IF NOT EXISTS jetmon_check_history (
     id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
     blog_id    BIGINT UNSIGNED NOT NULL,
+    request_method VARCHAR(16) NOT NULL DEFAULT 'GET',
     http_code  SMALLINT NULL,
     error_code TINYINT NULL,
     rtt_ms     INT NULL,
