@@ -385,6 +385,13 @@ No active candidate branch is queued here right now.
   context deadline; `http.Client.Timeout` added a second timeout timer per
   check. The checker now relies on the context deadline only and avoids an
   unnecessary custom-header map copy on the hot path.
+- [x] Apply cached local-storm suppression to large mixed transport chunks
+  after the `be0ba37` retest. That run nearly passed CPU at 85.60%, but lost
+  freshness because mixed chunks during a known local transport storm still
+  wrote failure history and queued failure events. While a recent Veriflier
+  sample says the monitor is seeing a local transport wave, chunks with at
+  least 1,000 transport failures now use that cached verdict even if the chunk's
+  failure percentage is below the broad-storm sampling threshold.
 - [x] Reduce storm-time bookkeeping that does not improve check quality:
   WPCOM-disabled notifications no longer write one audit row per skipped
   synthetic notification, per-site recovery success logs are suppressed, and

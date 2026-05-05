@@ -1691,12 +1691,6 @@ func (o *Orchestrator) assessFailureStorm(records []siteCheckResult) failureStor
 	if assessment.transportFailures < failureStormMinFailures {
 		return assessment
 	}
-	if assessment.failures*100 < len(records)*failureStormMinPercent {
-		return assessment
-	}
-	if assessment.transportFailures*100 < assessment.failures*failureStormTransportPercent {
-		return assessment
-	}
 
 	clients := o.veriflierSnapshot()
 	if len(clients) == 0 || len(transportRecords) == 0 {
@@ -1710,6 +1704,13 @@ func (o *Orchestrator) assessFailureStorm(records []siteCheckResult) failureStor
 		assessment.verifierSuccesses = cached.verifierSuccesses
 		assessment.verifierFailures = cached.verifierFailures
 		assessment.verifierErrors = cached.verifierErrors
+		return assessment
+	}
+
+	if assessment.failures*100 < len(records)*failureStormMinPercent {
+		return assessment
+	}
+	if assessment.transportFailures*100 < assessment.failures*failureStormTransportPercent {
 		return assessment
 	}
 

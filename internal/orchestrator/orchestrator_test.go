@@ -635,6 +635,30 @@ func broadTransportFailureResults(count int) (map[int64]checker.Result, map[int6
 	return results, sites
 }
 
+func mixedTransportFailureResults(failures, successes int) (map[int64]checker.Result, map[int64]db.Site) {
+	count := failures + successes
+	results := make(map[int64]checker.Result, count)
+	sites := make(map[int64]db.Site, count)
+	for i := 0; i < count; i++ {
+		blogID := int64(i + 1)
+		var res checker.Result
+		if i < failures {
+			res = checkerResultFailure(blogID)
+			res.HTTPCode = 0
+			res.ErrorCode = checker.ErrorConnect
+		} else {
+			res = checkerResultSuccess(blogID)
+		}
+		results[blogID] = res
+		sites[blogID] = db.Site{
+			BlogID:     blogID,
+			MonitorURL: fmt.Sprintf("https://site-%d.example.com", blogID),
+			SiteStatus: statusRunning,
+		}
+	}
+	return results, sites
+}
+
 func TestHandleRecoverySendsNotificationWhenSiteWasDown(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
@@ -1001,6 +1025,66 @@ func TestProcessResultsReusesBroadTransportFailureStormSuppressionCache(t *testi
 	}
 	if got := verifierCalls.Load(); got != failureStormVerifierSamples {
 		t.Fatalf("verifier calls = %d, want %d", got, failureStormVerifierSamples)
+	}
+	if got := rec.counter("detection.failure_storm.cache_hit.count"); got != 1 {
+		t.Fatalf("failure storm cache hits = %d, want 1", got)
+	}
+}
+
+func TestProcessResultsUsesFailureStormCacheForMixedTransportChunks(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig(t)
+
+	now := time.Date(2026, 5, 4, 19, 0, 0, 0, time.UTC)
+	nowFunc = func() time.Time { return now }
+
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+
+	var historyRows atomic.Int64
+	dbRecordCheckHistories = func(_ context.Context, rows []db.CheckHistoryRow) error {
+		historyRows.Add(int64(len(rows)))
+		return nil
+	}
+
+	var verifierCalls atomic.Int64
+	veriflierCheckFunc = func(_ *veriflier.VeriflierClient, _ context.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
+		verifierCalls.Add(1)
+		return &veriflier.CheckResult{
+			BlogID:   req.BlogID,
+			Success:  true,
+			HTTPCode: 200,
+		}, nil
+	}
+
+	broadResults, broadSites := broadTransportFailureResults(1200)
+	mixedResults, mixedSites := mixedTransportFailureResults(failureStormMinFailures, 4000)
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local",
+		ctx:      context.Background(),
+		veriflierClients: []*veriflier.VeriflierClient{
+			veriflier.NewVeriflierClient("verifier", ""),
+		},
+	}
+
+	first := o.processResults(broadResults, broadSites)
+	now = now.Add(10 * time.Second)
+	second := o.processResults(mixedResults, mixedSites)
+
+	if first.failureStormSuppressed != 1200 {
+		t.Fatalf("first failureStormSuppressed = %d, want 1200", first.failureStormSuppressed)
+	}
+	if second.failureStormSuppressed != failureStormMinFailures {
+		t.Fatalf("second failureStormSuppressed = %d, want %d", second.failureStormSuppressed, failureStormMinFailures)
+	}
+	if got := verifierCalls.Load(); got != failureStormVerifierSamples {
+		t.Fatalf("verifier calls = %d, want %d from initial broad sample only", got, failureStormVerifierSamples)
+	}
+	if got := historyRows.Load(); got != 4000 {
+		t.Fatalf("history rows = %d, want 4000 successes from mixed chunk only", got)
 	}
 	if got := rec.counter("detection.failure_storm.cache_hit.count"); got != 1 {
 		t.Fatalf("failure storm cache hits = %d, want 1", got)
