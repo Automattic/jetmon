@@ -67,6 +67,12 @@ window. This should smooth `last_checked_at` writes, `jetmon_check_history`
 inserts, event enqueueing, and per-window memory without reducing the worker
 pool's ability to keep checks in flight.
 
+The `241b692` retest showed the scheduler still spending more than 50 seconds
+per 150,000-site full round in freshness and check-history persistence. Hot DB
+writes now use 5,000-row chunks, matching the result-processing chunk size, so
+each completed chunk can be persisted with fewer SQL round trips before
+considering riskier async history or lower-resolution healthy-probe retention.
+
 The same run also showed failure-heavy synthetic sites opening and recovering
 large numbers of events, which drove WPCOM circuit-breaker and queue-full log
 storms. WPCOM notifications still use the existing circuit breaker and bounded

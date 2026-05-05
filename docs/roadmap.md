@@ -290,7 +290,7 @@ No active candidate branch is queued here right now.
   later buffers; stopping the whole round after a tiny tail left tens of
   thousands of due sites unchecked. Per-result stale/duplicate log lines are
   now suppressed because the round summary already reports those counts.
-- [x] Raise the internal DB write chunk size from 500 to 1,000 rows for hot
+- [x] Raise the internal DB write chunk size from 500 to 5,000 rows for hot
   scheduler freshness, SSL, and check-history writes. This reduces SQL round
   trips during large capacity runs while keeping individual statements well
   below packet-size risk.
@@ -396,6 +396,13 @@ No active candidate branch is queued here right now.
   WPCOM-disabled notifications no longer write one audit row per skipped
   synthetic notification, per-site recovery success logs are suppressed, and
   already-closed recovery events are treated as idempotent cleanup.
+- [x] Raise hot DB write chunks to 5,000 rows after the `241b692` retest.
+  That run still spent more than 50 seconds per 150,000-site full round in
+  synchronous freshness and check-history persistence while missing the CPU
+  threshold by less than one point and leaving a 5,000-site freshness tail.
+  Larger chunks preserve the same table contract but cut the number of
+  scheduler UPDATE/INSERT statements sharply before moving to riskier async or
+  lower-resolution history designs.
 - [ ] Replace scheduler batch windows with a continuous bounded in-flight
   dispatcher/result-drain pipeline. The latest reports show static window
   sizing keeps moving the bottleneck: 25k, 30k, and 50k windows each failed in
