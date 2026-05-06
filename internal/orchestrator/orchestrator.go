@@ -1073,6 +1073,15 @@ func checkResultMetadata(site db.Site, res checker.Result, firstFailAt time.Time
 	if res.ErrorDetail != "" {
 		metadata["error_detail"] = res.ErrorDetail
 	}
+	if res.DNSFailureKind != "" {
+		metadata["dns_error_kind"] = res.DNSFailureKind
+	}
+	if res.DNSFailureName != "" {
+		metadata["dns_error_name"] = res.DNSFailureName
+	}
+	if res.DNSFailureServer != "" {
+		metadata["dns_error_server"] = res.DNSFailureServer
+	}
 	if site.RedirectPolicy != "" {
 		metadata["redirect_policy"] = site.RedirectPolicy
 	} else {

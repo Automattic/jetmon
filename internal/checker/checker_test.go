@@ -2,6 +2,8 @@ package checker
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"net"
 	"net/http"
@@ -565,6 +567,43 @@ func TestCheckRedirectAlert(t *testing.T) {
 	}
 }
 
+func TestCheckTLS11IsAdvisoryNotOutage(t *testing.T) {
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	srv.TLS = &tls.Config{
+		MinVersion: tls.VersionTLS11,
+		MaxVersion: tls.VersionTLS11,
+		CipherSuites: []uint16{
+			tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+		},
+	}
+	srv.StartTLS()
+	defer srv.Close()
+
+	roots := x509.NewCertPool()
+	roots.AddCert(srv.Certificate())
+	oldTransport := defaultTransport
+	defaultTransport = newCheckTransport()
+	defaultTransport.TLSClientConfig.RootCAs = roots
+	t.Cleanup(func() {
+		defaultTransport.CloseIdleConnections()
+		defaultTransport = oldTransport
+	})
+
+	res := Check(context.Background(), Request{BlogID: 1, URL: srv.URL, TimeoutSeconds: 5})
+	if !res.Success {
+		t.Fatalf("Success = false for TLS 1.1 advisory, want true; result=%+v", res)
+	}
+	if res.ErrorCode != ErrorTLSDeprecated {
+		t.Fatalf("ErrorCode = %d, want ErrorTLSDeprecated", res.ErrorCode)
+	}
+	if res.TLSVersion != tls.VersionTLS11 {
+		t.Fatalf("TLSVersion = 0x%04x, want TLS 1.1", res.TLSVersion)
+	}
+}
+
 func TestCheckInvalidURL(t *testing.T) {
 	res := Check(context.Background(), Request{BlogID: 1, URL: "://invalid-url", TimeoutSeconds: 5})
 	if res.ErrorCode != ErrorConnect {
@@ -609,6 +648,46 @@ func TestBoundedErrorDetailTruncatesLongErrors(t *testing.T) {
 	}
 	if !strings.HasSuffix(detail, "...") {
 		t.Fatalf("ErrorDetail suffix = %q, want ellipsis", detail[len(detail)-3:])
+	}
+}
+
+func TestClassifyDNSError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{
+			name: "nxdomain",
+			err:  &net.DNSError{Name: "example.invalid", Err: "no such host", IsNotFound: true},
+			want: "nxdomain",
+		},
+		{
+			name: "timeout",
+			err:  &net.DNSError{Name: "example.test", Err: "i/o timeout", IsTimeout: true},
+			want: "timeout",
+		},
+		{
+			name: "servfail",
+			err:  &net.DNSError{Name: "example.test", Err: "server misbehaving", IsTemporary: true},
+			want: "servfail",
+		},
+		{
+			name: "other",
+			err:  &net.DNSError{Name: "example.test", Err: "resolver refused"},
+			want: "resolver_error",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, gotName, _ := classifyDNSError(tt.err)
+			if got != tt.want {
+				t.Fatalf("kind = %q, want %q", got, tt.want)
+			}
+			if gotName == "" {
+				t.Fatal("dns name is empty")
+			}
+		})
 	}
 }
 

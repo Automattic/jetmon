@@ -61,9 +61,9 @@ No active candidate branch is queued here right now.
   stable in production because dynamic WordPress pages need normalization,
   training, approval/reset workflows, and operator-visible evidence before
   Jetmon can safely alert on "content changed unexpectedly."
-- [ ] Improve DNS diagnostics on HTTP lookup failures before building explicit
+- [x] Improve DNS diagnostics on HTTP lookup failures before building explicit
   DNS monitors. The v2 HTTP checker already records DNS timing and classifies
-  lookup failures as connect failures; add event metadata that distinguishes
+  lookup failures as connect failures; event metadata now distinguishes
   NXDOMAIN, SERVFAIL, timeout, and resolver errors where Go/runtime resolver
   data can support it. This is the recommended near-term step because it helps
   HEs explain failures without creating a new monitor type.
@@ -74,6 +74,14 @@ No active candidate branch is queued here right now.
   this larger feature until the product semantics are designed: some DNS
   failures should be `Warning` or `Degraded`, some should roll up to site-level
   `Down`, and monitor-side resolver impairment must remain `Unknown`.
+- [ ] Decide whether Jetmon should add an explicit DNS monitor that bypasses or
+  complements recursive resolver cache visibility. The 2026-05-05 all-services
+  gapfill run showed every service, including Jetmon v2, missing short
+  authoritative DNS failure windows, which is consistent with recursive cache
+  TTLs hiding the outage from HTTP probes. This needs product semantics before
+  implementation: direct authoritative checks can catch short DNS outages, but
+  they also increase query load and can report a failure that many end users do
+  not observe until caches expire.
 - [ ] Validate geo-scoped benchmark assumptions before changing Jetmon
   production behavior for `http-geo-503`. Confirm the probe source ranges,
   intended Jetmon region semantics, and support story for partial regional

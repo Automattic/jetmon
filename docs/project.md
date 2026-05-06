@@ -129,6 +129,13 @@ Add `maintenance_start` and `maintenance_end` (nullable `DATETIME`) columns to `
 **Granular Timing Breakdown**
 Go's `net/http/httptrace` provides discrete callbacks for DNS start/done, TCP connect start/done, TLS handshake start/done, request written, and first response byte. Each check records composite RTT plus DNS, TCP, TLS, and TTFB timings. The raw samples are stored in `jetmon_check_history` for response-time trending and API statistics; scheduler-level StatsD metrics report round/page phase timing and write volume.
 
+When the HTTP probe fails during resolver lookup, Jetmon records structured DNS
+diagnostics in event metadata when Go exposes them: NXDOMAIN, SERVFAIL, timeout,
+or a generic resolver error, plus the queried name and resolver server when
+available. This improves operator explanation for DNS-caused HTTP failures
+without pretending that cached recursive resolvers can see every short
+authoritative DNS outage.
+
 **Per-Site Request Headers**
 Add a `custom_headers` JSON column to `jetpack_monitor_sites`. The check engine merges these into the outgoing request, allowing sites that require an `Authorization` header or a specific `Host` value to be checked correctly.
 

@@ -588,6 +588,12 @@ Incident history for a site. Default sort: most recent `started_at` first.
 
 `duration_ms` is a server-computed convenience: `(ended_at or now) - started_at`. `transition_count` lets the consumer decide whether to fetch the full transition log.
 
+When a failed HTTP probe reaches the resolver and Go exposes DNS details,
+`metadata` may also include `dns_error_kind` (`nxdomain`, `servfail`, `timeout`,
+or `resolver_error`), `dns_error_name`, and `dns_error_server`. These fields are
+diagnostic context for operators; dedicated DNS monitors remain a separate
+future check type.
+
 #### `GET /api/v1/sites/{id}/events/{event_id}`
 
 Single event, same shape, plus a `transitions` array (full history, no pagination — events have bounded transition counts).

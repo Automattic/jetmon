@@ -87,6 +87,12 @@ not exercise.
 | `keyword_forbidden` | Response body contained text from `forbidden_keyword` or `forbidden_keywords` |
 | `success` | Site recovered |
 
+For HTTP events caused by resolver failures, inspect event metadata for
+`dns_error_kind`, `dns_error_name`, and `dns_error_server`. These fields explain
+resolver-visible failures such as NXDOMAIN, SERVFAIL, and DNS timeouts. They do
+not prove that every recursive resolver on the internet saw the same DNS state;
+short authoritative outages can be hidden by recursive cache TTLs.
+
 `tls_deprecated` is advisory-only: it does not mark the site down. Jetmon still
 has to negotiate the deprecated protocol to classify the site accurately, so
 avoid sensitive custom check headers on sites that only support TLS 1.0 or 1.1

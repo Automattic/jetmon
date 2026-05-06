@@ -125,8 +125,10 @@ HTTP failure metadata includes `http_code`, `error_code`, `failure_class`,
 `keyword_rule` is `required` for a missing `check_keyword` and `forbidden` when
 `forbidden_keyword` appears in the response body. Jetmon also records bounded
 operator diagnostics such as `error_detail`, redirect policy/count/chain/final
-URL, TLS version, and cipher suite when those facts are available. Response
-bodies are not stored in event metadata.
+URL, TLS version, cipher suite, and DNS resolver failure details when those
+facts are available. DNS metadata uses `dns_error_kind` (`nxdomain`, `servfail`,
+`timeout`, or `resolver_error`), `dns_error_name`, and `dns_error_server` when
+Go's resolver exposes them. Response bodies are not stored in event metadata.
 
 Each HTTP failure also stores `metadata.observation` with timing bounds:
 `checked_at`, `first_failed_at`, `previous_observed_at`,

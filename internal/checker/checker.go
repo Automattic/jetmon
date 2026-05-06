@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -51,7 +52,13 @@ func newCheckTransport() *http.Transport {
 			Timeout:   30 * time.Second,
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
-		TLSClientConfig:     &tls.Config{InsecureSkipVerify: false},
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: false,
+			// Deprecated TLS versions are still site-reachability signals.
+			// Complete the handshake so the orchestrator can open an advisory
+			// tls_deprecated event instead of reporting customer downtime.
+			MinVersion: tls.VersionTLS10,
+		},
 		TLSHandshakeTimeout: 10 * time.Second,
 		IdleConnTimeout:     30 * time.Second,
 		MaxIdleConns:        1024,
@@ -89,14 +96,17 @@ type Result struct {
 	TLS  time.Duration
 	TTFB time.Duration
 
-	SSLExpiry       *time.Time
-	TLSVersion      uint16
-	CipherSuite     uint16
-	RedirectChanged bool
-	RedirectCount   int
-	RedirectChain   []string
-	FinalURL        string
-	KeywordRule     string
+	SSLExpiry        *time.Time
+	TLSVersion       uint16
+	CipherSuite      uint16
+	DNSFailureKind   string
+	DNSFailureName   string
+	DNSFailureServer string
+	RedirectChanged  bool
+	RedirectCount    int
+	RedirectChain    []string
+	FinalURL         string
+	KeywordRule      string
 
 	Timestamp time.Time
 }
@@ -239,6 +249,7 @@ func Check(ctx context.Context, req Request) Result {
 
 	if err != nil {
 		res.ErrorDetail = boundedErrorDetail(err)
+		res.DNSFailureKind, res.DNSFailureName, res.DNSFailureServer = classifyDNSError(err)
 		if ctx.Err() != nil {
 			res.ErrorCode = ErrorTimeout
 		} else if strings.Contains(err.Error(), "redirect") {
@@ -316,6 +327,26 @@ func boundedErrorDetail(err error) string {
 		return detail
 	}
 	return detail[:maxErrorDetail] + "..."
+}
+
+func classifyDNSError(err error) (kind, name, server string) {
+	var dnsErr *net.DNSError
+	if !errors.As(err, &dnsErr) {
+		return "", "", ""
+	}
+	name = dnsErr.Name
+	server = dnsErr.Server
+	switch {
+	case dnsErr.IsNotFound:
+		kind = "nxdomain"
+	case dnsErr.IsTimeout:
+		kind = "timeout"
+	case dnsErr.IsTemporary || strings.Contains(strings.ToLower(dnsErr.Err), "server misbehaving"):
+		kind = "servfail"
+	default:
+		kind = "resolver_error"
+	}
+	return kind, name, server
 }
 
 func readResponseBody(resp *http.Response, needKeyword bool) ([]byte, error) {

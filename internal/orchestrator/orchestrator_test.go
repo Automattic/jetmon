@@ -468,6 +468,9 @@ func TestCheckResultMetadataIncludesObservationAndDiagnostics(t *testing.T) {
 	res.Timestamp = firstFail.Add(5 * time.Second)
 	res.Method = "GET"
 	res.ErrorDetail = "dial tcp: connection refused"
+	res.DNSFailureKind = "nxdomain"
+	res.DNSFailureName = "example.invalid"
+	res.DNSFailureServer = "127.0.0.53:53"
 	res.RedirectCount = 1
 	res.RedirectChain = []string{"https://example.com/final"}
 	res.FinalURL = "https://example.com/final"
@@ -485,6 +488,9 @@ func TestCheckResultMetadataIncludesObservationAndDiagnostics(t *testing.T) {
 
 	if meta["error_detail"] != res.ErrorDetail {
 		t.Fatalf("error_detail = %v, want %q", meta["error_detail"], res.ErrorDetail)
+	}
+	if meta["dns_error_kind"] != "nxdomain" || meta["dns_error_name"] != "example.invalid" {
+		t.Fatalf("dns metadata = kind:%v name:%v, want nxdomain/example.invalid", meta["dns_error_kind"], meta["dns_error_name"])
 	}
 	if meta["redirect_policy"] != "alert" || meta["redirect_count"] != 1 {
 		t.Fatalf("redirect metadata = policy:%v count:%v, want alert/1", meta["redirect_policy"], meta["redirect_count"])
