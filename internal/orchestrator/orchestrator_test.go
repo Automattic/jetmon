@@ -1054,10 +1054,10 @@ func TestCheckTLSDeprecatedClosesWarningOnModernTLS(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"blog_id", "severity", "state", "ended_at", "cause_event_id"}).
 			AddRow(int64(73), eventstore.SeverityWarning, eventstore.StateWarning, nil, nil))
 	mock.ExpectExec("UPDATE jetmon_events").
-		WithArgs(eventstore.ReasonVerifierCleared, int64(202)).
+		WithArgs(eventstore.ReasonProbeCleared, int64(202)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO jetmon_event_transitions").
-		WithArgs(int64(202), int64(73), eventstore.SeverityWarning, nil, eventstore.StateWarning, eventstore.StateResolved, eventstore.ReasonVerifierCleared, "local-host", nil).
+		WithArgs(int64(202), int64(73), eventstore.SeverityWarning, nil, eventstore.StateWarning, eventstore.StateResolved, eventstore.ReasonProbeCleared, "local-host", nil).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
@@ -1099,6 +1099,44 @@ func TestCheckSSLAlertsAtThresholds(t *testing.T) {
 	for _, days := range []int{30, 14, 7, 31, 15} {
 		expiry := time.Now().Add(time.Duration(days)*24*time.Hour + 30*time.Minute)
 		o.checkSSLAlerts(db.Site{BlogID: 1}, expiry)
+	}
+}
+
+func TestCloseSSLExpiryUsesProbeCleared(t *testing.T) {
+	sqlDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer sqlDB.Close()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT id, severity, state FROM jetmon_events").
+		WithArgs(int64(74), checkTypeTLSExpiry).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "severity", "state"}).
+			AddRow(int64(303), eventstore.SeverityWarning, eventstore.StateWarning))
+	mock.ExpectQuery("SELECT blog_id, severity, state, ended_at, cause_event_id").
+		WithArgs(int64(303)).
+		WillReturnRows(sqlmock.NewRows([]string{"blog_id", "severity", "state", "ended_at", "cause_event_id"}).
+			AddRow(int64(74), eventstore.SeverityWarning, eventstore.StateWarning, nil, nil))
+	mock.ExpectExec("UPDATE jetmon_events").
+		WithArgs(eventstore.ReasonProbeCleared, int64(303)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO jetmon_event_transitions").
+		WithArgs(int64(303), int64(74), eventstore.SeverityWarning, nil, eventstore.StateWarning, eventstore.StateResolved, eventstore.ReasonProbeCleared, "local-host", nil).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	o := &Orchestrator{
+		events:   eventstore.New(sqlDB),
+		hostname: "local-host",
+		ctx:      context.Background(),
+	}
+	if err := o.closeSSLExpiryIfOpen(74); err != nil {
+		t.Fatalf("closeSSLExpiryIfOpen: %v", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
 	}
 }
 

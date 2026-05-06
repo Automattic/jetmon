@@ -1569,7 +1569,7 @@ func (o *Orchestrator) sendNotification(site db.Site, res checker.Result, status
 //   - <= 7 days  → Degraded (severity 2)
 //   - <= 14 days → Warning  (severity 1)
 //   - <= 30 days → Warning  (severity 1)
-//   - >  30 days → close any open event with reason=verifier_cleared
+//   - >  30 days → close any open event with reason=probe_cleared
 func (o *Orchestrator) checkSSLAlerts(site db.Site, expiry time.Time) {
 	daysUntil := int(time.Until(expiry).Hours() / 24)
 
@@ -1673,7 +1673,7 @@ func (o *Orchestrator) closeSSLExpiryIfOpenOnce(blogID int64) error {
 		}
 		return err
 	}
-	if err := tx.Close(o.ctx, ae.ID, eventstore.ReasonVerifierCleared, o.hostname, nil); err != nil {
+	if err := tx.Close(o.ctx, ae.ID, eventstore.ReasonProbeCleared, o.hostname, nil); err != nil {
 		return fmt.Errorf("close tls_expiry: %w", err)
 	}
 	return tx.Commit()
@@ -1735,7 +1735,7 @@ func (o *Orchestrator) closeTLSDeprecatedIfOpen(blogID int64) error {
 		}
 		return err
 	}
-	if err := tx.Close(o.ctx, ae.ID, eventstore.ReasonVerifierCleared, o.hostname, nil); err != nil {
+	if err := tx.Close(o.ctx, ae.ID, eventstore.ReasonProbeCleared, o.hostname, nil); err != nil {
 		return fmt.Errorf("close tls_deprecated: %w", err)
 	}
 	return tx.Commit()
