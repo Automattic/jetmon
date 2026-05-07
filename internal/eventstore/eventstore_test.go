@@ -348,9 +348,10 @@ func TestTxFindActiveByBlog(t *testing.T) {
 	defer db.Close()
 
 	mock.ExpectBegin()
-	mock.ExpectQuery("SELECT id, severity, state FROM jetmon_events").
+	mock.ExpectQuery("SELECT id, severity, state, cause_event_id FROM jetmon_events").
 		WithArgs(int64(42), "http").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "severity", "state"}).AddRow(int64(99), SeverityDown, StateDown))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "severity", "state", "cause_event_id"}).
+			AddRow(int64(99), SeverityDown, StateDown, int64(12)))
 	mock.ExpectRollback()
 
 	tx, err := New(db).Begin(context.Background())
@@ -361,7 +362,8 @@ func TestTxFindActiveByBlog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FindActiveByBlog: %v", err)
 	}
-	if active.ID != 99 || active.Severity != SeverityDown || active.State != StateDown {
+	if active.ID != 99 || active.Severity != SeverityDown || active.State != StateDown ||
+		active.CauseEventID == nil || *active.CauseEventID != 12 {
 		t.Fatalf("active = %+v", active)
 	}
 	if err := tx.Rollback(); err != nil {

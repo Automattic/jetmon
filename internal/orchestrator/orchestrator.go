@@ -645,9 +645,10 @@ func (o *Orchestrator) checkDNSTargets(cfg *config.Config, targets []db.DNSProbe
 			for target := range jobs {
 				hostname := hostnameForDNSTarget(target)
 				req := dnsprobe.Request{
-					BlogID:   target.BlogID,
-					Hostname: hostname,
-					Timeout:  time.Duration(cfg.DNSMonitorTimeoutMS) * time.Millisecond,
+					BlogID:        target.BlogID,
+					Hostname:      hostname,
+					Timeout:       time.Duration(cfg.DNSMonitorTimeoutMS) * time.Millisecond,
+					ResolverAddrs: cfg.DNSMonitorResolvers,
 				}
 				results <- dnsCheckResult{
 					target: target,
@@ -682,6 +683,7 @@ func (o *Orchestrator) checkDNSTargets(cfg *config.Config, targets []db.DNSProbe
 func (o *Orchestrator) processDNSResults(cfg *config.Config, results []dnsCheckResult, summary *roundSummary) {
 	updates := make([]db.DNSProbeStateUpdate, 0, len(results))
 	for _, record := range results {
+		emitCounter("dns.check."+metricSegment(record.res.Status)+".count", 1)
 		checkedAt := record.res.Timestamp
 		if checkedAt.IsZero() {
 			checkedAt = nowFunc().UTC()
@@ -721,7 +723,12 @@ func (o *Orchestrator) handleDNSResult(res dnsprobe.Result) error {
 		return o.closeDNSIfOpen(res)
 	}
 	meta, _ := json.Marshal(dnsEventMetadata(res))
-	openRes, err := o.ev().Open(o.ctx, eventstore.OpenInput{
+	tx, err := o.ev().Begin(o.ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	openRes, err := tx.Open(o.ctx, eventstore.OpenInput{
 		Identity: eventstore.Identity{
 			BlogID:    res.BlogID,
 			CheckType: checkTypeDNS,
@@ -734,9 +741,22 @@ func (o *Orchestrator) handleDNSResult(res dnsprobe.Result) error {
 	if err != nil {
 		return err
 	}
+	linked := false
+	if openRes.EventID > 0 {
+		linked, err = o.linkActiveHTTPToDNSCause(tx, res.BlogID, openRes.EventID)
+		if err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit DNS event: %w", err)
+	}
 	if openRes.Opened {
 		emitCounter("dns.event.open.count", 1)
 		emitCounter("dns.event.open."+metricSegment(res.Status)+".count", 1)
+	}
+	if linked {
+		emitCounter("dns.event.cause_linked.count", 1)
 	}
 	return nil
 }
@@ -758,10 +778,17 @@ func (o *Orchestrator) closeDNSIfOpen(res dnsprobe.Result) error {
 	if err := tx.Close(o.ctx, active.ID, eventstore.ReasonProbeCleared, o.hostname, meta); err != nil {
 		return err
 	}
+	unlinked, err := o.unlinkHTTPIfCausedByDNS(tx, res.BlogID, active.ID)
+	if err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit DNS recovery: %w", err)
 	}
 	emitCounter("dns.event.close.count", 1)
+	if unlinked {
+		emitCounter("dns.event.cause_unlinked.count", 1)
+	}
 	return nil
 }
 
@@ -774,8 +801,43 @@ func dnsEventMetadata(res dnsprobe.Result) map[string]any {
 		"cname_chain": res.CNAMEChain,
 		"duration_ms": res.Duration.Milliseconds(),
 		"checked_at":  res.Timestamp.UTC().Format(time.RFC3339),
-		"resolver":    "recursive",
+		"resolver":    resolverLabel(res),
 	}
+}
+
+func (o *Orchestrator) linkActiveHTTPToDNSCause(tx *eventstore.Tx, blogID, dnsEventID int64) (bool, error) {
+	httpEvent, err := tx.FindActiveByBlog(o.ctx, blogID, checkTypeHTTP)
+	if errors.Is(err, eventstore.ErrEventNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if httpEvent.CauseEventID != nil && *httpEvent.CauseEventID != dnsEventID {
+		return false, nil
+	}
+	return tx.LinkCause(o.ctx, httpEvent.ID, dnsEventID, o.hostname)
+}
+
+func (o *Orchestrator) unlinkHTTPIfCausedByDNS(tx *eventstore.Tx, blogID, dnsEventID int64) (bool, error) {
+	httpEvent, err := tx.FindActiveByBlog(o.ctx, blogID, checkTypeHTTP)
+	if errors.Is(err, eventstore.ErrEventNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if httpEvent.CauseEventID == nil || *httpEvent.CauseEventID != dnsEventID {
+		return false, nil
+	}
+	return tx.LinkCause(o.ctx, httpEvent.ID, 0, o.hostname)
+}
+
+func resolverLabel(res dnsprobe.Result) string {
+	if res.Resolver != "" {
+		return res.Resolver
+	}
+	return "system"
 }
 
 func dnsWorkerLimit(cfg *config.Config) int {

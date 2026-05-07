@@ -136,6 +136,14 @@ DNS_MONITOR_SCHEDULE_BATCH_SIZE
 Maximum missing DNS schedule rows to backfill in one scheduler pass. Set to 0
 for automatic sizing based on the DNS batch size. Default: 0.
 
+DNS_MONITOR_RESOLVERS
+Optional JSON array of recursive resolver addresses used by the DNS monitor
+instead of the host's system resolver. Entries may be hostnames/IPs or
+host:port values; port defaults to 53. Leave empty to use the system resolver.
+This is primarily for controlled test environments and production deployments
+that require a known recursive resolver path. Example:
+["1.1.1.1:53", "8.8.8.8:53"].
+
 LOG_FORMAT
 Log output format. Set to "json" for structured logging (e.g. for log aggregators), or "text" for human-readable output. Default: "text".
 

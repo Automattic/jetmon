@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -90,12 +92,13 @@ type Config struct {
 	// DNS monitoring is a separate scheduled probe stream. Batch/worker values
 	// default to 0, which lets the orchestrator derive bounded values from the
 	// HTTP worker count instead of requiring per-host tuning.
-	DNSMonitorEnable            bool `json:"DNS_MONITOR_ENABLE"`
-	DNSMonitorIntervalSec       int  `json:"DNS_MONITOR_INTERVAL_SEC"`
-	DNSMonitorTimeoutMS         int  `json:"DNS_MONITOR_TIMEOUT_MS"`
-	DNSMonitorBatchSize         int  `json:"DNS_MONITOR_BATCH_SIZE"`
-	DNSMonitorMaxWorkers        int  `json:"DNS_MONITOR_MAX_WORKERS"`
-	DNSMonitorScheduleBatchSize int  `json:"DNS_MONITOR_SCHEDULE_BATCH_SIZE"`
+	DNSMonitorEnable            bool     `json:"DNS_MONITOR_ENABLE"`
+	DNSMonitorIntervalSec       int      `json:"DNS_MONITOR_INTERVAL_SEC"`
+	DNSMonitorTimeoutMS         int      `json:"DNS_MONITOR_TIMEOUT_MS"`
+	DNSMonitorBatchSize         int      `json:"DNS_MONITOR_BATCH_SIZE"`
+	DNSMonitorMaxWorkers        int      `json:"DNS_MONITOR_MAX_WORKERS"`
+	DNSMonitorScheduleBatchSize int      `json:"DNS_MONITOR_SCHEDULE_BATCH_SIZE"`
+	DNSMonitorResolvers         []string `json:"DNS_MONITOR_RESOLVERS"`
 
 	LogFormat         string `json:"LOG_FORMAT"`
 	DashboardPort     int    `json:"DASHBOARD_PORT"`
@@ -331,6 +334,11 @@ func validate(cfg *Config) error {
 	if cfg.DNSMonitorScheduleBatchSize < 0 {
 		return fmt.Errorf("DNS_MONITOR_SCHEDULE_BATCH_SIZE must be >= 0")
 	}
+	for i, resolver := range cfg.DNSMonitorResolvers {
+		if err := validateDNSResolverAddr(resolver); err != nil {
+			return fmt.Errorf("DNS_MONITOR_RESOLVERS[%d]: %w", i, err)
+		}
+	}
 	if cfg.MinTimeBetweenRoundsSec < 0 {
 		return fmt.Errorf("MIN_TIME_BETWEEN_ROUNDS_SEC must be >= 0")
 	}
@@ -399,6 +407,36 @@ func validatePinnedBucketRange(cfg *Config) error {
 	}
 	if max >= cfg.BucketTotal {
 		return fmt.Errorf("pinned bucket max must be < BUCKET_TOTAL")
+	}
+	return nil
+}
+
+func validateDNSResolverAddr(addr string) error {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return fmt.Errorf("resolver address must not be empty")
+	}
+	normalized := addr
+	if _, _, err := net.SplitHostPort(normalized); err != nil {
+		if strings.Contains(normalized, ":") {
+			normalized = net.JoinHostPort(strings.Trim(normalized, "[]"), "53")
+		} else {
+			normalized = net.JoinHostPort(normalized, "53")
+		}
+	}
+	host, port, err := net.SplitHostPort(normalized)
+	if err != nil {
+		return fmt.Errorf("resolver address must be host or host:port")
+	}
+	if strings.TrimSpace(host) == "" {
+		return fmt.Errorf("resolver host must not be empty")
+	}
+	if strings.TrimSpace(port) == "" {
+		return fmt.Errorf("resolver port must not be empty")
+	}
+	portNum, err := strconv.Atoi(port)
+	if err != nil || portNum < 1 || portNum > 65535 {
+		return fmt.Errorf("resolver port must be a number between 1 and 65535")
 	}
 	return nil
 }

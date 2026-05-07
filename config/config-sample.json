@@ -41,6 +41,7 @@
 	"DNS_MONITOR_BATCH_SIZE"          : 0,
 	"DNS_MONITOR_MAX_WORKERS"         : 0,
 	"DNS_MONITOR_SCHEDULE_BATCH_SIZE" : 0,
+	"DNS_MONITOR_RESOLVERS"           : [],
 
 	"LOG_FORMAT"     : "text",
 	"DASHBOARD_PORT" : 8080,

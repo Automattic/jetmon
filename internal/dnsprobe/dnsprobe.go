@@ -3,6 +3,8 @@ package dnsprobe
 import (
 	"context"
 	"errors"
+	"fmt"
+	"hash/fnv"
 	"net"
 	"sort"
 	"strings"
@@ -28,9 +30,10 @@ type Resolver interface {
 
 // Request describes one recursive DNS probe.
 type Request struct {
-	BlogID   int64
-	Hostname string
-	Timeout  time.Duration
+	BlogID        int64
+	Hostname      string
+	Timeout       time.Duration
+	ResolverAddrs []string
 }
 
 // Result contains the latest DNS evidence for a monitored hostname.
@@ -42,25 +45,35 @@ type Result struct {
 	Error      string
 	Addresses  []string
 	CNAMEChain []string
+	Resolver   string
 	Duration   time.Duration
 	Timestamp  time.Time
 }
 
 var defaultResolver Resolver = net.DefaultResolver
 
-// Check performs a recursive DNS lookup with the default resolver.
+// Check performs a recursive DNS lookup. By default it uses the system resolver;
+// when Request.ResolverAddrs is set it uses a stable per-hostname resolver from
+// that list so tests and operators can point DNS monitoring at a known recursive
+// path without creating synchronized resolver load.
 func Check(ctx context.Context, req Request) Result {
-	return CheckWithResolver(ctx, defaultResolver, req)
+	resolver, label := resolverForRequest(req)
+	return checkWithResolver(ctx, resolver, req, label)
 }
 
 // CheckWithResolver performs a recursive DNS lookup with a supplied resolver.
 func CheckWithResolver(ctx context.Context, resolver Resolver, req Request) Result {
+	return checkWithResolver(ctx, resolver, req, "injected")
+}
+
+func checkWithResolver(ctx context.Context, resolver Resolver, req Request, resolverLabel string) Result {
 	hostname := NormalizeHostname(req.Hostname)
 	start := time.Now()
 	res := Result{
 		BlogID:    req.BlogID,
 		Hostname:  hostname,
 		Status:    StatusResolverError,
+		Resolver:  resolverLabel,
 		Timestamp: start.UTC(),
 	}
 	defer func() {
@@ -85,6 +98,13 @@ func CheckWithResolver(ctx context.Context, resolver Resolver, req Request) Resu
 	probeCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	if canonical, err := resolver.LookupCNAME(probeCtx, hostname); err == nil {
+		canonical = NormalizeHostname(canonical)
+		if canonical != "" && canonical != hostname {
+			res.CNAMEChain = []string{canonical}
+		}
+	}
+
 	addrs, err := resolver.LookupIPAddr(probeCtx, hostname)
 	if err != nil {
 		res.Status, res.Error = classifyError(err)
@@ -96,20 +116,66 @@ func CheckWithResolver(ctx context.Context, resolver Resolver, req Request) Resu
 		return res
 	}
 	res.Addresses = normalizeAddresses(addrs)
-	if canonical, err := resolver.LookupCNAME(probeCtx, hostname); err == nil {
-		canonical = NormalizeHostname(canonical)
-		if canonical != "" && canonical != hostname {
-			res.CNAMEChain = []string{canonical}
-		}
-	}
 	res.Success = true
 	res.Status = StatusOK
 	return res
 }
 
+func resolverForRequest(req Request) (Resolver, string) {
+	addrs := normalizeResolverAddrs(req.ResolverAddrs)
+	if len(addrs) == 0 {
+		return defaultResolver, "system"
+	}
+	addr := addrs[resolverIndex(req, len(addrs))]
+	dialer := &net.Dialer{}
+	return &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return dialer.DialContext(ctx, network, addr)
+		},
+	}, addr
+}
+
 // NormalizeHostname returns a lower-case hostname without a trailing root dot.
 func NormalizeHostname(hostname string) string {
 	return strings.Trim(strings.ToLower(strings.TrimSpace(hostname)), ".")
+}
+
+func normalizeResolverAddrs(addrs []string) []string {
+	out := make([]string, 0, len(addrs))
+	seen := make(map[string]struct{}, len(addrs))
+	for _, raw := range addrs {
+		addr := strings.TrimSpace(raw)
+		if addr == "" {
+			continue
+		}
+		normalized := normalizeResolverAddr(addr)
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	return out
+}
+
+func normalizeResolverAddr(addr string) string {
+	if _, _, err := net.SplitHostPort(addr); err == nil {
+		return addr
+	}
+	if strings.Contains(addr, ":") {
+		return net.JoinHostPort(strings.Trim(addr, "[]"), "53")
+	}
+	return net.JoinHostPort(addr, "53")
+}
+
+func resolverIndex(req Request, n int) int {
+	if n <= 1 {
+		return 0
+	}
+	h := fnv.New32a()
+	_, _ = fmt.Fprintf(h, "%d/%s", req.BlogID, NormalizeHostname(req.Hostname))
+	return int(h.Sum32() % uint32(n))
 }
 
 func normalizeAddresses(addrs []net.IPAddr) []string {

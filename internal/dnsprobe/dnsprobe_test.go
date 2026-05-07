@@ -9,9 +9,10 @@ import (
 )
 
 type fakeResolver struct {
-	addrs []net.IPAddr
-	cname string
-	err   error
+	addrs    []net.IPAddr
+	cname    string
+	cnameErr error
+	err      error
 }
 
 func (r fakeResolver) LookupIPAddr(context.Context, string) ([]net.IPAddr, error) {
@@ -19,6 +20,9 @@ func (r fakeResolver) LookupIPAddr(context.Context, string) ([]net.IPAddr, error
 }
 
 func (r fakeResolver) LookupCNAME(context.Context, string) (string, error) {
+	if r.cnameErr != nil {
+		return "", r.cnameErr
+	}
 	if r.cname == "" {
 		return "", &net.DNSError{Err: "no such host", IsNotFound: true}
 	}
@@ -47,6 +51,20 @@ func TestCheckWithResolverSuccessNormalizesEvidence(t *testing.T) {
 	}
 }
 
+func TestCheckWithResolverPreservesCNAMEEvidenceOnAddressFailure(t *testing.T) {
+	res := CheckWithResolver(context.Background(), fakeResolver{
+		cname: "Target.Example.COM.",
+		err:   &net.DNSError{Err: "no such host", IsNotFound: true},
+	}, Request{BlogID: 42, Hostname: "Alias.Example.COM.", Timeout: time.Second})
+
+	if res.Success || res.Status != StatusNXDomain {
+		t.Fatalf("result = %+v, want nxdomain failure", res)
+	}
+	if got := fmt.Sprint(res.CNAMEChain); got != "[target.example.com]" {
+		t.Fatalf("CNAMEChain = %s, want target evidence", got)
+	}
+}
+
 func TestCheckWithResolverClassifiesDNSErrors(t *testing.T) {
 	tests := []struct {
 		name string
@@ -72,5 +90,24 @@ func TestCheckWithResolverRejectsEmptyHostname(t *testing.T) {
 	res := CheckWithResolver(context.Background(), fakeResolver{}, Request{})
 	if res.Success || res.Status != StatusInvalidHost {
 		t.Fatalf("result = %+v, want invalid host failure", res)
+	}
+}
+
+func TestNormalizeResolverAddrsAddsPortsAndDeduplicates(t *testing.T) {
+	got := normalizeResolverAddrs([]string{"1.1.1.1", "1.1.1.1:53", "[2001:db8::1]", ""})
+	want := []string{"1.1.1.1:53", "[2001:db8::1]:53"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("normalizeResolverAddrs = %v, want %v", got, want)
+	}
+}
+
+func TestResolverForRequestUsesConfiguredResolver(t *testing.T) {
+	_, label := resolverForRequest(Request{
+		BlogID:        42,
+		Hostname:      "example.com",
+		ResolverAddrs: []string{"192.0.2.53"},
+	})
+	if label != "192.0.2.53:53" {
+		t.Fatalf("resolver label = %q, want configured resolver", label)
 	}
 }

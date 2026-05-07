@@ -207,6 +207,26 @@ func TestValidate(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "dns monitor resolver list accepts host and host port",
+			mutate: func(c *Config) {
+				c.DNSMonitorResolvers = []string{"1.1.1.1", "8.8.8.8:53", "[2001:4860:4860::8888]:53"}
+			},
+		},
+		{
+			name: "dns monitor resolver list rejects empty entry",
+			mutate: func(c *Config) {
+				c.DNSMonitorResolvers = []string{"1.1.1.1", " "}
+			},
+			wantErr: true,
+		},
+		{
+			name: "dns monitor resolver list rejects invalid port",
+			mutate: func(c *Config) {
+				c.DNSMonitorResolvers = []string{"1.1.1.1:99999"}
+			},
+			wantErr: true,
+		},
+		{
 			name:    "min time between rounds negative",
 			mutate:  func(c *Config) { c.MinTimeBetweenRoundsSec = -1 },
 			wantErr: true,

@@ -409,9 +409,10 @@ func (t *Tx) Close(ctx context.Context, eventID int64, resolutionReason, source 
 // found it via FindActiveByBlog and now want to close, promote, or otherwise
 // mutate it without a second round-trip to read its state.
 type ActiveEvent struct {
-	ID       int64
-	Severity uint8
-	State    string
+	ID           int64
+	Severity     uint8
+	State        string
+	CauseEventID *int64
 }
 
 // FindActiveByBlog returns the open event for (blog_id, check_type) — the
@@ -424,17 +425,22 @@ func (t *Tx) FindActiveByBlog(ctx context.Context, blogID int64, checkType strin
 		return ActiveEvent{}, nil
 	}
 	var ae ActiveEvent
+	var cause sql.NullInt64
 	err := t.tx.QueryRowContext(ctx, `
-		SELECT id, severity, state FROM jetmon_events
+		SELECT id, severity, state, cause_event_id FROM jetmon_events
 		 WHERE blog_id = ? AND check_type = ? AND ended_at IS NULL
 		 ORDER BY started_at ASC
 		 LIMIT 1`, blogID, checkType,
-	).Scan(&ae.ID, &ae.Severity, &ae.State)
+	).Scan(&ae.ID, &ae.Severity, &ae.State, &cause)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ActiveEvent{}, ErrEventNotFound
 	}
 	if err != nil {
 		return ActiveEvent{}, fmt.Errorf("find active event: %w", err)
+	}
+	if cause.Valid {
+		causeID := cause.Int64
+		ae.CauseEventID = &causeID
 	}
 	return ae, nil
 }

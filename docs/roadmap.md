@@ -62,6 +62,11 @@ No active candidate branch is queued here right now.
   initial due times, auto-sized batch/worker guardrails, latest resolver
   evidence, and `dns` events that do not mutate the legacy HTTP up/down
   projection or send WPCOM downtime notifications yet.
+- [x] Harden the DNS monitor after the focused uptime-bench smoke test:
+  configurable recursive resolvers for controlled test/prod resolver paths,
+  CNAME evidence preserved on address-lookup failures, DNS status counters, and
+  causal links from active HTTP events to DNS root-cause events when both are
+  open for the same site.
 - [ ] Improve DNS diagnostics on HTTP lookup failures as a follow-up. The v2
   HTTP checker already records DNS timing and classifies lookup failures as
   connect failures; add event metadata that distinguishes NXDOMAIN, SERVFAIL,
