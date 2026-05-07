@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -459,6 +460,88 @@ func TestCheckTruncatedBodyFailsEvenWhenKeywordIsPresent(t *testing.T) {
 	}
 }
 
+func TestCheckBodyReadMaxBytesLimitExactTruncatedFails(t *testing.T) {
+	const bodyReadLimit = int64(1 << 20) // 1 MiB
+
+	srv := truncatedBodyServerWithContentLength(t, bodyReadLimit, "partial body")
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{
+		BlogID:           1,
+		URL:              srv.URL,
+		TimeoutSeconds:   5,
+		BodyReadMaxBytes: bodyReadLimit,
+	})
+	if res.Success {
+		t.Fatalf("Success = true for truncated body at exact limit, want false; result=%+v", res)
+	}
+	if res.HTTPCode != http.StatusOK {
+		t.Fatalf("HTTPCode = %d, want %d", res.HTTPCode, http.StatusOK)
+	}
+	if res.ErrorCode != ErrorBodyRead {
+		t.Fatalf("ErrorCode = %d, want ErrorBodyRead", res.ErrorCode)
+	}
+}
+
+func TestCheckBodyReadMaxBytesLimitPlusOneSucceedsWithBudgetedRead(t *testing.T) {
+	const bodyReadLimit = int64(1 << 20) // 1 MiB
+	const contentLength = bodyReadLimit + 1
+
+	body := strings.Repeat("a", int(contentLength))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", strconv.FormatInt(contentLength, 10))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{
+		BlogID:           1,
+		URL:              srv.URL,
+		TimeoutSeconds:   5,
+		BodyReadMaxBytes: bodyReadLimit,
+	})
+	if !res.Success {
+		t.Fatalf("Success = false for known Content-Length above finite limit, want true; result=%+v", res)
+	}
+	if res.HTTPCode != http.StatusOK {
+		t.Fatalf("HTTPCode = %d, want %d", res.HTTPCode, http.StatusOK)
+	}
+	if res.ErrorCode != ErrorNone {
+		t.Fatalf("ErrorCode = %d, want ErrorNone", res.ErrorCode)
+	}
+}
+
+func TestCheckBodyReadMaxBytesUnknownLengthOverLimitSucceeds(t *testing.T) {
+	const bodyReadLimit = int64(1 << 20) // 1 MiB
+
+	body := strings.Repeat("a", int(bodyReadLimit)+1024)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{
+		BlogID:           1,
+		URL:              srv.URL,
+		TimeoutSeconds:   5,
+		BodyReadMaxBytes: bodyReadLimit,
+	})
+	if !res.Success {
+		t.Fatalf("Success = false for unknown Content-Length above finite limit, want true; result=%+v", res)
+	}
+	if res.HTTPCode != http.StatusOK {
+		t.Fatalf("HTTPCode = %d, want %d", res.HTTPCode, http.StatusOK)
+	}
+	if res.ErrorCode != ErrorNone {
+		t.Fatalf("ErrorCode = %d, want ErrorNone", res.ErrorCode)
+	}
+}
+
 func TestCheckRedirectFail(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
@@ -692,10 +775,14 @@ func TestClassifyDNSError(t *testing.T) {
 }
 
 func truncatedBodyServer(t *testing.T, body string) *httptest.Server {
+	return truncatedBodyServerWithContentLength(t, 1024, body)
+}
+
+func truncatedBodyServerWithContentLength(t *testing.T, contentLength int64, body string) *httptest.Server {
 	t.Helper()
 
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Length", "1024")
+		w.Header().Set("Content-Length", strconv.FormatInt(contentLength, 10))
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(body))
 		if flusher, ok := w.(http.Flusher); ok {
@@ -859,5 +946,61 @@ func TestActiveCount(t *testing.T) {
 
 	if p.ActiveCount() != 1 {
 		t.Fatalf("ActiveCount() = %d, want 1", p.ActiveCount())
+	}
+}
+
+func BenchmarkCheckNoKeywordLargeBody(b *testing.B) {
+	const bodyReadLimit = int64(1 << 20) // 1 MiB
+	const contentLength = bodyReadLimit + 1024
+
+	body := strings.Repeat("a", int(contentLength))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", strconv.FormatInt(contentLength, 10))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		res := Check(context.Background(), Request{
+			BlogID:           1,
+			URL:              srv.URL,
+			TimeoutSeconds:   5,
+			BodyReadMaxBytes: bodyReadLimit,
+		})
+		if !res.Success || res.ErrorCode != ErrorNone || res.HTTPCode != http.StatusOK {
+			b.Fatalf("unexpected result: %+v", res)
+		}
+	}
+}
+
+func BenchmarkCheckKeywordLargeBody(b *testing.B) {
+	const bodyReadLimit = int64(1 << 20) // 1 MiB
+	const contentLength = bodyReadLimit + 1024
+	const keyword = "required-token"
+	keywordPtr := keyword
+
+	body := keyword + strings.Repeat("a", int(contentLength)-len(keyword))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", strconv.FormatInt(contentLength, 10))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		res := Check(context.Background(), Request{
+			BlogID:              1,
+			URL:                 srv.URL,
+			TimeoutSeconds:      5,
+			BodyReadMaxBytes:    bodyReadLimit,
+			KeywordReadMaxBytes: bodyReadLimit,
+			Keyword:             &keywordPtr,
+		})
+		if !res.Success || res.ErrorCode != ErrorNone || res.HTTPCode != http.StatusOK {
+			b.Fatalf("unexpected result: %+v", res)
+		}
 	}
 }
