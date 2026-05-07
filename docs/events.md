@@ -120,15 +120,21 @@ A probe has failed but the verifier has not yet confirmed. This is a **real stat
 
 The first failure writes both an event row (`state = Seems Down`, `severity = 3`, `started_at = now`) and an `opened` transition row in one transaction.
 
-HTTP failure metadata includes `http_code`, `error_code`, `failure_class`,
+HTTP failure metadata includes `http_code`, `error_code`, legacy
+`failure_class`, operator-facing `detector_class`, `legacy_status_type`,
 `method`, `rtt_ms`, `url`, and `keyword_rule` when a content rule failed.
 `keyword_rule` is `required` for a missing `check_keyword` and `forbidden` when
-`forbidden_keyword` appears in the response body. Jetmon also records bounded
-operator diagnostics such as `error_detail`, redirect policy/count/chain/final
-URL, TLS version, cipher suite, and DNS resolver failure details when those
-facts are available. DNS metadata uses `dns_error_kind` (`nxdomain`, `servfail`,
-`timeout`, or `resolver_error`), `dns_error_name`, and `dns_error_server` when
-Go's resolver exposes them. Response bodies are not stored in event metadata.
+`forbidden_keyword` appears in the response body. `failure_class` intentionally
+preserves the old WPCOM status-type vocabulary, while `detector_class` explains
+the actual detector path (`partial_response`, `content_failure`, `timeout`,
+`dns_nxdomain`, etc.). Jetmon also records bounded operator diagnostics such as
+`error_detail`, redirect policy/count/chain/final URL, TLS version, cipher
+suite, and DNS resolver failure details when those facts are available. DNS
+metadata uses `dns_error_kind` (`nxdomain`, `servfail`, `timeout`, or
+`resolver_error`), `dns_error_name`, and `dns_error_server` when Go's resolver
+exposes them. Body-read failures include a `body_read` object with mode, bytes
+read, expected bytes when known, limit bytes, and read error. Response bodies
+are not stored in event metadata.
 
 Each HTTP failure also stores `metadata.observation` with timing bounds:
 `checked_at`, `first_failed_at`, `previous_observed_at`,

@@ -101,17 +101,22 @@ type Result struct {
 	TLS  time.Duration
 	TTFB time.Duration
 
-	SSLExpiry        *time.Time
-	TLSVersion       uint16
-	CipherSuite      uint16
-	DNSFailureKind   string
-	DNSFailureName   string
-	DNSFailureServer string
-	RedirectChanged  bool
-	RedirectCount    int
-	RedirectChain    []string
-	FinalURL         string
-	KeywordRule      string
+	SSLExpiry          *time.Time
+	TLSVersion         uint16
+	CipherSuite        uint16
+	DNSFailureKind     string
+	DNSFailureName     string
+	DNSFailureServer   string
+	RedirectChanged    bool
+	RedirectCount      int
+	RedirectChain      []string
+	FinalURL           string
+	KeywordRule        string
+	BodyReadMode       string
+	BodyBytesRead      int64
+	BodyExpectedBytes  int64
+	BodyReadLimitBytes int64
+	BodyReadError      string
 
 	Timestamp time.Time
 }
@@ -295,9 +300,18 @@ func Check(ctx context.Context, req Request) Result {
 
 	forbiddenKeywords := collectForbiddenKeywords(req.ForbiddenKeyword, req.ForbiddenKeywords)
 	needsBody := (req.Keyword != nil && *req.Keyword != "") || len(forbiddenKeywords) > 0
-	body, bodyErr := readResponseBody(resp, needsBody, req)
-	if bodyErr != nil && res.HTTPCode < http.StatusBadRequest {
+	bodyRead := readResponseBody(resp, needsBody, req)
+	body := bodyRead.Body
+	res.BodyReadMode = bodyRead.Mode
+	res.BodyBytesRead = bodyRead.BytesRead
+	res.BodyExpectedBytes = bodyRead.ExpectedBytes
+	res.BodyReadLimitBytes = bodyRead.LimitBytes
+	if bodyRead.Err != nil {
+		res.BodyReadError = boundedErrorDetail(bodyRead.Err)
+	}
+	if bodyRead.Err != nil && res.HTTPCode < http.StatusBadRequest {
 		res.ErrorCode = ErrorBodyRead
+		res.ErrorDetail = res.BodyReadError
 		return res
 	}
 
@@ -356,12 +370,23 @@ func classifyDNSError(err error) (kind, name, server string) {
 	return kind, name, server
 }
 
-func readResponseBody(resp *http.Response, needKeyword bool, req Request) ([]byte, error) {
+type bodyReadResult struct {
+	Body          []byte
+	Err           error
+	Mode          string
+	BytesRead     int64
+	ExpectedBytes int64
+	LimitBytes    int64
+}
+
+func readResponseBody(resp *http.Response, needKeyword bool, req Request) bodyReadResult {
 	limit := maxBodyIntegrityBytes
+	mode := "success_budgeted"
 	if req.BodyReadMaxBytes > 0 {
 		limit = req.BodyReadMaxBytes
 	}
 	if needKeyword {
+		mode = "keyword"
 		limit = maxKeywordBodyBytes
 		if req.KeywordReadMaxBytes > 0 {
 			limit = req.KeywordReadMaxBytes
@@ -369,18 +394,32 @@ func readResponseBody(resp *http.Response, needKeyword bool, req Request) ([]byt
 	} else if resp.ContentLength > limit && resp.ContentLength <= maxKeywordBodyBytes {
 		limit = resp.ContentLength
 	}
+	if !needKeyword && resp.ContentLength >= 0 && resp.ContentLength <= limit {
+		mode = "strict_finite"
+	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	result := bodyReadResult{
+		Body:          body,
+		Err:           err,
+		Mode:          mode,
+		BytesRead:     int64(len(body)),
+		ExpectedBytes: resp.ContentLength,
+		LimitBytes:    limit,
+	}
 	if err != nil {
-		return body, err
+		return result
 	}
 	if int64(len(body)) > limit {
-		return body[:limit], nil
+		result.Body = body[:limit]
+		result.BytesRead = int64(len(result.Body))
+		return result
 	}
 	if resp.ContentLength >= 0 && resp.ContentLength <= limit && int64(len(body)) != resp.ContentLength {
-		return body, io.ErrUnexpectedEOF
+		result.Err = io.ErrUnexpectedEOF
+		return result
 	}
-	return body, nil
+	return result
 }
 
 func collectForbiddenKeywords(single *string, many []string) []string {

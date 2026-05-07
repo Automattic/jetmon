@@ -444,6 +444,21 @@ func TestCheckTruncatedBodyFailsWithoutKeyword(t *testing.T) {
 	if res.ErrorCode != ErrorBodyRead {
 		t.Fatalf("ErrorCode = %d, want ErrorBodyRead", res.ErrorCode)
 	}
+	if res.ErrorDetail == "" || res.BodyReadError == "" {
+		t.Fatalf("body read diagnostic missing: error_detail=%q body_read_error=%q", res.ErrorDetail, res.BodyReadError)
+	}
+	if res.BodyReadMode != "strict_finite" {
+		t.Fatalf("BodyReadMode = %q, want strict_finite", res.BodyReadMode)
+	}
+	if res.BodyExpectedBytes != 1024 {
+		t.Fatalf("BodyExpectedBytes = %d, want 1024", res.BodyExpectedBytes)
+	}
+	if res.BodyBytesRead != int64(len("partial response")) {
+		t.Fatalf("BodyBytesRead = %d, want %d", res.BodyBytesRead, len("partial response"))
+	}
+	if res.BodyReadLimitBytes == 0 {
+		t.Fatal("BodyReadLimitBytes = 0, want configured/default limit")
+	}
 }
 
 func TestCheckTruncatedBodyFailsEvenWhenKeywordIsPresent(t *testing.T) {

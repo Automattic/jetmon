@@ -544,6 +544,7 @@ func TestCheckResultMetadataIncludesObservationAndDiagnostics(t *testing.T) {
 	previous := time.Date(2026, 5, 3, 11, 57, 0, 0, time.UTC)
 	firstFail := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
 	res := checkerResultFailure(42)
+	res.HTTPCode = 0
 	res.Timestamp = firstFail.Add(5 * time.Second)
 	res.Method = "GET"
 	res.ErrorDetail = "dial tcp: connection refused"
@@ -567,6 +568,12 @@ func TestCheckResultMetadataIncludesObservationAndDiagnostics(t *testing.T) {
 
 	if meta["error_detail"] != res.ErrorDetail {
 		t.Fatalf("error_detail = %v, want %q", meta["error_detail"], res.ErrorDetail)
+	}
+	if meta["detector_class"] != "dns_nxdomain" {
+		t.Fatalf("detector_class = %v, want dns_nxdomain", meta["detector_class"])
+	}
+	if meta["legacy_status_type"] != "intermittent" {
+		t.Fatalf("legacy_status_type = %v, want intermittent", meta["legacy_status_type"])
 	}
 	if meta["dns_error_kind"] != "nxdomain" || meta["dns_error_name"] != "example.invalid" {
 		t.Fatalf("dns metadata = kind:%v name:%v, want nxdomain/example.invalid", meta["dns_error_kind"], meta["dns_error_name"])
@@ -596,6 +603,42 @@ func TestCheckResultMetadataIncludesObservationAndDiagnostics(t *testing.T) {
 	}
 	if obs["next_check_interval_seconds"] != int64(60) {
 		t.Fatalf("next_check_interval_seconds = %v, want 60", obs["next_check_interval_seconds"])
+	}
+}
+
+func TestCheckResultMetadataIncludesBodyReadEvidence(t *testing.T) {
+	res := checkerResultFailure(42)
+	res.HTTPCode = http.StatusOK
+	res.ErrorCode = checker.ErrorBodyRead
+	res.ErrorDetail = "unexpected EOF"
+	res.BodyReadMode = "strict_finite"
+	res.BodyBytesRead = 100
+	res.BodyExpectedBytes = 1024
+	res.BodyReadLimitBytes = 1048576
+	res.BodyReadError = "unexpected EOF"
+
+	meta := checkResultMetadata(db.Site{
+		BlogID:        42,
+		MonitorURL:    "https://example.com",
+		CheckInterval: 1,
+	}, res, res.Timestamp)
+
+	if meta["detector_class"] != "partial_response" {
+		t.Fatalf("detector_class = %v, want partial_response", meta["detector_class"])
+	}
+	if meta["failure_class"] != "intermittent" {
+		t.Fatalf("failure_class = %v, want legacy intermittent", meta["failure_class"])
+	}
+	body, ok := meta["body_read"].(map[string]any)
+	if !ok {
+		t.Fatalf("body_read = %T, want map[string]any", meta["body_read"])
+	}
+	if body["mode"] != "strict_finite" ||
+		body["bytes_read"] != int64(100) ||
+		body["expected_bytes"] != int64(1024) ||
+		body["limit_bytes"] != int64(1048576) ||
+		body["error"] != "unexpected EOF" {
+		t.Fatalf("body_read metadata = %+v", body)
 	}
 }
 

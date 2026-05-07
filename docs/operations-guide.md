@@ -75,7 +75,10 @@ applies only to eligible successful finite responses and is skipped for `101`,
 upgrade handshakes, and `text/event-stream` when no keyword is configured. In
 strict finite mode (known `Content-Length <= BODY_READ_MAX_BYTES`), body-phase
 timeout is bounded by the request timeout envelope, not `BODY_READ_MAX_MS`.
-Keyword read-budget exhaustion is classified as `ErrorTimeout`.
+Keyword read-budget exhaustion is classified as `ErrorTimeout`. Event metadata
+keeps legacy `failure_class` for WPCOM-compatible status types and adds
+operator-facing `detector_class` plus `body_read` evidence for partial/truncated
+responses.
 
 ## Production Host Setup
 

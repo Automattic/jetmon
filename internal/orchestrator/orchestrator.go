@@ -1066,16 +1066,21 @@ func checkResultMetadata(site db.Site, res checker.Result, firstFailAt time.Time
 		method = "GET"
 	}
 	metadata := map[string]any{
-		"http_code":     res.HTTPCode,
-		"error_code":    res.ErrorCode,
-		"failure_class": failureClass(res),
-		"keyword_rule":  res.KeywordRule,
-		"method":        method,
-		"rtt_ms":        res.RTT.Milliseconds(),
-		"url":           site.MonitorURL,
+		"detector_class":     detectorClass(res),
+		"failure_class":      failureClass(res),
+		"http_code":          res.HTTPCode,
+		"error_code":         res.ErrorCode,
+		"legacy_status_type": (&res).StatusType(),
+		"keyword_rule":       res.KeywordRule,
+		"method":             method,
+		"rtt_ms":             res.RTT.Milliseconds(),
+		"url":                site.MonitorURL,
 	}
 	if res.ErrorDetail != "" {
 		metadata["error_detail"] = res.ErrorDetail
+	}
+	if bodyReadMetadata := checkBodyReadMetadata(res); len(bodyReadMetadata) > 0 {
+		metadata["body_read"] = bodyReadMetadata
 	}
 	if res.DNSFailureKind != "" {
 		metadata["dns_error_kind"] = res.DNSFailureKind
@@ -1150,6 +1155,55 @@ func recoveryResultMetadata(res checker.Result, changeTime time.Time) map[string
 			"first_recovered_at": checkedAt.Format(time.RFC3339Nano),
 			"closed_at":          changeTime.UTC().Format(time.RFC3339Nano),
 		},
+	}
+}
+
+func checkBodyReadMetadata(res checker.Result) map[string]any {
+	if res.BodyReadMode == "" &&
+		res.BodyBytesRead == 0 &&
+		res.BodyReadLimitBytes == 0 &&
+		res.BodyExpectedBytes <= 0 &&
+		res.BodyReadError == "" {
+		return nil
+	}
+	body := map[string]any{
+		"bytes_read":  res.BodyBytesRead,
+		"limit_bytes": res.BodyReadLimitBytes,
+		"mode":        res.BodyReadMode,
+	}
+	if res.BodyExpectedBytes >= 0 {
+		body["expected_bytes"] = res.BodyExpectedBytes
+	}
+	if res.BodyReadError != "" {
+		body["error"] = res.BodyReadError
+	}
+	return body
+}
+
+func detectorClass(res checker.Result) string {
+	switch {
+	case res.Success:
+		return "success"
+	case res.ErrorCode == checker.ErrorBodyRead:
+		return "partial_response"
+	case res.ErrorCode == checker.ErrorKeyword:
+		return "content_failure"
+	case res.ErrorCode == checker.ErrorTimeout:
+		return "timeout"
+	case res.ErrorCode == checker.ErrorRedirect:
+		return "redirect"
+	case res.ErrorCode == checker.ErrorSSL || res.ErrorCode == checker.ErrorTLSExpired:
+		return "tls_failure"
+	case res.ErrorCode == checker.ErrorTLSDeprecated:
+		return "tls_deprecated"
+	case res.DNSFailureKind != "":
+		return "dns_" + metricSegment(res.DNSFailureKind)
+	case res.HTTPCode >= 400:
+		return "http_failure"
+	case res.ErrorCode == checker.ErrorConnect:
+		return "connect_error"
+	default:
+		return "unknown"
 	}
 }
 
