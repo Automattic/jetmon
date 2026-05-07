@@ -65,7 +65,11 @@ NUM_OF_CHECKS
 Number of consecutive local check failures required before escalating to verifliers. Default: 3.
 
 TIME_BETWEEN_CHECKS_SEC
-Minimum seconds between checks for a given site. Default: 30.
+Legacy compatibility setting retained so copied v1-style configs parse.
+Jetmon v2 scheduler cadence is controlled by check_interval/next_check_at in
+variable-interval mode and by MIN_TIME_BETWEEN_ROUNDS_SEC in fixed-cadence
+mode. Failed checks are scheduled for a bounded one-minute follow-up when the
+normal interval is longer. Default: 30.
 
 ALERT_COOLDOWN_MINUTES
 Minimum minutes between repeated down-alerts for the same site. Prevents alert storms during flapping. Default: 30. Can be overridden per-site via alert_cooldown_minutes column.
@@ -104,9 +108,11 @@ USE_VARIABLE_CHECK_INTERVALS
 Set to true to respect the check_interval column per site instead of running
 all sites every fixed-cadence pass. Recommended for production freshness
 testing because newly due sites are discovered without waiting for
-MIN_TIME_BETWEEN_ROUNDS_SEC. Jetmon maintains next_check_at after each completed
-check so due-site selection can use an indexed timestamp range instead of
-recomputing each row's interval on every poll. Default in the sample config:
+MIN_TIME_BETWEEN_ROUNDS_SEC. Jetmon maintains next_check_at after each
+completed check so due-site selection can use an indexed timestamp range
+instead of recomputing each row's interval on every poll. Successful checks use
+the site's normal check_interval; failed checks get a bounded one-minute
+follow-up when the normal interval is longer. Default in the sample config:
 true. Minimal configs that omit the key retain the compatibility default of
 false.
 

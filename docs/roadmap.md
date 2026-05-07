@@ -18,6 +18,50 @@ production telemetry branches:
 
 No active candidate branch is queued here right now.
 
+### v2 Prelaunch Readiness TODO
+
+- [x] Bring the service handoff recommendations and rollout prelaunch checklist
+  into the repo as `docs/jetmon-v2-prelaunch-readiness.md`, linked from the
+  docs index and migration runbook.
+- [x] Draft the launch posture statement: v2 rollout is a backend replacement,
+  not a new customer-facing Monitor product launch.
+- [ ] Get WPCOM/Product approval for the launch posture statement before using
+  it as rollout-room or support language.
+- [x] Add first-pass local-search consumer inventory candidates for WPCOM,
+  Jetpack, Activity Log, Elasticsearch, support/explanation tools, hooks, and
+  XML-RPC monitor paths that still depend on legacy monitor fields or
+  notification behavior.
+- [ ] Get WPCOM/Jetpack/Support owner confirmation for the legacy consumer
+  inventory, including hidden consumers not present in the local sibling
+  checkouts and which paths still require legacy projection during rollout.
+- [x] Add a legacy consumer inventory table to the prelaunch tracker.
+- [x] Draft rollout stop/go threshold worksheet for projection drift, missed
+  checks, oldest selected age, stale heartbeats, WPCOM notification failures,
+  delivery backlog, API errors, MySQL errors, and verifier agreement.
+- [ ] Get Systems/Jetmon approval for exact rollout stop/go thresholds after
+  production-like rehearsal data is available.
+- [ ] Record projection drift and telemetry parity evidence on
+  production-like data before first canary.
+- [x] Add Jetmon-owned WPCOM notification parity tests for legacy payload shape,
+  confirmed-down payloads, recovery notifications, Seems Down no-notify
+  behavior, false-alarm no-notify behavior, and suppression no-duplicate
+  behavior.
+- [ ] Get WPCOM acceptance for WPCOM-owned notification parity cases: inactive
+  site behavior, URL mismatch behavior, blacklisted site behavior, current
+  home-URL-only handling, and legacy hook consumers.
+- [x] Update support and allowlist guidance for v2 `GET` checks,
+  `jetmon/2.0`, blocked/WAF cases, false positives, maintenance windows, and
+  `Unknown` as monitor-side uncertainty rather than downtime.
+- [x] Run local rollout docs verification plus same-server, fresh-server, and
+  rollback dry-run rehearsals with `make rollout-docs-verify`.
+- [x] Run VM lab snapshot rollout/rollback flow when available, and attach the
+  generated command plan for the chosen rollout mode.
+- [x] Draft canary cohort matrix and expansion/rollback threshold prompts for
+  WPCOM, Atomic, self-hosted Jetpack, agency, WAF/security-plugin,
+  historically noisy, high-traffic, and multi-endpoint sites.
+- [ ] Get WPCOM/Product/Support approval for the canary cohort matrix and exact
+  expansion/rollback thresholds.
+
 ### Production Telemetry Reports TODO
 
 - [x] Add `jetmon2 telemetry report` as a read-only production report over
@@ -28,8 +72,15 @@ No active candidate branch is queued here right now.
 - [x] Keep the report safe for production use by avoiding payload/credential
   dumps, bounding query runtime, using half-open report windows, and reporting
   only aggregate counts, durations, classes, and gap names.
+- [x] Include `jetmon2 telemetry report` in guided rollout, generated rehearsal
+  plans, and operator runbooks as read-only WPCOM parity evidence after the
+  full-round cutover gate and at fleet completion.
 - [ ] Revisit report thresholds and suggested actions after v2 has enough real
   production traffic to show which rates should be considered normal.
+- [x] Add richer incident observation metadata for HTTP failures and recovery
+  transitions so operators can explain the probe window behind an incident:
+  previous observed/known-good time, first failed time, first recovered time,
+  bounded error detail, redirect chain/final URL, and TLS/cipher facts.
 
 ### Uptime-Bench Scenario Coverage TODO
 
@@ -67,18 +118,25 @@ No active candidate branch is queued here right now.
   CNAME evidence preserved on address-lookup failures, DNS status counters, and
   causal links from active HTTP events to DNS root-cause events when both are
   open for the same site.
-- [ ] Improve DNS diagnostics on HTTP lookup failures as a follow-up. The v2
-  HTTP checker already records DNS timing and classifies lookup failures as
-  connect failures; add event metadata that distinguishes NXDOMAIN, SERVFAIL,
-  timeout, and resolver errors where Go/runtime resolver data can support it.
-  This remains useful even with explicit DNS probes because it ties a failed
-  HTTP check directly to the resolver failure seen on that request path.
+- [x] Improve DNS diagnostics on HTTP lookup failures. The v2 HTTP checker
+  already records DNS timing and classifies lookup failures as connect failures;
+  event metadata now distinguishes NXDOMAIN, SERVFAIL, timeout, and resolver
+  errors where Go/runtime resolver data can support it. This remains useful
+  even with explicit DNS probes because it ties a failed HTTP check directly to
+  the resolver failure seen on that request path.
 - [ ] Expand DNS-specific benchmark coverage beyond the first recursive probe
   stream. DNS-record expectation checks, DNSSEC, split-horizon, full CNAME-chain
   capture, authoritative nameserver probes, and DNS-latency monitors need
   product semantics before they should be exposed as production uptime signals:
   some DNS failures should be `Warning` or `Degraded`, some should roll up to
   site-level `Down`, and monitor-side resolver impairment must remain `Unknown`.
+- [ ] Decide whether Jetmon should later add authoritative DNS probes that
+  bypass or complement recursive resolver cache visibility. The 2026-05-05
+  all-services gapfill run showed every service, including Jetmon v2, missing
+  short authoritative DNS failure windows, which is consistent with recursive
+  cache TTLs hiding the outage from HTTP probes. Direct authoritative checks can
+  catch short DNS outages, but they also increase query load and can report a
+  failure that many end users do not observe until caches expire.
 - [ ] Validate geo-scoped benchmark assumptions before changing Jetmon
   production behavior for `http-geo-503`. Confirm the probe source ranges,
   intended Jetmon region semantics, and support story for partial regional
@@ -90,6 +148,11 @@ No active candidate branch is queued here right now.
   mixed outcomes. Defer customer-facing regional classifications until the
   probe-agent architecture exists because current Verifliers are confirmation
   probes after local failure, not continuous per-vantage primary checks.
+- [ ] Add an uptime-bench service scenario that lasts long enough to exercise
+  the verifier-confirmed `Seems Down` -> `Down` path. The latest 10-hour v2
+  services run proved the fast transient `probe_cleared` path, but it did not
+  validate promotion, verifier vote evidence, or `verifier_cleared` recovery.
+  Keep this as benchmark coverage rather than production behavior chasing.
 
 ### Capacity Scheduler TODO
 
@@ -140,8 +203,9 @@ No active candidate branch is queued here right now.
   interval due selection uses a simple indexed range predicate instead of
   computing `DATE_ADD(last_checked_at, INTERVAL GREATEST(check_interval, 1)
   MINUTE)` during every scheduler fetch. The scheduler now recalculates
-  `next_check_at` when checks complete or `check_interval` changes, and
-  migration backfills existing rows before adding the index.
+  `next_check_at` when checks complete or `check_interval` changes, gives
+  failed checks a bounded one-minute follow-up when the normal interval is
+  longer, and migration backfills existing rows before adding the index.
 - [x] Move exact due-count and projection-drift checks out of the hot scheduler
   loop, or run them on a slower background cadence, so operator reporting does
   not add broad database reads to every 5-second variable-interval pass. In
@@ -323,7 +387,7 @@ No active candidate branch is queued here right now.
   the new rehearsal verifier lands, then tighten any remaining wording that
   could cause operator copy/paste mistakes.
 - [x] Run the VM lab snapshot flow after the docs/tooling pass if the
-  `jetmon-deploy-test` host is available, and capture any mismatch between the
+  `jetmon-vm-host-1` host is available, and capture any mismatch between the
   text runbook and real guided execution.
 
 Recently completed candidate branches:

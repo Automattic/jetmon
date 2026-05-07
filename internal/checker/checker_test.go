@@ -2,6 +2,9 @@ package checker
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -441,6 +444,21 @@ func TestCheckTruncatedBodyFailsWithoutKeyword(t *testing.T) {
 	if res.ErrorCode != ErrorBodyRead {
 		t.Fatalf("ErrorCode = %d, want ErrorBodyRead", res.ErrorCode)
 	}
+	if res.ErrorDetail == "" || res.BodyReadError == "" {
+		t.Fatalf("body read diagnostic missing: error_detail=%q body_read_error=%q", res.ErrorDetail, res.BodyReadError)
+	}
+	if res.BodyReadMode != "strict_finite" {
+		t.Fatalf("BodyReadMode = %q, want strict_finite", res.BodyReadMode)
+	}
+	if res.BodyExpectedBytes != 1024 {
+		t.Fatalf("BodyExpectedBytes = %d, want 1024", res.BodyExpectedBytes)
+	}
+	if res.BodyBytesRead != int64(len("partial response")) {
+		t.Fatalf("BodyBytesRead = %d, want %d", res.BodyBytesRead, len("partial response"))
+	}
+	if res.BodyReadLimitBytes == 0 {
+		t.Fatal("BodyReadLimitBytes = 0, want configured/default limit")
+	}
 }
 
 func TestCheckTruncatedBodyFailsEvenWhenKeywordIsPresent(t *testing.T) {
@@ -553,6 +571,15 @@ func TestCheckRedirectFail(t *testing.T) {
 	if res.ErrorCode != ErrorRedirect {
 		t.Fatalf("ErrorCode = %d, want ErrorRedirect", res.ErrorCode)
 	}
+	if res.RedirectCount != 1 {
+		t.Fatalf("RedirectCount = %d, want 1", res.RedirectCount)
+	}
+	if len(res.RedirectChain) != 1 || !strings.HasSuffix(res.RedirectChain[0], "/final") {
+		t.Fatalf("RedirectChain = %#v, want one /final hop", res.RedirectChain)
+	}
+	if res.ErrorDetail == "" {
+		t.Fatal("ErrorDetail is empty, want redirect diagnostic context")
+	}
 }
 
 func TestCheckCustomHeadersForwarded(t *testing.T) {
@@ -630,12 +657,58 @@ func TestCheckRedirectAlert(t *testing.T) {
 	if !res.RedirectChanged {
 		t.Fatal("RedirectChanged = false for redirect-alert policy, want true")
 	}
+	if res.RedirectCount != 1 {
+		t.Fatalf("RedirectCount = %d, want 1", res.RedirectCount)
+	}
+	if !strings.HasSuffix(res.FinalURL, "/final") {
+		t.Fatalf("FinalURL = %q, want /final", res.FinalURL)
+	}
+}
+
+func TestCheckTLS11IsAdvisoryNotOutage(t *testing.T) {
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	srv.TLS = &tls.Config{
+		MinVersion: tls.VersionTLS11,
+		MaxVersion: tls.VersionTLS11,
+		CipherSuites: []uint16{
+			tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+		},
+	}
+	srv.StartTLS()
+	defer srv.Close()
+
+	roots := x509.NewCertPool()
+	roots.AddCert(srv.Certificate())
+	oldTransport := defaultTransport
+	defaultTransport = newCheckTransport()
+	defaultTransport.TLSClientConfig.RootCAs = roots
+	t.Cleanup(func() {
+		defaultTransport.CloseIdleConnections()
+		defaultTransport = oldTransport
+	})
+
+	res := Check(context.Background(), Request{BlogID: 1, URL: srv.URL, TimeoutSeconds: 5})
+	if !res.Success {
+		t.Fatalf("Success = false for TLS 1.1 advisory, want true; result=%+v", res)
+	}
+	if res.ErrorCode != ErrorTLSDeprecated {
+		t.Fatalf("ErrorCode = %d, want ErrorTLSDeprecated", res.ErrorCode)
+	}
+	if res.TLSVersion != tls.VersionTLS11 {
+		t.Fatalf("TLSVersion = 0x%04x, want TLS 1.1", res.TLSVersion)
+	}
 }
 
 func TestCheckInvalidURL(t *testing.T) {
 	res := Check(context.Background(), Request{BlogID: 1, URL: "://invalid-url", TimeoutSeconds: 5})
 	if res.ErrorCode != ErrorConnect {
 		t.Fatalf("ErrorCode = %d, want ErrorConnect for invalid URL", res.ErrorCode)
+	}
+	if res.ErrorDetail == "" {
+		t.Fatal("ErrorDetail is empty, want invalid-url diagnostic context")
 	}
 }
 
@@ -663,6 +736,56 @@ func TestCheckConnectionRefused(t *testing.T) {
 	}
 	if res.DNS < 0 {
 		t.Errorf("DNS duration is negative (%v); zero-time underflow", res.DNS)
+	}
+}
+
+func TestBoundedErrorDetailTruncatesLongErrors(t *testing.T) {
+	detail := boundedErrorDetail(errors.New(strings.Repeat("x", 600)))
+	if len(detail) != 503 {
+		t.Fatalf("len(ErrorDetail) = %d, want 503", len(detail))
+	}
+	if !strings.HasSuffix(detail, "...") {
+		t.Fatalf("ErrorDetail suffix = %q, want ellipsis", detail[len(detail)-3:])
+	}
+}
+
+func TestClassifyDNSError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{
+			name: "nxdomain",
+			err:  &net.DNSError{Name: "example.invalid", Err: "no such host", IsNotFound: true},
+			want: "nxdomain",
+		},
+		{
+			name: "timeout",
+			err:  &net.DNSError{Name: "example.test", Err: "i/o timeout", IsTimeout: true},
+			want: "timeout",
+		},
+		{
+			name: "servfail",
+			err:  &net.DNSError{Name: "example.test", Err: "server misbehaving", IsTemporary: true},
+			want: "servfail",
+		},
+		{
+			name: "other",
+			err:  &net.DNSError{Name: "example.test", Err: "resolver refused"},
+			want: "resolver_error",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, gotName, _ := classifyDNSError(tt.err)
+			if got != tt.want {
+				t.Fatalf("kind = %q, want %q", got, tt.want)
+			}
+			if gotName == "" {
+				t.Fatal("dns name is empty")
+			}
+		})
 	}
 }
 

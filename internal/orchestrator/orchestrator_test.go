@@ -3,16 +3,17 @@ package orchestrator
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/go-sql-driver/mysql"
-
+	"github.com/Automattic/jetmon/internal/audit"
 	"github.com/Automattic/jetmon/internal/checker"
 	"github.com/Automattic/jetmon/internal/config"
 	"github.com/Automattic/jetmon/internal/db"
@@ -21,6 +22,7 @@ import (
 	"github.com/Automattic/jetmon/internal/veriflier"
 	"github.com/Automattic/jetmon/internal/wpcom"
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/go-sql-driver/mysql"
 )
 
 var orchestratorConfigTestMu sync.Mutex
@@ -448,6 +450,78 @@ func TestSendNotificationRetriesAndUpdatesAlertTimestamp(t *testing.T) {
 	}
 }
 
+func TestSendNotificationBuildsLegacyWPCOMPayload(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+
+	setTestConfig(t)
+
+	checkTime := time.Date(2026, 5, 3, 3, 0, 0, 0, time.UTC)
+	changeTime := time.Date(2026, 5, 3, 3, 1, 0, 0, time.UTC)
+	alertUpdateTime := time.Date(2026, 5, 3, 3, 1, 5, 0, time.UTC)
+	nowFunc = func() time.Time { return alertUpdateTime }
+
+	var got wpcom.Notification
+	wpcomNotifyFunc = func(_ *wpcom.Client, n wpcom.Notification) error {
+		got = n
+		return nil
+	}
+	var updatedAt time.Time
+	dbUpdateLastAlertSent = func(_ context.Context, blogID int64, ts time.Time) error {
+		if blogID != 123 {
+			t.Fatalf("updated alert blog_id = %d, want 123", blogID)
+		}
+		updatedAt = ts
+		return nil
+	}
+
+	o := &Orchestrator{
+		wpcom:    &wpcom.Client{},
+		hostname: "monitor-a",
+		ctx:      context.Background(),
+	}
+	res := checker.Result{
+		BlogID:    123,
+		Success:   false,
+		HTTPCode:  500,
+		ErrorCode: checker.ErrorConnect,
+		RTT:       123 * time.Millisecond,
+		Timestamp: checkTime,
+	}
+	vResults := []veriflier.CheckResult{
+		{Host: "verifier-us", Success: false, HTTPCode: 500, RTTMs: 456},
+		{Host: "verifier-eu", Success: true, HTTPCode: 200, RTTMs: 78},
+	}
+
+	o.sendNotification(
+		db.Site{BlogID: 123, MonitorURL: "https://example.com/"},
+		res,
+		statusConfirmedDown,
+		changeTime,
+		vResults,
+	)
+
+	want := wpcom.Notification{
+		BlogID:           123,
+		MonitorURL:       "https://example.com/",
+		StatusID:         statusConfirmedDown,
+		LastCheck:        "2026-05-03T03:00:00Z",
+		LastStatusChange: "2026-05-03T03:01:00Z",
+		StatusType:       "server",
+		Checks: []wpcom.CheckEntry{
+			{Type: 1, Host: "monitor-a", Status: statusDown, RTT: 123, Code: 500},
+			{Type: 2, Host: "verifier-us", Status: statusDown, RTT: 456, Code: 500},
+			{Type: 2, Host: "verifier-eu", Status: statusRunning, RTT: 78, Code: 200},
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("notification = %+v, want %+v", got, want)
+	}
+	if !updatedAt.Equal(alertUpdateTime) {
+		t.Fatalf("last alert update = %s, want %s", updatedAt, alertUpdateTime)
+	}
+}
+
 func TestConfirmDownSuppressedDuringCooldown(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
@@ -786,6 +860,133 @@ func checkerResultFailure(blogID int64) checker.Result {
 	}
 }
 
+func TestCheckResultMetadataIncludesObservationAndDiagnostics(t *testing.T) {
+	previous := time.Date(2026, 5, 3, 11, 57, 0, 0, time.UTC)
+	firstFail := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
+	res := checkerResultFailure(42)
+	res.HTTPCode = 0
+	res.Timestamp = firstFail.Add(5 * time.Second)
+	res.Method = "GET"
+	res.ErrorDetail = "dial tcp: connection refused"
+	res.DNSFailureKind = "nxdomain"
+	res.DNSFailureName = "example.invalid"
+	res.DNSFailureServer = "127.0.0.53:53"
+	res.RedirectCount = 1
+	res.RedirectChain = []string{"https://example.com/final"}
+	res.FinalURL = "https://example.com/final"
+	res.TLSVersion = tls.VersionTLS12
+	res.CipherSuite = tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+
+	meta := checkResultMetadata(db.Site{
+		BlogID:         42,
+		MonitorURL:     "https://example.com",
+		SiteStatus:     statusRunning,
+		CheckInterval:  7,
+		LastCheckedAt:  &previous,
+		RedirectPolicy: "alert",
+	}, res, firstFail)
+
+	if meta["error_detail"] != res.ErrorDetail {
+		t.Fatalf("error_detail = %v, want %q", meta["error_detail"], res.ErrorDetail)
+	}
+	if meta["detector_class"] != "dns_nxdomain" {
+		t.Fatalf("detector_class = %v, want dns_nxdomain", meta["detector_class"])
+	}
+	if meta["legacy_status_type"] != "intermittent" {
+		t.Fatalf("legacy_status_type = %v, want intermittent", meta["legacy_status_type"])
+	}
+	if meta["dns_error_kind"] != "nxdomain" || meta["dns_error_name"] != "example.invalid" {
+		t.Fatalf("dns metadata = kind:%v name:%v, want nxdomain/example.invalid", meta["dns_error_kind"], meta["dns_error_name"])
+	}
+	if meta["redirect_policy"] != "alert" || meta["redirect_count"] != 1 {
+		t.Fatalf("redirect metadata = policy:%v count:%v, want alert/1", meta["redirect_policy"], meta["redirect_count"])
+	}
+	if meta["final_url"] != res.FinalURL {
+		t.Fatalf("final_url = %v, want %q", meta["final_url"], res.FinalURL)
+	}
+	if meta["tls_version"] == "" || meta["cipher_suite"] == "" {
+		t.Fatalf("TLS metadata missing: %+v", meta)
+	}
+
+	obs, ok := meta["observation"].(map[string]any)
+	if !ok {
+		t.Fatalf("observation = %T, want map[string]any", meta["observation"])
+	}
+	if obs["first_failed_at"] != firstFail.Format(time.RFC3339Nano) {
+		t.Fatalf("first_failed_at = %v, want %s", obs["first_failed_at"], firstFail.Format(time.RFC3339Nano))
+	}
+	if obs["previous_known_good_at"] != previous.Format(time.RFC3339Nano) {
+		t.Fatalf("previous_known_good_at = %v, want %s", obs["previous_known_good_at"], previous.Format(time.RFC3339Nano))
+	}
+	if obs["normal_check_interval_seconds"] != int64(420) {
+		t.Fatalf("normal_check_interval_seconds = %v, want 420", obs["normal_check_interval_seconds"])
+	}
+	if obs["next_check_interval_seconds"] != int64(60) {
+		t.Fatalf("next_check_interval_seconds = %v, want 60", obs["next_check_interval_seconds"])
+	}
+}
+
+func TestCheckResultMetadataIncludesBodyReadEvidence(t *testing.T) {
+	res := checkerResultFailure(42)
+	res.HTTPCode = http.StatusOK
+	res.ErrorCode = checker.ErrorBodyRead
+	res.ErrorDetail = "unexpected EOF"
+	res.BodyReadMode = "strict_finite"
+	res.BodyBytesRead = 100
+	res.BodyExpectedBytes = 1024
+	res.BodyReadLimitBytes = 1048576
+	res.BodyReadError = "unexpected EOF"
+
+	meta := checkResultMetadata(db.Site{
+		BlogID:        42,
+		MonitorURL:    "https://example.com",
+		CheckInterval: 1,
+	}, res, res.Timestamp)
+
+	if meta["detector_class"] != "partial_response" {
+		t.Fatalf("detector_class = %v, want partial_response", meta["detector_class"])
+	}
+	if meta["failure_class"] != "intermittent" {
+		t.Fatalf("failure_class = %v, want legacy intermittent", meta["failure_class"])
+	}
+	body, ok := meta["body_read"].(map[string]any)
+	if !ok {
+		t.Fatalf("body_read = %T, want map[string]any", meta["body_read"])
+	}
+	if body["mode"] != "strict_finite" ||
+		body["bytes_read"] != int64(100) ||
+		body["expected_bytes"] != int64(1024) ||
+		body["limit_bytes"] != int64(1048576) ||
+		body["error"] != "unexpected EOF" {
+		t.Fatalf("body_read metadata = %+v", body)
+	}
+}
+
+func TestRecoveryResultMetadataMarshalsObservation(t *testing.T) {
+	res := checkerResultSuccess(42)
+	res.Timestamp = time.Date(2026, 5, 3, 12, 4, 0, 0, time.UTC)
+	changeTime := time.Date(2026, 5, 3, 12, 4, 2, 0, time.UTC)
+
+	raw, err := json.Marshal(recoveryResultMetadata(res, changeTime))
+	if err != nil {
+		t.Fatalf("marshal recovery metadata: %v", err)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		t.Fatalf("unmarshal recovery metadata: %v", err)
+	}
+	obs, ok := meta["observation"].(map[string]any)
+	if !ok {
+		t.Fatalf("observation = %T, want map[string]any", meta["observation"])
+	}
+	if obs["first_recovered_at"] != res.Timestamp.Format(time.RFC3339Nano) {
+		t.Fatalf("first_recovered_at = %v, want %s", obs["first_recovered_at"], res.Timestamp.Format(time.RFC3339Nano))
+	}
+	if obs["closed_at"] != changeTime.Format(time.RFC3339Nano) {
+		t.Fatalf("closed_at = %v, want %s", obs["closed_at"], changeTime.Format(time.RFC3339Nano))
+	}
+}
+
 func maintenanceSite(blogID int64, now time.Time) db.Site {
 	start := now.Add(-1 * time.Hour)
 	end := now.Add(1 * time.Hour)
@@ -972,6 +1173,37 @@ func TestProcessResultsMarksChecked(t *testing.T) {
 	}
 	if want := res.Timestamp.Add(7 * time.Minute); !markedNext.Equal(want) {
 		t.Fatalf("MarkSitesChecked next_check_at = %s, want %s", markedNext, want)
+	}
+}
+
+func TestProcessResultsSchedulesFailedChecksSoonerThanNormalInterval(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig(t)
+
+	var markedNext time.Time
+	dbMarkSitesChecked = func(_ context.Context, checks []db.SiteCheck) error {
+		if len(checks) != 1 {
+			t.Fatalf("batch checks = %d, want 1", len(checks))
+		}
+		markedNext = checks[0].NextCheckAt
+		return nil
+	}
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local",
+		ctx:      context.Background(),
+	}
+
+	res := checkerResultFailure(42)
+	res.Timestamp = time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
+	sites := map[int64]db.Site{42: {BlogID: 42, SiteStatus: statusRunning, CheckInterval: 7}}
+	o.processResults(map[int64]checker.Result{42: res}, sites)
+
+	if want := res.Timestamp.Add(time.Minute); !markedNext.Equal(want) {
+		t.Fatalf("failed check next_check_at = %s, want %s", markedNext, want)
 	}
 }
 
@@ -1264,10 +1496,10 @@ func TestCheckTLSDeprecatedClosesWarningOnModernTLS(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"blog_id", "severity", "state", "ended_at", "cause_event_id"}).
 			AddRow(int64(73), eventstore.SeverityWarning, eventstore.StateWarning, nil, nil))
 	mock.ExpectExec("UPDATE jetmon_events").
-		WithArgs(eventstore.ReasonVerifierCleared, int64(202)).
+		WithArgs(eventstore.ReasonProbeCleared, int64(202)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO jetmon_event_transitions").
-		WithArgs(int64(202), int64(73), eventstore.SeverityWarning, nil, eventstore.StateWarning, eventstore.StateResolved, eventstore.ReasonVerifierCleared, "local-host", nil).
+		WithArgs(int64(202), int64(73), eventstore.SeverityWarning, nil, eventstore.StateWarning, eventstore.StateResolved, eventstore.ReasonProbeCleared, "local-host", nil).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
@@ -1309,6 +1541,44 @@ func TestCheckSSLAlertsAtThresholds(t *testing.T) {
 	for _, days := range []int{30, 14, 7, 31, 15} {
 		expiry := time.Now().Add(time.Duration(days)*24*time.Hour + 30*time.Minute)
 		o.checkSSLAlerts(db.Site{BlogID: 1}, expiry)
+	}
+}
+
+func TestCloseSSLExpiryUsesProbeCleared(t *testing.T) {
+	sqlDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer sqlDB.Close()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT id, severity, state, cause_event_id FROM jetmon_events").
+		WithArgs(int64(74), checkTypeTLSExpiry).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "severity", "state", "cause_event_id"}).
+			AddRow(int64(303), eventstore.SeverityWarning, eventstore.StateWarning, nil))
+	mock.ExpectQuery("SELECT blog_id, severity, state, ended_at, cause_event_id").
+		WithArgs(int64(303)).
+		WillReturnRows(sqlmock.NewRows([]string{"blog_id", "severity", "state", "ended_at", "cause_event_id"}).
+			AddRow(int64(74), eventstore.SeverityWarning, eventstore.StateWarning, nil, nil))
+	mock.ExpectExec("UPDATE jetmon_events").
+		WithArgs(eventstore.ReasonProbeCleared, int64(303)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO jetmon_event_transitions").
+		WithArgs(int64(303), int64(74), eventstore.SeverityWarning, nil, eventstore.StateWarning, eventstore.StateResolved, eventstore.ReasonProbeCleared, "local-host", nil).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	o := &Orchestrator{
+		events:   eventstore.New(sqlDB),
+		hostname: "local-host",
+		ctx:      context.Background(),
+	}
+	if err := o.closeSSLExpiryIfOpen(74); err != nil {
+		t.Fatalf("closeSSLExpiryIfOpen: %v", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
 	}
 }
 
@@ -2095,6 +2365,47 @@ func TestHandleRecoveryInMaintenance(t *testing.T) {
 	}, checkerResultSuccess(1))
 }
 
+func TestHandleRecoveryCooldownSuppressionIsAudited(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig(t)
+
+	sqlDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer sqlDB.Close()
+	audit.Init(sqlDB)
+	t.Cleanup(func() { audit.Init(nil) })
+
+	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error {
+		t.Fatal("notification should not be sent during cooldown")
+		return nil
+	}
+
+	recent := time.Now().UTC().Add(-5 * time.Minute)
+	mock.ExpectExec(`INSERT INTO jetmon_audit_log`).
+		WithArgs(int64(1), nil, audit.EventAlertSuppressed, "local", "recovery cooldown active", nil).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		ctx:      context.Background(),
+		hostname: "local",
+	}
+
+	o.handleRecovery(db.Site{
+		BlogID:          1,
+		SiteStatus:      statusConfirmedDown,
+		LastAlertSentAt: &recent,
+	}, checkerResultSuccess(1))
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
 func TestProcessResultsLogsErrorsFromDB(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
@@ -2205,6 +2516,30 @@ func TestHandleFailureEmitsSeemsDownMetrics(t *testing.T) {
 	}
 	if got := rec.timingCount("detection.first_failure_to_seems_down.time"); got != 1 {
 		t.Fatalf("first failure timing count = %d, want 1", got)
+	}
+}
+
+func TestHandleFailureDoesNotNotifyWPCOMBeforeConfirmation(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig(t)
+
+	var notifyCalls int
+	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error {
+		notifyCalls++
+		return nil
+	}
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local-host",
+		ctx:      context.Background(),
+	}
+	o.handleFailure(db.Site{BlogID: 42, MonitorURL: "https://example.com", SiteStatus: statusRunning}, checkerResultFailure(42))
+
+	if notifyCalls != 0 {
+		t.Fatalf("notify calls = %d, want 0 before verifier confirmation", notifyCalls)
 	}
 }
 
