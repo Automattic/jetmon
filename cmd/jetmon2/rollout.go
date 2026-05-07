@@ -868,6 +868,7 @@ type guidedRolloutDeps struct {
 	ValidateConfig     func(context.Context, io.Writer, guidedRolloutOptions) error
 	HostPreflight      func(context.Context, io.Writer, guidedRolloutOptions) error
 	CutoverCheck       func(context.Context, io.Writer, guidedRolloutOptions, bool) error
+	TelemetryReport    func(context.Context, io.Writer, guidedRolloutOptions) error
 	RollbackCheck      func(context.Context, io.Writer, guidedRolloutOptions) error
 	ExecCommand        func(context.Context, string) (string, error)
 }
@@ -1121,6 +1122,21 @@ func defaultGuidedRolloutDeps() guidedRolloutDeps {
 				SkipStatus:   opts.SkipStatus,
 			}, deps)
 		},
+		TelemetryReport: func(ctx context.Context, out io.Writer, opts guidedRolloutOptions) error {
+			if _, err := loadRolloutConfigAndDB(out); err != nil {
+				return err
+			}
+			report, err := buildTelemetryReport(ctx, db.DB(), time.Now().UTC(), telemetryReportOptions{
+				Since:        opts.Since,
+				Output:       "text",
+				Limit:        10,
+				QueryTimeout: defaultTelemetryQueryTimeout,
+			})
+			if err != nil {
+				return err
+			}
+			return renderTelemetryReport(out, report, "text")
+		},
 		RollbackCheck: func(ctx context.Context, out io.Writer, opts guidedRolloutOptions) error {
 			cfg, err := loadRolloutConfigAndDB(out)
 			if err != nil {
@@ -1275,6 +1291,9 @@ func normalizeGuidedRolloutDeps(deps guidedRolloutDeps) guidedRolloutDeps {
 	}
 	if deps.CutoverCheck == nil {
 		deps.CutoverCheck = defaults.CutoverCheck
+	}
+	if deps.TelemetryReport == nil {
+		deps.TelemetryReport = defaults.TelemetryReport
 	}
 	if deps.RollbackCheck == nil {
 		deps.RollbackCheck = defaults.RollbackCheck
@@ -1578,6 +1597,8 @@ func (s *guidedRolloutSession) dryRunCommandForStep(stepID string) string {
 		return stopSystemdServiceCommand(s.opts.Service)
 	case "rollback-start-v1":
 		return s.opts.V1StartCmd
+	case "telemetry-report":
+		return telemetryReportCommand("./jetmon2", s.opts.Since)
 	default:
 		return ""
 	}
@@ -1700,6 +1721,14 @@ func forwardGuidedSteps() []guidedStep {
 					return err
 				}
 				return s.deps.CutoverCheck(ctx, s.out, s.opts, true)
+			},
+		},
+		{
+			ID:      "telemetry-report",
+			Title:   "Capture WPCOM parity telemetry",
+			Details: "This read-only report summarizes WPCOM down and recovery notification parity plus explanation coverage for the current rollout window. Treat warnings as hold points, and widen --since if the window is too quiet to prove parity.",
+			Run: func(ctx context.Context, s *guidedRolloutSession) error {
+				return s.deps.TelemetryReport(ctx, s.out, s.opts)
 			},
 		},
 	}
@@ -2098,6 +2127,8 @@ func runRolloutRehearsalPlan(out io.Writer, input io.Reader, opts rolloutRehears
 		rolloutCommand(append([]string{binary, "rollout", "cutover-check", "--host", runtimeHost}, append(append([]string{}, rangeArgs...), "--since", since)...)...),
 		"# Strong gate after one full v2 check round:",
 		rolloutCommand(append([]string{binary, "rollout", "cutover-check", "--host", runtimeHost}, append(append([]string{}, rangeArgs...), "--since", since, "--require-all")...)...),
+		"# Window-level WPCOM down/recovery parity and explanation evidence:",
+		telemetryReportCommand(binary, since),
 	)
 
 	rollbackComment := "# Restart the original v1 service with its original BUCKET_NO_MIN/BUCKET_NO_MAX config."
@@ -2122,8 +2153,17 @@ func runRolloutRehearsalPlan(out io.Writer, input io.Reader, opts rolloutRehears
 		rolloutCommand(binary, "rollout", "dynamic-check"),
 		rolloutCommand(binary, "rollout", "activity-check", "--since", since, "--require-all"),
 		rolloutCommand(binary, "rollout", "projection-drift", "--limit", "100"),
+		telemetryReportCommand(binary, since),
 	)
 	return nil
+}
+
+func telemetryReportCommand(binary, since string) string {
+	since = strings.TrimSpace(since)
+	if since == "" {
+		since = "15m"
+	}
+	return rolloutCommand(binary, "telemetry", "report", "--since", since)
 }
 
 type cutoverCheckOptions struct {

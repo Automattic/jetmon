@@ -111,6 +111,10 @@ func TestRenderTelemetryReportText(t *testing.T) {
 			ExpectedRecoveryTransitions: 1,
 			Attempts:                    3,
 			Retries:                     1,
+			DownAttempts:                2,
+			RecoveryAttempts:            1,
+			DownSuppressed:              0,
+			RecoverySuppressed:          0,
 			RetryRatePercent:            33.3,
 		},
 		SuggestedNextActions: []string{"Telemetry looks internally consistent for this window."},
@@ -131,6 +135,8 @@ func TestRenderTelemetryReportText(t *testing.T) {
 		"INFO verifier_replies=6 confirm_down=4 disagree=2",
 		"INFO outcome=false_alarm class=server count=1",
 		"INFO expected_down=2 expected_recovery=1 attempts=3",
+		"down_suppressed=0 recovery_suppressed=0",
+		"down_attempt_delta=0 recovery_attempt_delta=0",
 		"PASS explanation_gaps=0",
 	} {
 		if !strings.Contains(got, want) {
@@ -160,11 +166,13 @@ func TestRenderTelemetryReportWarnTextSimulation(t *testing.T) {
 		},
 		WPCOM: telemetryWPCOMReport{
 			ExpectedDownTransitions: 2,
+			DownAttempts:            1,
 			Attempts:                1,
 			AttemptDelta:            1,
+			DownAttemptDelta:        1,
 		},
 		ExplanationGaps: []telemetryGap{
-			{Name: "wpcom_attempt_delta", Severity: "amber", Count: 1, Detail: "missing WPCOM attempt"},
+			{Name: "wpcom_down_attempt_delta", Severity: "amber", Count: 1, Detail: "missing WPCOM confirmed-down attempt"},
 			{Name: "verifier_reply_missing_outcome", Severity: "amber", Count: 6, Detail: "missing verifier outcome"},
 		},
 	}
@@ -181,15 +189,88 @@ func TestRenderTelemetryReportWarnTextSimulation(t *testing.T) {
 	for _, want := range []string{
 		"WARN telemetry_status=warn explanation_gap_types=2 explanation_gap_rows=7",
 		"INFO highlight=\"WPCOM attempt delta is 1 after expected suppressions.\"",
+		"INFO highlight=\"WPCOM confirmed-down attempt delta is 1.\"",
 		"INFO highlight=\"1 WPCOM-eligible transition(s) landed in the final 60s of the window; rerun with a later --until before treating the delta as missing telemetry.\"",
 		"INFO highlight=\"Verifier reply outcome is missing for 6 audit row(s).\"",
-		"WARN gap=wpcom_attempt_delta count=1",
+		"WARN gap=wpcom_down_attempt_delta count=1",
 		"WARN gap=verifier_reply_missing_outcome count=6",
 		"INFO suggested_next_action=\"Rerun the report with a later --until to rule out window-edge WPCOM audit lag before investigating missing notifications.\"",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("warn simulation missing %q:\n%s", want, got)
 		}
+	}
+}
+
+func TestDerivedTelemetryGapsSplitsWPCOMDownAndRecoveryDeltas(t *testing.T) {
+	gaps := derivedTelemetryGaps(telemetryWPCOMReport{
+		ExpectedDownTransitions:     2,
+		ExpectedRecoveryTransitions: 1,
+		DownAttempts:                1,
+		RecoveryAttempts:            2,
+		DownAttemptDelta:            1,
+		RecoveryAttemptDelta:        -1,
+		AttemptDelta:                0,
+	}, telemetryVerifierReport{Replies: 1})
+
+	if len(gaps) != 2 {
+		t.Fatalf("gaps = %+v, want down and recovery parity gaps even when total delta is zero", gaps)
+	}
+	if gaps[0].Name != "wpcom_down_attempt_delta" || gaps[0].Count != 1 {
+		t.Fatalf("first gap = %+v, want down attempt delta", gaps[0])
+	}
+	if gaps[1].Name != "wpcom_recovery_attempt_delta" || gaps[1].Count != 1 {
+		t.Fatalf("second gap = %+v, want recovery attempt delta", gaps[1])
+	}
+}
+
+func TestClassifyTelemetryWPCOMSuppressionSplitsDownAndRecovery(t *testing.T) {
+	tests := []struct {
+		name         string
+		eventType    string
+		detail       string
+		wantDown     bool
+		wantRecovery bool
+	}{
+		{
+			name:      "down cooldown",
+			eventType: audit.EventAlertSuppressed,
+			detail:    "cooldown active",
+			wantDown:  true,
+		},
+		{
+			name:         "recovery cooldown",
+			eventType:    audit.EventAlertSuppressed,
+			detail:       "recovery cooldown active",
+			wantRecovery: true,
+		},
+		{
+			name:      "maintenance downtime",
+			eventType: audit.EventMaintenanceActive,
+			detail:    "downtime suppressed during maintenance",
+			wantDown:  true,
+		},
+		{
+			name:         "maintenance recovery",
+			eventType:    audit.EventMaintenanceActive,
+			detail:       "recovery suppressed during maintenance",
+			wantRecovery: true,
+		},
+		{
+			name:      "maintenance swallowed probe",
+			eventType: audit.EventMaintenanceActive,
+			detail:    "failure swallowed during maintenance",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotDown, gotRecovery := classifyTelemetryWPCOMSuppression(tt.eventType, tt.detail)
+			if gotDown != tt.wantDown || gotRecovery != tt.wantRecovery {
+				t.Fatalf("classifyTelemetryWPCOMSuppression(%q, %q) = (%v, %v), want (%v, %v)",
+					tt.eventType, tt.detail, gotDown, gotRecovery, tt.wantDown, tt.wantRecovery)
+			}
+		})
 	}
 }
 
@@ -348,9 +429,10 @@ func expectTelemetryReportQueries(t *testing.T, mock sqlmock.Sqlmock, start, end
 	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\).*event_type = \?.*created_at >= \?.*created_at < \?`).
 		WithArgs(audit.EventWPCOMRetry, start, end).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(int64(1)))
-	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\).*event_type IN.*created_at >= \?.*created_at < \?`).
+	mock.ExpectQuery(`(?s)SELECT event_type, COALESCE\(detail, ''\), COUNT\(\*\).*event_type IN.*created_at >= \?.*created_at < \?.*GROUP BY event_type, detail`).
 		WithArgs(audit.EventMaintenanceActive, audit.EventAlertSuppressed, start, end).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(int64(1)))
+		WillReturnRows(sqlmock.NewRows([]string{"event_type", "detail", "count"}).
+			AddRow(audit.EventAlertSuppressed, "recovery cooldown active", int64(1)))
 
 	mock.ExpectQuery(`(?s)SELECT COALESCE\(SUM\(CASE WHEN reason IN.*changed_at >= \?.*changed_at < \?`).
 		WithArgs(

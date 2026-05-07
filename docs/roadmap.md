@@ -18,6 +18,50 @@ production telemetry branches:
 
 No active candidate branch is queued here right now.
 
+### v2 Prelaunch Readiness TODO
+
+- [x] Bring the service handoff recommendations and rollout prelaunch checklist
+  into the repo as `docs/jetmon-v2-prelaunch-readiness.md`, linked from the
+  docs index and migration runbook.
+- [x] Draft the launch posture statement: v2 rollout is a backend replacement,
+  not a new customer-facing Monitor product launch.
+- [ ] Get WPCOM/Product approval for the launch posture statement before using
+  it as rollout-room or support language.
+- [x] Add first-pass local-search consumer inventory candidates for WPCOM,
+  Jetpack, Activity Log, Elasticsearch, support/explanation tools, hooks, and
+  XML-RPC monitor paths that still depend on legacy monitor fields or
+  notification behavior.
+- [ ] Get WPCOM/Jetpack/Support owner confirmation for the legacy consumer
+  inventory, including hidden consumers not present in the local sibling
+  checkouts and which paths still require legacy projection during rollout.
+- [x] Add a legacy consumer inventory table to the prelaunch tracker.
+- [x] Draft rollout stop/go threshold worksheet for projection drift, missed
+  checks, oldest selected age, stale heartbeats, WPCOM notification failures,
+  delivery backlog, API errors, MySQL errors, and verifier agreement.
+- [ ] Get Systems/Jetmon approval for exact rollout stop/go thresholds after
+  production-like rehearsal data is available.
+- [ ] Record projection drift and telemetry parity evidence on
+  production-like data before first canary.
+- [x] Add Jetmon-owned WPCOM notification parity tests for legacy payload shape,
+  confirmed-down payloads, recovery notifications, Seems Down no-notify
+  behavior, false-alarm no-notify behavior, and suppression no-duplicate
+  behavior.
+- [ ] Get WPCOM acceptance for WPCOM-owned notification parity cases: inactive
+  site behavior, URL mismatch behavior, blacklisted site behavior, current
+  home-URL-only handling, and legacy hook consumers.
+- [x] Update support and allowlist guidance for v2 `GET` checks,
+  `jetmon/2.0`, blocked/WAF cases, false positives, maintenance windows, and
+  `Unknown` as monitor-side uncertainty rather than downtime.
+- [x] Run local rollout docs verification plus same-server, fresh-server, and
+  rollback dry-run rehearsals with `make rollout-docs-verify`.
+- [x] Run VM lab snapshot rollout/rollback flow when available, and attach the
+  generated command plan for the chosen rollout mode.
+- [x] Draft canary cohort matrix and expansion/rollback threshold prompts for
+  WPCOM, Atomic, self-hosted Jetpack, agency, WAF/security-plugin,
+  historically noisy, high-traffic, and multi-endpoint sites.
+- [ ] Get WPCOM/Product/Support approval for the canary cohort matrix and exact
+  expansion/rollback thresholds.
+
 ### Production Telemetry Reports TODO
 
 - [x] Add `jetmon2 telemetry report` as a read-only production report over
@@ -28,6 +72,9 @@ No active candidate branch is queued here right now.
 - [x] Keep the report safe for production use by avoiding payload/credential
   dumps, bounding query runtime, using half-open report windows, and reporting
   only aggregate counts, durations, classes, and gap names.
+- [x] Include `jetmon2 telemetry report` in guided rollout, generated rehearsal
+  plans, and operator runbooks as read-only WPCOM parity evidence after the
+  full-round cutover gate and at fleet completion.
 - [ ] Revisit report thresholds and suggested actions after v2 has enough real
   production traffic to show which rates should be considered normal.
 
@@ -314,7 +361,7 @@ No active candidate branch is queued here right now.
   the new rehearsal verifier lands, then tighten any remaining wording that
   could cause operator copy/paste mistakes.
 - [x] Run the VM lab snapshot flow after the docs/tooling pass if the
-  `jetmon-deploy-test` host is available, and capture any mismatch between the
+  `jetmon-vm-host-1` host is available, and capture any mismatch between the
   text runbook and real guided execution.
 
 Recently completed candidate branches:

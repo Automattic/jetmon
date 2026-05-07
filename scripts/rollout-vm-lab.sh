@@ -828,14 +828,15 @@ cd /opt/jetmon2
 set -a
 . config/jetmon2.env
 set +a
-printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \\
+printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \\
 	'y' \\
 	'y' \\
 	'y' \\
 	'STOP $v1_vm $LAB_BUCKET_MIN-$LAB_BUCKET_MAX' \\
 	'START V2 $v2_vm $LAB_BUCKET_MIN-$LAB_BUCKET_MAX' \\
 	'y' \\
-	'READY' | sudo env \\
+	'READY' \\
+	'y' | sudo env \\
 	JETMON_CONFIG=/opt/jetmon2/config/config.json \\
 	DB_HOST="\$DB_HOST" DB_PORT="\$DB_PORT" DB_USER="\$DB_USER" DB_PASSWORD="\$DB_PASSWORD" DB_NAME="\$DB_NAME" \\
 	/opt/jetmon2/jetmon2 rollout guided \\
@@ -942,11 +943,12 @@ cd /opt/jetmon2
 set -a
 . config/jetmon2.env
 set +a
-printf '%s\n%s\n%s\n%s\n' \\
+printf '%s\n%s\n%s\n%s\n%s\n' \\
 	'RESUME' \\
 	'START V2 $v2_vm $LAB_BUCKET_MIN-$LAB_BUCKET_MAX' \\
 	'y' \\
-	'READY' | sudo env \\
+	'READY' \\
+	'y' | sudo env \\
 	JETMON_CONFIG=/opt/jetmon2/config/config.json \\
 	DB_HOST="\$DB_HOST" DB_PORT="\$DB_PORT" DB_USER="\$DB_USER" DB_PASSWORD="\$DB_PASSWORD" DB_NAME="\$DB_NAME" \\
 	/opt/jetmon2/jetmon2 rollout guided \\

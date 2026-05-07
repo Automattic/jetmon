@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/go-sql-driver/mysql"
-
+	"github.com/Automattic/jetmon/internal/audit"
 	"github.com/Automattic/jetmon/internal/checker"
 	"github.com/Automattic/jetmon/internal/config"
 	"github.com/Automattic/jetmon/internal/db"
@@ -20,6 +20,7 @@ import (
 	"github.com/Automattic/jetmon/internal/veriflier"
 	"github.com/Automattic/jetmon/internal/wpcom"
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/go-sql-driver/mysql"
 )
 
 var orchestratorConfigTestMu sync.Mutex
@@ -213,6 +214,78 @@ func TestSendNotificationRetriesAndUpdatesAlertTimestamp(t *testing.T) {
 		if got := rec.counter(stat); got != want {
 			t.Fatalf("%s = %d, want %d", stat, got, want)
 		}
+	}
+}
+
+func TestSendNotificationBuildsLegacyWPCOMPayload(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+
+	setTestConfig(t)
+
+	checkTime := time.Date(2026, 5, 3, 3, 0, 0, 0, time.UTC)
+	changeTime := time.Date(2026, 5, 3, 3, 1, 0, 0, time.UTC)
+	alertUpdateTime := time.Date(2026, 5, 3, 3, 1, 5, 0, time.UTC)
+	nowFunc = func() time.Time { return alertUpdateTime }
+
+	var got wpcom.Notification
+	wpcomNotifyFunc = func(_ *wpcom.Client, n wpcom.Notification) error {
+		got = n
+		return nil
+	}
+	var updatedAt time.Time
+	dbUpdateLastAlertSent = func(_ context.Context, blogID int64, ts time.Time) error {
+		if blogID != 123 {
+			t.Fatalf("updated alert blog_id = %d, want 123", blogID)
+		}
+		updatedAt = ts
+		return nil
+	}
+
+	o := &Orchestrator{
+		wpcom:    &wpcom.Client{},
+		hostname: "monitor-a",
+		ctx:      context.Background(),
+	}
+	res := checker.Result{
+		BlogID:    123,
+		Success:   false,
+		HTTPCode:  500,
+		ErrorCode: checker.ErrorConnect,
+		RTT:       123 * time.Millisecond,
+		Timestamp: checkTime,
+	}
+	vResults := []veriflier.CheckResult{
+		{Host: "verifier-us", Success: false, HTTPCode: 500, RTTMs: 456},
+		{Host: "verifier-eu", Success: true, HTTPCode: 200, RTTMs: 78},
+	}
+
+	o.sendNotification(
+		db.Site{BlogID: 123, MonitorURL: "https://example.com/"},
+		res,
+		statusConfirmedDown,
+		changeTime,
+		vResults,
+	)
+
+	want := wpcom.Notification{
+		BlogID:           123,
+		MonitorURL:       "https://example.com/",
+		StatusID:         statusConfirmedDown,
+		LastCheck:        "2026-05-03T03:00:00Z",
+		LastStatusChange: "2026-05-03T03:01:00Z",
+		StatusType:       "server",
+		Checks: []wpcom.CheckEntry{
+			{Type: 1, Host: "monitor-a", Status: statusDown, RTT: 123, Code: 500},
+			{Type: 2, Host: "verifier-us", Status: statusDown, RTT: 456, Code: 500},
+			{Type: 2, Host: "verifier-eu", Status: statusRunning, RTT: 78, Code: 200},
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("notification = %+v, want %+v", got, want)
+	}
+	if !updatedAt.Equal(alertUpdateTime) {
+		t.Fatalf("last alert update = %s, want %s", updatedAt, alertUpdateTime)
 	}
 }
 
@@ -1848,6 +1921,47 @@ func TestHandleRecoveryInMaintenance(t *testing.T) {
 	}, checkerResultSuccess(1))
 }
 
+func TestHandleRecoveryCooldownSuppressionIsAudited(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig(t)
+
+	sqlDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer sqlDB.Close()
+	audit.Init(sqlDB)
+	t.Cleanup(func() { audit.Init(nil) })
+
+	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error {
+		t.Fatal("notification should not be sent during cooldown")
+		return nil
+	}
+
+	recent := time.Now().UTC().Add(-5 * time.Minute)
+	mock.ExpectExec(`INSERT INTO jetmon_audit_log`).
+		WithArgs(int64(1), nil, audit.EventAlertSuppressed, "local", "recovery cooldown active", nil).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		ctx:      context.Background(),
+		hostname: "local",
+	}
+
+	o.handleRecovery(db.Site{
+		BlogID:          1,
+		SiteStatus:      statusConfirmedDown,
+		LastAlertSentAt: &recent,
+	}, checkerResultSuccess(1))
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
 func TestProcessResultsLogsErrorsFromDB(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
@@ -1958,6 +2072,30 @@ func TestHandleFailureEmitsSeemsDownMetrics(t *testing.T) {
 	}
 	if got := rec.timingCount("detection.first_failure_to_seems_down.time"); got != 1 {
 		t.Fatalf("first failure timing count = %d, want 1", got)
+	}
+}
+
+func TestHandleFailureDoesNotNotifyWPCOMBeforeConfirmation(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig(t)
+
+	var notifyCalls int
+	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error {
+		notifyCalls++
+		return nil
+	}
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local-host",
+		ctx:      context.Background(),
+	}
+	o.handleFailure(db.Site{BlogID: 42, MonitorURL: "https://example.com", SiteStatus: statusRunning}, checkerResultFailure(42))
+
+	if notifyCalls != 0 {
+		t.Fatalf("notify calls = %d, want 0 before verifier confirmation", notifyCalls)
 	}
 }
 
