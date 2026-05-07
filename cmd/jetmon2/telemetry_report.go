@@ -544,19 +544,37 @@ func queryTelemetryWPCOM(ctx context.Context, conn *sql.DB, window telemetryWind
 		return telemetryWPCOMReport{}, fmt.Errorf("query WPCOM retries: %w", err)
 	}
 
-	err = conn.QueryRowContext(ctx, `
-		SELECT COUNT(*),
-		       COALESCE(SUM(CASE WHEN event_type = ? OR detail LIKE 'downtime suppressed%' THEN 1 ELSE 0 END), 0),
-		       COALESCE(SUM(CASE WHEN detail LIKE 'recovery suppressed%' OR detail = 'recovery cooldown active' THEN 1 ELSE 0 END), 0)
+	rows, err := conn.QueryContext(ctx, `
+		SELECT event_type, COALESCE(detail, ''), COUNT(*)
 		  FROM jetmon_audit_log
 		 WHERE event_type IN (?, ?)
 		   AND created_at >= ?
-		   AND created_at < ?`,
-		audit.EventAlertSuppressed,
+		   AND created_at < ?
+		 GROUP BY event_type, detail`,
 		audit.EventMaintenanceActive, audit.EventAlertSuppressed, window.Since, window.Until,
-	).Scan(&report.Suppressed, &report.DownSuppressed, &report.RecoverySuppressed)
+	)
 	if err != nil {
 		return telemetryWPCOMReport{}, fmt.Errorf("query WPCOM suppressions: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var eventType, detail string
+		var count int64
+		if err := rows.Scan(&eventType, &detail, &count); err != nil {
+			return telemetryWPCOMReport{}, fmt.Errorf("scan WPCOM suppression: %w", err)
+		}
+		report.Suppressed += count
+		down, recovery := classifyTelemetryWPCOMSuppression(eventType, detail)
+		if down {
+			report.DownSuppressed += count
+		}
+		if recovery {
+			report.RecoverySuppressed += count
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return telemetryWPCOMReport{}, fmt.Errorf("iterate WPCOM suppressions: %w", err)
 	}
 
 	report.DownAttemptDelta = report.ExpectedDownTransitions - report.DownAttempts - report.DownSuppressed
@@ -566,6 +584,27 @@ func queryTelemetryWPCOM(ctx context.Context, conn *sql.DB, window telemetryWind
 		report.RetryRatePercent = float64(report.Retries) * 100 / float64(report.Attempts)
 	}
 	return report, nil
+}
+
+func classifyTelemetryWPCOMSuppression(eventType, detail string) (down bool, recovery bool) {
+	detail = strings.TrimSpace(detail)
+	switch eventType {
+	case audit.EventMaintenanceActive:
+		if strings.HasPrefix(detail, "downtime suppressed") {
+			return true, false
+		}
+		if strings.HasPrefix(detail, "recovery suppressed") {
+			return false, true
+		}
+	case audit.EventAlertSuppressed:
+		switch {
+		case detail == "cooldown active" || strings.HasPrefix(detail, "downtime suppressed"):
+			return true, false
+		case detail == "recovery cooldown active" || strings.HasPrefix(detail, "recovery suppressed"):
+			return false, true
+		}
+	}
+	return false, false
 }
 
 func queryTelemetryWindowEdge(ctx context.Context, conn *sql.DB, window telemetryWindow, lookback time.Duration) (telemetryWindowEdge, error) {

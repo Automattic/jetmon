@@ -224,6 +224,56 @@ func TestDerivedTelemetryGapsSplitsWPCOMDownAndRecoveryDeltas(t *testing.T) {
 	}
 }
 
+func TestClassifyTelemetryWPCOMSuppressionSplitsDownAndRecovery(t *testing.T) {
+	tests := []struct {
+		name         string
+		eventType    string
+		detail       string
+		wantDown     bool
+		wantRecovery bool
+	}{
+		{
+			name:      "down cooldown",
+			eventType: audit.EventAlertSuppressed,
+			detail:    "cooldown active",
+			wantDown:  true,
+		},
+		{
+			name:         "recovery cooldown",
+			eventType:    audit.EventAlertSuppressed,
+			detail:       "recovery cooldown active",
+			wantRecovery: true,
+		},
+		{
+			name:      "maintenance downtime",
+			eventType: audit.EventMaintenanceActive,
+			detail:    "downtime suppressed during maintenance",
+			wantDown:  true,
+		},
+		{
+			name:         "maintenance recovery",
+			eventType:    audit.EventMaintenanceActive,
+			detail:       "recovery suppressed during maintenance",
+			wantRecovery: true,
+		},
+		{
+			name:      "maintenance swallowed probe",
+			eventType: audit.EventMaintenanceActive,
+			detail:    "failure swallowed during maintenance",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotDown, gotRecovery := classifyTelemetryWPCOMSuppression(tt.eventType, tt.detail)
+			if gotDown != tt.wantDown || gotRecovery != tt.wantRecovery {
+				t.Fatalf("classifyTelemetryWPCOMSuppression(%q, %q) = (%v, %v), want (%v, %v)",
+					tt.eventType, tt.detail, gotDown, gotRecovery, tt.wantDown, tt.wantRecovery)
+			}
+		})
+	}
+}
+
 func TestRenderTelemetryReportJSON(t *testing.T) {
 	report := telemetryReport{
 		Command:         "telemetry report",
@@ -379,9 +429,10 @@ func expectTelemetryReportQueries(t *testing.T, mock sqlmock.Sqlmock, start, end
 	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\).*event_type = \?.*created_at >= \?.*created_at < \?`).
 		WithArgs(audit.EventWPCOMRetry, start, end).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(int64(1)))
-	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\).*event_type = \?.*detail LIKE 'recovery suppressed%'.*event_type IN.*created_at >= \?.*created_at < \?`).
-		WithArgs(audit.EventAlertSuppressed, audit.EventMaintenanceActive, audit.EventAlertSuppressed, start, end).
-		WillReturnRows(sqlmock.NewRows([]string{"count", "down", "recovery"}).AddRow(int64(1), int64(0), int64(1)))
+	mock.ExpectQuery(`(?s)SELECT event_type, COALESCE\(detail, ''\), COUNT\(\*\).*event_type IN.*created_at >= \?.*created_at < \?.*GROUP BY event_type, detail`).
+		WithArgs(audit.EventMaintenanceActive, audit.EventAlertSuppressed, start, end).
+		WillReturnRows(sqlmock.NewRows([]string{"event_type", "detail", "count"}).
+			AddRow(audit.EventAlertSuppressed, "recovery cooldown active", int64(1)))
 
 	mock.ExpectQuery(`(?s)SELECT COALESCE\(SUM\(CASE WHEN reason IN.*changed_at >= \?.*changed_at < \?`).
 		WithArgs(
