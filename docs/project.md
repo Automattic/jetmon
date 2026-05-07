@@ -129,6 +129,15 @@ Add `maintenance_start` and `maintenance_end` (nullable `DATETIME`) columns to `
 **Granular Timing Breakdown**
 Go's `net/http/httptrace` provides discrete callbacks for DNS start/done, TCP connect start/done, TLS handshake start/done, request written, and first response byte. Each check records composite RTT plus DNS, TCP, TLS, and TTFB timings. The raw samples are stored in `jetmon_check_history` for response-time trending and API statistics; scheduler-level StatsD metrics report round/page phase timing and write volume.
 
+**Recursive DNS Monitoring**
+Jetmon can run a separate recursive DNS probe stream on a staggered schedule.
+DNS probes are stored in `jetmon_dns_probe_state`, auto-size their worker/batch
+limits from the HTTP worker pool by default, and open Degraded `dns` events
+with NXDOMAIN / SERVFAIL / timeout / resolver-error evidence when resolution
+fails. The first rollout slice is intentionally advisory: DNS events do not
+update the legacy HTTP `site_status` projection and do not send WPCOM downtime
+notifications until product semantics for DNS-to-site rollup are finalized.
+
 When the HTTP probe fails during resolver lookup, Jetmon records structured DNS
 diagnostics in event metadata when Go exposes them: NXDOMAIN, SERVFAIL, timeout,
 or a generic resolver error, plus the queried name and resolver server when
@@ -366,8 +375,13 @@ Benefits over the current static configuration:
 
 These are intentionally out of scope for the initial rewrite. They represent the path to making Jetmon 2 a fully competitive standalone monitoring platform rather than a reliable internal Jetpack service.
 
-**DNS Monitoring**
-Check that a domain resolves to expected IPs on a schedule, using Go's `net.LookupHost()`. Alert when the answer changes or when resolution fails. Particularly valuable for detecting DNS hijacking and nameserver misconfigurations before they cause HTTP failures. New monitor type stored as a separate DB table.
+**Advanced DNS Monitoring**
+Build on the recursive DNS probe stream with explicit DNS-record expectations,
+DNSSEC checks, split-horizon checks, full CNAME-chain capture, authoritative
+nameserver probes, and DNS latency baselines. These need product semantics for
+which failures are advisory, which roll up to site-level downtime, and how
+monitor-side resolver impairment is reported as Unknown rather than customer
+site downtime.
 
 **TCP Port Monitoring**
 Attempt a TCP connection to an arbitrary host:port on a schedule. No HTTP layer — a successful connection is "up". Useful for database ports, SMTP, and custom application services. A small extension of the existing connection logic.

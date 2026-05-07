@@ -225,6 +225,83 @@ func TestCountDueSitesForBucketRangeVariableIntervalsUsesNextCheckAt(t *testing.
 	}
 }
 
+func TestInitialDNSNextCheckAtSpreadsIntoFuture(t *testing.T) {
+	now := time.Date(2026, 5, 1, 12, 7, 0, 0, time.UTC)
+	got := InitialDNSNextCheckAt(now, 900, 42, "example.com")
+	if !got.After(now) {
+		t.Fatalf("InitialDNSNextCheckAt = %s, want after %s", got, now)
+	}
+	if got.Sub(now) > 900*time.Second {
+		t.Fatalf("InitialDNSNextCheckAt delta = %s, want <= 15m", got.Sub(now))
+	}
+	again := InitialDNSNextCheckAt(now, 900, 42, "example.com")
+	if !got.Equal(again) {
+		t.Fatalf("InitialDNSNextCheckAt not stable: %s != %s", got, again)
+	}
+}
+
+func TestGetDueDNSProbesScansRows(t *testing.T) {
+	mock, cleanup := withMockDB(t)
+	defer cleanup()
+
+	now := time.Now().UTC()
+	rows := sqlmock.NewRows([]string{
+		"blog_id", "bucket_no", "monitor_url", "hostname", "interval_seconds", "last_checked_at", "next_check_at",
+	}).AddRow(int64(42), 7, "https://example.com", "example.com", 900, now.Add(-time.Hour), now.Add(-time.Minute))
+
+	mock.ExpectQuery("jetmon_dns_probe_state").
+		WithArgs(0, 99, 10).
+		WillReturnRows(rows)
+
+	targets, err := GetDueDNSProbes(context.Background(), 0, 99, 10)
+	if err != nil {
+		t.Fatalf("GetDueDNSProbes: %v", err)
+	}
+	if len(targets) != 1 || targets[0].BlogID != 42 || targets[0].Hostname != "example.com" {
+		t.Fatalf("targets = %+v", targets)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestUpdateDNSProbeStatesBatchesJSONEvidence(t *testing.T) {
+	mock, cleanup := withMockDB(t)
+	defer cleanup()
+
+	now := time.Now().UTC()
+	mock.ExpectExec("INSERT INTO jetmon_dns_probe_state").
+		WithArgs(
+			int64(42),
+			"example.com",
+			900,
+			now,
+			now.Add(15*time.Minute),
+			"ok",
+			nil,
+			`["192.0.2.10"]`,
+			`["origin.example.com"]`,
+		).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	err := UpdateDNSProbeStates(context.Background(), []DNSProbeStateUpdate{{
+		BlogID:          42,
+		Hostname:        "example.com",
+		IntervalSeconds: 900,
+		CheckedAt:       now,
+		NextCheckAt:     now.Add(15 * time.Minute),
+		Result:          "ok",
+		Addresses:       []string{"192.0.2.10"},
+		CNAMEChain:      []string{"origin.example.com"},
+	}})
+	if err != nil {
+		t.Fatalf("UpdateDNSProbeStates: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestCountRecentlyCheckedActiveSitesForBucketRange(t *testing.T) {
 	mock, cleanup := withMockDB(t)
 	defer cleanup()

@@ -484,6 +484,24 @@ var migrations = []migration{
 	// strings without overloading one column.
 	{33, `ALTER TABLE jetpack_monitor_sites
 		ADD COLUMN forbidden_keywords JSON NULL AFTER forbidden_keyword`},
+
+	// Migration 34 stores the independent DNS probe schedule and latest DNS
+	// evidence. Keeping this outside jetpack_monitor_sites avoids putting DNS
+	// cadence writes on the HTTP scheduler's hot row.
+	{34, `CREATE TABLE IF NOT EXISTS jetmon_dns_probe_state (
+		blog_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+		hostname VARCHAR(255) NOT NULL DEFAULT '',
+		interval_seconds INT UNSIGNED NOT NULL,
+		last_checked_at DATETIME NULL,
+		next_check_at DATETIME NOT NULL,
+		last_result VARCHAR(32) NULL,
+		last_error VARCHAR(255) NULL,
+		last_addresses JSON NULL,
+		last_cname_chain JSON NULL,
+		updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+		INDEX idx_dns_next_check (next_check_at, blog_id),
+		INDEX idx_dns_hostname (hostname)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
 }
 
 // Migrate applies all pending migrations idempotently.

@@ -108,27 +108,35 @@ No active candidate branch is queued here right now.
   stable in production because dynamic WordPress pages need normalization,
   training, approval/reset workflows, and operator-visible evidence before
   Jetmon can safely alert on "content changed unexpectedly."
-- [x] Improve DNS diagnostics on HTTP lookup failures before building explicit
-  DNS monitors. The v2 HTTP checker already records DNS timing and classifies
-  lookup failures as connect failures; event metadata now distinguishes
-  NXDOMAIN, SERVFAIL, timeout, and resolver errors where Go/runtime resolver
-  data can support it. This is the recommended near-term step because it helps
-  HEs explain failures without creating a new monitor type.
-- [ ] Track DNS-specific benchmark scenarios separately from HTTP DNS failures.
-  Explicit DNS-record, DNSSEC, split-horizon, CNAME-chain, authoritative
-  nameserver, and DNS-latency monitors need a dedicated check type and event
-  taxonomy before they should be exposed as production uptime signals. Defer
-  this larger feature until the product semantics are designed: some DNS
-  failures should be `Warning` or `Degraded`, some should roll up to site-level
-  `Down`, and monitor-side resolver impairment must remain `Unknown`.
-- [ ] Decide whether Jetmon should add an explicit DNS monitor that bypasses or
-  complements recursive resolver cache visibility. The 2026-05-05 all-services
-  gapfill run showed every service, including Jetmon v2, missing short
-  authoritative DNS failure windows, which is consistent with recursive cache
-  TTLs hiding the outage from HTTP probes. This needs product semantics before
-  implementation: direct authoritative checks can catch short DNS outages, but
-  they also increase query load and can report a failure that many end users do
-  not observe until caches expire.
+- [x] Add the first explicit DNS monitor slice as an independent recursive
+  DNS probe stream. The implementation has its own schedule table, jittered
+  initial due times, auto-sized batch/worker guardrails, latest resolver
+  evidence, and `dns` events that do not mutate the legacy HTTP up/down
+  projection or send WPCOM downtime notifications yet.
+- [x] Harden the DNS monitor after the focused uptime-bench smoke test:
+  configurable recursive resolvers for controlled test/prod resolver paths,
+  CNAME evidence preserved on address-lookup failures, DNS status counters, and
+  causal links from active HTTP events to DNS root-cause events when both are
+  open for the same site.
+- [x] Improve DNS diagnostics on HTTP lookup failures. The v2 HTTP checker
+  already records DNS timing and classifies lookup failures as connect failures;
+  event metadata now distinguishes NXDOMAIN, SERVFAIL, timeout, and resolver
+  errors where Go/runtime resolver data can support it. This remains useful
+  even with explicit DNS probes because it ties a failed HTTP check directly to
+  the resolver failure seen on that request path.
+- [ ] Expand DNS-specific benchmark coverage beyond the first recursive probe
+  stream. DNS-record expectation checks, DNSSEC, split-horizon, full CNAME-chain
+  capture, authoritative nameserver probes, and DNS-latency monitors need
+  product semantics before they should be exposed as production uptime signals:
+  some DNS failures should be `Warning` or `Degraded`, some should roll up to
+  site-level `Down`, and monitor-side resolver impairment must remain `Unknown`.
+- [ ] Decide whether Jetmon should later add authoritative DNS probes that
+  bypass or complement recursive resolver cache visibility. The 2026-05-05
+  all-services gapfill run showed every service, including Jetmon v2, missing
+  short authoritative DNS failure windows, which is consistent with recursive
+  cache TTLs hiding the outage from HTTP probes. Direct authoritative checks can
+  catch short DNS outages, but they also increase query load and can report a
+  failure that many end users do not observe until caches expire.
 - [ ] Validate geo-scoped benchmark assumptions before changing Jetmon
   production behavior for `http-geo-503`. Confirm the probe source ranges,
   intended Jetmon region semantics, and support story for partial regional

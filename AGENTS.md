@@ -160,6 +160,9 @@ Copy `config/config-sample.json` to `config/config.json`. All keys from the orig
 - `LEGACY_STATUS_PROJECTION_ENABLE`: Keep v1 `site_status` / `last_status_change` projection updated during shadow-v2-state migration
 - `LOG_FORMAT`: `text` (default, drop-in compatible) or `json` (structured logging)
 - `USE_VARIABLE_CHECK_INTERVALS`: Respect per-site `check_interval`; the scheduler uses a short idle poll and maintained `next_check_at` timestamps control which sites are ready
+- `DNS_MONITOR_ENABLE`: Enable the independent recursive DNS probe stream
+- `DNS_MONITOR_INTERVAL_SEC`: Per-site DNS cadence; initial schedule rows are hash-jittered across this interval
+- `DNS_MONITOR_BATCH_SIZE`, `DNS_MONITOR_MAX_WORKERS`, `DNS_MONITOR_SCHEDULE_BATCH_SIZE`: Optional DNS guardrails; 0 means auto-size from `NUM_WORKERS`
 - `DASHBOARD_PORT`: Internal port for the operator dashboard (0 to disable)
 - `DEBUG_PORT`: localhost-only pprof port, default 6060 (0 to disable; never exposed remotely)
 
@@ -205,6 +208,15 @@ Every HTTPS check inspects `tls.ConnectionState` for:
 - Certificate `NotAfter` — alerts at 30, 14, and 7 days before expiry
 - TLS version — flags TLS 1.0/1.1 as deprecated
 - Cipher suite — recorded in audit log
+
+**DNS Monitoring:**
+When `DNS_MONITOR_ENABLE` is true, Jetmon runs a separate recursive DNS probe
+stream from `jetmon_dns_probe_state`. DNS schedules are spread over
+`DNS_MONITOR_INTERVAL_SEC`, lookup workers and batches auto-size from
+`NUM_WORKERS` by default, and failures open Degraded `dns` events with resolver
+evidence (NXDOMAIN, SERVFAIL, timeout, resolver error). The first DNS rollout
+slice is advisory: DNS events do not update the legacy HTTP `site_status`
+projection and do not send WPCOM downtime notifications.
 
 **Downtime Verification:**
 1. Local check fails → open a `Seems Down` event (severity 3) and enter the local retry queue. The event opens on the **first** failure so `started_at` reflects the actual incident start. Subsequent failures during retry are no-ops on the events table (idempotent dedup).
@@ -256,6 +268,7 @@ New tables introduced by Jetmon 2:
 | `jetmon_event_transitions` | Append-only history of every mutation to `jetmon_events` (open, severity change, state change, cause link, close) |
 | `jetmon_audit_log` | Operational trail — WPCOM notifications, retry dispatch, verifier RPCs, alert/maintenance suppression, config reloads. Site-state changes do **not** flow through here |
 | `jetmon_check_history` | RTT and timing samples for trending |
+| `jetmon_dns_probe_state` | Independent DNS probe schedule plus latest recursive resolver evidence |
 | `jetmon_false_positives` | Veriflier non-confirmation events |
 
 ## Multi-Host Bucket Coordination

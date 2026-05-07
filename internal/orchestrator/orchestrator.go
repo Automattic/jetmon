@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
+	"net/url"
 	runtimemetrics "runtime/metrics"
 	"sort"
 	"strings"
@@ -19,6 +21,7 @@ import (
 	"github.com/Automattic/jetmon/internal/checker"
 	"github.com/Automattic/jetmon/internal/config"
 	"github.com/Automattic/jetmon/internal/db"
+	"github.com/Automattic/jetmon/internal/dnsprobe"
 	"github.com/Automattic/jetmon/internal/eventstore"
 	"github.com/Automattic/jetmon/internal/metrics"
 	"github.com/Automattic/jetmon/internal/veriflier"
@@ -40,6 +43,7 @@ const (
 // constants alongside.
 const (
 	checkTypeHTTP          = "http"
+	checkTypeDNS           = "dns"
 	checkTypeTLSExpiry     = "tls_expiry"
 	checkTypeTLSDeprecated = "tls_deprecated"
 )
@@ -83,7 +87,12 @@ var (
 	dbRecordFalsePositive  = db.RecordFalsePositive
 	dbUpdateLastAlertSent  = db.UpdateLastAlertSent
 	dbCountDueSites        = db.CountDueSitesForBucketRange
+	dbEnsureDNSSchedules   = db.EnsureDNSProbeSchedules
+	dbGetDueDNSProbes      = db.GetDueDNSProbes
+	dbCountDueDNSProbes    = db.CountDueDNSProbes
+	dbUpdateDNSStates      = db.UpdateDNSProbeStates
 	dbCountProjectionDrift = db.CountLegacyProjectionDrift
+	dnsProbeCheckFunc      = dnsprobe.Check
 	veriflierCheckFunc     = func(c *veriflier.VeriflierClient, ctx stdctx.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
 		return c.Check(ctx, req)
 	}
@@ -146,6 +155,19 @@ type roundSummary struct {
 	checkRedirects     int
 	checkKeywords      int
 	checkTLSDeprecated int
+
+	dnsSchedulesCreated int
+	dnsSelected         int
+	dnsCompleted        int
+	dnsFailures         int
+	dnsDueAtStart       int
+	dnsDueRemaining     int
+	dnsScheduleErrors   int
+	dnsFetchErrors      int
+	dnsUpdateErrors     int
+	dnsEventErrors      int
+	dnsDispatchDuration time.Duration
+	dnsProcessDuration  time.Duration
 }
 
 func (s *roundSummary) add(other roundSummary) {
@@ -185,6 +207,18 @@ func (s *roundSummary) add(other roundSummary) {
 	s.checkRedirects += other.checkRedirects
 	s.checkKeywords += other.checkKeywords
 	s.checkTLSDeprecated += other.checkTLSDeprecated
+	s.dnsSchedulesCreated += other.dnsSchedulesCreated
+	s.dnsSelected += other.dnsSelected
+	s.dnsCompleted += other.dnsCompleted
+	s.dnsFailures += other.dnsFailures
+	s.dnsDueAtStart += other.dnsDueAtStart
+	s.dnsDueRemaining += other.dnsDueRemaining
+	s.dnsScheduleErrors += other.dnsScheduleErrors
+	s.dnsFetchErrors += other.dnsFetchErrors
+	s.dnsUpdateErrors += other.dnsUpdateErrors
+	s.dnsEventErrors += other.dnsEventErrors
+	s.dnsDispatchDuration += other.dnsDispatchDuration
+	s.dnsProcessDuration += other.dnsProcessDuration
 	if other.oldestSelectedAge > s.oldestSelectedAge {
 		s.oldestSelectedAge = other.oldestSelectedAge
 	}
@@ -222,6 +256,11 @@ type siteCheckResult struct {
 	blogID int64
 	site   db.Site
 	res    checker.Result
+}
+
+type dnsCheckResult struct {
+	target db.DNSProbeTarget
+	res    dnsprobe.Result
 }
 
 // Orchestrator drives the main check loop.
@@ -433,6 +472,10 @@ func (o *Orchestrator) runRound() roundSummary {
 		}
 	}
 
+	if cfg.DNSMonitorEnable && !summary.interrupted {
+		summary.add(o.runDNSProbes(cfg))
+	}
+
 	if cfg.UseVariableCheckIntervals && dueCountsSampled {
 		if due, err := dbCountDueSites(o.ctx, o.bucketMin, o.bucketMax, true); err != nil {
 			summary.dueCountErrors++
@@ -522,6 +565,349 @@ process:
 	emitPageMetrics(summary)
 	logPageSummary(pageNumber, len(sites), summary)
 	return summary
+}
+
+func (o *Orchestrator) runDNSProbes(cfg *config.Config) roundSummary {
+	summary := roundSummary{}
+	now := nowFunc().UTC()
+	intervalSec := cfg.DNSMonitorIntervalSec
+	if intervalSec <= 0 {
+		intervalSec = 900
+	}
+
+	if due, err := dbCountDueDNSProbes(o.ctx, o.bucketMin, o.bucketMax); err != nil {
+		summary.dnsFetchErrors++
+		log.Printf("orchestrator: count due DNS probes failed: %v", err)
+	} else {
+		summary.dnsDueAtStart = due
+	}
+
+	if created, err := dbEnsureDNSSchedules(
+		o.ctx,
+		o.bucketMin,
+		o.bucketMax,
+		dnsScheduleBatchSize(cfg),
+		intervalSec,
+		now,
+	); err != nil {
+		summary.dnsScheduleErrors++
+		log.Printf("orchestrator: ensure DNS probe schedules failed: %v", err)
+	} else {
+		summary.dnsSchedulesCreated = created
+	}
+
+	targets, err := dbGetDueDNSProbes(o.ctx, o.bucketMin, o.bucketMax, dnsBatchSize(cfg))
+	if err != nil {
+		summary.dnsFetchErrors++
+		log.Printf("orchestrator: fetch due DNS probes failed: %v", err)
+		return summary
+	}
+	if len(targets) == 0 {
+		return summary
+	}
+	summary.dnsSelected = len(targets)
+
+	start := time.Now()
+	results := o.checkDNSTargets(cfg, targets)
+	summary.dnsDispatchDuration = time.Since(start)
+	summary.dnsCompleted = len(results)
+	for _, result := range results {
+		if !result.res.Success {
+			summary.dnsFailures++
+		}
+	}
+
+	processStart := time.Now()
+	o.processDNSResults(cfg, results, &summary)
+	summary.dnsProcessDuration = time.Since(processStart)
+
+	if due, err := dbCountDueDNSProbes(o.ctx, o.bucketMin, o.bucketMax); err != nil {
+		summary.dnsFetchErrors++
+		log.Printf("orchestrator: count remaining DNS probes failed: %v", err)
+	} else {
+		summary.dnsDueRemaining = due
+	}
+	logDNSSummary(summary)
+	return summary
+}
+
+func (o *Orchestrator) checkDNSTargets(cfg *config.Config, targets []db.DNSProbeTarget) []dnsCheckResult {
+	workerCount := min(dnsWorkerLimit(cfg), len(targets))
+	if workerCount < 1 {
+		workerCount = 1
+	}
+	jobs := make(chan db.DNSProbeTarget)
+	results := make(chan dnsCheckResult, len(targets))
+	var wg sync.WaitGroup
+	for range workerCount {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for target := range jobs {
+				hostname := hostnameForDNSTarget(target)
+				req := dnsprobe.Request{
+					BlogID:        target.BlogID,
+					Hostname:      hostname,
+					Timeout:       time.Duration(cfg.DNSMonitorTimeoutMS) * time.Millisecond,
+					ResolverAddrs: cfg.DNSMonitorResolvers,
+				}
+				results <- dnsCheckResult{
+					target: target,
+					res:    dnsProbeCheckFunc(o.ctx, req),
+				}
+			}
+		}()
+	}
+	go func() {
+		defer close(jobs)
+		for _, target := range targets {
+			select {
+			case jobs <- target:
+			case <-o.ctx.Done():
+				return
+			}
+		}
+	}()
+	wg.Wait()
+	close(results)
+
+	out := make([]dnsCheckResult, 0, len(targets))
+	for result := range results {
+		out = append(out, result)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].target.BlogID < out[j].target.BlogID
+	})
+	return out
+}
+
+func (o *Orchestrator) processDNSResults(cfg *config.Config, results []dnsCheckResult, summary *roundSummary) {
+	updates := make([]db.DNSProbeStateUpdate, 0, len(results))
+	for _, record := range results {
+		emitCounter("dns.check."+metricSegment(record.res.Status)+".count", 1)
+		checkedAt := record.res.Timestamp
+		if checkedAt.IsZero() {
+			checkedAt = nowFunc().UTC()
+		}
+		intervalSec := record.target.IntervalSeconds
+		if intervalSec <= 0 {
+			intervalSec = cfg.DNSMonitorIntervalSec
+		}
+		if intervalSec <= 0 {
+			intervalSec = 900
+		}
+		updates = append(updates, db.DNSProbeStateUpdate{
+			BlogID:          record.target.BlogID,
+			Hostname:        record.res.Hostname,
+			IntervalSeconds: intervalSec,
+			CheckedAt:       checkedAt,
+			NextCheckAt:     checkedAt.Add(time.Duration(intervalSec) * time.Second),
+			Result:          record.res.Status,
+			Error:           record.res.Error,
+			Addresses:       record.res.Addresses,
+			CNAMEChain:      record.res.CNAMEChain,
+		})
+		if err := o.handleDNSResult(record.res); err != nil {
+			summary.dnsEventErrors++
+			log.Printf("orchestrator: DNS event update blog_id=%d hostname=%s status=%s: %v",
+				record.target.BlogID, record.res.Hostname, record.res.Status, err)
+		}
+	}
+	if err := dbUpdateDNSStates(o.ctx, updates); err != nil {
+		summary.dnsUpdateErrors++
+		log.Printf("orchestrator: update DNS probe states rows=%d: %v", len(updates), err)
+	}
+}
+
+func (o *Orchestrator) handleDNSResult(res dnsprobe.Result) error {
+	if res.Success {
+		return o.closeDNSIfOpen(res)
+	}
+	meta, _ := json.Marshal(dnsEventMetadata(res))
+	tx, err := o.ev().Begin(o.ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	openRes, err := tx.Open(o.ctx, eventstore.OpenInput{
+		Identity: eventstore.Identity{
+			BlogID:    res.BlogID,
+			CheckType: checkTypeDNS,
+		},
+		Severity: eventstore.SeverityDegraded,
+		State:    eventstore.StateDegraded,
+		Source:   o.hostname,
+		Metadata: meta,
+	})
+	if err != nil {
+		return err
+	}
+	linked := false
+	if openRes.EventID > 0 {
+		linked, err = o.linkActiveHTTPToDNSCause(tx, res.BlogID, openRes.EventID)
+		if err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit DNS event: %w", err)
+	}
+	if openRes.Opened {
+		emitCounter("dns.event.open.count", 1)
+		emitCounter("dns.event.open."+metricSegment(res.Status)+".count", 1)
+	}
+	if linked {
+		emitCounter("dns.event.cause_linked.count", 1)
+	}
+	return nil
+}
+
+func (o *Orchestrator) closeDNSIfOpen(res dnsprobe.Result) error {
+	tx, err := o.ev().Begin(o.ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	active, err := tx.FindActiveByBlog(o.ctx, res.BlogID, checkTypeDNS)
+	if errors.Is(err, eventstore.ErrEventNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	meta, _ := json.Marshal(dnsEventMetadata(res))
+	if err := tx.Close(o.ctx, active.ID, eventstore.ReasonProbeCleared, o.hostname, meta); err != nil {
+		return err
+	}
+	unlinked, err := o.unlinkHTTPIfCausedByDNS(tx, res.BlogID, active.ID)
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit DNS recovery: %w", err)
+	}
+	emitCounter("dns.event.close.count", 1)
+	if unlinked {
+		emitCounter("dns.event.cause_unlinked.count", 1)
+	}
+	return nil
+}
+
+func dnsEventMetadata(res dnsprobe.Result) map[string]any {
+	return map[string]any{
+		"hostname":    res.Hostname,
+		"status":      res.Status,
+		"error":       res.Error,
+		"addresses":   res.Addresses,
+		"cname_chain": res.CNAMEChain,
+		"duration_ms": res.Duration.Milliseconds(),
+		"checked_at":  res.Timestamp.UTC().Format(time.RFC3339),
+		"resolver":    resolverLabel(res),
+	}
+}
+
+func (o *Orchestrator) linkActiveHTTPToDNSCause(tx *eventstore.Tx, blogID, dnsEventID int64) (bool, error) {
+	httpEvent, err := tx.FindActiveByBlog(o.ctx, blogID, checkTypeHTTP)
+	if errors.Is(err, eventstore.ErrEventNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if httpEvent.CauseEventID != nil && *httpEvent.CauseEventID != dnsEventID {
+		return false, nil
+	}
+	return tx.LinkCause(o.ctx, httpEvent.ID, dnsEventID, o.hostname)
+}
+
+func (o *Orchestrator) unlinkHTTPIfCausedByDNS(tx *eventstore.Tx, blogID, dnsEventID int64) (bool, error) {
+	httpEvent, err := tx.FindActiveByBlog(o.ctx, blogID, checkTypeHTTP)
+	if errors.Is(err, eventstore.ErrEventNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if httpEvent.CauseEventID == nil || *httpEvent.CauseEventID != dnsEventID {
+		return false, nil
+	}
+	return tx.LinkCause(o.ctx, httpEvent.ID, 0, o.hostname)
+}
+
+func resolverLabel(res dnsprobe.Result) string {
+	if res.Resolver != "" {
+		return res.Resolver
+	}
+	return "system"
+}
+
+func dnsWorkerLimit(cfg *config.Config) int {
+	if cfg.DNSMonitorMaxWorkers > 0 {
+		return cfg.DNSMonitorMaxWorkers
+	}
+	workers := cfg.NumWorkers / 4
+	if workers < 4 {
+		workers = 4
+	}
+	if workers > 64 {
+		workers = 64
+	}
+	return workers
+}
+
+func dnsBatchSize(cfg *config.Config) int {
+	if cfg.DNSMonitorBatchSize > 0 {
+		return cfg.DNSMonitorBatchSize
+	}
+	return max(100, dnsWorkerLimit(cfg)*8)
+}
+
+func dnsScheduleBatchSize(cfg *config.Config) int {
+	if cfg.DNSMonitorScheduleBatchSize > 0 {
+		return cfg.DNSMonitorScheduleBatchSize
+	}
+	return max(500, dnsBatchSize(cfg)*4)
+}
+
+func hostnameForDNSTarget(target db.DNSProbeTarget) string {
+	if strings.TrimSpace(target.MonitorURL) != "" {
+		if hostname, err := hostnameFromMonitorURL(target.MonitorURL); err == nil {
+			return hostname
+		}
+		return ""
+	}
+	return dnsprobe.NormalizeHostname(target.Hostname)
+}
+
+func hostnameFromMonitorURL(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", fmt.Errorf("monitor_url is empty")
+	}
+	if u, err := url.Parse(value); err == nil {
+		if host := dnsprobe.NormalizeHostname(u.Hostname()); host != "" {
+			return host, nil
+		}
+	}
+	if !strings.Contains(value, "://") {
+		if u, err := url.Parse("http://" + value); err == nil {
+			if host := dnsprobe.NormalizeHostname(u.Hostname()); host != "" {
+				return host, nil
+			}
+		}
+	}
+	if host, _, err := net.SplitHostPort(value); err == nil {
+		if normalized := dnsprobe.NormalizeHostname(host); normalized != "" {
+			return normalized, nil
+		}
+	}
+	if strings.ContainsAny(value, "/?#") {
+		return "", fmt.Errorf("monitor_url has no hostname")
+	}
+	if host := dnsprobe.NormalizeHostname(value); host != "" {
+		return host, nil
+	}
+	return "", fmt.Errorf("monitor_url has no hostname")
 }
 
 func emitPageMetrics(summary roundSummary) {
@@ -785,6 +1171,18 @@ func (o *Orchestrator) finishRound(cfg *config.Config, summary roundSummary) {
 		m.Increment("scheduler.round.check.redirect.count", summary.checkRedirects)
 		m.Increment("scheduler.round.check.keyword.count", summary.checkKeywords)
 		m.Increment("scheduler.round.check.tls_deprecated.count", summary.checkTLSDeprecated)
+		m.Increment("dns.schedule.created.count", summary.dnsSchedulesCreated)
+		m.Gauge("dns.due_start.count", summary.dnsDueAtStart)
+		m.Gauge("dns.selected.count", summary.dnsSelected)
+		m.Gauge("dns.completed.count", summary.dnsCompleted)
+		m.Gauge("dns.failure.count", summary.dnsFailures)
+		m.Gauge("dns.due_remaining.count", summary.dnsDueRemaining)
+		m.Increment("dns.schedule.error.count", summary.dnsScheduleErrors)
+		m.Increment("dns.fetch.error.count", summary.dnsFetchErrors)
+		m.Increment("dns.update.error.count", summary.dnsUpdateErrors)
+		m.Increment("dns.event.error.count", summary.dnsEventErrors)
+		m.Timing("dns.dispatch.time", summary.dnsDispatchDuration)
+		m.Timing("dns.process.time", summary.dnsProcessDuration)
 
 		if cfg.StatsdSendMemUsage {
 			m.EmitMemStats()
@@ -795,17 +1193,51 @@ func (o *Orchestrator) finishRound(cfg *config.Config, summary roundSummary) {
 	logRoundSummary(summary, roundDuration, sps)
 }
 
-func logRoundSummary(summary roundSummary, roundDuration time.Duration, sps int) {
-	if summary.selected == 0 &&
-		summary.dueRemaining == 0 &&
-		summary.outstanding == 0 &&
-		summary.backpressureWaits == 0 &&
-		summary.fetchErrors == 0 &&
-		summary.dueCountErrors == 0 {
+func logDNSSummary(summary roundSummary) {
+	if summary.dnsSelected == 0 &&
+		summary.dnsSchedulesCreated == 0 &&
+		summary.dnsDueRemaining == 0 &&
+		summary.dnsScheduleErrors == 0 &&
+		summary.dnsFetchErrors == 0 &&
+		summary.dnsUpdateErrors == 0 &&
+		summary.dnsEventErrors == 0 {
 		return
 	}
 	log.Printf(
-		"orchestrator: round summary pages=%d due_count_sampled=%t due_start=%d selected=%d dispatched=%d completed=%d outstanding=%d due_remaining=%d backpressure_waits=%d stale_results=%d duplicate_results=%d never_checked=%d oldest_selected_age_sec=%d dispatch=%s wait=%s process=%s mark_checked=%s history=%s ssl=%s events=%s checks_success=%d checks_failure=%d checks_http_failure=%d checks_timeout=%d checks_connect_error=%d checks_ssl_error=%d checks_redirect=%d checks_keyword=%d checks_tls_deprecated=%d mark_checked_rows=%d history_rows=%d ssl_rows=%d mark_checked_errors=%d history_errors=%d ssl_errors=%d duration=%s sps=%d",
+		"orchestrator: DNS summary schedules_created=%d due_start=%d selected=%d completed=%d failures=%d due_remaining=%d schedule_errors=%d fetch_errors=%d update_errors=%d event_errors=%d dispatch=%s process=%s",
+		summary.dnsSchedulesCreated,
+		summary.dnsDueAtStart,
+		summary.dnsSelected,
+		summary.dnsCompleted,
+		summary.dnsFailures,
+		summary.dnsDueRemaining,
+		summary.dnsScheduleErrors,
+		summary.dnsFetchErrors,
+		summary.dnsUpdateErrors,
+		summary.dnsEventErrors,
+		summary.dnsDispatchDuration.Round(time.Millisecond),
+		summary.dnsProcessDuration.Round(time.Millisecond),
+	)
+}
+
+func logRoundSummary(summary roundSummary, roundDuration time.Duration, sps int) {
+	if summary.selected == 0 &&
+		summary.dnsSelected == 0 &&
+		summary.dnsSchedulesCreated == 0 &&
+		summary.dueRemaining == 0 &&
+		summary.dnsDueRemaining == 0 &&
+		summary.outstanding == 0 &&
+		summary.backpressureWaits == 0 &&
+		summary.fetchErrors == 0 &&
+		summary.dueCountErrors == 0 &&
+		summary.dnsScheduleErrors == 0 &&
+		summary.dnsFetchErrors == 0 &&
+		summary.dnsUpdateErrors == 0 &&
+		summary.dnsEventErrors == 0 {
+		return
+	}
+	log.Printf(
+		"orchestrator: round summary pages=%d due_count_sampled=%t due_start=%d selected=%d dispatched=%d completed=%d outstanding=%d due_remaining=%d backpressure_waits=%d stale_results=%d duplicate_results=%d never_checked=%d oldest_selected_age_sec=%d dispatch=%s wait=%s process=%s mark_checked=%s history=%s ssl=%s events=%s checks_success=%d checks_failure=%d checks_http_failure=%d checks_timeout=%d checks_connect_error=%d checks_ssl_error=%d checks_redirect=%d checks_keyword=%d checks_tls_deprecated=%d mark_checked_rows=%d history_rows=%d ssl_rows=%d mark_checked_errors=%d history_errors=%d ssl_errors=%d dns_schedules_created=%d dns_due_start=%d dns_selected=%d dns_completed=%d dns_failures=%d dns_due_remaining=%d dns_schedule_errors=%d dns_fetch_errors=%d dns_update_errors=%d dns_event_errors=%d duration=%s sps=%d",
 		summary.pagesFetched,
 		summary.dueCountsSampled,
 		summary.dueAtStart,
@@ -841,6 +1273,16 @@ func logRoundSummary(summary roundSummary, roundDuration time.Duration, sps int)
 		summary.markCheckedErrors,
 		summary.historyErrors,
 		summary.sslErrors,
+		summary.dnsSchedulesCreated,
+		summary.dnsDueAtStart,
+		summary.dnsSelected,
+		summary.dnsCompleted,
+		summary.dnsFailures,
+		summary.dnsDueRemaining,
+		summary.dnsScheduleErrors,
+		summary.dnsFetchErrors,
+		summary.dnsUpdateErrors,
+		summary.dnsEventErrors,
 		roundDuration.Round(time.Millisecond),
 		sps,
 	)

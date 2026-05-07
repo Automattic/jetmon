@@ -173,6 +173,60 @@ func TestValidate(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "dns monitor requires interval when enabled",
+			mutate: func(c *Config) {
+				c.DNSMonitorEnable = true
+				c.DNSMonitorIntervalSec = 0
+				c.DNSMonitorTimeoutMS = 2000
+			},
+			wantErr: true,
+		},
+		{
+			name: "dns monitor requires timeout when enabled",
+			mutate: func(c *Config) {
+				c.DNSMonitorEnable = true
+				c.DNSMonitorIntervalSec = 900
+				c.DNSMonitorTimeoutMS = 0
+			},
+			wantErr: true,
+		},
+		{
+			name: "dns monitor accepts auto sizing",
+			mutate: func(c *Config) {
+				c.DNSMonitorEnable = true
+				c.DNSMonitorIntervalSec = 900
+				c.DNSMonitorTimeoutMS = 2000
+				c.DNSMonitorBatchSize = 0
+				c.DNSMonitorMaxWorkers = 0
+				c.DNSMonitorScheduleBatchSize = 0
+			},
+		},
+		{
+			name:    "dns monitor batch size negative",
+			mutate:  func(c *Config) { c.DNSMonitorBatchSize = -1 },
+			wantErr: true,
+		},
+		{
+			name: "dns monitor resolver list accepts host and host port",
+			mutate: func(c *Config) {
+				c.DNSMonitorResolvers = []string{"1.1.1.1", "8.8.8.8:53", "[2001:4860:4860::8888]:53"}
+			},
+		},
+		{
+			name: "dns monitor resolver list rejects empty entry",
+			mutate: func(c *Config) {
+				c.DNSMonitorResolvers = []string{"1.1.1.1", " "}
+			},
+			wantErr: true,
+		},
+		{
+			name: "dns monitor resolver list rejects invalid port",
+			mutate: func(c *Config) {
+				c.DNSMonitorResolvers = []string{"1.1.1.1:99999"}
+			},
+			wantErr: true,
+		},
+		{
 			name:    "min time between rounds negative",
 			mutate:  func(c *Config) { c.MinTimeBetweenRoundsSec = -1 },
 			wantErr: true,

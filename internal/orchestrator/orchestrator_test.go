@@ -17,6 +17,7 @@ import (
 	"github.com/Automattic/jetmon/internal/checker"
 	"github.com/Automattic/jetmon/internal/config"
 	"github.com/Automattic/jetmon/internal/db"
+	"github.com/Automattic/jetmon/internal/dnsprobe"
 	"github.com/Automattic/jetmon/internal/eventstore"
 	"github.com/Automattic/jetmon/internal/veriflier"
 	"github.com/Automattic/jetmon/internal/wpcom"
@@ -56,6 +57,237 @@ func TestTimeoutForSite(t *testing.T) {
 	override := 3
 	if got := timeoutForSite(cfg, db.Site{TimeoutSeconds: &override}); got != 3 {
 		t.Fatalf("timeoutForSite() with override = %d, want 3", got)
+	}
+}
+
+func TestDNSAutoSizingUsesHTTPWorkers(t *testing.T) {
+	cfg := &config.Config{NumWorkers: 60}
+	if got := dnsWorkerLimit(cfg); got != 15 {
+		t.Fatalf("dnsWorkerLimit = %d, want 15", got)
+	}
+	if got := dnsBatchSize(cfg); got != 120 {
+		t.Fatalf("dnsBatchSize = %d, want 120", got)
+	}
+
+	cfg.DNSMonitorMaxWorkers = 200
+	cfg.DNSMonitorBatchSize = 25
+	if got := dnsWorkerLimit(cfg); got != 200 {
+		t.Fatalf("dnsWorkerLimit override = %d, want 200", got)
+	}
+	if got := dnsBatchSize(cfg); got != 25 {
+		t.Fatalf("dnsBatchSize override = %d, want 25", got)
+	}
+}
+
+func TestRunDNSProbesSchedulesChecksAndUpdatesState(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+
+	cfg := &config.Config{
+		NumWorkers:                   20,
+		DNSMonitorEnable:             true,
+		DNSMonitorIntervalSec:        900,
+		DNSMonitorTimeoutMS:          2000,
+		DNSMonitorBatchSize:          10,
+		DNSMonitorScheduleBatchSize:  50,
+		DNSMonitorResolvers:          []string{"192.0.2.53:53"},
+		LegacyStatusProjectionEnable: false,
+	}
+	o := &Orchestrator{
+		hostname:  "test-host",
+		bucketMin: 0,
+		bucketMax: 99,
+		ctx:       context.Background(),
+	}
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+
+	var scheduleLimit int
+	dbEnsureDNSSchedules = func(_ context.Context, _, _ int, limit, intervalSec int, _ time.Time) (int, error) {
+		scheduleLimit = limit
+		if intervalSec != 900 {
+			t.Fatalf("intervalSec = %d, want 900", intervalSec)
+		}
+		return 2, nil
+	}
+	dbCountDueDNSProbes = func(context.Context, int, int) (int, error) { return 1, nil }
+	dbGetDueDNSProbes = func(_ context.Context, _, _ int, limit int) ([]db.DNSProbeTarget, error) {
+		if limit != 10 {
+			t.Fatalf("limit = %d, want 10", limit)
+		}
+		return []db.DNSProbeTarget{{
+			BlogID:          42,
+			BucketNo:        7,
+			MonitorURL:      "https://Example.COM/path",
+			Hostname:        "old.example.com",
+			IntervalSeconds: 900,
+		}}, nil
+	}
+	dnsProbeCheckFunc = func(_ context.Context, req dnsprobe.Request) dnsprobe.Result {
+		if req.Hostname != "example.com" {
+			t.Fatalf("Hostname = %q, want example.com", req.Hostname)
+		}
+		if fmt.Sprint(req.ResolverAddrs) != "[192.0.2.53:53]" {
+			t.Fatalf("ResolverAddrs = %v", req.ResolverAddrs)
+		}
+		return dnsprobe.Result{
+			BlogID:    req.BlogID,
+			Hostname:  req.Hostname,
+			Success:   true,
+			Status:    dnsprobe.StatusOK,
+			Addresses: []string{"192.0.2.10"},
+			Timestamp: time.Now().UTC(),
+		}
+	}
+	var updates []db.DNSProbeStateUpdate
+	dbUpdateDNSStates = func(_ context.Context, got []db.DNSProbeStateUpdate) error {
+		updates = append([]db.DNSProbeStateUpdate(nil), got...)
+		return nil
+	}
+
+	summary := o.runDNSProbes(cfg)
+	if scheduleLimit != 50 {
+		t.Fatalf("scheduleLimit = %d, want 50", scheduleLimit)
+	}
+	if summary.dnsSchedulesCreated != 2 || summary.dnsSelected != 1 || summary.dnsCompleted != 1 || summary.dnsFailures != 0 {
+		t.Fatalf("summary = %+v", summary)
+	}
+	if len(updates) != 1 || updates[0].BlogID != 42 || updates[0].Hostname != "example.com" || updates[0].Result != dnsprobe.StatusOK {
+		t.Fatalf("updates = %+v", updates)
+	}
+	if got := rec.counter("dns.check.ok.count"); got != 1 {
+		t.Fatalf("dns.check.ok.count = %d, want 1", got)
+	}
+}
+
+func TestHandleDNSResultLinksActiveHTTPEventToDNSCause(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+
+	sqlDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer sqlDB.Close()
+
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+
+	mock.ExpectBegin()
+	mock.ExpectExec("INSERT INTO jetmon_events").
+		WithArgs(int64(42), nil, checkTypeDNS, nil, eventstore.SeverityDegraded, eventstore.StateDegraded, sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(300, 1))
+	mock.ExpectExec("INSERT INTO jetmon_event_transitions").
+		WithArgs(int64(300), int64(42), nil, eventstore.SeverityDegraded, nil, eventstore.StateDegraded, eventstore.ReasonOpened, "test-host", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery("SELECT id, severity, state, cause_event_id FROM jetmon_events").
+		WithArgs(int64(42), checkTypeHTTP).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "severity", "state", "cause_event_id"}).
+			AddRow(int64(200), eventstore.SeverityDown, eventstore.StateDown, nil))
+	mock.ExpectQuery("SELECT blog_id, severity, state, ended_at, cause_event_id").
+		WithArgs(int64(200)).
+		WillReturnRows(sqlmock.NewRows([]string{"blog_id", "severity", "state", "ended_at", "cause_event_id"}).
+			AddRow(int64(42), eventstore.SeverityDown, eventstore.StateDown, nil, nil))
+	mock.ExpectExec("UPDATE jetmon_events SET cause_event_id").
+		WithArgs(int64(300), int64(200)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO jetmon_event_transitions").
+		WithArgs(int64(200), int64(42), eventstore.SeverityDown, eventstore.SeverityDown, eventstore.StateDown, eventstore.StateDown, eventstore.ReasonCauseLinked, "test-host", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(2, 1))
+	mock.ExpectCommit()
+
+	o := &Orchestrator{
+		events:   eventstore.New(sqlDB),
+		hostname: "test-host",
+		ctx:      context.Background(),
+	}
+	err = o.handleDNSResult(dnsprobe.Result{
+		BlogID:   42,
+		Hostname: "example.com",
+		Status:   dnsprobe.StatusNXDomain,
+		Error:    "no such host",
+		Resolver: "192.0.2.53:53",
+	})
+	if err != nil {
+		t.Fatalf("handleDNSResult: %v", err)
+	}
+	if got := rec.counter("dns.event.open.nxdomain.count"); got != 1 {
+		t.Fatalf("dns.event.open.nxdomain.count = %d, want 1", got)
+	}
+	if got := rec.counter("dns.event.cause_linked.count"); got != 1 {
+		t.Fatalf("dns.event.cause_linked.count = %d, want 1", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestCloseDNSIfOpenUnlinksHTTPEventCausedByDNS(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+
+	sqlDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer sqlDB.Close()
+
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT id, severity, state, cause_event_id FROM jetmon_events").
+		WithArgs(int64(42), checkTypeDNS).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "severity", "state", "cause_event_id"}).
+			AddRow(int64(300), eventstore.SeverityDegraded, eventstore.StateDegraded, nil))
+	mock.ExpectQuery("SELECT blog_id, severity, state, ended_at, cause_event_id").
+		WithArgs(int64(300)).
+		WillReturnRows(sqlmock.NewRows([]string{"blog_id", "severity", "state", "ended_at", "cause_event_id"}).
+			AddRow(int64(42), eventstore.SeverityDegraded, eventstore.StateDegraded, nil, nil))
+	mock.ExpectExec("UPDATE jetmon_events").
+		WithArgs(eventstore.ReasonProbeCleared, int64(300)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO jetmon_event_transitions").
+		WithArgs(int64(300), int64(42), eventstore.SeverityDegraded, nil, eventstore.StateDegraded, eventstore.StateResolved, eventstore.ReasonProbeCleared, "test-host", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery("SELECT id, severity, state, cause_event_id FROM jetmon_events").
+		WithArgs(int64(42), checkTypeHTTP).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "severity", "state", "cause_event_id"}).
+			AddRow(int64(200), eventstore.SeverityDown, eventstore.StateDown, int64(300)))
+	mock.ExpectQuery("SELECT blog_id, severity, state, ended_at, cause_event_id").
+		WithArgs(int64(200)).
+		WillReturnRows(sqlmock.NewRows([]string{"blog_id", "severity", "state", "ended_at", "cause_event_id"}).
+			AddRow(int64(42), eventstore.SeverityDown, eventstore.StateDown, nil, int64(300)))
+	mock.ExpectExec("UPDATE jetmon_events SET cause_event_id").
+		WithArgs(nil, int64(200)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO jetmon_event_transitions").
+		WithArgs(int64(200), int64(42), eventstore.SeverityDown, eventstore.SeverityDown, eventstore.StateDown, eventstore.StateDown, eventstore.ReasonCauseUnlinked, "test-host", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(2, 1))
+	mock.ExpectCommit()
+
+	o := &Orchestrator{
+		events:   eventstore.New(sqlDB),
+		hostname: "test-host",
+		ctx:      context.Background(),
+	}
+	err = o.closeDNSIfOpen(dnsprobe.Result{
+		BlogID:   42,
+		Hostname: "example.com",
+		Success:  true,
+		Status:   dnsprobe.StatusOK,
+	})
+	if err != nil {
+		t.Fatalf("closeDNSIfOpen: %v", err)
+	}
+	if got := rec.counter("dns.event.close.count"); got != 1 {
+		t.Fatalf("dns.event.close.count = %d, want 1", got)
+	}
+	if got := rec.counter("dns.event.cause_unlinked.count"); got != 1 {
+		t.Fatalf("dns.event.cause_unlinked.count = %d, want 1", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
 	}
 }
 
@@ -525,7 +757,12 @@ func stubOrchestratorDeps() func() {
 	origDBUpdateSSLExpiry := dbUpdateSSLExpiry
 	origDBUpdateSSLExpiries := dbUpdateSSLExpiries
 	origDBCountDueSites := dbCountDueSites
+	origDBEnsureDNSSchedules := dbEnsureDNSSchedules
+	origDBGetDueDNSProbes := dbGetDueDNSProbes
+	origDBCountDueDNSProbes := dbCountDueDNSProbes
+	origDBUpdateDNSStates := dbUpdateDNSStates
 	origDBCountProjectionDrift := dbCountProjectionDrift
+	origDNSProbeCheck := dnsProbeCheckFunc
 	origNotify := wpcomNotifyFunc
 	origVeriflierCheck := veriflierCheckFunc
 	origMetricsClient := metricsClientFunc
@@ -546,7 +783,12 @@ func stubOrchestratorDeps() func() {
 	dbUpdateSSLExpiry = func(context.Context, int64, time.Time) error { return nil }
 	dbUpdateSSLExpiries = func(context.Context, []db.SiteSSLExpiry) error { return nil }
 	dbCountDueSites = func(context.Context, int, int, bool) (int, error) { return 0, nil }
+	dbEnsureDNSSchedules = func(context.Context, int, int, int, int, time.Time) (int, error) { return 0, nil }
+	dbGetDueDNSProbes = func(context.Context, int, int, int) ([]db.DNSProbeTarget, error) { return nil, nil }
+	dbCountDueDNSProbes = func(context.Context, int, int) (int, error) { return 0, nil }
+	dbUpdateDNSStates = func(context.Context, []db.DNSProbeStateUpdate) error { return nil }
 	dbCountProjectionDrift = func(context.Context, int, int) (int, error) { return 0, nil }
+	dnsProbeCheckFunc = func(context.Context, dnsprobe.Request) dnsprobe.Result { return dnsprobe.Result{} }
 	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error { return nil }
 	veriflierCheckFunc = func(c *veriflier.VeriflierClient, ctx context.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
 		return c.Check(ctx, req)
@@ -569,7 +811,12 @@ func stubOrchestratorDeps() func() {
 		dbUpdateSSLExpiry = origDBUpdateSSLExpiry
 		dbUpdateSSLExpiries = origDBUpdateSSLExpiries
 		dbCountDueSites = origDBCountDueSites
+		dbEnsureDNSSchedules = origDBEnsureDNSSchedules
+		dbGetDueDNSProbes = origDBGetDueDNSProbes
+		dbCountDueDNSProbes = origDBCountDueDNSProbes
+		dbUpdateDNSStates = origDBUpdateDNSStates
 		dbCountProjectionDrift = origDBCountProjectionDrift
+		dnsProbeCheckFunc = origDNSProbeCheck
 		wpcomNotifyFunc = origNotify
 		veriflierCheckFunc = origVeriflierCheck
 		metricsClientFunc = origMetricsClient
@@ -1240,10 +1487,10 @@ func TestCheckTLSDeprecatedClosesWarningOnModernTLS(t *testing.T) {
 	defer sqlDB.Close()
 
 	mock.ExpectBegin()
-	mock.ExpectQuery("SELECT id, severity, state FROM jetmon_events").
+	mock.ExpectQuery("SELECT id, severity, state, cause_event_id FROM jetmon_events").
 		WithArgs(int64(73), checkTypeTLSDeprecated).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "severity", "state"}).
-			AddRow(int64(202), eventstore.SeverityWarning, eventstore.StateWarning))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "severity", "state", "cause_event_id"}).
+			AddRow(int64(202), eventstore.SeverityWarning, eventstore.StateWarning, nil))
 	mock.ExpectQuery("SELECT blog_id, severity, state, ended_at, cause_event_id").
 		WithArgs(int64(202)).
 		WillReturnRows(sqlmock.NewRows([]string{"blog_id", "severity", "state", "ended_at", "cause_event_id"}).
@@ -1305,10 +1552,10 @@ func TestCloseSSLExpiryUsesProbeCleared(t *testing.T) {
 	defer sqlDB.Close()
 
 	mock.ExpectBegin()
-	mock.ExpectQuery("SELECT id, severity, state FROM jetmon_events").
+	mock.ExpectQuery("SELECT id, severity, state, cause_event_id FROM jetmon_events").
 		WithArgs(int64(74), checkTypeTLSExpiry).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "severity", "state"}).
-			AddRow(int64(303), eventstore.SeverityWarning, eventstore.StateWarning))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "severity", "state", "cause_event_id"}).
+			AddRow(int64(303), eventstore.SeverityWarning, eventstore.StateWarning, nil))
 	mock.ExpectQuery("SELECT blog_id, severity, state, ended_at, cause_event_id").
 		WithArgs(int64(303)).
 		WillReturnRows(sqlmock.NewRows([]string{"blog_id", "severity", "state", "ended_at", "cause_event_id"}).

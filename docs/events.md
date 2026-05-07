@@ -204,6 +204,7 @@ The split exists because the two trails have different consumers and different r
 | `jetmon_events` + `jetmon_event_transitions` | Public API incident timelines, SLA reports | Long — 30/90 days at full fidelity, then rolled up |
 | `jetmon_audit_log` | Operators investigating "why did the alert fire" | Short — aggressive pruning is fine once the incident is closed |
 | `jetmon_check_history` | Response-time trending, baseline learning | Medium — granular timing is high volume |
+| `jetmon_dns_probe_state` | DNS scheduler and latest recursive resolver evidence | Medium — one current row per monitored site |
 
 ## Causal links
 
