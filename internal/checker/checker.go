@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -52,7 +53,13 @@ func newCheckTransport() *http.Transport {
 			Timeout:   30 * time.Second,
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
-		TLSClientConfig:     &tls.Config{InsecureSkipVerify: false},
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: false,
+			// Deprecated TLS versions are still site-reachability signals.
+			// Complete the handshake so the orchestrator can open an advisory
+			// tls_deprecated event instead of reporting customer downtime.
+			MinVersion: tls.VersionTLS10,
+		},
 		TLSHandshakeTimeout: 10 * time.Second,
 		IdleConnTimeout:     30 * time.Second,
 		MaxIdleConns:        1024,
@@ -84,6 +91,9 @@ type Result struct {
 	Success   bool
 	HTTPCode  int
 	ErrorCode int
+	// ErrorDetail is bounded diagnostic context from the checker. It is meant
+	// for operator-facing event metadata, not matching logic.
+	ErrorDetail string
 
 	RTT  time.Duration
 	DNS  time.Duration
@@ -91,11 +101,22 @@ type Result struct {
 	TLS  time.Duration
 	TTFB time.Duration
 
-	SSLExpiry       *time.Time
-	TLSVersion      uint16
-	CipherSuite     uint16
-	RedirectChanged bool
-	KeywordRule     string
+	SSLExpiry          *time.Time
+	TLSVersion         uint16
+	CipherSuite        uint16
+	DNSFailureKind     string
+	DNSFailureName     string
+	DNSFailureServer   string
+	RedirectChanged    bool
+	RedirectCount      int
+	RedirectChain      []string
+	FinalURL           string
+	KeywordRule        string
+	BodyReadMode       string
+	BodyBytesRead      int64
+	BodyExpectedBytes  int64
+	BodyReadLimitBytes int64
+	BodyReadError      string
 
 	Timestamp time.Time
 }
@@ -174,7 +195,7 @@ func Check(ctx context.Context, req Request) Result {
 		headers[k] = v
 	}
 
-	redirectCount := 0
+	redirectChain := []string{}
 	redirectPolicyStr := string(req.RedirectPolicy)
 	if redirectPolicyStr == "" {
 		redirectPolicyStr = string(RedirectFollow)
@@ -183,11 +204,11 @@ func Check(ctx context.Context, req Request) Result {
 	client := &http.Client{
 		Transport: defaultTransport,
 		CheckRedirect: func(r *http.Request, via []*http.Request) error {
-			redirectCount++
+			redirectChain = append(redirectChain, r.URL.String())
 			if redirectPolicyStr == string(RedirectFail) {
 				return fmt.Errorf("redirect policy: fail")
 			}
-			if redirectCount > 10 {
+			if len(redirectChain) > 10 {
 				return fmt.Errorf("too many redirects")
 			}
 			return nil
@@ -198,6 +219,7 @@ func Check(ctx context.Context, req Request) Result {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, req.URL, nil)
 	if err != nil {
 		res.ErrorCode = ErrorConnect
+		res.ErrorDetail = boundedErrorDetail(err)
 		return res
 	}
 
@@ -209,6 +231,13 @@ func Check(ctx context.Context, req Request) Result {
 	start := time.Now()
 	resp, err := client.Do(httpReq)
 	res.RTT = time.Since(start)
+	res.RedirectCount = len(redirectChain)
+	if len(redirectChain) > 0 {
+		res.RedirectChain = append([]string(nil), redirectChain...)
+	}
+	if resp != nil && resp.Request != nil && resp.Request.URL != nil {
+		res.FinalURL = resp.Request.URL.String()
+	}
 
 	// Only record a phase duration when BOTH start and end fired. If a
 	// connection errors mid-handshake the DNSStart / ConnectStart / TLS
@@ -229,6 +258,8 @@ func Check(ctx context.Context, req Request) Result {
 	}
 
 	if err != nil {
+		res.ErrorDetail = boundedErrorDetail(err)
+		res.DNSFailureKind, res.DNSFailureName, res.DNSFailureServer = classifyDNSError(err)
 		if ctx.Err() != nil {
 			res.ErrorCode = ErrorTimeout
 		} else if strings.Contains(err.Error(), "redirect") {
@@ -263,15 +294,24 @@ func Check(ctx context.Context, req Request) Result {
 		}
 	}
 
-	if redirectPolicyStr == string(RedirectAlert) && redirectCount > 0 {
+	if redirectPolicyStr == string(RedirectAlert) && res.RedirectCount > 0 {
 		res.RedirectChanged = true
 	}
 
 	forbiddenKeywords := collectForbiddenKeywords(req.ForbiddenKeyword, req.ForbiddenKeywords)
 	needsBody := (req.Keyword != nil && *req.Keyword != "") || len(forbiddenKeywords) > 0
-	body, bodyErr := readResponseBody(resp, needsBody, req)
-	if bodyErr != nil && res.HTTPCode < http.StatusBadRequest {
+	bodyRead := readResponseBody(resp, needsBody, req)
+	body := bodyRead.Body
+	res.BodyReadMode = bodyRead.Mode
+	res.BodyBytesRead = bodyRead.BytesRead
+	res.BodyExpectedBytes = bodyRead.ExpectedBytes
+	res.BodyReadLimitBytes = bodyRead.LimitBytes
+	if bodyRead.Err != nil {
+		res.BodyReadError = boundedErrorDetail(bodyRead.Err)
+	}
+	if bodyRead.Err != nil && res.HTTPCode < http.StatusBadRequest {
 		res.ErrorCode = ErrorBodyRead
+		res.ErrorDetail = res.BodyReadError
 		return res
 	}
 
@@ -298,12 +338,55 @@ func Check(ctx context.Context, req Request) Result {
 	return res
 }
 
-func readResponseBody(resp *http.Response, needKeyword bool, req Request) ([]byte, error) {
+func boundedErrorDetail(err error) string {
+	if err == nil {
+		return ""
+	}
+	const maxErrorDetail = 500
+	detail := err.Error()
+	if len(detail) <= maxErrorDetail {
+		return detail
+	}
+	return detail[:maxErrorDetail] + "..."
+}
+
+func classifyDNSError(err error) (kind, name, server string) {
+	var dnsErr *net.DNSError
+	if !errors.As(err, &dnsErr) {
+		return "", "", ""
+	}
+	name = dnsErr.Name
+	server = dnsErr.Server
+	switch {
+	case dnsErr.IsNotFound:
+		kind = "nxdomain"
+	case dnsErr.IsTimeout:
+		kind = "timeout"
+	case dnsErr.IsTemporary || strings.Contains(strings.ToLower(dnsErr.Err), "server misbehaving"):
+		kind = "servfail"
+	default:
+		kind = "resolver_error"
+	}
+	return kind, name, server
+}
+
+type bodyReadResult struct {
+	Body          []byte
+	Err           error
+	Mode          string
+	BytesRead     int64
+	ExpectedBytes int64
+	LimitBytes    int64
+}
+
+func readResponseBody(resp *http.Response, needKeyword bool, req Request) bodyReadResult {
 	limit := maxBodyIntegrityBytes
+	mode := "success_budgeted"
 	if req.BodyReadMaxBytes > 0 {
 		limit = req.BodyReadMaxBytes
 	}
 	if needKeyword {
+		mode = "keyword"
 		limit = maxKeywordBodyBytes
 		if req.KeywordReadMaxBytes > 0 {
 			limit = req.KeywordReadMaxBytes
@@ -311,18 +394,32 @@ func readResponseBody(resp *http.Response, needKeyword bool, req Request) ([]byt
 	} else if resp.ContentLength > limit && resp.ContentLength <= maxKeywordBodyBytes {
 		limit = resp.ContentLength
 	}
+	if !needKeyword && resp.ContentLength >= 0 && resp.ContentLength <= limit {
+		mode = "strict_finite"
+	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	result := bodyReadResult{
+		Body:          body,
+		Err:           err,
+		Mode:          mode,
+		BytesRead:     int64(len(body)),
+		ExpectedBytes: resp.ContentLength,
+		LimitBytes:    limit,
+	}
 	if err != nil {
-		return body, err
+		return result
 	}
 	if int64(len(body)) > limit {
-		return body[:limit], nil
+		result.Body = body[:limit]
+		result.BytesRead = int64(len(result.Body))
+		return result
 	}
 	if resp.ContentLength >= 0 && resp.ContentLength <= limit && int64(len(body)) != resp.ContentLength {
-		return body, io.ErrUnexpectedEOF
+		result.Err = io.ErrUnexpectedEOF
+		return result
 	}
-	return body, nil
+	return result
 }
 
 func collectForbiddenKeywords(single *string, many []string) []string {

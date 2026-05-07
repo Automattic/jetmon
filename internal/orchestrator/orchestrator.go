@@ -57,6 +57,7 @@ const schedulerBacklogPollInterval = 5 * time.Second
 const schedulerBroadReportInterval = time.Minute
 const eventMutationMaxAttempts = 3
 const eventMutationRetryBaseDelay = 25 * time.Millisecond
+const failedCheckRetryInterval = time.Minute
 
 // VariableIntervalPollInterval returns the idle scheduler poll interval used
 // when per-site check intervals are enabled. The SQL due predicate prevents
@@ -1044,11 +1045,166 @@ func resultCheckedAt(res checker.Result) time.Time {
 }
 
 func nextCheckAt(site db.Site, res checker.Result) time.Time {
+	interval := siteCheckInterval(site)
+	if res.IsFailure() && interval > failedCheckRetryInterval {
+		interval = failedCheckRetryInterval
+	}
+	return resultCheckedAt(res).Add(interval)
+}
+
+func siteCheckInterval(site db.Site) time.Duration {
 	interval := site.CheckInterval
 	if interval < 1 {
 		interval = 1
 	}
-	return resultCheckedAt(res).Add(time.Duration(interval) * time.Minute)
+	return time.Duration(interval) * time.Minute
+}
+
+func checkResultMetadata(site db.Site, res checker.Result, firstFailAt time.Time) map[string]any {
+	method := res.Method
+	if method == "" {
+		method = "GET"
+	}
+	metadata := map[string]any{
+		"detector_class":     detectorClass(res),
+		"failure_class":      failureClass(res),
+		"http_code":          res.HTTPCode,
+		"error_code":         res.ErrorCode,
+		"legacy_status_type": (&res).StatusType(),
+		"keyword_rule":       res.KeywordRule,
+		"method":             method,
+		"rtt_ms":             res.RTT.Milliseconds(),
+		"url":                site.MonitorURL,
+	}
+	if res.ErrorDetail != "" {
+		metadata["error_detail"] = res.ErrorDetail
+	}
+	if bodyReadMetadata := checkBodyReadMetadata(res); len(bodyReadMetadata) > 0 {
+		metadata["body_read"] = bodyReadMetadata
+	}
+	if res.DNSFailureKind != "" {
+		metadata["dns_error_kind"] = res.DNSFailureKind
+	}
+	if res.DNSFailureName != "" {
+		metadata["dns_error_name"] = res.DNSFailureName
+	}
+	if res.DNSFailureServer != "" {
+		metadata["dns_error_server"] = res.DNSFailureServer
+	}
+	if site.RedirectPolicy != "" {
+		metadata["redirect_policy"] = site.RedirectPolicy
+	} else {
+		metadata["redirect_policy"] = string(checker.RedirectFollow)
+	}
+	if res.RedirectCount > 0 {
+		metadata["redirect_count"] = res.RedirectCount
+	}
+	if len(res.RedirectChain) > 0 {
+		metadata["redirect_chain"] = append([]string(nil), res.RedirectChain...)
+	}
+	if res.FinalURL != "" {
+		metadata["final_url"] = res.FinalURL
+	}
+	if res.TLSVersion != 0 {
+		metadata["tls_version"] = tlsVersionName(res.TLSVersion)
+		metadata["tls_version_code"] = fmt.Sprintf("0x%04x", res.TLSVersion)
+	}
+	if res.CipherSuite != 0 {
+		metadata["cipher_suite"] = tls.CipherSuiteName(res.CipherSuite)
+		metadata["cipher_suite_id"] = fmt.Sprintf("0x%04x", res.CipherSuite)
+	}
+	metadata["observation"] = failureObservationMetadata(site, res, firstFailAt)
+	return metadata
+}
+
+func failureObservationMetadata(site db.Site, res checker.Result, firstFailAt time.Time) map[string]any {
+	checkedAt := resultCheckedAt(res)
+	if firstFailAt.IsZero() {
+		firstFailAt = checkedAt
+	}
+	normalInterval := siteCheckInterval(site)
+	nextInterval := nextCheckAt(site, res).Sub(checkedAt)
+	obs := map[string]any{
+		"checked_at":                    checkedAt.Format(time.RFC3339Nano),
+		"first_failed_at":               firstFailAt.UTC().Format(time.RFC3339Nano),
+		"normal_check_interval_seconds": int64(normalInterval / time.Second),
+		"next_check_interval_seconds":   int64(nextInterval / time.Second),
+	}
+	if site.LastCheckedAt != nil {
+		previousObservedAt := site.LastCheckedAt.UTC().Format(time.RFC3339Nano)
+		obs["previous_observed_at"] = previousObservedAt
+		if site.SiteStatus == statusRunning {
+			obs["previous_known_good_at"] = previousObservedAt
+		}
+	}
+	return obs
+}
+
+func recoveryResultMetadata(res checker.Result, changeTime time.Time) map[string]any {
+	checkedAt := resultCheckedAt(res)
+	method := res.Method
+	if method == "" {
+		method = "GET"
+	}
+	return map[string]any{
+		"http_code":  res.HTTPCode,
+		"error_code": res.ErrorCode,
+		"method":     method,
+		"rtt_ms":     res.RTT.Milliseconds(),
+		"observation": map[string]any{
+			"first_recovered_at": checkedAt.Format(time.RFC3339Nano),
+			"closed_at":          changeTime.UTC().Format(time.RFC3339Nano),
+		},
+	}
+}
+
+func checkBodyReadMetadata(res checker.Result) map[string]any {
+	if res.BodyReadMode == "" &&
+		res.BodyBytesRead == 0 &&
+		res.BodyReadLimitBytes == 0 &&
+		res.BodyExpectedBytes <= 0 &&
+		res.BodyReadError == "" {
+		return nil
+	}
+	body := map[string]any{
+		"bytes_read":  res.BodyBytesRead,
+		"limit_bytes": res.BodyReadLimitBytes,
+		"mode":        res.BodyReadMode,
+	}
+	if res.BodyExpectedBytes >= 0 {
+		body["expected_bytes"] = res.BodyExpectedBytes
+	}
+	if res.BodyReadError != "" {
+		body["error"] = res.BodyReadError
+	}
+	return body
+}
+
+func detectorClass(res checker.Result) string {
+	switch {
+	case res.Success:
+		return "success"
+	case res.ErrorCode == checker.ErrorBodyRead:
+		return "partial_response"
+	case res.ErrorCode == checker.ErrorKeyword:
+		return "content_failure"
+	case res.ErrorCode == checker.ErrorTimeout:
+		return "timeout"
+	case res.ErrorCode == checker.ErrorRedirect:
+		return "redirect"
+	case res.ErrorCode == checker.ErrorSSL || res.ErrorCode == checker.ErrorTLSExpired:
+		return "tls_failure"
+	case res.ErrorCode == checker.ErrorTLSDeprecated:
+		return "tls_deprecated"
+	case res.DNSFailureKind != "":
+		return "dns_" + metricSegment(res.DNSFailureKind)
+	case res.HTTPCode >= 400:
+		return "http_failure"
+	case res.ErrorCode == checker.ErrorConnect:
+		return "connect_error"
+	default:
+		return "unknown"
+	}
 }
 
 func shouldUpdateSSLExpiry(stored *time.Time, observed time.Time) bool {
@@ -1085,7 +1241,7 @@ func (o *Orchestrator) handleRecovery(site db.Site, res checker.Result) {
 		// same transaction. The resolution reason depends on whether the event
 		// was already verifier-confirmed (Down) or still in the local-retry
 		// phase (Seems Down).
-		if err := o.closeRecoveredEvent(site.BlogID, knownEventID, changeTime); err != nil {
+		if err := o.closeRecoveredEvent(site.BlogID, knownEventID, changeTime, res); err != nil {
 			log.Printf("orchestrator: close recovered event blog_id=%d: %v", site.BlogID, err)
 		}
 
@@ -1124,7 +1280,7 @@ func (o *Orchestrator) handleFailure(site db.Site, res checker.Result) {
 	// failure would update the same row, so this is also a self-healing retry
 	// path if a previous Open failed to commit.
 	if entry.eventID == 0 {
-		id, opened, err := o.openSeemsDown(site, res)
+		id, opened, err := o.openSeemsDown(site, res, entry.firstFailAt)
 		if err != nil {
 			log.Printf("orchestrator: open seems-down event blog_id=%d: %v", site.BlogID, err)
 		} else {
@@ -1138,14 +1294,11 @@ func (o *Orchestrator) handleFailure(site db.Site, res checker.Result) {
 	}
 
 	if entry.failCount < config.Get().NumOfChecks {
-		meta, _ := json.Marshal(map[string]any{
-			"http_code":  res.HTTPCode,
-			"error_code": res.ErrorCode,
-			"rtt_ms":     res.RTT.Milliseconds(),
-			"attempt":    entry.failCount,
-			"of":         config.Get().NumOfChecks,
-			"event_id":   entry.eventID,
-		})
+		metaMap := checkResultMetadata(site, res, entry.firstFailAt)
+		metaMap["attempt"] = entry.failCount
+		metaMap["of"] = config.Get().NumOfChecks
+		metaMap["event_id"] = entry.eventID
+		meta, _ := json.Marshal(metaMap)
 		o.auditLog(audit.Entry{
 			BlogID:    site.BlogID,
 			EventID:   entry.eventID,
@@ -1485,7 +1638,7 @@ func (o *Orchestrator) sendNotification(site db.Site, res checker.Result, status
 //   - <= 7 days  → Degraded (severity 2)
 //   - <= 14 days → Warning  (severity 1)
 //   - <= 30 days → Warning  (severity 1)
-//   - >  30 days → close any open event with reason=verifier_cleared
+//   - >  30 days → close any open event with reason=probe_cleared
 func (o *Orchestrator) checkSSLAlerts(site db.Site, expiry time.Time) {
 	daysUntil := int(time.Until(expiry).Hours() / 24)
 
@@ -1589,7 +1742,7 @@ func (o *Orchestrator) closeSSLExpiryIfOpenOnce(blogID int64) error {
 		}
 		return err
 	}
-	if err := tx.Close(o.ctx, ae.ID, eventstore.ReasonVerifierCleared, o.hostname, nil); err != nil {
+	if err := tx.Close(o.ctx, ae.ID, eventstore.ReasonProbeCleared, o.hostname, nil); err != nil {
 		return fmt.Errorf("close tls_expiry: %w", err)
 	}
 	return tx.Commit()
@@ -1651,7 +1804,7 @@ func (o *Orchestrator) closeTLSDeprecatedIfOpen(blogID int64) error {
 		}
 		return err
 	}
-	if err := tx.Close(o.ctx, ae.ID, eventstore.ReasonVerifierCleared, o.hostname, nil); err != nil {
+	if err := tx.Close(o.ctx, ae.ID, eventstore.ReasonProbeCleared, o.hostname, nil); err != nil {
 		return fmt.Errorf("close tls_deprecated: %w", err)
 	}
 	return tx.Commit()
@@ -1855,11 +2008,11 @@ func isRetryableMySQLError(err error) bool {
 // site and projects v1 site_status=SITE_DOWN in the same transaction. Returns
 // the event id. Idempotent: a re-detection of the same identity returns the
 // existing event's id with no transition row written and no projection update.
-func (o *Orchestrator) openSeemsDown(site db.Site, res checker.Result) (int64, bool, error) {
+func (o *Orchestrator) openSeemsDown(site db.Site, res checker.Result, firstFailAt time.Time) (int64, bool, error) {
 	var eventID int64
 	var opened bool
 	err := o.withEventMutationRetry(site.BlogID, "open_seems_down", func() error {
-		id, didOpen, err := o.openSeemsDownOnce(site, res)
+		id, didOpen, err := o.openSeemsDownOnce(site, res, firstFailAt)
 		if err != nil {
 			return err
 		}
@@ -1870,21 +2023,14 @@ func (o *Orchestrator) openSeemsDown(site db.Site, res checker.Result) (int64, b
 	return eventID, opened, err
 }
 
-func (o *Orchestrator) openSeemsDownOnce(site db.Site, res checker.Result) (int64, bool, error) {
+func (o *Orchestrator) openSeemsDownOnce(site db.Site, res checker.Result, firstFailAt time.Time) (int64, bool, error) {
 	tx, err := o.ev().Begin(o.ctx)
 	if err != nil {
 		return 0, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	meta, _ := json.Marshal(map[string]any{
-		"http_code":    res.HTTPCode,
-		"error_code":   res.ErrorCode,
-		"keyword_rule": res.KeywordRule,
-		"method":       res.Method,
-		"rtt_ms":       res.RTT.Milliseconds(),
-		"url":          site.MonitorURL,
-	})
+	meta, _ := json.Marshal(checkResultMetadata(site, res, firstFailAt))
 
 	out, err := tx.Open(o.ctx, eventstore.OpenInput{
 		Identity: eventstore.Identity{BlogID: site.BlogID, CheckType: checkTypeHTTP},
@@ -1974,13 +2120,13 @@ func (o *Orchestrator) closeEventOnce(blogID, eventID int64, reason string, proj
 // retry entry) it is used directly; otherwise the active event is looked up
 // inside the transaction. site_status is projected back to SITE_RUNNING in the
 // same tx.
-func (o *Orchestrator) closeRecoveredEvent(blogID, knownEventID int64, changeTime time.Time) error {
+func (o *Orchestrator) closeRecoveredEvent(blogID, knownEventID int64, changeTime time.Time, res checker.Result) error {
 	return o.withEventMutationRetry(blogID, "close_recovered_event", func() error {
-		return o.closeRecoveredEventOnce(blogID, knownEventID, changeTime)
+		return o.closeRecoveredEventOnce(blogID, knownEventID, changeTime, res)
 	})
 }
 
-func (o *Orchestrator) closeRecoveredEventOnce(blogID, knownEventID int64, changeTime time.Time) error {
+func (o *Orchestrator) closeRecoveredEventOnce(blogID, knownEventID int64, changeTime time.Time, res checker.Result) error {
 	tx, err := o.ev().Begin(o.ctx)
 	if err != nil {
 		return err
@@ -2026,7 +2172,8 @@ func (o *Orchestrator) closeRecoveredEventOnce(blogID, knownEventID int64, chang
 		reason = eventstore.ReasonVerifierCleared
 	}
 
-	if err := tx.Close(o.ctx, eventID, reason, o.hostname, nil); err != nil {
+	meta, _ := json.Marshal(recoveryResultMetadata(res, changeTime))
+	if err := tx.Close(o.ctx, eventID, reason, o.hostname, meta); err != nil {
 		return fmt.Errorf("close event: %w", err)
 	}
 	if config.LegacyStatusProjectionEnabled() && tx.Tx() != nil {

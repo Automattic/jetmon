@@ -77,6 +77,10 @@ No active candidate branch is queued here right now.
   full-round cutover gate and at fleet completion.
 - [ ] Revisit report thresholds and suggested actions after v2 has enough real
   production traffic to show which rates should be considered normal.
+- [x] Add richer incident observation metadata for HTTP failures and recovery
+  transitions so operators can explain the probe window behind an incident:
+  previous observed/known-good time, first failed time, first recovered time,
+  bounded error detail, redirect chain/final URL, and TLS/cipher facts.
 
 ### Uptime-Bench Scenario Coverage TODO
 
@@ -104,9 +108,9 @@ No active candidate branch is queued here right now.
   stable in production because dynamic WordPress pages need normalization,
   training, approval/reset workflows, and operator-visible evidence before
   Jetmon can safely alert on "content changed unexpectedly."
-- [ ] Improve DNS diagnostics on HTTP lookup failures before building explicit
+- [x] Improve DNS diagnostics on HTTP lookup failures before building explicit
   DNS monitors. The v2 HTTP checker already records DNS timing and classifies
-  lookup failures as connect failures; add event metadata that distinguishes
+  lookup failures as connect failures; event metadata now distinguishes
   NXDOMAIN, SERVFAIL, timeout, and resolver errors where Go/runtime resolver
   data can support it. This is the recommended near-term step because it helps
   HEs explain failures without creating a new monitor type.
@@ -117,6 +121,14 @@ No active candidate branch is queued here right now.
   this larger feature until the product semantics are designed: some DNS
   failures should be `Warning` or `Degraded`, some should roll up to site-level
   `Down`, and monitor-side resolver impairment must remain `Unknown`.
+- [ ] Decide whether Jetmon should add an explicit DNS monitor that bypasses or
+  complements recursive resolver cache visibility. The 2026-05-05 all-services
+  gapfill run showed every service, including Jetmon v2, missing short
+  authoritative DNS failure windows, which is consistent with recursive cache
+  TTLs hiding the outage from HTTP probes. This needs product semantics before
+  implementation: direct authoritative checks can catch short DNS outages, but
+  they also increase query load and can report a failure that many end users do
+  not observe until caches expire.
 - [ ] Validate geo-scoped benchmark assumptions before changing Jetmon
   production behavior for `http-geo-503`. Confirm the probe source ranges,
   intended Jetmon region semantics, and support story for partial regional
@@ -128,6 +140,11 @@ No active candidate branch is queued here right now.
   mixed outcomes. Defer customer-facing regional classifications until the
   probe-agent architecture exists because current Verifliers are confirmation
   probes after local failure, not continuous per-vantage primary checks.
+- [ ] Add an uptime-bench service scenario that lasts long enough to exercise
+  the verifier-confirmed `Seems Down` -> `Down` path. The latest 10-hour v2
+  services run proved the fast transient `probe_cleared` path, but it did not
+  validate promotion, verifier vote evidence, or `verifier_cleared` recovery.
+  Keep this as benchmark coverage rather than production behavior chasing.
 
 ### Capacity Scheduler TODO
 
@@ -178,8 +195,9 @@ No active candidate branch is queued here right now.
   interval due selection uses a simple indexed range predicate instead of
   computing `DATE_ADD(last_checked_at, INTERVAL GREATEST(check_interval, 1)
   MINUTE)` during every scheduler fetch. The scheduler now recalculates
-  `next_check_at` when checks complete or `check_interval` changes, and
-  migration backfills existing rows before adding the index.
+  `next_check_at` when checks complete or `check_interval` changes, gives
+  failed checks a bounded one-minute follow-up when the normal interval is
+  longer, and migration backfills existing rows before adding the index.
 - [x] Move exact due-count and projection-drift checks out of the hot scheduler
   loop, or run them on a slower background cadence, so operator reporting does
   not add broad database reads to every 5-second variable-interval pass. In

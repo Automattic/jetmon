@@ -20,7 +20,7 @@ Key settings:
 | `NUM_TO_PROCESS` | 40 | Legacy compatibility setting; does not cap Go scheduler throughput |
 | `DATASET_SIZE` | 100 | Database fetch page size for scheduler work; not a total round cap |
 | `NUM_OF_CHECKS` | 3 | Local failures before Veriflier escalation |
-| `TIME_BETWEEN_CHECKS_SEC` | 30 | Delay between local retry checks |
+| `TIME_BETWEEN_CHECKS_SEC` | 30 | Legacy compatibility setting retained for copied v1-style configs |
 | `MIN_TIME_BETWEEN_ROUNDS_SEC` | 300 | Fixed-cadence full-fleet pass interval when variable intervals are disabled |
 | `NET_COMMS_TIMEOUT` | 10 | Default per-check HTTP timeout in seconds |
 | `BODY_READ_MAX_BYTES` | 1048576 | Success-path body-read budget in bytes for unknown/large responses |
@@ -51,11 +51,12 @@ Scheduler behavior:
   being dropped.
 - With `USE_VARIABLE_CHECK_INTERVALS=true`, Jetmon polls for newly due work on a
   short idle interval and uses each site's maintained `next_check_at` timestamp
-  to decide what to check. `next_check_at` is recalculated from
-  `last_checked_at + check_interval` whenever a check completes or
-  `check_interval` changes. `MIN_TIME_BETWEEN_ROUNDS_SEC` is only the
-  fixed-cadence pass interval when variable intervals are disabled. Use this
-  mode for production-like freshness and capacity tests.
+  to decide what to check. `next_check_at` is recalculated after every check:
+  successful checks use `last_checked_at + check_interval`, while failed checks
+  are scheduled for a bounded one-minute follow-up when the normal interval is
+  longer. `MIN_TIME_BETWEEN_ROUNDS_SEC` is only the fixed-cadence pass interval
+  when variable intervals are disabled. Use this mode for production-like
+  freshness and capacity tests.
 - Watch the `scheduler.round.*` StatsD metrics during capacity tests. In
   particular, `due_start`, `selected`, `completed`, `outstanding`, and
   `due_remaining` show whether freshness pressure is clearing or building.
@@ -74,7 +75,10 @@ applies only to eligible successful finite responses and is skipped for `101`,
 upgrade handshakes, and `text/event-stream` when no keyword is configured. In
 strict finite mode (known `Content-Length <= BODY_READ_MAX_BYTES`), body-phase
 timeout is bounded by the request timeout envelope, not `BODY_READ_MAX_MS`.
-Keyword read-budget exhaustion is classified as `ErrorTimeout`.
+Keyword read-budget exhaustion is classified as `ErrorTimeout`. Event metadata
+keeps legacy `failure_class` for WPCOM-compatible status types and adds
+operator-facing `detector_class` plus `body_read` evidence for partial/truncated
+responses.
 
 ## Production Host Setup
 
