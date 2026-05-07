@@ -110,7 +110,11 @@ type telemetryWPCOMReport struct {
 	RecoveryAttempts            int64   `json:"recovery_attempts"`
 	Retries                     int64   `json:"retries"`
 	Suppressed                  int64   `json:"suppressed"`
+	DownSuppressed              int64   `json:"down_suppressed"`
+	RecoverySuppressed          int64   `json:"recovery_suppressed"`
 	AttemptDelta                int64   `json:"attempt_delta"`
+	DownAttemptDelta            int64   `json:"down_attempt_delta"`
+	RecoveryAttemptDelta        int64   `json:"recovery_attempt_delta"`
 	RetryRatePercent            float64 `json:"retry_rate_percent"`
 }
 
@@ -540,24 +544,67 @@ func queryTelemetryWPCOM(ctx context.Context, conn *sql.DB, window telemetryWind
 		return telemetryWPCOMReport{}, fmt.Errorf("query WPCOM retries: %w", err)
 	}
 
-	err = conn.QueryRowContext(ctx, `
-		SELECT COUNT(*)
+	rows, err := conn.QueryContext(ctx, `
+		SELECT event_type, COALESCE(detail, ''), COUNT(*)
 		  FROM jetmon_audit_log
 		 WHERE event_type IN (?, ?)
 		   AND created_at >= ?
-		   AND created_at < ?`,
+		   AND created_at < ?
+		 GROUP BY event_type, detail`,
 		audit.EventMaintenanceActive, audit.EventAlertSuppressed, window.Since, window.Until,
-	).Scan(&report.Suppressed)
+	)
 	if err != nil {
 		return telemetryWPCOMReport{}, fmt.Errorf("query WPCOM suppressions: %w", err)
 	}
+	defer rows.Close()
 
-	expectedAttempts := report.ExpectedDownTransitions + report.ExpectedRecoveryTransitions
-	report.AttemptDelta = expectedAttempts - report.Attempts - report.Suppressed
+	for rows.Next() {
+		var eventType, detail string
+		var count int64
+		if err := rows.Scan(&eventType, &detail, &count); err != nil {
+			return telemetryWPCOMReport{}, fmt.Errorf("scan WPCOM suppression: %w", err)
+		}
+		report.Suppressed += count
+		down, recovery := classifyTelemetryWPCOMSuppression(eventType, detail)
+		if down {
+			report.DownSuppressed += count
+		}
+		if recovery {
+			report.RecoverySuppressed += count
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return telemetryWPCOMReport{}, fmt.Errorf("iterate WPCOM suppressions: %w", err)
+	}
+
+	report.DownAttemptDelta = report.ExpectedDownTransitions - report.DownAttempts - report.DownSuppressed
+	report.RecoveryAttemptDelta = report.ExpectedRecoveryTransitions - report.RecoveryAttempts - report.RecoverySuppressed
+	report.AttemptDelta = report.DownAttemptDelta + report.RecoveryAttemptDelta
 	if report.Attempts > 0 {
 		report.RetryRatePercent = float64(report.Retries) * 100 / float64(report.Attempts)
 	}
 	return report, nil
+}
+
+func classifyTelemetryWPCOMSuppression(eventType, detail string) (down bool, recovery bool) {
+	detail = strings.TrimSpace(detail)
+	switch eventType {
+	case audit.EventMaintenanceActive:
+		if strings.HasPrefix(detail, "downtime suppressed") {
+			return true, false
+		}
+		if strings.HasPrefix(detail, "recovery suppressed") {
+			return false, true
+		}
+	case audit.EventAlertSuppressed:
+		switch {
+		case detail == "cooldown active" || strings.HasPrefix(detail, "downtime suppressed"):
+			return true, false
+		case detail == "recovery cooldown active" || strings.HasPrefix(detail, "recovery suppressed"):
+			return false, true
+		}
+	}
+	return false, false
 }
 
 func queryTelemetryWindowEdge(ctx context.Context, conn *sql.DB, window telemetryWindow, lookback time.Duration) (telemetryWindowEdge, error) {
@@ -689,12 +736,20 @@ func telemetrySummaryFromReasons(counts map[string]int64) telemetrySummary {
 
 func derivedTelemetryGaps(wpcom telemetryWPCOMReport, verifier telemetryVerifierReport) []telemetryGap {
 	var gaps []telemetryGap
-	if wpcom.AttemptDelta != 0 {
+	if wpcom.DownAttemptDelta != 0 {
 		gaps = append(gaps, telemetryGap{
-			Name:     "wpcom_attempt_delta",
+			Name:     "wpcom_down_attempt_delta",
 			Severity: "amber",
-			Count:    absInt64(wpcom.AttemptDelta),
-			Detail:   "WPCOM attempts differ from down/recovery transitions after maintenance and cooldown suppressions",
+			Count:    absInt64(wpcom.DownAttemptDelta),
+			Detail:   "WPCOM confirmed-down attempts differ from verifier-confirmed transitions after downtime suppressions",
+		})
+	}
+	if wpcom.RecoveryAttemptDelta != 0 {
+		gaps = append(gaps, telemetryGap{
+			Name:     "wpcom_recovery_attempt_delta",
+			Severity: "amber",
+			Count:    absInt64(wpcom.RecoveryAttemptDelta),
+			Detail:   "WPCOM recovery attempts differ from recovery transitions after recovery suppressions",
 		})
 	}
 	if verifier.Replies == 0 && wpcom.ExpectedDownTransitions > 0 {
@@ -733,6 +788,12 @@ func telemetryReportHighlights(report telemetryReport) []string {
 	var highlights []string
 	if report.WPCOM.AttemptDelta != 0 {
 		highlights = append(highlights, fmt.Sprintf("WPCOM attempt delta is %d after expected suppressions.", report.WPCOM.AttemptDelta))
+		if report.WPCOM.DownAttemptDelta != 0 {
+			highlights = append(highlights, fmt.Sprintf("WPCOM confirmed-down attempt delta is %d.", report.WPCOM.DownAttemptDelta))
+		}
+		if report.WPCOM.RecoveryAttemptDelta != 0 {
+			highlights = append(highlights, fmt.Sprintf("WPCOM recovery attempt delta is %d.", report.WPCOM.RecoveryAttemptDelta))
+		}
 		if report.WindowEdge.WPCOMEligibleTransitions > 0 {
 			highlights = append(highlights, fmt.Sprintf("%d WPCOM-eligible transition(s) landed in the final %ds of the window; rerun with a later --until before treating the delta as missing telemetry.", report.WindowEdge.WPCOMEligibleTransitions, report.WindowEdge.LookbackSeconds))
 		}
@@ -764,11 +825,11 @@ func suggestTelemetryNextActions(report telemetryReport) []string {
 	var actions []string
 	for _, gap := range report.ExplanationGaps {
 		switch gap.Name {
-		case "wpcom_attempt_delta":
+		case "wpcom_down_attempt_delta", "wpcom_recovery_attempt_delta":
 			if report.WindowEdge.WPCOMEligibleTransitions > 0 {
 				actions = append(actions, "Rerun the report with a later --until to rule out window-edge WPCOM audit lag before investigating missing notifications.")
 			}
-			actions = append(actions, "Review WPCOM audit rows against event transitions for the same window; suppressions or missing audit writes may explain the delta.")
+			actions = append(actions, "Review WPCOM audit rows against event transitions for the same window; compare down and recovery attempts separately before treating the total delta as clean.")
 		case "opened_missing_failure_metadata", "confirmed_down_missing_verifier_results", "false_alarm_missing_verifier_counts", "verifier_reply_missing_outcome":
 			actions = append(actions, "Fix telemetry metadata gaps before relying on this report for customer-facing explanations.")
 		case "no_verifier_replies_for_event_window":
@@ -866,7 +927,7 @@ func renderTelemetryReportText(out io.Writer, report telemetryReport) {
 	}
 
 	fmt.Fprintln(out, "## WPCOM Parity")
-	fmt.Fprintf(out, "INFO expected_down=%d expected_recovery=%d attempts=%d down_attempts=%d recovery_attempts=%d retries=%d suppressed=%d attempt_delta=%d retry_rate=%.1f%%\n",
+	fmt.Fprintf(out, "INFO expected_down=%d expected_recovery=%d attempts=%d down_attempts=%d recovery_attempts=%d retries=%d suppressed=%d down_suppressed=%d recovery_suppressed=%d attempt_delta=%d down_attempt_delta=%d recovery_attempt_delta=%d retry_rate=%.1f%%\n",
 		report.WPCOM.ExpectedDownTransitions,
 		report.WPCOM.ExpectedRecoveryTransitions,
 		report.WPCOM.Attempts,
@@ -874,7 +935,11 @@ func renderTelemetryReportText(out io.Writer, report telemetryReport) {
 		report.WPCOM.RecoveryAttempts,
 		report.WPCOM.Retries,
 		report.WPCOM.Suppressed,
+		report.WPCOM.DownSuppressed,
+		report.WPCOM.RecoverySuppressed,
 		report.WPCOM.AttemptDelta,
+		report.WPCOM.DownAttemptDelta,
+		report.WPCOM.RecoveryAttemptDelta,
 		report.WPCOM.RetryRatePercent,
 	)
 

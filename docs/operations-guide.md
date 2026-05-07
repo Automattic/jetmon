@@ -152,7 +152,11 @@ After a pinned v2 host starts, use `./jetmon2 rollout cutover-check
 post-start pinned preflight, recent activity check, dashboard status check, and
 projection-drift report together. Treat the immediate run as a smoke gate
 because recent activity can still include v1 writes. After one full expected v2
-check round, rerun it with `--require-all` before moving to the next host.
+check round, rerun it with `--require-all`, then run `./jetmon2 telemetry
+report --since=15m` before moving to the next host. The telemetry report is
+read-only window-level evidence for WPCOM down/recovery parity and explanation
+coverage; warnings are rollout hold points, and quiet windows may need a wider
+`--since` range.
 
 Use `--output=json` on rollout gate commands when wiring them into Systems
 automation. The command still exits non-zero on failed checks, and stdout
@@ -443,8 +447,13 @@ The report is read-only and runs with a bounded query timeout by default
 (`since <= row time < until`) so adjacent scheduled reports do not double-count
 boundary rows. It summarizes event lifecycle counts, first-failure timings,
 verifier agreement, false-alarm classes, WPCOM attempt parity, and metadata gaps
-that would make operator or customer explanations weaker. It reports aggregate
-counts and classes rather than raw payloads or credentials.
+that would make operator or customer explanations weaker. WPCOM parity is split
+between confirmed-down and recovery attempts, with maintenance/cooldown
+suppressions separated the same way, so one side cannot mask a mismatch on the
+other. During v1-to-v2 rollout, capture this report after each full-round
+cutover gate and again at fleet completion. It reports aggregate counts and
+classes rather than raw payloads or
+credentials.
 
 The top line reports `telemetry_status`, `explanation_gap_types`, and
 `explanation_gap_rows`. Treat `warn` or `fail` as a signal that the report found

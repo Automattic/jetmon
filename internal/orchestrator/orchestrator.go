@@ -1254,6 +1254,13 @@ func (o *Orchestrator) handleRecovery(site db.Site, res checker.Result) {
 			})
 		} else if !o.isAlertSuppressed(site) {
 			o.sendNotification(site, res, statusRunning, changeTime, nil)
+		} else {
+			o.auditLog(audit.Entry{
+				BlogID:    site.BlogID,
+				EventType: audit.EventAlertSuppressed,
+				Source:    "local",
+				Detail:    "recovery cooldown active",
+			})
 		}
 	}
 }

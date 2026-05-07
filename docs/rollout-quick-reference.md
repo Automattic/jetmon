@@ -50,6 +50,9 @@ only when the operator wants the command to execute those stop/start commands
 after typed confirmation. Use `--dry-run` to verify the selected path, log
 paths, service commands, typed confirmation phrases, and manual `DONE`
 checkpoints without running rollout checks or service commands.
+After the full-round v2 gate, the guided flow also captures a read-only WPCOM
+parity telemetry report so the transcript includes notification and
+operator-explanation evidence.
 
 To return a range to v1, run the guided rollback path:
 
@@ -173,7 +176,17 @@ to v1" and keep the transcript with the incident record.
      --require-all
    ```
 
-6. Watch logs, the host dashboard, `/fleet`, WPCOM notification parity, event
+6. Capture WPCOM down/recovery parity and operator-explanation evidence:
+
+   ```bash
+   ./jetmon2 telemetry report --since=15m
+   ```
+
+   This is a read-only window-level report. Treat warnings as rollout hold
+   points, and widen `--since` when the current range is too quiet to prove
+   parity.
+
+7. Watch logs, the host dashboard, `/fleet`, WPCOM notification parity, event
    rows, and projection drift before moving to the next host. In pinned rollout,
    `/fleet` should show pinned bucket mode as amber rather than dynamic green.
 
@@ -212,6 +225,7 @@ restart the fleet in the approved window, and run:
 ./jetmon2 rollout dynamic-check
 ./jetmon2 rollout activity-check --since=15m --require-all
 ./jetmon2 rollout projection-drift --limit=100
+./jetmon2 telemetry report --since=15m
 ```
 
 When `projection-drift` fails, start with the summary and cause lines before
