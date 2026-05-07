@@ -16,6 +16,7 @@ import (
 	"github.com/Automattic/jetmon/internal/checker"
 	"github.com/Automattic/jetmon/internal/config"
 	"github.com/Automattic/jetmon/internal/db"
+	"github.com/Automattic/jetmon/internal/dnsprobe"
 	"github.com/Automattic/jetmon/internal/eventstore"
 	"github.com/Automattic/jetmon/internal/veriflier"
 	"github.com/Automattic/jetmon/internal/wpcom"
@@ -54,6 +55,97 @@ func TestTimeoutForSite(t *testing.T) {
 	override := 3
 	if got := timeoutForSite(cfg, db.Site{TimeoutSeconds: &override}); got != 3 {
 		t.Fatalf("timeoutForSite() with override = %d, want 3", got)
+	}
+}
+
+func TestDNSAutoSizingUsesHTTPWorkers(t *testing.T) {
+	cfg := &config.Config{NumWorkers: 60}
+	if got := dnsWorkerLimit(cfg); got != 15 {
+		t.Fatalf("dnsWorkerLimit = %d, want 15", got)
+	}
+	if got := dnsBatchSize(cfg); got != 120 {
+		t.Fatalf("dnsBatchSize = %d, want 120", got)
+	}
+
+	cfg.DNSMonitorMaxWorkers = 200
+	cfg.DNSMonitorBatchSize = 25
+	if got := dnsWorkerLimit(cfg); got != 200 {
+		t.Fatalf("dnsWorkerLimit override = %d, want 200", got)
+	}
+	if got := dnsBatchSize(cfg); got != 25 {
+		t.Fatalf("dnsBatchSize override = %d, want 25", got)
+	}
+}
+
+func TestRunDNSProbesSchedulesChecksAndUpdatesState(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+
+	cfg := &config.Config{
+		NumWorkers:                   20,
+		DNSMonitorEnable:             true,
+		DNSMonitorIntervalSec:        900,
+		DNSMonitorTimeoutMS:          2000,
+		DNSMonitorBatchSize:          10,
+		DNSMonitorScheduleBatchSize:  50,
+		LegacyStatusProjectionEnable: false,
+	}
+	o := &Orchestrator{
+		hostname:  "test-host",
+		bucketMin: 0,
+		bucketMax: 99,
+		ctx:       context.Background(),
+	}
+
+	var scheduleLimit int
+	dbEnsureDNSSchedules = func(_ context.Context, _, _ int, limit, intervalSec int, _ time.Time) (int, error) {
+		scheduleLimit = limit
+		if intervalSec != 900 {
+			t.Fatalf("intervalSec = %d, want 900", intervalSec)
+		}
+		return 2, nil
+	}
+	dbCountDueDNSProbes = func(context.Context, int, int) (int, error) { return 1, nil }
+	dbGetDueDNSProbes = func(_ context.Context, _, _ int, limit int) ([]db.DNSProbeTarget, error) {
+		if limit != 10 {
+			t.Fatalf("limit = %d, want 10", limit)
+		}
+		return []db.DNSProbeTarget{{
+			BlogID:          42,
+			BucketNo:        7,
+			MonitorURL:      "https://Example.COM/path",
+			Hostname:        "old.example.com",
+			IntervalSeconds: 900,
+		}}, nil
+	}
+	dnsProbeCheckFunc = func(_ context.Context, req dnsprobe.Request) dnsprobe.Result {
+		if req.Hostname != "example.com" {
+			t.Fatalf("Hostname = %q, want example.com", req.Hostname)
+		}
+		return dnsprobe.Result{
+			BlogID:    req.BlogID,
+			Hostname:  req.Hostname,
+			Success:   true,
+			Status:    dnsprobe.StatusOK,
+			Addresses: []string{"192.0.2.10"},
+			Timestamp: time.Now().UTC(),
+		}
+	}
+	var updates []db.DNSProbeStateUpdate
+	dbUpdateDNSStates = func(_ context.Context, got []db.DNSProbeStateUpdate) error {
+		updates = append([]db.DNSProbeStateUpdate(nil), got...)
+		return nil
+	}
+
+	summary := o.runDNSProbes(cfg)
+	if scheduleLimit != 50 {
+		t.Fatalf("scheduleLimit = %d, want 50", scheduleLimit)
+	}
+	if summary.dnsSchedulesCreated != 2 || summary.dnsSelected != 1 || summary.dnsCompleted != 1 || summary.dnsFailures != 0 {
+		t.Fatalf("summary = %+v", summary)
+	}
+	if len(updates) != 1 || updates[0].BlogID != 42 || updates[0].Hostname != "example.com" || updates[0].Result != dnsprobe.StatusOK {
+		t.Fatalf("updates = %+v", updates)
 	}
 }
 
@@ -451,7 +543,12 @@ func stubOrchestratorDeps() func() {
 	origDBUpdateSSLExpiry := dbUpdateSSLExpiry
 	origDBUpdateSSLExpiries := dbUpdateSSLExpiries
 	origDBCountDueSites := dbCountDueSites
+	origDBEnsureDNSSchedules := dbEnsureDNSSchedules
+	origDBGetDueDNSProbes := dbGetDueDNSProbes
+	origDBCountDueDNSProbes := dbCountDueDNSProbes
+	origDBUpdateDNSStates := dbUpdateDNSStates
 	origDBCountProjectionDrift := dbCountProjectionDrift
+	origDNSProbeCheck := dnsProbeCheckFunc
 	origNotify := wpcomNotifyFunc
 	origVeriflierCheck := veriflierCheckFunc
 	origMetricsClient := metricsClientFunc
@@ -472,7 +569,12 @@ func stubOrchestratorDeps() func() {
 	dbUpdateSSLExpiry = func(context.Context, int64, time.Time) error { return nil }
 	dbUpdateSSLExpiries = func(context.Context, []db.SiteSSLExpiry) error { return nil }
 	dbCountDueSites = func(context.Context, int, int, bool) (int, error) { return 0, nil }
+	dbEnsureDNSSchedules = func(context.Context, int, int, int, int, time.Time) (int, error) { return 0, nil }
+	dbGetDueDNSProbes = func(context.Context, int, int, int) ([]db.DNSProbeTarget, error) { return nil, nil }
+	dbCountDueDNSProbes = func(context.Context, int, int) (int, error) { return 0, nil }
+	dbUpdateDNSStates = func(context.Context, []db.DNSProbeStateUpdate) error { return nil }
 	dbCountProjectionDrift = func(context.Context, int, int) (int, error) { return 0, nil }
+	dnsProbeCheckFunc = func(context.Context, dnsprobe.Request) dnsprobe.Result { return dnsprobe.Result{} }
 	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error { return nil }
 	veriflierCheckFunc = func(c *veriflier.VeriflierClient, ctx context.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
 		return c.Check(ctx, req)
@@ -495,7 +597,12 @@ func stubOrchestratorDeps() func() {
 		dbUpdateSSLExpiry = origDBUpdateSSLExpiry
 		dbUpdateSSLExpiries = origDBUpdateSSLExpiries
 		dbCountDueSites = origDBCountDueSites
+		dbEnsureDNSSchedules = origDBEnsureDNSSchedules
+		dbGetDueDNSProbes = origDBGetDueDNSProbes
+		dbCountDueDNSProbes = origDBCountDueDNSProbes
+		dbUpdateDNSStates = origDBUpdateDNSStates
 		dbCountProjectionDrift = origDBCountProjectionDrift
+		dnsProbeCheckFunc = origDNSProbeCheck
 		wpcomNotifyFunc = origNotify
 		veriflierCheckFunc = origVeriflierCheck
 		metricsClientFunc = origMetricsClient

@@ -27,6 +27,12 @@ Key settings:
 | `BODY_READ_MAX_MS` | 250 | Post-header body-phase budget in milliseconds for budgeted reads (unknown/large responses) |
 | `KEYWORD_READ_MAX_BYTES` | 1048576 | Max bytes scanned when keyword checks are enabled |
 | `KEYWORD_READ_MAX_MS` | 0 | Keyword read budget in milliseconds, 0 inherits full request timeout envelope |
+| `DNS_MONITOR_ENABLE` | false | Enable the independent recursive DNS monitor |
+| `DNS_MONITOR_INTERVAL_SEC` | 900 | Per-site DNS probe cadence when DNS monitoring is enabled |
+| `DNS_MONITOR_TIMEOUT_MS` | 2000 | Per-hostname recursive DNS lookup timeout |
+| `DNS_MONITOR_BATCH_SIZE` | 0 | Due DNS probes per scheduler pass; 0 auto-sizes from `NUM_WORKERS` |
+| `DNS_MONITOR_MAX_WORKERS` | 0 | DNS lookup worker cap; 0 auto-sizes from `NUM_WORKERS` |
+| `DNS_MONITOR_SCHEDULE_BATCH_SIZE` | 0 | Missing DNS schedule rows to backfill per pass; 0 auto-sizes |
 | `PEER_OFFLINE_LIMIT` | 3 | Veriflier agreements required to confirm downtime |
 | `WORKER_MAX_MEM_MB` | 0 | Optional Go runtime memory threshold that triggers worker-pool drain; 0 disables the artificial cap |
 | `BUCKET_TOTAL` | 1000 | Total bucket range across all hosts |
@@ -64,6 +70,13 @@ Scheduler behavior:
   reporting queries do not run on every short scheduler poll. Use
   `scheduler.round.due_count_sampled.count` to distinguish sampled polls from
   intentionally skipped reporting polls.
+- DNS monitoring uses `jetmon_dns_probe_state` for its own schedule and latest
+  recursive resolver evidence. Initial schedule rows are jittered across
+  `DNS_MONITOR_INTERVAL_SEC`, and `DNS_MONITOR_BATCH_SIZE` /
+  `DNS_MONITOR_MAX_WORKERS` can stay at 0 so the orchestrator auto-sizes DNS
+  load from the HTTP worker pool. DNS failures open Degraded `dns` events with
+  resolver metadata but do not change the legacy `site_status` projection or
+  send WPCOM downtime notifications in this first rollout slice.
 
 See [../config/config.readme](../config/config.readme) for the full option
 reference.

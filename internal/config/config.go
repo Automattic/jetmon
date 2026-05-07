@@ -87,6 +87,16 @@ type Config struct {
 	KeywordReadMaxMS          int   `json:"KEYWORD_READ_MAX_MS"`
 	UseVariableCheckIntervals bool  `json:"USE_VARIABLE_CHECK_INTERVALS"`
 
+	// DNS monitoring is a separate scheduled probe stream. Batch/worker values
+	// default to 0, which lets the orchestrator derive bounded values from the
+	// HTTP worker count instead of requiring per-host tuning.
+	DNSMonitorEnable            bool `json:"DNS_MONITOR_ENABLE"`
+	DNSMonitorIntervalSec       int  `json:"DNS_MONITOR_INTERVAL_SEC"`
+	DNSMonitorTimeoutMS         int  `json:"DNS_MONITOR_TIMEOUT_MS"`
+	DNSMonitorBatchSize         int  `json:"DNS_MONITOR_BATCH_SIZE"`
+	DNSMonitorMaxWorkers        int  `json:"DNS_MONITOR_MAX_WORKERS"`
+	DNSMonitorScheduleBatchSize int  `json:"DNS_MONITOR_SCHEDULE_BATCH_SIZE"`
+
 	LogFormat         string `json:"LOG_FORMAT"`
 	DashboardPort     int    `json:"DASHBOARD_PORT"`
 	DashboardBindAddr string `json:"DASHBOARD_BIND_ADDR"`
@@ -221,6 +231,8 @@ func defaults() *Config {
 		BodyReadMaxMS:                250,
 		KeywordReadMaxBytes:          1048576,
 		KeywordReadMaxMS:             0,
+		DNSMonitorIntervalSec:        900,
+		DNSMonitorTimeoutMS:          2000,
 		LogFormat:                    "text",
 		DashboardPort:                8080,
 		DashboardBindAddr:            "127.0.0.1",
@@ -303,6 +315,21 @@ func validate(cfg *Config) error {
 	}
 	if cfg.KeywordReadMaxMS < 0 {
 		return fmt.Errorf("KEYWORD_READ_MAX_MS must be >= 0")
+	}
+	if cfg.DNSMonitorEnable && cfg.DNSMonitorIntervalSec <= 0 {
+		return fmt.Errorf("DNS_MONITOR_INTERVAL_SEC must be > 0 when DNS_MONITOR_ENABLE is true")
+	}
+	if cfg.DNSMonitorEnable && cfg.DNSMonitorTimeoutMS <= 0 {
+		return fmt.Errorf("DNS_MONITOR_TIMEOUT_MS must be > 0 when DNS_MONITOR_ENABLE is true")
+	}
+	if cfg.DNSMonitorBatchSize < 0 {
+		return fmt.Errorf("DNS_MONITOR_BATCH_SIZE must be >= 0")
+	}
+	if cfg.DNSMonitorMaxWorkers < 0 {
+		return fmt.Errorf("DNS_MONITOR_MAX_WORKERS must be >= 0")
+	}
+	if cfg.DNSMonitorScheduleBatchSize < 0 {
+		return fmt.Errorf("DNS_MONITOR_SCHEDULE_BATCH_SIZE must be >= 0")
 	}
 	if cfg.MinTimeBetweenRoundsSec < 0 {
 		return fmt.Errorf("MIN_TIME_BETWEEN_ROUNDS_SEC must be >= 0")

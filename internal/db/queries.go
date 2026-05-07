@@ -3,14 +3,52 @@ package db
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
+	"net"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
 )
 
 const batchWriteChunkSize = 500
+
+// DNSProbeTarget is one site-level hostname check selected by the independent
+// DNS scheduler. It intentionally carries only the fields needed by the DNS
+// probe path so the HTTP scheduler row remains compact.
+type DNSProbeTarget struct {
+	BlogID          int64
+	BucketNo        int
+	MonitorURL      string
+	Hostname        string
+	IntervalSeconds int
+	LastCheckedAt   *time.Time
+	NextCheckAt     time.Time
+}
+
+// DNSProbeStateUpdate records the result and next due time for one DNS probe.
+type DNSProbeStateUpdate struct {
+	BlogID          int64
+	Hostname        string
+	IntervalSeconds int
+	CheckedAt       time.Time
+	NextCheckAt     time.Time
+	Result          string
+	Error           string
+	Addresses       []string
+	CNAMEChain      []string
+}
+
+type dnsScheduleSeed struct {
+	blogID     int64
+	hostname   string
+	nextCheck  time.Time
+	lastResult string
+	lastError  string
+}
 
 // GetSitesForBucket fetches active sites within the given bucket range.
 func GetSitesForBucket(ctx context.Context, bucketMin, bucketMax, batchSize int, useVariableIntervals bool) ([]Site, error) {
@@ -130,6 +168,306 @@ func CountDueSitesForBucketRange(ctx context.Context, bucketMin, bucketMax int, 
 		return 0, fmt.Errorf("count due sites: %w", err)
 	}
 	return count, nil
+}
+
+// EnsureDNSProbeSchedules creates DNS schedule rows for active sites that do
+// not have one yet. Initial due times are spread across the configured interval
+// with a stable hash so enabling DNS monitoring does not create a synchronized
+// first-run wave.
+func EnsureDNSProbeSchedules(ctx context.Context, bucketMin, bucketMax, limit, intervalSec int, now time.Time) (int, error) {
+	if limit <= 0 {
+		return 0, nil
+	}
+	if intervalSec <= 0 {
+		intervalSec = 900
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	rows, err := db.QueryContext(ctx, `
+		SELECT s.blog_id, s.monitor_url
+		  FROM jetpack_monitor_sites s
+		  LEFT JOIN jetmon_dns_probe_state d
+		    ON d.blog_id = s.blog_id
+		 WHERE s.monitor_active = 1
+		   AND s.bucket_no BETWEEN ? AND ?
+		   AND d.blog_id IS NULL
+		 ORDER BY s.blog_id ASC
+		 LIMIT ?`,
+		bucketMin, bucketMax, limit,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("query missing DNS schedules: %w", err)
+	}
+	defer rows.Close()
+
+	seeds := make([]dnsScheduleSeed, 0, limit)
+	for rows.Next() {
+		var blogID int64
+		var monitorURL string
+		if err := rows.Scan(&blogID, &monitorURL); err != nil {
+			return 0, fmt.Errorf("scan missing DNS schedule: %w", err)
+		}
+		hostname, hostErr := hostnameFromMonitorURL(monitorURL)
+		seed := dnsScheduleSeed{
+			blogID:    blogID,
+			hostname:  hostname,
+			nextCheck: InitialDNSNextCheckAt(now.UTC(), intervalSec, blogID, hostname),
+		}
+		if hostErr != nil {
+			seed.lastResult = "invalid_url"
+			seed.lastError = truncateDBString(hostErr.Error(), 255)
+		}
+		seeds = append(seeds, seed)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterate missing DNS schedules: %w", err)
+	}
+	if len(seeds) == 0 {
+		return 0, nil
+	}
+
+	for start := 0; start < len(seeds); start += batchWriteChunkSize {
+		end := min(start+batchWriteChunkSize, len(seeds))
+		if err := insertDNSProbeScheduleChunk(ctx, seeds[start:end], intervalSec); err != nil {
+			return 0, err
+		}
+	}
+	return len(seeds), nil
+}
+
+func insertDNSProbeScheduleChunk(ctx context.Context, seeds []dnsScheduleSeed, intervalSec int) error {
+	if len(seeds) == 0 {
+		return nil
+	}
+	var query strings.Builder
+	query.WriteString(`INSERT INTO jetmon_dns_probe_state
+		(blog_id, hostname, interval_seconds, next_check_at, last_result, last_error)
+		VALUES `)
+	args := make([]any, 0, len(seeds)*6)
+	for i, seed := range seeds {
+		if i > 0 {
+			query.WriteByte(',')
+		}
+		query.WriteString("(?, ?, ?, ?, ?, ?)")
+		args = append(args,
+			seed.blogID,
+			seed.hostname,
+			intervalSec,
+			seed.nextCheck.UTC(),
+			nullableString(seed.lastResult),
+			nullableString(seed.lastError),
+		)
+	}
+	query.WriteString(" ON DUPLICATE KEY UPDATE blog_id = blog_id")
+	if _, err := db.ExecContext(ctx, query.String(), args...); err != nil {
+		return fmt.Errorf("insert DNS schedules: %w", err)
+	}
+	return nil
+}
+
+// GetDueDNSProbes returns DNS schedule rows due for this host's active bucket
+// range. A monitor_url hostname change is corrected when the result is written
+// back; the query keeps scheduling independent from the HTTP hot path.
+func GetDueDNSProbes(ctx context.Context, bucketMin, bucketMax, limit int) ([]DNSProbeTarget, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	rows, err := db.QueryContext(ctx, `
+		SELECT s.blog_id,
+		       s.bucket_no,
+		       s.monitor_url,
+		       d.hostname,
+		       d.interval_seconds,
+		       d.last_checked_at,
+		       d.next_check_at
+		  FROM jetmon_dns_probe_state d
+		  JOIN jetpack_monitor_sites s
+		    ON s.blog_id = d.blog_id
+		 WHERE s.monitor_active = 1
+		   AND s.bucket_no BETWEEN ? AND ?
+		   AND d.next_check_at <= NOW()
+		 ORDER BY d.next_check_at ASC, s.blog_id ASC
+		 LIMIT ?`,
+		bucketMin, bucketMax, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query due DNS probes: %w", err)
+	}
+	defer rows.Close()
+
+	targets := make([]DNSProbeTarget, 0, limit)
+	for rows.Next() {
+		var target DNSProbeTarget
+		if err := rows.Scan(
+			&target.BlogID,
+			&target.BucketNo,
+			&target.MonitorURL,
+			&target.Hostname,
+			&target.IntervalSeconds,
+			&target.LastCheckedAt,
+			&target.NextCheckAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan due DNS probe: %w", err)
+		}
+		targets = append(targets, target)
+	}
+	return targets, rows.Err()
+}
+
+// CountDueDNSProbes returns the number of currently due DNS schedule rows for
+// this host's active bucket range.
+func CountDueDNSProbes(ctx context.Context, bucketMin, bucketMax int) (int, error) {
+	var count int
+	err := db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		  FROM jetmon_dns_probe_state d
+		  JOIN jetpack_monitor_sites s
+		    ON s.blog_id = d.blog_id
+		 WHERE s.monitor_active = 1
+		   AND s.bucket_no BETWEEN ? AND ?
+		   AND d.next_check_at <= NOW()`,
+		bucketMin, bucketMax,
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count due DNS probes: %w", err)
+	}
+	return count, nil
+}
+
+// UpdateDNSProbeStates writes the latest DNS evidence and next due time for a
+// batch of probe results.
+func UpdateDNSProbeStates(ctx context.Context, updates []DNSProbeStateUpdate) error {
+	if len(updates) == 0 {
+		return nil
+	}
+	updates = append([]DNSProbeStateUpdate(nil), updates...)
+	sort.Slice(updates, func(i, j int) bool {
+		return updates[i].BlogID < updates[j].BlogID
+	})
+	for start := 0; start < len(updates); start += batchWriteChunkSize {
+		end := min(start+batchWriteChunkSize, len(updates))
+		if err := updateDNSProbeStatesChunk(ctx, updates[start:end]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func updateDNSProbeStatesChunk(ctx context.Context, updates []DNSProbeStateUpdate) error {
+	var query strings.Builder
+	query.WriteString(`INSERT INTO jetmon_dns_probe_state
+		(blog_id, hostname, interval_seconds, last_checked_at, next_check_at, last_result, last_error, last_addresses, last_cname_chain)
+		VALUES `)
+	args := make([]any, 0, len(updates)*9)
+	for i, update := range updates {
+		if i > 0 {
+			query.WriteByte(',')
+		}
+		addresses, err := json.Marshal(update.Addresses)
+		if err != nil {
+			return fmt.Errorf("marshal DNS addresses blog_id=%d: %w", update.BlogID, err)
+		}
+		cnameChain, err := json.Marshal(update.CNAMEChain)
+		if err != nil {
+			return fmt.Errorf("marshal DNS cname chain blog_id=%d: %w", update.BlogID, err)
+		}
+		query.WriteString("(?, ?, ?, ?, ?, ?, ?, ?, ?)")
+		args = append(args,
+			update.BlogID,
+			update.Hostname,
+			update.IntervalSeconds,
+			update.CheckedAt.UTC(),
+			update.NextCheckAt.UTC(),
+			truncateDBString(update.Result, 32),
+			nullableString(truncateDBString(update.Error, 255)),
+			string(addresses),
+			string(cnameChain),
+		)
+	}
+	query.WriteString(` ON DUPLICATE KEY UPDATE
+		hostname = VALUES(hostname),
+		interval_seconds = VALUES(interval_seconds),
+		last_checked_at = VALUES(last_checked_at),
+		next_check_at = VALUES(next_check_at),
+		last_result = VALUES(last_result),
+		last_error = VALUES(last_error),
+		last_addresses = VALUES(last_addresses),
+		last_cname_chain = VALUES(last_cname_chain)`)
+	if _, err := db.ExecContext(ctx, query.String(), args...); err != nil {
+		return fmt.Errorf("update DNS probe states: %w", err)
+	}
+	return nil
+}
+
+// InitialDNSNextCheckAt returns a stable first due slot within intervalSec for
+// a site. The first slot is always in the future relative to now.
+func InitialDNSNextCheckAt(now time.Time, intervalSec int, blogID int64, hostname string) time.Time {
+	if intervalSec <= 0 {
+		intervalSec = 900
+	}
+	interval := time.Duration(intervalSec) * time.Second
+	offset := time.Duration(stableDNSOffsetSeconds(blogID, hostname, intervalSec)) * time.Second
+	next := now.UTC().Truncate(interval).Add(offset)
+	if !next.After(now.UTC()) {
+		next = next.Add(interval)
+	}
+	return next
+}
+
+func stableDNSOffsetSeconds(blogID int64, hostname string, intervalSec int) int {
+	if intervalSec <= 1 {
+		return 0
+	}
+	h := fnv.New64a()
+	_, _ = fmt.Fprintf(h, "%d:%s", blogID, strings.ToLower(hostname))
+	return int(h.Sum64() % uint64(intervalSec))
+}
+
+func hostnameFromMonitorURL(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", fmt.Errorf("monitor_url is empty")
+	}
+	host := ""
+	if u, err := url.Parse(value); err == nil {
+		host = u.Hostname()
+	}
+	if host == "" && !strings.Contains(value, "://") {
+		if u, err := url.Parse("http://" + value); err == nil {
+			host = u.Hostname()
+		}
+	}
+	if host == "" {
+		trimmed := strings.Trim(value, "[]")
+		if splitHost, _, err := net.SplitHostPort(trimmed); err == nil {
+			host = splitHost
+		} else {
+			if strings.ContainsAny(trimmed, "/?#") {
+				return "", fmt.Errorf("monitor_url has no hostname")
+			}
+			host = trimmed
+		}
+	}
+	host = strings.Trim(strings.ToLower(host), ".")
+	if host == "" {
+		return "", fmt.Errorf("monitor_url has no hostname")
+	}
+	return host, nil
+}
+
+func truncateDBString(value string, maxLen int) string {
+	if maxLen <= 0 || len(value) <= maxLen {
+		return value
+	}
+	return value[:maxLen]
+}
+
+func nullableString(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
 }
 
 // UpdateSiteStatus updates site_status and last_status_change for a site.

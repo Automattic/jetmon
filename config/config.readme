@@ -110,6 +110,32 @@ recomputing each row's interval on every poll. Default in the sample config:
 true. Minimal configs that omit the key retain the compatibility default of
 false.
 
+DNS_MONITOR_ENABLE
+Set to true to run the independent recursive DNS monitor. DNS probes use their
+own schedule table and bounded worker loop so DNS health checks do not add DNS
+load to every HTTP probe. Default: false.
+
+DNS_MONITOR_INTERVAL_SEC
+Seconds between DNS probes for each active site when DNS monitoring is enabled.
+Initial schedules are spread across this interval with stable hash jitter so
+enabling DNS monitoring does not create a synchronized lookup wave. Default:
+900.
+
+DNS_MONITOR_TIMEOUT_MS
+Per-hostname recursive lookup timeout in milliseconds. Default: 2000.
+
+DNS_MONITOR_BATCH_SIZE
+Maximum due DNS probes to process in one scheduler pass. Set to 0 for automatic
+sizing based on NUM_WORKERS. Default: 0.
+
+DNS_MONITOR_MAX_WORKERS
+Maximum DNS lookup workers. Set to 0 for automatic sizing based on NUM_WORKERS.
+Default: 0.
+
+DNS_MONITOR_SCHEDULE_BATCH_SIZE
+Maximum missing DNS schedule rows to backfill in one scheduler pass. Set to 0
+for automatic sizing based on the DNS batch size. Default: 0.
+
 LOG_FORMAT
 Log output format. Set to "json" for structured logging (e.g. for log aggregators), or "text" for human-readable output. Default: "text".
 
