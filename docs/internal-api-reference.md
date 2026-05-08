@@ -560,8 +560,23 @@ Incident history for a site. Default sort: most recent `started_at` first.
       "metadata": {
         "http_code": 503,
         "error_code": 0,
+        "failure_class": "server",
+        "method": "GET",
         "rtt_ms": 84,
-        "url": "https://example.com"
+        "url": "https://example.com",
+        "redirect_policy": "follow",
+        "tls_version": "TLS 1.3",
+        "tls_version_code": "0x0304",
+        "cipher_suite": "TLS_AES_128_GCM_SHA256",
+        "cipher_suite_id": "0x1301",
+        "observation": {
+          "checked_at": "2026-04-25T03:18:38.329Z",
+          "first_failed_at": "2026-04-25T03:18:38.329Z",
+          "previous_observed_at": "2026-04-25T03:15:38.018Z",
+          "previous_known_good_at": "2026-04-25T03:15:38.018Z",
+          "normal_check_interval_seconds": 180,
+          "next_check_interval_seconds": 60
+        }
       },
       "duration_ms": 158961,
       "transition_count": 5
@@ -572,6 +587,12 @@ Incident history for a site. Default sort: most recent `started_at` first.
 ```
 
 `duration_ms` is a server-computed convenience: `(ended_at or now) - started_at`. `transition_count` lets the consumer decide whether to fetch the full transition log.
+
+When a failed HTTP probe reaches the resolver and Go exposes DNS details,
+`metadata` may also include `dns_error_kind` (`nxdomain`, `servfail`, `timeout`,
+or `resolver_error`), `dns_error_name`, and `dns_error_server`. These fields are
+diagnostic context for operators; dedicated DNS monitors remain a separate
+future check type.
 
 #### `GET /api/v1/sites/{id}/events/{event_id}`
 
@@ -590,7 +611,17 @@ Single event, same shape, plus a `transitions` array (full history, no paginatio
       "state_after": "Seems Down",
       "reason": "opened",
       "source": "host-us-west-1",
-      "metadata": { "http_code": 503, "rtt_ms": 84 },
+      "metadata": {
+        "http_code": 503,
+        "error_code": 0,
+        "failure_class": "server",
+        "rtt_ms": 84,
+        "observation": {
+          "checked_at": "2026-04-25T03:18:38.329Z",
+          "first_failed_at": "2026-04-25T03:18:38.329Z",
+          "previous_known_good_at": "2026-04-25T03:15:38.018Z"
+        }
+      },
       "changed_at": "2026-04-25T03:18:38.329Z"
     },
     {

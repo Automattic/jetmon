@@ -120,10 +120,30 @@ A probe has failed but the verifier has not yet confirmed. This is a **real stat
 
 The first failure writes both an event row (`state = Seems Down`, `severity = 3`, `started_at = now`) and an `opened` transition row in one transaction.
 
-HTTP failure metadata includes `http_code`, `error_code`, `rtt_ms`, `url`, and
-`keyword_rule` when a content rule failed. `keyword_rule` is `required` for a
-missing `check_keyword` and `forbidden` when `forbidden_keyword` appears in the
-response body.
+HTTP failure metadata includes `http_code`, `error_code`, legacy
+`failure_class`, operator-facing `detector_class`, `legacy_status_type`,
+`method`, `rtt_ms`, `url`, and `keyword_rule` when a content rule failed.
+`keyword_rule` is `required` for a missing `check_keyword` and `forbidden` when
+`forbidden_keyword` appears in the response body. `failure_class` intentionally
+preserves the old WPCOM status-type vocabulary, while `detector_class` explains
+the actual detector path (`partial_response`, `content_failure`, `timeout`,
+`dns_nxdomain`, etc.). Jetmon also records bounded operator diagnostics such as
+`error_detail`, redirect policy/count/chain/final URL, TLS version, cipher
+suite, and DNS resolver failure details when those facts are available. DNS
+metadata uses `dns_error_kind` (`nxdomain`, `servfail`, `timeout`, or
+`resolver_error`), `dns_error_name`, and `dns_error_server` when Go's resolver
+exposes them. Body-read failures include a `body_read` object with mode, bytes
+read, expected bytes when known, limit bytes, and read error. Response bodies
+are not stored in event metadata.
+
+Each HTTP failure also stores `metadata.observation` with timing bounds:
+`checked_at`, `first_failed_at`, `previous_observed_at`,
+`previous_known_good_at`, `normal_check_interval_seconds`, and
+`next_check_interval_seconds`. The exact customer failure may have started any
+time after the previous known-good probe and no later than `first_failed_at`;
+recovery transitions similarly store `first_recovered_at` and `closed_at` in
+their transition metadata. This keeps incident durations honest while giving
+operators enough context to explain the observation window.
 
 Three outcomes from Seems Down:
 
@@ -214,7 +234,7 @@ Every transition row records *why* the change happened. The seeded vocabulary, i
 - `severity_deescalation` — severity went down on the same state.
 - `verifier_confirmed` — Seems Down → Down.
 - `verifier_cleared` — site returns to Up after a verifier-confirmed Down; closes the event.
-- `probe_cleared` — site returns to Up while still in Seems Down (verifier was never invoked or never confirmed); closes the event. Count of these per site over time is the false-positive rate of local detection.
+- `probe_cleared` — site returns to Up while still in Seems Down (verifier was never invoked or never confirmed), or an advisory condition such as `tls_expiry` / `tls_deprecated` clears on a later local probe; closes the event. Count of these per site over time is the false-positive rate of local detection or advisory churn.
 - `false_alarm` — verifier disagreed with the initial failure signal; closes the event.
 - `manual_override` — an operator changed state or closed the event.
 - `maintenance_swallowed` — event closed because a maintenance window started; failures detected inside the active window are recorded operationally but do not open a downtime event.

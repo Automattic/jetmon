@@ -36,10 +36,12 @@ For a broader production-window view, use the telemetry report:
 ```
 
 This summarizes detection timings, Veriflier agreement, false-alarm classes,
-WPCOM attempt parity, and explanation gaps across the selected window. Use it
-to decide whether an incident looks like an isolated site issue, a noisy class
-of local failures, a verifier disagreement pattern, or an instrumentation gap
-that needs engineering follow-up. The first lines show an overall
+WPCOM attempt parity, and explanation gaps across the selected window. WPCOM
+parity is split between confirmed-down and recovery attempts so a clean total
+does not hide a mismatch in one direction. Use it to decide whether an incident
+looks like an isolated site issue, a noisy class of local failures, a verifier
+disagreement pattern, or an instrumentation gap that needs engineering
+follow-up. The first lines show an overall
 `telemetry_status` of `pass`, `warn`, or `fail` before the detailed timing and
 parity sections. If the report highlights window-edge WPCOM transitions, rerun
 with a later `--until` before treating the parity delta as a missing
@@ -71,6 +73,29 @@ When an alert differs from old v1 behavior, this is often the first thing to
 check: v2 may be surfacing a real GET-path issue that v1's HEAD-only probe did
 not exercise.
 
+## Allowlist And WAF Guidance
+
+Jetmon 2 identifies itself with the `jetmon/2.0` user agent and performs `GET`
+requests against the monitored URL. Customer firewalls, WAFs, bot controls, and
+security plugins should allow Jetmon checks to reach the same application path a
+normal visitor would reach. Do not ask a customer to broadly disable security
+rules; the safer path is to allow the published Jetmon source hosts or IP
+ranges and the `jetmon/2.0` user agent.
+
+Blocked monitoring can show up in a few different ways:
+
+| Symptom | Likely explanation |
+|---|---|
+| `blocked` / HTTP 403 | The site or edge layer rejected the monitor request |
+| Captcha, bot challenge, or security page | The request reached a protection layer instead of the customer site |
+| `keyword_missing` | The monitor received a page, but not the expected customer content |
+| Redirect failure | The monitor was sent to a login, challenge, canonical URL, or unexpected host |
+| Local failure but Verifliers disagree | The block may be regional, source-specific, intermittent, or edge-specific |
+
+For customer explanations, separate "the site was down for visitors" from "the
+monitor could not verify the visitor path." A WAF block is real monitor
+evidence, but it is not automatically proof that all visitors saw downtime.
+
 ## Understand Alert Types
 
 | Type | Meaning |
@@ -86,6 +111,12 @@ not exercise.
 | `keyword_missing` | Response body did not contain the expected keyword |
 | `keyword_forbidden` | Response body contained text from `forbidden_keyword` or `forbidden_keywords` |
 | `success` | Site recovered |
+
+For HTTP events caused by resolver failures, inspect event metadata for
+`dns_error_kind`, `dns_error_name`, and `dns_error_server`. These fields explain
+resolver-visible failures such as NXDOMAIN, SERVFAIL, and DNS timeouts. They do
+not prove that every recursive resolver on the internet saw the same DNS state;
+short authoritative outages can be hidden by recursive cache TTLs.
 
 `tls_deprecated` is advisory-only: it does not mark the site down. Jetmon still
 has to negotiate the deprecated protocol to classify the site accurately, so
@@ -117,6 +148,18 @@ A false positive is recorded when Jetmon escalates a local failure to Veriflier
 confirmation and the Verifliers do not confirm the site as down. A high rate for
 one site usually means the site has transient network, redirect, firewall, or
 performance behavior worth tuning.
+
+## Monitor-Side Uncertainty
+
+Treat `Unknown` or monitor-side uncertainty as an operational state, not as
+confirmed customer-site downtime. Use this framing when Jetmon cannot produce a
+trustworthy site verdict because of monitor infrastructure issues such as
+checker failure, verifier unavailability, database errors, missing telemetry, or
+an unhealthy quorum.
+
+Customer-facing downtime should require site evidence. If the monitor itself is
+uncertain, explain what Jetmon could not verify, what evidence is missing, and
+what follow-up is needed before calling the site down.
 
 ## Maintenance Windows
 
@@ -155,9 +198,13 @@ SET alert_cooldown_minutes = 60
 WHERE blog_id = 12345;
 ```
 
-Global retry behavior is controlled by `NUM_OF_CHECKS` and
-`TIME_BETWEEN_CHECKS_SEC`. Per-site retry overrides are planned separately; do
-not promise per-site retry tuning unless the deployed schema includes it.
+Global promotion behavior is controlled by `NUM_OF_CHECKS`: that many
+consecutive local failures are required before Veriflier escalation. In
+variable-interval mode, failed probes are scheduled for a bounded one-minute
+follow-up when the site's normal check interval is longer, so transient
+incidents get rechecked sooner without per-site retry tuning.
+`TIME_BETWEEN_CHECKS_SEC` is retained for v1 config compatibility; do not
+promise per-site retry tuning unless the deployed schema includes it.
 
 ## WPCOM Notification Data
 
@@ -190,5 +237,9 @@ Each `checks` entry includes:
 - "The alert was suppressed because a maintenance window was active."
 - "The site blocked the monitor with a 403, which is different from the site
   being down for visitors."
+- "Jetmon v2 uses GET checks, so it tests the visitor path more closely than the
+  v1 HEAD-only check did."
+- "Jetmon could not produce a trustworthy verdict because monitor-side
+  telemetry was incomplete; that is not the same thing as confirmed downtime."
 - "The audit trail shows exactly which checkers saw the failure and what status
   code or timeout they received."

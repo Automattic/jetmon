@@ -81,7 +81,11 @@ NUM_OF_CHECKS
 Number of consecutive local check failures required before escalating to verifliers. Default: 3.
 
 TIME_BETWEEN_CHECKS_SEC
-Minimum seconds between checks for a given site. Default: 30.
+Legacy compatibility setting retained so copied v1-style configs parse.
+Jetmon v2 scheduler cadence is controlled by check_interval/next_check_at in
+variable-interval mode and by MIN_TIME_BETWEEN_ROUNDS_SEC in fixed-cadence
+mode. Failed checks are scheduled for a bounded one-minute follow-up when the
+normal interval is longer. Default: 30.
 
 ALERT_COOLDOWN_MINUTES
 Minimum minutes between repeated down-alerts for the same site. Prevents alert storms during flapping. Default: 30. Can be overridden per-site via alert_cooldown_minutes column.
@@ -104,13 +108,27 @@ which sites are ready to check. Default: 300.
 NET_COMMS_TIMEOUT
 Default HTTP request timeout in seconds. Can be overridden per-site via timeout_seconds column. Default: 10.
 
+BODY_READ_MAX_BYTES
+Maximum response-body bytes checker will read for success-path validation when Content-Length is unknown or larger than this budget. For known Content-Length <= this budget, checker requires full EOF and treats truncation as a hard failure. Default: 1048576.
+
+BODY_READ_MAX_MS
+Post-header response-body phase budget in milliseconds for budgeted reads (unknown or large Content-Length). In strict finite mode (known Content-Length <= BODY_READ_MAX_BYTES), this budget does not hard-fail completion; request timeout remains the hard deadline. Default: 250.
+
+KEYWORD_READ_MAX_BYTES
+Maximum response-body bytes checker will read when a keyword check is configured. This budget is separate from BODY_READ_MAX_BYTES so keyword checks can scan deeper without changing non-keyword body-read behavior. Default: 1048576.
+
+KEYWORD_READ_MAX_MS
+Keyword body-read budget in milliseconds. Set to 0 to inherit the request timeout envelope (NET_COMMS_TIMEOUT or per-site timeout_seconds). If set > 0 and exhausted before the keyword is found, the check fails as timeout (ErrorTimeout), not keyword mismatch. Default: 0.
+
 USE_VARIABLE_CHECK_INTERVALS
 Set to true to respect the check_interval column per site instead of running
 all sites every fixed-cadence pass. Recommended for production freshness
 testing because newly due sites are discovered without waiting for
-MIN_TIME_BETWEEN_ROUNDS_SEC. Jetmon maintains next_check_at after each completed
-check so due-site selection can use an indexed timestamp range instead of
-recomputing each row's interval on every poll. Default in the sample config:
+MIN_TIME_BETWEEN_ROUNDS_SEC. Jetmon maintains next_check_at after each
+completed check so due-site selection can use an indexed timestamp range
+instead of recomputing each row's interval on every poll. Successful checks use
+the site's normal check_interval; failed checks get a bounded one-minute
+follow-up when the normal interval is longer. Default in the sample config:
 true. Minimal configs that omit the key retain the compatibility default of
 false.
 

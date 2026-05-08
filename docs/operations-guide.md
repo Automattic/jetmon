@@ -20,9 +20,13 @@ Key settings:
 | `NUM_TO_PROCESS` | 40 | Legacy compatibility setting; does not cap Go scheduler throughput |
 | `DATASET_SIZE` | 100 | Database fetch page size for scheduler work; not a total round cap |
 | `NUM_OF_CHECKS` | 3 | Local failures before Veriflier escalation |
-| `TIME_BETWEEN_CHECKS_SEC` | 30 | Delay between local retry checks |
+| `TIME_BETWEEN_CHECKS_SEC` | 30 | Legacy compatibility setting retained for copied v1-style configs |
 | `MIN_TIME_BETWEEN_ROUNDS_SEC` | 300 | Fixed-cadence full-fleet pass interval when variable intervals are disabled |
 | `NET_COMMS_TIMEOUT` | 10 | Default per-check HTTP timeout in seconds |
+| `BODY_READ_MAX_BYTES` | 1048576 | Success-path body-read budget in bytes for unknown/large responses |
+| `BODY_READ_MAX_MS` | 250 | Post-header body-phase budget in milliseconds for budgeted reads (unknown/large responses) |
+| `KEYWORD_READ_MAX_BYTES` | 1048576 | Max bytes scanned when keyword checks are enabled |
+| `KEYWORD_READ_MAX_MS` | 0 | Keyword read budget in milliseconds, 0 inherits full request timeout envelope |
 | `PEER_OFFLINE_LIMIT` | 3 | Veriflier agreements required to confirm downtime |
 | `WORKER_MAX_MEM_MB` | 0 | Optional Go runtime memory threshold that triggers worker-pool drain; 0 disables the artificial cap |
 | `BUCKET_TOTAL` | 1000 | Total bucket range across all hosts |
@@ -68,11 +72,12 @@ Scheduler behavior:
   pending result buffers do not become their own capacity limit.
 - With `USE_VARIABLE_CHECK_INTERVALS=true`, Jetmon polls for newly due work on a
   short idle interval and uses each site's maintained `next_check_at` timestamp
-  to decide what to check. `next_check_at` is recalculated from
-  `last_checked_at + check_interval` whenever a check completes or
-  `check_interval` changes. `MIN_TIME_BETWEEN_ROUNDS_SEC` is only the
-  fixed-cadence pass interval when variable intervals are disabled. Use this
-  mode for production-like freshness and capacity tests.
+  to decide what to check. `next_check_at` is recalculated after every check:
+  successful checks use `last_checked_at + check_interval`, while failed checks
+  are scheduled for a bounded one-minute follow-up when the normal interval is
+  longer. `MIN_TIME_BETWEEN_ROUNDS_SEC` is only the fixed-cadence pass interval
+  when variable intervals are disabled. Use this mode for production-like
+  freshness and capacity tests.
 - Watch the `scheduler.round.*` StatsD metrics during capacity tests. In
   particular, `due_start`, `selected`, `completed`, `outstanding`, and
   `due_remaining` show whether freshness pressure is clearing or building.
@@ -142,6 +147,17 @@ Scheduler behavior:
 
 See [../config/config.readme](../config/config.readme) for the full option
 reference.
+
+Checker policy note: HTTP `>= 400` responses are classified immediately by status
+code and do not depend on body drain completion. Strict EOF/truncation validation
+applies only to eligible successful finite responses and is skipped for `101`,
+upgrade handshakes, and `text/event-stream` when no keyword is configured. In
+strict finite mode (known `Content-Length <= BODY_READ_MAX_BYTES`), body-phase
+timeout is bounded by the request timeout envelope, not `BODY_READ_MAX_MS`.
+Keyword read-budget exhaustion is classified as `ErrorTimeout`. Event metadata
+keeps legacy `failure_class` for WPCOM-compatible status types and adds
+operator-facing `detector_class` plus `body_read` evidence for partial/truncated
+responses.
 
 ## Production Host Setup
 
@@ -215,7 +231,11 @@ After a pinned v2 host starts, use `./jetmon2 rollout cutover-check
 post-start pinned preflight, recent activity check, dashboard status check, and
 projection-drift report together. Treat the immediate run as a smoke gate
 because recent activity can still include v1 writes. After one full expected v2
-check round, rerun it with `--require-all` before moving to the next host.
+check round, rerun it with `--require-all`, then run `./jetmon2 telemetry
+report --since=15m` before moving to the next host. The telemetry report is
+read-only window-level evidence for WPCOM down/recovery parity and explanation
+coverage; warnings are rollout hold points, and quiet windows may need a wider
+`--since` range.
 
 Use `--output=json` on rollout gate commands when wiring them into Systems
 automation. The command still exits non-zero on failed checks, and stdout
@@ -508,8 +528,13 @@ The report is read-only and runs with a bounded query timeout by default
 (`since <= row time < until`) so adjacent scheduled reports do not double-count
 boundary rows. It summarizes event lifecycle counts, first-failure timings,
 verifier agreement, false-alarm classes, WPCOM attempt parity, and metadata gaps
-that would make operator or customer explanations weaker. It reports aggregate
-counts and classes rather than raw payloads or credentials.
+that would make operator or customer explanations weaker. WPCOM parity is split
+between confirmed-down and recovery attempts, with maintenance/cooldown
+suppressions separated the same way, so one side cannot mask a mismatch on the
+other. During v1-to-v2 rollout, capture this report after each full-round
+cutover gate and again at fleet completion. It reports aggregate counts and
+classes rather than raw payloads or
+credentials.
 
 The top line reports `telemetry_status`, `explanation_gap_types`, and
 `explanation_gap_rows`. Treat `warn` or `fail` as a signal that the report found
