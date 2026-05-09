@@ -2303,6 +2303,74 @@ func TestRunRoundWaitsUnderPoolBackpressureInsteadOfDropping(t *testing.T) {
 	}
 }
 
+func TestRunRoundKeepsFetchingAfterAdaptivePageSizeGrows(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	cfg := setTestConfig(t)
+	cfg.DatasetSize = 2
+	cfg.NumWorkers = 2
+	cfg.NetCommsTimeout = 10
+	cfg.MinTimeBetweenRoundsSec = 300
+	cfg.UseVariableCheckIntervals = true
+	cfg.WorkerMaxMemMB = 0
+
+	now := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
+	nowFunc = func() time.Time { return now }
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	sites := make([]db.Site, 0, 10)
+	for i := 1; i <= 10; i++ {
+		sites = append(sites, db.Site{BlogID: int64(i), MonitorURL: srv.URL})
+	}
+
+	var pageSizes []int
+	dbGetSitesForBucketPage = func(_ context.Context, _, _ int, batchSize int, useVariableIntervals bool, cursor db.SitePageCursor) ([]db.Site, error) {
+		if !useVariableIntervals {
+			t.Fatal("useVariableIntervals = false, want true")
+		}
+		pageSizes = append(pageSizes, batchSize)
+		return nextSchedulerTestPageAfter(sites, cursor, batchSize), nil
+	}
+	dbCountDueSites = func(_ context.Context, _, _ int, useVariableIntervals bool) (int, error) {
+		if !useVariableIntervals {
+			t.Fatal("count due useVariableIntervals = false, want true")
+		}
+		return 100, nil
+	}
+	dbMarkSitesCheckedAt = func(context.Context, []int64, time.Time) error {
+		return nil
+	}
+
+	p := checker.NewPool(2, 1, 2)
+	defer p.Drain()
+	o := &Orchestrator{
+		pool:           p,
+		retries:        newRetryQueue(),
+		ctx:            context.Background(),
+		hostname:       "host-a",
+		roundStart:     now,
+		lastDueCountAt: now,
+	}
+
+	summary := o.runRound()
+	if summary.selected != len(sites) || summary.completed != len(sites) {
+		t.Fatalf("summary selected/completed = %d/%d, want %d/%d", summary.selected, summary.completed, len(sites), len(sites))
+	}
+	if len(pageSizes) < 2 {
+		t.Fatalf("page size calls = %v, want multiple fetches", pageSizes)
+	}
+	if pageSizes[0] != 2 {
+		t.Fatalf("first page size = %d, want configured floor 2", pageSizes[0])
+	}
+	if pageSizes[1] <= pageSizes[0] {
+		t.Fatalf("page sizes = %v, want adaptive growth after due-count sample", pageSizes)
+	}
+}
+
 func TestRunRoundSamplesBroadReportsOnCadence(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
@@ -2400,23 +2468,37 @@ func TestSchedulerSleepDurationUsesShortPollForVariableIntervals(t *testing.T) {
 
 func TestSchedulerBatchTargetSitesDerivesFromWorkers(t *testing.T) {
 	defaultCfg := &config.Config{NumWorkers: 60, MinTimeBetweenRoundsSec: 300, NetCommsTimeout: 10}
-	if got := schedulerBatchTargetSites(defaultCfg, 100, defaultCfg.NumWorkers); got != 1800 {
+	if got := schedulerBatchTargetSites(defaultCfg, 100, defaultCfg.NumWorkers, 0); got != 1800 {
 		t.Fatalf("schedulerBatchTargetSites(default) = %d, want 1800", got)
 	}
-	if got := schedulerBatchTargetSites(&config.Config{NumWorkers: 60}, 100, 60); got != 6000 {
+	if got := schedulerBatchTargetSites(&config.Config{NumWorkers: 60}, 100, 60, 0); got != 6000 {
 		t.Fatalf("schedulerBatchTargetSites(no timeout budget) = %d, want 6000", got)
 	}
-	if got := schedulerBatchTargetSites(&config.Config{NumWorkers: 1, MinTimeBetweenRoundsSec: 300, NetCommsTimeout: 10}, 500, 1); got != 500 {
+	if got := schedulerBatchTargetSites(&config.Config{NumWorkers: 1, MinTimeBetweenRoundsSec: 300, NetCommsTimeout: 10}, 500, 1, 0); got != 500 {
 		t.Fatalf("schedulerBatchTargetSites(page floor) = %d, want 500", got)
 	}
-	if got := schedulerBatchTargetSites(&config.Config{NumWorkers: 1000}, 100, 1000); got != schedulerBaseMaxBatchSites {
-		t.Fatalf("schedulerBatchTargetSites(cap) = %d, want %d", got, schedulerBaseMaxBatchSites)
+	if got := schedulerBatchTargetSites(defaultCfg, 100, 4000, 0); got != 120000 {
+		t.Fatalf("schedulerBatchTargetSites(adaptive workers) = %d, want 120000", got)
 	}
-	if got := schedulerBatchTargetSites(defaultCfg, 100, 4000); got != schedulerBaseMaxBatchSites {
-		t.Fatalf("schedulerBatchTargetSites(adaptive cap) = %d, want %d", got, schedulerBaseMaxBatchSites)
+	if got := schedulerBatchTargetSites(defaultCfg, 100, 4000, 50000); got != 50000 {
+		t.Fatalf("schedulerBatchTargetSites(due cap) = %d, want 50000", got)
 	}
-	if got := schedulerBatchTargetSites(defaultCfg, 100, 40000); got != 80000 {
-		t.Fatalf("schedulerBatchTargetSites(resource-derived cap) = %d, want 80000", got)
+	if got := schedulerBatchTargetSites(defaultCfg, 100, 40000, 0); got != 1200000 {
+		t.Fatalf("schedulerBatchTargetSites(no static cap) = %d, want 1200000", got)
+	}
+}
+
+func TestSchedulerFetchPageSizeScalesWithBatchTarget(t *testing.T) {
+	cfg := &config.Config{DatasetSize: 100}
+
+	if got := schedulerFetchPageSize(cfg, 50000); got != 1563 {
+		t.Fatalf("schedulerFetchPageSize(50k target) = %d, want 1563", got)
+	}
+	if got := schedulerFetchPageSize(cfg, 1800); got != 100 {
+		t.Fatalf("schedulerFetchPageSize(1800 target) = %d, want dataset floor 100", got)
+	}
+	if got := schedulerFetchPageSize(&config.Config{DatasetSize: 1000}, 500); got != 500 {
+		t.Fatalf("schedulerFetchPageSize(target below floor) = %d, want 500", got)
 	}
 }
 

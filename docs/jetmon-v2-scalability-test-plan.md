@@ -27,19 +27,20 @@ The branch includes the previous scaling changes:
 It also adds scheduler batch windows: Jetmon fetches several ordered DB pages
 with a keyset cursor, then dispatches that larger batch as one check window.
 The batch target comes from the current check-pool ceiling, request timeout, and
-freshness target. Normal baseline runs cap the per-batch result window at
-25,000 sites to avoid unbounded in-process maps and to keep freshness writes
-staggered across a large active fleet. When adaptive worker growth is active,
-Jetmon derives the ceiling from due backlog and the host file-descriptor budget
-instead of treating `NUM_WORKERS` as a hard burst cap. Scheduler windows also
-derive their upper bound from the active worker ceiling: small fleets keep the
-25,000-site guardrail, while large fleets can keep enough work in flight for
-100,000+ and eventually 1,000,000-site tests without adding another manual
-batch-size knob. The checker pending/result buffers keep the configured
-baseline cushion at small scale, then grow to at least one adaptive worker wave
-when the host resource budget allows it. A scheduler-side soft submit limit
-tracks the current adaptive worker ceiling so queue depth grows with the
-intended burst size rather than the host's absolute file-descriptor ceiling.
+freshness target. Jetmon derives the ceiling from due backlog and the host
+file-descriptor budget instead of treating `NUM_WORKERS` as a hard burst cap.
+`DATASET_SIZE` is a compatibility floor for DB paging, not a fixed fetch size;
+large due waves raise the effective page size automatically so the scheduler
+does not spend the freshness window issuing hundreds of tiny SQL pages.
+Scheduler windows are bounded by due work and resource budget rather than a
+static 25,000-site guardrail or another manual batch-size knob. The checker
+pending/result buffers keep the configured baseline cushion at small scale,
+then grow to at least one adaptive worker wave when the host resource budget
+allows it. A scheduler-side soft submit limit tracks the current adaptive
+worker ceiling so queue depth grows with the intended burst size rather than
+the host's absolute file-descriptor ceiling. The pool pre-warms to the
+adaptive ceiling after due-count sampling so large windows do not wait for the
+5-second autoscaler tick before using available host headroom.
 During backpressure, the scheduler drains ready results before sleeping so
 completed checks can be persisted without one timer allocation per queue-full
 loop. After the `32bca7c` retest passed 150,000-site freshness but failed the

@@ -14,16 +14,19 @@ Default: 60.
 
 NUM_TO_PROCESS
 Legacy compatibility setting retained so copied v1-style configs continue to
-parse. The Go scheduler uses DATASET_SIZE as the fetch page and NUM_WORKERS as
-the baseline concurrency setting; adaptive pool growth may raise the active
-ceiling when due backlog requires it. NUM_TO_PROCESS does not cap scheduler
-throughput.
+parse. The Go scheduler uses DATASET_SIZE as the minimum fetch page and
+NUM_WORKERS as the baseline concurrency setting; adaptive pool growth may raise
+the active ceiling and effective fetch page size when due backlog requires it.
+NUM_TO_PROCESS does not cap scheduler throughput.
 Default: 40.
 
 DATASET_SIZE
-Maximum number of sites to fetch from the database per scheduler page. The
-orchestrator keeps fetching additional pages until due work is drained, so this
-is a database/query guardrail rather than a cap on total checks per round.
+Minimum number of sites to fetch from the database per scheduler page. The
+orchestrator keeps fetching additional pages until due work is drained, and
+raises the effective page size automatically for large due backlogs so one
+freshness window does not require hundreds of tiny SQL pages. This is a
+compatibility floor for copied v1-style configs, not a cap on total checks per
+round or a setting operators should tune for each fleet size.
 Default: 100.
 
 WORKER_MAX_MEM_MB
@@ -58,7 +61,7 @@ Deprecated v1 names accepted as aliases for PINNED_BUCKET_MIN / PINNED_BUCKET_MA
 BATCH_SIZE
 Legacy compatibility setting retained so copied v1-style configs continue to
 parse. It is not used by the Go scheduler; scheduler DB paging is controlled by
-DATASET_SIZE. Default: 32.
+the DATASET_SIZE floor plus adaptive page sizing. Default: 32.
 
 AUTH_TOKEN
 Shared secret used to authenticate outbound WPCOM API calls. Required.

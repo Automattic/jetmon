@@ -106,6 +106,32 @@ func (p *Pool) WorkerCount() int {
 	return int(p.size.Load())
 }
 
+// WarmTo immediately raises the pool to target workers, bounded by maxSize.
+// It complements the 5-second autoscaler tick for scheduler windows that
+// already know the due backlog requires the higher ceiling.
+func (p *Pool) WarmTo(target int) int {
+	if target < 1 {
+		target = 1
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed.Load() {
+		return 0
+	}
+	if target > p.maxSize {
+		target = p.maxSize
+	}
+	current := int(p.size.Load())
+	if target <= current {
+		return 0
+	}
+	add := target - current
+	for range add {
+		p.spawnWorker()
+	}
+	return add
+}
+
 // Drain stops accepting new work and waits for in-flight checks to complete.
 func (p *Pool) Drain() {
 	if !p.closed.CompareAndSwap(false, true) {

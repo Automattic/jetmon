@@ -97,7 +97,8 @@ This is the end-to-end path from database query to WPCOM notification.
 │  orchestrator.runRound()                                             │
 │    dbHeartbeat()          ── UPDATE jetmon_hosts SET last_heartbeat  │
 │    ClaimBuckets()         ── rebalance bucket ranges (each round)    │
-│    dbGetSitesForBucketPage() ─ SELECT due sites in DATASET_SIZE pages │
+│    dbGetSitesForBucketPage() ─ SELECT due sites in adaptive pages      │
+│                                (DATASET_SIZE is the floor)             │
 │                                with a keyset cursor over               │
 │                                next_check_at / last_checked_at         │
 └──────────────────────────────────────────────────────────────────────┘
@@ -211,14 +212,16 @@ orchestrator.Run()
     └── loop (until ctx.Done()):
           │
           ├─ config.Get()                    // fresh config snapshot each round
-          ├─ pool.SetMaxSize(cfg.NumWorkers)  // apply hot-reloaded worker limit
+          ├─ pool.SetMaxSize(cfg.NumWorkers)  // apply hot-reloaded baseline
           ├─ refreshVeriflierClients(cfg)     // rebuild list only on change
           │
           ├─ runRound()
           │     │
           │     ├─ dbHeartbeat()
           │     ├─ ClaimBuckets()             // rebalance every round
-          │     ├─ dbGetSitesForBucketPage()  // fetch due work in DATASET_SIZE pages
+          │     ├─ sample due count
+          │     ├─ pool.WarmTo(adaptive ceiling)
+          │     ├─ dbGetSitesForBucketPage()  // fetch due work in adaptive pages
           │     │
           │     ├─ for each scheduler batch built from multiple DB pages:
           │     │     pool.Submit(checker.Request)  // waits/collects on backpressure
@@ -243,12 +246,14 @@ Checker Pool — Auto-Scaling
 ----------------------------
 
 The pool maintains a live set of worker goroutines bounded by `[minSize, maxSize]`.
+The scheduler can raise `maxSize` and pre-warm workers when due-count sampling
+shows the baseline would miss the freshness window.
 
 ```
-  NewPool(initial=30, min=1, max=60)
+  NewPoolWithQueueCapacity(initial=30, min=1, max=60, queueCapacity=120)
     │
-    ├─ work channel  (cap = max×2 = 120)
-    ├─ results channel (cap = max×2 = 120)
+    ├─ work channel  (bounded by explicit queueCapacity)
+    ├─ results channel (bounded by explicit queueCapacity)
     ├─ retire channel  (cap = max  =  60)
     └─ autoScale() goroutine (every 5 s)
 
@@ -259,6 +264,9 @@ The pool maintains a live set of worker goroutines bounded by `[minSize, maxSize
     │                                                     │
     │  Scale UP:   queue > current && current < maxSize   │
     │    spawn min(queue-current, maxSize-current) workers│
+    │                                                     │
+    │  WarmTo: scheduler can immediately spawn to maxSize │
+    │    after due-count sampling for large due waves     │
     │                                                     │
     │  Scale DOWN: current > maxSize                      │
     │    retire (current - maxSize) workers immediately   │

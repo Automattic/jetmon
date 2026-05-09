@@ -58,8 +58,7 @@ const schedulerVariableIntervalPollInterval = 5 * time.Second
 const schedulerBacklogPollInterval = 5 * time.Second
 const schedulerBroadReportInterval = time.Minute
 const schedulerBatchSitesPerWorker = 100
-const schedulerBaseMaxBatchSites = 25000
-const schedulerBatchWorkersMultiplier = 2
+const schedulerTargetDBPagesPerBatch = 32
 const schedulerPoolQueueBufferMultiplier = 2
 const schedulerResultProcessChunkSites = 5000
 const schedulerAdaptiveWorkerSafetyNumerator = 11
@@ -523,11 +522,9 @@ func (o *Orchestrator) runRound() roundSummary {
 		}
 	}
 
-	pageSize := cfg.DatasetSize
-	if pageSize < 1 {
-		pageSize = 1
-	}
-	batchTarget := schedulerBatchTargetSites(cfg, pageSize, workerMax)
+	basePageSize := schedulerConfiguredPageSize(cfg)
+	batchTarget := schedulerBatchTargetSites(cfg, basePageSize, workerMax, summary.dueAtStart)
+	pageSize := schedulerFetchPageSize(cfg, batchTarget)
 	summary.batchTarget = batchTarget
 	seen := make(map[int64]struct{}, batchTarget)
 	cursor := db.SitePageCursor{}
@@ -545,7 +542,8 @@ func (o *Orchestrator) runRound() roundSummary {
 
 		batch := make([]db.Site, 0, batchTarget)
 		for len(batch) < batchTarget && !doneFetching {
-			sites, err := dbGetSitesForBucketPage(o.ctx, o.bucketMin, o.bucketMax, pageSize, cfg.UseVariableCheckIntervals, cursor)
+			fetchPageSize := pageSize
+			sites, err := dbGetSitesForBucketPage(o.ctx, o.bucketMin, o.bucketMax, fetchPageSize, cfg.UseVariableCheckIntervals, cursor)
 			if err != nil {
 				summary.fetchErrors++
 				log.Printf("orchestrator: fetch sites failed: %v", err)
@@ -556,11 +554,12 @@ func (o *Orchestrator) runRound() roundSummary {
 				doneFetching = true
 				break
 			}
-			if cfg.UseVariableCheckIntervals && !summary.dueCountsSampled && len(sites) == pageSize {
+			if cfg.UseVariableCheckIntervals && !summary.dueCountsSampled && len(sites) == fetchPageSize {
 				if due, ok := o.sampleDueSites(cfg, &summary); ok {
 					workerMax = o.applyAdaptiveWorkerCeiling(cfg, due)
-					if target := schedulerBatchTargetSites(cfg, pageSize, workerMax); target > batchTarget {
+					if target := schedulerBatchTargetSites(cfg, basePageSize, workerMax, due); target > batchTarget {
 						batchTarget = target
+						pageSize = schedulerFetchPageSize(cfg, batchTarget)
 						summary.batchTarget = batchTarget
 					}
 				}
@@ -574,7 +573,7 @@ func (o *Orchestrator) runRound() roundSummary {
 				summary.add(selectedSiteSummary(page))
 				batch = append(batch, page...)
 			}
-			if len(sites) < pageSize {
+			if len(sites) < fetchPageSize {
 				doneFetching = true
 				break
 			}
@@ -650,11 +649,14 @@ func (o *Orchestrator) applyAdaptiveWorkerCeiling(cfg *config.Config, dueSites i
 	workerMax := schedulerAdaptiveWorkerMax(cfg, dueSites)
 	if o != nil && o.pool != nil {
 		o.pool.SetMaxSize(workerMax)
+		if warmed := o.pool.WarmTo(workerMax); warmed > 0 {
+			log.Printf("orchestrator: prewarmed check pool by %d workers for %d due sites (ceiling=%d)", warmed, dueSites, workerMax)
+		}
 	}
 	return workerMax
 }
 
-func schedulerBatchTargetSites(cfg *config.Config, pageSize, workerMax int) int {
+func schedulerBatchTargetSites(cfg *config.Config, pageSize, workerMax, dueSites int) int {
 	if pageSize < 1 {
 		pageSize = 1
 	}
@@ -664,9 +666,9 @@ func schedulerBatchTargetSites(cfg *config.Config, pageSize, workerMax int) int 
 	if workerMax < 1 {
 		workerMax = 1
 	}
-	target := workerMax * schedulerBatchSitesPerWorker
+	target := saturatingMulInt(workerMax, schedulerBatchSitesPerWorker)
 	if cfg != nil && cfg.MinTimeBetweenRoundsSec > 0 && cfg.NetCommsTimeout > 0 {
-		timeoutBound := workerMax * cfg.MinTimeBetweenRoundsSec / cfg.NetCommsTimeout
+		timeoutBound := saturatingMulInt(workerMax, cfg.MinTimeBetweenRoundsSec) / cfg.NetCommsTimeout
 		if timeoutBound > 0 && timeoutBound < target {
 			target = timeoutBound
 		}
@@ -674,22 +676,32 @@ func schedulerBatchTargetSites(cfg *config.Config, pageSize, workerMax int) int 
 	if target < pageSize {
 		target = pageSize
 	}
-	capacityCap := schedulerBatchCapacityCap(workerMax)
-	if target > capacityCap {
-		target = capacityCap
+	if dueSites > 0 && target > dueSites {
+		target = dueSites
 	}
 	return target
 }
 
-func schedulerBatchCapacityCap(workerMax int) int {
-	if workerMax < 1 {
-		workerMax = 1
+func schedulerConfiguredPageSize(cfg *config.Config) int {
+	if cfg != nil && cfg.DatasetSize > 0 {
+		return cfg.DatasetSize
 	}
-	capacityCap := workerMax * schedulerBatchWorkersMultiplier
-	if capacityCap < schedulerBaseMaxBatchSites {
-		return schedulerBaseMaxBatchSites
+	return 1
+}
+
+func schedulerFetchPageSize(cfg *config.Config, batchTarget int) int {
+	pageSize := schedulerConfiguredPageSize(cfg)
+	if batchTarget < 1 {
+		return pageSize
 	}
-	return capacityCap
+	adaptive := int(ceilDivInt64(int64(batchTarget), int64(schedulerTargetDBPagesPerBatch)))
+	if adaptive > pageSize {
+		pageSize = adaptive
+	}
+	if pageSize > batchTarget {
+		pageSize = batchTarget
+	}
+	return pageSize
 }
 
 func schedulerAdaptiveWorkerMax(cfg *config.Config, dueSites int) int {
@@ -806,6 +818,17 @@ func ceilDivInt64(numerator, denominator int64) int64 {
 	return (numerator + denominator - 1) / denominator
 }
 
+func saturatingMulInt(a, b int) int {
+	if a <= 0 || b <= 0 {
+		return 0
+	}
+	limit := maxInt()
+	if a > limit/b {
+		return limit
+	}
+	return a * b
+}
+
 func maxInt() int {
 	return int(^uint(0) >> 1)
 }
@@ -826,13 +849,10 @@ func eventWorkerCountForConfig(cfg *config.Config) int {
 
 func eventQueueCapacityForConfig(cfg *config.Config) int {
 	if cfg == nil {
-		return schedulerBaseMaxBatchSites
+		return schedulerBatchSitesPerWorker * eventQueueBatches
 	}
-	pageSize := 1
-	if cfg.DatasetSize > 0 {
-		pageSize = cfg.DatasetSize
-	}
-	return schedulerBatchTargetSites(cfg, pageSize, cfg.NumWorkers) * eventQueueBatches
+	pageSize := schedulerConfiguredPageSize(cfg)
+	return schedulerBatchTargetSites(cfg, pageSize, cfg.NumWorkers, 0) * eventQueueBatches
 }
 
 func eventQueueCapacityPerWorker(totalCapacity, count int) int {

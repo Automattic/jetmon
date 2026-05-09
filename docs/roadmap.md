@@ -522,6 +522,12 @@ No active candidate branch is queued here right now.
   100,000 timeout/connect failures per round; preserving the same metric names
   without lowercasing and rebuilding strings for every failed probe removes CPU
   work without changing detection behavior.
+- [x] Remove the remaining legacy-style static scheduler throughput guardrails.
+  `DATASET_SIZE` is now treated as a compatibility floor for DB paging, not a
+  fixed fetch size, and scheduler batch size is bounded by due work plus the
+  adaptive resource budget rather than a historical 25k window. The check pool
+  also pre-warms to the adaptive ceiling after due-count sampling so large due
+  waves do not wait for autoscale ticks before using available host headroom.
 - [ ] Replace scheduler batch windows with a continuous bounded in-flight
   dispatcher/result-drain pipeline. The latest reports show static window
   sizing keeps moving the bottleneck: 25k, 30k, and 50k windows each failed in

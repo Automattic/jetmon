@@ -205,6 +205,31 @@ func TestSetMaxSizeRetireExcessWorkers(t *testing.T) {
 	t.Fatalf("worker count = %d after SetMaxSize(2), want <= 2", p.WorkerCount())
 }
 
+func TestWarmToRaisesWorkersImmediately(t *testing.T) {
+	p := NewPool(1, 1, 5)
+	t.Cleanup(p.Drain)
+
+	if got := p.WarmTo(4); got != 3 {
+		t.Fatalf("WarmTo(4) added %d workers, want 3", got)
+	}
+	if got := p.WorkerCount(); got != 4 {
+		t.Fatalf("worker count after WarmTo(4) = %d, want 4", got)
+	}
+}
+
+func TestWarmToHonorsMaxSize(t *testing.T) {
+	p := NewPool(1, 1, 5)
+	t.Cleanup(p.Drain)
+	p.SetMaxSize(3)
+
+	if got := p.WarmTo(5); got != 2 {
+		t.Fatalf("WarmTo(5) added %d workers, want 2", got)
+	}
+	if got := p.WorkerCount(); got != 3 {
+		t.Fatalf("worker count after capped WarmTo(5) = %d, want 3", got)
+	}
+}
+
 func TestDrainCalledTwice(t *testing.T) {
 	p := NewPool(1, 1, 1)
 	p.Drain()

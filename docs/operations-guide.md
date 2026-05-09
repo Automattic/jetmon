@@ -18,7 +18,7 @@ Key settings:
 |---|---:|---|
 | `NUM_WORKERS` | 60 | Baseline check-pool size; adaptive scheduling raises the active ceiling from due backlog and host resource budget |
 | `NUM_TO_PROCESS` | 40 | Legacy compatibility setting; does not cap Go scheduler throughput |
-| `DATASET_SIZE` | 100 | Database fetch page size for scheduler work; not a total round cap |
+| `DATASET_SIZE` | 100 | Minimum database fetch page size for scheduler work; not a total round cap |
 | `NUM_OF_CHECKS` | 3 | Local failures before Veriflier escalation |
 | `TIME_BETWEEN_CHECKS_SEC` | 30 | Legacy compatibility setting retained for copied v1-style configs |
 | `MIN_TIME_BETWEEN_ROUNDS_SEC` | 300 | Fixed-cadence full-fleet pass interval when variable intervals are disabled |
@@ -45,13 +45,14 @@ Key settings:
 
 Scheduler behavior:
 
-- `DATASET_SIZE` limits one database page. Jetmon continues fetching pages until
-  due work is drained, so a low value should not cause unchecked sites by itself.
+- `DATASET_SIZE` is the minimum database page size, not a throughput cap. Jetmon
+  continues fetching pages until due work is drained and raises the effective
+  page size automatically for large due backlogs so a 50k+ window does not spend
+  most of its time issuing tiny SQL pages.
 - Jetmon groups multiple ordered database pages into each scheduler check batch
-  before waiting for the batch's slowest result. This prevents large fleets from
-  paying one slow-tail wait per `DATASET_SIZE` page. The batch target is derived
+  before waiting for the batch's slowest result. The batch target is derived
   from worker capacity and the configured timeout / round-cadence budget, then
-  bounded by a resource-derived in-flight target rather than a config knob.
+  bounded by the amount of due work rather than a legacy fixed scheduler limit.
   Operators usually should not raise `DATASET_SIZE` just to improve throughput.
 - With `USE_VARIABLE_CHECK_INTERVALS=true`, Jetmon estimates the check-pool
   ceiling needed to clear the current due backlog inside the freshness window.
@@ -60,6 +61,8 @@ Scheduler behavior:
   `MIN_TIME_BETWEEN_ROUNDS_SEC` show the baseline would miss freshness. The
   adaptive ceiling uses a 10% headroom factor and is bounded by the host's
   file-descriptor budget, so a low `ulimit -n` becomes a real capacity limit.
+  The check pool pre-warms to the adaptive ceiling at the start of a large
+  window instead of waiting for autoscale ticks to discover the demand.
 - The pending-work queue keeps the configured baseline cushion at small scale
   but grows to at least one adaptive worker wave when host resources allow a
   higher ceiling. The scheduler also applies a soft submit limit based on the
@@ -86,9 +89,9 @@ Scheduler behavior:
   `process.chunk.count` shows how many result-processing chunks were flushed
   inside those windows; high-capacity runs should show multiple chunks per
   scheduler window instead of one large freshness-write wave. Scheduler windows
-  use a resource-derived cap: at smaller worker ceilings the historical
-  25,000-site guardrail still applies, while much larger adaptive ceilings can
-  raise the window to keep enough work in flight without a manual config cap.
+  are derived from the current due backlog, resource budget, and freshness
+  window; there is no static 25,000-site guardrail or manual config cap on the
+  amount of due work a host may clear in one scheduler window.
   The per-window collection deadline scales by the number of worker waves needed
   for the batch, so larger adaptive ceilings do not make queued checks look
   stale simply because the static timeout expired before they could run. A
