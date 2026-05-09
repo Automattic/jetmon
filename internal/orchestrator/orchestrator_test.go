@@ -1160,6 +1160,86 @@ func TestProcessResultsMarksChecked(t *testing.T) {
 	}
 }
 
+func TestProcessResultsPreservesVariableIntervalSchedulePhase(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	cfg := setTestConfig(t)
+	cfg.UseVariableCheckIntervals = true
+
+	var markedNext time.Time
+	dbMarkSitesCheckedAt = func(context.Context, []int64, time.Time) error {
+		t.Fatal("MarkSitesCheckedAt called; want precise next_check_at update")
+		return nil
+	}
+	dbMarkSitesChecked = func(_ context.Context, checks []db.SiteCheck) error {
+		if len(checks) != 1 {
+			t.Fatalf("batch checks = %d, want 1", len(checks))
+		}
+		markedNext = checks[0].NextCheckAt
+		return nil
+	}
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local",
+		ctx:      context.Background(),
+	}
+
+	dueAt := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
+	res := checkerResultSuccess(42)
+	res.Timestamp = dueAt.Add(4 * time.Second)
+	sites := map[int64]db.Site{42: {
+		BlogID:        42,
+		SiteStatus:    statusRunning,
+		CheckInterval: 1,
+		NextCheckAt:   &dueAt,
+	}}
+	o.processResults(map[int64]checker.Result{42: res}, sites)
+
+	if want := dueAt.Add(time.Minute); !markedNext.Equal(want) {
+		t.Fatalf("next_check_at = %s, want scheduled phase %s", markedNext, want)
+	}
+}
+
+func TestProcessResultsSkipsMissedVariableIntervals(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	cfg := setTestConfig(t)
+	cfg.UseVariableCheckIntervals = true
+
+	var markedNext time.Time
+	dbMarkSitesChecked = func(_ context.Context, checks []db.SiteCheck) error {
+		if len(checks) != 1 {
+			t.Fatalf("batch checks = %d, want 1", len(checks))
+		}
+		markedNext = checks[0].NextCheckAt
+		return nil
+	}
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local",
+		ctx:      context.Background(),
+	}
+
+	dueAt := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
+	res := checkerResultSuccess(42)
+	res.Timestamp = dueAt.Add(3*time.Minute + 10*time.Second)
+	sites := map[int64]db.Site{42: {
+		BlogID:        42,
+		SiteStatus:    statusRunning,
+		CheckInterval: 1,
+		NextCheckAt:   &dueAt,
+	}}
+	o.processResults(map[int64]checker.Result{42: res}, sites)
+
+	if want := dueAt.Add(4 * time.Minute); !markedNext.Equal(want) {
+		t.Fatalf("next_check_at = %s, want next future scheduled slot %s", markedNext, want)
+	}
+}
+
 func TestProcessResultsSchedulesFailedChecksSoonerThanNormalInterval(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
@@ -2555,6 +2635,23 @@ func TestSchedulerAdaptiveWorkerMaxFromDueBacklog(t *testing.T) {
 	}
 }
 
+func TestSchedulerAdaptiveWorkerMaxUsesMinuteTargetWhenFixedRoundUnset(t *testing.T) {
+	orig := workerResourceCapFunc
+	workerResourceCapFunc = func() int { return 10000 }
+	t.Cleanup(func() { workerResourceCapFunc = orig })
+
+	cfg := &config.Config{
+		NumWorkers:                0,
+		MinTimeBetweenRoundsSec:   0,
+		NetCommsTimeout:           10,
+		UseVariableCheckIntervals: true,
+	}
+
+	if got := schedulerAdaptiveWorkerMax(cfg, 1000); got != 184 {
+		t.Fatalf("schedulerAdaptiveWorkerMax(no fixed round interval) = %d, want minute-cadence autoscale 184", got)
+	}
+}
+
 func TestSchedulerAdaptiveWorkerMaxHonorsResourceCapAboveBase(t *testing.T) {
 	orig := workerResourceCapFunc
 	workerResourceCapFunc = func() int { return 1200 }
@@ -2619,8 +2716,8 @@ func TestSchedulerPoolQueueCapacityFollowsAdaptiveResourceCeiling(t *testing.T) 
 func TestSchedulerPoolQueueSoftLimitTracksCurrentAdaptiveCeiling(t *testing.T) {
 	cfg := &config.Config{NumWorkers: 960}
 
-	if got := schedulerPoolQueueSoftLimit(cfg, 6000, 52224); got != 6000 {
-		t.Fatalf("schedulerPoolQueueSoftLimit(6000 workers) = %d, want one worker wave 6000", got)
+	if got := schedulerPoolQueueSoftLimit(cfg, 6000, 52224); got != 12000 {
+		t.Fatalf("schedulerPoolQueueSoftLimit(6000 workers) = %d, want two worker waves 12000", got)
 	}
 	if got := schedulerPoolQueueSoftLimit(cfg, 960, 52224); got != 1920 {
 		t.Fatalf("schedulerPoolQueueSoftLimit(baseline workers) = %d, want baseline cushion 1920", got)

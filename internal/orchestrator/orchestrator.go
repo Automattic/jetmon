@@ -58,6 +58,7 @@ const schedulerVariableIntervalPollInterval = 5 * time.Second
 const schedulerBacklogPollInterval = 5 * time.Second
 const schedulerBroadReportInterval = time.Minute
 const schedulerDefaultBaselineWorkers = 60
+const schedulerDefaultVariableIntervalTargetSec = 60
 const schedulerDefaultPageSize = 100
 const schedulerBatchSitesPerWorker = 100
 const schedulerTargetDBPagesPerBatch = 32
@@ -715,12 +716,15 @@ func schedulerAdaptiveWorkerMax(cfg *config.Config, dueSites int) int {
 	if cfg != nil &&
 		cfg.UseVariableCheckIntervals &&
 		dueSites > 0 &&
-		cfg.MinTimeBetweenRoundsSec > 0 &&
 		cfg.NetCommsTimeout > 0 {
+		targetSec := cfg.MinTimeBetweenRoundsSec
+		if targetSec <= 0 {
+			targetSec = schedulerDefaultVariableIntervalTargetSec
+		}
 		numerator := int64(dueSites) *
 			int64(cfg.NetCommsTimeout) *
 			int64(schedulerAdaptiveWorkerSafetyNumerator)
-		denominator := int64(cfg.MinTimeBetweenRoundsSec) *
+		denominator := int64(targetSec) *
 			int64(schedulerAdaptiveWorkerSafetyDenominator)
 		if denominator > 0 {
 			needed := ceilDivInt64(numerator, denominator)
@@ -773,10 +777,10 @@ func schedulerPoolQueueCapacity(cfg *config.Config) int {
 
 func schedulerPoolQueueSoftLimit(cfg *config.Config, workerMax, queueCapacity int) int {
 	base := schedulerBaselineWorkers(cfg)
-	limit := base * schedulerPoolQueueBufferMultiplier
-	if workerMax > limit {
-		limit = workerMax
+	if workerMax < 1 {
+		workerMax = base
 	}
+	limit := saturatingMulInt(workerMax, schedulerPoolQueueBufferMultiplier)
 	if queueCapacity > 0 && limit > queueCapacity {
 		limit = queueCapacity
 	}
@@ -1989,6 +1993,9 @@ func (o *Orchestrator) markResultsChecked(records []siteCheckResult, summary *re
 }
 
 func needsPreciseNextCheck(site db.Site, res checker.Result) bool {
+	if site.NextCheckAt != nil && config.Get().UseVariableCheckIntervals {
+		return true
+	}
 	if !res.IsFailure() {
 		return false
 	}
@@ -2081,10 +2088,24 @@ func resultCheckedAt(res checker.Result) time.Time {
 
 func nextCheckAt(site db.Site, res checker.Result) time.Time {
 	interval := siteCheckInterval(site)
+	checkedAt := resultCheckedAt(res)
 	if res.IsFailure() && interval > failedCheckRetryInterval {
 		interval = failedCheckRetryInterval
+		return checkedAt.Add(interval)
 	}
-	return resultCheckedAt(res).Add(interval)
+	if site.NextCheckAt == nil || !config.Get().UseVariableCheckIntervals {
+		return checkedAt.Add(interval)
+	}
+	scheduled := site.NextCheckAt.UTC()
+	if scheduled.IsZero() || scheduled.After(checkedAt) {
+		return checkedAt.Add(interval)
+	}
+	elapsed := checkedAt.Sub(scheduled)
+	intervals := elapsed/interval + 1
+	if intervals < 1 {
+		intervals = 1
+	}
+	return scheduled.Add(intervals * interval)
 }
 
 func siteCheckInterval(site db.Site) time.Duration {
