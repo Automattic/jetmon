@@ -2518,6 +2518,23 @@ func TestEventQueueCapacityIsSplitAcrossWorkers(t *testing.T) {
 	}
 }
 
+func TestEventQueueCapacityUsesResourceDerivedQueueWhenAutoBaseline(t *testing.T) {
+	orig := workerResourceCapFunc
+	t.Cleanup(func() { workerResourceCapFunc = orig })
+	workerResourceCapFunc = func() int { return 10000 }
+
+	cfg := &config.Config{
+		NumWorkers:              0,
+		DatasetSize:             0,
+		MinTimeBetweenRoundsSec: 300,
+		NetCommsTimeout:         10,
+	}
+
+	if got := eventQueueCapacityForConfig(cfg); got != 40000 {
+		t.Fatalf("eventQueueCapacityForConfig(auto baseline) = %d, want resource-derived capacity 40000", got)
+	}
+}
+
 func TestSchedulerAdaptiveWorkerMaxFromDueBacklog(t *testing.T) {
 	orig := workerResourceCapFunc
 	workerResourceCapFunc = func() int { return 10000 }

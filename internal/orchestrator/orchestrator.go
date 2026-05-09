@@ -845,11 +845,14 @@ func eventWorkerCountForConfig(cfg *config.Config) int {
 }
 
 func eventQueueCapacityForConfig(cfg *config.Config) int {
-	if cfg == nil {
-		return schedulerBatchSitesPerWorker * eventQueueBatches
-	}
 	pageSize := schedulerConfiguredPageSize(cfg)
-	return schedulerBatchTargetSites(cfg, pageSize, cfg.NumWorkers, 0) * eventQueueBatches
+	workerMax := schedulerBaselineWorkers(cfg)
+	baselineCapacity := schedulerBatchTargetSites(cfg, pageSize, workerMax, 0) * eventQueueBatches
+	resourceCapacity := schedulerPoolQueueCapacity(cfg) * eventQueueBatches
+	if resourceCapacity > baselineCapacity {
+		return resourceCapacity
+	}
+	return baselineCapacity
 }
 
 func eventQueueCapacityPerWorker(totalCapacity, count int) int {
