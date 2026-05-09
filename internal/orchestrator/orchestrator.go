@@ -835,13 +835,21 @@ func eventQueueCapacityForConfig(cfg *config.Config) int {
 	return schedulerBatchTargetSites(cfg, pageSize, cfg.NumWorkers) * eventQueueBatches
 }
 
-func (o *Orchestrator) startEventWorkers(count, queueCapacity int) {
+func eventQueueCapacityPerWorker(totalCapacity, count int) int {
+	if count < 1 {
+		count = 1
+	}
+	if totalCapacity < count {
+		totalCapacity = count
+	}
+	return int(ceilDivInt64(int64(totalCapacity), int64(count)))
+}
+
+func (o *Orchestrator) startEventWorkers(count, totalQueueCapacity int) {
 	if o == nil || count <= 0 {
 		return
 	}
-	if queueCapacity < count {
-		queueCapacity = count
-	}
+	queueCapacity := eventQueueCapacityPerWorker(totalQueueCapacity, count)
 	o.eventWork = make([]chan siteCheckResult, count)
 	for i := range count {
 		ch := make(chan siteCheckResult, queueCapacity)
@@ -849,7 +857,7 @@ func (o *Orchestrator) startEventWorkers(count, queueCapacity int) {
 		o.eventWG.Add(1)
 		go o.eventWorker(i, ch)
 	}
-	log.Printf("orchestrator: event workers started workers=%d queue_capacity_per_worker=%d", count, queueCapacity)
+	log.Printf("orchestrator: event workers started workers=%d queue_capacity_total=%d queue_capacity_per_worker=%d", count, queueCapacity*count, queueCapacity)
 }
 
 func (o *Orchestrator) stopEventWorkers() {
@@ -1624,8 +1632,9 @@ func (o *Orchestrator) enqueueResultEvent(record siteCheckResult, summary *resul
 		if depth > summary.eventQueueDepthMax {
 			summary.eventQueueDepthMax = depth
 		}
-		if cap(ch) > summary.eventQueueCapacity {
-			summary.eventQueueCapacity = cap(ch)
+		totalCapacity := cap(ch) * len(o.eventWork)
+		if totalCapacity > summary.eventQueueCapacity {
+			summary.eventQueueCapacity = totalCapacity
 		}
 		return true
 	case <-o.ctx.Done():

@@ -2420,6 +2420,21 @@ func TestSchedulerBatchTargetSitesDerivesFromWorkers(t *testing.T) {
 	}
 }
 
+func TestEventQueueCapacityIsSplitAcrossWorkers(t *testing.T) {
+	if got := eventQueueCapacityPerWorker(100000, 16); got != 6250 {
+		t.Fatalf("eventQueueCapacityPerWorker(100000, 16) = %d, want 6250", got)
+	}
+	if got := eventQueueCapacityPerWorker(100001, 16); got != 6251 {
+		t.Fatalf("eventQueueCapacityPerWorker(100001, 16) = %d, want 6251", got)
+	}
+	if got := eventQueueCapacityPerWorker(4, 16); got != 1 {
+		t.Fatalf("eventQueueCapacityPerWorker(4, 16) = %d, want 1", got)
+	}
+	if got := eventQueueCapacityPerWorker(0, 0); got != 1 {
+		t.Fatalf("eventQueueCapacityPerWorker(0, 0) = %d, want 1", got)
+	}
+}
+
 func TestSchedulerAdaptiveWorkerMaxFromDueBacklog(t *testing.T) {
 	orig := workerResourceCapFunc
 	workerResourceCapFunc = func() int { return 10000 }
