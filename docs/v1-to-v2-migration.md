@@ -293,8 +293,10 @@ While pinned:
 - the host checks only the configured inclusive bucket range
 - the host does not claim or heartbeat `jetmon_hosts`
 - shutdown does not release a `jetmon_hosts` row
-- `BUCKET_TOTAL`, `BUCKET_TARGET`, and `BUCKET_HEARTBEAT_GRACE_SEC` still
-  validate, but dynamic ownership does not use them on that host
+- `BUCKET_TOTAL` and `BUCKET_HEARTBEAT_GRACE_SEC` still validate, but dynamic
+  ownership does not use them on that host
+- `BUCKET_TARGET` is accepted as an ignored compatibility key; pinned migration
+  ranges are controlled by `PINNED_BUCKET_MIN` / `PINNED_BUCKET_MAX`
 
 ### Validate Before Cutover
 

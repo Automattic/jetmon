@@ -209,7 +209,7 @@ func defaults() *Config {
 		WorkerMaxMemMB:               0,
 		LegacyStatusProjectionEnable: true,
 		BucketTotal:                  1000,
-		BucketTarget:                 500,
+		BucketTarget:                 0,
 		BucketHeartbeatGraceSec:      600,
 		BatchSize:                    32,
 		VeriflierBatchSize:           200,
@@ -228,6 +228,7 @@ func defaults() *Config {
 		BodyReadMaxMS:                250,
 		KeywordReadMaxBytes:          1048576,
 		KeywordReadMaxMS:             0,
+		UseVariableCheckIntervals:    true,
 		LogFormat:                    "text",
 		DashboardPort:                8080,
 		DashboardBindAddr:            "127.0.0.1",
@@ -281,17 +282,17 @@ func validate(cfg *Config) error {
 	if cfg.AuthToken == "" {
 		return fmt.Errorf("AUTH_TOKEN is required")
 	}
-	if cfg.NumWorkers <= 0 {
-		return fmt.Errorf("NUM_WORKERS must be > 0")
+	if cfg.NumWorkers < 0 {
+		return fmt.Errorf("NUM_WORKERS must be >= 0")
 	}
-	if cfg.DatasetSize <= 0 {
-		return fmt.Errorf("DATASET_SIZE must be > 0")
+	if cfg.DatasetSize < 0 {
+		return fmt.Errorf("DATASET_SIZE must be >= 0")
 	}
 	if cfg.BucketTotal <= 0 {
 		return fmt.Errorf("BUCKET_TOTAL must be > 0")
 	}
-	if cfg.BucketTarget <= 0 || cfg.BucketTarget > cfg.BucketTotal {
-		return fmt.Errorf("BUCKET_TARGET must be between 1 and BUCKET_TOTAL")
+	if cfg.BucketTarget < 0 {
+		return fmt.Errorf("BUCKET_TARGET must be >= 0")
 	}
 	if err := validatePinnedBucketRange(cfg); err != nil {
 		return err

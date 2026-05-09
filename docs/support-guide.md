@@ -203,8 +203,9 @@ consecutive local failures are required before Veriflier escalation. In
 variable-interval mode, failed probes are scheduled for a bounded one-minute
 follow-up when the site's normal check interval is longer, so transient
 incidents get rechecked sooner without per-site retry tuning.
-`TIME_BETWEEN_CHECKS_SEC` is retained for v1 config compatibility; do not
-promise per-site retry tuning unless the deployed schema includes it.
+`TIME_BETWEEN_CHECKS_SEC` is accepted for v1 config compatibility but ignored
+by Jetmon v2; do not promise per-site retry tuning unless the deployed schema
+includes it.
 
 ## WPCOM Notification Data
 

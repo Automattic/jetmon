@@ -254,9 +254,9 @@ Veriflier guard. Those suppressed history rows are counted with
 1. Confirm migrations have run through migration 31.
 2. Confirm the test service is running this branch's `jetmon2` binary.
 3. Confirm the Veriflier service is reachable from the monitor host.
-4. Confirm `WORKER_MAX_MEM_MB=0` for capacity tests unless intentionally
+4. Confirm `WORKER_MAX_MEM_MB` is unset or `0` for capacity tests unless intentionally
    testing memory-pressure drain.
-5. Confirm `USE_VARIABLE_CHECK_INTERVALS=true`.
+5. Confirm `USE_VARIABLE_CHECK_INTERVALS` is unset or `true`.
 6. Confirm `WPCOM_NOTIFY_ENABLE=false` for synthetic capacity tests. These test
    blog IDs are not real WPCOM sites, and allowing legacy notifications to
    leave the test environment adds DNS/network noise while contacting a real

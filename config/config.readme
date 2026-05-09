@@ -2,31 +2,28 @@ DEBUG
 Set to true to enable more verbose log messages. Default: false.
 
 NUM_WORKERS
-Baseline number of goroutines for the check pool. Jetmon starts at this level
-and auto-scales up when due backlog cannot fit inside the configured freshness
-window. NUM_WORKERS is not the burst ceiling in variable-interval mode; the
-adaptive ceiling is derived from due-site count, timeout, round freshness
-budget, and the host file-descriptor budget. The pending-work queue remains
-bounded from this baseline so the scheduler applies backpressure instead of
-building a very large stale-result backlog. Watch scheduler pool metrics and
-host FD limits rather than manually raising NUM_WORKERS for each fleet size.
+Compatibility baseline for the check pool. Omit it or set it to 0 for the
+default auto baseline. Jetmon auto-scales up when due backlog cannot fit inside
+the configured freshness window; NUM_WORKERS is not the burst ceiling in
+variable-interval mode. The adaptive ceiling is derived from due-site count,
+timeout, round freshness budget, and the host file-descriptor budget. Watch
+scheduler pool metrics and host FD limits rather than manually raising
+NUM_WORKERS for each fleet size.
 Default: 60.
 
 NUM_TO_PROCESS
 Legacy compatibility setting retained so copied v1-style configs continue to
-parse. The Go scheduler uses DATASET_SIZE as the minimum fetch page and
-NUM_WORKERS as the baseline concurrency setting; adaptive pool growth may raise
-the active ceiling and effective fetch page size when due backlog requires it.
-NUM_TO_PROCESS does not cap scheduler throughput.
+parse. It is ignored by Jetmon v2 and does not cap scheduler throughput.
 Default: 40.
 
 DATASET_SIZE
-Minimum number of sites to fetch from the database per scheduler page. The
-orchestrator keeps fetching additional pages until due work is drained, and
-raises the effective page size automatically for large due backlogs so one
-freshness window does not require hundreds of tiny SQL pages. This is a
-compatibility floor for copied v1-style configs, not a cap on total checks per
-round or a setting operators should tune for each fleet size.
+Optional minimum number of sites to fetch from the database per scheduler page.
+Omit it or set it to 0 for the default floor. The orchestrator keeps fetching
+additional pages until due work is drained, and raises the effective page size
+automatically for large due backlogs so one freshness window does not require
+hundreds of tiny SQL pages. This is a compatibility floor for copied v1-style
+configs, not a cap on total checks per round or a setting operators should tune
+for each fleet size.
 Default: 100.
 
 WORKER_MAX_MEM_MB
@@ -47,7 +44,10 @@ BUCKET_TOTAL
 Total number of buckets in the system across all hosts. Must match the range of bucket_no values in the jetpack_monitor_sites table. Default: 1000.
 
 BUCKET_TARGET
-Number of buckets this host should claim on startup. Used for initial distribution across hosts. Default: 500.
+Legacy compatibility setting retained so copied v1-style configs continue to
+parse. Dynamic ownership now ignores this value and evenly assigns the full
+BUCKET_TOTAL range across active hosts. Use PINNED_BUCKET_MIN/MAX for the
+temporary v1-to-v2 one-host-at-a-time migration shape. Default: 0.
 
 BUCKET_HEARTBEAT_GRACE_SEC
 Seconds after a host's last heartbeat before its buckets are considered available for reclaiming by another host. Default: 600.
@@ -60,8 +60,13 @@ Deprecated v1 names accepted as aliases for PINNED_BUCKET_MIN / PINNED_BUCKET_MA
 
 BATCH_SIZE
 Legacy compatibility setting retained so copied v1-style configs continue to
-parse. It is not used by the Go scheduler; scheduler DB paging is controlled by
-the DATASET_SIZE floor plus adaptive page sizing. Default: 32.
+parse. It is ignored by Jetmon v2; scheduler DB paging uses the DATASET_SIZE
+floor plus adaptive page sizing. Default: 32.
+
+SQL_UPDATE_BATCH / DB_CONFIG_UPDATES_MIN
+Legacy compatibility settings retained so copied v1-style configs continue to
+parse. They are ignored by Jetmon v2; freshness/history/event writes use
+internal batching sized by the Go implementation and database behavior.
 
 AUTH_TOKEN
 Shared secret used to authenticate outbound WPCOM API calls. Required.
@@ -104,8 +109,9 @@ Minimum minutes between a site going down and a confirmed-down notification bein
 
 MIN_TIME_BETWEEN_ROUNDS_SEC
 Minimum seconds between fixed-cadence full-fleet passes when
-USE_VARIABLE_CHECK_INTERVALS is false. When USE_VARIABLE_CHECK_INTERVALS is
-true, the scheduler uses a short idle poll and the SQL due predicate decides
+USE_VARIABLE_CHECK_INTERVALS is explicitly false. In the default
+variable-interval mode, the scheduler uses this as the freshness budget for
+adaptive worker sizing while a short idle poll and the SQL due predicate decide
 which sites are ready to check. Default: 300.
 
 NET_COMMS_TIMEOUT
@@ -124,16 +130,15 @@ KEYWORD_READ_MAX_MS
 Keyword body-read budget in milliseconds. Set to 0 to inherit the request timeout envelope (NET_COMMS_TIMEOUT or per-site timeout_seconds). If set > 0 and exhausted before the keyword is found, the check fails as timeout (ErrorTimeout), not keyword mismatch. Default: 0.
 
 USE_VARIABLE_CHECK_INTERVALS
-Set to true to respect the check_interval column per site instead of running
-all sites every fixed-cadence pass. Recommended for production freshness
-testing because newly due sites are discovered without waiting for
-MIN_TIME_BETWEEN_ROUNDS_SEC. Jetmon maintains next_check_at after each
-completed check so due-site selection can use an indexed timestamp range
-instead of recomputing each row's interval on every poll. Successful checks use
-the site's normal check_interval; failed checks get a bounded one-minute
-follow-up when the normal interval is longer. Default in the sample config:
-true. Minimal configs that omit the key retain the compatibility default of
-false.
+Defaults to true. Jetmon respects the check_interval column per site instead of
+running all sites every fixed-cadence pass, and newly due sites are discovered
+without waiting for MIN_TIME_BETWEEN_ROUNDS_SEC. Jetmon maintains next_check_at
+after each completed check so due-site selection can use an indexed timestamp
+range instead of recomputing each row's interval on every poll. Successful
+checks use the site's normal check_interval; failed checks get a bounded
+one-minute follow-up when the normal interval is longer. Explicitly setting this
+to false is kept for local debugging and v1-behavior comparison, not production
+capacity tuning.
 
 LOG_FORMAT
 Log output format. Set to "json" for structured logging (e.g. for log aggregators), or "text" for human-readable output. Default: "text".

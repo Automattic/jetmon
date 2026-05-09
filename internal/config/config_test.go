@@ -41,9 +41,8 @@ func TestValidate(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:    "num workers zero",
-			mutate:  func(c *Config) { c.NumWorkers = 0 },
-			wantErr: true,
+			name:   "num workers zero means auto baseline",
+			mutate: func(c *Config) { c.NumWorkers = 0 },
 		},
 		{
 			name:    "num workers negative",
@@ -51,9 +50,8 @@ func TestValidate(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:    "dataset size zero",
-			mutate:  func(c *Config) { c.DatasetSize = 0 },
-			wantErr: true,
+			name:   "dataset size zero means auto page floor",
+			mutate: func(c *Config) { c.DatasetSize = 0 },
 		},
 		{
 			name:    "dataset size negative",
@@ -66,13 +64,16 @@ func TestValidate(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:    "bucket target zero",
-			mutate:  func(c *Config) { c.BucketTarget = 0 },
-			wantErr: true,
+			name:   "bucket target zero is ignored compatibility value",
+			mutate: func(c *Config) { c.BucketTarget = 0 },
 		},
 		{
-			name:    "bucket target exceeds bucket total",
-			mutate:  func(c *Config) { c.BucketTarget = 101 },
+			name:   "bucket target exceeds bucket total is ignored",
+			mutate: func(c *Config) { c.BucketTarget = 101 },
+		},
+		{
+			name:    "bucket target negative",
+			mutate:  func(c *Config) { c.BucketTarget = -1 },
 			wantErr: true,
 		},
 		{
@@ -627,8 +628,8 @@ func TestDefaults(t *testing.T) {
 	if cfg.BucketTotal <= 0 {
 		t.Fatalf("defaults().BucketTotal = %d, want > 0", cfg.BucketTotal)
 	}
-	if cfg.BucketTarget <= 0 || cfg.BucketTarget > cfg.BucketTotal {
-		t.Fatalf("defaults().BucketTarget = %d out of range [1, %d]", cfg.BucketTarget, cfg.BucketTotal)
+	if cfg.BucketTarget != 0 {
+		t.Fatalf("defaults().BucketTarget = %d, want 0 ignored compatibility value", cfg.BucketTarget)
 	}
 	if cfg.NetCommsTimeout <= 0 {
 		t.Fatalf("defaults().NetCommsTimeout = %d, want > 0", cfg.NetCommsTimeout)
@@ -638,5 +639,8 @@ func TestDefaults(t *testing.T) {
 	}
 	if !cfg.WPCOMNotifyEnable {
 		t.Fatal("defaults().WPCOMNotifyEnable should be true")
+	}
+	if !cfg.UseVariableCheckIntervals {
+		t.Fatal("defaults().UseVariableCheckIntervals should be true")
 	}
 }

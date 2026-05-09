@@ -1,26 +1,16 @@
 {
 	"DEBUG"             : false,
-	"NUM_WORKERS"       : 60,
-	"NUM_TO_PROCESS"    : 40,
-	"DATASET_SIZE"      : 100,
-	"WORKER_MAX_MEM_MB" : 0,
 
 	"LEGACY_STATUS_PROJECTION_ENABLE" : true,
 
 	"BUCKET_TOTAL"               : 1000,
-	"BUCKET_TARGET"              : 500,
 	"BUCKET_HEARTBEAT_GRACE_SEC" : 600,
 
-	"BATCH_SIZE"     : 32,
 	"AUTH_TOKEN"     : "<AUTH_TOKEN>",
 
-	"VERIFLIER_BATCH_SIZE"  : 200,
-	"SQL_UPDATE_BATCH"      : 1,
-	"DB_CONFIG_UPDATES_MIN" : 10,
 	"PEER_OFFLINE_LIMIT"    : 3,
 
-	"NUM_OF_CHECKS"           : 3,
-	"TIME_BETWEEN_CHECKS_SEC" : 30,
+	"NUM_OF_CHECKS" : 3,
 
 	"ALERT_COOLDOWN_MINUTES" : 30,
 	"WPCOM_NOTIFY_ENABLE"    : true,
@@ -34,7 +24,6 @@
 	"BODY_READ_MAX_MS"             : 250,
 	"KEYWORD_READ_MAX_BYTES"       : 1048576,
 	"KEYWORD_READ_MAX_MS"          : 0,
-	"USE_VARIABLE_CHECK_INTERVALS" : true,
 
 	"LOG_FORMAT"     : "text",
 	"DASHBOARD_PORT" : 8080,

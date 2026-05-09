@@ -608,9 +608,10 @@ func updateSSLExpiriesChunk(ctx context.Context, expiries []SiteSSLExpiry) error
 	return execBatchWrite(ctx, query.String(), args...)
 }
 
-// ClaimBuckets registers this host in jetmon_hosts, claiming uncovered bucket
-// ranges from expired peers. Returns the claimed min/max bucket numbers.
-func ClaimBuckets(hostID string, bucketTotal, bucketTarget int, graceSec int) (int, int, error) {
+// ClaimBuckets registers this host in jetmon_hosts and evenly assigns the full
+// bucket range across all active hosts. bucketTarget is retained as a
+// compatibility parameter for older callers but no longer caps ownership.
+func ClaimBuckets(hostID string, bucketTotal, _ int, graceSec int) (int, int, error) {
 	tx, err := db.Begin()
 	if err != nil {
 		return 0, 0, fmt.Errorf("begin tx: %w", err)
@@ -645,7 +646,7 @@ func ClaimBuckets(hostID string, bucketTotal, bucketTarget int, graceSec int) (i
 	}
 	sort.Strings(hostIDs)
 
-	assignments := assignBucketRanges(hostIDs, bucketTotal, bucketTarget)
+	assignments := assignBucketRanges(hostIDs, bucketTotal)
 
 	for _, id := range hostIDs {
 		rng := assignments[id]
@@ -665,7 +666,7 @@ func ClaimBuckets(hostID string, bucketTotal, bucketTarget int, graceSec int) (i
 	return rng[0], rng[1], tx.Commit()
 }
 
-func assignBucketRanges(hostIDs []string, bucketTotal, bucketTarget int) map[string][2]int {
+func assignBucketRanges(hostIDs []string, bucketTotal int) map[string][2]int {
 	assignments := make(map[string][2]int, len(hostIDs))
 	nextBucket := 0
 	for i, id := range hostIDs {
@@ -677,9 +678,6 @@ func assignBucketRanges(hostIDs []string, bucketTotal, bucketTarget int) map[str
 		remainingBuckets := bucketTotal - nextBucket
 		remainingHosts := len(hostIDs) - i
 		size := (remainingBuckets + remainingHosts - 1) / remainingHosts
-		if size > bucketTarget {
-			size = bucketTarget
-		}
 		if size < 1 {
 			assignments[id] = [2]int{0, -1}
 			continue

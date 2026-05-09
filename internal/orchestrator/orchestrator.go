@@ -57,6 +57,8 @@ const schedulerBackpressurePollInterval = 10 * time.Millisecond
 const schedulerVariableIntervalPollInterval = 5 * time.Second
 const schedulerBacklogPollInterval = 5 * time.Second
 const schedulerBroadReportInterval = time.Minute
+const schedulerDefaultBaselineWorkers = 60
+const schedulerDefaultPageSize = 100
 const schedulerBatchSitesPerWorker = 100
 const schedulerTargetDBPagesPerBatch = 32
 const schedulerPoolQueueBufferMultiplier = 2
@@ -374,10 +376,7 @@ type Orchestrator struct {
 func New(cfg *config.Config, wp *wpcom.Client) *Orchestrator {
 	ctx, cancel := stdctx.WithCancel(stdctx.Background())
 	poolMax := schedulerPoolMax(cfg)
-	initialWorkers := cfg.NumWorkers
-	if initialWorkers < 1 {
-		initialWorkers = 1
-	}
+	initialWorkers := schedulerBaselineWorkers(cfg)
 	if initialWorkers > poolMax {
 		initialWorkers = poolMax
 	}
@@ -661,7 +660,7 @@ func schedulerBatchTargetSites(cfg *config.Config, pageSize, workerMax, dueSites
 		pageSize = 1
 	}
 	if workerMax < 1 && cfg != nil {
-		workerMax = cfg.NumWorkers
+		workerMax = schedulerBaselineWorkers(cfg)
 	}
 	if workerMax < 1 {
 		workerMax = 1
@@ -686,7 +685,7 @@ func schedulerConfiguredPageSize(cfg *config.Config) int {
 	if cfg != nil && cfg.DatasetSize > 0 {
 		return cfg.DatasetSize
 	}
-	return 1
+	return schedulerDefaultPageSize
 }
 
 func schedulerFetchPageSize(cfg *config.Config, batchTarget int) int {
@@ -705,10 +704,7 @@ func schedulerFetchPageSize(cfg *config.Config, batchTarget int) int {
 }
 
 func schedulerAdaptiveWorkerMax(cfg *config.Config, dueSites int) int {
-	base := 1
-	if cfg != nil && cfg.NumWorkers > 0 {
-		base = cfg.NumWorkers
-	}
+	base := schedulerBaselineWorkers(cfg)
 	desired := base
 	if cfg != nil &&
 		cfg.UseVariableCheckIntervals &&
@@ -742,10 +738,7 @@ func schedulerAdaptiveWorkerMax(cfg *config.Config, dueSites int) int {
 }
 
 func schedulerPoolMax(cfg *config.Config) int {
-	base := 1
-	if cfg != nil && cfg.NumWorkers > 0 {
-		base = cfg.NumWorkers
-	}
+	base := schedulerBaselineWorkers(cfg)
 	poolMax := base
 	if resourceCap := workerResourceCapFunc(); resourceCap > 0 {
 		poolMax = resourceCap
@@ -757,10 +750,7 @@ func schedulerPoolMax(cfg *config.Config) int {
 }
 
 func schedulerPoolQueueCapacity(cfg *config.Config) int {
-	base := 1
-	if cfg != nil && cfg.NumWorkers > 0 {
-		base = cfg.NumWorkers
-	}
+	base := schedulerBaselineWorkers(cfg)
 	poolMax := schedulerPoolMax(cfg)
 	if poolMax > 0 && base > poolMax {
 		base = poolMax
@@ -776,10 +766,7 @@ func schedulerPoolQueueCapacity(cfg *config.Config) int {
 }
 
 func schedulerPoolQueueSoftLimit(cfg *config.Config, workerMax, queueCapacity int) int {
-	base := 1
-	if cfg != nil && cfg.NumWorkers > 0 {
-		base = cfg.NumWorkers
-	}
+	base := schedulerBaselineWorkers(cfg)
 	limit := base * schedulerPoolQueueBufferMultiplier
 	if workerMax > limit {
 		limit = workerMax
@@ -811,6 +798,13 @@ func schedulerWorkerResourceCap() int {
 		schedulerWorkerFDUseDenominator
 }
 
+func schedulerBaselineWorkers(cfg *config.Config) int {
+	if cfg != nil && cfg.NumWorkers > 0 {
+		return cfg.NumWorkers
+	}
+	return schedulerDefaultBaselineWorkers
+}
+
 func ceilDivInt64(numerator, denominator int64) int64 {
 	if numerator <= 0 || denominator <= 0 {
 		return 0
@@ -834,10 +828,7 @@ func maxInt() int {
 }
 
 func eventWorkerCountForConfig(cfg *config.Config) int {
-	if cfg == nil || cfg.NumWorkers <= 0 {
-		return eventWorkerMinCount
-	}
-	workers := cfg.NumWorkers / eventWorkerScaleSites
+	workers := schedulerPoolMax(cfg) / eventWorkerScaleSites
 	if workers < eventWorkerMinCount {
 		workers = eventWorkerMinCount
 	}

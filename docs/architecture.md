@@ -366,13 +366,13 @@ MySQL transaction. Expired hosts (heartbeat missed by `BucketHeartbeatGraceSec`)
 are removed and their ranges redistributed.
 
 ```
-  jetmon_hosts (3 active hosts, BucketTotal=1000, BucketTarget=500):
+  jetmon_hosts (3 active hosts, BucketTotal=1000):
 
   Hosts sorted by host_id: [host-a, host-b, host-c]
-  assignBucketRanges() water-fill:
-    host-a → buckets   0– 499  (capped at BucketTarget=500)
-    host-b → buckets 500– 749  (250 remaining, 2 hosts left)
-    host-c → buckets 750– 999
+  assignBucketRanges() even split:
+    host-a → buckets   0– 333
+    host-b → buckets 334– 666
+    host-c → buckets 667– 999
 
   host-b goes offline (heartbeat expires):
     host-a → buckets   0– 499

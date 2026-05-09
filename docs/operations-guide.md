@@ -16,11 +16,11 @@ Key settings:
 
 | Key | Default | Description |
 |---|---:|---|
-| `NUM_WORKERS` | 60 | Baseline check-pool size; adaptive scheduling raises the active ceiling from due backlog and host resource budget |
-| `NUM_TO_PROCESS` | 40 | Legacy compatibility setting; does not cap Go scheduler throughput |
-| `DATASET_SIZE` | 100 | Minimum database fetch page size for scheduler work; not a total round cap |
+| `NUM_WORKERS` | 60 | Optional compatibility baseline; adaptive scheduling raises the active ceiling from due backlog and host resource budget |
+| `NUM_TO_PROCESS` | 40 | Ignored legacy compatibility setting; does not cap Go scheduler throughput |
+| `DATASET_SIZE` | 100 | Optional minimum database fetch page size for scheduler work; not a total round cap |
 | `NUM_OF_CHECKS` | 3 | Local failures before Veriflier escalation |
-| `TIME_BETWEEN_CHECKS_SEC` | 30 | Legacy compatibility setting retained for copied v1-style configs |
+| `TIME_BETWEEN_CHECKS_SEC` | 30 | Ignored legacy compatibility setting retained for copied v1-style configs |
 | `MIN_TIME_BETWEEN_ROUNDS_SEC` | 300 | Fixed-cadence full-fleet pass interval when variable intervals are disabled |
 | `NET_COMMS_TIMEOUT` | 10 | Default per-check HTTP timeout in seconds |
 | `BODY_READ_MAX_BYTES` | 1048576 | Success-path body-read budget in bytes for unknown/large responses |
@@ -30,7 +30,7 @@ Key settings:
 | `PEER_OFFLINE_LIMIT` | 3 | Veriflier agreements required to confirm downtime |
 | `WORKER_MAX_MEM_MB` | 0 | Optional Go runtime memory threshold that triggers worker-pool drain; 0 disables the artificial cap |
 | `BUCKET_TOTAL` | 1000 | Total bucket range across all hosts |
-| `BUCKET_TARGET` | 500 | Maximum buckets this host should own |
+| `BUCKET_TARGET` | 0 | Ignored legacy compatibility setting; dynamic ownership evenly splits `BUCKET_TOTAL` across active hosts |
 | `BUCKET_HEARTBEAT_GRACE_SEC` | 600 | Seconds before a silent host's buckets are reclaimed |
 | `PINNED_BUCKET_MIN` / `PINNED_BUCKET_MAX` | unset | Static bucket range used by the [v1-to-v2 migration runbook](v1-to-v2-migration.md) |
 | `ALERT_COOLDOWN_MINUTES` | 30 | Default cooldown between repeated alerts per site |
@@ -45,19 +45,20 @@ Key settings:
 
 Scheduler behavior:
 
-- `DATASET_SIZE` is the minimum database page size, not a throughput cap. Jetmon
-  continues fetching pages until due work is drained and raises the effective
-  page size automatically for large due backlogs so a 50k+ window does not spend
-  most of its time issuing tiny SQL pages.
+- `DATASET_SIZE` is an optional minimum database page size, not a throughput
+  cap. Jetmon continues fetching pages until due work is drained and raises the
+  effective page size automatically for large due backlogs so a 50k+ window does
+  not spend most of its time issuing tiny SQL pages.
 - Jetmon groups multiple ordered database pages into each scheduler check batch
   before waiting for the batch's slowest result. The batch target is derived
   from worker capacity and the configured timeout / round-cadence budget, then
   bounded by the amount of due work rather than a legacy fixed scheduler limit.
   Operators usually should not raise `DATASET_SIZE` just to improve throughput.
-- With `USE_VARIABLE_CHECK_INTERVALS=true`, Jetmon estimates the check-pool
+- With the default variable-interval scheduler, Jetmon estimates the check-pool
   ceiling needed to clear the current due backlog inside the freshness window.
-  `NUM_WORKERS` remains the baseline, but the scheduler can temporarily raise
-  the ceiling above it when the due backlog, `NET_COMMS_TIMEOUT`, and
+  `NUM_WORKERS` is only an optional compatibility baseline, and the scheduler
+  can temporarily raise the ceiling above it when the due backlog,
+  `NET_COMMS_TIMEOUT`, and
   `MIN_TIME_BETWEEN_ROUNDS_SEC` show the baseline would miss freshness. The
   adaptive ceiling uses a 10% headroom factor and is bounded by the host's
   file-descriptor budget, so a low `ulimit -n` becomes a real capacity limit.
@@ -73,13 +74,14 @@ Scheduler behavior:
   being dropped. Before sleeping on backpressure, the scheduler drains any
   already-completed results and flushes full result chunks so timer churn and
   pending result buffers do not become their own capacity limit.
-- With `USE_VARIABLE_CHECK_INTERVALS=true`, Jetmon polls for newly due work on a
-  short idle interval and uses each site's maintained `next_check_at` timestamp
-  to decide what to check. `next_check_at` is recalculated after every check:
+- Variable-interval scheduling is the default. Jetmon polls for newly due work
+  on a short idle interval and uses each site's maintained `next_check_at`
+  timestamp to decide what to check. `next_check_at` is recalculated after every check:
   successful checks use `last_checked_at + check_interval`, while failed checks
   are scheduled for a bounded one-minute follow-up when the normal interval is
   longer. `MIN_TIME_BETWEEN_ROUNDS_SEC` is only the fixed-cadence pass interval
-  when variable intervals are disabled. Use this mode for production-like
+  when variable intervals are explicitly disabled for local debugging or v1
+  comparison. Use the default variable-interval mode for production-like
   freshness and capacity tests.
 - Watch the `scheduler.round.*` StatsD metrics during capacity tests. In
   particular, `due_start`, `selected`, `completed`, `outstanding`, and
@@ -174,11 +176,10 @@ responses.
 5. Create `/opt/jetmon2/config/jetmon2.env` with database credentials and auth
    tokens. See `config/db-config-sample.conf`.
 6. Copy or generate `config/config.json`.
-7. Set `BUCKET_TARGET` to the desired maximum bucket count for the host.
-8. Run `./jetmon2 migrate`.
-9. Run `systemd-analyze verify /etc/systemd/system/jetmon2.service` after the
+7. Run `./jetmon2 migrate`.
+8. Run `systemd-analyze verify /etc/systemd/system/jetmon2.service` after the
    binary exists at the path used by `ExecStart`.
-10. Start the service with
+9. Start the service with
     `systemctl enable --now jetmon2 && systemctl is-active --quiet jetmon2`.
 
 Manual commands such as `migrate`, `validate-config`, and `rollout` need the

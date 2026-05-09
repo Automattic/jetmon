@@ -173,8 +173,8 @@ No active candidate branch is queued here right now.
   so MySQL can use the nullable `last_checked_at` ordering more directly while
   preserving NULL-first behavior.
 - [x] Update capacity-test config posture so `WORKER_MAX_MEM_MB=0` disables the
-  artificial memory-drain cap by default, `USE_VARIABLE_CHECK_INTERVALS=true`
-  is the sample freshness mode, and API-enabled test hosts use an explicit
+  artificial memory-drain cap by default, variable-interval scheduling is the
+  default freshness mode, and API-enabled test hosts use an explicit
   `DELIVERY_OWNER_HOST`.
 - [x] Run a 1,000-site capacity retest against the batched-write branch and
   compare freshness, scheduler page timings, MySQL CPU, monitor CPU, and
@@ -528,6 +528,13 @@ No active candidate branch is queued here right now.
   adaptive resource budget rather than a historical 25k window. The check pool
   also pre-warms to the adaptive ceiling after due-count sampling so large due
   waves do not wait for autoscale ticks before using available host headroom.
+- [x] Demote remaining copied-v1 sizing knobs from operational tuning inputs to
+  compatibility keys. `NUM_WORKERS` and `DATASET_SIZE` can be omitted or set to
+  0 to use the auto baseline/floor, variable-interval scheduling is now the
+  default, ignored v1 knobs were removed from the sample config, and
+  `BUCKET_TARGET` no longer caps dynamic ownership. Active hosts now split the
+  full `BUCKET_TOTAL` range evenly so horizontal scaling does not depend on a
+  hand-tuned per-host bucket limit.
 - [ ] Replace scheduler batch windows with a continuous bounded in-flight
   dispatcher/result-drain pipeline. The latest reports show static window
   sizing keeps moving the bottleneck: 25k, 30k, and 50k windows each failed in

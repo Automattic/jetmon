@@ -2227,6 +2227,7 @@ func TestRunRoundWaitsUnderPoolBackpressureInsteadOfDropping(t *testing.T) {
 	defer restore()
 	cfg := setTestConfig(t)
 	cfg.DatasetSize = 5
+	cfg.NumWorkers = 1
 	cfg.NetCommsTimeout = 1
 	cfg.MinTimeBetweenRoundsSec = 0
 	cfg.UseVariableCheckIntervals = true
@@ -2610,8 +2611,8 @@ func TestSchedulerPoolQueueSoftLimitTracksCurrentAdaptiveCeiling(t *testing.T) {
 	if got := schedulerPoolQueueSoftLimit(cfg, 6000, 3000); got != 3000 {
 		t.Fatalf("schedulerPoolQueueSoftLimit(channel cap) = %d, want channel cap 3000", got)
 	}
-	if got := schedulerPoolQueueSoftLimit(nil, 0, 0); got != 2 {
-		t.Fatalf("schedulerPoolQueueSoftLimit(nil) = %d, want default cushion 2", got)
+	if got := schedulerPoolQueueSoftLimit(nil, 0, 0); got != schedulerDefaultBaselineWorkers*schedulerPoolQueueBufferMultiplier {
+		t.Fatalf("schedulerPoolQueueSoftLimit(nil) = %d, want default cushion %d", got, schedulerDefaultBaselineWorkers*schedulerPoolQueueBufferMultiplier)
 	}
 }
 
