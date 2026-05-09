@@ -64,6 +64,18 @@ func TestEnvOrDefault(t *testing.T) {
 	}
 }
 
+func TestSchedulerConfigLabelUsesEffectivePageSize(t *testing.T) {
+	cfg := &config.Config{
+		UseVariableCheckIntervals: true,
+		DatasetSize:               0,
+	}
+
+	got := schedulerConfigLabel(cfg)
+	if !strings.Contains(got, "fetch_page_size=100") {
+		t.Fatalf("schedulerConfigLabel() = %q, want effective default fetch page size", got)
+	}
+}
+
 func TestReadPIDFile(t *testing.T) {
 	dir := t.TempDir()
 	pidPath := filepath.Join(dir, "test.pid")

@@ -734,13 +734,13 @@ func schedulerConfigLabel(cfg *config.Config) string {
 	if cfg.UseVariableCheckIntervals {
 		return fmt.Sprintf(
 			"variable_intervals fetch_page_size=%d idle_poll=%s",
-			cfg.DatasetSize,
+			orchestrator.ConfiguredFetchPageSize(cfg),
 			orchestrator.VariableIntervalPollInterval(),
 		)
 	}
 	return fmt.Sprintf(
 		"fixed_rounds fetch_page_size=%d min_round_interval=%s",
-		cfg.DatasetSize,
+		orchestrator.ConfiguredFetchPageSize(cfg),
 		time.Duration(cfg.MinTimeBetweenRoundsSec)*time.Second,
 	)
 }

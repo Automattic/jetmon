@@ -92,6 +92,12 @@ func VariableIntervalPollInterval() time.Duration {
 	return schedulerVariableIntervalPollInterval
 }
 
+// ConfiguredFetchPageSize returns the effective minimum scheduler fetch page
+// size after applying the auto default for omitted compatibility config.
+func ConfiguredFetchPageSize(cfg *config.Config) int {
+	return schedulerConfiguredPageSize(cfg)
+}
+
 var (
 	nowFunc                 = time.Now
 	dbClaimBuckets          = db.ClaimBuckets
