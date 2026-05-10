@@ -1009,19 +1009,7 @@ func (o *Orchestrator) markResultsChecked(records []siteCheckResult, summary *re
 func (o *Orchestrator) recordResultHistories(records []siteCheckResult, summary *resultProcessSummary) {
 	histories := make([]db.CheckHistoryRow, 0, len(records))
 	for _, record := range records {
-		res := record.res
-		histories = append(histories, db.CheckHistoryRow{
-			BlogID:        record.blogID,
-			RequestMethod: res.Method,
-			HTTPCode:      res.HTTPCode,
-			ErrorCode:     res.ErrorCode,
-			RTTMs:         res.RTT.Milliseconds(),
-			DNSMs:         res.DNS.Milliseconds(),
-			TCPMs:         res.TCP.Milliseconds(),
-			TLSMs:         res.TLS.Milliseconds(),
-			TTFBMs:        res.TTFB.Milliseconds(),
-			CheckedAt:     resultCheckedAt(res),
-		})
+		histories = append(histories, checkHistoryRowForResult(record.blogID, record.res))
 	}
 
 	start := time.Now()
@@ -1050,6 +1038,54 @@ func (o *Orchestrator) recordResultHistories(records []siteCheckResult, summary 
 		summary.historyRows += len(histories)
 	}
 	summary.historyDuration += time.Since(start)
+}
+
+func (o *Orchestrator) recordStreamingHistoryRows(rows []db.CheckHistoryRow) resultProcessSummary {
+	summary := resultProcessSummary{}
+	if len(rows) == 0 {
+		return summary
+	}
+
+	rows = append([]db.CheckHistoryRow(nil), rows...)
+	start := time.Now()
+	if err := dbRecordCheckHistories(o.ctx, rows); err != nil {
+		summary.historyErrors++
+		log.Printf("orchestrator: streaming batch record check history rows=%d: %v", len(rows), err)
+		for _, row := range rows {
+			if err := dbRecordCheckHistory(
+				row.BlogID,
+				row.RequestMethod,
+				row.HTTPCode,
+				row.ErrorCode,
+				row.RTTMs,
+				row.DNSMs,
+				row.TCPMs,
+				row.TLSMs,
+				row.TTFBMs,
+			); err != nil {
+				summary.historyErrors++
+				log.Printf("orchestrator: streaming record check history blog_id=%d: %v", row.BlogID, err)
+			}
+		}
+	}
+	summary.historyDuration += time.Since(start)
+	summary.historyRows += len(rows)
+	return summary
+}
+
+func checkHistoryRowForResult(blogID int64, res checker.Result) db.CheckHistoryRow {
+	return db.CheckHistoryRow{
+		BlogID:        blogID,
+		RequestMethod: res.Method,
+		HTTPCode:      res.HTTPCode,
+		ErrorCode:     res.ErrorCode,
+		RTTMs:         res.RTT.Milliseconds(),
+		DNSMs:         res.DNS.Milliseconds(),
+		TCPMs:         res.TCP.Milliseconds(),
+		TLSMs:         res.TLS.Milliseconds(),
+		TTFBMs:        res.TTFB.Milliseconds(),
+		CheckedAt:     resultCheckedAt(res),
+	}
 }
 
 func resultCheckedAt(res checker.Result) time.Time {

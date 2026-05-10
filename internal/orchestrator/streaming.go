@@ -21,6 +21,8 @@ const (
 	streamingActiveCountPollInterval = 30 * time.Second
 	streamingDefaultLatency          = 250 * time.Millisecond
 	streamingMaxScaleLatency         = time.Second
+	streamingHistoryFlushInterval    = 250 * time.Millisecond
+	streamingHistoryBatchSize        = 1000
 	streamingMinLoadPageSize         = 5000
 	streamingMinQueueCap             = 65536
 	streamingMaxQueueCap             = 262144
@@ -265,12 +267,35 @@ func (p *streamingSideEffectProcessor) runShard(o *Orchestrator, jobs <-chan str
 	defer p.wg.Done()
 	statusByBlog := make(map[int64]int)
 	sslExpiryByBlog := make(map[int64]*time.Time)
+	historyRows := make([]db.CheckHistoryRow, 0, streamingHistoryBatchSize)
+	historyTicker := time.NewTicker(streamingHistoryFlushInterval)
+	defer historyTicker.Stop()
+	flushHistory := func() bool {
+		if len(historyRows) == 0 {
+			return true
+		}
+		summary := o.recordStreamingHistoryRows(historyRows)
+		historyRows = historyRows[:0]
+		select {
+		case p.reports <- streamingSideEffectReport{summary: summary}:
+			return true
+		case <-p.ctx:
+			return false
+		}
+	}
+	defer flushHistory()
 	for {
 		select {
 		case <-p.ctx:
+			flushHistory()
 			return
+		case <-historyTicker.C:
+			if !flushHistory() {
+				return
+			}
 		case job, ok := <-jobs:
 			if !ok {
+				flushHistory()
 				return
 			}
 			site := job.site
@@ -287,6 +312,12 @@ func (p *streamingSideEffectProcessor) runShard(o *Orchestrator, jobs <-chan str
 				sslExpiryByBlog[site.BlogID] = &expiry
 			} else {
 				delete(sslExpiryByBlog, site.BlogID)
+			}
+			if job.res.IsFailure() {
+				historyRows = append(historyRows, checkHistoryRowForResult(site.BlogID, job.res))
+				if len(historyRows) >= streamingHistoryBatchSize && !flushHistory() {
+					return
+				}
 			}
 			select {
 			case p.reports <- streamingSideEffectReport{
@@ -416,12 +447,14 @@ func (o *Orchestrator) runStreamingEngine() {
 			return
 		case report := <-sideEffects.reportsChannel():
 			stats.addSideEffects(report.summary)
-			if pendingSideEffects[report.blogID] <= 1 {
-				delete(pendingSideEffects, report.blogID)
-			} else {
-				pendingSideEffects[report.blogID]--
+			if report.blogID != 0 {
+				if pendingSideEffects[report.blogID] <= 1 {
+					delete(pendingSideEffects, report.blogID)
+				} else {
+					pendingSideEffects[report.blogID]--
+				}
+				sideEffectStatus[report.blogID] = report.status
 			}
-			sideEffectStatus[report.blogID] = report.status
 		case res := <-o.pool.Results():
 			target, ok := planner.targets[res.BlogID]
 			if !ok || !target.inFlight {
@@ -599,11 +632,6 @@ func (o *Orchestrator) dispatchStreamingPending(cfg *config.Config, pending []*s
 
 func (o *Orchestrator) processStreamingSideEffects(site db.Site, res checker.Result) (resultProcessSummary, db.Site) {
 	summary := resultProcessSummary{processed: 1}
-
-	record := siteCheckResult{blogID: site.BlogID, site: site, res: res}
-	if res.IsFailure() {
-		o.recordResultHistories([]siteCheckResult{record}, &summary)
-	}
 
 	sslStart := time.Now()
 	if res.TLSVersion != 0 {
