@@ -20,7 +20,6 @@ const (
 	streamingEmptyTargetPollInterval = 5 * time.Second
 	streamingActiveCountPollInterval = 30 * time.Second
 	streamingDefaultLatency          = 250 * time.Millisecond
-	streamingMaxScaleLatency         = time.Second
 	streamingHistoryFlushInterval    = 250 * time.Millisecond
 	streamingHistoryBatchSize        = 1000
 	streamingMinLoadPageSize         = 5000
@@ -886,8 +885,8 @@ func streamingWorkerTarget(cfg *config.Config, planner *streamingPlanner, latenc
 	if latency < streamingDefaultLatency {
 		latency = streamingDefaultLatency
 	}
-	if latency > streamingMaxScaleLatency {
-		latency = streamingMaxScaleLatency
+	if maxLatency := streamingScaleLatencyCap(cfg); latency > maxLatency {
+		latency = maxLatency
 	}
 	// Little's Law with headroom: concurrency ~= throughput * latency.
 	// Multiply by 3 so the pool can absorb normal latency variance without
@@ -903,6 +902,17 @@ func streamingWorkerTarget(cfg *config.Config, planner *streamingPlanner, latenc
 		target = 1
 	}
 	return target
+}
+
+func streamingScaleLatencyCap(cfg *config.Config) time.Duration {
+	if cfg == nil || cfg.NetCommsTimeout <= 0 {
+		return 10 * time.Second
+	}
+	cap := time.Duration(cfg.NetCommsTimeout) * time.Second
+	if cap < streamingDefaultLatency {
+		return streamingDefaultLatency
+	}
+	return cap
 }
 
 func streamingQueueCap(workerTarget, activeCount int) int {

@@ -71,7 +71,7 @@ func TestStreamingWorkerTargetScalesFromRequiredRate(t *testing.T) {
 	}
 }
 
-func TestStreamingWorkerTargetCapsScaleLatency(t *testing.T) {
+func TestStreamingWorkerTargetCapsScaleLatencyAtCheckTimeout(t *testing.T) {
 	planner := &streamingPlanner{targets: make(map[int64]*streamingTarget)}
 	for i := int64(1); i <= 100000; i++ {
 		planner.targets[i] = &streamingTarget{
@@ -80,12 +80,21 @@ func TestStreamingWorkerTargetCapsScaleLatency(t *testing.T) {
 		}
 	}
 	planner.recalculateRequiredRate()
-	cfg := &config.Config{NumWorkers: 60}
+	cfg := &config.Config{NumWorkers: 60, NetCommsTimeout: 2}
 
 	got := streamingWorkerTarget(cfg, planner, 10*time.Second)
-	want := int(planner.requiredChecksPerSecond()*streamingMaxScaleLatency.Seconds()*3) + 1
+	want := int(planner.requiredChecksPerSecond()*2*3) + 1
 	if got != want {
 		t.Fatalf("streamingWorkerTarget() = %d, want capped target %d", got, want)
+	}
+}
+
+func TestStreamingScaleLatencyCapUsesDefaultTimeout(t *testing.T) {
+	if got := streamingScaleLatencyCap(&config.Config{}); got != 10*time.Second {
+		t.Fatalf("streamingScaleLatencyCap(default) = %s, want 10s", got)
+	}
+	if got := streamingScaleLatencyCap(&config.Config{NetCommsTimeout: 1}); got != time.Second {
+		t.Fatalf("streamingScaleLatencyCap(configured) = %s, want 1s", got)
 	}
 }
 
