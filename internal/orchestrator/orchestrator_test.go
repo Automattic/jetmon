@@ -2627,8 +2627,8 @@ func TestSchedulerAdaptiveWorkerMaxFromDueBacklog(t *testing.T) {
 		UseVariableCheckIntervals: true,
 	}
 
-	if got := schedulerAdaptiveWorkerMax(cfg, 100000); got != 3667 {
-		t.Fatalf("schedulerAdaptiveWorkerMax(100k due) = %d, want 3667", got)
+	if got := schedulerAdaptiveWorkerMax(cfg, 100000); got != 10000 {
+		t.Fatalf("schedulerAdaptiveWorkerMax(100k due) = %d, want resource-capped 10000", got)
 	}
 	if got := schedulerAdaptiveWorkerMax(cfg, 1000); got != 960 {
 		t.Fatalf("schedulerAdaptiveWorkerMax(small backlog) = %d, want base 960", got)
@@ -2648,7 +2648,24 @@ func TestSchedulerAdaptiveWorkerMaxUsesMinuteTargetWhenFixedRoundUnset(t *testin
 	}
 
 	if got := schedulerAdaptiveWorkerMax(cfg, 1000); got != 184 {
-		t.Fatalf("schedulerAdaptiveWorkerMax(no fixed round interval) = %d, want minute-cadence autoscale 184", got)
+		t.Fatalf("schedulerAdaptiveWorkerMax(legacy fixed round unset) = %d, want minute-cadence autoscale 184", got)
+	}
+}
+
+func TestSchedulerAdaptiveWorkerMaxIgnoresLegacyFixedRoundForVariableIntervals(t *testing.T) {
+	orig := workerResourceCapFunc
+	workerResourceCapFunc = func() int { return 10000 }
+	t.Cleanup(func() { workerResourceCapFunc = orig })
+
+	cfg := &config.Config{
+		NumWorkers:                0,
+		MinTimeBetweenRoundsSec:   300,
+		NetCommsTimeout:           10,
+		UseVariableCheckIntervals: true,
+	}
+
+	if got := schedulerAdaptiveWorkerMax(cfg, 5000); got != 917 {
+		t.Fatalf("schedulerAdaptiveWorkerMax(legacy fixed round set) = %d, want one-minute target 917", got)
 	}
 }
 

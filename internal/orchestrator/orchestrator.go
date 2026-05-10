@@ -717,10 +717,7 @@ func schedulerAdaptiveWorkerMax(cfg *config.Config, dueSites int) int {
 		cfg.UseVariableCheckIntervals &&
 		dueSites > 0 &&
 		cfg.NetCommsTimeout > 0 {
-		targetSec := cfg.MinTimeBetweenRoundsSec
-		if targetSec <= 0 {
-			targetSec = schedulerDefaultVariableIntervalTargetSec
-		}
+		targetSec := schedulerDefaultVariableIntervalTargetSec
 		numerator := int64(dueSites) *
 			int64(cfg.NetCommsTimeout) *
 			int64(schedulerAdaptiveWorkerSafetyNumerator)
