@@ -115,9 +115,17 @@ func TestStreamingSideEffectShardIsStable(t *testing.T) {
 }
 
 func TestStreamingSideEffectShardCountIsBounded(t *testing.T) {
-	got := streamingSideEffectShardCount()
+	got := streamingSideEffectShardCount(0)
 	if got < streamingMinSideEffectShards || got > streamingMaxSideEffectShards {
 		t.Fatalf("streamingSideEffectShardCount() = %d, want within [%d,%d]", got, streamingMinSideEffectShards, streamingMaxSideEffectShards)
+	}
+
+	large := streamingSideEffectShardCount(100000)
+	if large <= got {
+		t.Fatalf("streamingSideEffectShardCount(100k) = %d, want above empty target count %d", large, got)
+	}
+	if large > streamingMaxSideEffectShards {
+		t.Fatalf("streamingSideEffectShardCount(100k) = %d, want <= %d", large, streamingMaxSideEffectShards)
 	}
 }
 
