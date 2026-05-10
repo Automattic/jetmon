@@ -18,6 +18,7 @@ const (
 	streamingEmptyTargetPollInterval = 5 * time.Second
 	streamingActiveCountPollInterval = 30 * time.Second
 	streamingDefaultLatency          = 250 * time.Millisecond
+	streamingMaxScaleLatency         = time.Second
 	streamingMinLoadPageSize         = 5000
 	streamingMinQueueCap             = 65536
 	streamingMinScheduleHeadroom     = time.Second
@@ -160,6 +161,8 @@ type streamingStats struct {
 	sslDuration       time.Duration
 	latencyTotal      time.Duration
 	latencyCount      int
+	successLatency    time.Duration
+	successLatencyN   int
 	maxLag            time.Duration
 }
 
@@ -177,6 +180,10 @@ func (s *streamingStats) addProcess(summary resultProcessSummary, res checker.Re
 	if res.RTT > 0 {
 		s.latencyTotal += res.RTT
 		s.latencyCount++
+		if !res.IsFailure() {
+			s.successLatency += res.RTT
+			s.successLatencyN++
+		}
 	}
 	if lag > s.maxLag {
 		s.maxLag = lag
@@ -188,6 +195,13 @@ func (s streamingStats) averageLatency() time.Duration {
 		return 0
 	}
 	return s.latencyTotal / time.Duration(s.latencyCount)
+}
+
+func (s streamingStats) scaleLatency() time.Duration {
+	if s.successLatencyN > 0 {
+		return s.successLatency / time.Duration(s.successLatencyN)
+	}
+	return 0
 }
 
 func (o *Orchestrator) runStreamingEngine() {
@@ -249,7 +263,7 @@ func (o *Orchestrator) runStreamingEngine() {
 		case now := <-tick.C:
 			cfg = config.Get()
 			o.refreshVeriflierClients(cfg)
-			o.applyStreamingWorkerTarget(cfg, planner, stats.averageLatency())
+			o.applyStreamingWorkerTarget(cfg, planner, stats.scaleLatency())
 
 			if now.Sub(lastHeartbeat) >= schedulerBroadReportInterval {
 				bucketsChanged, err := o.refreshStreamingBuckets(cfg)
@@ -492,7 +506,11 @@ func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streami
 	if avgLatency == 0 {
 		avgLatency = streamingDefaultLatency
 	}
-	workerTarget := o.applyStreamingWorkerTarget(cfg, planner, avgLatency)
+	scaleLatency := stats.scaleLatency()
+	if scaleLatency == 0 {
+		scaleLatency = streamingDefaultLatency
+	}
+	workerTarget := o.applyStreamingWorkerTarget(cfg, planner, scaleLatency)
 
 	activeChecks := o.pool.ActiveCount()
 	queueDepth := o.pool.QueueDepth()
@@ -527,6 +545,7 @@ func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streami
 		m.Increment("scheduler.streaming.ssl.row.count", stats.sslRows)
 		m.Increment("scheduler.streaming.ssl.error.count", stats.sslErrors)
 		m.Timing("scheduler.streaming.avg_latency.time", avgLatency)
+		m.Timing("scheduler.streaming.scale_latency.time", scaleLatency)
 		m.Timing("scheduler.streaming.max_lag.time", stats.maxLag)
 		m.Timing("scheduler.streaming.history.time", stats.historyDuration)
 		m.Timing("scheduler.streaming.ssl.time", stats.sslDuration)
@@ -534,7 +553,7 @@ func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streami
 		metrics.WriteStatsFiles(sps, queueDepth, o.totalChecked)
 	}
 
-	log.Printf("orchestrator: streaming summary active=%d required_rate=%.2f/s selected=%d dispatched=%d completed=%d pending=%d active_checks=%d queue_depth=%d workers=%d worker_target=%d sps=%d max_lag=%s avg_latency=%s successes=%d failures=%d history_rows=%d ssl_rows=%d stale_results=%d backpressure_waits=%d",
+	log.Printf("orchestrator: streaming summary active=%d required_rate=%.2f/s selected=%d dispatched=%d completed=%d pending=%d active_checks=%d queue_depth=%d workers=%d worker_target=%d sps=%d max_lag=%s avg_latency=%s scale_latency=%s successes=%d failures=%d history_rows=%d ssl_rows=%d stale_results=%d backpressure_waits=%d",
 		planner.activeCount(),
 		planner.requiredChecksPerSecond(),
 		stats.selected,
@@ -548,6 +567,7 @@ func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streami
 		sps,
 		stats.maxLag.Round(time.Millisecond),
 		avgLatency.Round(time.Millisecond),
+		scaleLatency.Round(time.Millisecond),
 		stats.checkSuccesses,
 		stats.checkFailures,
 		stats.historyRows,
@@ -597,6 +617,12 @@ func streamingWorkerTarget(cfg *config.Config, planner *streamingPlanner, latenc
 	}
 	if latency <= 0 {
 		latency = streamingDefaultLatency
+	}
+	if latency < streamingDefaultLatency {
+		latency = streamingDefaultLatency
+	}
+	if latency > streamingMaxScaleLatency {
+		latency = streamingMaxScaleLatency
 	}
 	// Little's Law with headroom: concurrency ~= throughput * latency.
 	// Multiply by 3 so the pool can absorb normal latency variance without

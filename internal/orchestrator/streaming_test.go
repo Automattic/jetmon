@@ -71,6 +71,24 @@ func TestStreamingWorkerTargetScalesFromRequiredRate(t *testing.T) {
 	}
 }
 
+func TestStreamingWorkerTargetCapsScaleLatency(t *testing.T) {
+	planner := &streamingPlanner{targets: make(map[int64]*streamingTarget)}
+	for i := int64(1); i <= 100000; i++ {
+		planner.targets[i] = &streamingTarget{
+			site:   db.Site{BlogID: i, CheckInterval: 5},
+			active: true,
+		}
+	}
+	planner.recalculateRequiredRate()
+	cfg := &config.Config{NumWorkers: 60}
+
+	got := streamingWorkerTarget(cfg, planner, 10*time.Second)
+	want := int(planner.requiredChecksPerSecond()*streamingMaxScaleLatency.Seconds()*3) + 1
+	if got != want {
+		t.Fatalf("streamingWorkerTarget() = %d, want capped target %d", got, want)
+	}
+}
+
 func TestStreamingCheckCadenceAddsBoundedHeadroom(t *testing.T) {
 	if got := streamingCheckCadence(db.Site{CheckInterval: 5}); got != 285*time.Second {
 		t.Fatalf("streamingCheckCadence(5m) = %s, want 285s", got)
