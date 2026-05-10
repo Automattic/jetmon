@@ -37,7 +37,7 @@ const (
 	streamingFailurePressureMin      = 1000
 	streamingFailurePressurePercent  = 25
 	streamingFailurePressureHold     = 2 * time.Minute
-	streamingFailurePressureLatency  = 2 * time.Second
+	streamingFailurePressureLatency  = 3 * time.Second
 )
 
 type streamingTarget struct {
