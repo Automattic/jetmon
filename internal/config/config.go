@@ -349,11 +349,11 @@ func validate(cfg *Config) error {
 	if cfg.StreamingLegacyProjectionIntervalMin == 0 {
 		cfg.StreamingLegacyProjectionIntervalMin = 10
 	}
-	if cfg.StreamingLegacyProjectionIntervalMin < 0 {
-		return fmt.Errorf("STREAMING_LEGACY_PROJECTION_INTERVAL_MIN must be > 0")
+	if cfg.StreamingLegacyProjectionIntervalMin < 5 {
+		return fmt.Errorf("STREAMING_LEGACY_PROJECTION_INTERVAL_MIN must be between 5 and 15")
 	}
 	if cfg.StreamingLegacyProjectionIntervalMin > 15 {
-		return fmt.Errorf("STREAMING_LEGACY_PROJECTION_INTERVAL_MIN must be <= 15")
+		return fmt.Errorf("STREAMING_LEGACY_PROJECTION_INTERVAL_MIN must be between 5 and 15")
 	}
 	if cfg.StreamingTargetReloadSec == 0 {
 		cfg.StreamingTargetReloadSec = 300

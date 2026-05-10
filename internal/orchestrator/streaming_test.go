@@ -75,7 +75,7 @@ func TestQueueStreamingProjectionRespectsInterval(t *testing.T) {
 	cfg := &config.Config{StreamingLegacyProjectionIntervalMin: 10}
 	checkedAt := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
 	target := &streamingTarget{
-		site:            db.Site{BlogID: 42},
+		site:            db.Site{BlogID: 42, CheckInterval: 10},
 		dueAt:           checkedAt.Add(5 * time.Minute),
 		lastProjectedAt: checkedAt.Add(-5 * time.Minute),
 	}
@@ -93,5 +93,25 @@ func TestQueueStreamingProjectionRespectsInterval(t *testing.T) {
 	}
 	if got := pending[42].CheckedAt; !got.Equal(later) {
 		t.Fatalf("projected CheckedAt = %s, want %s", got, later)
+	}
+}
+
+func TestStreamingProjectionIntervalCapsToFiveMinuteSiteInterval(t *testing.T) {
+	cfg := &config.Config{StreamingLegacyProjectionIntervalMin: 10}
+
+	got := streamingProjectionInterval(cfg, db.Site{CheckInterval: 5})
+	if got != 5*time.Minute {
+		t.Fatalf("streamingProjectionInterval(5m site) = %s, want 5m", got)
+	}
+
+	got = streamingProjectionInterval(cfg, db.Site{CheckInterval: 1})
+	if got != 10*time.Minute {
+		t.Fatalf("streamingProjectionInterval(1m site) = %s, want configured 10m", got)
+	}
+
+	cfg.StreamingLegacyProjectionIntervalMin = 3
+	got = streamingProjectionInterval(cfg, db.Site{CheckInterval: 1})
+	if got != 5*time.Minute {
+		t.Fatalf("streamingProjectionInterval(enforced floor) = %s, want 5m", got)
 	}
 }

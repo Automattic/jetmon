@@ -419,7 +419,7 @@ func (o *Orchestrator) processStreamingResult(target *streamingTarget, res check
 }
 
 func (o *Orchestrator) queueStreamingProjection(cfg *config.Config, target *streamingTarget, res checker.Result, pending map[int64]db.SiteCheck) {
-	interval := time.Duration(cfg.StreamingLegacyProjectionIntervalMin) * time.Minute
+	interval := streamingProjectionInterval(cfg, target.site)
 	checkedAt := resultCheckedAt(res)
 	if !target.lastProjectedAt.IsZero() && checkedAt.Sub(target.lastProjectedAt) < interval {
 		return
@@ -430,6 +430,22 @@ func (o *Orchestrator) queueStreamingProjection(cfg *config.Config, target *stre
 		NextCheckAt: target.dueAt,
 	}
 	target.lastProjectedAt = checkedAt
+}
+
+func streamingProjectionInterval(cfg *config.Config, site db.Site) time.Duration {
+	interval := time.Duration(cfg.StreamingLegacyProjectionIntervalMin) * time.Minute
+	if interval <= 0 {
+		interval = 10 * time.Minute
+	}
+	minRollbackWindow := 5 * time.Minute
+	if interval < minRollbackWindow {
+		interval = minRollbackWindow
+	}
+	siteInterval := siteCheckInterval(site)
+	if siteInterval >= minRollbackWindow && siteInterval < interval {
+		return siteInterval
+	}
+	return interval
 }
 
 func (o *Orchestrator) flushStreamingProjection(pending map[int64]db.SiteCheck) bool {

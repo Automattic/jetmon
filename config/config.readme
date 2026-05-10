@@ -140,7 +140,10 @@ Coarse freshness projection interval used only when SCHEDULER_ENGINE is
 after every successful probe; instead it batches the latest observation for each
 site at this cadence so a rollback to the legacy scheduler loses at most this
 many minutes of freshness data in normal operation. The accepted rollout window
-is 5-15 minutes. Default: 10.
+is 5-15 minutes. Sites with check intervals between 5 minutes and the configured
+projection interval are projected at their own interval so 5-minute production
+sites keep a 5-minute rollback freshness view without forcing 1-minute sites to
+write every minute. Default: 10.
 
 STREAMING_TARGET_RELOAD_SEC
 How often streaming mode reloads active site config from jetpack_monitor_sites.
