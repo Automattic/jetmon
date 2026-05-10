@@ -12,6 +12,7 @@ import (
 	"net/http/httptrace"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -31,8 +32,11 @@ const (
 )
 
 const (
-	maxBodyIntegrityBytes int64 = 64 << 10
-	maxKeywordBodyBytes   int64 = 1 << 20
+	maxBodyIntegrityBytes      int64 = 64 << 10
+	maxKeywordBodyBytes        int64 = 1 << 20
+	checkDNSCacheTTL                 = 5 * time.Minute
+	checkDNSCacheMaxEntries          = 2000000
+	checkDNSCachePurgeInterval       = 10000
 )
 
 // RedirectPolicy controls how redirect responses are handled.
@@ -48,6 +52,98 @@ const (
 // fresh connection pool for every probe. The http.Client stays per request so
 // timeout and redirect policy remain isolated to that site check.
 var defaultTransport = newCheckTransport()
+var defaultDNSCache = newCheckDNSCache(checkDNSCacheTTL, checkDNSCacheMaxEntries)
+
+type checkDNSCache struct {
+	mu         sync.RWMutex
+	ttl        time.Duration
+	maxEntries int
+	writes     int
+	entries    map[string]checkDNSCacheEntry
+}
+
+type checkDNSCacheEntry struct {
+	addrs   []net.IPAddr
+	expires time.Time
+}
+
+func newCheckDNSCache(ttl time.Duration, maxEntries int) *checkDNSCache {
+	return &checkDNSCache{
+		ttl:        ttl,
+		maxEntries: maxEntries,
+		entries:    make(map[string]checkDNSCacheEntry),
+	}
+}
+
+func (c *checkDNSCache) lookup(ctx context.Context, resolver *net.Resolver, host string) ([]net.IPAddr, error) {
+	if resolver == nil {
+		return nil, fmt.Errorf("lookup %s: resolver unavailable", host)
+	}
+	if c == nil || c.ttl <= 0 {
+		return resolver.LookupIPAddr(ctx, host)
+	}
+	key := normalizeDNSCacheHost(host)
+	now := time.Now()
+	c.mu.RLock()
+	entry, ok := c.entries[key]
+	if ok && now.Before(entry.expires) {
+		addrs := cloneIPAddrs(entry.addrs)
+		c.mu.RUnlock()
+		return addrs, nil
+	}
+	c.mu.RUnlock()
+
+	addrs, err := resolver.LookupIPAddr(ctx, host)
+	if err != nil || len(addrs) == 0 {
+		return addrs, err
+	}
+	c.store(key, addrs, now.Add(c.ttl))
+	return addrs, nil
+}
+
+func (c *checkDNSCache) store(key string, addrs []net.IPAddr, expires time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.maxEntries > 0 && len(c.entries) >= c.maxEntries {
+		c.purgeExpiredLocked(time.Now())
+		if len(c.entries) >= c.maxEntries {
+			return
+		}
+	}
+	c.entries[key] = checkDNSCacheEntry{addrs: cloneIPAddrs(addrs), expires: expires}
+	c.writes++
+	if c.writes%checkDNSCachePurgeInterval == 0 {
+		c.purgeExpiredLocked(time.Now())
+	}
+}
+
+func (c *checkDNSCache) purgeExpiredLocked(now time.Time) {
+	for key, entry := range c.entries {
+		if !now.Before(entry.expires) {
+			delete(c.entries, key)
+		}
+	}
+}
+
+func normalizeDNSCacheHost(host string) string {
+	return strings.TrimSuffix(strings.ToLower(host), ".")
+}
+
+func cloneIPAddrs(addrs []net.IPAddr) []net.IPAddr {
+	if len(addrs) == 0 {
+		return nil
+	}
+	out := make([]net.IPAddr, 0, len(addrs))
+	for _, addr := range addrs {
+		if addr.IP == nil {
+			continue
+		}
+		ip := make(net.IP, len(addr.IP))
+		copy(ip, addr.IP)
+		out = append(out, net.IPAddr{IP: ip, Zone: addr.Zone})
+	}
+	return out
+}
 
 func newCheckTransport() *http.Transport {
 	return &http.Transport{
@@ -87,7 +183,7 @@ func newCheckDialContext(resolver *net.Resolver) func(context.Context, string, s
 		if trace != nil && trace.DNSStart != nil {
 			trace.DNSStart(httptrace.DNSStartInfo{Host: host})
 		}
-		addrs, err := resolver.LookupIPAddr(ctx, host)
+		addrs, err := defaultDNSCache.lookup(ctx, resolver, host)
 		if trace != nil && trace.DNSDone != nil {
 			trace.DNSDone(httptrace.DNSDoneInfo{Addrs: addrs, Err: err})
 		}

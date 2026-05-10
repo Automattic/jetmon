@@ -721,6 +721,30 @@ func TestOrderedResolverAddrsPrefersIPv4ButHonorsNetwork(t *testing.T) {
 	}
 }
 
+func TestCheckDNSCacheReturnsClonedCachedAddresses(t *testing.T) {
+	cache := newCheckDNSCache(time.Minute, 10)
+	cache.entries["example.com"] = checkDNSCacheEntry{
+		addrs:   []net.IPAddr{{IP: net.ParseIP("192.0.2.10")}},
+		expires: time.Now().Add(time.Minute),
+	}
+
+	got, err := cache.lookup(context.Background(), &net.Resolver{}, "Example.COM.")
+	if err != nil {
+		t.Fatalf("lookup() error = %v", err)
+	}
+	if len(got) != 1 || got[0].IP.String() != "192.0.2.10" {
+		t.Fatalf("lookup() = %#v, want cached IPv4 address", got)
+	}
+
+	got[0].IP[15] = 99
+	cache.mu.RLock()
+	cached := cache.entries["example.com"].addrs[0].IP.String()
+	cache.mu.RUnlock()
+	if cached != "192.0.2.10" {
+		t.Fatalf("cached address mutated through returned slice: %s", cached)
+	}
+}
+
 func TestCheckRedirectAlert(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
