@@ -29,6 +29,7 @@ const (
 	streamingMaxScheduleHeadroom     = 15 * time.Second
 	streamingMinSideEffectShards     = 8
 	streamingMaxSideEffectShards     = 256
+	streamingWorkerHeadroom          = 2.0
 )
 
 type streamingTarget struct {
@@ -888,10 +889,10 @@ func streamingWorkerTarget(cfg *config.Config, planner *streamingPlanner, latenc
 	if maxLatency := streamingScaleLatencyCap(cfg); latency > maxLatency {
 		latency = maxLatency
 	}
-	// Little's Law with headroom: concurrency ~= throughput * latency.
-	// Multiply by 3 so the pool can absorb normal latency variance without
-	// requiring operators to hand-tune a static worker cap for each fleet size.
-	target := int(planner.requiredChecksPerSecond()*latency.Seconds()*3) + 1
+	// Little's Law with headroom: concurrency ~= throughput * latency. The
+	// headroom absorbs normal latency variance, but it stays conservative enough
+	// to avoid turning transient latency into a self-amplifying worker surge.
+	target := int(planner.requiredChecksPerSecond()*latency.Seconds()*streamingWorkerHeadroom) + 1
 	if target < cfg.NumWorkers {
 		target = cfg.NumWorkers
 	}

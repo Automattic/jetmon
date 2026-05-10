@@ -83,7 +83,8 @@ func TestStreamingWorkerTargetCapsScaleLatencyAtCheckTimeout(t *testing.T) {
 	cfg := &config.Config{NumWorkers: 60, NetCommsTimeout: 2}
 
 	got := streamingWorkerTarget(cfg, planner, 10*time.Second)
-	want := int(planner.requiredChecksPerSecond()*2*3) + 1
+	want := int(planner.requiredChecksPerSecond() * 2 * streamingWorkerHeadroom)
+	want++
 	if got != want {
 		t.Fatalf("streamingWorkerTarget() = %d, want capped target %d", got, want)
 	}
