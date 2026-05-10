@@ -285,8 +285,11 @@ func validate(cfg *Config) error {
 	if cfg.AuthToken == "" {
 		return fmt.Errorf("AUTH_TOKEN is required")
 	}
-	if cfg.NumWorkers <= 0 {
-		return fmt.Errorf("NUM_WORKERS must be > 0")
+	if cfg.NumWorkers < 0 {
+		return fmt.Errorf("NUM_WORKERS must be >= 0")
+	}
+	if cfg.NumWorkers == 0 {
+		cfg.NumWorkers = 60
 	}
 	if cfg.DatasetSize <= 0 {
 		return fmt.Errorf("DATASET_SIZE must be > 0")
@@ -294,8 +297,14 @@ func validate(cfg *Config) error {
 	if cfg.BucketTotal <= 0 {
 		return fmt.Errorf("BUCKET_TOTAL must be > 0")
 	}
-	if cfg.BucketTarget <= 0 || cfg.BucketTarget > cfg.BucketTotal {
-		return fmt.Errorf("BUCKET_TARGET must be between 1 and BUCKET_TOTAL")
+	if cfg.BucketTarget < 0 {
+		return fmt.Errorf("BUCKET_TARGET must be >= 0")
+	}
+	if cfg.BucketTarget == 0 {
+		cfg.BucketTarget = cfg.BucketTotal
+	}
+	if cfg.BucketTarget > cfg.BucketTotal {
+		return fmt.Errorf("BUCKET_TARGET must be <= BUCKET_TOTAL")
 	}
 	if err := validatePinnedBucketRange(cfg); err != nil {
 		return err

@@ -41,9 +41,8 @@ func TestValidate(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:    "num workers zero",
-			mutate:  func(c *Config) { c.NumWorkers = 0 },
-			wantErr: true,
+			name:   "num workers zero uses default floor",
+			mutate: func(c *Config) { c.NumWorkers = 0 },
 		},
 		{
 			name:    "num workers negative",
@@ -66,9 +65,8 @@ func TestValidate(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:    "bucket target zero",
-			mutate:  func(c *Config) { c.BucketTarget = 0 },
-			wantErr: true,
+			name:   "bucket target zero uses bucket total",
+			mutate: func(c *Config) { c.BucketTarget = 0 },
 		},
 		{
 			name:    "bucket target exceeds bucket total",

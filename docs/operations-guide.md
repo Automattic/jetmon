@@ -16,7 +16,7 @@ Key settings:
 
 | Key | Default | Description |
 |---|---:|---|
-| `NUM_WORKERS` | 60 | Goroutine pool size |
+| `NUM_WORKERS` | 60 | Goroutine pool size/floor; 0 uses the default floor |
 | `NUM_TO_PROCESS` | 40 | Legacy compatibility setting; does not cap Go scheduler throughput |
 | `DATASET_SIZE` | 100 | Database fetch page size for scheduler work; not a total round cap |
 | `NUM_OF_CHECKS` | 3 | Local failures before Veriflier escalation |
@@ -30,7 +30,7 @@ Key settings:
 | `PEER_OFFLINE_LIMIT` | 3 | Veriflier agreements required to confirm downtime |
 | `WORKER_MAX_MEM_MB` | 0 | Optional Go runtime memory threshold that triggers worker-pool drain; 0 disables the artificial cap |
 | `BUCKET_TOTAL` | 1000 | Total bucket range across all hosts |
-| `BUCKET_TARGET` | 500 | Maximum buckets this host should own |
+| `BUCKET_TARGET` | 500 | Maximum buckets this host should own; 0 means all buckets |
 | `BUCKET_HEARTBEAT_GRACE_SEC` | 600 | Seconds before a silent host's buckets are reclaimed |
 | `PINNED_BUCKET_MIN` / `PINNED_BUCKET_MAX` | unset | Static bucket range used by the [v1-to-v2 migration runbook](v1-to-v2-migration.md) |
 | `ALERT_COOLDOWN_MINUTES` | 30 | Default cooldown between repeated alerts per site |
@@ -50,6 +50,11 @@ Scheduler behavior:
 
 - `DATASET_SIZE` limits one database page. Jetmon continues fetching pages until
   due work is drained, so a low value should not cause unchecked sites by itself.
+- `NUM_WORKERS=0` uses the default worker floor instead of failing validation.
+  In streaming mode this is not a throughput cap; the engine derives a higher
+  worker target from active site rate and observed latency.
+- `BUCKET_TARGET=0` expands to `BUCKET_TOTAL`, which is useful for a single
+  monitor host in test fleets and removes one more manual capacity-tuning knob.
 - A full worker queue applies backpressure; checks remain pending instead of
   being dropped.
 - With `USE_VARIABLE_CHECK_INTERVALS=true`, Jetmon polls for newly due work on a

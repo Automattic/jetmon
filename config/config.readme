@@ -2,7 +2,11 @@ DEBUG
 Set to true to enable more verbose log messages. Default: false.
 
 NUM_WORKERS
-Initial number of goroutines in the check pool. The pool auto-scales between 1 and NUM_WORKERS based on queue depth. Default: 60.
+Initial/floor number of goroutines in the check pool. In the legacy scheduler,
+the pool auto-scales between 1 and NUM_WORKERS based on queue depth. In the
+streaming scheduler, NUM_WORKERS is only the floor; the engine derives the
+worker target from active site rate and observed latency. Set 0 to use the
+default floor of 60. Default: 60.
 
 NUM_TO_PROCESS
 Legacy compatibility setting retained so copied v1-style configs continue to
@@ -34,7 +38,10 @@ BUCKET_TOTAL
 Total number of buckets in the system across all hosts. Must match the range of bucket_no values in the jetpack_monitor_sites table. Default: 1000.
 
 BUCKET_TARGET
-Number of buckets this host should claim on startup. Used for initial distribution across hosts. Default: 500.
+Number of buckets this host should claim on startup. Used for initial
+distribution across hosts. Set 0 to claim BUCKET_TOTAL, which is useful for a
+single-host test fleet and avoids carrying a static performance cap in config.
+Default: 500.
 
 BUCKET_HEARTBEAT_GRACE_SEC
 Seconds after a host's last heartbeat before its buckets are considered available for reclaiming by another host. Default: 600.
