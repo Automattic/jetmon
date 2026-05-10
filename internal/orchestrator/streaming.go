@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"log"
+	"runtime"
 	"sync"
 	"time"
 
@@ -25,7 +26,8 @@ const (
 	streamingMaxQueueCap             = 262144
 	streamingMinScheduleHeadroom     = time.Second
 	streamingMaxScheduleHeadroom     = 15 * time.Second
-	streamingSideEffectShardCount    = 8
+	streamingMinSideEffectShards     = 8
+	streamingMaxSideEffectShards     = 64
 )
 
 type streamingTarget struct {
@@ -221,10 +223,16 @@ type streamingSideEffectJob struct {
 	res  checker.Result
 }
 
+type streamingSideEffectReport struct {
+	blogID  int64
+	status  int
+	summary resultProcessSummary
+}
+
 type streamingSideEffectProcessor struct {
 	ctx     <-chan struct{}
 	shards  []chan streamingSideEffectJob
-	reports chan resultProcessSummary
+	reports chan streamingSideEffectReport
 	wg      sync.WaitGroup
 }
 
@@ -242,7 +250,7 @@ func (o *Orchestrator) newStreamingSideEffectProcessor(shards, queueCap int) *st
 	p := &streamingSideEffectProcessor{
 		ctx:     o.ctx.Done(),
 		shards:  make([]chan streamingSideEffectJob, shards),
-		reports: make(chan resultProcessSummary, queueCap),
+		reports: make(chan streamingSideEffectReport, queueCap),
 	}
 	for i := range shards {
 		ch := make(chan streamingSideEffectJob, perShard)
@@ -281,7 +289,11 @@ func (p *streamingSideEffectProcessor) runShard(o *Orchestrator, jobs <-chan str
 				delete(sslExpiryByBlog, site.BlogID)
 			}
 			select {
-			case p.reports <- summary:
+			case p.reports <- streamingSideEffectReport{
+				blogID:  site.BlogID,
+				status:  updated.SiteStatus,
+				summary: summary,
+			}:
 			case <-p.ctx:
 				return
 			}
@@ -315,7 +327,7 @@ func (p *streamingSideEffectProcessor) tryEnqueue(job streamingSideEffectJob) bo
 	}
 }
 
-func (p *streamingSideEffectProcessor) reportsChannel() <-chan resultProcessSummary {
+func (p *streamingSideEffectProcessor) reportsChannel() <-chan streamingSideEffectReport {
 	return p.reports
 }
 
@@ -345,6 +357,17 @@ func streamingSideEffectShard(blogID int64, shards int) int {
 	return int(blogID % int64(shards))
 }
 
+func streamingSideEffectShardCount() int {
+	shards := runtime.GOMAXPROCS(0) * 4
+	if shards < streamingMinSideEffectShards {
+		return streamingMinSideEffectShards
+	}
+	if shards > streamingMaxSideEffectShards {
+		return streamingMaxSideEffectShards
+	}
+	return shards
+}
+
 func (o *Orchestrator) runStreamingEngine() {
 	cfg := config.Get()
 	log.Printf("orchestrator: streaming scheduler starting, host=%s buckets=%d-%d", o.hostname, o.bucketMin, o.bucketMax)
@@ -358,13 +381,14 @@ func (o *Orchestrator) runStreamingEngine() {
 	}
 	planner := newStreamingPlanner(sites, nowFunc().UTC())
 	o.configureStreamingPool(cfg, planner, streamingDefaultLatency)
-	sideEffects := o.newStreamingSideEffectProcessor(streamingSideEffectShardCount, streamingQueueCap(streamingWorkerTarget(cfg, planner, streamingDefaultLatency), planner.activeCount()))
+	sideEffectShards := streamingSideEffectShardCount()
+	sideEffects := o.newStreamingSideEffectProcessor(sideEffectShards, streamingQueueCap(streamingWorkerTarget(cfg, planner, streamingDefaultLatency), planner.activeCount()))
 	log.Printf("orchestrator: streaming scheduler loaded targets=%d required_rate=%.2f/s workers=%d queue_cap=%d side_effect_shards=%d",
 		planner.activeCount(),
 		planner.requiredChecksPerSecond(),
 		o.pool.WorkerCount(),
 		streamingQueueCap(streamingWorkerTarget(cfg, planner, streamingDefaultLatency), planner.activeCount()),
-		streamingSideEffectShardCount,
+		sideEffectShards,
 	)
 
 	tick := time.NewTicker(streamingTickInterval)
@@ -373,6 +397,8 @@ func (o *Orchestrator) runStreamingEngine() {
 	var (
 		pending             []*streamingTarget
 		pendingProjection   = make(map[int64]db.SiteCheck)
+		pendingSideEffects  = make(map[int64]int)
+		sideEffectStatus    = make(map[int64]int)
 		stats               streamingStats
 		lastReport          = nowFunc().UTC()
 		lastReload          = lastReport
@@ -388,8 +414,14 @@ func (o *Orchestrator) runStreamingEngine() {
 			sideEffects.stop()
 			o.shutdown()
 			return
-		case summary := <-sideEffects.reportsChannel():
-			stats.addSideEffects(summary)
+		case report := <-sideEffects.reportsChannel():
+			stats.addSideEffects(report.summary)
+			if pendingSideEffects[report.blogID] <= 1 {
+				delete(pendingSideEffects, report.blogID)
+			} else {
+				pendingSideEffects[report.blogID]--
+			}
+			sideEffectStatus[report.blogID] = report.status
 		case res := <-o.pool.Results():
 			target, ok := planner.targets[res.BlogID]
 			if !ok || !target.inFlight {
@@ -403,12 +435,15 @@ func (o *Orchestrator) runStreamingEngine() {
 			}
 			stats.addResult(res, lag)
 			o.totalChecked++
-			job := streamingSideEffectJob{site: target.site, res: res}
-			if !sideEffects.tryEnqueue(job) {
-				stats.sideEffectWaits++
-				if !sideEffects.enqueue(job) {
-					continue
+			if streamingSideEffectsNeeded(target, res, pendingSideEffects, sideEffectStatus, o.retries) {
+				job := streamingSideEffectJob{site: target.site, res: res}
+				if !sideEffects.tryEnqueue(job) {
+					stats.sideEffectWaits++
+					if !sideEffects.enqueue(job) {
+						continue
+					}
 				}
+				pendingSideEffects[target.site.BlogID]++
 			}
 			planner.scheduleAfterResult(target, res)
 			o.queueStreamingProjection(cfg, target, res, pendingProjection)
@@ -447,7 +482,10 @@ func (o *Orchestrator) runStreamingEngine() {
 					if wasEmpty && planner.activeCount() > 0 {
 						o.configureStreamingPool(cfg, planner, streamingDefaultLatency)
 						sideEffects.stop()
-						sideEffects = o.newStreamingSideEffectProcessor(streamingSideEffectShardCount, streamingQueueCap(streamingWorkerTarget(cfg, planner, streamingDefaultLatency), planner.activeCount()))
+						sideEffectShards = streamingSideEffectShardCount()
+						sideEffects = o.newStreamingSideEffectProcessor(sideEffectShards, streamingQueueCap(streamingWorkerTarget(cfg, planner, streamingDefaultLatency), planner.activeCount()))
+						pendingSideEffects = make(map[int64]int)
+						sideEffectStatus = make(map[int64]int)
 					}
 					log.Printf("orchestrator: streaming target reload active=%d added=%d updated=%d removed=%d required_rate=%.2f/s",
 						planner.activeCount(), added, updated, removed, planner.requiredChecksPerSecond())
@@ -591,6 +629,27 @@ func (o *Orchestrator) processStreamingSideEffects(site db.Site, res checker.Res
 	}
 	summary.eventDuration += time.Since(eventStart)
 	return summary, site
+}
+
+func streamingSideEffectsNeeded(target *streamingTarget, res checker.Result, pending map[int64]int, statusCache map[int64]int, retries *retryQueue) bool {
+	if target == nil {
+		return false
+	}
+	blogID := target.site.BlogID
+	if res.IsFailure() || res.TLSVersion != 0 || res.SSLExpiry != nil {
+		return true
+	}
+	if pending[blogID] > 0 {
+		return true
+	}
+	status := target.site.SiteStatus
+	if cached, ok := statusCache[blogID]; ok {
+		status = cached
+	}
+	if status != statusRunning {
+		return true
+	}
+	return retries != nil && retries.get(blogID) != nil
 }
 
 func (o *Orchestrator) queueStreamingProjection(cfg *config.Config, target *streamingTarget, res checker.Result, pending map[int64]db.SiteCheck) {

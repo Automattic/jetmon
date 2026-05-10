@@ -114,6 +114,48 @@ func TestStreamingSideEffectShardIsStable(t *testing.T) {
 	}
 }
 
+func TestStreamingSideEffectShardCountIsBounded(t *testing.T) {
+	got := streamingSideEffectShardCount()
+	if got < streamingMinSideEffectShards || got > streamingMaxSideEffectShards {
+		t.Fatalf("streamingSideEffectShardCount() = %d, want within [%d,%d]", got, streamingMinSideEffectShards, streamingMaxSideEffectShards)
+	}
+}
+
+func TestStreamingSideEffectsNeededSkipsNoopSuccess(t *testing.T) {
+	target := &streamingTarget{site: db.Site{BlogID: 42, SiteStatus: statusRunning}}
+	res := checker.Result{BlogID: 42, Success: true, HTTPCode: 200}
+
+	if streamingSideEffectsNeeded(target, res, nil, nil, nil) {
+		t.Fatal("no-op success should not require side effects")
+	}
+
+	pending := map[int64]int{42: 1}
+	if !streamingSideEffectsNeeded(target, res, pending, nil, nil) {
+		t.Fatal("success behind a pending side effect should preserve ordering")
+	}
+
+	statusCache := map[int64]int{42: statusDown}
+	if !streamingSideEffectsNeeded(target, res, nil, statusCache, nil) {
+		t.Fatal("success for cached non-running status should run recovery side effects")
+	}
+
+	retries := newRetryQueue()
+	retries.record(checker.Result{BlogID: 42, URL: "http://example.com", Timestamp: time.Now()})
+	if !streamingSideEffectsNeeded(target, res, nil, nil, retries) {
+		t.Fatal("success for retrying site should run recovery side effects")
+	}
+}
+
+func TestStreamingSideEffectsNeededKeepsFailureAndTLS(t *testing.T) {
+	target := &streamingTarget{site: db.Site{BlogID: 42, SiteStatus: statusRunning}}
+	if !streamingSideEffectsNeeded(target, checker.Result{BlogID: 42, ErrorCode: checker.ErrorConnect}, nil, nil, nil) {
+		t.Fatal("failure should require side effects")
+	}
+	if !streamingSideEffectsNeeded(target, checker.Result{BlogID: 42, Success: true, HTTPCode: 200, TLSVersion: 0x0304}, nil, nil, nil) {
+		t.Fatal("TLS observations should require side effects")
+	}
+}
+
 func TestStreamingCheckCadenceAddsBoundedHeadroom(t *testing.T) {
 	if got := streamingCheckCadence(db.Site{CheckInterval: 5}); got != 285*time.Second {
 		t.Fatalf("streamingCheckCadence(5m) = %s, want 285s", got)
