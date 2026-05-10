@@ -85,6 +85,12 @@ func (p *Pool) QueueDepth() int {
 	return len(p.work)
 }
 
+// ResultDepth returns the number of completed checks waiting for the
+// orchestrator to process them.
+func (p *Pool) ResultDepth() int {
+	return len(p.results)
+}
+
 // ActiveCount returns the number of goroutines currently running a check.
 func (p *Pool) ActiveCount() int {
 	return int(p.active.Load())

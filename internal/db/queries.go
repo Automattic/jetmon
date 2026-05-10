@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const batchWriteChunkSize = 500
+const batchWriteChunkSize = 1000
 
 // GetSitesForBucket fetches active sites within the given bucket range.
 func GetSitesForBucket(ctx context.Context, bucketMin, bucketMax, batchSize int, useVariableIntervals bool) ([]Site, error) {

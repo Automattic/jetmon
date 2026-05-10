@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"runtime"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
@@ -66,8 +67,15 @@ func Connect() error {
 		return fmt.Errorf("open db: %w", err)
 	}
 
-	db.SetMaxOpenConns(10)
-	db.SetMaxIdleConns(5)
+	maxOpenConns := runtime.GOMAXPROCS(0) * 8
+	if maxOpenConns < 16 {
+		maxOpenConns = 16
+	}
+	if maxOpenConns > 256 {
+		maxOpenConns = 256
+	}
+	db.SetMaxOpenConns(maxOpenConns)
+	db.SetMaxIdleConns(maxOpenConns / 2)
 	db.SetConnMaxLifetime(5 * time.Minute)
 
 	return db.Ping()

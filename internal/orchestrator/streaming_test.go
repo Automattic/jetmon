@@ -89,6 +89,31 @@ func TestStreamingWorkerTargetCapsScaleLatency(t *testing.T) {
 	}
 }
 
+func TestStreamingQueueCapScalesWithActiveTargets(t *testing.T) {
+	if got := streamingQueueCap(60, 0); got != streamingMinQueueCap {
+		t.Fatalf("streamingQueueCap(empty) = %d, want %d", got, streamingMinQueueCap)
+	}
+	if got := streamingQueueCap(60, 100000); got != 100000 {
+		t.Fatalf("streamingQueueCap(100k active) = %d, want 100000", got)
+	}
+	if got := streamingQueueCap(100000, 1000000); got != streamingMaxQueueCap {
+		t.Fatalf("streamingQueueCap(capped) = %d, want %d", got, streamingMaxQueueCap)
+	}
+}
+
+func TestStreamingSideEffectShardIsStable(t *testing.T) {
+	const shards = 8
+	first := streamingSideEffectShard(42, shards)
+	for range 10 {
+		if got := streamingSideEffectShard(42, shards); got != first {
+			t.Fatalf("streamingSideEffectShard() = %d, want stable %d", got, first)
+		}
+	}
+	if got := streamingSideEffectShard(-42, shards); got != first {
+		t.Fatalf("streamingSideEffectShard(negative) = %d, want %d", got, first)
+	}
+}
+
 func TestStreamingCheckCadenceAddsBoundedHeadroom(t *testing.T) {
 	if got := streamingCheckCadence(db.Site{CheckInterval: 5}); got != 285*time.Second {
 		t.Fatalf("streamingCheckCadence(5m) = %s, want 285s", got)
