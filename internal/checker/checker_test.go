@@ -679,6 +679,25 @@ func TestCheckReusesSharedTransportForReadableResponses(t *testing.T) {
 	}
 }
 
+func TestParseResolverServersSkipsLocalStub(t *testing.T) {
+	raw := `
+nameserver 127.0.0.53
+nameserver ::1
+nameserver 10.0.0.1
+nameserver 2600:1702:50c1:71bf:1298:36ff:fea4:d4ee
+`
+	got := parseResolverServers(raw)
+	want := []string{"10.0.0.1:53", "[2600:1702:50c1:71bf:1298:36ff:fea4:d4ee]:53"}
+	if len(got) != len(want) {
+		t.Fatalf("resolver servers = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("resolver server %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
 func TestCheckRedirectAlert(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {

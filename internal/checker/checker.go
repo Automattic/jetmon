@@ -10,7 +10,9 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptrace"
+	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -50,6 +52,7 @@ var defaultTransport = newCheckTransport()
 func newCheckTransport() *http.Transport {
 	return &http.Transport{
 		DialContext: (&net.Dialer{
+			Resolver:  newCheckResolver(),
 			Timeout:   30 * time.Second,
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
@@ -65,6 +68,62 @@ func newCheckTransport() *http.Transport {
 		MaxIdleConns:        1024,
 		MaxIdleConnsPerHost: 8,
 	}
+}
+
+func newCheckResolver() *net.Resolver {
+	servers := directResolverServers()
+	if len(servers) == 0 {
+		return nil
+	}
+	var next atomic.Uint64
+	return &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			idx := next.Add(1)
+			server := servers[int(idx-1)%len(servers)]
+			d := net.Dialer{Timeout: 5 * time.Second}
+			return d.DialContext(ctx, network, server)
+		},
+	}
+}
+
+func directResolverServers() []string {
+	if servers := parseResolverServers(readResolverConfig("/run/systemd/resolve/resolv.conf")); len(servers) > 0 {
+		return servers
+	}
+	return parseResolverServers(readResolverConfig("/etc/resolv.conf"))
+}
+
+func readResolverConfig(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+func parseResolverServers(raw string) []string {
+	var servers []string
+	for _, line := range strings.Split(raw, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[0] != "nameserver" {
+			continue
+		}
+		host := fields[1]
+		if isLocalResolverHost(host) {
+			continue
+		}
+		servers = append(servers, net.JoinHostPort(host, "53"))
+	}
+	return servers
+}
+
+func isLocalResolverHost(host string) bool {
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback()
 }
 
 // Request holds the parameters for a single HTTP check.
