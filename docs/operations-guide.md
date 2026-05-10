@@ -18,14 +18,14 @@ Key settings:
 |---|---:|---|
 | `NUM_WORKERS` | 60 | Goroutine pool size/floor; 0 uses the default floor |
 | `NUM_TO_PROCESS` | 40 | Legacy compatibility setting; does not cap Go scheduler throughput |
-| `DATASET_SIZE` | 100 | Database fetch page size for scheduler work; not a total round cap |
+| `DATASET_SIZE` | 100 | Database fetch page size for scheduler work; not a total round cap; 0 uses the default |
 | `NUM_OF_CHECKS` | 3 | Local failures before Veriflier escalation |
 | `TIME_BETWEEN_CHECKS_SEC` | 30 | Legacy compatibility setting retained for copied v1-style configs |
 | `MIN_TIME_BETWEEN_ROUNDS_SEC` | 300 | Fixed-cadence full-fleet pass interval when variable intervals are disabled |
 | `NET_COMMS_TIMEOUT` | 10 | Default per-check HTTP timeout in seconds |
 | `BODY_READ_MAX_BYTES` | 1048576 | Success-path body-read budget in bytes for unknown/large responses |
-| `BODY_READ_MAX_MS` | 250 | Post-header body-phase budget in milliseconds for budgeted reads (unknown/large responses) |
-| `KEYWORD_READ_MAX_BYTES` | 1048576 | Max bytes scanned when keyword checks are enabled |
+| `BODY_READ_MAX_MS` | 250 | Post-header body-phase budget in milliseconds for budgeted reads (unknown/large responses); 0 uses the default |
+| `KEYWORD_READ_MAX_BYTES` | 1048576 | Max bytes scanned when keyword checks are enabled; 0 uses the default |
 | `KEYWORD_READ_MAX_MS` | 0 | Keyword read budget in milliseconds, 0 inherits full request timeout envelope |
 | `PEER_OFFLINE_LIMIT` | 3 | Veriflier agreements required to confirm downtime |
 | `WORKER_MAX_MEM_MB` | 0 | Optional Go runtime memory threshold that triggers worker-pool drain; 0 disables the artificial cap |
@@ -50,6 +50,7 @@ Scheduler behavior:
 
 - `DATASET_SIZE` limits one database page. Jetmon continues fetching pages until
   due work is drained, so a low value should not cause unchecked sites by itself.
+  `DATASET_SIZE=0` uses the default page size.
 - `NUM_WORKERS=0` uses the default worker floor instead of failing validation.
   In streaming mode this is not a throughput cap; the engine derives a higher
   worker target from active site rate and observed latency.

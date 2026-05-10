@@ -291,8 +291,11 @@ func validate(cfg *Config) error {
 	if cfg.NumWorkers == 0 {
 		cfg.NumWorkers = 60
 	}
-	if cfg.DatasetSize <= 0 {
-		return fmt.Errorf("DATASET_SIZE must be > 0")
+	if cfg.DatasetSize < 0 {
+		return fmt.Errorf("DATASET_SIZE must be >= 0")
+	}
+	if cfg.DatasetSize == 0 {
+		cfg.DatasetSize = 100
 	}
 	if cfg.BucketTotal <= 0 {
 		return fmt.Errorf("BUCKET_TOTAL must be > 0")
@@ -312,14 +315,23 @@ func validate(cfg *Config) error {
 	if cfg.NetCommsTimeout <= 0 {
 		return fmt.Errorf("NET_COMMS_TIMEOUT must be > 0")
 	}
-	if cfg.BodyReadMaxBytes <= 0 {
-		return fmt.Errorf("BODY_READ_MAX_BYTES must be > 0")
+	if cfg.BodyReadMaxBytes < 0 {
+		return fmt.Errorf("BODY_READ_MAX_BYTES must be >= 0")
 	}
-	if cfg.BodyReadMaxMS <= 0 {
-		return fmt.Errorf("BODY_READ_MAX_MS must be > 0")
+	if cfg.BodyReadMaxBytes == 0 {
+		cfg.BodyReadMaxBytes = 1048576
 	}
-	if cfg.KeywordReadMaxBytes <= 0 {
-		return fmt.Errorf("KEYWORD_READ_MAX_BYTES must be > 0")
+	if cfg.BodyReadMaxMS < 0 {
+		return fmt.Errorf("BODY_READ_MAX_MS must be >= 0")
+	}
+	if cfg.BodyReadMaxMS == 0 {
+		cfg.BodyReadMaxMS = 250
+	}
+	if cfg.KeywordReadMaxBytes < 0 {
+		return fmt.Errorf("KEYWORD_READ_MAX_BYTES must be >= 0")
+	}
+	if cfg.KeywordReadMaxBytes == 0 {
+		cfg.KeywordReadMaxBytes = 1048576
 	}
 	if cfg.KeywordReadMaxMS < 0 {
 		return fmt.Errorf("KEYWORD_READ_MAX_MS must be >= 0")

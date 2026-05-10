@@ -50,9 +50,8 @@ func TestValidate(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:    "dataset size zero",
-			mutate:  func(c *Config) { c.DatasetSize = 0 },
-			wantErr: true,
+			name:   "dataset size zero uses default",
+			mutate: func(c *Config) { c.DatasetSize = 0 },
 		},
 		{
 			name:    "dataset size negative",
@@ -151,19 +150,17 @@ func TestValidate(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:    "body read max bytes zero",
-			mutate:  func(c *Config) { c.BodyReadMaxBytes = 0 },
+			name:   "body read max bytes zero uses default",
+			mutate: func(c *Config) { c.BodyReadMaxBytes = 0 },
+		},
+		{
+			name:    "body read max ms negative",
+			mutate:  func(c *Config) { c.BodyReadMaxMS = -1 },
 			wantErr: true,
 		},
 		{
-			name:    "body read max ms zero",
-			mutate:  func(c *Config) { c.BodyReadMaxMS = 0 },
-			wantErr: true,
-		},
-		{
-			name:    "keyword read max bytes zero",
-			mutate:  func(c *Config) { c.KeywordReadMaxBytes = 0 },
-			wantErr: true,
+			name:   "keyword read max bytes zero uses default",
+			mutate: func(c *Config) { c.KeywordReadMaxBytes = 0 },
 		},
 		{
 			name:    "keyword read max ms negative",
