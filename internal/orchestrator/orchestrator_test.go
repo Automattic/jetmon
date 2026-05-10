@@ -2420,7 +2420,7 @@ func TestRunRoundKeepsFetchingAfterAdaptivePageSizeGrows(t *testing.T) {
 		if !useVariableIntervals {
 			t.Fatal("count due useVariableIntervals = false, want true")
 		}
-		return 100, nil
+		return 1000, nil
 	}
 	dbMarkSitesCheckedAt = func(context.Context, []int64, time.Time) error {
 		return nil
@@ -2444,8 +2444,8 @@ func TestRunRoundKeepsFetchingAfterAdaptivePageSizeGrows(t *testing.T) {
 	if len(pageSizes) < 2 {
 		t.Fatalf("page size calls = %v, want multiple fetches", pageSizes)
 	}
-	if pageSizes[0] != 2 {
-		t.Fatalf("first page size = %d, want configured floor 2", pageSizes[0])
+	if pageSizes[0] != 7 {
+		t.Fatalf("first page size = %d, want adaptive initial page size 7", pageSizes[0])
 	}
 	if pageSizes[1] <= pageSizes[0] {
 		t.Fatalf("page sizes = %v, want adaptive growth after due-count sample", pageSizes)
@@ -2561,6 +2561,10 @@ func TestSchedulerBatchTargetSitesDerivesFromWorkers(t *testing.T) {
 	if got := schedulerBatchTargetSites(defaultCfg, 100, 4000, 0); got != 120000 {
 		t.Fatalf("schedulerBatchTargetSites(adaptive workers) = %d, want 120000", got)
 	}
+	variableCfg := &config.Config{NumWorkers: 60, MinTimeBetweenRoundsSec: 300, NetCommsTimeout: 10, UseVariableCheckIntervals: true}
+	if got := schedulerBatchTargetSites(variableCfg, 100, 4000, 0); got != 400000 {
+		t.Fatalf("schedulerBatchTargetSites(variable interval ignores legacy round) = %d, want 400000", got)
+	}
 	if got := schedulerBatchTargetSites(defaultCfg, 100, 4000, 50000); got != 50000 {
 		t.Fatalf("schedulerBatchTargetSites(due cap) = %d, want 50000", got)
 	}
@@ -2627,8 +2631,8 @@ func TestSchedulerAdaptiveWorkerMaxFromDueBacklog(t *testing.T) {
 		UseVariableCheckIntervals: true,
 	}
 
-	if got := schedulerAdaptiveWorkerMax(cfg, 100000); got != 10000 {
-		t.Fatalf("schedulerAdaptiveWorkerMax(100k due) = %d, want resource-capped 10000", got)
+	if got := schedulerAdaptiveWorkerMax(cfg, 100000); got != 3667 {
+		t.Fatalf("schedulerAdaptiveWorkerMax(100k due) = %d, want steady-state target 3667", got)
 	}
 	if got := schedulerAdaptiveWorkerMax(cfg, 1000); got != 960 {
 		t.Fatalf("schedulerAdaptiveWorkerMax(small backlog) = %d, want base 960", got)
@@ -2647,8 +2651,8 @@ func TestSchedulerAdaptiveWorkerMaxUsesMinuteTargetWhenFixedRoundUnset(t *testin
 		UseVariableCheckIntervals: true,
 	}
 
-	if got := schedulerAdaptiveWorkerMax(cfg, 1000); got != 184 {
-		t.Fatalf("schedulerAdaptiveWorkerMax(legacy fixed round unset) = %d, want minute-cadence autoscale 184", got)
+	if got := schedulerAdaptiveWorkerMax(cfg, 5000); got != 184 {
+		t.Fatalf("schedulerAdaptiveWorkerMax(legacy fixed round unset) = %d, want steady-state target 184", got)
 	}
 }
 
@@ -2664,8 +2668,8 @@ func TestSchedulerAdaptiveWorkerMaxIgnoresLegacyFixedRoundForVariableIntervals(t
 		UseVariableCheckIntervals: true,
 	}
 
-	if got := schedulerAdaptiveWorkerMax(cfg, 5000); got != 917 {
-		t.Fatalf("schedulerAdaptiveWorkerMax(legacy fixed round set) = %d, want one-minute target 917", got)
+	if got := schedulerAdaptiveWorkerMax(cfg, 5000); got != 184 {
+		t.Fatalf("schedulerAdaptiveWorkerMax(legacy fixed round set) = %d, want steady-state target 184", got)
 	}
 }
 

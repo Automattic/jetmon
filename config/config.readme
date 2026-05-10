@@ -110,9 +110,10 @@ Minimum minutes between a site going down and a confirmed-down notification bein
 MIN_TIME_BETWEEN_ROUNDS_SEC
 Minimum seconds between fixed-cadence full-fleet passes when
 USE_VARIABLE_CHECK_INTERVALS is explicitly false. In the default
-variable-interval mode, the scheduler uses this as the freshness budget for
-adaptive worker sizing while a short idle poll and the SQL due predicate decide
-which sites are ready to check. Default: 300.
+variable-interval mode, this is parsed for v1 config compatibility but does
+not control scheduler throughput, batching, or freshness. Variable-interval
+freshness is controlled by each site's check_interval and maintained
+next_check_at timestamp. Default: 300.
 
 NET_COMMS_TIMEOUT
 Default HTTP request timeout in seconds. Can be overridden per-site via timeout_seconds column. Default: 10.

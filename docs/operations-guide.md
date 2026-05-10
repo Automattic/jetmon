@@ -57,10 +57,11 @@ Scheduler behavior:
 - With the default variable-interval scheduler, Jetmon estimates the check-pool
   ceiling needed to clear the current due backlog inside the freshness window.
   `NUM_WORKERS` is only an optional compatibility baseline, and the scheduler
-  can temporarily raise the ceiling above it when the due backlog,
-  `NET_COMMS_TIMEOUT`, and
-  `MIN_TIME_BETWEEN_ROUNDS_SEC` show the baseline would miss freshness. The
-  adaptive ceiling uses a 10% headroom factor and is bounded by the host's
+  can temporarily raise the ceiling above it when the due backlog would miss
+  the one-minute freshness target. The adaptive ceiling uses a steady-state
+  two-second check budget with 10% headroom rather than the full request timeout;
+  this keeps continuous all-day checking from turning a slow target window into
+  a self-inflicted connection storm. The ceiling is bounded by the host's
   file-descriptor budget, so a low `ulimit -n` becomes a real capacity limit.
   The check pool pre-warms to the adaptive ceiling at the start of a large
   window instead of waiting for autoscale ticks to discover the demand.

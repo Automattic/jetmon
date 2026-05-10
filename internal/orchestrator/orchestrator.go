@@ -59,6 +59,13 @@ const schedulerBacklogPollInterval = 5 * time.Second
 const schedulerBroadReportInterval = time.Minute
 const schedulerDefaultBaselineWorkers = 60
 const schedulerDefaultVariableIntervalTargetSec = 60
+
+// schedulerDefaultVariableIntervalCheckBudgetSec estimates the normal
+// steady-state cost of a successful check. Adaptive worker sizing deliberately
+// does not use the full request timeout here: Jetmon probes the same fleet all
+// day, so sizing every window as if all probes will run to timeout causes
+// avoidable connection storms under otherwise recoverable slowness.
+const schedulerDefaultVariableIntervalCheckBudgetSec = 2
 const schedulerDefaultPageSize = 100
 const schedulerBatchSitesPerWorker = 100
 const schedulerTargetDBPagesPerBatch = 32
@@ -673,7 +680,7 @@ func schedulerBatchTargetSites(cfg *config.Config, pageSize, workerMax, dueSites
 		workerMax = 1
 	}
 	target := saturatingMulInt(workerMax, schedulerBatchSitesPerWorker)
-	if cfg != nil && cfg.MinTimeBetweenRoundsSec > 0 && cfg.NetCommsTimeout > 0 {
+	if cfg != nil && !cfg.UseVariableCheckIntervals && cfg.MinTimeBetweenRoundsSec > 0 && cfg.NetCommsTimeout > 0 {
 		timeoutBound := saturatingMulInt(workerMax, cfg.MinTimeBetweenRoundsSec) / cfg.NetCommsTimeout
 		if timeoutBound > 0 && timeoutBound < target {
 			target = timeoutBound
@@ -715,11 +722,10 @@ func schedulerAdaptiveWorkerMax(cfg *config.Config, dueSites int) int {
 	desired := base
 	if cfg != nil &&
 		cfg.UseVariableCheckIntervals &&
-		dueSites > 0 &&
-		cfg.NetCommsTimeout > 0 {
+		dueSites > 0 {
 		targetSec := schedulerDefaultVariableIntervalTargetSec
 		numerator := int64(dueSites) *
-			int64(cfg.NetCommsTimeout) *
+			int64(schedulerDefaultVariableIntervalCheckBudgetSec) *
 			int64(schedulerAdaptiveWorkerSafetyNumerator)
 		denominator := int64(targetSec) *
 			int64(schedulerAdaptiveWorkerSafetyDenominator)
