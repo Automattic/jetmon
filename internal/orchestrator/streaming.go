@@ -38,7 +38,7 @@ const (
 	streamingFailurePressureMin      = 1000
 	streamingFailurePressurePercent  = 25
 	streamingFailurePressureHold     = 2 * time.Minute
-	streamingFailurePressureLatency  = 3 * time.Second
+	streamingFailurePressureLatency  = time.Second
 )
 
 type streamingTarget struct {
@@ -182,30 +182,39 @@ func (p *streamingPlanner) popDue(now time.Time) []*streamingTarget {
 }
 
 type streamingStats struct {
-	selected          int
-	dispatched        int
-	completed         int
-	backpressureWaits int
-	staleResults      int
-	checkFailures     int
-	checkSuccesses    int
-	historyRows       int
-	historyErrors     int
-	sslRows           int
-	sslErrors         int
-	eventDuration     time.Duration
-	historyDuration   time.Duration
-	sslDuration       time.Duration
-	sideEffectRows    int
-	sideEffectWaits   int
-	sideEffectPaused  int
-	resultPaused      int
-	dispatchLimited   int
-	latencyTotal      time.Duration
-	latencyCount      int
-	successLatency    time.Duration
-	successLatencyN   int
-	maxLag            time.Duration
+	selected           int
+	dispatched         int
+	completed          int
+	backpressureWaits  int
+	staleResults       int
+	checkFailures      int
+	checkSuccesses     int
+	historyRows        int
+	historyErrors      int
+	sslRows            int
+	sslErrors          int
+	eventDuration      time.Duration
+	historyDuration    time.Duration
+	sslDuration        time.Duration
+	sideEffectRows     int
+	sideEffectWaits    int
+	sideEffectPaused   int
+	resultPaused       int
+	dispatchLimited    int
+	latencyTotal       time.Duration
+	latencyCount       int
+	successLatency     time.Duration
+	successLatencyN    int
+	maxLag             time.Duration
+	errorTimeouts      int
+	errorConnects      int
+	errorSSL           int
+	errorRedirects     int
+	errorKeywords      int
+	errorBodyReads     int
+	errorTLSExpired    int
+	errorTLSDeprecated int
+	errorOther         int
 }
 
 func (s *streamingStats) addResult(res checker.Result, lag time.Duration) {
@@ -225,6 +234,32 @@ func (s *streamingStats) addResult(res checker.Result, lag time.Duration) {
 	}
 	if lag > s.maxLag {
 		s.maxLag = lag
+	}
+	if res.ErrorCode != checker.ErrorNone {
+		s.addErrorCode(res.ErrorCode)
+	}
+}
+
+func (s *streamingStats) addErrorCode(code int) {
+	switch code {
+	case checker.ErrorTimeout:
+		s.errorTimeouts++
+	case checker.ErrorConnect:
+		s.errorConnects++
+	case checker.ErrorSSL:
+		s.errorSSL++
+	case checker.ErrorRedirect:
+		s.errorRedirects++
+	case checker.ErrorKeyword:
+		s.errorKeywords++
+	case checker.ErrorBodyRead:
+		s.errorBodyReads++
+	case checker.ErrorTLSExpired:
+		s.errorTLSExpired++
+	case checker.ErrorTLSDeprecated:
+		s.errorTLSDeprecated++
+	default:
+		s.errorOther++
 	}
 }
 
@@ -945,6 +980,15 @@ func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streami
 		m.Increment("scheduler.streaming.stale_result.count", stats.staleResults)
 		m.Increment("scheduler.streaming.check.success.count", stats.checkSuccesses)
 		m.Increment("scheduler.streaming.check.failure.count", stats.checkFailures)
+		m.Increment("scheduler.streaming.check.error.timeout.count", stats.errorTimeouts)
+		m.Increment("scheduler.streaming.check.error.connect.count", stats.errorConnects)
+		m.Increment("scheduler.streaming.check.error.ssl.count", stats.errorSSL)
+		m.Increment("scheduler.streaming.check.error.redirect.count", stats.errorRedirects)
+		m.Increment("scheduler.streaming.check.error.keyword.count", stats.errorKeywords)
+		m.Increment("scheduler.streaming.check.error.body_read.count", stats.errorBodyReads)
+		m.Increment("scheduler.streaming.check.error.tls_expired.count", stats.errorTLSExpired)
+		m.Increment("scheduler.streaming.check.error.tls_deprecated.count", stats.errorTLSDeprecated)
+		m.Increment("scheduler.streaming.check.error.other.count", stats.errorOther)
 		m.Increment("scheduler.streaming.side_effect.processed.count", stats.sideEffectRows)
 		m.Increment("scheduler.streaming.history.row.count", stats.historyRows)
 		m.Increment("scheduler.streaming.history.error.count", stats.historyErrors)
@@ -959,7 +1003,7 @@ func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streami
 		metrics.WriteStatsFiles(sps, queueDepth, o.totalChecked)
 	}
 
-	log.Printf("orchestrator: streaming summary active=%d required_rate=%.2f/s selected=%d dispatched=%d completed=%d side_effects=%d pending=%d active_checks=%d queue_depth=%d result_depth=%d side_effect_depth=%d workers=%d worker_target=%d sps=%d elapsed=%s max_lag=%s avg_latency=%s scale_latency=%s successes=%d failures=%d failure_pressure=%t history_rows=%d ssl_rows=%d stale_results=%d backpressure_waits=%d side_effect_waits=%d result_pauses=%d side_effect_pauses=%d dispatch_limited=%d",
+	log.Printf("orchestrator: streaming summary active=%d required_rate=%.2f/s selected=%d dispatched=%d completed=%d side_effects=%d pending=%d active_checks=%d queue_depth=%d result_depth=%d side_effect_depth=%d workers=%d worker_target=%d sps=%d elapsed=%s max_lag=%s avg_latency=%s scale_latency=%s successes=%d failures=%d failure_pressure=%t error_timeout=%d error_connect=%d error_ssl=%d error_redirect=%d error_keyword=%d error_body_read=%d error_tls_expired=%d error_tls_deprecated=%d error_other=%d history_rows=%d ssl_rows=%d stale_results=%d backpressure_waits=%d side_effect_waits=%d result_pauses=%d side_effect_pauses=%d dispatch_limited=%d",
 		planner.activeCount(),
 		planner.requiredChecksPerSecond(),
 		stats.selected,
@@ -981,6 +1025,15 @@ func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streami
 		stats.checkSuccesses,
 		stats.checkFailures,
 		pressureActive || streamingFailurePressure(stats),
+		stats.errorTimeouts,
+		stats.errorConnects,
+		stats.errorSSL,
+		stats.errorRedirects,
+		stats.errorKeywords,
+		stats.errorBodyReads,
+		stats.errorTLSExpired,
+		stats.errorTLSDeprecated,
+		stats.errorOther,
 		stats.historyRows,
 		stats.sslRows,
 		stats.staleResults,

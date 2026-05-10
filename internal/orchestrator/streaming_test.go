@@ -257,6 +257,33 @@ func TestStreamingFailurePressureRequiresVolumeAndRatio(t *testing.T) {
 	}
 }
 
+func TestStreamingStatsCountsErrorCodes(t *testing.T) {
+	var stats streamingStats
+	stats.addResult(checker.Result{ErrorCode: checker.ErrorTimeout}, 0)
+	stats.addResult(checker.Result{ErrorCode: checker.ErrorConnect}, 0)
+	stats.addResult(checker.Result{ErrorCode: checker.ErrorSSL}, 0)
+	stats.addResult(checker.Result{ErrorCode: checker.ErrorRedirect}, 0)
+	stats.addResult(checker.Result{ErrorCode: checker.ErrorKeyword}, 0)
+	stats.addResult(checker.Result{ErrorCode: checker.ErrorBodyRead}, 0)
+	stats.addResult(checker.Result{ErrorCode: checker.ErrorTLSExpired}, 0)
+	stats.addResult(checker.Result{ErrorCode: checker.ErrorTLSDeprecated}, 0)
+
+	if stats.errorTimeouts != 1 || stats.errorConnects != 1 || stats.errorSSL != 1 || stats.errorRedirects != 1 ||
+		stats.errorKeywords != 1 || stats.errorBodyReads != 1 || stats.errorTLSExpired != 1 || stats.errorTLSDeprecated != 1 || stats.errorOther != 0 {
+		t.Fatalf("error counters = timeout:%d connect:%d ssl:%d redirect:%d keyword:%d body:%d expired:%d deprecated:%d other:%d",
+			stats.errorTimeouts,
+			stats.errorConnects,
+			stats.errorSSL,
+			stats.errorRedirects,
+			stats.errorKeywords,
+			stats.errorBodyReads,
+			stats.errorTLSExpired,
+			stats.errorTLSDeprecated,
+			stats.errorOther,
+		)
+	}
+}
+
 func TestStreamingBacklogWorkerTargetUsesSpareHeadroom(t *testing.T) {
 	if got := streamingBacklogWorkerTarget(700, 100000, 42000); got != 1400 {
 		t.Fatalf("backlog worker target = %d, want base plus backlog catch-up", got)

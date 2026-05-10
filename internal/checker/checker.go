@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -53,6 +54,34 @@ const (
 // timeout and redirect policy remain isolated to that site check.
 var defaultTransport = newCheckTransport()
 var defaultDNSCache = newCheckDNSCache(checkDNSCacheTTL, checkDNSCacheMaxEntries)
+var defaultDNSLookupLimiter = newCheckDNSLookupLimiter()
+
+type checkDNSLookupLimiter struct {
+	slots chan struct{}
+}
+
+func newCheckDNSLookupLimiter() *checkDNSLookupLimiter {
+	limit := runtime.GOMAXPROCS(0) * 128
+	if limit < 128 {
+		limit = 128
+	}
+	if limit > 1024 {
+		limit = 1024
+	}
+	return &checkDNSLookupLimiter{slots: make(chan struct{}, limit)}
+}
+
+func (l *checkDNSLookupLimiter) acquire(ctx context.Context) (func(), error) {
+	if l == nil || cap(l.slots) == 0 {
+		return func() {}, nil
+	}
+	select {
+	case l.slots <- struct{}{}:
+		return func() { <-l.slots }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
 
 type checkDNSCache struct {
 	mu         sync.RWMutex
@@ -86,6 +115,22 @@ func (c *checkDNSCache) lookup(ctx context.Context, resolver *net.Resolver, host
 	now := time.Now()
 	c.mu.RLock()
 	entry, ok := c.entries[key]
+	if ok && now.Before(entry.expires) {
+		addrs := cloneIPAddrs(entry.addrs)
+		c.mu.RUnlock()
+		return addrs, nil
+	}
+	c.mu.RUnlock()
+
+	release, err := defaultDNSLookupLimiter.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	now = time.Now()
+	c.mu.RLock()
+	entry, ok = c.entries[key]
 	if ok && now.Before(entry.expires) {
 		addrs := cloneIPAddrs(entry.addrs)
 		c.mu.RUnlock()
