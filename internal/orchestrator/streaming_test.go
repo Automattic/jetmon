@@ -51,6 +51,76 @@ func TestStreamingPlannerPopDueSkipsQueuedAndInflightTargets(t *testing.T) {
 	}
 }
 
+func TestStreamingScheduleAfterResultKeepsLocalRetryForSeemsDown(t *testing.T) {
+	checkedAt := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	planner := &streamingPlanner{
+		targets: make(map[int64]*streamingTarget),
+		due:     make(map[int64][]int64),
+	}
+	target := &streamingTarget{
+		site:   db.Site{BlogID: 42, CheckInterval: 5, SiteStatus: statusDown},
+		dueAt:  checkedAt,
+		active: true,
+	}
+
+	planner.scheduleAfterResult(target, checker.Result{
+		BlogID:    42,
+		ErrorCode: checker.ErrorConnect,
+		Timestamp: checkedAt,
+	})
+
+	if got, want := target.dueAt, checkedAt.Add(failedCheckRetryInterval); !got.Equal(want) {
+		t.Fatalf("dueAt = %s, want retry at %s", got, want)
+	}
+}
+
+func TestStreamingScheduleAfterResultUsesNormalCadenceForConfirmedDown(t *testing.T) {
+	checkedAt := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	planner := &streamingPlanner{
+		targets: make(map[int64]*streamingTarget),
+		due:     make(map[int64][]int64),
+	}
+	target := &streamingTarget{
+		site:   db.Site{BlogID: 42, CheckInterval: 5, SiteStatus: statusConfirmedDown},
+		dueAt:  checkedAt,
+		active: true,
+	}
+
+	planner.scheduleAfterResult(target, checker.Result{
+		BlogID:    42,
+		ErrorCode: checker.ErrorConnect,
+		Timestamp: checkedAt,
+	})
+
+	if got, want := target.dueAt, checkedAt.Add(streamingCheckCadence(target.site)); !got.Equal(want) {
+		t.Fatalf("dueAt = %s, want normal cadence at %s", got, want)
+	}
+}
+
+func TestStreamingScheduleAtNextPhaseAfterRestoresPhaseSpread(t *testing.T) {
+	checkedAt := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	planner := &streamingPlanner{
+		targets: make(map[int64]*streamingTarget),
+		due:     make(map[int64][]int64),
+	}
+	target := &streamingTarget{
+		site:   db.Site{BlogID: 42, CheckInterval: 5, SiteStatus: statusRunning},
+		dueAt:  checkedAt.Add(failedCheckRetryInterval),
+		active: true,
+	}
+
+	planner.scheduleAtNextPhaseAfter(target, checkedAt)
+
+	cadence := streamingCheckCadence(target.site)
+	expected := nextStreamingPhaseAt(checkedAt.Add(time.Second), cadence, streamingPhaseOffset(target.site.BlogID, cadence))
+	if !target.dueAt.Equal(expected) {
+		t.Fatalf("dueAt = %s, want phase-spread due at %s", target.dueAt, expected)
+	}
+	if target.dueAt.Equal(checkedAt.Add(failedCheckRetryInterval)) {
+		t.Fatal("dueAt stayed on local retry cadence")
+	}
+}
+
 func TestStreamingWorkerTargetScalesFromRequiredRate(t *testing.T) {
 	planner := &streamingPlanner{targets: make(map[int64]*streamingTarget)}
 	for i := int64(1); i <= 1200; i++ {
@@ -90,12 +160,36 @@ func TestStreamingWorkerTargetCapsScaleLatencyAtCheckTimeout(t *testing.T) {
 	}
 }
 
+func TestStreamingDampedWorkerTargetLimitsGrowthAndShrink(t *testing.T) {
+	if got := streamingDampedWorkerTarget(400, 2000); got != 500 {
+		t.Fatalf("growth damped target = %d, want 500", got)
+	}
+	if got := streamingDampedWorkerTarget(2000, 400); got != 1600 {
+		t.Fatalf("shrink damped target = %d, want 1600", got)
+	}
+	if got := streamingDampedWorkerTarget(60, 80); got != 80 {
+		t.Fatalf("small target change = %d, want 80", got)
+	}
+}
+
 func TestStreamingScaleLatencyCapUsesDefaultTimeout(t *testing.T) {
 	if got := streamingScaleLatencyCap(&config.Config{}); got != 10*time.Second {
 		t.Fatalf("streamingScaleLatencyCap(default) = %s, want 10s", got)
 	}
 	if got := streamingScaleLatencyCap(&config.Config{NetCommsTimeout: 1}); got != time.Second {
 		t.Fatalf("streamingScaleLatencyCap(configured) = %s, want 1s", got)
+	}
+}
+
+func TestStreamingBackpressureDepthScalesWithWorkersAndTargets(t *testing.T) {
+	if got := streamingResultBackpressureDepth(60, 0); got != streamingMinBackpressureDepth {
+		t.Fatalf("empty result backpressure depth = %d, want %d", got, streamingMinBackpressureDepth)
+	}
+	if got := streamingSideEffectBackpressureDepth(2000, 100000); got != 5000 {
+		t.Fatalf("100k side-effect backpressure depth = %d, want target-based 5000", got)
+	}
+	if got := streamingResultBackpressureDepth(100000, 1000000); got != 131072 {
+		t.Fatalf("capped result backpressure depth = %d, want 131072", got)
 	}
 }
 
