@@ -421,16 +421,20 @@ func (o *Orchestrator) processStreamingResult(target *streamingTarget, res check
 
 func (o *Orchestrator) queueStreamingProjection(cfg *config.Config, target *streamingTarget, res checker.Result, pending map[int64]db.SiteCheck) {
 	interval := streamingProjectionInterval(cfg, target.site)
-	checkedAt := resultCheckedAt(res)
-	if !streamingProjectionDue(target, checkedAt, interval) {
+	resultAt := resultCheckedAt(res)
+	if !streamingProjectionDue(target, resultAt, interval) {
 		return
+	}
+	projectedAt := nowFunc().UTC()
+	if projectedAt.Before(resultAt) {
+		projectedAt = resultAt
 	}
 	pending[target.site.BlogID] = db.SiteCheck{
 		BlogID:      target.site.BlogID,
-		CheckedAt:   checkedAt,
+		CheckedAt:   projectedAt,
 		NextCheckAt: target.dueAt,
 	}
-	target.lastProjectedAt = checkedAt
+	target.lastProjectedAt = projectedAt
 }
 
 func streamingProjectionDue(target *streamingTarget, checkedAt time.Time, interval time.Duration) bool {

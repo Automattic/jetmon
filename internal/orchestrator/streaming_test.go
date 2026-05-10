@@ -71,9 +71,14 @@ func TestStreamingWorkerTargetScalesFromRequiredRate(t *testing.T) {
 }
 
 func TestQueueStreamingProjectionRespectsInterval(t *testing.T) {
+	origNow := nowFunc
+	defer func() { nowFunc = origNow }()
+
 	o := &Orchestrator{}
 	cfg := &config.Config{StreamingLegacyProjectionIntervalMin: 10}
 	checkedAt := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	projectedAt := checkedAt.Add(10*time.Minute + 2*time.Second)
+	nowFunc = func() time.Time { return projectedAt }
 	target := &streamingTarget{
 		site:            db.Site{BlogID: 42, CheckInterval: 1},
 		dueAt:           checkedAt.Add(5 * time.Minute),
@@ -91,15 +96,20 @@ func TestQueueStreamingProjectionRespectsInterval(t *testing.T) {
 	if len(pending) != 1 {
 		t.Fatalf("pending projection rows = %d, want 1 after interval", len(pending))
 	}
-	if got := pending[42].CheckedAt; !got.Equal(later) {
-		t.Fatalf("projected CheckedAt = %s, want %s", got, later)
+	if got := pending[42].CheckedAt; !got.Equal(projectedAt) {
+		t.Fatalf("projected CheckedAt = %s, want %s", got, projectedAt)
 	}
 }
 
 func TestQueueStreamingProjectionProjectsEveryCheckWhenSiteIntervalMatchesProjection(t *testing.T) {
+	origNow := nowFunc
+	defer func() { nowFunc = origNow }()
+
 	o := &Orchestrator{}
 	cfg := &config.Config{StreamingLegacyProjectionIntervalMin: 10}
 	checkedAt := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	projectedAt := checkedAt.Add(2 * time.Second)
+	nowFunc = func() time.Time { return projectedAt }
 	target := &streamingTarget{
 		site:            db.Site{BlogID: 42, CheckInterval: 5},
 		dueAt:           checkedAt.Add(5 * time.Minute),
@@ -111,8 +121,8 @@ func TestQueueStreamingProjectionProjectsEveryCheckWhenSiteIntervalMatchesProjec
 	if len(pending) != 1 {
 		t.Fatalf("pending projection rows = %d, want 1 for every 5m check", len(pending))
 	}
-	if got := pending[42].CheckedAt; !got.Equal(checkedAt) {
-		t.Fatalf("projected CheckedAt = %s, want %s", got, checkedAt)
+	if got := pending[42].CheckedAt; !got.Equal(projectedAt) {
+		t.Fatalf("projected CheckedAt = %s, want %s", got, projectedAt)
 	}
 }
 
