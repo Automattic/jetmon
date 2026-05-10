@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -33,6 +34,12 @@ const (
 	maxKeywordBodyBytes   int64 = 1 << 20
 )
 
+const (
+	dnsCacheFreshTTL        = 5 * time.Minute
+	dnsCacheCleanupInterval = time.Minute
+	dnsCacheMaxEntries      = 2_000_000
+)
+
 // RedirectPolicy controls how redirect responses are handled.
 type RedirectPolicy string
 
@@ -47,12 +54,19 @@ const (
 // timeout and redirect policy remain isolated to that site check.
 var defaultTransport = newCheckTransport()
 
+var defaultDNSCache = newDNSCache()
+
+var dnsLookupIPAddr = func(ctx context.Context, host string) ([]net.IPAddr, error) {
+	return net.DefaultResolver.LookupIPAddr(ctx, host)
+}
+
 func newCheckTransport() *http.Transport {
+	dialer := &net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
 	return &http.Transport{
-		DialContext: (&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
+		DialContext: cachedDialContext(dialer),
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: false,
 			// Deprecated TLS versions are still site-reachability signals.
@@ -64,6 +78,124 @@ func newCheckTransport() *http.Transport {
 		IdleConnTimeout:     30 * time.Second,
 		MaxIdleConns:        1024,
 		MaxIdleConnsPerHost: 8,
+	}
+}
+
+type dnsCache struct {
+	mu          sync.Mutex
+	entries     map[string]dnsCacheEntry
+	lastCleanup time.Time
+}
+
+type dnsCacheEntry struct {
+	addrs     []net.IPAddr
+	expiresAt time.Time
+}
+
+func newDNSCache() *dnsCache {
+	return &dnsCache{entries: make(map[string]dnsCacheEntry)}
+}
+
+func (c *dnsCache) lookup(ctx context.Context, host string) ([]net.IPAddr, error) {
+	if c == nil {
+		return dnsLookupIPAddr(ctx, host)
+	}
+	key := canonicalDNSCacheHost(host)
+	now := time.Now()
+	c.mu.Lock()
+	if entry, ok := c.entries[key]; ok && now.Before(entry.expiresAt) {
+		addrs := cloneIPAddrs(entry.addrs)
+		c.mu.Unlock()
+		return addrs, nil
+	}
+	c.mu.Unlock()
+
+	addrs, err := dnsLookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	if len(addrs) == 0 {
+		return nil, &net.DNSError{Name: host, Err: "no such host", IsNotFound: true}
+	}
+
+	c.mu.Lock()
+	c.cleanupLocked(now)
+	c.entries[key] = dnsCacheEntry{
+		addrs:     cloneIPAddrs(addrs),
+		expiresAt: now.Add(dnsCacheFreshTTL),
+	}
+	c.mu.Unlock()
+	return cloneIPAddrs(addrs), nil
+}
+
+func (c *dnsCache) cleanupLocked(now time.Time) {
+	if c.entries == nil {
+		c.entries = make(map[string]dnsCacheEntry)
+	}
+	if !c.lastCleanup.IsZero() &&
+		now.Sub(c.lastCleanup) < dnsCacheCleanupInterval &&
+		len(c.entries) <= dnsCacheMaxEntries {
+		return
+	}
+	c.lastCleanup = now
+	for host, entry := range c.entries {
+		if !now.Before(entry.expiresAt) {
+			delete(c.entries, host)
+		}
+	}
+	if len(c.entries) > dnsCacheMaxEntries {
+		c.entries = make(map[string]dnsCacheEntry)
+	}
+}
+
+func cachedDialContext(dialer *net.Dialer) func(context.Context, string, string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil || host == "" || port == "" || net.ParseIP(host) != nil {
+			return dialer.DialContext(ctx, network, addr)
+		}
+		addrs, err := defaultDNSCache.lookup(ctx, host)
+		if err != nil {
+			return nil, err
+		}
+		var firstErr error
+		for _, ip := range addrs {
+			if !ipMatchesNetwork(ip.IP, network) {
+				continue
+			}
+			conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(ip.IP.String(), port))
+			if err == nil {
+				return conn, nil
+			}
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+		if firstErr != nil {
+			return nil, firstErr
+		}
+		return nil, &net.DNSError{Name: host, Err: "no address for requested network"}
+	}
+}
+
+func canonicalDNSCacheHost(host string) string {
+	return strings.TrimSuffix(strings.ToLower(host), ".")
+}
+
+func cloneIPAddrs(addrs []net.IPAddr) []net.IPAddr {
+	out := make([]net.IPAddr, len(addrs))
+	copy(out, addrs)
+	return out
+}
+
+func ipMatchesNetwork(ip net.IP, network string) bool {
+	switch network {
+	case "tcp4":
+		return ip.To4() != nil
+	case "tcp6":
+		return ip.To4() == nil
+	default:
+		return true
 	}
 }
 

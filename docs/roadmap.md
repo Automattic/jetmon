@@ -550,15 +550,23 @@ No active candidate branch is queued here right now.
   250,000+ ladder. The current Prometheus data proves the host is not saturated,
   but CPU profiles, block profiles, mutex profiles, and DB wait/lock sampling
   are needed to distinguish Go scheduler overhead from MySQL row-lock stalls.
-- [ ] After the adaptive retest, decide whether to incorporate observed RTT into
-  the worker-ceiling formula. The first implementation uses the configured
-  timeout as the conservative sizing input; observed RTT could reduce
-  over-allocation on healthy fast fleets, but it needs real capacity data to
-  avoid hiding slow-tail risk.
-- [ ] Evaluate DNS-resolution cost and cache options after the next capacity
-  run. The synthetic capacity targets use many hostnames, and production also
-  checks many unique domains; any cache must respect TTLs and preserve
-  diagnostics for NXDOMAIN/SERVFAIL/timeouts.
+- [x] Replace timeout-sized variable-interval worker ceilings with steady-state
+  sizing. The 2026-05-10 `227e4fe` capacity run showed that using
+  `NET_COMMS_TIMEOUT` as the per-check sizing cost over-warmed the pool and
+  created a monitor-side transport storm at 5,000 one-minute sites. The current
+  formula uses an internal two-second steady-state check budget with 10%
+  headroom, while host resource caps still bound the ceiling.
+- [x] Add a positive DNS cache to the shared checker transport. The 2026-05-10
+  `fe55838` retest completed DB freshness at 5,000 one-minute sites but still
+  produced stale target-observer sites and repeated local resolver `SERVFAIL`
+  evidence. The checker now caches successful hostname resolutions for the
+  steady same-site monitoring pattern without caching NXDOMAIN/SERVFAIL/timeout
+  failures.
+- [ ] Evaluate whether the worker-ceiling formula should use observed RTT or a
+  feedback controller instead of the current internal steady-state check budget.
+  This remains deferred until the DNS-cache retest shows whether the remaining
+  stale-target signal is resolver load, checker tail latency, or scheduler
+  pacing.
 - [ ] After the next capacity retest, add validate-config sizing advice that
   explains expected throughput from active site count, check interval,
   `NUM_WORKERS`, and timeout settings. This is deferred until the retest shows

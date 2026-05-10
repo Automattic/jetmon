@@ -704,6 +704,83 @@ func TestCheckReusesSharedTransportForReadableResponses(t *testing.T) {
 	}
 }
 
+func TestDNSCacheReusesFreshLookup(t *testing.T) {
+	oldLookup := dnsLookupIPAddr
+	t.Cleanup(func() { dnsLookupIPAddr = oldLookup })
+
+	var lookups atomic.Int64
+	dnsLookupIPAddr = func(context.Context, string) ([]net.IPAddr, error) {
+		lookups.Add(1)
+		return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
+	}
+
+	cache := newDNSCache()
+	for i := 0; i < 2; i++ {
+		addrs, err := cache.lookup(context.Background(), "Example.TEST.")
+		if err != nil {
+			t.Fatalf("lookup %d: %v", i+1, err)
+		}
+		if len(addrs) != 1 || !addrs[0].IP.Equal(net.ParseIP("127.0.0.1")) {
+			t.Fatalf("lookup %d addrs = %#v, want 127.0.0.1", i+1, addrs)
+		}
+	}
+	if got := lookups.Load(); got != 1 {
+		t.Fatalf("resolver lookups = %d, want 1", got)
+	}
+}
+
+func TestCachedDialContextUsesDNSCache(t *testing.T) {
+	oldLookup := dnsLookupIPAddr
+	oldCache := defaultDNSCache
+	defaultDNSCache = newDNSCache()
+	t.Cleanup(func() {
+		dnsLookupIPAddr = oldLookup
+		defaultDNSCache = oldCache
+	})
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+
+	var lookups atomic.Int64
+	dnsLookupIPAddr = func(context.Context, string) ([]net.IPAddr, error) {
+		lookups.Add(1)
+		return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
+	}
+
+	_, port, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatalf("split listener addr: %v", err)
+	}
+	dial := cachedDialContext(&net.Dialer{Timeout: time.Second})
+	for i := 0; i < 2; i++ {
+		conn, err := dial(context.Background(), "tcp", net.JoinHostPort("cache-test.local", port))
+		if err != nil {
+			t.Fatalf("dial %d: %v", i+1, err)
+		}
+		_ = conn.Close()
+	}
+	if got := lookups.Load(); got != 1 {
+		t.Fatalf("resolver lookups = %d, want 1", got)
+	}
+	_ = ln.Close()
+	<-done
+}
+
 func TestCheckRedirectAlert(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {

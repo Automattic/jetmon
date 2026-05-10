@@ -107,6 +107,15 @@ Scheduler behavior:
   checks sit near the adaptive ceiling while CPU and memory remain low, check
   file-descriptor headroom and the current due-backlog estimate before raising
   host-level limits or splitting buckets across more monitor hosts.
+- The shared HTTP transport includes an in-process positive DNS cache for
+  recently resolved hostnames. This is intentional for production's steady
+  all-day checking model: resolving the same stable hostnames every minute adds
+  resolver load and can create monitor-side `SERVFAIL` noise before a request
+  ever reaches the target. NXDOMAIN and other failed lookups are not cached, and
+  DNS error metadata is still recorded when resolution fails. If operators need
+  authoritative DNS-change detection rather than HTTP reachability through the
+  normal resolver path, use the explicit DNS-monitoring roadmap work instead of
+  treating every HTTP probe as a fresh DNS audit.
   Failure/recovery event handling runs through a bounded sharded background
   queue after freshness and check-history writes complete. Watch
   `scheduler.round.event_queue.job.count`,
