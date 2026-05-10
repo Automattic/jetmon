@@ -66,6 +66,22 @@ The API can expose a derived `cli_batch` field for local API CLI test data when
 | `jetmon_alert_dispatch_progress` | Alert worker high-water marks over transitions |
 | `jetmon_site_tenants` | Tenant-to-site mapping for gateway-scoped API access |
 | `jetmon_process_health` | Durable per-process heartbeat snapshots for host and fleet dashboards |
+| `jetmon_check_targets` | V2-native scheduling target state for the streaming monitor engine |
+
+## Streaming Check Targets
+
+`jetmon_check_targets` is additive scheduling infrastructure for
+`SCHEDULER_ENGINE=streaming`. During migration, `jetpack_monitor_sites` remains
+the source of truth for site config and current legacy status. The target table
+stores derived scheduling details such as source site row, bucket, interval,
+stable phase slot, config hash, and coarse last outcome fields so later
+iterations can sync scheduling state without repeatedly scanning the legacy
+table or writing healthy probe freshness back into it.
+
+The first streaming prototype creates the table but still reloads active config
+from `jetpack_monitor_sites`. That keeps correctness and rollback behavior easy
+to validate before moving config-sync reads fully onto the v2-native target
+table.
 
 ## Process Health
 

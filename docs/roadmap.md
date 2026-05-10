@@ -148,6 +148,20 @@ No active candidate branch is queued here right now.
 
 ### Capacity Scheduler TODO
 
+- [x] Add the first v2-native streaming monitor-engine prototype behind
+  `SCHEDULER_ENGINE=streaming`. The prototype spreads active sites over stable
+  per-interval phases, keeps due scheduling in memory, treats `NUM_WORKERS` as
+  an autoscaling floor rather than the throughput cap, stops writing healthy
+  check-history rows, and batches coarse legacy freshness projection so rollback
+  loses at most the accepted 5-15 minute freshness window.
+- [ ] Move streaming scheduler persistence from broad legacy-table reloads to
+  `jetmon_check_targets` plus change detection. The table exists now, but the
+  first prototype still reloads active config from `jetpack_monitor_sites` so
+  correctness can be validated before optimizing config-sync reads.
+- [ ] Add uptime-bench scenarios for streaming mode that explicitly validate
+  phase-spread scheduling, bounded rollback freshness staleness, verifier
+  promotion/recovery, failure-history retention, and steady-state write volume
+  over multi-hour runs.
 - [x] Treat `DATASET_SIZE` as a database fetch page size rather than a total
   per-round work cap, so low page sizes do not leave due sites unchecked.
 - [x] Keep fetching scheduler pages until due work is drained or the process

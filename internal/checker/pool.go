@@ -30,10 +30,23 @@ type Pool struct {
 
 // NewPool creates a Pool with the given initial, min, and max worker counts.
 func NewPool(initial, min, max int) *Pool {
+	return NewPoolWithQueueCap(initial, min, max, max*2)
+}
+
+// NewPoolWithQueueCap creates a Pool with an explicit work/result channel
+// capacity. It is used by streaming schedulers that need a large elastic queue
+// without changing the legacy NewPool queue-size contract.
+func NewPoolWithQueueCap(initial, min, max, queueCap int) *Pool {
+	if queueCap < 1 {
+		queueCap = 1
+	}
+	if max < 1 {
+		max = 1
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	p := &Pool{
-		work:    make(chan Request, max*2),
-		results: make(chan Result, max*2),
+		work:    make(chan Request, queueCap),
+		results: make(chan Result, queueCap),
 		retire:  make(chan struct{}, max),
 		cancel:  cancel,
 		ctx:     ctx,

@@ -73,6 +73,7 @@ var (
 	dbReleaseHost          = db.ReleaseHost
 	dbMarkHostDraining     = db.MarkHostDraining
 	dbGetSitesForBucket    = db.GetSitesForBucket
+	dbListActiveSites      = db.ListActiveSitesForBucketRange
 	dbMarkSiteChecked      = db.MarkSiteChecked
 	dbMarkSitesChecked     = db.MarkSitesChecked
 	dbRecordCheckHistory   = db.RecordCheckHistory
@@ -80,6 +81,7 @@ var (
 	dbUpdateSSLExpiry      = db.UpdateSSLExpiry
 	dbUpdateSSLExpiries    = db.UpdateSSLExpiries
 	dbUpdateSiteStatus     = db.UpdateSiteStatus
+	dbGetSiteStatus        = db.GetSiteStatus
 	dbRecordFalsePositive  = db.RecordFalsePositive
 	dbUpdateLastAlertSent  = db.UpdateLastAlertSent
 	dbCountDueSites        = db.CountDueSitesForBucketRange
@@ -316,23 +318,16 @@ func (o *Orchestrator) Run() {
 	for {
 		select {
 		case <-o.ctx.Done():
-			log.Println("orchestrator: shutting down")
-			if !o.usesPinnedBuckets(config.Get()) {
-				if err := dbMarkHostDraining(stdctx.Background(), o.hostname); err != nil {
-					log.Printf("orchestrator: mark draining: %v", err)
-				}
-			}
-			o.pool.Drain()
-			if o.usesPinnedBuckets(config.Get()) {
-				log.Println("orchestrator: pinned bucket mode active; no jetmon_hosts row to release")
-			} else if err := dbReleaseHost(stdctx.Background(), o.hostname); err != nil {
-				log.Printf("orchestrator: release host: %v", err)
-			}
+			o.shutdown()
 			return
 		default:
 		}
 
 		cfg := config.Get()
+		if cfg.SchedulerEngine == "streaming" {
+			o.runStreamingEngine()
+			return
+		}
 		o.pool.SetMaxSize(cfg.NumWorkers)
 		o.refreshVeriflierClients(cfg)
 
@@ -347,6 +342,23 @@ func (o *Orchestrator) Run() {
 			case <-o.ctx.Done():
 			}
 		}
+	}
+}
+
+func (o *Orchestrator) shutdown() {
+	log.Println("orchestrator: shutting down")
+	if !o.usesPinnedBuckets(config.Get()) {
+		if err := dbMarkHostDraining(stdctx.Background(), o.hostname); err != nil {
+			log.Printf("orchestrator: mark draining: %v", err)
+		}
+	}
+	if o.pool != nil {
+		o.pool.Drain()
+	}
+	if o.usesPinnedBuckets(config.Get()) {
+		log.Println("orchestrator: pinned bucket mode active; no jetmon_hosts row to release")
+	} else if err := dbReleaseHost(stdctx.Background(), o.hostname); err != nil {
+		log.Printf("orchestrator: release host: %v", err)
 	}
 }
 

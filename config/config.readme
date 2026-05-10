@@ -116,6 +116,29 @@ follow-up when the normal interval is longer. Default in the sample config:
 true. Minimal configs that omit the key retain the compatibility default of
 false.
 
+SCHEDULER_ENGINE
+Scheduler implementation to run. "legacy" keeps the v2 round/page scheduler for
+drop-in rollout safety. "streaming" enables the v2-native time-wheel scheduler:
+active site config is loaded into memory, checks are spread over each site's
+interval by stable phase, and healthy checks do not write per-probe freshness or
+history rows. Event, recovery, SSL, TLS, retry, and WPCOM behavior stays routed
+through the existing v2 incident code. Default: legacy.
+
+STREAMING_LEGACY_PROJECTION_INTERVAL_MIN
+Coarse freshness projection interval used only when SCHEDULER_ENGINE is
+"streaming". Streaming mode does not update jetpack_monitor_sites.last_checked_at
+after every successful probe; instead it batches the latest observation for each
+site at this cadence so a rollback to the legacy scheduler loses at most this
+many minutes of freshness data in normal operation. The accepted rollout window
+is 5-15 minutes. Default: 10.
+
+STREAMING_TARGET_RELOAD_SEC
+How often streaming mode reloads active site config from jetpack_monitor_sites.
+This is not a performance cap and does not control check cadence. It bounds how
+quickly site activation, URL, interval, keyword, header, timeout, redirect, and
+maintenance-window changes are reflected in the in-memory schedule. Default:
+300.
+
 LOG_FORMAT
 Log output format. Set to "json" for structured logging (e.g. for log aggregators), or "text" for human-readable output. Default: "text".
 

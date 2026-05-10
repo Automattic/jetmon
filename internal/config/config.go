@@ -76,16 +76,24 @@ type Config struct {
 
 	AlertCooldownMinutes int `json:"ALERT_COOLDOWN_MINUTES"`
 
-	StatsUpdateIntervalMS     int   `json:"STATS_UPDATE_INTERVAL_MS"`
-	StatsdSendMemUsage        bool  `json:"STATSD_SEND_MEM_USAGE"`
-	TimeBetweenNoticesMin     int   `json:"TIME_BETWEEN_NOTICES_MIN"`
-	MinTimeBetweenRoundsSec   int   `json:"MIN_TIME_BETWEEN_ROUNDS_SEC"`
-	NetCommsTimeout           int   `json:"NET_COMMS_TIMEOUT"`
-	BodyReadMaxBytes          int64 `json:"BODY_READ_MAX_BYTES"`
-	BodyReadMaxMS             int   `json:"BODY_READ_MAX_MS"`
-	KeywordReadMaxBytes       int64 `json:"KEYWORD_READ_MAX_BYTES"`
-	KeywordReadMaxMS          int   `json:"KEYWORD_READ_MAX_MS"`
-	UseVariableCheckIntervals bool  `json:"USE_VARIABLE_CHECK_INTERVALS"`
+	StatsUpdateIntervalMS     int    `json:"STATS_UPDATE_INTERVAL_MS"`
+	StatsdSendMemUsage        bool   `json:"STATSD_SEND_MEM_USAGE"`
+	TimeBetweenNoticesMin     int    `json:"TIME_BETWEEN_NOTICES_MIN"`
+	MinTimeBetweenRoundsSec   int    `json:"MIN_TIME_BETWEEN_ROUNDS_SEC"`
+	NetCommsTimeout           int    `json:"NET_COMMS_TIMEOUT"`
+	BodyReadMaxBytes          int64  `json:"BODY_READ_MAX_BYTES"`
+	BodyReadMaxMS             int    `json:"BODY_READ_MAX_MS"`
+	KeywordReadMaxBytes       int64  `json:"KEYWORD_READ_MAX_BYTES"`
+	KeywordReadMaxMS          int    `json:"KEYWORD_READ_MAX_MS"`
+	UseVariableCheckIntervals bool   `json:"USE_VARIABLE_CHECK_INTERVALS"`
+	SchedulerEngine           string `json:"SCHEDULER_ENGINE"`
+
+	// StreamingLegacyProjectionIntervalMin controls the coarse compatibility
+	// freshness write interval used by the streaming scheduler. It intentionally
+	// does not affect check cadence; it only bounds last_checked_at staleness
+	// for rollback to legacy readers.
+	StreamingLegacyProjectionIntervalMin int `json:"STREAMING_LEGACY_PROJECTION_INTERVAL_MIN"`
+	StreamingTargetReloadSec             int `json:"STREAMING_TARGET_RELOAD_SEC"`
 
 	LogFormat         string `json:"LOG_FORMAT"`
 	DashboardPort     int    `json:"DASHBOARD_PORT"`
@@ -197,36 +205,39 @@ func GetDB() *DBConfig {
 
 func defaults() *Config {
 	return &Config{
-		NumWorkers:                   60,
-		NumToProcess:                 40,
-		DatasetSize:                  100,
-		WorkerMaxMemMB:               0,
-		LegacyStatusProjectionEnable: true,
-		BucketTotal:                  1000,
-		BucketTarget:                 500,
-		BucketHeartbeatGraceSec:      600,
-		BatchSize:                    32,
-		VeriflierBatchSize:           200,
-		SQLUpdateBatch:               1,
-		DBConfigUpdatesMin:           10,
-		PeerOfflineLimit:             3,
-		NumOfChecks:                  3,
-		TimeBetweenChecksSec:         30,
-		AlertCooldownMinutes:         30,
-		StatsUpdateIntervalMS:        10000,
-		TimeBetweenNoticesMin:        59,
-		MinTimeBetweenRoundsSec:      300,
-		NetCommsTimeout:              10,
-		BodyReadMaxBytes:             1048576,
-		BodyReadMaxMS:                250,
-		KeywordReadMaxBytes:          1048576,
-		KeywordReadMaxMS:             0,
-		LogFormat:                    "text",
-		DashboardPort:                8080,
-		DashboardBindAddr:            "127.0.0.1",
-		DebugPort:                    6060,
-		EmailTransport:               "stub",
-		EmailFrom:                    "jetmon@noreply.invalid",
+		NumWorkers:                           60,
+		NumToProcess:                         40,
+		DatasetSize:                          100,
+		WorkerMaxMemMB:                       0,
+		LegacyStatusProjectionEnable:         true,
+		BucketTotal:                          1000,
+		BucketTarget:                         500,
+		BucketHeartbeatGraceSec:              600,
+		BatchSize:                            32,
+		VeriflierBatchSize:                   200,
+		SQLUpdateBatch:                       1,
+		DBConfigUpdatesMin:                   10,
+		PeerOfflineLimit:                     3,
+		NumOfChecks:                          3,
+		TimeBetweenChecksSec:                 30,
+		AlertCooldownMinutes:                 30,
+		StatsUpdateIntervalMS:                10000,
+		TimeBetweenNoticesMin:                59,
+		MinTimeBetweenRoundsSec:              300,
+		NetCommsTimeout:                      10,
+		BodyReadMaxBytes:                     1048576,
+		BodyReadMaxMS:                        250,
+		KeywordReadMaxBytes:                  1048576,
+		KeywordReadMaxMS:                     0,
+		SchedulerEngine:                      "legacy",
+		StreamingLegacyProjectionIntervalMin: 10,
+		StreamingTargetReloadSec:             300,
+		LogFormat:                            "text",
+		DashboardPort:                        8080,
+		DashboardBindAddr:                    "127.0.0.1",
+		DebugPort:                            6060,
+		EmailTransport:                       "stub",
+		EmailFrom:                            "jetmon@noreply.invalid",
 	}
 }
 
@@ -306,6 +317,28 @@ func validate(cfg *Config) error {
 	}
 	if cfg.MinTimeBetweenRoundsSec < 0 {
 		return fmt.Errorf("MIN_TIME_BETWEEN_ROUNDS_SEC must be >= 0")
+	}
+	switch cfg.SchedulerEngine {
+	case "", "legacy":
+		cfg.SchedulerEngine = "legacy"
+	case "streaming":
+	default:
+		return fmt.Errorf("SCHEDULER_ENGINE must be 'legacy' or 'streaming'")
+	}
+	if cfg.StreamingLegacyProjectionIntervalMin == 0 {
+		cfg.StreamingLegacyProjectionIntervalMin = 10
+	}
+	if cfg.StreamingLegacyProjectionIntervalMin < 0 {
+		return fmt.Errorf("STREAMING_LEGACY_PROJECTION_INTERVAL_MIN must be > 0")
+	}
+	if cfg.StreamingLegacyProjectionIntervalMin > 15 {
+		return fmt.Errorf("STREAMING_LEGACY_PROJECTION_INTERVAL_MIN must be <= 15")
+	}
+	if cfg.StreamingTargetReloadSec == 0 {
+		cfg.StreamingTargetReloadSec = 300
+	}
+	if cfg.StreamingTargetReloadSec < 0 {
+		return fmt.Errorf("STREAMING_TARGET_RELOAD_SEC must be > 0")
 	}
 	if cfg.LogFormat != "text" && cfg.LogFormat != "json" {
 		return fmt.Errorf("LOG_FORMAT must be 'text' or 'json'")

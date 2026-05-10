@@ -42,6 +42,9 @@ Key settings:
 | `DELIVERY_OWNER_HOST` | empty | Optional host allowed to run embedded delivery workers |
 | `DEBUG_PORT` | 6060 | localhost-only pprof port, 0 disables it |
 | `EMAIL_TRANSPORT` | `stub` | `stub`, `smtp`, or `wpcom` |
+| `SCHEDULER_ENGINE` | `legacy` | `legacy` round/page scheduler or `streaming` v2-native scheduler prototype |
+| `STREAMING_LEGACY_PROJECTION_INTERVAL_MIN` | 10 | Coarse `last_checked_at` rollback projection interval for streaming mode |
+| `STREAMING_TARGET_RELOAD_SEC` | 300 | Active site config reload cadence for streaming mode |
 
 Scheduler behavior:
 
@@ -65,6 +68,15 @@ Scheduler behavior:
   reporting queries do not run on every short scheduler poll. Use
   `scheduler.round.due_count_sampled.count` to distinguish sampled polls from
   intentionally skipped reporting polls.
+- With `SCHEDULER_ENGINE=streaming`, Jetmon uses a v2-native time-wheel
+  scheduler instead of database due-row polling. Active sites are spread over
+  stable phases inside each site's interval, healthy probes avoid per-check
+  history/freshness writes, and the checker pool target is derived from active
+  site rate plus observed latency. Streaming mode keeps event, retry, verifier,
+  SSL/TLS, recovery, and WPCOM behavior on the existing v2 incident path. It
+  batches legacy `last_checked_at`/`next_check_at` projection at
+  `STREAMING_LEGACY_PROJECTION_INTERVAL_MIN` so rollback to the legacy scheduler
+  has bounded freshness loss rather than exact per-check freshness.
 
 See [../config/config.readme](../config/config.readme) for the full option
 reference.

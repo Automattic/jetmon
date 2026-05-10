@@ -48,6 +48,39 @@ func GetSitesForBucket(ctx context.Context, bucketMin, bucketMax, batchSize int,
 	}
 	defer rows.Close()
 
+	return scanSiteRows(rows)
+}
+
+// ListActiveSitesForBucketRange pages active site config for the streaming
+// scheduler. It intentionally ignores last_checked_at and next_check_at: those
+// are legacy scheduler projections, while streaming mode maintains due time in
+// memory and writes coarse rollback freshness separately.
+func ListActiveSitesForBucketRange(ctx context.Context, bucketMin, bucketMax int, afterBlogID int64, limit int) ([]Site, error) {
+	if limit <= 0 {
+		limit = 5000
+	}
+	rows, err := db.QueryContext(ctx, `
+		SELECT
+			jetpack_monitor_site_id, blog_id, bucket_no, monitor_url,
+			monitor_active, site_status, last_status_change, check_interval, last_checked_at, next_check_at,
+			ssl_expiry_date, check_keyword, forbidden_keyword, forbidden_keywords, maintenance_start, maintenance_end,
+			custom_headers, timeout_seconds, redirect_policy, alert_cooldown_minutes, last_alert_sent_at
+		FROM jetpack_monitor_sites
+		WHERE monitor_active = 1
+		  AND bucket_no BETWEEN ? AND ?
+		  AND blog_id > ?
+		ORDER BY blog_id ASC
+		LIMIT ?`,
+		bucketMin, bucketMax, afterBlogID, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query active sites: %w", err)
+	}
+	defer rows.Close()
+	return scanSiteRows(rows)
+}
+
+func scanSiteRows(rows *sql.Rows) ([]Site, error) {
 	var sites []Site
 	for rows.Next() {
 		var s Site
@@ -68,7 +101,10 @@ func GetSitesForBucket(ctx context.Context, bucketMin, bucketMax, batchSize int,
 		}
 		sites = append(sites, s)
 	}
-	return sites, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return sites, nil
 }
 
 // CountActiveSitesForBucketRange returns the number of active monitor rows in
@@ -139,6 +175,21 @@ func UpdateSiteStatus(ctx context.Context, blogID int64, status int, changedAt t
 		status, changedAt.UTC(), blogID,
 	)
 	return err
+}
+
+// GetSiteStatus reads the legacy status projection for one site. Streaming
+// mode uses this sparingly after verifier escalation so its in-memory target
+// state does not send a recovery notification after a false alarm.
+func GetSiteStatus(ctx context.Context, blogID int64) (int, error) {
+	var status int
+	err := db.QueryRowContext(ctx,
+		`SELECT site_status FROM jetpack_monitor_sites WHERE blog_id = ?`,
+		blogID,
+	).Scan(&status)
+	if err != nil {
+		return 0, fmt.Errorf("get site status: %w", err)
+	}
+	return status, nil
 }
 
 // UpdateSiteStatusTx is the transaction-aware variant of UpdateSiteStatus, used
