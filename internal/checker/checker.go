@@ -422,12 +422,9 @@ func Check(ctx context.Context, req Request) Result {
 	}
 	ctx = httptrace.WithClientTrace(ctx, trace)
 
-	headers := make(map[string]string)
-	for k, v := range req.CustomHeaders {
-		headers[k] = v
-	}
+	headers := req.CustomHeaders
 
-	redirectChain := []string{}
+	var redirectChain []string
 	redirectPolicyStr := string(req.RedirectPolicy)
 	if redirectPolicyStr == "" {
 		redirectPolicyStr = string(RedirectFollow)

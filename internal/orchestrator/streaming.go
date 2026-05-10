@@ -47,6 +47,19 @@ type streamingTarget struct {
 	queued          bool
 	active          bool
 	lastProjectedAt time.Time
+
+	checkRequest       checker.Request
+	checkRequestConfig streamingRequestConfig
+	checkRequestReady  bool
+	checkRequestDirty  bool
+}
+
+type streamingRequestConfig struct {
+	timeoutSeconds      int
+	bodyReadMaxBytes    int64
+	bodyReadMaxMS       int
+	keywordReadMaxBytes int64
+	keywordReadMaxMS    int
 }
 
 type streamingPlanner struct {
@@ -71,12 +84,14 @@ func (p *streamingPlanner) merge(sites []db.Site, now time.Time) (added, updated
 		if target, ok := p.targets[site.BlogID]; ok {
 			target.site = site
 			target.active = true
+			target.checkRequestDirty = true
 			updated++
 			continue
 		}
 		target := &streamingTarget{
-			site:   site,
-			active: true,
+			site:              site,
+			active:            true,
+			checkRequestDirty: true,
 		}
 		if site.LastCheckedAt != nil {
 			target.lastProjectedAt = site.LastCheckedAt.UTC()
@@ -675,7 +690,7 @@ func (o *Orchestrator) dispatchStreamingPending(cfg *config.Config, pending []*s
 			pending = pending[1:]
 			continue
 		}
-		if !o.pool.Submit(checkRequestForSite(cfg, target.site)) {
+		if !o.pool.Submit(streamingCheckRequestForTarget(cfg, target)) {
 			stats.backpressureWaits++
 			return pending
 		}
@@ -727,6 +742,30 @@ func (o *Orchestrator) processStreamingSideEffects(site db.Site, res checker.Res
 	}
 	summary.eventDuration += time.Since(eventStart)
 	return summary, site
+}
+
+func streamingCheckRequestForTarget(cfg *config.Config, target *streamingTarget) checker.Request {
+	if target == nil {
+		return checker.Request{}
+	}
+	requestConfig := streamingRequestConfigForSite(cfg, target.site)
+	if !target.checkRequestReady || target.checkRequestDirty || target.checkRequestConfig != requestConfig {
+		target.checkRequest = checkRequestForSite(cfg, target.site)
+		target.checkRequestConfig = requestConfig
+		target.checkRequestReady = true
+		target.checkRequestDirty = false
+	}
+	return target.checkRequest
+}
+
+func streamingRequestConfigForSite(cfg *config.Config, site db.Site) streamingRequestConfig {
+	return streamingRequestConfig{
+		timeoutSeconds:      timeoutForSite(cfg, site),
+		bodyReadMaxBytes:    cfg.BodyReadMaxBytes,
+		bodyReadMaxMS:       cfg.BodyReadMaxMS,
+		keywordReadMaxBytes: cfg.KeywordReadMaxBytes,
+		keywordReadMaxMS:    cfg.KeywordReadMaxMS,
+	}
 }
 
 func streamingSideEffectsNeeded(target *streamingTarget, res checker.Result, pending map[int64]int, statusCache map[int64]int, retries *retryQueue, pressure bool) bool {

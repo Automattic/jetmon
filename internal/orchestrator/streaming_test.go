@@ -393,6 +393,67 @@ func TestStreamingSideEffectsNeededSuppressesNewLocalFailuresUnderPressure(t *te
 	}
 }
 
+func TestStreamingCheckRequestForTargetCachesParsedSiteFields(t *testing.T) {
+	headers := `{"X-Test":"one"}`
+	forbidden := `["blocked",""]`
+	site := db.Site{
+		BlogID:            42,
+		MonitorURL:        "https://example.com",
+		CheckInterval:     5,
+		CustomHeaders:     &headers,
+		ForbiddenKeywords: &forbidden,
+	}
+	cfg := &config.Config{
+		NetCommsTimeout:     10,
+		BodyReadMaxBytes:    64,
+		BodyReadMaxMS:       20,
+		KeywordReadMaxBytes: 128,
+		KeywordReadMaxMS:    30,
+	}
+	target := &streamingTarget{site: site, checkRequestDirty: true}
+
+	req := streamingCheckRequestForTarget(cfg, target)
+	if !target.checkRequestReady {
+		t.Fatal("check request was not marked ready")
+	}
+	if target.checkRequestDirty {
+		t.Fatal("check request stayed dirty after refresh")
+	}
+	if got := req.CustomHeaders["X-Test"]; got != "one" {
+		t.Fatalf("CustomHeaders[X-Test] = %q, want one", got)
+	}
+	if len(req.ForbiddenKeywords) != 1 || req.ForbiddenKeywords[0] != "blocked" {
+		t.Fatalf("ForbiddenKeywords = %#v, want [blocked]", req.ForbiddenKeywords)
+	}
+
+	cfg.BodyReadMaxMS = 21
+	req = streamingCheckRequestForTarget(cfg, target)
+	if req.BodyReadMaxMS != 21 {
+		t.Fatalf("BodyReadMaxMS = %d after config change, want 21", req.BodyReadMaxMS)
+	}
+}
+
+func TestStreamingPlannerMergeMarksCheckRequestDirty(t *testing.T) {
+	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	headers := `{"X-Test":"one"}`
+	site := db.Site{BlogID: 42, MonitorURL: "https://example.com", CheckInterval: 5, CustomHeaders: &headers}
+	cfg := &config.Config{NetCommsTimeout: 10}
+	planner := newStreamingPlanner([]db.Site{site}, now)
+	target := planner.targets[42]
+	_ = streamingCheckRequestForTarget(cfg, target)
+
+	updatedHeaders := `{"X-Test":"two"}`
+	site.CustomHeaders = &updatedHeaders
+	planner.merge([]db.Site{site}, now)
+	if !target.checkRequestDirty {
+		t.Fatal("planner merge did not mark cached check request dirty")
+	}
+	req := streamingCheckRequestForTarget(cfg, target)
+	if got := req.CustomHeaders["X-Test"]; got != "two" {
+		t.Fatalf("CustomHeaders[X-Test] = %q after merge, want two", got)
+	}
+}
+
 func TestStreamingCheckCadenceAddsBoundedHeadroom(t *testing.T) {
 	if got := streamingCheckCadence(db.Site{CheckInterval: 5}); got != 285*time.Second {
 		t.Fatalf("streamingCheckCadence(5m) = %s, want 285s", got)
