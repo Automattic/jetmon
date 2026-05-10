@@ -249,6 +249,8 @@ type Orchestrator struct {
 	lastDueCountAt        time.Time
 	lastProjectionDriftAt time.Time
 
+	wpcomNotifyDisabledLogOnce sync.Once
+
 	ctx    stdctx.Context
 	cancel stdctx.CancelFunc
 }
@@ -1574,7 +1576,9 @@ func (o *Orchestrator) swallowMaintenanceFailure(site db.Site, res checker.Resul
 func (o *Orchestrator) sendNotification(site db.Site, res checker.Result, status int, changeTime time.Time, vResults []veriflier.CheckResult) {
 	if !config.WPCOMNotifyEnabled() {
 		emitCounter("wpcom.notification.disabled.count", 1)
-		log.Printf("orchestrator: wpcom notification disabled; skipping blog_id=%d status=%d", site.BlogID, status)
+		o.wpcomNotifyDisabledLogOnce.Do(func() {
+			log.Print("orchestrator: wpcom notification disabled; skipping legacy status-change notifications")
+		})
 		return
 	}
 
