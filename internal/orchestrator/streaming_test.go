@@ -296,6 +296,38 @@ func TestStreamingBacklogWorkerTargetUsesSpareHeadroom(t *testing.T) {
 	}
 }
 
+func TestStreamingShouldDeferPeriodicReloadOnlyWhenHotPathIsBehind(t *testing.T) {
+	planner := &streamingPlanner{targets: make(map[int64]*streamingTarget)}
+	for i := int64(1); i <= 100000; i++ {
+		planner.targets[i] = &streamingTarget{
+			site:   db.Site{BlogID: i, CheckInterval: 5},
+			active: true,
+		}
+	}
+
+	if !streamingShouldDeferPeriodicReload(planner, 50000, 0, 0, 5000, streamingStats{}) {
+		t.Fatal("large pending backlog should defer periodic reload")
+	}
+	if !streamingShouldDeferPeriodicReload(planner, 0, streamingResultBackpressureDepth(5000, planner.activeCount()), 0, 5000, streamingStats{}) {
+		t.Fatal("large result backlog should defer periodic reload")
+	}
+	if !streamingShouldDeferPeriodicReload(planner, 0, 0, 0, 5000, streamingStats{maxLag: 2 * time.Minute}) {
+		t.Fatal("large scheduler lag should defer periodic reload")
+	}
+	if streamingShouldDeferPeriodicReload(planner, 10, 10, 0, 5000, streamingStats{}) {
+		t.Fatal("healthy hot path should not defer periodic reload")
+	}
+}
+
+func TestStreamingDeferredReloadRetriesSoonerThanFullInterval(t *testing.T) {
+	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	lastReload := streamingDeferredReloadLastReload(now, 5*time.Minute)
+
+	if next := lastReload.Add(5 * time.Minute); !next.Equal(now.Add(streamingReloadDeferInterval)) {
+		t.Fatalf("next deferred reload = %s, want %s", next, now.Add(streamingReloadDeferInterval))
+	}
+}
+
 func TestStreamingScaleLatencyCapUsesDefaultTimeout(t *testing.T) {
 	if got := streamingScaleLatencyCap(&config.Config{}); got != 10*time.Second {
 		t.Fatalf("streamingScaleLatencyCap(default) = %s, want 10s", got)

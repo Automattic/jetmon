@@ -19,6 +19,7 @@ const (
 	streamingReportInterval          = time.Minute
 	streamingScaleInterval           = 15 * time.Second
 	streamingProjectionFlushInterval = 10 * time.Second
+	streamingReloadDeferInterval     = time.Minute
 	streamingProjectionSlack         = 2 * time.Second
 	streamingEmptyTargetPollInterval = 5 * time.Second
 	streamingActiveCountPollInterval = 30 * time.Second
@@ -708,11 +709,18 @@ func (o *Orchestrator) runStreamingEngine() {
 				lastActiveCountPoll = now
 			}
 
-			if now.Sub(lastReload) >= time.Duration(cfg.StreamingTargetReloadSec)*time.Second {
+			reloadInterval := time.Duration(cfg.StreamingTargetReloadSec) * time.Second
+			if now.Sub(lastReload) >= reloadInterval {
 				if reloadReason == "" {
 					reloadReason = "periodic"
 				}
-				startReload(reloadReason, now)
+				if reloadReason == "periodic" && streamingShouldDeferPeriodicReload(planner, len(pending), o.pool.ResultDepth(), sideEffects.queueDepth(), o.pool.WorkerCount(), stats) {
+					lastReload = streamingDeferredReloadLastReload(now, reloadInterval)
+					log.Printf("orchestrator: streaming target reload deferred reason=periodic active=%d pending=%d result_depth=%d side_effect_depth=%d max_lag=%s",
+						planner.activeCount(), len(pending), o.pool.ResultDepth(), sideEffects.queueDepth(), stats.maxLag.Round(time.Millisecond))
+				} else {
+					startReload(reloadReason, now)
+				}
 			}
 
 			due := planner.popDue(now)
@@ -1206,6 +1214,44 @@ func streamingBacklogWorkerTarget(base, active, backlog int) int {
 		target = active
 	}
 	return target
+}
+
+func streamingShouldDeferPeriodicReload(planner *streamingPlanner, pending, resultDepth, sideEffectDepth, workers int, stats streamingStats) bool {
+	if planner == nil || planner.activeCount() == 0 {
+		return false
+	}
+	active := planner.activeCount()
+	if pending > streamingReloadPendingDeferDepth(active, workers) {
+		return true
+	}
+	if resultDepth > streamingResultBackpressureDepth(workers, active)/2 {
+		return true
+	}
+	if sideEffectDepth > streamingSideEffectBackpressureDepth(workers, active)/2 {
+		return true
+	}
+	return stats.maxLag > streamingReportInterval
+}
+
+func streamingReloadPendingDeferDepth(active, workers int) int {
+	if active < 1 {
+		return 0
+	}
+	depth := active / 100
+	if workerBased := workers * 2; workerBased > depth {
+		depth = workerBased
+	}
+	if depth < 1000 {
+		return 1000
+	}
+	return depth
+}
+
+func streamingDeferredReloadLastReload(now time.Time, reloadInterval time.Duration) time.Time {
+	if reloadInterval <= streamingReloadDeferInterval {
+		return now
+	}
+	return now.Add(-(reloadInterval - streamingReloadDeferInterval))
 }
 
 func streamingLoadPageSize(cfg *config.Config) int {
