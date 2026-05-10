@@ -698,6 +698,29 @@ nameserver 2600:1702:50c1:71bf:1298:36ff:fea4:d4ee
 	}
 }
 
+func TestOrderedResolverAddrsPrefersIPv4ButHonorsNetwork(t *testing.T) {
+	addrs := []net.IPAddr{
+		{IP: net.ParseIP("2001:db8::1")},
+		{IP: net.ParseIP("192.0.2.10")},
+		{IP: net.ParseIP("198.51.100.20")},
+	}
+
+	got := orderedResolverAddrs(addrs, "tcp")
+	if len(got) != 3 || got[0].IP.String() != "192.0.2.10" || got[1].IP.String() != "198.51.100.20" || got[2].IP.String() != "2001:db8::1" {
+		t.Fatalf("orderedResolverAddrs(tcp) = %#v, want IPv4 addresses first", got)
+	}
+
+	got = orderedResolverAddrs(addrs, "tcp4")
+	if len(got) != 2 || got[0].IP.To4() == nil || got[1].IP.To4() == nil {
+		t.Fatalf("orderedResolverAddrs(tcp4) = %#v, want IPv4 only", got)
+	}
+
+	got = orderedResolverAddrs(addrs, "tcp6")
+	if len(got) != 1 || got[0].IP.To4() != nil {
+		t.Fatalf("orderedResolverAddrs(tcp6) = %#v, want IPv6 only", got)
+	}
+}
+
 func TestCheckRedirectAlert(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {

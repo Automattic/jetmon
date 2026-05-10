@@ -34,6 +34,8 @@ const (
 	streamingWorkerHeadroom          = 2.0
 	streamingMinWorkerStep           = 50
 	streamingMinBackpressureDepth    = 1024
+	streamingFailurePressureMin      = 1000
+	streamingFailurePressurePercent  = 25
 )
 
 type streamingTarget struct {
@@ -113,10 +115,10 @@ func (p *streamingPlanner) recalculateRequiredRate() {
 	p.requiredRate = rate
 }
 
-func (p *streamingPlanner) scheduleAfterResult(target *streamingTarget, res checker.Result) {
+func (p *streamingPlanner) scheduleAfterResult(target *streamingTarget, res checker.Result, allowImmediateRetry bool) {
 	siteInterval := siteCheckInterval(target.site)
 	checkedAt := resultCheckedAt(res)
-	if res.IsFailure() && target.site.SiteStatus != statusConfirmedDown && siteInterval > failedCheckRetryInterval {
+	if allowImmediateRetry && res.IsFailure() && target.site.SiteStatus != statusConfirmedDown && siteInterval > failedCheckRetryInterval {
 		p.scheduleAt(target, checkedAt.Add(failedCheckRetryInterval))
 		return
 	}
@@ -506,14 +508,14 @@ func (o *Orchestrator) runStreamingEngine() {
 				}
 				pendingSideEffects[target.site.BlogID]++
 			}
-			planner.scheduleAfterResult(target, res)
+			planner.scheduleAfterResult(target, res, !streamingFailurePressure(stats))
 			o.queueStreamingProjection(cfg, target, res, pendingProjection)
 		case <-tick.C:
 			now := nowFunc().UTC()
 			cfg = config.Get()
 			o.refreshVeriflierClients(cfg)
 			if now.Sub(lastScale) >= streamingScaleInterval {
-				o.applyStreamingWorkerTarget(cfg, planner, stats.scaleLatency(), len(pending), sideEffects.queueDepth())
+				o.applyStreamingWorkerTarget(cfg, planner, stats, len(pending), sideEffects.queueDepth())
 				lastScale = now
 			}
 
@@ -867,7 +869,7 @@ func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streami
 		metrics.WriteStatsFiles(sps, queueDepth, o.totalChecked)
 	}
 
-	log.Printf("orchestrator: streaming summary active=%d required_rate=%.2f/s selected=%d dispatched=%d completed=%d side_effects=%d pending=%d active_checks=%d queue_depth=%d result_depth=%d side_effect_depth=%d workers=%d worker_target=%d sps=%d elapsed=%s max_lag=%s avg_latency=%s scale_latency=%s successes=%d failures=%d history_rows=%d ssl_rows=%d stale_results=%d backpressure_waits=%d side_effect_waits=%d result_pauses=%d side_effect_pauses=%d dispatch_limited=%d",
+	log.Printf("orchestrator: streaming summary active=%d required_rate=%.2f/s selected=%d dispatched=%d completed=%d side_effects=%d pending=%d active_checks=%d queue_depth=%d result_depth=%d side_effect_depth=%d workers=%d worker_target=%d sps=%d elapsed=%s max_lag=%s avg_latency=%s scale_latency=%s successes=%d failures=%d failure_pressure=%t history_rows=%d ssl_rows=%d stale_results=%d backpressure_waits=%d side_effect_waits=%d result_pauses=%d side_effect_pauses=%d dispatch_limited=%d",
 		planner.activeCount(),
 		planner.requiredChecksPerSecond(),
 		stats.selected,
@@ -888,6 +890,7 @@ func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streami
 		scaleLatency.Round(time.Millisecond),
 		stats.checkSuccesses,
 		stats.checkFailures,
+		streamingFailurePressure(stats),
 		stats.historyRows,
 		stats.sslRows,
 		stats.staleResults,
@@ -899,16 +902,20 @@ func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streami
 	)
 }
 
-func (o *Orchestrator) applyStreamingWorkerTarget(cfg *config.Config, planner *streamingPlanner, latency time.Duration, pending, sideEffectDepth int) int {
+func (o *Orchestrator) applyStreamingWorkerTarget(cfg *config.Config, planner *streamingPlanner, stats streamingStats, pending, sideEffectDepth int) int {
+	latency := stats.scaleLatency()
 	desiredTarget := streamingWorkerTarget(cfg, planner, latency)
-	if sideEffectDepth < streamingSideEffectBackpressureDepth(o.pool.WorkerCount(), planner.activeCount()) {
+	pressure := streamingFailurePressure(stats)
+	if !pressure && sideEffectDepth < streamingSideEffectBackpressureDepth(o.pool.WorkerCount(), planner.activeCount()) {
 		desiredTarget = streamingBacklogWorkerTarget(desiredTarget, planner.activeCount(), pending+o.pool.QueueDepth())
+	} else if pressure && desiredTarget > o.pool.WorkerCount() {
+		desiredTarget = o.pool.WorkerCount()
 	}
-	workerTarget := streamingDampedWorkerTarget(o.pool.WorkerCount(), desiredTarget)
+	workerTarget := streamingDampedWorkerTarget(o.pool.WorkerCount(), desiredTarget, pressure)
 	if planner.activeCount() > 0 {
 		if added := o.pool.SetSizeBounds(workerTarget, workerTarget); added > 0 {
-			log.Printf("orchestrator: streaming prewarmed check pool by %d workers (target=%d desired=%d active_targets=%d)",
-				added, workerTarget, desiredTarget, planner.activeCount())
+			log.Printf("orchestrator: streaming prewarmed check pool by %d workers (target=%d desired=%d active_targets=%d failure_pressure=%t)",
+				added, workerTarget, desiredTarget, planner.activeCount(), pressure)
 		}
 	} else {
 		o.pool.SetSizeBounds(1, workerTarget)
@@ -916,7 +923,7 @@ func (o *Orchestrator) applyStreamingWorkerTarget(cfg *config.Config, planner *s
 	return workerTarget
 }
 
-func streamingDampedWorkerTarget(current, desired int) int {
+func streamingDampedWorkerTarget(current, desired int, pressure bool) int {
 	if current < 1 || desired < 1 {
 		return desired
 	}
@@ -932,6 +939,9 @@ func streamingDampedWorkerTarget(current, desired int) int {
 	}
 	if desired < current {
 		step := current / 5
+		if pressure {
+			step = current / 2
+		}
 		if step < streamingMinWorkerStep {
 			step = streamingMinWorkerStep
 		}
@@ -941,6 +951,14 @@ func streamingDampedWorkerTarget(current, desired int) int {
 		return desired
 	}
 	return desired
+}
+
+func streamingFailurePressure(stats streamingStats) bool {
+	total := stats.checkSuccesses + stats.checkFailures
+	if total < streamingFailurePressureMin {
+		return false
+	}
+	return stats.checkFailures*100 >= total*streamingFailurePressurePercent
 }
 
 func streamingBacklogWorkerTarget(base, active, backlog int) int {

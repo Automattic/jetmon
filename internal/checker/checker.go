@@ -51,11 +51,7 @@ var defaultTransport = newCheckTransport()
 
 func newCheckTransport() *http.Transport {
 	return &http.Transport{
-		DialContext: (&net.Dialer{
-			Resolver:  newCheckResolver(),
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
+		DialContext: newCheckDialContext(newCheckResolver()),
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: false,
 			// Deprecated TLS versions are still site-reachability signals.
@@ -67,6 +63,56 @@ func newCheckTransport() *http.Transport {
 		IdleConnTimeout:     30 * time.Second,
 		MaxIdleConns:        1024,
 		MaxIdleConnsPerHost: 8,
+	}
+}
+
+func newCheckDialContext(resolver *net.Resolver) func(context.Context, string, string) (net.Conn, error) {
+	dialer := &net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
+	if resolver == nil {
+		return dialer.DialContext
+	}
+	return func(ctx context.Context, network, address string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(address)
+		if err != nil {
+			return nil, err
+		}
+		if ip := net.ParseIP(host); ip != nil {
+			return dialer.DialContext(ctx, network, address)
+		}
+
+		trace := httptrace.ContextClientTrace(ctx)
+		if trace != nil && trace.DNSStart != nil {
+			trace.DNSStart(httptrace.DNSStartInfo{Host: host})
+		}
+		addrs, err := resolver.LookupIPAddr(ctx, host)
+		if trace != nil && trace.DNSDone != nil {
+			trace.DNSDone(httptrace.DNSDoneInfo{Addrs: addrs, Err: err})
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		var firstErr error
+		for _, addr := range orderedResolverAddrs(addrs, network) {
+			target := net.JoinHostPort(addr.IP.String(), port)
+			conn, err := dialer.DialContext(ctx, network, target)
+			if err == nil {
+				return conn, nil
+			}
+			if firstErr == nil {
+				firstErr = err
+			}
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+		}
+		if firstErr != nil {
+			return nil, firstErr
+		}
+		return nil, fmt.Errorf("lookup %s: no usable addresses", host)
 	}
 }
 
@@ -85,6 +131,37 @@ func newCheckResolver() *net.Resolver {
 			return d.DialContext(ctx, network, server)
 		},
 	}
+}
+
+func orderedResolverAddrs(addrs []net.IPAddr, network string) []net.IPAddr {
+	ordered := make([]net.IPAddr, 0, len(addrs))
+	wants4 := strings.HasSuffix(network, "4")
+	wants6 := strings.HasSuffix(network, "6")
+	for _, addr := range addrs {
+		if addr.IP == nil {
+			continue
+		}
+		if addr.IP.To4() == nil {
+			continue
+		}
+		if wants6 {
+			continue
+		}
+		ordered = append(ordered, addr)
+	}
+	for _, addr := range addrs {
+		if addr.IP == nil {
+			continue
+		}
+		if addr.IP.To4() != nil {
+			continue
+		}
+		if wants4 {
+			continue
+		}
+		ordered = append(ordered, addr)
+	}
+	return ordered
 }
 
 func directResolverServers() []string {

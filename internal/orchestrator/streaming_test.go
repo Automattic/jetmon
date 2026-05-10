@@ -67,7 +67,7 @@ func TestStreamingScheduleAfterResultKeepsLocalRetryForSeemsDown(t *testing.T) {
 		BlogID:    42,
 		ErrorCode: checker.ErrorConnect,
 		Timestamp: checkedAt,
-	})
+	}, true)
 
 	if got, want := target.dueAt, checkedAt.Add(failedCheckRetryInterval); !got.Equal(want) {
 		t.Fatalf("dueAt = %s, want retry at %s", got, want)
@@ -90,7 +90,7 @@ func TestStreamingScheduleAfterResultUsesNormalCadenceForConfirmedDown(t *testin
 		BlogID:    42,
 		ErrorCode: checker.ErrorConnect,
 		Timestamp: checkedAt,
-	})
+	}, true)
 
 	if got, want := target.dueAt, checkedAt.Add(streamingCheckCadence(target.site)); !got.Equal(want) {
 		t.Fatalf("dueAt = %s, want normal cadence at %s", got, want)
@@ -118,6 +118,32 @@ func TestStreamingScheduleAtNextPhaseAfterRestoresPhaseSpread(t *testing.T) {
 	}
 	if target.dueAt.Equal(checkedAt.Add(failedCheckRetryInterval)) {
 		t.Fatal("dueAt stayed on local retry cadence")
+	}
+}
+
+func TestStreamingScheduleAfterResultSkipsImmediateRetryUnderPressure(t *testing.T) {
+	checkedAt := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	planner := &streamingPlanner{
+		targets: make(map[int64]*streamingTarget),
+		due:     make(map[int64][]int64),
+	}
+	target := &streamingTarget{
+		site:   db.Site{BlogID: 42, CheckInterval: 5, SiteStatus: statusDown},
+		dueAt:  checkedAt,
+		active: true,
+	}
+
+	planner.scheduleAfterResult(target, checker.Result{
+		BlogID:    42,
+		ErrorCode: checker.ErrorConnect,
+		Timestamp: checkedAt,
+	}, false)
+
+	if target.dueAt.Equal(checkedAt.Add(failedCheckRetryInterval)) {
+		t.Fatal("dueAt used immediate retry while failure pressure was active")
+	}
+	if got := target.dueAt.Sub(checkedAt); got < time.Minute {
+		t.Fatalf("dueAt delay = %s, want normal cadence instead of retry cadence", got)
 	}
 }
 
@@ -161,14 +187,32 @@ func TestStreamingWorkerTargetCapsScaleLatencyAtCheckTimeout(t *testing.T) {
 }
 
 func TestStreamingDampedWorkerTargetLimitsGrowthAndShrink(t *testing.T) {
-	if got := streamingDampedWorkerTarget(400, 2000); got != 500 {
+	if got := streamingDampedWorkerTarget(400, 2000, false); got != 500 {
 		t.Fatalf("growth damped target = %d, want 500", got)
 	}
-	if got := streamingDampedWorkerTarget(2000, 400); got != 1600 {
+	if got := streamingDampedWorkerTarget(2000, 400, false); got != 1600 {
 		t.Fatalf("shrink damped target = %d, want 1600", got)
 	}
-	if got := streamingDampedWorkerTarget(60, 80); got != 80 {
+	if got := streamingDampedWorkerTarget(60, 80, false); got != 80 {
 		t.Fatalf("small target change = %d, want 80", got)
+	}
+}
+
+func TestStreamingDampedWorkerTargetShrinksFasterUnderFailurePressure(t *testing.T) {
+	if got := streamingDampedWorkerTarget(2000, 400, true); got != 1000 {
+		t.Fatalf("pressure shrink target = %d, want 1000", got)
+	}
+}
+
+func TestStreamingFailurePressureRequiresVolumeAndRatio(t *testing.T) {
+	if streamingFailurePressure(streamingStats{checkSuccesses: 9, checkFailures: 990}) {
+		t.Fatal("failure pressure should wait for enough completed checks")
+	}
+	if streamingFailurePressure(streamingStats{checkSuccesses: 800, checkFailures: 200}) {
+		t.Fatal("failure pressure should stay off below the failure ratio threshold")
+	}
+	if !streamingFailurePressure(streamingStats{checkSuccesses: 750, checkFailures: 250}) {
+		t.Fatal("failure pressure should trip at the configured failure ratio")
 	}
 }
 
