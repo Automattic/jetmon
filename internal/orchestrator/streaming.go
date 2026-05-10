@@ -1092,8 +1092,12 @@ func streamingDispatchBudget(requiredRate float64, pending, workerTarget int, el
 	if maxBudget < base {
 		maxBudget = base
 	}
-	if workerTarget > maxBudget {
-		maxBudget = workerTarget
+	workerCap := workerTarget * 4
+	if workerCap < workerTarget {
+		workerCap = workerTarget
+	}
+	if workerCap > 0 && maxBudget > workerCap {
+		maxBudget = workerCap
 	}
 	if maxBudget < 1 {
 		maxBudget = 1
