@@ -698,6 +698,30 @@ nameserver 2600:1702:50c1:71bf:1298:36ff:fea4:d4ee
 	}
 }
 
+func TestNormalizeResolverServers(t *testing.T) {
+	got, err := normalizeResolverServers([]string{"10.0.0.176", "10.0.0.176:5353", "[2001:db8::1]:5353"})
+	if err != nil {
+		t.Fatalf("normalizeResolverServers() error = %v", err)
+	}
+	want := []string{"10.0.0.176:53", "10.0.0.176:5353", "[2001:db8::1]:5353"}
+	if len(got) != len(want) {
+		t.Fatalf("normalizeResolverServers() = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("resolver %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestNormalizeResolverServersRejectsUnsafeValues(t *testing.T) {
+	for _, raw := range []string{"", "resolver.internal:53", "10.0.0.176:0", "10.0.0.176:notaport"} {
+		if _, err := normalizeResolverServers([]string{raw}); err == nil {
+			t.Fatalf("normalizeResolverServers(%q) expected error", raw)
+		}
+	}
+}
+
 func TestOrderedResolverAddrsPrefersIPv4ButHonorsNetwork(t *testing.T) {
 	addrs := []net.IPAddr{
 		{IP: net.ParseIP("2001:db8::1")},

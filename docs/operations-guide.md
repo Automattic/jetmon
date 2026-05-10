@@ -23,6 +23,7 @@ Key settings:
 | `TIME_BETWEEN_CHECKS_SEC` | 30 | Legacy compatibility setting retained for copied v1-style configs |
 | `MIN_TIME_BETWEEN_ROUNDS_SEC` | 300 | Fixed-cadence full-fleet pass interval when variable intervals are disabled |
 | `NET_COMMS_TIMEOUT` | 10 | Default per-check HTTP timeout in seconds |
+| `CHECK_DNS_RESOLVERS` | `[]` | Optional HTTP-check recursive resolver IPs, with optional ports; restart required after changes |
 | `BODY_READ_MAX_BYTES` | 1048576 | Success-path body-read budget in bytes for unknown/large responses |
 | `BODY_READ_MAX_MS` | 250 | Post-header body-phase budget in milliseconds for budgeted reads (unknown/large responses); 0 uses the default |
 | `KEYWORD_READ_MAX_BYTES` | 1048576 | Max bytes scanned when keyword checks are enabled; 0 uses the default |

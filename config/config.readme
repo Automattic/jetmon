@@ -105,6 +105,12 @@ which sites are ready to check. Default: 300.
 NET_COMMS_TIMEOUT
 Default HTTP request timeout in seconds. Can be overridden per-site via timeout_seconds column. Default: 10.
 
+CHECK_DNS_RESOLVERS
+Optional list of recursive resolver IPs for HTTP checks. Entries may include
+ports (for example "10.0.0.176:5353"); entries without a port use 53. Leave
+empty to use the host resolver configuration. Resolver changes require a
+service restart so in-flight checks keep a stable transport. Default: [].
+
 BODY_READ_MAX_BYTES
 Maximum response-body bytes checker will read for success-path validation when Content-Length is unknown or larger than this budget. For known Content-Length <= this budget, checker requires full EOF and treats truncation as a hard failure. Default: 1048576.
 Set 0 to use the default budget.

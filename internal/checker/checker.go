@@ -12,6 +12,7 @@ import (
 	"net/http/httptrace"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -55,6 +56,8 @@ const (
 var defaultTransport = newCheckTransport()
 var defaultDNSCache = newCheckDNSCache(checkDNSCacheTTL, checkDNSCacheMaxEntries)
 var defaultDNSLookupLimiter = newCheckDNSLookupLimiter()
+var configuredResolverMu sync.RWMutex
+var configuredResolverServers []string
 
 type checkDNSLookupLimiter struct {
 	slots chan struct{}
@@ -81,6 +84,29 @@ func (l *checkDNSLookupLimiter) acquire(ctx context.Context) (func(), error) {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
+
+// ConfigureResolverServers replaces the system resolver list used by the HTTP
+// checker. It is intended for process startup before checks begin; runtime
+// resolver changes should restart the service so in-flight checks continue to
+// use a stable transport.
+func ConfigureResolverServers(rawServers []string) error {
+	servers, err := normalizeResolverServers(rawServers)
+	if err != nil {
+		return err
+	}
+
+	configuredResolverMu.Lock()
+	configuredResolverServers = servers
+	oldTransport := defaultTransport
+	defaultTransport = newCheckTransport()
+	defaultDNSCache = newCheckDNSCache(checkDNSCacheTTL, checkDNSCacheMaxEntries)
+	configuredResolverMu.Unlock()
+
+	if oldTransport != nil {
+		oldTransport.CloseIdleConnections()
+	}
+	return nil
 }
 
 type checkDNSCache struct {
@@ -349,6 +375,14 @@ func orderedResolverAddrs(addrs []net.IPAddr, network string) []net.IPAddr {
 }
 
 func directResolverServers() []string {
+	configuredResolverMu.RLock()
+	if len(configuredResolverServers) > 0 {
+		servers := append([]string(nil), configuredResolverServers...)
+		configuredResolverMu.RUnlock()
+		return servers
+	}
+	configuredResolverMu.RUnlock()
+
 	if servers := parseResolverServers(readResolverConfig("/run/systemd/resolve/resolv.conf")); len(servers) > 0 {
 		return servers
 	}
@@ -377,6 +411,48 @@ func parseResolverServers(raw string) []string {
 		servers = append(servers, net.JoinHostPort(host, "53"))
 	}
 	return servers
+}
+
+func normalizeResolverServers(rawServers []string) ([]string, error) {
+	if len(rawServers) == 0 {
+		return nil, nil
+	}
+	servers := make([]string, 0, len(rawServers))
+	for i, raw := range rawServers {
+		server, err := normalizeResolverServer(raw)
+		if err != nil {
+			return nil, fmt.Errorf("resolver %d: %w", i, err)
+		}
+		servers = append(servers, server)
+	}
+	return servers, nil
+}
+
+func normalizeResolverServer(raw string) (string, error) {
+	server := strings.TrimSpace(raw)
+	if server == "" {
+		return "", fmt.Errorf("empty resolver")
+	}
+	host := server
+	port := "53"
+	if splitHost, splitPort, err := net.SplitHostPort(server); err == nil {
+		host = strings.Trim(splitHost, "[]")
+		port = splitPort
+	} else if strings.Contains(server, ":") {
+		if ip := net.ParseIP(strings.Trim(server, "[]")); ip == nil || ip.To4() != nil {
+			return "", fmt.Errorf("resolver must be an IP literal with optional port")
+		}
+		host = strings.Trim(server, "[]")
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return "", fmt.Errorf("resolver must be an IP literal with optional port")
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n <= 0 || n > 65535 {
+		return "", fmt.Errorf("resolver port must be between 1 and 65535")
+	}
+	return net.JoinHostPort(ip.String(), strconv.Itoa(n)), nil
 }
 
 func isLocalResolverHost(host string) bool {

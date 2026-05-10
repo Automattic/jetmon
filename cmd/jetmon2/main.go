@@ -23,6 +23,7 @@ import (
 	"github.com/Automattic/jetmon/internal/api"
 	"github.com/Automattic/jetmon/internal/apikeys"
 	"github.com/Automattic/jetmon/internal/audit"
+	"github.com/Automattic/jetmon/internal/checker"
 	"github.com/Automattic/jetmon/internal/config"
 	"github.com/Automattic/jetmon/internal/dashboard"
 	"github.com/Automattic/jetmon/internal/db"
@@ -88,6 +89,9 @@ func runServe() {
 		log.Fatalf("load config: %v", err)
 	}
 	cfg := config.Get()
+	if err := checker.ConfigureResolverServers(cfg.CheckDNSResolvers); err != nil {
+		log.Fatalf("configure check DNS resolvers: %v", err)
+	}
 	log.Printf("config: legacy_status_projection=%s", enabledLabel(cfg.LegacyStatusProjectionEnable))
 	log.Printf("config: bucket_ownership=%s", bucketOwnershipLabel(cfg))
 	log.Printf("config: scheduler=%s", schedulerConfigLabel(cfg))
@@ -297,7 +301,7 @@ func runServe() {
 					if dash != nil {
 						dash.SetFleetSource(newFleetDashboardStore(config.Get()))
 					}
-					log.Println("config reloaded")
+					log.Println("config reloaded; CHECK_DNS_RESOLVERS changes require restart")
 				}
 			case syscall.SIGINT, syscall.SIGTERM:
 				log.Println("received shutdown signal, draining")

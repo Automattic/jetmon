@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -76,18 +78,19 @@ type Config struct {
 
 	AlertCooldownMinutes int `json:"ALERT_COOLDOWN_MINUTES"`
 
-	StatsUpdateIntervalMS     int    `json:"STATS_UPDATE_INTERVAL_MS"`
-	StatsdSendMemUsage        bool   `json:"STATSD_SEND_MEM_USAGE"`
-	TimeBetweenNoticesMin     int    `json:"TIME_BETWEEN_NOTICES_MIN"`
-	WPCOMNotifyEnable         bool   `json:"WPCOM_NOTIFY_ENABLE"`
-	MinTimeBetweenRoundsSec   int    `json:"MIN_TIME_BETWEEN_ROUNDS_SEC"`
-	NetCommsTimeout           int    `json:"NET_COMMS_TIMEOUT"`
-	BodyReadMaxBytes          int64  `json:"BODY_READ_MAX_BYTES"`
-	BodyReadMaxMS             int    `json:"BODY_READ_MAX_MS"`
-	KeywordReadMaxBytes       int64  `json:"KEYWORD_READ_MAX_BYTES"`
-	KeywordReadMaxMS          int    `json:"KEYWORD_READ_MAX_MS"`
-	UseVariableCheckIntervals bool   `json:"USE_VARIABLE_CHECK_INTERVALS"`
-	SchedulerEngine           string `json:"SCHEDULER_ENGINE"`
+	StatsUpdateIntervalMS     int      `json:"STATS_UPDATE_INTERVAL_MS"`
+	StatsdSendMemUsage        bool     `json:"STATSD_SEND_MEM_USAGE"`
+	TimeBetweenNoticesMin     int      `json:"TIME_BETWEEN_NOTICES_MIN"`
+	WPCOMNotifyEnable         bool     `json:"WPCOM_NOTIFY_ENABLE"`
+	MinTimeBetweenRoundsSec   int      `json:"MIN_TIME_BETWEEN_ROUNDS_SEC"`
+	NetCommsTimeout           int      `json:"NET_COMMS_TIMEOUT"`
+	CheckDNSResolvers         []string `json:"CHECK_DNS_RESOLVERS"`
+	BodyReadMaxBytes          int64    `json:"BODY_READ_MAX_BYTES"`
+	BodyReadMaxMS             int      `json:"BODY_READ_MAX_MS"`
+	KeywordReadMaxBytes       int64    `json:"KEYWORD_READ_MAX_BYTES"`
+	KeywordReadMaxMS          int      `json:"KEYWORD_READ_MAX_MS"`
+	UseVariableCheckIntervals bool     `json:"USE_VARIABLE_CHECK_INTERVALS"`
+	SchedulerEngine           string   `json:"SCHEDULER_ENGINE"`
 
 	// StreamingLegacyProjectionIntervalMin controls the coarse compatibility
 	// freshness write interval used by the streaming scheduler. It intentionally
@@ -328,6 +331,9 @@ func validate(cfg *Config) error {
 	if cfg.NetCommsTimeout <= 0 {
 		return fmt.Errorf("NET_COMMS_TIMEOUT must be > 0")
 	}
+	if err := validateCheckDNSResolvers(cfg.CheckDNSResolvers); err != nil {
+		return err
+	}
 	if cfg.BodyReadMaxBytes < 0 {
 		return fmt.Errorf("BODY_READ_MAX_BYTES must be >= 0")
 	}
@@ -410,6 +416,42 @@ func validate(cfg *Config) error {
 		}
 	}
 	return nil
+}
+
+func validateCheckDNSResolvers(servers []string) error {
+	for i, raw := range servers {
+		if _, err := normalizeCheckDNSResolver(raw); err != nil {
+			return fmt.Errorf("CHECK_DNS_RESOLVERS[%d]: %w", i, err)
+		}
+	}
+	return nil
+}
+
+func normalizeCheckDNSResolver(raw string) (string, error) {
+	server := strings.TrimSpace(raw)
+	if server == "" {
+		return "", fmt.Errorf("resolver must not be empty")
+	}
+	host := server
+	port := "53"
+	if splitHost, splitPort, err := net.SplitHostPort(server); err == nil {
+		host = strings.Trim(splitHost, "[]")
+		port = splitPort
+	} else if strings.Contains(server, ":") {
+		if ip := net.ParseIP(strings.Trim(server, "[]")); ip == nil || ip.To4() != nil {
+			return "", fmt.Errorf("resolver must be an IP literal with optional port")
+		}
+		host = strings.Trim(server, "[]")
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return "", fmt.Errorf("resolver must be an IP literal with optional port")
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n <= 0 || n > 65535 {
+		return "", fmt.Errorf("resolver port must be between 1 and 65535")
+	}
+	return net.JoinHostPort(ip.String(), strconv.Itoa(n)), nil
 }
 
 func validatePinnedBucketRange(cfg *Config) error {

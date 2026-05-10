@@ -78,6 +78,26 @@ func TestValidate(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "check dns resolver accepts ip with port",
+			mutate: func(c *Config) {
+				c.CheckDNSResolvers = []string{"10.0.0.176:5353", "[2001:db8::1]:53"}
+			},
+		},
+		{
+			name: "check dns resolver rejects hostnames",
+			mutate: func(c *Config) {
+				c.CheckDNSResolvers = []string{"resolver.internal:53"}
+			},
+			wantErr: true,
+		},
+		{
+			name: "check dns resolver rejects bad port",
+			mutate: func(c *Config) {
+				c.CheckDNSResolvers = []string{"10.0.0.176:0"}
+			},
+			wantErr: true,
+		},
+		{
 			name: "pinned bucket range is valid",
 			mutate: func(c *Config) {
 				min, max := 10, 19
