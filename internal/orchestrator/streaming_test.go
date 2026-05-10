@@ -75,7 +75,7 @@ func TestQueueStreamingProjectionRespectsInterval(t *testing.T) {
 	cfg := &config.Config{StreamingLegacyProjectionIntervalMin: 10}
 	checkedAt := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
 	target := &streamingTarget{
-		site:            db.Site{BlogID: 42, CheckInterval: 10},
+		site:            db.Site{BlogID: 42, CheckInterval: 1},
 		dueAt:           checkedAt.Add(5 * time.Minute),
 		lastProjectedAt: checkedAt.Add(-5 * time.Minute),
 	}
@@ -93,6 +93,26 @@ func TestQueueStreamingProjectionRespectsInterval(t *testing.T) {
 	}
 	if got := pending[42].CheckedAt; !got.Equal(later) {
 		t.Fatalf("projected CheckedAt = %s, want %s", got, later)
+	}
+}
+
+func TestQueueStreamingProjectionProjectsEveryCheckWhenSiteIntervalMatchesProjection(t *testing.T) {
+	o := &Orchestrator{}
+	cfg := &config.Config{StreamingLegacyProjectionIntervalMin: 10}
+	checkedAt := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	target := &streamingTarget{
+		site:            db.Site{BlogID: 42, CheckInterval: 5},
+		dueAt:           checkedAt.Add(5 * time.Minute),
+		lastProjectedAt: checkedAt.Add(-299 * time.Second),
+	}
+	pending := map[int64]db.SiteCheck{}
+
+	o.queueStreamingProjection(cfg, target, checker.Result{BlogID: 42, Timestamp: checkedAt}, pending)
+	if len(pending) != 1 {
+		t.Fatalf("pending projection rows = %d, want 1 for every 5m check", len(pending))
+	}
+	if got := pending[42].CheckedAt; !got.Equal(checkedAt) {
+		t.Fatalf("projected CheckedAt = %s, want %s", got, checkedAt)
 	}
 }
 

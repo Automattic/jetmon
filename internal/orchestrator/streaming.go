@@ -14,6 +14,7 @@ const (
 	streamingTickInterval            = time.Second
 	streamingReportInterval          = time.Minute
 	streamingProjectionFlushInterval = 10 * time.Second
+	streamingProjectionSlack         = 2 * time.Second
 	streamingEmptyTargetPollInterval = 5 * time.Second
 	streamingActiveCountPollInterval = 30 * time.Second
 	streamingDefaultLatency          = 250 * time.Millisecond
@@ -421,7 +422,7 @@ func (o *Orchestrator) processStreamingResult(target *streamingTarget, res check
 func (o *Orchestrator) queueStreamingProjection(cfg *config.Config, target *streamingTarget, res checker.Result, pending map[int64]db.SiteCheck) {
 	interval := streamingProjectionInterval(cfg, target.site)
 	checkedAt := resultCheckedAt(res)
-	if !target.lastProjectedAt.IsZero() && checkedAt.Sub(target.lastProjectedAt) < interval {
+	if !streamingProjectionDue(target, checkedAt, interval) {
 		return
 	}
 	pending[target.site.BlogID] = db.SiteCheck{
@@ -430,6 +431,17 @@ func (o *Orchestrator) queueStreamingProjection(cfg *config.Config, target *stre
 		NextCheckAt: target.dueAt,
 	}
 	target.lastProjectedAt = checkedAt
+}
+
+func streamingProjectionDue(target *streamingTarget, checkedAt time.Time, interval time.Duration) bool {
+	if target.lastProjectedAt.IsZero() || interval <= 0 {
+		return true
+	}
+	siteInterval := siteCheckInterval(target.site)
+	if siteInterval >= interval {
+		return true
+	}
+	return !checkedAt.Add(streamingProjectionSlack).Before(target.lastProjectedAt.Add(interval))
 }
 
 func streamingProjectionInterval(cfg *config.Config, site db.Site) time.Duration {
