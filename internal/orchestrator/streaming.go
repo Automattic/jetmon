@@ -506,7 +506,7 @@ func (o *Orchestrator) runStreamingEngine() {
 				pressureActive = true
 			}
 			o.totalChecked++
-			if streamingSideEffectsNeeded(target, res, pendingSideEffects, sideEffectStatus, o.retries) {
+			if streamingSideEffectsNeeded(target, res, pendingSideEffects, sideEffectStatus, o.retries, pressureActive) {
 				job := streamingSideEffectJob{site: target.site, res: res}
 				if !sideEffects.tryEnqueue(job) {
 					stats.sideEffectWaits++
@@ -729,25 +729,37 @@ func (o *Orchestrator) processStreamingSideEffects(site db.Site, res checker.Res
 	return summary, site
 }
 
-func streamingSideEffectsNeeded(target *streamingTarget, res checker.Result, pending map[int64]int, statusCache map[int64]int, retries *retryQueue) bool {
+func streamingSideEffectsNeeded(target *streamingTarget, res checker.Result, pending map[int64]int, statusCache map[int64]int, retries *retryQueue, pressure bool) bool {
 	if target == nil {
 		return false
 	}
 	blogID := target.site.BlogID
-	if res.IsFailure() || res.TLSVersion != 0 || res.SSLExpiry != nil {
-		return true
-	}
-	if pending[blogID] > 0 {
+	pendingForSite := pending[blogID] > 0
+	if pendingForSite {
 		return true
 	}
 	status := target.site.SiteStatus
 	if cached, ok := statusCache[blogID]; ok {
 		status = cached
 	}
+	retrying := retries != nil && retries.get(blogID) != nil
+	if pressure && status == statusRunning && !retrying && streamingLocalPressureFailure(res) {
+		return false
+	}
+	if res.IsFailure() || res.TLSVersion != 0 || res.SSLExpiry != nil {
+		return true
+	}
 	if status != statusRunning {
 		return true
 	}
-	return retries != nil && retries.get(blogID) != nil
+	return retrying
+}
+
+func streamingLocalPressureFailure(res checker.Result) bool {
+	if !res.IsFailure() || res.HTTPCode > 0 {
+		return false
+	}
+	return res.ErrorCode == checker.ErrorTimeout || res.ErrorCode == checker.ErrorConnect
 }
 
 func (o *Orchestrator) queueStreamingProjection(cfg *config.Config, target *streamingTarget, res checker.Result, pending map[int64]db.SiteCheck) {

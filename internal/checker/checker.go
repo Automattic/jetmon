@@ -34,7 +34,7 @@ const (
 const (
 	maxBodyIntegrityBytes      int64 = 64 << 10
 	maxKeywordBodyBytes        int64 = 1 << 20
-	checkDNSCacheTTL                 = 5 * time.Minute
+	checkDNSCacheTTL                 = 15 * time.Minute
 	checkDNSCacheMaxEntries          = 2000000
 	checkDNSCachePurgeInterval       = 10000
 )

@@ -341,34 +341,55 @@ func TestStreamingSideEffectsNeededSkipsNoopSuccess(t *testing.T) {
 	target := &streamingTarget{site: db.Site{BlogID: 42, SiteStatus: statusRunning}}
 	res := checker.Result{BlogID: 42, Success: true, HTTPCode: 200}
 
-	if streamingSideEffectsNeeded(target, res, nil, nil, nil) {
+	if streamingSideEffectsNeeded(target, res, nil, nil, nil, false) {
 		t.Fatal("no-op success should not require side effects")
 	}
 
 	pending := map[int64]int{42: 1}
-	if !streamingSideEffectsNeeded(target, res, pending, nil, nil) {
+	if !streamingSideEffectsNeeded(target, res, pending, nil, nil, false) {
 		t.Fatal("success behind a pending side effect should preserve ordering")
 	}
 
 	statusCache := map[int64]int{42: statusDown}
-	if !streamingSideEffectsNeeded(target, res, nil, statusCache, nil) {
+	if !streamingSideEffectsNeeded(target, res, nil, statusCache, nil, false) {
 		t.Fatal("success for cached non-running status should run recovery side effects")
 	}
 
 	retries := newRetryQueue()
 	retries.record(checker.Result{BlogID: 42, URL: "http://example.com", Timestamp: time.Now()})
-	if !streamingSideEffectsNeeded(target, res, nil, nil, retries) {
+	if !streamingSideEffectsNeeded(target, res, nil, nil, retries, false) {
 		t.Fatal("success for retrying site should run recovery side effects")
 	}
 }
 
 func TestStreamingSideEffectsNeededKeepsFailureAndTLS(t *testing.T) {
 	target := &streamingTarget{site: db.Site{BlogID: 42, SiteStatus: statusRunning}}
-	if !streamingSideEffectsNeeded(target, checker.Result{BlogID: 42, ErrorCode: checker.ErrorConnect}, nil, nil, nil) {
+	if !streamingSideEffectsNeeded(target, checker.Result{BlogID: 42, ErrorCode: checker.ErrorConnect}, nil, nil, nil, false) {
 		t.Fatal("failure should require side effects")
 	}
-	if !streamingSideEffectsNeeded(target, checker.Result{BlogID: 42, Success: true, HTTPCode: 200, TLSVersion: 0x0304}, nil, nil, nil) {
+	if !streamingSideEffectsNeeded(target, checker.Result{BlogID: 42, Success: true, HTTPCode: 200, TLSVersion: 0x0304}, nil, nil, nil, false) {
 		t.Fatal("TLS observations should require side effects")
+	}
+}
+
+func TestStreamingSideEffectsNeededSuppressesNewLocalFailuresUnderPressure(t *testing.T) {
+	target := &streamingTarget{site: db.Site{BlogID: 42, SiteStatus: statusRunning}}
+	timeout := checker.Result{BlogID: 42, ErrorCode: checker.ErrorTimeout}
+
+	if streamingSideEffectsNeeded(target, timeout, nil, nil, nil, true) {
+		t.Fatal("new local timeout under pressure should not open event side effects")
+	}
+	if !streamingSideEffectsNeeded(target, checker.Result{BlogID: 42, HTTPCode: 500}, nil, nil, nil, true) {
+		t.Fatal("HTTP failures should still flow through side effects under pressure")
+	}
+	if !streamingSideEffectsNeeded(target, timeout, map[int64]int{42: 1}, nil, nil, true) {
+		t.Fatal("pending side effects should preserve ordering under pressure")
+	}
+
+	retries := newRetryQueue()
+	retries.record(checker.Result{BlogID: 42, URL: "http://example.com", Timestamp: time.Now()})
+	if !streamingSideEffectsNeeded(target, timeout, nil, nil, retries, true) {
+		t.Fatal("existing retry state should continue through side effects under pressure")
 	}
 }
 
