@@ -20,6 +20,8 @@ const (
 	streamingDefaultLatency          = 250 * time.Millisecond
 	streamingMinLoadPageSize         = 5000
 	streamingMinQueueCap             = 65536
+	streamingMinScheduleHeadroom     = time.Second
+	streamingMaxScheduleHeadroom     = 15 * time.Second
 )
 
 type streamingTarget struct {
@@ -90,7 +92,7 @@ func (p *streamingPlanner) requiredChecksPerSecond() float64 {
 func (p *streamingPlanner) recalculateRequiredRate() {
 	var rate float64
 	for _, target := range p.targets {
-		interval := siteCheckInterval(target.site)
+		interval := streamingCheckCadence(target.site)
 		if interval <= 0 {
 			continue
 		}
@@ -100,13 +102,14 @@ func (p *streamingPlanner) recalculateRequiredRate() {
 }
 
 func (p *streamingPlanner) scheduleAfterResult(target *streamingTarget, res checker.Result) {
-	interval := siteCheckInterval(target.site)
+	siteInterval := siteCheckInterval(target.site)
 	checkedAt := resultCheckedAt(res)
-	if res.IsFailure() && interval > failedCheckRetryInterval {
+	if res.IsFailure() && siteInterval > failedCheckRetryInterval {
 		p.scheduleAt(target, checkedAt.Add(failedCheckRetryInterval))
 		return
 	}
 
+	interval := streamingCheckCadence(target.site)
 	next := target.dueAt.Add(interval)
 	for !next.After(checkedAt) {
 		next = next.Add(interval)
@@ -620,9 +623,25 @@ func streamingQueueCap(workerTarget int) int {
 }
 
 func initialStreamingDueAt(site db.Site, now time.Time) time.Time {
-	interval := siteCheckInterval(site)
+	interval := streamingCheckCadence(site)
 	phase := streamingPhaseOffset(site.BlogID, interval)
 	return nextStreamingPhaseAt(now, interval, phase)
+}
+
+func streamingCheckCadence(site db.Site) time.Duration {
+	interval := siteCheckInterval(site)
+	headroom := interval / 20
+	if headroom < streamingMinScheduleHeadroom {
+		headroom = streamingMinScheduleHeadroom
+	}
+	if headroom > streamingMaxScheduleHeadroom {
+		headroom = streamingMaxScheduleHeadroom
+	}
+	cadence := interval - headroom
+	if cadence < time.Second {
+		return time.Second
+	}
+	return cadence
 }
 
 func streamingPhaseOffset(blogID int64, interval time.Duration) int64 {

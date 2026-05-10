@@ -20,7 +20,8 @@ func TestStreamingPhaseStaysInsideInterval(t *testing.T) {
 	if due.Sub(now) >= 5*time.Minute {
 		t.Fatalf("initialStreamingDueAt() delay = %s, want < 5m", due.Sub(now))
 	}
-	if got := due.Unix() % int64(5*time.Minute/time.Second); got != streamingPhaseOffset(site.BlogID, 5*time.Minute) {
+	cadence := streamingCheckCadence(site)
+	if got := due.Unix() % int64(cadence/time.Second); got != streamingPhaseOffset(site.BlogID, cadence) {
 		t.Fatalf("due phase = %d, want stable phase", got)
 	}
 }
@@ -67,6 +68,18 @@ func TestStreamingWorkerTargetScalesFromRequiredRate(t *testing.T) {
 	}
 	if got > planner.activeCount() {
 		t.Fatalf("streamingWorkerTarget() = %d, want <= active target count", got)
+	}
+}
+
+func TestStreamingCheckCadenceAddsBoundedHeadroom(t *testing.T) {
+	if got := streamingCheckCadence(db.Site{CheckInterval: 5}); got != 285*time.Second {
+		t.Fatalf("streamingCheckCadence(5m) = %s, want 285s", got)
+	}
+	if got := streamingCheckCadence(db.Site{CheckInterval: 1}); got != 57*time.Second {
+		t.Fatalf("streamingCheckCadence(1m) = %s, want 57s", got)
+	}
+	if got := streamingCheckCadence(db.Site{CheckInterval: 60}); got != 3585*time.Second {
+		t.Fatalf("streamingCheckCadence(60m) = %s, want 3585s", got)
 	}
 }
 
