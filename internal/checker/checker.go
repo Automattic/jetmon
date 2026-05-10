@@ -98,8 +98,13 @@ func ConfigureResolverServers(rawServers []string) error {
 
 	configuredResolverMu.Lock()
 	configuredResolverServers = servers
+	configuredResolverMu.Unlock()
+
+	newTransport := newCheckTransport()
+
+	configuredResolverMu.Lock()
 	oldTransport := defaultTransport
-	defaultTransport = newCheckTransport()
+	defaultTransport = newTransport
 	defaultDNSCache = newCheckDNSCache(checkDNSCacheTTL, checkDNSCacheMaxEntries)
 	configuredResolverMu.Unlock()
 

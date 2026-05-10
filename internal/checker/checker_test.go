@@ -722,6 +722,37 @@ func TestNormalizeResolverServersRejectsUnsafeValues(t *testing.T) {
 	}
 }
 
+func TestConfigureResolverServersInstallsOverride(t *testing.T) {
+	configuredResolverMu.RLock()
+	oldServers := append([]string(nil), configuredResolverServers...)
+	configuredResolverMu.RUnlock()
+	oldCache := defaultDNSCache
+	t.Cleanup(func() {
+		configuredResolverMu.Lock()
+		configuredResolverServers = oldServers
+		configuredResolverMu.Unlock()
+
+		restoredTransport := newCheckTransport()
+
+		configuredResolverMu.Lock()
+		currentTransport := defaultTransport
+		defaultTransport = restoredTransport
+		defaultDNSCache = oldCache
+		configuredResolverMu.Unlock()
+		if currentTransport != nil {
+			currentTransport.CloseIdleConnections()
+		}
+	})
+
+	if err := ConfigureResolverServers([]string{"10.0.0.176:5353"}); err != nil {
+		t.Fatalf("ConfigureResolverServers() error = %v", err)
+	}
+	got := directResolverServers()
+	if len(got) != 1 || got[0] != "10.0.0.176:5353" {
+		t.Fatalf("directResolverServers() = %#v, want configured resolver", got)
+	}
+}
+
 func TestOrderedResolverAddrsPrefersIPv4ButHonorsNetwork(t *testing.T) {
 	addrs := []net.IPAddr{
 		{IP: net.ParseIP("2001:db8::1")},
