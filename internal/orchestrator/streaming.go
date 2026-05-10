@@ -34,6 +34,7 @@ const (
 	streamingWorkerHeadroom          = 2.0
 	streamingMinWorkerStep           = 50
 	streamingMinBackpressureDepth    = 1024
+	streamingResultDrainLimit        = 2048
 	streamingFailurePressureMin      = 1000
 	streamingFailurePressurePercent  = 25
 	streamingFailurePressureHold     = 2 * time.Minute
@@ -480,6 +481,38 @@ func (o *Orchestrator) runStreamingEngine() {
 		pressureUntil       time.Time
 	)
 
+	handleResult := func(res checker.Result) {
+		target, ok := planner.targets[res.BlogID]
+		if !ok || !target.inFlight {
+			stats.staleResults++
+			return
+		}
+		target.inFlight = false
+		lag := resultCheckedAt(res).Sub(target.dueAt)
+		if lag < 0 {
+			lag = 0
+		}
+		stats.addResult(res, lag)
+		pressureActive := nowFunc().UTC().Before(pressureUntil)
+		if streamingFailurePressure(stats) {
+			pressureUntil = nowFunc().UTC().Add(streamingFailurePressureHold)
+			pressureActive = true
+		}
+		o.totalChecked++
+		if streamingSideEffectsNeeded(target, res, pendingSideEffects, sideEffectStatus, o.retries, pressureActive) {
+			job := streamingSideEffectJob{site: target.site, res: res}
+			if !sideEffects.tryEnqueue(job) {
+				stats.sideEffectWaits++
+				if !sideEffects.enqueue(job) {
+					return
+				}
+			}
+			pendingSideEffects[target.site.BlogID]++
+		}
+		planner.scheduleAfterResult(target, res, !pressureActive)
+		o.queueStreamingProjection(cfg, target, res, pendingProjection)
+	}
+
 	for {
 		select {
 		case <-o.ctx.Done():
@@ -504,35 +537,16 @@ func (o *Orchestrator) runStreamingEngine() {
 				}
 			}
 		case res := <-o.pool.Results():
-			target, ok := planner.targets[res.BlogID]
-			if !ok || !target.inFlight {
-				stats.staleResults++
-				continue
-			}
-			target.inFlight = false
-			lag := resultCheckedAt(res).Sub(target.dueAt)
-			if lag < 0 {
-				lag = 0
-			}
-			stats.addResult(res, lag)
-			pressureActive := nowFunc().UTC().Before(pressureUntil)
-			if streamingFailurePressure(stats) {
-				pressureUntil = nowFunc().UTC().Add(streamingFailurePressureHold)
-				pressureActive = true
-			}
-			o.totalChecked++
-			if streamingSideEffectsNeeded(target, res, pendingSideEffects, sideEffectStatus, o.retries, pressureActive) {
-				job := streamingSideEffectJob{site: target.site, res: res}
-				if !sideEffects.tryEnqueue(job) {
-					stats.sideEffectWaits++
-					if !sideEffects.enqueue(job) {
-						continue
-					}
+			handleResult(res)
+		resultDrain:
+			for range streamingResultDrainLimit {
+				select {
+				case res := <-o.pool.Results():
+					handleResult(res)
+				default:
+					break resultDrain
 				}
-				pendingSideEffects[target.site.BlogID]++
 			}
-			planner.scheduleAfterResult(target, res, !pressureActive)
-			o.queueStreamingProjection(cfg, target, res, pendingProjection)
 		case <-tick.C:
 			now := nowFunc().UTC()
 			cfg = config.Get()
