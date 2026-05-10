@@ -197,6 +197,40 @@ func (p *Pool) SetMaxSize(max int) {
 	p.mu.Unlock()
 }
 
+// SetSizeBounds updates the autoscaler floor and ceiling together. If the
+// current worker count is below the new floor, workers are started immediately;
+// if it is above the new ceiling, excess workers are retired gracefully.
+func (p *Pool) SetSizeBounds(minSize, maxSize int) int {
+	if maxSize < 1 {
+		maxSize = 1
+	}
+	if minSize < 1 {
+		minSize = 1
+	}
+	if minSize > maxSize {
+		minSize = maxSize
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.minSize = minSize
+	p.maxSize = maxSize
+
+	current := int(p.size.Load())
+	if current > p.maxSize {
+		p.retireWorkers(current - p.maxSize)
+		return 0
+	}
+	if current >= p.minSize || p.closed.Load() {
+		return 0
+	}
+	added := p.minSize - current
+	for range added {
+		p.spawnWorker()
+	}
+	return added
+}
+
 // EnsureSize proactively starts workers up to target, bounded by maxSize.
 // The queue-depth autoscaler will still adjust over time, but streaming
 // schedulers use this to avoid a cold pool after a large target activation.

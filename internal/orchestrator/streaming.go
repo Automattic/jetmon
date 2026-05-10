@@ -524,12 +524,13 @@ func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streami
 
 func (o *Orchestrator) applyStreamingWorkerTarget(cfg *config.Config, planner *streamingPlanner, latency time.Duration) int {
 	workerTarget := streamingWorkerTarget(cfg, planner, latency)
-	o.pool.SetMaxSize(workerTarget)
 	if planner.activeCount() > 0 {
-		if added := o.pool.EnsureSize(workerTarget); added > 0 {
+		if added := o.pool.SetSizeBounds(workerTarget, workerTarget); added > 0 {
 			log.Printf("orchestrator: streaming prewarmed check pool by %d workers (target=%d active_targets=%d)",
 				added, workerTarget, planner.activeCount())
 		}
+	} else {
+		o.pool.SetSizeBounds(1, workerTarget)
 	}
 	return workerTarget
 }

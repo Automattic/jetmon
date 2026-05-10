@@ -212,6 +212,28 @@ func TestEnsureSizeStartsWorkersWithoutQueuePressure(t *testing.T) {
 	}
 }
 
+func TestSetSizeBoundsStartsAndRetiresWorkers(t *testing.T) {
+	p := NewPoolWithQueueCap(1, 1, 5, 10)
+	t.Cleanup(p.Drain)
+
+	if added := p.SetSizeBounds(4, 4); added != 3 {
+		t.Fatalf("SetSizeBounds(4, 4) added = %d, want 3", added)
+	}
+	if got := p.WorkerCount(); got != 4 {
+		t.Fatalf("WorkerCount() = %d, want 4", got)
+	}
+
+	p.SetSizeBounds(1, 2)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if p.WorkerCount() <= 2 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("WorkerCount() = %d after SetSizeBounds(1, 2), want <= 2", p.WorkerCount())
+}
+
 func TestDrainCalledTwice(t *testing.T) {
 	p := NewPool(1, 1, 1)
 	p.Drain()
