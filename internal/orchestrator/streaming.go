@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"log"
+	"math"
 	"runtime"
 	"sync"
 	"time"
@@ -179,6 +180,7 @@ type streamingStats struct {
 	sideEffectWaits   int
 	sideEffectPaused  int
 	resultPaused      int
+	dispatchLimited   int
 	latencyTotal      time.Duration
 	latencyCount      int
 	successLatency    time.Duration
@@ -571,7 +573,8 @@ func (o *Orchestrator) runStreamingEngine() {
 			} else if sideEffectDepth := sideEffects.queueDepth(); sideEffectDepth >= streamingSideEffectBackpressureDepth(o.pool.WorkerCount(), planner.activeCount()) {
 				stats.sideEffectPaused++
 			} else {
-				pending = o.dispatchStreamingPending(cfg, pending, &stats)
+				budget := streamingDispatchBudget(planner.requiredChecksPerSecond(), len(pending), o.pool.WorkerCount())
+				pending = o.dispatchStreamingPending(cfg, pending, budget, &stats)
 			}
 
 			if now.Sub(lastProjectionFlush) >= streamingProjectionFlushInterval {
@@ -644,8 +647,12 @@ func (o *Orchestrator) loadStreamingSites(cfg *config.Config) ([]db.Site, error)
 	}
 }
 
-func (o *Orchestrator) dispatchStreamingPending(cfg *config.Config, pending []*streamingTarget, stats *streamingStats) []*streamingTarget {
-	for len(pending) > 0 {
+func (o *Orchestrator) dispatchStreamingPending(cfg *config.Config, pending []*streamingTarget, budget int, stats *streamingStats) []*streamingTarget {
+	if budget <= 0 {
+		return pending
+	}
+	dispatched := 0
+	for len(pending) > 0 && dispatched < budget {
 		target := pending[0]
 		if !target.active || target.inFlight {
 			target.queued = false
@@ -659,7 +666,11 @@ func (o *Orchestrator) dispatchStreamingPending(cfg *config.Config, pending []*s
 		target.queued = false
 		target.inFlight = true
 		stats.dispatched++
+		dispatched++
 		pending = pending[1:]
+	}
+	if len(pending) > 0 && dispatched >= budget {
+		stats.dispatchLimited++
 	}
 	return pending
 }
@@ -830,6 +841,7 @@ func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streami
 		m.Increment("scheduler.streaming.side_effect_backpressure_wait.count", stats.sideEffectWaits)
 		m.Increment("scheduler.streaming.result_backpressure_pause.count", stats.resultPaused)
 		m.Increment("scheduler.streaming.side_effect_backpressure_pause.count", stats.sideEffectPaused)
+		m.Increment("scheduler.streaming.dispatch_budget_limited.count", stats.dispatchLimited)
 		m.Increment("scheduler.streaming.stale_result.count", stats.staleResults)
 		m.Increment("scheduler.streaming.check.success.count", stats.checkSuccesses)
 		m.Increment("scheduler.streaming.check.failure.count", stats.checkFailures)
@@ -847,7 +859,7 @@ func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streami
 		metrics.WriteStatsFiles(sps, queueDepth, o.totalChecked)
 	}
 
-	log.Printf("orchestrator: streaming summary active=%d required_rate=%.2f/s selected=%d dispatched=%d completed=%d side_effects=%d pending=%d active_checks=%d queue_depth=%d result_depth=%d side_effect_depth=%d workers=%d worker_target=%d sps=%d max_lag=%s avg_latency=%s scale_latency=%s successes=%d failures=%d history_rows=%d ssl_rows=%d stale_results=%d backpressure_waits=%d side_effect_waits=%d result_pauses=%d side_effect_pauses=%d",
+	log.Printf("orchestrator: streaming summary active=%d required_rate=%.2f/s selected=%d dispatched=%d completed=%d side_effects=%d pending=%d active_checks=%d queue_depth=%d result_depth=%d side_effect_depth=%d workers=%d worker_target=%d sps=%d max_lag=%s avg_latency=%s scale_latency=%s successes=%d failures=%d history_rows=%d ssl_rows=%d stale_results=%d backpressure_waits=%d side_effect_waits=%d result_pauses=%d side_effect_pauses=%d dispatch_limited=%d",
 		planner.activeCount(),
 		planner.requiredChecksPerSecond(),
 		stats.selected,
@@ -874,6 +886,7 @@ func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streami
 		stats.sideEffectWaits,
 		stats.resultPaused,
 		stats.sideEffectPaused,
+		stats.dispatchLimited,
 	)
 }
 
@@ -1026,6 +1039,32 @@ func streamingBackpressureDepth(workerTarget, activeCount, workerMultiplier int)
 		return limit
 	}
 	return depth
+}
+
+func streamingDispatchBudget(requiredRate float64, pending, workerTarget int) int {
+	if pending <= 0 {
+		return 0
+	}
+	base := int(math.Ceil(requiredRate * 1.25))
+	if base < 1 {
+		base = 1
+	}
+	catchup := pending / 30
+	budget := base + catchup
+	maxBudget := base * 4
+	if workerTarget > maxBudget {
+		maxBudget = workerTarget
+	}
+	if maxBudget < 1 {
+		maxBudget = 1
+	}
+	if budget > maxBudget {
+		budget = maxBudget
+	}
+	if budget > pending {
+		return pending
+	}
+	return budget
 }
 
 func initialStreamingDueAt(site db.Site, now time.Time) time.Time {
