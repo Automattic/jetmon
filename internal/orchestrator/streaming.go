@@ -245,7 +245,7 @@ func (o *Orchestrator) runStreamingEngine() {
 		case now := <-tick.C:
 			cfg = config.Get()
 			o.refreshVeriflierClients(cfg)
-			o.pool.SetMaxSize(streamingWorkerTarget(cfg, planner, stats.averageLatency()))
+			o.applyStreamingWorkerTarget(cfg, planner, stats.averageLatency())
 
 			if now.Sub(lastHeartbeat) >= schedulerBroadReportInterval {
 				bucketsChanged, err := o.refreshStreamingBuckets(cfg)
@@ -314,6 +314,9 @@ func (o *Orchestrator) configureStreamingPool(cfg *config.Config, planner *strea
 		initial = 1
 	}
 	o.pool = checker.NewPoolWithQueueCap(initial, 1, workerTarget, queueCap)
+	if planner.activeCount() > 0 {
+		o.pool.EnsureSize(workerTarget)
+	}
 }
 
 func (o *Orchestrator) refreshStreamingBuckets(cfg *config.Config) (bool, error) {
@@ -454,8 +457,7 @@ func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streami
 	if avgLatency == 0 {
 		avgLatency = streamingDefaultLatency
 	}
-	workerTarget := streamingWorkerTarget(cfg, planner, avgLatency)
-	o.pool.SetMaxSize(workerTarget)
+	workerTarget := o.applyStreamingWorkerTarget(cfg, planner, avgLatency)
 
 	activeChecks := o.pool.ActiveCount()
 	queueDepth := o.pool.QueueDepth()
@@ -518,6 +520,18 @@ func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streami
 		stats.staleResults,
 		stats.backpressureWaits,
 	)
+}
+
+func (o *Orchestrator) applyStreamingWorkerTarget(cfg *config.Config, planner *streamingPlanner, latency time.Duration) int {
+	workerTarget := streamingWorkerTarget(cfg, planner, latency)
+	o.pool.SetMaxSize(workerTarget)
+	if planner.activeCount() > 0 {
+		if added := o.pool.EnsureSize(workerTarget); added > 0 {
+			log.Printf("orchestrator: streaming prewarmed check pool by %d workers (target=%d active_targets=%d)",
+				added, workerTarget, planner.activeCount())
+		}
+	}
+	return workerTarget
 }
 
 func streamingLoadPageSize(cfg *config.Config) int {

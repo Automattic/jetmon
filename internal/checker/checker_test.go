@@ -194,6 +194,24 @@ func TestSetMaxSizeRetireExcessWorkers(t *testing.T) {
 	t.Fatalf("worker count = %d after SetMaxSize(2), want <= 2", p.WorkerCount())
 }
 
+func TestEnsureSizeStartsWorkersWithoutQueuePressure(t *testing.T) {
+	p := NewPoolWithQueueCap(1, 1, 5, 10)
+	t.Cleanup(p.Drain)
+
+	if added := p.EnsureSize(4); added != 3 {
+		t.Fatalf("EnsureSize(4) added = %d, want 3", added)
+	}
+	if got := p.WorkerCount(); got != 4 {
+		t.Fatalf("WorkerCount() = %d, want 4", got)
+	}
+	if added := p.EnsureSize(10); added != 1 {
+		t.Fatalf("EnsureSize(10) added = %d, want 1 capped by max", added)
+	}
+	if got := p.WorkerCount(); got != 5 {
+		t.Fatalf("WorkerCount() = %d, want max 5", got)
+	}
+}
+
 func TestDrainCalledTwice(t *testing.T) {
 	p := NewPool(1, 1, 1)
 	p.Drain()

@@ -197,6 +197,32 @@ func (p *Pool) SetMaxSize(max int) {
 	p.mu.Unlock()
 }
 
+// EnsureSize proactively starts workers up to target, bounded by maxSize.
+// The queue-depth autoscaler will still adjust over time, but streaming
+// schedulers use this to avoid a cold pool after a large target activation.
+func (p *Pool) EnsureSize(target int) int {
+	if target < 1 {
+		return 0
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed.Load() {
+		return 0
+	}
+	current := int(p.size.Load())
+	if target > p.maxSize {
+		target = p.maxSize
+	}
+	if target <= current {
+		return 0
+	}
+	added := target - current
+	for range added {
+		p.spawnWorker()
+	}
+	return added
+}
+
 // DrainWorkers gracefully reduces the pool size by up to n idle workers.
 func (p *Pool) DrainWorkers(n int) int {
 	if n < 1 {
