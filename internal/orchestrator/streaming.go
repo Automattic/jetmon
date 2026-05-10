@@ -14,6 +14,8 @@ const (
 	streamingTickInterval            = time.Second
 	streamingReportInterval          = time.Minute
 	streamingProjectionFlushInterval = 10 * time.Second
+	streamingEmptyTargetPollInterval = 5 * time.Second
+	streamingActiveCountPollInterval = 30 * time.Second
 	streamingDefaultLatency          = 250 * time.Millisecond
 	streamingMinLoadPageSize         = 5000
 	streamingMinQueueCap             = 65536
@@ -215,6 +217,7 @@ func (o *Orchestrator) runStreamingEngine() {
 		lastReload          = lastReport
 		lastProjectionFlush = lastReport
 		lastHeartbeat       = lastReport
+		lastActiveCountPoll = lastReport
 	)
 
 	for {
@@ -253,6 +256,16 @@ func (o *Orchestrator) runStreamingEngine() {
 					lastReload = time.Time{}
 				}
 				lastHeartbeat = now
+			}
+
+			if now.Sub(lastActiveCountPoll) >= streamingActiveCountPollIntervalFor(planner) {
+				if count, err := dbCountActiveSites(o.ctx, o.bucketMin, o.bucketMax); err != nil {
+					log.Printf("orchestrator: streaming active target count check failed: %v", err)
+				} else if count != planner.activeCount() {
+					log.Printf("orchestrator: streaming active target count changed db=%d memory=%d; reloading targets", count, planner.activeCount())
+					lastReload = time.Time{}
+				}
+				lastActiveCountPoll = now
 			}
 
 			if now.Sub(lastReload) >= time.Duration(cfg.StreamingTargetReloadSec)*time.Second {
@@ -512,6 +525,13 @@ func streamingLoadPageSize(cfg *config.Config) int {
 		return streamingMinLoadPageSize
 	}
 	return cfg.DatasetSize
+}
+
+func streamingActiveCountPollIntervalFor(planner *streamingPlanner) time.Duration {
+	if planner.activeCount() == 0 {
+		return streamingEmptyTargetPollInterval
+	}
+	return streamingActiveCountPollInterval
 }
 
 func streamingWorkerTarget(cfg *config.Config, planner *streamingPlanner, latency time.Duration) int {

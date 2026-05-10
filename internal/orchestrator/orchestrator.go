@@ -74,6 +74,7 @@ var (
 	dbMarkHostDraining     = db.MarkHostDraining
 	dbGetSitesForBucket    = db.GetSitesForBucket
 	dbListActiveSites      = db.ListActiveSitesForBucketRange
+	dbCountActiveSites     = db.CountActiveSitesForBucketRange
 	dbMarkSiteChecked      = db.MarkSiteChecked
 	dbMarkSitesChecked     = db.MarkSitesChecked
 	dbRecordCheckHistory   = db.RecordCheckHistory
