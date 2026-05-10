@@ -75,14 +75,14 @@ func newCheckDNSCache(ttl time.Duration, maxEntries int) *checkDNSCache {
 	}
 }
 
-func (c *checkDNSCache) lookup(ctx context.Context, resolver *net.Resolver, host string) ([]net.IPAddr, error) {
+func (c *checkDNSCache) lookup(ctx context.Context, resolver *net.Resolver, host, network string) ([]net.IPAddr, error) {
 	if resolver == nil {
 		return nil, fmt.Errorf("lookup %s: resolver unavailable", host)
 	}
 	if c == nil || c.ttl <= 0 {
-		return resolver.LookupIPAddr(ctx, host)
+		return lookupResolverIPAddrs(ctx, resolver, host, network)
 	}
-	key := normalizeDNSCacheHost(host)
+	key := normalizeDNSCacheKey(host, preferredLookupFamily(network))
 	now := time.Now()
 	c.mu.RLock()
 	entry, ok := c.entries[key]
@@ -93,7 +93,7 @@ func (c *checkDNSCache) lookup(ctx context.Context, resolver *net.Resolver, host
 	}
 	c.mu.RUnlock()
 
-	addrs, err := resolver.LookupIPAddr(ctx, host)
+	addrs, err := lookupResolverIPAddrs(ctx, resolver, host, network)
 	if err != nil || len(addrs) == 0 {
 		return addrs, err
 	}
@@ -127,6 +127,49 @@ func (c *checkDNSCache) purgeExpiredLocked(now time.Time) {
 
 func normalizeDNSCacheHost(host string) string {
 	return strings.TrimSuffix(strings.ToLower(host), ".")
+}
+
+func normalizeDNSCacheKey(host, family string) string {
+	return normalizeDNSCacheHost(host) + "|" + family
+}
+
+func preferredLookupFamily(network string) string {
+	if strings.HasSuffix(network, "6") {
+		return "ip6"
+	}
+	return "ip4"
+}
+
+func lookupResolverIPAddrs(ctx context.Context, resolver *net.Resolver, host, network string) ([]net.IPAddr, error) {
+	family := preferredLookupFamily(network)
+	addrs, err := lookupResolverIPFamily(ctx, resolver, host, family)
+	if (err == nil && len(addrs) > 0) || family == "ip6" || strings.HasSuffix(network, "4") {
+		return addrs, err
+	}
+
+	fallback, fallbackErr := lookupResolverIPFamily(ctx, resolver, host, "ip6")
+	if fallbackErr == nil && len(fallback) > 0 {
+		return fallback, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return fallback, fallbackErr
+}
+
+func lookupResolverIPFamily(ctx context.Context, resolver *net.Resolver, host, family string) ([]net.IPAddr, error) {
+	ips, err := resolver.LookupIP(ctx, family, host)
+	if err != nil {
+		return nil, err
+	}
+	addrs := make([]net.IPAddr, 0, len(ips))
+	for _, ip := range ips {
+		if ip == nil {
+			continue
+		}
+		addrs = append(addrs, net.IPAddr{IP: ip})
+	}
+	return addrs, nil
 }
 
 func cloneIPAddrs(addrs []net.IPAddr) []net.IPAddr {
@@ -183,7 +226,7 @@ func newCheckDialContext(resolver *net.Resolver) func(context.Context, string, s
 		if trace != nil && trace.DNSStart != nil {
 			trace.DNSStart(httptrace.DNSStartInfo{Host: host})
 		}
-		addrs, err := defaultDNSCache.lookup(ctx, resolver, host)
+		addrs, err := defaultDNSCache.lookup(ctx, resolver, host, network)
 		if trace != nil && trace.DNSDone != nil {
 			trace.DNSDone(httptrace.DNSDoneInfo{Addrs: addrs, Err: err})
 		}

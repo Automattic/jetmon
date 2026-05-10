@@ -723,12 +723,12 @@ func TestOrderedResolverAddrsPrefersIPv4ButHonorsNetwork(t *testing.T) {
 
 func TestCheckDNSCacheReturnsClonedCachedAddresses(t *testing.T) {
 	cache := newCheckDNSCache(time.Minute, 10)
-	cache.entries["example.com"] = checkDNSCacheEntry{
+	cache.entries["example.com|ip4"] = checkDNSCacheEntry{
 		addrs:   []net.IPAddr{{IP: net.ParseIP("192.0.2.10")}},
 		expires: time.Now().Add(time.Minute),
 	}
 
-	got, err := cache.lookup(context.Background(), &net.Resolver{}, "Example.COM.")
+	got, err := cache.lookup(context.Background(), &net.Resolver{}, "Example.COM.", "tcp")
 	if err != nil {
 		t.Fatalf("lookup() error = %v", err)
 	}
@@ -738,10 +738,22 @@ func TestCheckDNSCacheReturnsClonedCachedAddresses(t *testing.T) {
 
 	got[0].IP[15] = 99
 	cache.mu.RLock()
-	cached := cache.entries["example.com"].addrs[0].IP.String()
+	cached := cache.entries["example.com|ip4"].addrs[0].IP.String()
 	cache.mu.RUnlock()
 	if cached != "192.0.2.10" {
 		t.Fatalf("cached address mutated through returned slice: %s", cached)
+	}
+}
+
+func TestPreferredLookupFamily(t *testing.T) {
+	if got := preferredLookupFamily("tcp"); got != "ip4" {
+		t.Fatalf("preferredLookupFamily(tcp) = %q, want ip4", got)
+	}
+	if got := preferredLookupFamily("tcp4"); got != "ip4" {
+		t.Fatalf("preferredLookupFamily(tcp4) = %q, want ip4", got)
+	}
+	if got := preferredLookupFamily("tcp6"); got != "ip6" {
+		t.Fatalf("preferredLookupFamily(tcp6) = %q, want ip6", got)
 	}
 }
 
