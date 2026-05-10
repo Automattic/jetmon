@@ -645,13 +645,16 @@ func TestCheckCustomHeadersForwarded(t *testing.T) {
 	}
 }
 
-func TestCheckReusesSharedTransportForReadableResponses(t *testing.T) {
+func TestCheckDisablesIdleConnectionReuseForFleetScans(t *testing.T) {
 	oldTransport := defaultTransport
 	defaultTransport = newCheckTransport()
 	t.Cleanup(func() {
 		defaultTransport.CloseIdleConnections()
 		defaultTransport = oldTransport
 	})
+	if !defaultTransport.DisableKeepAlives {
+		t.Fatal("checker transport should disable keep-alives for large unique-host fleet scans")
+	}
 
 	var newConns atomic.Int64
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -674,8 +677,8 @@ func TestCheckReusesSharedTransportForReadableResponses(t *testing.T) {
 		}
 	}
 
-	if got := newConns.Load(); got != 1 {
-		t.Fatalf("new connections = %d, want 1 from shared transport reuse", got)
+	if got := newConns.Load(); got != 2 {
+		t.Fatalf("new connections = %d, want one connection per check with keep-alives disabled", got)
 	}
 }
 

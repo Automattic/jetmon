@@ -275,9 +275,11 @@ func newCheckTransport() *http.Transport {
 			MinVersion: tls.VersionTLS10,
 		},
 		TLSHandshakeTimeout: 10 * time.Second,
-		IdleConnTimeout:     30 * time.Second,
-		MaxIdleConns:        1024,
-		MaxIdleConnsPerHost: 8,
+		// Jetmon checks huge fleets of mostly-unique hostnames on minute-scale
+		// cadences. Connections would usually expire before reuse, while the
+		// shared idle pool becomes a global lock and goroutine-pressure point at
+		// high concurrency.
+		DisableKeepAlives: true,
 	}
 }
 
