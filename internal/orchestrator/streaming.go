@@ -513,7 +513,7 @@ func (o *Orchestrator) runStreamingEngine() {
 			cfg = config.Get()
 			o.refreshVeriflierClients(cfg)
 			if now.Sub(lastScale) >= streamingScaleInterval {
-				o.applyStreamingWorkerTarget(cfg, planner, stats.scaleLatency())
+				o.applyStreamingWorkerTarget(cfg, planner, stats.scaleLatency(), len(pending), sideEffects.queueDepth())
 				lastScale = now
 			}
 
@@ -899,8 +899,11 @@ func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streami
 	)
 }
 
-func (o *Orchestrator) applyStreamingWorkerTarget(cfg *config.Config, planner *streamingPlanner, latency time.Duration) int {
+func (o *Orchestrator) applyStreamingWorkerTarget(cfg *config.Config, planner *streamingPlanner, latency time.Duration, pending, sideEffectDepth int) int {
 	desiredTarget := streamingWorkerTarget(cfg, planner, latency)
+	if sideEffectDepth < streamingSideEffectBackpressureDepth(o.pool.WorkerCount(), planner.activeCount()) {
+		desiredTarget = streamingBacklogWorkerTarget(desiredTarget, planner.activeCount(), pending+o.pool.QueueDepth())
+	}
 	workerTarget := streamingDampedWorkerTarget(o.pool.WorkerCount(), desiredTarget)
 	if planner.activeCount() > 0 {
 		if added := o.pool.SetSizeBounds(workerTarget, workerTarget); added > 0 {
@@ -938,6 +941,27 @@ func streamingDampedWorkerTarget(current, desired int) int {
 		return desired
 	}
 	return desired
+}
+
+func streamingBacklogWorkerTarget(base, active, backlog int) int {
+	if base < 1 || backlog <= 0 {
+		return base
+	}
+	target := base + backlog/60
+	if target <= base {
+		target = base + 1
+	}
+	maxTarget := base * 3
+	if maxTarget < base+streamingMinWorkerStep {
+		maxTarget = base + streamingMinWorkerStep
+	}
+	if target > maxTarget {
+		target = maxTarget
+	}
+	if active > 0 && target > active {
+		target = active
+	}
+	return target
 }
 
 func streamingLoadPageSize(cfg *config.Config) int {
