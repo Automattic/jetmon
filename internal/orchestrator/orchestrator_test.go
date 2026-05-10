@@ -218,6 +218,48 @@ func TestSendNotificationRetriesAndUpdatesAlertTimestamp(t *testing.T) {
 	}
 }
 
+func TestSendNotificationSkipsWhenWPCOMDisabled(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+
+	cfg := setTestConfig(t)
+	cfg.WPCOMNotifyEnable = false
+
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+
+	var notifyCalls int
+	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error {
+		notifyCalls++
+		return nil
+	}
+
+	var updatedBlogID int64
+	dbUpdateLastAlertSent = func(_ context.Context, blogID int64, _ time.Time) error {
+		updatedBlogID = blogID
+		return nil
+	}
+
+	o := &Orchestrator{
+		wpcom:    &wpcom.Client{},
+		hostname: "local-host",
+		ctx:      context.Background(),
+	}
+
+	res := checkerResultSuccess(123)
+	o.sendNotification(db.Site{BlogID: 123, MonitorURL: "https://example.com"}, res, statusRunning, res.Timestamp, nil)
+
+	if notifyCalls != 0 {
+		t.Fatalf("notify calls = %d, want 0", notifyCalls)
+	}
+	if updatedBlogID != 0 {
+		t.Fatalf("updated blog_id = %d, want 0", updatedBlogID)
+	}
+	if got := rec.counter("wpcom.notification.disabled.count"); got != 1 {
+		t.Fatalf("wpcom.notification.disabled.count = %d, want 1", got)
+	}
+}
+
 func TestSendNotificationBuildsLegacyWPCOMPayload(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()

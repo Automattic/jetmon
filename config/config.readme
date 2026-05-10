@@ -60,6 +60,12 @@ DATASET_SIZE. Default: 32.
 AUTH_TOKEN
 Shared secret used to authenticate outbound WPCOM API calls. Required.
 
+WPCOM_NOTIFY_ENABLE
+Whether the legacy WPCOM status-change notification path is allowed to make
+outbound calls. Keep this enabled in production for v1 payload compatibility.
+Set false on isolated test fleets so capacity and outage simulations cannot
+attempt to notify WPCOM. Default: true.
+
 VERIFLIER_BATCH_SIZE
 Legacy compatibility setting retained for verifier batching compatibility. The
 current JSON-over-HTTP verifier path sends one verification request per site

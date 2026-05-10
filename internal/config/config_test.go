@@ -372,6 +372,9 @@ func TestLoadAndGet(t *testing.T) {
 	if !cfg.LegacyStatusProjectionEnable {
 		t.Fatal("LegacyStatusProjectionEnable default should be true")
 	}
+	if !cfg.WPCOMNotifyEnable {
+		t.Fatal("WPCOMNotifyEnable default should be true")
+	}
 }
 
 func TestSampleConfigLoads(t *testing.T) {
@@ -432,6 +435,26 @@ func TestLegacyStatusProjectionConfig(t *testing.T) {
 				t.Fatalf("LegacyStatusProjectionEnabled() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestWPCOMNotifyConfig(t *testing.T) {
+	saveConfigState(t)
+	p := writeConfigFile(t, `{
+		"AUTH_TOKEN": "token",
+		"NUM_WORKERS": 7,
+		"BUCKET_TOTAL": 100,
+		"BUCKET_TARGET": 50,
+		"NET_COMMS_TIMEOUT": 10,
+		"LOG_FORMAT": "text",
+		"WPCOM_NOTIFY_ENABLE": false
+	}`)
+
+	if err := Load(p); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if WPCOMNotifyEnabled() {
+		t.Fatal("WPCOMNotifyEnabled() = true, want false")
 	}
 }
 

@@ -79,6 +79,7 @@ type Config struct {
 	StatsUpdateIntervalMS     int    `json:"STATS_UPDATE_INTERVAL_MS"`
 	StatsdSendMemUsage        bool   `json:"STATSD_SEND_MEM_USAGE"`
 	TimeBetweenNoticesMin     int    `json:"TIME_BETWEEN_NOTICES_MIN"`
+	WPCOMNotifyEnable         bool   `json:"WPCOM_NOTIFY_ENABLE"`
 	MinTimeBetweenRoundsSec   int    `json:"MIN_TIME_BETWEEN_ROUNDS_SEC"`
 	NetCommsTimeout           int    `json:"NET_COMMS_TIMEOUT"`
 	BodyReadMaxBytes          int64  `json:"BODY_READ_MAX_BYTES"`
@@ -223,6 +224,7 @@ func defaults() *Config {
 		AlertCooldownMinutes:                 30,
 		StatsUpdateIntervalMS:                10000,
 		TimeBetweenNoticesMin:                59,
+		WPCOMNotifyEnable:                    true,
 		MinTimeBetweenRoundsSec:              300,
 		NetCommsTimeout:                      10,
 		BodyReadMaxBytes:                     1048576,
@@ -263,6 +265,17 @@ func LegacyStatusProjectionEnabled() bool {
 		return true
 	}
 	return cfg.LegacyStatusProjectionEnable
+}
+
+// WPCOMNotifyEnabled reports whether the legacy WPCOM status-change
+// notification path should make outbound calls. It defaults to true for
+// production compatibility; test fleets can set WPCOM_NOTIFY_ENABLE=false.
+func WPCOMNotifyEnabled() bool {
+	cfg := Get()
+	if cfg == nil {
+		return true
+	}
+	return cfg.WPCOMNotifyEnable
 }
 
 // PinnedBucketRange returns the migration-only static bucket range configured
