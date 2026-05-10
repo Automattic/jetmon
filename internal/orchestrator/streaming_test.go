@@ -186,6 +186,25 @@ func TestStreamingWorkerTargetCapsScaleLatencyAtCheckTimeout(t *testing.T) {
 	}
 }
 
+func TestStreamingPressureWorkerTargetUsesConservativeLatency(t *testing.T) {
+	planner := &streamingPlanner{targets: make(map[int64]*streamingTarget)}
+	for i := int64(1); i <= 100000; i++ {
+		planner.targets[i] = &streamingTarget{
+			site:   db.Site{BlogID: i, CheckInterval: 5},
+			active: true,
+		}
+	}
+	planner.recalculateRequiredRate()
+	cfg := &config.Config{NumWorkers: 60, NetCommsTimeout: 10}
+
+	got := streamingPressureWorkerTarget(cfg, planner)
+	want := int(planner.requiredChecksPerSecond() * streamingFailurePressureLatency.Seconds() * streamingWorkerHeadroom)
+	want++
+	if got != want {
+		t.Fatalf("streamingPressureWorkerTarget() = %d, want %d", got, want)
+	}
+}
+
 func TestStreamingDampedWorkerTargetLimitsGrowthAndShrink(t *testing.T) {
 	if got := streamingDampedWorkerTarget(400, 2000, false); got != 500 {
 		t.Fatalf("growth damped target = %d, want 500", got)

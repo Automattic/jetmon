@@ -36,6 +36,8 @@ const (
 	streamingMinBackpressureDepth    = 1024
 	streamingFailurePressureMin      = 1000
 	streamingFailurePressurePercent  = 25
+	streamingFailurePressureHold     = 2 * time.Minute
+	streamingFailurePressureLatency  = time.Second
 )
 
 type streamingTarget struct {
@@ -460,6 +462,7 @@ func (o *Orchestrator) runStreamingEngine() {
 		lastProjectionFlush = lastReport
 		lastHeartbeat       = lastReport
 		lastActiveCountPoll = lastReport
+		pressureUntil       time.Time
 	)
 
 	for {
@@ -497,6 +500,11 @@ func (o *Orchestrator) runStreamingEngine() {
 				lag = 0
 			}
 			stats.addResult(res, lag)
+			pressureActive := nowFunc().UTC().Before(pressureUntil)
+			if streamingFailurePressure(stats) {
+				pressureUntil = nowFunc().UTC().Add(streamingFailurePressureHold)
+				pressureActive = true
+			}
 			o.totalChecked++
 			if streamingSideEffectsNeeded(target, res, pendingSideEffects, sideEffectStatus, o.retries) {
 				job := streamingSideEffectJob{site: target.site, res: res}
@@ -508,14 +516,15 @@ func (o *Orchestrator) runStreamingEngine() {
 				}
 				pendingSideEffects[target.site.BlogID]++
 			}
-			planner.scheduleAfterResult(target, res, !streamingFailurePressure(stats))
+			planner.scheduleAfterResult(target, res, !pressureActive)
 			o.queueStreamingProjection(cfg, target, res, pendingProjection)
 		case <-tick.C:
 			now := nowFunc().UTC()
 			cfg = config.Get()
 			o.refreshVeriflierClients(cfg)
+			pressureActive := now.Before(pressureUntil) || streamingFailurePressure(stats)
 			if now.Sub(lastScale) >= streamingScaleInterval {
-				o.applyStreamingWorkerTarget(cfg, planner, stats, len(pending), sideEffects.queueDepth())
+				o.applyStreamingWorkerTarget(cfg, planner, stats, len(pending), sideEffects.queueDepth(), pressureActive)
 				lastScale = now
 			}
 
@@ -592,7 +601,7 @@ func (o *Orchestrator) runStreamingEngine() {
 
 			if now.Sub(lastReport) >= streamingReportInterval {
 				reportElapsed := now.Sub(lastReport)
-				o.reportStreamingStats(cfg, planner, stats, len(pending), sideEffects.queueDepth(), reportElapsed)
+				o.reportStreamingStats(cfg, planner, stats, len(pending), sideEffects.queueDepth(), reportElapsed, pressureActive)
 				stats = streamingStats{}
 				lastReport = now
 			}
@@ -806,7 +815,7 @@ func (o *Orchestrator) flushStreamingProjection(pending map[int64]db.SiteCheck) 
 	return true
 }
 
-func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streamingPlanner, stats streamingStats, pending, sideEffectDepth int, elapsed time.Duration) {
+func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streamingPlanner, stats streamingStats, pending, sideEffectDepth int, elapsed time.Duration, pressureActive bool) {
 	avgLatency := stats.averageLatency()
 	if avgLatency == 0 {
 		avgLatency = streamingDefaultLatency
@@ -890,7 +899,7 @@ func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streami
 		scaleLatency.Round(time.Millisecond),
 		stats.checkSuccesses,
 		stats.checkFailures,
-		streamingFailurePressure(stats),
+		pressureActive || streamingFailurePressure(stats),
 		stats.historyRows,
 		stats.sslRows,
 		stats.staleResults,
@@ -902,14 +911,16 @@ func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streami
 	)
 }
 
-func (o *Orchestrator) applyStreamingWorkerTarget(cfg *config.Config, planner *streamingPlanner, stats streamingStats, pending, sideEffectDepth int) int {
+func (o *Orchestrator) applyStreamingWorkerTarget(cfg *config.Config, planner *streamingPlanner, stats streamingStats, pending, sideEffectDepth int, pressure bool) int {
 	latency := stats.scaleLatency()
 	desiredTarget := streamingWorkerTarget(cfg, planner, latency)
-	pressure := streamingFailurePressure(stats)
-	if !pressure && sideEffectDepth < streamingSideEffectBackpressureDepth(o.pool.WorkerCount(), planner.activeCount()) {
+	if pressure {
+		pressureTarget := streamingPressureWorkerTarget(cfg, planner)
+		if desiredTarget > pressureTarget {
+			desiredTarget = pressureTarget
+		}
+	} else if sideEffectDepth < streamingSideEffectBackpressureDepth(o.pool.WorkerCount(), planner.activeCount()) {
 		desiredTarget = streamingBacklogWorkerTarget(desiredTarget, planner.activeCount(), pending+o.pool.QueueDepth())
-	} else if pressure && desiredTarget > o.pool.WorkerCount() {
-		desiredTarget = o.pool.WorkerCount()
 	}
 	workerTarget := streamingDampedWorkerTarget(o.pool.WorkerCount(), desiredTarget, pressure)
 	if planner.activeCount() > 0 {
@@ -921,6 +932,10 @@ func (o *Orchestrator) applyStreamingWorkerTarget(cfg *config.Config, planner *s
 		o.pool.SetSizeBounds(1, workerTarget)
 	}
 	return workerTarget
+}
+
+func streamingPressureWorkerTarget(cfg *config.Config, planner *streamingPlanner) int {
+	return streamingWorkerTarget(cfg, planner, streamingFailurePressureLatency)
 }
 
 func streamingDampedWorkerTarget(current, desired int, pressure bool) int {
