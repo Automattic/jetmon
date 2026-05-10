@@ -509,7 +509,7 @@ func (o *Orchestrator) runStreamingEngine() {
 			}
 			pendingSideEffects[target.site.BlogID]++
 		}
-		planner.scheduleAfterResult(target, res, !pressureActive)
+		planner.scheduleAfterResult(target, res, streamingAllowImmediateRetry(target, res, o.retries, pressureActive))
 		o.queueStreamingProjection(cfg, target, res, pendingProjection)
 	}
 
@@ -813,6 +813,22 @@ func streamingLocalPressureFailure(res checker.Result) bool {
 		return false
 	}
 	return res.ErrorCode == checker.ErrorTimeout || res.ErrorCode == checker.ErrorConnect
+}
+
+func streamingAllowImmediateRetry(target *streamingTarget, res checker.Result, retries *retryQueue, pressure bool) bool {
+	if !pressure {
+		return true
+	}
+	if target == nil {
+		return false
+	}
+	if !streamingLocalPressureFailure(res) {
+		return true
+	}
+	if target.site.SiteStatus != statusRunning {
+		return true
+	}
+	return retries != nil && retries.get(target.site.BlogID) != nil
 }
 
 func (o *Orchestrator) queueStreamingProjection(cfg *config.Config, target *streamingTarget, res checker.Result, pending map[int64]db.SiteCheck) {

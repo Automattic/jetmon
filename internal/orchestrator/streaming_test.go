@@ -147,6 +147,28 @@ func TestStreamingScheduleAfterResultSkipsImmediateRetryUnderPressure(t *testing
 	}
 }
 
+func TestStreamingAllowImmediateRetryUnderPressure(t *testing.T) {
+	target := &streamingTarget{site: db.Site{BlogID: 42, CheckInterval: 5, SiteStatus: statusRunning}}
+	localTimeout := checker.Result{BlogID: 42, ErrorCode: checker.ErrorTimeout}
+	if streamingAllowImmediateRetry(target, localTimeout, nil, true) {
+		t.Fatal("new local timeout under pressure should not use immediate retry")
+	}
+	if !streamingAllowImmediateRetry(target, checker.Result{BlogID: 42, HTTPCode: 503}, nil, true) {
+		t.Fatal("HTTP failure under pressure should keep immediate retry")
+	}
+
+	retries := newRetryQueue()
+	retries.record(checker.Result{BlogID: 42, URL: "http://example.com", Timestamp: time.Now()})
+	if !streamingAllowImmediateRetry(target, localTimeout, retries, true) {
+		t.Fatal("existing retry state under pressure should keep immediate retry")
+	}
+
+	target.site.SiteStatus = statusDown
+	if !streamingAllowImmediateRetry(target, localTimeout, nil, true) {
+		t.Fatal("non-running site under pressure should keep immediate retry")
+	}
+}
+
 func TestStreamingWorkerTargetScalesFromRequiredRate(t *testing.T) {
 	planner := &streamingPlanner{targets: make(map[int64]*streamingTarget)}
 	for i := int64(1); i <= 1200; i++ {
