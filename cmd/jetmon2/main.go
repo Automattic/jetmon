@@ -729,6 +729,15 @@ func emailTransportDelivers(cfg *config.Config) bool {
 }
 
 func schedulerConfigLabel(cfg *config.Config) string {
+	if cfg.SchedulerEngine == "streaming" {
+		return fmt.Sprintf(
+			"streaming reload=%s legacy_projection=%s worker_floor=%d fetch_page_size=%d",
+			time.Duration(cfg.StreamingTargetReloadSec)*time.Second,
+			time.Duration(cfg.StreamingLegacyProjectionIntervalMin)*time.Minute,
+			cfg.NumWorkers,
+			cfg.DatasetSize,
+		)
+	}
 	if cfg.UseVariableCheckIntervals {
 		return fmt.Sprintf(
 			"variable_intervals fetch_page_size=%d idle_poll=%s",
