@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -906,6 +907,59 @@ func TestResults(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for result")
+	}
+}
+
+func TestPoolDoesNotDropResultWhenResultChannelIsFull(t *testing.T) {
+	orig := poolCheckFunc
+	secondReturned := make(chan struct{})
+	var once sync.Once
+	poolCheckFunc = func(_ context.Context, req Request) Result {
+		if req.BlogID == 2 {
+			once.Do(func() { close(secondReturned) })
+		}
+		return Result{BlogID: req.BlogID, Success: true, HTTPCode: 200}
+	}
+	t.Cleanup(func() { poolCheckFunc = orig })
+
+	p := NewPoolWithQueueCap(1, 1, 1, 1)
+	t.Cleanup(p.Drain)
+
+	if !p.Submit(Request{BlogID: 1, URL: "https://example.com/1"}) {
+		t.Fatal("first Submit() returned false")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(p.Results()) == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(p.Results()) != 1 {
+		t.Fatal("first result did not fill result channel")
+	}
+
+	if !p.Submit(Request{BlogID: 2, URL: "https://example.com/2"}) {
+		t.Fatal("second Submit() returned false")
+	}
+	select {
+	case <-secondReturned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for second check to complete")
+	}
+	time.Sleep(25 * time.Millisecond)
+
+	first := <-p.Results()
+	if first.BlogID != 1 {
+		t.Fatalf("first result BlogID = %d, want 1", first.BlogID)
+	}
+	select {
+	case second := <-p.Results():
+		if second.BlogID != 2 {
+			t.Fatalf("second result BlogID = %d, want 2", second.BlogID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for second result; result was likely dropped")
 	}
 }
 

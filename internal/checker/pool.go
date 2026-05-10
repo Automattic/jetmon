@@ -103,8 +103,8 @@ func (p *Pool) Drain() {
 	p.workMu.Lock()
 	close(p.work)
 	p.workMu.Unlock()
-	p.wg.Wait()
 	p.cancel()
+	p.wg.Wait()
 }
 
 func (p *Pool) spawnWorker() {
@@ -133,8 +133,6 @@ func (p *Pool) spawnWorker() {
 				case p.results <- res:
 				case <-p.ctx.Done():
 					return
-				default:
-					// Avoid deadlocking shutdown if the result consumer has stopped.
 				}
 			}
 		}
