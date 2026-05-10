@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"context"
 	"log"
 	"math"
 	"runtime"
@@ -69,6 +70,13 @@ type streamingPlanner struct {
 	requiredRate float64
 }
 
+type streamingReloadResult struct {
+	sites     []db.Site
+	bucketMin int
+	bucketMax int
+	err       error
+}
+
 func newStreamingPlanner(sites []db.Site, now time.Time) *streamingPlanner {
 	p := &streamingPlanner{
 		targets: make(map[int64]*streamingTarget, len(sites)),
@@ -83,9 +91,11 @@ func (p *streamingPlanner) merge(sites []db.Site, now time.Time) (added, updated
 	for _, site := range sites {
 		seen[site.BlogID] = struct{}{}
 		if target, ok := p.targets[site.BlogID]; ok {
+			if !streamingSiteCheckConfigEqual(target.site, site) {
+				target.checkRequestDirty = true
+			}
 			target.site = site
 			target.active = true
-			target.checkRequestDirty = true
 			updated++
 			continue
 		}
@@ -111,6 +121,24 @@ func (p *streamingPlanner) merge(sites []db.Site, now time.Time) (added, updated
 	}
 	p.recalculateRequiredRate()
 	return added, updated, removed
+}
+
+func streamingSiteCheckConfigEqual(a, b db.Site) bool {
+	return a.MonitorURL == b.MonitorURL &&
+		a.CheckInterval == b.CheckInterval &&
+		stringPtrEqual(a.CheckKeyword, b.CheckKeyword) &&
+		stringPtrEqual(a.ForbiddenKeyword, b.ForbiddenKeyword) &&
+		stringPtrEqual(a.ForbiddenKeywords, b.ForbiddenKeywords) &&
+		stringPtrEqual(a.CustomHeaders, b.CustomHeaders) &&
+		a.TimeoutSeconds == b.TimeoutSeconds &&
+		a.RedirectPolicy == b.RedirectPolicy
+}
+
+func stringPtrEqual(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 func (p *streamingPlanner) activeCount() int {
@@ -514,7 +542,69 @@ func (o *Orchestrator) runStreamingEngine() {
 		lastHeartbeat       = lastReport
 		lastActiveCountPoll = lastReport
 		pressureUntil       time.Time
+		reloadResults       = make(chan streamingReloadResult, 1)
+		reloadInFlight      bool
 	)
+
+	applyReload := func(reload streamingReloadResult) {
+		reloadInFlight = false
+		if reload.err != nil {
+			log.Printf("orchestrator: streaming target reload failed: %v", reload.err)
+			return
+		}
+		if reload.bucketMin != o.bucketMin || reload.bucketMax != o.bucketMax {
+			log.Printf("orchestrator: streaming target reload discarded stale bucket snapshot loaded=%d-%d current=%d-%d",
+				reload.bucketMin, reload.bucketMax, o.bucketMin, o.bucketMax)
+			lastReload = time.Time{}
+			return
+		}
+
+		wasEmpty := planner.activeCount() == 0
+		wasActive := planner.activeCount() > 0
+		added, updated, removed := planner.merge(reload.sites, nowFunc().UTC())
+		if wasEmpty && planner.activeCount() > 0 {
+			o.configureStreamingPool(cfg, planner, streamingDefaultLatency)
+			sideEffects.stop()
+			sideEffectShards = streamingSideEffectShardCount(planner.activeCount())
+			sideEffects = o.newStreamingSideEffectProcessor(sideEffectShards, streamingQueueCap(streamingWorkerTarget(cfg, planner, streamingDefaultLatency), planner.activeCount()))
+			pendingSideEffects = make(map[int64]int)
+			sideEffectStatus = make(map[int64]int)
+		} else if wasActive && planner.activeCount() == 0 {
+			o.configureStreamingPool(cfg, planner, streamingDefaultLatency)
+			sideEffects.stop()
+			sideEffectShards = streamingSideEffectShardCount(planner.activeCount())
+			sideEffects = o.newStreamingSideEffectProcessor(sideEffectShards, streamingQueueCap(streamingWorkerTarget(cfg, planner, streamingDefaultLatency), planner.activeCount()))
+			pending = nil
+			pendingSideEffects = make(map[int64]int)
+			sideEffectStatus = make(map[int64]int)
+		}
+		log.Printf("orchestrator: streaming target reload active=%d added=%d updated=%d removed=%d required_rate=%.2f/s",
+			planner.activeCount(), added, updated, removed, planner.requiredChecksPerSecond())
+	}
+
+	startReload := func(reason string, now time.Time) {
+		if reloadInFlight {
+			return
+		}
+		reloadInFlight = true
+		lastReload = now
+		reloadCfg := cfg
+		bucketMin, bucketMax := o.bucketMin, o.bucketMax
+		log.Printf("orchestrator: streaming target reload started reason=%s buckets=%d-%d", reason, bucketMin, bucketMax)
+		go func() {
+			sites, err := o.loadStreamingSitesForRange(o.ctx, reloadCfg, bucketMin, bucketMax)
+			result := streamingReloadResult{
+				sites:     sites,
+				bucketMin: bucketMin,
+				bucketMax: bucketMax,
+				err:       err,
+			}
+			select {
+			case reloadResults <- result:
+			case <-o.ctx.Done():
+			}
+		}()
+	}
 
 	handleResult := func(res checker.Result) {
 		target, ok := planner.targets[res.BlogID]
@@ -571,6 +661,8 @@ func (o *Orchestrator) runStreamingEngine() {
 					}
 				}
 			}
+		case reload := <-reloadResults:
+			applyReload(reload)
 		case res := <-o.pool.Results():
 			handleResult(res)
 		resultDrain:
@@ -585,6 +677,7 @@ func (o *Orchestrator) runStreamingEngine() {
 		case <-tick.C:
 			now := nowFunc().UTC()
 			cfg = config.Get()
+			reloadReason := ""
 			o.refreshVeriflierClients(cfg)
 			pressureActive := now.Before(pressureUntil) || streamingFailurePressure(stats)
 			if now.Sub(lastScale) >= streamingScaleInterval {
@@ -599,6 +692,7 @@ func (o *Orchestrator) runStreamingEngine() {
 				}
 				if bucketsChanged {
 					lastReload = time.Time{}
+					reloadReason = "bucket_change"
 				}
 				lastHeartbeat = now
 			}
@@ -609,37 +703,16 @@ func (o *Orchestrator) runStreamingEngine() {
 				} else if count != planner.activeCount() {
 					log.Printf("orchestrator: streaming active target count changed db=%d memory=%d; reloading targets", count, planner.activeCount())
 					lastReload = time.Time{}
+					reloadReason = "active_count_changed"
 				}
 				lastActiveCountPoll = now
 			}
 
 			if now.Sub(lastReload) >= time.Duration(cfg.StreamingTargetReloadSec)*time.Second {
-				if sites, err := o.loadStreamingSites(cfg); err != nil {
-					log.Printf("orchestrator: streaming target reload failed: %v", err)
-				} else {
-					wasEmpty := planner.activeCount() == 0
-					wasActive := planner.activeCount() > 0
-					added, updated, removed := planner.merge(sites, now.UTC())
-					if wasEmpty && planner.activeCount() > 0 {
-						o.configureStreamingPool(cfg, planner, streamingDefaultLatency)
-						sideEffects.stop()
-						sideEffectShards = streamingSideEffectShardCount(planner.activeCount())
-						sideEffects = o.newStreamingSideEffectProcessor(sideEffectShards, streamingQueueCap(streamingWorkerTarget(cfg, planner, streamingDefaultLatency), planner.activeCount()))
-						pendingSideEffects = make(map[int64]int)
-						sideEffectStatus = make(map[int64]int)
-					} else if wasActive && planner.activeCount() == 0 {
-						o.configureStreamingPool(cfg, planner, streamingDefaultLatency)
-						sideEffects.stop()
-						sideEffectShards = streamingSideEffectShardCount(planner.activeCount())
-						sideEffects = o.newStreamingSideEffectProcessor(sideEffectShards, streamingQueueCap(streamingWorkerTarget(cfg, planner, streamingDefaultLatency), planner.activeCount()))
-						pending = nil
-						pendingSideEffects = make(map[int64]int)
-						sideEffectStatus = make(map[int64]int)
-					}
-					log.Printf("orchestrator: streaming target reload active=%d added=%d updated=%d removed=%d required_rate=%.2f/s",
-						planner.activeCount(), added, updated, removed, planner.requiredChecksPerSecond())
+				if reloadReason == "" {
+					reloadReason = "periodic"
 				}
-				lastReload = now
+				startReload(reloadReason, now)
 			}
 
 			due := planner.popDue(now)
@@ -706,13 +779,17 @@ func (o *Orchestrator) refreshStreamingBuckets(cfg *config.Config) (bool, error)
 }
 
 func (o *Orchestrator) loadStreamingSites(cfg *config.Config) ([]db.Site, error) {
+	return o.loadStreamingSitesForRange(o.ctx, cfg, o.bucketMin, o.bucketMax)
+}
+
+func (o *Orchestrator) loadStreamingSitesForRange(ctx context.Context, cfg *config.Config, bucketMin, bucketMax int) ([]db.Site, error) {
 	pageSize := streamingLoadPageSize(cfg)
 	var (
 		afterBlogID int64
 		sites       []db.Site
 	)
 	for {
-		page, err := dbListActiveSites(o.ctx, o.bucketMin, o.bucketMax, afterBlogID, pageSize)
+		page, err := dbListActiveSites(ctx, bucketMin, bucketMax, afterBlogID, pageSize)
 		if err != nil {
 			return nil, err
 		}

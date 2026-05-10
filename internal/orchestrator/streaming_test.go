@@ -503,6 +503,24 @@ func TestStreamingPlannerMergeMarksCheckRequestDirty(t *testing.T) {
 	}
 }
 
+func TestStreamingPlannerMergeKeepsCheckRequestCacheForStatusOnlyReload(t *testing.T) {
+	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	site := db.Site{BlogID: 42, MonitorURL: "https://example.com", CheckInterval: 5, SiteStatus: statusRunning}
+	cfg := &config.Config{NetCommsTimeout: 10}
+	planner := newStreamingPlanner([]db.Site{site}, now)
+	target := planner.targets[42]
+	_ = streamingCheckRequestForTarget(cfg, target)
+
+	site.SiteStatus = statusDown
+	planner.merge([]db.Site{site}, now)
+	if target.checkRequestDirty {
+		t.Fatal("status-only reload marked cached check request dirty")
+	}
+	if target.site.SiteStatus != statusDown {
+		t.Fatalf("SiteStatus = %d after merge, want %d", target.site.SiteStatus, statusDown)
+	}
+}
+
 func TestStreamingCheckCadenceAddsBoundedHeadroom(t *testing.T) {
 	if got := streamingCheckCadence(db.Site{CheckInterval: 5}); got != 285*time.Second {
 		t.Fatalf("streamingCheckCadence(5m) = %s, want 285s", got)
