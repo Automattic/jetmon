@@ -478,12 +478,21 @@ func (o *Orchestrator) runStreamingEngine() {
 					log.Printf("orchestrator: streaming target reload failed: %v", err)
 				} else {
 					wasEmpty := planner.activeCount() == 0
+					wasActive := planner.activeCount() > 0
 					added, updated, removed := planner.merge(sites, now.UTC())
 					if wasEmpty && planner.activeCount() > 0 {
 						o.configureStreamingPool(cfg, planner, streamingDefaultLatency)
 						sideEffects.stop()
 						sideEffectShards = streamingSideEffectShardCount()
 						sideEffects = o.newStreamingSideEffectProcessor(sideEffectShards, streamingQueueCap(streamingWorkerTarget(cfg, planner, streamingDefaultLatency), planner.activeCount()))
+						pendingSideEffects = make(map[int64]int)
+						sideEffectStatus = make(map[int64]int)
+					} else if wasActive && planner.activeCount() == 0 {
+						o.configureStreamingPool(cfg, planner, streamingDefaultLatency)
+						sideEffects.stop()
+						sideEffectShards = streamingSideEffectShardCount()
+						sideEffects = o.newStreamingSideEffectProcessor(sideEffectShards, streamingQueueCap(streamingWorkerTarget(cfg, planner, streamingDefaultLatency), planner.activeCount()))
+						pending = nil
 						pendingSideEffects = make(map[int64]int)
 						sideEffectStatus = make(map[int64]int)
 					}
