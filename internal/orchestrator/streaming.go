@@ -619,11 +619,12 @@ func (o *Orchestrator) runStreamingEngine() {
 			lag = 0
 		}
 		stats.addResult(res, lag)
-		pressureActive := nowFunc().UTC().Before(pressureUntil)
+		failurePressureActive := nowFunc().UTC().Before(pressureUntil)
 		if streamingFailurePressure(stats) {
 			pressureUntil = nowFunc().UTC().Add(streamingFailurePressureHold)
-			pressureActive = true
+			failurePressureActive = true
 		}
+		pressureActive := failurePressureActive || streamingHotPathBehind(planner, len(pending), o.pool.ResultDepth(), sideEffects.queueDepth(), o.pool.WorkerCount(), stats)
 		o.totalChecked++
 		if streamingSideEffectsNeeded(target, res, pendingSideEffects, sideEffectStatus, o.retries, pressureActive) {
 			job := streamingSideEffectJob{site: target.site, res: res}
@@ -680,9 +681,10 @@ func (o *Orchestrator) runStreamingEngine() {
 			cfg = config.Get()
 			reloadReason := ""
 			o.refreshVeriflierClients(cfg)
-			pressureActive := now.Before(pressureUntil) || streamingFailurePressure(stats)
+			failurePressureActive := now.Before(pressureUntil) || streamingFailurePressure(stats)
+			pressureActive := failurePressureActive || streamingHotPathBehind(planner, len(pending), o.pool.ResultDepth(), sideEffects.queueDepth(), o.pool.WorkerCount(), stats)
 			if now.Sub(lastScale) >= streamingScaleInterval {
-				o.applyStreamingWorkerTarget(cfg, planner, stats, len(pending), sideEffects.queueDepth(), pressureActive)
+				o.applyStreamingWorkerTarget(cfg, planner, stats, len(pending), sideEffects.queueDepth(), failurePressureActive)
 				lastScale = now
 			}
 
@@ -1217,6 +1219,10 @@ func streamingBacklogWorkerTarget(base, active, backlog int) int {
 }
 
 func streamingShouldDeferPeriodicReload(planner *streamingPlanner, pending, resultDepth, sideEffectDepth, workers int, stats streamingStats) bool {
+	return streamingHotPathBehind(planner, pending, resultDepth, sideEffectDepth, workers, stats)
+}
+
+func streamingHotPathBehind(planner *streamingPlanner, pending, resultDepth, sideEffectDepth, workers int, stats streamingStats) bool {
 	if planner == nil || planner.activeCount() == 0 {
 		return false
 	}
