@@ -36,7 +36,7 @@ const (
 	streamingWorkerHeadroom          = 2.0
 	streamingMinWorkerStep           = 50
 	streamingMinBackpressureDepth    = 1024
-	streamingResultDrainLimit        = 8192
+	streamingResultDrainLimit        = 32768
 	streamingFailurePressureMin      = 1000
 	streamingFailurePressurePercent  = 25
 	streamingFailurePressureHold     = 2 * time.Minute
@@ -682,6 +682,15 @@ func (o *Orchestrator) runStreamingEngine() {
 			now := nowFunc().UTC()
 			cfg = config.Get()
 			reloadReason := ""
+		tickResultDrain:
+			for range streamingResultDrainLimit {
+				select {
+				case res := <-o.pool.Results():
+					handleResult(res)
+				default:
+					break tickResultDrain
+				}
+			}
 			o.refreshVeriflierClients(cfg)
 			failurePressureActive := now.Before(pressureUntil) || streamingFailurePressure(stats)
 			hotPathPressure = streamingHotPathBehind(planner, len(pending), o.pool.ResultDepth(), sideEffects.queueDepth(), o.pool.WorkerCount(), stats)

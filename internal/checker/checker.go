@@ -798,6 +798,25 @@ func readResponseBody(resp *http.Response, needKeyword bool, req Request) bodyRe
 		mode = "strict_finite"
 	}
 
+	if !needKeyword {
+		n, err := io.Copy(io.Discard, io.LimitReader(resp.Body, limit+1))
+		result := bodyReadResult{
+			Err:           err,
+			Mode:          mode,
+			BytesRead:     n,
+			ExpectedBytes: resp.ContentLength,
+			LimitBytes:    limit,
+		}
+		if n > limit {
+			result.BytesRead = limit
+			return result
+		}
+		if err == nil && resp.ContentLength >= 0 && resp.ContentLength <= limit && n != resp.ContentLength {
+			result.Err = io.ErrUnexpectedEOF
+		}
+		return result
+	}
+
 	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	result := bodyReadResult{
 		Body:          body,
