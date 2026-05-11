@@ -235,7 +235,7 @@ func defaults() *Config {
 		KeywordReadMaxBytes:                  1048576,
 		KeywordReadMaxMS:                     0,
 		SchedulerEngine:                      "legacy",
-		StreamingLegacyProjectionIntervalMin: 10,
+		StreamingLegacyProjectionIntervalMin: 15,
 		StreamingTargetReloadSec:             300,
 		LogFormat:                            "text",
 		DashboardPort:                        8080,
@@ -366,7 +366,7 @@ func validate(cfg *Config) error {
 		return fmt.Errorf("SCHEDULER_ENGINE must be 'legacy' or 'streaming'")
 	}
 	if cfg.StreamingLegacyProjectionIntervalMin == 0 {
-		cfg.StreamingLegacyProjectionIntervalMin = 10
+		cfg.StreamingLegacyProjectionIntervalMin = 15
 	}
 	if cfg.StreamingLegacyProjectionIntervalMin < 5 {
 		return fmt.Errorf("STREAMING_LEGACY_PROJECTION_INTERVAL_MIN must be between 5 and 15")

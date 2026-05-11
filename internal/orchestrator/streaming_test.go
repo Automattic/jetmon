@@ -30,7 +30,6 @@ func TestStreamingPlannerPopDueSkipsQueuedAndInflightTargets(t *testing.T) {
 	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
 	planner := &streamingPlanner{
 		targets: make(map[int64]*streamingTarget),
-		due:     make(map[int64][]int64),
 	}
 	ready := &streamingTarget{site: db.Site{BlogID: 1, CheckInterval: 1}, active: true}
 	queued := &streamingTarget{site: db.Site{BlogID: 2, CheckInterval: 1}, active: true, queued: true}
@@ -55,7 +54,6 @@ func TestStreamingPlannerPopDueKeepsFutureBucketsPending(t *testing.T) {
 	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
 	planner := &streamingPlanner{
 		targets: make(map[int64]*streamingTarget),
-		due:     make(map[int64][]int64),
 	}
 	ready := &streamingTarget{site: db.Site{BlogID: 1, CheckInterval: 1}, active: true}
 	future := &streamingTarget{site: db.Site{BlogID: 2, CheckInterval: 1}, active: true}
@@ -81,7 +79,6 @@ func TestStreamingPlannerPopDueSkipsStaleBucketEntries(t *testing.T) {
 	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
 	planner := &streamingPlanner{
 		targets: make(map[int64]*streamingTarget),
-		due:     make(map[int64][]int64),
 	}
 	target := &streamingTarget{site: db.Site{BlogID: 1, CheckInterval: 1}, active: true}
 	planner.targets[1] = target
@@ -104,7 +101,6 @@ func TestStreamingScheduleAfterResultKeepsLocalRetryForSeemsDown(t *testing.T) {
 	checkedAt := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
 	planner := &streamingPlanner{
 		targets: make(map[int64]*streamingTarget),
-		due:     make(map[int64][]int64),
 	}
 	target := &streamingTarget{
 		site:   db.Site{BlogID: 42, CheckInterval: 5, SiteStatus: statusDown},
@@ -127,7 +123,6 @@ func TestStreamingScheduleAfterResultUsesNormalCadenceForConfirmedDown(t *testin
 	checkedAt := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
 	planner := &streamingPlanner{
 		targets: make(map[int64]*streamingTarget),
-		due:     make(map[int64][]int64),
 	}
 	target := &streamingTarget{
 		site:   db.Site{BlogID: 42, CheckInterval: 5, SiteStatus: statusConfirmedDown},
@@ -150,7 +145,6 @@ func TestStreamingScheduleAtNextPhaseAfterRestoresPhaseSpread(t *testing.T) {
 	checkedAt := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
 	planner := &streamingPlanner{
 		targets: make(map[int64]*streamingTarget),
-		due:     make(map[int64][]int64),
 	}
 	target := &streamingTarget{
 		site:   db.Site{BlogID: 42, CheckInterval: 5, SiteStatus: statusRunning},
@@ -174,7 +168,6 @@ func TestStreamingScheduleAfterResultSkipsImmediateRetryUnderPressure(t *testing
 	checkedAt := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
 	planner := &streamingPlanner{
 		targets: make(map[int64]*streamingTarget),
-		due:     make(map[int64][]int64),
 	}
 	target := &streamingTarget{
 		site:   db.Site{BlogID: 42, CheckInterval: 5, SiteStatus: statusDown},
@@ -529,7 +522,10 @@ func TestStreamingResultDrainLimitScalesWithBacklog(t *testing.T) {
 	if got := streamingResultDrainLimitFor(40000); got != 20000 {
 		t.Fatalf("medium result drain limit = %d, want 20000", got)
 	}
-	if got := streamingResultDrainLimitFor(200000); got != streamingMaxResultDrainLimit {
+	if got := streamingResultDrainLimitFor(200000); got != 100000 {
+		t.Fatalf("large result drain limit = %d, want 100000", got)
+	}
+	if got := streamingResultDrainLimitFor(600000); got != streamingMaxResultDrainLimit {
 		t.Fatalf("large result drain limit = %d, want %d", got, streamingMaxResultDrainLimit)
 	}
 }
@@ -556,11 +552,11 @@ func TestStreamingBackpressureDepthScalesWithWorkersAndTargets(t *testing.T) {
 	if got := streamingResultDispatchPauseDepth(5000, 500000); got != 166666 {
 		t.Fatalf("500k result dispatch pause depth = %d, want target-based 166666", got)
 	}
-	if got := streamingResultBackpressureDepth(100000, 1000000); got != 131072 {
-		t.Fatalf("capped result backpressure depth = %d, want 131072", got)
+	if got := streamingResultBackpressureDepth(100000, 1000000); got != 200000 {
+		t.Fatalf("large result backpressure depth = %d, want 200000", got)
 	}
-	if got := streamingResultDispatchPauseDepth(100000, 1000000); got != 196608 {
-		t.Fatalf("capped result dispatch pause depth = %d, want 196608", got)
+	if got := streamingResultDispatchPauseDepth(100000, 1000000); got != 600000 {
+		t.Fatalf("large result dispatch pause depth = %d, want 600000", got)
 	}
 }
 
@@ -631,7 +627,10 @@ func TestStreamingQueueCapScalesWithActiveTargets(t *testing.T) {
 	if got := streamingQueueCap(60, 100000); got != 100000 {
 		t.Fatalf("streamingQueueCap(100k active) = %d, want 100000", got)
 	}
-	if got := streamingQueueCap(100000, 1000000); got != streamingMaxQueueCap {
+	if got := streamingQueueCap(100000, 1000000); got != 1000000 {
+		t.Fatalf("streamingQueueCap(1M active) = %d, want active target count", got)
+	}
+	if got := streamingQueueCap(100000, 2000000); got != streamingMaxQueueCap {
 		t.Fatalf("streamingQueueCap(capped) = %d, want %d", got, streamingMaxQueueCap)
 	}
 }

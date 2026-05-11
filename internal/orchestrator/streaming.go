@@ -1,11 +1,11 @@
 package orchestrator
 
 import (
-	"container/heap"
 	"context"
 	"log"
 	"math"
 	"runtime"
+	"sort"
 	"sync"
 	"time"
 
@@ -21,6 +21,7 @@ const (
 	streamingScaleInterval                   = 5 * time.Second
 	streamingDispatchWakeInterval            = 100 * time.Millisecond
 	streamingProjectionFlushInterval         = 10 * time.Second
+	streamingDefaultProjectionInterval       = 15 * time.Minute
 	streamingProjectionFlushMinRows          = 5000
 	streamingProjectionFlushMaxRows          = 50000
 	streamingReloadDeferInterval             = time.Minute
@@ -36,7 +37,7 @@ const (
 	streamingHistoryBatchSize                = 1000
 	streamingMinLoadPageSize                 = 5000
 	streamingMinQueueCap                     = 65536
-	streamingMaxQueueCap                     = 262144
+	streamingMaxQueueCap                     = 1048576
 	streamingMinScheduleHeadroom             = time.Second
 	streamingMaxScheduleHeadroom             = 15 * time.Second
 	streamingMinSideEffectShards             = 8
@@ -47,7 +48,7 @@ const (
 	streamingBacklogWorkerDivisor            = 240
 	streamingBacklogWorkerMultiplier         = 2
 	streamingResultDrainLimit                = 4096
-	streamingMaxResultDrainLimit             = 65536
+	streamingMaxResultDrainLimit             = 262144
 	streamingResultDispatchStride            = 1024
 	streamingDispatchCatchupDivisor          = 120
 	streamingDispatchFastCatchupDivisor      = 60
@@ -87,27 +88,79 @@ type streamingRequestConfig struct {
 
 type streamingPlanner struct {
 	targets      map[int64]*streamingTarget
-	due          map[int64][]int64
-	dueHeap      streamingDueHeap
+	due          streamingDueWheel
 	requiredRate float64
 }
 
-type streamingDueHeap []int64
-
-func (h streamingDueHeap) Len() int           { return len(h) }
-func (h streamingDueHeap) Less(i, j int) bool { return h[i] < h[j] }
-func (h streamingDueHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
-
-func (h *streamingDueHeap) Push(x any) {
-	*h = append(*h, x.(int64))
+type streamingDueWheel struct {
+	buckets     map[int64][]int64
+	nextDueUnix int64
 }
 
-func (h *streamingDueHeap) Pop() any {
-	old := *h
-	n := len(old)
-	x := old[n-1]
-	*h = old[:n-1]
-	return x
+type streamingDueBucket struct {
+	dueUnix int64
+	blogIDs []int64
+}
+
+func newStreamingDueWheel(capacity int) streamingDueWheel {
+	if capacity < 1 {
+		capacity = 1
+	}
+	return streamingDueWheel{buckets: make(map[int64][]int64, capacity)}
+}
+
+func (w *streamingDueWheel) schedule(dueUnix, blogID int64) {
+	if w.buckets == nil {
+		w.buckets = make(map[int64][]int64)
+	}
+	w.buckets[dueUnix] = append(w.buckets[dueUnix], blogID)
+	if w.nextDueUnix == 0 || dueUnix < w.nextDueUnix {
+		w.nextDueUnix = dueUnix
+	}
+}
+
+func (w *streamingDueWheel) popReady(nowUnix int64) []streamingDueBucket {
+	if w == nil || len(w.buckets) == 0 {
+		return nil
+	}
+	if w.nextDueUnix == 0 {
+		w.refreshNextDue()
+	}
+	if w.nextDueUnix > nowUnix {
+		return nil
+	}
+	readyTimes := make([]int64, 0, min(len(w.buckets), 1024))
+	for dueUnix := range w.buckets {
+		if dueUnix <= nowUnix {
+			readyTimes = append(readyTimes, dueUnix)
+		}
+	}
+	if len(readyTimes) == 0 {
+		return nil
+	}
+	sort.Slice(readyTimes, func(i, j int) bool {
+		return readyTimes[i] < readyTimes[j]
+	})
+	ready := make([]streamingDueBucket, 0, len(readyTimes))
+	for _, dueUnix := range readyTimes {
+		blogIDs := w.buckets[dueUnix]
+		delete(w.buckets, dueUnix)
+		ready = append(ready, streamingDueBucket{
+			dueUnix: dueUnix,
+			blogIDs: blogIDs,
+		})
+	}
+	w.refreshNextDue()
+	return ready
+}
+
+func (w *streamingDueWheel) refreshNextDue() {
+	w.nextDueUnix = 0
+	for dueUnix := range w.buckets {
+		if w.nextDueUnix == 0 || dueUnix < w.nextDueUnix {
+			w.nextDueUnix = dueUnix
+		}
+	}
 }
 
 type streamingReloadResult struct {
@@ -126,10 +179,24 @@ type streamingProjectionFlushResult struct {
 func newStreamingPlanner(sites []db.Site, now time.Time) *streamingPlanner {
 	p := &streamingPlanner{
 		targets: make(map[int64]*streamingTarget, len(sites)),
-		due:     make(map[int64][]int64, len(sites)),
+		due:     newStreamingDueWheel(streamingDueWheelInitialCapacity(sites)),
 	}
 	p.merge(sites, now)
 	return p
+}
+
+func streamingDueWheelInitialCapacity(sites []db.Site) int {
+	maxSeconds := 0
+	for _, site := range sites {
+		seconds := int(streamingCheckCadence(site) / time.Second)
+		if seconds > maxSeconds {
+			maxSeconds = seconds
+		}
+	}
+	if maxSeconds < 1 {
+		return 1
+	}
+	return maxSeconds
 }
 
 func (p *streamingPlanner) merge(sites []db.Site, now time.Time) (added, updated, removed int) {
@@ -231,29 +298,17 @@ func (p *streamingPlanner) scheduleAtNextPhaseAfter(target *streamingTarget, aft
 func (p *streamingPlanner) scheduleAt(target *streamingTarget, dueAt time.Time) {
 	dueAt = dueAt.UTC().Truncate(time.Second)
 	target.dueAt = dueAt
-	if p.due == nil {
-		p.due = make(map[int64][]int64)
-	}
 	dueUnix := dueAt.Unix()
-	if _, ok := p.due[dueUnix]; !ok {
-		heap.Push(&p.dueHeap, dueUnix)
-	}
-	p.due[dueUnix] = append(p.due[dueUnix], target.site.BlogID)
+	p.due.schedule(dueUnix, target.site.BlogID)
 }
 
 func (p *streamingPlanner) popDue(now time.Time) []*streamingTarget {
 	nowUnix := now.UTC().Unix()
 	var due []*streamingTarget
-	for len(p.dueHeap) > 0 && p.dueHeap[0] <= nowUnix {
-		dueUnix := heap.Pop(&p.dueHeap).(int64)
-		blogIDs, ok := p.due[dueUnix]
-		if !ok {
-			continue
-		}
-		delete(p.due, dueUnix)
-		for _, blogID := range blogIDs {
+	for _, bucket := range p.due.popReady(nowUnix) {
+		for _, blogID := range bucket.blogIDs {
 			target, ok := p.targets[blogID]
-			if !ok || !target.active || target.inFlight || target.queued || target.dueAt.Unix() != dueUnix {
+			if !ok || !target.active || target.inFlight || target.queued || target.dueAt.Unix() != bucket.dueUnix {
 				continue
 			}
 			target.queued = true
@@ -761,16 +816,18 @@ func (o *Orchestrator) runStreamingEngine() {
 	}
 
 	drainResults := func(limit int, dispatchDuringDrain bool) {
+		now := nowFunc().UTC()
 		for processed := 0; processed < limit; processed++ {
 			select {
 			case res := <-o.pool.Results():
-				handleResult(res, nowFunc().UTC())
+				handleResult(res, now)
 				if dispatchDuringDrain && processed%streamingResultDispatchStride == streamingResultDispatchStride-1 {
-					dispatchPending(nowFunc().UTC(), false, streamingDispatchWakeInterval)
+					now = nowFunc().UTC()
+					dispatchPending(now, false, streamingDispatchWakeInterval)
 				}
 			default:
 				if dispatchDuringDrain {
-					dispatchPending(nowFunc().UTC(), false, streamingDispatchWakeInterval)
+					dispatchPending(now, false, streamingDispatchWakeInterval)
 				}
 				return
 			}
@@ -888,7 +945,8 @@ func (o *Orchestrator) runStreamingEngine() {
 		case reload := <-reloadResults:
 			applyReload(reload)
 		case res := <-o.pool.Results():
-			handleResult(res, nowFunc().UTC())
+			now := nowFunc().UTC()
+			handleResult(res, now)
 			drainResults(streamingResultDrainLimitFor(o.pool.ResultDepth()), true)
 			dispatchPending(nowFunc().UTC(), false, streamingDispatchWakeInterval)
 			drainReadyTick()
@@ -1123,9 +1181,12 @@ func streamingProjectionDue(target *streamingTarget, checkedAt time.Time, interv
 }
 
 func streamingProjectionInterval(cfg *config.Config) time.Duration {
+	if cfg == nil {
+		return streamingDefaultProjectionInterval
+	}
 	interval := time.Duration(cfg.StreamingLegacyProjectionIntervalMin) * time.Minute
 	if interval <= 0 {
-		interval = 10 * time.Minute
+		interval = streamingDefaultProjectionInterval
 	}
 	minRollbackWindow := 5 * time.Minute
 	if interval < minRollbackWindow {

@@ -156,7 +156,7 @@ is 5-15 minutes. The configured interval applies uniformly rather than shrinking
 to each site's check interval, because matching 5-minute site cadence at large
 fleet sizes can turn rollback freshness into the dominant write load. Large
 pending projection sets are flushed in rate-sized batches so compatibility
-writes do not block check throughput. Default: 10.
+writes do not block check throughput. Default: 15.
 
 STREAMING_TARGET_RELOAD_SEC
 How often streaming mode reloads active site config from jetpack_monitor_sites.

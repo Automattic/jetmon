@@ -44,7 +44,7 @@ Key settings:
 | `DEBUG_PORT` | 6060 | localhost-only pprof port, 0 disables it |
 | `EMAIL_TRANSPORT` | `stub` | `stub`, `smtp`, or `wpcom` |
 | `SCHEDULER_ENGINE` | `legacy` | `legacy` round/page scheduler or `streaming` v2-native scheduler prototype |
-| `STREAMING_LEGACY_PROJECTION_INTERVAL_MIN` | 10 | Coarse `last_checked_at` rollback projection interval for streaming mode |
+| `STREAMING_LEGACY_PROJECTION_INTERVAL_MIN` | 15 | Coarse `last_checked_at` rollback projection interval for streaming mode |
 | `STREAMING_TARGET_RELOAD_SEC` | 300 | Active site config reload cadence for streaming mode |
 
 Scheduler behavior:
@@ -89,7 +89,9 @@ Scheduler behavior:
   5-minute site cadence, because that makes rollback freshness writes scale with
   active fleet size in the hot path. Pending projection writes are also flushed
   in rate-sized batches so a backlog cannot turn one flush into a large
-  lock-heavy update burst.
+  lock-heavy update burst. Streaming mode intentionally uses larger in-memory
+  due/result/work buffers than the legacy scheduler; low RSS in capacity tests is
+  expected to be spent on those buffers before check dispatch is throttled.
 
 See [../config/config.readme](../config/config.readme) for the full option
 reference.
