@@ -37,9 +37,9 @@ const (
 	streamingWorkerHeadroom           = 2.0
 	streamingMinWorkerStep            = 50
 	streamingMinBackpressureDepth     = 1024
-	streamingResultDrainLimit         = 8192
+	streamingResultDrainLimit         = 4096
 	streamingDispatchCatchupDivisor   = 120
-	streamingDispatchMaxElapsed       = 3 * time.Second
+	streamingDispatchMaxElapsed       = 6 * time.Second
 	streamingDispatchMaxMultiplier    = 2.0
 	streamingDispatchWorkerMultiplier = 3
 	streamingFailurePressureMin       = 1000

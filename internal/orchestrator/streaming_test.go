@@ -376,15 +376,15 @@ func TestStreamingDispatchBudgetScalesWithElapsedTime(t *testing.T) {
 	if got <= 702 {
 		t.Fatalf("10s delayed dispatch budget = %d, want above one-second budget", got)
 	}
-	if got > 2106 {
+	if got > 4211 {
 		t.Fatalf("10s delayed dispatch budget = %d, want <= capped elapsed steady-state cap", got)
 	}
 }
 
 func TestStreamingDispatchBudgetCapsLongPauseByWorkers(t *testing.T) {
 	got := streamingDispatchBudget(350.88, 96077, 3693, 136*time.Second)
-	if got != 2106 {
-		t.Fatalf("long-pause dispatch budget = %d, want elapsed-capped budget 2106", got)
+	if got != 3432 {
+		t.Fatalf("long-pause dispatch budget = %d, want elapsed-capped budget 3432", got)
 	}
 }
 
