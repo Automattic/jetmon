@@ -80,6 +80,10 @@ production telemetry branches:
   telemetry, and Veriflier hosts do not need database credentials.
 - [x] Add an operator checklist for Veriflier dashboard and discovery-report
   green/amber/red warnings before active-discovery rollout.
+- [x] Expand repo-local `make test-veriflier-soak` coverage with Veriflier
+  discovery drift scenarios: duplicate static vantages, incomplete or missing
+  trusted registry rows, endpoint/auth-presence mismatches, untrusted agents,
+  duplicate active agent endpoints, active-mode fallback, and recovery to green.
 - [ ] Run Veriflier auto-discovery in production-like shadow mode and compare
   static configured vantages to the DB registry before enabling active mode.
 - [ ] Add an uptime-bench scenario long enough to exercise full

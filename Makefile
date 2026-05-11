@@ -56,7 +56,7 @@ test-race:
 	$(GO_ENV) $(GO) test -race ./...
 
 test-veriflier-soak:
-	$(GO_ENV) $(GO) test ./internal/veriflier -run 'TestV2Soak'
+	$(GO_ENV) $(GO) test ./internal/veriflier ./cmd/jetmon2 -run 'Test(V2Soak|VeriflierDiscoverySoak)'
 
 lint:
 	$(GO_ENV) $(GO) vet ./...

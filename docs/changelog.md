@@ -71,7 +71,10 @@ because it is intentionally **not** drop-in with the Jetmon 1 wire format
   quorum.
 - Added `make test-veriflier-soak` for local v2 contract soak coverage:
   high-concurrency mixed outcomes, overload recovery, auth rejection, and
-  deadline timeout recovery.
+  deadline timeout recovery. The same target now also runs Veriflier discovery
+  drift soak cases for duplicate static vantages, registry mismatch, stale or
+  missing agent telemetry, untrusted agents, duplicate active endpoints,
+  active-mode fallback, and recovery to green.
 - `jetmon2 telemetry report` now includes v2 Veriflier vote-evidence rollups:
   duplicate votes ignored for quorum, duplicate-vote transitions,
   minimum-healthy-floor blocks, and max observed quorum/healthy-vantage counts.

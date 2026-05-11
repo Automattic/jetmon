@@ -378,7 +378,8 @@ a follow-up branch after all of these are true:
   deployed fleet
 - `make test-veriflier-soak` and the approved production-like Veriflier soak
   pass for high concurrency, overload, auth failure, timeout, duplicate-vantage
-  misconfiguration, and long outage promotion/recovery
+  misconfiguration, discovery drift, active-mode fallback, and long outage
+  promotion/recovery
 - `./jetmon2 telemetry report` shows stable verifier reply and vote evidence
   with no verifier metadata gaps over the agreed production window
 - rollback plans no longer depend on any legacy Veriflier endpoint
