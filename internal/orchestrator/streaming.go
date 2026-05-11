@@ -78,6 +78,12 @@ type streamingReloadResult struct {
 	err       error
 }
 
+type streamingProjectionFlushResult struct {
+	checks   []db.SiteCheck
+	duration time.Duration
+	err      error
+}
+
 func newStreamingPlanner(sites []db.Site, now time.Time) *streamingPlanner {
 	p := &streamingPlanner{
 		targets: make(map[int64]*streamingTarget, len(sites)),
@@ -546,6 +552,8 @@ func (o *Orchestrator) runStreamingEngine() {
 		hotPathPressure     bool
 		reloadResults       = make(chan streamingReloadResult, 1)
 		reloadInFlight      bool
+		projectionResults   = make(chan streamingProjectionFlushResult, 1)
+		projectionInFlight  bool
 	)
 
 	applyReload := func(reload streamingReloadResult) {
@@ -606,6 +614,44 @@ func (o *Orchestrator) runStreamingEngine() {
 			case <-o.ctx.Done():
 			}
 		}()
+	}
+
+	startProjectionFlush := func(checks []db.SiteCheck) {
+		if len(checks) == 0 || projectionInFlight {
+			return
+		}
+		projectionInFlight = true
+		go func() {
+			start := time.Now()
+			err := dbMarkSitesChecked(o.ctx, checks)
+			result := streamingProjectionFlushResult{
+				checks:   checks,
+				duration: time.Since(start),
+				err:      err,
+			}
+			select {
+			case projectionResults <- result:
+			case <-o.ctx.Done():
+			}
+		}()
+	}
+
+	handleProjectionFlushResult := func(result streamingProjectionFlushResult) {
+		projectionInFlight = false
+		if result.err != nil {
+			log.Printf("orchestrator: streaming legacy freshness projection rows=%d: %v", len(result.checks), result.err)
+			for _, check := range result.checks {
+				existing, ok := pendingProjection[check.BlogID]
+				if !ok || existing.CheckedAt.Before(check.CheckedAt) {
+					pendingProjection[check.BlogID] = check
+				}
+			}
+			return
+		}
+		if m := metricsClientFunc(); m != nil {
+			m.Increment("scheduler.streaming.legacy_projection.row.count", len(result.checks))
+			m.Timing("scheduler.streaming.legacy_projection.time", result.duration)
+		}
 	}
 
 	handleResult := func(res checker.Result) {
@@ -716,8 +762,10 @@ func (o *Orchestrator) runStreamingEngine() {
 		}
 
 		if now.Sub(lastProjectionFlush) >= streamingProjectionFlushInterval {
-			if o.flushStreamingProjection(pendingProjection) {
+			if !projectionInFlight && len(pendingProjection) > 0 {
+				checks := streamingProjectionChecks(pendingProjection)
 				pendingProjection = make(map[int64]db.SiteCheck)
+				startProjectionFlush(checks)
 			}
 			lastProjectionFlush = now
 		}
@@ -745,6 +793,8 @@ func (o *Orchestrator) runStreamingEngine() {
 			sideEffects.stop()
 			o.shutdown()
 			return
+		case result := <-projectionResults:
+			handleProjectionFlushResult(result)
 		case report := <-sideEffects.reportsChannel():
 			stats.addSideEffects(report.summary)
 			if report.blogID != 0 {
@@ -1027,10 +1077,7 @@ func (o *Orchestrator) flushStreamingProjection(pending map[int64]db.SiteCheck) 
 	if len(pending) == 0 {
 		return true
 	}
-	checks := make([]db.SiteCheck, 0, len(pending))
-	for _, check := range pending {
-		checks = append(checks, check)
-	}
+	checks := streamingProjectionChecks(pending)
 	start := time.Now()
 	if err := dbMarkSitesChecked(o.ctx, checks); err != nil {
 		log.Printf("orchestrator: streaming legacy freshness projection rows=%d: %v", len(checks), err)
@@ -1041,6 +1088,14 @@ func (o *Orchestrator) flushStreamingProjection(pending map[int64]db.SiteCheck) 
 		m.Timing("scheduler.streaming.legacy_projection.time", time.Since(start))
 	}
 	return true
+}
+
+func streamingProjectionChecks(pending map[int64]db.SiteCheck) []db.SiteCheck {
+	checks := make([]db.SiteCheck, 0, len(pending))
+	for _, check := range pending {
+		checks = append(checks, check)
+	}
+	return checks
 }
 
 func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streamingPlanner, stats streamingStats, pending, sideEffectDepth int, elapsed time.Duration, pressureActive bool) {
