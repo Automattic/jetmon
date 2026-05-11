@@ -276,6 +276,42 @@ func TestStreamingPressureWorkerTargetUsesConservativeLatency(t *testing.T) {
 	}
 }
 
+func TestStreamingDesiredWorkerTargetUsesBacklogWithoutFailurePressure(t *testing.T) {
+	planner := &streamingPlanner{targets: make(map[int64]*streamingTarget)}
+	for i := int64(1); i <= 100000; i++ {
+		planner.targets[i] = &streamingTarget{
+			site:   db.Site{BlogID: i, CheckInterval: 5},
+			active: true,
+		}
+	}
+	planner.recalculateRequiredRate()
+	cfg := &config.Config{NumWorkers: 60, NetCommsTimeout: 10}
+
+	base := streamingWorkerTarget(cfg, planner, 40*time.Millisecond)
+	got := streamingDesiredWorkerTarget(cfg, planner, 40*time.Millisecond, 60000, 0, 0, base, false)
+	if got <= base {
+		t.Fatalf("streamingDesiredWorkerTarget() = %d, want above base target %d for pending backlog", got, base)
+	}
+}
+
+func TestStreamingDesiredWorkerTargetSkipsBacklogGrowthDuringFailurePressure(t *testing.T) {
+	planner := &streamingPlanner{targets: make(map[int64]*streamingTarget)}
+	for i := int64(1); i <= 100000; i++ {
+		planner.targets[i] = &streamingTarget{
+			site:   db.Site{BlogID: i, CheckInterval: 5},
+			active: true,
+		}
+	}
+	planner.recalculateRequiredRate()
+	cfg := &config.Config{NumWorkers: 60, NetCommsTimeout: 10}
+
+	base := streamingWorkerTarget(cfg, planner, 40*time.Millisecond)
+	got := streamingDesiredWorkerTarget(cfg, planner, 40*time.Millisecond, 60000, 0, 0, base, true)
+	if got != base {
+		t.Fatalf("streamingDesiredWorkerTarget() = %d, want base target %d while failure pressure is active", got, base)
+	}
+}
+
 func TestStreamingDampedWorkerTargetLimitsGrowthAndShrink(t *testing.T) {
 	if got := streamingDampedWorkerTarget(400, 2000, false); got != 600 {
 		t.Fatalf("growth damped target = %d, want 600", got)

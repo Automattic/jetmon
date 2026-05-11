@@ -740,7 +740,7 @@ func (o *Orchestrator) runStreamingEngine() {
 		hotPathPressure = streamingHotPathBehind(planner, len(pending), o.pool.ResultDepth(), sideEffects.queueDepth(), o.pool.WorkerCount(), stats)
 		pressureActive := failurePressureActive || hotPathPressure
 		if now.Sub(lastScale) >= streamingScaleInterval {
-			o.applyStreamingWorkerTarget(cfg, planner, stats, len(pending), sideEffects.queueDepth(), pressureActive)
+			o.applyStreamingWorkerTarget(cfg, planner, stats, len(pending), sideEffects.queueDepth(), failurePressureActive, hotPathPressure)
 			lastScale = now
 		}
 
@@ -1246,27 +1246,34 @@ func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streami
 	)
 }
 
-func (o *Orchestrator) applyStreamingWorkerTarget(cfg *config.Config, planner *streamingPlanner, stats streamingStats, pending, sideEffectDepth int, pressure bool) int {
+func (o *Orchestrator) applyStreamingWorkerTarget(cfg *config.Config, planner *streamingPlanner, stats streamingStats, pending, sideEffectDepth int, failurePressure, hotPathPressure bool) int {
 	latency := stats.scaleLatency()
-	desiredTarget := streamingWorkerTarget(cfg, planner, latency)
-	if pressure {
-		pressureTarget := streamingPressureWorkerTarget(cfg, planner)
-		if desiredTarget > pressureTarget {
-			desiredTarget = pressureTarget
-		}
-	} else if sideEffectDepth < streamingSideEffectBackpressureDepth(o.pool.WorkerCount(), planner.activeCount()) {
-		desiredTarget = streamingBacklogWorkerTarget(desiredTarget, planner.activeCount(), pending+o.pool.QueueDepth())
-	}
-	workerTarget := streamingDampedWorkerTarget(o.pool.WorkerCount(), desiredTarget, pressure)
+	desiredTarget := streamingDesiredWorkerTarget(cfg, planner, latency, pending, o.pool.QueueDepth(), sideEffectDepth, o.pool.WorkerCount(), failurePressure)
+	workerTarget := streamingDampedWorkerTarget(o.pool.WorkerCount(), desiredTarget, failurePressure)
 	if planner.activeCount() > 0 {
 		if added := o.pool.SetSizeBounds(workerTarget, workerTarget); added > 0 {
-			log.Printf("orchestrator: streaming prewarmed check pool by %d workers (target=%d desired=%d active_targets=%d failure_pressure=%t)",
-				added, workerTarget, desiredTarget, planner.activeCount(), pressure)
+			log.Printf("orchestrator: streaming prewarmed check pool by %d workers (target=%d desired=%d active_targets=%d failure_pressure=%t hot_path_pressure=%t)",
+				added, workerTarget, desiredTarget, planner.activeCount(), failurePressure, hotPathPressure)
 		}
 	} else {
 		o.pool.SetSizeBounds(1, workerTarget)
 	}
 	return workerTarget
+}
+
+func streamingDesiredWorkerTarget(cfg *config.Config, planner *streamingPlanner, latency time.Duration, pending, queueDepth, sideEffectDepth, currentWorkers int, failurePressure bool) int {
+	desiredTarget := streamingWorkerTarget(cfg, planner, latency)
+	if failurePressure {
+		pressureTarget := streamingPressureWorkerTarget(cfg, planner)
+		if desiredTarget > pressureTarget {
+			desiredTarget = pressureTarget
+		}
+		return desiredTarget
+	}
+	if sideEffectDepth < streamingSideEffectBackpressureDepth(currentWorkers, planner.activeCount()) {
+		desiredTarget = streamingBacklogWorkerTarget(desiredTarget, planner.activeCount(), pending+queueDepth)
+	}
+	return desiredTarget
 }
 
 func streamingPressureWorkerTarget(cfg *config.Config, planner *streamingPlanner) int {
