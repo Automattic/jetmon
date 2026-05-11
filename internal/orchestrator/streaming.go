@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	streamingTickInterval                    = time.Second
+	streamingTickInterval                    = 250 * time.Millisecond
 	streamingReportInterval                  = time.Minute
 	streamingScaleInterval                   = 5 * time.Second
 	streamingProjectionFlushInterval         = 10 * time.Second
