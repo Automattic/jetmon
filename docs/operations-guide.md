@@ -653,6 +653,12 @@ not re-enter Veriflier confirmation. Jetmon keeps checking for recovery and
 emits `detection.down.still_down.*` counters for the ongoing failed
 observations without duplicating confirmed-down notifications.
 
+For deployment, replace one Veriflier endpoint at a time and keep the existing
+hostname, port, and auth token unchanged. The new `veriflier2` process is
+compatible with v1 monitors through `/check` and `/status`, and with v2 monitors
+through `/v2/check` and `/v2/status`. Veriflier hosts do not need database
+credentials; monitors collect agent telemetry and write it to MySQL.
+
 Manual check:
 
 ```bash

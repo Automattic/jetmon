@@ -308,6 +308,28 @@ monitors prefer `/v2/check` and automatically fall back to `/check` when an
 older Veriflier does not support the v2 endpoint, so a mixed fleet is expected
 during rollout.
 
+This Veriflier replacement is safe to do before the monitor rollout. v1
+monitors continue to use the legacy `/check` and `/status` endpoints; v2
+monitors use `/v2/check` and `/v2/status` when available. Keep the same
+Veriflier hostname, port, and shared auth token when replacing an existing
+endpoint, and both monitor generations can use the new `veriflier2` process.
+
+Deploy one Veriflier endpoint at a time:
+
+1. Stage the new `veriflier2` binary and its config on the Veriflier host.
+2. Keep the existing listen port and monitor auth token unchanged.
+3. Set `VERIFLIER_VANTAGE_ID` to a stable regional/provider identity. Leave
+   database settings unset; Veriflier hosts do not need database credentials.
+4. Restart the Veriflier service for that endpoint.
+5. From a monitor runtime host, verify both status endpoints and then resume
+   with the next Veriflier endpoint.
+
+If the endpoint is a load-balanced pool, roll the backend replicas one at a
+time. All replicas behind the same monitor-side endpoint must share the same
+`VERIFLIER_VANTAGE_ID`, because that endpoint is one quorum vote. If a rollback
+is needed, restart the previous Veriflier binary on the same host, port, and
+token; no Jetmon database rollback is required for a Veriflier-only rollback.
+
 For each Veriflier endpoint, set a stable `VERIFLIER_VANTAGE_ID` when the
 endpoint represents a region/provider vantage. Multiple horizontally scaled
 replicas behind the same load-balanced endpoint must share that `vantage_id`;
