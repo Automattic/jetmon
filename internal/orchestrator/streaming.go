@@ -642,6 +642,102 @@ func (o *Orchestrator) runStreamingEngine() {
 		o.queueStreamingProjection(cfg, target, res, pendingProjection)
 	}
 
+	handleTick := func() {
+		now := nowFunc().UTC()
+		cfg = config.Get()
+		reloadReason := ""
+	tickResultDrain:
+		for range streamingResultDrainLimit {
+			select {
+			case res := <-o.pool.Results():
+				handleResult(res)
+			default:
+				break tickResultDrain
+			}
+		}
+		o.refreshVeriflierClients(cfg)
+		failurePressureActive := now.Before(pressureUntil) || streamingFailurePressure(stats)
+		hotPathPressure = streamingHotPathBehind(planner, len(pending), o.pool.ResultDepth(), sideEffects.queueDepth(), o.pool.WorkerCount(), stats)
+		pressureActive := failurePressureActive || hotPathPressure
+		if now.Sub(lastScale) >= streamingScaleInterval {
+			o.applyStreamingWorkerTarget(cfg, planner, stats, len(pending), sideEffects.queueDepth(), failurePressureActive)
+			lastScale = now
+		}
+
+		if now.Sub(lastHeartbeat) >= schedulerBroadReportInterval {
+			bucketsChanged, err := o.refreshStreamingBuckets(cfg)
+			if err != nil {
+				log.Printf("orchestrator: streaming bucket refresh failed: %v", err)
+			}
+			if bucketsChanged {
+				lastReload = time.Time{}
+				reloadReason = "bucket_change"
+			}
+			lastHeartbeat = now
+		}
+
+		if now.Sub(lastActiveCountPoll) >= streamingActiveCountPollIntervalFor(planner) {
+			if count, err := dbCountActiveSites(o.ctx, o.bucketMin, o.bucketMax); err != nil {
+				log.Printf("orchestrator: streaming active target count check failed: %v", err)
+			} else if count != planner.activeCount() {
+				log.Printf("orchestrator: streaming active target count changed db=%d memory=%d; reloading targets", count, planner.activeCount())
+				lastReload = time.Time{}
+				reloadReason = "active_count_changed"
+			}
+			lastActiveCountPoll = now
+		}
+
+		reloadInterval := time.Duration(cfg.StreamingTargetReloadSec) * time.Second
+		if now.Sub(lastReload) >= reloadInterval {
+			if reloadReason == "" {
+				reloadReason = "periodic"
+			}
+			if reloadReason == "periodic" && streamingShouldDeferPeriodicReload(planner, len(pending), o.pool.ResultDepth(), sideEffects.queueDepth(), o.pool.WorkerCount(), stats) {
+				lastReload = streamingDeferredReloadLastReload(now, reloadInterval)
+				log.Printf("orchestrator: streaming target reload deferred reason=periodic active=%d pending=%d result_depth=%d side_effect_depth=%d max_lag=%s",
+					planner.activeCount(), len(pending), o.pool.ResultDepth(), sideEffects.queueDepth(), stats.maxLag.Round(time.Millisecond))
+			} else {
+				startReload(reloadReason, now)
+			}
+		}
+
+		due := planner.popDue(now)
+		stats.selected += len(due)
+		pending = append(pending, due...)
+		if resultDepth := o.pool.ResultDepth(); resultDepth >= streamingResultDispatchPauseDepth(o.pool.WorkerCount(), planner.activeCount()) {
+			stats.resultPaused++
+		} else if sideEffectDepth := sideEffects.queueDepth(); sideEffectDepth >= streamingSideEffectBackpressureDepth(o.pool.WorkerCount(), planner.activeCount()) {
+			stats.sideEffectPaused++
+		} else {
+			dispatchElapsed := now.Sub(lastDispatch)
+			budget := streamingDispatchBudget(planner.requiredChecksPerSecond(), len(pending), o.pool.WorkerCount(), dispatchElapsed)
+			pending = o.dispatchStreamingPending(cfg, pending, budget, &stats)
+			lastDispatch = now
+		}
+
+		if now.Sub(lastProjectionFlush) >= streamingProjectionFlushInterval {
+			if o.flushStreamingProjection(pendingProjection) {
+				pendingProjection = make(map[int64]db.SiteCheck)
+			}
+			lastProjectionFlush = now
+		}
+
+		if now.Sub(lastReport) >= streamingReportInterval {
+			reportElapsed := now.Sub(lastReport)
+			o.reportStreamingStats(cfg, planner, stats, len(pending), sideEffects.queueDepth(), reportElapsed, pressureActive)
+			stats = streamingStats{}
+			lastReport = now
+		}
+	}
+
+	drainReadyTick := func() {
+		select {
+		case <-tick.C:
+			handleTick()
+		default:
+		}
+	}
+
 	for {
 		select {
 		case <-o.ctx.Done():
@@ -678,92 +774,9 @@ func (o *Orchestrator) runStreamingEngine() {
 					break resultDrain
 				}
 			}
+			drainReadyTick()
 		case <-tick.C:
-			now := nowFunc().UTC()
-			cfg = config.Get()
-			reloadReason := ""
-		tickResultDrain:
-			for range streamingResultDrainLimit {
-				select {
-				case res := <-o.pool.Results():
-					handleResult(res)
-				default:
-					break tickResultDrain
-				}
-			}
-			o.refreshVeriflierClients(cfg)
-			failurePressureActive := now.Before(pressureUntil) || streamingFailurePressure(stats)
-			hotPathPressure = streamingHotPathBehind(planner, len(pending), o.pool.ResultDepth(), sideEffects.queueDepth(), o.pool.WorkerCount(), stats)
-			pressureActive := failurePressureActive || hotPathPressure
-			if now.Sub(lastScale) >= streamingScaleInterval {
-				o.applyStreamingWorkerTarget(cfg, planner, stats, len(pending), sideEffects.queueDepth(), failurePressureActive)
-				lastScale = now
-			}
-
-			if now.Sub(lastHeartbeat) >= schedulerBroadReportInterval {
-				bucketsChanged, err := o.refreshStreamingBuckets(cfg)
-				if err != nil {
-					log.Printf("orchestrator: streaming bucket refresh failed: %v", err)
-				}
-				if bucketsChanged {
-					lastReload = time.Time{}
-					reloadReason = "bucket_change"
-				}
-				lastHeartbeat = now
-			}
-
-			if now.Sub(lastActiveCountPoll) >= streamingActiveCountPollIntervalFor(planner) {
-				if count, err := dbCountActiveSites(o.ctx, o.bucketMin, o.bucketMax); err != nil {
-					log.Printf("orchestrator: streaming active target count check failed: %v", err)
-				} else if count != planner.activeCount() {
-					log.Printf("orchestrator: streaming active target count changed db=%d memory=%d; reloading targets", count, planner.activeCount())
-					lastReload = time.Time{}
-					reloadReason = "active_count_changed"
-				}
-				lastActiveCountPoll = now
-			}
-
-			reloadInterval := time.Duration(cfg.StreamingTargetReloadSec) * time.Second
-			if now.Sub(lastReload) >= reloadInterval {
-				if reloadReason == "" {
-					reloadReason = "periodic"
-				}
-				if reloadReason == "periodic" && streamingShouldDeferPeriodicReload(planner, len(pending), o.pool.ResultDepth(), sideEffects.queueDepth(), o.pool.WorkerCount(), stats) {
-					lastReload = streamingDeferredReloadLastReload(now, reloadInterval)
-					log.Printf("orchestrator: streaming target reload deferred reason=periodic active=%d pending=%d result_depth=%d side_effect_depth=%d max_lag=%s",
-						planner.activeCount(), len(pending), o.pool.ResultDepth(), sideEffects.queueDepth(), stats.maxLag.Round(time.Millisecond))
-				} else {
-					startReload(reloadReason, now)
-				}
-			}
-
-			due := planner.popDue(now)
-			stats.selected += len(due)
-			pending = append(pending, due...)
-			if resultDepth := o.pool.ResultDepth(); resultDepth >= streamingResultDispatchPauseDepth(o.pool.WorkerCount(), planner.activeCount()) {
-				stats.resultPaused++
-			} else if sideEffectDepth := sideEffects.queueDepth(); sideEffectDepth >= streamingSideEffectBackpressureDepth(o.pool.WorkerCount(), planner.activeCount()) {
-				stats.sideEffectPaused++
-			} else {
-				dispatchElapsed := now.Sub(lastDispatch)
-				budget := streamingDispatchBudget(planner.requiredChecksPerSecond(), len(pending), o.pool.WorkerCount(), dispatchElapsed)
-				pending = o.dispatchStreamingPending(cfg, pending, budget, &stats)
-				lastDispatch = now
-			}
-
-			if now.Sub(lastProjectionFlush) >= streamingProjectionFlushInterval {
-				if o.flushStreamingProjection(pendingProjection) {
-					pendingProjection = make(map[int64]db.SiteCheck)
-				}
-				lastProjectionFlush = now
-			}
-
-			if now.Sub(lastReport) >= streamingReportInterval {
-				reportElapsed := now.Sub(lastReport)
-				o.reportStreamingStats(cfg, planner, stats, len(pending), sideEffects.queueDepth(), reportElapsed, pressureActive)
-				stats = streamingStats{}
-				lastReport = now
-			}
+			handleTick()
 		}
 	}
 }
