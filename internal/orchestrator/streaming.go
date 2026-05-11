@@ -17,13 +17,14 @@ import (
 const (
 	streamingTickInterval            = time.Second
 	streamingReportInterval          = time.Minute
-	streamingScaleInterval           = 15 * time.Second
+	streamingScaleInterval           = 5 * time.Second
 	streamingProjectionFlushInterval = 10 * time.Second
 	streamingReloadDeferInterval     = time.Minute
 	streamingProjectionSlack         = 2 * time.Second
 	streamingEmptyTargetPollInterval = 5 * time.Second
 	streamingActiveCountPollInterval = 30 * time.Second
 	streamingDefaultLatency          = 250 * time.Millisecond
+	streamingBootstrapLatency        = time.Second
 	streamingHistoryFlushInterval    = 250 * time.Millisecond
 	streamingHistoryBatchSize        = 1000
 	streamingMinLoadPageSize         = 5000
@@ -36,7 +37,7 @@ const (
 	streamingWorkerHeadroom          = 2.0
 	streamingMinWorkerStep           = 50
 	streamingMinBackpressureDepth    = 1024
-	streamingResultDrainLimit        = 32768
+	streamingResultDrainLimit        = 8192
 	streamingFailurePressureMin      = 1000
 	streamingFailurePressurePercent  = 25
 	streamingFailurePressureHold     = 2 * time.Minute
@@ -521,14 +522,14 @@ func (o *Orchestrator) runStreamingEngine() {
 		sites = nil
 	}
 	planner := newStreamingPlanner(sites, nowFunc().UTC())
-	o.configureStreamingPool(cfg, planner, streamingDefaultLatency)
+	o.configureStreamingPool(cfg, planner, streamingBootstrapLatency)
 	sideEffectShards := streamingSideEffectShardCount(planner.activeCount())
-	sideEffects := o.newStreamingSideEffectProcessor(sideEffectShards, streamingQueueCap(streamingWorkerTarget(cfg, planner, streamingDefaultLatency), planner.activeCount()))
+	sideEffects := o.newStreamingSideEffectProcessor(sideEffectShards, streamingQueueCap(streamingWorkerTarget(cfg, planner, streamingBootstrapLatency), planner.activeCount()))
 	log.Printf("orchestrator: streaming scheduler loaded targets=%d required_rate=%.2f/s workers=%d queue_cap=%d side_effect_shards=%d",
 		planner.activeCount(),
 		planner.requiredChecksPerSecond(),
 		o.pool.WorkerCount(),
-		streamingQueueCap(streamingWorkerTarget(cfg, planner, streamingDefaultLatency), planner.activeCount()),
+		streamingQueueCap(streamingWorkerTarget(cfg, planner, streamingBootstrapLatency), planner.activeCount()),
 		sideEffectShards,
 	)
 
@@ -573,17 +574,17 @@ func (o *Orchestrator) runStreamingEngine() {
 		wasActive := planner.activeCount() > 0
 		added, updated, removed := planner.merge(reload.sites, nowFunc().UTC())
 		if wasEmpty && planner.activeCount() > 0 {
-			o.configureStreamingPool(cfg, planner, streamingDefaultLatency)
+			o.configureStreamingPool(cfg, planner, streamingBootstrapLatency)
 			sideEffects.stop()
 			sideEffectShards = streamingSideEffectShardCount(planner.activeCount())
-			sideEffects = o.newStreamingSideEffectProcessor(sideEffectShards, streamingQueueCap(streamingWorkerTarget(cfg, planner, streamingDefaultLatency), planner.activeCount()))
+			sideEffects = o.newStreamingSideEffectProcessor(sideEffectShards, streamingQueueCap(streamingWorkerTarget(cfg, planner, streamingBootstrapLatency), planner.activeCount()))
 			pendingSideEffects = make(map[int64]int)
 			sideEffectStatus = make(map[int64]int)
 		} else if wasActive && planner.activeCount() == 0 {
-			o.configureStreamingPool(cfg, planner, streamingDefaultLatency)
+			o.configureStreamingPool(cfg, planner, streamingBootstrapLatency)
 			sideEffects.stop()
 			sideEffectShards = streamingSideEffectShardCount(planner.activeCount())
-			sideEffects = o.newStreamingSideEffectProcessor(sideEffectShards, streamingQueueCap(streamingWorkerTarget(cfg, planner, streamingDefaultLatency), planner.activeCount()))
+			sideEffects = o.newStreamingSideEffectProcessor(sideEffectShards, streamingQueueCap(streamingWorkerTarget(cfg, planner, streamingBootstrapLatency), planner.activeCount()))
 			pending = nil
 			pendingSideEffects = make(map[int64]int)
 			sideEffectStatus = make(map[int64]int)
