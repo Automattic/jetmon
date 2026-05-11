@@ -345,10 +345,30 @@ func (t *httpIPPoolTransport) RoundTrip(req *http.Request) (*http.Response, erro
 		return nil, &net.DNSError{Name: host, Err: "no addresses"}
 	}
 
+	var firstErr error
+	for _, addr := range ordered {
+		resp, err := t.roundTripResolvedIP(req, addr, port)
+		if err == nil || resp != nil {
+			return resp, err
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+		if req.Context().Err() != nil {
+			return nil, req.Context().Err()
+		}
+	}
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	return nil, fmt.Errorf("lookup %s: no usable addresses", host)
+}
+
+func (t *httpIPPoolTransport) roundTripResolvedIP(req *http.Request, addr net.IPAddr, port string) (*http.Response, error) {
 	clone := new(http.Request)
 	*clone = *req
 	cloneURL := *req.URL
-	cloneURL.Host = net.JoinHostPort(ordered[0].IP.String(), port)
+	cloneURL.Host = net.JoinHostPort(addr.IP.String(), port)
 	clone.URL = &cloneURL
 	if clone.Host == "" {
 		clone.Host = req.URL.Host
