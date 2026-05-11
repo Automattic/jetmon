@@ -451,6 +451,40 @@ func TestStreamingDeferredReloadRetriesSoonerThanFullInterval(t *testing.T) {
 	}
 }
 
+func TestStreamingTargetReloadIntervalScalesForLargeFleets(t *testing.T) {
+	cfg := &config.Config{StreamingTargetReloadSec: 300}
+	planner := &streamingPlanner{targets: make(map[int64]*streamingTarget)}
+	for i := int64(1); i <= 50000; i++ {
+		planner.targets[i] = &streamingTarget{site: db.Site{BlogID: i}, active: true}
+	}
+	if got := streamingTargetReloadInterval(cfg, planner); got != 5*time.Minute {
+		t.Fatalf("small fleet reload interval = %s, want configured 5m", got)
+	}
+
+	for i := int64(50001); i <= 500000; i++ {
+		planner.targets[i] = &streamingTarget{site: db.Site{BlogID: i}, active: true}
+	}
+	if got := streamingTargetReloadInterval(cfg, planner); got != 1000*time.Second {
+		t.Fatalf("500k fleet reload interval = %s, want scaled 1000s", got)
+	}
+}
+
+func TestStreamingTargetReloadIntervalRespectsLongConfigAndCap(t *testing.T) {
+	planner := &streamingPlanner{targets: make(map[int64]*streamingTarget)}
+	for i := int64(1); i <= 500000; i++ {
+		planner.targets[i] = &streamingTarget{site: db.Site{BlogID: i}, active: true}
+	}
+	if got := streamingTargetReloadInterval(&config.Config{StreamingTargetReloadSec: 1200}, planner); got != 20*time.Minute {
+		t.Fatalf("long configured reload interval = %s, want configured 20m", got)
+	}
+	for i := int64(500001); i <= 1000000; i++ {
+		planner.targets[i] = &streamingTarget{site: db.Site{BlogID: i}, active: true}
+	}
+	if got := streamingTargetReloadInterval(&config.Config{StreamingTargetReloadSec: 300}, planner); got != streamingMaxTargetReloadInterval {
+		t.Fatalf("capped reload interval = %s, want %s", got, streamingMaxTargetReloadInterval)
+	}
+}
+
 func TestStreamingScaleLatencyCapUsesDefaultTimeout(t *testing.T) {
 	if got := streamingScaleLatencyCap(&config.Config{}); got != 10*time.Second {
 		t.Fatalf("streamingScaleLatencyCap(default) = %s, want 10s", got)

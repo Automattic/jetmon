@@ -21,6 +21,9 @@ const (
 	streamingScaleInterval                   = 5 * time.Second
 	streamingProjectionFlushInterval         = 10 * time.Second
 	streamingReloadDeferInterval             = time.Minute
+	streamingLargeFleetReloadFloor           = 100000
+	streamingLargeFleetReloadSitesPerSecond  = 500
+	streamingMaxTargetReloadInterval         = 30 * time.Minute
 	streamingProjectionSlack                 = 2 * time.Second
 	streamingEmptyTargetPollInterval         = 5 * time.Second
 	streamingActiveCountPollInterval         = 30 * time.Second
@@ -772,7 +775,7 @@ func (o *Orchestrator) runStreamingEngine() {
 			lastActiveCountPoll = now
 		}
 
-		reloadInterval := time.Duration(cfg.StreamingTargetReloadSec) * time.Second
+		reloadInterval := streamingTargetReloadInterval(cfg, planner)
 		if now.Sub(lastReload) >= reloadInterval {
 			if reloadReason == "" {
 				reloadReason = "periodic"
@@ -1394,6 +1397,25 @@ func streamingDeferredReloadLastReload(now time.Time, reloadInterval time.Durati
 		return now
 	}
 	return now.Add(-(reloadInterval - streamingReloadDeferInterval))
+}
+
+func streamingTargetReloadInterval(cfg *config.Config, planner *streamingPlanner) time.Duration {
+	interval := time.Duration(cfg.StreamingTargetReloadSec) * time.Second
+	if interval <= 0 {
+		interval = 5 * time.Minute
+	}
+	active := planner.activeCount()
+	if active < streamingLargeFleetReloadFloor {
+		return interval
+	}
+	scaled := time.Duration(active/streamingLargeFleetReloadSitesPerSecond) * time.Second
+	if scaled < interval {
+		return interval
+	}
+	if scaled > streamingMaxTargetReloadInterval {
+		return streamingMaxTargetReloadInterval
+	}
+	return scaled
 }
 
 func streamingLoadPageSize(cfg *config.Config) int {
