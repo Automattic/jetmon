@@ -36,7 +36,7 @@ const (
 	streamingWorkerHeadroom          = 2.0
 	streamingMinWorkerStep           = 50
 	streamingMinBackpressureDepth    = 1024
-	streamingResultDrainLimit        = 2048
+	streamingResultDrainLimit        = 8192
 	streamingFailurePressureMin      = 1000
 	streamingFailurePressurePercent  = 25
 	streamingFailurePressureHold     = 2 * time.Minute
@@ -543,6 +543,7 @@ func (o *Orchestrator) runStreamingEngine() {
 		lastHeartbeat       = lastReport
 		lastActiveCountPoll = lastReport
 		pressureUntil       time.Time
+		hotPathPressure     bool
 		reloadResults       = make(chan streamingReloadResult, 1)
 		reloadInFlight      bool
 	)
@@ -619,12 +620,13 @@ func (o *Orchestrator) runStreamingEngine() {
 			lag = 0
 		}
 		stats.addResult(res, lag)
-		failurePressureActive := nowFunc().UTC().Before(pressureUntil)
+		now := nowFunc().UTC()
+		failurePressureActive := now.Before(pressureUntil)
 		if streamingFailurePressure(stats) {
-			pressureUntil = nowFunc().UTC().Add(streamingFailurePressureHold)
+			pressureUntil = now.Add(streamingFailurePressureHold)
 			failurePressureActive = true
 		}
-		pressureActive := failurePressureActive || streamingHotPathBehind(planner, len(pending), o.pool.ResultDepth(), sideEffects.queueDepth(), o.pool.WorkerCount(), stats)
+		pressureActive := failurePressureActive || hotPathPressure
 		o.totalChecked++
 		if streamingSideEffectsNeeded(target, res, pendingSideEffects, sideEffectStatus, o.retries, pressureActive) {
 			job := streamingSideEffectJob{site: target.site, res: res}
@@ -682,7 +684,8 @@ func (o *Orchestrator) runStreamingEngine() {
 			reloadReason := ""
 			o.refreshVeriflierClients(cfg)
 			failurePressureActive := now.Before(pressureUntil) || streamingFailurePressure(stats)
-			pressureActive := failurePressureActive || streamingHotPathBehind(planner, len(pending), o.pool.ResultDepth(), sideEffects.queueDepth(), o.pool.WorkerCount(), stats)
+			hotPathPressure = streamingHotPathBehind(planner, len(pending), o.pool.ResultDepth(), sideEffects.queueDepth(), o.pool.WorkerCount(), stats)
+			pressureActive := failurePressureActive || hotPathPressure
 			if now.Sub(lastScale) >= streamingScaleInterval {
 				o.applyStreamingWorkerTarget(cfg, planner, stats, len(pending), sideEffects.queueDepth(), failurePressureActive)
 				lastScale = now
@@ -728,7 +731,7 @@ func (o *Orchestrator) runStreamingEngine() {
 			due := planner.popDue(now)
 			stats.selected += len(due)
 			pending = append(pending, due...)
-			if resultDepth := o.pool.ResultDepth(); resultDepth >= streamingResultBackpressureDepth(o.pool.WorkerCount(), planner.activeCount()) {
+			if resultDepth := o.pool.ResultDepth(); resultDepth >= streamingResultDispatchPauseDepth(o.pool.WorkerCount(), planner.activeCount()) {
 				stats.resultPaused++
 			} else if sideEffectDepth := sideEffects.queueDepth(); sideEffectDepth >= streamingSideEffectBackpressureDepth(o.pool.WorkerCount(), planner.activeCount()) {
 				stats.sideEffectPaused++
@@ -1230,7 +1233,7 @@ func streamingHotPathBehind(planner *streamingPlanner, pending, resultDepth, sid
 	if pending > streamingReloadPendingDeferDepth(active, workers) {
 		return true
 	}
-	if resultDepth > streamingResultBackpressureDepth(workers, active)/2 {
+	if resultDepth > streamingResultDispatchPauseDepth(workers, active)/2 {
 		return true
 	}
 	if sideEffectDepth > streamingSideEffectBackpressureDepth(workers, active)/2 {
@@ -1343,6 +1346,24 @@ func streamingQueueCap(workerTarget, activeCount int) int {
 
 func streamingResultBackpressureDepth(workerTarget, activeCount int) int {
 	return streamingBackpressureDepth(workerTarget, activeCount, 2)
+}
+
+func streamingResultDispatchPauseDepth(workerTarget, activeCount int) int {
+	if workerTarget < 1 {
+		workerTarget = 1
+	}
+	depth := workerTarget * 8
+	if activeBased := activeCount / 4; activeBased > depth {
+		depth = activeBased
+	}
+	if depth < streamingMinBackpressureDepth {
+		return streamingMinBackpressureDepth
+	}
+	limit := streamingMaxQueueCap * 3 / 4
+	if depth > limit {
+		return limit
+	}
+	return depth
 }
 
 func streamingSideEffectBackpressureDepth(workerTarget, activeCount int) int {

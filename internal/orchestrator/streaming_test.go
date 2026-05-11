@@ -308,7 +308,8 @@ func TestStreamingShouldDeferPeriodicReloadOnlyWhenHotPathIsBehind(t *testing.T)
 	if !streamingShouldDeferPeriodicReload(planner, 50000, 0, 0, 5000, streamingStats{}) {
 		t.Fatal("large pending backlog should defer periodic reload")
 	}
-	if !streamingShouldDeferPeriodicReload(planner, 0, streamingResultBackpressureDepth(5000, planner.activeCount()), 0, 5000, streamingStats{}) {
+	resultBacklog := streamingResultDispatchPauseDepth(5000, planner.activeCount())/2 + 1
+	if !streamingShouldDeferPeriodicReload(planner, 0, resultBacklog, 0, 5000, streamingStats{}) {
 		t.Fatal("large result backlog should defer periodic reload")
 	}
 	if !streamingShouldDeferPeriodicReload(planner, 0, 0, 0, 5000, streamingStats{maxLag: 2 * time.Minute}) {
@@ -341,11 +342,20 @@ func TestStreamingBackpressureDepthScalesWithWorkersAndTargets(t *testing.T) {
 	if got := streamingResultBackpressureDepth(60, 0); got != streamingMinBackpressureDepth {
 		t.Fatalf("empty result backpressure depth = %d, want %d", got, streamingMinBackpressureDepth)
 	}
+	if got := streamingResultDispatchPauseDepth(60, 0); got != streamingMinBackpressureDepth {
+		t.Fatalf("empty result dispatch pause depth = %d, want %d", got, streamingMinBackpressureDepth)
+	}
 	if got := streamingSideEffectBackpressureDepth(2000, 100000); got != 5000 {
 		t.Fatalf("100k side-effect backpressure depth = %d, want target-based 5000", got)
 	}
+	if got := streamingResultDispatchPauseDepth(5000, 500000); got != 125000 {
+		t.Fatalf("500k result dispatch pause depth = %d, want target-based 125000", got)
+	}
 	if got := streamingResultBackpressureDepth(100000, 1000000); got != 131072 {
 		t.Fatalf("capped result backpressure depth = %d, want 131072", got)
+	}
+	if got := streamingResultDispatchPauseDepth(100000, 1000000); got != 196608 {
+		t.Fatalf("capped result dispatch pause depth = %d, want 196608", got)
 	}
 }
 
