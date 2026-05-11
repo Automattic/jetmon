@@ -16,9 +16,10 @@ import (
 )
 
 const (
-	streamingTickInterval                    = 250 * time.Millisecond
+	streamingTickInterval                    = time.Second
 	streamingReportInterval                  = time.Minute
 	streamingScaleInterval                   = 5 * time.Second
+	streamingDispatchWakeInterval            = 100 * time.Millisecond
 	streamingProjectionFlushInterval         = 10 * time.Second
 	streamingProjectionFlushMinRows          = 5000
 	streamingProjectionFlushMaxRows          = 50000
@@ -733,6 +734,31 @@ func (o *Orchestrator) runStreamingEngine() {
 		o.queueStreamingProjection(cfg, target, res, pendingProjection)
 	}
 
+	dispatchPending := func(now time.Time, recordPause bool, minInterval time.Duration) {
+		if len(pending) == 0 {
+			return
+		}
+		if minInterval > 0 && now.Sub(lastDispatch) < minInterval {
+			return
+		}
+		if resultDepth := o.pool.ResultDepth(); resultDepth >= streamingResultDispatchPauseDepth(o.pool.WorkerCount(), planner.activeCount()) {
+			if recordPause {
+				stats.resultPaused++
+			}
+			return
+		}
+		if sideEffectDepth := sideEffects.queueDepth(); sideEffectDepth >= streamingSideEffectBackpressureDepth(o.pool.WorkerCount(), planner.activeCount()) {
+			if recordPause {
+				stats.sideEffectPaused++
+			}
+			return
+		}
+		dispatchElapsed := now.Sub(lastDispatch)
+		budget := streamingDispatchBudget(planner.requiredChecksPerSecond(), len(pending), o.pool.WorkerCount(), dispatchElapsed, stats.maxLag, o.pool.ResultDepth(), planner.activeCount())
+		pending = o.dispatchStreamingPending(cfg, pending, budget, &stats)
+		lastDispatch = now
+	}
+
 	handleTick := func() {
 		now := nowFunc().UTC()
 		cfg = config.Get()
@@ -795,16 +821,7 @@ func (o *Orchestrator) runStreamingEngine() {
 		due := planner.popDue(now)
 		stats.selected += len(due)
 		pending = append(pending, due...)
-		if resultDepth := o.pool.ResultDepth(); resultDepth >= streamingResultDispatchPauseDepth(o.pool.WorkerCount(), planner.activeCount()) {
-			stats.resultPaused++
-		} else if sideEffectDepth := sideEffects.queueDepth(); sideEffectDepth >= streamingSideEffectBackpressureDepth(o.pool.WorkerCount(), planner.activeCount()) {
-			stats.sideEffectPaused++
-		} else {
-			dispatchElapsed := now.Sub(lastDispatch)
-			budget := streamingDispatchBudget(planner.requiredChecksPerSecond(), len(pending), o.pool.WorkerCount(), dispatchElapsed, stats.maxLag, o.pool.ResultDepth(), planner.activeCount())
-			pending = o.dispatchStreamingPending(cfg, pending, budget, &stats)
-			lastDispatch = now
-		}
+		dispatchPending(now, true, 0)
 
 		if now.Sub(lastProjectionFlush) >= streamingProjectionFlushInterval {
 			if !projectionInFlight && len(pendingProjection) > 0 {
@@ -868,6 +885,7 @@ func (o *Orchestrator) runStreamingEngine() {
 					break resultDrain
 				}
 			}
+			dispatchPending(nowFunc().UTC(), false, streamingDispatchWakeInterval)
 			drainReadyTick()
 		case <-tick.C:
 			handleTick()
