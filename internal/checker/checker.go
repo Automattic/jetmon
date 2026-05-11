@@ -54,6 +54,7 @@ const (
 // fresh connection pool for every probe. The http.Client stays per request so
 // timeout and redirect policy remain isolated to that site check.
 var defaultTransport = newCheckTransport()
+var defaultHTTPIPTransport = newHTTPIPPoolTransport()
 var defaultDNSCache = newCheckDNSCache(checkDNSCacheTTL, checkDNSCacheMaxEntries)
 var defaultDNSLookupLimiter = newCheckDNSLookupLimiter()
 var configuredResolverMu sync.RWMutex
@@ -101,15 +102,21 @@ func ConfigureResolverServers(rawServers []string) error {
 	configuredResolverMu.Unlock()
 
 	newTransport := newCheckTransport()
+	newHTTPIPTransport := newHTTPIPPoolTransportWithFallback(newTransport)
 
 	configuredResolverMu.Lock()
 	oldTransport := defaultTransport
+	oldHTTPIPTransport := defaultHTTPIPTransport
 	defaultTransport = newTransport
+	defaultHTTPIPTransport = newHTTPIPTransport
 	defaultDNSCache = newCheckDNSCache(checkDNSCacheTTL, checkDNSCacheMaxEntries)
 	configuredResolverMu.Unlock()
 
 	if oldTransport != nil {
 		oldTransport.CloseIdleConnections()
+	}
+	if oldHTTPIPTransport != nil {
+		oldHTTPIPTransport.CloseIdleConnections()
 	}
 	return nil
 }
@@ -281,6 +288,96 @@ func newCheckTransport() *http.Transport {
 		// high concurrency.
 		DisableKeepAlives: true,
 	}
+}
+
+type httpIPPoolTransport struct {
+	inner    *http.Transport
+	fallback *http.Transport
+	resolver *net.Resolver
+}
+
+func newHTTPIPPoolTransport() *httpIPPoolTransport {
+	return newHTTPIPPoolTransportWithFallback(defaultTransport)
+}
+
+func newHTTPIPPoolTransportWithFallback(fallback *http.Transport) *httpIPPoolTransport {
+	inner := newCheckTransport()
+	inner.DisableKeepAlives = false
+	inner.MaxIdleConns = 8192
+	inner.MaxIdleConnsPerHost = 2048
+	inner.IdleConnTimeout = 30 * time.Second
+	return &httpIPPoolTransport{
+		inner:    inner,
+		fallback: fallback,
+		resolver: newCheckResolver(),
+	}
+}
+
+func (t *httpIPPoolTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if t == nil || t.inner == nil {
+		return defaultTransport.RoundTrip(req)
+	}
+	if req == nil || req.URL == nil || req.URL.Scheme != "http" {
+		return t.roundTripFallback(req)
+	}
+	host := req.URL.Hostname()
+	if host == "" || net.ParseIP(host) != nil {
+		return t.inner.RoundTrip(req)
+	}
+	port := req.URL.Port()
+	if port == "" {
+		port = "80"
+	}
+
+	trace := httptrace.ContextClientTrace(req.Context())
+	if trace != nil && trace.DNSStart != nil {
+		trace.DNSStart(httptrace.DNSStartInfo{Host: host})
+	}
+	addrs, err := defaultDNSCache.lookup(req.Context(), t.resolver, host, "tcp")
+	if trace != nil && trace.DNSDone != nil {
+		trace.DNSDone(httptrace.DNSDoneInfo{Addrs: addrs, Err: err})
+	}
+	if err != nil {
+		return nil, err
+	}
+	ordered := orderedResolverAddrs(addrs, "tcp")
+	if len(ordered) == 0 {
+		return nil, &net.DNSError{Name: host, Err: "no addresses"}
+	}
+
+	clone := new(http.Request)
+	*clone = *req
+	cloneURL := *req.URL
+	cloneURL.Host = net.JoinHostPort(ordered[0].IP.String(), port)
+	clone.URL = &cloneURL
+	if clone.Host == "" {
+		clone.Host = req.URL.Host
+	}
+	resp, err := t.inner.RoundTrip(clone)
+	if resp != nil && resp.Request == clone {
+		resp.Request = req
+	}
+	return resp, err
+}
+
+func (t *httpIPPoolTransport) roundTripFallback(req *http.Request) (*http.Response, error) {
+	if t != nil && t.fallback != nil {
+		return t.fallback.RoundTrip(req)
+	}
+	return defaultTransport.RoundTrip(req)
+}
+
+func (t *httpIPPoolTransport) CloseIdleConnections() {
+	if t != nil && t.inner != nil {
+		t.inner.CloseIdleConnections()
+	}
+}
+
+func transportForRequestURL(rawURL string) http.RoundTripper {
+	if strings.HasPrefix(strings.ToLower(rawURL), "http://") && defaultHTTPIPTransport != nil {
+		return defaultHTTPIPTransport
+	}
+	return defaultTransport
 }
 
 func newCheckDialContext(resolver *net.Resolver) func(context.Context, string, string) (net.Conn, error) {
@@ -602,7 +699,7 @@ func Check(ctx context.Context, req Request) Result {
 	}
 
 	client := &http.Client{
-		Transport: defaultTransport,
+		Transport: transportForRequestURL(req.URL),
 		CheckRedirect: func(r *http.Request, via []*http.Request) error {
 			redirectChain = append(redirectChain, r.URL.String())
 			if redirectPolicyStr == string(RedirectFail) {

@@ -645,12 +645,16 @@ func TestCheckCustomHeadersForwarded(t *testing.T) {
 	}
 }
 
-func TestCheckDisablesIdleConnectionReuseForFleetScans(t *testing.T) {
+func TestCheckReusesCleartextIPConnectionsForFleetScans(t *testing.T) {
 	oldTransport := defaultTransport
+	oldHTTPIPTransport := defaultHTTPIPTransport
 	defaultTransport = newCheckTransport()
+	defaultHTTPIPTransport = newHTTPIPPoolTransportWithFallback(defaultTransport)
 	t.Cleanup(func() {
 		defaultTransport.CloseIdleConnections()
+		defaultHTTPIPTransport.CloseIdleConnections()
 		defaultTransport = oldTransport
+		defaultHTTPIPTransport = oldHTTPIPTransport
 	})
 	if !defaultTransport.DisableKeepAlives {
 		t.Fatal("checker transport should disable keep-alives for large unique-host fleet scans")
@@ -677,8 +681,8 @@ func TestCheckDisablesIdleConnectionReuseForFleetScans(t *testing.T) {
 		}
 	}
 
-	if got := newConns.Load(); got != 2 {
-		t.Fatalf("new connections = %d, want one connection per check with keep-alives disabled", got)
+	if got := newConns.Load(); got != 1 {
+		t.Fatalf("new connections = %d, want cleartext IP pool to reuse the connection", got)
 	}
 }
 
@@ -730,6 +734,7 @@ func TestConfigureResolverServersInstallsOverride(t *testing.T) {
 	oldServers := append([]string(nil), configuredResolverServers...)
 	configuredResolverMu.RUnlock()
 	oldCache := defaultDNSCache
+	oldHTTPIPTransport := defaultHTTPIPTransport
 	t.Cleanup(func() {
 		configuredResolverMu.Lock()
 		configuredResolverServers = oldServers
@@ -739,11 +744,16 @@ func TestConfigureResolverServersInstallsOverride(t *testing.T) {
 
 		configuredResolverMu.Lock()
 		currentTransport := defaultTransport
+		currentHTTPIPTransport := defaultHTTPIPTransport
 		defaultTransport = restoredTransport
 		defaultDNSCache = oldCache
+		defaultHTTPIPTransport = oldHTTPIPTransport
 		configuredResolverMu.Unlock()
 		if currentTransport != nil {
 			currentTransport.CloseIdleConnections()
+		}
+		if currentHTTPIPTransport != nil {
+			currentHTTPIPTransport.CloseIdleConnections()
 		}
 	})
 
@@ -753,6 +763,49 @@ func TestConfigureResolverServersInstallsOverride(t *testing.T) {
 	got := directResolverServers()
 	if len(got) != 1 || got[0] != "10.0.0.176:5353" {
 		t.Fatalf("directResolverServers() = %#v, want configured resolver", got)
+	}
+}
+
+func TestHTTPIPPoolTransportPreservesHostHeader(t *testing.T) {
+	hostSeen := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hostSeen <- r.Host
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	addr := srv.Listener.Addr().(*net.TCPAddr)
+	rawURL := "http://site-0000001.capacity.internal:" + strconv.Itoa(addr.Port) + "/"
+
+	oldCache := defaultDNSCache
+	oldHTTPIPTransport := defaultHTTPIPTransport
+	defaultDNSCache = newCheckDNSCache(time.Minute, 10)
+	defaultDNSCache.store(
+		normalizeDNSCacheKey("site-0000001.capacity.internal", "ip4"),
+		[]net.IPAddr{{IP: net.ParseIP("127.0.0.1")}},
+		time.Now().Add(time.Minute),
+	)
+	defaultHTTPIPTransport = newHTTPIPPoolTransportWithFallback(defaultTransport)
+	t.Cleanup(func() {
+		if defaultHTTPIPTransport != nil {
+			defaultHTTPIPTransport.CloseIdleConnections()
+		}
+		defaultDNSCache = oldCache
+		defaultHTTPIPTransport = oldHTTPIPTransport
+	})
+
+	res := Check(context.Background(), Request{BlogID: 42, URL: rawURL, TimeoutSeconds: 2})
+	if !res.Success {
+		t.Fatalf("Check() success = false, result=%+v", res)
+	}
+	select {
+	case got := <-hostSeen:
+		want := "site-0000001.capacity.internal:" + strconv.Itoa(addr.Port)
+		if got != want {
+			t.Fatalf("Host header = %q, want %q", got, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("server did not receive request")
 	}
 }
 
