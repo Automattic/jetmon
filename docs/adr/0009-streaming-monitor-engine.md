@@ -65,7 +65,10 @@ constant function of fleet size.
 The first version still performs periodic full active-site reloads. That is
 simpler and safer for the prototype, but a later iteration should use
 `jetmon_check_targets` plus change detection to avoid broad reload reads at very
-large fleet sizes.
+large fleet sizes. Until that target-table sync exists, the scheduler
+automatically stretches periodic full reload cadence for large fleets so broad
+legacy-table scans do not compete with the check loop during normal steady
+state.
 
 The new engine needs uptime-bench coverage that validates freshness, incident
 correctness, recovery correctness, verifier promotion, rollback projection

@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/go-sql-driver/mysql"
 )
 
 const batchWriteChunkSize = 1000
@@ -447,11 +449,30 @@ func MarkSitesChecked(ctx context.Context, checks []SiteCheck) error {
 	})
 	for start := 0; start < len(checks); start += batchWriteChunkSize {
 		end := min(start+batchWriteChunkSize, len(checks))
-		if err := markSitesCheckedChunk(ctx, checks[start:end]); err != nil {
+		if err := markSitesCheckedChunkWithRetry(ctx, checks[start:end]); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func markSitesCheckedChunkWithRetry(ctx context.Context, checks []SiteCheck) error {
+	var err error
+	for attempt := 0; attempt < 5; attempt++ {
+		err = markSitesCheckedChunk(ctx, checks)
+		if err == nil || !isRetryableWriteConflict(err) {
+			return err
+		}
+		backoff := time.Duration(attempt+1) * 25 * time.Millisecond
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return err
 }
 
 func markSitesCheckedChunk(ctx context.Context, checks []SiteCheck) error {
@@ -478,6 +499,14 @@ func markSitesCheckedChunk(ctx context.Context, checks []SiteCheck) error {
 	query.WriteByte(')')
 	_, err := db.ExecContext(ctx, query.String(), args...)
 	return err
+}
+
+func isRetryableWriteConflict(err error) bool {
+	var mysqlErr *mysql.MySQLError
+	if errors.As(err, &mysqlErr) {
+		return mysqlErr.Number == 1205 || mysqlErr.Number == 1213
+	}
+	return false
 }
 
 // UpdateLastAlertSent records when an alert was last sent for a site.

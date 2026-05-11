@@ -152,17 +152,20 @@ Coarse freshness projection interval used only when SCHEDULER_ENGINE is
 after every successful probe; instead it batches the latest observation for each
 site at this cadence so a rollback to the legacy scheduler loses at most this
 many minutes of freshness data in normal operation. The accepted rollout window
-is 5-15 minutes. Sites with check intervals between 5 minutes and the configured
-projection interval are projected at their own interval so 5-minute production
-sites keep a 5-minute rollback freshness view without forcing 1-minute sites to
-write every minute. Default: 10.
+is 5-15 minutes. The configured interval applies uniformly rather than shrinking
+to each site's check interval, because matching 5-minute site cadence at large
+fleet sizes can turn rollback freshness into the dominant write load. Large
+pending projection sets are flushed in rate-sized batches so compatibility
+writes do not block check throughput. Default: 10.
 
 STREAMING_TARGET_RELOAD_SEC
 How often streaming mode reloads active site config from jetpack_monitor_sites.
 This is not a performance cap and does not control check cadence. It bounds how
 quickly site activation, URL, interval, keyword, header, timeout, redirect, and
-maintenance-window changes are reflected in the in-memory schedule. Default:
-300.
+maintenance-window changes are reflected in the in-memory schedule for smaller
+fleets. Very large fleets automatically stretch periodic full reloads to avoid
+turning broad config scans into a steady-state throughput bottleneck; activation
+and deactivation count changes are still polled separately. Default: 300.
 
 LOG_FORMAT
 Log output format. Set to "json" for structured logging (e.g. for log aggregators), or "text" for human-readable output. Default: "text".

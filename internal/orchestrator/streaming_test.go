@@ -464,8 +464,8 @@ func TestStreamingTargetReloadIntervalScalesForLargeFleets(t *testing.T) {
 	for i := int64(50001); i <= 500000; i++ {
 		planner.targets[i] = &streamingTarget{site: db.Site{BlogID: i}, active: true}
 	}
-	if got := streamingTargetReloadInterval(cfg, planner); got != 1000*time.Second {
-		t.Fatalf("500k fleet reload interval = %s, want scaled 1000s", got)
+	if got := streamingTargetReloadInterval(cfg, planner); got != 10000*time.Second {
+		t.Fatalf("500k fleet reload interval = %s, want scaled 10000s", got)
 	}
 }
 
@@ -474,14 +474,26 @@ func TestStreamingTargetReloadIntervalRespectsLongConfigAndCap(t *testing.T) {
 	for i := int64(1); i <= 500000; i++ {
 		planner.targets[i] = &streamingTarget{site: db.Site{BlogID: i}, active: true}
 	}
-	if got := streamingTargetReloadInterval(&config.Config{StreamingTargetReloadSec: 1200}, planner); got != 20*time.Minute {
-		t.Fatalf("long configured reload interval = %s, want configured 20m", got)
+	if got := streamingTargetReloadInterval(&config.Config{StreamingTargetReloadSec: 4 * 60 * 60}, planner); got != 4*time.Hour {
+		t.Fatalf("long configured reload interval = %s, want configured 4h", got)
 	}
-	for i := int64(500001); i <= 1000000; i++ {
+	for i := int64(500001); i <= 2000000; i++ {
 		planner.targets[i] = &streamingTarget{site: db.Site{BlogID: i}, active: true}
 	}
 	if got := streamingTargetReloadInterval(&config.Config{StreamingTargetReloadSec: 300}, planner); got != streamingMaxTargetReloadInterval {
 		t.Fatalf("capped reload interval = %s, want %s", got, streamingMaxTargetReloadInterval)
+	}
+}
+
+func TestStreamingResultDrainLimitScalesWithBacklog(t *testing.T) {
+	if got := streamingResultDrainLimitFor(10); got != streamingResultDrainLimit {
+		t.Fatalf("small result drain limit = %d, want %d", got, streamingResultDrainLimit)
+	}
+	if got := streamingResultDrainLimitFor(40000); got != 20000 {
+		t.Fatalf("medium result drain limit = %d, want 20000", got)
+	}
+	if got := streamingResultDrainLimitFor(200000); got != streamingMaxResultDrainLimit {
+		t.Fatalf("large result drain limit = %d, want %d", got, streamingMaxResultDrainLimit)
 	}
 }
 
@@ -777,7 +789,7 @@ func TestQueueStreamingProjectionRespectsInterval(t *testing.T) {
 	}
 }
 
-func TestQueueStreamingProjectionProjectsEveryCheckWhenSiteIntervalMatchesProjection(t *testing.T) {
+func TestQueueStreamingProjectionUsesConfiguredRollbackWindowForFiveMinuteSites(t *testing.T) {
 	origNow := nowFunc
 	defer func() { nowFunc = origNow }()
 
@@ -794,30 +806,63 @@ func TestQueueStreamingProjectionProjectsEveryCheckWhenSiteIntervalMatchesProjec
 	pending := map[int64]db.SiteCheck{}
 
 	o.queueStreamingProjection(cfg, target, checker.Result{BlogID: 42, Timestamp: checkedAt}, pending)
-	if len(pending) != 1 {
-		t.Fatalf("pending projection rows = %d, want 1 for every 5m check", len(pending))
+	if len(pending) != 0 {
+		t.Fatalf("pending projection rows = %d, want 0 before configured interval", len(pending))
 	}
-	if got := pending[42].CheckedAt; !got.Equal(projectedAt) {
-		t.Fatalf("projected CheckedAt = %s, want %s", got, projectedAt)
+
+	later := checkedAt.Add(10 * time.Minute)
+	o.queueStreamingProjection(cfg, target, checker.Result{BlogID: 42, Timestamp: later}, pending)
+	if len(pending) != 1 {
+		t.Fatalf("pending projection rows = %d, want 1 after configured interval", len(pending))
 	}
 }
 
-func TestStreamingProjectionIntervalCapsToFiveMinuteSiteInterval(t *testing.T) {
+func TestStreamingProjectionIntervalUsesConfiguredRollbackWindow(t *testing.T) {
 	cfg := &config.Config{StreamingLegacyProjectionIntervalMin: 10}
 
-	got := streamingProjectionInterval(cfg, db.Site{CheckInterval: 5})
-	if got != 5*time.Minute {
-		t.Fatalf("streamingProjectionInterval(5m site) = %s, want 5m", got)
-	}
-
-	got = streamingProjectionInterval(cfg, db.Site{CheckInterval: 1})
+	got := streamingProjectionInterval(cfg)
 	if got != 10*time.Minute {
-		t.Fatalf("streamingProjectionInterval(1m site) = %s, want configured 10m", got)
+		t.Fatalf("streamingProjectionInterval(configured) = %s, want 10m", got)
 	}
 
 	cfg.StreamingLegacyProjectionIntervalMin = 3
-	got = streamingProjectionInterval(cfg, db.Site{CheckInterval: 1})
+	got = streamingProjectionInterval(cfg)
 	if got != 5*time.Minute {
 		t.Fatalf("streamingProjectionInterval(enforced floor) = %s, want 5m", got)
+	}
+}
+
+func TestStreamingProjectionFlushBatchCapsRows(t *testing.T) {
+	pending := map[int64]db.SiteCheck{}
+	for i := int64(1); i <= 5; i++ {
+		pending[i] = db.SiteCheck{BlogID: i}
+	}
+
+	batch := streamingProjectionFlushBatch(pending, 2)
+	if len(batch) != 2 {
+		t.Fatalf("projection flush batch size = %d, want 2", len(batch))
+	}
+	if len(pending) != 3 {
+		t.Fatalf("pending projection rows after capped batch = %d, want 3", len(pending))
+	}
+
+	batch = streamingProjectionFlushBatch(pending, 0)
+	if len(batch) != 3 {
+		t.Fatalf("projection flush final batch size = %d, want 3", len(batch))
+	}
+	if len(pending) != 0 {
+		t.Fatalf("pending projection rows after final batch = %d, want 0", len(pending))
+	}
+}
+
+func TestStreamingProjectionFlushRowLimitScalesWithRequiredRate(t *testing.T) {
+	if got := streamingProjectionFlushRowLimit(10); got != streamingProjectionFlushMinRows {
+		t.Fatalf("low-rate projection row limit = %d, want %d", got, streamingProjectionFlushMinRows)
+	}
+	if got := streamingProjectionFlushRowLimit(1754.39); got != 21930 {
+		t.Fatalf("500k projection row limit = %d, want 21930", got)
+	}
+	if got := streamingProjectionFlushRowLimit(100000); got != streamingProjectionFlushMaxRows {
+		t.Fatalf("high-rate projection row limit = %d, want %d", got, streamingProjectionFlushMaxRows)
 	}
 }

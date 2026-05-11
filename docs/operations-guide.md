@@ -84,9 +84,12 @@ Scheduler behavior:
   batches legacy `last_checked_at`/`next_check_at` projection at
   `STREAMING_LEGACY_PROJECTION_INTERVAL_MIN` so rollback to the legacy scheduler
   has bounded freshness loss rather than exact per-check freshness. The
-  projection interval is constrained to the accepted 5-15 minute rollback window;
-  sites whose own check interval is between 5 minutes and the configured
-  projection interval are projected at their site interval.
+  projection interval is constrained to the accepted 5-15 minute rollback window
+  and applies uniformly across sites. It intentionally does not shrink to match
+  5-minute site cadence, because that makes rollback freshness writes scale with
+  active fleet size in the hot path. Pending projection writes are also flushed
+  in rate-sized batches so a backlog cannot turn one flush into a large
+  lock-heavy update burst.
 
 See [../config/config.readme](../config/config.readme) for the full option
 reference.

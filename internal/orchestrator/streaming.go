@@ -20,10 +20,12 @@ const (
 	streamingReportInterval                  = time.Minute
 	streamingScaleInterval                   = 5 * time.Second
 	streamingProjectionFlushInterval         = 10 * time.Second
+	streamingProjectionFlushMinRows          = 5000
+	streamingProjectionFlushMaxRows          = 50000
 	streamingReloadDeferInterval             = time.Minute
 	streamingLargeFleetReloadFloor           = 100000
-	streamingLargeFleetReloadSitesPerSecond  = 500
-	streamingMaxTargetReloadInterval         = 30 * time.Minute
+	streamingLargeFleetReloadSitesPerSecond  = 50
+	streamingMaxTargetReloadInterval         = 6 * time.Hour
 	streamingProjectionSlack                 = 2 * time.Second
 	streamingEmptyTargetPollInterval         = 5 * time.Second
 	streamingActiveCountPollInterval         = 30 * time.Second
@@ -44,6 +46,7 @@ const (
 	streamingBacklogWorkerDivisor            = 240
 	streamingBacklogWorkerMultiplier         = 2
 	streamingResultDrainLimit                = 4096
+	streamingMaxResultDrainLimit             = 65536
 	streamingDispatchCatchupDivisor          = 120
 	streamingDispatchFastCatchupDivisor      = 60
 	streamingDispatchMaxElapsed              = 6 * time.Second
@@ -735,7 +738,7 @@ func (o *Orchestrator) runStreamingEngine() {
 		cfg = config.Get()
 		reloadReason := ""
 	tickResultDrain:
-		for range streamingResultDrainLimit {
+		for range streamingResultDrainLimitFor(o.pool.ResultDepth()) {
 			select {
 			case res := <-o.pool.Results():
 				handleResult(res)
@@ -805,8 +808,7 @@ func (o *Orchestrator) runStreamingEngine() {
 
 		if now.Sub(lastProjectionFlush) >= streamingProjectionFlushInterval {
 			if !projectionInFlight && len(pendingProjection) > 0 {
-				checks := streamingProjectionChecks(pendingProjection)
-				pendingProjection = make(map[int64]db.SiteCheck)
+				checks := streamingProjectionFlushBatch(pendingProjection, streamingProjectionFlushRowLimit(planner.requiredChecksPerSecond()))
 				startProjectionFlush(checks)
 			}
 			lastProjectionFlush = now
@@ -858,7 +860,7 @@ func (o *Orchestrator) runStreamingEngine() {
 		case res := <-o.pool.Results():
 			handleResult(res)
 		resultDrain:
-			for range streamingResultDrainLimit {
+			for range streamingResultDrainLimitFor(o.pool.ResultDepth()) {
 				select {
 				case res := <-o.pool.Results():
 					handleResult(res)
@@ -1071,7 +1073,7 @@ func streamingAllowImmediateRetry(target *streamingTarget, res checker.Result, r
 }
 
 func (o *Orchestrator) queueStreamingProjection(cfg *config.Config, target *streamingTarget, res checker.Result, pending map[int64]db.SiteCheck) {
-	interval := streamingProjectionInterval(cfg, target.site)
+	interval := streamingProjectionInterval(cfg)
 	resultAt := resultCheckedAt(res)
 	if !streamingProjectionDue(target, resultAt, interval) {
 		return
@@ -1099,7 +1101,7 @@ func streamingProjectionDue(target *streamingTarget, checkedAt time.Time, interv
 	return !checkedAt.Add(streamingProjectionSlack).Before(target.lastProjectedAt.Add(interval))
 }
 
-func streamingProjectionInterval(cfg *config.Config, site db.Site) time.Duration {
+func streamingProjectionInterval(cfg *config.Config) time.Duration {
 	interval := time.Duration(cfg.StreamingLegacyProjectionIntervalMin) * time.Minute
 	if interval <= 0 {
 		interval = 10 * time.Minute
@@ -1107,10 +1109,6 @@ func streamingProjectionInterval(cfg *config.Config, site db.Site) time.Duration
 	minRollbackWindow := 5 * time.Minute
 	if interval < minRollbackWindow {
 		interval = minRollbackWindow
-	}
-	siteInterval := siteCheckInterval(site)
-	if siteInterval >= minRollbackWindow && siteInterval < interval {
-		return siteInterval
 	}
 	return interval
 }
@@ -1138,6 +1136,39 @@ func streamingProjectionChecks(pending map[int64]db.SiteCheck) []db.SiteCheck {
 		checks = append(checks, check)
 	}
 	return checks
+}
+
+func streamingProjectionFlushBatch(pending map[int64]db.SiteCheck, limit int) []db.SiteCheck {
+	if len(pending) == 0 {
+		return nil
+	}
+	if limit <= 0 || limit >= len(pending) {
+		checks := streamingProjectionChecks(pending)
+		for blogID := range pending {
+			delete(pending, blogID)
+		}
+		return checks
+	}
+	checks := make([]db.SiteCheck, 0, limit)
+	for blogID, check := range pending {
+		checks = append(checks, check)
+		delete(pending, blogID)
+		if len(checks) >= limit {
+			break
+		}
+	}
+	return checks
+}
+
+func streamingProjectionFlushRowLimit(requiredRate float64) int {
+	limit := int(math.Ceil(requiredRate * streamingProjectionFlushInterval.Seconds() * 1.25))
+	if limit < streamingProjectionFlushMinRows {
+		return streamingProjectionFlushMinRows
+	}
+	if limit > streamingProjectionFlushMaxRows {
+		return streamingProjectionFlushMaxRows
+	}
+	return limit
 }
 
 func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streamingPlanner, stats streamingStats, pending, sideEffectDepth int, elapsed time.Duration, pressureActive bool) {
@@ -1519,6 +1550,20 @@ func streamingResultDispatchPauseDepth(workerTarget, activeCount int) int {
 		return limit
 	}
 	return depth
+}
+
+func streamingResultDrainLimitFor(resultDepth int) int {
+	if resultDepth <= streamingResultDrainLimit {
+		return streamingResultDrainLimit
+	}
+	limit := resultDepth / 2
+	if limit < streamingResultDrainLimit {
+		return streamingResultDrainLimit
+	}
+	if limit > streamingMaxResultDrainLimit {
+		return streamingMaxResultDrainLimit
+	}
+	return limit
 }
 
 func streamingSideEffectBackpressureDepth(workerTarget, activeCount int) int {
