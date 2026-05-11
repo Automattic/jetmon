@@ -38,6 +38,8 @@ const (
 	streamingWorkerHeadroom                  = 2.0
 	streamingMinWorkerStep                   = 50
 	streamingMinBackpressureDepth            = 1024
+	streamingBacklogWorkerDivisor            = 240
+	streamingBacklogWorkerMultiplier         = 2
 	streamingResultDrainLimit                = 4096
 	streamingDispatchCatchupDivisor          = 120
 	streamingDispatchFastCatchupDivisor      = 60
@@ -1266,7 +1268,7 @@ func (o *Orchestrator) applyStreamingWorkerTarget(cfg *config.Config, planner *s
 
 func streamingDesiredWorkerTarget(cfg *config.Config, planner *streamingPlanner, latency, maxLag time.Duration, pending, queueDepth, resultDepth, sideEffectDepth, currentWorkers int, failurePressure bool) int {
 	scaleLatency := latency
-	if !failurePressure && maxLag <= streamingReportInterval && scaleLatency > streamingDefaultLatency {
+	if !failurePressure && scaleLatency > streamingDefaultLatency {
 		scaleLatency = streamingDefaultLatency
 	}
 	desiredTarget := streamingWorkerTarget(cfg, planner, scaleLatency)
@@ -1335,11 +1337,11 @@ func streamingBacklogWorkerTarget(base, active, backlog int) int {
 	if base < 1 || backlog <= 0 {
 		return base
 	}
-	target := base + backlog/60
+	target := base + backlog/streamingBacklogWorkerDivisor
 	if target <= base {
 		target = base + 1
 	}
-	maxTarget := base * 3
+	maxTarget := base * streamingBacklogWorkerMultiplier
 	if maxTarget < base+streamingMinWorkerStep {
 		maxTarget = base + streamingMinWorkerStep
 	}

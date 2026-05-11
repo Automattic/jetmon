@@ -407,11 +407,11 @@ func TestStreamingStatsCountsErrorCodes(t *testing.T) {
 }
 
 func TestStreamingBacklogWorkerTargetUsesSpareHeadroom(t *testing.T) {
-	if got := streamingBacklogWorkerTarget(700, 100000, 42000); got != 1400 {
+	if got := streamingBacklogWorkerTarget(700, 100000, 42000); got != 875 {
 		t.Fatalf("backlog worker target = %d, want base plus backlog catch-up", got)
 	}
-	if got := streamingBacklogWorkerTarget(700, 100000, 200000); got != 2100 {
-		t.Fatalf("capped backlog worker target = %d, want 3x base cap", got)
+	if got := streamingBacklogWorkerTarget(700, 100000, 200000); got != 1400 {
+		t.Fatalf("capped backlog worker target = %d, want 2x base cap", got)
 	}
 	if got := streamingBacklogWorkerTarget(700, 1000, 200000); got != 1000 {
 		t.Fatalf("active-capped backlog worker target = %d, want active target count", got)
