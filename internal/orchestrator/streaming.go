@@ -1565,13 +1565,13 @@ func streamingResultDispatchPauseDepth(workerTarget, activeCount int) int {
 		workerTarget = 1
 	}
 	depth := workerTarget * 6
-	if activeBased := activeCount / 10; activeBased > depth {
+	if activeBased := activeCount / 5; activeBased > depth {
 		depth = activeBased
 	}
 	if depth < streamingMinBackpressureDepth {
 		return streamingMinBackpressureDepth
 	}
-	limit := streamingMaxQueueCap / 2
+	limit := streamingMaxQueueCap * 3 / 4
 	if depth > limit {
 		return limit
 	}

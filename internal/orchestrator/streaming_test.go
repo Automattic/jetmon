@@ -553,14 +553,14 @@ func TestStreamingBackpressureDepthScalesWithWorkersAndTargets(t *testing.T) {
 	if got := streamingSideEffectBackpressureDepth(2000, 100000); got != 5000 {
 		t.Fatalf("100k side-effect backpressure depth = %d, want target-based 5000", got)
 	}
-	if got := streamingResultDispatchPauseDepth(5000, 500000); got != 50000 {
-		t.Fatalf("500k result dispatch pause depth = %d, want target-based 50000", got)
+	if got := streamingResultDispatchPauseDepth(5000, 500000); got != 100000 {
+		t.Fatalf("500k result dispatch pause depth = %d, want target-based 100000", got)
 	}
 	if got := streamingResultBackpressureDepth(100000, 1000000); got != 131072 {
 		t.Fatalf("capped result backpressure depth = %d, want 131072", got)
 	}
-	if got := streamingResultDispatchPauseDepth(100000, 1000000); got != 131072 {
-		t.Fatalf("capped result dispatch pause depth = %d, want 131072", got)
+	if got := streamingResultDispatchPauseDepth(100000, 1000000); got != 196608 {
+		t.Fatalf("capped result dispatch pause depth = %d, want 196608", got)
 	}
 }
 
