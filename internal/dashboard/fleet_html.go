@@ -134,6 +134,31 @@ const fleetDashboardHTML = `<!DOCTYPE html>
     <tbody id="delivery-tables"></tbody>
   </table>
 
+  <h2>Veriflier Fleet</h2>
+  <div class="grid">
+    <div class="card"><div class="label">Status</div><div class="value" id="veriflier-status">-</div><div class="detail" id="veriflier-detail"></div></div>
+    <div class="card"><div class="label">Vantages</div><div class="value" id="veriflier-vantages">-</div><div class="detail" id="veriflier-vantage-detail"></div></div>
+    <div class="card"><div class="label">Agents</div><div class="value" id="veriflier-agents">-</div><div class="detail" id="veriflier-agent-detail"></div></div>
+    <div class="card"><div class="label">Capacity</div><div class="value" id="veriflier-capacity">-</div><div class="detail" id="veriflier-capacity-detail"></div></div>
+    <div class="card"><div class="label">Discovery Modes</div><div class="value" id="veriflier-modes">-</div></div>
+  </div>
+
+  <h2>Veriflier Vantages</h2>
+  <table>
+    <thead>
+      <tr><th>Vantage</th><th>Status</th><th>Endpoint</th><th>Region</th><th>Agents</th><th>Last Seen</th></tr>
+    </thead>
+    <tbody id="veriflier-vantage-rows"></tbody>
+  </table>
+
+  <h2>Veriflier Agents</h2>
+  <table>
+    <thead>
+      <tr><th>Agent</th><th>Vantage</th><th>Status</th><th>Endpoint</th><th>Capacity</th><th>Last Seen</th></tr>
+    </thead>
+    <tbody id="veriflier-agent-rows"></tbody>
+  </table>
+
   <h2>Bucket Owners</h2>
   <table>
     <thead>
@@ -255,6 +280,54 @@ function render(snapshot) {
   });
   if (((snapshot.delivery || {}).tables || []).length === 0) {
     deliveryBody.appendChild(row(['No delivery queue summaries found', '', '', '', '', '', '', '']));
+  }
+
+  const verifliers = snapshot.verifliers || {};
+  setText('veriflier-status', verifliers.status || '-');
+  setText('veriflier-detail', joinParts([verifliers.message, verifliers.error]));
+  setText('veriflier-vantages', (verifliers.usable_vantages || 0) + '/' + (verifliers.enabled_vantages || 0));
+  setText('veriflier-vantage-detail', 'total=' + (verifliers.total_vantages || 0) + ' disabled=' + (verifliers.disabled_vantages || 0) + ' incomplete=' + (verifliers.incomplete_vantages || 0));
+  setText('veriflier-agents', (verifliers.fresh_agents || 0) + '/' + (verifliers.total_agents || 0));
+  setText('veriflier-agent-detail', 'active=' + (verifliers.active_agents || 0) + ' stale=' + (verifliers.stale_agents || 0) + ' duplicate_endpoints=' + (verifliers.duplicate_endpoints || 0));
+  setText('veriflier-capacity', (verifliers.max_concurrency || 0));
+  setText('veriflier-capacity-detail', 'queue=' + (verifliers.queue_depth || 0) + '/' + (verifliers.queue_capacity || 0) + ' active=' + (verifliers.active_checks || 0) + ' in_flight=' + (verifliers.in_flight || 0));
+  setText('veriflier-modes', (verifliers.discovery_modes || []).map(function(mode) {
+    return mode.mode + '(' + mode.process_count + ')';
+  }).join(', ') || 'static');
+
+  const vantageBody = document.getElementById('veriflier-vantage-rows');
+  vantageBody.textContent = '';
+  (verifliers.vantages || []).forEach(function(vantage) {
+    const status = vantage.enabled ? (vantage.usable ? 'enabled usable' : 'enabled incomplete') : 'disabled';
+    const endpoint = joinParts([vantage.endpoint_host, vantage.endpoint_port]);
+    const region = joinParts([vantage.region, vantage.provider]);
+    vantageBody.appendChild(row([
+      vantage.vantage_id,
+      status + (vantage.auth_token_present ? '' : ' no-token'),
+      endpoint,
+      region,
+      'fresh=' + (vantage.fresh_agents || 0) + ' stale=' + (vantage.stale_agents || 0) + ' active=' + (vantage.active_agents || 0),
+      vantage.last_seen_age_sec ? ageLabel(vantage.last_seen_age_sec) : '-'
+    ]));
+  });
+  if ((verifliers.vantages || []).length === 0) {
+    vantageBody.appendChild(row(['No trusted Veriflier vantages found', '', '', '', '', '']));
+  }
+
+  const agentBody = document.getElementById('veriflier-agent-rows');
+  agentBody.textContent = '';
+  (verifliers.agents || []).forEach(function(agent) {
+    agentBody.appendChild(row([
+      joinParts([agent.agent_id, agent.hostname]),
+      agent.vantage_id + (agent.vantage_preapproved ? '' : ' unapproved'),
+      agent.status + (agent.stale ? ' stale' : ''),
+      joinParts([agent.endpoint_host, agent.endpoint_port]),
+      'max=' + (agent.max_concurrency || 0) + ' queue=' + (agent.queue_depth || 0) + '/' + (agent.queue_capacity || 0) + ' active=' + (agent.active || 0) + ' in_flight=' + (agent.in_flight || 0),
+      ageLabel(agent.last_seen_age_sec)
+    ]));
+  });
+  if ((verifliers.agents || []).length === 0) {
+    agentBody.appendChild(row(['No Veriflier agent telemetry found', '', '', '', '', '']));
   }
 
   const bucketBody = document.getElementById('bucket-hosts');

@@ -1,4 +1,7 @@
 {
 	"auth_token" : "<VERIFLIER_AUTH_TOKEN>",
-	"port"       : "<VERIFLIER_PORT>"
+	"port"       : "<VERIFLIER_PORT>",
+	"vantage_id" : "<VERIFLIER_VANTAGE_ID>",
+	"region"     : "<VERIFLIER_REGION>",
+	"provider"   : "<VERIFLIER_PROVIDER>"
 }

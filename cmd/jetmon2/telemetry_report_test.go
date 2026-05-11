@@ -63,6 +63,9 @@ func TestBuildTelemetryReport(t *testing.T) {
 	if report.Verifier.Replies != 6 || report.Verifier.ConfirmDown != 4 || len(report.Verifier.Hosts) != 2 {
 		t.Fatalf("Verifier = %+v, want replies=6 confirm=4 hosts=2", report.Verifier)
 	}
+	if report.Verifier.VoteTransitions != 3 || report.Verifier.MaxQuorum != 2 || report.Verifier.MaxHealthy != 3 {
+		t.Fatalf("Verifier vote evidence = %+v, want transitions=3 max_quorum=2 max_healthy=3", report.Verifier)
+	}
 	if len(report.FalseAlarmClasses) != 2 || report.FalseAlarmClasses[0].Class != "server" {
 		t.Fatalf("FalseAlarmClasses = %+v, want server first", report.FalseAlarmClasses)
 	}
@@ -92,15 +95,30 @@ func TestRenderTelemetryReportText(t *testing.T) {
 		},
 		WindowEdge:      telemetryWindowEdge{LookbackSeconds: 60},
 		TelemetryStatus: "pass",
-		Highlights:      []string{"Telemetry looks internally consistent for this window."},
-		Summary:         telemetrySummary{Opened: 5, ConfirmedDown: 2, ProbeCleared: 1},
+		Highlights: []string{
+			"Telemetry looks internally consistent for this window.",
+			"Verifier duplicate vote protection ignored 1 duplicate vote(s) across 1 transition(s).",
+			"Verifier minimum-healthy floor blocked confirmation in 1 transition(s).",
+		},
+		Summary: telemetrySummary{Opened: 5, ConfirmedDown: 2, ProbeCleared: 1},
 		Timings: []telemetryTiming{{
 			Name:  "first_failure_to_down",
 			Count: 2,
 			AvgMS: 1500,
 			MaxMS: 2500,
 		}},
-		Verifier: telemetryVerifierReport{Replies: 6, ConfirmDown: 4, Disagree: 2, ConfirmPercent: 66.7},
+		Verifier: telemetryVerifierReport{
+			Replies:                      6,
+			ConfirmDown:                  4,
+			Disagree:                     2,
+			ConfirmPercent:               66.7,
+			VoteTransitions:              2,
+			DuplicateVotes:               1,
+			DuplicateVoteTransitions:     1,
+			MinHealthyBlockedTransitions: 1,
+			MaxQuorum:                    2,
+			MaxHealthy:                   3,
+		},
 		FalseAlarmClasses: []telemetryClassCount{{
 			Outcome: eventstore.ReasonFalseAlarm,
 			Class:   "server",
@@ -133,6 +151,9 @@ func TestRenderTelemetryReportText(t *testing.T) {
 		"INFO events opened=5 confirmed_down=2",
 		"INFO timing=first_failure_to_down count=2 avg_ms=1500 max_ms=2500",
 		"INFO verifier_replies=6 confirm_down=4 disagree=2",
+		"INFO verifier_vote_transitions=2 duplicate_votes=1 duplicate_vote_transitions=1 min_healthy_blocked=1 max_quorum=2 max_healthy=3",
+		"INFO highlight=\"Verifier duplicate vote protection ignored 1 duplicate vote(s) across 1 transition(s).\"",
+		"INFO highlight=\"Verifier minimum-healthy floor blocked confirmation in 1 transition(s).\"",
 		"INFO outcome=false_alarm class=server count=1",
 		"INFO expected_down=2 expected_recovery=1 attempts=3",
 		"down_suppressed=0 recovery_suppressed=0",
@@ -416,6 +437,10 @@ func expectTelemetryReportQueries(t *testing.T, mock sqlmock.Sqlmock, start, end
 		WillReturnRows(sqlmock.NewRows([]string{"source", "count", "confirm", "disagree", "missing"}).
 			AddRow("verifier-a", int64(4), int64(3), int64(1), int64(0)).
 			AddRow("verifier-b", int64(2), int64(1), int64(1), int64(0)))
+	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\).*verifier_duplicate_votes.*FROM jetmon_event_transitions.*reason IN.*changed_at >= \?.*changed_at < \?`).
+		WithArgs(eventstore.ReasonVerifierConfirmed, eventstore.ReasonFalseAlarm, start, end).
+		WillReturnRows(sqlmock.NewRows([]string{"count", "duplicates", "duplicate_rows", "under_min", "max_quorum", "max_healthy"}).
+			AddRow(int64(3), int64(0), int64(0), int64(0), int64(2), int64(3)))
 
 	mock.ExpectQuery(`(?s)SELECT outcome.reason AS outcome.*outcome.changed_at >= \?.*outcome.changed_at < \?.*GROUP BY outcome.reason, class.*LIMIT 5`).
 		WithArgs(eventstore.ReasonOpened, eventstore.ReasonFalseAlarm, eventstore.ReasonProbeCleared, start, end).

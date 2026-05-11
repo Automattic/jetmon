@@ -96,6 +96,7 @@ func (s *FleetStore) Snapshot(ctx context.Context) (FleetSnapshot, error) {
 
 	projectionDrift := queryFleetProjectionDrift(ctx, s.db, s.bucketTotal)
 	dependencies := summarizeFleetDependencies(processes)
+	verifliers := queryFleetVerifliers(ctx, s.db, now, s.heartbeatGrace, processes)
 
 	snapshot := FleetSnapshot{
 		GeneratedAt:     now,
@@ -105,6 +106,7 @@ func (s *FleetStore) Snapshot(ctx context.Context) (FleetSnapshot, error) {
 		Delivery:        delivery,
 		ProjectionDrift: projectionDrift,
 		Dependencies:    dependencies,
+		Verifliers:      verifliers,
 	}
 	snapshot.Summary = summarizeFleet(snapshot)
 	s.storeCachedSnapshot(snapshot)
@@ -143,6 +145,7 @@ type FleetSnapshot struct {
 	Delivery        FleetDeliverySummary     `json:"delivery"`
 	ProjectionDrift FleetProjectionDrift     `json:"projection_drift"`
 	Dependencies    []FleetDependencySummary `json:"dependencies,omitempty"`
+	Verifliers      FleetVeriflierSummary    `json:"verifliers"`
 }
 
 // FleetSummary is the top-level red/amber/green rollup for the fleet.
@@ -271,6 +274,74 @@ type FleetDependencySummary struct {
 	GreenCount int    `json:"green_count"`
 	StaleCount int    `json:"stale_count"`
 	LastError  string `json:"last_error,omitempty"`
+}
+
+// FleetVeriflierSummary summarizes trusted vantages and monitor-collected
+// Veriflier agent telemetry for the fleet dashboard.
+type FleetVeriflierSummary struct {
+	Status             string                         `json:"status"`
+	Message            string                         `json:"message,omitempty"`
+	Error              string                         `json:"error,omitempty"`
+	TotalVantages      int                            `json:"total_vantages"`
+	EnabledVantages    int                            `json:"enabled_vantages"`
+	DisabledVantages   int                            `json:"disabled_vantages"`
+	UsableVantages     int                            `json:"usable_vantages"`
+	IncompleteVantages int                            `json:"incomplete_vantages"`
+	TotalAgents        int                            `json:"total_agents"`
+	FreshAgents        int                            `json:"fresh_agents"`
+	StaleAgents        int                            `json:"stale_agents"`
+	ActiveAgents       int                            `json:"active_agents"`
+	DuplicateEndpoints int                            `json:"duplicate_endpoints"`
+	MaxConcurrency     int                            `json:"max_concurrency"`
+	QueueCapacity      int                            `json:"queue_capacity"`
+	QueueDepth         int                            `json:"queue_depth"`
+	ActiveChecks       int                            `json:"active_checks"`
+	InFlight           int                            `json:"in_flight"`
+	DiscoveryModes     []FleetVeriflierDiscoveryMode  `json:"discovery_modes,omitempty"`
+	Vantages           []FleetVeriflierVantageSummary `json:"vantages,omitempty"`
+	Agents             []FleetVeriflierAgentSummary   `json:"agents,omitempty"`
+}
+
+type FleetVeriflierDiscoveryMode struct {
+	Mode         string   `json:"mode"`
+	ProcessCount int      `json:"process_count"`
+	Hosts        []string `json:"hosts,omitempty"`
+}
+
+type FleetVeriflierVantageSummary struct {
+	VantageID        string    `json:"vantage_id"`
+	Region           string    `json:"region,omitempty"`
+	Provider         string    `json:"provider,omitempty"`
+	EndpointHost     string    `json:"endpoint_host,omitempty"`
+	EndpointPort     string    `json:"endpoint_port,omitempty"`
+	AuthTokenPresent bool      `json:"auth_token_present"`
+	Enabled          bool      `json:"enabled"`
+	Usable           bool      `json:"usable"`
+	ActiveAgents     int       `json:"active_agents"`
+	FreshAgents      int       `json:"fresh_agents"`
+	StaleAgents      int       `json:"stale_agents"`
+	LastSeen         time.Time `json:"last_seen,omitempty"`
+	LastSeenAgeSec   int64     `json:"last_seen_age_sec,omitempty"`
+}
+
+type FleetVeriflierAgentSummary struct {
+	AgentID            string    `json:"agent_id"`
+	VantageID          string    `json:"vantage_id"`
+	Hostname           string    `json:"hostname,omitempty"`
+	EndpointHost       string    `json:"endpoint_host,omitempty"`
+	EndpointPort       string    `json:"endpoint_port,omitempty"`
+	Version            string    `json:"version,omitempty"`
+	Protocols          []string  `json:"protocols,omitempty"`
+	MaxConcurrency     int       `json:"max_concurrency"`
+	QueueCapacity      int       `json:"queue_capacity"`
+	QueueDepth         int       `json:"queue_depth"`
+	Active             int       `json:"active"`
+	InFlight           int       `json:"in_flight"`
+	Status             string    `json:"status"`
+	LastSeen           time.Time `json:"last_seen"`
+	LastSeenAgeSec     int64     `json:"last_seen_age_sec"`
+	Stale              bool      `json:"stale"`
+	VantagePreapproved bool      `json:"vantage_preapproved"`
 }
 
 func summarizeFleetProcesses(rows []fleethealth.Snapshot, now time.Time, heartbeatGrace time.Duration) []FleetProcess {
@@ -735,6 +806,308 @@ func queryFleetProjectionDrift(ctx context.Context, db *sql.DB, bucketTotal int)
 	return FleetProjectionDrift{Status: "green"}
 }
 
+func queryFleetVerifliers(ctx context.Context, db *sql.DB, now time.Time, staleAfter time.Duration, processes []FleetProcess) FleetVeriflierSummary {
+	summary := FleetVeriflierSummary{
+		Status:         "green",
+		DiscoveryModes: summarizeFleetVeriflierDiscoveryModes(processes),
+	}
+	vantages, err := queryFleetVeriflierVantages(ctx, db)
+	if err != nil {
+		summary.Status = veriflierQueryErrorStatus(summary.DiscoveryModes)
+		summary.Error = err.Error()
+		summary.Message = "Veriflier discovery tables are unavailable"
+		return summary
+	}
+	agents, err := queryFleetVeriflierAgents(ctx, db, now, staleAfter)
+	if err != nil {
+		summary.Status = veriflierQueryErrorStatus(summary.DiscoveryModes)
+		summary.Error = err.Error()
+		summary.Vantages = vantages
+		summary.Message = "Veriflier agent telemetry is unavailable"
+		return summary
+	}
+
+	summary.Vantages = vantages
+	summary.Agents = agents
+	summarizeFleetVeriflierRows(&summary, now)
+	return summary
+}
+
+func queryFleetVeriflierVantages(ctx context.Context, db *sql.DB) ([]FleetVeriflierVantageSummary, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT vantage_id, region, provider, endpoint_host, endpoint_port,
+		       IF(auth_token <> '', 1, 0) AS auth_token_present,
+		       enabled, updated_at
+		  FROM jetmon_veriflier_vantages
+		 ORDER BY enabled DESC, vantage_id`)
+	if err != nil {
+		return nil, fmt.Errorf("query jetmon_veriflier_vantages: %w", err)
+	}
+	defer rows.Close()
+
+	var vantages []FleetVeriflierVantageSummary
+	for rows.Next() {
+		var v FleetVeriflierVantageSummary
+		var authTokenPresent, enabled int
+		var updatedAt time.Time
+		if err := rows.Scan(
+			&v.VantageID,
+			&v.Region,
+			&v.Provider,
+			&v.EndpointHost,
+			&v.EndpointPort,
+			&authTokenPresent,
+			&enabled,
+			&updatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan jetmon_veriflier_vantages: %w", err)
+		}
+		v.AuthTokenPresent = authTokenPresent != 0
+		v.Enabled = enabled != 0
+		v.Usable = v.Enabled &&
+			strings.TrimSpace(v.EndpointHost) != "" &&
+			strings.TrimSpace(v.EndpointPort) != "" &&
+			v.AuthTokenPresent
+		vantages = append(vantages, v)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate jetmon_veriflier_vantages: %w", err)
+	}
+	return vantages, nil
+}
+
+func queryFleetVeriflierAgents(ctx context.Context, db *sql.DB, now time.Time, staleAfter time.Duration) ([]FleetVeriflierAgentSummary, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT agent_id, vantage_id, hostname, endpoint_host, endpoint_port,
+		       version, protocols, max_concurrency, queue_capacity, queue_depth,
+		       active, in_flight, status, last_seen
+		  FROM jetmon_veriflier_agents
+		 ORDER BY last_seen DESC, vantage_id, agent_id`)
+	if err != nil {
+		return nil, fmt.Errorf("query jetmon_veriflier_agents: %w", err)
+	}
+	defer rows.Close()
+
+	var agents []FleetVeriflierAgentSummary
+	for rows.Next() {
+		var agent FleetVeriflierAgentSummary
+		var protocols sql.NullString
+		if err := rows.Scan(
+			&agent.AgentID,
+			&agent.VantageID,
+			&agent.Hostname,
+			&agent.EndpointHost,
+			&agent.EndpointPort,
+			&agent.Version,
+			&protocols,
+			&agent.MaxConcurrency,
+			&agent.QueueCapacity,
+			&agent.QueueDepth,
+			&agent.Active,
+			&agent.InFlight,
+			&agent.Status,
+			&agent.LastSeen,
+		); err != nil {
+			return nil, fmt.Errorf("scan jetmon_veriflier_agents: %w", err)
+		}
+		if protocols.Valid && strings.TrimSpace(protocols.String) != "" {
+			if err := json.Unmarshal([]byte(protocols.String), &agent.Protocols); err != nil {
+				return nil, fmt.Errorf("decode jetmon_veriflier_agents.protocols: %w", err)
+			}
+		}
+		agent.LastSeen = agent.LastSeen.UTC()
+		age := now.Sub(agent.LastSeen)
+		if age < 0 {
+			age = 0
+		}
+		agent.LastSeenAgeSec = int64(age.Round(time.Second) / time.Second)
+		agent.Stale = staleAfter > 0 && age > staleAfter
+		agents = append(agents, agent)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate jetmon_veriflier_agents: %w", err)
+	}
+	return agents, nil
+}
+
+func summarizeFleetVeriflierRows(summary *FleetVeriflierSummary, now time.Time) {
+	if summary == nil {
+		return
+	}
+	vantageIndex := map[string]int{}
+	freshActiveEndpointsByVantage := map[string]map[string]struct{}{}
+	for i := range summary.Vantages {
+		v := &summary.Vantages[i]
+		summary.TotalVantages++
+		vantageIndex[v.VantageID] = i
+		if v.Enabled {
+			summary.EnabledVantages++
+		} else {
+			summary.DisabledVantages++
+		}
+		if v.Usable {
+			summary.UsableVantages++
+		} else if v.Enabled {
+			summary.IncompleteVantages++
+		}
+	}
+
+	for i := range summary.Agents {
+		agent := &summary.Agents[i]
+		summary.TotalAgents++
+		if agent.Stale {
+			summary.StaleAgents++
+		} else {
+			summary.FreshAgents++
+		}
+		if agent.Status == "active" {
+			summary.ActiveAgents++
+		}
+		summary.MaxConcurrency += agent.MaxConcurrency
+		summary.QueueCapacity += agent.QueueCapacity
+		summary.QueueDepth += agent.QueueDepth
+		summary.ActiveChecks += agent.Active
+		summary.InFlight += agent.InFlight
+
+		if idx, ok := vantageIndex[agent.VantageID]; ok {
+			v := &summary.Vantages[idx]
+			agent.VantagePreapproved = v.Enabled
+			if agent.Status == "active" {
+				v.ActiveAgents++
+			}
+			if agent.Stale {
+				v.StaleAgents++
+			} else {
+				v.FreshAgents++
+			}
+			if v.LastSeen.IsZero() || agent.LastSeen.After(v.LastSeen) {
+				v.LastSeen = agent.LastSeen
+				age := now.Sub(agent.LastSeen)
+				if age < 0 {
+					age = 0
+				}
+				v.LastSeenAgeSec = int64(age.Round(time.Second) / time.Second)
+			}
+		}
+		if !agent.Stale && agent.Status == "active" && strings.TrimSpace(agent.VantageID) != "" {
+			endpoints := freshActiveEndpointsByVantage[agent.VantageID]
+			if endpoints == nil {
+				endpoints = map[string]struct{}{}
+				freshActiveEndpointsByVantage[agent.VantageID] = endpoints
+			}
+			endpoints[strings.TrimSpace(agent.EndpointHost)+":"+strings.TrimSpace(agent.EndpointPort)] = struct{}{}
+		}
+	}
+	for _, endpoints := range freshActiveEndpointsByVantage {
+		if len(endpoints) > 1 {
+			summary.DuplicateEndpoints++
+		}
+	}
+
+	summary.Status, summary.Message = summarizeFleetVeriflierStatus(*summary)
+}
+
+func summarizeFleetVeriflierStatus(summary FleetVeriflierSummary) (string, string) {
+	activeMode := fleetVeriflierModeVisible(summary.DiscoveryModes, "active")
+	shadowMode := fleetVeriflierModeVisible(summary.DiscoveryModes, "shadow")
+	discoveryVisible := activeMode || shadowMode
+
+	switch {
+	case activeMode && summary.UsableVantages == 0:
+		return "red", "active discovery has no usable enabled Veriflier vantages"
+	case activeMode && summary.IncompleteVantages > 0:
+		return "red", fmt.Sprintf("active discovery has %d incomplete enabled Veriflier vantages", summary.IncompleteVantages)
+	case activeMode && summary.DuplicateEndpoints > 0:
+		return "red", fmt.Sprintf("%d Veriflier vantages have multiple fresh active endpoints", summary.DuplicateEndpoints)
+	case discoveryVisible && summary.EnabledVantages == 0:
+		return "amber", "discovery mode is visible but no trusted Veriflier vantages are enabled"
+	case shadowMode && summary.IncompleteVantages > 0:
+		return "amber", fmt.Sprintf("shadow registry has %d incomplete enabled Veriflier vantages", summary.IncompleteVantages)
+	case discoveryVisible && summary.FreshAgents == 0:
+		return "amber", "discovery mode is visible but no fresh Veriflier agent telemetry is available"
+	case summary.DuplicateEndpoints > 0:
+		return "amber", fmt.Sprintf("%d Veriflier vantages have multiple fresh active endpoints", summary.DuplicateEndpoints)
+	case summary.StaleAgents > 0:
+		return "amber", fmt.Sprintf("%d Veriflier agent telemetry rows are stale", summary.StaleAgents)
+	case !discoveryVisible && summary.TotalVantages == 0:
+		return "green", "static Veriflier configuration is in use; discovery registry is empty"
+	case summary.IncompleteVantages > 0:
+		return "amber", fmt.Sprintf("registry has %d incomplete enabled Veriflier vantages", summary.IncompleteVantages)
+	case summary.EnabledVantages > 0:
+		return "green", fmt.Sprintf("%d usable trusted Veriflier vantages", summary.UsableVantages)
+	default:
+		return "green", "Veriflier discovery registry is present"
+	}
+}
+
+func summarizeFleetVeriflierDiscoveryModes(processes []FleetProcess) []FleetVeriflierDiscoveryMode {
+	byMode := map[string]map[string]struct{}{}
+	for _, process := range processes {
+		if process.Stale || process.ProcessType != fleethealth.ProcessMonitor {
+			continue
+		}
+		for _, dep := range process.DependencyHealth {
+			mode, ok := parseVeriflierDiscoveryMode(dep.Name)
+			if !ok {
+				continue
+			}
+			hosts := byMode[mode]
+			if hosts == nil {
+				hosts = map[string]struct{}{}
+				byMode[mode] = hosts
+			}
+			hosts[process.HostID] = struct{}{}
+		}
+	}
+	modes := make([]FleetVeriflierDiscoveryMode, 0, len(byMode))
+	for mode, hosts := range byMode {
+		modes = append(modes, FleetVeriflierDiscoveryMode{
+			Mode:         mode,
+			ProcessCount: len(hosts),
+			Hosts:        sortedStringKeys(hosts),
+		})
+	}
+	sort.Slice(modes, func(i, j int) bool {
+		if modes[i].Mode == modes[j].Mode {
+			return modes[i].ProcessCount > modes[j].ProcessCount
+		}
+		return modes[i].Mode < modes[j].Mode
+	})
+	return modes
+}
+
+func parseVeriflierDiscoveryMode(name string) (string, bool) {
+	const prefix = "veriflier-discovery:"
+	name = strings.TrimSpace(name)
+	if !strings.HasPrefix(name, prefix) {
+		return "", false
+	}
+	mode := strings.TrimSpace(strings.TrimPrefix(name, prefix))
+	if idx := strings.IndexByte(mode, ' '); idx >= 0 {
+		mode = mode[:idx]
+	}
+	if mode == "" {
+		return "", false
+	}
+	return mode, true
+}
+
+func fleetVeriflierModeVisible(modes []FleetVeriflierDiscoveryMode, want string) bool {
+	for _, mode := range modes {
+		if mode.Mode == want && mode.ProcessCount > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func veriflierQueryErrorStatus(modes []FleetVeriflierDiscoveryMode) string {
+	if fleetVeriflierModeVisible(modes, "active") {
+		return "red"
+	}
+	return "amber"
+}
+
 func summarizeFleetDependencies(processes []FleetProcess) []FleetDependencySummary {
 	byName := map[string]*FleetDependencySummary{}
 	for _, process := range processes {
@@ -862,6 +1235,9 @@ func summarizeFleet(snapshot FleetSnapshot) FleetSummary {
 	if snapshot.Delivery.Posture.Status != "green" {
 		appendStatusIssue("delivery posture", snapshot.Delivery.Posture.Status, snapshot.Delivery.Posture.Message)
 	}
+	if snapshot.Verifliers.Status != "" && snapshot.Verifliers.Status != "green" {
+		appendStatusIssue("verifliers", snapshot.Verifliers.Status, firstNonEmpty(snapshot.Verifliers.Error, snapshot.Verifliers.Message, snapshot.Verifliers.Status))
+	}
 
 	summary.Issues = append(redIssues, amberIssues...)
 	switch {
@@ -889,12 +1265,16 @@ func suggestFleetNextAction(snapshot FleetSnapshot, summary FleetSummary) string
 		return "Run rollout projection-drift --limit=100 and fix legacy projection drift before continuing."
 	case snapshot.Delivery.Status == "red":
 		return "Investigate failed or abandoned delivery rows before moving delivery ownership."
+	case snapshot.Verifliers.Status == "red":
+		return "Fix Veriflier discovery registry or agent telemetry before enabling active discovery."
 	case summary.RedProcesses > 0:
 		return "Open the affected host dashboard and resolve red process health before rollout."
 	case snapshot.Delivery.Status == "amber":
 		return "Watch delivery-check and confirm due deliveries drain before moving delivery ownership."
 	case snapshot.Delivery.Posture.Status == "amber":
 		return "Confirm DELIVERY_OWNER_HOST posture before enabling or moving delivery workers."
+	case snapshot.Verifliers.Status == "amber":
+		return "Resolve Veriflier registry or telemetry warnings before moving discovery from shadow to active."
 	case snapshot.BucketCoverage.Status == "amber":
 		return "Confirm whether the fleet is still in pinned rollout before expecting dynamic bucket coverage."
 	case summary.MonitorProcesses == 0:
@@ -922,6 +1302,15 @@ func cloneFleetSnapshot(in FleetSnapshot) FleetSnapshot {
 	out.Delivery.Posture.EnabledHosts = append([]string(nil), in.Delivery.Posture.EnabledHosts...)
 	out.Delivery.Posture.OwnerHosts = append([]string(nil), in.Delivery.Posture.OwnerHosts...)
 	out.Dependencies = append([]FleetDependencySummary(nil), in.Dependencies...)
+	out.Verifliers.DiscoveryModes = append([]FleetVeriflierDiscoveryMode(nil), in.Verifliers.DiscoveryModes...)
+	for i := range out.Verifliers.DiscoveryModes {
+		out.Verifliers.DiscoveryModes[i].Hosts = append([]string(nil), in.Verifliers.DiscoveryModes[i].Hosts...)
+	}
+	out.Verifliers.Vantages = append([]FleetVeriflierVantageSummary(nil), in.Verifliers.Vantages...)
+	out.Verifliers.Agents = append([]FleetVeriflierAgentSummary(nil), in.Verifliers.Agents...)
+	for i := range out.Verifliers.Agents {
+		out.Verifliers.Agents[i].Protocols = append([]string(nil), in.Verifliers.Agents[i].Protocols...)
+	}
 	return out
 }
 

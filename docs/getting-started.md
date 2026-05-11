@@ -66,6 +66,23 @@ projection mode, email transport mode, and configured Verifliers. Veriflier
 reachability is reported as operational context rather than a hard validation
 failure.
 
+The local Veriflier serves both compatibility and v2 status endpoints:
+
+```bash
+curl http://127.0.0.1:7803/status
+curl http://127.0.0.1:7803/v2/status
+```
+
+The v2 response includes supported protocols, local `vantage.id`, serving
+`agent.id`, and executor capacity.
+
+To inspect the local Veriflier discovery registry and monitor-collected agent
+telemetry without exposing auth token values:
+
+```bash
+./bin/jetmon2 verifliers discovery-report --output=text
+```
+
 ## API CLI Smoke
 
 Build the binary, create a local API key, and point the CLI at the exposed API:

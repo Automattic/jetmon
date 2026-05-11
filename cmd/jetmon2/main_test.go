@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,8 +16,10 @@ import (
 	"github.com/Automattic/jetmon/internal/alerting"
 	"github.com/Automattic/jetmon/internal/config"
 	"github.com/Automattic/jetmon/internal/dashboard"
+	"github.com/Automattic/jetmon/internal/db"
 	"github.com/Automattic/jetmon/internal/deliverer"
 	"github.com/Automattic/jetmon/internal/fleethealth"
+	"github.com/Automattic/jetmon/internal/veriflier"
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
@@ -347,6 +350,197 @@ func TestRolloutCommandHelpers(t *testing.T) {
 	if got := stateReportCommand(); got != "./jetmon2 rollout state-report --since=15m" {
 		t.Fatalf("stateReportCommand() = %q", got)
 	}
+}
+
+func TestRenderVeriflierReadinessReportsV2LegacyAndUnreachable(t *testing.T) {
+	results := []veriflierReadinessResult{
+		{
+			Name: "us-east",
+			Addr: "127.0.0.1:7803",
+			Status: &veriflier.StatusV2Response{
+				Version:   "2.0.0",
+				Protocols: []string{veriflier.ProtocolV2, veriflier.ProtocolLegacy},
+				Vantage:   veriflier.Vantage{ID: "us-east-1"},
+				Agent:     veriflier.Agent{ID: "agent-a"},
+				Capacity:  veriflier.Capacity{MaxConcurrency: 64, QueueCapacity: 256, QueueDepth: 2, Active: 3, InFlight: 4},
+			},
+		},
+		{
+			Name:   "legacy",
+			Addr:   "127.0.0.1:7804",
+			Status: &veriflier.StatusV2Response{Version: "1.0.0", Protocols: []string{veriflier.ProtocolLegacy}},
+		},
+		{
+			Name: "offline",
+			Addr: "127.0.0.1:7805",
+			Err:  fmt.Errorf("dial tcp: connection refused"),
+		},
+	}
+
+	lines, failed := renderVeriflierReadiness(results)
+	if failed {
+		t.Fatal("readiness should not fail for reachable unique v2 plus warning-only legacy/offline verifliers")
+	}
+	joined := strings.Join(lines, "\n")
+	for _, want := range []string{
+		`PASS veriflier_contract name="us-east"`,
+		`protocol=v2-json-http`,
+		`vantage_id="us-east-1"`,
+		`WARN veriflier_contract name="legacy"`,
+		`WARN veriflier_status name="offline"`,
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("readiness lines missing %q:\n%s", want, joined)
+		}
+	}
+}
+
+func TestRenderVeriflierReadinessFailsDuplicateAndMissingVantage(t *testing.T) {
+	results := []veriflierReadinessResult{
+		{
+			Name:   "a",
+			Addr:   "127.0.0.1:7803",
+			Status: &veriflier.StatusV2Response{Version: "2.0.0", Protocols: []string{veriflier.ProtocolV2}, Vantage: veriflier.Vantage{ID: "same"}},
+		},
+		{
+			Name:   "b",
+			Addr:   "127.0.0.1:7804",
+			Status: &veriflier.StatusV2Response{Version: "2.0.0", Protocols: []string{veriflier.ProtocolV2}, Vantage: veriflier.Vantage{ID: "same"}},
+		},
+		{
+			Name:   "c",
+			Addr:   "127.0.0.1:7805",
+			Status: &veriflier.StatusV2Response{Version: "2.0.0", Protocols: []string{veriflier.ProtocolV2}},
+		},
+	}
+
+	lines, failed := renderVeriflierReadiness(results)
+	if !failed {
+		t.Fatal("readiness should fail duplicate or missing v2 vantage ids")
+	}
+	joined := strings.Join(lines, "\n")
+	if got := strings.Count(joined, "FAIL veriflier_vantage_duplicate"); got != 2 {
+		t.Fatalf("duplicate failures = %d, want 2\n%s", got, joined)
+	}
+	if !strings.Contains(joined, `FAIL veriflier_vantage_missing name="c"`) {
+		t.Fatalf("missing vantage failure absent:\n%s", joined)
+	}
+}
+
+func TestRenderVeriflierDiscoveryReadinessStatic(t *testing.T) {
+	lines, failed := renderVeriflierDiscoveryReadiness(config.VeriflierDiscoveryModeStatic, db.VeriflierDiscoverySnapshot{}, nil, nil)
+	if failed {
+		t.Fatal("static discovery should not fail")
+	}
+	if len(lines) != 1 || lines[0] != "INFO veriflier_discovery=static" {
+		t.Fatalf("lines = %#v", lines)
+	}
+}
+
+func TestRenderVeriflierDiscoveryReadinessShadowReportsDrift(t *testing.T) {
+	staticResults := []veriflierReadinessResult{{
+		Name: "static-east",
+		Status: &veriflier.StatusV2Response{
+			Protocols: []string{veriflier.ProtocolV2},
+			Vantage:   veriflier.Vantage{ID: "us-east"},
+		},
+	}}
+	snapshot := db.VeriflierDiscoverySnapshot{
+		Vantages: []db.VeriflierVantage{
+			{VantageID: "us-west", Enabled: true, EndpointHost: "west.example", EndpointPort: "7803", AuthToken: "token"},
+		},
+		Agents: []db.VeriflierAgent{{AgentID: "agent-west"}},
+	}
+
+	lines, failed := renderVeriflierDiscoveryReadiness(config.VeriflierDiscoveryModeShadow, snapshot, nil, staticResults)
+	if failed {
+		t.Fatal("shadow discovery drift should not fail validation")
+	}
+	joined := strings.Join(lines, "\n")
+	for _, want := range []string{
+		`INFO veriflier_discovery mode=shadow enabled_vantages=1 usable_vantages=1 recent_agents=1`,
+		`WARN veriflier_discovery_extra vantage_id="us-west"`,
+		`WARN veriflier_discovery_missing vantage_id="us-east"`,
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("lines missing %q:\n%s", want, joined)
+		}
+	}
+}
+
+func TestRenderVeriflierDiscoveryReadinessActiveFailsIncomplete(t *testing.T) {
+	snapshot := db.VeriflierDiscoverySnapshot{
+		Vantages: []db.VeriflierVantage{
+			{VantageID: "us-east", Enabled: true, EndpointHost: "east.example", EndpointPort: "7803"},
+		},
+	}
+	lines, failed := renderVeriflierDiscoveryReadiness(config.VeriflierDiscoveryModeActive, snapshot, nil, nil)
+	if !failed {
+		t.Fatal("active discovery with no usable vantages should fail")
+	}
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, `FAIL veriflier_discovery_incomplete vantage_id="us-east"`) {
+		t.Fatalf("lines = %#v", lines)
+	}
+	if !strings.Contains(joined, "FAIL veriflier_discovery_active usable_vantages=0") {
+		t.Fatalf("lines = %#v", lines)
+	}
+}
+
+func TestVeriflierHealthEntriesReportsV2CapacityAndDuplicateVantage(t *testing.T) {
+	status := veriflier.StatusV2Response{
+		Status:    "ok",
+		Version:   "2.0.0",
+		Protocols: []string{veriflier.ProtocolV2, veriflier.ProtocolLegacy},
+		Vantage:   veriflier.Vantage{ID: "shared"},
+		Agent:     veriflier.Agent{ID: "agent-a"},
+		Capacity:  veriflier.Capacity{MaxConcurrency: 64, QueueCapacity: 256, QueueDepth: 1, Active: 2, InFlight: 3},
+	}
+	serverA := testVeriflierStatusServer(t, status)
+	defer serverA.Close()
+	status.Agent.ID = "agent-b"
+	serverB := testVeriflierStatusServer(t, status)
+	defer serverB.Close()
+
+	cfg := &config.Config{Verifiers: []config.VerifierConfig{
+		testVerifierConfig(t, "a", serverA),
+		testVerifierConfig(t, "b", serverB),
+	}}
+	entries := veriflierHealthEntries(context.Background(), cfg, time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC))
+	if len(entries) != 2 {
+		t.Fatalf("entries len = %d, want 2", len(entries))
+	}
+	for _, entry := range entries {
+		if entry.Status != "red" {
+			t.Fatalf("entry %s status = %q, want red for duplicate vantage", entry.Name, entry.Status)
+		}
+		if !strings.Contains(entry.LastError, `duplicate v2 verifier vantage id "shared"`) {
+			t.Fatalf("entry %s LastError = %q, want duplicate vantage message", entry.Name, entry.LastError)
+		}
+	}
+}
+
+func testVeriflierStatusServer(t *testing.T, status veriflier.StatusV2Response) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/status" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(status); err != nil {
+			t.Fatalf("encode status: %v", err)
+		}
+	}))
+}
+
+func testVerifierConfig(t *testing.T, name string, server *httptest.Server) config.VerifierConfig {
+	t.Helper()
+	host, port, err := net.SplitHostPort(server.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("SplitHostPort: %v", err)
+	}
+	return config.VerifierConfig{Name: name, Host: host, Port: port}
 }
 
 func TestDashboardHealthEntriesReportsCoreDependencies(t *testing.T) {

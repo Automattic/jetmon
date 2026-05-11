@@ -51,6 +51,7 @@ const (
 // and network round-trip — 5s covers a comfortable steady-state and forces
 // failure on a truly wedged verifier rather than letting the call hang.
 const verifierRPCHeadroom = 5 * time.Second
+const verifierTelemetryStatusTimeout = 2 * time.Second
 
 const schedulerBackpressurePollInterval = 10 * time.Millisecond
 const schedulerVariableIntervalPollInterval = 5 * time.Second
@@ -72,27 +73,32 @@ func VariableIntervalPollInterval() time.Duration {
 }
 
 var (
-	nowFunc                = time.Now
-	dbClaimBuckets         = db.ClaimBuckets
-	dbHeartbeat            = db.Heartbeat
-	dbReleaseHost          = db.ReleaseHost
-	dbMarkHostDraining     = db.MarkHostDraining
-	dbGetSitesForBucket    = db.GetSitesForBucket
-	dbListActiveSites      = db.ListActiveSitesForBucketRange
-	dbCountActiveSites     = db.CountActiveSitesForBucketRange
-	dbMarkSiteChecked      = db.MarkSiteChecked
-	dbMarkSitesChecked     = db.MarkSitesChecked
-	dbRecordCheckHistory   = db.RecordCheckHistory
-	dbRecordCheckHistories = db.RecordCheckHistories
-	dbUpdateSSLExpiry      = db.UpdateSSLExpiry
-	dbUpdateSSLExpiries    = db.UpdateSSLExpiries
-	dbUpdateSiteStatus     = db.UpdateSiteStatus
-	dbGetSiteStatus        = db.GetSiteStatusForMonitorSite
-	dbRecordFalsePositive  = db.RecordFalsePositive
-	dbUpdateLastAlertSent  = db.UpdateLastAlertSent
-	dbCountDueSites        = db.CountDueSitesForBucketRange
-	dbCountProjectionDrift = db.CountLegacyProjectionDrift
-	veriflierCheckFunc     = func(c *veriflier.VeriflierClient, ctx stdctx.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
+	nowFunc                 = time.Now
+	dbClaimBuckets          = db.ClaimBuckets
+	dbHeartbeat             = db.Heartbeat
+	dbReleaseHost           = db.ReleaseHost
+	dbMarkHostDraining      = db.MarkHostDraining
+	dbGetSitesForBucket     = db.GetSitesForBucket
+	dbListActiveSites       = db.ListActiveSitesForBucketRange
+	dbCountActiveSites      = db.CountActiveSitesForBucketRange
+	dbMarkSiteChecked       = db.MarkSiteChecked
+	dbMarkSitesChecked      = db.MarkSitesChecked
+	dbRecordCheckHistory    = db.RecordCheckHistory
+	dbRecordCheckHistories  = db.RecordCheckHistories
+	dbUpdateSSLExpiry       = db.UpdateSSLExpiry
+	dbUpdateSSLExpiries     = db.UpdateSSLExpiries
+	dbUpdateSiteStatus      = db.UpdateSiteStatus
+	dbGetSiteStatus         = db.GetSiteStatusForMonitorSite
+	dbRecordFalsePositive   = db.RecordFalsePositive
+	dbUpdateLastAlertSent   = db.UpdateLastAlertSent
+	dbCountDueSites         = db.CountDueSitesForBucketRange
+	dbCountProjectionDrift  = db.CountLegacyProjectionDrift
+	dbListVeriflierVantages = db.ListEnabledVeriflierVantages
+	dbUpsertVeriflierAgent  = db.UpsertVeriflierAgent
+	veriflierStatusFunc     = func(c *veriflier.VeriflierClient, ctx stdctx.Context) (*veriflier.StatusV2Response, error) {
+		return c.Status(ctx)
+	}
+	veriflierCheckFunc = func(c *veriflier.VeriflierClient, ctx stdctx.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
 		return c.Check(ctx, req)
 	}
 	metricsClientFunc = func() metricsClient {
@@ -349,6 +355,7 @@ func (o *Orchestrator) Run() {
 		}
 		o.pool.SetMaxSize(cfg.NumWorkers)
 		o.refreshVeriflierClients(cfg)
+		o.syncVeriflierAgentTelemetry(cfg)
 
 		o.roundStart = time.Now()
 		summary := o.runRound()
@@ -1693,8 +1700,10 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 	}
 
 	var vResults []veriflier.CheckResult
+	seenVoteIDs := make(map[string]struct{}, len(clients))
 	healthyVerifliers := 0
 	confirmations := 0
+	duplicateVotes := 0
 
 	for range clients {
 		vr := <-ch
@@ -1707,19 +1716,39 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 			log.Printf("orchestrator: veriflier %s error: %v", vr.host, vr.err)
 			continue
 		}
+		if vr.res == nil {
+			emitCounter("verifier.rpc.error.count", 1)
+			emitCounter("verifier.host."+hostSegment+".rpc.error.count", 1)
+			log.Printf("orchestrator: veriflier %s returned no result", vr.host)
+			continue
+		}
+
 		emitCounter("verifier.rpc.success.count", 1)
 		emitCounter("verifier.host."+hostSegment+".rpc.success.count", 1)
-		healthyVerifliers++
+		voteID := verifierVoteID(vr.host, vr.res)
+		_, duplicateVote := seenVoteIDs[voteID]
+		if duplicateVote {
+			duplicateVotes++
+			emitCounter("verifier.vote.duplicate_identity.count", 1)
+			emitCounter("verifier.host."+hostSegment+".vote.duplicate_identity.count", 1)
+			log.Printf("orchestrator: veriflier %s returned duplicate vote identity %q; ignoring duplicate vote", vr.host, voteID)
+		} else {
+			seenVoteIDs[voteID] = struct{}{}
+		}
+		vr.res.Host = voteID
+
 		// Verifier reply is operational telemetry — recorded under
 		// EventVeriflierSent with the response in metadata. The site-state
 		// outcome (confirm or false alarm) is captured separately, ultimately
 		// as a transition row in jetmon_event_transitions.
 		meta, _ := json.Marshal(map[string]any{
-			"http_code":  vr.res.HTTPCode,
-			"error_code": vr.res.ErrorCode,
-			"rtt_ms":     vr.res.RTTMs,
-			"success":    vr.res.Success,
-			"request_id": vr.res.RequestID,
+			"http_code":      vr.res.HTTPCode,
+			"error_code":     vr.res.ErrorCode,
+			"rtt_ms":         vr.res.RTTMs,
+			"success":        vr.res.Success,
+			"request_id":     vr.res.RequestID,
+			"vote_id":        voteID,
+			"duplicate_vote": duplicateVote,
 		})
 		o.auditLog(audit.Entry{
 			BlogID:    site.BlogID,
@@ -1728,6 +1757,11 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 			Detail:    "veriflier reply",
 			Metadata:  meta,
 		})
+		if duplicateVote {
+			continue
+		}
+
+		healthyVerifliers++
 		vResults = append(vResults, *vr.res)
 		if !vr.res.Success {
 			emitCounter("verifier.vote.confirm_down.count", 1)
@@ -1739,7 +1773,10 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 		}
 	}
 
-	// Adjust quorum floor to healthy verifliers, but minimum 1.
+	// Adjust quorum to healthy unique verifier vote identities. In a
+	// multi-verifier fleet, avoid letting a degraded verifier set collapse
+	// to one confirming vote unless operators intentionally configured a
+	// one-vote quorum.
 	quorum := config.Get().PeerOfflineLimit
 	if healthyVerifliers < quorum {
 		quorum = healthyVerifliers
@@ -1747,13 +1784,27 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 	if quorum < 1 {
 		quorum = 1
 	}
+	minHealthy := verifierMinHealthyFloor(config.Get().PeerOfflineLimit, len(clients))
+	if quorum < minHealthy {
+		quorum = minHealthy
+	}
 	emitGauge("detection.verifier.healthy.count", healthyVerifliers)
 	emitGauge("detection.verifier.confirmations.count", confirmations)
 	emitGauge("detection.verifier.quorum.count", quorum)
+	emitGauge("detection.verifier.min_healthy.count", minHealthy)
+	emitGauge("detection.verifier.duplicate_votes.count", duplicateVotes)
+	decision := verifierDecision{
+		Quorum:         quorum,
+		MinHealthy:     minHealthy,
+		Healthy:        healthyVerifliers,
+		Confirmed:      confirmations,
+		Disagreed:      healthyVerifliers - confirmations,
+		DuplicateVotes: duplicateVotes,
+	}
 
 	if confirmations >= quorum {
 		emitCounter("detection.verifier.quorum_met.count", 1)
-		o.confirmDown(site, entry, vResults)
+		o.confirmDown(site, entry, vResults, decision)
 	} else {
 		// Verifliers did not confirm — false positive. Close the Seems Down
 		// event with reason=false_alarm and reset site_status in the same tx.
@@ -1767,10 +1818,13 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 
 		if entry.eventID > 0 {
 			meta, _ := json.Marshal(map[string]any{
-				"verifier_quorum":    quorum,
-				"verifier_healthy":   healthyVerifliers,
-				"verifier_disagreed": healthyVerifliers - confirmations,
-				"verifier_confirmed": confirmations,
+				"verifier_quorum":          quorum,
+				"verifier_min_healthy":     minHealthy,
+				"verifier_healthy":         healthyVerifliers,
+				"verifier_disagreed":       healthyVerifliers - confirmations,
+				"verifier_confirmed":       confirmations,
+				"verifier_duplicate_votes": duplicateVotes,
+				"verifier_results":         summarizeVerifierResults(vResults),
 			})
 			if err := o.closeEvent(site, entry.eventID,
 				eventstore.ReasonFalseAlarm, statusRunning, falseAlarmAt, meta); err != nil {
@@ -1784,7 +1838,54 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 	}
 }
 
-func (o *Orchestrator) confirmDown(site db.Site, entry *retryEntry, vResults []veriflier.CheckResult) {
+type verifierDecision struct {
+	Quorum         int
+	MinHealthy     int
+	Healthy        int
+	Confirmed      int
+	Disagreed      int
+	DuplicateVotes int
+}
+
+func verifierVoteID(addr string, res *veriflier.CheckResult) string {
+	if res != nil {
+		if host := strings.TrimSpace(res.Host); host != "" {
+			return host
+		}
+	}
+	return strings.TrimSpace(addr)
+}
+
+func verifierMinHealthyFloor(peerOfflineLimit, configuredVerifiers int) int {
+	if configuredVerifiers <= 0 {
+		return 0
+	}
+	if configuredVerifiers == 1 || peerOfflineLimit <= 1 {
+		return 1
+	}
+	return 2
+}
+
+func inferredVerifierDecision(vResults []veriflier.CheckResult) verifierDecision {
+	decision := verifierDecision{
+		Quorum:     len(vResults),
+		MinHealthy: 1,
+		Healthy:    len(vResults),
+	}
+	if len(vResults) == 0 {
+		decision.MinHealthy = 0
+	}
+	for _, vr := range vResults {
+		if vr.Success {
+			decision.Disagreed++
+			continue
+		}
+		decision.Confirmed++
+	}
+	return decision
+}
+
+func (o *Orchestrator) confirmDown(site db.Site, entry *retryEntry, vResults []veriflier.CheckResult, decisions ...verifierDecision) {
 	if inMaintenance(site) {
 		if entry != nil {
 			o.swallowMaintenanceFailure(site, entry.lastResult)
@@ -1804,7 +1905,7 @@ func (o *Orchestrator) confirmDown(site db.Site, entry *retryEntry, vResults []v
 
 	log.Printf("orchestrator: blog_id=%d confirmed down", site.BlogID)
 
-	meta := confirmedDownMetadata(site, entry, vResults, entry.eventID == 0)
+	meta := confirmedDownMetadata(site, entry, vResults, entry.eventID == 0, decisions...)
 
 	// Promote the open Seems Down event to Down with reason=verifier_confirmed
 	// and project site_status=SITE_CONFIRMED_DOWN in the same tx. Low-confidence
@@ -1850,10 +1951,19 @@ func (o *Orchestrator) confirmDown(site db.Site, entry *retryEntry, vResults []v
 	o.retries.clear(monitorTargetID(site))
 }
 
-func confirmedDownMetadata(site db.Site, entry *retryEntry, vResults []veriflier.CheckResult, directOpen bool) json.RawMessage {
+func confirmedDownMetadata(site db.Site, entry *retryEntry, vResults []veriflier.CheckResult, directOpen bool, decisions ...verifierDecision) json.RawMessage {
+	decision := inferredVerifierDecision(vResults)
+	if len(decisions) > 0 {
+		decision = decisions[0]
+	}
 	metaMap := checkResultMetadata(site, entry.lastResult, entry.firstFailAt)
 	metaMap["verifier_results"] = summarizeVerifierResults(vResults)
-	metaMap["verifier_confirmed"] = verifierConfirmationCount(vResults)
+	metaMap["verifier_quorum"] = decision.Quorum
+	metaMap["verifier_min_healthy"] = decision.MinHealthy
+	metaMap["verifier_healthy"] = decision.Healthy
+	metaMap["verifier_disagreed"] = decision.Disagreed
+	metaMap["verifier_confirmed"] = decision.Confirmed
+	metaMap["verifier_duplicate_votes"] = decision.DuplicateVotes
 	if directOpen {
 		metaMap["opened_after_verifier_confirmation"] = true
 	}
@@ -2711,10 +2821,12 @@ func summarizeVerifierResults(vResults []veriflier.CheckResult) []map[string]any
 	out := make([]map[string]any, 0, len(vResults))
 	for _, vr := range vResults {
 		out = append(out, map[string]any{
-			"host":      vr.Host,
-			"success":   vr.Success,
-			"http_code": vr.HTTPCode,
-			"rtt_ms":    vr.RTTMs,
+			"host":       vr.Host,
+			"success":    vr.Success,
+			"http_code":  vr.HTTPCode,
+			"error_code": vr.ErrorCode,
+			"rtt_ms":     vr.RTTMs,
+			"request_id": vr.RequestID,
 		})
 	}
 	return out
@@ -2749,8 +2861,9 @@ func wpcomStatusMetricSegment(status int) string {
 }
 
 func (o *Orchestrator) refreshVeriflierClients(cfg *config.Config) {
-	newAddrs := make([]string, 0, len(cfg.Verifiers))
-	for _, v := range cfg.Verifiers {
+	verifiers := o.veriflierConfigs(cfg)
+	newAddrs := make([]string, 0, len(verifiers))
+	for _, v := range verifiers {
 		newAddrs = append(newAddrs, fmt.Sprintf("%s:%s|%s", v.Host, v.TransportPort(), v.AuthToken))
 	}
 
@@ -2761,8 +2874,8 @@ func (o *Orchestrator) refreshVeriflierClients(cfg *config.Config) {
 		return
 	}
 
-	clients := make([]*veriflier.VeriflierClient, 0, len(cfg.Verifiers))
-	for _, v := range cfg.Verifiers {
+	clients := make([]*veriflier.VeriflierClient, 0, len(verifiers))
+	for _, v := range verifiers {
 		addr := fmt.Sprintf("%s:%s", v.Host, v.TransportPort())
 		clients = append(clients, veriflier.NewVeriflierClient(addr, v.AuthToken))
 	}
@@ -2770,6 +2883,124 @@ func (o *Orchestrator) refreshVeriflierClients(cfg *config.Config) {
 	o.veriflierClients = clients
 	o.veriflierAddrs = newAddrs
 	o.veriflierMu.Unlock()
+}
+
+func (o *Orchestrator) veriflierConfigs(cfg *config.Config) []config.VerifierConfig {
+	if cfg == nil {
+		return nil
+	}
+	static := cfg.Verifiers
+	if cfg.VeriflierDiscoveryModeOrDefault() != config.VeriflierDiscoveryModeActive {
+		return static
+	}
+
+	ctx := o.ctx
+	if ctx == nil {
+		ctx = stdctx.Background()
+	}
+	queryCtx, cancel := stdctx.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	vantages, err := dbListVeriflierVantages(queryCtx, db.VeriflierDiscoveryDefaultStaleAfter)
+	if err != nil {
+		log.Printf("orchestrator: veriflier discovery failed, using static config: %v", err)
+		return static
+	}
+	discovered := verifierConfigsFromVantages(vantages)
+	if len(discovered) == 0 {
+		log.Println("orchestrator: veriflier discovery returned no usable enabled vantages, using static config")
+		return static
+	}
+	return discovered
+}
+
+func verifierConfigsFromVantages(vantages []db.VeriflierVantage) []config.VerifierConfig {
+	out := make([]config.VerifierConfig, 0, len(vantages))
+	for _, vantage := range vantages {
+		if !vantage.Usable() {
+			continue
+		}
+		out = append(out, config.VerifierConfig{
+			Name:      vantage.VantageID,
+			Host:      strings.TrimSpace(vantage.EndpointHost),
+			Port:      strings.TrimSpace(vantage.EndpointPort),
+			AuthToken: strings.TrimSpace(vantage.AuthToken),
+		})
+	}
+	return out
+}
+
+func (o *Orchestrator) syncVeriflierAgentTelemetry(cfg *config.Config) {
+	verifiers := o.veriflierConfigs(cfg)
+	if len(verifiers) == 0 {
+		return
+	}
+	var wg sync.WaitGroup
+	for _, verifierConfig := range verifiers {
+		v := verifierConfig
+		if v.Host == "" || v.TransportPort() == "" {
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctx := o.ctx
+			if ctx == nil {
+				ctx = stdctx.Background()
+			}
+			statusCtx, cancel := stdctx.WithTimeout(ctx, verifierTelemetryStatusTimeout)
+			defer cancel()
+
+			addr := fmt.Sprintf("%s:%s", v.Host, v.TransportPort())
+			status, err := veriflierStatusFunc(veriflier.NewVeriflierClient(addr, v.AuthToken), statusCtx)
+			if err != nil || status == nil || !verifierStatusSupportsProtocol(status, veriflier.ProtocolV2) {
+				return
+			}
+			hb := veriflierAgentHeartbeatFromStatus(v, status)
+			if hb.AgentID == "" || hb.VantageID == "" {
+				return
+			}
+			writeCtx, writeCancel := stdctx.WithTimeout(ctx, verifierTelemetryStatusTimeout)
+			defer writeCancel()
+			if err := dbUpsertVeriflierAgent(writeCtx, hb); err != nil {
+				log.Printf("orchestrator: veriflier agent telemetry failed addr=%s: %v", addr, err)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+func veriflierAgentHeartbeatFromStatus(cfg config.VerifierConfig, status *veriflier.StatusV2Response) db.VeriflierAgentHeartbeat {
+	if status == nil {
+		return db.VeriflierAgentHeartbeat{}
+	}
+	return db.VeriflierAgentHeartbeat{
+		AgentID:        strings.TrimSpace(status.Agent.ID),
+		VantageID:      strings.TrimSpace(status.Vantage.ID),
+		Hostname:       strings.TrimSpace(status.Agent.Host),
+		EndpointHost:   strings.TrimSpace(cfg.Host),
+		EndpointPort:   strings.TrimSpace(cfg.TransportPort()),
+		Version:        strings.TrimSpace(status.Version),
+		Protocols:      append([]string(nil), status.Protocols...),
+		MaxConcurrency: status.Capacity.MaxConcurrency,
+		QueueCapacity:  status.Capacity.QueueCapacity,
+		QueueDepth:     status.Capacity.QueueDepth,
+		Active:         status.Capacity.Active,
+		InFlight:       status.Capacity.InFlight,
+		Status:         "active",
+	}
+}
+
+func verifierStatusSupportsProtocol(status *veriflier.StatusV2Response, protocol string) bool {
+	if status == nil {
+		return false
+	}
+	for _, p := range status.Protocols {
+		if p == protocol {
+			return true
+		}
+	}
+	return false
 }
 
 func slicesEqual(a, b []string) bool {

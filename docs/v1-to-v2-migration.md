@@ -295,6 +295,98 @@ Stage these artifacts for each target host:
 Keep v2 files in `/opt/jetmon2` or another v2-specific directory. Do not
 overwrite the v1 install until rollback signoff.
 
+### Veriflier Contract Rollout
+
+New `veriflier2` binaries serve both the legacy JSON contract and the versioned
+v2 JSON contract:
+
+- legacy: `POST /check`, `GET /status`
+- v2: `POST /v2/check`, `GET /v2/status`
+
+Deploy updated Verifliers before switching monitor hosts when possible. New
+monitors prefer `/v2/check` and automatically fall back to `/check` when an
+older Veriflier does not support the v2 endpoint, so a mixed fleet is expected
+during rollout.
+
+For each Veriflier endpoint, set a stable `VERIFLIER_VANTAGE_ID` when the
+endpoint represents a region/provider vantage. Multiple horizontally scaled
+replicas behind the same load-balanced endpoint must share that `vantage_id`;
+the monitor counts the configured endpoint as one quorum vote. `agent.id` in
+`/v2/status` identifies the serving process for diagnostics only.
+
+Monitor quorum counts unique v2 `vantage.id` values. If two configured
+Veriflier entries report the same `vantage.id`, only one vote counts; the
+duplicate reply is retained in audit metadata. In multi-Veriflier layouts,
+Jetmon keeps a two-healthy-vantage floor unless `PEER_OFFLINE_LIMIT=1` was
+intentionally configured.
+
+Before advancing a monitor range that depends on a newly staged Veriflier,
+run `validate-config` and verify both status endpoints from the monitor runtime
+host:
+
+```bash
+./jetmon2 validate-config
+curl -fsS http://<veriflier-host>:7803/status
+curl -fsS http://<veriflier-host>:7803/v2/status
+```
+
+`/v2/status` should report `protocols` containing `v2-json-http`,
+`vantage.id`, `agent.id`, and non-zero `capacity.max_concurrency`. If a
+Veriflier is saturated, `/v2/check` returns HTTP 503 and contributes no vote;
+that is a rollout hold point for capacity, not evidence that customer sites are
+down. `validate-config` warns for unreachable or legacy-only Verifliers and
+fails for missing or duplicate v2 vantage IDs.
+
+Veriflier auto-discovery is also staged. Leave
+`VERIFLIER_DISCOVERY_MODE=static` for the first monitor cutover unless the
+registry has already been rehearsed. To rehearse discovery, create one
+pre-approved `jetmon_veriflier_vantages` row per trusted quorum vantage, enable
+it only when the endpoint and token are correct, and run monitors in
+`VERIFLIER_DISCOVERY_MODE=shadow`. Shadow mode queries
+`jetmon_veriflier_vantages` and recent `jetmon_veriflier_agents` telemetry rows,
+then reports missing/extra registry vantages without changing traffic. Switch
+to `active` only after `validate-config` reports usable registry vantages and
+no shadow drift. Active mode falls back to static `VERIFIERS` if discovery is
+unavailable or empty during rollout.
+
+Use the read-only discovery comparison report as the explicit shadow-mode gate:
+
+```bash
+./jetmon2 verifliers discovery-report --output=text
+```
+
+The report compares configured static Verifliers, trusted registry vantages,
+and recent monitor-collected agent rows. Green means the static v2 vantage IDs
+match the enabled registry and recent agents are present. Amber is a hold point
+for drift, stale telemetry, incomplete registry rows, or endpoint mismatches.
+Red is a hold point for active discovery, such as duplicate static vantages or
+active mode without any usable enabled registry vantages. The report does not
+print auth token values.
+
+Agent telemetry is not trust. Monitors poll authenticated Veriflier
+`/v2/status` endpoints and write `jetmon_veriflier_agents` rows showing process
+liveness/capacity, so Veriflier hosts do not need database credentials. Those
+rows do not create quorum votes unless an operator has created and enabled the
+matching `jetmon_veriflier_vantages` row.
+
+Keep legacy `/check` fallback enabled through the v2 rollout. Remove it only in
+a follow-up branch after all of these are true:
+
+- every configured Veriflier endpoint reports `/v2/status` with
+  `v2-json-http`, a stable `vantage.id`, `agent.id`, and non-zero capacity
+- `./jetmon2 validate-config` has no legacy-only Veriflier warnings on the
+  deployed fleet
+- `make test-veriflier-soak` and the approved production-like Veriflier soak
+  pass for high concurrency, overload, auth failure, timeout, duplicate-vantage
+  misconfiguration, and long outage promotion/recovery
+- `./jetmon2 telemetry report` shows stable verifier reply and vote evidence
+  with no verifier metadata gaps over the agreed production window
+- rollback plans no longer depend on any legacy Veriflier endpoint
+
+Keep the historical `veriflier` / `veriflier2` names during v2 rollout. A v3
+probe architecture can introduce a clearer `probe-agent` or `vantage-agent`
+role without renaming the compatibility binary in place.
+
 Do not start `bin/jetmon-deliverer` during the initial monitor replacement
 unless standalone delivery is part of the approved rollout plan. Use
 [`jetmon-deliverer-rollout.md`](jetmon-deliverer-rollout.md) for that separate

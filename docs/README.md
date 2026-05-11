@@ -8,7 +8,9 @@ main README.
 Accepted decisions live in [`adr/`](adr/). These records are append-only and
 capture load-bearing choices that the current v2 implementation depends on.
 
-Start with [`adr/README.md`](adr/README.md) for the ADR format and index.
+Start with [`adr/README.md`](adr/README.md) for the ADR format and index,
+including the Veriflier discovery trust decision in
+[`adr/0010-trusted-veriflier-discovery.md`](adr/0010-trusted-veriflier-discovery.md).
 
 ## User Guides
 

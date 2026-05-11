@@ -79,12 +79,18 @@ type telemetryTiming struct {
 }
 
 type telemetryVerifierReport struct {
-	Replies        int64                   `json:"replies"`
-	ConfirmDown    int64                   `json:"confirm_down"`
-	Disagree       int64                   `json:"disagree"`
-	MissingOutcome int64                   `json:"missing_outcome"`
-	ConfirmPercent float64                 `json:"confirm_percent"`
-	Hosts          []telemetryVerifierHost `json:"hosts,omitempty"`
+	Replies                      int64                   `json:"replies"`
+	ConfirmDown                  int64                   `json:"confirm_down"`
+	Disagree                     int64                   `json:"disagree"`
+	MissingOutcome               int64                   `json:"missing_outcome"`
+	ConfirmPercent               float64                 `json:"confirm_percent"`
+	VoteTransitions              int64                   `json:"vote_transitions"`
+	DuplicateVotes               int64                   `json:"duplicate_votes"`
+	DuplicateVoteTransitions     int64                   `json:"duplicate_vote_transitions"`
+	MinHealthyBlockedTransitions int64                   `json:"min_healthy_blocked_transitions"`
+	MaxQuorum                    int64                   `json:"max_quorum"`
+	MaxHealthy                   int64                   `json:"max_healthy"`
+	Hosts                        []telemetryVerifierHost `json:"hosts,omitempty"`
 }
 
 type telemetryVerifierHost struct {
@@ -451,6 +457,33 @@ func queryTelemetryVerifier(ctx context.Context, conn *sql.DB, window telemetryW
 	if err := rows.Err(); err != nil {
 		return telemetryVerifierReport{}, fmt.Errorf("iterate verifier hosts: %w", err)
 	}
+	err = conn.QueryRowContext(ctx, `
+		SELECT COUNT(*),
+		       COALESCE(SUM(COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.verifier_duplicate_votes')) AS SIGNED), 0)), 0),
+		       COALESCE(SUM(CASE WHEN COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.verifier_duplicate_votes')) AS SIGNED), 0) > 0 THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.verifier_healthy')) AS SIGNED), 0) < COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.verifier_min_healthy')) AS SIGNED), 0) THEN 1 ELSE 0 END), 0),
+		       COALESCE(MAX(COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.verifier_quorum')) AS SIGNED), 0)), 0),
+		       COALESCE(MAX(COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.verifier_healthy')) AS SIGNED), 0)), 0)
+		  FROM jetmon_event_transitions
+		 WHERE reason IN (?, ?)
+		   AND changed_at >= ?
+		   AND changed_at < ?
+		   AND metadata IS NOT NULL`,
+		eventstore.ReasonVerifierConfirmed,
+		eventstore.ReasonFalseAlarm,
+		window.Since,
+		window.Until,
+	).Scan(
+		&summary.VoteTransitions,
+		&summary.DuplicateVotes,
+		&summary.DuplicateVoteTransitions,
+		&summary.MinHealthyBlockedTransitions,
+		&summary.MaxQuorum,
+		&summary.MaxHealthy,
+	)
+	if err != nil {
+		return telemetryVerifierReport{}, fmt.Errorf("query verifier vote evidence: %w", err)
+	}
 	return summary, nil
 }
 
@@ -812,6 +845,12 @@ func telemetryReportHighlights(report telemetryReport) []string {
 	if report.Verifier.Replies > 0 {
 		highlights = append(highlights, fmt.Sprintf("Verifier agreement is %.1f%% across %d replies.", report.Verifier.ConfirmPercent, report.Verifier.Replies))
 	}
+	if report.Verifier.DuplicateVotes > 0 {
+		highlights = append(highlights, fmt.Sprintf("Verifier duplicate vote protection ignored %d duplicate vote(s) across %d transition(s).", report.Verifier.DuplicateVotes, report.Verifier.DuplicateVoteTransitions))
+	}
+	if report.Verifier.MinHealthyBlockedTransitions > 0 {
+		highlights = append(highlights, fmt.Sprintf("Verifier minimum-healthy floor blocked confirmation in %d transition(s).", report.Verifier.MinHealthyBlockedTransitions))
+	}
 	if report.Summary.Opened == 0 {
 		highlights = append(highlights, "No events opened in this window; widen --since before drawing production conclusions.")
 	}
@@ -841,6 +880,12 @@ func suggestTelemetryNextActions(report telemetryReport) []string {
 	}
 	if report.Verifier.Replies > 0 && report.Verifier.MissingOutcome > 0 {
 		actions = append(actions, "Inspect verifier reply metadata; missing success fields prevent agreement reporting.")
+	}
+	if report.Verifier.DuplicateVotes > 0 {
+		actions = append(actions, "Inspect Veriflier vantage IDs; duplicate vantages are ignored for quorum and should usually be represented by one monitor-side endpoint.")
+	}
+	if report.Verifier.MinHealthyBlockedTransitions > 0 {
+		actions = append(actions, "Check Veriflier health and capacity before lowering quorum; the minimum-healthy floor prevented single-vantage confirmation.")
 	}
 	if len(actions) == 0 {
 		actions = append(actions, "Telemetry looks internally consistent for this window; compare rates across longer windows as v2 traffic grows.")
@@ -906,6 +951,14 @@ func renderTelemetryReportText(out io.Writer, report telemetryReport) {
 		report.Verifier.Disagree,
 		report.Verifier.MissingOutcome,
 		report.Verifier.ConfirmPercent,
+	)
+	fmt.Fprintf(out, "INFO verifier_vote_transitions=%d duplicate_votes=%d duplicate_vote_transitions=%d min_healthy_blocked=%d max_quorum=%d max_healthy=%d\n",
+		report.Verifier.VoteTransitions,
+		report.Verifier.DuplicateVotes,
+		report.Verifier.DuplicateVoteTransitions,
+		report.Verifier.MinHealthyBlockedTransitions,
+		report.Verifier.MaxQuorum,
+		report.Verifier.MaxHealthy,
 	)
 	for _, host := range report.Verifier.Hosts {
 		fmt.Fprintf(out, "INFO verifier_host=%q replies=%d confirm_down=%d disagree=%d missing_outcome=%d confirm_percent=%.1f\n",

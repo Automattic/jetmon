@@ -131,6 +131,34 @@ to v1" and keep the transcript with the incident record.
      --bucket-total=<total>
    ```
 
+5. If the window includes Veriflier replacement, deploy the new `veriflier2`
+   binary first and confirm it serves both contracts from the v2 runtime host:
+
+   ```bash
+   ./jetmon2 validate-config
+   curl -fsS http://<veriflier-host>:7803/status
+   curl -fsS http://<veriflier-host>:7803/v2/status
+   ```
+
+   `/v2/status` should advertise `v2-json-http`, a stable `vantage.id`, the
+   serving `agent.id`, and non-zero capacity. Horizontally scaled replicas behind
+   one endpoint must share the same `vantage.id`; do not add each replica as a
+   separate monitor-side Veriflier unless it should count as an independent
+   quorum vote. `validate-config` fails missing or duplicate v2 vantage IDs and
+   warns on unreachable or legacy-only Verifliers.
+
+   For auto-discovery, keep `VERIFLIER_DISCOVERY_MODE=shadow` until the
+   registry matches the static `VERIFIERS` fleet. Seed
+   `jetmon_veriflier_vantages` with one enabled row per trusted quorum vantage;
+   do not rely on `jetmon_veriflier_agents` telemetry alone, because agent rows
+   never create trusted votes. Move to `active` only after
+   `validate-config` and the read-only discovery report show usable registry
+   vantages and no shadow drift:
+
+   ```bash
+   ./jetmon2 verifliers discovery-report --output=text
+   ```
+
 ## Per-Host Cutover
 
 1. Confirm the pre-stop host gate passes:

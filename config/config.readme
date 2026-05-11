@@ -68,11 +68,29 @@ attempt to notify WPCOM. Default: true.
 
 VERIFLIER_BATCH_SIZE
 Legacy compatibility setting retained for verifier batching compatibility. The
-current JSON-over-HTTP verifier path sends one verification request per site
-escalation. Default: 200.
+current JSON-over-HTTP verifier path can send multiple sites per request, but
+confirmation escalation still commonly sends one site at a time. Default: 200.
 
 PEER_OFFLINE_LIMIT
 Minimum number of verifliers that must confirm a site is down before it is declared confirmed-down. Default: 3.
+For multi-Veriflier fleets, quorum counts unique v2 vantage IDs and will not
+collapse below two healthy vantages unless PEER_OFFLINE_LIMIT is explicitly set
+to 1. Single-Veriflier dev/test layouts still confirm with one healthy
+Veriflier.
+
+VERIFLIER_DISCOVERY_MODE
+Controls whether monitors read Veriflier endpoints from the DB registry:
+  static - use the VERIFIERS array only (default)
+  shadow - read jetmon_veriflier_vantages / jetmon_veriflier_agents and report
+           drift in validate-config and dashboard health, but keep using
+           VERIFIERS for traffic
+  active - use enabled, usable DB registry vantages for traffic; fall back to
+           VERIFIERS if discovery fails or returns no usable vantages
+
+The registry is intentionally trust-gated. Agent telemetry rows in
+jetmon_veriflier_agents do not create quorum votes. A vantage must have a
+pre-approved enabled row in jetmon_veriflier_vantages before monitors count it.
+Default: static.
 
 NUM_OF_CHECKS
 Number of consecutive local check failures required before escalating to verifliers. Default: 3.
@@ -242,7 +260,42 @@ Set to true to connect to SMTP_HOST with TLS from the start. Default: false.
 VERIFIERS
 Array of veriflier configuration objects. Each entry requires:
   name       - display name
-  host       - hostname or IP of the veriflier
+  host       - hostname, IP, or load-balanced vantage endpoint
   port       - Veriflier JSON-over-HTTP transport port (default 7803)
   auth_token - shared secret for veriflier authentication
 The legacy grpc_port key is still accepted as a compatibility alias.
+
+Each configured entry is treated as one quorum vote by the monitor. When a
+Veriflier endpoint is horizontally scaled, put replicas behind a stable endpoint
+and give that endpoint one Veriflier entry; do not add each replica as a
+separate monitor-side verifier unless it is intended to count as an independent
+vantage point.
+
+Veriflier process config
+------------------------
+
+The standalone Veriflier keeps its local config intentionally small:
+
+  auth_token - shared secret required for POST /check and POST /v2/check
+  port       - HTTP listen port (default 7803)
+  vantage_id - optional quorum/vantage identity reported by /v2/status and
+               /v2/check results; defaults to hostname when omitted
+  region     - optional region metadata for diagnostics
+  provider   - optional provider metadata for diagnostics
+
+Environment aliases are VERIFLIER_AUTH_TOKEN, VERIFLIER_PORT,
+VERIFLIER_VANTAGE_ID, VERIFLIER_REGION, and VERIFLIER_PROVIDER. The legacy
+VERIFLIER_GRPC_PORT / grpc_port names remain accepted as port aliases.
+
+The Veriflier derives its concurrency from the Go runtime and local file
+descriptor limit, then exposes current capacity through GET /v2/status. Normal
+deployments should not need worker-count config. Saturated Verifliers reject
+whole batches with HTTP 503 so the monitor treats that endpoint as unhealthy/no
+vote rather than as a site-down confirmation.
+
+Monitors collect agent telemetry by polling authenticated Veriflier
+GET /v2/status endpoints and writing jetmon_veriflier_agents rows from the
+monitor side. Veriflier hosts do not need database credentials. Those rows
+include agent ID, vantage ID, version, protocols, endpoint host/port, and
+current capacity. They are telemetry only until an operator creates and enables
+the matching trusted row in jetmon_veriflier_vantages.

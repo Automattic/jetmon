@@ -246,6 +246,124 @@ func TestSummarizeFleetDependencies(t *testing.T) {
 	}
 }
 
+func TestQueryFleetVerifliersSummarizesRegistryAndAgents(t *testing.T) {
+	sqlDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer sqlDB.Close()
+
+	now := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
+	vantageRows := sqlmock.NewRows([]string{
+		"vantage_id", "region", "provider", "endpoint_host", "endpoint_port", "auth_token_present", "enabled", "updated_at",
+	}).
+		AddRow("us-east", "iad", "provider-a", "east.example", "7803", 1, 1, now).
+		AddRow("us-west", "sfo", "provider-b", "west.example", "", 1, 1, now).
+		AddRow("disabled", "dev", "provider-c", "disabled.example", "7803", 1, 0, now)
+	agentRows := sqlmock.NewRows([]string{
+		"agent_id", "vantage_id", "hostname", "endpoint_host", "endpoint_port",
+		"version", "protocols", "max_concurrency", "queue_capacity", "queue_depth",
+		"active", "in_flight", "status", "last_seen",
+	}).
+		AddRow("agent-east", "us-east", "host-east", "east.example", "7803",
+			"dev", `["v2-json-http"]`, 64, 256, 3, 2, 1, "active", now.Add(-10*time.Second)).
+		AddRow("agent-west", "us-west", "host-west", "west-alt.example", "7803",
+			"dev", `["v2-json-http"]`, 32, 128, 1, 1, 0, "active", now.Add(-time.Minute))
+
+	mock.ExpectQuery("SELECT vantage_id").
+		WillReturnRows(vantageRows)
+	mock.ExpectQuery("SELECT agent_id").
+		WillReturnRows(agentRows)
+
+	processes := []FleetProcess{{
+		ProcessType: fleethealth.ProcessMonitor,
+		HostID:      "monitor-a",
+		DependencyHealth: []fleethealth.DependencyHealth{{
+			Name:   "veriflier-discovery:active enabled=2 usable=1 agents=1",
+			Status: fleethealth.HealthGreen,
+		}},
+	}}
+	got := queryFleetVerifliers(context.Background(), sqlDB, now, 30*time.Second, processes)
+	if got.Status != "red" || !strings.Contains(got.Message, "incomplete") {
+		t.Fatalf("status=%q message=%q, want red incomplete", got.Status, got.Message)
+	}
+	if got.EnabledVantages != 2 || got.UsableVantages != 1 || got.IncompleteVantages != 1 || got.DisabledVantages != 1 {
+		t.Fatalf("vantage counts = %+v", got)
+	}
+	if got.TotalAgents != 2 || got.FreshAgents != 1 || got.StaleAgents != 1 || got.MaxConcurrency != 96 || got.QueueDepth != 4 {
+		t.Fatalf("agent/capacity counts = %+v", got)
+	}
+	if !got.Agents[0].VantagePreapproved || got.Agents[1].VantagePreapproved != true {
+		t.Fatalf("agent preapproval flags = %+v", got.Agents)
+	}
+	if len(got.DiscoveryModes) != 1 || got.DiscoveryModes[0].Mode != "active" || got.DiscoveryModes[0].Hosts[0] != "monitor-a" {
+		t.Fatalf("discovery modes = %+v", got.DiscoveryModes)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet SQL expectations: %v", err)
+	}
+}
+
+func TestQueryFleetVerifliersStaticEmptyRegistryIsGreen(t *testing.T) {
+	sqlDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer sqlDB.Close()
+
+	mock.ExpectQuery("SELECT vantage_id").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"vantage_id", "region", "provider", "endpoint_host", "endpoint_port", "auth_token_present", "enabled", "updated_at",
+		}))
+	mock.ExpectQuery("SELECT agent_id").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"agent_id", "vantage_id", "hostname", "endpoint_host", "endpoint_port",
+			"version", "protocols", "max_concurrency", "queue_capacity", "queue_depth",
+			"active", "in_flight", "status", "last_seen",
+		}))
+
+	got := queryFleetVerifliers(context.Background(), sqlDB, time.Now().UTC(), 30*time.Second, nil)
+	if got.Status != "green" || !strings.Contains(got.Message, "static") {
+		t.Fatalf("summary = %+v, want static green", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet SQL expectations: %v", err)
+	}
+}
+
+func TestSummarizeFleetVerifliersFlagsDuplicateEndpoints(t *testing.T) {
+	now := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
+	summary := FleetVeriflierSummary{
+		DiscoveryModes: []FleetVeriflierDiscoveryMode{{Mode: "shadow", ProcessCount: 1}},
+		Vantages: []FleetVeriflierVantageSummary{{
+			VantageID:        "us-east",
+			Enabled:          true,
+			Usable:           true,
+			AuthTokenPresent: true,
+			EndpointHost:     "east.example",
+			EndpointPort:     "7803",
+		}},
+		Agents: []FleetVeriflierAgentSummary{
+			{AgentID: "a", VantageID: "us-east", EndpointHost: "east-a.example", EndpointPort: "7803", Status: "active", LastSeen: now},
+			{AgentID: "b", VantageID: "us-east", EndpointHost: "east-b.example", EndpointPort: "7803", Status: "active", LastSeen: now},
+		},
+	}
+	summarizeFleetVeriflierRows(&summary, now)
+	if summary.Status != "amber" || summary.DuplicateEndpoints != 1 {
+		t.Fatalf("summary = %+v, want amber duplicate endpoint warning", summary)
+	}
+}
+
+func TestParseVeriflierDiscoveryMode(t *testing.T) {
+	mode, ok := parseVeriflierDiscoveryMode("veriflier-discovery:shadow enabled=2")
+	if !ok || mode != "shadow" {
+		t.Fatalf("parse mode = %q %v, want shadow true", mode, ok)
+	}
+	if _, ok := parseVeriflierDiscoveryMode("veriflier:us-east"); ok {
+		t.Fatal("parseVeriflierDiscoveryMode accepted non-discovery dependency")
+	}
+}
+
 func TestSummarizeFleetProcessesOrdersUnhealthyFirst(t *testing.T) {
 	now := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
 	processes := summarizeFleetProcesses([]fleethealth.Snapshot{
@@ -288,6 +406,11 @@ func TestFleetStoreCachedSnapshotIsCloned(t *testing.T) {
 			Posture: FleetDeliveryPosture{EnabledHosts: []string{"host-a"}, OwnerHosts: []string{"host-a"}},
 		},
 		Dependencies: []FleetDependencySummary{{Name: "mysql", Status: "green"}},
+		Verifliers: FleetVeriflierSummary{
+			DiscoveryModes: []FleetVeriflierDiscoveryMode{{Mode: "shadow", Hosts: []string{"host-a"}}},
+			Vantages:       []FleetVeriflierVantageSummary{{VantageID: "us-east", Enabled: true}},
+			Agents:         []FleetVeriflierAgentSummary{{AgentID: "agent-a", Protocols: []string{"v2-json-http"}}},
+		},
 	})
 
 	cached, ok := store.cachedSnapshot(now.Add(time.Second))
@@ -301,6 +424,9 @@ func TestFleetStoreCachedSnapshotIsCloned(t *testing.T) {
 	cached.Delivery.Tables[0].Pending = 99
 	cached.Delivery.Posture.EnabledHosts[0] = "mutated"
 	cached.Dependencies[0].Status = "red"
+	cached.Verifliers.DiscoveryModes[0].Hosts[0] = "mutated"
+	cached.Verifliers.Vantages[0].VantageID = "mutated"
+	cached.Verifliers.Agents[0].Protocols[0] = "legacy"
 
 	cachedAgain, ok := store.cachedSnapshot(now.Add(2 * time.Second))
 	if !ok {
@@ -323,6 +449,11 @@ func TestFleetStoreCachedSnapshotIsCloned(t *testing.T) {
 	}
 	if cachedAgain.Dependencies[0].Status != "green" {
 		t.Fatalf("Dependencies = %#v, cache was mutated", cachedAgain.Dependencies)
+	}
+	if cachedAgain.Verifliers.DiscoveryModes[0].Hosts[0] != "host-a" ||
+		cachedAgain.Verifliers.Vantages[0].VantageID != "us-east" ||
+		cachedAgain.Verifliers.Agents[0].Protocols[0] != "v2-json-http" {
+		t.Fatalf("Verifliers = %+v, cache was mutated", cachedAgain.Verifliers)
 	}
 }
 

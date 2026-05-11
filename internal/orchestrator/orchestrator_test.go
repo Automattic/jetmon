@@ -239,6 +239,143 @@ func TestRefreshVeriflierClientsRebuildsChangedClients(t *testing.T) {
 	}
 }
 
+func TestRefreshVeriflierClientsActiveDiscoveryUsesEnabledVantages(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+
+	dbListVeriflierVantages = func(context.Context, time.Duration) ([]db.VeriflierVantage, error) {
+		return []db.VeriflierVantage{
+			{VantageID: "us-east", EndpointHost: "east.example", EndpointPort: "7803", AuthToken: "east-token"},
+			{VantageID: "incomplete", EndpointHost: "missing-token", EndpointPort: "7803"},
+			{VantageID: "us-west", EndpointHost: "west.example", EndpointPort: "7804", AuthToken: "west-token"},
+		}, nil
+	}
+
+	cfg := &config.Config{
+		NumWorkers:             2,
+		VeriflierDiscoveryMode: config.VeriflierDiscoveryModeActive,
+		Verifiers:              []config.VerifierConfig{{Name: "static", Host: "static.example", Port: "7803", AuthToken: "static-token"}},
+	}
+	o := New(cfg, nil)
+
+	want := []string{"east.example:7803|east-token", "west.example:7804|west-token"}
+	if !slicesEqual(o.veriflierAddrs, want) {
+		t.Fatalf("veriflierAddrs = %#v, want %#v", o.veriflierAddrs, want)
+	}
+}
+
+func TestRefreshVeriflierClientsActiveDiscoveryFallsBackToStatic(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+
+	dbListVeriflierVantages = func(context.Context, time.Duration) ([]db.VeriflierVantage, error) {
+		return nil, fmt.Errorf("db unavailable")
+	}
+
+	cfg := &config.Config{
+		NumWorkers:             2,
+		VeriflierDiscoveryMode: config.VeriflierDiscoveryModeActive,
+		Verifiers:              []config.VerifierConfig{{Name: "static", Host: "static.example", Port: "7803", AuthToken: "static-token"}},
+	}
+	o := New(cfg, nil)
+
+	want := []string{"static.example:7803|static-token"}
+	if !slicesEqual(o.veriflierAddrs, want) {
+		t.Fatalf("veriflierAddrs = %#v, want %#v", o.veriflierAddrs, want)
+	}
+}
+
+func TestVerifierConfigsFromVantagesFiltersIncompleteRows(t *testing.T) {
+	got := verifierConfigsFromVantages([]db.VeriflierVantage{
+		{VantageID: "ok", EndpointHost: " host.example ", EndpointPort: " 7803 ", AuthToken: " token "},
+		{VantageID: "no-host", EndpointPort: "7803", AuthToken: "token"},
+		{VantageID: "no-port", EndpointHost: "host.example", AuthToken: "token"},
+		{VantageID: "no-token", EndpointHost: "host.example", EndpointPort: "7803"},
+	})
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1: %#v", len(got), got)
+	}
+	if got[0].Name != "ok" || got[0].Host != "host.example" || got[0].Port != "7803" || got[0].AuthToken != "token" {
+		t.Fatalf("config = %+v", got[0])
+	}
+}
+
+func TestSyncVeriflierAgentTelemetryWritesMonitorCollectedStatus(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+
+	var mu sync.Mutex
+	var heartbeats []db.VeriflierAgentHeartbeat
+	veriflierStatusFunc = func(c *veriflier.VeriflierClient, _ context.Context) (*veriflier.StatusV2Response, error) {
+		return &veriflier.StatusV2Response{
+			Version:   "test-version",
+			Protocols: []string{veriflier.ProtocolV2, veriflier.ProtocolLegacy},
+			Vantage:   veriflier.Vantage{ID: "us-east", Region: "iad", Provider: "test"},
+			Agent:     veriflier.Agent{ID: "agent-a", Host: "host-a", Version: "test-version", Protocol: veriflier.ProtocolV2},
+			Capacity:  veriflier.Capacity{MaxConcurrency: 64, QueueCapacity: 256, QueueDepth: 3, Active: 2, InFlight: 1},
+		}, nil
+	}
+	dbUpsertVeriflierAgent = func(_ context.Context, hb db.VeriflierAgentHeartbeat) error {
+		mu.Lock()
+		defer mu.Unlock()
+		heartbeats = append(heartbeats, hb)
+		return nil
+	}
+
+	o := &Orchestrator{ctx: context.Background()}
+	o.syncVeriflierAgentTelemetry(&config.Config{
+		Verifiers: []config.VerifierConfig{{Name: "east", Host: "east.example", Port: "7803", AuthToken: "token"}},
+	})
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(heartbeats) != 1 {
+		t.Fatalf("heartbeats len = %d, want 1", len(heartbeats))
+	}
+	got := heartbeats[0]
+	if got.AgentID != "agent-a" || got.VantageID != "us-east" || got.EndpointHost != "east.example" || got.EndpointPort != "7803" {
+		t.Fatalf("heartbeat identity = %+v", got)
+	}
+	if got.MaxConcurrency != 64 || got.QueueCapacity != 256 || got.QueueDepth != 3 || got.Active != 2 || got.InFlight != 1 {
+		t.Fatalf("heartbeat capacity = %+v", got)
+	}
+}
+
+func TestSyncVeriflierAgentTelemetrySkipsLegacyStatus(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+
+	veriflierStatusFunc = func(_ *veriflier.VeriflierClient, _ context.Context) (*veriflier.StatusV2Response, error) {
+		return &veriflier.StatusV2Response{Version: "legacy", Protocols: []string{veriflier.ProtocolLegacy}}, nil
+	}
+	dbUpsertVeriflierAgent = func(_ context.Context, hb db.VeriflierAgentHeartbeat) error {
+		t.Fatalf("unexpected heartbeat: %+v", hb)
+		return nil
+	}
+
+	o := &Orchestrator{ctx: context.Background()}
+	o.syncVeriflierAgentTelemetry(&config.Config{
+		Verifiers: []config.VerifierConfig{{Name: "legacy", Host: "legacy.example", Port: "7803", AuthToken: "token"}},
+	})
+}
+
+func TestVeriflierAgentHeartbeatFromStatus(t *testing.T) {
+	got := veriflierAgentHeartbeatFromStatus(
+		config.VerifierConfig{Host: " endpoint.example ", Port: " 7803 "},
+		&veriflier.StatusV2Response{
+			Version:   " test-version ",
+			Protocols: []string{veriflier.ProtocolV2},
+			Vantage:   veriflier.Vantage{ID: " us-west "},
+			Agent:     veriflier.Agent{ID: " agent-west ", Host: " host-west "},
+			Capacity:  veriflier.Capacity{MaxConcurrency: 8, QueueCapacity: 16},
+		},
+	)
+	if got.AgentID != "agent-west" || got.VantageID != "us-west" || got.EndpointHost != "endpoint.example" ||
+		got.EndpointPort != "7803" || got.Version != "test-version" || got.Status != "active" {
+		t.Fatalf("heartbeat = %+v", got)
+	}
+}
+
 func TestSendNotificationRetriesAndUpdatesAlertTimestamp(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
@@ -669,6 +806,179 @@ func TestEscalateToVerifliersRecordsFalsePositiveWhenQuorumMissed(t *testing.T) 
 	}
 }
 
+func TestEscalateToVerifliersIgnoresDuplicateVoteIdentities(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+
+	cfg := setTestConfig(t)
+	cfg.PeerOfflineLimit = 2
+
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+
+	var falsePositiveBlogID int64
+	dbRecordFalsePositive = func(blogID int64, _ int, _ int, _ int64) error {
+		falsePositiveBlogID = blogID
+		return nil
+	}
+	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error {
+		t.Fatal("duplicate verifier identity should not satisfy quorum")
+		return nil
+	}
+	veriflierCheckFunc = func(_ *veriflier.VeriflierClient, _ context.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
+		return &veriflier.CheckResult{
+			BlogID:   req.BlogID,
+			Host:     "shared-vantage",
+			Success:  false,
+			HTTPCode: 500,
+		}, nil
+	}
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		ctx:      context.Background(),
+		hostname: "local-host",
+		veriflierClients: []*veriflier.VeriflierClient{
+			veriflier.NewVeriflierClient("v1", ""),
+			veriflier.NewVeriflierClient("v2", ""),
+		},
+	}
+
+	fail := checkerResultFailure(655)
+	o.retries.record(fail)
+	entry := o.retries.get(655)
+	o.escalateToVerifliers(db.Site{BlogID: 655, MonitorURL: "https://example.com", SiteStatus: statusRunning}, entry)
+
+	if falsePositiveBlogID != 655 {
+		t.Fatalf("false positive blog_id = %d, want 655", falsePositiveBlogID)
+	}
+	if got := rec.counter("verifier.vote.duplicate_identity.count"); got != 1 {
+		t.Fatalf("duplicate identity counter = %d, want 1", got)
+	}
+	if got := rec.gauge("detection.verifier.healthy.count"); got != 1 {
+		t.Fatalf("healthy verifier gauge = %d, want 1 unique vote", got)
+	}
+	if got := rec.gauge("detection.verifier.duplicate_votes.count"); got != 1 {
+		t.Fatalf("duplicate vote gauge = %d, want 1", got)
+	}
+}
+
+func TestEscalateToVerifliersRequiresTwoHealthyVotesForMultiVerifierFleet(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+
+	cfg := setTestConfig(t)
+	cfg.PeerOfflineLimit = 2
+
+	var falsePositiveBlogID int64
+	dbRecordFalsePositive = func(blogID int64, _ int, _ int, _ int64) error {
+		falsePositiveBlogID = blogID
+		return nil
+	}
+	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error {
+		t.Fatal("one healthy verifier should not confirm downtime in a multi-verifier fleet")
+		return nil
+	}
+	veriflierCheckFunc = func(c *veriflier.VeriflierClient, _ context.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
+		if c.Addr() != "v1" {
+			return nil, fmt.Errorf("veriflier offline")
+		}
+		return &veriflier.CheckResult{
+			BlogID:   req.BlogID,
+			Host:     c.Addr(),
+			Success:  false,
+			HTTPCode: 500,
+		}, nil
+	}
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		ctx:      context.Background(),
+		hostname: "local-host",
+		veriflierClients: []*veriflier.VeriflierClient{
+			veriflier.NewVeriflierClient("v1", ""),
+			veriflier.NewVeriflierClient("v2", ""),
+			veriflier.NewVeriflierClient("v3", ""),
+		},
+	}
+
+	fail := checkerResultFailure(656)
+	o.retries.record(fail)
+	entry := o.retries.get(656)
+	o.escalateToVerifliers(db.Site{BlogID: 656, MonitorURL: "https://example.com", SiteStatus: statusRunning}, entry)
+
+	if falsePositiveBlogID != 656 {
+		t.Fatalf("false positive blog_id = %d, want 656", falsePositiveBlogID)
+	}
+}
+
+func TestEscalateToVerifliersAllowsSingleConfiguredVerifier(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+
+	cfg := setTestConfig(t)
+	cfg.PeerOfflineLimit = 2
+
+	var notifyCalls int
+	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error {
+		notifyCalls++
+		return nil
+	}
+	dbUpdateLastAlertSent = func(context.Context, int64, time.Time) error { return nil }
+	veriflierCheckFunc = func(c *veriflier.VeriflierClient, _ context.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
+		return &veriflier.CheckResult{
+			BlogID:   req.BlogID,
+			Host:     c.Addr(),
+			Success:  false,
+			HTTPCode: 500,
+		}, nil
+	}
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		ctx:      context.Background(),
+		hostname: "local-host",
+		veriflierClients: []*veriflier.VeriflierClient{
+			veriflier.NewVeriflierClient("v1", ""),
+		},
+	}
+
+	fail := checkerResultFailure(657)
+	o.retries.record(fail)
+	entry := o.retries.get(657)
+	o.escalateToVerifliers(db.Site{BlogID: 657, MonitorURL: "https://example.com", SiteStatus: statusRunning}, entry)
+
+	if notifyCalls != 1 {
+		t.Fatalf("notify calls = %d, want 1", notifyCalls)
+	}
+}
+
+func TestVerifierMinHealthyFloor(t *testing.T) {
+	tests := []struct {
+		name               string
+		peerOfflineLimit   int
+		configuredVerifier int
+		want               int
+	}{
+		{name: "none", peerOfflineLimit: 2, configuredVerifier: 0, want: 0},
+		{name: "single verifier", peerOfflineLimit: 2, configuredVerifier: 1, want: 1},
+		{name: "intentional one vote quorum", peerOfflineLimit: 1, configuredVerifier: 3, want: 1},
+		{name: "multi verifier floor", peerOfflineLimit: 2, configuredVerifier: 3, want: 2},
+		{name: "higher configured quorum still floor two", peerOfflineLimit: 4, configuredVerifier: 5, want: 2},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := verifierMinHealthyFloor(tt.peerOfflineLimit, tt.configuredVerifier); got != tt.want {
+				t.Fatalf("verifierMinHealthyFloor() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestEscalateToVerifliersConfirmsDownOnPartialResponseFromLocalAndVerifier(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
@@ -755,7 +1065,10 @@ func stubOrchestratorDeps() func() {
 	origDBUpdateSSLExpiries := dbUpdateSSLExpiries
 	origDBCountDueSites := dbCountDueSites
 	origDBCountProjectionDrift := dbCountProjectionDrift
+	origDBListVeriflierVantages := dbListVeriflierVantages
+	origDBUpsertVeriflierAgent := dbUpsertVeriflierAgent
 	origNotify := wpcomNotifyFunc
+	origVeriflierStatus := veriflierStatusFunc
 	origVeriflierCheck := veriflierCheckFunc
 	origMetricsClient := metricsClientFunc
 
@@ -777,7 +1090,12 @@ func stubOrchestratorDeps() func() {
 	dbUpdateSSLExpiries = func(context.Context, []db.SiteSSLExpiry) error { return nil }
 	dbCountDueSites = func(context.Context, int, int, bool) (int, error) { return 0, nil }
 	dbCountProjectionDrift = func(context.Context, int, int) (int, error) { return 0, nil }
+	dbListVeriflierVantages = func(context.Context, time.Duration) ([]db.VeriflierVantage, error) { return nil, nil }
+	dbUpsertVeriflierAgent = func(context.Context, db.VeriflierAgentHeartbeat) error { return nil }
 	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error { return nil }
+	veriflierStatusFunc = func(c *veriflier.VeriflierClient, ctx context.Context) (*veriflier.StatusV2Response, error) {
+		return c.Status(ctx)
+	}
 	veriflierCheckFunc = func(c *veriflier.VeriflierClient, ctx context.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
 		return c.Check(ctx, req)
 	}
@@ -801,7 +1119,10 @@ func stubOrchestratorDeps() func() {
 		dbUpdateSSLExpiries = origDBUpdateSSLExpiries
 		dbCountDueSites = origDBCountDueSites
 		dbCountProjectionDrift = origDBCountProjectionDrift
+		dbListVeriflierVantages = origDBListVeriflierVantages
+		dbUpsertVeriflierAgent = origDBUpsertVeriflierAgent
 		wpcomNotifyFunc = origNotify
+		veriflierStatusFunc = origVeriflierStatus
 		veriflierCheckFunc = origVeriflierCheck
 		metricsClientFunc = origMetricsClient
 	}

@@ -17,7 +17,7 @@ The current architecture uses forked Node.js processes (8–16MB RSS each at sta
 - **Built-in profiling** via `pprof`, race detector via `go test -race`, and a mature testing ecosystem
 - **Graceful goroutine lifecycle management** replaces the fragile worker spawn/recycle/evaporate lifecycle
 
-The Veriflier is rewritten in Go as well, replacing the Qt C++ dependency with a lightweight Go HTTP service. The v2 production Monitor-to-Veriflier transport is JSON-over-HTTP on the configured Veriflier port. The proto contract is kept in `proto/` as a schema reference for a possible future transport, not as the v2 deployment path.
+The Veriflier is rewritten in Go as well, replacing the Qt C++ dependency with a lightweight Go HTTP service. The v2 production Monitor-to-Veriflier transport is JSON-over-HTTP on the configured Veriflier port. New Verifliers serve a versioned `/v2/check` + `/v2/status` contract with explicit batch/request IDs, typed outcomes, vantage identity, agent identity, deadline propagation, and capacity reporting while retaining legacy `/check` + `/status` compatibility for staged rollout. The proto contract is kept in `proto/` as a schema reference for a possible future transport, not as the v2 deployment path.
 
 ---
 
@@ -43,7 +43,7 @@ The Veriflier is rewritten in Go as well, replacing the Qt C++ dependency with a
           (all unchanged)
 ```
 
-The monitor process replaces the master/worker/SSL-cluster process tree. Concurrency is managed through Go channels and a bounded goroutine worker pool. The orchestrator goroutine owns DB access and WPCOM notifications. The check pool goroutines own HTTP connections. The Veriflier client/server code handles remote confirmation batches over JSON-over-HTTP and is isolated behind `internal/veriflier/`. Outbound webhook and alert-contact delivery can run embedded in one API-enabled `jetmon2` process today, or through the standalone `jetmon-deliverer` entry point as that responsibility moves toward its own deployable process.
+The monitor process replaces the master/worker/SSL-cluster process tree. Concurrency is managed through Go channels and a bounded goroutine worker pool. The orchestrator goroutine owns DB access and WPCOM notifications. The check pool goroutines own HTTP connections. The Veriflier client/server code handles remote confirmation batches over JSON-over-HTTP and is isolated behind `internal/veriflier/`. The monitor prefers the v2 Veriflier contract and falls back to the legacy contract when needed. Veriflier endpoints advertise a quorum-counted `vantage.id` separately from the serving `agent.id`, so multiple horizontally scaled replicas behind one endpoint add capacity without adding extra votes. Monitor-side Veriflier discovery can run in `static`, `shadow`, or `active` mode against a trusted DB registry; monitors collect agent liveness and capacity from `/v2/status`, but only pre-approved enabled vantages count for quorum. Outbound webhook and alert-contact delivery can run embedded in one API-enabled `jetmon2` process today, or through the standalone `jetmon-deliverer` entry point as that responsibility moves toward its own deployable process.
 
 ---
 
@@ -218,10 +218,25 @@ A standalone binary (`jetmon2 validate-config`) that:
 - Prints the matching rollout preflight and projection-drift investigation
   commands for the configured bucket ownership mode
 - Warns when the email transport resolves to the log-only `stub` sender
-- Lists configured Verifliers as best-effort operator context
+- Probes configured Verifliers as best-effort operator context, reports v2 vs.
+  legacy contract status, and prints v2 `vantage.id`, `agent.id`, and capacity
+  metadata when available
+- Fails on duplicate or missing v2 Veriflier vantage IDs so bad quorum identity
+  layouts are caught before rollout
+- Reports Veriflier discovery mode, trusted DB registry counts, incomplete
+  active-discovery rows, and shadow-mode drift between static config and the
+  registry
 - Outputs a pass/fail summary with specific error messages
 
 Intended to run as a pre-deployment check in CI and as an operator tool when diagnosing connectivity issues.
+
+**Veriflier Discovery Report**
+`jetmon2 verifliers discovery-report` is a read-only rollout gate for
+auto-discovery. It compares configured static Verifliers, enabled trusted
+`jetmon_veriflier_vantages` rows, and recent monitor-collected
+`jetmon_veriflier_agents` telemetry, then emits text or JSON with
+green/amber/red status and a suggested next action. It reports only token
+presence, never token values.
 
 **Operator Dashboard**
 A lightweight web UI served by the binary itself (no separate process) on a configurable internal port. Displays in real time:
@@ -236,8 +251,8 @@ A lightweight web UI served by the binary itself (no separate process) on a conf
   rollout preflight / projection-drift commands
 - RSS memory and Go runtime system memory usage
 - WPCOM circuit-breaker state and queued notification depth
-- Live dependency health for MySQL, configured Verifliers, WPCOM, StatsD, and
-  log/stats directory writes
+- Live dependency health for MySQL, configured Verifliers, Veriflier discovery,
+  WPCOM, StatsD, and log/stats directory writes
 - Combined `/api/host` snapshot with local state, dependency health, and a
   red/amber/green host summary for operator tooling
 
@@ -248,6 +263,8 @@ The operator dashboard health grid publishes:
 
 - MySQL: connection state and ping latency
 - Each configured Veriflier: reachability and status latency
+- Veriflier discovery: registry query status, enabled/usable vantage counts,
+  and recent agent telemetry count when discovery mode is `shadow` or `active`
 - WPCOM API: circuit-breaker state and queued notification depth
 - StatsD: local client initialization state
 - Disk: writable `logs/` and `stats/` directories
@@ -260,10 +277,12 @@ on.
 Long-running `jetmon2` and `jetmon-deliverer` processes also publish compact
 heartbeat snapshots into `jetmon_process_health`. The `/fleet` dashboard uses
 those snapshots alongside `jetmon_hosts`, outbound delivery queues, projection
-drift, and dependency rollups to summarize monitor hosts, standalone
-deliverers, stale process heartbeats, lifecycle state, red/amber/green health
-rollups, delivery-owner posture, RSS memory, Go runtime system memory, and
-local dependency health without polling every host dashboard directly.
+drift, dependency rollups, and Veriflier discovery tables to summarize monitor
+hosts, standalone deliverers, stale process heartbeats, lifecycle state,
+red/amber/green health rollups, delivery-owner posture, trusted Veriflier
+vantages, monitor-collected Veriflier agent telemetry, capacity, RSS memory, Go
+runtime system memory, and local dependency health without polling every host
+dashboard directly.
 
 **False Positive Tracker**
 Every time the system escalates a site to Veriflier confirmation and the Verifliers do NOT confirm it as down (i.e., the queue entry times out or all Verifliers report the site as up), the event is recorded in a `jetmon_false_positives` table with timestamp, site, HTTP code, error code, and RTT from the local check. A view in the operator dashboard surfaces sites with high false positive rates, helping operators tune per-site `NUM_OF_CHECKS` settings and review whether the site's content/timeout rules are too sensitive.
@@ -356,6 +375,7 @@ Benefits over the current static configuration:
 **Auto-Heal**
 - **DB connection loss**: The DB pool retries connections with exponential backoff. In-flight batch work is held in the queue; no work is lost.
 - **Veriflier unreachable**: A Veriflier that fails to respond is marked unhealthy and excluded from confirmation requests. Remaining healthy Verifliers continue; the `PEER_OFFLINE_LIMIT` threshold adjusts dynamically to the number of healthy Verifliers (with a floor to prevent false confirmations).
+- **Veriflier overloaded**: A saturated v2 Veriflier returns HTTP 503 for the whole batch. The monitor treats that endpoint as unhealthy/no-vote for the escalation; overload is never counted as a customer-site down result.
 - **WPCOM API failures**: Circuit breaker pattern. After N consecutive failures the circuit opens, pending notifications are queued in memory with timestamps, and the circuit is retried on a backoff schedule. Queue is bounded; oldest entries are dropped with an error log if it fills.
 - **Stuck check goroutine**: A watchdog goroutine tracks the last activity time of each check. A goroutine that exceeds `NET_COMMS_TIMEOUT * 2` without completing is cancelled via context cancellation, its result counted as a timeout, and a new goroutine is allocated to replace it.
 - **Memory pressure**: The binary exposes both RSS memory and Go runtime system memory through the dashboard state endpoints. If Go runtime system memory exceeds a configurable threshold, the pool size is reduced by 10% via graceful drain until pressure eases — the equivalent of the current worker recycling mechanism, but without process death. Use RSS to compare Jetmon with host-level tools and Go Sys with pprof when investigating sustained memory pressure.
@@ -385,7 +405,7 @@ Generate a static status page (or a hosted dynamic one) showing uptime history, 
 Derive uptime percentage and incident history from the audit log. Expose via a read API that the Jetpack dashboard can query to show customers their site's uptime over the last 30/90 days. This is primarily a query layer over data the audit log already captures.
 
 **Per-Location Downtime Visibility**
-Surface which Veriflier locations saw the site as down vs. up during a downtime event. Already collected internally in `queuedRetries[].checks[]` — this is an exposure and storage change, not a new data collection effort. Highly valuable for diagnosing CDN or regional routing issues.
+Surface which Veriflier locations saw the site as down vs. up during a downtime event. v2 now preserves per-vantage vote evidence in audit and event transition metadata; the remaining future work is deciding how much of that regional evidence should be exposed to operators or customers. Highly valuable for diagnosing CDN or regional routing issues.
 
 **Synthetic / Transaction Monitoring**
 Simulate a real user journey (login, add to cart, checkout) using a headless browser via Playwright or Chromedp. Completely different architecture from HTTP checks — requires browser infrastructure — but represents the most valuable monitoring capability for e-commerce and membership sites. Long-term roadmap item.

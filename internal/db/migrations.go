@@ -556,6 +556,49 @@ var migrations = []migration{
 	{39, `ALTER TABLE jetmon_check_targets
 		DROP INDEX uk_blog_id,
 		ADD UNIQUE KEY uk_source_site_id (source_site_id)`},
+
+	// Migration 40 creates the trusted Veriflier vantage registry used by
+	// monitor-side discovery. Vantages are quorum-counted identities, not
+	// individual processes. enabled defaults to 0 so agent telemetry can never
+	// create its own trusted vote.
+	{40, `CREATE TABLE IF NOT EXISTS jetmon_veriflier_vantages (
+		vantage_id    VARCHAR(128) NOT NULL PRIMARY KEY,
+		region        VARCHAR(128) NOT NULL DEFAULT '',
+		provider      VARCHAR(128) NOT NULL DEFAULT '',
+		endpoint_host VARCHAR(255) NOT NULL DEFAULT '',
+		endpoint_port VARCHAR(16) NOT NULL DEFAULT '',
+		auth_token    VARCHAR(255) NOT NULL DEFAULT '',
+		enabled       TINYINT UNSIGNED NOT NULL DEFAULT 0,
+		created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+		INDEX idx_enabled (enabled),
+		INDEX idx_endpoint (endpoint_host, endpoint_port)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
+
+	// Migration 41 records concrete Veriflier agent telemetry collected by
+	// monitors from /v2/status. These rows are operational telemetry and
+	// capacity hints; only pre-approved enabled rows in
+	// jetmon_veriflier_vantages are eligible for quorum or traffic.
+	{41, `CREATE TABLE IF NOT EXISTS jetmon_veriflier_agents (
+		agent_id        VARCHAR(128) NOT NULL PRIMARY KEY,
+		vantage_id      VARCHAR(128) NOT NULL,
+		hostname        VARCHAR(255) NOT NULL DEFAULT '',
+		endpoint_host   VARCHAR(255) NOT NULL DEFAULT '',
+		endpoint_port   VARCHAR(16) NOT NULL DEFAULT '',
+		version         VARCHAR(64) NOT NULL DEFAULT '',
+		protocols       JSON NULL,
+		max_concurrency INT UNSIGNED NOT NULL DEFAULT 0,
+		queue_capacity  INT UNSIGNED NOT NULL DEFAULT 0,
+		queue_depth     INT UNSIGNED NOT NULL DEFAULT 0,
+		active          INT UNSIGNED NOT NULL DEFAULT 0,
+		in_flight       INT UNSIGNED NOT NULL DEFAULT 0,
+		status          ENUM('starting','active','draining','stopped') NOT NULL DEFAULT 'active',
+		last_seen       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+		INDEX idx_vantage_seen (vantage_id, last_seen),
+		INDEX idx_status_seen (status, last_seen)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
 }
 
 // Migrate applies all pending migrations idempotently.

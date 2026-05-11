@@ -304,13 +304,106 @@ circuit-breaker state, dependency health for MySQL, Verifliers, WPCOM, StatsD,
 local log/stats writes, and the rollout commands an operator is most likely to
 need from that host.
 
+When `VERIFLIER_DISCOVERY_MODE` is `shadow` or `active`, host health also shows
+Veriflier discovery status from the DB registry. Shadow mode is the rollout
+gate: compare enabled `jetmon_veriflier_vantages` rows against the static
+`VERIFIERS` list until there is no drift. Active mode uses enabled usable
+registry rows and falls back to static config if discovery is unavailable or
+empty. Monitor-collected rows in `jetmon_veriflier_agents` expose liveness and
+capacity without giving Veriflier hosts DB credentials; they do not create
+trusted quorum votes.
+
+Use the read-only discovery report before switching from `shadow` to `active`:
+
+```bash
+./jetmon2 verifliers discovery-report --output=text
+./jetmon2 verifliers discovery-report --output=json
+```
+
+The report probes configured static Verifliers for v2 `vantage.id` values,
+compares them with enabled trusted registry rows, checks recent agent telemetry,
+and reports green/amber/red status plus a suggested next action. It never prints
+Veriflier auth tokens; text and JSON output only expose whether each static or
+registry entry has a token present.
+
+### Veriflier Discovery Warning Checklist
+
+Use this checklist for warnings from the host dashboard, fleet dashboard, or
+`jetmon2 verifliers discovery-report`.
+
+**Green**
+
+- Static configured Verifliers report v2 status with stable `vantage.id`
+  values.
+- Enabled trusted registry rows match the static quorum vantages.
+- Recent active agent telemetry exists for each enabled usable registry vantage.
+- Capacity and queue depth look normal for the current rollout window.
+
+Action: continue the approved rollout step. In `shadow` mode, keep observing at
+least one expected check/report interval before changing to `active`.
+
+**Amber**
+
+- `static_probe_failed`: verify monitor-to-Veriflier network access, auth token
+  presence, and `/v2/status` response from the monitor runtime host.
+- `static_legacy_only`: deploy or restart the Go `veriflier2` binary before
+  relying on v2 identity or active discovery.
+- `static_vantage_missing`: set a stable `VERIFLIER_VANTAGE_ID`; do not advance
+  while a v2 Veriflier lacks a quorum identity.
+- `static_missing_enabled_registry`: create or enable the matching
+  `jetmon_veriflier_vantages` row after confirming the static endpoint is a
+  trusted quorum vantage.
+- `enabled_registry_missing_static`: confirm the registry row is intentional.
+  If it is staged early, leave discovery in `shadow`; if it is stale, disable
+  or correct the row.
+- `registry_enabled_incomplete`: fill endpoint host, endpoint port, and auth
+  token before active discovery can use the row.
+- `static_registry_endpoint_mismatch` or `agent_registry_endpoint_mismatch`:
+  decide whether the static config, registry row, or load-balanced endpoint is
+  authoritative, then make them agree.
+- `static_registry_auth_presence_mismatch`: fix missing token material on the
+  side that should be active. The report will not print token values.
+- `agent_without_registry`: treat the agent as untrusted telemetry. Add a
+  registry row only if the vantage is intentionally approved for quorum.
+- `enabled_registry_without_active_agent`: verify monitors can poll
+  authenticated `/v2/status`, check the Veriflier process state, and widen
+  `--stale-after` only if the report window is intentionally longer than the
+  heartbeat interval.
+- `duplicate_active_agent_endpoints`: confirm whether the agents are replicas
+  behind one endpoint or an accidental split endpoint for the same vantage.
+- Fleet/dashboard stale telemetry warnings: inspect `/api/fleet` or rerun
+  `verifliers discovery-report`; stale rows are last-known state, not proof a
+  Veriflier is still serving traffic.
+
+Action: hold before switching from `shadow` to `active`, fix the named drift,
+then rerun `validate-config` and `verifliers discovery-report`.
+
+**Red**
+
+- `static_vantage_duplicate`: two configured Verifliers report the same
+  `vantage.id`; only one vote would count. Fix static config or endpoint
+  identity before rollout.
+- `active_without_usable_registry`: active discovery has no usable enabled
+  trusted vantages and would fall back to static config. Treat this as a bad
+  active-mode posture.
+- Active discovery plus incomplete enabled registry rows: fill or disable those
+  rows before relying on discovery traffic.
+- Dashboard red Veriflier dependency health: the monitor cannot safely prove
+  Veriflier contract, identity, or reachability from that host.
+
+Action: do not advance rollout. Return to `static` or `shadow` if needed, fix
+the registry/static/agent mismatch, and rerun the report from the monitor
+runtime host.
+
 The fleet dashboard is available at `/fleet` on the same listener. It summarizes
 all rows in `jetmon_process_health` alongside `jetmon_hosts` dynamic bucket
 coverage, delivery backlog, delivery-owner posture, dependency rollups,
-Veriflier dependency health reported by monitor hosts, and global legacy
-projection drift. It also shows per-table delivery queue counts and per-host
-bucket-owner rows for diagnosis. It uses stale heartbeat thresholds when
-deciding whether a process or dynamic bucket owner is healthy.
+Veriflier dependency health reported by monitor hosts, Veriflier discovery
+registry state, and global legacy projection drift. It also shows per-table
+delivery queue counts, per-host bucket-owner rows, trusted Veriflier vantages,
+monitor-collected Veriflier agent telemetry, capacity, discovery modes, and
+duplicate endpoint warnings. It uses stale heartbeat thresholds when deciding
+whether a process, dynamic bucket owner, or Veriflier telemetry row is healthy.
 
 When fleet projection drift is red, run `./jetmon2 rollout projection-drift
 --limit=100` on an operator host. The command reports bucket/status summaries,
@@ -495,14 +588,15 @@ The report is read-only and runs with a bounded query timeout by default
 (`--query-timeout` is capped at 5 minutes). The time window is half-open
 (`since <= row time < until`) so adjacent scheduled reports do not double-count
 boundary rows. It summarizes event lifecycle counts, first-failure timings,
-verifier agreement, false-alarm classes, WPCOM attempt parity, and metadata gaps
-that would make operator or customer explanations weaker. WPCOM parity is split
-between confirmed-down and recovery attempts, with maintenance/cooldown
+verifier agreement, v2 verifier vote evidence, false-alarm classes, WPCOM
+attempt parity, and metadata gaps that would make operator or customer
+explanations weaker. Verifier vote evidence includes duplicate votes ignored
+for quorum and transitions blocked by the minimum-healthy floor. WPCOM parity
+is split between confirmed-down and recovery attempts, with maintenance/cooldown
 suppressions separated the same way, so one side cannot mask a mismatch on the
 other. During v1-to-v2 rollout, capture this report after each full-round
 cutover gate and again at fleet completion. It reports aggregate counts and
-classes rather than raw payloads or
-credentials.
+classes rather than raw payloads or credentials.
 
 The top line reports `telemetry_status`, `explanation_gap_types`, and
 `explanation_gap_rows`. Treat `warn` or `fail` as a signal that the report found
@@ -540,9 +634,19 @@ pprof when investigating sustained runtime memory pressure.
 
 ## Veriflier Health
 
-Verifliers that fail to respond are excluded from confirmation requests. If the
-healthy set drops below `PEER_OFFLINE_LIMIT`, Jetmon cannot issue new downtime
-confirmations.
+Verifliers that fail to respond are excluded from confirmation requests. Quorum
+counts unique v2 `vantage.id` values rather than raw agent replies. If the
+healthy unique-vantage set drops below `PEER_OFFLINE_LIMIT`, Jetmon lowers the
+effective quorum only to the multi-Veriflier safety floor: two healthy vantages
+unless `PEER_OFFLINE_LIMIT=1` was explicitly configured. This prevents one
+remaining healthy Veriflier from confirming downtime alone in normal
+multi-Veriflier layouts.
+
+New Verifliers expose the versioned contract at `/v2/status`. Use that endpoint
+for operational detail: it reports supported protocols, the quorum-counted
+`vantage.id`, serving `agent.id`, and current capacity. Horizontal replicas
+behind one regional endpoint should share the same `vantage.id`; `agent.id`
+changes per process and is diagnostic only.
 
 Once a site is already projected as confirmed down, subsequent local failures do
 not re-enter Veriflier confirmation. Jetmon keeps checking for recovery and
@@ -552,8 +656,17 @@ observations without duplicating confirmed-down notifications.
 Manual check:
 
 ```bash
+./jetmon2 validate-config
 curl http://<veriflier-host>:7803/status
+curl http://<veriflier-host>:7803/v2/status
 ```
+
+`validate-config` reports each configured Veriflier's contract status and marks
+duplicate or missing v2 `vantage.id` values as failures. The operator dashboard
+uses the same status metadata and shows duplicate-vantage Verifliers as red.
+
+If a v2 Veriflier is saturated, it returns HTTP 503 for `/v2/check`. Treat that
+as a capacity or routing problem for that endpoint. It is not a site-down vote.
 
 ## Docker Cleanup
 

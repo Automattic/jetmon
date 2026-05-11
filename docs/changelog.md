@@ -37,6 +37,48 @@ because it is intentionally **not** drop-in with the Jetmon 1 wire format
 - Audit logging via `jetmon_audit_log` with `event_type=api_access`
 - See internal-api-reference.md for full surface and design rationale
 
+**New — Veriflier v2 contract:**
+- Added versioned JSON-over-HTTP endpoints `POST /v2/check` and `GET /v2/status`
+  while keeping legacy `/check` and `/status` for mixed-fleet rollout.
+- `/v2/check` carries batch/request IDs, request deadlines, body rules, typed
+  outcomes, timing breakdowns, quorum `vantage.id`, and diagnostic `agent.id`.
+- Veriflier checks now run through a bounded concurrent executor. Saturated
+  Verifliers reject whole batches with HTTP 503 so overload is treated as
+  no-vote/unhealthy, not as customer-site downtime.
+- Monitor clients prefer the v2 contract and fall back to the legacy contract
+  when an older Veriflier does not advertise or serve v2.
+- Downtime quorum now counts unique v2 `vantage.id` values rather than raw
+  Veriflier agent replies. Duplicate vantage replies are audited but ignored
+  for quorum, and multi-Veriflier fleets retain a two-healthy-vantage floor
+  unless `PEER_OFFLINE_LIMIT=1` is explicitly configured.
+- `jetmon2 validate-config` and dashboard health now surface Veriflier v2
+  contract status, vantage/agent/capacity metadata, and duplicate or missing
+  vantage IDs.
+- Added Veriflier auto-discovery plumbing: trusted
+  `jetmon_veriflier_vantages`, agent telemetry rows in
+  `jetmon_veriflier_agents`, `VERIFLIER_DISCOVERY_MODE=static|shadow|active`,
+  shadow-mode drift reporting, and active-mode fallback to static config.
+- Added `jetmon2 verifliers discovery-report`, a read-only shadow-mode gate
+  that compares configured static Verifliers, trusted registry rows, and recent
+  agent telemetry without printing auth token values.
+- Documented the Veriflier discovery trust model in ADR-0010 and added an
+  operator checklist for dashboard/report green, amber, and red discovery
+  warnings.
+- Monitors collect Veriflier liveness/capacity telemetry from authenticated
+  `/v2/status` responses and write `jetmon_veriflier_agents`, so Veriflier
+  hosts do not need database credentials. Agent telemetry is not trust;
+  operators must pre-approve and enable vantages before monitors count them for
+  quorum.
+- Added `make test-veriflier-soak` for local v2 contract soak coverage:
+  high-concurrency mixed outcomes, overload recovery, auth rejection, and
+  deadline timeout recovery.
+- `jetmon2 telemetry report` now includes v2 Veriflier vote-evidence rollups:
+  duplicate votes ignored for quorum, duplicate-vote transitions,
+  minimum-healthy-floor blocks, and max observed quorum/healthy-vantage counts.
+- Documented legacy Veriflier fallback removal gates and the v2 naming
+  decision: keep `veriflier` / `veriflier2` through rollout, use a clearer
+  probe-agent name only for a future v3 architecture.
+
 **New — webhooks (Phase 3):**
 - `jetmon_webhooks` registry + `jetmon_webhook_deliveries` per-fire records
 - Stripe-style HMAC-SHA256 signatures (`t=<unix>,v1=<hex>` over
@@ -103,6 +145,10 @@ because it is intentionally **not** drop-in with the Jetmon 1 wire format
   `jetmon_process_health`, `jetmon_hosts`, delivery queues, projection drift,
   and dependency rollups so operators can see stale heartbeats, bucket coverage,
   delivery-owner posture, and suggested next actions in one place.
+- Fleet dashboard now has a dedicated Veriflier fleet section showing trusted
+  vantages, monitor-collected agent telemetry, capacity, discovery modes,
+  incomplete registry rows, stale telemetry, and duplicate endpoint warnings
+  without exposing Veriflier auth tokens.
 - Host and fleet dashboards now publish true process RSS beside Go runtime
   system memory, and `process.rss_mb` again reports operating-system resident
   memory when procfs is available.
