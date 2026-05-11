@@ -228,8 +228,8 @@ func TestStreamingPressureWorkerTargetUsesConservativeLatency(t *testing.T) {
 }
 
 func TestStreamingDampedWorkerTargetLimitsGrowthAndShrink(t *testing.T) {
-	if got := streamingDampedWorkerTarget(400, 2000, false); got != 500 {
-		t.Fatalf("growth damped target = %d, want 500", got)
+	if got := streamingDampedWorkerTarget(400, 2000, false); got != 600 {
+		t.Fatalf("growth damped target = %d, want 600", got)
 	}
 	if got := streamingDampedWorkerTarget(2000, 400, false); got != 1600 {
 		t.Fatalf("shrink damped target = %d, want 1600", got)

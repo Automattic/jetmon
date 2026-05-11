@@ -40,7 +40,7 @@ const (
 	streamingFailurePressureMin      = 1000
 	streamingFailurePressurePercent  = 25
 	streamingFailurePressureHold     = 2 * time.Minute
-	streamingFailurePressureLatency  = time.Second
+	streamingFailurePressureLatency  = 3 * time.Second
 )
 
 type streamingTarget struct {
@@ -1176,7 +1176,7 @@ func streamingDampedWorkerTarget(current, desired int, pressure bool) int {
 		return desired
 	}
 	if desired > current {
-		step := current / 4
+		step := current / 2
 		if step < streamingMinWorkerStep {
 			step = streamingMinWorkerStep
 		}
