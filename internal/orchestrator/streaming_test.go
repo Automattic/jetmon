@@ -526,8 +526,8 @@ func TestStreamingResultDrainLimitScalesWithBacklog(t *testing.T) {
 	if got := streamingResultDrainLimitFor(10); got != streamingResultDrainLimit {
 		t.Fatalf("small result drain limit = %d, want %d", got, streamingResultDrainLimit)
 	}
-	if got := streamingResultDrainLimitFor(40000); got != 20000 {
-		t.Fatalf("medium result drain limit = %d, want 20000", got)
+	if got := streamingResultDrainLimitFor(40000); got != streamingMaxResultDrainLimit {
+		t.Fatalf("medium result drain limit = %d, want capped %d", got, streamingMaxResultDrainLimit)
 	}
 	if got := streamingResultDrainLimitFor(200000); got != streamingMaxResultDrainLimit {
 		t.Fatalf("large result drain limit = %d, want %d", got, streamingMaxResultDrainLimit)
@@ -553,8 +553,8 @@ func TestStreamingBackpressureDepthScalesWithWorkersAndTargets(t *testing.T) {
 	if got := streamingSideEffectBackpressureDepth(2000, 100000); got != 5000 {
 		t.Fatalf("100k side-effect backpressure depth = %d, want target-based 5000", got)
 	}
-	if got := streamingResultDispatchPauseDepth(5000, 500000); got != 100000 {
-		t.Fatalf("500k result dispatch pause depth = %d, want target-based 100000", got)
+	if got := streamingResultDispatchPauseDepth(5000, 500000); got != 166666 {
+		t.Fatalf("500k result dispatch pause depth = %d, want target-based 166666", got)
 	}
 	if got := streamingResultBackpressureDepth(100000, 1000000); got != 131072 {
 		t.Fatalf("capped result backpressure depth = %d, want 131072", got)

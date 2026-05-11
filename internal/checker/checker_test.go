@@ -878,7 +878,7 @@ func TestOrderedResolverAddrsPrefersIPv4ButHonorsNetwork(t *testing.T) {
 	}
 }
 
-func TestCheckDNSCacheReturnsClonedCachedAddresses(t *testing.T) {
+func TestCheckDNSCacheReturnsCachedAddresses(t *testing.T) {
 	cache := newCheckDNSCache(time.Minute, 10)
 	cache.entries["example.com|ip4"] = checkDNSCacheEntry{
 		addrs:   []net.IPAddr{{IP: net.ParseIP("192.0.2.10")}},
@@ -891,14 +891,6 @@ func TestCheckDNSCacheReturnsClonedCachedAddresses(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].IP.String() != "192.0.2.10" {
 		t.Fatalf("lookup() = %#v, want cached IPv4 address", got)
-	}
-
-	got[0].IP[15] = 99
-	cache.mu.RLock()
-	cached := cache.entries["example.com|ip4"].addrs[0].IP.String()
-	cache.mu.RUnlock()
-	if cached != "192.0.2.10" {
-		t.Fatalf("cached address mutated through returned slice: %s", cached)
 	}
 }
 

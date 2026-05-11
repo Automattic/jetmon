@@ -47,7 +47,7 @@ const (
 	streamingBacklogWorkerDivisor            = 240
 	streamingBacklogWorkerMultiplier         = 2
 	streamingResultDrainLimit                = 4096
-	streamingMaxResultDrainLimit             = 65536
+	streamingMaxResultDrainLimit             = 16384
 	streamingResultDispatchStride            = 1024
 	streamingDispatchCatchupDivisor          = 120
 	streamingDispatchFastCatchupDivisor      = 60
@@ -1565,7 +1565,7 @@ func streamingResultDispatchPauseDepth(workerTarget, activeCount int) int {
 		workerTarget = 1
 	}
 	depth := workerTarget * 6
-	if activeBased := activeCount / 5; activeBased > depth {
+	if activeBased := activeCount / 3; activeBased > depth {
 		depth = activeBased
 	}
 	if depth < streamingMinBackpressureDepth {

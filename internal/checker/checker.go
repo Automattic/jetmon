@@ -154,7 +154,10 @@ func (c *checkDNSCache) lookup(ctx context.Context, resolver *net.Resolver, host
 	c.mu.RLock()
 	entry, ok := c.entries[key]
 	if ok && now.Before(entry.expires) {
-		addrs := cloneIPAddrs(entry.addrs)
+		// Cache entries are immutable after store; callers only iterate them.
+		// Returning the stored slice avoids an allocation on every repeated
+		// check for long-lived monitored sites.
+		addrs := entry.addrs
 		c.mu.RUnlock()
 		return addrs, nil
 	}
@@ -170,7 +173,10 @@ func (c *checkDNSCache) lookup(ctx context.Context, resolver *net.Resolver, host
 	c.mu.RLock()
 	entry, ok = c.entries[key]
 	if ok && now.Before(entry.expires) {
-		addrs := cloneIPAddrs(entry.addrs)
+		// Cache entries are immutable after store; callers only iterate them.
+		// Returning the stored slice avoids an allocation on every repeated
+		// check for long-lived monitored sites.
+		addrs := entry.addrs
 		c.mu.RUnlock()
 		return addrs, nil
 	}
@@ -468,6 +474,19 @@ func newCheckResolver() *net.Resolver {
 }
 
 func orderedResolverAddrs(addrs []net.IPAddr, network string) []net.IPAddr {
+	if len(addrs) == 1 {
+		addr := addrs[0]
+		if addr.IP == nil {
+			return nil
+		}
+		if strings.HasSuffix(network, "6") && addr.IP.To4() != nil {
+			return nil
+		}
+		if strings.HasSuffix(network, "4") && addr.IP.To4() == nil {
+			return nil
+		}
+		return addrs
+	}
 	ordered := make([]net.IPAddr, 0, len(addrs))
 	wants4 := strings.HasSuffix(network, "4")
 	wants6 := strings.HasSuffix(network, "6")
