@@ -526,8 +526,8 @@ func TestStreamingResultDrainLimitScalesWithBacklog(t *testing.T) {
 	if got := streamingResultDrainLimitFor(10); got != streamingResultDrainLimit {
 		t.Fatalf("small result drain limit = %d, want %d", got, streamingResultDrainLimit)
 	}
-	if got := streamingResultDrainLimitFor(40000); got != streamingMaxResultDrainLimit {
-		t.Fatalf("medium result drain limit = %d, want capped %d", got, streamingMaxResultDrainLimit)
+	if got := streamingResultDrainLimitFor(40000); got != 20000 {
+		t.Fatalf("medium result drain limit = %d, want 20000", got)
 	}
 	if got := streamingResultDrainLimitFor(200000); got != streamingMaxResultDrainLimit {
 		t.Fatalf("large result drain limit = %d, want %d", got, streamingMaxResultDrainLimit)
@@ -561,6 +561,22 @@ func TestStreamingBackpressureDepthScalesWithWorkersAndTargets(t *testing.T) {
 	}
 	if got := streamingResultDispatchPauseDepth(100000, 1000000); got != 196608 {
 		t.Fatalf("capped result dispatch pause depth = %d, want 196608", got)
+	}
+}
+
+func TestStreamingResultBacklogPauseKeepsIdleWorkersFed(t *testing.T) {
+	depth := streamingResultDispatchPauseDepth(5000, 500000)
+	if streamingShouldPauseDispatchForResultBacklog(depth, 5000, 500000, 0, 0) {
+		t.Fatal("idle pool should keep dispatching despite result backlog")
+	}
+	if !streamingShouldPauseDispatchForResultBacklog(depth, 5000, 500000, 1, 0) {
+		t.Fatal("active checks should pause dispatch at result backlog threshold")
+	}
+	if !streamingShouldPauseDispatchForResultBacklog(depth, 5000, 500000, 0, 1) {
+		t.Fatal("queued checks should pause dispatch at result backlog threshold")
+	}
+	if streamingShouldPauseDispatchForResultBacklog(depth-1, 5000, 500000, 1, 1) {
+		t.Fatal("below threshold should not pause dispatch")
 	}
 }
 

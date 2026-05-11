@@ -47,7 +47,7 @@ const (
 	streamingBacklogWorkerDivisor            = 240
 	streamingBacklogWorkerMultiplier         = 2
 	streamingResultDrainLimit                = 4096
-	streamingMaxResultDrainLimit             = 16384
+	streamingMaxResultDrainLimit             = 65536
 	streamingResultDispatchStride            = 1024
 	streamingDispatchCatchupDivisor          = 120
 	streamingDispatchFastCatchupDivisor      = 60
@@ -742,7 +742,7 @@ func (o *Orchestrator) runStreamingEngine() {
 		if minInterval > 0 && now.Sub(lastDispatch) < minInterval {
 			return
 		}
-		if resultDepth := o.pool.ResultDepth(); resultDepth >= streamingResultDispatchPauseDepth(o.pool.WorkerCount(), planner.activeCount()) {
+		if streamingShouldPauseDispatchForResultBacklog(o.pool.ResultDepth(), o.pool.WorkerCount(), planner.activeCount(), o.pool.ActiveCount(), o.pool.QueueDepth()) {
 			if recordPause {
 				stats.resultPaused++
 			}
@@ -1576,6 +1576,13 @@ func streamingResultDispatchPauseDepth(workerTarget, activeCount int) int {
 		return limit
 	}
 	return depth
+}
+
+func streamingShouldPauseDispatchForResultBacklog(resultDepth, workerTarget, activeCount, activeChecks, queueDepth int) bool {
+	if resultDepth < streamingResultDispatchPauseDepth(workerTarget, activeCount) {
+		return false
+	}
+	return activeChecks+queueDepth > 0
 }
 
 func streamingResultDrainLimitFor(resultDepth int) int {
