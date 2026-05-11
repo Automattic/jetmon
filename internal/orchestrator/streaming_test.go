@@ -348,23 +348,23 @@ func TestStreamingBackpressureDepthScalesWithWorkersAndTargets(t *testing.T) {
 	if got := streamingSideEffectBackpressureDepth(2000, 100000); got != 5000 {
 		t.Fatalf("100k side-effect backpressure depth = %d, want target-based 5000", got)
 	}
-	if got := streamingResultDispatchPauseDepth(5000, 500000); got != 125000 {
-		t.Fatalf("500k result dispatch pause depth = %d, want target-based 125000", got)
+	if got := streamingResultDispatchPauseDepth(5000, 500000); got != 50000 {
+		t.Fatalf("500k result dispatch pause depth = %d, want target-based 50000", got)
 	}
 	if got := streamingResultBackpressureDepth(100000, 1000000); got != 131072 {
 		t.Fatalf("capped result backpressure depth = %d, want 131072", got)
 	}
-	if got := streamingResultDispatchPauseDepth(100000, 1000000); got != 196608 {
-		t.Fatalf("capped result dispatch pause depth = %d, want 196608", got)
+	if got := streamingResultDispatchPauseDepth(100000, 1000000); got != 131072 {
+		t.Fatalf("capped result dispatch pause depth = %d, want 131072", got)
 	}
 }
 
 func TestStreamingDispatchBudgetPacesBacklogCatchup(t *testing.T) {
-	if got := streamingDispatchBudget(350.88, 60000, 3500, time.Second); got != 1404 {
-		t.Fatalf("100k backlog dispatch budget = %d, want paced catch-up budget 1404", got)
+	if got := streamingDispatchBudget(350.88, 60000, 3500, time.Second); got != 702 {
+		t.Fatalf("100k backlog dispatch budget = %d, want paced catch-up budget 702", got)
 	}
-	if got := streamingDispatchBudget(3508.8, 600000, 5000, time.Second); got != 14036 {
-		t.Fatalf("1M backlog dispatch budget = %d, want capped catch-up budget 14036", got)
+	if got := streamingDispatchBudget(3508.8, 600000, 5000, time.Second); got != 7018 {
+		t.Fatalf("1M backlog dispatch budget = %d, want capped catch-up budget 7018", got)
 	}
 	if got := streamingDispatchBudget(350.88, 20, 3500, time.Second); got != 20 {
 		t.Fatalf("small pending dispatch budget = %d, want pending count", got)
@@ -373,18 +373,18 @@ func TestStreamingDispatchBudgetPacesBacklogCatchup(t *testing.T) {
 
 func TestStreamingDispatchBudgetScalesWithElapsedTime(t *testing.T) {
 	got := streamingDispatchBudget(350.88, 60000, 3500, 10*time.Second)
-	if got <= 1404 {
+	if got <= 702 {
 		t.Fatalf("10s delayed dispatch budget = %d, want above one-second budget", got)
 	}
-	if got > 14036 {
-		t.Fatalf("10s delayed dispatch budget = %d, want <= 4x elapsed steady-state cap", got)
+	if got > 2106 {
+		t.Fatalf("10s delayed dispatch budget = %d, want <= capped elapsed steady-state cap", got)
 	}
 }
 
 func TestStreamingDispatchBudgetCapsLongPauseByWorkers(t *testing.T) {
 	got := streamingDispatchBudget(350.88, 96077, 3693, 136*time.Second)
-	if got != 14772 {
-		t.Fatalf("long-pause dispatch budget = %d, want worker-capped budget 14772", got)
+	if got != 2106 {
+		t.Fatalf("long-pause dispatch budget = %d, want elapsed-capped budget 2106", got)
 	}
 }
 

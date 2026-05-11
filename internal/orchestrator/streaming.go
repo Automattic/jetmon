@@ -15,33 +15,37 @@ import (
 )
 
 const (
-	streamingTickInterval            = time.Second
-	streamingReportInterval          = time.Minute
-	streamingScaleInterval           = 5 * time.Second
-	streamingProjectionFlushInterval = 10 * time.Second
-	streamingReloadDeferInterval     = time.Minute
-	streamingProjectionSlack         = 2 * time.Second
-	streamingEmptyTargetPollInterval = 5 * time.Second
-	streamingActiveCountPollInterval = 30 * time.Second
-	streamingDefaultLatency          = 250 * time.Millisecond
-	streamingBootstrapLatency        = time.Second
-	streamingHistoryFlushInterval    = 250 * time.Millisecond
-	streamingHistoryBatchSize        = 1000
-	streamingMinLoadPageSize         = 5000
-	streamingMinQueueCap             = 65536
-	streamingMaxQueueCap             = 262144
-	streamingMinScheduleHeadroom     = time.Second
-	streamingMaxScheduleHeadroom     = 15 * time.Second
-	streamingMinSideEffectShards     = 8
-	streamingMaxSideEffectShards     = 256
-	streamingWorkerHeadroom          = 2.0
-	streamingMinWorkerStep           = 50
-	streamingMinBackpressureDepth    = 1024
-	streamingResultDrainLimit        = 8192
-	streamingFailurePressureMin      = 1000
-	streamingFailurePressurePercent  = 25
-	streamingFailurePressureHold     = 2 * time.Minute
-	streamingFailurePressureLatency  = 3 * time.Second
+	streamingTickInterval             = time.Second
+	streamingReportInterval           = time.Minute
+	streamingScaleInterval            = 5 * time.Second
+	streamingProjectionFlushInterval  = 10 * time.Second
+	streamingReloadDeferInterval      = time.Minute
+	streamingProjectionSlack          = 2 * time.Second
+	streamingEmptyTargetPollInterval  = 5 * time.Second
+	streamingActiveCountPollInterval  = 30 * time.Second
+	streamingDefaultLatency           = 250 * time.Millisecond
+	streamingBootstrapLatency         = time.Second
+	streamingHistoryFlushInterval     = 250 * time.Millisecond
+	streamingHistoryBatchSize         = 1000
+	streamingMinLoadPageSize          = 5000
+	streamingMinQueueCap              = 65536
+	streamingMaxQueueCap              = 262144
+	streamingMinScheduleHeadroom      = time.Second
+	streamingMaxScheduleHeadroom      = 15 * time.Second
+	streamingMinSideEffectShards      = 8
+	streamingMaxSideEffectShards      = 256
+	streamingWorkerHeadroom           = 2.0
+	streamingMinWorkerStep            = 50
+	streamingMinBackpressureDepth     = 1024
+	streamingResultDrainLimit         = 8192
+	streamingDispatchCatchupDivisor   = 120
+	streamingDispatchMaxElapsed       = 3 * time.Second
+	streamingDispatchMaxMultiplier    = 2.0
+	streamingDispatchWorkerMultiplier = 3
+	streamingFailurePressureMin       = 1000
+	streamingFailurePressurePercent   = 25
+	streamingFailurePressureHold      = 2 * time.Minute
+	streamingFailurePressureLatency   = 3 * time.Second
 )
 
 type streamingTarget struct {
@@ -707,7 +711,7 @@ func (o *Orchestrator) runStreamingEngine() {
 		hotPathPressure = streamingHotPathBehind(planner, len(pending), o.pool.ResultDepth(), sideEffects.queueDepth(), o.pool.WorkerCount(), stats)
 		pressureActive := failurePressureActive || hotPathPressure
 		if now.Sub(lastScale) >= streamingScaleInterval {
-			o.applyStreamingWorkerTarget(cfg, planner, stats, len(pending), sideEffects.queueDepth(), failurePressureActive)
+			o.applyStreamingWorkerTarget(cfg, planner, stats, len(pending), sideEffects.queueDepth(), pressureActive)
 			lastScale = now
 		}
 
@@ -1430,14 +1434,14 @@ func streamingResultDispatchPauseDepth(workerTarget, activeCount int) int {
 	if workerTarget < 1 {
 		workerTarget = 1
 	}
-	depth := workerTarget * 8
-	if activeBased := activeCount / 4; activeBased > depth {
+	depth := workerTarget * 6
+	if activeBased := activeCount / 10; activeBased > depth {
 		depth = activeBased
 	}
 	if depth < streamingMinBackpressureDepth {
 		return streamingMinBackpressureDepth
 	}
-	limit := streamingMaxQueueCap * 3 / 4
+	limit := streamingMaxQueueCap / 2
 	if depth > limit {
 		return limit
 	}
@@ -1473,6 +1477,9 @@ func streamingDispatchBudget(requiredRate float64, pending, workerTarget int, el
 	if pending <= 0 {
 		return 0
 	}
+	if elapsed > streamingDispatchMaxElapsed {
+		elapsed = streamingDispatchMaxElapsed
+	}
 	seconds := elapsed.Seconds()
 	if seconds <= 0 {
 		seconds = streamingTickInterval.Seconds()
@@ -1481,13 +1488,13 @@ func streamingDispatchBudget(requiredRate float64, pending, workerTarget int, el
 	if base < 1 {
 		base = 1
 	}
-	catchup := pending / 30
+	catchup := pending / streamingDispatchCatchupDivisor
 	budget := base + catchup
-	maxBudget := int(math.Ceil(requiredRate * seconds * 4))
+	maxBudget := int(math.Ceil(requiredRate * seconds * streamingDispatchMaxMultiplier))
 	if maxBudget < base {
 		maxBudget = base
 	}
-	workerCap := workerTarget * 4
+	workerCap := workerTarget * streamingDispatchWorkerMultiplier
 	if workerCap < workerTarget {
 		workerCap = workerTarget
 	}
