@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"container/heap"
 	"context"
 	"log"
 	"math"
@@ -73,7 +74,26 @@ type streamingRequestConfig struct {
 type streamingPlanner struct {
 	targets      map[int64]*streamingTarget
 	due          map[int64][]int64
+	dueHeap      streamingDueHeap
 	requiredRate float64
+}
+
+type streamingDueHeap []int64
+
+func (h streamingDueHeap) Len() int           { return len(h) }
+func (h streamingDueHeap) Less(i, j int) bool { return h[i] < h[j] }
+func (h streamingDueHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+
+func (h *streamingDueHeap) Push(x any) {
+	*h = append(*h, x.(int64))
+}
+
+func (h *streamingDueHeap) Pop() any {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[:n-1]
+	return x
 }
 
 type streamingReloadResult struct {
@@ -198,14 +218,23 @@ func (p *streamingPlanner) scheduleAtNextPhaseAfter(target *streamingTarget, aft
 func (p *streamingPlanner) scheduleAt(target *streamingTarget, dueAt time.Time) {
 	dueAt = dueAt.UTC().Truncate(time.Second)
 	target.dueAt = dueAt
-	p.due[dueAt.Unix()] = append(p.due[dueAt.Unix()], target.site.BlogID)
+	if p.due == nil {
+		p.due = make(map[int64][]int64)
+	}
+	dueUnix := dueAt.Unix()
+	if _, ok := p.due[dueUnix]; !ok {
+		heap.Push(&p.dueHeap, dueUnix)
+	}
+	p.due[dueUnix] = append(p.due[dueUnix], target.site.BlogID)
 }
 
 func (p *streamingPlanner) popDue(now time.Time) []*streamingTarget {
 	nowUnix := now.UTC().Unix()
 	var due []*streamingTarget
-	for dueUnix, blogIDs := range p.due {
-		if dueUnix > nowUnix {
+	for len(p.dueHeap) > 0 && p.dueHeap[0] <= nowUnix {
+		dueUnix := heap.Pop(&p.dueHeap).(int64)
+		blogIDs, ok := p.due[dueUnix]
+		if !ok {
 			continue
 		}
 		delete(p.due, dueUnix)

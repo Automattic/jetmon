@@ -51,6 +51,55 @@ func TestStreamingPlannerPopDueSkipsQueuedAndInflightTargets(t *testing.T) {
 	}
 }
 
+func TestStreamingPlannerPopDueKeepsFutureBucketsPending(t *testing.T) {
+	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	planner := &streamingPlanner{
+		targets: make(map[int64]*streamingTarget),
+		due:     make(map[int64][]int64),
+	}
+	ready := &streamingTarget{site: db.Site{BlogID: 1, CheckInterval: 1}, active: true}
+	future := &streamingTarget{site: db.Site{BlogID: 2, CheckInterval: 1}, active: true}
+	planner.targets[1] = ready
+	planner.targets[2] = future
+	planner.scheduleAt(future, now.Add(10*time.Minute))
+	planner.scheduleAt(ready, now)
+
+	due := planner.popDue(now)
+	if len(due) != 1 || due[0].site.BlogID != 1 {
+		t.Fatalf("popDue(now) = %+v, want only blog 1", due)
+	}
+	if got := planner.popDue(now.Add(5 * time.Minute)); len(got) != 0 {
+		t.Fatalf("popDue(before future) = %+v, want no sites", got)
+	}
+	due = planner.popDue(now.Add(10 * time.Minute))
+	if len(due) != 1 || due[0].site.BlogID != 2 {
+		t.Fatalf("popDue(future) = %+v, want only blog 2", due)
+	}
+}
+
+func TestStreamingPlannerPopDueSkipsStaleBucketEntries(t *testing.T) {
+	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	planner := &streamingPlanner{
+		targets: make(map[int64]*streamingTarget),
+		due:     make(map[int64][]int64),
+	}
+	target := &streamingTarget{site: db.Site{BlogID: 1, CheckInterval: 1}, active: true}
+	planner.targets[1] = target
+	planner.scheduleAt(target, now.Add(-time.Second))
+	planner.scheduleAt(target, now.Add(time.Minute))
+
+	if got := planner.popDue(now); len(got) != 0 {
+		t.Fatalf("popDue(now) = %+v, want stale bucket skipped", got)
+	}
+	if target.queued {
+		t.Fatal("target should not be queued from a stale due bucket")
+	}
+	due := planner.popDue(now.Add(time.Minute))
+	if len(due) != 1 || due[0].site.BlogID != 1 {
+		t.Fatalf("popDue(rescheduled) = %+v, want blog 1", due)
+	}
+}
+
 func TestStreamingScheduleAfterResultKeepsLocalRetryForSeemsDown(t *testing.T) {
 	checkedAt := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
 	planner := &streamingPlanner{
