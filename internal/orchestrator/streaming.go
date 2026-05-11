@@ -48,6 +48,7 @@ const (
 	streamingBacklogWorkerMultiplier         = 2
 	streamingResultDrainLimit                = 4096
 	streamingMaxResultDrainLimit             = 65536
+	streamingResultDispatchStride            = 1024
 	streamingDispatchCatchupDivisor          = 120
 	streamingDispatchFastCatchupDivisor      = 60
 	streamingDispatchMaxElapsed              = 6 * time.Second
@@ -55,6 +56,7 @@ const (
 	streamingDispatchCatchupMultiplier       = 4.0
 	streamingDispatchWorkerMultiplier        = 3
 	streamingDispatchCatchupWorkerMultiplier = 6
+	streamingHotPathScaleLag                 = 10 * time.Second
 	streamingFailurePressureMin              = 1000
 	streamingFailurePressurePercent          = 25
 	streamingFailurePressureHold             = 2 * time.Minute
@@ -205,9 +207,8 @@ func (p *streamingPlanner) recalculateRequiredRate() {
 	p.requiredRate = rate
 }
 
-func (p *streamingPlanner) scheduleAfterResult(target *streamingTarget, res checker.Result, allowImmediateRetry bool) {
+func (p *streamingPlanner) scheduleAfterResult(target *streamingTarget, res checker.Result, checkedAt time.Time, allowImmediateRetry bool) {
 	siteInterval := siteCheckInterval(target.site)
-	checkedAt := resultCheckedAt(res)
 	if allowImmediateRetry && res.IsFailure() && target.site.SiteStatus != statusConfirmedDown && siteInterval > failedCheckRetryInterval {
 		p.scheduleAt(target, checkedAt.Add(failedCheckRetryInterval))
 		return
@@ -700,19 +701,19 @@ func (o *Orchestrator) runStreamingEngine() {
 		}
 	}
 
-	handleResult := func(res checker.Result) {
+	handleResult := func(res checker.Result, now time.Time) {
 		target, ok := planner.targets[res.BlogID]
 		if !ok || !target.inFlight {
 			stats.staleResults++
 			return
 		}
 		target.inFlight = false
-		lag := resultCheckedAt(res).Sub(target.dueAt)
+		checkedAt := resultCheckedAt(res)
+		lag := checkedAt.Sub(target.dueAt)
 		if lag < 0 {
 			lag = 0
 		}
 		stats.addResult(res, lag)
-		now := nowFunc().UTC()
 		failurePressureActive := now.Before(pressureUntil)
 		if streamingFailurePressure(stats) {
 			pressureUntil = now.Add(streamingFailurePressureHold)
@@ -730,8 +731,8 @@ func (o *Orchestrator) runStreamingEngine() {
 			}
 			pendingSideEffects[target.site.BlogID]++
 		}
-		planner.scheduleAfterResult(target, res, streamingAllowImmediateRetry(target, res, o.retries, pressureActive))
-		o.queueStreamingProjection(cfg, target, res, pendingProjection)
+		planner.scheduleAfterResult(target, res, checkedAt, streamingAllowImmediateRetry(target, res, o.retries, pressureActive))
+		o.queueStreamingProjection(cfg, target, checkedAt, now, pendingProjection)
 	}
 
 	dispatchPending := func(now time.Time, recordPause bool, minInterval time.Duration) {
@@ -759,19 +760,31 @@ func (o *Orchestrator) runStreamingEngine() {
 		lastDispatch = now
 	}
 
+	drainResults := func(limit int, dispatchDuringDrain bool) {
+		for processed := 0; processed < limit; processed++ {
+			select {
+			case res := <-o.pool.Results():
+				handleResult(res, nowFunc().UTC())
+				if dispatchDuringDrain && processed%streamingResultDispatchStride == streamingResultDispatchStride-1 {
+					dispatchPending(nowFunc().UTC(), false, streamingDispatchWakeInterval)
+				}
+			default:
+				if dispatchDuringDrain {
+					dispatchPending(nowFunc().UTC(), false, streamingDispatchWakeInterval)
+				}
+				return
+			}
+		}
+		if dispatchDuringDrain {
+			dispatchPending(nowFunc().UTC(), false, streamingDispatchWakeInterval)
+		}
+	}
+
 	handleTick := func() {
 		now := nowFunc().UTC()
 		cfg = config.Get()
 		reloadReason := ""
-	tickResultDrain:
-		for range streamingResultDrainLimitFor(o.pool.ResultDepth()) {
-			select {
-			case res := <-o.pool.Results():
-				handleResult(res)
-			default:
-				break tickResultDrain
-			}
-		}
+		drainResults(streamingResultDrainLimitFor(o.pool.ResultDepth()), true)
 		o.refreshVeriflierClients(cfg)
 		failurePressureActive := now.Before(pressureUntil) || streamingFailurePressure(stats)
 		hotPathPressure = streamingHotPathBehind(planner, len(pending), o.pool.ResultDepth(), sideEffects.queueDepth(), o.pool.WorkerCount(), stats)
@@ -875,16 +888,8 @@ func (o *Orchestrator) runStreamingEngine() {
 		case reload := <-reloadResults:
 			applyReload(reload)
 		case res := <-o.pool.Results():
-			handleResult(res)
-		resultDrain:
-			for range streamingResultDrainLimitFor(o.pool.ResultDepth()) {
-				select {
-				case res := <-o.pool.Results():
-					handleResult(res)
-				default:
-					break resultDrain
-				}
-			}
+			handleResult(res, nowFunc().UTC())
+			drainResults(streamingResultDrainLimitFor(o.pool.ResultDepth()), true)
 			dispatchPending(nowFunc().UTC(), false, streamingDispatchWakeInterval)
 			drainReadyTick()
 		case <-tick.C:
@@ -1090,13 +1095,11 @@ func streamingAllowImmediateRetry(target *streamingTarget, res checker.Result, r
 	return retries != nil && retries.get(target.site.BlogID) != nil
 }
 
-func (o *Orchestrator) queueStreamingProjection(cfg *config.Config, target *streamingTarget, res checker.Result, pending map[int64]db.SiteCheck) {
+func (o *Orchestrator) queueStreamingProjection(cfg *config.Config, target *streamingTarget, resultAt, projectedAt time.Time, pending map[int64]db.SiteCheck) {
 	interval := streamingProjectionInterval(cfg)
-	resultAt := resultCheckedAt(res)
 	if !streamingProjectionDue(target, resultAt, interval) {
 		return
 	}
-	projectedAt := nowFunc().UTC()
 	if projectedAt.Before(resultAt) {
 		projectedAt = resultAt
 	}
@@ -1305,7 +1308,7 @@ func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streami
 
 func (o *Orchestrator) applyStreamingWorkerTarget(cfg *config.Config, planner *streamingPlanner, stats streamingStats, pending, resultDepth, sideEffectDepth int, failurePressure, hotPathPressure bool) int {
 	latency := stats.scaleLatency()
-	desiredTarget := streamingDesiredWorkerTarget(cfg, planner, latency, stats.maxLag, pending, o.pool.QueueDepth(), resultDepth, sideEffectDepth, o.pool.WorkerCount(), failurePressure)
+	desiredTarget := streamingDesiredWorkerTarget(cfg, planner, latency, stats.maxLag, pending, o.pool.QueueDepth(), resultDepth, sideEffectDepth, o.pool.WorkerCount(), failurePressure, hotPathPressure)
 	workerTarget := streamingDampedWorkerTarget(o.pool.WorkerCount(), desiredTarget, failurePressure)
 	if planner.activeCount() > 0 {
 		if added := o.pool.SetSizeBounds(workerTarget, workerTarget); added > 0 {
@@ -1318,9 +1321,10 @@ func (o *Orchestrator) applyStreamingWorkerTarget(cfg *config.Config, planner *s
 	return workerTarget
 }
 
-func streamingDesiredWorkerTarget(cfg *config.Config, planner *streamingPlanner, latency, maxLag time.Duration, pending, queueDepth, resultDepth, sideEffectDepth, currentWorkers int, failurePressure bool) int {
+func streamingDesiredWorkerTarget(cfg *config.Config, planner *streamingPlanner, latency, maxLag time.Duration, pending, queueDepth, resultDepth, sideEffectDepth, currentWorkers int, failurePressure, hotPathPressure bool) int {
+	resultPressured := resultDepth >= streamingResultDispatchPauseDepth(currentWorkers, planner.activeCount())/2
 	scaleLatency := latency
-	if !failurePressure && scaleLatency > streamingDefaultLatency {
+	if !failurePressure && (!hotPathPressure || resultPressured) && scaleLatency > streamingDefaultLatency {
 		scaleLatency = streamingDefaultLatency
 	}
 	desiredTarget := streamingWorkerTarget(cfg, planner, scaleLatency)
@@ -1331,10 +1335,14 @@ func streamingDesiredWorkerTarget(cfg *config.Config, planner *streamingPlanner,
 		}
 		return desiredTarget
 	}
-	if maxLag <= streamingReportInterval {
+	scaleForBacklog := maxLag > streamingReportInterval
+	if hotPathPressure && maxLag > streamingHotPathScaleLag {
+		scaleForBacklog = true
+	}
+	if !scaleForBacklog {
 		return desiredTarget
 	}
-	if resultDepth >= streamingResultDispatchPauseDepth(currentWorkers, planner.activeCount())/2 {
+	if resultPressured {
 		return desiredTarget
 	}
 	if sideEffectDepth < streamingSideEffectBackpressureDepth(currentWorkers, planner.activeCount()) {

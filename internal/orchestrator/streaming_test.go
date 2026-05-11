@@ -116,7 +116,7 @@ func TestStreamingScheduleAfterResultKeepsLocalRetryForSeemsDown(t *testing.T) {
 		BlogID:    42,
 		ErrorCode: checker.ErrorConnect,
 		Timestamp: checkedAt,
-	}, true)
+	}, checkedAt, true)
 
 	if got, want := target.dueAt, checkedAt.Add(failedCheckRetryInterval); !got.Equal(want) {
 		t.Fatalf("dueAt = %s, want retry at %s", got, want)
@@ -139,7 +139,7 @@ func TestStreamingScheduleAfterResultUsesNormalCadenceForConfirmedDown(t *testin
 		BlogID:    42,
 		ErrorCode: checker.ErrorConnect,
 		Timestamp: checkedAt,
-	}, true)
+	}, checkedAt, true)
 
 	if got, want := target.dueAt, checkedAt.Add(streamingCheckCadence(target.site)); !got.Equal(want) {
 		t.Fatalf("dueAt = %s, want normal cadence at %s", got, want)
@@ -186,7 +186,7 @@ func TestStreamingScheduleAfterResultSkipsImmediateRetryUnderPressure(t *testing
 		BlogID:    42,
 		ErrorCode: checker.ErrorConnect,
 		Timestamp: checkedAt,
-	}, false)
+	}, checkedAt, false)
 
 	if target.dueAt.Equal(checkedAt.Add(failedCheckRetryInterval)) {
 		t.Fatal("dueAt used immediate retry while failure pressure was active")
@@ -288,7 +288,7 @@ func TestStreamingDesiredWorkerTargetUsesBacklogWithoutFailurePressure(t *testin
 	cfg := &config.Config{NumWorkers: 60, NetCommsTimeout: 10}
 
 	base := streamingWorkerTarget(cfg, planner, 40*time.Millisecond)
-	got := streamingDesiredWorkerTarget(cfg, planner, 40*time.Millisecond, 2*time.Minute, 60000, 0, 0, 0, base, false)
+	got := streamingDesiredWorkerTarget(cfg, planner, 40*time.Millisecond, 2*time.Minute, 60000, 0, 0, 0, base, false, false)
 	if got <= base {
 		t.Fatalf("streamingDesiredWorkerTarget() = %d, want above base target %d for pending backlog", got, base)
 	}
@@ -306,9 +306,27 @@ func TestStreamingDesiredWorkerTargetAvoidsLatencySurgeWhileOnTime(t *testing.T)
 	cfg := &config.Config{NumWorkers: 60, NetCommsTimeout: 10}
 
 	base := streamingWorkerTarget(cfg, planner, streamingDefaultLatency)
-	got := streamingDesiredWorkerTarget(cfg, planner, 3*time.Second, 30*time.Second, 60000, 0, 0, 0, base, false)
+	got := streamingDesiredWorkerTarget(cfg, planner, 3*time.Second, 30*time.Second, 60000, 0, 0, 0, base, false, false)
 	if got != base {
 		t.Fatalf("streamingDesiredWorkerTarget() = %d, want base target %d while freshness is on time", got, base)
+	}
+}
+
+func TestStreamingDesiredWorkerTargetUsesHotPathLatencyBeforeMinuteLag(t *testing.T) {
+	planner := &streamingPlanner{targets: make(map[int64]*streamingTarget)}
+	for i := int64(1); i <= 100000; i++ {
+		planner.targets[i] = &streamingTarget{
+			site:   db.Site{BlogID: i, CheckInterval: 5},
+			active: true,
+		}
+	}
+	planner.recalculateRequiredRate()
+	cfg := &config.Config{NumWorkers: 60, NetCommsTimeout: 10}
+
+	base := streamingWorkerTarget(cfg, planner, streamingDefaultLatency)
+	got := streamingDesiredWorkerTarget(cfg, planner, 900*time.Millisecond, 20*time.Second, 60000, 0, 0, 0, base, false, true)
+	if got <= base {
+		t.Fatalf("streamingDesiredWorkerTarget() = %d, want above base target %d during hot-path backlog", got, base)
 	}
 }
 
@@ -325,9 +343,28 @@ func TestStreamingDesiredWorkerTargetSkipsBacklogGrowthUnderResultPressure(t *te
 
 	base := streamingWorkerTarget(cfg, planner, streamingDefaultLatency)
 	resultDepth := streamingResultDispatchPauseDepth(base, planner.activeCount()) / 2
-	got := streamingDesiredWorkerTarget(cfg, planner, streamingDefaultLatency, 2*time.Minute, 60000, 0, resultDepth, 0, base, false)
+	got := streamingDesiredWorkerTarget(cfg, planner, streamingDefaultLatency, 2*time.Minute, 60000, 0, resultDepth, 0, base, false, false)
 	if got != base {
 		t.Fatalf("streamingDesiredWorkerTarget() = %d, want base target %d while result backlog is pressured", got, base)
+	}
+}
+
+func TestStreamingDesiredWorkerTargetAvoidsHotPathGrowthUnderResultPressure(t *testing.T) {
+	planner := &streamingPlanner{targets: make(map[int64]*streamingTarget)}
+	for i := int64(1); i <= 100000; i++ {
+		planner.targets[i] = &streamingTarget{
+			site:   db.Site{BlogID: i, CheckInterval: 5},
+			active: true,
+		}
+	}
+	planner.recalculateRequiredRate()
+	cfg := &config.Config{NumWorkers: 60, NetCommsTimeout: 10}
+
+	base := streamingWorkerTarget(cfg, planner, streamingDefaultLatency)
+	resultDepth := streamingResultDispatchPauseDepth(base, planner.activeCount()) / 2
+	got := streamingDesiredWorkerTarget(cfg, planner, 900*time.Millisecond, 20*time.Second, 60000, 0, resultDepth, 0, base, false, true)
+	if got != base {
+		t.Fatalf("streamingDesiredWorkerTarget() = %d, want base target %d while hot path has result pressure", got, base)
 	}
 }
 
@@ -343,7 +380,7 @@ func TestStreamingDesiredWorkerTargetSkipsBacklogGrowthDuringFailurePressure(t *
 	cfg := &config.Config{NumWorkers: 60, NetCommsTimeout: 10}
 
 	base := streamingWorkerTarget(cfg, planner, 40*time.Millisecond)
-	got := streamingDesiredWorkerTarget(cfg, planner, 40*time.Millisecond, 2*time.Minute, 60000, 0, 0, 0, base, true)
+	got := streamingDesiredWorkerTarget(cfg, planner, 40*time.Millisecond, 2*time.Minute, 60000, 0, 0, 0, base, true, false)
 	if got != base {
 		t.Fatalf("streamingDesiredWorkerTarget() = %d, want base target %d while failure pressure is active", got, base)
 	}
@@ -774,13 +811,13 @@ func TestQueueStreamingProjectionRespectsInterval(t *testing.T) {
 	}
 	pending := map[int64]db.SiteCheck{}
 
-	o.queueStreamingProjection(cfg, target, checker.Result{BlogID: 42, Timestamp: checkedAt}, pending)
+	o.queueStreamingProjection(cfg, target, checkedAt, projectedAt, pending)
 	if len(pending) != 0 {
 		t.Fatalf("pending projection rows = %d, want 0 before interval", len(pending))
 	}
 
 	later := checkedAt.Add(10 * time.Minute)
-	o.queueStreamingProjection(cfg, target, checker.Result{BlogID: 42, Timestamp: later}, pending)
+	o.queueStreamingProjection(cfg, target, later, projectedAt, pending)
 	if len(pending) != 1 {
 		t.Fatalf("pending projection rows = %d, want 1 after interval", len(pending))
 	}
@@ -805,13 +842,13 @@ func TestQueueStreamingProjectionUsesConfiguredRollbackWindowForFiveMinuteSites(
 	}
 	pending := map[int64]db.SiteCheck{}
 
-	o.queueStreamingProjection(cfg, target, checker.Result{BlogID: 42, Timestamp: checkedAt}, pending)
+	o.queueStreamingProjection(cfg, target, checkedAt, projectedAt, pending)
 	if len(pending) != 0 {
 		t.Fatalf("pending projection rows = %d, want 0 before configured interval", len(pending))
 	}
 
 	later := checkedAt.Add(10 * time.Minute)
-	o.queueStreamingProjection(cfg, target, checker.Result{BlogID: 42, Timestamp: later}, pending)
+	o.queueStreamingProjection(cfg, target, later, projectedAt, pending)
 	if len(pending) != 1 {
 		t.Fatalf("pending projection rows = %d, want 1 after configured interval", len(pending))
 	}
