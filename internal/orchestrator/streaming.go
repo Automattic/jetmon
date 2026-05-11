@@ -740,7 +740,7 @@ func (o *Orchestrator) runStreamingEngine() {
 		hotPathPressure = streamingHotPathBehind(planner, len(pending), o.pool.ResultDepth(), sideEffects.queueDepth(), o.pool.WorkerCount(), stats)
 		pressureActive := failurePressureActive || hotPathPressure
 		if now.Sub(lastScale) >= streamingScaleInterval {
-			o.applyStreamingWorkerTarget(cfg, planner, stats, len(pending), sideEffects.queueDepth(), failurePressureActive, hotPathPressure)
+			o.applyStreamingWorkerTarget(cfg, planner, stats, len(pending), o.pool.ResultDepth(), sideEffects.queueDepth(), failurePressureActive, hotPathPressure)
 			lastScale = now
 		}
 
@@ -1246,9 +1246,9 @@ func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streami
 	)
 }
 
-func (o *Orchestrator) applyStreamingWorkerTarget(cfg *config.Config, planner *streamingPlanner, stats streamingStats, pending, sideEffectDepth int, failurePressure, hotPathPressure bool) int {
+func (o *Orchestrator) applyStreamingWorkerTarget(cfg *config.Config, planner *streamingPlanner, stats streamingStats, pending, resultDepth, sideEffectDepth int, failurePressure, hotPathPressure bool) int {
 	latency := stats.scaleLatency()
-	desiredTarget := streamingDesiredWorkerTarget(cfg, planner, latency, pending, o.pool.QueueDepth(), sideEffectDepth, o.pool.WorkerCount(), failurePressure)
+	desiredTarget := streamingDesiredWorkerTarget(cfg, planner, latency, stats.maxLag, pending, o.pool.QueueDepth(), resultDepth, sideEffectDepth, o.pool.WorkerCount(), failurePressure)
 	workerTarget := streamingDampedWorkerTarget(o.pool.WorkerCount(), desiredTarget, failurePressure)
 	if planner.activeCount() > 0 {
 		if added := o.pool.SetSizeBounds(workerTarget, workerTarget); added > 0 {
@@ -1261,13 +1261,23 @@ func (o *Orchestrator) applyStreamingWorkerTarget(cfg *config.Config, planner *s
 	return workerTarget
 }
 
-func streamingDesiredWorkerTarget(cfg *config.Config, planner *streamingPlanner, latency time.Duration, pending, queueDepth, sideEffectDepth, currentWorkers int, failurePressure bool) int {
-	desiredTarget := streamingWorkerTarget(cfg, planner, latency)
+func streamingDesiredWorkerTarget(cfg *config.Config, planner *streamingPlanner, latency, maxLag time.Duration, pending, queueDepth, resultDepth, sideEffectDepth, currentWorkers int, failurePressure bool) int {
+	scaleLatency := latency
+	if !failurePressure && maxLag <= streamingReportInterval && scaleLatency > streamingDefaultLatency {
+		scaleLatency = streamingDefaultLatency
+	}
+	desiredTarget := streamingWorkerTarget(cfg, planner, scaleLatency)
 	if failurePressure {
 		pressureTarget := streamingPressureWorkerTarget(cfg, planner)
 		if desiredTarget > pressureTarget {
 			desiredTarget = pressureTarget
 		}
+		return desiredTarget
+	}
+	if maxLag <= streamingReportInterval {
+		return desiredTarget
+	}
+	if resultDepth >= streamingResultDispatchPauseDepth(currentWorkers, planner.activeCount())/2 {
 		return desiredTarget
 	}
 	if sideEffectDepth < streamingSideEffectBackpressureDepth(currentWorkers, planner.activeCount()) {

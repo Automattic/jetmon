@@ -288,9 +288,46 @@ func TestStreamingDesiredWorkerTargetUsesBacklogWithoutFailurePressure(t *testin
 	cfg := &config.Config{NumWorkers: 60, NetCommsTimeout: 10}
 
 	base := streamingWorkerTarget(cfg, planner, 40*time.Millisecond)
-	got := streamingDesiredWorkerTarget(cfg, planner, 40*time.Millisecond, 60000, 0, 0, base, false)
+	got := streamingDesiredWorkerTarget(cfg, planner, 40*time.Millisecond, 2*time.Minute, 60000, 0, 0, 0, base, false)
 	if got <= base {
 		t.Fatalf("streamingDesiredWorkerTarget() = %d, want above base target %d for pending backlog", got, base)
+	}
+}
+
+func TestStreamingDesiredWorkerTargetAvoidsLatencySurgeWhileOnTime(t *testing.T) {
+	planner := &streamingPlanner{targets: make(map[int64]*streamingTarget)}
+	for i := int64(1); i <= 100000; i++ {
+		planner.targets[i] = &streamingTarget{
+			site:   db.Site{BlogID: i, CheckInterval: 5},
+			active: true,
+		}
+	}
+	planner.recalculateRequiredRate()
+	cfg := &config.Config{NumWorkers: 60, NetCommsTimeout: 10}
+
+	base := streamingWorkerTarget(cfg, planner, streamingDefaultLatency)
+	got := streamingDesiredWorkerTarget(cfg, planner, 3*time.Second, 30*time.Second, 60000, 0, 0, 0, base, false)
+	if got != base {
+		t.Fatalf("streamingDesiredWorkerTarget() = %d, want base target %d while freshness is on time", got, base)
+	}
+}
+
+func TestStreamingDesiredWorkerTargetSkipsBacklogGrowthUnderResultPressure(t *testing.T) {
+	planner := &streamingPlanner{targets: make(map[int64]*streamingTarget)}
+	for i := int64(1); i <= 100000; i++ {
+		planner.targets[i] = &streamingTarget{
+			site:   db.Site{BlogID: i, CheckInterval: 5},
+			active: true,
+		}
+	}
+	planner.recalculateRequiredRate()
+	cfg := &config.Config{NumWorkers: 60, NetCommsTimeout: 10}
+
+	base := streamingWorkerTarget(cfg, planner, streamingDefaultLatency)
+	resultDepth := streamingResultDispatchPauseDepth(base, planner.activeCount()) / 2
+	got := streamingDesiredWorkerTarget(cfg, planner, streamingDefaultLatency, 2*time.Minute, 60000, 0, resultDepth, 0, base, false)
+	if got != base {
+		t.Fatalf("streamingDesiredWorkerTarget() = %d, want base target %d while result backlog is pressured", got, base)
 	}
 }
 
@@ -306,7 +343,7 @@ func TestStreamingDesiredWorkerTargetSkipsBacklogGrowthDuringFailurePressure(t *
 	cfg := &config.Config{NumWorkers: 60, NetCommsTimeout: 10}
 
 	base := streamingWorkerTarget(cfg, planner, 40*time.Millisecond)
-	got := streamingDesiredWorkerTarget(cfg, planner, 40*time.Millisecond, 60000, 0, 0, base, true)
+	got := streamingDesiredWorkerTarget(cfg, planner, 40*time.Millisecond, 2*time.Minute, 60000, 0, 0, 0, base, true)
 	if got != base {
 		t.Fatalf("streamingDesiredWorkerTarget() = %d, want base target %d while failure pressure is active", got, base)
 	}
