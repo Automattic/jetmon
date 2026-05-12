@@ -121,6 +121,15 @@ func ConfigureResolverServers(rawServers []string) error {
 	return nil
 }
 
+// ConfiguredResolverServers returns the normalized resolver override currently
+// installed for checks. An empty slice means checks are using the host resolver
+// configuration.
+func ConfiguredResolverServers() []string {
+	configuredResolverMu.RLock()
+	defer configuredResolverMu.RUnlock()
+	return append([]string(nil), configuredResolverServers...)
+}
+
 type checkDNSCache struct {
 	mu         sync.RWMutex
 	ttl        time.Duration
