@@ -1,0 +1,18 @@
+{
+	"name": "jetmon-veriflier-worker",
+	"version": "0.1.0",
+	"private": true,
+	"description": "Cloudflare Worker that fronts the Jetmon veriflier Go binary running in a Cloudflare Container.",
+	"type": "module",
+	"scripts": {
+		"dev": "wrangler dev",
+		"deploy": "wrangler deploy",
+		"deploy:staging": "wrangler deploy --env staging"
+	},
+	"devDependencies": {
+		"@cloudflare/containers": "^0.0.10",
+		"@cloudflare/workers-types": "^4.20250101.0",
+		"typescript": "^5.5.0",
+		"wrangler": "^4.0.0"
+	}
+}

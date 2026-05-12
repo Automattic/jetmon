@@ -1,0 +1,22 @@
+name = "jetmon-veriflier"
+main = "deploy/workers/worker/index.ts"
+compatibility_date = "2026-05-01"
+
+[[containers]]
+class_name = "Veriflier"
+image = "./docker/Dockerfile_veriflier"
+max_instances = 10
+
+[[durable_objects.bindings]]
+class_name = "Veriflier"
+name = "VERIFLIER"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Veriflier"]
+
+[observability]
+enabled = true
+
+[env.staging]
+name = "jetmon-veriflier-staging"
