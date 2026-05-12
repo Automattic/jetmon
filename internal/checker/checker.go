@@ -10,7 +10,12 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptrace"
+	"os"
+	"runtime"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -29,8 +34,11 @@ const (
 )
 
 const (
-	maxBodyIntegrityBytes int64 = 64 << 10
-	maxKeywordBodyBytes   int64 = 1 << 20
+	maxBodyIntegrityBytes      int64 = 64 << 10
+	maxKeywordBodyBytes        int64 = 1 << 20
+	checkDNSCacheTTL                 = 15 * time.Minute
+	checkDNSCacheMaxEntries          = 2000000
+	checkDNSCachePurgeInterval       = 10000
 )
 
 // RedirectPolicy controls how redirect responses are handled.
@@ -46,13 +54,232 @@ const (
 // fresh connection pool for every probe. The http.Client stays per request so
 // timeout and redirect policy remain isolated to that site check.
 var defaultTransport = newCheckTransport()
+var defaultHTTPIPTransport = newHTTPIPPoolTransport()
+var defaultDNSCache = newCheckDNSCache(checkDNSCacheTTL, checkDNSCacheMaxEntries)
+var defaultDNSLookupLimiter = newCheckDNSLookupLimiter()
+var configuredResolverMu sync.RWMutex
+var configuredResolverServers []string
+
+type checkDNSLookupLimiter struct {
+	slots chan struct{}
+}
+
+func newCheckDNSLookupLimiter() *checkDNSLookupLimiter {
+	limit := runtime.GOMAXPROCS(0) * 128
+	if limit < 128 {
+		limit = 128
+	}
+	if limit > 1024 {
+		limit = 1024
+	}
+	return &checkDNSLookupLimiter{slots: make(chan struct{}, limit)}
+}
+
+func (l *checkDNSLookupLimiter) acquire(ctx context.Context) (func(), error) {
+	if l == nil || cap(l.slots) == 0 {
+		return func() {}, nil
+	}
+	select {
+	case l.slots <- struct{}{}:
+		return func() { <-l.slots }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// ConfigureResolverServers replaces the system resolver list used by the HTTP
+// checker. It is intended for process startup before checks begin; runtime
+// resolver changes should restart the service so in-flight checks continue to
+// use a stable transport.
+func ConfigureResolverServers(rawServers []string) error {
+	servers, err := normalizeResolverServers(rawServers)
+	if err != nil {
+		return err
+	}
+
+	configuredResolverMu.Lock()
+	configuredResolverServers = servers
+	configuredResolverMu.Unlock()
+
+	newTransport := newCheckTransport()
+	newHTTPIPTransport := newHTTPIPPoolTransportWithFallback(newTransport)
+
+	configuredResolverMu.Lock()
+	oldTransport := defaultTransport
+	oldHTTPIPTransport := defaultHTTPIPTransport
+	defaultTransport = newTransport
+	defaultHTTPIPTransport = newHTTPIPTransport
+	defaultDNSCache = newCheckDNSCache(checkDNSCacheTTL, checkDNSCacheMaxEntries)
+	configuredResolverMu.Unlock()
+
+	if oldTransport != nil {
+		oldTransport.CloseIdleConnections()
+	}
+	if oldHTTPIPTransport != nil {
+		oldHTTPIPTransport.CloseIdleConnections()
+	}
+	return nil
+}
+
+type checkDNSCache struct {
+	mu         sync.RWMutex
+	ttl        time.Duration
+	maxEntries int
+	writes     int
+	entries    map[string]checkDNSCacheEntry
+}
+
+type checkDNSCacheEntry struct {
+	addrs   []net.IPAddr
+	expires time.Time
+}
+
+func newCheckDNSCache(ttl time.Duration, maxEntries int) *checkDNSCache {
+	return &checkDNSCache{
+		ttl:        ttl,
+		maxEntries: maxEntries,
+		entries:    make(map[string]checkDNSCacheEntry),
+	}
+}
+
+func (c *checkDNSCache) lookup(ctx context.Context, resolver *net.Resolver, host, network string) ([]net.IPAddr, error) {
+	if resolver == nil {
+		return nil, fmt.Errorf("lookup %s: resolver unavailable", host)
+	}
+	if c == nil || c.ttl <= 0 {
+		return lookupResolverIPAddrs(ctx, resolver, host, network)
+	}
+	key := normalizeDNSCacheKey(host, preferredLookupFamily(network))
+	now := time.Now()
+	c.mu.RLock()
+	entry, ok := c.entries[key]
+	if ok && now.Before(entry.expires) {
+		// Cache entries are immutable after store; callers only iterate them.
+		// Returning the stored slice avoids an allocation on every repeated
+		// check for long-lived monitored sites.
+		addrs := entry.addrs
+		c.mu.RUnlock()
+		return addrs, nil
+	}
+	c.mu.RUnlock()
+
+	release, err := defaultDNSLookupLimiter.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	now = time.Now()
+	c.mu.RLock()
+	entry, ok = c.entries[key]
+	if ok && now.Before(entry.expires) {
+		// Cache entries are immutable after store; callers only iterate them.
+		// Returning the stored slice avoids an allocation on every repeated
+		// check for long-lived monitored sites.
+		addrs := entry.addrs
+		c.mu.RUnlock()
+		return addrs, nil
+	}
+	c.mu.RUnlock()
+
+	addrs, err := lookupResolverIPAddrs(ctx, resolver, host, network)
+	if err != nil || len(addrs) == 0 {
+		return addrs, err
+	}
+	c.store(key, addrs, now.Add(c.ttl))
+	return addrs, nil
+}
+
+func (c *checkDNSCache) store(key string, addrs []net.IPAddr, expires time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.maxEntries > 0 && len(c.entries) >= c.maxEntries {
+		c.purgeExpiredLocked(time.Now())
+		if len(c.entries) >= c.maxEntries {
+			return
+		}
+	}
+	c.entries[key] = checkDNSCacheEntry{addrs: cloneIPAddrs(addrs), expires: expires}
+	c.writes++
+	if c.writes%checkDNSCachePurgeInterval == 0 {
+		c.purgeExpiredLocked(time.Now())
+	}
+}
+
+func (c *checkDNSCache) purgeExpiredLocked(now time.Time) {
+	for key, entry := range c.entries {
+		if !now.Before(entry.expires) {
+			delete(c.entries, key)
+		}
+	}
+}
+
+func normalizeDNSCacheHost(host string) string {
+	return strings.TrimSuffix(strings.ToLower(host), ".")
+}
+
+func normalizeDNSCacheKey(host, family string) string {
+	return normalizeDNSCacheHost(host) + "|" + family
+}
+
+func preferredLookupFamily(network string) string {
+	if strings.HasSuffix(network, "6") {
+		return "ip6"
+	}
+	return "ip4"
+}
+
+func lookupResolverIPAddrs(ctx context.Context, resolver *net.Resolver, host, network string) ([]net.IPAddr, error) {
+	family := preferredLookupFamily(network)
+	addrs, err := lookupResolverIPFamily(ctx, resolver, host, family)
+	if (err == nil && len(addrs) > 0) || family == "ip6" || strings.HasSuffix(network, "4") {
+		return addrs, err
+	}
+
+	fallback, fallbackErr := lookupResolverIPFamily(ctx, resolver, host, "ip6")
+	if fallbackErr == nil && len(fallback) > 0 {
+		return fallback, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return fallback, fallbackErr
+}
+
+func lookupResolverIPFamily(ctx context.Context, resolver *net.Resolver, host, family string) ([]net.IPAddr, error) {
+	ips, err := resolver.LookupIP(ctx, family, host)
+	if err != nil {
+		return nil, err
+	}
+	addrs := make([]net.IPAddr, 0, len(ips))
+	for _, ip := range ips {
+		if ip == nil {
+			continue
+		}
+		addrs = append(addrs, net.IPAddr{IP: ip})
+	}
+	return addrs, nil
+}
+
+func cloneIPAddrs(addrs []net.IPAddr) []net.IPAddr {
+	if len(addrs) == 0 {
+		return nil
+	}
+	out := make([]net.IPAddr, 0, len(addrs))
+	for _, addr := range addrs {
+		if addr.IP == nil {
+			continue
+		}
+		ip := make(net.IP, len(addr.IP))
+		copy(ip, addr.IP)
+		out = append(out, net.IPAddr{IP: ip, Zone: addr.Zone})
+	}
+	return out
+}
 
 func newCheckTransport() *http.Transport {
 	return &http.Transport{
-		DialContext: (&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
+		DialContext: newCheckDialContext(newCheckResolver()),
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: false,
 			// Deprecated TLS versions are still site-reachability signals.
@@ -61,10 +288,322 @@ func newCheckTransport() *http.Transport {
 			MinVersion: tls.VersionTLS10,
 		},
 		TLSHandshakeTimeout: 10 * time.Second,
-		IdleConnTimeout:     30 * time.Second,
-		MaxIdleConns:        1024,
-		MaxIdleConnsPerHost: 8,
+		// Jetmon checks huge fleets of mostly-unique hostnames on minute-scale
+		// cadences. Connections would usually expire before reuse, while the
+		// shared idle pool becomes a global lock and goroutine-pressure point at
+		// high concurrency.
+		DisableKeepAlives: true,
 	}
+}
+
+type httpIPPoolTransport struct {
+	inner    *http.Transport
+	fallback *http.Transport
+	resolver *net.Resolver
+}
+
+func newHTTPIPPoolTransport() *httpIPPoolTransport {
+	return newHTTPIPPoolTransportWithFallback(defaultTransport)
+}
+
+func newHTTPIPPoolTransportWithFallback(fallback *http.Transport) *httpIPPoolTransport {
+	inner := newCheckTransport()
+	inner.DisableKeepAlives = false
+	inner.MaxIdleConns = 8192
+	inner.MaxIdleConnsPerHost = 2048
+	inner.IdleConnTimeout = 30 * time.Second
+	return &httpIPPoolTransport{
+		inner:    inner,
+		fallback: fallback,
+		resolver: newCheckResolver(),
+	}
+}
+
+func (t *httpIPPoolTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if t == nil || t.inner == nil {
+		return defaultTransport.RoundTrip(req)
+	}
+	if req == nil || req.URL == nil || req.URL.Scheme != "http" {
+		return t.roundTripFallback(req)
+	}
+	host := req.URL.Hostname()
+	if host == "" || net.ParseIP(host) != nil {
+		return t.inner.RoundTrip(req)
+	}
+	port := req.URL.Port()
+	if port == "" {
+		port = "80"
+	}
+
+	trace := httptrace.ContextClientTrace(req.Context())
+	if trace != nil && trace.DNSStart != nil {
+		trace.DNSStart(httptrace.DNSStartInfo{Host: host})
+	}
+	addrs, err := defaultDNSCache.lookup(req.Context(), t.resolver, host, "tcp")
+	if trace != nil && trace.DNSDone != nil {
+		trace.DNSDone(httptrace.DNSDoneInfo{Addrs: addrs, Err: err})
+	}
+	if err != nil {
+		return nil, err
+	}
+	ordered := orderedResolverAddrs(addrs, "tcp")
+	if len(ordered) == 0 {
+		return nil, &net.DNSError{Name: host, Err: "no addresses"}
+	}
+
+	var firstErr error
+	for _, addr := range ordered {
+		resp, err := t.roundTripResolvedIP(req, addr, port)
+		if err == nil || resp != nil {
+			return resp, err
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+		if req.Context().Err() != nil {
+			return nil, req.Context().Err()
+		}
+	}
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	return nil, fmt.Errorf("lookup %s: no usable addresses", host)
+}
+
+func (t *httpIPPoolTransport) roundTripResolvedIP(req *http.Request, addr net.IPAddr, port string) (*http.Response, error) {
+	clone := new(http.Request)
+	*clone = *req
+	cloneURL := *req.URL
+	cloneURL.Host = net.JoinHostPort(addr.IP.String(), port)
+	clone.URL = &cloneURL
+	if clone.Host == "" {
+		clone.Host = req.URL.Host
+	}
+	resp, err := t.inner.RoundTrip(clone)
+	if resp != nil && resp.Request == clone {
+		resp.Request = req
+	}
+	return resp, err
+}
+
+func (t *httpIPPoolTransport) roundTripFallback(req *http.Request) (*http.Response, error) {
+	if t != nil && t.fallback != nil {
+		return t.fallback.RoundTrip(req)
+	}
+	return defaultTransport.RoundTrip(req)
+}
+
+func (t *httpIPPoolTransport) CloseIdleConnections() {
+	if t != nil && t.inner != nil {
+		t.inner.CloseIdleConnections()
+	}
+}
+
+func transportForRequestURL(rawURL string) http.RoundTripper {
+	if strings.HasPrefix(strings.ToLower(rawURL), "http://") && defaultHTTPIPTransport != nil {
+		return defaultHTTPIPTransport
+	}
+	return defaultTransport
+}
+
+func newCheckDialContext(resolver *net.Resolver) func(context.Context, string, string) (net.Conn, error) {
+	dialer := &net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
+	if resolver == nil {
+		return dialer.DialContext
+	}
+	return func(ctx context.Context, network, address string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(address)
+		if err != nil {
+			return nil, err
+		}
+		if ip := net.ParseIP(host); ip != nil {
+			return dialer.DialContext(ctx, network, address)
+		}
+
+		trace := httptrace.ContextClientTrace(ctx)
+		if trace != nil && trace.DNSStart != nil {
+			trace.DNSStart(httptrace.DNSStartInfo{Host: host})
+		}
+		addrs, err := defaultDNSCache.lookup(ctx, resolver, host, network)
+		if trace != nil && trace.DNSDone != nil {
+			trace.DNSDone(httptrace.DNSDoneInfo{Addrs: addrs, Err: err})
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		var firstErr error
+		for _, addr := range orderedResolverAddrs(addrs, network) {
+			target := net.JoinHostPort(addr.IP.String(), port)
+			conn, err := dialer.DialContext(ctx, network, target)
+			if err == nil {
+				return conn, nil
+			}
+			if firstErr == nil {
+				firstErr = err
+			}
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+		}
+		if firstErr != nil {
+			return nil, firstErr
+		}
+		return nil, fmt.Errorf("lookup %s: no usable addresses", host)
+	}
+}
+
+func newCheckResolver() *net.Resolver {
+	servers := directResolverServers()
+	if len(servers) == 0 {
+		return nil
+	}
+	var next atomic.Uint64
+	return &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			idx := next.Add(1)
+			server := servers[int(idx-1)%len(servers)]
+			d := net.Dialer{Timeout: 5 * time.Second}
+			return d.DialContext(ctx, network, server)
+		},
+	}
+}
+
+func orderedResolverAddrs(addrs []net.IPAddr, network string) []net.IPAddr {
+	if len(addrs) == 1 {
+		addr := addrs[0]
+		if addr.IP == nil {
+			return nil
+		}
+		if strings.HasSuffix(network, "6") && addr.IP.To4() != nil {
+			return nil
+		}
+		if strings.HasSuffix(network, "4") && addr.IP.To4() == nil {
+			return nil
+		}
+		return addrs
+	}
+	ordered := make([]net.IPAddr, 0, len(addrs))
+	wants4 := strings.HasSuffix(network, "4")
+	wants6 := strings.HasSuffix(network, "6")
+	for _, addr := range addrs {
+		if addr.IP == nil {
+			continue
+		}
+		if addr.IP.To4() == nil {
+			continue
+		}
+		if wants6 {
+			continue
+		}
+		ordered = append(ordered, addr)
+	}
+	for _, addr := range addrs {
+		if addr.IP == nil {
+			continue
+		}
+		if addr.IP.To4() != nil {
+			continue
+		}
+		if wants4 {
+			continue
+		}
+		ordered = append(ordered, addr)
+	}
+	return ordered
+}
+
+func directResolverServers() []string {
+	configuredResolverMu.RLock()
+	if len(configuredResolverServers) > 0 {
+		servers := append([]string(nil), configuredResolverServers...)
+		configuredResolverMu.RUnlock()
+		return servers
+	}
+	configuredResolverMu.RUnlock()
+
+	if servers := parseResolverServers(readResolverConfig("/run/systemd/resolve/resolv.conf")); len(servers) > 0 {
+		return servers
+	}
+	return parseResolverServers(readResolverConfig("/etc/resolv.conf"))
+}
+
+func readResolverConfig(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+func parseResolverServers(raw string) []string {
+	var servers []string
+	for _, line := range strings.Split(raw, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[0] != "nameserver" {
+			continue
+		}
+		host := fields[1]
+		if isLocalResolverHost(host) {
+			continue
+		}
+		servers = append(servers, net.JoinHostPort(host, "53"))
+	}
+	return servers
+}
+
+func normalizeResolverServers(rawServers []string) ([]string, error) {
+	if len(rawServers) == 0 {
+		return nil, nil
+	}
+	servers := make([]string, 0, len(rawServers))
+	for i, raw := range rawServers {
+		server, err := normalizeResolverServer(raw)
+		if err != nil {
+			return nil, fmt.Errorf("resolver %d: %w", i, err)
+		}
+		servers = append(servers, server)
+	}
+	return servers, nil
+}
+
+func normalizeResolverServer(raw string) (string, error) {
+	server := strings.TrimSpace(raw)
+	if server == "" {
+		return "", fmt.Errorf("empty resolver")
+	}
+	host := server
+	port := "53"
+	if splitHost, splitPort, err := net.SplitHostPort(server); err == nil {
+		host = strings.Trim(splitHost, "[]")
+		port = splitPort
+	} else if strings.Contains(server, ":") {
+		if ip := net.ParseIP(strings.Trim(server, "[]")); ip == nil || ip.To4() != nil {
+			return "", fmt.Errorf("resolver must be an IP literal with optional port")
+		}
+		host = strings.Trim(server, "[]")
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return "", fmt.Errorf("resolver must be an IP literal with optional port")
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n <= 0 || n > 65535 {
+		return "", fmt.Errorf("resolver port must be between 1 and 65535")
+	}
+	return net.JoinHostPort(ip.String(), strconv.Itoa(n)), nil
+}
+
+func isLocalResolverHost(host string) bool {
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback()
 }
 
 // Request holds the parameters for a single HTTP check.
@@ -190,19 +729,16 @@ func Check(ctx context.Context, req Request) Result {
 	}
 	ctx = httptrace.WithClientTrace(ctx, trace)
 
-	headers := make(map[string]string)
-	for k, v := range req.CustomHeaders {
-		headers[k] = v
-	}
+	headers := req.CustomHeaders
 
-	redirectChain := []string{}
+	var redirectChain []string
 	redirectPolicyStr := string(req.RedirectPolicy)
 	if redirectPolicyStr == "" {
 		redirectPolicyStr = string(RedirectFollow)
 	}
 
 	client := &http.Client{
-		Transport: defaultTransport,
+		Transport: transportForRequestURL(req.URL),
 		CheckRedirect: func(r *http.Request, via []*http.Request) error {
 			redirectChain = append(redirectChain, r.URL.String())
 			if redirectPolicyStr == string(RedirectFail) {
@@ -396,6 +932,25 @@ func readResponseBody(resp *http.Response, needKeyword bool, req Request) bodyRe
 	}
 	if !needKeyword && resp.ContentLength >= 0 && resp.ContentLength <= limit {
 		mode = "strict_finite"
+	}
+
+	if !needKeyword {
+		n, err := io.Copy(io.Discard, io.LimitReader(resp.Body, limit+1))
+		result := bodyReadResult{
+			Err:           err,
+			Mode:          mode,
+			BytesRead:     n,
+			ExpectedBytes: resp.ContentLength,
+			LimitBytes:    limit,
+		}
+		if n > limit {
+			result.BytesRead = limit
+			return result
+		}
+		if err == nil && resp.ContentLength >= 0 && resp.ContentLength <= limit && n != resp.ContentLength {
+			result.Err = io.ErrUnexpectedEOF
+		}
+		return result
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))

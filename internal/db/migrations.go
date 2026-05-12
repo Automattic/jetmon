@@ -484,6 +484,40 @@ var migrations = []migration{
 	// strings without overloading one column.
 	{33, `ALTER TABLE jetpack_monitor_sites
 		ADD COLUMN forbidden_keywords JSON NULL AFTER forbidden_keyword`},
+
+	// Migration 34 creates the v2-native scheduling target table. The legacy
+	// jetpack_monitor_sites row remains the source of truth during migration,
+	// but this table gives the streaming scheduler a compact place to persist
+	// derived scheduling state without turning the legacy table into the hot
+	// write path again.
+	{34, `CREATE TABLE IF NOT EXISTS jetmon_check_targets (
+		target_id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+		blog_id             BIGINT UNSIGNED NOT NULL,
+		source_site_id      BIGINT UNSIGNED NOT NULL,
+		bucket_no           SMALLINT UNSIGNED NOT NULL,
+		monitor_url         VARCHAR(2083) NOT NULL,
+		monitor_active      TINYINT UNSIGNED NOT NULL DEFAULT 1,
+		check_interval_sec  INT UNSIGNED NOT NULL DEFAULT 300,
+		phase_slot_sec      INT UNSIGNED NOT NULL DEFAULT 0,
+		config_hash         CHAR(64) NOT NULL DEFAULT '',
+		last_config_sync_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+		last_checked_at     TIMESTAMP(3) NULL,
+		last_success_at     TIMESTAMP(3) NULL,
+		last_failure_at     TIMESTAMP(3) NULL,
+		last_outcome        ENUM('unknown','success','failure') NOT NULL DEFAULT 'unknown',
+		updated_at          TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+		UNIQUE KEY uk_blog_id (blog_id),
+		INDEX idx_bucket_phase (bucket_no, phase_slot_sec, blog_id),
+		INDEX idx_bucket_active (bucket_no, monitor_active, blog_id),
+		INDEX idx_config_sync (last_config_sync_at)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
+
+	// Migration 35 supports streaming scheduler reloads. The scheduler pages
+	// active rows by blog_id inside its bucket range; this keeps periodic config
+	// refreshes from depending on the older last_checked_at/next_check_at
+	// indexes that are specific to the legacy round scheduler.
+	{35, `ALTER TABLE jetpack_monitor_sites
+		ADD INDEX idx_monitor_active_bucket_blog (monitor_active, bucket_no, blog_id)`},
 }
 
 // Migrate applies all pending migrations idempotently.

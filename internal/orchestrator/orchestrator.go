@@ -73,6 +73,8 @@ var (
 	dbReleaseHost          = db.ReleaseHost
 	dbMarkHostDraining     = db.MarkHostDraining
 	dbGetSitesForBucket    = db.GetSitesForBucket
+	dbListActiveSites      = db.ListActiveSitesForBucketRange
+	dbCountActiveSites     = db.CountActiveSitesForBucketRange
 	dbMarkSiteChecked      = db.MarkSiteChecked
 	dbMarkSitesChecked     = db.MarkSitesChecked
 	dbRecordCheckHistory   = db.RecordCheckHistory
@@ -80,6 +82,7 @@ var (
 	dbUpdateSSLExpiry      = db.UpdateSSLExpiry
 	dbUpdateSSLExpiries    = db.UpdateSSLExpiries
 	dbUpdateSiteStatus     = db.UpdateSiteStatus
+	dbGetSiteStatus        = db.GetSiteStatus
 	dbRecordFalsePositive  = db.RecordFalsePositive
 	dbUpdateLastAlertSent  = db.UpdateLastAlertSent
 	dbCountDueSites        = db.CountDueSitesForBucketRange
@@ -246,6 +249,8 @@ type Orchestrator struct {
 	lastDueCountAt        time.Time
 	lastProjectionDriftAt time.Time
 
+	wpcomNotifyDisabledLogOnce sync.Once
+
 	ctx    stdctx.Context
 	cancel stdctx.CancelFunc
 }
@@ -316,23 +321,16 @@ func (o *Orchestrator) Run() {
 	for {
 		select {
 		case <-o.ctx.Done():
-			log.Println("orchestrator: shutting down")
-			if !o.usesPinnedBuckets(config.Get()) {
-				if err := dbMarkHostDraining(stdctx.Background(), o.hostname); err != nil {
-					log.Printf("orchestrator: mark draining: %v", err)
-				}
-			}
-			o.pool.Drain()
-			if o.usesPinnedBuckets(config.Get()) {
-				log.Println("orchestrator: pinned bucket mode active; no jetmon_hosts row to release")
-			} else if err := dbReleaseHost(stdctx.Background(), o.hostname); err != nil {
-				log.Printf("orchestrator: release host: %v", err)
-			}
+			o.shutdown()
 			return
 		default:
 		}
 
 		cfg := config.Get()
+		if cfg.SchedulerEngine == "streaming" {
+			o.runStreamingEngine()
+			return
+		}
 		o.pool.SetMaxSize(cfg.NumWorkers)
 		o.refreshVeriflierClients(cfg)
 
@@ -347,6 +345,23 @@ func (o *Orchestrator) Run() {
 			case <-o.ctx.Done():
 			}
 		}
+	}
+}
+
+func (o *Orchestrator) shutdown() {
+	log.Println("orchestrator: shutting down")
+	if !o.usesPinnedBuckets(config.Get()) {
+		if err := dbMarkHostDraining(stdctx.Background(), o.hostname); err != nil {
+			log.Printf("orchestrator: mark draining: %v", err)
+		}
+	}
+	if o.pool != nil {
+		o.pool.Drain()
+	}
+	if o.usesPinnedBuckets(config.Get()) {
+		log.Println("orchestrator: pinned bucket mode active; no jetmon_hosts row to release")
+	} else if err := dbReleaseHost(stdctx.Background(), o.hostname); err != nil {
+		log.Printf("orchestrator: release host: %v", err)
 	}
 }
 
@@ -994,19 +1009,7 @@ func (o *Orchestrator) markResultsChecked(records []siteCheckResult, summary *re
 func (o *Orchestrator) recordResultHistories(records []siteCheckResult, summary *resultProcessSummary) {
 	histories := make([]db.CheckHistoryRow, 0, len(records))
 	for _, record := range records {
-		res := record.res
-		histories = append(histories, db.CheckHistoryRow{
-			BlogID:        record.blogID,
-			RequestMethod: res.Method,
-			HTTPCode:      res.HTTPCode,
-			ErrorCode:     res.ErrorCode,
-			RTTMs:         res.RTT.Milliseconds(),
-			DNSMs:         res.DNS.Milliseconds(),
-			TCPMs:         res.TCP.Milliseconds(),
-			TLSMs:         res.TLS.Milliseconds(),
-			TTFBMs:        res.TTFB.Milliseconds(),
-			CheckedAt:     resultCheckedAt(res),
-		})
+		histories = append(histories, checkHistoryRowForResult(record.blogID, record.res))
 	}
 
 	start := time.Now()
@@ -1035,6 +1038,54 @@ func (o *Orchestrator) recordResultHistories(records []siteCheckResult, summary 
 		summary.historyRows += len(histories)
 	}
 	summary.historyDuration += time.Since(start)
+}
+
+func (o *Orchestrator) recordStreamingHistoryRows(rows []db.CheckHistoryRow) resultProcessSummary {
+	summary := resultProcessSummary{}
+	if len(rows) == 0 {
+		return summary
+	}
+
+	rows = append([]db.CheckHistoryRow(nil), rows...)
+	start := time.Now()
+	if err := dbRecordCheckHistories(o.ctx, rows); err != nil {
+		summary.historyErrors++
+		log.Printf("orchestrator: streaming batch record check history rows=%d: %v", len(rows), err)
+		for _, row := range rows {
+			if err := dbRecordCheckHistory(
+				row.BlogID,
+				row.RequestMethod,
+				row.HTTPCode,
+				row.ErrorCode,
+				row.RTTMs,
+				row.DNSMs,
+				row.TCPMs,
+				row.TLSMs,
+				row.TTFBMs,
+			); err != nil {
+				summary.historyErrors++
+				log.Printf("orchestrator: streaming record check history blog_id=%d: %v", row.BlogID, err)
+			}
+		}
+	}
+	summary.historyDuration += time.Since(start)
+	summary.historyRows += len(rows)
+	return summary
+}
+
+func checkHistoryRowForResult(blogID int64, res checker.Result) db.CheckHistoryRow {
+	return db.CheckHistoryRow{
+		BlogID:        blogID,
+		RequestMethod: res.Method,
+		HTTPCode:      res.HTTPCode,
+		ErrorCode:     res.ErrorCode,
+		RTTMs:         res.RTT.Milliseconds(),
+		DNSMs:         res.DNS.Milliseconds(),
+		TCPMs:         res.TCP.Milliseconds(),
+		TLSMs:         res.TLS.Milliseconds(),
+		TTFBMs:        res.TTFB.Milliseconds(),
+		CheckedAt:     resultCheckedAt(res),
+	}
 }
 
 func resultCheckedAt(res checker.Result) time.Time {
@@ -1559,6 +1610,14 @@ func (o *Orchestrator) swallowMaintenanceFailure(site db.Site, res checker.Resul
 }
 
 func (o *Orchestrator) sendNotification(site db.Site, res checker.Result, status int, changeTime time.Time, vResults []veriflier.CheckResult) {
+	if !config.WPCOMNotifyEnabled() {
+		emitCounter("wpcom.notification.disabled.count", 1)
+		o.wpcomNotifyDisabledLogOnce.Do(func() {
+			log.Print("orchestrator: wpcom notification disabled; skipping legacy status-change notifications")
+		})
+		return
+	}
+
 	checks := []wpcom.CheckEntry{
 		{
 			Type:   1,

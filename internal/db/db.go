@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"runtime"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
@@ -66,11 +67,32 @@ func Connect() error {
 		return fmt.Errorf("open db: %w", err)
 	}
 
-	db.SetMaxOpenConns(10)
-	db.SetMaxIdleConns(5)
+	maxOpenConns := maxOpenConnectionsForConfig(config.Get(), runtime.GOMAXPROCS(0))
+	db.SetMaxOpenConns(maxOpenConns)
+	db.SetMaxIdleConns(maxOpenConns / 2)
 	db.SetConnMaxLifetime(5 * time.Minute)
 
 	return db.Ping()
+}
+
+func maxOpenConnectionsForConfig(cfg *config.Config, gomaxprocs int) int {
+	if gomaxprocs < 1 {
+		gomaxprocs = 1
+	}
+	multiplier := 8
+	minConns := 16
+	if cfg != nil && cfg.SchedulerEngine == "streaming" {
+		multiplier = 16
+		minConns = 64
+	}
+	maxOpenConns := gomaxprocs * multiplier
+	if maxOpenConns < minConns {
+		return minConns
+	}
+	if maxOpenConns > 256 {
+		return 256
+	}
+	return maxOpenConns
 }
 
 // ConnectWithRetry retries Connect with exponential backoff.

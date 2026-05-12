@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -191,6 +192,46 @@ func TestSetMaxSizeRetireExcessWorkers(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("worker count = %d after SetMaxSize(2), want <= 2", p.WorkerCount())
+}
+
+func TestEnsureSizeStartsWorkersWithoutQueuePressure(t *testing.T) {
+	p := NewPoolWithQueueCap(1, 1, 5, 10)
+	t.Cleanup(p.Drain)
+
+	if added := p.EnsureSize(4); added != 3 {
+		t.Fatalf("EnsureSize(4) added = %d, want 3", added)
+	}
+	if got := p.WorkerCount(); got != 4 {
+		t.Fatalf("WorkerCount() = %d, want 4", got)
+	}
+	if added := p.EnsureSize(10); added != 1 {
+		t.Fatalf("EnsureSize(10) added = %d, want 1 capped by max", added)
+	}
+	if got := p.WorkerCount(); got != 5 {
+		t.Fatalf("WorkerCount() = %d, want max 5", got)
+	}
+}
+
+func TestSetSizeBoundsStartsAndRetiresWorkers(t *testing.T) {
+	p := NewPoolWithQueueCap(1, 1, 5, 10)
+	t.Cleanup(p.Drain)
+
+	if added := p.SetSizeBounds(4, 4); added != 3 {
+		t.Fatalf("SetSizeBounds(4, 4) added = %d, want 3", added)
+	}
+	if got := p.WorkerCount(); got != 4 {
+		t.Fatalf("WorkerCount() = %d, want 4", got)
+	}
+
+	p.SetSizeBounds(1, 2)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if p.WorkerCount() <= 2 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("WorkerCount() = %d after SetSizeBounds(1, 2), want <= 2", p.WorkerCount())
 }
 
 func TestDrainCalledTwice(t *testing.T) {
@@ -604,13 +645,20 @@ func TestCheckCustomHeadersForwarded(t *testing.T) {
 	}
 }
 
-func TestCheckReusesSharedTransportForReadableResponses(t *testing.T) {
+func TestCheckReusesCleartextIPConnectionsForFleetScans(t *testing.T) {
 	oldTransport := defaultTransport
+	oldHTTPIPTransport := defaultHTTPIPTransport
 	defaultTransport = newCheckTransport()
+	defaultHTTPIPTransport = newHTTPIPPoolTransportWithFallback(defaultTransport)
 	t.Cleanup(func() {
 		defaultTransport.CloseIdleConnections()
+		defaultHTTPIPTransport.CloseIdleConnections()
 		defaultTransport = oldTransport
+		defaultHTTPIPTransport = oldHTTPIPTransport
 	})
+	if !defaultTransport.DisableKeepAlives {
+		t.Fatal("checker transport should disable keep-alives for large unique-host fleet scans")
+	}
 
 	var newConns atomic.Int64
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -634,7 +682,227 @@ func TestCheckReusesSharedTransportForReadableResponses(t *testing.T) {
 	}
 
 	if got := newConns.Load(); got != 1 {
-		t.Fatalf("new connections = %d, want 1 from shared transport reuse", got)
+		t.Fatalf("new connections = %d, want cleartext IP pool to reuse the connection", got)
+	}
+}
+
+func TestParseResolverServersSkipsLocalStub(t *testing.T) {
+	raw := `
+nameserver 127.0.0.53
+nameserver ::1
+nameserver 10.0.0.1
+nameserver 2600:1702:50c1:71bf:1298:36ff:fea4:d4ee
+`
+	got := parseResolverServers(raw)
+	want := []string{"10.0.0.1:53", "[2600:1702:50c1:71bf:1298:36ff:fea4:d4ee]:53"}
+	if len(got) != len(want) {
+		t.Fatalf("resolver servers = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("resolver server %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestNormalizeResolverServers(t *testing.T) {
+	got, err := normalizeResolverServers([]string{"10.0.0.176", "10.0.0.176:5353", "[2001:db8::1]:5353"})
+	if err != nil {
+		t.Fatalf("normalizeResolverServers() error = %v", err)
+	}
+	want := []string{"10.0.0.176:53", "10.0.0.176:5353", "[2001:db8::1]:5353"}
+	if len(got) != len(want) {
+		t.Fatalf("normalizeResolverServers() = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("resolver %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestNormalizeResolverServersRejectsUnsafeValues(t *testing.T) {
+	for _, raw := range []string{"", "resolver.internal:53", "10.0.0.176:0", "10.0.0.176:notaport"} {
+		if _, err := normalizeResolverServers([]string{raw}); err == nil {
+			t.Fatalf("normalizeResolverServers(%q) expected error", raw)
+		}
+	}
+}
+
+func TestConfigureResolverServersInstallsOverride(t *testing.T) {
+	configuredResolverMu.RLock()
+	oldServers := append([]string(nil), configuredResolverServers...)
+	configuredResolverMu.RUnlock()
+	oldCache := defaultDNSCache
+	oldHTTPIPTransport := defaultHTTPIPTransport
+	t.Cleanup(func() {
+		configuredResolverMu.Lock()
+		configuredResolverServers = oldServers
+		configuredResolverMu.Unlock()
+
+		restoredTransport := newCheckTransport()
+
+		configuredResolverMu.Lock()
+		currentTransport := defaultTransport
+		currentHTTPIPTransport := defaultHTTPIPTransport
+		defaultTransport = restoredTransport
+		defaultDNSCache = oldCache
+		defaultHTTPIPTransport = oldHTTPIPTransport
+		configuredResolverMu.Unlock()
+		if currentTransport != nil {
+			currentTransport.CloseIdleConnections()
+		}
+		if currentHTTPIPTransport != nil {
+			currentHTTPIPTransport.CloseIdleConnections()
+		}
+	})
+
+	if err := ConfigureResolverServers([]string{"10.0.0.176:5353"}); err != nil {
+		t.Fatalf("ConfigureResolverServers() error = %v", err)
+	}
+	got := directResolverServers()
+	if len(got) != 1 || got[0] != "10.0.0.176:5353" {
+		t.Fatalf("directResolverServers() = %#v, want configured resolver", got)
+	}
+}
+
+func TestHTTPIPPoolTransportPreservesHostHeader(t *testing.T) {
+	hostSeen := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hostSeen <- r.Host
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	addr := srv.Listener.Addr().(*net.TCPAddr)
+	rawURL := "http://site-0000001.capacity.internal:" + strconv.Itoa(addr.Port) + "/"
+
+	oldCache := defaultDNSCache
+	oldHTTPIPTransport := defaultHTTPIPTransport
+	defaultDNSCache = newCheckDNSCache(time.Minute, 10)
+	defaultDNSCache.store(
+		normalizeDNSCacheKey("site-0000001.capacity.internal", "ip4"),
+		[]net.IPAddr{{IP: net.ParseIP("127.0.0.1")}},
+		time.Now().Add(time.Minute),
+	)
+	defaultHTTPIPTransport = newHTTPIPPoolTransportWithFallback(defaultTransport)
+	t.Cleanup(func() {
+		if defaultHTTPIPTransport != nil {
+			defaultHTTPIPTransport.CloseIdleConnections()
+		}
+		defaultDNSCache = oldCache
+		defaultHTTPIPTransport = oldHTTPIPTransport
+	})
+
+	res := Check(context.Background(), Request{BlogID: 42, URL: rawURL, TimeoutSeconds: 2})
+	if !res.Success {
+		t.Fatalf("Check() success = false, result=%+v", res)
+	}
+	select {
+	case got := <-hostSeen:
+		want := "site-0000001.capacity.internal:" + strconv.Itoa(addr.Port)
+		if got != want {
+			t.Fatalf("Host header = %q, want %q", got, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("server did not receive request")
+	}
+}
+
+func TestHTTPIPPoolTransportFallsBackAcrossResolvedAddresses(t *testing.T) {
+	hostSeen := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hostSeen <- r.Host
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	addr := srv.Listener.Addr().(*net.TCPAddr)
+	rawURL := "http://multi-a.capacity.internal:" + strconv.Itoa(addr.Port) + "/"
+
+	oldCache := defaultDNSCache
+	oldHTTPIPTransport := defaultHTTPIPTransport
+	defaultDNSCache = newCheckDNSCache(time.Minute, 10)
+	defaultDNSCache.store(
+		normalizeDNSCacheKey("multi-a.capacity.internal", "ip4"),
+		[]net.IPAddr{
+			{IP: net.ParseIP("127.0.0.2")},
+			{IP: net.ParseIP("127.0.0.1")},
+		},
+		time.Now().Add(time.Minute),
+	)
+	defaultHTTPIPTransport = newHTTPIPPoolTransportWithFallback(defaultTransport)
+	t.Cleanup(func() {
+		if defaultHTTPIPTransport != nil {
+			defaultHTTPIPTransport.CloseIdleConnections()
+		}
+		defaultDNSCache = oldCache
+		defaultHTTPIPTransport = oldHTTPIPTransport
+	})
+
+	res := Check(context.Background(), Request{BlogID: 42, URL: rawURL, TimeoutSeconds: 2})
+	if !res.Success {
+		t.Fatalf("Check() success = false after fallback, result=%+v", res)
+	}
+	select {
+	case got := <-hostSeen:
+		want := "multi-a.capacity.internal:" + strconv.Itoa(addr.Port)
+		if got != want {
+			t.Fatalf("Host header = %q, want %q", got, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("server did not receive request through fallback address")
+	}
+}
+
+func TestOrderedResolverAddrsPrefersIPv4ButHonorsNetwork(t *testing.T) {
+	addrs := []net.IPAddr{
+		{IP: net.ParseIP("2001:db8::1")},
+		{IP: net.ParseIP("192.0.2.10")},
+		{IP: net.ParseIP("198.51.100.20")},
+	}
+
+	got := orderedResolverAddrs(addrs, "tcp")
+	if len(got) != 3 || got[0].IP.String() != "192.0.2.10" || got[1].IP.String() != "198.51.100.20" || got[2].IP.String() != "2001:db8::1" {
+		t.Fatalf("orderedResolverAddrs(tcp) = %#v, want IPv4 addresses first", got)
+	}
+
+	got = orderedResolverAddrs(addrs, "tcp4")
+	if len(got) != 2 || got[0].IP.To4() == nil || got[1].IP.To4() == nil {
+		t.Fatalf("orderedResolverAddrs(tcp4) = %#v, want IPv4 only", got)
+	}
+
+	got = orderedResolverAddrs(addrs, "tcp6")
+	if len(got) != 1 || got[0].IP.To4() != nil {
+		t.Fatalf("orderedResolverAddrs(tcp6) = %#v, want IPv6 only", got)
+	}
+}
+
+func TestCheckDNSCacheReturnsCachedAddresses(t *testing.T) {
+	cache := newCheckDNSCache(time.Minute, 10)
+	cache.entries["example.com|ip4"] = checkDNSCacheEntry{
+		addrs:   []net.IPAddr{{IP: net.ParseIP("192.0.2.10")}},
+		expires: time.Now().Add(time.Minute),
+	}
+
+	got, err := cache.lookup(context.Background(), &net.Resolver{}, "Example.COM.", "tcp")
+	if err != nil {
+		t.Fatalf("lookup() error = %v", err)
+	}
+	if len(got) != 1 || got[0].IP.String() != "192.0.2.10" {
+		t.Fatalf("lookup() = %#v, want cached IPv4 address", got)
+	}
+}
+
+func TestPreferredLookupFamily(t *testing.T) {
+	if got := preferredLookupFamily("tcp"); got != "ip4" {
+		t.Fatalf("preferredLookupFamily(tcp) = %q, want ip4", got)
+	}
+	if got := preferredLookupFamily("tcp4"); got != "ip4" {
+		t.Fatalf("preferredLookupFamily(tcp4) = %q, want ip4", got)
+	}
+	if got := preferredLookupFamily("tcp6"); got != "ip6" {
+		t.Fatalf("preferredLookupFamily(tcp6) = %q, want ip6", got)
 	}
 }
 
@@ -906,6 +1174,59 @@ func TestResults(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for result")
+	}
+}
+
+func TestPoolDoesNotDropResultWhenResultChannelIsFull(t *testing.T) {
+	orig := poolCheckFunc
+	secondReturned := make(chan struct{})
+	var once sync.Once
+	poolCheckFunc = func(_ context.Context, req Request) Result {
+		if req.BlogID == 2 {
+			once.Do(func() { close(secondReturned) })
+		}
+		return Result{BlogID: req.BlogID, Success: true, HTTPCode: 200}
+	}
+	t.Cleanup(func() { poolCheckFunc = orig })
+
+	p := NewPoolWithQueueCap(1, 1, 1, 1)
+	t.Cleanup(p.Drain)
+
+	if !p.Submit(Request{BlogID: 1, URL: "https://example.com/1"}) {
+		t.Fatal("first Submit() returned false")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(p.Results()) == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(p.Results()) != 1 {
+		t.Fatal("first result did not fill result channel")
+	}
+
+	if !p.Submit(Request{BlogID: 2, URL: "https://example.com/2"}) {
+		t.Fatal("second Submit() returned false")
+	}
+	select {
+	case <-secondReturned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for second check to complete")
+	}
+	time.Sleep(25 * time.Millisecond)
+
+	first := <-p.Results()
+	if first.BlogID != 1 {
+		t.Fatalf("first result BlogID = %d, want 1", first.BlogID)
+	}
+	select {
+	case second := <-p.Results():
+		if second.BlogID != 2 {
+			t.Fatalf("second result BlogID = %d, want 2", second.BlogID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for second result; result was likely dropped")
 	}
 }
 

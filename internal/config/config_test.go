@@ -41,9 +41,8 @@ func TestValidate(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:    "num workers zero",
-			mutate:  func(c *Config) { c.NumWorkers = 0 },
-			wantErr: true,
+			name:   "num workers zero uses default floor",
+			mutate: func(c *Config) { c.NumWorkers = 0 },
 		},
 		{
 			name:    "num workers negative",
@@ -51,9 +50,8 @@ func TestValidate(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:    "dataset size zero",
-			mutate:  func(c *Config) { c.DatasetSize = 0 },
-			wantErr: true,
+			name:   "dataset size zero uses default",
+			mutate: func(c *Config) { c.DatasetSize = 0 },
 		},
 		{
 			name:    "dataset size negative",
@@ -66,9 +64,8 @@ func TestValidate(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:    "bucket target zero",
-			mutate:  func(c *Config) { c.BucketTarget = 0 },
-			wantErr: true,
+			name:   "bucket target zero uses bucket total",
+			mutate: func(c *Config) { c.BucketTarget = 0 },
 		},
 		{
 			name:    "bucket target exceeds bucket total",
@@ -79,6 +76,26 @@ func TestValidate(t *testing.T) {
 			name:    "bucket target equals bucket total is valid",
 			mutate:  func(c *Config) { c.BucketTarget = 100 },
 			wantErr: false,
+		},
+		{
+			name: "check dns resolver accepts ip with port",
+			mutate: func(c *Config) {
+				c.CheckDNSResolvers = []string{"10.0.0.176:5353", "[2001:db8::1]:53"}
+			},
+		},
+		{
+			name: "check dns resolver rejects hostnames",
+			mutate: func(c *Config) {
+				c.CheckDNSResolvers = []string{"resolver.internal:53"}
+			},
+			wantErr: true,
+		},
+		{
+			name: "check dns resolver rejects bad port",
+			mutate: func(c *Config) {
+				c.CheckDNSResolvers = []string{"10.0.0.176:0"}
+			},
+			wantErr: true,
 		},
 		{
 			name: "pinned bucket range is valid",
@@ -153,19 +170,17 @@ func TestValidate(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:    "body read max bytes zero",
-			mutate:  func(c *Config) { c.BodyReadMaxBytes = 0 },
+			name:   "body read max bytes zero uses default",
+			mutate: func(c *Config) { c.BodyReadMaxBytes = 0 },
+		},
+		{
+			name:    "body read max ms negative",
+			mutate:  func(c *Config) { c.BodyReadMaxMS = -1 },
 			wantErr: true,
 		},
 		{
-			name:    "body read max ms zero",
-			mutate:  func(c *Config) { c.BodyReadMaxMS = 0 },
-			wantErr: true,
-		},
-		{
-			name:    "keyword read max bytes zero",
-			mutate:  func(c *Config) { c.KeywordReadMaxBytes = 0 },
-			wantErr: true,
+			name:   "keyword read max bytes zero uses default",
+			mutate: func(c *Config) { c.KeywordReadMaxBytes = 0 },
 		},
 		{
 			name:    "keyword read max ms negative",
@@ -377,6 +392,9 @@ func TestLoadAndGet(t *testing.T) {
 	if !cfg.LegacyStatusProjectionEnable {
 		t.Fatal("LegacyStatusProjectionEnable default should be true")
 	}
+	if !cfg.WPCOMNotifyEnable {
+		t.Fatal("WPCOMNotifyEnable default should be true")
+	}
 }
 
 func TestSampleConfigLoads(t *testing.T) {
@@ -437,6 +455,26 @@ func TestLegacyStatusProjectionConfig(t *testing.T) {
 				t.Fatalf("LegacyStatusProjectionEnabled() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestWPCOMNotifyConfig(t *testing.T) {
+	saveConfigState(t)
+	p := writeConfigFile(t, `{
+		"AUTH_TOKEN": "token",
+		"NUM_WORKERS": 7,
+		"BUCKET_TOTAL": 100,
+		"BUCKET_TARGET": 50,
+		"NET_COMMS_TIMEOUT": 10,
+		"LOG_FORMAT": "text",
+		"WPCOM_NOTIFY_ENABLE": false
+	}`)
+
+	if err := Load(p); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if WPCOMNotifyEnabled() {
+		t.Fatal("WPCOMNotifyEnabled() = true, want false")
 	}
 }
 

@@ -2,7 +2,11 @@ DEBUG
 Set to true to enable more verbose log messages. Default: false.
 
 NUM_WORKERS
-Initial number of goroutines in the check pool. The pool auto-scales between 1 and NUM_WORKERS based on queue depth. Default: 60.
+Initial/floor number of goroutines in the check pool. In the legacy scheduler,
+the pool auto-scales between 1 and NUM_WORKERS based on queue depth. In the
+streaming scheduler, NUM_WORKERS is only the floor; the engine derives the
+worker target from active site rate and observed latency. Set 0 to use the
+default floor of 60. Default: 60.
 
 NUM_TO_PROCESS
 Legacy compatibility setting retained so copied v1-style configs continue to
@@ -14,7 +18,7 @@ DATASET_SIZE
 Maximum number of sites to fetch from the database per scheduler page. The
 orchestrator keeps fetching additional pages until due work is drained, so this
 is a database/query guardrail rather than a cap on total checks per round.
-Default: 100.
+Set 0 to use the default page size of 100. Default: 100.
 
 WORKER_MAX_MEM_MB
 Optional Go runtime memory threshold that triggers worker-pool drain. Set to 0
@@ -34,7 +38,10 @@ BUCKET_TOTAL
 Total number of buckets in the system across all hosts. Must match the range of bucket_no values in the jetpack_monitor_sites table. Default: 1000.
 
 BUCKET_TARGET
-Number of buckets this host should claim on startup. Used for initial distribution across hosts. Default: 500.
+Number of buckets this host should claim on startup. Used for initial
+distribution across hosts. Set 0 to claim BUCKET_TOTAL, which is useful for a
+single-host test fleet and avoids carrying a static performance cap in config.
+Default: 500.
 
 BUCKET_HEARTBEAT_GRACE_SEC
 Seconds after a host's last heartbeat before its buckets are considered available for reclaiming by another host. Default: 600.
@@ -52,6 +59,12 @@ DATASET_SIZE. Default: 32.
 
 AUTH_TOKEN
 Shared secret used to authenticate outbound WPCOM API calls. Required.
+
+WPCOM_NOTIFY_ENABLE
+Whether the legacy WPCOM status-change notification path is allowed to make
+outbound calls. Keep this enabled in production for v1 payload compatibility.
+Set false on isolated test fleets so capacity and outage simulations cannot
+attempt to notify WPCOM. Default: true.
 
 VERIFLIER_BATCH_SIZE
 Legacy compatibility setting retained for verifier batching compatibility. The
@@ -92,14 +105,23 @@ which sites are ready to check. Default: 300.
 NET_COMMS_TIMEOUT
 Default HTTP request timeout in seconds. Can be overridden per-site via timeout_seconds column. Default: 10.
 
+CHECK_DNS_RESOLVERS
+Optional list of recursive resolver IPs for HTTP checks. Entries may include
+ports (for example "10.0.0.176:5353"); entries without a port use 53. Leave
+empty to use the host resolver configuration. Resolver changes require a
+service restart so in-flight checks keep a stable transport. Default: [].
+
 BODY_READ_MAX_BYTES
 Maximum response-body bytes checker will read for success-path validation when Content-Length is unknown or larger than this budget. For known Content-Length <= this budget, checker requires full EOF and treats truncation as a hard failure. Default: 1048576.
+Set 0 to use the default budget.
 
 BODY_READ_MAX_MS
 Post-header response-body phase budget in milliseconds for budgeted reads (unknown or large Content-Length). In strict finite mode (known Content-Length <= BODY_READ_MAX_BYTES), this budget does not hard-fail completion; request timeout remains the hard deadline. Default: 250.
+Set 0 to use the default budget.
 
 KEYWORD_READ_MAX_BYTES
 Maximum response-body bytes checker will read when a keyword check is configured. This budget is separate from BODY_READ_MAX_BYTES so keyword checks can scan deeper without changing non-keyword body-read behavior. Default: 1048576.
+Set 0 to use the default budget.
 
 KEYWORD_READ_MAX_MS
 Keyword body-read budget in milliseconds. Set to 0 to inherit the request timeout envelope (NET_COMMS_TIMEOUT or per-site timeout_seconds). If set > 0 and exhausted before the keyword is found, the check fails as timeout (ErrorTimeout), not keyword mismatch. Default: 0.
@@ -115,6 +137,35 @@ the site's normal check_interval; failed checks get a bounded one-minute
 follow-up when the normal interval is longer. Default in the sample config:
 true. Minimal configs that omit the key retain the compatibility default of
 false.
+
+SCHEDULER_ENGINE
+Scheduler implementation to run. "legacy" keeps the v2 round/page scheduler for
+drop-in rollout safety. "streaming" enables the v2-native time-wheel scheduler:
+active site config is loaded into memory, checks are spread over each site's
+interval by stable phase, and healthy checks do not write per-probe freshness or
+history rows. Event, recovery, SSL, TLS, retry, and WPCOM behavior stays routed
+through the existing v2 incident code. Default: legacy.
+
+STREAMING_LEGACY_PROJECTION_INTERVAL_MIN
+Coarse freshness projection interval used only when SCHEDULER_ENGINE is
+"streaming". Streaming mode does not update jetpack_monitor_sites.last_checked_at
+after every successful probe; instead it batches the latest observation for each
+site at this cadence so a rollback to the legacy scheduler loses at most this
+many minutes of freshness data in normal operation. The accepted rollout window
+is 5-15 minutes. The configured interval applies uniformly rather than shrinking
+to each site's check interval, because matching 5-minute site cadence at large
+fleet sizes can turn rollback freshness into the dominant write load. Large
+pending projection sets are flushed in rate-sized batches so compatibility
+writes do not block check throughput. Default: 15.
+
+STREAMING_TARGET_RELOAD_SEC
+How often streaming mode reloads active site config from jetpack_monitor_sites.
+This is not a performance cap and does not control check cadence. It bounds how
+quickly site activation, URL, interval, keyword, header, timeout, redirect, and
+maintenance-window changes are reflected in the in-memory schedule for smaller
+fleets. Very large fleets automatically stretch periodic full reloads to avoid
+turning broad config scans into a steady-state throughput bottleneck; activation
+and deactivation count changes are still polled separately. Default: 300.
 
 LOG_FORMAT
 Log output format. Set to "json" for structured logging (e.g. for log aggregators), or "text" for human-readable output. Default: "text".

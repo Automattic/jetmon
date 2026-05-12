@@ -2,12 +2,14 @@ package db
 
 import (
 	"context"
+	"database/sql/driver"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/go-sql-driver/mysql"
 )
 
 func TestAssignBucketRanges(t *testing.T) {
@@ -349,6 +351,28 @@ func TestMarkSitesCheckedBatchesUpdates(t *testing.T) {
 		{BlogID: 7, CheckedAt: first, NextCheckAt: firstNext},
 	})
 	if err != nil {
+		t.Fatalf("MarkSitesChecked: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestMarkSitesCheckedRetriesDeadlock(t *testing.T) {
+	mock, cleanup := withMockDB(t)
+	defer cleanup()
+
+	checkedAt := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
+	nextAt := checkedAt.Add(5 * time.Minute)
+	args := []driver.Value{int64(42), checkedAt, int64(42), nextAt, int64(42)}
+	mock.ExpectExec("UPDATE jetpack_monitor_sites SET last_checked_at = CASE blog_id").
+		WithArgs(args...).
+		WillReturnError(&mysql.MySQLError{Number: 1213, Message: "Deadlock found when trying to get lock"})
+	mock.ExpectExec("UPDATE jetpack_monitor_sites SET last_checked_at = CASE blog_id").
+		WithArgs(args...).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	if err := MarkSitesChecked(context.Background(), []SiteCheck{{BlogID: 42, CheckedAt: checkedAt, NextCheckAt: nextAt}}); err != nil {
 		t.Fatalf("MarkSitesChecked: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {

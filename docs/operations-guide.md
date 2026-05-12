@@ -16,21 +16,22 @@ Key settings:
 
 | Key | Default | Description |
 |---|---:|---|
-| `NUM_WORKERS` | 60 | Goroutine pool size |
+| `NUM_WORKERS` | 60 | Goroutine pool size/floor; 0 uses the default floor |
 | `NUM_TO_PROCESS` | 40 | Legacy compatibility setting; does not cap Go scheduler throughput |
-| `DATASET_SIZE` | 100 | Database fetch page size for scheduler work; not a total round cap |
+| `DATASET_SIZE` | 100 | Database fetch page size for scheduler work; not a total round cap; 0 uses the default |
 | `NUM_OF_CHECKS` | 3 | Local failures before Veriflier escalation |
 | `TIME_BETWEEN_CHECKS_SEC` | 30 | Legacy compatibility setting retained for copied v1-style configs |
 | `MIN_TIME_BETWEEN_ROUNDS_SEC` | 300 | Fixed-cadence full-fleet pass interval when variable intervals are disabled |
 | `NET_COMMS_TIMEOUT` | 10 | Default per-check HTTP timeout in seconds |
+| `CHECK_DNS_RESOLVERS` | `[]` | Optional HTTP-check recursive resolver IPs, with optional ports; restart required after changes |
 | `BODY_READ_MAX_BYTES` | 1048576 | Success-path body-read budget in bytes for unknown/large responses |
-| `BODY_READ_MAX_MS` | 250 | Post-header body-phase budget in milliseconds for budgeted reads (unknown/large responses) |
-| `KEYWORD_READ_MAX_BYTES` | 1048576 | Max bytes scanned when keyword checks are enabled |
+| `BODY_READ_MAX_MS` | 250 | Post-header body-phase budget in milliseconds for budgeted reads (unknown/large responses); 0 uses the default |
+| `KEYWORD_READ_MAX_BYTES` | 1048576 | Max bytes scanned when keyword checks are enabled; 0 uses the default |
 | `KEYWORD_READ_MAX_MS` | 0 | Keyword read budget in milliseconds, 0 inherits full request timeout envelope |
 | `PEER_OFFLINE_LIMIT` | 3 | Veriflier agreements required to confirm downtime |
 | `WORKER_MAX_MEM_MB` | 0 | Optional Go runtime memory threshold that triggers worker-pool drain; 0 disables the artificial cap |
 | `BUCKET_TOTAL` | 1000 | Total bucket range across all hosts |
-| `BUCKET_TARGET` | 500 | Maximum buckets this host should own |
+| `BUCKET_TARGET` | 500 | Maximum buckets this host should own; 0 means all buckets |
 | `BUCKET_HEARTBEAT_GRACE_SEC` | 600 | Seconds before a silent host's buckets are reclaimed |
 | `PINNED_BUCKET_MIN` / `PINNED_BUCKET_MAX` | unset | Static bucket range used by the [v1-to-v2 migration runbook](v1-to-v2-migration.md) |
 | `ALERT_COOLDOWN_MINUTES` | 30 | Default cooldown between repeated alerts per site |
@@ -42,11 +43,20 @@ Key settings:
 | `DELIVERY_OWNER_HOST` | empty | Optional host allowed to run embedded delivery workers |
 | `DEBUG_PORT` | 6060 | localhost-only pprof port, 0 disables it |
 | `EMAIL_TRANSPORT` | `stub` | `stub`, `smtp`, or `wpcom` |
+| `SCHEDULER_ENGINE` | `legacy` | `legacy` round/page scheduler or `streaming` v2-native scheduler |
+| `STREAMING_LEGACY_PROJECTION_INTERVAL_MIN` | 15 | Coarse `last_checked_at` rollback projection interval for streaming mode |
+| `STREAMING_TARGET_RELOAD_SEC` | 300 | Active site config reload cadence for streaming mode |
 
 Scheduler behavior:
 
 - `DATASET_SIZE` limits one database page. Jetmon continues fetching pages until
   due work is drained, so a low value should not cause unchecked sites by itself.
+  `DATASET_SIZE=0` uses the default page size.
+- `NUM_WORKERS=0` uses the default worker floor instead of failing validation.
+  In streaming mode this is not a throughput cap; the engine derives a higher
+  worker target from active site rate and observed latency.
+- `BUCKET_TARGET=0` expands to `BUCKET_TOTAL`, which is useful for a single
+  monitor host in test fleets and removes one more manual capacity-tuning knob.
 - A full worker queue applies backpressure; checks remain pending instead of
   being dropped.
 - With `USE_VARIABLE_CHECK_INTERVALS=true`, Jetmon polls for newly due work on a
@@ -65,6 +75,35 @@ Scheduler behavior:
   reporting queries do not run on every short scheduler poll. Use
   `scheduler.round.due_count_sampled.count` to distinguish sampled polls from
   intentionally skipped reporting polls.
+- With `SCHEDULER_ENGINE=streaming`, Jetmon uses a v2-native time-wheel
+  scheduler instead of database due-row polling. Active sites are spread over
+  stable phases inside each site's interval, healthy probes avoid per-check
+  history/freshness writes, and the checker pool target is derived from active
+  site rate plus observed latency. Streaming mode keeps event, retry, verifier,
+  SSL/TLS, recovery, and WPCOM behavior on the existing v2 incident path. It
+  batches legacy `last_checked_at`/`next_check_at` projection at
+  `STREAMING_LEGACY_PROJECTION_INTERVAL_MIN` so rollback to the legacy scheduler
+  has bounded freshness loss rather than exact per-check freshness. The
+  projection interval is constrained to the accepted 5-15 minute rollback window
+  and applies uniformly across sites. It intentionally does not shrink to match
+  5-minute site cadence, because that makes rollback freshness writes scale with
+  active fleet size in the hot path. Pending projection writes are also flushed
+  in rate-sized batches so a backlog cannot turn one flush into a large
+  lock-heavy update burst. Streaming mode intentionally uses larger in-memory
+  due/result/work buffers than the legacy scheduler; low RSS in capacity tests is
+  expected to be spent on those buffers before check dispatch is throttled.
+- Treat the current single-host streaming capacity evidence as validated through
+  2 million active internal-only targets on five-minute intervals, not as an
+  unlimited ceiling. The 2026-05-12 2 million-target run had full target
+  coverage, no stale or never-seen targets, p95 target age around 270 seconds,
+  max target age below 285 seconds, process RSS around 6.3 GB peak, and host CPU
+  around 36% average. A 4 million-target run exceeded the current stable
+  envelope: timeout pressure grew, queue depth reached its cap, pending work
+  climbed into the millions, and target coverage stopped at roughly 88%. During
+  larger tests or rollout rehearsals, watch `scheduler.streaming.pending.count`,
+  `queue_depth`, `result_depth`, `max_lag`, `dispatch_budget_limited`, timeout
+  counters, process RSS, and host CPU together; backlog plus timeout growth is a
+  hold point even when raw CPU still appears available.
 
 See [../config/config.readme](../config/config.readme) for the full option
 reference.

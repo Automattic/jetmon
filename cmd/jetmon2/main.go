@@ -23,6 +23,7 @@ import (
 	"github.com/Automattic/jetmon/internal/api"
 	"github.com/Automattic/jetmon/internal/apikeys"
 	"github.com/Automattic/jetmon/internal/audit"
+	"github.com/Automattic/jetmon/internal/checker"
 	"github.com/Automattic/jetmon/internal/config"
 	"github.com/Automattic/jetmon/internal/dashboard"
 	"github.com/Automattic/jetmon/internal/db"
@@ -88,9 +89,13 @@ func runServe() {
 		log.Fatalf("load config: %v", err)
 	}
 	cfg := config.Get()
+	if err := checker.ConfigureResolverServers(cfg.CheckDNSResolvers); err != nil {
+		log.Fatalf("configure check DNS resolvers: %v", err)
+	}
 	log.Printf("config: legacy_status_projection=%s", enabledLabel(cfg.LegacyStatusProjectionEnable))
 	log.Printf("config: bucket_ownership=%s", bucketOwnershipLabel(cfg))
 	log.Printf("config: scheduler=%s", schedulerConfigLabel(cfg))
+	log.Printf("config: wpcom_notify=%s", enabledLabel(cfg.WPCOMNotifyEnable))
 	log.Printf("config: email_transport=%s", emailTransportLabel(cfg))
 	if !emailTransportDelivers(cfg) {
 		log.Printf("WARN: email_transport=%s — alert-contact emails will be logged but not delivered", emailTransportLabel(cfg))
@@ -296,7 +301,7 @@ func runServe() {
 					if dash != nil {
 						dash.SetFleetSource(newFleetDashboardStore(config.Get()))
 					}
-					log.Println("config reloaded")
+					log.Println("config reloaded; CHECK_DNS_RESOLVERS changes require restart")
 				}
 			case syscall.SIGINT, syscall.SIGTERM:
 				log.Println("received shutdown signal, draining")
@@ -365,6 +370,7 @@ func cmdValidateConfig() {
 	fmt.Printf("INFO legacy_status_projection=%s\n", enabledLabel(cfg.LegacyStatusProjectionEnable))
 	fmt.Printf("INFO bucket_ownership=%s\n", bucketOwnershipLabel(cfg))
 	fmt.Printf("INFO scheduler=%s\n", schedulerConfigLabel(cfg))
+	fmt.Printf("INFO wpcom_notify=%s\n", enabledLabel(cfg.WPCOMNotifyEnable))
 	for _, line := range rolloutAdviceLines(cfg) {
 		fmt.Println(line)
 	}
@@ -729,6 +735,15 @@ func emailTransportDelivers(cfg *config.Config) bool {
 }
 
 func schedulerConfigLabel(cfg *config.Config) string {
+	if cfg.SchedulerEngine == "streaming" {
+		return fmt.Sprintf(
+			"streaming reload=%s legacy_projection=%s worker_floor=%d fetch_page_size=%d",
+			time.Duration(cfg.StreamingTargetReloadSec)*time.Second,
+			time.Duration(cfg.StreamingLegacyProjectionIntervalMin)*time.Minute,
+			cfg.NumWorkers,
+			cfg.DatasetSize,
+		)
+	}
 	if cfg.UseVariableCheckIntervals {
 		return fmt.Sprintf(
 			"variable_intervals fetch_page_size=%d idle_poll=%s",

@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -76,16 +78,26 @@ type Config struct {
 
 	AlertCooldownMinutes int `json:"ALERT_COOLDOWN_MINUTES"`
 
-	StatsUpdateIntervalMS     int   `json:"STATS_UPDATE_INTERVAL_MS"`
-	StatsdSendMemUsage        bool  `json:"STATSD_SEND_MEM_USAGE"`
-	TimeBetweenNoticesMin     int   `json:"TIME_BETWEEN_NOTICES_MIN"`
-	MinTimeBetweenRoundsSec   int   `json:"MIN_TIME_BETWEEN_ROUNDS_SEC"`
-	NetCommsTimeout           int   `json:"NET_COMMS_TIMEOUT"`
-	BodyReadMaxBytes          int64 `json:"BODY_READ_MAX_BYTES"`
-	BodyReadMaxMS             int   `json:"BODY_READ_MAX_MS"`
-	KeywordReadMaxBytes       int64 `json:"KEYWORD_READ_MAX_BYTES"`
-	KeywordReadMaxMS          int   `json:"KEYWORD_READ_MAX_MS"`
-	UseVariableCheckIntervals bool  `json:"USE_VARIABLE_CHECK_INTERVALS"`
+	StatsUpdateIntervalMS     int      `json:"STATS_UPDATE_INTERVAL_MS"`
+	StatsdSendMemUsage        bool     `json:"STATSD_SEND_MEM_USAGE"`
+	TimeBetweenNoticesMin     int      `json:"TIME_BETWEEN_NOTICES_MIN"`
+	WPCOMNotifyEnable         bool     `json:"WPCOM_NOTIFY_ENABLE"`
+	MinTimeBetweenRoundsSec   int      `json:"MIN_TIME_BETWEEN_ROUNDS_SEC"`
+	NetCommsTimeout           int      `json:"NET_COMMS_TIMEOUT"`
+	CheckDNSResolvers         []string `json:"CHECK_DNS_RESOLVERS"`
+	BodyReadMaxBytes          int64    `json:"BODY_READ_MAX_BYTES"`
+	BodyReadMaxMS             int      `json:"BODY_READ_MAX_MS"`
+	KeywordReadMaxBytes       int64    `json:"KEYWORD_READ_MAX_BYTES"`
+	KeywordReadMaxMS          int      `json:"KEYWORD_READ_MAX_MS"`
+	UseVariableCheckIntervals bool     `json:"USE_VARIABLE_CHECK_INTERVALS"`
+	SchedulerEngine           string   `json:"SCHEDULER_ENGINE"`
+
+	// StreamingLegacyProjectionIntervalMin controls the coarse compatibility
+	// freshness write interval used by the streaming scheduler. It intentionally
+	// does not affect check cadence; it only bounds last_checked_at staleness
+	// for rollback to legacy readers.
+	StreamingLegacyProjectionIntervalMin int `json:"STREAMING_LEGACY_PROJECTION_INTERVAL_MIN"`
+	StreamingTargetReloadSec             int `json:"STREAMING_TARGET_RELOAD_SEC"`
 
 	LogFormat         string `json:"LOG_FORMAT"`
 	DashboardPort     int    `json:"DASHBOARD_PORT"`
@@ -197,36 +209,40 @@ func GetDB() *DBConfig {
 
 func defaults() *Config {
 	return &Config{
-		NumWorkers:                   60,
-		NumToProcess:                 40,
-		DatasetSize:                  100,
-		WorkerMaxMemMB:               0,
-		LegacyStatusProjectionEnable: true,
-		BucketTotal:                  1000,
-		BucketTarget:                 500,
-		BucketHeartbeatGraceSec:      600,
-		BatchSize:                    32,
-		VeriflierBatchSize:           200,
-		SQLUpdateBatch:               1,
-		DBConfigUpdatesMin:           10,
-		PeerOfflineLimit:             3,
-		NumOfChecks:                  3,
-		TimeBetweenChecksSec:         30,
-		AlertCooldownMinutes:         30,
-		StatsUpdateIntervalMS:        10000,
-		TimeBetweenNoticesMin:        59,
-		MinTimeBetweenRoundsSec:      300,
-		NetCommsTimeout:              10,
-		BodyReadMaxBytes:             1048576,
-		BodyReadMaxMS:                250,
-		KeywordReadMaxBytes:          1048576,
-		KeywordReadMaxMS:             0,
-		LogFormat:                    "text",
-		DashboardPort:                8080,
-		DashboardBindAddr:            "127.0.0.1",
-		DebugPort:                    6060,
-		EmailTransport:               "stub",
-		EmailFrom:                    "jetmon@noreply.invalid",
+		NumWorkers:                           60,
+		NumToProcess:                         40,
+		DatasetSize:                          100,
+		WorkerMaxMemMB:                       0,
+		LegacyStatusProjectionEnable:         true,
+		BucketTotal:                          1000,
+		BucketTarget:                         500,
+		BucketHeartbeatGraceSec:              600,
+		BatchSize:                            32,
+		VeriflierBatchSize:                   200,
+		SQLUpdateBatch:                       1,
+		DBConfigUpdatesMin:                   10,
+		PeerOfflineLimit:                     3,
+		NumOfChecks:                          3,
+		TimeBetweenChecksSec:                 30,
+		AlertCooldownMinutes:                 30,
+		StatsUpdateIntervalMS:                10000,
+		TimeBetweenNoticesMin:                59,
+		WPCOMNotifyEnable:                    true,
+		MinTimeBetweenRoundsSec:              300,
+		NetCommsTimeout:                      10,
+		BodyReadMaxBytes:                     1048576,
+		BodyReadMaxMS:                        250,
+		KeywordReadMaxBytes:                  1048576,
+		KeywordReadMaxMS:                     0,
+		SchedulerEngine:                      "legacy",
+		StreamingLegacyProjectionIntervalMin: 15,
+		StreamingTargetReloadSec:             300,
+		LogFormat:                            "text",
+		DashboardPort:                        8080,
+		DashboardBindAddr:                    "127.0.0.1",
+		DebugPort:                            6060,
+		EmailTransport:                       "stub",
+		EmailFrom:                            "jetmon@noreply.invalid",
 	}
 }
 
@@ -254,6 +270,17 @@ func LegacyStatusProjectionEnabled() bool {
 	return cfg.LegacyStatusProjectionEnable
 }
 
+// WPCOMNotifyEnabled reports whether the legacy WPCOM status-change
+// notification path should make outbound calls. It defaults to true for
+// production compatibility; test fleets can set WPCOM_NOTIFY_ENABLE=false.
+func WPCOMNotifyEnabled() bool {
+	cfg := Get()
+	if cfg == nil {
+		return true
+	}
+	return cfg.WPCOMNotifyEnable
+}
+
 // PinnedBucketRange returns the migration-only static bucket range configured
 // on this host. Explicit PINNED_BUCKET_* keys take precedence over legacy
 // BUCKET_NO_* aliases after validation has checked for conflicts.
@@ -274,17 +301,29 @@ func validate(cfg *Config) error {
 	if cfg.AuthToken == "" {
 		return fmt.Errorf("AUTH_TOKEN is required")
 	}
-	if cfg.NumWorkers <= 0 {
-		return fmt.Errorf("NUM_WORKERS must be > 0")
+	if cfg.NumWorkers < 0 {
+		return fmt.Errorf("NUM_WORKERS must be >= 0")
 	}
-	if cfg.DatasetSize <= 0 {
-		return fmt.Errorf("DATASET_SIZE must be > 0")
+	if cfg.NumWorkers == 0 {
+		cfg.NumWorkers = 60
+	}
+	if cfg.DatasetSize < 0 {
+		return fmt.Errorf("DATASET_SIZE must be >= 0")
+	}
+	if cfg.DatasetSize == 0 {
+		cfg.DatasetSize = 100
 	}
 	if cfg.BucketTotal <= 0 {
 		return fmt.Errorf("BUCKET_TOTAL must be > 0")
 	}
-	if cfg.BucketTarget <= 0 || cfg.BucketTarget > cfg.BucketTotal {
-		return fmt.Errorf("BUCKET_TARGET must be between 1 and BUCKET_TOTAL")
+	if cfg.BucketTarget < 0 {
+		return fmt.Errorf("BUCKET_TARGET must be >= 0")
+	}
+	if cfg.BucketTarget == 0 {
+		cfg.BucketTarget = cfg.BucketTotal
+	}
+	if cfg.BucketTarget > cfg.BucketTotal {
+		return fmt.Errorf("BUCKET_TARGET must be <= BUCKET_TOTAL")
 	}
 	if err := validatePinnedBucketRange(cfg); err != nil {
 		return err
@@ -292,20 +331,54 @@ func validate(cfg *Config) error {
 	if cfg.NetCommsTimeout <= 0 {
 		return fmt.Errorf("NET_COMMS_TIMEOUT must be > 0")
 	}
-	if cfg.BodyReadMaxBytes <= 0 {
-		return fmt.Errorf("BODY_READ_MAX_BYTES must be > 0")
+	if err := validateCheckDNSResolvers(cfg.CheckDNSResolvers); err != nil {
+		return err
 	}
-	if cfg.BodyReadMaxMS <= 0 {
-		return fmt.Errorf("BODY_READ_MAX_MS must be > 0")
+	if cfg.BodyReadMaxBytes < 0 {
+		return fmt.Errorf("BODY_READ_MAX_BYTES must be >= 0")
 	}
-	if cfg.KeywordReadMaxBytes <= 0 {
-		return fmt.Errorf("KEYWORD_READ_MAX_BYTES must be > 0")
+	if cfg.BodyReadMaxBytes == 0 {
+		cfg.BodyReadMaxBytes = 1048576
+	}
+	if cfg.BodyReadMaxMS < 0 {
+		return fmt.Errorf("BODY_READ_MAX_MS must be >= 0")
+	}
+	if cfg.BodyReadMaxMS == 0 {
+		cfg.BodyReadMaxMS = 250
+	}
+	if cfg.KeywordReadMaxBytes < 0 {
+		return fmt.Errorf("KEYWORD_READ_MAX_BYTES must be >= 0")
+	}
+	if cfg.KeywordReadMaxBytes == 0 {
+		cfg.KeywordReadMaxBytes = 1048576
 	}
 	if cfg.KeywordReadMaxMS < 0 {
 		return fmt.Errorf("KEYWORD_READ_MAX_MS must be >= 0")
 	}
 	if cfg.MinTimeBetweenRoundsSec < 0 {
 		return fmt.Errorf("MIN_TIME_BETWEEN_ROUNDS_SEC must be >= 0")
+	}
+	switch cfg.SchedulerEngine {
+	case "", "legacy":
+		cfg.SchedulerEngine = "legacy"
+	case "streaming":
+	default:
+		return fmt.Errorf("SCHEDULER_ENGINE must be 'legacy' or 'streaming'")
+	}
+	if cfg.StreamingLegacyProjectionIntervalMin == 0 {
+		cfg.StreamingLegacyProjectionIntervalMin = 15
+	}
+	if cfg.StreamingLegacyProjectionIntervalMin < 5 {
+		return fmt.Errorf("STREAMING_LEGACY_PROJECTION_INTERVAL_MIN must be between 5 and 15")
+	}
+	if cfg.StreamingLegacyProjectionIntervalMin > 15 {
+		return fmt.Errorf("STREAMING_LEGACY_PROJECTION_INTERVAL_MIN must be between 5 and 15")
+	}
+	if cfg.StreamingTargetReloadSec == 0 {
+		cfg.StreamingTargetReloadSec = 300
+	}
+	if cfg.StreamingTargetReloadSec < 0 {
+		return fmt.Errorf("STREAMING_TARGET_RELOAD_SEC must be > 0")
 	}
 	if cfg.LogFormat != "text" && cfg.LogFormat != "json" {
 		return fmt.Errorf("LOG_FORMAT must be 'text' or 'json'")
@@ -343,6 +416,42 @@ func validate(cfg *Config) error {
 		}
 	}
 	return nil
+}
+
+func validateCheckDNSResolvers(servers []string) error {
+	for i, raw := range servers {
+		if _, err := normalizeCheckDNSResolver(raw); err != nil {
+			return fmt.Errorf("CHECK_DNS_RESOLVERS[%d]: %w", i, err)
+		}
+	}
+	return nil
+}
+
+func normalizeCheckDNSResolver(raw string) (string, error) {
+	server := strings.TrimSpace(raw)
+	if server == "" {
+		return "", fmt.Errorf("resolver must not be empty")
+	}
+	host := server
+	port := "53"
+	if splitHost, splitPort, err := net.SplitHostPort(server); err == nil {
+		host = strings.Trim(splitHost, "[]")
+		port = splitPort
+	} else if strings.Contains(server, ":") {
+		if ip := net.ParseIP(strings.Trim(server, "[]")); ip == nil || ip.To4() != nil {
+			return "", fmt.Errorf("resolver must be an IP literal with optional port")
+		}
+		host = strings.Trim(server, "[]")
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return "", fmt.Errorf("resolver must be an IP literal with optional port")
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n <= 0 || n > 65535 {
+		return "", fmt.Errorf("resolver port must be between 1 and 65535")
+	}
+	return net.JoinHostPort(ip.String(), strconv.Itoa(n)), nil
 }
 
 func validatePinnedBucketRange(cfg *Config) error {

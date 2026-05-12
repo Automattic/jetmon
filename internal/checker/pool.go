@@ -30,10 +30,23 @@ type Pool struct {
 
 // NewPool creates a Pool with the given initial, min, and max worker counts.
 func NewPool(initial, min, max int) *Pool {
+	return NewPoolWithQueueCap(initial, min, max, max*2)
+}
+
+// NewPoolWithQueueCap creates a Pool with an explicit work/result channel
+// capacity. It is used by streaming schedulers that need a large elastic queue
+// without changing the legacy NewPool queue-size contract.
+func NewPoolWithQueueCap(initial, min, max, queueCap int) *Pool {
+	if queueCap < 1 {
+		queueCap = 1
+	}
+	if max < 1 {
+		max = 1
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	p := &Pool{
-		work:    make(chan Request, max*2),
-		results: make(chan Result, max*2),
+		work:    make(chan Request, queueCap),
+		results: make(chan Result, queueCap),
 		retire:  make(chan struct{}, max),
 		cancel:  cancel,
 		ctx:     ctx,
@@ -72,6 +85,12 @@ func (p *Pool) QueueDepth() int {
 	return len(p.work)
 }
 
+// ResultDepth returns the number of completed checks waiting for the
+// orchestrator to process them.
+func (p *Pool) ResultDepth() int {
+	return len(p.results)
+}
+
 // ActiveCount returns the number of goroutines currently running a check.
 func (p *Pool) ActiveCount() int {
 	return int(p.active.Load())
@@ -90,8 +109,8 @@ func (p *Pool) Drain() {
 	p.workMu.Lock()
 	close(p.work)
 	p.workMu.Unlock()
-	p.wg.Wait()
 	p.cancel()
+	p.wg.Wait()
 }
 
 func (p *Pool) spawnWorker() {
@@ -120,8 +139,6 @@ func (p *Pool) spawnWorker() {
 				case p.results <- res:
 				case <-p.ctx.Done():
 					return
-				default:
-					// Avoid deadlocking shutdown if the result consumer has stopped.
 				}
 			}
 		}
@@ -184,6 +201,66 @@ func (p *Pool) SetMaxSize(max int) {
 		p.retireWorkers(current - p.maxSize)
 	}
 	p.mu.Unlock()
+}
+
+// SetSizeBounds updates the autoscaler floor and ceiling together. If the
+// current worker count is below the new floor, workers are started immediately;
+// if it is above the new ceiling, excess workers are retired gracefully.
+func (p *Pool) SetSizeBounds(minSize, maxSize int) int {
+	if maxSize < 1 {
+		maxSize = 1
+	}
+	if minSize < 1 {
+		minSize = 1
+	}
+	if minSize > maxSize {
+		minSize = maxSize
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.minSize = minSize
+	p.maxSize = maxSize
+
+	current := int(p.size.Load())
+	if current > p.maxSize {
+		p.retireWorkers(current - p.maxSize)
+		return 0
+	}
+	if current >= p.minSize || p.closed.Load() {
+		return 0
+	}
+	added := p.minSize - current
+	for range added {
+		p.spawnWorker()
+	}
+	return added
+}
+
+// EnsureSize proactively starts workers up to target, bounded by maxSize.
+// The queue-depth autoscaler will still adjust over time, but streaming
+// schedulers use this to avoid a cold pool after a large target activation.
+func (p *Pool) EnsureSize(target int) int {
+	if target < 1 {
+		return 0
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed.Load() {
+		return 0
+	}
+	current := int(p.size.Load())
+	if target > p.maxSize {
+		target = p.maxSize
+	}
+	if target <= current {
+		return 0
+	}
+	added := target - current
+	for range added {
+		p.spawnWorker()
+	}
+	return added
 }
 
 // DrainWorkers gracefully reduces the pool size by up to n idle workers.
