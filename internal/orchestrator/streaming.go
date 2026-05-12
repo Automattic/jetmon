@@ -1067,8 +1067,8 @@ func (o *Orchestrator) processStreamingSideEffects(site db.Site, res checker.Res
 		o.handleRecovery(site, res)
 		site.SiteStatus = statusRunning
 	} else {
-		o.handleFailure(site, res)
-		if o.retries.get(site.BlogID) != nil {
+		failureActive := o.handleFailure(site, res)
+		if retry := o.retries.get(site.BlogID); retry != nil && (failureActive || retry.eventID > 0) {
 			site.SiteStatus = statusDown
 		} else if status, err := dbGetSiteStatus(o.ctx, site.BlogID); err != nil {
 			log.Printf("orchestrator: streaming refresh site status blog_id=%d: %v", site.BlogID, err)

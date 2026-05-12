@@ -558,6 +558,7 @@ func stubOrchestratorDeps() func() {
 	origDBMarkHostDraining := dbMarkHostDraining
 	origDBGetSites := dbGetSitesForBucket
 	origDBUpdateStatus := dbUpdateSiteStatus
+	origDBGetSiteStatus := dbGetSiteStatus
 	origDBUpdateLastAlert := dbUpdateLastAlertSent
 	origDBRecordFalsePositive := dbRecordFalsePositive
 	origDBMarkSiteChecked := dbMarkSiteChecked
@@ -579,6 +580,7 @@ func stubOrchestratorDeps() func() {
 	dbMarkHostDraining = func(context.Context, string) error { return nil }
 	dbGetSitesForBucket = func(context.Context, int, int, int, bool) ([]db.Site, error) { return nil, nil }
 	dbUpdateSiteStatus = func(context.Context, int64, int, time.Time) error { return nil }
+	dbGetSiteStatus = func(context.Context, int64) (int, error) { return statusRunning, nil }
 	dbUpdateLastAlertSent = func(context.Context, int64, time.Time) error { return nil }
 	dbRecordFalsePositive = func(int64, int, int, int64) error { return nil }
 	dbMarkSiteChecked = func(context.Context, int64, time.Time, time.Time) error { return nil }
@@ -602,6 +604,7 @@ func stubOrchestratorDeps() func() {
 		dbMarkHostDraining = origDBMarkHostDraining
 		dbGetSitesForBucket = origDBGetSites
 		dbUpdateSiteStatus = origDBUpdateStatus
+		dbGetSiteStatus = origDBGetSiteStatus
 		dbUpdateLastAlertSent = origDBUpdateLastAlert
 		dbRecordFalsePositive = origDBRecordFalsePositive
 		dbMarkSiteChecked = origDBMarkSiteChecked
@@ -652,6 +655,19 @@ func checkerResultFailure(blogID int64) checker.Result {
 		ErrorCode: checker.ErrorConnect,
 		RTT:       100 * time.Millisecond,
 		Timestamp: time.Now().UTC(),
+	}
+}
+
+func checkerResultTransportFailure(blogID int64, at time.Time) checker.Result {
+	return checker.Result{
+		BlogID:      blogID,
+		URL:         "https://example.com",
+		Success:     false,
+		HTTPCode:    0,
+		ErrorCode:   checker.ErrorConnect,
+		ErrorDetail: "dial tcp: connection refused",
+		RTT:         10 * time.Millisecond,
+		Timestamp:   at.UTC(),
 	}
 }
 
@@ -821,6 +837,9 @@ func TestHandleRecoverySendsNotificationWhenSiteWasDown(t *testing.T) {
 	if o.retries.get(1) != nil {
 		t.Fatal("retry entry should be cleared after recovery")
 	}
+	if !o.retries.recentlyRecovered(1, time.Now().UTC(), postRecoveryTransientFailureWindow(db.Site{BlogID: 1, CheckInterval: 5})) {
+		t.Fatal("recovery should mark site for post-recovery transient dampening")
+	}
 }
 
 func TestHandleRecoveryIsNoopWhenSiteAlreadyRunning(t *testing.T) {
@@ -927,6 +946,81 @@ func TestHandleFailureBelowThresholdDoesNotEscalate(t *testing.T) {
 	}
 	if o.retries.get(1) == nil {
 		t.Fatal("retry entry should exist after first failure")
+	}
+}
+
+func TestHandleFailureSuppressesFirstPostRecoveryTransportFailure(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	cfg := setTestConfig(t)
+	cfg.NumOfChecks = 1
+
+	var escalated bool
+	veriflierCheckFunc = func(_ *veriflier.VeriflierClient, _ context.Context, _ veriflier.CheckRequest) (*veriflier.CheckResult, error) {
+		escalated = true
+		return &veriflier.CheckResult{Success: false}, nil
+	}
+
+	recoveredAt := time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local",
+		ctx:      context.Background(),
+	}
+	o.retries.markRecovered(42, recoveredAt)
+
+	active := o.handleFailure(
+		db.Site{BlogID: 42, MonitorURL: "https://example.com", CheckInterval: 3, SiteStatus: statusRunning},
+		checkerResultTransportFailure(42, recoveredAt.Add(2*time.Minute)),
+	)
+
+	if active {
+		t.Fatal("first post-recovery transport failure should not make the site non-running")
+	}
+	if escalated {
+		t.Fatal("first post-recovery transport failure escalated despite dampening")
+	}
+	if entry := o.retries.get(42); entry != nil {
+		t.Fatalf("suppressed failure created retry state: %+v", entry)
+	}
+}
+
+func TestHandleFailureEscalatesPostRecoveryTransportFailureAfterWindow(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	cfg := setTestConfig(t)
+	cfg.NumOfChecks = 1
+	cfg.PeerOfflineLimit = 1
+
+	var escalated bool
+	veriflierCheckFunc = func(c *veriflier.VeriflierClient, _ context.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
+		escalated = true
+		return &veriflier.CheckResult{
+			BlogID:   req.BlogID,
+			Host:     c.Addr(),
+			Success:  false,
+			HTTPCode: 0,
+		}, nil
+	}
+
+	recoveredAt := time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local",
+		ctx:      context.Background(),
+		veriflierClients: []*veriflier.VeriflierClient{
+			veriflier.NewVeriflierClient("v1", ""),
+		},
+	}
+	o.retries.markRecovered(42, recoveredAt)
+	site := db.Site{BlogID: 42, MonitorURL: "https://example.com", CheckInterval: 3, SiteStatus: statusRunning}
+
+	o.handleFailure(site, checkerResultTransportFailure(42, recoveredAt.Add(postRecoveryTransientFailureWindow(site)+time.Second)))
+
+	if !escalated {
+		t.Fatal("transport failure after post-recovery suppression window should continue the normal retry pipeline")
 	}
 }
 
@@ -2456,6 +2550,12 @@ func TestEscalateToVerifliersEmitsFalseAlarmMetrics(t *testing.T) {
 	}
 	if got := rec.timingCount("detection.seems_down_to_false_alarm.time"); got != 1 {
 		t.Fatalf("false alarm timing count = %d, want 1", got)
+	}
+	if entry := o.retries.get(654); entry != nil {
+		t.Fatalf("retry entry after false alarm = %+v, want nil", entry)
+	}
+	if !o.retries.recentlyRecovered(654, nowFunc().UTC(), postRecoveryTransientFailureWindow(db.Site{BlogID: 654, CheckInterval: 5})) {
+		t.Fatal("false alarm should mark the site recently recovered for transient suppression")
 	}
 }
 

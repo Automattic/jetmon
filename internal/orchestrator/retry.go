@@ -21,12 +21,16 @@ type retryEntry struct {
 // retryQueue holds sites awaiting local retry or veriflier escalation.
 // It persists between rounds — never flushed at round start.
 type retryQueue struct {
-	mu      sync.Mutex
-	entries map[int64]*retryEntry
+	mu               sync.Mutex
+	entries          map[int64]*retryEntry
+	recentRecoveries map[int64]time.Time
 }
 
 func newRetryQueue() *retryQueue {
-	return &retryQueue{entries: make(map[int64]*retryEntry)}
+	return &retryQueue{
+		entries:          make(map[int64]*retryEntry),
+		recentRecoveries: make(map[int64]time.Time),
+	}
 }
 
 // record adds a failed check result to the queue. Returns the updated entry.
@@ -54,6 +58,38 @@ func (q *retryQueue) clear(blogID int64) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	delete(q.entries, blogID)
+}
+
+func (q *retryQueue) markRecovered(blogID int64, recoveredAt time.Time) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if recoveredAt.IsZero() {
+		recoveredAt = time.Now().UTC()
+	}
+	q.recentRecoveries[blogID] = recoveredAt.UTC()
+}
+
+func (q *retryQueue) recentlyRecovered(blogID int64, at time.Time, window time.Duration) bool {
+	if window <= 0 {
+		return false
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	recoveredAt, ok := q.recentRecoveries[blogID]
+	if !ok {
+		return false
+	}
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
+	if at.Before(recoveredAt) {
+		return true
+	}
+	if at.Sub(recoveredAt.UTC()) <= window {
+		return true
+	}
+	delete(q.recentRecoveries, blogID)
+	return false
 }
 
 // get returns the entry for a site, or nil if not in the queue.

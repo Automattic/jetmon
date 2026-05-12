@@ -58,6 +58,7 @@ const schedulerBroadReportInterval = time.Minute
 const eventMutationMaxAttempts = 3
 const eventMutationRetryBaseDelay = 25 * time.Millisecond
 const failedCheckRetryInterval = time.Minute
+const maxPostRecoveryTransientFailureWindow = 5 * time.Minute
 
 // VariableIntervalPollInterval returns the idle scheduler poll interval used
 // when per-site check intervals are enabled. The SQL due predicate prevents
@@ -1279,7 +1280,7 @@ func (o *Orchestrator) handleRecovery(site db.Site, res checker.Result) {
 	}
 	o.retries.clear(site.BlogID)
 
-	if site.SiteStatus != statusRunning {
+	if site.SiteStatus != statusRunning || knownEventID > 0 {
 		changeTime := nowFunc().UTC()
 		log.Printf("orchestrator: blog_id=%d recovered", site.BlogID)
 		if entry != nil && site.SiteStatus == statusDown {
@@ -1313,13 +1314,32 @@ func (o *Orchestrator) handleRecovery(site db.Site, res checker.Result) {
 				Detail:    "recovery cooldown active",
 			})
 		}
+		o.retries.markRecovered(site.BlogID, changeTime)
 	}
 }
 
-func (o *Orchestrator) handleFailure(site db.Site, res checker.Result) {
+func (o *Orchestrator) handleFailure(site db.Site, res checker.Result) bool {
 	if inMaintenance(site) {
 		o.swallowMaintenanceFailure(site, res)
-		return
+		return false
+	}
+
+	if o.shouldSuppressPostRecoveryTransientFailure(site, res) {
+		class := failureClass(res)
+		emitCounter("detection.post_recovery_transient_suppressed.count", 1)
+		emitCounter("detection.post_recovery_transient_suppressed."+class+".count", 1)
+		metaMap := checkResultMetadata(site, res, resultCheckedAt(res))
+		metaMap["suppressed_after_recent_recovery"] = true
+		metaMap["post_recovery_window_seconds"] = int(postRecoveryTransientFailureWindow(site) / time.Second)
+		meta, _ := json.Marshal(metaMap)
+		o.auditLog(audit.Entry{
+			BlogID:    site.BlogID,
+			EventType: audit.EventAlertSuppressed,
+			Source:    o.hostname,
+			Detail:    "post-recovery transient failure suppressed",
+			Metadata:  meta,
+		})
+		return false
 	}
 
 	entry := o.retries.record(res)
@@ -1358,11 +1378,40 @@ func (o *Orchestrator) handleFailure(site db.Site, res checker.Result) {
 			Detail:    fmt.Sprintf("retry %d of %d", entry.failCount, config.Get().NumOfChecks),
 			Metadata:  meta,
 		})
-		return
+		return entry.eventID > 0
 	}
 
 	// Escalate to verifliers.
 	o.escalateToVerifliers(site, entry)
+	return true
+}
+
+func (o *Orchestrator) shouldSuppressPostRecoveryTransientFailure(site db.Site, res checker.Result) bool {
+	if o == nil || o.retries == nil || !postRecoveryTransientFailure(res) {
+		return false
+	}
+	if o.retries.get(site.BlogID) != nil {
+		return false
+	}
+	return o.retries.recentlyRecovered(site.BlogID, resultCheckedAt(res), postRecoveryTransientFailureWindow(site))
+}
+
+func postRecoveryTransientFailure(res checker.Result) bool {
+	if !res.IsFailure() || res.HTTPCode > 0 {
+		return false
+	}
+	return res.ErrorCode == checker.ErrorConnect || res.ErrorCode == checker.ErrorTimeout
+}
+
+func postRecoveryTransientFailureWindow(site db.Site) time.Duration {
+	window := siteCheckInterval(site)
+	if window < failedCheckRetryInterval {
+		return failedCheckRetryInterval
+	}
+	if window > maxPostRecoveryTransientFailureWindow {
+		return maxPostRecoveryTransientFailureWindow
+	}
+	return window
 }
 
 func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
@@ -1495,9 +1544,10 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 		// Verifliers did not confirm — false positive. Close the Seems Down
 		// event with reason=false_alarm and reset site_status in the same tx.
 		log.Printf("orchestrator: blog_id=%d verifliers did not confirm down (%d/%d)", site.BlogID, confirmations, quorum)
+		falseAlarmAt := nowFunc().UTC()
 		emitCounter("detection.verifier.false_alarm.count", 1)
 		emitCounter("detection.verifier.false_alarm."+failureClass(entry.lastResult)+".count", 1)
-		emitTimingSince("detection.seems_down_to_false_alarm.time", entry.firstFailAt, nowFunc().UTC())
+		emitTimingSince("detection.seems_down_to_false_alarm.time", entry.firstFailAt, falseAlarmAt)
 		_ = dbRecordFalsePositive(site.BlogID, entry.lastResult.HTTPCode, entry.lastResult.ErrorCode,
 			entry.lastResult.RTT.Milliseconds())
 
@@ -1509,12 +1559,13 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 				"verifier_confirmed": confirmations,
 			})
 			if err := o.closeEvent(site.BlogID, entry.eventID,
-				eventstore.ReasonFalseAlarm, statusRunning, nowFunc().UTC(), meta); err != nil {
+				eventstore.ReasonFalseAlarm, statusRunning, falseAlarmAt, meta); err != nil {
 				log.Printf("orchestrator: close false-alarm event blog_id=%d event_id=%d: %v",
 					site.BlogID, entry.eventID, err)
 			}
 		}
 		o.retries.clear(site.BlogID)
+		o.retries.markRecovered(site.BlogID, falseAlarmAt)
 	}
 }
 

@@ -1,12 +1,14 @@
 package orchestrator
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"github.com/Automattic/jetmon/internal/checker"
 	"github.com/Automattic/jetmon/internal/config"
 	"github.com/Automattic/jetmon/internal/db"
+	"github.com/Automattic/jetmon/internal/wpcom"
 )
 
 func TestStreamingPhaseStaysInsideInterval(t *testing.T) {
@@ -716,6 +718,34 @@ func TestStreamingSideEffectsNeededSuppressesNewLocalFailuresUnderPressure(t *te
 	retries.record(checker.Result{BlogID: 42, URL: "http://example.com", Timestamp: time.Now()})
 	if !streamingSideEffectsNeeded(target, timeout, nil, nil, retries, true) {
 		t.Fatal("existing retry state should continue through side effects under pressure")
+	}
+}
+
+func TestProcessStreamingSideEffectsKeepsSuppressedPostRecoveryFailureRunning(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	cfg := setTestConfig(t)
+	cfg.NumOfChecks = 1
+
+	recoveredAt := time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local",
+		ctx:      context.Background(),
+	}
+	o.retries.markRecovered(42, recoveredAt)
+
+	_, updated := o.processStreamingSideEffects(
+		db.Site{BlogID: 42, MonitorURL: "https://example.com", CheckInterval: 3, SiteStatus: statusRunning},
+		checkerResultTransportFailure(42, recoveredAt.Add(2*time.Minute)),
+	)
+
+	if updated.SiteStatus != statusRunning {
+		t.Fatalf("SiteStatus = %d, want running for suppressed post-recovery transient failure", updated.SiteStatus)
+	}
+	if entry := o.retries.get(42); entry != nil {
+		t.Fatalf("suppressed post-recovery transient failure created retry state: %+v", entry)
 	}
 }
 
