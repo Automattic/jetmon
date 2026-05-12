@@ -213,6 +213,23 @@ func TestStreamingAllowImmediateRetryUnderPressure(t *testing.T) {
 	}
 }
 
+func TestStreamingAllowImmediateRetrySkipsSuppressedPostRecoveryFailure(t *testing.T) {
+	retries := newRetryQueue()
+	recoveredAt := time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)
+	retries.markRecovered(42, recoveredAt)
+	target := &streamingTarget{site: db.Site{BlogID: 42, CheckInterval: 3, SiteStatus: statusRunning}}
+	res := checkerResultTransportFailure(42, recoveredAt.Add(2*time.Minute))
+
+	if streamingAllowImmediateRetry(target, res, retries, false) {
+		t.Fatal("suppressed post-recovery transport failure should return to normal cadence")
+	}
+
+	retries.record(checker.Result{BlogID: 42, URL: "http://example.com", Timestamp: recoveredAt})
+	if !streamingAllowImmediateRetry(target, res, retries, false) {
+		t.Fatal("existing retry state should keep immediate retry")
+	}
+}
+
 func TestStreamingWorkerTargetScalesFromRequiredRate(t *testing.T) {
 	planner := &streamingPlanner{targets: make(map[int64]*streamingTarget)}
 	for i := int64(1); i <= 1200; i++ {

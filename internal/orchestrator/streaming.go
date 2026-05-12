@@ -1139,9 +1139,15 @@ func streamingLocalPressureFailure(res checker.Result) bool {
 
 func streamingAllowImmediateRetry(target *streamingTarget, res checker.Result, retries *retryQueue, pressure bool) bool {
 	if !pressure {
-		return true
+		if target == nil {
+			return false
+		}
+		return !streamingSuppressPostRecoveryImmediateRetry(target, res, retries)
 	}
 	if target == nil {
+		return false
+	}
+	if streamingSuppressPostRecoveryImmediateRetry(target, res, retries) {
 		return false
 	}
 	if !streamingLocalPressureFailure(res) {
@@ -1151,6 +1157,16 @@ func streamingAllowImmediateRetry(target *streamingTarget, res checker.Result, r
 		return true
 	}
 	return retries != nil && retries.get(target.site.BlogID) != nil
+}
+
+func streamingSuppressPostRecoveryImmediateRetry(target *streamingTarget, res checker.Result, retries *retryQueue) bool {
+	if target == nil || retries == nil || !postRecoveryTransientFailure(res) {
+		return false
+	}
+	if retries.get(target.site.BlogID) != nil {
+		return false
+	}
+	return retries.recentlyRecovered(target.site.BlogID, resultCheckedAt(res), postRecoveryTransientFailureWindow(target.site))
 }
 
 func (o *Orchestrator) queueStreamingProjection(cfg *config.Config, target *streamingTarget, resultAt, projectedAt time.Time, pending map[int64]db.SiteCheck) {
