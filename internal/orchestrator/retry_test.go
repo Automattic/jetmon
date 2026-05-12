@@ -88,6 +88,22 @@ func TestRetryQueueRecentlyRecoveredExpires(t *testing.T) {
 	}
 }
 
+func TestRetryQueueRecentlyFalseAlarmedExpiresSeparately(t *testing.T) {
+	q := newRetryQueue()
+	falseAlarmAt := time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)
+	q.markFalseAlarm(42, falseAlarmAt)
+
+	if !q.recentlyFalseAlarmed(42, falseAlarmAt.Add(4*time.Minute), 5*time.Minute) {
+		t.Fatal("recentlyFalseAlarmed returned false inside window")
+	}
+	if q.recentlyRecovered(42, falseAlarmAt.Add(4*time.Minute), 5*time.Minute) {
+		t.Fatal("false-alarm marker should not count as a normal recovery marker")
+	}
+	if q.recentlyFalseAlarmed(42, falseAlarmAt.Add(6*time.Minute), 5*time.Minute) {
+		t.Fatal("recentlyFalseAlarmed returned true after window")
+	}
+}
+
 func TestRetryQueueSize(t *testing.T) {
 	q := newRetryQueue()
 	if q.size() != 0 {

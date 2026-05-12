@@ -59,6 +59,8 @@ const eventMutationMaxAttempts = 3
 const eventMutationRetryBaseDelay = 25 * time.Millisecond
 const failedCheckRetryInterval = time.Minute
 const maxPostRecoveryTransientFailureWindow = 5 * time.Minute
+const minPostFalseAlarmTransientFailureWindow = 5 * time.Minute
+const maxPostFalseAlarmTransientFailureWindow = 10 * time.Minute
 
 // VariableIntervalPollInterval returns the idle scheduler poll interval used
 // when per-site check intervals are enabled. The SQL due predicate prevents
@@ -1324,13 +1326,18 @@ func (o *Orchestrator) handleFailure(site db.Site, res checker.Result) bool {
 		return false
 	}
 
-	if o.shouldSuppressPostRecoveryTransientFailure(site, res) {
+	if suppressed, reason, window := o.postRecoveryTransientSuppression(site, res); suppressed {
 		class := failureClass(res)
 		emitCounter("detection.post_recovery_transient_suppressed.count", 1)
 		emitCounter("detection.post_recovery_transient_suppressed."+class+".count", 1)
 		metaMap := checkResultMetadata(site, res, resultCheckedAt(res))
-		metaMap["suppressed_after_recent_recovery"] = true
-		metaMap["post_recovery_window_seconds"] = int(postRecoveryTransientFailureWindow(site) / time.Second)
+		if reason == "false_alarm" {
+			metaMap["suppressed_after_recent_false_alarm"] = true
+		} else {
+			metaMap["suppressed_after_recent_recovery"] = true
+		}
+		metaMap["suppressed_after"] = reason
+		metaMap["post_recovery_window_seconds"] = int(window / time.Second)
 		meta, _ := json.Marshal(metaMap)
 		o.auditLog(audit.Entry{
 			BlogID:    site.BlogID,
@@ -1387,13 +1394,37 @@ func (o *Orchestrator) handleFailure(site db.Site, res checker.Result) bool {
 }
 
 func (o *Orchestrator) shouldSuppressPostRecoveryTransientFailure(site db.Site, res checker.Result) bool {
+	suppressed, _, _ := o.postRecoveryTransientSuppression(site, res)
+	return suppressed
+}
+
+func (o *Orchestrator) postRecoveryTransientSuppression(site db.Site, res checker.Result) (bool, string, time.Duration) {
 	if o == nil || o.retries == nil || !postRecoveryTransientFailure(res) {
-		return false
+		return false, "", 0
 	}
 	if o.retries.get(site.BlogID) != nil {
-		return false
+		return false, "", 0
 	}
-	return o.retries.recentlyRecovered(site.BlogID, resultCheckedAt(res), postRecoveryTransientFailureWindow(site))
+	return postRecoveryTransientSuppression(site, res, o.retries)
+}
+
+func postRecoveryTransientSuppression(site db.Site, res checker.Result, retries *retryQueue) (bool, string, time.Duration) {
+	if retries == nil || !postRecoveryTransientFailure(res) {
+		return false, "", 0
+	}
+	if retries.get(site.BlogID) != nil {
+		return false, "", 0
+	}
+	checkedAt := resultCheckedAt(res)
+	falseAlarmWindow := postFalseAlarmTransientFailureWindow(site)
+	if retries.recentlyFalseAlarmed(site.BlogID, checkedAt, falseAlarmWindow) {
+		return true, "false_alarm", falseAlarmWindow
+	}
+	recoveryWindow := postRecoveryTransientFailureWindow(site)
+	if retries.recentlyRecovered(site.BlogID, checkedAt, recoveryWindow) {
+		return true, "recovery", recoveryWindow
+	}
+	return false, "", 0
 }
 
 func postRecoveryTransientFailure(res checker.Result) bool {
@@ -1410,6 +1441,17 @@ func postRecoveryTransientFailureWindow(site db.Site) time.Duration {
 	}
 	if window > maxPostRecoveryTransientFailureWindow {
 		return maxPostRecoveryTransientFailureWindow
+	}
+	return window
+}
+
+func postFalseAlarmTransientFailureWindow(site db.Site) time.Duration {
+	window := siteCheckInterval(site) * 2
+	if window < minPostFalseAlarmTransientFailureWindow {
+		return minPostFalseAlarmTransientFailureWindow
+	}
+	if window > maxPostFalseAlarmTransientFailureWindow {
+		return maxPostFalseAlarmTransientFailureWindow
 	}
 	return window
 }
@@ -1565,7 +1607,7 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 			}
 		}
 		o.retries.clear(site.BlogID)
-		o.retries.markRecovered(site.BlogID, falseAlarmAt)
+		o.retries.markFalseAlarm(site.BlogID, falseAlarmAt)
 	}
 }
 

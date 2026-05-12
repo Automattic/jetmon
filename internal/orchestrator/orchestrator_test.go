@@ -1024,6 +1024,79 @@ func TestHandleFailureEscalatesPostRecoveryTransportFailureAfterWindow(t *testin
 	}
 }
 
+func TestHandleFailureSuppressesPostFalseAlarmTransportFailurePastRecoveryWindow(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	cfg := setTestConfig(t)
+	cfg.NumOfChecks = 1
+
+	var escalated bool
+	veriflierCheckFunc = func(_ *veriflier.VeriflierClient, _ context.Context, _ veriflier.CheckRequest) (*veriflier.CheckResult, error) {
+		escalated = true
+		return &veriflier.CheckResult{Success: false}, nil
+	}
+
+	falseAlarmAt := time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local",
+		ctx:      context.Background(),
+	}
+	o.retries.markFalseAlarm(42, falseAlarmAt)
+	site := db.Site{BlogID: 42, MonitorURL: "https://example.com", CheckInterval: 3, SiteStatus: statusRunning}
+
+	active := o.handleFailure(site, checkerResultTransportFailure(42, falseAlarmAt.Add(postRecoveryTransientFailureWindow(site)+time.Second)))
+
+	if active {
+		t.Fatal("post-false-alarm transport failure should stay suppressed beyond the normal recovery window")
+	}
+	if escalated {
+		t.Fatal("post-false-alarm transport failure escalated despite false-alarm dampening")
+	}
+	if entry := o.retries.get(42); entry != nil {
+		t.Fatalf("suppressed post-false-alarm failure created retry state: %+v", entry)
+	}
+}
+
+func TestHandleFailureEscalatesPostFalseAlarmTransportFailureAfterFalseAlarmWindow(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	cfg := setTestConfig(t)
+	cfg.NumOfChecks = 1
+	cfg.PeerOfflineLimit = 1
+
+	var escalated bool
+	veriflierCheckFunc = func(c *veriflier.VeriflierClient, _ context.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
+		escalated = true
+		return &veriflier.CheckResult{
+			BlogID:   req.BlogID,
+			Host:     c.Addr(),
+			Success:  false,
+			HTTPCode: 0,
+		}, nil
+	}
+
+	falseAlarmAt := time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local",
+		ctx:      context.Background(),
+		veriflierClients: []*veriflier.VeriflierClient{
+			veriflier.NewVeriflierClient("v1", ""),
+		},
+	}
+	o.retries.markFalseAlarm(42, falseAlarmAt)
+	site := db.Site{BlogID: 42, MonitorURL: "https://example.com", CheckInterval: 3, SiteStatus: statusRunning}
+
+	o.handleFailure(site, checkerResultTransportFailure(42, falseAlarmAt.Add(postFalseAlarmTransientFailureWindow(site)+time.Second)))
+
+	if !escalated {
+		t.Fatal("transport failure after post-false-alarm suppression window should continue the normal retry pipeline")
+	}
+}
+
 func TestProcessResultsMarksChecked(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
@@ -2554,8 +2627,11 @@ func TestEscalateToVerifliersEmitsFalseAlarmMetrics(t *testing.T) {
 	if entry := o.retries.get(654); entry != nil {
 		t.Fatalf("retry entry after false alarm = %+v, want nil", entry)
 	}
-	if !o.retries.recentlyRecovered(654, nowFunc().UTC(), postRecoveryTransientFailureWindow(db.Site{BlogID: 654, CheckInterval: 5})) {
-		t.Fatal("false alarm should mark the site recently recovered for transient suppression")
+	if !o.retries.recentlyFalseAlarmed(654, nowFunc().UTC(), postFalseAlarmTransientFailureWindow(db.Site{BlogID: 654, CheckInterval: 5})) {
+		t.Fatal("false alarm should mark the site for false-alarm transient suppression")
+	}
+	if o.retries.recentlyRecovered(654, nowFunc().UTC(), postRecoveryTransientFailureWindow(db.Site{BlogID: 654, CheckInterval: 5})) {
+		t.Fatal("false alarm should not mark the site as a normal recovery")
 	}
 }
 

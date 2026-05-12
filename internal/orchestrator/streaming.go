@@ -937,9 +937,7 @@ func (o *Orchestrator) runStreamingEngine() {
 				sideEffectStatus[report.blogID] = report.status
 				if target, ok := planner.targets[report.blogID]; ok {
 					target.site.SiteStatus = report.status
-					if report.resultFailure && report.status != statusDown && !target.inFlight && !target.queued {
-						planner.scheduleAtNextPhaseAfter(target, report.checkedAt)
-					}
+					rescheduleStreamingAfterSideEffect(planner, target, report)
 				}
 			}
 		case reload := <-reloadResults:
@@ -1021,7 +1019,7 @@ func (o *Orchestrator) dispatchStreamingPending(cfg *config.Config, pending []*s
 	dispatched := 0
 	for len(pending) > 0 && dispatched < budget {
 		target := pending[0]
-		if !target.active || target.inFlight {
+		if !target.active || target.inFlight || !target.queued {
 			target.queued = false
 			pending = pending[1:]
 			continue
@@ -1160,13 +1158,21 @@ func streamingAllowImmediateRetry(target *streamingTarget, res checker.Result, r
 }
 
 func streamingSuppressPostRecoveryImmediateRetry(target *streamingTarget, res checker.Result, retries *retryQueue) bool {
-	if target == nil || retries == nil || !postRecoveryTransientFailure(res) {
+	if target == nil || retries == nil {
 		return false
 	}
-	if retries.get(target.site.BlogID) != nil {
-		return false
+	suppressed, _, _ := postRecoveryTransientSuppression(target.site, res, retries)
+	return suppressed
+}
+
+func rescheduleStreamingAfterSideEffect(planner *streamingPlanner, target *streamingTarget, report streamingSideEffectReport) {
+	if planner == nil || target == nil {
+		return
 	}
-	return retries.recentlyRecovered(target.site.BlogID, resultCheckedAt(res), postRecoveryTransientFailureWindow(target.site))
+	if report.resultFailure && report.status != statusDown && !target.inFlight {
+		target.queued = false
+		planner.scheduleAtNextPhaseAfter(target, report.checkedAt)
+	}
 }
 
 func (o *Orchestrator) queueStreamingProjection(cfg *config.Config, target *streamingTarget, resultAt, projectedAt time.Time, pending map[int64]db.SiteCheck) {

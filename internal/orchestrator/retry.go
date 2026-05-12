@@ -21,15 +21,17 @@ type retryEntry struct {
 // retryQueue holds sites awaiting local retry or veriflier escalation.
 // It persists between rounds — never flushed at round start.
 type retryQueue struct {
-	mu               sync.Mutex
-	entries          map[int64]*retryEntry
-	recentRecoveries map[int64]time.Time
+	mu                sync.Mutex
+	entries           map[int64]*retryEntry
+	recentRecoveries  map[int64]time.Time
+	recentFalseAlarms map[int64]time.Time
 }
 
 func newRetryQueue() *retryQueue {
 	return &retryQueue{
-		entries:          make(map[int64]*retryEntry),
-		recentRecoveries: make(map[int64]time.Time),
+		entries:           make(map[int64]*retryEntry),
+		recentRecoveries:  make(map[int64]time.Time),
+		recentFalseAlarms: make(map[int64]time.Time),
 	}
 }
 
@@ -70,25 +72,42 @@ func (q *retryQueue) markRecovered(blogID int64, recoveredAt time.Time) {
 }
 
 func (q *retryQueue) recentlyRecovered(blogID int64, at time.Time, window time.Duration) bool {
+	return q.recentlyMarked(q.recentRecoveries, blogID, at, window)
+}
+
+func (q *retryQueue) markFalseAlarm(blogID int64, falseAlarmAt time.Time) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if falseAlarmAt.IsZero() {
+		falseAlarmAt = time.Now().UTC()
+	}
+	q.recentFalseAlarms[blogID] = falseAlarmAt.UTC()
+}
+
+func (q *retryQueue) recentlyFalseAlarmed(blogID int64, at time.Time, window time.Duration) bool {
+	return q.recentlyMarked(q.recentFalseAlarms, blogID, at, window)
+}
+
+func (q *retryQueue) recentlyMarked(markers map[int64]time.Time, blogID int64, at time.Time, window time.Duration) bool {
 	if window <= 0 {
 		return false
 	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	recoveredAt, ok := q.recentRecoveries[blogID]
+	markedAt, ok := markers[blogID]
 	if !ok {
 		return false
 	}
 	if at.IsZero() {
 		at = time.Now().UTC()
 	}
-	if at.Before(recoveredAt) {
+	if at.Before(markedAt) {
 		return true
 	}
-	if at.Sub(recoveredAt.UTC()) <= window {
+	if at.Sub(markedAt.UTC()) <= window {
 		return true
 	}
-	delete(q.recentRecoveries, blogID)
+	delete(markers, blogID)
 	return false
 }
 

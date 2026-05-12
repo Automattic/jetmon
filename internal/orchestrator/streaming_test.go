@@ -230,6 +230,65 @@ func TestStreamingAllowImmediateRetrySkipsSuppressedPostRecoveryFailure(t *testi
 	}
 }
 
+func TestStreamingAllowImmediateRetrySkipsSuppressedPostFalseAlarmFailure(t *testing.T) {
+	retries := newRetryQueue()
+	falseAlarmAt := time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)
+	retries.markFalseAlarm(42, falseAlarmAt)
+	target := &streamingTarget{site: db.Site{BlogID: 42, CheckInterval: 3, SiteStatus: statusRunning}}
+	res := checkerResultTransportFailure(42, falseAlarmAt.Add(postRecoveryTransientFailureWindow(target.site)+time.Second))
+
+	if streamingAllowImmediateRetry(target, res, retries, false) {
+		t.Fatal("suppressed post-false-alarm transport failure should return to normal cadence")
+	}
+}
+
+func TestRescheduleStreamingAfterSideEffectCancelsQueuedRetry(t *testing.T) {
+	checkedAt := time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)
+	planner := &streamingPlanner{
+		targets: make(map[int64]*streamingTarget),
+	}
+	target := &streamingTarget{
+		site:   db.Site{BlogID: 42, CheckInterval: 3, SiteStatus: statusRunning},
+		dueAt:  checkedAt.Add(failedCheckRetryInterval),
+		active: true,
+		queued: true,
+	}
+	planner.targets[42] = target
+
+	rescheduleStreamingAfterSideEffect(planner, target, streamingSideEffectReport{
+		blogID:        42,
+		status:        statusRunning,
+		resultFailure: true,
+		checkedAt:     checkedAt,
+	})
+
+	if target.queued {
+		t.Fatal("queued immediate retry should be canceled after side effects keep the site running")
+	}
+	if target.dueAt.Equal(checkedAt.Add(failedCheckRetryInterval)) {
+		t.Fatalf("dueAt = %s, want normal phase instead of immediate retry point", target.dueAt)
+	}
+}
+
+func TestDispatchStreamingPendingSkipsCanceledQueuedEntry(t *testing.T) {
+	o := &Orchestrator{}
+	stats := &streamingStats{}
+	target := &streamingTarget{
+		site:   db.Site{BlogID: 42, CheckInterval: 3, SiteStatus: statusRunning},
+		active: true,
+		queued: false,
+	}
+
+	remaining := o.dispatchStreamingPending(&config.Config{}, []*streamingTarget{target}, 1, stats)
+
+	if len(remaining) != 0 {
+		t.Fatalf("remaining pending = %d, want canceled entry drained", len(remaining))
+	}
+	if stats.dispatched != 0 {
+		t.Fatalf("dispatched = %d, want canceled entry skipped", stats.dispatched)
+	}
+}
+
 func TestStreamingWorkerTargetScalesFromRequiredRate(t *testing.T) {
 	planner := &streamingPlanner{targets: make(map[int64]*streamingTarget)}
 	for i := int64(1); i <= 1200; i++ {
