@@ -105,6 +105,7 @@ See [docs/getting-started.md](docs/getting-started.md) for the full local loop.
 | [docs/events.md](docs/events.md) | Event lifecycle and transition semantics |
 | [docs/taxonomy.md](docs/taxonomy.md) | Severity, state, cause, and rollup taxonomy |
 | [docs/getting-started.md](docs/getting-started.md) | Docker setup, builds, tests, API CLI smoke runs |
+| [docs/docker-images.md](docs/docker-images.md) | Pulling and running the published GHCR images |
 | [docs/operations-guide.md](docs/operations-guide.md) | Production config, rollout, delivery workers, metrics, debugging |
 | [docs/data-model.md](docs/data-model.md) | Tables, migrations, event projection, tenant mapping |
 | [docs/support-guide.md](docs/support-guide.md) | HE workflows for explaining alerts and missed alerts |
