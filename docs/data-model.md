@@ -78,10 +78,10 @@ stable phase slot, config hash, and coarse last outcome fields so later
 iterations can sync scheduling state without repeatedly scanning the legacy
 table or writing healthy probe freshness back into it.
 
-The first streaming prototype creates the table but still reloads active config
+The current streaming engine creates the table but still reloads active config
 from `jetpack_monitor_sites`. That keeps correctness and rollback behavior easy
 to validate before moving config-sync reads fully onto the v2-native target
-table.
+table in a later scaling branch.
 
 ## Process Health
 

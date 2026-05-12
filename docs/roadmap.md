@@ -148,8 +148,8 @@ No active candidate branch is queued here right now.
 
 ### Capacity Scheduler TODO
 
-- [x] Add the first v2-native streaming monitor-engine prototype behind
-  `SCHEDULER_ENGINE=streaming`. The prototype spreads active sites over stable
+- [x] Add the first v2-native streaming monitor-engine implementation behind
+  `SCHEDULER_ENGINE=streaming`. The engine spreads active sites over stable
   per-interval phases, keeps due scheduling in memory, treats `NUM_WORKERS` as
   an autoscaling floor rather than the throughput cap, stops writing healthy
   check-history rows, and batches coarse legacy freshness projection so rollback
@@ -159,11 +159,33 @@ No active candidate branch is queued here right now.
   allows larger in-memory work/result buffers before pausing dispatch, drains
   large result backlogs more aggressively, and defaults coarse legacy freshness
   projection to the accepted 15-minute rollback ceiling.
-- [ ] Prototype sharded result ingestion for the streaming engine. The 500k
-  reports show `result_depth` and pending backlogs growing while process RSS
-  remains low, so the next major engine iteration should evaluate per-shard
-  result queues/state caches that can process completed checks in parallel
-  without breaking per-site ordering or retry/event invariants.
+- [x] Validate the streaming engine through 2 million active internal-only sites
+  on five-minute check intervals. The 2026-05-12 1.5 million and 2 million runs
+  reached full target coverage, no stale or never-seen targets, and successful
+  down/recovery replay detection while keeping healthy-check write pressure low.
+- [ ] Prototype latency/error-aware concurrency control for the streaming
+  engine. The 2026-05-12 4 million run initially reached the required check
+  rate, then collapsed into HTTP timeout pressure, capped queue depth, and
+  multi-million pending backlog. The next major scheduler iteration should
+  reduce dispatch before timeouts cascade, recover cleanly after target or
+  network saturation, and distinguish Jetmon CPU headroom from downstream
+  request-path saturation.
+- [ ] Harden the streaming worker scaler against transient target spikes and
+  backlog overreaction. The 4 million run reported a worker target above 50k
+  while throughput had already collapsed, so the scaler needs stronger damping,
+  error-rate guardrails, and per-host resource feedback before another large
+  jump test.
+- [ ] Run bracket capacity tests around 2.5 million and 3 million active sites
+  on internal-only targets before attempting another 4 million-plus run. The
+  current evidence shows 2 million stable and 4 million unstable, but it does
+  not yet identify the curve shape or the exact point where timeout pressure
+  starts to dominate.
+- [ ] Prototype sharded result ingestion for the streaming engine if bracket
+  tests show result handling rather than request-path saturation as the next
+  bottleneck. Per-shard result queues/state caches could process completed
+  checks in parallel without breaking per-site ordering or retry/event
+  invariants, but the 4 million failure points first toward timeout-aware
+  dispatch and scaler control.
 - [ ] Expand prepared request/runtime caches for the checker hot path. Cache
   parsed URL/host metadata, normalized headers, keyword rules, and reusable
   per-site request material in memory so repeated all-day checks spend less CPU

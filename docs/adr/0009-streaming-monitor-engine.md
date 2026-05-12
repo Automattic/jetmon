@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted for prototyping on `feature/streaming-monitor-engine`.
+Accepted for merge candidacy on `feature/streaming-monitor-engine` after
+internal-only capacity validation through 2 million active sites.
 
 ## Context
 
@@ -54,7 +55,30 @@ the same eventstore paths already used by the legacy-compatible v2 scheduler.
 The deliberate compatibility tradeoff is freshness precision:
 `last_checked_at` and `next_check_at` are no longer updated after every healthy
 probe in streaming mode. Operators accepted a 5-15 minute worst-case rollback
-freshness loss window; the default projection interval is 10 minutes.
+freshness loss window; the default projection interval is 15 minutes.
+
+## Capacity Validation
+
+The branch was capacity-tested with uptime-bench internal-only HTTP/DNS targets
+so the monitor service, not external internet reachability, was the primary
+bottleneck under test.
+
+The 2026-05-12 runs validated the streaming engine through 2 million active
+sites on five-minute check intervals. At 1.5 million and 2 million active sites,
+Jetmon v2 reached 100% observed target coverage, reported no never-seen or
+stale targets, and passed replay detection for down and recovery scenarios. The
+2 million run sustained roughly 6,765 completed checks per second, kept p95
+target age around 270 seconds, kept max target age below 285 seconds, and kept
+process RSS around 6.3 GB peak on the test host.
+
+The same test shape failed at 4 million active sites. The engine initially
+reached the required throughput, then collapsed into a timeout/backlog failure:
+pending work grew into the millions, queue depth hit its cap, HTTP timeout
+counts spiked, and target-observer coverage stopped at roughly 88%. That run
+defines the current single-host ceiling signal, not an accepted production
+capacity. The follow-up work is latency/error-aware concurrency control,
+worker-scaler hardening, and bracket tests around 2.5-3 million sites before
+attempting another larger jump.
 
 ## Consequences
 

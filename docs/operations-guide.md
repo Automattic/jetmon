@@ -43,7 +43,7 @@ Key settings:
 | `DELIVERY_OWNER_HOST` | empty | Optional host allowed to run embedded delivery workers |
 | `DEBUG_PORT` | 6060 | localhost-only pprof port, 0 disables it |
 | `EMAIL_TRANSPORT` | `stub` | `stub`, `smtp`, or `wpcom` |
-| `SCHEDULER_ENGINE` | `legacy` | `legacy` round/page scheduler or `streaming` v2-native scheduler prototype |
+| `SCHEDULER_ENGINE` | `legacy` | `legacy` round/page scheduler or `streaming` v2-native scheduler |
 | `STREAMING_LEGACY_PROJECTION_INTERVAL_MIN` | 15 | Coarse `last_checked_at` rollback projection interval for streaming mode |
 | `STREAMING_TARGET_RELOAD_SEC` | 300 | Active site config reload cadence for streaming mode |
 
@@ -92,6 +92,18 @@ Scheduler behavior:
   lock-heavy update burst. Streaming mode intentionally uses larger in-memory
   due/result/work buffers than the legacy scheduler; low RSS in capacity tests is
   expected to be spent on those buffers before check dispatch is throttled.
+- Treat the current single-host streaming capacity evidence as validated through
+  2 million active internal-only targets on five-minute intervals, not as an
+  unlimited ceiling. The 2026-05-12 2 million-target run had full target
+  coverage, no stale or never-seen targets, p95 target age around 270 seconds,
+  max target age below 285 seconds, process RSS around 6.3 GB peak, and host CPU
+  around 36% average. A 4 million-target run exceeded the current stable
+  envelope: timeout pressure grew, queue depth reached its cap, pending work
+  climbed into the millions, and target coverage stopped at roughly 88%. During
+  larger tests or rollout rehearsals, watch `scheduler.streaming.pending.count`,
+  `queue_depth`, `result_depth`, `max_lag`, `dispatch_budget_limited`, timeout
+  counters, process RSS, and host CPU together; backlog plus timeout growth is a
+  hold point even when raw CPU still appears available.
 
 See [../config/config.readme](../config/config.readme) for the full option
 reference.
