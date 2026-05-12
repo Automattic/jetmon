@@ -13,10 +13,19 @@ The Worker exposes the **same wire contract** the orchestrator already speaks
 Worker-hosted veriflier is just another entry in the `VERIFIERS` array in
 `config/config.json`.
 
+Image source
+------------
+The Container pulls the published image
+`ghcr.io/automattic/veriflier:latest`, built by
+`.github/workflows/docker-publish.yml` on every push to `v2`. There is no
+local `docker build` step in the deploy path — `wrangler deploy` references
+the registry image directly. See [../../docs/docker-images.md](../../docs/docker-images.md)
+for tag conventions.
+
 Layout
 ------
-- `../../wrangler.toml` — at the repo root, so its build context is the repo
-  root and it can reference `docker/Dockerfile_veriflier` unchanged.
+- `../../wrangler.toml` — at the repo root. Pins the Container's `image` to
+  `ghcr.io/automattic/veriflier:latest`.
 - `worker/index.ts` — Worker entry point. Dispatches every incoming request to
   one of the Container instances via a Durable Object binding.
 - `worker/package.json`, `worker/tsconfig.json` — TypeScript build for the
@@ -27,6 +36,10 @@ Prerequisites
 1. Install Wrangler: `npm install -g wrangler`
 2. `wrangler login` against the target Cloudflare account.
 3. Cloudflare account with Workers Paid + Containers enabled.
+4. The `ghcr.io/automattic/veriflier` package must be **public**, so
+   Cloudflare can pull it without GHCR credentials. A maintainer flips this in
+   the GHCR package settings; until then, `wrangler deploy` will fail with a
+   pull-auth error.
 
 Deploy
 ------
@@ -40,21 +53,29 @@ From the repo root:
     wrangler secret put VERIFLIER_AUTH_TOKEN
     wrangler secret put VERIFLIER_AUTH_TOKEN --env staging
 
-    # Build and deploy staging first.
+    # Deploy staging first.
     npm run deploy:staging
 
     # Production once staging looks healthy.
     npm run deploy
 
-`wrangler deploy` will run `docker build` against `docker/Dockerfile_veriflier`
-with the repo root as build context, push the image to Cloudflare's container
-registry, and ship the Worker.
+`wrangler deploy` resolves `ghcr.io/automattic/veriflier:latest`, copies it
+into Cloudflare's container registry, and ships the Worker. To roll a new
+build out, re-run `wrangler deploy` after the GHCR workflow has finished on
+`v2`; no Dockerfile change or local build is involved.
 
 Local development
 -----------------
     cd deploy/workers/worker
     npm install
     wrangler dev
+
+`wrangler dev` pulls `ghcr.io/automattic/veriflier:latest` from GHCR and runs
+it under the local container runtime. If you need to iterate on uncommitted
+veriflier changes, build locally and tag the image as
+`ghcr.io/automattic/veriflier:latest`:
+
+    docker build -f docker/Dockerfile_veriflier -t ghcr.io/automattic/veriflier:latest .
 
 Then, in another shell:
 

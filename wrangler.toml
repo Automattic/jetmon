@@ -4,7 +4,7 @@ compatibility_date = "2026-05-01"
 
 [[containers]]
 class_name = "Veriflier"
-image = "./docker/Dockerfile_veriflier"
+image = "ghcr.io/automattic/veriflier:latest"
 max_instances = 10
 
 [[durable_objects.bindings]]
