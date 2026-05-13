@@ -1474,6 +1474,14 @@ func (o *Orchestrator) handleFailure(site db.Site, res checker.Result) bool {
 		return false
 	}
 
+	if site.SiteStatus == statusConfirmedDown {
+		o.retries.clear(site.BlogID)
+		class := failureClass(res)
+		emitCounter("detection.down.still_down.count", 1)
+		emitCounter("detection.down.still_down."+class+".count", 1)
+		return true
+	}
+
 	entry := o.retries.record(res)
 	class := failureClass(res)
 	emitCounter("detection.failure."+class+".count", 1)
