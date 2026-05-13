@@ -233,12 +233,16 @@ production telemetry branches:
   first prototype still reloads active identity/cadence from
   `jetpack_monitor_sites` plus v2 sidecar config so correctness can be
   validated before optimizing config-sync reads.
-- [ ] Evaluate whether any remaining single-column `blog_id` index is needed
+- [x] Evaluate whether any remaining single-column `blog_id` index is needed
   on `jetpack_monitor_sites` after sidecar-table rollout. PR #101 added
   `idx_monitor_blog_id` for legacy-table point writes, but current rollout
   goals minimize changes to the hot v1 compatibility table. Use `EXPLAIN`,
   production-like write/read traces, and sidecar-table coverage before adding
-  another index to `jetpack_monitor_sites`.
+  another index to `jetpack_monitor_sites`. Current `v2` does not add
+  `idx_monitor_blog_id`: migration 27 is intentionally a no-op, v2-owned
+  point lookups use sidecar tables keyed by `blog_id`, and the legacy table
+  remains v1-shaped for rollout safety. Reopen only with query-plan evidence
+  from production-like traces.
 - [ ] Add uptime-bench scenarios for streaming mode that explicitly validate
   phase-spread scheduling, bounded rollback freshness staleness, verifier
   promotion/recovery, failure-history retention, and steady-state write volume
@@ -577,9 +581,8 @@ Recently completed candidate branches:
   circuit.** PR #101 identified a useful hardening idea: per-notification
   permanent WPCOM responses such as 404/410 should be reported and audited, but
   should not open the shared WPCOM circuit breaker or generate pointless retry
-  pressure. Rebuild this as a focused follow-up against current `v2`, with typed
-  status errors, bounded drop logging, metrics, and tests for retry/circuit
-  behavior.
+  pressure. The focused follow-up adds typed WPCOM status errors, bounded queue
+  drop logging, permanent-failure metrics, and retry/circuit tests.
 - **Adopt consumer-specific OpenAPI generator validation when one is chosen.**
   The route-driven `GET /api/v1/openapi.json` endpoint now includes
   handler-derived request/response component schemas, and `make test` validates

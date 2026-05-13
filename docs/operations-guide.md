@@ -455,6 +455,10 @@ Important metric groups include:
 - Round completion time
 - Scheduler page count, selected/dispatched/completed rows, outstanding checks,
   backpressure waits, stale/duplicate results, and sampled due backlog
+- Streaming failure-pressure suppression via
+  `scheduler.streaming.pressure_suppressed.count`, which shows local
+  timeout/connect failures that were treated as monitor-side pressure instead
+  of opening noisy incident side effects for otherwise running sites
 - Scheduler phase timings for dispatch, wait, result processing,
   sidecar freshness writes, check-history inserts, SSL expiry
   writes, and event handling
@@ -464,7 +468,8 @@ Important metric groups include:
   `scheduler.*.check.method.<method>.profile.<profile>.count`, using the
   effective runtime method/profile for `HEAD` / `GET` and `legacy` /
   `simple_http` / `full`
-- WPCOM API attempts, deliveries, retries, errors, and failures
+- WPCOM API attempts, deliveries, retries, queued circuit-open responses,
+  permanent 404/410 failures, errors, and final failures
 - Veriflier response times and vote counters
 - Detection flow timing from first failure to escalation, confirmation,
   recovery, or false alarm
