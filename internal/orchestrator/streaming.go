@@ -356,10 +356,12 @@ type streamingStats struct {
 	errorTLSExpired    int
 	errorTLSDeprecated int
 	errorOther         int
+	checkCohorts       map[checkCohortKey]int
 }
 
 func (s *streamingStats) addResult(res checker.Result, lag time.Duration) {
 	s.completed++
+	s.checkCohorts = incrementCheckCohort(s.checkCohorts, res)
 	if res.Success {
 		s.checkSuccesses++
 	} else {
@@ -1343,6 +1345,7 @@ func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streami
 		m.Increment("scheduler.streaming.check.error.tls_expired.count", stats.errorTLSExpired)
 		m.Increment("scheduler.streaming.check.error.tls_deprecated.count", stats.errorTLSDeprecated)
 		m.Increment("scheduler.streaming.check.error.other.count", stats.errorOther)
+		emitCheckCohortCounters(m, "scheduler.streaming", stats.checkCohorts)
 		m.Increment("scheduler.streaming.side_effect.processed.count", stats.sideEffectRows)
 		m.Increment("scheduler.streaming.history.row.count", stats.historyRows)
 		m.Increment("scheduler.streaming.history.error.count", stats.historyErrors)

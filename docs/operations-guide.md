@@ -460,6 +460,10 @@ Important metric groups include:
   writes, and event handling
 - Scheduler write row/error counters for freshness, check history, and SSL
   expiry updates
+- Staged-rollout check cohort counters under
+  `scheduler.*.check.method.<method>.profile.<profile>.count`, using the
+  effective runtime method/profile for `HEAD` / `GET` and `legacy` /
+  `simple_http` / `full`
 - WPCOM API attempts, deliveries, retries, errors, and failures
 - Veriflier response times and vote counters
 - Detection flow timing from first failure to escalation, confirmation,

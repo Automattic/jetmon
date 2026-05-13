@@ -153,6 +153,7 @@ type roundSummary struct {
 	checkRedirects     int
 	checkKeywords      int
 	checkTLSDeprecated int
+	checkCohorts       map[checkCohortKey]int
 }
 
 func (s *roundSummary) add(other roundSummary) {
@@ -192,6 +193,7 @@ func (s *roundSummary) add(other roundSummary) {
 	s.checkRedirects += other.checkRedirects
 	s.checkKeywords += other.checkKeywords
 	s.checkTLSDeprecated += other.checkTLSDeprecated
+	mergeCheckCohorts(&s.checkCohorts, other.checkCohorts)
 	if other.oldestSelectedAge > s.oldestSelectedAge {
 		s.oldestSelectedAge = other.oldestSelectedAge
 	}
@@ -218,11 +220,17 @@ type resultProcessSummary struct {
 	checkRedirects     int
 	checkKeywords      int
 	checkTLSDeprecated int
+	checkCohorts       map[checkCohortKey]int
 
 	markCheckedDuration time.Duration
 	historyDuration     time.Duration
 	sslDuration         time.Duration
 	eventDuration       time.Duration
+}
+
+type checkCohortKey struct {
+	method  string
+	profile string
 }
 
 type siteCheckResult struct {
@@ -533,6 +541,7 @@ process:
 	summary.checkRedirects += processSummary.checkRedirects
 	summary.checkKeywords += processSummary.checkKeywords
 	summary.checkTLSDeprecated += processSummary.checkTLSDeprecated
+	mergeCheckCohorts(&summary.checkCohorts, processSummary.checkCohorts)
 	summary.markCheckedDuration += processSummary.markCheckedDuration
 	summary.historyDuration += processSummary.historyDuration
 	summary.sslDuration += processSummary.sslDuration
@@ -570,6 +579,7 @@ func emitPageMetrics(summary roundSummary) {
 	m.Increment("scheduler.page.check.redirect.count", summary.checkRedirects)
 	m.Increment("scheduler.page.check.keyword.count", summary.checkKeywords)
 	m.Increment("scheduler.page.check.tls_deprecated.count", summary.checkTLSDeprecated)
+	emitCheckCohortCounters(m, "scheduler.page", summary.checkCohorts)
 }
 
 func logPageSummary(pageNumber, sites int, summary roundSummary) {
@@ -841,6 +851,7 @@ func (o *Orchestrator) finishRound(cfg *config.Config, summary roundSummary) {
 		m.Increment("scheduler.round.check.redirect.count", summary.checkRedirects)
 		m.Increment("scheduler.round.check.keyword.count", summary.checkKeywords)
 		m.Increment("scheduler.round.check.tls_deprecated.count", summary.checkTLSDeprecated)
+		emitCheckCohortCounters(m, "scheduler.round", summary.checkCohorts)
 
 		if cfg.StatsdSendMemUsage {
 			m.EmitMemStats()
@@ -954,6 +965,7 @@ func (o *Orchestrator) processResults(results map[int64]checker.Result, sites ma
 }
 
 func addCheckOutcome(summary *resultProcessSummary, res checker.Result) {
+	summary.checkCohorts = incrementCheckCohort(summary.checkCohorts, res)
 	if res.Success {
 		summary.checkSuccesses++
 	} else {
@@ -976,6 +988,66 @@ func addCheckOutcome(summary *resultProcessSummary, res checker.Result) {
 		summary.checkKeywords++
 	case checker.ErrorTLSDeprecated:
 		summary.checkTLSDeprecated++
+	}
+}
+
+func incrementCheckCohort(cohorts map[checkCohortKey]int, res checker.Result) map[checkCohortKey]int {
+	if cohorts == nil {
+		cohorts = make(map[checkCohortKey]int)
+	}
+	cohorts[checkCohortForResult(res)]++
+	return cohorts
+}
+
+func checkCohortForResult(res checker.Result) checkCohortKey {
+	method := res.Method
+	if method == "" {
+		method = "unknown"
+	}
+	profile := res.DetectionProfile
+	if profile == "" {
+		profile = "unknown"
+	}
+	return checkCohortKey{method: method, profile: profile}
+}
+
+func mergeCheckCohorts(dst *map[checkCohortKey]int, src map[checkCohortKey]int) {
+	if len(src) == 0 {
+		return
+	}
+	if *dst == nil {
+		*dst = make(map[checkCohortKey]int, len(src))
+	}
+	for key, count := range src {
+		(*dst)[key] += count
+	}
+}
+
+func emitCheckCohortCounters(m metricsClient, prefix string, cohorts map[checkCohortKey]int) {
+	if m == nil || len(cohorts) == 0 {
+		return
+	}
+	keys := make([]checkCohortKey, 0, len(cohorts))
+	for key := range cohorts {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].method == keys[j].method {
+			return keys[i].profile < keys[j].profile
+		}
+		return keys[i].method < keys[j].method
+	})
+	for _, key := range keys {
+		count := cohorts[key]
+		if count <= 0 {
+			continue
+		}
+		m.Increment(fmt.Sprintf(
+			"%s.check.method.%s.profile.%s.count",
+			prefix,
+			metricSegment(key.method),
+			metricSegment(key.profile),
+		), count)
 	}
 }
 
