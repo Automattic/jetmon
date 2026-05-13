@@ -62,6 +62,7 @@ const failedCheckRetryInterval = time.Minute
 const maxPostRecoveryTransientFailureWindow = 5 * time.Minute
 const minPostFalseAlarmTransientFailureWindow = 5 * time.Minute
 const maxPostFalseAlarmTransientFailureWindow = 10 * time.Minute
+const wpcomPermanentFailureLogInterval = 10 * time.Second
 
 // VariableIntervalPollInterval returns the idle scheduler poll interval used
 // when per-site check intervals are enabled. The SQL due predicate prevents
@@ -262,6 +263,9 @@ type Orchestrator struct {
 	lastProjectionDriftAt time.Time
 
 	wpcomNotifyDisabledLogOnce sync.Once
+	wpcomPermanentMu           sync.Mutex
+	wpcomPermanentLastLog      time.Time
+	wpcomPermanentSuppressed   int
 
 	ctx    stdctx.Context
 	cancel stdctx.CancelFunc
@@ -1953,8 +1957,33 @@ func (o *Orchestrator) sendNotification(site db.Site, res checker.Result, status
 	if err := wpcomNotifyFunc(o.wpcom, n); err != nil {
 		emitCounter("wpcom.notification.error.count", 1)
 		emitCounter("wpcom.notification.status."+wpcomStatus+".error.count", 1)
-		emitCounter("wpcom.notification.retry.count", 1)
 		log.Printf("orchestrator: wpcom notify failed for blog_id=%d: %v", site.BlogID, err)
+
+		if errors.Is(err, wpcom.ErrCircuitOpen) {
+			emitCounter("wpcom.notification.queued.count", 1)
+			emitCounter("wpcom.notification.status."+wpcomStatus+".queued.count", 1)
+			return
+		}
+
+		if wpcom.IsPermanentStatusError(err) {
+			emitCounter("wpcom.notification.permanent_failure.count", 1)
+			emitCounter("wpcom.notification.status."+wpcomStatus+".permanent_failure.count", 1)
+			if statusCode, ok := wpcom.HTTPStatusCode(err); ok {
+				emitCounter(fmt.Sprintf("wpcom.notification.http.%d.permanent_failure.count", statusCode), 1)
+			}
+			emitCounter("wpcom.notification.failed.count", 1)
+			emitCounter("wpcom.notification.status."+wpcomStatus+".failed.count", 1)
+			o.logWPCOMPermanentFailure(site.BlogID, err)
+			o.auditLog(audit.Entry{
+				BlogID:    site.BlogID,
+				EventType: audit.EventWPCOMFailure,
+				Source:    "local",
+				Detail:    err.Error(),
+			})
+			return
+		}
+
+		emitCounter("wpcom.notification.retry.count", 1)
 		o.auditLog(audit.Entry{
 			BlogID:    site.BlogID,
 			EventType: audit.EventWPCOMRetry,
@@ -1969,6 +1998,12 @@ func (o *Orchestrator) sendNotification(site db.Site, res checker.Result, status
 			emitCounter("wpcom.notification.failed.count", 1)
 			emitCounter("wpcom.notification.status."+wpcomStatus+".failed.count", 1)
 			log.Printf("orchestrator: wpcom notify retry failed for blog_id=%d: %v", site.BlogID, retryErr)
+			o.auditLog(audit.Entry{
+				BlogID:    site.BlogID,
+				EventType: audit.EventWPCOMFailure,
+				Source:    "local",
+				Detail:    retryErr.Error(),
+			})
 			return
 		}
 		emitCounter("wpcom.notification.retry.delivered.count", 1)
@@ -1978,6 +2013,33 @@ func (o *Orchestrator) sendNotification(site db.Site, res checker.Result, status
 	if err := dbUpdateLastAlertSent(o.ctx, site.BlogID, nowFunc().UTC()); err != nil {
 		log.Printf("orchestrator: update last alert sent blog_id=%d: %v", site.BlogID, err)
 	}
+}
+
+func (o *Orchestrator) logWPCOMPermanentFailure(blogID int64, err error) {
+	if o == nil {
+		log.Printf("orchestrator: wpcom notify permanent failure for blog_id=%d: %v", blogID, err)
+		return
+	}
+	o.wpcomPermanentMu.Lock()
+	defer o.wpcomPermanentMu.Unlock()
+
+	now := nowFunc()
+	if o.wpcomPermanentLastLog.IsZero() || now.Sub(o.wpcomPermanentLastLog) >= wpcomPermanentFailureLogInterval {
+		if o.wpcomPermanentSuppressed > 0 {
+			log.Printf(
+				"orchestrator: wpcom notify permanent failure for blog_id=%d: %v (suppressed %d similar permanent failures)",
+				blogID,
+				err,
+				o.wpcomPermanentSuppressed,
+			)
+		} else {
+			log.Printf("orchestrator: wpcom notify permanent failure for blog_id=%d: %v", blogID, err)
+		}
+		o.wpcomPermanentLastLog = now
+		o.wpcomPermanentSuppressed = 0
+		return
+	}
+	o.wpcomPermanentSuppressed++
 }
 
 // checkSSLAlerts manages a site-level tls_expiry event that tracks the cert's

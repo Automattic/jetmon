@@ -342,6 +342,7 @@ type streamingStats struct {
 	sideEffectPaused   int
 	resultPaused       int
 	dispatchLimited    int
+	pressureSuppressed int
 	latencyTotal       time.Duration
 	latencyCount       int
 	successLatency     time.Duration
@@ -782,7 +783,11 @@ func (o *Orchestrator) runStreamingEngine() {
 		}
 		pressureActive := failurePressureActive || hotPathPressure
 		o.totalChecked++
-		if streamingSideEffectsNeeded(target, res, pendingSideEffects, sideEffectStatus, o.retries, pressureActive) {
+		suppressedByPressure := streamingSideEffectsSuppressedByPressure(target, res, pendingSideEffects, sideEffectStatus, o.retries, pressureActive)
+		if suppressedByPressure {
+			stats.pressureSuppressed++
+		}
+		if !suppressedByPressure && streamingSideEffectsNeeded(target, res, pendingSideEffects, sideEffectStatus, o.retries, pressureActive) {
 			job := streamingSideEffectJob{site: target.site, res: res}
 			if !sideEffects.tryEnqueue(job) {
 				stats.sideEffectWaits++
@@ -1118,9 +1123,11 @@ func streamingSideEffectsNeeded(target *streamingTarget, res checker.Result, pen
 	if target == nil {
 		return false
 	}
+	if streamingSideEffectsSuppressedByPressure(target, res, pending, statusCache, retries, pressure) {
+		return false
+	}
 	blogID := target.site.BlogID
-	pendingForSite := pending[blogID] > 0
-	if pendingForSite {
+	if pending[blogID] > 0 {
 		return true
 	}
 	status := target.site.SiteStatus
@@ -1128,9 +1135,6 @@ func streamingSideEffectsNeeded(target *streamingTarget, res checker.Result, pen
 		status = cached
 	}
 	retrying := retries != nil && retries.get(blogID) != nil
-	if pressure && status == statusRunning && !retrying && streamingLocalPressureFailure(res) {
-		return false
-	}
 	if res.IsFailure() || res.TLSVersion != 0 || res.SSLExpiry != nil {
 		return true
 	}
@@ -1138,6 +1142,22 @@ func streamingSideEffectsNeeded(target *streamingTarget, res checker.Result, pen
 		return true
 	}
 	return retrying
+}
+
+func streamingSideEffectsSuppressedByPressure(target *streamingTarget, res checker.Result, pending map[int64]int, statusCache map[int64]int, retries *retryQueue, pressure bool) bool {
+	if !pressure || target == nil {
+		return false
+	}
+	blogID := target.site.BlogID
+	if pending[blogID] > 0 {
+		return false
+	}
+	status := target.site.SiteStatus
+	if cached, ok := statusCache[blogID]; ok {
+		status = cached
+	}
+	retrying := retries != nil && retries.get(blogID) != nil
+	return status == statusRunning && !retrying && streamingLocalPressureFailure(res)
 }
 
 func streamingLocalPressureFailure(res checker.Result) bool {
@@ -1333,6 +1353,7 @@ func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streami
 		m.Increment("scheduler.streaming.result_backpressure_pause.count", stats.resultPaused)
 		m.Increment("scheduler.streaming.side_effect_backpressure_pause.count", stats.sideEffectPaused)
 		m.Increment("scheduler.streaming.dispatch_budget_limited.count", stats.dispatchLimited)
+		m.Increment("scheduler.streaming.pressure_suppressed.count", stats.pressureSuppressed)
 		m.Increment("scheduler.streaming.stale_result.count", stats.staleResults)
 		m.Increment("scheduler.streaming.check.success.count", stats.checkSuccesses)
 		m.Increment("scheduler.streaming.check.failure.count", stats.checkFailures)
@@ -1360,7 +1381,7 @@ func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streami
 		metrics.WriteStatsFiles(sps, queueDepth, o.totalChecked)
 	}
 
-	log.Printf("orchestrator: streaming summary active=%d required_rate=%.2f/s selected=%d dispatched=%d completed=%d side_effects=%d pending=%d active_checks=%d queue_depth=%d result_depth=%d side_effect_depth=%d workers=%d worker_target=%d sps=%d elapsed=%s max_lag=%s avg_latency=%s scale_latency=%s successes=%d failures=%d failure_pressure=%t error_timeout=%d error_connect=%d error_ssl=%d error_redirect=%d error_keyword=%d error_body_read=%d error_tls_expired=%d error_tls_deprecated=%d error_other=%d history_rows=%d ssl_rows=%d stale_results=%d backpressure_waits=%d side_effect_waits=%d result_pauses=%d side_effect_pauses=%d dispatch_limited=%d",
+	log.Printf("orchestrator: streaming summary active=%d required_rate=%.2f/s selected=%d dispatched=%d completed=%d side_effects=%d pending=%d active_checks=%d queue_depth=%d result_depth=%d side_effect_depth=%d workers=%d worker_target=%d sps=%d elapsed=%s max_lag=%s avg_latency=%s scale_latency=%s successes=%d failures=%d failure_pressure=%t pressure_suppressed=%d error_timeout=%d error_connect=%d error_ssl=%d error_redirect=%d error_keyword=%d error_body_read=%d error_tls_expired=%d error_tls_deprecated=%d error_other=%d history_rows=%d ssl_rows=%d stale_results=%d backpressure_waits=%d side_effect_waits=%d result_pauses=%d side_effect_pauses=%d dispatch_limited=%d",
 		planner.activeCount(),
 		planner.requiredChecksPerSecond(),
 		stats.selected,
@@ -1382,6 +1403,7 @@ func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streami
 		stats.checkSuccesses,
 		stats.checkFailures,
 		pressureActive || streamingFailurePressure(stats),
+		stats.pressureSuppressed,
 		stats.errorTimeouts,
 		stats.errorConnects,
 		stats.errorSSL,

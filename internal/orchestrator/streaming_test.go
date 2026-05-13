@@ -793,20 +793,35 @@ func TestStreamingSideEffectsNeededSuppressesNewLocalFailuresUnderPressure(t *te
 	target := &streamingTarget{site: db.Site{BlogID: 42, SiteStatus: statusRunning}}
 	timeout := checker.Result{BlogID: 42, ErrorCode: checker.ErrorTimeout}
 
+	if !streamingSideEffectsSuppressedByPressure(target, timeout, nil, nil, nil, true) {
+		t.Fatal("new local timeout under pressure should be counted as pressure-suppressed")
+	}
 	if streamingSideEffectsNeeded(target, timeout, nil, nil, nil, true) {
 		t.Fatal("new local timeout under pressure should not open event side effects")
+	}
+	if streamingSideEffectsSuppressedByPressure(target, timeout, nil, nil, nil, false) {
+		t.Fatal("local timeout without pressure should not be counted as pressure-suppressed")
 	}
 	if !streamingSideEffectsNeeded(target, checker.Result{BlogID: 42, HTTPCode: 500}, nil, nil, nil, true) {
 		t.Fatal("HTTP failures should still flow through side effects under pressure")
 	}
+	if streamingSideEffectsSuppressedByPressure(target, checker.Result{BlogID: 42, HTTPCode: 500}, nil, nil, nil, true) {
+		t.Fatal("HTTP failures should not be counted as pressure-suppressed")
+	}
 	if !streamingSideEffectsNeeded(target, timeout, map[int64]int{42: 1}, nil, nil, true) {
 		t.Fatal("pending side effects should preserve ordering under pressure")
+	}
+	if streamingSideEffectsSuppressedByPressure(target, timeout, map[int64]int{42: 1}, nil, nil, true) {
+		t.Fatal("pending side effects should not be counted as pressure-suppressed")
 	}
 
 	retries := newRetryQueue()
 	retries.record(checker.Result{BlogID: 42, URL: "http://example.com", Timestamp: time.Now()})
 	if !streamingSideEffectsNeeded(target, timeout, nil, nil, retries, true) {
 		t.Fatal("existing retry state should continue through side effects under pressure")
+	}
+	if streamingSideEffectsSuppressedByPressure(target, timeout, nil, nil, retries, true) {
+		t.Fatal("existing retry state should not be counted as pressure-suppressed")
 	}
 }
 
