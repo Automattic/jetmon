@@ -539,6 +539,11 @@ Verifliers that fail to respond are excluded from confirmation requests. If the
 healthy set drops below `PEER_OFFLINE_LIMIT`, Jetmon cannot issue new downtime
 confirmations.
 
+Once a site is already projected as confirmed down, subsequent local failures do
+not re-enter Veriflier confirmation. Jetmon keeps checking for recovery and
+emits `detection.down.still_down.*` counters for the ongoing failed
+observations without duplicating confirmed-down notifications.
+
 Manual check:
 
 ```bash

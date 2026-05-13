@@ -2744,6 +2744,58 @@ func TestHandleFailureDoesNotNotifyWPCOMBeforeConfirmation(t *testing.T) {
 	}
 }
 
+func TestHandleFailureDoesNotReverifyAlreadyConfirmedDownSite(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+
+	cfg := setTestConfig(t)
+	cfg.NumOfChecks = 1
+
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error {
+		t.Fatal("already-confirmed down failure should not send another notification")
+		return nil
+	}
+	veriflierCheckFunc = func(_ *veriflier.VeriflierClient, _ context.Context, _ veriflier.CheckRequest) (*veriflier.CheckResult, error) {
+		t.Fatal("already-confirmed down failure should not re-enter Veriflier confirmation")
+		return nil, nil
+	}
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local-host",
+		ctx:      context.Background(),
+		veriflierClients: []*veriflier.VeriflierClient{
+			veriflier.NewVeriflierClient("v1", ""),
+		},
+	}
+	o.retries.record(checkerResultFailure(42))
+
+	active := o.handleFailure(db.Site{
+		BlogID:     42,
+		MonitorURL: "https://example.com",
+		SiteStatus: statusConfirmedDown,
+	}, checkerResultFailure(42))
+
+	if !active {
+		t.Fatal("already-confirmed down failure should report an active failure")
+	}
+	if entry := o.retries.get(42); entry != nil {
+		t.Fatalf("stale retry entry should be cleared for already-confirmed down site: %+v", entry)
+	}
+	if got := rec.counter("detection.down.still_down.count"); got != 1 {
+		t.Fatalf("still-down counter = %d, want 1", got)
+	}
+	if got := rec.counter("detection.down.still_down.server.count"); got != 1 {
+		t.Fatalf("still-down server counter = %d, want 1", got)
+	}
+	if got := rec.counter("detection.verifier.escalation.count"); got != 0 {
+		t.Fatalf("verifier escalation counter = %d, want 0", got)
+	}
+}
+
 func TestEscalateToVerifliersEmitsConfirmedMetrics(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
