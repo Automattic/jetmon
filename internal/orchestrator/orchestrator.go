@@ -1741,7 +1741,7 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 		// EventVeriflierSent with the response in metadata. The site-state
 		// outcome (confirm or false alarm) is captured separately, ultimately
 		// as a transition row in jetmon_event_transitions.
-		meta, _ := json.Marshal(map[string]any{
+		metaMap := map[string]any{
 			"http_code":      vr.res.HTTPCode,
 			"error_code":     vr.res.ErrorCode,
 			"rtt_ms":         vr.res.RTTMs,
@@ -1749,7 +1749,19 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 			"request_id":     vr.res.RequestID,
 			"vote_id":        voteID,
 			"duplicate_vote": duplicateVote,
-		})
+		}
+		if vr.res.VantageID != "" {
+			metaMap["vantage_id"] = vr.res.VantageID
+		} else if voteID != "" {
+			metaMap["vantage_id"] = voteID
+		}
+		if vr.res.AgentID != "" {
+			metaMap["agent_id"] = vr.res.AgentID
+		}
+		if vr.res.Outcome != "" {
+			metaMap["outcome"] = vr.res.Outcome
+		}
+		meta, _ := json.Marshal(metaMap)
 		o.auditLog(audit.Entry{
 			BlogID:    site.BlogID,
 			EventType: audit.EventVeriflierSent,
@@ -1849,6 +1861,9 @@ type verifierDecision struct {
 
 func verifierVoteID(addr string, res *veriflier.CheckResult) string {
 	if res != nil {
+		if vantageID := strings.TrimSpace(res.VantageID); vantageID != "" {
+			return vantageID
+		}
 		if host := strings.TrimSpace(res.Host); host != "" {
 			return host
 		}
@@ -2820,14 +2835,26 @@ func (o *Orchestrator) closeMaintenanceEvent(site db.Site, knownEventID int64, c
 func summarizeVerifierResults(vResults []veriflier.CheckResult) []map[string]any {
 	out := make([]map[string]any, 0, len(vResults))
 	for _, vr := range vResults {
-		out = append(out, map[string]any{
+		item := map[string]any{
 			"host":       vr.Host,
 			"success":    vr.Success,
 			"http_code":  vr.HTTPCode,
 			"error_code": vr.ErrorCode,
 			"rtt_ms":     vr.RTTMs,
 			"request_id": vr.RequestID,
-		})
+		}
+		if vr.VantageID != "" {
+			item["vantage_id"] = vr.VantageID
+		} else if vr.Host != "" {
+			item["vantage_id"] = vr.Host
+		}
+		if vr.AgentID != "" {
+			item["agent_id"] = vr.AgentID
+		}
+		if vr.Outcome != "" {
+			item["outcome"] = vr.Outcome
+		}
+		out = append(out, item)
 	}
 	return out
 }

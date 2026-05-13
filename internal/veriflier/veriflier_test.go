@@ -621,6 +621,9 @@ func TestClientPrefersV2WhenAvailable(t *testing.T) {
 	if res.Host != "edge-us-east" {
 		t.Fatalf("Host = %q, want v2 vantage identity", res.Host)
 	}
+	if res.VantageID != "edge-us-east" || res.AgentID != "agent-1" || res.Outcome != OutcomeUp {
+		t.Fatalf("v2 identity = vantage:%q agent:%q outcome:%q", res.VantageID, res.AgentID, res.Outcome)
+	}
 	if client.cachedProtocol() != ProtocolV2 {
 		t.Fatalf("cached protocol = %q, want %q", client.cachedProtocol(), ProtocolV2)
 	}
@@ -654,6 +657,7 @@ func TestClientV2SendsContextDeadline(t *testing.T) {
 				BlogID:    req.Requests[0].BlogID,
 				URL:       req.Requests[0].URL,
 				VantageID: "vantage",
+				AgentID:   "agent",
 				Outcome:   OutcomeUp,
 				Success:   true,
 				HTTPCode:  200,
@@ -677,6 +681,9 @@ func TestClientV2SendsContextDeadline(t *testing.T) {
 	}
 	if res.Host != "vantage" {
 		t.Fatalf("Host = %q, want vantage", res.Host)
+	}
+	if res.VantageID != "vantage" || res.AgentID != "agent" || res.Outcome != OutcomeUp {
+		t.Fatalf("v2 identity = vantage:%q agent:%q outcome:%q", res.VantageID, res.AgentID, res.Outcome)
 	}
 }
 

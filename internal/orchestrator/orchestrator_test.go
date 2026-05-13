@@ -166,7 +166,7 @@ func TestInMaintenance(t *testing.T) {
 
 func TestSummarizeVerifierResults(t *testing.T) {
 	got := summarizeVerifierResults([]veriflier.CheckResult{
-		{Host: "us-west", Success: false, HTTPCode: 500, RTTMs: 123},
+		{Host: "us-west", VantageID: "us-west", AgentID: "agent-a", Outcome: veriflier.OutcomeDown, Success: false, HTTPCode: 500, RTTMs: 123},
 		{Host: "eu", Success: true, HTTPCode: 200, RTTMs: 45},
 	})
 	if len(got) != 2 {
@@ -176,8 +176,14 @@ func TestSummarizeVerifierResults(t *testing.T) {
 		got[0]["http_code"] != int32(500) || got[0]["rtt_ms"] != int64(123) {
 		t.Fatalf("first summary = %+v", got[0])
 	}
+	if got[0]["vantage_id"] != "us-west" || got[0]["agent_id"] != "agent-a" || got[0]["outcome"] != veriflier.OutcomeDown {
+		t.Fatalf("first v2 identity summary = %+v", got[0])
+	}
 	if got[1]["host"] != "eu" || got[1]["success"] != true {
 		t.Fatalf("second summary = %+v", got[1])
+	}
+	if got[1]["vantage_id"] != "eu" {
+		t.Fatalf("second fallback vantage summary = %+v", got[1])
 	}
 }
 

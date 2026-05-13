@@ -34,6 +34,9 @@ type CheckResult struct {
 	BlogID        int64
 	URL           string
 	Host          string
+	VantageID     string
+	AgentID       string
+	Outcome       string
 	Success       bool
 	HTTPCode      int32
 	ErrorCode     int32
