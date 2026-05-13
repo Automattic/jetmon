@@ -337,6 +337,7 @@ Veriflier Transport
         "url": "https://example.com",
         "timeout_ms": 10000,
         "method": "GET",
+        "detection_profile": "full",
         "headers": {},
         "body_rules": {"required": ["needle"], "forbidden": ["bad"]},
         "redirect_policy": "follow"
@@ -344,7 +345,7 @@ Veriflier Transport
     }
                         ─────────────────────────────►
                                                         bounded admission queue
-                                                        concurrent GET probes
+                                                        concurrent HEAD/GET probes
                                                         typed outcomes
                         ◄─────────────────────────────
     Body: {

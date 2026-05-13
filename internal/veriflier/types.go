@@ -99,6 +99,7 @@ type CheckV2Request struct {
 	URL                 string            `json:"url"`
 	TimeoutMS           int64             `json:"timeout_ms,omitempty"`
 	Method              string            `json:"method,omitempty"`
+	DetectionProfile    string            `json:"detection_profile,omitempty"`
 	Headers             map[string]string `json:"headers,omitempty"`
 	BodyRules           BodyRules         `json:"body_rules,omitempty"`
 	RedirectPolicy      string            `json:"redirect_policy,omitempty"`

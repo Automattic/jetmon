@@ -434,6 +434,12 @@ func TestServerHandleV2Status(t *testing.T) {
 
 func TestServerHandleV2Check(t *testing.T) {
 	srv, ts := newV2TestServer(func(_ context.Context, req CheckRequest) ProbeResult {
+		if req.Method != http.MethodHead {
+			t.Fatalf("method = %q, want HEAD", req.Method)
+		}
+		if req.DetectionProfile != "legacy" {
+			t.Fatalf("detection profile = %q, want legacy", req.DetectionProfile)
+		}
 		if req.Keyword != "needle" {
 			t.Fatalf("keyword = %q, want needle", req.Keyword)
 		}
@@ -460,12 +466,13 @@ func TestServerHandleV2Check(t *testing.T) {
 	if err := json.NewEncoder(body).Encode(CheckV2BatchRequest{
 		BatchID: "batch-1",
 		Requests: []CheckV2Request{{
-			RequestID:      "req-1",
-			BlogID:         42,
-			URL:            "https://example.com",
-			TimeoutMS:      1500,
-			Method:         http.MethodGet,
-			RedirectPolicy: "follow",
+			RequestID:        "req-1",
+			BlogID:           42,
+			URL:              "https://example.com",
+			TimeoutMS:        1500,
+			Method:           http.MethodHead,
+			DetectionProfile: "legacy",
+			RedirectPolicy:   "follow",
 			BodyRules: BodyRules{
 				Required:  []string{"needle"},
 				Forbidden: []string{"bad"},
@@ -635,6 +642,9 @@ func TestClientV2SendsContextDeadline(t *testing.T) {
 		if len(req.Requests) != 1 || req.Requests[0].TimeoutMS != 2000 {
 			t.Fatalf("requests = %+v", req.Requests)
 		}
+		if req.Requests[0].Method != http.MethodHead || req.Requests[0].DetectionProfile != "legacy" {
+			t.Fatalf("method/profile = %s/%s, want HEAD/legacy", req.Requests[0].Method, req.Requests[0].DetectionProfile)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(CheckV2BatchResponse{
 			Vantage: Vantage{ID: "vantage"},
@@ -656,9 +666,11 @@ func TestClientV2SendsContextDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	res, err := client.Check(ctx, CheckRequest{
-		BlogID:         9,
-		URL:            "https://example.com",
-		TimeoutSeconds: 2,
+		BlogID:           9,
+		URL:              "https://example.com",
+		Method:           http.MethodHead,
+		DetectionProfile: "legacy",
+		TimeoutSeconds:   2,
 	})
 	if err != nil {
 		t.Fatalf("Check() error = %v", err)

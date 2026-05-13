@@ -255,7 +255,7 @@ Evidence:
 - Alert names and owners
 - `make test-veriflier-soak`
 - `jetmon2 verifliers discovery-report`
-- ADR-0009: trusted Veriflier discovery with monitor-collected telemetry
+- ADR-0010: trusted Veriflier discovery with monitor-collected telemetry
 
 Initial stop/go threshold worksheet:
 
@@ -281,7 +281,7 @@ Jetmon-owned Veriflier discovery evidence:
   values.
 - `make test-veriflier-soak` covers local Veriflier v2 contract soak scenarios
   and discovery-drift soak scenarios.
-- ADR-0009 records the trust boundary: operator-approved vantages are quorum
+- ADR-0010 records the trust boundary: operator-approved vantages are quorum
   trust, monitor-collected agents are telemetry, and Veriflier hosts do not
   need database credentials.
 

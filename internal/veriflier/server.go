@@ -11,6 +11,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/Automattic/jetmon/internal/checkmode"
 	"github.com/Automattic/jetmon/internal/metrics"
 )
 
@@ -359,9 +360,15 @@ func v2RequestToLegacy(req CheckV2Request) (CheckRequest, error) {
 	if req.URL == "" {
 		return CheckRequest{}, fmt.Errorf("url is required")
 	}
-	if req.Method != "" && req.Method != http.MethodGet {
+	method, err := checkmode.NormalizeMethod(req.Method, checkmode.MethodGET)
+	if err != nil {
 		return CheckRequest{}, fmt.Errorf("unsupported method %q", req.Method)
 	}
+	profile, err := checkmode.NormalizeProfile(req.DetectionProfile, checkmode.ProfileFull)
+	if err != nil {
+		return CheckRequest{}, fmt.Errorf("unsupported detection_profile %q", req.DetectionProfile)
+	}
+	profile = checkmode.EffectiveProfile(method, profile)
 	requestID := req.RequestID
 	if requestID == "" {
 		requestID = NewRequestID()
@@ -373,6 +380,8 @@ func v2RequestToLegacy(req CheckV2Request) (CheckRequest, error) {
 	legacyReq := CheckRequest{
 		BlogID:              req.BlogID,
 		URL:                 req.URL,
+		Method:              method,
+		DetectionProfile:    profile,
 		TimeoutSeconds:      timeoutSeconds,
 		BodyReadMaxBytes:    req.BodyReadMaxBytes,
 		BodyReadMaxMS:       req.BodyReadMaxMS,
@@ -395,11 +404,22 @@ func v2RequestToLegacy(req CheckV2Request) (CheckRequest, error) {
 }
 
 func legacyRequestToV2(req CheckRequest) CheckV2Request {
+	method, err := checkmode.NormalizeMethod(req.Method, checkmode.MethodGET)
+	if err != nil {
+		method = checkmode.MethodGET
+	}
+	profile, err := checkmode.NormalizeProfile(req.DetectionProfile, checkmode.ProfileFull)
+	if err != nil {
+		profile = checkmode.ProfileFull
+	}
+	profile = checkmode.EffectiveProfile(method, profile)
+
 	out := CheckV2Request{
 		RequestID:           req.RequestID,
 		BlogID:              req.BlogID,
 		URL:                 req.URL,
-		Method:              http.MethodGet,
+		Method:              method,
+		DetectionProfile:    profile,
 		Headers:             req.CustomHeaders,
 		RedirectPolicy:      req.RedirectPolicy,
 		BodyReadMaxBytes:    req.BodyReadMaxBytes,
