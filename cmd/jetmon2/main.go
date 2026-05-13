@@ -52,9 +52,12 @@ func main() {
 		return
 	}
 
+	if isVersionCommand(os.Args[1]) {
+		printVersion(os.Stdout)
+		return
+	}
+
 	switch os.Args[1] {
-	case "version":
-		fmt.Printf("jetmon2 %s (built %s with %s)\n", version, buildDate, goVersion)
 	case "migrate":
 		cmdMigrate()
 	case "validate-config":
@@ -82,6 +85,19 @@ func main() {
 	default:
 		runServe()
 	}
+}
+
+func isVersionCommand(arg string) bool {
+	switch arg {
+	case "version", "--version", "-version":
+		return true
+	default:
+		return false
+	}
+}
+
+func printVersion(w io.Writer) {
+	fmt.Fprintf(w, "jetmon2 %s (built %s with %s)\n", version, buildDate, goVersion)
 }
 
 // runServe is the main entry point for the monitoring service.

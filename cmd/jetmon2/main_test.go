@@ -67,6 +67,19 @@ func TestEnvOrDefault(t *testing.T) {
 	}
 }
 
+func TestIsVersionCommand(t *testing.T) {
+	for _, arg := range []string{"version", "--version", "-version"} {
+		if !isVersionCommand(arg) {
+			t.Fatalf("isVersionCommand(%q) = false, want true", arg)
+		}
+	}
+	for _, arg := range []string{"", "status", "--help", "validate-config"} {
+		if isVersionCommand(arg) {
+			t.Fatalf("isVersionCommand(%q) = true, want false", arg)
+		}
+	}
+}
+
 func TestReadPIDFile(t *testing.T) {
 	dir := t.TempDir()
 	pidPath := filepath.Join(dir, "test.pid")
