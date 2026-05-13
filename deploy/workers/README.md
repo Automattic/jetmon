@@ -15,17 +15,29 @@ Worker-hosted veriflier is just another entry in the `VERIFIERS` array in
 
 Image source
 ------------
-The Container pulls the published image
-`ghcr.io/automattic/veriflier:latest`, built by
-`.github/workflows/docker-publish.yml` on every push to `v2`. There is no
-local `docker build` step in the deploy path — `wrangler deploy` references
-the registry image directly. See [../../docs/docker-images.md](../../docs/docker-images.md)
-for tag conventions.
+Source of truth for builds is GHCR — `.github/workflows/docker-publish.yml`
+publishes `ghcr.io/automattic/veriflier:latest` (and `:<short-sha>` for
+labelled PRs) on every push to `v2`. See
+[../../docs/docker-images.md](../../docs/docker-images.md) for tag conventions.
+
+Cloudflare Containers does **not** support GHCR as a source registry — its
+allowlist for non-Cloudflare registries is DockerHub and AWS ECR only.
+Every CF deploy therefore mirrors the GHCR image into Cloudflare's managed
+registry (`registry.cloudflare.com/<account-id>/veriflier:<digest>`) and
+points `wrangler.toml` at that mirror. CF also rejects `:latest` tags on
+container images, so the mirrored tag is the source image's digest prefix.
+
+`deploy/workers/deploy.sh` orchestrates the mirror + deploy in one step; you
+should not need to run the underlying commands by hand.
 
 Layout
 ------
 - `../../wrangler.toml` — at the repo root. Pins the Container's `image` to
-  `ghcr.io/automattic/veriflier:latest`.
+  the current `registry.cloudflare.com/<account-id>/veriflier:<digest12>` tag.
+  `deploy.sh` rewrites this line on each deploy.
+- `deploy.sh` — streamlined deploy script (pull → tag → push to CF →
+  rewrite wrangler.toml → wrangler deploy). Invoked via
+  `make deploy-veriflier-cf` / `make deploy-veriflier-cf-staging`.
 - `worker/index.ts` — Worker entry point. Dispatches every incoming request to
   one of the Container instances via a Durable Object binding.
 - `worker/package.json`, `worker/tsconfig.json` — TypeScript build for the
@@ -33,49 +45,62 @@ Layout
 
 Prerequisites
 -------------
-1. Install Wrangler: `npm install -g wrangler`
+1. Install Wrangler: `npm install -g wrangler` (or rely on `npx wrangler`).
 2. `wrangler login` against the target Cloudflare account.
 3. Cloudflare account with Workers Paid + Containers enabled.
-4. The `ghcr.io/automattic/veriflier` package must be **public**, so
-   Cloudflare can pull it without GHCR credentials. A maintainer flips this in
-   the GHCR package settings; until then, `wrangler deploy` will fail with a
-   pull-auth error.
+4. Docker daemon running locally — the script pulls from GHCR and pushes to
+   CF's managed registry via the docker CLI.
+5. The `ghcr.io/automattic/veriflier` package must be **public** so the local
+   `docker pull` in step 1 of the script succeeds without GHCR credentials.
+   A maintainer flips this once in the GHCR package settings; if it is ever
+   re-privatised, run `docker login ghcr.io` before `deploy.sh`.
 
 Deploy
 ------
 From the repo root:
 
-    cd deploy/workers/worker
-    npm install
+    cd deploy/workers/worker && npm install && cd -
 
-    # Set the auth token. Use the same token you put into the matching
-    # VERIFIERS[].auth_token entry in jetmon's config/config.json.
-    wrangler secret put VERIFLIER_AUTH_TOKEN
-    wrangler secret put VERIFLIER_AUTH_TOKEN --env staging
+    # One-time per environment: set the auth token used by the orchestrator
+    # to call this veriflier. Same value as the matching VERIFIERS[].auth_token
+    # entry in jetmon's config/config.json.
+    npx wrangler secret put VERIFLIER_AUTH_TOKEN
+    npx wrangler secret put VERIFLIER_AUTH_TOKEN --env staging
 
     # Deploy staging first.
-    npm run deploy:staging
+    make deploy-veriflier-cf-staging
 
     # Production once staging looks healthy.
-    npm run deploy
+    make deploy-veriflier-cf
 
-`wrangler deploy` resolves `ghcr.io/automattic/veriflier:latest`, copies it
-into Cloudflare's container registry, and ships the Worker. To roll a new
-build out, re-run `wrangler deploy` after the GHCR workflow has finished on
-`v2`; no Dockerfile change or local build is involved.
+Each run pulls `ghcr.io/automattic/veriflier:latest`, mirrors it to
+Cloudflare's managed registry under a digest-derived tag, rewrites the
+`image = "..."` line in `wrangler.toml`, and runs `wrangler deploy`. The
+resulting one-line change to `wrangler.toml` should be committed so the
+pinned tag stays in version control.
+
+To deploy a specific source build (e.g. a PR's short-SHA image) instead of
+the v2 head:
+
+    SRC_TAG=af64e64 make deploy-veriflier-cf-staging
+
+To rebuild the wrangler.toml entry without actually deploying:
+
+    SKIP_DEPLOY=1 make deploy-veriflier-cf
 
 Local development
 -----------------
     cd deploy/workers/worker
     npm install
-    wrangler dev
+    npx wrangler dev
 
-`wrangler dev` pulls `ghcr.io/automattic/veriflier:latest` from GHCR and runs
-it under the local container runtime. If you need to iterate on uncommitted
-veriflier changes, build locally and tag the image as
-`ghcr.io/automattic/veriflier:latest`:
+`wrangler dev` runs the Worker locally and pulls the container image
+referenced in `wrangler.toml` from Cloudflare's managed registry. If you need
+to iterate on uncommitted veriflier changes, build locally and tag the image
+to match the URI in `wrangler.toml`:
 
-    docker build -f docker/Dockerfile_veriflier -t ghcr.io/automattic/veriflier:latest .
+    docker build -f docker/Dockerfile_veriflier \
+      -t registry.cloudflare.com/<account-id>/veriflier:<digest12> .
 
 Then, in another shell:
 

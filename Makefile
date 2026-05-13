@@ -27,7 +27,7 @@ BUILD_FLAGS := -ldflags "-X main.version=$(shell git describe --tags --always --
                          -X main.buildDate=$(shell date -u +%Y-%m-%dT%H:%M:%SZ) \
                          -X main.goVersion=$(shell $(GO) version | awk '{print $$3}')"
 
-.PHONY: all build build-deliverer build-veriflier generate test test-race lint vet rollout-docs-verify rollout-rehearsal-verify rollout-vm-lab-sync rollout-vm-lab-sync-artifacts rollout-vm-lab-stage-v2 rollout-vm-lab-doctor rollout-vm-lab-prepare rollout-vm-lab-smoke rollout-vm-lab-execute-smoke rollout-vm-lab-failure-smoke rollout-vm-lab-resume-smoke rollout-vm-lab-post-start-rollback-smoke rollout-vm-lab-bad-ssh-smoke rollout-vm-lab-v2-start-failure-smoke rollout-vm-lab-runtime-guard-smoke rollout-vm-lab-real-activity-smoke rollout-vm-lab-snapshot-execute-smoke rollout-vm-lab-snapshot-all-smoke api-cli-smoke api-cli-validate api-cli-token-create api-cli-token-list api-cli-token-revoke clean
+.PHONY: all build build-deliverer build-veriflier generate test test-race lint vet rollout-docs-verify rollout-rehearsal-verify rollout-vm-lab-sync rollout-vm-lab-sync-artifacts rollout-vm-lab-stage-v2 rollout-vm-lab-doctor rollout-vm-lab-prepare rollout-vm-lab-smoke rollout-vm-lab-execute-smoke rollout-vm-lab-failure-smoke rollout-vm-lab-resume-smoke rollout-vm-lab-post-start-rollback-smoke rollout-vm-lab-bad-ssh-smoke rollout-vm-lab-v2-start-failure-smoke rollout-vm-lab-runtime-guard-smoke rollout-vm-lab-real-activity-smoke rollout-vm-lab-snapshot-execute-smoke rollout-vm-lab-snapshot-all-smoke api-cli-smoke api-cli-validate api-cli-token-create api-cli-token-list api-cli-token-revoke deploy-veriflier-cf deploy-veriflier-cf-staging clean
 
 all: build build-deliverer build-veriflier
 
@@ -147,6 +147,12 @@ api-cli-token-list:
 api-cli-token-revoke:
 	@test -n "$(API_CLI_TOKEN_ID)" || { echo "API_CLI_TOKEN_ID is required"; exit 1; }
 	$(DOCKER_COMPOSE) exec jetmon ./jetmon2 keys revoke $(API_CLI_TOKEN_ID)
+
+deploy-veriflier-cf:
+	bash deploy/workers/deploy.sh
+
+deploy-veriflier-cf-staging:
+	DEPLOY_ENV=staging bash deploy/workers/deploy.sh
 
 clean:
 	rm -f $(BINARY) $(DELIVERER) $(VERIFLIER)

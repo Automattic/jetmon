@@ -39,3 +39,7 @@ coverage.html
 
 # Local Claude settings (project settings.json is tracked)
 .claude/settings.local.json
+
+# Cloudflare Workers local state and Worker node_modules
+.wrangler/
+deploy/workers/worker/node_modules/
