@@ -136,12 +136,12 @@ func TestGetSitesForBucketScansRowsAndDefaultRedirectPolicy(t *testing.T) {
 		"jetpack_monitor_site_id", "blog_id", "bucket_no", "monitor_url",
 		"monitor_active", "site_status", "last_status_change", "check_interval", "last_checked_at", "next_check_at",
 		"ssl_expiry_date", "check_keyword", "forbidden_keyword", "forbidden_keywords", "maintenance_start", "maintenance_end",
-		"custom_headers", "timeout_seconds", "redirect_policy", "alert_cooldown_minutes", "last_alert_sent_at",
+		"custom_headers", "timeout_seconds", "redirect_policy", "alert_cooldown_minutes", "last_alert_sent_at", "request_method", "detection_profile",
 	}).AddRow(
 		int64(1), int64(42), 7, "https://site.example",
 		true, 1, now, 5, now, now.Add(5*time.Minute),
 		nil, nil, nil, nil, nil, nil,
-		nil, nil, nil, nil, nil,
+		nil, nil, nil, nil, nil, nil, nil,
 	)
 	mock.ExpectQuery("SELECT").
 		WithArgs(0, 99, 50).
@@ -173,7 +173,7 @@ func TestGetSitesForBucketVariableIntervalsUsesNextCheckAt(t *testing.T) {
 		"jetpack_monitor_site_id", "blog_id", "bucket_no", "monitor_url",
 		"monitor_active", "site_status", "last_status_change", "check_interval", "last_checked_at", "next_check_at",
 		"ssl_expiry_date", "check_keyword", "forbidden_keyword", "forbidden_keywords", "maintenance_start", "maintenance_end",
-		"custom_headers", "timeout_seconds", "redirect_policy", "alert_cooldown_minutes", "last_alert_sent_at",
+		"custom_headers", "timeout_seconds", "redirect_policy", "alert_cooldown_minutes", "last_alert_sent_at", "request_method", "detection_profile",
 	})
 	mock.ExpectQuery("next_check_at").
 		WithArgs(0, 99, 50).

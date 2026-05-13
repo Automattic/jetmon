@@ -110,9 +110,9 @@ This is the end-to-end path from database query to WPCOM notification.
 │         │                                                            │
 │         ▼   (goroutine worker)                                       │
 │    checker.Check(ctx, req)                                           │
-│      • HTTP GET with httptrace timing (DNS/TCP/TLS/TTFB)             │
-│      • Keyword match (reads up to 1 MB of body)                      │
-│      • Redirect policy (follow / alert / fail)                       │
+│      • HTTP HEAD or GET with httptrace timing (DNS/TCP/TLS/TTFB)     │
+│      • Keyword match in full GET profile (reads up to 1 MB of body)  │
+│      • Redirect policy in full profile (follow / alert / fail)       │
 │      • SSL expiry extraction from peer certificate                   │
 │      • Error classification → ErrorCode (8 codes)                    │
 │      • Success = HTTPCode in [1, 399]                                │
@@ -180,9 +180,9 @@ Failure Escalation Detail
           ▼
   Dispatch in parallel to all verifliers
           │
-          ├── veriflier-1:  GET site  ──►  {success: false, http: 500}
-          ├── veriflier-2:  GET site  ──►  {success: false, http: 500}
-          └── veriflier-N:  GET site  ──►  {success: true,  http: 200}
+          ├── veriflier-1:  same policy  ──►  {success: false, http: 500}
+          ├── veriflier-2:  same policy  ──►  {success: false, http: 500}
+          └── veriflier-N:  same policy  ──►  {success: true,  http: 200}
                                                     ↑ false positive
 
   Quorum = min(healthyVerifliers, PeerOfflineLimit)  // floor: 1

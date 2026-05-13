@@ -9,8 +9,10 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/Automattic/jetmon/internal/checkmode"
 	"github.com/Automattic/jetmon/internal/config"
 )
 
@@ -47,6 +49,8 @@ type createSiteRequest struct {
 	CustomHeaders        *map[string]string `json:"custom_headers"`
 	AlertCooldownMinutes *int               `json:"alert_cooldown_minutes"`
 	CheckInterval        *int               `json:"check_interval"`
+	RequestMethod        *string            `json:"request_method"`
+	DetectionProfile     *string            `json:"detection_profile"`
 }
 
 // handleCreateSite implements POST /api/v1/sites.
@@ -77,6 +81,11 @@ func (s *Server) handleCreateSite(w http.ResponseWriter, r *http.Request) {
 				"redirect_policy must be one of: follow, alert, fail")
 			return
 		}
+	}
+	requestMethod, detectionProfile, err := validateCheckPolicy(body.RequestMethod, body.DetectionProfile)
+	if err != nil {
+		writeError(w, r, http.StatusUnprocessableEntity, "invalid_check_policy", err.Error())
+		return
 	}
 
 	ctx := r.Context()
@@ -138,7 +147,20 @@ func (s *Server) handleCreateSite(w http.ResponseWriter, r *http.Request) {
 		customHeadersJSON,
 		nullableIntPtr(body.AlertCooldownMinutes),
 	}
-	if tenantID, ok := ownerTenantIDFromRequest(r); ok {
+	tenantID, tenantScoped := ownerTenantIDFromRequest(r)
+	policyChanged := body.RequestMethod != nil || body.DetectionProfile != nil
+	if !tenantScoped && !policyChanged {
+		if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO jetpack_monitor_sites
+			(blog_id, bucket_no, monitor_url, monitor_active, site_status, check_interval,
+			 check_keyword, forbidden_keyword, forbidden_keywords, redirect_policy, timeout_seconds, custom_headers,
+			 alert_cooldown_minutes)
+		VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)`, insertArgs...); err != nil {
+			writeError(w, r, http.StatusInternalServerError, "db_error",
+				"site insert failed: "+err.Error())
+			return
+		}
+	} else {
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
 			writeError(w, r, http.StatusInternalServerError, "db_error",
@@ -156,26 +178,26 @@ func (s *Server) handleCreateSite(w http.ResponseWriter, r *http.Request) {
 				"site insert failed: "+err.Error())
 			return
 		}
-		if err := s.assignSiteTenant(ctx, tx, *body.BlogID, tenantID); err != nil {
+		if err := s.upsertSiteCheckPolicy(ctx, tx, *body.BlogID,
+			body.RequestMethod != nil, requestMethod,
+			body.DetectionProfile != nil, detectionProfile,
+		); err != nil {
 			writeError(w, r, http.StatusInternalServerError, "db_error",
-				err.Error())
+				"site check policy insert failed: "+err.Error())
 			return
+		}
+		if tenantScoped {
+			if err := s.assignSiteTenant(ctx, tx, *body.BlogID, tenantID); err != nil {
+				writeError(w, r, http.StatusInternalServerError, "db_error",
+					err.Error())
+				return
+			}
 		}
 		if err := tx.Commit(); err != nil {
 			writeError(w, r, http.StatusInternalServerError, "db_error",
 				"site transaction commit failed: "+err.Error())
 			return
 		}
-	} else if _, err = s.db.ExecContext(ctx, `
-		INSERT INTO jetpack_monitor_sites
-			(blog_id, bucket_no, monitor_url, monitor_active, site_status, check_interval,
-			 check_keyword, forbidden_keyword, forbidden_keywords, redirect_policy, timeout_seconds, custom_headers,
-			 alert_cooldown_minutes)
-		VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		insertArgs...); err != nil {
-		writeError(w, r, http.StatusInternalServerError, "db_error",
-			"site insert failed: "+err.Error())
-		return
 	}
 
 	// Read back the row to return it as the response body.
@@ -203,6 +225,8 @@ type updateSiteRequest struct {
 	CustomHeaders        *map[string]string `json:"custom_headers"`
 	AlertCooldownMinutes *int               `json:"alert_cooldown_minutes"`
 	CheckInterval        *int               `json:"check_interval"`
+	RequestMethod        *string            `json:"request_method"`
+	DetectionProfile     *string            `json:"detection_profile"`
 	MaintenanceStart     *string            `json:"maintenance_start"`
 	MaintenanceEnd       *string            `json:"maintenance_end"`
 }
@@ -239,6 +263,11 @@ func (s *Server) handleUpdateSite(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	requestMethod, detectionProfile, err := validateCheckPolicy(body.RequestMethod, body.DetectionProfile)
+	if err != nil {
+		writeError(w, r, http.StatusUnprocessableEntity, "invalid_check_policy", err.Error())
+		return
+	}
 
 	ctx := r.Context()
 	if !s.ensureSiteVisibleForRequest(w, r, siteID) {
@@ -261,7 +290,8 @@ func (s *Server) handleUpdateSite(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusUnprocessableEntity, "invalid_field", err.Error())
 		return
 	}
-	if len(setClauses) == 0 {
+	policyChanged := body.RequestMethod != nil || body.DetectionProfile != nil
+	if len(setClauses) == 0 && !policyChanged {
 		// No fields to change — return the current state without touching the row.
 		site, err := s.readSite(ctx, siteID)
 		if err != nil {
@@ -273,12 +303,46 @@ func (s *Server) handleUpdateSite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	args = append(args, siteID)
-	query := "UPDATE jetpack_monitor_sites SET " + joinSetClauses(setClauses) + " WHERE blog_id = ?"
-	if _, err := s.db.ExecContext(ctx, query, args...); err != nil {
-		writeError(w, r, http.StatusInternalServerError, "db_error",
-			"site update failed: "+err.Error())
-		return
+	if !policyChanged {
+		args = append(args, siteID)
+		query := "UPDATE jetpack_monitor_sites SET " + joinSetClauses(setClauses) + " WHERE blog_id = ?"
+		if _, err := s.db.ExecContext(ctx, query, args...); err != nil {
+			writeError(w, r, http.StatusInternalServerError, "db_error",
+				"site update failed: "+err.Error())
+			return
+		}
+	} else {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			writeError(w, r, http.StatusInternalServerError, "db_error",
+				"site transaction failed: "+err.Error())
+			return
+		}
+		defer func() { _ = tx.Rollback() }()
+		if len(setClauses) > 0 {
+			args = append(args, siteID)
+			query := "UPDATE jetpack_monitor_sites SET " + joinSetClauses(setClauses) + " WHERE blog_id = ?"
+			if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+				writeError(w, r, http.StatusInternalServerError, "db_error",
+					"site update failed: "+err.Error())
+				return
+			}
+		}
+		if policyChanged {
+			if err := s.upsertSiteCheckPolicy(ctx, tx, siteID,
+				body.RequestMethod != nil, requestMethod,
+				body.DetectionProfile != nil, detectionProfile,
+			); err != nil {
+				writeError(w, r, http.StatusInternalServerError, "db_error",
+					"site check policy update failed: "+err.Error())
+				return
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			writeError(w, r, http.StatusInternalServerError, "db_error",
+				"site transaction commit failed: "+err.Error())
+			return
+		}
 	}
 
 	site, err := s.readSite(ctx, siteID)
@@ -512,9 +576,10 @@ func (s *Server) closeEvent(ctx context.Context, eventID, blogID int64, reason s
 // write handlers' read-back step.
 func (s *Server) readSite(ctx context.Context, blogID int64) (siteResponse, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT `+siteSelectColumns("", false)+`
-		  FROM jetpack_monitor_sites
-		 WHERE blog_id = ?`, blogID)
+		SELECT `+siteSelectColumns("s.", "c.", false)+`
+		  FROM jetpack_monitor_sites s
+		  LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id
+		 WHERE s.blog_id = ?`, blogID)
 	return scanSiteRow(row, false)
 }
 
@@ -666,6 +731,66 @@ func buildUpdateSetClause(body updateSiteRequest) ([]string, []any, error) {
 		args = append(args, t)
 	}
 	return clauses, args, nil
+}
+
+func validateCheckPolicy(methodPtr, profilePtr *string) (any, any, error) {
+	var method any
+	if methodPtr != nil {
+		if *methodPtr == "" {
+			method = nil
+		} else {
+			normalized, err := checkmode.NormalizeMethod(*methodPtr, "")
+			if err != nil {
+				return nil, nil, err
+			}
+			method = normalized
+		}
+	}
+	var profile any
+	if profilePtr != nil {
+		if *profilePtr == "" {
+			profile = nil
+		} else {
+			normalized, err := checkmode.NormalizeProfile(*profilePtr, "")
+			if err != nil {
+				return nil, nil, err
+			}
+			profile = normalized
+		}
+	}
+	return method, profile, nil
+}
+
+func (s *Server) upsertSiteCheckPolicy(ctx context.Context, tx *sql.Tx, blogID int64, methodSet bool, method any, profileSet bool, profile any) error {
+	if !methodSet && !profileSet {
+		return nil
+	}
+	cols := []string{"blog_id"}
+	placeholders := []string{"?"}
+	updates := []string{}
+	args := []any{blogID}
+	if methodSet {
+		cols = append(cols, "request_method")
+		placeholders = append(placeholders, "?")
+		updates = append(updates, "request_method = VALUES(request_method)")
+		args = append(args, method)
+	}
+	if profileSet {
+		cols = append(cols, "detection_profile")
+		placeholders = append(placeholders, "?")
+		updates = append(updates, "detection_profile = VALUES(detection_profile)")
+		args = append(args, profile)
+	}
+	query := fmt.Sprintf(`
+		INSERT INTO jetmon_site_check_config (%s)
+		VALUES (%s)
+		ON DUPLICATE KEY UPDATE %s`,
+		strings.Join(cols, ", "),
+		strings.Join(placeholders, ", "),
+		strings.Join(updates, ", "),
+	)
+	_, err := tx.ExecContext(ctx, query, args...)
+	return err
 }
 
 // parseMaintenanceTime accepts an empty string (clears the column to NULL)

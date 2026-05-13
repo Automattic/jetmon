@@ -66,21 +66,25 @@ notification.
 
 Jetmon 1 used `HEAD` requests to decide whether a site was reachable. Some
 customer stacks block `HEAD`, route it differently, or return a status that does
-not match a real page load. Jetmon 2 uses `GET` for local checks and Veriflier
-checks, which better matches what visitors and customer-facing uptime tools see.
+not match a real page load. Jetmon 2 supports a staged migration: initial
+rollout can keep `HEAD` + `legacy` behavior, then selected cohorts can move to
+`GET` + `simple_http`, and finally to `GET` + `full` detections. GET checks
+better match what visitors and customer-facing uptime tools see.
 
-When an alert differs from old v1 behavior, this is often the first thing to
-check: v2 may be surfacing a real GET-path issue that v1's HEAD-only probe did
-not exercise.
+When an alert differs from old v1 behavior, check the site's effective
+`request_method` and `detection_profile` first. v2 may be surfacing a real
+GET-path issue or a full-profile detection that v1's HEAD-only probe did not
+exercise.
 
 ## Allowlist And WAF Guidance
 
-Jetmon 2 identifies itself with the `jetmon/2.0` user agent and performs `GET`
-requests against the monitored URL. Customer firewalls, WAFs, bot controls, and
-security plugins should allow Jetmon checks to reach the same application path a
-normal visitor would reach. Do not ask a customer to broadly disable security
-rules; the safer path is to allow the published Jetmon source hosts or IP
-ranges and the `jetmon/2.0` user agent.
+Jetmon 2 identifies itself with the `jetmon/2.0` user agent. During rollout it
+may perform either `HEAD` or `GET` requests depending on site policy. For GET
+cohorts, customer firewalls, WAFs, bot controls, and security plugins should
+allow Jetmon checks to reach the same application path a normal visitor would
+reach. Do not ask a customer to broadly disable security rules; the safer path
+is to allow the published Jetmon source hosts or IP ranges and the
+`jetmon/2.0` user agent.
 
 Blocked monitoring can show up in a few different ways:
 
@@ -237,8 +241,8 @@ Each `checks` entry includes:
 - "The alert was suppressed because a maintenance window was active."
 - "The site blocked the monitor with a 403, which is different from the site
   being down for visitors."
-- "Jetmon v2 uses GET checks, so it tests the visitor path more closely than the
-  v1 HEAD-only check did."
+- "This site is in the GET cohort, so Jetmon tests the visitor path more
+  closely than the v1 HEAD-only check did."
 - "Jetmon could not produce a trustworthy verdict because monitor-side
   telemetry was incomplete; that is not the same thing as confirmed downtime."
 - "The audit trail shows exactly which checkers saw the failure and what status

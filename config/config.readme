@@ -126,6 +126,25 @@ Set 0 to use the default budget.
 KEYWORD_READ_MAX_MS
 Keyword body-read budget in milliseconds. Set to 0 to inherit the request timeout envelope (NET_COMMS_TIMEOUT or per-site timeout_seconds). If set > 0 and exhausted before the keyword is found, the check fails as timeout (ErrorTimeout), not keyword mismatch. Default: 0.
 
+DEFAULT_CHECK_METHOD
+Default HTTP method for sites without a row in jetmon_site_check_config.
+Allowed values: HEAD or GET. Use HEAD during the first v1-to-v2 replacement
+phase when v2 should behave like the legacy monitor; use GET after the fleet is
+ready to exercise visitor-path checks by default. Default: GET.
+
+DEFAULT_DETECTION_PROFILE
+Default detection profile for sites without a row in jetmon_site_check_config.
+Allowed values:
+- legacy: v1-compatible reachability semantics; no body checks, redirect
+  advisory/fail policy, TLS advisory events, or body-read integrity failures.
+- simple_http: simple status/connect/timeout checks using the selected method;
+  intended for the HEAD-to-GET migration phase before richer v2 detections are
+  enabled.
+- full: all v2 HTTP, body, redirect, TLS, keyword, and forbidden-content
+  detections. HEAD requests automatically cap the effective profile to
+  simple_http because body-based checks cannot run against HEAD responses.
+Default: full.
+
 USE_VARIABLE_CHECK_INTERVALS
 Set to true to respect the check_interval column per site instead of running
 all sites every fixed-cadence pass. Recommended for production freshness

@@ -774,7 +774,7 @@ func apiTableColumns(rows []map[string]any) []string {
 	best := []string{}
 	for _, cols := range [][]string{
 		{"id", "blog_id", "monitor_url", "monitor_active", "current_state", "current_severity", "active_event_id"},
-		{"blog_id", "monitor_url", "monitor_active", "check_keyword", "redirect_policy", "timeout_seconds"},
+		{"blog_id", "monitor_url", "monitor_active", "request_method", "detection_profile", "check_keyword", "redirect_policy", "timeout_seconds"},
 		{"id", "site_id", "check_type", "state", "severity", "started_at", "ended_at"},
 		{"id", "url", "active", "events", "secret_preview", "created_at"},
 		{"id", "label", "active", "transport", "min_severity", "max_per_hour", "destination_preview"},

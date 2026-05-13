@@ -17,6 +17,7 @@ import (
 
 	"github.com/Automattic/jetmon/internal/audit"
 	"github.com/Automattic/jetmon/internal/checker"
+	"github.com/Automattic/jetmon/internal/checkmode"
 	"github.com/Automattic/jetmon/internal/config"
 	"github.com/Automattic/jetmon/internal/db"
 	"github.com/Automattic/jetmon/internal/eventstore"
@@ -647,24 +648,61 @@ func selectedSiteSummary(sites []db.Site) roundSummary {
 }
 
 func checkRequestForSite(cfg *config.Config, site db.Site) checker.Request {
+	method := effectiveCheckMethod(cfg, site)
+	profile := effectiveDetectionProfile(cfg, site, method)
 	req := checker.Request{
 		BlogID:              site.BlogID,
 		URL:                 site.MonitorURL,
+		Method:              method,
+		DetectionProfile:    profile,
 		TimeoutSeconds:      timeoutForSite(cfg, site),
 		BodyReadMaxBytes:    cfg.BodyReadMaxBytes,
 		BodyReadMaxMS:       cfg.BodyReadMaxMS,
 		KeywordReadMaxBytes: cfg.KeywordReadMaxBytes,
 		KeywordReadMaxMS:    cfg.KeywordReadMaxMS,
-		Keyword:             site.CheckKeyword,
-		ForbiddenKeyword:    site.ForbiddenKeyword,
-		ForbiddenKeywords:   checker.ParseForbiddenKeywords(site.ForbiddenKeywords),
 		CustomHeaders:       checker.ParseCustomHeaders(site.CustomHeaders),
-		RedirectPolicy:      checker.RedirectPolicy(site.RedirectPolicy),
+		RedirectPolicy:      checker.RedirectFollow,
 	}
-	if req.RedirectPolicy == "" {
-		req.RedirectPolicy = checker.RedirectFollow
+	if profile == checkmode.ProfileFull {
+		req.Keyword = site.CheckKeyword
+		req.ForbiddenKeyword = site.ForbiddenKeyword
+		req.ForbiddenKeywords = checker.ParseForbiddenKeywords(site.ForbiddenKeywords)
+		req.RedirectPolicy = checker.RedirectPolicy(site.RedirectPolicy)
+		if req.RedirectPolicy == "" {
+			req.RedirectPolicy = checker.RedirectFollow
+		}
 	}
 	return req
+}
+
+func effectiveCheckMethod(cfg *config.Config, site db.Site) string {
+	def := checkmode.MethodGET
+	if cfg != nil && cfg.DefaultCheckMethod != "" {
+		def = cfg.DefaultCheckMethod
+	}
+	method, err := checkmode.NormalizeMethod(site.RequestMethod, def)
+	if err != nil {
+		return def
+	}
+	return method
+}
+
+func effectiveDetectionProfile(cfg *config.Config, site db.Site, method string) string {
+	def := checkmode.ProfileFull
+	if cfg != nil && cfg.DefaultDetectionProfile != "" {
+		def = cfg.DefaultDetectionProfile
+	}
+	profile, err := checkmode.NormalizeProfile(site.DetectionProfile, def)
+	if err != nil {
+		return checkmode.EffectiveProfile(method, def)
+	}
+	return checkmode.EffectiveProfile(method, profile)
+}
+
+func fullDetectionsEnabled(cfg *config.Config, site db.Site) bool {
+	method := effectiveCheckMethod(cfg, site)
+	profile := effectiveDetectionProfile(cfg, site, method)
+	return checkmode.FullDetectionsEnabled(method, profile)
 }
 
 func collectionDeadlineForSites(cfg *config.Config, sites []db.Site) time.Duration {
@@ -879,7 +917,11 @@ func (o *Orchestrator) processResults(results map[int64]checker.Result, sites ma
 
 	sslStart := time.Now()
 	sslUpdates := make([]db.SiteSSLExpiry, 0)
+	cfg := config.Get()
 	for _, record := range records {
+		if !fullDetectionsEnabled(cfg, record.site) {
+			continue
+		}
 		if record.res.TLSVersion != 0 {
 			o.checkTLSDeprecated(record.site, record.res)
 		}
@@ -1117,7 +1159,11 @@ func siteCheckInterval(site db.Site) time.Duration {
 func checkResultMetadata(site db.Site, res checker.Result, firstFailAt time.Time) map[string]any {
 	method := res.Method
 	if method == "" {
-		method = "GET"
+		method = effectiveCheckMethod(config.Get(), site)
+	}
+	profile := res.DetectionProfile
+	if profile == "" {
+		profile = effectiveDetectionProfile(config.Get(), site, method)
 	}
 	metadata := map[string]any{
 		"detector_class":     detectorClass(res),
@@ -1127,6 +1173,7 @@ func checkResultMetadata(site db.Site, res checker.Result, firstFailAt time.Time
 		"legacy_status_type": (&res).StatusType(),
 		"keyword_rule":       res.KeywordRule,
 		"method":             method,
+		"detection_profile":  profile,
 		"rtt_ms":             res.RTT.Milliseconds(),
 		"url":                site.MonitorURL,
 	}
@@ -1488,25 +1535,38 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 		return
 	}
 
+	cfg := config.Get()
+	method := effectiveCheckMethod(cfg, site)
+	profile := effectiveDetectionProfile(cfg, site, method)
 	req := veriflier.CheckRequest{
 		BlogID:              site.BlogID,
 		URL:                 site.MonitorURL,
-		TimeoutSeconds:      int32(timeoutForSite(config.Get(), site)),
-		BodyReadMaxBytes:    config.Get().BodyReadMaxBytes,
-		BodyReadMaxMS:       int32(config.Get().BodyReadMaxMS),
-		KeywordReadMaxBytes: config.Get().KeywordReadMaxBytes,
-		KeywordReadMaxMS:    int32(config.Get().KeywordReadMaxMS),
-		Keyword:             stringPtrValue(site.CheckKeyword),
-		ForbiddenKeyword:    stringPtrValue(site.ForbiddenKeyword),
-		ForbiddenKeywords:   checker.ParseForbiddenKeywords(site.ForbiddenKeywords),
+		Method:              method,
+		DetectionProfile:    profile,
+		TimeoutSeconds:      int32(timeoutForSite(cfg, site)),
+		BodyReadMaxBytes:    cfg.BodyReadMaxBytes,
+		BodyReadMaxMS:       int32(cfg.BodyReadMaxMS),
+		KeywordReadMaxBytes: cfg.KeywordReadMaxBytes,
+		KeywordReadMaxMS:    int32(cfg.KeywordReadMaxMS),
 		CustomHeaders:       checker.ParseCustomHeaders(site.CustomHeaders),
-		RedirectPolicy:      site.RedirectPolicy,
+		RedirectPolicy:      string(checker.RedirectFollow),
 		RequestID:           veriflier.NewRequestID(),
+	}
+	if profile == checkmode.ProfileFull {
+		req.Keyword = stringPtrValue(site.CheckKeyword)
+		req.ForbiddenKeyword = stringPtrValue(site.ForbiddenKeyword)
+		req.ForbiddenKeywords = checker.ParseForbiddenKeywords(site.ForbiddenKeywords)
+		req.RedirectPolicy = site.RedirectPolicy
+		if req.RedirectPolicy == "" {
+			req.RedirectPolicy = string(checker.RedirectFollow)
+		}
 	}
 
 	escalateMeta, _ := json.Marshal(map[string]any{
-		"verifier_count": len(clients),
-		"request_id":     req.RequestID,
+		"verifier_count":    len(clients),
+		"request_id":        req.RequestID,
+		"method":            method,
+		"detection_profile": profile,
 	})
 	o.auditLog(audit.Entry{
 		BlogID:    site.BlogID,

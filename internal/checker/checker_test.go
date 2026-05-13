@@ -348,6 +348,62 @@ func TestCheckUsesGETWhenHEADWouldTimeout(t *testing.T) {
 	}
 }
 
+func TestCheckCanUseLegacyHEADMethod(t *testing.T) {
+	var sawHEAD bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodHead {
+			t.Fatalf("method = %q, want HEAD", r.Method)
+		}
+		sawHEAD = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{
+		BlogID:           1,
+		URL:              srv.URL,
+		Method:           http.MethodHead,
+		DetectionProfile: "legacy",
+		TimeoutSeconds:   5,
+	})
+	if !sawHEAD {
+		t.Fatal("server did not receive HEAD")
+	}
+	if !res.Success || res.Method != http.MethodHead || res.DetectionProfile != "legacy" {
+		t.Fatalf("HEAD result = %+v, want successful legacy HEAD", res)
+	}
+	if res.BodyReadMode != "" || res.BodyBytesRead != 0 {
+		t.Fatalf("HEAD body read = mode:%q bytes:%d, want none", res.BodyReadMode, res.BodyBytesRead)
+	}
+}
+
+func TestSimpleHTTPProfileSkipsKeywordDetection(t *testing.T) {
+	kw := "must-be-present"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("method = %q, want GET", r.Method)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("plain healthy response"))
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{
+		BlogID:           1,
+		URL:              srv.URL,
+		Method:           http.MethodGet,
+		DetectionProfile: "simple_http",
+		TimeoutSeconds:   5,
+		Keyword:          &kw,
+	})
+	if !res.Success {
+		t.Fatalf("simple_http result = %+v, want success despite missing keyword", res)
+	}
+	if res.ErrorCode != ErrorNone || res.KeywordRule != "" {
+		t.Fatalf("simple_http keyword fields = code:%d rule:%q, want none", res.ErrorCode, res.KeywordRule)
+	}
+}
+
 func TestCheckHTTP500(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)

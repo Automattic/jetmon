@@ -36,6 +36,8 @@ type apiBulkSiteEntry struct {
 	ForbiddenKeyword     *string           `json:"forbidden_keyword,omitempty"`
 	ForbiddenKeywords    []string          `json:"forbidden_keywords,omitempty"`
 	RedirectPolicy       *string           `json:"redirect_policy,omitempty"`
+	RequestMethod        *string           `json:"request_method,omitempty"`
+	DetectionProfile     *string           `json:"detection_profile,omitempty"`
 	TimeoutSeconds       *int              `json:"timeout_seconds,omitempty"`
 	CustomHeaders        map[string]string `json:"custom_headers,omitempty"`
 	AlertCooldownMinutes *int              `json:"alert_cooldown_minutes,omitempty"`
@@ -265,6 +267,12 @@ func apiBulkSiteEntryFromCSVRecord(header map[string]int, record []string) (apiB
 	if v := csvField(header, record, "redirect_policy"); v != "" {
 		entry.RedirectPolicy = &v
 	}
+	if v := csvField(header, record, "request_method"); v != "" {
+		entry.RequestMethod = &v
+	}
+	if v := csvField(header, record, "detection_profile"); v != "" {
+		entry.DetectionProfile = &v
+	}
 	if v := csvField(header, record, "timeout_seconds"); v != "" {
 		parsed, err := strconv.Atoi(v)
 		if err != nil {
@@ -331,6 +339,8 @@ func planAPIBulkSiteCreates(entries []apiBulkSiteEntry, opts apiSitesBulkAddOpti
 			ForbiddenKeyword:     entry.ForbiddenKeyword,
 			ForbiddenKeywords:    forbiddenKeywordsPtr(entry.ForbiddenKeywords),
 			RedirectPolicy:       entry.RedirectPolicy,
+			RequestMethod:        entry.RequestMethod,
+			DetectionProfile:     entry.DetectionProfile,
 			TimeoutSeconds:       entry.TimeoutSeconds,
 			AlertCooldownMinutes: entry.AlertCooldownMinutes,
 			CheckInterval:        entry.CheckInterval,

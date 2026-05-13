@@ -121,8 +121,8 @@ func invokeAuthed(_ *Server, req *http.Request, h http.HandlerFunc) *httptest.Re
 var columnsSite = []string{
 	"blog_id", "public_id", "monitor_url", "monitor_active", "bucket_no",
 	"check_interval", "site_status", "last_checked_at", "last_status_change",
-	"ssl_expiry_date", "check_keyword", "forbidden_keyword", "forbidden_keywords", "redirect_policy", "maintenance_start",
-	"maintenance_end", "alert_cooldown_minutes",
+	"ssl_expiry_date", "check_keyword", "forbidden_keyword", "forbidden_keywords", "redirect_policy",
+	"request_method", "detection_profile", "maintenance_start", "maintenance_end", "alert_cooldown_minutes",
 }
 
 var columnsSiteWithCLIMetadata = append(append([]string{}, columnsSite...), "custom_headers")

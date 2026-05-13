@@ -17,6 +17,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/Automattic/jetmon/internal/checkmode"
 )
 
 // ErrorCode mirrors the status change email types from the original Jetmon.
@@ -619,6 +621,8 @@ func isLocalResolverHost(host string) bool {
 type Request struct {
 	BlogID              int64
 	URL                 string
+	Method              string
+	DetectionProfile    string
 	TimeoutSeconds      int
 	BodyReadMaxBytes    int64
 	BodyReadMaxMS       int
@@ -633,12 +637,13 @@ type Request struct {
 
 // Result holds the outcome of a single HTTP check.
 type Result struct {
-	BlogID    int64
-	URL       string
-	Method    string
-	Success   bool
-	HTTPCode  int
-	ErrorCode int
+	BlogID           int64
+	URL              string
+	Method           string
+	DetectionProfile string
+	Success          bool
+	HTTPCode         int
+	ErrorCode        int
 	// ErrorDetail is bounded diagnostic context from the checker. It is meant
 	// for operator-facing event metadata, not matching logic.
 	ErrorDetail string
@@ -706,11 +711,22 @@ func (r *Result) IsFailure() bool {
 
 // Check performs an HTTP check and returns the result.
 func Check(ctx context.Context, req Request) Result {
+	method, err := checkmode.NormalizeMethod(req.Method, checkmode.MethodGET)
+	if err != nil {
+		method = checkmode.MethodGET
+	}
+	profile, err := checkmode.NormalizeProfile(req.DetectionProfile, checkmode.ProfileFull)
+	if err != nil {
+		profile = checkmode.ProfileFull
+	}
+	profile = checkmode.EffectiveProfile(method, profile)
+
 	res := Result{
-		BlogID:    req.BlogID,
-		URL:       req.URL,
-		Method:    http.MethodGet,
-		Timestamp: time.Now(),
+		BlogID:           req.BlogID,
+		URL:              req.URL,
+		Method:           method,
+		DetectionProfile: profile,
+		Timestamp:        time.Now(),
 	}
 
 	timeout := time.Duration(req.TimeoutSeconds) * time.Second
@@ -745,6 +761,9 @@ func Check(ctx context.Context, req Request) Result {
 	if redirectPolicyStr == "" {
 		redirectPolicyStr = string(RedirectFollow)
 	}
+	if profile != checkmode.ProfileFull {
+		redirectPolicyStr = string(RedirectFollow)
+	}
 
 	client := &http.Client{
 		Transport: transportForRequestURL(req.URL),
@@ -761,7 +780,7 @@ func Check(ctx context.Context, req Request) Result {
 		Timeout: timeout,
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, req.URL, nil)
+	httpReq, err := http.NewRequestWithContext(ctx, method, req.URL, nil)
 	if err != nil {
 		res.ErrorCode = ErrorConnect
 		res.ErrorDetail = boundedErrorDetail(err)
@@ -833,48 +852,54 @@ func Check(ctx context.Context, req Request) Result {
 				return res
 			}
 		}
-		// Flag deprecated TLS versions (TLS 1.0 = 0x0301, TLS 1.1 = 0x0302).
-		if resp.TLS.Version <= tls.VersionTLS11 {
+		// Flag deprecated TLS versions (TLS 1.0 = 0x0301, TLS 1.1 = 0x0302)
+		// only when rich detections are enabled. Legacy/simple rollout modes
+		// keep TLS version as telemetry but avoid new advisory events.
+		if profile == checkmode.ProfileFull && resp.TLS.Version <= tls.VersionTLS11 {
 			res.ErrorCode = ErrorTLSDeprecated
 		}
 	}
 
-	if redirectPolicyStr == string(RedirectAlert) && res.RedirectCount > 0 {
+	if profile == checkmode.ProfileFull && redirectPolicyStr == string(RedirectAlert) && res.RedirectCount > 0 {
 		res.RedirectChanged = true
 	}
 
 	forbiddenKeywords := collectForbiddenKeywords(req.ForbiddenKeyword, req.ForbiddenKeywords)
-	needsBody := (req.Keyword != nil && *req.Keyword != "") || len(forbiddenKeywords) > 0
-	bodyRead := readResponseBody(resp, needsBody, req)
-	body := bodyRead.Body
-	res.BodyReadMode = bodyRead.Mode
-	res.BodyBytesRead = bodyRead.BytesRead
-	res.BodyExpectedBytes = bodyRead.ExpectedBytes
-	res.BodyReadLimitBytes = bodyRead.LimitBytes
-	if bodyRead.Err != nil {
-		res.BodyReadError = boundedErrorDetail(bodyRead.Err)
-	}
-	if bodyRead.Err != nil && res.HTTPCode < http.StatusBadRequest {
-		res.ErrorCode = ErrorBodyRead
-		res.ErrorDetail = res.BodyReadError
-		return res
-	}
-
-	if needsBody {
-		// Keyword check uses the same bounded body read as integrity checks.
-		bodyText := string(body)
-		if req.Keyword != nil && *req.Keyword != "" {
-			if !strings.Contains(bodyText, *req.Keyword) {
-				res.KeywordRule = "required"
-				res.ErrorCode = ErrorKeyword
-				return res
-			}
+	needsBody := profile == checkmode.ProfileFull && method != http.MethodHead &&
+		((req.Keyword != nil && *req.Keyword != "") || len(forbiddenKeywords) > 0)
+	shouldReadBody := profile == checkmode.ProfileFull && method != http.MethodHead
+	if shouldReadBody {
+		bodyRead := readResponseBody(resp, needsBody, req)
+		body := bodyRead.Body
+		res.BodyReadMode = bodyRead.Mode
+		res.BodyBytesRead = bodyRead.BytesRead
+		res.BodyExpectedBytes = bodyRead.ExpectedBytes
+		res.BodyReadLimitBytes = bodyRead.LimitBytes
+		if bodyRead.Err != nil {
+			res.BodyReadError = boundedErrorDetail(bodyRead.Err)
 		}
-		for _, keyword := range forbiddenKeywords {
-			if strings.Contains(bodyText, keyword) {
-				res.KeywordRule = "forbidden"
-				res.ErrorCode = ErrorKeyword
-				return res
+		if bodyRead.Err != nil && res.HTTPCode < http.StatusBadRequest {
+			res.ErrorCode = ErrorBodyRead
+			res.ErrorDetail = res.BodyReadError
+			return res
+		}
+
+		// Keyword check uses the same bounded body read as integrity checks.
+		if needsBody {
+			bodyText := string(body)
+			if req.Keyword != nil && *req.Keyword != "" {
+				if !strings.Contains(bodyText, *req.Keyword) {
+					res.KeywordRule = "required"
+					res.ErrorCode = ErrorKeyword
+					return res
+				}
+			}
+			for _, keyword := range forbiddenKeywords {
+				if strings.Contains(bodyText, keyword) {
+					res.KeywordRule = "forbidden"
+					res.ErrorCode = ErrorKeyword
+					return res
+				}
 			}
 		}
 	}

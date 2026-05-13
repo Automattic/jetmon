@@ -98,6 +98,8 @@ func performCheck(req veriflier.CheckRequest) veriflier.CheckResult {
 	res := checker.Check(context.Background(), checker.Request{
 		BlogID:              req.BlogID,
 		URL:                 req.URL,
+		Method:              req.Method,
+		DetectionProfile:    req.DetectionProfile,
 		TimeoutSeconds:      int(req.TimeoutSeconds),
 		BodyReadMaxBytes:    req.BodyReadMaxBytes,
 		BodyReadMaxMS:       int(req.BodyReadMaxMS),

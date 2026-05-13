@@ -20,6 +20,20 @@ No active candidate branch is queued here right now.
 
 ### v2 Prelaunch Readiness TODO
 
+- [x] Add staged rollout check policy support so production can first replace
+  v1 with v2 using `HEAD` + `legacy`, then migrate controlled cohorts to
+  `GET` + `simple_http`, then enable `GET` + `full` detections after stability
+  is proven.
+- [x] Store per-site rollout check policy in `jetmon_site_check_config` instead
+  of adding more fields to `jetpack_monitor_sites`, reducing hot-schema-change
+  pressure on the legacy compatibility table.
+- [ ] Move remaining v2-only site options that still live on
+  `jetpack_monitor_sites` into v2-owned side tables before production if
+  Systems determines those ALTERs are too risky for the live legacy table.
+  This is deferred because the staged check-policy branch avoids new legacy
+  table changes, while moving already-implemented columns needs a separate
+  compatibility pass across API, scheduler, support docs, and any sibling
+  consumers that may already rely on the current v2 schema.
 - [x] Bring the service handoff recommendations and rollout prelaunch checklist
   into the repo as `docs/jetmon-v2-prelaunch-readiness.md`, linked from the
   docs index and migration runbook.

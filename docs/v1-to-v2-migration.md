@@ -24,19 +24,35 @@ Use this document for:
 
 ## What Changes For Customers
 
-The important product fix is the probe method.
+The important product fix is the probe method, but it should be rolled out in
+stages.
 
 Jetmon 1 verified sites with `HEAD` requests. That caused real customer pain:
 some production stacks block `HEAD`, route it differently, skip application
 logic, or return a status that does not match a visitor's real page load.
-Jetmon 2 uses `GET` requests for local monitor checks and Veriflier checks, so
-it validates the same class of request a browser or customer-facing uptime
-check normally makes.
+Jetmon 2 can use `GET` requests for local monitor checks and Veriflier checks,
+so it can validate the same class of request a browser or customer-facing
+uptime check normally makes.
 
-This is why v2 can support keyword checks, richer redirect behavior, and better
-VIP/Agency explanations. It is also why the rollout should be watched closely:
-GET-based checks are more correct, but they can expose sites whose `HEAD`
-behavior used to hide a real application issue.
+The production rollout should not switch every variable at once. Use this
+three-step check-policy migration:
+
+1. Replace v1 processing with v2 while keeping `HEAD` plus the `legacy`
+   detection profile. This validates the binary, bucket ownership, Veriflier
+   transport, legacy projection, WPCOM payloads, and rollback process while the
+   probe semantics stay as close to v1 as possible.
+2. Move controlled batches to `GET` plus `simple_http`. This tests the visitor
+   request path without enabling keyword, forbidden-content, redirect advisory,
+   TLS advisory, or body-integrity detections.
+3. Move stable batches to `GET` plus `full`. This enables the richer v2
+   detections that provide better VIP/Agency explanations.
+
+Set `DEFAULT_CHECK_METHOD=HEAD` and `DEFAULT_DETECTION_PROFILE=legacy` during
+the initial replacement phase. Per-site overrides live in
+`jetmon_site_check_config`; use that table or the API/CLI fields
+`request_method` and `detection_profile` to move batches through the phases.
+After migration, switch the process defaults to `GET` and `full`; keep
+per-site `HEAD` overrides only for sites that truly require legacy semantics.
 
 ## Success Criteria
 
@@ -280,6 +296,8 @@ For each replacement host, configure the exact v1 bucket range:
   "PINNED_BUCKET_MIN": 0,
   "PINNED_BUCKET_MAX": 99,
   "LEGACY_STATUS_PROJECTION_ENABLE": true,
+  "DEFAULT_CHECK_METHOD": "HEAD",
+  "DEFAULT_DETECTION_PROFILE": "legacy",
   "API_PORT": 0
 }
 ```
@@ -308,6 +326,7 @@ Confirm it reports:
 
 - `legacy_status_projection=enabled`
 - `bucket_ownership=pinned range=<min>-<max>`
+- `default_check_policy=method:HEAD profile:legacy`
 - `rollout_static_plan=./jetmon2 rollout static-plan-check --file=<ranges.csv>`
 - `rollout_preflight=` points at `./jetmon2 rollout host-preflight` with the
   static plan file, v1 host, runtime v2 host, and pinned bucket range
@@ -525,7 +544,8 @@ For every replaced range, verify:
 
 - checks run only for the pinned range
 - round time and sites-per-second are within the expected envelope
-- local checks use GET semantics against customer sites
+- local checks use `HEAD` plus `legacy` detection during the first replacement
+  phase
 - Veriflier confirmation works
 - WPCOM notifications retain the v1 payload shape
 - `jetmon_events` receives event rows
@@ -718,6 +738,33 @@ After every monitor host is on v2 and stable in pinned mode:
    write, or an unexpected status value before making any manual repair.
 9. Continue with normal v2 rolling updates: stop one host, deploy, start it,
    verify `./jetmon2 status`, then move to the next host.
+
+## Phase 5: Migrate Probe Semantics
+
+After v2 has replaced v1 and the fleet is stable, migrate probe semantics in
+separate batches:
+
+1. Select a small cohort and set `request_method='GET'`,
+   `detection_profile='simple_http'` in `jetmon_site_check_config` or through
+   the API/CLI. Watch for false-positive floods, verifier disagreement, WPCOM
+   parity issues, and support reports.
+2. Expand the `GET` + `simple_http` cohort only after the previous cohort is
+   clean for the agreed observation window.
+3. For stable GET cohorts, set `detection_profile='full'` to enable keyword,
+   forbidden-content, redirect advisory/fail, TLS advisory, and body-integrity
+   detections.
+4. When all normal sites are stable on `GET` + `full`, change process defaults
+   to:
+
+   ```json
+   {
+     "DEFAULT_CHECK_METHOD": "GET",
+     "DEFAULT_DETECTION_PROFILE": "full"
+   }
+   ```
+
+5. Leave rows in `jetmon_site_check_config` only for sites that need an
+   exception from the defaults, such as long-term `HEAD` compatibility.
 
 ## Phase 5: Tear Down v1
 

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Automattic/jetmon/internal/checkmode"
 	"github.com/Automattic/jetmon/internal/config"
 	"github.com/Automattic/jetmon/internal/eventstore"
 )
@@ -37,6 +38,8 @@ type siteResponse struct {
 	ForbiddenKeyword     *string  `json:"forbidden_keyword"`
 	ForbiddenKeywords    []string `json:"forbidden_keywords"`
 	RedirectPolicy       string   `json:"redirect_policy"`
+	RequestMethod        string   `json:"request_method"`
+	DetectionProfile     string   `json:"detection_profile"`
 	MaintenanceStart     *string  `json:"maintenance_start"`
 	MaintenanceEnd       *string  `json:"maintenance_end"`
 	AlertCooldownMinutes *int     `json:"alert_cooldown_minutes"`
@@ -123,16 +126,18 @@ func (s *Server) handleListSites(w http.ResponseWriter, r *http.Request) {
 	if tenantScoped {
 		args = append(args, tenantID, cursor)
 		sb.WriteString(`
-		SELECT ` + siteSelectColumns("s.", includeCLIMetadata) + `
+		SELECT ` + siteSelectColumns("s.", "c.", includeCLIMetadata) + `
 		  FROM jetpack_monitor_sites s
+		  LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id
 		  JOIN jetmon_site_tenants st ON st.blog_id = s.blog_id AND st.tenant_id = ?
 		 WHERE s.blog_id > ?`)
 	} else {
 		args = append(args, cursor)
 		sb.WriteString(`
-		SELECT ` + siteSelectColumns("", includeCLIMetadata) + `
-		  FROM jetpack_monitor_sites
-		 WHERE blog_id > ?`)
+		SELECT ` + siteSelectColumns("s.", "c.", includeCLIMetadata) + `
+		  FROM jetpack_monitor_sites s
+		  LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id
+		 WHERE s.blog_id > ?`)
 	}
 
 	switch monitorActive {
@@ -140,13 +145,13 @@ func (s *Server) handleListSites(w http.ResponseWriter, r *http.Request) {
 		if tenantScoped {
 			sb.WriteString(" AND s.monitor_active = 1")
 		} else {
-			sb.WriteString(" AND monitor_active = 1")
+			sb.WriteString(" AND s.monitor_active = 1")
 		}
 	case "false", "0":
 		if tenantScoped {
 			sb.WriteString(" AND s.monitor_active = 0")
 		} else {
-			sb.WriteString(" AND monitor_active = 0")
+			sb.WriteString(" AND s.monitor_active = 0")
 		}
 	case "":
 		// no filter
@@ -159,14 +164,14 @@ func (s *Server) handleListSites(w http.ResponseWriter, r *http.Request) {
 		if tenantScoped {
 			sb.WriteString(" AND s.monitor_url LIKE ?")
 		} else {
-			sb.WriteString(" AND monitor_url LIKE ?")
+			sb.WriteString(" AND s.monitor_url LIKE ?")
 		}
 		args = append(args, "%"+urlSubstr+"%")
 	}
 	if tenantScoped {
 		sb.WriteString(" ORDER BY s.blog_id ASC LIMIT ?")
 	} else {
-		sb.WriteString(" ORDER BY blog_id ASC LIMIT ?")
+		sb.WriteString(" ORDER BY s.blog_id ASC LIMIT ?")
 	}
 	// Fetch limit+1 so we know whether there's a next page without an extra count query.
 	args = append(args, limit+1)
@@ -246,9 +251,10 @@ func (s *Server) handleGetSite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	row := s.db.QueryRowContext(ctx, `
-		SELECT `+siteSelectColumns("", includeCLIMetadata)+`
-		  FROM jetpack_monitor_sites
-		 WHERE blog_id = ?`, id)
+		SELECT `+siteSelectColumns("s.", "c.", includeCLIMetadata)+`
+		  FROM jetpack_monitor_sites s
+		  LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id
+		 WHERE s.blog_id = ?`, id)
 
 	site, err := scanSiteRow(row, includeCLIMetadata)
 	if err != nil {
@@ -291,7 +297,7 @@ func (s *Server) handleGetSite(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, singleSiteResponse{siteResponse: site, ActiveEvents: active})
 }
 
-func siteSelectColumns(prefix string, includeCLIMetadata bool) string {
+func siteSelectColumns(prefix, checkConfigPrefix string, includeCLIMetadata bool) string {
 	cols := []string{
 		prefix + "blog_id",
 		prefix + "blog_id AS public_id",
@@ -307,6 +313,8 @@ func siteSelectColumns(prefix string, includeCLIMetadata bool) string {
 		prefix + "forbidden_keyword",
 		prefix + "forbidden_keywords",
 		prefix + "redirect_policy",
+		checkConfigPrefix + "request_method",
+		checkConfigPrefix + "detection_profile",
 		prefix + "maintenance_start",
 		prefix + "maintenance_end",
 		prefix + "alert_cooldown_minutes",
@@ -454,6 +462,8 @@ func scanSiteRow(s rowScanner, includeCLIMetadata bool) (siteResponse, error) {
 		forbiddenKeyword  sql.NullString
 		forbiddenKeywords sql.NullString
 		redirectPolicy    sql.NullString
+		requestMethod     sql.NullString
+		detectionProfile  sql.NullString
 		maintStart        sql.NullTime
 		maintEnd          sql.NullTime
 		alertCooldown     sql.NullInt64
@@ -462,7 +472,7 @@ func scanSiteRow(s rowScanner, includeCLIMetadata bool) (siteResponse, error) {
 		&out.ID, &out.BlogID, &out.MonitorURL, &monitorActive,
 		&out.BucketNo, &out.CheckInterval, &siteStatus,
 		&lastCheckedAt, &lastStatusChg, &sslExpiry, &checkKeyword, &forbiddenKeyword, &forbiddenKeywords,
-		&redirectPolicy, &maintStart, &maintEnd, &alertCooldown,
+		&redirectPolicy, &requestMethod, &detectionProfile, &maintStart, &maintEnd, &alertCooldown,
 	}
 	var customHeaders sql.NullString
 	if includeCLIMetadata {
@@ -507,6 +517,8 @@ func scanSiteRow(s rowScanner, includeCLIMetadata bool) (siteResponse, error) {
 	} else {
 		out.RedirectPolicy = "follow"
 	}
+	out.RequestMethod = effectiveAPICheckMethod(requestMethod)
+	out.DetectionProfile = effectiveAPIDetectionProfile(out.RequestMethod, detectionProfile)
 	if maintStart.Valid {
 		v := maintStart.Time.UTC().Format(time.RFC3339)
 		out.MaintenanceStart = &v
@@ -539,6 +551,40 @@ func cliBatchFromCustomHeaders(raw string) string {
 		}
 	}
 	return ""
+}
+
+func effectiveAPICheckMethod(value sql.NullString) string {
+	def := checkmode.MethodGET
+	if cfg := config.Get(); cfg != nil && cfg.DefaultCheckMethod != "" {
+		def = cfg.DefaultCheckMethod
+	}
+	method, err := checkmode.NormalizeMethod("", def)
+	if err != nil {
+		method = checkmode.MethodGET
+	}
+	if value.Valid {
+		if normalized, err := checkmode.NormalizeMethod(value.String, method); err == nil {
+			method = normalized
+		}
+	}
+	return method
+}
+
+func effectiveAPIDetectionProfile(method string, value sql.NullString) string {
+	def := checkmode.ProfileFull
+	if cfg := config.Get(); cfg != nil && cfg.DefaultDetectionProfile != "" {
+		def = cfg.DefaultDetectionProfile
+	}
+	profile, err := checkmode.NormalizeProfile("", def)
+	if err != nil {
+		profile = checkmode.ProfileFull
+	}
+	if value.Valid {
+		if normalized, err := checkmode.NormalizeProfile(value.String, profile); err == nil {
+			profile = normalized
+		}
+	}
+	return checkmode.EffectiveProfile(method, profile)
 }
 
 func decodeForbiddenKeywords(raw string) ([]string, error) {

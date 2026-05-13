@@ -59,6 +59,48 @@ func TestTimeoutForSite(t *testing.T) {
 	}
 }
 
+func TestCheckRequestForSiteAppliesRolloutCheckPolicy(t *testing.T) {
+	keyword := "needle"
+	forbidden := `["blocked"]`
+	cfg := &config.Config{
+		NetCommsTimeout:         10,
+		DefaultCheckMethod:      "HEAD",
+		DefaultDetectionProfile: "legacy",
+		BodyReadMaxBytes:        64,
+		KeywordReadMaxBytes:     128,
+	}
+
+	req := checkRequestForSite(cfg, db.Site{
+		BlogID:            42,
+		MonitorURL:        "https://example.com",
+		CheckKeyword:      &keyword,
+		ForbiddenKeywords: &forbidden,
+		RedirectPolicy:    "fail",
+	})
+	if req.Method != "HEAD" || req.DetectionProfile != "legacy" {
+		t.Fatalf("request policy = %s/%s, want HEAD/legacy", req.Method, req.DetectionProfile)
+	}
+	if req.Keyword != nil || len(req.ForbiddenKeywords) != 0 || req.RedirectPolicy != checker.RedirectFollow {
+		t.Fatalf("legacy request kept full detections: %+v", req)
+	}
+
+	req = checkRequestForSite(cfg, db.Site{
+		BlogID:            43,
+		MonitorURL:        "https://example.com",
+		RequestMethod:     "GET",
+		DetectionProfile:  "full",
+		CheckKeyword:      &keyword,
+		ForbiddenKeywords: &forbidden,
+		RedirectPolicy:    "fail",
+	})
+	if req.Method != "GET" || req.DetectionProfile != "full" {
+		t.Fatalf("request policy = %s/%s, want GET/full", req.Method, req.DetectionProfile)
+	}
+	if req.Keyword == nil || len(req.ForbiddenKeywords) != 1 || req.RedirectPolicy != checker.RedirectFail {
+		t.Fatalf("full request did not keep rich detections: %+v", req)
+	}
+}
+
 func TestInMaintenance(t *testing.T) {
 	origNow := nowFunc
 	defer func() { nowFunc = origNow }()

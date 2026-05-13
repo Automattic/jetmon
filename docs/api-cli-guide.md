@@ -148,6 +148,8 @@ Create a monitored site with explicit per-site check behavior:
   --blog-id 12345 \
   --url https://example.com \
   --monitor-active=true \
+  --request-method HEAD \
+  --detection-profile legacy \
   --redirect-policy follow \
   --timeout-seconds 5 \
   --check-interval 1 \
@@ -155,12 +157,14 @@ Create a monitored site with explicit per-site check behavior:
   --pretty
 ```
 
-Update a site when testing redirects, keyword checks, custom headers, or
-maintenance windows:
+Update a site when testing staged rollout batches, redirects, keyword checks,
+custom headers, or maintenance windows:
 
 ```bash
 ./bin/jetmon2 api sites update \
   --url https://example.com/health \
+  --request-method GET \
+  --detection-profile simple_http \
   --check-keyword Example \
   --forbidden-keyword 'database error' \
   --forbidden-keyword-list 'metrics.evil-cdn.example/collect.js' \
@@ -224,9 +228,10 @@ Use your own source list when needed:
 Accepted source formats are newline URLs, CSV with a `url` or `monitor_url`
 column, or JSON objects using fields such as `monitor_url`, `check_keyword`,
 `forbidden_keyword`, `forbidden_keywords`, `redirect_policy`,
-`timeout_seconds`, `custom_headers`, `alert_cooldown_minutes`, and
-`check_interval`. In CSV, `forbidden_keywords` is a comma-separated list inside
-one field; quote the field when a value contains commas.
+`request_method`, `detection_profile`, `timeout_seconds`, `custom_headers`,
+`alert_cooldown_minutes`, and `check_interval`. In CSV, `forbidden_keywords`
+is a comma-separated list inside one field; quote the field when a value
+contains commas.
 
 Clean up a batch after testing:
 

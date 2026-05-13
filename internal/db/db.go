@@ -39,6 +39,8 @@ type Site struct {
 	RedirectPolicy       string
 	AlertCooldownMinutes *int
 	LastAlertSentAt      *time.Time
+	RequestMethod        string
+	DetectionProfile     string
 }
 
 // Connect opens the MySQL connection pool using the loaded DBConfig.

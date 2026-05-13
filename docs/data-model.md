@@ -67,6 +67,29 @@ The API can expose a derived `cli_batch` field for local API CLI test data when
 | `jetmon_site_tenants` | Tenant-to-site mapping for gateway-scoped API access |
 | `jetmon_process_health` | Durable per-process heartbeat snapshots for host and fleet dashboards |
 | `jetmon_check_targets` | V2-native scheduling target state for the streaming monitor engine |
+| `jetmon_site_check_config` | Per-site rollout check policy: optional `HEAD`/`GET` request-method and `legacy`/`simple_http`/`full` detection-profile overrides |
+
+## Site Check Policy
+
+`jetmon_site_check_config` keeps staged rollout policy out of
+`jetpack_monitor_sites`:
+
+```sql
+CREATE TABLE `jetmon_site_check_config` (
+  `blog_id` bigint(20) unsigned NOT NULL PRIMARY KEY,
+  `request_method` enum('HEAD','GET') NULL,
+  `detection_profile` enum('legacy','simple_http','full') NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp()
+);
+```
+
+NULL values inherit process defaults from `DEFAULT_CHECK_METHOD` and
+`DEFAULT_DETECTION_PROFILE`. During rollout, use `HEAD` + `legacy` for
+v1-compatible replacement, `GET` + `simple_http` for visitor-path migration,
+and `GET` + `full` for the complete v2 detection set. A `HEAD` request
+automatically caps the effective profile to `simple_http`; body-based keyword
+and forbidden-content checks require `GET`.
 
 ## Streaming Check Targets
 
@@ -114,8 +137,10 @@ WPCOM, and StatsD across hosts.
 `jetmon_check_history` records one compact timing sample per local check. The
 `request_method` column records the actual HTTP method used by the probe. This
 is primarily operational evidence for v2 rollout and uptime-bench review: v2
-should show `GET`, not the v1 HEAD-only behavior. Failure events carry richer
-per-incident metadata such as URL and error reason.
+should show `HEAD` during the initial legacy-compatible replacement phase,
+`GET` during the visitor-path migration phase, and the actual effective method
+for any per-site exceptions. Failure events carry richer per-incident metadata
+such as URL and error reason.
 
 ## Event Source Of Truth
 

@@ -18,28 +18,30 @@ const batchWriteChunkSize = 1000
 func GetSitesForBucket(ctx context.Context, bucketMin, bucketMax, batchSize int, useVariableIntervals bool) ([]Site, error) {
 	query := `
 		SELECT
-			jetpack_monitor_site_id, blog_id, bucket_no, monitor_url,
-			monitor_active, site_status, last_status_change, check_interval, last_checked_at, next_check_at,
-			ssl_expiry_date, check_keyword, forbidden_keyword, forbidden_keywords, maintenance_start, maintenance_end,
-			custom_headers, timeout_seconds, redirect_policy, alert_cooldown_minutes, last_alert_sent_at
-		FROM jetpack_monitor_sites
-		WHERE monitor_active = 1
-		  AND bucket_no BETWEEN ? AND ?`
+			s.jetpack_monitor_site_id, s.blog_id, s.bucket_no, s.monitor_url,
+			s.monitor_active, s.site_status, s.last_status_change, s.check_interval, s.last_checked_at, s.next_check_at,
+			s.ssl_expiry_date, s.check_keyword, s.forbidden_keyword, s.forbidden_keywords, s.maintenance_start, s.maintenance_end,
+			s.custom_headers, s.timeout_seconds, s.redirect_policy, s.alert_cooldown_minutes, s.last_alert_sent_at,
+			c.request_method, c.detection_profile
+		FROM jetpack_monitor_sites s
+		LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id
+		WHERE s.monitor_active = 1
+		  AND s.bucket_no BETWEEN ? AND ?`
 	if useVariableIntervals {
 		query += `
 		  AND (
-			next_check_at IS NULL
-			OR next_check_at <= NOW()
+			s.next_check_at IS NULL
+			OR s.next_check_at <= NOW()
 		  )`
 		query += `
 		ORDER BY
-			next_check_at ASC,
-			blog_id ASC`
+			s.next_check_at ASC,
+			s.blog_id ASC`
 	} else {
 		query += `
 		ORDER BY
-			last_checked_at ASC,
-			blog_id ASC`
+			s.last_checked_at ASC,
+			s.blog_id ASC`
 	}
 	query += `
 		LIMIT ?`
@@ -63,15 +65,17 @@ func ListActiveSitesForBucketRange(ctx context.Context, bucketMin, bucketMax int
 	}
 	rows, err := db.QueryContext(ctx, `
 		SELECT
-			jetpack_monitor_site_id, blog_id, bucket_no, monitor_url,
-			monitor_active, site_status, last_status_change, check_interval, last_checked_at, next_check_at,
-			ssl_expiry_date, check_keyword, forbidden_keyword, forbidden_keywords, maintenance_start, maintenance_end,
-			custom_headers, timeout_seconds, redirect_policy, alert_cooldown_minutes, last_alert_sent_at
-		FROM jetpack_monitor_sites
-		WHERE monitor_active = 1
-		  AND bucket_no BETWEEN ? AND ?
-		  AND blog_id > ?
-		ORDER BY blog_id ASC
+			s.jetpack_monitor_site_id, s.blog_id, s.bucket_no, s.monitor_url,
+			s.monitor_active, s.site_status, s.last_status_change, s.check_interval, s.last_checked_at, s.next_check_at,
+			s.ssl_expiry_date, s.check_keyword, s.forbidden_keyword, s.forbidden_keywords, s.maintenance_start, s.maintenance_end,
+			s.custom_headers, s.timeout_seconds, s.redirect_policy, s.alert_cooldown_minutes, s.last_alert_sent_at,
+			c.request_method, c.detection_profile
+		FROM jetpack_monitor_sites s
+		LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id
+		WHERE s.monitor_active = 1
+		  AND s.bucket_no BETWEEN ? AND ?
+		  AND s.blog_id > ?
+		ORDER BY s.blog_id ASC
 		LIMIT ?`,
 		bucketMin, bucketMax, afterBlogID, limit,
 	)
@@ -87,11 +91,14 @@ func scanSiteRows(rows *sql.Rows) ([]Site, error) {
 	for rows.Next() {
 		var s Site
 		var redirectPolicy sql.NullString
+		var requestMethod sql.NullString
+		var detectionProfile sql.NullString
 		err := rows.Scan(
 			&s.ID, &s.BlogID, &s.BucketNo, &s.MonitorURL,
 			&s.MonitorActive, &s.SiteStatus, &s.LastStatusChange, &s.CheckInterval, &s.LastCheckedAt, &s.NextCheckAt,
 			&s.SSLExpiryDate, &s.CheckKeyword, &s.ForbiddenKeyword, &s.ForbiddenKeywords, &s.MaintenanceStart, &s.MaintenanceEnd,
 			&s.CustomHeaders, &s.TimeoutSeconds, &redirectPolicy, &s.AlertCooldownMinutes, &s.LastAlertSentAt,
+			&requestMethod, &detectionProfile,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan site: %w", err)
@@ -100,6 +107,12 @@ func scanSiteRows(rows *sql.Rows) ([]Site, error) {
 			s.RedirectPolicy = redirectPolicy.String
 		} else {
 			s.RedirectPolicy = "follow"
+		}
+		if requestMethod.Valid {
+			s.RequestMethod = requestMethod.String
+		}
+		if detectionProfile.Valid {
+			s.DetectionProfile = detectionProfile.String
 		}
 		sites = append(sites, s)
 	}

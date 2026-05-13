@@ -77,3 +77,16 @@ CREATE TABLE IF NOT EXISTS jetmon_false_positives (
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_blog_id (blog_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Per-site v2 check policy lives outside the legacy site table so rollout
+-- batches can switch HEAD/GET and detection profiles without another ALTER on
+-- jetpack_monitor_sites. NULL values inherit process defaults.
+CREATE TABLE IF NOT EXISTS jetmon_site_check_config (
+    blog_id            BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+    request_method     ENUM('HEAD','GET') NULL,
+    detection_profile  ENUM('legacy','simple_http','full') NULL,
+    created_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_request_method (request_method),
+    INDEX idx_detection_profile (detection_profile)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

@@ -518,6 +518,20 @@ var migrations = []migration{
 	// indexes that are specific to the legacy round scheduler.
 	{35, `ALTER TABLE jetpack_monitor_sites
 		ADD INDEX idx_monitor_active_bucket_blog (monitor_active, bucket_no, blog_id)`},
+
+	// Migration 36 stores v2 rollout check policy outside the legacy
+	// jetpack_monitor_sites table. NULL means "inherit the process default",
+	// letting operators migrate in phases without another hot ALTER on the
+	// largest v1 compatibility table.
+	{36, `CREATE TABLE IF NOT EXISTS jetmon_site_check_config (
+		blog_id            BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+		request_method     ENUM('HEAD','GET') NULL,
+		detection_profile  ENUM('legacy','simple_http','full') NULL,
+		created_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+		INDEX idx_request_method (request_method),
+		INDEX idx_detection_profile (detection_profile)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
 }
 
 // Migrate applies all pending migrations idempotently.

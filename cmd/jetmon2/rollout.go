@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Automattic/jetmon/internal/checkmode"
 	"github.com/Automattic/jetmon/internal/config"
 	"github.com/Automattic/jetmon/internal/db"
 )
@@ -2796,6 +2797,12 @@ func runPinnedRolloutCheck(ctx context.Context, out io.Writer, cfg *config.Confi
 		return errors.New("LEGACY_STATUS_PROJECTION_ENABLE must be true during pinned v1-to-v2 rollout")
 	}
 	fmt.Fprintln(out, "PASS legacy_status_projection=enabled")
+	defaultMethod, defaultProfile := rolloutDefaultCheckPolicy(cfg)
+	if defaultMethod == checkmode.MethodHEAD && defaultProfile == checkmode.ProfileLegacy {
+		fmt.Fprintln(out, "PASS default_check_policy=method:HEAD profile:legacy")
+	} else {
+		fmt.Fprintf(out, "WARN default_check_policy=method:%s profile:%s; initial v1 replacement should normally use method:HEAD profile:legacy\n", defaultMethod, defaultProfile)
+	}
 
 	if cfg.APIPort > 0 {
 		fmt.Fprintf(out, "WARN api_port=%d; confirm the API/delivery ownership plan before monitor cutover\n", cfg.APIPort)
@@ -2994,6 +3001,18 @@ func runDynamicRolloutCheck(ctx context.Context, out io.Writer, cfg *config.Conf
 	fmt.Fprintln(out, "PASS legacy_projection_drift=0")
 	fmt.Fprintln(out, "dynamic rollout check passed")
 	return nil
+}
+
+func rolloutDefaultCheckPolicy(cfg *config.Config) (string, string) {
+	method := strings.TrimSpace(cfg.DefaultCheckMethod)
+	if method == "" {
+		method = checkmode.MethodGET
+	}
+	profile := strings.TrimSpace(cfg.DefaultDetectionProfile)
+	if profile == "" {
+		profile = checkmode.ProfileFull
+	}
+	return method, checkmode.EffectiveProfile(method, profile)
 }
 
 func runActivityCheck(ctx context.Context, out io.Writer, cfg *config.Config, bucketMin, bucketMax int, since string, requireAll bool, deps activityCheckDeps) error {
