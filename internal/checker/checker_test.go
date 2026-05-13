@@ -764,6 +764,10 @@ func TestConfigureResolverServersInstallsOverride(t *testing.T) {
 	if len(got) != 1 || got[0] != "10.0.0.176:5353" {
 		t.Fatalf("directResolverServers() = %#v, want configured resolver", got)
 	}
+	configured := ConfiguredResolverServers()
+	if len(configured) != 1 || configured[0] != "10.0.0.176:5353" {
+		t.Fatalf("ConfiguredResolverServers() = %#v, want configured resolver", configured)
+	}
 }
 
 func TestHTTPIPPoolTransportPreservesHostHeader(t *testing.T) {

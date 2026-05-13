@@ -95,6 +95,7 @@ func runServe() {
 	log.Printf("config: legacy_status_projection=%s", enabledLabel(cfg.LegacyStatusProjectionEnable))
 	log.Printf("config: bucket_ownership=%s", bucketOwnershipLabel(cfg))
 	log.Printf("config: scheduler=%s", schedulerConfigLabel(cfg))
+	log.Printf("config: check_dns_resolvers=%s", checkDNSResolversLabel(checker.ConfiguredResolverServers()))
 	log.Printf("config: wpcom_notify=%s", enabledLabel(cfg.WPCOMNotifyEnable))
 	log.Printf("config: email_transport=%s", emailTransportLabel(cfg))
 	if !emailTransportDelivers(cfg) {
@@ -400,6 +401,13 @@ func enabledLabel(b bool) string {
 		return "enabled"
 	}
 	return "disabled"
+}
+
+func checkDNSResolversLabel(servers []string) string {
+	if len(servers) == 0 {
+		return "system"
+	}
+	return "configured [" + strings.Join(servers, ",") + "]"
 }
 
 func bucketOwnershipLabel(cfg *config.Config) string {

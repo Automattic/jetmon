@@ -1,12 +1,14 @@
 package orchestrator
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"github.com/Automattic/jetmon/internal/checker"
 	"github.com/Automattic/jetmon/internal/config"
 	"github.com/Automattic/jetmon/internal/db"
+	"github.com/Automattic/jetmon/internal/wpcom"
 )
 
 func TestStreamingPhaseStaysInsideInterval(t *testing.T) {
@@ -208,6 +210,82 @@ func TestStreamingAllowImmediateRetryUnderPressure(t *testing.T) {
 	target.site.SiteStatus = statusDown
 	if !streamingAllowImmediateRetry(target, localTimeout, nil, true) {
 		t.Fatal("non-running site under pressure should keep immediate retry")
+	}
+}
+
+func TestStreamingAllowImmediateRetrySkipsSuppressedPostRecoveryFailure(t *testing.T) {
+	retries := newRetryQueue()
+	recoveredAt := time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)
+	retries.markRecovered(42, recoveredAt)
+	target := &streamingTarget{site: db.Site{BlogID: 42, CheckInterval: 3, SiteStatus: statusRunning}}
+	res := checkerResultTransportFailure(42, recoveredAt.Add(2*time.Minute))
+
+	if streamingAllowImmediateRetry(target, res, retries, false) {
+		t.Fatal("suppressed post-recovery transport failure should return to normal cadence")
+	}
+
+	retries.record(checker.Result{BlogID: 42, URL: "http://example.com", Timestamp: recoveredAt})
+	if !streamingAllowImmediateRetry(target, res, retries, false) {
+		t.Fatal("existing retry state should keep immediate retry")
+	}
+}
+
+func TestStreamingAllowImmediateRetrySkipsSuppressedPostFalseAlarmFailure(t *testing.T) {
+	retries := newRetryQueue()
+	falseAlarmAt := time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)
+	retries.markFalseAlarm(42, falseAlarmAt)
+	target := &streamingTarget{site: db.Site{BlogID: 42, CheckInterval: 3, SiteStatus: statusRunning}}
+	res := checkerResultTransportFailure(42, falseAlarmAt.Add(postRecoveryTransientFailureWindow(target.site)+time.Second))
+
+	if streamingAllowImmediateRetry(target, res, retries, false) {
+		t.Fatal("suppressed post-false-alarm transport failure should return to normal cadence")
+	}
+}
+
+func TestRescheduleStreamingAfterSideEffectCancelsQueuedRetry(t *testing.T) {
+	checkedAt := time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)
+	planner := &streamingPlanner{
+		targets: make(map[int64]*streamingTarget),
+	}
+	target := &streamingTarget{
+		site:   db.Site{BlogID: 42, CheckInterval: 3, SiteStatus: statusRunning},
+		dueAt:  checkedAt.Add(failedCheckRetryInterval),
+		active: true,
+		queued: true,
+	}
+	planner.targets[42] = target
+
+	rescheduleStreamingAfterSideEffect(planner, target, streamingSideEffectReport{
+		blogID:        42,
+		status:        statusRunning,
+		resultFailure: true,
+		checkedAt:     checkedAt,
+	})
+
+	if target.queued {
+		t.Fatal("queued immediate retry should be canceled after side effects keep the site running")
+	}
+	if target.dueAt.Equal(checkedAt.Add(failedCheckRetryInterval)) {
+		t.Fatalf("dueAt = %s, want normal phase instead of immediate retry point", target.dueAt)
+	}
+}
+
+func TestDispatchStreamingPendingSkipsCanceledQueuedEntry(t *testing.T) {
+	o := &Orchestrator{}
+	stats := &streamingStats{}
+	target := &streamingTarget{
+		site:   db.Site{BlogID: 42, CheckInterval: 3, SiteStatus: statusRunning},
+		active: true,
+		queued: false,
+	}
+
+	remaining := o.dispatchStreamingPending(&config.Config{}, []*streamingTarget{target}, 1, stats)
+
+	if len(remaining) != 0 {
+		t.Fatalf("remaining pending = %d, want canceled entry drained", len(remaining))
+	}
+	if stats.dispatched != 0 {
+		t.Fatalf("dispatched = %d, want canceled entry skipped", stats.dispatched)
 	}
 }
 
@@ -716,6 +794,34 @@ func TestStreamingSideEffectsNeededSuppressesNewLocalFailuresUnderPressure(t *te
 	retries.record(checker.Result{BlogID: 42, URL: "http://example.com", Timestamp: time.Now()})
 	if !streamingSideEffectsNeeded(target, timeout, nil, nil, retries, true) {
 		t.Fatal("existing retry state should continue through side effects under pressure")
+	}
+}
+
+func TestProcessStreamingSideEffectsKeepsSuppressedPostRecoveryFailureRunning(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	cfg := setTestConfig(t)
+	cfg.NumOfChecks = 1
+
+	recoveredAt := time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local",
+		ctx:      context.Background(),
+	}
+	o.retries.markRecovered(42, recoveredAt)
+
+	_, updated := o.processStreamingSideEffects(
+		db.Site{BlogID: 42, MonitorURL: "https://example.com", CheckInterval: 3, SiteStatus: statusRunning},
+		checkerResultTransportFailure(42, recoveredAt.Add(2*time.Minute)),
+	)
+
+	if updated.SiteStatus != statusRunning {
+		t.Fatalf("SiteStatus = %d, want running for suppressed post-recovery transient failure", updated.SiteStatus)
+	}
+	if entry := o.retries.get(42); entry != nil {
+		t.Fatalf("suppressed post-recovery transient failure created retry state: %+v", entry)
 	}
 }
 

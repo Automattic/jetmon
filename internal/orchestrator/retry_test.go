@@ -56,14 +56,51 @@ func TestRetryQueueClear(t *testing.T) {
 	q := newRetryQueue()
 	q.record(checker.Result{BlogID: 1, Timestamp: time.Now()})
 	q.record(checker.Result{BlogID: 2, Timestamp: time.Now()})
+	recoveredAt := time.Now().UTC()
+	q.markRecovered(1, recoveredAt)
 
 	q.clear(1)
 
 	if q.get(1) != nil {
 		t.Fatalf("get() after clear returned entry, want nil")
 	}
+	if !q.recentlyRecovered(1, recoveredAt.Add(time.Minute), 2*time.Minute) {
+		t.Fatalf("recent recovery marker should survive retry clear")
+	}
 	if q.get(2) == nil {
 		t.Fatalf("get() for uncleared entry returned nil")
+	}
+}
+
+func TestRetryQueueRecentlyRecoveredExpires(t *testing.T) {
+	q := newRetryQueue()
+	recoveredAt := time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)
+	q.markRecovered(42, recoveredAt)
+
+	if !q.recentlyRecovered(42, recoveredAt.Add(30*time.Second), time.Minute) {
+		t.Fatal("recentlyRecovered returned false inside window")
+	}
+	if q.recentlyRecovered(42, recoveredAt.Add(2*time.Minute), time.Minute) {
+		t.Fatal("recentlyRecovered returned true after window")
+	}
+	if q.recentlyRecovered(42, recoveredAt.Add(30*time.Second), time.Minute) {
+		t.Fatal("expired marker should be removed")
+	}
+}
+
+func TestRetryQueueRecentlyFalseAlarmedExpiresSeparately(t *testing.T) {
+	q := newRetryQueue()
+	falseAlarmAt := time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)
+	q.markFalseAlarm(42, falseAlarmAt)
+
+	if !q.recentlyFalseAlarmed(42, falseAlarmAt.Add(4*time.Minute), 5*time.Minute) {
+		t.Fatal("recentlyFalseAlarmed returned false inside window")
+	}
+	if q.recentlyRecovered(42, falseAlarmAt.Add(4*time.Minute), 5*time.Minute) {
+		t.Fatal("false-alarm marker should not count as a normal recovery marker")
+	}
+	if q.recentlyFalseAlarmed(42, falseAlarmAt.Add(6*time.Minute), 5*time.Minute) {
+		t.Fatal("recentlyFalseAlarmed returned true after window")
 	}
 }
 

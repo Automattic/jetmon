@@ -58,6 +58,9 @@ const schedulerBroadReportInterval = time.Minute
 const eventMutationMaxAttempts = 3
 const eventMutationRetryBaseDelay = 25 * time.Millisecond
 const failedCheckRetryInterval = time.Minute
+const maxPostRecoveryTransientFailureWindow = 5 * time.Minute
+const minPostFalseAlarmTransientFailureWindow = 5 * time.Minute
+const maxPostFalseAlarmTransientFailureWindow = 10 * time.Minute
 
 // VariableIntervalPollInterval returns the idle scheduler poll interval used
 // when per-site check intervals are enabled. The SQL due predicate prevents
@@ -1135,6 +1138,12 @@ func checkResultMetadata(site db.Site, res checker.Result, firstFailAt time.Time
 	}
 	if res.DNSFailureKind != "" {
 		metadata["dns_error_kind"] = res.DNSFailureKind
+		if servers := checker.ConfiguredResolverServers(); len(servers) > 0 {
+			metadata["dns_resolver_source"] = "configured"
+			metadata["check_dns_resolvers"] = servers
+		} else {
+			metadata["dns_resolver_source"] = "system"
+		}
 	}
 	if res.DNSFailureName != "" {
 		metadata["dns_error_name"] = res.DNSFailureName
@@ -1279,7 +1288,7 @@ func (o *Orchestrator) handleRecovery(site db.Site, res checker.Result) {
 	}
 	o.retries.clear(site.BlogID)
 
-	if site.SiteStatus != statusRunning {
+	if site.SiteStatus != statusRunning || knownEventID > 0 {
 		changeTime := nowFunc().UTC()
 		log.Printf("orchestrator: blog_id=%d recovered", site.BlogID)
 		if entry != nil && site.SiteStatus == statusDown {
@@ -1313,24 +1322,52 @@ func (o *Orchestrator) handleRecovery(site db.Site, res checker.Result) {
 				Detail:    "recovery cooldown active",
 			})
 		}
+		o.retries.markRecovered(site.BlogID, changeTime)
 	}
 }
 
-func (o *Orchestrator) handleFailure(site db.Site, res checker.Result) {
+func (o *Orchestrator) handleFailure(site db.Site, res checker.Result) bool {
 	if inMaintenance(site) {
 		o.swallowMaintenanceFailure(site, res)
-		return
+		return false
+	}
+
+	if suppressed, reason, window := o.postRecoveryTransientSuppression(site, res); suppressed {
+		class := failureClass(res)
+		emitCounter("detection.post_recovery_transient_suppressed.count", 1)
+		emitCounter("detection.post_recovery_transient_suppressed."+class+".count", 1)
+		metaMap := checkResultMetadata(site, res, resultCheckedAt(res))
+		if reason == "false_alarm" {
+			metaMap["suppressed_after_recent_false_alarm"] = true
+		} else {
+			metaMap["suppressed_after_recent_recovery"] = true
+		}
+		metaMap["suppressed_after"] = reason
+		metaMap["post_recovery_window_seconds"] = int(window / time.Second)
+		meta, _ := json.Marshal(metaMap)
+		o.auditLog(audit.Entry{
+			BlogID:    site.BlogID,
+			EventType: audit.EventAlertSuppressed,
+			Source:    o.hostname,
+			Detail:    "post-recovery transient failure suppressed",
+			Metadata:  meta,
+		})
+		return false
 	}
 
 	entry := o.retries.record(res)
 	class := failureClass(res)
 	emitCounter("detection.failure."+class+".count", 1)
+	lowConfidenceDNS := lowConfidenceDNSFailure(res)
 
 	// Open a Seems Down event on the first failure we don't already have an
 	// id for. The schema's idempotent dedup_key means re-detecting the same
 	// failure would update the same row, so this is also a self-healing retry
 	// path if a previous Open failed to commit.
-	if entry.eventID == 0 {
+	if entry.eventID == 0 && lowConfidenceDNS {
+		emitCounter("detection.low_confidence_dns.awaiting_verifier.count", 1)
+		emitCounter("detection.low_confidence_dns.awaiting_verifier."+metricSegment(res.DNSFailureKind)+".count", 1)
+	} else if entry.eventID == 0 {
 		id, opened, err := o.openSeemsDown(site, res, entry.firstFailAt)
 		if err != nil {
 			log.Printf("orchestrator: open seems-down event blog_id=%d: %v", site.BlogID, err)
@@ -1349,6 +1386,10 @@ func (o *Orchestrator) handleFailure(site db.Site, res checker.Result) {
 		metaMap["attempt"] = entry.failCount
 		metaMap["of"] = config.Get().NumOfChecks
 		metaMap["event_id"] = entry.eventID
+		if lowConfidenceDNS {
+			metaMap["low_confidence_dns_failure"] = true
+			metaMap["customer_visible_event_deferred_until_verifier_confirmation"] = true
+		}
 		meta, _ := json.Marshal(metaMap)
 		o.auditLog(audit.Entry{
 			BlogID:    site.BlogID,
@@ -1358,11 +1399,83 @@ func (o *Orchestrator) handleFailure(site db.Site, res checker.Result) {
 			Detail:    fmt.Sprintf("retry %d of %d", entry.failCount, config.Get().NumOfChecks),
 			Metadata:  meta,
 		})
-		return
+		return entry.eventID > 0
 	}
 
 	// Escalate to verifliers.
 	o.escalateToVerifliers(site, entry)
+	if lowConfidenceDNS {
+		return entry.eventID > 0
+	}
+	return true
+}
+
+func (o *Orchestrator) shouldSuppressPostRecoveryTransientFailure(site db.Site, res checker.Result) bool {
+	suppressed, _, _ := o.postRecoveryTransientSuppression(site, res)
+	return suppressed
+}
+
+func (o *Orchestrator) postRecoveryTransientSuppression(site db.Site, res checker.Result) (bool, string, time.Duration) {
+	if o == nil || o.retries == nil || !postRecoveryTransientFailure(res) {
+		return false, "", 0
+	}
+	if o.retries.get(site.BlogID) != nil {
+		return false, "", 0
+	}
+	return postRecoveryTransientSuppression(site, res, o.retries)
+}
+
+func postRecoveryTransientSuppression(site db.Site, res checker.Result, retries *retryQueue) (bool, string, time.Duration) {
+	if retries == nil || !postRecoveryTransientFailure(res) {
+		return false, "", 0
+	}
+	if retries.get(site.BlogID) != nil {
+		return false, "", 0
+	}
+	checkedAt := resultCheckedAt(res)
+	falseAlarmWindow := postFalseAlarmTransientFailureWindow(site)
+	if retries.recentlyFalseAlarmed(site.BlogID, checkedAt, falseAlarmWindow) {
+		retries.markFalseAlarm(site.BlogID, checkedAt)
+		return true, "false_alarm", falseAlarmWindow
+	}
+	recoveryWindow := postRecoveryTransientFailureWindow(site)
+	if retries.recentlyRecovered(site.BlogID, checkedAt, recoveryWindow) {
+		return true, "recovery", recoveryWindow
+	}
+	return false, "", 0
+}
+
+func postRecoveryTransientFailure(res checker.Result) bool {
+	if !res.IsFailure() || res.HTTPCode > 0 {
+		return false
+	}
+	return res.ErrorCode == checker.ErrorConnect || res.ErrorCode == checker.ErrorTimeout
+}
+
+func lowConfidenceDNSFailure(res checker.Result) bool {
+	return postRecoveryTransientFailure(res) && res.DNSFailureKind != ""
+}
+
+func postRecoveryTransientFailureWindow(site db.Site) time.Duration {
+	window := siteCheckInterval(site)
+	if window < failedCheckRetryInterval {
+		return failedCheckRetryInterval
+	}
+	if window > maxPostRecoveryTransientFailureWindow {
+		return maxPostRecoveryTransientFailureWindow
+	}
+	return window
+}
+
+func postFalseAlarmTransientFailureWindow(site db.Site) time.Duration {
+	window := siteCheckInterval(site) * 2
+	if window < minPostFalseAlarmTransientFailureWindow {
+		return minPostFalseAlarmTransientFailureWindow
+	}
+	if window > maxPostFalseAlarmTransientFailureWindow {
+		return maxPostFalseAlarmTransientFailureWindow
+	}
+	return window
 }
 
 func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
@@ -1495,9 +1608,10 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 		// Verifliers did not confirm — false positive. Close the Seems Down
 		// event with reason=false_alarm and reset site_status in the same tx.
 		log.Printf("orchestrator: blog_id=%d verifliers did not confirm down (%d/%d)", site.BlogID, confirmations, quorum)
+		falseAlarmAt := nowFunc().UTC()
 		emitCounter("detection.verifier.false_alarm.count", 1)
 		emitCounter("detection.verifier.false_alarm."+failureClass(entry.lastResult)+".count", 1)
-		emitTimingSince("detection.seems_down_to_false_alarm.time", entry.firstFailAt, nowFunc().UTC())
+		emitTimingSince("detection.seems_down_to_false_alarm.time", entry.firstFailAt, falseAlarmAt)
 		_ = dbRecordFalsePositive(site.BlogID, entry.lastResult.HTTPCode, entry.lastResult.ErrorCode,
 			entry.lastResult.RTT.Milliseconds())
 
@@ -1509,12 +1623,13 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 				"verifier_confirmed": confirmations,
 			})
 			if err := o.closeEvent(site.BlogID, entry.eventID,
-				eventstore.ReasonFalseAlarm, statusRunning, nowFunc().UTC(), meta); err != nil {
+				eventstore.ReasonFalseAlarm, statusRunning, falseAlarmAt, meta); err != nil {
 				log.Printf("orchestrator: close false-alarm event blog_id=%d event_id=%d: %v",
 					site.BlogID, entry.eventID, err)
 			}
 		}
 		o.retries.clear(site.BlogID)
+		o.retries.markFalseAlarm(site.BlogID, falseAlarmAt)
 	}
 }
 
@@ -1523,6 +1638,10 @@ func (o *Orchestrator) confirmDown(site db.Site, entry *retryEntry, vResults []v
 		if entry != nil {
 			o.swallowMaintenanceFailure(site, entry.lastResult)
 		}
+		return
+	}
+	if entry == nil {
+		log.Printf("orchestrator: confirmed down blog_id=%d without retry entry", site.BlogID)
 		return
 	}
 
@@ -1534,20 +1653,29 @@ func (o *Orchestrator) confirmDown(site db.Site, entry *retryEntry, vResults []v
 
 	log.Printf("orchestrator: blog_id=%d confirmed down", site.BlogID)
 
+	meta := confirmedDownMetadata(site, entry, vResults, entry.eventID == 0)
+
 	// Promote the open Seems Down event to Down with reason=verifier_confirmed
-	// and project site_status=SITE_CONFIRMED_DOWN in the same tx. If we have no
-	// event id (open failed earlier or eventstore unavailable), fall back to
-	// the bare projection write.
+	// and project site_status=SITE_CONFIRMED_DOWN in the same tx. Low-confidence
+	// local DNS failures intentionally skip the Seems Down event, so verifier
+	// confirmation opens the customer-visible incident directly as Down.
 	if entry.eventID > 0 {
-		meta, _ := json.Marshal(map[string]any{
-			"verifier_results":   summarizeVerifierResults(vResults),
-			"verifier_confirmed": len(vResults),
-		})
 		if err := o.promoteToDown(site.BlogID, entry.eventID, changeTime, meta); err != nil {
 			log.Printf("orchestrator: promote event blog_id=%d event_id=%d: %v", site.BlogID, entry.eventID, err)
 		}
-	} else if config.LegacyStatusProjectionEnabled() {
-		_ = dbUpdateSiteStatus(o.ctx, site.BlogID, newStatus, changeTime)
+	} else {
+		eventID, opened, err := o.openConfirmedDown(site, changeTime, meta)
+		if err != nil {
+			log.Printf("orchestrator: open confirmed-down event blog_id=%d: %v", site.BlogID, err)
+			if config.LegacyStatusProjectionEnabled() {
+				_ = dbUpdateSiteStatus(o.ctx, site.BlogID, newStatus, changeTime)
+			}
+		} else {
+			entry.eventID = eventID
+			if opened {
+				emitCounter("detection.down.open_after_verifier.count", 1)
+			}
+		}
 	}
 
 	if inMaintenance(site) {
@@ -1569,6 +1697,31 @@ func (o *Orchestrator) confirmDown(site db.Site, entry *retryEntry, vResults []v
 	}
 
 	o.retries.clear(site.BlogID)
+}
+
+func confirmedDownMetadata(site db.Site, entry *retryEntry, vResults []veriflier.CheckResult, directOpen bool) json.RawMessage {
+	metaMap := checkResultMetadata(site, entry.lastResult, entry.firstFailAt)
+	metaMap["verifier_results"] = summarizeVerifierResults(vResults)
+	metaMap["verifier_confirmed"] = verifierConfirmationCount(vResults)
+	if directOpen {
+		metaMap["opened_after_verifier_confirmation"] = true
+	}
+	if lowConfidenceDNSFailure(entry.lastResult) {
+		metaMap["low_confidence_dns_failure"] = true
+		metaMap["customer_visible_event_deferred_until_verifier_confirmation"] = true
+	}
+	meta, _ := json.Marshal(metaMap)
+	return meta
+}
+
+func verifierConfirmationCount(vResults []veriflier.CheckResult) int {
+	count := 0
+	for _, res := range vResults {
+		if !res.Success {
+			count++
+		}
+	}
+	return count
 }
 
 func (o *Orchestrator) swallowMaintenanceFailure(site db.Site, res checker.Result) {
@@ -2107,6 +2260,63 @@ func (o *Orchestrator) openSeemsDownOnce(site db.Site, res checker.Result, first
 	// was already projected when the event first opened.
 	if out.Opened && config.LegacyStatusProjectionEnabled() && tx.Tx() != nil {
 		if err := db.UpdateSiteStatusTx(o.ctx, tx.Tx(), site.BlogID, statusDown, nowFunc().UTC()); err != nil {
+			return 0, false, fmt.Errorf("project site_status: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, false, fmt.Errorf("commit: %w", err)
+	}
+	return out.EventID, out.Opened, nil
+}
+
+// openConfirmedDown opens a Down event directly for failures that were kept
+// out of the customer-visible Seems Down state until verifier confirmation.
+func (o *Orchestrator) openConfirmedDown(site db.Site, changeTime time.Time, meta json.RawMessage) (int64, bool, error) {
+	var eventID int64
+	var opened bool
+	err := o.withEventMutationRetry(site.BlogID, "open_confirmed_down", func() error {
+		id, didOpen, err := o.openConfirmedDownOnce(site, changeTime, meta)
+		if err != nil {
+			return err
+		}
+		eventID = id
+		opened = didOpen
+		return nil
+	})
+	return eventID, opened, err
+}
+
+func (o *Orchestrator) openConfirmedDownOnce(site db.Site, changeTime time.Time, meta json.RawMessage) (int64, bool, error) {
+	tx, err := o.ev().Begin(o.ctx)
+	if err != nil {
+		return 0, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	out, err := tx.Open(o.ctx, eventstore.OpenInput{
+		Identity: eventstore.Identity{BlogID: site.BlogID, CheckType: checkTypeHTTP},
+		Severity: eventstore.SeverityDown,
+		State:    eventstore.StateDown,
+		Source:   o.hostname,
+		Metadata: meta,
+	})
+	if err != nil {
+		return 0, false, err
+	}
+
+	projectConfirmedDown := out.Opened
+	if !out.Opened && (out.CurrentSeverity != eventstore.SeverityDown || out.CurrentState != eventstore.StateDown) {
+		if _, err := tx.Promote(o.ctx, out.EventID,
+			eventstore.SeverityDown, eventstore.StateDown,
+			eventstore.ReasonVerifierConfirmed, o.hostname, meta); err != nil {
+			return 0, false, fmt.Errorf("promote existing event: %w", err)
+		}
+		projectConfirmedDown = true
+	}
+
+	if projectConfirmedDown && config.LegacyStatusProjectionEnabled() && tx.Tx() != nil {
+		if err := db.UpdateSiteStatusTx(o.ctx, tx.Tx(), site.BlogID, statusConfirmedDown, changeTime); err != nil {
 			return 0, false, fmt.Errorf("project site_status: %w", err)
 		}
 	}
