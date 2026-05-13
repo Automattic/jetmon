@@ -98,7 +98,7 @@ This is the end-to-end path from database query to WPCOM notification.
 │    dbHeartbeat()          ── UPDATE jetmon_hosts SET last_heartbeat  │
 │    ClaimBuckets()         ── rebalance bucket ranges (each round)    │
 │    dbGetSitesForBucket()  ── SELECT due sites in DATASET_SIZE pages  │
-│                              ORDER BY next_check_at / last_checked_at │
+│                              ORDER BY sidecar next/last checked time  │
 └──────────────────────────────────────────────────────────────────────┘
                   │  []db.Site
                   ▼
@@ -218,7 +218,7 @@ orchestrator.Run()
           │     ├─ collect results (deadline-bounded)
           │     │
           │     ├─ processResults()
-          │     │     ├─ dbMarkSitesChecked()       // last_checked_at + next_check_at
+          │     │     ├─ dbMarkSitesChecked()       // jetmon_site_runtime freshness
           │     │     ├─ dbRecordCheckHistories()   // method + RTT + DNS/TCP/TLS/TTFB
           │     │     ├─ dbUpdateSSLExpiries() + checkSSLAlerts()
           │     │     └─ handleRecovery(), handleFailure(),
@@ -390,15 +390,18 @@ Database Tables
 ----------------
 
 ```
-  jetpack_monitor_sites   Legacy site/config table plus compatibility projection
+  jetpack_monitor_sites   V1-shaped legacy site table plus compatibility projection
     blog_id               WordPress site identifier
     bucket_no             Determines which monitor instance owns this site
     monitor_url           URL to check
+    monitor_active        Whether the site is active
+    check_interval        V1-owned per-site cadence
     site_status           Legacy v1 projection; derived from v2 events
     last_status_change    Legacy v1 projection; derived from v2 transitions
-    last_checked_at       Last completed local check timestamp
-    next_check_at         Materialized variable-interval due time
-    ssl_expiry_date       Updated after each TLS handshake
+
+  jetmon_site_check_config V2-only per-site probe config
+    request_method        HEAD / GET rollout policy override
+    detection_profile     legacy / simple_http / full detection profile
     check_keyword         Optional body text to require
     forbidden_keyword     Optional body text that must not appear
     forbidden_keywords    JSON array of body text that must not appear
@@ -407,6 +410,11 @@ Database Tables
     timeout_seconds       Per-site timeout override
     redirect_policy       follow / alert / fail
     alert_cooldown_minutes Per-site override for notification cooldown
+
+  jetmon_site_runtime     V2-only runtime/freshness projection
+    last_checked_at       Last completed local check timestamp
+    next_check_at         Materialized variable-interval due time
+    ssl_expiry_date       Updated after HTTPS checks
     last_alert_sent_at    Tracks cooldown window
 
   jetmon_hosts            Active monitor instances and bucket leases

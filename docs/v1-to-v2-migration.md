@@ -81,6 +81,8 @@ Do not violate these during the migration:
   rollback window is closed.
 - Treat `./jetmon2 migrate` as forward-only. Migrations are additive, so revert
   by restarting v1, not by rolling the schema back.
+- V2 migrations intentionally add v2-owned tables and avoid requiring new
+  columns or indexes on the live `jetpack_monitor_sites` compatibility table.
 
 ## Phase 0: Prepare Before Production Changes
 
@@ -235,7 +237,7 @@ the range was returned to v1. Keep the transcript with the rollout record.
 
 4. Confirm v1 continues to run normally after migrations are applied.
 5. Do not plan a schema rollback. If v2 must be reverted, v1 can keep running
-   with the additive v2 tables and columns present.
+   with the additive v2 tables present.
 
 ### Build And Stage Artifacts
 
@@ -450,9 +452,9 @@ are the fallback/reference path and match what the guided command walks through.
 
     `cutover-check` runs the pinned preflight, recent activity check,
     dashboard status check, and projection-drift report. Its activity section
-    proves the range has fresh `last_checked_at` writes, not which process
-    wrote them. Keep v1 stopped and use logs or the dashboard to confirm v2 is
-    checking only the pinned range.
+    proves the range has fresh `jetmon_site_runtime.last_checked_at` writes,
+    not which process wrote them. Keep v1 stopped and use logs or the dashboard
+    to confirm v2 is checking only the pinned range.
 11. After one full expected round, run:
 
     ```bash
@@ -577,7 +579,7 @@ For every replaced range, verify:
   ```
 
   After a full expected round, require every active site in the range to have a
-  fresh `last_checked_at`:
+  fresh `jetmon_site_runtime.last_checked_at`:
 
   ```bash
   ./jetmon2 rollout activity-check \
@@ -778,8 +780,8 @@ Only remove v1 after rollout signoff.
    addons, Qt Veriflier artifacts, and v1-only logrotate files.
 5. Remove v1-only deployment hooks from host automation.
 6. Keep shared log and stats paths only if v2 still writes to them.
-7. Keep v2 additive database schema. Do not remove compatibility columns while
-   legacy consumers still read them.
+7. Keep v2 additive database schema. Do not remove v2-owned tables while legacy
+   consumers still need rollback coverage.
 8. Keep `LEGACY_STATUS_PROJECTION_ENABLE=true` until legacy readers have moved
    to v2 state surfaces. Retiring that projection is a separate project.
 

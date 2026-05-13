@@ -130,9 +130,10 @@ until the site is upgraded.
 ## Check SSL Certificate Status
 
 ```sql
-SELECT blog_id, monitor_url, ssl_expiry_date
-FROM jetpack_monitor_sites
-WHERE blog_id = 12345;
+SELECT s.blog_id, s.monitor_url, r.ssl_expiry_date
+FROM jetpack_monitor_sites s
+LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id
+WHERE s.blog_id = 12345;
 ```
 
 `ssl_expiry_date` is updated on HTTPS checks. Alerts fire at the configured
@@ -170,10 +171,11 @@ what follow-up is needed before calling the site down.
 Use maintenance windows for planned work:
 
 ```sql
-UPDATE jetpack_monitor_sites
-SET maintenance_start = '2026-04-20 02:00:00',
-    maintenance_end   = '2026-04-20 04:00:00'
-WHERE blog_id = 12345;
+INSERT INTO jetmon_site_check_config (blog_id, maintenance_start, maintenance_end)
+VALUES (12345, '2026-04-20 02:00:00', '2026-04-20 04:00:00')
+ON DUPLICATE KEY UPDATE
+    maintenance_start = VALUES(maintenance_start),
+    maintenance_end = VALUES(maintenance_end);
 ```
 
 Checks continue and results are recorded during the window, but failing checks
@@ -186,10 +188,11 @@ silently suppress alerts indefinitely.
 Clear a window after maintenance:
 
 ```sql
-UPDATE jetpack_monitor_sites
-SET maintenance_start = NULL,
-    maintenance_end = NULL
-WHERE blog_id = 12345;
+INSERT INTO jetmon_site_check_config (blog_id, maintenance_start, maintenance_end)
+VALUES (12345, NULL, NULL)
+ON DUPLICATE KEY UPDATE
+    maintenance_start = NULL,
+    maintenance_end = NULL;
 ```
 
 ## Alert Sensitivity
@@ -197,9 +200,9 @@ WHERE blog_id = 12345;
 Use per-site cooldowns to reduce repeated alerts from a flapping site:
 
 ```sql
-UPDATE jetpack_monitor_sites
-SET alert_cooldown_minutes = 60
-WHERE blog_id = 12345;
+INSERT INTO jetmon_site_check_config (blog_id, alert_cooldown_minutes)
+VALUES (12345, 60)
+ON DUPLICATE KEY UPDATE alert_cooldown_minutes = VALUES(alert_cooldown_minutes);
 ```
 
 Global promotion behavior is controlled by `NUM_OF_CHECKS`: that many

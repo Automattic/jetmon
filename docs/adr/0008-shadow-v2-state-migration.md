@@ -59,10 +59,11 @@ configs, but `LEGACY_STATUS_PROJECTION_ENABLE` is the real switch.
   are authoritative; the legacy status fields are only a projection.
 - Projection drift must be treated as a bug while
   `LEGACY_STATUS_PROJECTION_ENABLE` is true.
-- `jetpack_monitor_sites` still carries site configuration and some v2
-  additive bookkeeping columns (`last_checked_at`, `ssl_expiry_date`,
-  cooldown fields). Disabling legacy status projection does not remove the
-  table from the system.
+- `jetpack_monitor_sites` still carries v1-owned site identity, bucket,
+  cadence, activity, and projection fields. V2-only rollout policy, advanced
+  check options, and runtime freshness/SSL bookkeeping live in v2-owned side
+  tables, so disabling legacy status projection does not remove the legacy table
+  from the system.
 
 ## Alternatives considered
 

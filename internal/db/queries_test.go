@@ -277,14 +277,14 @@ func TestSimpleMutationQueries(t *testing.T) {
 	mock.ExpectExec("UPDATE jetpack_monitor_sites SET site_status").
 		WithArgs(2, now, int64(42)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("UPDATE jetpack_monitor_sites SET last_checked_at").
-		WithArgs(now, next, int64(42)).
+	mock.ExpectExec("INSERT INTO jetmon_site_runtime").
+		WithArgs(int64(42), now, next).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("UPDATE jetpack_monitor_sites SET last_alert_sent_at").
-		WithArgs(now, int64(42)).
+	mock.ExpectExec("INSERT INTO jetmon_site_runtime").
+		WithArgs(int64(42), now).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("UPDATE jetpack_monitor_sites SET ssl_expiry_date").
-		WithArgs(now, int64(42)).
+	mock.ExpectExec("INSERT INTO jetmon_site_runtime").
+		WithArgs(int64(42), now).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("UPDATE jetmon_hosts SET last_heartbeat").
 		WithArgs("host-a").
@@ -342,8 +342,8 @@ func TestMarkSitesCheckedBatchesUpdates(t *testing.T) {
 	second := first.Add(time.Minute)
 	firstNext := first.Add(5 * time.Minute)
 	secondNext := second.Add(5 * time.Minute)
-	mock.ExpectExec("UPDATE jetpack_monitor_sites SET last_checked_at = CASE blog_id").
-		WithArgs(int64(7), first, int64(42), second, int64(7), firstNext, int64(42), secondNext, int64(7), int64(42)).
+	mock.ExpectExec("INSERT INTO jetmon_site_runtime").
+		WithArgs(int64(7), first, firstNext, int64(42), second, secondNext).
 		WillReturnResult(sqlmock.NewResult(0, 2))
 
 	err := MarkSitesChecked(context.Background(), []SiteCheck{
@@ -364,11 +364,11 @@ func TestMarkSitesCheckedRetriesDeadlock(t *testing.T) {
 
 	checkedAt := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
 	nextAt := checkedAt.Add(5 * time.Minute)
-	args := []driver.Value{int64(42), checkedAt, int64(42), nextAt, int64(42)}
-	mock.ExpectExec("UPDATE jetpack_monitor_sites SET last_checked_at = CASE blog_id").
+	args := []driver.Value{int64(42), checkedAt, nextAt}
+	mock.ExpectExec("INSERT INTO jetmon_site_runtime").
 		WithArgs(args...).
 		WillReturnError(&mysql.MySQLError{Number: 1213, Message: "Deadlock found when trying to get lock"})
-	mock.ExpectExec("UPDATE jetpack_monitor_sites SET last_checked_at = CASE blog_id").
+	mock.ExpectExec("INSERT INTO jetmon_site_runtime").
 		WithArgs(args...).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -411,8 +411,8 @@ func TestUpdateSSLExpiriesBatchesUpdates(t *testing.T) {
 
 	first := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	second := first.AddDate(0, 1, 0)
-	mock.ExpectExec("UPDATE jetpack_monitor_sites SET ssl_expiry_date = CASE blog_id").
-		WithArgs(int64(7), first, int64(42), second, int64(7), int64(42)).
+	mock.ExpectExec("INSERT INTO jetmon_site_runtime").
+		WithArgs(int64(7), first, int64(42), second).
 		WillReturnResult(sqlmock.NewResult(0, 2))
 
 	err := UpdateSSLExpiries(context.Background(), []SiteSSLExpiry{

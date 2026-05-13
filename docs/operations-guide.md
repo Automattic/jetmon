@@ -44,7 +44,7 @@ Key settings:
 | `DEBUG_PORT` | 6060 | localhost-only pprof port, 0 disables it |
 | `EMAIL_TRANSPORT` | `stub` | `stub`, `smtp`, or `wpcom` |
 | `SCHEDULER_ENGINE` | `legacy` | `legacy` round/page scheduler or `streaming` v2-native scheduler |
-| `STREAMING_LEGACY_PROJECTION_INTERVAL_MIN` | 15 | Coarse `last_checked_at` rollback projection interval for streaming mode |
+| `STREAMING_LEGACY_PROJECTION_INTERVAL_MIN` | 15 | Coarse sidecar freshness rollback projection interval for streaming mode |
 | `STREAMING_TARGET_RELOAD_SEC` | 300 | Active site config reload cadence for streaming mode |
 
 Scheduler behavior:
@@ -60,9 +60,10 @@ Scheduler behavior:
 - A full worker queue applies backpressure; checks remain pending instead of
   being dropped.
 - With `USE_VARIABLE_CHECK_INTERVALS=true`, Jetmon polls for newly due work on a
-  short idle interval and uses each site's maintained `next_check_at` timestamp
-  to decide what to check. `next_check_at` is recalculated after every check:
-  successful checks use `last_checked_at + check_interval`, while failed checks
+  short idle interval and uses each site's maintained
+  `jetmon_site_runtime.next_check_at` timestamp to decide what to check.
+  `next_check_at` is recalculated after every check: successful checks use
+  `jetmon_site_runtime.last_checked_at + check_interval`, while failed checks
   are scheduled for a bounded one-minute follow-up when the normal interval is
   longer. `MIN_TIME_BETWEEN_ROUNDS_SEC` is only the fixed-cadence pass interval
   when variable intervals are disabled. Use this mode for production-like
@@ -81,7 +82,7 @@ Scheduler behavior:
   history/freshness writes, and the checker pool target is derived from active
   site rate plus observed latency. Streaming mode keeps event, retry, verifier,
   SSL/TLS, recovery, and WPCOM behavior on the existing v2 incident path. It
-  batches legacy `last_checked_at`/`next_check_at` projection at
+  batches sidecar `last_checked_at`/`next_check_at` projection at
   `STREAMING_LEGACY_PROJECTION_INTERVAL_MIN` so rollback to the legacy scheduler
   has bounded freshness loss rather than exact per-check freshness. The
   projection interval is constrained to the accepted 5-15 minute rollback window
@@ -455,7 +456,7 @@ Important metric groups include:
 - Scheduler page count, selected/dispatched/completed rows, outstanding checks,
   backpressure waits, stale/duplicate results, and sampled due backlog
 - Scheduler phase timings for dispatch, wait, result processing,
-  `last_checked_at`/`next_check_at` writes, check-history inserts, SSL expiry
+  sidecar freshness writes, check-history inserts, SSL expiry
   writes, and event handling
 - Scheduler write row/error counters for freshness, check history, and SSL
   expiry updates

@@ -9,10 +9,10 @@ internal-only capacity validation through 2 million active sites.
 
 The legacy-compatible v2 scheduler still behaves like a round/page system: query
 due rows, dispatch a page, collect results, then write freshness and history for
-every completed probe. Batched writes and indexed `next_check_at` made that
-model viable for the current test sizes, but the shape does not scale cleanly to
-the next target: hundreds of thousands to one million sites on five-minute
-intervals.
+every completed probe. Batched writes and indexed
+`jetmon_site_runtime.next_check_at` made that model viable for the current test
+sizes, but the shape does not scale cleanly to the next target: hundreds of
+thousands to one million sites on five-minute intervals.
 
 At one million sites on five-minute intervals, the monitor must sustain roughly
 3,333 checks per second all day, every day. A design that writes healthy
@@ -25,14 +25,16 @@ Add a v2-native streaming scheduler behind `SCHEDULER_ENGINE=streaming`.
 
 The streaming engine:
 
-- loads active site config from `jetpack_monitor_sites`, which remains the
-  migration-time source of truth for site configuration and legacy status;
+- loads active site identity, bucket, cadence, and projection state from
+  `jetpack_monitor_sites`, with v2-only check config from
+  `jetmon_site_check_config`;
 - assigns each site a stable phase inside its configured check interval so work
   is naturally spread over time instead of lumped into round boundaries;
 - keeps due scheduling in memory and reschedules each target as results return;
 - auto-sizes the checker pool from required check rate and observed latency,
   using `NUM_WORKERS` as a floor rather than a throughput ceiling;
-- avoids per-success writes to `last_checked_at` and `jetmon_check_history`;
+- avoids per-success writes to `jetmon_site_runtime.last_checked_at` and
+  `jetmon_check_history`;
 - writes failure history, event transitions, recoveries, SSL/TLS event changes,
   verifier state changes, audit entries, and WPCOM notifications through the
   existing v2 incident path;
@@ -41,21 +43,24 @@ The streaming engine:
   scheduler has bounded freshness loss.
 
 Add `jetmon_check_targets` as the durable home for v2-native scheduling state.
-The first prototype still reloads from `jetpack_monitor_sites` directly, but the
-new table is intentionally additive so later iterations can move derived
-scheduling state out of the legacy table without breaking rollback.
+The first prototype still reloads active targets from the legacy site table and
+v2 sidecar config tables, but the new table is intentionally additive so later
+iterations can move derived scheduling state out of the legacy path without
+breaking rollback.
 
 ## Compatibility
 
-`jetpack_monitor_sites` remains the source of truth during v1/v2 migration.
-Event state remains authoritative in `jetmon_events` and
-`jetmon_event_transitions`, with legacy `site_status` projection maintained by
-the same eventstore paths already used by the legacy-compatible v2 scheduler.
+`jetpack_monitor_sites` remains the source of truth for v1-owned site identity,
+bucket, cadence, and legacy projection during v1/v2 migration. Event state
+remains authoritative in `jetmon_events` and `jetmon_event_transitions`, with
+legacy `site_status` projection maintained by the same eventstore paths already
+used by the legacy-compatible v2 scheduler.
 
 The deliberate compatibility tradeoff is freshness precision:
-`last_checked_at` and `next_check_at` are no longer updated after every healthy
-probe in streaming mode. Operators accepted a 5-15 minute worst-case rollback
-freshness loss window; the default projection interval is 15 minutes.
+`jetmon_site_runtime.last_checked_at` and `next_check_at` are no longer updated
+after every healthy probe in streaming mode. Operators accepted a 5-15 minute
+worst-case rollback freshness loss window; the default projection interval is
+15 minutes.
 
 ## Capacity Validation
 

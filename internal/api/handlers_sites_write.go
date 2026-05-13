@@ -14,10 +14,11 @@ import (
 
 	"github.com/Automattic/jetmon/internal/checkmode"
 	"github.com/Automattic/jetmon/internal/config"
+	jetdb "github.com/Automattic/jetmon/internal/db"
 )
 
-// validRedirectPolicies bounds the redirect_policy field. Matches the ENUM
-// in jetpack_monitor_sites schema (migration 3).
+// validRedirectPolicies bounds the redirect_policy field. Matches the ENUM in
+// the Jetmon-owned site check config sidecar.
 var validRedirectPolicies = map[string]struct{}{
 	"follow": {},
 	"alert":  {},
@@ -139,28 +140,20 @@ func (s *Server) handleCreateSite(w http.ResponseWriter, r *http.Request) {
 
 	insertArgs := []any{
 		*body.BlogID, bucketNo, body.MonitorURL, boolToTinyint(monitorActive), checkInterval,
-		nullableStringPtr(body.CheckKeyword),
-		nullableStringPtr(body.ForbiddenKeyword),
-		forbiddenKeywordsJSON,
-		redirectPolicy,
-		nullableIntPtr(body.TimeoutSeconds),
-		customHeadersJSON,
-		nullableIntPtr(body.AlertCooldownMinutes),
+	}
+	configFields := siteCheckConfigFields{
+		{set: body.RequestMethod != nil, name: "request_method", value: requestMethod},
+		{set: body.DetectionProfile != nil, name: "detection_profile", value: detectionProfile},
+		{set: body.CheckKeyword != nil, name: "check_keyword", value: nullableStringPtr(body.CheckKeyword)},
+		{set: body.ForbiddenKeyword != nil, name: "forbidden_keyword", value: nullableStringPtr(body.ForbiddenKeyword)},
+		{set: body.ForbiddenKeywords != nil, name: "forbidden_keywords", value: forbiddenKeywordsJSON},
+		{set: body.RedirectPolicy != nil, name: "redirect_policy", value: redirectPolicy},
+		{set: body.TimeoutSeconds != nil, name: "timeout_seconds", value: nullableIntPtr(body.TimeoutSeconds)},
+		{set: body.CustomHeaders != nil, name: "custom_headers", value: customHeadersJSON},
+		{set: body.AlertCooldownMinutes != nil, name: "alert_cooldown_minutes", value: nullableIntPtr(body.AlertCooldownMinutes)},
 	}
 	tenantID, tenantScoped := ownerTenantIDFromRequest(r)
-	policyChanged := body.RequestMethod != nil || body.DetectionProfile != nil
-	if !tenantScoped && !policyChanged {
-		if _, err := s.db.ExecContext(ctx, `
-		INSERT INTO jetpack_monitor_sites
-			(blog_id, bucket_no, monitor_url, monitor_active, site_status, check_interval,
-			 check_keyword, forbidden_keyword, forbidden_keywords, redirect_policy, timeout_seconds, custom_headers,
-			 alert_cooldown_minutes)
-		VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)`, insertArgs...); err != nil {
-			writeError(w, r, http.StatusInternalServerError, "db_error",
-				"site insert failed: "+err.Error())
-			return
-		}
-	} else {
+	if tenantScoped || configFields.hasSet() {
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
 			writeError(w, r, http.StatusInternalServerError, "db_error",
@@ -170,20 +163,15 @@ func (s *Server) handleCreateSite(w http.ResponseWriter, r *http.Request) {
 		defer func() { _ = tx.Rollback() }()
 		if _, err := tx.ExecContext(ctx, `
 		INSERT INTO jetpack_monitor_sites
-			(blog_id, bucket_no, monitor_url, monitor_active, site_status, check_interval,
-			 check_keyword, forbidden_keyword, forbidden_keywords, redirect_policy, timeout_seconds, custom_headers,
-			 alert_cooldown_minutes)
-		VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)`, insertArgs...); err != nil {
+			(blog_id, bucket_no, monitor_url, monitor_active, site_status, check_interval)
+		VALUES (?, ?, ?, ?, 1, ?)`, insertArgs...); err != nil {
 			writeError(w, r, http.StatusInternalServerError, "db_error",
 				"site insert failed: "+err.Error())
 			return
 		}
-		if err := s.upsertSiteCheckPolicy(ctx, tx, *body.BlogID,
-			body.RequestMethod != nil, requestMethod,
-			body.DetectionProfile != nil, detectionProfile,
-		); err != nil {
+		if err := s.upsertSiteCheckConfig(ctx, tx, *body.BlogID, configFields); err != nil {
 			writeError(w, r, http.StatusInternalServerError, "db_error",
-				"site check policy insert failed: "+err.Error())
+				"site check config insert failed: "+err.Error())
 			return
 		}
 		if tenantScoped {
@@ -196,6 +184,15 @@ func (s *Server) handleCreateSite(w http.ResponseWriter, r *http.Request) {
 		if err := tx.Commit(); err != nil {
 			writeError(w, r, http.StatusInternalServerError, "db_error",
 				"site transaction commit failed: "+err.Error())
+			return
+		}
+	} else {
+		if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO jetpack_monitor_sites
+			(blog_id, bucket_no, monitor_url, monitor_active, site_status, check_interval)
+		VALUES (?, ?, ?, ?, 1, ?)`, insertArgs...); err != nil {
+			writeError(w, r, http.StatusInternalServerError, "db_error",
+				"site insert failed: "+err.Error())
 			return
 		}
 	}
@@ -290,8 +287,12 @@ func (s *Server) handleUpdateSite(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusUnprocessableEntity, "invalid_field", err.Error())
 		return
 	}
-	policyChanged := body.RequestMethod != nil || body.DetectionProfile != nil
-	if len(setClauses) == 0 && !policyChanged {
+	configFields, err := buildSiteCheckConfigFields(body, requestMethod, detectionProfile)
+	if err != nil {
+		writeError(w, r, http.StatusUnprocessableEntity, "invalid_field", err.Error())
+		return
+	}
+	if len(setClauses) == 0 && !configFields.hasSet() {
 		// No fields to change — return the current state without touching the row.
 		site, err := s.readSite(ctx, siteID)
 		if err != nil {
@@ -303,7 +304,7 @@ func (s *Server) handleUpdateSite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !policyChanged {
+	if !configFields.hasSet() && body.CheckInterval == nil {
 		args = append(args, siteID)
 		query := "UPDATE jetpack_monitor_sites SET " + joinSetClauses(setClauses) + " WHERE blog_id = ?"
 		if _, err := s.db.ExecContext(ctx, query, args...); err != nil {
@@ -328,13 +329,17 @@ func (s *Server) handleUpdateSite(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		if policyChanged {
-			if err := s.upsertSiteCheckPolicy(ctx, tx, siteID,
-				body.RequestMethod != nil, requestMethod,
-				body.DetectionProfile != nil, detectionProfile,
-			); err != nil {
+		if configFields.hasSet() {
+			if err := s.upsertSiteCheckConfig(ctx, tx, siteID, configFields); err != nil {
 				writeError(w, r, http.StatusInternalServerError, "db_error",
-					"site check policy update failed: "+err.Error())
+					"site check config update failed: "+err.Error())
+				return
+			}
+		}
+		if body.CheckInterval != nil {
+			if err := jetdb.RescheduleSiteRuntime(ctx, tx, siteID, *body.CheckInterval); err != nil {
+				writeError(w, r, http.StatusInternalServerError, "db_error",
+					"site runtime reschedule failed: "+err.Error())
 				return
 			}
 		}
@@ -576,9 +581,10 @@ func (s *Server) closeEvent(ctx context.Context, eventID, blogID int64, reason s
 // write handlers' read-back step.
 func (s *Server) readSite(ctx context.Context, blogID int64) (siteResponse, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT `+siteSelectColumns("s.", "c.", false)+`
+		SELECT `+siteSelectColumns("s.", "c.", "r.", false)+`
 		  FROM jetpack_monitor_sites s
 		  LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id
+		  LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id
 		 WHERE s.blog_id = ?`, blogID)
 	return scanSiteRow(row, false)
 }
@@ -672,65 +678,28 @@ func buildUpdateSetClause(body updateSiteRequest) ([]string, []any, error) {
 		clauses = append(clauses, "bucket_no = ?")
 		args = append(args, *body.BucketNo)
 	}
-	if body.CheckKeyword != nil {
-		clauses = append(clauses, "check_keyword = ?")
-		args = append(args, nullableEmpty(*body.CheckKeyword))
-	}
-	if body.ForbiddenKeyword != nil {
-		clauses = append(clauses, "forbidden_keyword = ?")
-		args = append(args, nullableEmpty(*body.ForbiddenKeyword))
-	}
-	if body.ForbiddenKeywords != nil {
-		v, err := encodeForbiddenKeywords(body.ForbiddenKeywords)
-		if err != nil {
-			return nil, nil, err
-		}
-		clauses = append(clauses, "forbidden_keywords = ?")
-		args = append(args, v)
-	}
-	if body.RedirectPolicy != nil {
-		clauses = append(clauses, "redirect_policy = ?")
-		args = append(args, *body.RedirectPolicy)
-	}
-	if body.TimeoutSeconds != nil {
-		clauses = append(clauses, "timeout_seconds = ?")
-		args = append(args, *body.TimeoutSeconds)
-	}
-	if body.CustomHeaders != nil {
-		v, err := encodeCustomHeaders(body.CustomHeaders)
-		if err != nil {
-			return nil, nil, err
-		}
-		clauses = append(clauses, "custom_headers = ?")
-		args = append(args, v)
-	}
-	if body.AlertCooldownMinutes != nil {
-		clauses = append(clauses, "alert_cooldown_minutes = ?")
-		args = append(args, *body.AlertCooldownMinutes)
-	}
 	if body.CheckInterval != nil {
 		clauses = append(clauses, "check_interval = ?")
 		args = append(args, *body.CheckInterval)
-		clauses = append(clauses, "next_check_at = CASE WHEN last_checked_at IS NULL THEN NULL ELSE DATE_ADD(last_checked_at, INTERVAL GREATEST(?, 1) MINUTE) END")
-		args = append(args, *body.CheckInterval)
-	}
-	if body.MaintenanceStart != nil {
-		t, err := parseMaintenanceTime(*body.MaintenanceStart, "maintenance_start")
-		if err != nil {
-			return nil, nil, err
-		}
-		clauses = append(clauses, "maintenance_start = ?")
-		args = append(args, t)
-	}
-	if body.MaintenanceEnd != nil {
-		t, err := parseMaintenanceTime(*body.MaintenanceEnd, "maintenance_end")
-		if err != nil {
-			return nil, nil, err
-		}
-		clauses = append(clauses, "maintenance_end = ?")
-		args = append(args, t)
 	}
 	return clauses, args, nil
+}
+
+type siteCheckConfigField struct {
+	set   bool
+	name  string
+	value any
+}
+
+type siteCheckConfigFields []siteCheckConfigField
+
+func (fields siteCheckConfigFields) hasSet() bool {
+	for _, field := range fields {
+		if field.set {
+			return true
+		}
+	}
+	return false
 }
 
 func validateCheckPolicy(methodPtr, profilePtr *string) (any, any, error) {
@@ -761,25 +730,64 @@ func validateCheckPolicy(methodPtr, profilePtr *string) (any, any, error) {
 	return method, profile, nil
 }
 
-func (s *Server) upsertSiteCheckPolicy(ctx context.Context, tx *sql.Tx, blogID int64, methodSet bool, method any, profileSet bool, profile any) error {
-	if !methodSet && !profileSet {
+func buildSiteCheckConfigFields(body updateSiteRequest, requestMethod, detectionProfile any) (siteCheckConfigFields, error) {
+	var fields siteCheckConfigFields
+	fields = append(fields,
+		siteCheckConfigField{set: body.RequestMethod != nil, name: "request_method", value: requestMethod},
+		siteCheckConfigField{set: body.DetectionProfile != nil, name: "detection_profile", value: detectionProfile},
+		siteCheckConfigField{set: body.CheckKeyword != nil, name: "check_keyword", value: nullableStringPtr(body.CheckKeyword)},
+		siteCheckConfigField{set: body.ForbiddenKeyword != nil, name: "forbidden_keyword", value: nullableStringPtr(body.ForbiddenKeyword)},
+		siteCheckConfigField{set: body.RedirectPolicy != nil, name: "redirect_policy", value: valueOrNilString(body.RedirectPolicy)},
+		siteCheckConfigField{set: body.TimeoutSeconds != nil, name: "timeout_seconds", value: nullableIntPtr(body.TimeoutSeconds)},
+		siteCheckConfigField{set: body.AlertCooldownMinutes != nil, name: "alert_cooldown_minutes", value: nullableIntPtr(body.AlertCooldownMinutes)},
+	)
+	if body.ForbiddenKeywords != nil {
+		v, err := encodeForbiddenKeywords(body.ForbiddenKeywords)
+		if err != nil {
+			return nil, err
+		}
+		fields = append(fields, siteCheckConfigField{set: true, name: "forbidden_keywords", value: v})
+	}
+	if body.CustomHeaders != nil {
+		v, err := encodeCustomHeaders(body.CustomHeaders)
+		if err != nil {
+			return nil, err
+		}
+		fields = append(fields, siteCheckConfigField{set: true, name: "custom_headers", value: v})
+	}
+	if body.MaintenanceStart != nil {
+		t, err := parseMaintenanceTime(*body.MaintenanceStart, "maintenance_start")
+		if err != nil {
+			return nil, err
+		}
+		fields = append(fields, siteCheckConfigField{set: true, name: "maintenance_start", value: t})
+	}
+	if body.MaintenanceEnd != nil {
+		t, err := parseMaintenanceTime(*body.MaintenanceEnd, "maintenance_end")
+		if err != nil {
+			return nil, err
+		}
+		fields = append(fields, siteCheckConfigField{set: true, name: "maintenance_end", value: t})
+	}
+	return fields, nil
+}
+
+func (s *Server) upsertSiteCheckConfig(ctx context.Context, tx *sql.Tx, blogID int64, fields siteCheckConfigFields) error {
+	if !fields.hasSet() {
 		return nil
 	}
 	cols := []string{"blog_id"}
 	placeholders := []string{"?"}
 	updates := []string{}
 	args := []any{blogID}
-	if methodSet {
-		cols = append(cols, "request_method")
+	for _, field := range fields {
+		if !field.set {
+			continue
+		}
+		cols = append(cols, field.name)
 		placeholders = append(placeholders, "?")
-		updates = append(updates, "request_method = VALUES(request_method)")
-		args = append(args, method)
-	}
-	if profileSet {
-		cols = append(cols, "detection_profile")
-		placeholders = append(placeholders, "?")
-		updates = append(updates, "detection_profile = VALUES(detection_profile)")
-		args = append(args, profile)
+		updates = append(updates, field.name+" = VALUES("+field.name+")")
+		args = append(args, field.value)
 	}
 	query := fmt.Sprintf(`
 		INSERT INTO jetmon_site_check_config (%s)
@@ -839,6 +847,13 @@ func nullableEmpty(s string) any {
 }
 
 func nullableIntPtr(p *int) any {
+	if p == nil {
+		return nil
+	}
+	return *p
+}
+
+func valueOrNilString(p *string) any {
 	if p == nil {
 		return nil
 	}

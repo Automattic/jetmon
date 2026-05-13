@@ -27,13 +27,11 @@ No active candidate branch is queued here right now.
 - [x] Store per-site rollout check policy in `jetmon_site_check_config` instead
   of adding more fields to `jetpack_monitor_sites`, reducing hot-schema-change
   pressure on the legacy compatibility table.
-- [ ] Move remaining v2-only site options that still live on
-  `jetpack_monitor_sites` into v2-owned side tables before production if
-  Systems determines those ALTERs are too risky for the live legacy table.
-  This is deferred because the staged check-policy branch avoids new legacy
-  table changes, while moving already-implemented columns needs a separate
-  compatibility pass across API, scheduler, support docs, and any sibling
-  consumers that may already rely on the current v2 schema.
+- [x] Move remaining v2-only site options and runtime freshness fields out of
+  `jetpack_monitor_sites` into v2-owned side tables before production. The
+  legacy table remains v1-shaped for rollout compatibility, while
+  `jetmon_site_check_config` owns advanced per-site check policy/config and
+  `jetmon_site_runtime` owns freshness, due-time, alert, and SSL bookkeeping.
 - [x] Bring the service handoff recommendations and rollout prelaunch checklist
   into the repo as `docs/jetmon-v2-prelaunch-readiness.md`, linked from the
   docs index and migration runbook.
@@ -222,8 +220,9 @@ No active candidate branch is queued here right now.
   mismatch reporting.
 - [ ] Move streaming scheduler persistence from broad legacy-table reloads to
   `jetmon_check_targets` plus change detection. The table exists now, but the
-  first prototype still reloads active config from `jetpack_monitor_sites` so
-  correctness can be validated before optimizing config-sync reads.
+  first prototype still reloads active identity/cadence from
+  `jetpack_monitor_sites` plus v2 sidecar config so correctness can be
+  validated before optimizing config-sync reads.
 - [ ] Add uptime-bench scenarios for streaming mode that explicitly validate
   phase-spread scheduling, bounded rollback freshness staleness, verifier
   promotion/recovery, failure-history retention, and steady-state write volume
@@ -239,18 +238,18 @@ No active candidate branch is queued here right now.
   duplicate results, never-checked selections, oldest selected age, and whether
   exact due-count gauges were sampled on this variable-interval poll.
 - [x] Add per-page scheduler phase timings for dispatch, wait, result
-  processing, `last_checked_at` writes, check-history writes, SSL updates, and
-  event handling so the next capacity retest can identify the exact slow
-  stage.
-- [x] Batch passive per-check DB writes for `last_checked_at` freshness updates
-  and `jetmon_check_history` timing samples so healthy high-volume sweeps are
-  not dominated by one UPDATE plus one INSERT per site.
+  processing, sidecar freshness writes, check-history writes, SSL updates, and
+  event handling so the next capacity retest can identify the exact slow stage.
+- [x] Batch passive per-check DB writes for
+  `jetmon_site_runtime.last_checked_at` freshness updates and
+  `jetmon_check_history` timing samples so healthy high-volume sweeps are not
+  dominated by one UPDATE plus one INSERT per site.
 - [x] Avoid rewriting unchanged `ssl_expiry_date` values on every HTTPS check
   while still evaluating TLS-expiry alert state for each observed certificate.
 - [x] Batch changed `ssl_expiry_date` writes so first-run certificate backfills
   and certificate-renewal waves do not issue one UPDATE per HTTPS site.
 - [x] Remove the `COALESCE(last_checked_at, ...)` scheduler ordering expression
-  so MySQL can use the nullable `last_checked_at` ordering more directly while
+  so MySQL can use nullable runtime freshness ordering more directly while
   preserving NULL-first behavior.
 - [x] Update capacity-test config posture so `WORKER_MAX_MEM_MB=0` disables the
   artificial memory-drain cap by default, `USE_VARIABLE_CHECK_INTERVALS=true`
@@ -263,21 +262,20 @@ No active candidate branch is queued here right now.
   CPU and MySQL CPU.
 - [x] Capture live `EXPLAIN` output for fixed-round and variable-interval site
   selection; both plans scanned roughly 995k rows with `Using filesort`, so add
-  a scheduler-oriented `(monitor_active, last_checked_at, blog_id, bucket_no)`
-  index migration.
+  a scheduler-oriented runtime freshness index migration.
 - [x] After applying the scheduler index migration in a test environment,
   capture `EXPLAIN` again and confirm the hot site-selection query no longer
   falls back to a full scan/filesort before running the full capacity retest.
 - [ ] If MySQL CPU remains the limiting factor after batched writes, evaluate
   an asynchronous bounded check-history writer or lower-resolution history
-  retention for healthy probes while keeping `last_checked_at` synchronous.
-- [x] Add a maintained `next_check_at` column and scheduler index so variable
-  interval due selection uses a simple indexed range predicate instead of
-  computing `DATE_ADD(last_checked_at, INTERVAL GREATEST(check_interval, 1)
-  MINUTE)` during every scheduler fetch. The scheduler now recalculates
-  `next_check_at` when checks complete or `check_interval` changes, gives
-  failed checks a bounded one-minute follow-up when the normal interval is
-  longer, and migration backfills existing rows before adding the index.
+  retention for healthy probes while keeping runtime freshness synchronous.
+- [x] Add maintained `jetmon_site_runtime.next_check_at` values and scheduler
+  indexes so variable-interval due selection uses a simple indexed range
+  predicate instead of computing `DATE_ADD(last_checked_at, INTERVAL
+  GREATEST(check_interval, 1) MINUTE)` during every scheduler fetch. The
+  scheduler now recalculates `next_check_at` when checks complete or
+  `check_interval` changes and gives failed checks a bounded one-minute
+  follow-up when the normal interval is longer.
 - [x] Move exact due-count and projection-drift checks out of the hot scheduler
   loop, or run them on a slower background cadence, so operator reporting does
   not add broad database reads to every 5-second variable-interval pass. In
@@ -285,7 +283,7 @@ No active candidate branch is queued here right now.
   sampled on a slower operator-reporting cadence while fixed-cadence mode keeps
   exact per-round counts.
 - [ ] Prototype a bounded asynchronous check-history writer and rollup model:
-  keep `last_checked_at` synchronous, preserve raw rows for failures/recent
+  keep runtime freshness synchronous, preserve raw rows for failures/recent
   windows, and store long-term latency/error aggregates to avoid raw history
   becoming the 10k/100k-site storage and I/O wall.
 - [x] Prototype a shared or per-worker HTTP transport/client pool that reduces
@@ -403,8 +401,8 @@ No active candidate branch is queued here right now.
 - [x] Add snapshot-backed VM flow runners for full execute-mode cutover and
   rollback simulations.
 - [x] Automate v2 service start failure after v1 stops, unwritable rollout log
-  directory refusal, bad DB connection refusal, and real `last_checked_at`
-  activity from the `jetmon2` service.
+  directory refusal, bad DB connection refusal, and real
+  `jetmon_site_runtime.last_checked_at` activity from the `jetmon2` service.
 - [x] Add snapshot-backed replay for every named VM lab smoke flow.
 
 ### Dashboard and Fleet Health TODO
@@ -966,8 +964,8 @@ where to look, and what each item unlocked.
   The old custom SSL server dependency is gone, and the transport is easier to
   test and deploy.
 - **Embedded migrations and schema bootstrap.** `jetmon2 migrate` applies the
-  v2 additive schema and can create the legacy `jetpack_monitor_sites` table in
-  local/dev databases.
+  v2 additive schema and can create the v1-shaped `jetpack_monitor_sites` table
+  in local/dev databases.
   This makes fresh Docker environments and production schema upgrades use the
   same migration path.
 - **MySQL bucket coordination.** v2 introduced `jetmon_hosts` ownership and

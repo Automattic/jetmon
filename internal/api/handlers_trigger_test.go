@@ -9,7 +9,7 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
-const readSiteForCheckSQL = ` SELECT s.monitor_url, s.timeout_seconds, s.check_keyword, s.forbidden_keyword, s.forbidden_keywords, s.custom_headers, s.redirect_policy, c.request_method, c.detection_profile, s.site_status FROM jetpack_monitor_sites s LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id WHERE s.blog_id = ?`
+const readSiteForCheckSQL = ` SELECT s.monitor_url, c.timeout_seconds, c.check_keyword, c.forbidden_keyword, c.forbidden_keywords, c.custom_headers, c.redirect_policy, c.request_method, c.detection_profile, s.site_status FROM jetpack_monitor_sites s LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id WHERE s.blog_id = ?`
 
 var columnsSiteForCheck = []string{"monitor_url", "timeout_seconds", "check_keyword", "forbidden_keyword", "forbidden_keywords", "custom_headers", "redirect_policy", "request_method", "detection_profile", "site_status"}
 

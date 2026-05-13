@@ -8,12 +8,13 @@ efficiency changes after the successful 1,000-site capacity run.
 `feature/jetmon-v2-scalability-efficiency` adds these scaling changes on top of
 the completed 1,000-site capacity branch:
 
-- Maintained `next_check_at` timestamps for indexed variable-interval due
-  selection.
+- Maintained `jetmon_site_runtime.next_check_at` timestamps for indexed
+  variable-interval due selection without altering the legacy site table.
 - One-minute sampling for exact due-count and projection-drift reporting in
   variable-interval mode.
 - Shared bounded HTTP transport for local site checks.
-- Batched `ssl_expiry_date` writes when observed certificate dates change.
+- Batched `jetmon_site_runtime.ssl_expiry_date` writes when observed
+  certificate dates change.
 
 Do not stack larger persistence changes, such as async check-history writes, on
 top of this branch before a real capacity run. The next test should isolate
@@ -21,7 +22,7 @@ these changes from the previous successful 1,000-site baseline.
 
 ## Pre-Test Checks
 
-1. Confirm migrations have run through migration 30.
+1. Confirm migrations have run through the sidecar runtime/config migrations.
 2. Confirm the test service is running this branch's `jetmon2` binary.
 3. Confirm the Veriflier service is reachable from the monitor host.
 4. Confirm `WORKER_MAX_MEM_MB=0` for capacity tests unless intentionally
@@ -40,34 +41,36 @@ these changes from the previous successful 1,000-site baseline.
 
 Capture `EXPLAIN` for both scheduler modes before the capacity run.
 
-Variable-interval selection should use `idx_monitor_next_check_blog_bucket` and
+Variable-interval selection should use `jetmon_site_runtime.idx_next_check` and
 should not show `Using filesort`:
 
 ```sql
 EXPLAIN
-SELECT jetpack_monitor_site_id, blog_id, bucket_no, monitor_url,
-       monitor_active, site_status, last_status_change, check_interval,
-       last_checked_at, next_check_at
-  FROM jetpack_monitor_sites
- WHERE monitor_active = 1
-   AND bucket_no BETWEEN 0 AND 999
-   AND (next_check_at IS NULL OR next_check_at <= NOW())
- ORDER BY next_check_at ASC, blog_id ASC
+SELECT s.jetpack_monitor_site_id, s.blog_id, s.bucket_no, s.monitor_url,
+       s.monitor_active, s.site_status, s.last_status_change, s.check_interval,
+       r.last_checked_at, r.next_check_at
+  FROM jetpack_monitor_sites s
+  LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id
+ WHERE s.monitor_active = 1
+   AND s.bucket_no BETWEEN 0 AND 999
+   AND (r.next_check_at IS NULL OR r.next_check_at <= NOW())
+ ORDER BY r.next_check_at ASC, s.blog_id ASC
  LIMIT 100;
 ```
 
 Fixed-cadence selection should continue to use
-`idx_monitor_last_checked_blog_bucket` and should not show `Using filesort`:
+`jetmon_site_runtime.idx_last_checked` and should not show `Using filesort`:
 
 ```sql
 EXPLAIN
-SELECT jetpack_monitor_site_id, blog_id, bucket_no, monitor_url,
-       monitor_active, site_status, last_status_change, check_interval,
-       last_checked_at, next_check_at
-  FROM jetpack_monitor_sites
- WHERE monitor_active = 1
-   AND bucket_no BETWEEN 0 AND 999
- ORDER BY last_checked_at ASC, blog_id ASC
+SELECT s.jetpack_monitor_site_id, s.blog_id, s.bucket_no, s.monitor_url,
+       s.monitor_active, s.site_status, s.last_status_change, s.check_interval,
+       r.last_checked_at, r.next_check_at
+  FROM jetpack_monitor_sites s
+  LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id
+ WHERE s.monitor_active = 1
+   AND s.bucket_no BETWEEN 0 AND 999
+ ORDER BY r.last_checked_at ASC, s.blog_id ASC
  LIMIT 100;
 ```
 

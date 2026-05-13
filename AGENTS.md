@@ -159,7 +159,7 @@ Copy `config/config-sample.json` to `config/config.json`. All keys from the orig
 - `ALERT_COOLDOWN_MINUTES`: Default cooldown between repeated alerts for the same site
 - `LEGACY_STATUS_PROJECTION_ENABLE`: Keep v1 `site_status` / `last_status_change` projection updated during shadow-v2-state migration
 - `LOG_FORMAT`: `text` (default, drop-in compatible) or `json` (structured logging)
-- `USE_VARIABLE_CHECK_INTERVALS`: Respect per-site `check_interval`; the scheduler uses a short idle poll and maintained `next_check_at` timestamps control which sites are ready
+- `USE_VARIABLE_CHECK_INTERVALS`: Respect per-site `check_interval`; the scheduler uses a short idle poll and maintained `jetmon_site_runtime.next_check_at` timestamps control which sites are ready in legacy round-scheduler mode
 - `DASHBOARD_PORT`: Internal port for the operator dashboard (0 to disable)
 - `DEBUG_PORT`: localhost-only pprof port, default 6060 (0 to disable; never exposed remotely)
 
@@ -189,13 +189,13 @@ These interfaces must remain identical to the original Jetmon. Do not change the
 ## Monitoring Behaviour
 
 **Check Process:**
-- Default timeout: `NET_COMMS_TIMEOUT` seconds (configurable per-site via `timeout_seconds` column)
+- Default timeout: `NET_COMMS_TIMEOUT` seconds (configurable per site via `jetmon_site_check_config.timeout_seconds`)
 - HTTP response code < 400 is success
 - Redirect policy configurable per site: `follow` (default), `alert` (warn on chain change), `fail`
 - Max redirects when following: 10
 - Keyword check: if `check_keyword` is set, GET the body and confirm the string is present
 - User-Agent: `jetmon/2.0 (Jetpack Site Uptime Monitor by WordPress.com)`
-- Per-site custom headers merged from `custom_headers` JSON column
+- Per-site custom headers merged from `jetmon_site_check_config.custom_headers`
 
 **Timing Breakdown (via `net/http/httptrace`):**
 Every check records composite RTT plus DNS lookup, TCP connect, TLS handshake, and first response byte (TTFB) timings. These samples are stored in `jetmon_check_history` for trending and API statistics. Scheduler-level StatsD metrics expose phase timing and write volume so capacity tests can separate check execution, freshness writes, check-history inserts, SSL expiry updates, and event handling.
@@ -217,10 +217,10 @@ Every HTTPS check inspects `tls.ConnectionState` for:
    - From `Seems Down` → close with `resolution_reason = probe_cleared`.
    - From `Down` → close with `resolution_reason = verifier_cleared` and send recovery notification.
 
-Shadow-v2-state migration keeps incidents authoritative in `jetmon_events` + `jetmon_event_transitions` while `jetpack_monitor_sites` remains the legacy site/config table. When `LEGACY_STATUS_PROJECTION_ENABLE` is true, the `jetpack_monitor_sites.site_status` / `last_status_change` projection is updated in the same transaction as every event mutation (no drift). v1 mapping: open Seems Down → `site_status = SITE_DOWN (0)`; promoted to Down → `site_status = SITE_CONFIRMED_DOWN (2)`; closed → `site_status = SITE_RUNNING (1)`. After legacy readers move to the v2 API/event tables, this projection can be disabled.
+Shadow-v2-state migration keeps incidents authoritative in `jetmon_events` + `jetmon_event_transitions` while `jetpack_monitor_sites` remains the v1-owned site identity/cadence/projection table. V2-only check config lives in `jetmon_site_check_config`. When `LEGACY_STATUS_PROJECTION_ENABLE` is true, the `jetpack_monitor_sites.site_status` / `last_status_change` projection is updated in the same transaction as every event mutation (no drift). v1 mapping: open Seems Down → `site_status = SITE_DOWN (0)`; promoted to Down → `site_status = SITE_CONFIRMED_DOWN (2)`; closed → `site_status = SITE_RUNNING (1)`. After legacy readers move to the v2 API/event tables, this projection can be disabled.
 
 **Alert Deduplication:**
-After an alert fires, subsequent alerts for the same site are suppressed for `alert_cooldown_minutes`. Suppression is recorded in the audit log.
+After an alert fires, subsequent alerts for the same site are suppressed for the global `ALERT_COOLDOWN_MINUTES` value or `jetmon_site_check_config.alert_cooldown_minutes`. Suppression is recorded in the audit log.
 
 **Status Change Types (unchanged):**
 - `server`: 5xx response
@@ -233,19 +233,13 @@ After an alert fires, subsequent alerts for the same site are suppressed for `al
 
 ## Database Schema
 
-Sites are stored in `jetpack_monitor_sites` with bucket-based sharding. The `bucket_no` field enables horizontal scaling. New additive columns introduced by Jetmon 2:
-
-| Column | Type | Purpose |
-|--------|------|---------|
-| `ssl_expiry_date` | DATE NULL | Updated each HTTPS check |
-| `next_check_at` | DATETIME NULL | Materialized variable-interval due time maintained after each check |
-| `check_keyword` | VARCHAR(500) NULL | String to verify in response body |
-| `maintenance_start` | DATETIME NULL | Maintenance window start |
-| `maintenance_end` | DATETIME NULL | Maintenance window end |
-| `custom_headers` | JSON NULL | Per-site request headers |
-| `timeout_seconds` | TINYINT NULL | Per-site timeout override |
-| `redirect_policy` | ENUM NULL | `follow`, `alert`, `fail` |
-| `alert_cooldown_minutes` | SMALLINT NULL | Per-site cooldown override |
+Sites are stored in the v1-shaped `jetpack_monitor_sites` table with
+bucket-based sharding. The `bucket_no` field enables horizontal scaling. Jetmon
+v2 keeps v2-only site config and runtime state out of that legacy table: rich
+probe config lives in `jetmon_site_check_config`, and freshness / SSL
+observation state lives in `jetmon_site_runtime`. During rollout, v2 writes
+only the v1 compatibility projection fields `site_status` and
+`last_status_change` back to `jetpack_monitor_sites`.
 
 New tables introduced by Jetmon 2:
 
@@ -256,6 +250,8 @@ New tables introduced by Jetmon 2:
 | `jetmon_event_transitions` | Append-only history of every mutation to `jetmon_events` (open, severity change, state change, cause link, close) |
 | `jetmon_audit_log` | Operational trail — WPCOM notifications, retry dispatch, verifier RPCs, alert/maintenance suppression, config reloads. Site-state changes do **not** flow through here |
 | `jetmon_check_history` | RTT and timing samples for trending |
+| `jetmon_site_check_config` | V2-only per-site check policy/config: HEAD/GET mode, detection profile, keywords, maintenance windows, headers, timeout, redirect policy, cooldown |
+| `jetmon_site_runtime` | V2-only runtime freshness and observation projection: last checked, next check, last alert, SSL expiry |
 | `jetmon_false_positives` | Veriflier non-confirmation events |
 
 ## Multi-Host Bucket Coordination

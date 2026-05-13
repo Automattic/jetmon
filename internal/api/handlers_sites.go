@@ -126,17 +126,19 @@ func (s *Server) handleListSites(w http.ResponseWriter, r *http.Request) {
 	if tenantScoped {
 		args = append(args, tenantID, cursor)
 		sb.WriteString(`
-		SELECT ` + siteSelectColumns("s.", "c.", includeCLIMetadata) + `
+		SELECT ` + siteSelectColumns("s.", "c.", "r.", includeCLIMetadata) + `
 		  FROM jetpack_monitor_sites s
 		  LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id
+		  LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id
 		  JOIN jetmon_site_tenants st ON st.blog_id = s.blog_id AND st.tenant_id = ?
 		 WHERE s.blog_id > ?`)
 	} else {
 		args = append(args, cursor)
 		sb.WriteString(`
-		SELECT ` + siteSelectColumns("s.", "c.", includeCLIMetadata) + `
+		SELECT ` + siteSelectColumns("s.", "c.", "r.", includeCLIMetadata) + `
 		  FROM jetpack_monitor_sites s
 		  LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id
+		  LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id
 		 WHERE s.blog_id > ?`)
 	}
 
@@ -251,9 +253,10 @@ func (s *Server) handleGetSite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	row := s.db.QueryRowContext(ctx, `
-		SELECT `+siteSelectColumns("s.", "c.", includeCLIMetadata)+`
+		SELECT `+siteSelectColumns("s.", "c.", "r.", includeCLIMetadata)+`
 		  FROM jetpack_monitor_sites s
 		  LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id
+		  LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id
 		 WHERE s.blog_id = ?`, id)
 
 	site, err := scanSiteRow(row, includeCLIMetadata)
@@ -297,7 +300,7 @@ func (s *Server) handleGetSite(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, singleSiteResponse{siteResponse: site, ActiveEvents: active})
 }
 
-func siteSelectColumns(prefix, checkConfigPrefix string, includeCLIMetadata bool) string {
+func siteSelectColumns(prefix, checkConfigPrefix, runtimePrefix string, includeCLIMetadata bool) string {
 	cols := []string{
 		prefix + "blog_id",
 		prefix + "blog_id AS public_id",
@@ -306,21 +309,21 @@ func siteSelectColumns(prefix, checkConfigPrefix string, includeCLIMetadata bool
 		prefix + "bucket_no",
 		prefix + "check_interval",
 		prefix + "site_status",
-		prefix + "last_checked_at",
+		runtimePrefix + "last_checked_at",
 		prefix + "last_status_change",
-		prefix + "ssl_expiry_date",
-		prefix + "check_keyword",
-		prefix + "forbidden_keyword",
-		prefix + "forbidden_keywords",
-		prefix + "redirect_policy",
+		runtimePrefix + "ssl_expiry_date",
+		checkConfigPrefix + "check_keyword",
+		checkConfigPrefix + "forbidden_keyword",
+		checkConfigPrefix + "forbidden_keywords",
+		checkConfigPrefix + "redirect_policy",
 		checkConfigPrefix + "request_method",
 		checkConfigPrefix + "detection_profile",
-		prefix + "maintenance_start",
-		prefix + "maintenance_end",
-		prefix + "alert_cooldown_minutes",
+		checkConfigPrefix + "maintenance_start",
+		checkConfigPrefix + "maintenance_end",
+		checkConfigPrefix + "alert_cooldown_minutes",
 	}
 	if includeCLIMetadata {
-		cols = append(cols, prefix+"custom_headers")
+		cols = append(cols, checkConfigPrefix+"custom_headers")
 	}
 	return strings.Join(cols, ", ")
 }

@@ -79,13 +79,14 @@ Number of consecutive local check failures required before escalating to verifli
 
 TIME_BETWEEN_CHECKS_SEC
 Legacy compatibility setting retained so copied v1-style configs parse.
-Jetmon v2 scheduler cadence is controlled by check_interval/next_check_at in
-variable-interval mode and by MIN_TIME_BETWEEN_ROUNDS_SEC in fixed-cadence
-mode. Failed checks are scheduled for a bounded one-minute follow-up when the
-normal interval is longer. Default: 30.
+Jetmon v2 scheduler cadence is controlled by the v1 check_interval field plus
+v2 sidecar runtime due state in variable-interval mode and by
+MIN_TIME_BETWEEN_ROUNDS_SEC in fixed-cadence mode. Failed checks are scheduled
+for a bounded one-minute follow-up when the normal interval is longer. Default:
+30.
 
 ALERT_COOLDOWN_MINUTES
-Minimum minutes between repeated down-alerts for the same site. Prevents alert storms during flapping. Default: 30. Can be overridden per-site via alert_cooldown_minutes column.
+Minimum minutes between repeated down-alerts for the same site. Prevents alert storms during flapping. Default: 30. Can be overridden per site through the API or jetmon_site_check_config.alert_cooldown_minutes.
 
 STATS_UPDATE_INTERVAL_MS
 Milliseconds between StatsD metric flushes and stats file updates. Default: 10000.
@@ -103,7 +104,7 @@ true, the scheduler uses a short idle poll and the SQL due predicate decides
 which sites are ready to check. Default: 300.
 
 NET_COMMS_TIMEOUT
-Default HTTP request timeout in seconds. Can be overridden per-site via timeout_seconds column. Default: 10.
+Default HTTP request timeout in seconds. Can be overridden per site through the API or jetmon_site_check_config.timeout_seconds. Default: 10.
 
 CHECK_DNS_RESOLVERS
 Optional list of recursive resolver IPs for HTTP checks. Entries may include
@@ -124,7 +125,7 @@ Maximum response-body bytes checker will read when a keyword check is configured
 Set 0 to use the default budget.
 
 KEYWORD_READ_MAX_MS
-Keyword body-read budget in milliseconds. Set to 0 to inherit the request timeout envelope (NET_COMMS_TIMEOUT or per-site timeout_seconds). If set > 0 and exhausted before the keyword is found, the check fails as timeout (ErrorTimeout), not keyword mismatch. Default: 0.
+Keyword body-read budget in milliseconds. Set to 0 to inherit the request timeout envelope (NET_COMMS_TIMEOUT or a per-site jetmon_site_check_config.timeout_seconds override). If set > 0 and exhausted before the keyword is found, the check fails as timeout (ErrorTimeout), not keyword mismatch. Default: 0.
 
 DEFAULT_CHECK_METHOD
 Default HTTP method for sites without a row in jetmon_site_check_config.
@@ -149,25 +150,26 @@ USE_VARIABLE_CHECK_INTERVALS
 Set to true to respect the check_interval column per site instead of running
 all sites every fixed-cadence pass. Recommended for production freshness
 testing because newly due sites are discovered without waiting for
-MIN_TIME_BETWEEN_ROUNDS_SEC. Jetmon maintains next_check_at after each
-completed check so due-site selection can use an indexed timestamp range
-instead of recomputing each row's interval on every poll. Successful checks use
-the site's normal check_interval; failed checks get a bounded one-minute
-follow-up when the normal interval is longer. Default in the sample config:
-true. Minimal configs that omit the key retain the compatibility default of
-false.
+MIN_TIME_BETWEEN_ROUNDS_SEC. In legacy round-scheduler mode, Jetmon maintains
+jetmon_site_runtime.next_check_at after each completed check so due-site
+selection can use an indexed sidecar timestamp range instead of recomputing
+each row's interval on every poll. Successful checks use the site's normal
+check_interval; failed checks get a bounded one-minute follow-up when the
+normal interval is longer. Default in the sample config: true. Minimal configs
+that omit the key retain the compatibility default of false.
 
 SCHEDULER_ENGINE
 Scheduler implementation to run. "legacy" keeps the v2 round/page scheduler for
 drop-in rollout safety. "streaming" enables the v2-native time-wheel scheduler:
-active site config is loaded into memory, checks are spread over each site's
-interval by stable phase, and healthy checks do not write per-probe freshness or
-history rows. Event, recovery, SSL, TLS, retry, and WPCOM behavior stays routed
-through the existing v2 incident code. Default: legacy.
+active site identity/cadence plus v2 sidecar config is loaded into memory,
+checks are spread over each site's interval by stable phase, and healthy checks
+do not write per-probe freshness or history rows. Event, recovery, SSL, TLS,
+retry, and WPCOM behavior stays routed through the existing v2 incident code.
+Default: legacy.
 
 STREAMING_LEGACY_PROJECTION_INTERVAL_MIN
 Coarse freshness projection interval used only when SCHEDULER_ENGINE is
-"streaming". Streaming mode does not update jetpack_monitor_sites.last_checked_at
+"streaming". Streaming mode does not update jetmon_site_runtime.last_checked_at
 after every successful probe; instead it batches the latest observation for each
 site at this cadence so a rollback to the legacy scheduler loses at most this
 many minutes of freshness data in normal operation. The accepted rollout window

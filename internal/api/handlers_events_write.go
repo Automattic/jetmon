@@ -392,8 +392,8 @@ func (s *Server) readSiteForCheck(ctx context.Context, blogID int64) (siteForChe
 		detectionProfile sql.NullString
 	)
 	err := s.db.QueryRowContext(ctx, `
-		SELECT s.monitor_url, s.timeout_seconds, s.check_keyword, s.forbidden_keyword, s.forbidden_keywords, s.custom_headers,
-		       s.redirect_policy, c.request_method, c.detection_profile, s.site_status
+		SELECT s.monitor_url, c.timeout_seconds, c.check_keyword, c.forbidden_keyword, c.forbidden_keywords, c.custom_headers,
+		       c.redirect_policy, c.request_method, c.detection_profile, s.site_status
 		  FROM jetpack_monitor_sites s
 		  LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id
 		 WHERE s.blog_id = ?`, blogID,

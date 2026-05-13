@@ -384,6 +384,11 @@ see rows mapped to `X-Jetmon-Tenant-ID` in `jetmon_site_tenants`.
 
 `id` and `blog_id` are the same value for now; `id` is the public field name (`blog_id` is the historical column name). Consumers should rely on `id`.
 
+The response intentionally merges v1-shaped `jetpack_monitor_sites` fields with
+v2-owned sidecar state from `jetmon_site_check_config` and
+`jetmon_site_runtime`; callers should use the API contract instead of assuming
+all fields live in the legacy site table.
+
 `cli_batch` is an opt-in local-tooling projection. It is present only when
 `include_cli_metadata=true` and the site's `custom_headers` include
 `X-Jetmon-CLI-Batch`; the API does not expose the rest of `custom_headers`.
