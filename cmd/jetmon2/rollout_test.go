@@ -1549,6 +1549,8 @@ func TestRunPinnedRolloutCheckSuccess(t *testing.T) {
 		PinnedBucketMin:              &minBucket,
 		PinnedBucketMax:              &maxBucket,
 		LegacyStatusProjectionEnable: true,
+		DefaultCheckMethod:           "HEAD",
+		DefaultDetectionProfile:      "legacy",
 	}
 
 	var gotHost string
@@ -1590,6 +1592,7 @@ func TestRunPinnedRolloutCheckSuccess(t *testing.T) {
 	for _, want := range []string{
 		"PASS pinned_range=12-34",
 		"PASS legacy_status_projection=enabled",
+		"PASS default_check_policy=method:HEAD profile:legacy",
 		"PASS api_port=disabled",
 		"PASS jetmon_hosts row absent host=\"host-a\"",
 		"PASS jetmon_hosts overlap=0",

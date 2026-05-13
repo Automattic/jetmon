@@ -59,6 +59,48 @@ func TestTimeoutForSite(t *testing.T) {
 	}
 }
 
+func TestCheckRequestForSiteAppliesRolloutCheckPolicy(t *testing.T) {
+	keyword := "needle"
+	forbidden := `["blocked"]`
+	cfg := &config.Config{
+		NetCommsTimeout:         10,
+		DefaultCheckMethod:      "HEAD",
+		DefaultDetectionProfile: "legacy",
+		BodyReadMaxBytes:        64,
+		KeywordReadMaxBytes:     128,
+	}
+
+	req := checkRequestForSite(cfg, db.Site{
+		BlogID:            42,
+		MonitorURL:        "https://example.com",
+		CheckKeyword:      &keyword,
+		ForbiddenKeywords: &forbidden,
+		RedirectPolicy:    "fail",
+	})
+	if req.Method != "HEAD" || req.DetectionProfile != "legacy" {
+		t.Fatalf("request policy = %s/%s, want HEAD/legacy", req.Method, req.DetectionProfile)
+	}
+	if req.Keyword != nil || len(req.ForbiddenKeywords) != 0 || req.RedirectPolicy != checker.RedirectFollow {
+		t.Fatalf("legacy request kept full detections: %+v", req)
+	}
+
+	req = checkRequestForSite(cfg, db.Site{
+		BlogID:            43,
+		MonitorURL:        "https://example.com",
+		RequestMethod:     "GET",
+		DetectionProfile:  "full",
+		CheckKeyword:      &keyword,
+		ForbiddenKeywords: &forbidden,
+		RedirectPolicy:    "fail",
+	})
+	if req.Method != "GET" || req.DetectionProfile != "full" {
+		t.Fatalf("request policy = %s/%s, want GET/full", req.Method, req.DetectionProfile)
+	}
+	if req.Keyword == nil || len(req.ForbiddenKeywords) != 1 || req.RedirectPolicy != checker.RedirectFail {
+		t.Fatalf("full request did not keep rich detections: %+v", req)
+	}
+}
+
 func TestInMaintenance(t *testing.T) {
 	origNow := nowFunc
 	defer func() { nowFunc = origNow }()
@@ -1363,6 +1405,61 @@ func TestProcessResultsReportsCheckOutcomes(t *testing.T) {
 			summary.checkHTTPFailures,
 			summary.checkTLSDeprecated,
 		)
+	}
+}
+
+func TestProcessResultsReportsCheckCohorts(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig(t)
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local",
+		ctx:      context.Background(),
+	}
+
+	headLegacy := checkerResultSuccess(1)
+	headLegacy.Method = http.MethodHead
+	headLegacy.DetectionProfile = "legacy"
+	getSimple := checkerResultFailure(2)
+	getSimple.Method = http.MethodGet
+	getSimple.DetectionProfile = "simple_http"
+	getFull := checkerResultSuccess(3)
+	getFull.Method = http.MethodGet
+	getFull.DetectionProfile = "full"
+
+	summary := o.processResults(
+		map[int64]checker.Result{
+			1: headLegacy,
+			2: getSimple,
+			3: getFull,
+		},
+		map[int64]db.Site{
+			1: {BlogID: 1, SiteStatus: statusRunning},
+			2: {BlogID: 2, SiteStatus: statusRunning},
+			3: {BlogID: 3, SiteStatus: statusRunning},
+		},
+	)
+
+	assertCheckCohortCount(t, summary.checkCohorts, http.MethodHead, "legacy", 1)
+	assertCheckCohortCount(t, summary.checkCohorts, http.MethodGet, "simple_http", 1)
+	assertCheckCohortCount(t, summary.checkCohorts, http.MethodGet, "full", 1)
+}
+
+func TestEmitCheckCohortCounters(t *testing.T) {
+	rec := newRecordingMetrics()
+	emitCheckCohortCounters(rec, "scheduler.streaming", map[checkCohortKey]int{
+		{method: http.MethodGet, profile: "full"}:         2,
+		{method: http.MethodHead, profile: "simple_http"}: 1,
+	})
+
+	if got := rec.counter("scheduler.streaming.check.method.get.profile.full.count"); got != 2 {
+		t.Fatalf("GET/full cohort counter = %d, want 2", got)
+	}
+	if got := rec.counter("scheduler.streaming.check.method.head.profile.simple_http.count"); got != 1 {
+		t.Fatalf("HEAD/simple_http cohort counter = %d, want 1", got)
 	}
 }
 
@@ -2869,4 +2966,11 @@ func (r *recordingMetrics) timingCount(stat string) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.timings[stat])
+}
+
+func assertCheckCohortCount(t *testing.T, cohorts map[checkCohortKey]int, method, profile string, want int) {
+	t.Helper()
+	if got := cohorts[checkCohortKey{method: method, profile: profile}]; got != want {
+		t.Fatalf("cohort %s/%s count = %d, want %d", method, profile, got, want)
+	}
 }

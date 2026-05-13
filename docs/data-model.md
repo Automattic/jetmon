@@ -1,9 +1,9 @@
 # Data Model
 
-Jetmon 2 keeps the legacy site table as the configuration source during the
-[v1-to-v2 migration](v1-to-v2-migration.md) and adds event-sourced incident
-tables around it. New schema changes are additive and applied by
-`./jetmon2 migrate`.
+Jetmon 2 keeps the legacy site table v1-shaped during the
+[v1-to-v2 migration](v1-to-v2-migration.md) and adds Jetmon-owned side tables
+for v2-only configuration, runtime freshness, and event-sourced incident state.
+New schema changes are additive and applied by `./jetmon2 migrate`.
 
 ## Legacy Site Table
 
@@ -25,26 +25,11 @@ CREATE TABLE `jetpack_monitor_sites` (
 );
 ```
 
-Jetmon 2 adds these columns:
-
-| Column | Type | Purpose |
-|---|---|---|
-| `ssl_expiry_date` | `DATE NULL` | Last observed HTTPS certificate expiry |
-| `check_keyword` | `VARCHAR(500) NULL` | Required response-body string |
-| `forbidden_keyword` | `VARCHAR(500) NULL` | Response-body string that must not appear |
-| `forbidden_keywords` | `JSON NULL` | Response-body strings that must not appear |
-| `maintenance_start` | `DATETIME NULL` | Maintenance window start |
-| `maintenance_end` | `DATETIME NULL` | Maintenance window end |
-| `custom_headers` | `JSON NULL` | Per-site request headers |
-| `timeout_seconds` | `TINYINT NULL` | Per-site timeout override |
-| `redirect_policy` | `ENUM NULL` | `follow`, `alert`, or `fail` |
-| `alert_cooldown_minutes` | `SMALLINT NULL` | Per-site alert cooldown override |
-| `last_checked_at` | `DATETIME NULL` | Last completed local check timestamp |
-| `next_check_at` | `DATETIME NULL` | Materialized variable-interval due time used by the scheduler; failed checks get a bounded one-minute follow-up when the normal interval is longer |
-
-The API can expose a derived `cli_batch` field for local API CLI test data when
-`include_cli_metadata=true` is requested and `custom_headers` contains
-`X-Jetmon-CLI-Batch`; it is not a dedicated database column.
+Jetmon v2 does not require new columns or indexes on an existing production
+`jetpack_monitor_sites` table. It continues to read v1-owned fields such as
+`monitor_url`, `monitor_active`, `bucket_no`, and `check_interval`, and it
+writes only the v1 compatibility projection fields `site_status` and
+`last_status_change` while `LEGACY_STATUS_PROJECTION_ENABLE` is on.
 
 ## New Tables
 
@@ -67,16 +52,79 @@ The API can expose a derived `cli_batch` field for local API CLI test data when
 | `jetmon_site_tenants` | Tenant-to-site mapping for gateway-scoped API access |
 | `jetmon_process_health` | Durable per-process heartbeat snapshots for host and fleet dashboards |
 | `jetmon_check_targets` | V2-native scheduling target state for the streaming monitor engine |
+| `jetmon_site_check_config` | Per-site v2 check config: rollout method/profile, body rules, maintenance windows, custom headers, timeout, redirect policy, and cooldown overrides |
+| `jetmon_site_runtime` | V2 runtime freshness and derived observation state such as last checked time, next due time, last alert time, and SSL expiry |
+
+## Site Check Policy
+
+`jetmon_site_check_config` keeps staged rollout policy and rich v2 probe config
+out of `jetpack_monitor_sites`:
+
+```sql
+CREATE TABLE `jetmon_site_check_config` (
+  `blog_id` bigint(20) unsigned NOT NULL PRIMARY KEY,
+  `request_method` enum('HEAD','GET') NULL,
+  `detection_profile` enum('legacy','simple_http','full') NULL,
+  `check_keyword` varchar(500) NULL,
+  `forbidden_keyword` varchar(500) NULL,
+  `forbidden_keywords` json NULL,
+  `maintenance_start` datetime NULL,
+  `maintenance_end` datetime NULL,
+  `custom_headers` json NULL,
+  `timeout_seconds` tinyint unsigned NULL,
+  `redirect_policy` enum('follow','alert','fail') NULL,
+  `alert_cooldown_minutes` smallint unsigned NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp()
+);
+```
+
+NULL values inherit process defaults from `DEFAULT_CHECK_METHOD` and
+`DEFAULT_DETECTION_PROFILE`. During rollout, use `HEAD` + `legacy` for
+v1-compatible replacement, `GET` + `simple_http` for visitor-path migration,
+and `GET` + `full` for the complete v2 detection set. A `HEAD` request
+automatically caps the effective profile to `simple_http`; body-based keyword
+and forbidden-content checks require `GET`.
+
+The API can expose a derived `cli_batch` field for local API CLI test data when
+`include_cli_metadata=true` is requested and `custom_headers` contains
+`X-Jetmon-CLI-Batch`; it is not a dedicated database column.
+
+## Site Runtime
+
+`jetmon_site_runtime` keeps v2 freshness and derived observations out of the
+legacy table:
+
+```sql
+CREATE TABLE `jetmon_site_runtime` (
+  `blog_id` bigint(20) unsigned NOT NULL PRIMARY KEY,
+  `last_checked_at` datetime NULL,
+  `next_check_at` datetime NULL,
+  `last_alert_sent_at` datetime NULL,
+  `ssl_expiry_date` date NULL,
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  INDEX `idx_next_check` (`next_check_at`, `blog_id`),
+  INDEX `idx_last_checked` (`last_checked_at`, `blog_id`)
+);
+```
+
+`last_checked_at` and `next_check_at` support API display, rollout freshness
+checks, rollback visibility, and the legacy round scheduler without requiring
+v2 to rewrite the v1 compatibility table after every probe. The streaming
+scheduler keeps its hot due-time state in memory and in `jetmon_check_targets`;
+`jetmon_site_runtime` is a compatibility/readability projection, not the
+high-frequency source of truth for streaming mode.
 
 ## Streaming Check Targets
 
 `jetmon_check_targets` is additive scheduling infrastructure for
 `SCHEDULER_ENGINE=streaming`. During migration, `jetpack_monitor_sites` remains
-the source of truth for site config and current legacy status. The target table
-stores derived scheduling details such as source site row, bucket, interval,
-stable phase slot, config hash, and coarse last outcome fields so later
-iterations can sync scheduling state without repeatedly scanning the legacy
-table or writing healthy probe freshness back into it.
+the source of truth for v1-owned site identity and current legacy status, while
+`jetmon_site_check_config` carries v2-only probe config. The target table stores
+derived scheduling details such as source site row, bucket, interval, stable
+phase slot, config hash, and coarse last outcome fields so later iterations can
+sync scheduling state without repeatedly scanning the legacy table or writing
+healthy probe freshness back into it.
 
 The current streaming engine creates the table but still reloads active config
 from `jetpack_monitor_sites`. That keeps correctness and rollback behavior easy
@@ -114,8 +162,10 @@ WPCOM, and StatsD across hosts.
 `jetmon_check_history` records one compact timing sample per local check. The
 `request_method` column records the actual HTTP method used by the probe. This
 is primarily operational evidence for v2 rollout and uptime-bench review: v2
-should show `GET`, not the v1 HEAD-only behavior. Failure events carry richer
-per-incident metadata such as URL and error reason.
+should show `HEAD` during the initial legacy-compatible replacement phase,
+`GET` during the visitor-path migration phase, and the actual effective method
+for any per-site exceptions. Failure events carry richer per-incident metadata
+such as URL and error reason.
 
 ## Event Source Of Truth
 

@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/Automattic/jetmon/internal/checkmode"
 )
 
 // VerifierConfig holds connection details for a single Veriflier instance.
@@ -89,13 +91,15 @@ type Config struct {
 	BodyReadMaxMS             int      `json:"BODY_READ_MAX_MS"`
 	KeywordReadMaxBytes       int64    `json:"KEYWORD_READ_MAX_BYTES"`
 	KeywordReadMaxMS          int      `json:"KEYWORD_READ_MAX_MS"`
+	DefaultCheckMethod        string   `json:"DEFAULT_CHECK_METHOD"`
+	DefaultDetectionProfile   string   `json:"DEFAULT_DETECTION_PROFILE"`
 	UseVariableCheckIntervals bool     `json:"USE_VARIABLE_CHECK_INTERVALS"`
 	SchedulerEngine           string   `json:"SCHEDULER_ENGINE"`
 
 	// StreamingLegacyProjectionIntervalMin controls the coarse compatibility
 	// freshness write interval used by the streaming scheduler. It intentionally
-	// does not affect check cadence; it only bounds last_checked_at staleness
-	// for rollback to legacy readers.
+	// does not affect check cadence; it only bounds jetmon_site_runtime
+	// freshness staleness for rollback to the legacy scheduler.
 	StreamingLegacyProjectionIntervalMin int `json:"STREAMING_LEGACY_PROJECTION_INTERVAL_MIN"`
 	StreamingTargetReloadSec             int `json:"STREAMING_TARGET_RELOAD_SEC"`
 
@@ -234,6 +238,8 @@ func defaults() *Config {
 		BodyReadMaxMS:                        250,
 		KeywordReadMaxBytes:                  1048576,
 		KeywordReadMaxMS:                     0,
+		DefaultCheckMethod:                   checkmode.MethodGET,
+		DefaultDetectionProfile:              checkmode.ProfileFull,
 		SchedulerEngine:                      "legacy",
 		StreamingLegacyProjectionIntervalMin: 15,
 		StreamingTargetReloadSec:             300,
@@ -355,6 +361,16 @@ func validate(cfg *Config) error {
 	if cfg.KeywordReadMaxMS < 0 {
 		return fmt.Errorf("KEYWORD_READ_MAX_MS must be >= 0")
 	}
+	method, err := checkmode.NormalizeMethod(cfg.DefaultCheckMethod, checkmode.MethodGET)
+	if err != nil {
+		return fmt.Errorf("DEFAULT_CHECK_METHOD: %w", err)
+	}
+	cfg.DefaultCheckMethod = method
+	profile, err := checkmode.NormalizeProfile(cfg.DefaultDetectionProfile, checkmode.ProfileFull)
+	if err != nil {
+		return fmt.Errorf("DEFAULT_DETECTION_PROFILE: %w", err)
+	}
+	cfg.DefaultDetectionProfile = profile
 	if cfg.MinTimeBetweenRoundsSec < 0 {
 		return fmt.Errorf("MIN_TIME_BETWEEN_ROUNDS_SEC must be >= 0")
 	}

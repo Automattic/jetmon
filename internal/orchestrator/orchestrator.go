@@ -17,6 +17,7 @@ import (
 
 	"github.com/Automattic/jetmon/internal/audit"
 	"github.com/Automattic/jetmon/internal/checker"
+	"github.com/Automattic/jetmon/internal/checkmode"
 	"github.com/Automattic/jetmon/internal/config"
 	"github.com/Automattic/jetmon/internal/db"
 	"github.com/Automattic/jetmon/internal/eventstore"
@@ -152,6 +153,7 @@ type roundSummary struct {
 	checkRedirects     int
 	checkKeywords      int
 	checkTLSDeprecated int
+	checkCohorts       map[checkCohortKey]int
 }
 
 func (s *roundSummary) add(other roundSummary) {
@@ -191,6 +193,7 @@ func (s *roundSummary) add(other roundSummary) {
 	s.checkRedirects += other.checkRedirects
 	s.checkKeywords += other.checkKeywords
 	s.checkTLSDeprecated += other.checkTLSDeprecated
+	mergeCheckCohorts(&s.checkCohorts, other.checkCohorts)
 	if other.oldestSelectedAge > s.oldestSelectedAge {
 		s.oldestSelectedAge = other.oldestSelectedAge
 	}
@@ -217,11 +220,17 @@ type resultProcessSummary struct {
 	checkRedirects     int
 	checkKeywords      int
 	checkTLSDeprecated int
+	checkCohorts       map[checkCohortKey]int
 
 	markCheckedDuration time.Duration
 	historyDuration     time.Duration
 	sslDuration         time.Duration
 	eventDuration       time.Duration
+}
+
+type checkCohortKey struct {
+	method  string
+	profile string
 }
 
 type siteCheckResult struct {
@@ -532,6 +541,7 @@ process:
 	summary.checkRedirects += processSummary.checkRedirects
 	summary.checkKeywords += processSummary.checkKeywords
 	summary.checkTLSDeprecated += processSummary.checkTLSDeprecated
+	mergeCheckCohorts(&summary.checkCohorts, processSummary.checkCohorts)
 	summary.markCheckedDuration += processSummary.markCheckedDuration
 	summary.historyDuration += processSummary.historyDuration
 	summary.sslDuration += processSummary.sslDuration
@@ -569,6 +579,7 @@ func emitPageMetrics(summary roundSummary) {
 	m.Increment("scheduler.page.check.redirect.count", summary.checkRedirects)
 	m.Increment("scheduler.page.check.keyword.count", summary.checkKeywords)
 	m.Increment("scheduler.page.check.tls_deprecated.count", summary.checkTLSDeprecated)
+	emitCheckCohortCounters(m, "scheduler.page", summary.checkCohorts)
 }
 
 func logPageSummary(pageNumber, sites int, summary roundSummary) {
@@ -647,24 +658,61 @@ func selectedSiteSummary(sites []db.Site) roundSummary {
 }
 
 func checkRequestForSite(cfg *config.Config, site db.Site) checker.Request {
+	method := effectiveCheckMethod(cfg, site)
+	profile := effectiveDetectionProfile(cfg, site, method)
 	req := checker.Request{
 		BlogID:              site.BlogID,
 		URL:                 site.MonitorURL,
+		Method:              method,
+		DetectionProfile:    profile,
 		TimeoutSeconds:      timeoutForSite(cfg, site),
 		BodyReadMaxBytes:    cfg.BodyReadMaxBytes,
 		BodyReadMaxMS:       cfg.BodyReadMaxMS,
 		KeywordReadMaxBytes: cfg.KeywordReadMaxBytes,
 		KeywordReadMaxMS:    cfg.KeywordReadMaxMS,
-		Keyword:             site.CheckKeyword,
-		ForbiddenKeyword:    site.ForbiddenKeyword,
-		ForbiddenKeywords:   checker.ParseForbiddenKeywords(site.ForbiddenKeywords),
 		CustomHeaders:       checker.ParseCustomHeaders(site.CustomHeaders),
-		RedirectPolicy:      checker.RedirectPolicy(site.RedirectPolicy),
+		RedirectPolicy:      checker.RedirectFollow,
 	}
-	if req.RedirectPolicy == "" {
-		req.RedirectPolicy = checker.RedirectFollow
+	if profile == checkmode.ProfileFull {
+		req.Keyword = site.CheckKeyword
+		req.ForbiddenKeyword = site.ForbiddenKeyword
+		req.ForbiddenKeywords = checker.ParseForbiddenKeywords(site.ForbiddenKeywords)
+		req.RedirectPolicy = checker.RedirectPolicy(site.RedirectPolicy)
+		if req.RedirectPolicy == "" {
+			req.RedirectPolicy = checker.RedirectFollow
+		}
 	}
 	return req
+}
+
+func effectiveCheckMethod(cfg *config.Config, site db.Site) string {
+	def := checkmode.MethodGET
+	if cfg != nil && cfg.DefaultCheckMethod != "" {
+		def = cfg.DefaultCheckMethod
+	}
+	method, err := checkmode.NormalizeMethod(site.RequestMethod, def)
+	if err != nil {
+		return def
+	}
+	return method
+}
+
+func effectiveDetectionProfile(cfg *config.Config, site db.Site, method string) string {
+	def := checkmode.ProfileFull
+	if cfg != nil && cfg.DefaultDetectionProfile != "" {
+		def = cfg.DefaultDetectionProfile
+	}
+	profile, err := checkmode.NormalizeProfile(site.DetectionProfile, def)
+	if err != nil {
+		return checkmode.EffectiveProfile(method, def)
+	}
+	return checkmode.EffectiveProfile(method, profile)
+}
+
+func fullDetectionsEnabled(cfg *config.Config, site db.Site) bool {
+	method := effectiveCheckMethod(cfg, site)
+	profile := effectiveDetectionProfile(cfg, site, method)
+	return checkmode.FullDetectionsEnabled(method, profile)
 }
 
 func collectionDeadlineForSites(cfg *config.Config, sites []db.Site) time.Duration {
@@ -803,6 +851,7 @@ func (o *Orchestrator) finishRound(cfg *config.Config, summary roundSummary) {
 		m.Increment("scheduler.round.check.redirect.count", summary.checkRedirects)
 		m.Increment("scheduler.round.check.keyword.count", summary.checkKeywords)
 		m.Increment("scheduler.round.check.tls_deprecated.count", summary.checkTLSDeprecated)
+		emitCheckCohortCounters(m, "scheduler.round", summary.checkCohorts)
 
 		if cfg.StatsdSendMemUsage {
 			m.EmitMemStats()
@@ -879,7 +928,11 @@ func (o *Orchestrator) processResults(results map[int64]checker.Result, sites ma
 
 	sslStart := time.Now()
 	sslUpdates := make([]db.SiteSSLExpiry, 0)
+	cfg := config.Get()
 	for _, record := range records {
+		if !fullDetectionsEnabled(cfg, record.site) {
+			continue
+		}
 		if record.res.TLSVersion != 0 {
 			o.checkTLSDeprecated(record.site, record.res)
 		}
@@ -912,6 +965,7 @@ func (o *Orchestrator) processResults(results map[int64]checker.Result, sites ma
 }
 
 func addCheckOutcome(summary *resultProcessSummary, res checker.Result) {
+	summary.checkCohorts = incrementCheckCohort(summary.checkCohorts, res)
 	if res.Success {
 		summary.checkSuccesses++
 	} else {
@@ -934,6 +988,66 @@ func addCheckOutcome(summary *resultProcessSummary, res checker.Result) {
 		summary.checkKeywords++
 	case checker.ErrorTLSDeprecated:
 		summary.checkTLSDeprecated++
+	}
+}
+
+func incrementCheckCohort(cohorts map[checkCohortKey]int, res checker.Result) map[checkCohortKey]int {
+	if cohorts == nil {
+		cohorts = make(map[checkCohortKey]int)
+	}
+	cohorts[checkCohortForResult(res)]++
+	return cohorts
+}
+
+func checkCohortForResult(res checker.Result) checkCohortKey {
+	method := res.Method
+	if method == "" {
+		method = "unknown"
+	}
+	profile := res.DetectionProfile
+	if profile == "" {
+		profile = "unknown"
+	}
+	return checkCohortKey{method: method, profile: profile}
+}
+
+func mergeCheckCohorts(dst *map[checkCohortKey]int, src map[checkCohortKey]int) {
+	if len(src) == 0 {
+		return
+	}
+	if *dst == nil {
+		*dst = make(map[checkCohortKey]int, len(src))
+	}
+	for key, count := range src {
+		(*dst)[key] += count
+	}
+}
+
+func emitCheckCohortCounters(m metricsClient, prefix string, cohorts map[checkCohortKey]int) {
+	if m == nil || len(cohorts) == 0 {
+		return
+	}
+	keys := make([]checkCohortKey, 0, len(cohorts))
+	for key := range cohorts {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].method == keys[j].method {
+			return keys[i].profile < keys[j].profile
+		}
+		return keys[i].method < keys[j].method
+	})
+	for _, key := range keys {
+		count := cohorts[key]
+		if count <= 0 {
+			continue
+		}
+		m.Increment(fmt.Sprintf(
+			"%s.check.method.%s.profile.%s.count",
+			prefix,
+			metricSegment(key.method),
+			metricSegment(key.profile),
+		), count)
 	}
 }
 
@@ -1117,7 +1231,11 @@ func siteCheckInterval(site db.Site) time.Duration {
 func checkResultMetadata(site db.Site, res checker.Result, firstFailAt time.Time) map[string]any {
 	method := res.Method
 	if method == "" {
-		method = "GET"
+		method = effectiveCheckMethod(config.Get(), site)
+	}
+	profile := res.DetectionProfile
+	if profile == "" {
+		profile = effectiveDetectionProfile(config.Get(), site, method)
 	}
 	metadata := map[string]any{
 		"detector_class":     detectorClass(res),
@@ -1127,6 +1245,7 @@ func checkResultMetadata(site db.Site, res checker.Result, firstFailAt time.Time
 		"legacy_status_type": (&res).StatusType(),
 		"keyword_rule":       res.KeywordRule,
 		"method":             method,
+		"detection_profile":  profile,
 		"rtt_ms":             res.RTT.Milliseconds(),
 		"url":                site.MonitorURL,
 	}
@@ -1488,25 +1607,38 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 		return
 	}
 
+	cfg := config.Get()
+	method := effectiveCheckMethod(cfg, site)
+	profile := effectiveDetectionProfile(cfg, site, method)
 	req := veriflier.CheckRequest{
 		BlogID:              site.BlogID,
 		URL:                 site.MonitorURL,
-		TimeoutSeconds:      int32(timeoutForSite(config.Get(), site)),
-		BodyReadMaxBytes:    config.Get().BodyReadMaxBytes,
-		BodyReadMaxMS:       int32(config.Get().BodyReadMaxMS),
-		KeywordReadMaxBytes: config.Get().KeywordReadMaxBytes,
-		KeywordReadMaxMS:    int32(config.Get().KeywordReadMaxMS),
-		Keyword:             stringPtrValue(site.CheckKeyword),
-		ForbiddenKeyword:    stringPtrValue(site.ForbiddenKeyword),
-		ForbiddenKeywords:   checker.ParseForbiddenKeywords(site.ForbiddenKeywords),
+		Method:              method,
+		DetectionProfile:    profile,
+		TimeoutSeconds:      int32(timeoutForSite(cfg, site)),
+		BodyReadMaxBytes:    cfg.BodyReadMaxBytes,
+		BodyReadMaxMS:       int32(cfg.BodyReadMaxMS),
+		KeywordReadMaxBytes: cfg.KeywordReadMaxBytes,
+		KeywordReadMaxMS:    int32(cfg.KeywordReadMaxMS),
 		CustomHeaders:       checker.ParseCustomHeaders(site.CustomHeaders),
-		RedirectPolicy:      site.RedirectPolicy,
+		RedirectPolicy:      string(checker.RedirectFollow),
 		RequestID:           veriflier.NewRequestID(),
+	}
+	if profile == checkmode.ProfileFull {
+		req.Keyword = stringPtrValue(site.CheckKeyword)
+		req.ForbiddenKeyword = stringPtrValue(site.ForbiddenKeyword)
+		req.ForbiddenKeywords = checker.ParseForbiddenKeywords(site.ForbiddenKeywords)
+		req.RedirectPolicy = site.RedirectPolicy
+		if req.RedirectPolicy == "" {
+			req.RedirectPolicy = string(checker.RedirectFollow)
+		}
 	}
 
 	escalateMeta, _ := json.Marshal(map[string]any{
-		"verifier_count": len(clients),
-		"request_id":     req.RequestID,
+		"verifier_count":    len(clients),
+		"request_id":        req.RequestID,
+		"method":            method,
+		"detection_profile": profile,
 	})
 	o.auditLog(audit.Entry{
 		BlogID:    site.BlogID,

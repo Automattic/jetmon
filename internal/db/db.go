@@ -15,7 +15,8 @@ import (
 
 var db *sql.DB
 
-// Site mirrors the jetpack_monitor_sites row plus new Jetmon 2 columns.
+// Site combines the v1-shaped jetpack_monitor_sites row with Jetmon-owned
+// sidecar config/runtime tables.
 type Site struct {
 	ID               int64
 	BlogID           int64
@@ -39,6 +40,8 @@ type Site struct {
 	RedirectPolicy       string
 	AlertCooldownMinutes *int
 	LastAlertSentAt      *time.Time
+	RequestMethod        string
+	DetectionProfile     string
 }
 
 // Connect opens the MySQL connection pool using the loaded DBConfig.

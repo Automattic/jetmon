@@ -13,6 +13,8 @@ package veriflier
 type CheckRequest struct {
 	BlogID              int64
 	URL                 string
+	Method              string
+	DetectionProfile    string
 	TimeoutSeconds      int32
 	BodyReadMaxBytes    int64
 	BodyReadMaxMS       int32

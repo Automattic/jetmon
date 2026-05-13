@@ -12,7 +12,7 @@ import (
 
 const siteExistsCheckSQL = `SELECT 1 FROM jetpack_monitor_sites WHERE blog_id = ? LIMIT 1`
 
-const insertSiteSQL = ` INSERT INTO jetpack_monitor_sites (blog_id, bucket_no, monitor_url, monitor_active, site_status, check_interval, check_keyword, forbidden_keyword, forbidden_keywords, redirect_policy, timeout_seconds, custom_headers, alert_cooldown_minutes) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)`
+const insertSiteSQL = ` INSERT INTO jetpack_monitor_sites (blog_id, bucket_no, monitor_url, monitor_active, site_status, check_interval) VALUES (?, ?, ?, ?, 1, ?)`
 
 func newPOSTWithBody(target string, body []byte) *http.Request {
 	req := httptest.NewRequest("POST", target, bytes.NewReader(body))
@@ -81,8 +81,7 @@ func TestCreateSiteHappyPath(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"1"}))
 	// insert
 	mock.ExpectExec(insertSiteSQL).
-		WithArgs(int64(12345), 12, "https://example.com", 1, 9,
-			nil, nil, nil, "follow", nil, nil, nil).
+		WithArgs(int64(12345), 12, "https://example.com", 1, 9).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	// read-back
 	mock.ExpectQuery(singleSiteSQL).WithArgs(int64(12345)).
@@ -114,8 +113,7 @@ func TestCreateSiteWithGatewayTenantAssignsMapping(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"1"}))
 	mock.ExpectBegin()
 	mock.ExpectExec(insertSiteSQL).
-		WithArgs(int64(12345), 0, "https://example.com", 1, 5,
-			nil, nil, nil, "follow", nil, nil, nil).
+		WithArgs(int64(12345), 0, "https://example.com", 1, 5).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(insertSiteTenantTestSQL).
 		WithArgs("tenant-a", int64(12345)).
@@ -218,9 +216,14 @@ func TestUpdateSiteHappyPath(t *testing.T) {
 
 	mock.ExpectQuery(siteExistsCheckSQL).WithArgs(int64(42)).
 		WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
-	mock.ExpectExec(`UPDATE jetpack_monitor_sites SET monitor_url = ?, redirect_policy = ? WHERE blog_id = ?`).
-		WithArgs("https://new.example.com", "alert", int64(42)).
+	mock.ExpectBegin()
+	mock.ExpectExec(`UPDATE jetpack_monitor_sites SET monitor_url = ? WHERE blog_id = ?`).
+		WithArgs("https://new.example.com", int64(42)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`INSERT INTO jetmon_site_check_config (blog_id, redirect_policy) VALUES (?, ?) ON DUPLICATE KEY UPDATE redirect_policy = VALUES(redirect_policy)`).
+		WithArgs(int64(42), "alert").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 	mock.ExpectQuery(singleSiteSQL).WithArgs(int64(42)).
 		WillReturnRows(makeSiteRow(42, "https://new.example.com", 1))
 
@@ -480,7 +483,21 @@ func TestBuildUpdateSetClauseHandlesAllFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	if len(clauses) != 11 || len(args) != 11 {
-		t.Errorf("expected 11 clauses, got clauses=%d args=%d", len(clauses), len(args))
+	if len(clauses) != 4 || len(args) != 4 {
+		t.Errorf("expected 4 core clauses, got clauses=%d args=%d", len(clauses), len(args))
+	}
+	configFields, err := buildSiteCheckConfigFields(updateSiteRequest{
+		CheckKeyword:         &keyword,
+		ForbiddenKeywords:    &forbiddenKeywords,
+		RedirectPolicy:       &policy,
+		TimeoutSeconds:       &timeout,
+		CustomHeaders:        &headers,
+		AlertCooldownMinutes: &cooldown,
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("config fields err: %v", err)
+	}
+	if !configFields.hasSet() {
+		t.Fatal("expected sidecar config fields")
 	}
 }

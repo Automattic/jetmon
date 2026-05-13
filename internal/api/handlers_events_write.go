@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/Automattic/jetmon/internal/checker"
+	"github.com/Automattic/jetmon/internal/checkmode"
+	"github.com/Automattic/jetmon/internal/config"
 )
 
 // closeEventRequest is the body for POST .../events/{event_id}/close.
@@ -151,15 +153,17 @@ type triggerNowResponse struct {
 
 // checkResultPayload is the subset of checker.Result we return inline.
 type checkResultPayload struct {
-	HTTPCode     int    `json:"http_code"`
-	ErrorCode    int    `json:"error_code"`
-	Success      bool   `json:"success"`
-	RTTMs        int64  `json:"rtt_ms"`
-	DNSMs        int64  `json:"dns_ms"`
-	TCPMs        int64  `json:"tcp_ms"`
-	TLSMs        int64  `json:"tls_ms"`
-	TTFBMs       int64  `json:"ttfb_ms"`
-	SSLExpiresAt string `json:"ssl_expires_at,omitempty"`
+	Method           string `json:"method"`
+	DetectionProfile string `json:"detection_profile"`
+	HTTPCode         int    `json:"http_code"`
+	ErrorCode        int    `json:"error_code"`
+	Success          bool   `json:"success"`
+	RTTMs            int64  `json:"rtt_ms"`
+	DNSMs            int64  `json:"dns_ms"`
+	TCPMs            int64  `json:"tcp_ms"`
+	TLSMs            int64  `json:"tls_ms"`
+	TTFBMs           int64  `json:"ttfb_ms"`
+	SSLExpiresAt     string `json:"ssl_expires_at,omitempty"`
 }
 
 // triggerNowTimeout is the synchronous deadline for a POST /trigger-now
@@ -216,27 +220,37 @@ func (s *Server) handleTriggerNow(w http.ResponseWriter, r *http.Request) {
 	if redirectPolicy == "" {
 		redirectPolicy = "follow"
 	}
+	method := site.effectiveRequestMethod()
+	profile := site.effectiveDetectionProfile(method)
 
-	res := checker.Check(ctx, checker.Request{
-		BlogID:            siteID,
-		URL:               site.monitorURL,
-		TimeoutSeconds:    timeoutSec,
-		Keyword:           site.checkKeywordPtr(),
-		ForbiddenKeyword:  site.forbiddenKeywordPtr(),
-		ForbiddenKeywords: checker.ParseForbiddenKeywords(site.forbiddenKeywordsPtr()),
-		CustomHeaders:     headers,
-		RedirectPolicy:    checker.RedirectPolicy(redirectPolicy),
-	})
+	req := checker.Request{
+		BlogID:           siteID,
+		URL:              site.monitorURL,
+		Method:           method,
+		DetectionProfile: profile,
+		TimeoutSeconds:   timeoutSec,
+		CustomHeaders:    headers,
+		RedirectPolicy:   checker.RedirectFollow,
+	}
+	if profile == checkmode.ProfileFull {
+		req.Keyword = site.checkKeywordPtr()
+		req.ForbiddenKeyword = site.forbiddenKeywordPtr()
+		req.ForbiddenKeywords = checker.ParseForbiddenKeywords(site.forbiddenKeywordsPtr())
+		req.RedirectPolicy = checker.RedirectPolicy(redirectPolicy)
+	}
+	res := checker.Check(ctx, req)
 
 	payload := checkResultPayload{
-		HTTPCode:  res.HTTPCode,
-		ErrorCode: res.ErrorCode,
-		Success:   res.Success,
-		RTTMs:     res.RTT.Milliseconds(),
-		DNSMs:     res.DNS.Milliseconds(),
-		TCPMs:     res.TCP.Milliseconds(),
-		TLSMs:     res.TLS.Milliseconds(),
-		TTFBMs:    res.TTFB.Milliseconds(),
+		Method:           res.Method,
+		DetectionProfile: res.DetectionProfile,
+		HTTPCode:         res.HTTPCode,
+		ErrorCode:        res.ErrorCode,
+		Success:          res.Success,
+		RTTMs:            res.RTT.Milliseconds(),
+		DNSMs:            res.DNS.Milliseconds(),
+		TCPMs:            res.TCP.Milliseconds(),
+		TLSMs:            res.TLS.Milliseconds(),
+		TTFBMs:           res.TTFB.Milliseconds(),
 	}
 	if res.SSLExpiry != nil {
 		payload.SSLExpiresAt = res.SSLExpiry.UTC().Format(time.RFC3339)
@@ -313,6 +327,8 @@ type siteForCheck struct {
 	forbiddenKeywords sql.NullString
 	customHeadersJSON string
 	redirectPolicy    string
+	requestMethod     string
+	detectionProfile  string
 	siteStatus        int
 }
 
@@ -342,20 +358,47 @@ func (s siteForCheck) deriveState() string {
 	return state
 }
 
+func (s siteForCheck) effectiveRequestMethod() string {
+	def := checkmode.MethodGET
+	if cfg := config.Get(); cfg != nil && cfg.DefaultCheckMethod != "" {
+		def = cfg.DefaultCheckMethod
+	}
+	method, err := checkmode.NormalizeMethod(s.requestMethod, def)
+	if err != nil {
+		return def
+	}
+	return method
+}
+
+func (s siteForCheck) effectiveDetectionProfile(method string) string {
+	def := checkmode.ProfileFull
+	if cfg := config.Get(); cfg != nil && cfg.DefaultDetectionProfile != "" {
+		def = cfg.DefaultDetectionProfile
+	}
+	profile, err := checkmode.NormalizeProfile(s.detectionProfile, def)
+	if err != nil {
+		return checkmode.EffectiveProfile(method, def)
+	}
+	return checkmode.EffectiveProfile(method, profile)
+}
+
 func (s *Server) readSiteForCheck(ctx context.Context, blogID int64) (siteForCheck, error) {
 	var (
-		out            siteForCheck
-		timeoutSeconds sql.NullInt64
-		customHeaders  sql.NullString
-		redirectPolicy sql.NullString
+		out              siteForCheck
+		timeoutSeconds   sql.NullInt64
+		customHeaders    sql.NullString
+		redirectPolicy   sql.NullString
+		requestMethod    sql.NullString
+		detectionProfile sql.NullString
 	)
 	err := s.db.QueryRowContext(ctx, `
-		SELECT monitor_url, timeout_seconds, check_keyword, forbidden_keyword, forbidden_keywords, custom_headers,
-		       redirect_policy, site_status
-		  FROM jetpack_monitor_sites
-		 WHERE blog_id = ?`, blogID,
+		SELECT s.monitor_url, c.timeout_seconds, c.check_keyword, c.forbidden_keyword, c.forbidden_keywords, c.custom_headers,
+		       c.redirect_policy, c.request_method, c.detection_profile, s.site_status
+		  FROM jetpack_monitor_sites s
+		  LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id
+		 WHERE s.blog_id = ?`, blogID,
 	).Scan(&out.monitorURL, &timeoutSeconds, &out.checkKeyword, &out.forbiddenKeyword, &out.forbiddenKeywords, &customHeaders,
-		&redirectPolicy, &out.siteStatus)
+		&redirectPolicy, &requestMethod, &detectionProfile, &out.siteStatus)
 	if err != nil {
 		return out, err
 	}
@@ -367,6 +410,12 @@ func (s *Server) readSiteForCheck(ctx context.Context, blogID int64) (siteForChe
 	}
 	if redirectPolicy.Valid {
 		out.redirectPolicy = redirectPolicy.String
+	}
+	if requestMethod.Valid {
+		out.requestMethod = requestMethod.String
+	}
+	if detectionProfile.Valid {
+		out.detectionProfile = detectionProfile.String
 	}
 	return out, nil
 }

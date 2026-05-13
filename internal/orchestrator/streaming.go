@@ -84,6 +84,8 @@ type streamingRequestConfig struct {
 	bodyReadMaxMS       int
 	keywordReadMaxBytes int64
 	keywordReadMaxMS    int
+	requestMethod       string
+	detectionProfile    string
 }
 
 type streamingPlanner struct {
@@ -244,7 +246,9 @@ func streamingSiteCheckConfigEqual(a, b db.Site) bool {
 		stringPtrEqual(a.ForbiddenKeywords, b.ForbiddenKeywords) &&
 		stringPtrEqual(a.CustomHeaders, b.CustomHeaders) &&
 		a.TimeoutSeconds == b.TimeoutSeconds &&
-		a.RedirectPolicy == b.RedirectPolicy
+		a.RedirectPolicy == b.RedirectPolicy &&
+		a.RequestMethod == b.RequestMethod &&
+		a.DetectionProfile == b.DetectionProfile
 }
 
 func stringPtrEqual(a, b *string) bool {
@@ -352,10 +356,12 @@ type streamingStats struct {
 	errorTLSExpired    int
 	errorTLSDeprecated int
 	errorOther         int
+	checkCohorts       map[checkCohortKey]int
 }
 
 func (s *streamingStats) addResult(res checker.Result, lag time.Duration) {
 	s.completed++
+	s.checkCohorts = incrementCheckCohort(s.checkCohorts, res)
 	if res.Success {
 		s.checkSuccesses++
 	} else {
@@ -1044,19 +1050,21 @@ func (o *Orchestrator) processStreamingSideEffects(site db.Site, res checker.Res
 	summary := resultProcessSummary{processed: 1}
 
 	sslStart := time.Now()
-	if res.TLSVersion != 0 {
-		o.checkTLSDeprecated(site, res)
-	}
-	if res.SSLExpiry != nil {
-		if shouldUpdateSSLExpiry(site.SSLExpiryDate, *res.SSLExpiry) {
-			o.updateSSLExpiries([]db.SiteSSLExpiry{{
-				BlogID: site.BlogID,
-				Expiry: *res.SSLExpiry,
-			}}, &summary)
-			expiry := *res.SSLExpiry
-			site.SSLExpiryDate = &expiry
+	if fullDetectionsEnabled(config.Get(), site) {
+		if res.TLSVersion != 0 {
+			o.checkTLSDeprecated(site, res)
 		}
-		o.checkSSLAlerts(site, *res.SSLExpiry)
+		if res.SSLExpiry != nil {
+			if shouldUpdateSSLExpiry(site.SSLExpiryDate, *res.SSLExpiry) {
+				o.updateSSLExpiries([]db.SiteSSLExpiry{{
+					BlogID: site.BlogID,
+					Expiry: *res.SSLExpiry,
+				}}, &summary)
+				expiry := *res.SSLExpiry
+				site.SSLExpiryDate = &expiry
+			}
+			o.checkSSLAlerts(site, *res.SSLExpiry)
+		}
 	}
 	summary.sslDuration += time.Since(sslStart)
 
@@ -1093,12 +1101,16 @@ func streamingCheckRequestForTarget(cfg *config.Config, target *streamingTarget)
 }
 
 func streamingRequestConfigForSite(cfg *config.Config, site db.Site) streamingRequestConfig {
+	method := effectiveCheckMethod(cfg, site)
+	profile := effectiveDetectionProfile(cfg, site, method)
 	return streamingRequestConfig{
 		timeoutSeconds:      timeoutForSite(cfg, site),
 		bodyReadMaxBytes:    cfg.BodyReadMaxBytes,
 		bodyReadMaxMS:       cfg.BodyReadMaxMS,
 		keywordReadMaxBytes: cfg.KeywordReadMaxBytes,
 		keywordReadMaxMS:    cfg.KeywordReadMaxMS,
+		requestMethod:       method,
+		detectionProfile:    profile,
 	}
 }
 
@@ -1333,6 +1345,7 @@ func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streami
 		m.Increment("scheduler.streaming.check.error.tls_expired.count", stats.errorTLSExpired)
 		m.Increment("scheduler.streaming.check.error.tls_deprecated.count", stats.errorTLSDeprecated)
 		m.Increment("scheduler.streaming.check.error.other.count", stats.errorOther)
+		emitCheckCohortCounters(m, "scheduler.streaming", stats.checkCohorts)
 		m.Increment("scheduler.streaming.side_effect.processed.count", stats.sideEffectRows)
 		m.Increment("scheduler.streaming.history.row.count", stats.historyRows)
 		m.Increment("scheduler.streaming.history.error.count", stats.historyErrors)

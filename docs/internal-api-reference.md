@@ -371,6 +371,8 @@ see rows mapped to `X-Jetmon-Tenant-ID` in `jetmon_site_tenants`.
       "forbidden_keyword": null,
       "forbidden_keywords": null,
       "redirect_policy": "follow",
+      "request_method": "GET",
+      "detection_profile": "full",
       "maintenance_start": null,
       "maintenance_end": null,
       "alert_cooldown_minutes": null
@@ -381,6 +383,11 @@ see rows mapped to `X-Jetmon-Tenant-ID` in `jetmon_site_tenants`.
 ```
 
 `id` and `blog_id` are the same value for now; `id` is the public field name (`blog_id` is the historical column name). Consumers should rely on `id`.
+
+The response intentionally merges v1-shaped `jetpack_monitor_sites` fields with
+v2-owned sidecar state from `jetmon_site_check_config` and
+`jetmon_site_runtime`; callers should use the API contract instead of assuming
+all fields live in the legacy site table.
 
 `cli_batch` is an opt-in local-tooling projection. It is present only when
 `include_cli_metadata=true` and the site's `custom_headers` include
@@ -451,6 +458,8 @@ Create a site.
     "buy cheap viagra"
   ],
   "redirect_policy": "follow",
+  "request_method": "GET",
+  "detection_profile": "full",
   "timeout_seconds": null,
   "custom_headers": {},
   "alert_cooldown_minutes": null,
@@ -464,6 +473,11 @@ When the `gateway` consumer creates a site with tenant context, Jetmon inserts
 the site row and the `(tenant_id, blog_id)` mapping in one transaction. Internal
 creates without tenant context keep the existing unscoped behavior.
 
+`request_method` accepts `HEAD` or `GET`. `detection_profile` accepts
+`legacy`, `simple_http`, or `full`. Omit either field to inherit the process
+default. During rollout, use `HEAD` + `legacy`, then `GET` + `simple_http`,
+then `GET` + `full`.
+
 **Errors:**
 
 | Code | Meaning |
@@ -471,6 +485,7 @@ creates without tenant context keep the existing unscoped behavior.
 | `invalid_blog_id` | `blog_id` is missing or not a positive integer |
 | `invalid_url` | `monitor_url` doesn't parse |
 | `invalid_redirect_policy` | `redirect_policy` is not `follow`, `alert`, or `fail` |
+| `invalid_check_policy` | `request_method` or `detection_profile` is not supported |
 | `invalid_custom_headers` | `custom_headers` is not a valid string map |
 | `invalid_forbidden_keywords` | `forbidden_keywords` is too large or contains invalid entries |
 | `site_exists` | A site with this `blog_id` already exists |

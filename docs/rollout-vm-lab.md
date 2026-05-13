@@ -195,9 +195,10 @@ scripts/rollout-vm-lab.sh smoke-real-activity
 - `smoke-runtime-guards` confirms guided rollout refuses an unwritable log
   directory before any rollout checks run, and confirms host preflight refuses
   a broken DB connection before service state changes.
-- `smoke-real-activity` clears the seeded range's `last_checked_at`, stops the
-  v1 simulator, starts real `jetmon2`, and waits for every active seeded site
-  to receive a real check write before returning the range to v1.
+- `smoke-real-activity` clears the seeded range's
+  `jetmon_site_runtime.last_checked_at`, stops the v1 simulator, starts real
+  `jetmon2`, and waits for every active seeded site to receive a real check
+  write before returning the range to v1.
 
 Run the failure-gate smoke:
 
@@ -282,7 +283,8 @@ The VM lab is intended to exercise these rollout scenarios:
 - unwritable rollout log directory refusal before any rollout checks or service
   commands run
 - bad DB connection refusal during host preflight
-- real v2 monitor activity that writes seeded sites' `last_checked_at`
+- real v2 monitor activity that writes seeded sites'
+  `jetmon_site_runtime.last_checked_at`
 - snapshot-backed flow reruns
 - bad systemd unit refusal
 

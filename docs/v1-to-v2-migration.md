@@ -24,19 +24,35 @@ Use this document for:
 
 ## What Changes For Customers
 
-The important product fix is the probe method.
+The important product fix is the probe method, but it should be rolled out in
+stages.
 
 Jetmon 1 verified sites with `HEAD` requests. That caused real customer pain:
 some production stacks block `HEAD`, route it differently, skip application
 logic, or return a status that does not match a visitor's real page load.
-Jetmon 2 uses `GET` requests for local monitor checks and Veriflier checks, so
-it validates the same class of request a browser or customer-facing uptime
-check normally makes.
+Jetmon 2 can use `GET` requests for local monitor checks and Veriflier checks,
+so it can validate the same class of request a browser or customer-facing
+uptime check normally makes.
 
-This is why v2 can support keyword checks, richer redirect behavior, and better
-VIP/Agency explanations. It is also why the rollout should be watched closely:
-GET-based checks are more correct, but they can expose sites whose `HEAD`
-behavior used to hide a real application issue.
+The production rollout should not switch every variable at once. Use this
+three-step check-policy migration:
+
+1. Replace v1 processing with v2 while keeping `HEAD` plus the `legacy`
+   detection profile. This validates the binary, bucket ownership, Veriflier
+   transport, legacy projection, WPCOM payloads, and rollback process while the
+   probe semantics stay as close to v1 as possible.
+2. Move controlled batches to `GET` plus `simple_http`. This tests the visitor
+   request path without enabling keyword, forbidden-content, redirect advisory,
+   TLS advisory, or body-integrity detections.
+3. Move stable batches to `GET` plus `full`. This enables the richer v2
+   detections that provide better VIP/Agency explanations.
+
+Set `DEFAULT_CHECK_METHOD=HEAD` and `DEFAULT_DETECTION_PROFILE=legacy` during
+the initial replacement phase. Per-site overrides live in
+`jetmon_site_check_config`; use that table or the API/CLI fields
+`request_method` and `detection_profile` to move batches through the phases.
+After migration, switch the process defaults to `GET` and `full`; keep
+per-site `HEAD` overrides only for sites that truly require legacy semantics.
 
 ## Success Criteria
 
@@ -65,6 +81,8 @@ Do not violate these during the migration:
   rollback window is closed.
 - Treat `./jetmon2 migrate` as forward-only. Migrations are additive, so revert
   by restarting v1, not by rolling the schema back.
+- V2 migrations intentionally add v2-owned tables and avoid requiring new
+  columns or indexes on the live `jetpack_monitor_sites` compatibility table.
 
 ## Phase 0: Prepare Before Production Changes
 
@@ -219,7 +237,7 @@ the range was returned to v1. Keep the transcript with the rollout record.
 
 4. Confirm v1 continues to run normally after migrations are applied.
 5. Do not plan a schema rollback. If v2 must be reverted, v1 can keep running
-   with the additive v2 tables and columns present.
+   with the additive v2 tables present.
 
 ### Build And Stage Artifacts
 
@@ -280,6 +298,8 @@ For each replacement host, configure the exact v1 bucket range:
   "PINNED_BUCKET_MIN": 0,
   "PINNED_BUCKET_MAX": 99,
   "LEGACY_STATUS_PROJECTION_ENABLE": true,
+  "DEFAULT_CHECK_METHOD": "HEAD",
+  "DEFAULT_DETECTION_PROFILE": "legacy",
   "API_PORT": 0
 }
 ```
@@ -308,6 +328,7 @@ Confirm it reports:
 
 - `legacy_status_projection=enabled`
 - `bucket_ownership=pinned range=<min>-<max>`
+- `default_check_policy=method:HEAD profile:legacy`
 - `rollout_static_plan=./jetmon2 rollout static-plan-check --file=<ranges.csv>`
 - `rollout_preflight=` points at `./jetmon2 rollout host-preflight` with the
   static plan file, v1 host, runtime v2 host, and pinned bucket range
@@ -431,9 +452,9 @@ are the fallback/reference path and match what the guided command walks through.
 
     `cutover-check` runs the pinned preflight, recent activity check,
     dashboard status check, and projection-drift report. Its activity section
-    proves the range has fresh `last_checked_at` writes, not which process
-    wrote them. Keep v1 stopped and use logs or the dashboard to confirm v2 is
-    checking only the pinned range.
+    proves the range has fresh `jetmon_site_runtime.last_checked_at` writes,
+    not which process wrote them. Keep v1 stopped and use logs or the dashboard
+    to confirm v2 is checking only the pinned range.
 11. After one full expected round, run:
 
     ```bash
@@ -525,7 +546,8 @@ For every replaced range, verify:
 
 - checks run only for the pinned range
 - round time and sites-per-second are within the expected envelope
-- local checks use GET semantics against customer sites
+- local checks use `HEAD` plus `legacy` detection during the first replacement
+  phase
 - Veriflier confirmation works
 - WPCOM notifications retain the v1 payload shape
 - `jetmon_events` receives event rows
@@ -557,7 +579,7 @@ For every replaced range, verify:
   ```
 
   After a full expected round, require every active site in the range to have a
-  fresh `last_checked_at`:
+  fresh `jetmon_site_runtime.last_checked_at`:
 
   ```bash
   ./jetmon2 rollout activity-check \
@@ -719,6 +741,33 @@ After every monitor host is on v2 and stable in pinned mode:
 9. Continue with normal v2 rolling updates: stop one host, deploy, start it,
    verify `./jetmon2 status`, then move to the next host.
 
+## Phase 5: Migrate Probe Semantics
+
+After v2 has replaced v1 and the fleet is stable, migrate probe semantics in
+separate batches:
+
+1. Select a small cohort and set `request_method='GET'`,
+   `detection_profile='simple_http'` in `jetmon_site_check_config` or through
+   the API/CLI. Watch for false-positive floods, verifier disagreement, WPCOM
+   parity issues, and support reports.
+2. Expand the `GET` + `simple_http` cohort only after the previous cohort is
+   clean for the agreed observation window.
+3. For stable GET cohorts, set `detection_profile='full'` to enable keyword,
+   forbidden-content, redirect advisory/fail, TLS advisory, and body-integrity
+   detections.
+4. When all normal sites are stable on `GET` + `full`, change process defaults
+   to:
+
+   ```json
+   {
+     "DEFAULT_CHECK_METHOD": "GET",
+     "DEFAULT_DETECTION_PROFILE": "full"
+   }
+   ```
+
+5. Leave rows in `jetmon_site_check_config` only for sites that need an
+   exception from the defaults, such as long-term `HEAD` compatibility.
+
 ## Phase 5: Tear Down v1
 
 Only remove v1 after rollout signoff.
@@ -731,8 +780,8 @@ Only remove v1 after rollout signoff.
    addons, Qt Veriflier artifacts, and v1-only logrotate files.
 5. Remove v1-only deployment hooks from host automation.
 6. Keep shared log and stats paths only if v2 still writes to them.
-7. Keep v2 additive database schema. Do not remove compatibility columns while
-   legacy consumers still read them.
+7. Keep v2 additive database schema. Do not remove v2-owned tables while legacy
+   consumers still need rollback coverage.
 8. Keep `LEGACY_STATUS_PROJECTION_ENABLE=true` until legacy readers have moved
    to v2 state surfaces. Retiring that projection is a separate project.
 

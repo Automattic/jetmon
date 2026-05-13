@@ -18,28 +18,31 @@ const batchWriteChunkSize = 1000
 func GetSitesForBucket(ctx context.Context, bucketMin, bucketMax, batchSize int, useVariableIntervals bool) ([]Site, error) {
 	query := `
 		SELECT
-			jetpack_monitor_site_id, blog_id, bucket_no, monitor_url,
-			monitor_active, site_status, last_status_change, check_interval, last_checked_at, next_check_at,
-			ssl_expiry_date, check_keyword, forbidden_keyword, forbidden_keywords, maintenance_start, maintenance_end,
-			custom_headers, timeout_seconds, redirect_policy, alert_cooldown_minutes, last_alert_sent_at
-		FROM jetpack_monitor_sites
-		WHERE monitor_active = 1
-		  AND bucket_no BETWEEN ? AND ?`
+			s.jetpack_monitor_site_id, s.blog_id, s.bucket_no, s.monitor_url,
+			s.monitor_active, s.site_status, s.last_status_change, s.check_interval, r.last_checked_at, r.next_check_at,
+			r.ssl_expiry_date, c.check_keyword, c.forbidden_keyword, c.forbidden_keywords, c.maintenance_start, c.maintenance_end,
+			c.custom_headers, c.timeout_seconds, c.redirect_policy, c.alert_cooldown_minutes, r.last_alert_sent_at,
+			c.request_method, c.detection_profile
+		FROM jetpack_monitor_sites s
+		LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id
+		LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id
+		WHERE s.monitor_active = 1
+		  AND s.bucket_no BETWEEN ? AND ?`
 	if useVariableIntervals {
 		query += `
 		  AND (
-			next_check_at IS NULL
-			OR next_check_at <= NOW()
+			r.next_check_at IS NULL
+			OR r.next_check_at <= NOW()
 		  )`
 		query += `
 		ORDER BY
-			next_check_at ASC,
-			blog_id ASC`
+			r.next_check_at ASC,
+			s.blog_id ASC`
 	} else {
 		query += `
 		ORDER BY
-			last_checked_at ASC,
-			blog_id ASC`
+			r.last_checked_at ASC,
+			s.blog_id ASC`
 	}
 	query += `
 		LIMIT ?`
@@ -63,15 +66,18 @@ func ListActiveSitesForBucketRange(ctx context.Context, bucketMin, bucketMax int
 	}
 	rows, err := db.QueryContext(ctx, `
 		SELECT
-			jetpack_monitor_site_id, blog_id, bucket_no, monitor_url,
-			monitor_active, site_status, last_status_change, check_interval, last_checked_at, next_check_at,
-			ssl_expiry_date, check_keyword, forbidden_keyword, forbidden_keywords, maintenance_start, maintenance_end,
-			custom_headers, timeout_seconds, redirect_policy, alert_cooldown_minutes, last_alert_sent_at
-		FROM jetpack_monitor_sites
-		WHERE monitor_active = 1
-		  AND bucket_no BETWEEN ? AND ?
-		  AND blog_id > ?
-		ORDER BY blog_id ASC
+			s.jetpack_monitor_site_id, s.blog_id, s.bucket_no, s.monitor_url,
+			s.monitor_active, s.site_status, s.last_status_change, s.check_interval, r.last_checked_at, r.next_check_at,
+			r.ssl_expiry_date, c.check_keyword, c.forbidden_keyword, c.forbidden_keywords, c.maintenance_start, c.maintenance_end,
+			c.custom_headers, c.timeout_seconds, c.redirect_policy, c.alert_cooldown_minutes, r.last_alert_sent_at,
+			c.request_method, c.detection_profile
+		FROM jetpack_monitor_sites s
+		LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id
+		LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id
+		WHERE s.monitor_active = 1
+		  AND s.bucket_no BETWEEN ? AND ?
+		  AND s.blog_id > ?
+		ORDER BY s.blog_id ASC
 		LIMIT ?`,
 		bucketMin, bucketMax, afterBlogID, limit,
 	)
@@ -87,11 +93,14 @@ func scanSiteRows(rows *sql.Rows) ([]Site, error) {
 	for rows.Next() {
 		var s Site
 		var redirectPolicy sql.NullString
+		var requestMethod sql.NullString
+		var detectionProfile sql.NullString
 		err := rows.Scan(
 			&s.ID, &s.BlogID, &s.BucketNo, &s.MonitorURL,
 			&s.MonitorActive, &s.SiteStatus, &s.LastStatusChange, &s.CheckInterval, &s.LastCheckedAt, &s.NextCheckAt,
 			&s.SSLExpiryDate, &s.CheckKeyword, &s.ForbiddenKeyword, &s.ForbiddenKeywords, &s.MaintenanceStart, &s.MaintenanceEnd,
 			&s.CustomHeaders, &s.TimeoutSeconds, &redirectPolicy, &s.AlertCooldownMinutes, &s.LastAlertSentAt,
+			&requestMethod, &detectionProfile,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan site: %w", err)
@@ -100,6 +109,12 @@ func scanSiteRows(rows *sql.Rows) ([]Site, error) {
 			s.RedirectPolicy = redirectPolicy.String
 		} else {
 			s.RedirectPolicy = "follow"
+		}
+		if requestMethod.Valid {
+			s.RequestMethod = requestMethod.String
+		}
+		if detectionProfile.Valid {
+			s.DetectionProfile = detectionProfile.String
 		}
 		sites = append(sites, s)
 	}
@@ -127,16 +142,17 @@ func CountActiveSitesForBucketRange(ctx context.Context, bucketMin, bucketMax in
 }
 
 // CountRecentlyCheckedActiveSitesForBucketRange returns the number of active
-// monitor rows in the inclusive bucket range whose last_checked_at timestamp is
-// at or after the provided cutoff.
+// monitor rows in the inclusive bucket range whose runtime freshness timestamp
+// is at or after the provided cutoff.
 func CountRecentlyCheckedActiveSitesForBucketRange(ctx context.Context, bucketMin, bucketMax int, cutoff time.Time) (int, error) {
 	var count int
 	err := db.QueryRowContext(ctx, `
 		SELECT COUNT(*)
-		  FROM jetpack_monitor_sites
-		 WHERE monitor_active = 1
-		   AND bucket_no BETWEEN ? AND ?
-		   AND last_checked_at >= ?`,
+		  FROM jetpack_monitor_sites s
+		  JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id
+		 WHERE s.monitor_active = 1
+		   AND s.bucket_no BETWEEN ? AND ?
+		   AND r.last_checked_at >= ?`,
 		bucketMin, bucketMax, cutoff.UTC(),
 	).Scan(&count)
 	if err != nil {
@@ -151,14 +167,15 @@ func CountRecentlyCheckedActiveSitesForBucketRange(ctx context.Context, bucketMi
 func CountDueSitesForBucketRange(ctx context.Context, bucketMin, bucketMax int, useVariableIntervals bool) (int, error) {
 	query := `
 		SELECT COUNT(*)
-		  FROM jetpack_monitor_sites
-		 WHERE monitor_active = 1
-		   AND bucket_no BETWEEN ? AND ?`
+		  FROM jetpack_monitor_sites s
+		  LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id
+		 WHERE s.monitor_active = 1
+		   AND s.bucket_no BETWEEN ? AND ?`
 	if useVariableIntervals {
 		query += `
 		   AND (
-			next_check_at IS NULL
-			OR next_check_at <= NOW()
+			r.next_check_at IS NULL
+			OR r.next_check_at <= NOW()
 		   )`
 	}
 
@@ -423,8 +440,12 @@ func SummarizeLegacyProjectionDrift(ctx context.Context, bucketMin, bucketMax, l
 // MarkSiteChecked records when a site was last checked and when it is next due.
 func MarkSiteChecked(ctx context.Context, blogID int64, checkedAt, nextCheckAt time.Time) error {
 	_, err := db.ExecContext(ctx,
-		`UPDATE jetpack_monitor_sites SET last_checked_at = ?, next_check_at = ? WHERE blog_id = ?`,
-		checkedAt.UTC(), nextCheckAt.UTC(), blogID,
+		`INSERT INTO jetmon_site_runtime (blog_id, last_checked_at, next_check_at)
+		 VALUES (?, ?, ?)
+		 ON DUPLICATE KEY UPDATE
+			last_checked_at = VALUES(last_checked_at),
+			next_check_at = VALUES(next_check_at)`,
+		blogID, checkedAt.UTC(), nextCheckAt.UTC(),
 	)
 	return err
 }
@@ -477,26 +498,16 @@ func markSitesCheckedChunkWithRetry(ctx context.Context, checks []SiteCheck) err
 
 func markSitesCheckedChunk(ctx context.Context, checks []SiteCheck) error {
 	var query strings.Builder
-	query.WriteString("UPDATE jetpack_monitor_sites SET last_checked_at = CASE blog_id")
-	args := make([]any, 0, len(checks)*5)
-	for _, check := range checks {
-		query.WriteString(" WHEN ? THEN ?")
-		args = append(args, check.BlogID, check.CheckedAt.UTC())
-	}
-	query.WriteString(" END, next_check_at = CASE blog_id")
-	for _, check := range checks {
-		query.WriteString(" WHEN ? THEN ?")
-		args = append(args, check.BlogID, check.NextCheckAt.UTC())
-	}
-	query.WriteString(" END WHERE blog_id IN (")
+	query.WriteString("INSERT INTO jetmon_site_runtime (blog_id, last_checked_at, next_check_at) VALUES ")
+	args := make([]any, 0, len(checks)*3)
 	for i, check := range checks {
 		if i > 0 {
 			query.WriteByte(',')
 		}
-		query.WriteByte('?')
-		args = append(args, check.BlogID)
+		query.WriteString("(?, ?, ?)")
+		args = append(args, check.BlogID, check.CheckedAt.UTC(), check.NextCheckAt.UTC())
 	}
-	query.WriteByte(')')
+	query.WriteString(" ON DUPLICATE KEY UPDATE last_checked_at = VALUES(last_checked_at), next_check_at = VALUES(next_check_at)")
 	_, err := db.ExecContext(ctx, query.String(), args...)
 	return err
 }
@@ -512,8 +523,10 @@ func isRetryableWriteConflict(err error) bool {
 // UpdateLastAlertSent records when an alert was last sent for a site.
 func UpdateLastAlertSent(ctx context.Context, blogID int64, sentAt time.Time) error {
 	_, err := db.ExecContext(ctx,
-		`UPDATE jetpack_monitor_sites SET last_alert_sent_at = ? WHERE blog_id = ?`,
-		sentAt.UTC(), blogID,
+		`INSERT INTO jetmon_site_runtime (blog_id, last_alert_sent_at)
+		 VALUES (?, ?)
+		 ON DUPLICATE KEY UPDATE last_alert_sent_at = VALUES(last_alert_sent_at)`,
+		blogID, sentAt.UTC(),
 	)
 	return err
 }
@@ -521,8 +534,10 @@ func UpdateLastAlertSent(ctx context.Context, blogID int64, sentAt time.Time) er
 // UpdateSSLExpiry records the SSL certificate expiry date for a site.
 func UpdateSSLExpiry(ctx context.Context, blogID int64, expiry time.Time) error {
 	_, err := db.ExecContext(ctx,
-		`UPDATE jetpack_monitor_sites SET ssl_expiry_date = ? WHERE blog_id = ?`,
-		expiry, blogID,
+		`INSERT INTO jetmon_site_runtime (blog_id, ssl_expiry_date)
+		 VALUES (?, ?)
+		 ON DUPLICATE KEY UPDATE ssl_expiry_date = VALUES(ssl_expiry_date)`,
+		blogID, expiry,
 	)
 	return err
 }
@@ -556,22 +571,33 @@ func UpdateSSLExpiries(ctx context.Context, expiries []SiteSSLExpiry) error {
 
 func updateSSLExpiriesChunk(ctx context.Context, expiries []SiteSSLExpiry) error {
 	var query strings.Builder
-	query.WriteString("UPDATE jetpack_monitor_sites SET ssl_expiry_date = CASE blog_id")
-	args := make([]any, 0, len(expiries)*3)
-	for _, expiry := range expiries {
-		query.WriteString(" WHEN ? THEN ?")
-		args = append(args, expiry.BlogID, expiry.Expiry)
-	}
-	query.WriteString(" END WHERE blog_id IN (")
+	query.WriteString("INSERT INTO jetmon_site_runtime (blog_id, ssl_expiry_date) VALUES ")
+	args := make([]any, 0, len(expiries)*2)
 	for i, expiry := range expiries {
 		if i > 0 {
 			query.WriteByte(',')
 		}
-		query.WriteByte('?')
-		args = append(args, expiry.BlogID)
+		query.WriteString("(?, ?)")
+		args = append(args, expiry.BlogID, expiry.Expiry)
 	}
-	query.WriteByte(')')
+	query.WriteString(" ON DUPLICATE KEY UPDATE ssl_expiry_date = VALUES(ssl_expiry_date)")
 	_, err := db.ExecContext(ctx, query.String(), args...)
+	return err
+}
+
+// RescheduleSiteRuntime recalculates the sidecar due-time projection after a
+// site's check interval changes.
+func RescheduleSiteRuntime(ctx context.Context, tx *sql.Tx, blogID int64, checkInterval int) error {
+	_, err := tx.ExecContext(ctx,
+		`INSERT INTO jetmon_site_runtime (blog_id, next_check_at)
+		 VALUES (?, NULL)
+		 ON DUPLICATE KEY UPDATE
+			next_check_at = CASE
+				WHEN last_checked_at IS NULL THEN NULL
+				ELSE DATE_ADD(last_checked_at, INTERVAL GREATEST(?, 1) MINUTE)
+			END`,
+		blogID, checkInterval,
+	)
 	return err
 }
 

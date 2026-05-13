@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"net/http"
 	"testing"
 	"time"
 
@@ -512,6 +513,18 @@ func TestStreamingStatsCountsErrorCodes(t *testing.T) {
 			stats.errorOther,
 		)
 	}
+}
+
+func TestStreamingStatsCountsCheckCohorts(t *testing.T) {
+	var stats streamingStats
+	stats.addResult(checker.Result{Method: http.MethodHead, DetectionProfile: "legacy", Success: true}, 0)
+	stats.addResult(checker.Result{Method: http.MethodGet, DetectionProfile: "simple_http", Success: false}, 0)
+	stats.addResult(checker.Result{Method: http.MethodGet, DetectionProfile: "full", Success: true}, 0)
+	stats.addResult(checker.Result{Method: http.MethodGet, DetectionProfile: "full", Success: false}, 0)
+
+	assertCheckCohortCount(t, stats.checkCohorts, http.MethodHead, "legacy", 1)
+	assertCheckCohortCount(t, stats.checkCohorts, http.MethodGet, "simple_http", 1)
+	assertCheckCohortCount(t, stats.checkCohorts, http.MethodGet, "full", 2)
 }
 
 func TestStreamingBacklogWorkerTargetUsesSpareHeadroom(t *testing.T) {

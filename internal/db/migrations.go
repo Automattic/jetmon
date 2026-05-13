@@ -29,15 +29,10 @@ var migrations = []migration{
 		INDEX idx_bucket_active (bucket_no, monitor_active)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
 
-	{3, `ALTER TABLE jetpack_monitor_sites
-		ADD COLUMN ssl_expiry_date        DATE NULL,
-		ADD COLUMN check_keyword          VARCHAR(500) NULL,
-		ADD COLUMN maintenance_start      DATETIME NULL,
-		ADD COLUMN maintenance_end        DATETIME NULL,
-		ADD COLUMN custom_headers         JSON NULL,
-		ADD COLUMN timeout_seconds        TINYINT UNSIGNED NULL,
-		ADD COLUMN redirect_policy        ENUM('follow','alert','fail') NULL DEFAULT 'follow',
-		ADD COLUMN alert_cooldown_minutes SMALLINT UNSIGNED NULL`},
+	// Migration 3 previously added v2-only config columns to
+	// jetpack_monitor_sites. That hot table is now kept v1-shaped for rollout;
+	// v2-only config lives in jetmon_site_check_config.
+	{3, `SELECT 1`},
 
 	{4, `CREATE TABLE IF NOT EXISTS jetmon_hosts (
 		host_id        VARCHAR(255) NOT NULL PRIMARY KEY,
@@ -86,10 +81,9 @@ var migrations = []migration{
 		INDEX idx_blog_id (blog_id)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
 
-	{8, `ALTER TABLE jetpack_monitor_sites
-		ADD COLUMN last_checked_at DATETIME NULL,
-		ADD COLUMN last_alert_sent_at DATETIME NULL,
-		ADD INDEX idx_bucket_monitor_last_checked (bucket_no, monitor_active, last_checked_at)`},
+	// Migration 8 previously added v2 runtime/freshness fields to
+	// jetpack_monitor_sites. Runtime state now lives in jetmon_site_runtime.
+	{8, `SELECT 1`},
 
 	// Migration 9 retires jetmon_audit_log's site-state columns. Per-probe data lives in
 	// jetmon_check_history; status transitions move to jetmon_event_transitions (migration 11).
@@ -435,41 +429,30 @@ var migrations = []migration{
 	{26, `ALTER TABLE jetmon_process_health
 		ADD COLUMN rss_mem_mb INT UNSIGNED NOT NULL DEFAULT 0 AFTER go_sys_mem_mb`},
 
-	// Migration 27 supports the scheduler's hot path: fetch the least recently
-	// checked active rows for a host's bucket range. The previous bucket-first
-	// index is still useful for bucket coverage/count queries, but the
-	// scheduler ORDER BY starts with last_checked_at and otherwise falls back to
-	// a full scan/filesort at larger table sizes.
-	{27, `ALTER TABLE jetpack_monitor_sites
-		ADD INDEX idx_monitor_last_checked_blog_bucket (monitor_active, last_checked_at, blog_id, bucket_no)`},
+	// Migration 27 previously added a scheduler index on jetpack_monitor_sites.
+	// The legacy table is no longer altered for v2 scheduler internals.
+	{27, `SELECT 1`},
 
-	// Migration 28 adds a maintained due timestamp for variable-interval
-	// scheduling. This lets the scheduler use a simple indexed range predicate
-	// instead of computing DATE_ADD(last_checked_at, INTERVAL check_interval)
-	// for every candidate row on every poll.
-	{28, `ALTER TABLE jetpack_monitor_sites
-		ADD COLUMN next_check_at DATETIME NULL AFTER last_checked_at`},
+	// Migration 28 previously added next_check_at to jetpack_monitor_sites.
+	// Due-time projection now lives in jetmon_site_runtime.
+	{28, `SELECT 1`},
 
-	// Migration 29 backfills next_check_at for already-checked rows. Rows that
-	// have never been checked stay NULL and are due immediately, matching the
-	// existing last_checked_at IS NULL behavior.
-	{29, `UPDATE jetpack_monitor_sites
-		SET next_check_at = DATE_ADD(last_checked_at, INTERVAL GREATEST(check_interval, 1) MINUTE)
-		WHERE last_checked_at IS NOT NULL
-		  AND next_check_at IS NULL`},
+	// Migration 29 previously backfilled jetpack_monitor_sites.next_check_at.
+	// No backfill is needed now because the sidecar runtime table is populated
+	// lazily as checks complete.
+	{29, `SELECT 1`},
 
-	// Migration 30 supports variable-interval scheduling's hot path:
-	// active rows whose maintained due timestamp is NULL or due now, ordered by
-	// next_check_at and blog_id.
-	{30, `ALTER TABLE jetpack_monitor_sites
-		ADD INDEX idx_monitor_next_check_blog_bucket (monitor_active, next_check_at, blog_id, bucket_no)`},
+	// Migration 30 previously added a next_check_at scheduler index to the
+	// legacy table. Runtime due queries now use jetmon_site_runtime.
+	{30, `SELECT 1`},
 
 	// Migration 31 adds an explicit forbidden-content check alongside the
 	// existing required keyword. The two columns intentionally stay separate:
 	// check_keyword means "must be present"; forbidden_keyword means "must be
 	// absent".
-	{31, `ALTER TABLE jetpack_monitor_sites
-		ADD COLUMN forbidden_keyword VARCHAR(500) NULL AFTER check_keyword`},
+	// Migration 31 previously added forbidden_keyword to jetpack_monitor_sites.
+	// V2 body-check config now lives in jetmon_site_check_config.
+	{31, `SELECT 1`},
 
 	// Migration 32 records the actual HTTP method used for each timing sample.
 	// This keeps the high-volume check history compact while giving operators
@@ -482,8 +465,9 @@ var migrations = []migration{
 	// checks. forbidden_keyword remains for compatibility and simple one-off
 	// rules; forbidden_keywords lets operators provision multiple known-bad
 	// strings without overloading one column.
-	{33, `ALTER TABLE jetpack_monitor_sites
-		ADD COLUMN forbidden_keywords JSON NULL AFTER forbidden_keyword`},
+	// Migration 33 previously added forbidden_keywords to jetpack_monitor_sites.
+	// V2 body-check config now lives in jetmon_site_check_config.
+	{33, `SELECT 1`},
 
 	// Migration 34 creates the v2-native scheduling target table. The legacy
 	// jetpack_monitor_sites row remains the source of truth during migration,
@@ -516,8 +500,54 @@ var migrations = []migration{
 	// active rows by blog_id inside its bucket range; this keeps periodic config
 	// refreshes from depending on the older last_checked_at/next_check_at
 	// indexes that are specific to the legacy round scheduler.
-	{35, `ALTER TABLE jetpack_monitor_sites
-		ADD INDEX idx_monitor_active_bucket_blog (monitor_active, bucket_no, blog_id)`},
+	// Migration 35 previously added a streaming reload index to the legacy
+	// table. The streaming engine can use the existing v1 bucket/active shape
+	// during rollout without requiring another hot ALTER.
+	{35, `SELECT 1`},
+
+	// Migration 36 stores v2 rollout check policy outside the legacy
+	// jetpack_monitor_sites table. NULL means "inherit the process default",
+	// letting operators migrate in phases without another hot ALTER on the
+	// largest v1 compatibility table.
+	{36, `CREATE TABLE IF NOT EXISTS jetmon_site_check_config (
+		blog_id            BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+		request_method     ENUM('HEAD','GET') NULL,
+		detection_profile  ENUM('legacy','simple_http','full') NULL,
+		created_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+		INDEX idx_request_method (request_method),
+		INDEX idx_detection_profile (detection_profile)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
+
+	// Migration 37 stores v2 runtime/projection fields outside the legacy site
+	// table. These values are useful for API display, rollback freshness checks,
+	// and the legacy round scheduler, but they do not need to change the v1
+	// table shape.
+	{37, `CREATE TABLE IF NOT EXISTS jetmon_site_runtime (
+		blog_id            BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+		last_checked_at    DATETIME NULL,
+		next_check_at      DATETIME NULL,
+		last_alert_sent_at DATETIME NULL,
+		ssl_expiry_date    DATE NULL,
+		updated_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+		INDEX idx_next_check (next_check_at, blog_id),
+		INDEX idx_last_checked (last_checked_at, blog_id)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
+
+	// Migration 38 extends the Jetmon-owned check config table with every
+	// v2-only per-site setting that previously lived on jetpack_monitor_sites.
+	// Keeping this as a separate migration lets databases that already applied
+	// migration 36 receive the expanded sidecar shape.
+	{38, `ALTER TABLE jetmon_site_check_config
+		ADD COLUMN check_keyword          VARCHAR(500) NULL AFTER detection_profile,
+		ADD COLUMN forbidden_keyword      VARCHAR(500) NULL AFTER check_keyword,
+		ADD COLUMN forbidden_keywords     JSON NULL AFTER forbidden_keyword,
+		ADD COLUMN maintenance_start      DATETIME NULL AFTER forbidden_keywords,
+		ADD COLUMN maintenance_end        DATETIME NULL AFTER maintenance_start,
+		ADD COLUMN custom_headers         JSON NULL AFTER maintenance_end,
+		ADD COLUMN timeout_seconds        TINYINT UNSIGNED NULL AFTER custom_headers,
+		ADD COLUMN redirect_policy        ENUM('follow','alert','fail') NULL DEFAULT NULL AFTER timeout_seconds,
+		ADD COLUMN alert_cooldown_minutes SMALLINT UNSIGNED NULL AFTER redirect_policy`},
 }
 
 // Migrate applies all pending migrations idempotently.

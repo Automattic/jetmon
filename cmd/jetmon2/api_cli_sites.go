@@ -33,6 +33,8 @@ type apiSiteCreateOptions struct {
 	forbiddenKeyword     apiOptionalStringFlag
 	forbiddenKeywords    apiStringSliceFlags
 	redirectPolicy       apiOptionalStringFlag
+	requestMethod        apiOptionalStringFlag
+	detectionProfile     apiOptionalStringFlag
 	timeoutSeconds       apiOptionalIntFlag
 	customHeaders        apiStringMapFlags
 	alertCooldownMinutes apiOptionalIntFlag
@@ -48,6 +50,8 @@ type apiSiteUpdateOptions struct {
 	forbiddenKeywords      apiStringSliceFlags
 	clearForbiddenKeywords bool
 	redirectPolicy         apiOptionalStringFlag
+	requestMethod          apiOptionalStringFlag
+	detectionProfile       apiOptionalStringFlag
 	timeoutSeconds         apiOptionalIntFlag
 	customHeaders          apiStringMapFlags
 	clearCustomHeaders     bool
@@ -66,6 +70,8 @@ type apiSiteCreateRequest struct {
 	ForbiddenKeyword     *string            `json:"forbidden_keyword,omitempty"`
 	ForbiddenKeywords    *[]string          `json:"forbidden_keywords,omitempty"`
 	RedirectPolicy       *string            `json:"redirect_policy,omitempty"`
+	RequestMethod        *string            `json:"request_method,omitempty"`
+	DetectionProfile     *string            `json:"detection_profile,omitempty"`
 	TimeoutSeconds       *int               `json:"timeout_seconds,omitempty"`
 	CustomHeaders        *map[string]string `json:"custom_headers,omitempty"`
 	AlertCooldownMinutes *int               `json:"alert_cooldown_minutes,omitempty"`
@@ -80,6 +86,8 @@ type apiSiteUpdateRequest struct {
 	ForbiddenKeyword     *string            `json:"forbidden_keyword,omitempty"`
 	ForbiddenKeywords    *[]string          `json:"forbidden_keywords,omitempty"`
 	RedirectPolicy       *string            `json:"redirect_policy,omitempty"`
+	RequestMethod        *string            `json:"request_method,omitempty"`
+	DetectionProfile     *string            `json:"detection_profile,omitempty"`
 	TimeoutSeconds       *int               `json:"timeout_seconds,omitempty"`
 	CustomHeaders        *map[string]string `json:"custom_headers,omitempty"`
 	AlertCooldownMinutes *int               `json:"alert_cooldown_minutes,omitempty"`
@@ -180,6 +188,8 @@ func cmdAPISitesCreate(args []string) error {
 	fs.Var(&create.forbiddenKeyword, "forbidden-keyword", "keyword forbidden in response body")
 	fs.Var(&create.forbiddenKeywords, "forbidden-keyword-list", "additional forbidden body keyword (repeatable or comma-separated)")
 	fs.Var(&create.redirectPolicy, "redirect-policy", "redirect policy: follow, alert, or fail")
+	fs.Var(&create.requestMethod, "request-method", "HTTP check method: HEAD or GET")
+	fs.Var(&create.detectionProfile, "detection-profile", "detection profile: legacy, simple_http, or full")
 	fs.Var(&create.timeoutSeconds, "timeout-seconds", "per-site timeout in seconds")
 	fs.Var(&create.customHeaders, "custom-header", "site custom header in Name: Value form (repeatable)")
 	fs.Var(&create.alertCooldownMinutes, "alert-cooldown-minutes", "per-site alert cooldown in minutes")
@@ -209,6 +219,8 @@ func cmdAPISitesUpdate(args []string) error {
 	fs.Var(&update.forbiddenKeywords, "forbidden-keyword-list", "replacement forbidden body keyword list (repeatable or comma-separated)")
 	fs.BoolVar(&update.clearForbiddenKeywords, "clear-forbidden-keywords", false, "clear the forbidden body keyword list")
 	fs.Var(&update.redirectPolicy, "redirect-policy", "redirect policy: follow, alert, or fail")
+	fs.Var(&update.requestMethod, "request-method", "HTTP check method: HEAD or GET; empty inherits default")
+	fs.Var(&update.detectionProfile, "detection-profile", "detection profile: legacy, simple_http, or full; empty inherits default")
 	fs.Var(&update.timeoutSeconds, "timeout-seconds", "per-site timeout in seconds")
 	fs.Var(&update.customHeaders, "custom-header", "site custom header in Name: Value form (repeatable)")
 	fs.BoolVar(&update.clearCustomHeaders, "clear-custom-headers", false, "clear all site custom headers")
@@ -343,6 +355,8 @@ func marshalAPISiteCreateBody(opts apiSiteCreateOptions) ([]byte, error) {
 		ForbiddenKeyword:     opts.forbiddenKeyword.ptr(),
 		ForbiddenKeywords:    opts.forbiddenKeywords.ptr(),
 		RedirectPolicy:       opts.redirectPolicy.ptr(),
+		RequestMethod:        opts.requestMethod.ptr(),
+		DetectionProfile:     opts.detectionProfile.ptr(),
 		TimeoutSeconds:       opts.timeoutSeconds.ptr(),
 		CustomHeaders:        opts.customHeaders.ptr(),
 		AlertCooldownMinutes: opts.alertCooldownMinutes.ptr(),
@@ -367,6 +381,8 @@ func marshalAPISiteUpdateBody(opts apiSiteUpdateOptions) ([]byte, error) {
 		ForbiddenKeyword:     opts.forbiddenKeyword.ptr(),
 		ForbiddenKeywords:    opts.forbiddenKeywords.ptr(),
 		RedirectPolicy:       opts.redirectPolicy.ptr(),
+		RequestMethod:        opts.requestMethod.ptr(),
+		DetectionProfile:     opts.detectionProfile.ptr(),
 		TimeoutSeconds:       opts.timeoutSeconds.ptr(),
 		CustomHeaders:        opts.customHeaders.ptr(),
 		AlertCooldownMinutes: opts.alertCooldownMinutes.ptr(),

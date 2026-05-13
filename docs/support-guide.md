@@ -66,21 +66,25 @@ notification.
 
 Jetmon 1 used `HEAD` requests to decide whether a site was reachable. Some
 customer stacks block `HEAD`, route it differently, or return a status that does
-not match a real page load. Jetmon 2 uses `GET` for local checks and Veriflier
-checks, which better matches what visitors and customer-facing uptime tools see.
+not match a real page load. Jetmon 2 supports a staged migration: initial
+rollout can keep `HEAD` + `legacy` behavior, then selected cohorts can move to
+`GET` + `simple_http`, and finally to `GET` + `full` detections. GET checks
+better match what visitors and customer-facing uptime tools see.
 
-When an alert differs from old v1 behavior, this is often the first thing to
-check: v2 may be surfacing a real GET-path issue that v1's HEAD-only probe did
-not exercise.
+When an alert differs from old v1 behavior, check the site's effective
+`request_method` and `detection_profile` first. v2 may be surfacing a real
+GET-path issue or a full-profile detection that v1's HEAD-only probe did not
+exercise.
 
 ## Allowlist And WAF Guidance
 
-Jetmon 2 identifies itself with the `jetmon/2.0` user agent and performs `GET`
-requests against the monitored URL. Customer firewalls, WAFs, bot controls, and
-security plugins should allow Jetmon checks to reach the same application path a
-normal visitor would reach. Do not ask a customer to broadly disable security
-rules; the safer path is to allow the published Jetmon source hosts or IP
-ranges and the `jetmon/2.0` user agent.
+Jetmon 2 identifies itself with the `jetmon/2.0` user agent. During rollout it
+may perform either `HEAD` or `GET` requests depending on site policy. For GET
+cohorts, customer firewalls, WAFs, bot controls, and security plugins should
+allow Jetmon checks to reach the same application path a normal visitor would
+reach. Do not ask a customer to broadly disable security rules; the safer path
+is to allow the published Jetmon source hosts or IP ranges and the
+`jetmon/2.0` user agent.
 
 Blocked monitoring can show up in a few different ways:
 
@@ -126,9 +130,10 @@ until the site is upgraded.
 ## Check SSL Certificate Status
 
 ```sql
-SELECT blog_id, monitor_url, ssl_expiry_date
-FROM jetpack_monitor_sites
-WHERE blog_id = 12345;
+SELECT s.blog_id, s.monitor_url, r.ssl_expiry_date
+FROM jetpack_monitor_sites s
+LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id
+WHERE s.blog_id = 12345;
 ```
 
 `ssl_expiry_date` is updated on HTTPS checks. Alerts fire at the configured
@@ -166,10 +171,11 @@ what follow-up is needed before calling the site down.
 Use maintenance windows for planned work:
 
 ```sql
-UPDATE jetpack_monitor_sites
-SET maintenance_start = '2026-04-20 02:00:00',
-    maintenance_end   = '2026-04-20 04:00:00'
-WHERE blog_id = 12345;
+INSERT INTO jetmon_site_check_config (blog_id, maintenance_start, maintenance_end)
+VALUES (12345, '2026-04-20 02:00:00', '2026-04-20 04:00:00')
+ON DUPLICATE KEY UPDATE
+    maintenance_start = VALUES(maintenance_start),
+    maintenance_end = VALUES(maintenance_end);
 ```
 
 Checks continue and results are recorded during the window, but failing checks
@@ -182,10 +188,11 @@ silently suppress alerts indefinitely.
 Clear a window after maintenance:
 
 ```sql
-UPDATE jetpack_monitor_sites
-SET maintenance_start = NULL,
-    maintenance_end = NULL
-WHERE blog_id = 12345;
+INSERT INTO jetmon_site_check_config (blog_id, maintenance_start, maintenance_end)
+VALUES (12345, NULL, NULL)
+ON DUPLICATE KEY UPDATE
+    maintenance_start = NULL,
+    maintenance_end = NULL;
 ```
 
 ## Alert Sensitivity
@@ -193,9 +200,9 @@ WHERE blog_id = 12345;
 Use per-site cooldowns to reduce repeated alerts from a flapping site:
 
 ```sql
-UPDATE jetpack_monitor_sites
-SET alert_cooldown_minutes = 60
-WHERE blog_id = 12345;
+INSERT INTO jetmon_site_check_config (blog_id, alert_cooldown_minutes)
+VALUES (12345, 60)
+ON DUPLICATE KEY UPDATE alert_cooldown_minutes = VALUES(alert_cooldown_minutes);
 ```
 
 Global promotion behavior is controlled by `NUM_OF_CHECKS`: that many
@@ -237,8 +244,8 @@ Each `checks` entry includes:
 - "The alert was suppressed because a maintenance window was active."
 - "The site blocked the monitor with a 403, which is different from the site
   being down for visitors."
-- "Jetmon v2 uses GET checks, so it tests the visitor path more closely than the
-  v1 HEAD-only check did."
+- "This site is in the GET cohort, so Jetmon tests the visitor path more
+  closely than the v1 HEAD-only check did."
 - "Jetmon could not produce a trustworthy verdict because monitor-side
   telemetry was incomplete; that is not the same thing as confirmed downtime."
 - "The audit trail shows exactly which checkers saw the failure and what status
