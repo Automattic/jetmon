@@ -629,6 +629,102 @@ func TestClientPrefersV2WhenAvailable(t *testing.T) {
 	}
 }
 
+func TestClientFallsBackToLegacyWhenUnknownV2ConnectionCloses(t *testing.T) {
+	var v2Hits atomic.Int64
+	var legacyHits atomic.Int64
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v2/check", func(w http.ResponseWriter, r *http.Request) {
+		v2Hits.Add(1)
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Fatalf("hijack: %v", err)
+		}
+		_ = conn.Close()
+	})
+	mux.HandleFunc("/check", func(w http.ResponseWriter, r *http.Request) {
+		legacyHits.Add(1)
+		var req struct {
+			Sites []CheckRequest `json:"sites"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode legacy request: %v", err)
+		}
+		results := make([]CheckResult, 0, len(req.Sites))
+		for _, site := range req.Sites {
+			results = append(results, CheckResult{
+				MonitorSiteID: site.MonitorSiteID,
+				BlogID:        site.BlogID,
+				URL:           site.URL,
+				RequestID:     site.RequestID,
+				Success:       true,
+				HTTPCode:      200,
+			})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(struct {
+			Results []CheckResult `json:"results"`
+		}{Results: results})
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	client := NewVeriflierClient(ts.Listener.Addr().String(), "secret")
+	res, err := client.Check(context.Background(), CheckRequest{
+		MonitorSiteID: 44,
+		BlogID:        99,
+		URL:           "https://example.com",
+	})
+	if err != nil {
+		t.Fatalf("Check() error = %v", err)
+	}
+	if !res.Success || res.BlogID != 99 || res.MonitorSiteID != 44 {
+		t.Fatalf("legacy fallback result = %+v", res)
+	}
+	if client.cachedProtocol() != ProtocolLegacy {
+		t.Fatalf("cached protocol = %q, want %q", client.cachedProtocol(), ProtocolLegacy)
+	}
+	if v2Hits.Load() != 1 || legacyHits.Load() != 1 {
+		t.Fatalf("hits after first check v2=%d legacy=%d, want 1/1", v2Hits.Load(), legacyHits.Load())
+	}
+
+	if _, err := client.Check(context.Background(), CheckRequest{BlogID: 100, URL: "https://example.org"}); err != nil {
+		t.Fatalf("cached legacy Check() error = %v", err)
+	}
+	if v2Hits.Load() != 1 || legacyHits.Load() != 2 {
+		t.Fatalf("hits after cached legacy check v2=%d legacy=%d, want 1/2", v2Hits.Load(), legacyHits.Load())
+	}
+}
+
+func TestClientDoesNotFallbackWhenV2ProtocolCached(t *testing.T) {
+	var legacyHits atomic.Int64
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v2/check", func(w http.ResponseWriter, r *http.Request) {
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Fatalf("hijack: %v", err)
+		}
+		_ = conn.Close()
+	})
+	mux.HandleFunc("/check", func(w http.ResponseWriter, r *http.Request) {
+		legacyHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	client := NewVeriflierClient(ts.Listener.Addr().String(), "secret")
+	client.setProtocol(ProtocolV2)
+	_, err := client.Check(context.Background(), CheckRequest{BlogID: 1, URL: "https://example.com"})
+	if err == nil {
+		t.Fatal("Check() expected v2 transport error")
+	}
+	if legacyHits.Load() != 0 {
+		t.Fatalf("legacy hits = %d, want 0 for cached v2 protocol", legacyHits.Load())
+	}
+}
+
 func TestClientV2SendsContextDeadline(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v2/check" {

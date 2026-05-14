@@ -6,7 +6,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"sync"
@@ -181,7 +183,7 @@ func (c *VeriflierClient) checkBatchV2(ctx context.Context, reqs []CheckRequest)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("veriflier v2 request failed: %w", err)
+		return nil, v2TransportError{endpoint: "/v2/check", err: err}
 	}
 	defer resp.Body.Close()
 
@@ -242,7 +244,7 @@ func (c *VeriflierClient) Status(ctx context.Context) (*StatusV2Response, error)
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, v2TransportError{endpoint: "/v2/status", err: err}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -317,12 +319,30 @@ func (e statusError) Error() string {
 	return fmt.Sprintf("veriflier %s returned %d", e.endpoint, e.status)
 }
 
+type v2TransportError struct {
+	endpoint string
+	err      error
+}
+
+func (e v2TransportError) Error() string {
+	return fmt.Sprintf("veriflier %s request failed: %v", e.endpoint, e.err)
+}
+
+func (e v2TransportError) Unwrap() error {
+	return e.err
+}
+
 func isV2Unsupported(err error) bool {
-	se, ok := err.(statusError)
-	if !ok {
-		return false
+	var se statusError
+	if errors.As(err, &se) {
+		return se.status == http.StatusNotFound ||
+			se.status == http.StatusMethodNotAllowed ||
+			se.status == http.StatusNotImplemented
 	}
-	return se.status == http.StatusNotFound ||
-		se.status == http.StatusMethodNotAllowed ||
-		se.status == http.StatusNotImplemented
+
+	var te v2TransportError
+	if errors.As(err, &te) {
+		return errors.Is(te.err, io.EOF) || errors.Is(te.err, io.ErrUnexpectedEOF)
+	}
+	return false
 }
