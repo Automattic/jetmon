@@ -46,6 +46,40 @@ func TestIsAlertSuppressedUsesLastAlertSent(t *testing.T) {
 	}
 }
 
+func TestDuplicateBlogMonitorRowsUseMonitorSiteIdentity(t *testing.T) {
+	sites := []db.Site{
+		{ID: 10, BlogID: 42, MonitorURL: "https://example.com/"},
+		{ID: 11, BlogID: 42, MonitorURL: "https://example.com/path"},
+	}
+	filtered := filterUnseenSites(sites, map[int64]struct{}{})
+	if len(filtered) != 2 {
+		t.Fatalf("filterUnseenSites returned %d sites, want 2", len(filtered))
+	}
+
+	req := checkRequestForSite(&config.Config{}, sites[0])
+	if req.MonitorSiteID != 10 || req.BlogID != 42 {
+		t.Fatalf("request identity = monitor_site_id:%d blog_id:%d, want 10/42", req.MonitorSiteID, req.BlogID)
+	}
+
+	siteMap := map[int64]db.Site{
+		monitorTargetID(sites[0]): sites[0],
+		monitorTargetID(sites[1]): sites[1],
+	}
+	results := map[int64]checker.Result{
+		10: {MonitorSiteID: 10, BlogID: 42, Success: true},
+		11: {MonitorSiteID: 11, BlogID: 42, Success: true},
+	}
+	records := knownSiteResults(results, siteMap)
+	if len(records) != 2 {
+		t.Fatalf("knownSiteResults returned %d records, want 2", len(records))
+	}
+
+	identity := httpEventIdentity(sites[0])
+	if identity.EndpointID == nil || *identity.EndpointID != 10 {
+		t.Fatalf("httpEventIdentity endpoint = %v, want 10", identity.EndpointID)
+	}
+}
+
 func TestTimeoutForSite(t *testing.T) {
 	cfg := &config.Config{NetCommsTimeout: 10}
 
@@ -732,7 +766,7 @@ func stubOrchestratorDeps() func() {
 	dbMarkHostDraining = func(context.Context, string) error { return nil }
 	dbGetSitesForBucket = func(context.Context, int, int, int, bool) ([]db.Site, error) { return nil, nil }
 	dbUpdateSiteStatus = func(context.Context, int64, int, time.Time) error { return nil }
-	dbGetSiteStatus = func(context.Context, int64) (int, error) { return statusRunning, nil }
+	dbGetSiteStatus = func(context.Context, int64, int64) (int, error) { return statusRunning, nil }
 	dbUpdateLastAlertSent = func(context.Context, int64, time.Time) error { return nil }
 	dbRecordFalsePositive = func(int64, int, int, int64) error { return nil }
 	dbMarkSiteChecked = func(context.Context, int64, time.Time, time.Time) error { return nil }

@@ -96,6 +96,7 @@ func main() {
 // performCheck runs a single HTTP check and returns the result for the server.
 func performCheck(req veriflier.CheckRequest) veriflier.CheckResult {
 	res := checker.Check(context.Background(), checker.Request{
+		MonitorSiteID:       req.MonitorSiteID,
 		BlogID:              req.BlogID,
 		URL:                 req.URL,
 		Method:              req.Method,
@@ -113,12 +114,13 @@ func performCheck(req veriflier.CheckRequest) veriflier.CheckResult {
 	})
 
 	return veriflier.CheckResult{
-		BlogID:    res.BlogID,
-		URL:       res.URL,
-		Success:   res.Success,
-		HTTPCode:  int32(res.HTTPCode),
-		ErrorCode: int32(res.ErrorCode),
-		RTTMs:     res.RTT.Milliseconds(),
+		MonitorSiteID: res.MonitorSiteID,
+		BlogID:        res.BlogID,
+		URL:           res.URL,
+		Success:       res.Success,
+		HTTPCode:      int32(res.HTTPCode),
+		ErrorCode:     int32(res.ErrorCode),
+		RTTMs:         res.RTT.Milliseconds(),
 	}
 }
 

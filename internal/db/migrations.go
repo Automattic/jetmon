@@ -548,6 +548,14 @@ var migrations = []migration{
 		ADD COLUMN timeout_seconds        TINYINT UNSIGNED NULL AFTER custom_headers,
 		ADD COLUMN redirect_policy        ENUM('follow','alert','fail') NULL DEFAULT NULL AFTER timeout_seconds,
 		ADD COLUMN alert_cooldown_minutes SMALLINT UNSIGNED NULL AFTER redirect_policy`},
+
+	// Migration 39 prepares the v2-native target table for production rows
+	// where one blog_id has multiple active monitor URLs. The legacy table's
+	// primary row id is the durable endpoint identity, so target sync must be
+	// unique on source_site_id rather than collapsing all endpoints for a blog.
+	{39, `ALTER TABLE jetmon_check_targets
+		DROP INDEX uk_blog_id,
+		ADD UNIQUE KEY uk_source_site_id (source_site_id)`},
 }
 
 // Migrate applies all pending migrations idempotently.

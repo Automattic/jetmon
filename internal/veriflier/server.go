@@ -140,6 +140,12 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 		// audit row it wrote when escalating.
 		log.Printf("veriflier: check blog_id=%d request_id=%s url=%s", site.BlogID, site.RequestID, site.URL)
 		res := s.checkFn(site)
+		if res.MonitorSiteID == 0 {
+			res.MonitorSiteID = site.MonitorSiteID
+		}
+		if res.BlogID == 0 {
+			res.BlogID = site.BlogID
+		}
 		res.Host = s.hostname
 		res.RequestID = site.RequestID
 		results = append(results, res)

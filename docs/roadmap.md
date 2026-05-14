@@ -233,6 +233,11 @@ production telemetry branches:
   first prototype still reloads active identity/cadence from
   `jetpack_monitor_sites` plus v2 sidecar config so correctness can be
   validated before optimizing config-sync reads.
+- [x] Preserve duplicate active monitor URLs for the same `blog_id` by carrying
+  `jetpack_monitor_site_id` through local checks, Veriflier RPCs, streaming
+  planner state, retry state, HTTP event identity, and legacy projection
+  writes. `blog_id` remains the site/WPCOM identity, while the legacy row id is
+  the endpoint identity for monitor execution.
 - [x] Evaluate whether any remaining single-column `blog_id` index is needed
   on `jetpack_monitor_sites` after sidecar-table rollout. PR #101 added
   `idx_monitor_blog_id` for legacy-table point writes, but current rollout

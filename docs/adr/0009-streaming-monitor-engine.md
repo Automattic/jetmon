@@ -48,6 +48,13 @@ v2 sidecar config tables, but the new table is intentionally additive so later
 iterations can move derived scheduling state out of the legacy path without
 breaking rollback.
 
+HTTP monitor identity is the legacy row id, not just `blog_id`. Production
+datasets can contain multiple active monitor URLs for one blog, so streaming
+planner targets, retry state, and future `jetmon_check_targets` sync must key
+by `jetpack_monitor_sites.jetpack_monitor_site_id` / `source_site_id` when that
+row id is available. `blog_id` remains the WPCOM/site identity used for
+notifications and site-level API views.
+
 ## Compatibility
 
 `jetpack_monitor_sites` remains the source of truth for v1-owned site identity,
