@@ -182,8 +182,8 @@ func TestSummarizeVerifierResults(t *testing.T) {
 	if got[1]["host"] != "eu" || got[1]["success"] != true {
 		t.Fatalf("second summary = %+v", got[1])
 	}
-	if got[1]["vantage_id"] != "eu" {
-		t.Fatalf("second fallback vantage summary = %+v", got[1])
+	if _, ok := got[1]["vantage_id"]; ok {
+		t.Fatalf("legacy summary included synthetic vantage_id: %+v", got[1])
 	}
 }
 

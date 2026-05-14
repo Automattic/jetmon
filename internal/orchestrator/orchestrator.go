@@ -1752,8 +1752,6 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 		}
 		if vr.res.VantageID != "" {
 			metaMap["vantage_id"] = vr.res.VantageID
-		} else if voteID != "" {
-			metaMap["vantage_id"] = voteID
 		}
 		if vr.res.AgentID != "" {
 			metaMap["agent_id"] = vr.res.AgentID
@@ -2845,8 +2843,6 @@ func summarizeVerifierResults(vResults []veriflier.CheckResult) []map[string]any
 		}
 		if vr.VantageID != "" {
 			item["vantage_id"] = vr.VantageID
-		} else if vr.Host != "" {
-			item["vantage_id"] = vr.Host
 		}
 		if vr.AgentID != "" {
 			item["agent_id"] = vr.AgentID
