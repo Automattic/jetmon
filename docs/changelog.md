@@ -40,7 +40,7 @@ because it is intentionally **not** drop-in with the Jetmon 1 wire format
 **New — Veriflier v2 contract:**
 - Added versioned JSON-over-HTTP endpoints `POST /v2/check` and `GET /v2/status`
   while keeping `veriflier2` legacy-compatible `/check` and `/status`
-  endpoints available during rollout.
+  endpoints available behind the opt-in `VERIFLIER_ENABLE_LEGACY_HTTP` switch.
 - `/v2/check` carries batch/request IDs, request deadlines, body rules, typed
   outcomes, timing breakdowns, quorum `vantage.id`, and diagnostic `agent.id`.
 - Veriflier checks now run through a bounded concurrent executor. Saturated

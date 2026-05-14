@@ -23,8 +23,9 @@ production telemetry branches:
 ### Veriflier Rebuild and Contract TODO
 
 - [x] Rebuild the Veriflier as a Go binary with the v2 JSON-over-HTTP transport
-  as the production Monitor-to-Veriflier contract while keeping legacy `/check`
-  and `/status` endpoints available for transition.
+  as the production Monitor-to-Veriflier contract while keeping legacy-compatible
+  `/check` and `/status` endpoints available behind an opt-in
+  `VERIFLIER_ENABLE_LEGACY_HTTP` switch for lab/emergency transition testing.
 - [x] Keep the external monitor behavior compatible while allowing the internal
   Monitor-to-Veriflier contract to evolve for Jetmon v2: v2 requests now carry
   request IDs, client deadlines, body rules, header rules, redirect policy, and
@@ -91,11 +92,13 @@ production telemetry branches:
 - [ ] Add an uptime-bench scenario long enough to exercise full
   `Seems Down -> Down -> verifier_cleared` behavior with v2 vote evidence.
 - [x] Decide when legacy-compatible `veriflier2` fallback can be removed: keep
-  fallback through v2 rollout as a guard, but do not rely on it for original v1
-  Verifliers. Remove it only after every configured v2 Veriflier endpoint
-  reports v2 status, `validate-config` has no legacy-only Veriflier warnings
-  for the fleet, production-like soak passes, and telemetry shows stable v2
-  verifier reply/vote evidence. Exact gates are documented in
+  the server-side legacy-compatible endpoint code behind
+  `VERIFLIER_ENABLE_LEGACY_HTTP` as an explicit lab/emergency guard, but leave
+  it disabled for normal production v2 endpoints and do not rely on it for
+  original v1 Verifliers. Remove it only after every configured v2 Veriflier
+  endpoint reports v2 status, `validate-config` has no legacy-only Veriflier
+  warnings for the fleet, production-like soak passes, and telemetry shows
+  stable v2 verifier reply/vote evidence. Exact gates are documented in
   `docs/v1-to-v2-migration.md`.
 - [x] Decide naming for v2: keep the historical `veriflier` / `veriflier2`
   names through the v2 rollout to avoid operational churn. If v3 introduces a

@@ -66,15 +66,19 @@ projection mode, email transport mode, and configured Verifliers. Veriflier
 reachability is reported as operational context rather than a hard validation
 failure.
 
-The local Veriflier serves both compatibility and v2 status endpoints:
+The local Veriflier serves the v2 status endpoint by default:
 
 ```bash
-curl http://127.0.0.1:7803/status
 curl http://127.0.0.1:7803/v2/status
 ```
 
 The v2 response includes supported protocols, local `vantage.id`, serving
 `agent.id`, and executor capacity.
+
+`veriflier2` can also expose legacy-compatible HTTP `/check` and `/status`
+endpoints for lab or emergency compatibility testing by setting
+`VERIFLIER_ENABLE_LEGACY_HTTP=true`, but production v2 Verifliers should remain
+v2-only unless there is an explicit rollout need.
 
 To inspect the local Veriflier discovery registry and monitor-collected agent
 telemetry without exposing auth token values:

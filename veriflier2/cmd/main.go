@@ -23,12 +23,13 @@ var version = "dev"
 const shutdownGracePeriod = 30 * time.Second
 
 type veriflierConfig struct {
-	AuthToken string `json:"auth_token"`
-	Port      string `json:"port"`
-	GRPCPort  string `json:"grpc_port"` // Deprecated alias for Port.
-	VantageID string `json:"vantage_id"`
-	Region    string `json:"region"`
-	Provider  string `json:"provider"`
+	AuthToken  string `json:"auth_token"`
+	Port       string `json:"port"`
+	GRPCPort   string `json:"grpc_port"` // Deprecated alias for Port.
+	VantageID  string `json:"vantage_id"`
+	Region     string `json:"region"`
+	Provider   string `json:"provider"`
+	LegacyHTTP bool   `json:"enable_legacy_http"`
 }
 
 func main() {
@@ -58,6 +59,13 @@ func main() {
 	}
 	if v := os.Getenv("VERIFLIER_PROVIDER"); v != "" {
 		cfg.Provider = v
+	}
+	if v := os.Getenv("VERIFLIER_ENABLE_LEGACY_HTTP"); v != "" {
+		enabled, err := parseBool(v)
+		if err != nil {
+			log.Fatalf("VERIFLIER_ENABLE_LEGACY_HTTP: %v", err)
+		}
+		cfg.LegacyHTTP = enabled
 	}
 
 	if cfg.TransportPort() == "" {
@@ -91,7 +99,8 @@ func main() {
 			Region:   cfg.Region,
 			Provider: cfg.Provider,
 		},
-		AgentID: agentID,
+		AgentID:      agentID,
+		EnableLegacy: cfg.LegacyHTTP,
 	})
 
 	// Graceful shutdown: SIGINT/SIGTERM triggers Shutdown(ctx) with a drain
@@ -108,7 +117,7 @@ func main() {
 		}
 	}()
 
-	log.Printf("veriflier2 %s starting on %s", version, addr)
+	log.Printf("veriflier2 %s starting on %s legacy_http=%s", version, addr, enabledLabel(cfg.LegacyHTTP))
 	if err := srv.Listen(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("listen: %v", err)
 	}
@@ -225,4 +234,22 @@ func envOrDefault(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func parseBool(raw string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "t", "true", "y", "yes", "on", "enabled":
+		return true, nil
+	case "0", "f", "false", "n", "no", "off", "disabled":
+		return false, nil
+	default:
+		return false, fmt.Errorf("expected boolean value, got %q", raw)
+	}
+}
+
+func enabledLabel(enabled bool) string {
+	if enabled {
+		return "enabled"
+	}
+	return "disabled"
 }

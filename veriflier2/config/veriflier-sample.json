@@ -3,5 +3,6 @@
 	"port"       : "<VERIFLIER_PORT>",
 	"vantage_id" : "<VERIFLIER_VANTAGE_ID>",
 	"region"     : "<VERIFLIER_REGION>",
-	"provider"   : "<VERIFLIER_PROVIDER>"
+	"provider"   : "<VERIFLIER_PROVIDER>",
+	"enable_legacy_http" : false
 }

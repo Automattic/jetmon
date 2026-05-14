@@ -372,13 +372,14 @@ Veriflier Transport
     ◄── {
           "status": "OK",
           "version": "1.2.3",
-          "protocols": ["v2-json-http", "legacy-json-http"],
+          "protocols": ["v2-json-http"],
           "vantage": {...},
           "agent": {...},
           "capacity": {"max_concurrency": 512, "queue_depth": 0, ...}
         }
 
-  Legacy compatibility contract:
+  Optional legacy-compatible HTTP contract
+  (only when VERIFLIER_ENABLE_LEGACY_HTTP=true):
 
     POST /check
     Authorization: Bearer <token>

@@ -34,6 +34,7 @@ type Server struct {
 	agent     Agent
 	executor  *Executor
 	httpSrv   *http.Server
+	legacy    bool
 }
 
 type ServerOptions struct {
@@ -42,6 +43,7 @@ type ServerOptions struct {
 	AgentID        string
 	MaxConcurrency int
 	QueueCapacity  int
+	EnableLegacy   bool
 }
 
 // Timeout defaults for the verifier HTTP server. These are conservative — the
@@ -83,6 +85,7 @@ func NewServer(addr, authToken, hostname, version string, checkFn func(CheckRequ
 				Outcome:     outcomeFromResult(res),
 			}
 		},
+		EnableLegacy: true,
 	})
 }
 
@@ -112,21 +115,27 @@ func NewServerWithOptions(addr, authToken, hostname, version string, opts Server
 			Protocol: ProtocolV2,
 		},
 		executor: executor,
+		legacy:   opts.EnableLegacy,
 	}
+}
+
+func (s *Server) handler() http.Handler {
+	mux := http.NewServeMux()
+	if s.legacy {
+		mux.HandleFunc("/check", s.handleCheck)
+		mux.HandleFunc("/status", s.handleStatus)
+	}
+	mux.HandleFunc("/v2/check", s.handleV2Check)
+	mux.HandleFunc("/v2/status", s.handleV2Status)
+	return mux
 }
 
 // Listen starts the HTTP server. Blocks until the server exits via Shutdown
 // or an unrecoverable error. Returns http.ErrServerClosed on a clean Shutdown.
 func (s *Server) Listen() error {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/check", s.handleCheck)
-	mux.HandleFunc("/status", s.handleStatus)
-	mux.HandleFunc("/v2/check", s.handleV2Check)
-	mux.HandleFunc("/v2/status", s.handleV2Status)
-
 	s.httpSrv = &http.Server{
 		Addr:              s.addr,
-		Handler:           mux,
+		Handler:           s.handler(),
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,
 		WriteTimeout:      writeTimeout,
@@ -317,10 +326,14 @@ func (s *Server) handleV2Status(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) Status() StatusV2Response {
+	protocols := []string{ProtocolV2}
+	if s.legacy {
+		protocols = append(protocols, ProtocolLegacy)
+	}
 	return StatusV2Response{
 		Status:    "OK",
 		Version:   s.version,
-		Protocols: []string{ProtocolV2, ProtocolLegacy},
+		Protocols: protocols,
 		Vantage:   s.vantage,
 		Agent:     s.agent,
 		Capacity:  s.executor.Capacity(),

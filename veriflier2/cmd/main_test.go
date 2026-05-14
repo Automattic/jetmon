@@ -25,6 +25,24 @@ func TestEnvOrDefault(t *testing.T) {
 	}
 }
 
+func TestParseBool(t *testing.T) {
+	for _, value := range []string{"1", "true", "TRUE", "yes", "on", "enabled"} {
+		got, err := parseBool(value)
+		if err != nil || !got {
+			t.Fatalf("parseBool(%q) = %v, %v; want true, nil", value, got, err)
+		}
+	}
+	for _, value := range []string{"0", "false", "FALSE", "no", "off", "disabled"} {
+		got, err := parseBool(value)
+		if err != nil || got {
+			t.Fatalf("parseBool(%q) = %v, %v; want false, nil", value, got, err)
+		}
+	}
+	if _, err := parseBool("sometimes"); err == nil {
+		t.Fatal("parseBool accepted invalid value")
+	}
+}
+
 func TestStringPtr(t *testing.T) {
 	if got := stringPtr(""); got != nil {
 		t.Fatalf("stringPtr(empty) = %v, want nil", got)
@@ -37,7 +55,7 @@ func TestStringPtr(t *testing.T) {
 
 func TestLoadConfigFromFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "veriflier.json")
-	if err := os.WriteFile(path, []byte(`{"auth_token":"secret","port":"7804","vantage_id":"us-east","region":"iad","provider":"test"}`), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(`{"auth_token":"secret","port":"7804","vantage_id":"us-east","region":"iad","provider":"test","enable_legacy_http":true}`), 0644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -50,6 +68,9 @@ func TestLoadConfigFromFile(t *testing.T) {
 	}
 	if cfg.VantageID != "us-east" || cfg.Region != "iad" || cfg.Provider != "test" {
 		t.Fatalf("vantage config = %+v", cfg)
+	}
+	if !cfg.LegacyHTTP {
+		t.Fatalf("LegacyHTTP = false, want true")
 	}
 }
 

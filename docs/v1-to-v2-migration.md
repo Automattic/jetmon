@@ -297,11 +297,14 @@ overwrite the v1 install until rollback signoff.
 
 ### Veriflier Contract Rollout
 
-New `veriflier2` binaries serve both the legacy JSON contract and the versioned
-v2 JSON contract:
+New `veriflier2` binaries serve the versioned v2 JSON contract by default:
 
-- legacy: `POST /check`, `GET /status`
 - v2: `POST /v2/check`, `GET /v2/status`
+
+They can optionally serve a legacy-compatible HTTP contract for lab or
+emergency rollback testing by setting `VERIFLIER_ENABLE_LEGACY_HTTP=true`:
+
+- legacy-compatible HTTP: `POST /check`, `GET /status`
 
 Deploy the new v2 Veriflier fleet before switching monitor hosts. The preferred
 rollout uses fresh Veriflier servers, proves that fleet independently, then
@@ -320,8 +323,10 @@ Deploy one new v2 Veriflier endpoint at a time:
 2. Set the listen port and monitor auth token that v2 Monitors will use.
 3. Set `VERIFLIER_VANTAGE_ID` to a stable regional/provider identity. Leave
    database settings unset; Veriflier hosts do not need database credentials.
-4. Start or restart the Veriflier service for that endpoint.
-5. From a v2 monitor runtime host, verify both status endpoints and then resume
+4. Leave `VERIFLIER_ENABLE_LEGACY_HTTP=false` unless this endpoint is part of an
+   explicit lab or emergency compatibility test.
+5. Start or restart the Veriflier service for that endpoint.
+6. From a v2 monitor runtime host, verify the v2 status endpoint and then resume
    with the next Veriflier endpoint.
 
 If the endpoint is a load-balanced pool, roll the backend replicas one at a
@@ -345,12 +350,11 @@ Jetmon keeps a two-healthy-vantage floor unless `PEER_OFFLINE_LIMIT=1` was
 intentionally configured.
 
 Before advancing a monitor range that depends on the new v2 Veriflier fleet,
-run `validate-config` and verify both status endpoints from the v2 monitor
+run `validate-config` and verify the v2 status endpoint from the v2 monitor
 runtime host:
 
 ```bash
 ./jetmon2 validate-config
-curl -fsS http://<veriflier-host>:7803/status
 curl -fsS http://<veriflier-host>:7803/v2/status
 ```
 
@@ -393,10 +397,10 @@ liveness/capacity, so Veriflier hosts do not need database credentials. Those
 rows do not create quorum votes unless an operator has created and enabled the
 matching `jetmon_veriflier_vantages` row.
 
-Keep `veriflier2`'s legacy `/check` fallback enabled through the v2 rollout as
-a compatibility guard, but do not treat it as support for original v1
-Verifliers. Remove the fallback only in a follow-up branch after all of these
-are true:
+Keep `veriflier2`'s legacy-compatible `/check` fallback available as an
+explicit opt-in compatibility guard, but keep it disabled on normal production
+v2 endpoints and do not treat it as support for original v1 Verifliers. Remove
+the fallback code only in a follow-up branch after all of these are true:
 
 - every configured Veriflier endpoint reports `/v2/status` with
   `v2-json-http`, a stable `vantage.id`, `agent.id`, and non-zero capacity

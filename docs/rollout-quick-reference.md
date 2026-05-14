@@ -131,12 +131,11 @@ to v1" and keep the transcript with the incident record.
      --bucket-total=<total>
    ```
 
-5. Deploy the new `veriflier2` fleet first and confirm it serves both
-   contracts from the v2 runtime host:
+5. Deploy the new `veriflier2` fleet first and confirm it serves the v2
+   contract from the v2 runtime host:
 
    ```bash
    ./jetmon2 validate-config
-   curl -fsS http://<veriflier-host>:7803/status
    curl -fsS http://<veriflier-host>:7803/v2/status
    ```
 
@@ -144,8 +143,10 @@ to v1" and keep the transcript with the incident record.
    pointed at the original v1 Verifliers until monitor cutover, and point v2
    Monitors only at the new `veriflier2` fleet. The original v1 Veriflier uses
    the old TLS/custom transport; the v2 Monitor's legacy `/check` fallback is
-   only for `veriflier2`'s compatibility endpoint. Roll one v2 endpoint at a
-   time and leave database credentials unset on Veriflier hosts.
+   only for `veriflier2`'s opt-in compatibility endpoint. Keep
+   `VERIFLIER_ENABLE_LEGACY_HTTP=false` unless the endpoint is part of an
+   explicit lab or emergency compatibility test. Roll one v2 endpoint at a time
+   and leave database credentials unset on Veriflier hosts.
 
    `/v2/status` should advertise `v2-json-http`, a stable `vantage.id`, the
    serving `agent.id`, and non-zero capacity. Horizontally scaled replicas behind

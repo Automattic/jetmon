@@ -20,11 +20,9 @@ func newTestServer(checkFn func(CheckRequest) CheckResult) (*Server, *httptest.S
 		},
 		MaxConcurrency: 4,
 		QueueCapacity:  4,
+		EnableLegacy:   true,
 	})
-	mux := http.NewServeMux()
-	mux.HandleFunc("/check", srv.handleCheck)
-	mux.HandleFunc("/status", srv.handleStatus)
-	ts := httptest.NewServer(mux)
+	ts := httptest.NewServer(srv.handler())
 	return srv, ts
 }
 
@@ -53,14 +51,12 @@ func newV2TestServer(checkFn CheckFunc, opts ...ServerOptions) (*Server, *httpte
 		if override.QueueCapacity != 0 {
 			cfg.QueueCapacity = override.QueueCapacity
 		}
+		if override.EnableLegacy {
+			cfg.EnableLegacy = true
+		}
 	}
 	srv := NewServerWithOptions("", "secret", "test-host", "1.0", cfg)
-	mux := http.NewServeMux()
-	mux.HandleFunc("/check", srv.handleCheck)
-	mux.HandleFunc("/status", srv.handleStatus)
-	mux.HandleFunc("/v2/check", srv.handleV2Check)
-	mux.HandleFunc("/v2/status", srv.handleV2Status)
-	ts := httptest.NewServer(mux)
+	ts := httptest.NewServer(srv.handler())
 	return srv, ts
 }
 
@@ -427,8 +423,75 @@ func TestServerHandleV2Status(t *testing.T) {
 	if status.Capacity.MaxConcurrency != 4 {
 		t.Fatalf("max concurrency = %d, want 4", status.Capacity.MaxConcurrency)
 	}
-	if len(status.Protocols) != 2 || status.Protocols[0] != ProtocolV2 {
-		t.Fatalf("protocols = %#v", status.Protocols)
+	if len(status.Protocols) != 1 || status.Protocols[0] != ProtocolV2 {
+		t.Fatalf("protocols = %#v, want v2-only by default", status.Protocols)
+	}
+}
+
+func TestServerLegacyEndpointsDisabledByDefault(t *testing.T) {
+	srv, ts := newV2TestServer(func(_ context.Context, req CheckRequest) ProbeResult {
+		t.Fatal("checkFn should not be called for disabled legacy endpoint")
+		return ProbeResult{}
+	})
+	defer srv.executor.Shutdown()
+	defer ts.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/check", checkReqBody(t, []CheckRequest{{BlogID: 1, URL: "https://example.com"}}))
+	req.Header.Set("Authorization", "Bearer secret")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("POST /check status = %d, want 404 when legacy disabled", resp.StatusCode)
+	}
+
+	resp, err = http.Get(ts.URL + "/status")
+	if err != nil {
+		t.Fatalf("status request error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET /status status = %d, want 404 when legacy disabled", resp.StatusCode)
+	}
+}
+
+func TestServerLegacyEndpointsOptIn(t *testing.T) {
+	srv, ts := newV2TestServer(func(_ context.Context, req CheckRequest) ProbeResult {
+		return ProbeResult{CheckResult: CheckResult{
+			BlogID:   req.BlogID,
+			URL:      req.URL,
+			Success:  true,
+			HTTPCode: 200,
+		}, Outcome: OutcomeUp}
+	}, ServerOptions{EnableLegacy: true})
+	defer srv.executor.Shutdown()
+	defer ts.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/check", checkReqBody(t, []CheckRequest{{BlogID: 1, URL: "https://example.com"}}))
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /check status = %d, want 200 when legacy enabled", resp.StatusCode)
+	}
+
+	statusResp, err := http.Get(ts.URL + "/v2/status")
+	if err != nil {
+		t.Fatalf("v2 status request error: %v", err)
+	}
+	defer statusResp.Body.Close()
+	var status StatusV2Response
+	if err := json.NewDecoder(statusResp.Body).Decode(&status); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if len(status.Protocols) != 2 || status.Protocols[0] != ProtocolV2 || status.Protocols[1] != ProtocolLegacy {
+		t.Fatalf("protocols = %+v, want v2 plus legacy when enabled", status.Protocols)
 	}
 }
 
@@ -852,6 +915,7 @@ func TestServerExecutesLegacyBatchConcurrently(t *testing.T) {
 	}, ServerOptions{
 		MaxConcurrency: 2,
 		QueueCapacity:  2,
+		EnableLegacy:   true,
 	})
 	defer srv.executor.Shutdown()
 	defer ts.Close()

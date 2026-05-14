@@ -282,10 +282,19 @@ The standalone Veriflier keeps its local config intentionally small:
                /v2/check results; defaults to hostname when omitted
   region     - optional region metadata for diagnostics
   provider   - optional provider metadata for diagnostics
+  enable_legacy_http - optional emergency/lab compatibility switch for legacy
+               HTTP /check and /status endpoints; default false
 
 Environment aliases are VERIFLIER_AUTH_TOKEN, VERIFLIER_PORT,
-VERIFLIER_VANTAGE_ID, VERIFLIER_REGION, and VERIFLIER_PROVIDER. The legacy
-VERIFLIER_GRPC_PORT / grpc_port names remain accepted as port aliases.
+VERIFLIER_VANTAGE_ID, VERIFLIER_REGION, VERIFLIER_PROVIDER, and
+VERIFLIER_ENABLE_LEGACY_HTTP. The legacy VERIFLIER_GRPC_PORT / grpc_port names
+remain accepted as port aliases.
+
+Production v2 Verifliers should normally leave legacy HTTP disabled and expose
+only POST /v2/check plus GET /v2/status. Enable legacy HTTP only for lab runs,
+emergency rollback experiments, or explicit compatibility tests. The original
+v1 Veriflier used a TLS/custom transport and is not equivalent to this
+legacy-compatible HTTP switch.
 
 The Veriflier derives its concurrency from the Go runtime and local file
 descriptor limit, then exposes current capacity through GET /v2/status. Normal

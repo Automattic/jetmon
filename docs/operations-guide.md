@@ -656,17 +656,18 @@ observations without duplicating confirmed-down notifications.
 For deployment, build the v2 Veriflier fleet before cutting monitors over.
 The preferred rollout uses fresh `veriflier2` endpoints and points v2 Monitors
 only at that fleet. Keep v1 Monitors pointed at the original v1 Verifliers
-until monitor cutover is complete. `veriflier2` still serves `/check` and
-`/status` for legacy-compatible HTTP clients, but the original v1 Veriflier uses
-the old TLS/custom transport and should not be treated as a supported v2
-Monitor fallback target. Veriflier hosts do not need database credentials;
-monitors collect agent telemetry and write it to MySQL.
+until monitor cutover is complete. `veriflier2` can serve `/check` and
+`/status` for legacy-compatible HTTP clients only when
+`VERIFLIER_ENABLE_LEGACY_HTTP=true`; leave that disabled for normal production
+v2 endpoints. The original v1 Veriflier uses the old TLS/custom transport and
+should not be treated as a supported v2 Monitor fallback target. Veriflier
+hosts do not need database credentials; monitors collect agent telemetry and
+write it to MySQL.
 
 Manual check:
 
 ```bash
 ./jetmon2 validate-config
-curl http://<veriflier-host>:7803/status
 curl http://<veriflier-host>:7803/v2/status
 ```
 
