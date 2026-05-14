@@ -619,6 +619,7 @@ func isLocalResolverHost(host string) bool {
 
 // Request holds the parameters for a single HTTP check.
 type Request struct {
+	MonitorSiteID       int64
 	BlogID              int64
 	URL                 string
 	Method              string
@@ -637,6 +638,7 @@ type Request struct {
 
 // Result holds the outcome of a single HTTP check.
 type Result struct {
+	MonitorSiteID    int64
 	BlogID           int64
 	URL              string
 	Method           string
@@ -722,6 +724,7 @@ func Check(ctx context.Context, req Request) Result {
 	profile = checkmode.EffectiveProfile(method, profile)
 
 	res := Result{
+		MonitorSiteID:    req.MonitorSiteID,
 		BlogID:           req.BlogID,
 		URL:              req.URL,
 		Method:           method,

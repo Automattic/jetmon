@@ -131,6 +131,16 @@ from `jetpack_monitor_sites`. That keeps correctness and rollback behavior easy
 to validate before moving config-sync reads fully onto the v2-native target
 table in a later scaling branch.
 
+Production data can contain more than one active monitor URL for the same
+`blog_id`. Monitor execution therefore treats
+`jetpack_monitor_sites.jetpack_monitor_site_id` as the endpoint identity for
+HTTP checks while retaining `blog_id` as the WPCOM/site identity. HTTP events
+write that row id to `jetmon_events.endpoint_id`, scheduler/retry in-memory
+state keys by the row id when available, and the v1 compatibility projection is
+updated by `jetpack_monitor_site_id` so two active URLs for one site do not
+overwrite each other's rollout state. The v2-native target table is unique on
+`source_site_id` for the same reason.
+
 ## Process Health
 
 `jetmon_process_health` is the durable source for fleet-level operator views.

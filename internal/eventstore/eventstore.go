@@ -442,15 +442,41 @@ type ActiveEvent struct {
 // the event id cached (e.g. a recovery in a round after the open was forgotten
 // across a process restart).
 func (t *Tx) FindActiveByBlog(ctx context.Context, blogID int64, checkType string) (ActiveEvent, error) {
+	return t.FindActive(ctx, Identity{BlogID: blogID, CheckType: checkType})
+}
+
+// FindActive returns the open event for an identity. When EndpointID is set it
+// prefers an endpoint-specific event but can fall back to a legacy site-level
+// event so in-flight migrations can recover rows opened before endpoint
+// identity was introduced.
+func (t *Tx) FindActive(ctx context.Context, identity Identity) (ActiveEvent, error) {
 	if t.tx == nil {
 		return ActiveEvent{}, nil
 	}
 	var ae ActiveEvent
+	if identity.EndpointID != nil {
+		err := t.tx.QueryRowContext(ctx, `
+			SELECT id, severity, state FROM jetmon_events
+			 WHERE blog_id = ?
+			   AND check_type = ?
+			   AND ended_at IS NULL
+			   AND (endpoint_id = ? OR endpoint_id IS NULL)
+			 ORDER BY endpoint_id IS NULL ASC, started_at ASC
+			 LIMIT 1`, identity.BlogID, identity.CheckType, *identity.EndpointID,
+		).Scan(&ae.ID, &ae.Severity, &ae.State)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ActiveEvent{}, ErrEventNotFound
+		}
+		if err != nil {
+			return ActiveEvent{}, fmt.Errorf("find active event: %w", err)
+		}
+		return ae, nil
+	}
 	err := t.tx.QueryRowContext(ctx, `
 		SELECT id, severity, state FROM jetmon_events
 		 WHERE blog_id = ? AND check_type = ? AND ended_at IS NULL
 		 ORDER BY started_at ASC
-		 LIMIT 1`, blogID, checkType,
+		 LIMIT 1`, identity.BlogID, identity.CheckType,
 	).Scan(&ae.ID, &ae.Severity, &ae.State)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ActiveEvent{}, ErrEventNotFound

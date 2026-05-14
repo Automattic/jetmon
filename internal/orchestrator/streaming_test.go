@@ -14,7 +14,7 @@ import (
 
 func TestStreamingPhaseStaysInsideInterval(t *testing.T) {
 	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
-	site := db.Site{BlogID: 12345, CheckInterval: 5}
+	site := db.Site{ID: 98765, BlogID: 12345, CheckInterval: 5}
 
 	due := initialStreamingDueAt(site, now)
 	if due.Before(now) {
@@ -24,8 +24,25 @@ func TestStreamingPhaseStaysInsideInterval(t *testing.T) {
 		t.Fatalf("initialStreamingDueAt() delay = %s, want < 5m", due.Sub(now))
 	}
 	cadence := streamingCheckCadence(site)
-	if got := due.Unix() % int64(cadence/time.Second); got != streamingPhaseOffset(site.BlogID, cadence) {
+	if got := due.Unix() % int64(cadence/time.Second); got != streamingPhaseOffset(site.ID, cadence) {
 		t.Fatalf("due phase = %d, want stable phase", got)
+	}
+}
+
+func TestStreamingPlannerKeepsDuplicateBlogEndpoints(t *testing.T) {
+	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	planner := newStreamingPlanner([]db.Site{
+		{ID: 10, BlogID: 42, MonitorURL: "https://example.com/", CheckInterval: 5},
+		{ID: 11, BlogID: 42, MonitorURL: "https://example.com/path", CheckInterval: 5},
+	}, now)
+	if got := planner.activeCount(); got != 2 {
+		t.Fatalf("activeCount = %d, want 2", got)
+	}
+	if _, ok := planner.targets[10]; !ok {
+		t.Fatal("planner missing monitor_site_id 10")
+	}
+	if _, ok := planner.targets[11]; !ok {
+		t.Fatal("planner missing monitor_site_id 11")
 	}
 }
 

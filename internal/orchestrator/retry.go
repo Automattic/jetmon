@@ -9,6 +9,7 @@ import (
 
 // retryEntry tracks local retry state for a site that has failed at least once.
 type retryEntry struct {
+	targetID    int64
 	blogID      int64
 	url         string
 	failCount   int
@@ -40,14 +41,16 @@ func (q *retryQueue) record(res checker.Result) *retryEntry {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	e, exists := q.entries[res.BlogID]
+	targetID := checkResultTargetID(res)
+	e, exists := q.entries[targetID]
 	if !exists {
 		e = &retryEntry{
+			targetID:    targetID,
 			blogID:      res.BlogID,
 			url:         res.URL,
 			firstFailAt: res.Timestamp,
 		}
-		q.entries[res.BlogID] = e
+		q.entries[targetID] = e
 	}
 	e.failCount++
 	e.lastResult = res
@@ -56,45 +59,45 @@ func (q *retryQueue) record(res checker.Result) *retryEntry {
 }
 
 // clear removes a site from the retry queue (site recovered or confirmed down).
-func (q *retryQueue) clear(blogID int64) {
+func (q *retryQueue) clear(targetID int64) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	delete(q.entries, blogID)
+	delete(q.entries, targetID)
 }
 
-func (q *retryQueue) markRecovered(blogID int64, recoveredAt time.Time) {
+func (q *retryQueue) markRecovered(targetID int64, recoveredAt time.Time) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if recoveredAt.IsZero() {
 		recoveredAt = time.Now().UTC()
 	}
-	q.recentRecoveries[blogID] = recoveredAt.UTC()
+	q.recentRecoveries[targetID] = recoveredAt.UTC()
 }
 
-func (q *retryQueue) recentlyRecovered(blogID int64, at time.Time, window time.Duration) bool {
-	return q.recentlyMarked(q.recentRecoveries, blogID, at, window)
+func (q *retryQueue) recentlyRecovered(targetID int64, at time.Time, window time.Duration) bool {
+	return q.recentlyMarked(q.recentRecoveries, targetID, at, window)
 }
 
-func (q *retryQueue) markFalseAlarm(blogID int64, falseAlarmAt time.Time) {
+func (q *retryQueue) markFalseAlarm(targetID int64, falseAlarmAt time.Time) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if falseAlarmAt.IsZero() {
 		falseAlarmAt = time.Now().UTC()
 	}
-	q.recentFalseAlarms[blogID] = falseAlarmAt.UTC()
+	q.recentFalseAlarms[targetID] = falseAlarmAt.UTC()
 }
 
-func (q *retryQueue) recentlyFalseAlarmed(blogID int64, at time.Time, window time.Duration) bool {
-	return q.recentlyMarked(q.recentFalseAlarms, blogID, at, window)
+func (q *retryQueue) recentlyFalseAlarmed(targetID int64, at time.Time, window time.Duration) bool {
+	return q.recentlyMarked(q.recentFalseAlarms, targetID, at, window)
 }
 
-func (q *retryQueue) recentlyMarked(markers map[int64]time.Time, blogID int64, at time.Time, window time.Duration) bool {
+func (q *retryQueue) recentlyMarked(markers map[int64]time.Time, targetID int64, at time.Time, window time.Duration) bool {
 	if window <= 0 {
 		return false
 	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	markedAt, ok := markers[blogID]
+	markedAt, ok := markers[targetID]
 	if !ok {
 		return false
 	}
@@ -107,15 +110,15 @@ func (q *retryQueue) recentlyMarked(markers map[int64]time.Time, blogID int64, a
 	if at.Sub(markedAt.UTC()) <= window {
 		return true
 	}
-	delete(markers, blogID)
+	delete(markers, targetID)
 	return false
 }
 
 // get returns the entry for a site, or nil if not in the queue.
-func (q *retryQueue) get(blogID int64) *retryEntry {
+func (q *retryQueue) get(targetID int64) *retryEntry {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	return q.entries[blogID]
+	return q.entries[targetID]
 }
 
 // allBlogIDs returns the blog IDs of all sites currently in retry.

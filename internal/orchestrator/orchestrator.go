@@ -87,7 +87,7 @@ var (
 	dbUpdateSSLExpiry      = db.UpdateSSLExpiry
 	dbUpdateSSLExpiries    = db.UpdateSSLExpiries
 	dbUpdateSiteStatus     = db.UpdateSiteStatus
-	dbGetSiteStatus        = db.GetSiteStatus
+	dbGetSiteStatus        = db.GetSiteStatusForMonitorSite
 	dbRecordFalsePositive  = db.RecordFalsePositive
 	dbUpdateLastAlertSent  = db.UpdateLastAlertSent
 	dbCountDueSites        = db.CountDueSitesForBucketRange
@@ -485,7 +485,7 @@ func (o *Orchestrator) checkSitesPage(cfg *config.Config, sites []db.Site, pageN
 	siteMap := make(map[int64]db.Site, len(sites))
 	results := make(map[int64]checker.Result, len(sites))
 	for _, s := range sites {
-		siteMap[s.BlogID] = s
+		siteMap[monitorTargetID(s)] = s
 	}
 
 	dispatchStart := time.Now()
@@ -636,10 +636,11 @@ func (o *Orchestrator) waitForPageResult(siteMap map[int64]db.Site, results map[
 func filterUnseenSites(sites []db.Site, seen map[int64]struct{}) []db.Site {
 	filtered := make([]db.Site, 0, len(sites))
 	for _, site := range sites {
-		if _, ok := seen[site.BlogID]; ok {
+		targetID := monitorTargetID(site)
+		if _, ok := seen[targetID]; ok {
 			continue
 		}
-		seen[site.BlogID] = struct{}{}
+		seen[targetID] = struct{}{}
 		filtered = append(filtered, site)
 	}
 	return filtered
@@ -665,6 +666,7 @@ func checkRequestForSite(cfg *config.Config, site db.Site) checker.Request {
 	method := effectiveCheckMethod(cfg, site)
 	profile := effectiveDetectionProfile(cfg, site, method)
 	req := checker.Request{
+		MonitorSiteID:       site.ID,
 		BlogID:              site.BlogID,
 		URL:                 site.MonitorURL,
 		Method:              method,
@@ -730,17 +732,18 @@ func collectionDeadlineForSites(cfg *config.Config, sites []db.Site) time.Durati
 }
 
 func recordPageResult(siteMap map[int64]db.Site, results map[int64]checker.Result, res checker.Result, summary *roundSummary) {
-	if _, ok := siteMap[res.BlogID]; !ok {
+	targetID := checkResultTargetID(res)
+	if _, ok := siteMap[targetID]; !ok {
 		summary.staleResults++
-		log.Printf("orchestrator: ignored stale check result blog_id=%d", res.BlogID)
+		log.Printf("orchestrator: ignored stale check result target_id=%d blog_id=%d", targetID, res.BlogID)
 		return
 	}
-	if _, ok := results[res.BlogID]; ok {
+	if _, ok := results[targetID]; ok {
 		summary.duplicateResults++
-		log.Printf("orchestrator: ignored duplicate check result blog_id=%d", res.BlogID)
+		log.Printf("orchestrator: ignored duplicate check result target_id=%d blog_id=%d", targetID, res.BlogID)
 		return
 	}
-	results[res.BlogID] = res
+	results[targetID] = res
 }
 
 func (o *Orchestrator) shouldSampleDueCounts(now time.Time) bool {
@@ -1076,24 +1079,24 @@ func (o *Orchestrator) updateSSLExpiries(updates []db.SiteSSLExpiry, summary *re
 }
 
 func knownSiteResults(results map[int64]checker.Result, sites map[int64]db.Site) []siteCheckResult {
-	blogIDs := make([]int64, 0, len(results))
-	for blogID := range results {
-		blogIDs = append(blogIDs, blogID)
+	targetIDs := make([]int64, 0, len(results))
+	for targetID := range results {
+		targetIDs = append(targetIDs, targetID)
 	}
-	sort.Slice(blogIDs, func(i, j int) bool {
-		return blogIDs[i] < blogIDs[j]
+	sort.Slice(targetIDs, func(i, j int) bool {
+		return targetIDs[i] < targetIDs[j]
 	})
 
 	records := make([]siteCheckResult, 0, len(results))
-	for _, blogID := range blogIDs {
-		site, ok := sites[blogID]
+	for _, targetID := range targetIDs {
+		site, ok := sites[targetID]
 		if !ok {
 			continue
 		}
 		records = append(records, siteCheckResult{
-			blogID: blogID,
+			blogID: site.BlogID,
 			site:   site,
-			res:    results[blogID],
+			res:    results[targetID],
 		})
 	}
 	return records
@@ -1400,7 +1403,8 @@ func shouldUpdateSSLExpiry(stored *time.Time, observed time.Time) bool {
 }
 
 func (o *Orchestrator) handleRecovery(site db.Site, res checker.Result) {
-	entry := o.retries.get(site.BlogID)
+	targetID := monitorTargetID(site)
+	entry := o.retries.get(targetID)
 	if entry == nil && site.SiteStatus == statusRunning {
 		return // was already up, nothing to do
 	}
@@ -1409,7 +1413,7 @@ func (o *Orchestrator) handleRecovery(site db.Site, res checker.Result) {
 	if entry != nil {
 		knownEventID = entry.eventID
 	}
-	o.retries.clear(site.BlogID)
+	o.retries.clear(targetID)
 
 	if site.SiteStatus != statusRunning || knownEventID > 0 {
 		changeTime := nowFunc().UTC()
@@ -1424,7 +1428,7 @@ func (o *Orchestrator) handleRecovery(site db.Site, res checker.Result) {
 		// same transaction. The resolution reason depends on whether the event
 		// was already verifier-confirmed (Down) or still in the local-retry
 		// phase (Seems Down).
-		if err := o.closeRecoveredEvent(site.BlogID, knownEventID, changeTime, res); err != nil {
+		if err := o.closeRecoveredEvent(site, knownEventID, changeTime, res); err != nil {
 			log.Printf("orchestrator: close recovered event blog_id=%d: %v", site.BlogID, err)
 		}
 
@@ -1445,7 +1449,7 @@ func (o *Orchestrator) handleRecovery(site db.Site, res checker.Result) {
 				Detail:    "recovery cooldown active",
 			})
 		}
-		o.retries.markRecovered(site.BlogID, changeTime)
+		o.retries.markRecovered(targetID, changeTime)
 	}
 }
 
@@ -1479,7 +1483,7 @@ func (o *Orchestrator) handleFailure(site db.Site, res checker.Result) bool {
 	}
 
 	if site.SiteStatus == statusConfirmedDown {
-		o.retries.clear(site.BlogID)
+		o.retries.clear(monitorTargetID(site))
 		class := failureClass(res)
 		emitCounter("detection.down.still_down.count", 1)
 		emitCounter("detection.down.still_down."+class+".count", 1)
@@ -1550,7 +1554,7 @@ func (o *Orchestrator) postRecoveryTransientSuppression(site db.Site, res checke
 	if o == nil || o.retries == nil || !postRecoveryTransientFailure(res) {
 		return false, "", 0
 	}
-	if o.retries.get(site.BlogID) != nil {
+	if o.retries.get(monitorTargetID(site)) != nil {
 		return false, "", 0
 	}
 	return postRecoveryTransientSuppression(site, res, o.retries)
@@ -1560,17 +1564,18 @@ func postRecoveryTransientSuppression(site db.Site, res checker.Result, retries 
 	if retries == nil || !postRecoveryTransientFailure(res) {
 		return false, "", 0
 	}
-	if retries.get(site.BlogID) != nil {
+	targetID := monitorTargetID(site)
+	if retries.get(targetID) != nil {
 		return false, "", 0
 	}
 	checkedAt := resultCheckedAt(res)
 	falseAlarmWindow := postFalseAlarmTransientFailureWindow(site)
-	if retries.recentlyFalseAlarmed(site.BlogID, checkedAt, falseAlarmWindow) {
-		retries.markFalseAlarm(site.BlogID, checkedAt)
+	if retries.recentlyFalseAlarmed(targetID, checkedAt, falseAlarmWindow) {
+		retries.markFalseAlarm(targetID, checkedAt)
 		return true, "false_alarm", falseAlarmWindow
 	}
 	recoveryWindow := postRecoveryTransientFailureWindow(site)
-	if retries.recentlyRecovered(site.BlogID, checkedAt, recoveryWindow) {
+	if retries.recentlyRecovered(targetID, checkedAt, recoveryWindow) {
 		return true, "recovery", recoveryWindow
 	}
 	return false, "", 0
@@ -1623,6 +1628,7 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 	method := effectiveCheckMethod(cfg, site)
 	profile := effectiveDetectionProfile(cfg, site, method)
 	req := veriflier.CheckRequest{
+		MonitorSiteID:       site.ID,
 		BlogID:              site.BlogID,
 		URL:                 site.MonitorURL,
 		Method:              method,
@@ -1766,14 +1772,15 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 				"verifier_disagreed": healthyVerifliers - confirmations,
 				"verifier_confirmed": confirmations,
 			})
-			if err := o.closeEvent(site.BlogID, entry.eventID,
+			if err := o.closeEvent(site, entry.eventID,
 				eventstore.ReasonFalseAlarm, statusRunning, falseAlarmAt, meta); err != nil {
 				log.Printf("orchestrator: close false-alarm event blog_id=%d event_id=%d: %v",
 					site.BlogID, entry.eventID, err)
 			}
 		}
-		o.retries.clear(site.BlogID)
-		o.retries.markFalseAlarm(site.BlogID, falseAlarmAt)
+		targetID := monitorTargetID(site)
+		o.retries.clear(targetID)
+		o.retries.markFalseAlarm(targetID, falseAlarmAt)
 	}
 }
 
@@ -1804,7 +1811,7 @@ func (o *Orchestrator) confirmDown(site db.Site, entry *retryEntry, vResults []v
 	// local DNS failures intentionally skip the Seems Down event, so verifier
 	// confirmation opens the customer-visible incident directly as Down.
 	if entry.eventID > 0 {
-		if err := o.promoteToDown(site.BlogID, entry.eventID, changeTime, meta); err != nil {
+		if err := o.promoteToDown(site, entry.eventID, changeTime, meta); err != nil {
 			log.Printf("orchestrator: promote event blog_id=%d event_id=%d: %v", site.BlogID, entry.eventID, err)
 		}
 	} else {
@@ -1812,7 +1819,7 @@ func (o *Orchestrator) confirmDown(site db.Site, entry *retryEntry, vResults []v
 		if err != nil {
 			log.Printf("orchestrator: open confirmed-down event blog_id=%d: %v", site.BlogID, err)
 			if config.LegacyStatusProjectionEnabled() {
-				_ = dbUpdateSiteStatus(o.ctx, site.BlogID, newStatus, changeTime)
+				_ = db.UpdateSiteStatusForMonitorSite(o.ctx, site.ID, site.BlogID, newStatus, changeTime)
 			}
 		} else {
 			entry.eventID = eventID
@@ -1840,7 +1847,7 @@ func (o *Orchestrator) confirmDown(site db.Site, entry *retryEntry, vResults []v
 		})
 	}
 
-	o.retries.clear(site.BlogID)
+	o.retries.clear(monitorTargetID(site))
 }
 
 func confirmedDownMetadata(site db.Site, entry *retryEntry, vResults []veriflier.CheckResult, directOpen bool) json.RawMessage {
@@ -1869,7 +1876,8 @@ func verifierConfirmationCount(vResults []veriflier.CheckResult) int {
 }
 
 func (o *Orchestrator) swallowMaintenanceFailure(site db.Site, res checker.Result) {
-	entry := o.retries.get(site.BlogID)
+	targetID := monitorTargetID(site)
+	entry := o.retries.get(targetID)
 	knownEventID := int64(0)
 	if entry != nil {
 		knownEventID = entry.eventID
@@ -1889,12 +1897,12 @@ func (o *Orchestrator) swallowMaintenanceFailure(site db.Site, res checker.Resul
 	})
 
 	if entry != nil || site.SiteStatus != statusRunning {
-		if err := o.closeMaintenanceEvent(site.BlogID, knownEventID, nowFunc().UTC(), meta); err != nil {
+		if err := o.closeMaintenanceEvent(site, knownEventID, nowFunc().UTC(), meta); err != nil {
 			log.Printf("orchestrator: close maintenance-swallowed event blog_id=%d event_id=%d: %v",
 				site.BlogID, knownEventID, err)
 		}
 	}
-	o.retries.clear(site.BlogID)
+	o.retries.clear(targetID)
 
 	o.auditLog(audit.Entry{
 		BlogID:    site.BlogID,
@@ -2447,7 +2455,7 @@ func (o *Orchestrator) openSeemsDownOnce(site db.Site, res checker.Result, first
 	meta, _ := json.Marshal(checkResultMetadata(site, res, firstFailAt))
 
 	out, err := tx.Open(o.ctx, eventstore.OpenInput{
-		Identity: eventstore.Identity{BlogID: site.BlogID, CheckType: checkTypeHTTP},
+		Identity: httpEventIdentity(site),
 		Severity: eventstore.SeveritySeemsDown,
 		State:    eventstore.StateSeemsDown,
 		Source:   o.hostname,
@@ -2461,7 +2469,7 @@ func (o *Orchestrator) openSeemsDownOnce(site db.Site, res checker.Result, first
 	// (Opened=false) is by definition a row that already exists, so site_status
 	// was already projected when the event first opened.
 	if out.Opened && config.LegacyStatusProjectionEnabled() && tx.Tx() != nil {
-		if err := db.UpdateSiteStatusTx(o.ctx, tx.Tx(), site.BlogID, statusDown, nowFunc().UTC()); err != nil {
+		if err := db.UpdateSiteStatusTxForMonitorSite(o.ctx, tx.Tx(), site.ID, site.BlogID, statusDown, nowFunc().UTC()); err != nil {
 			return 0, false, fmt.Errorf("project site_status: %w", err)
 		}
 	}
@@ -2497,7 +2505,7 @@ func (o *Orchestrator) openConfirmedDownOnce(site db.Site, changeTime time.Time,
 	defer func() { _ = tx.Rollback() }()
 
 	out, err := tx.Open(o.ctx, eventstore.OpenInput{
-		Identity: eventstore.Identity{BlogID: site.BlogID, CheckType: checkTypeHTTP},
+		Identity: httpEventIdentity(site),
 		Severity: eventstore.SeverityDown,
 		State:    eventstore.StateDown,
 		Source:   o.hostname,
@@ -2518,7 +2526,7 @@ func (o *Orchestrator) openConfirmedDownOnce(site db.Site, changeTime time.Time,
 	}
 
 	if projectConfirmedDown && config.LegacyStatusProjectionEnabled() && tx.Tx() != nil {
-		if err := db.UpdateSiteStatusTx(o.ctx, tx.Tx(), site.BlogID, statusConfirmedDown, changeTime); err != nil {
+		if err := db.UpdateSiteStatusTxForMonitorSite(o.ctx, tx.Tx(), site.ID, site.BlogID, statusConfirmedDown, changeTime); err != nil {
 			return 0, false, fmt.Errorf("project site_status: %w", err)
 		}
 	}
@@ -2531,13 +2539,13 @@ func (o *Orchestrator) openConfirmedDownOnce(site db.Site, changeTime time.Time,
 
 // promoteToDown bumps an open Seems Down event to Down (severity 4) and
 // projects site_status=SITE_CONFIRMED_DOWN in the same transaction.
-func (o *Orchestrator) promoteToDown(blogID, eventID int64, changeTime time.Time, meta json.RawMessage) error {
-	return o.withEventMutationRetry(blogID, "promote_to_down", func() error {
-		return o.promoteToDownOnce(blogID, eventID, changeTime, meta)
+func (o *Orchestrator) promoteToDown(site db.Site, eventID int64, changeTime time.Time, meta json.RawMessage) error {
+	return o.withEventMutationRetry(site.BlogID, "promote_to_down", func() error {
+		return o.promoteToDownOnce(site, eventID, changeTime, meta)
 	})
 }
 
-func (o *Orchestrator) promoteToDownOnce(blogID, eventID int64, changeTime time.Time, meta json.RawMessage) error {
+func (o *Orchestrator) promoteToDownOnce(site db.Site, eventID int64, changeTime time.Time, meta json.RawMessage) error {
 	tx, err := o.ev().Begin(o.ctx)
 	if err != nil {
 		return err
@@ -2551,7 +2559,7 @@ func (o *Orchestrator) promoteToDownOnce(blogID, eventID int64, changeTime time.
 	}
 
 	if config.LegacyStatusProjectionEnabled() && tx.Tx() != nil {
-		if err := db.UpdateSiteStatusTx(o.ctx, tx.Tx(), blogID, statusConfirmedDown, changeTime); err != nil {
+		if err := db.UpdateSiteStatusTxForMonitorSite(o.ctx, tx.Tx(), site.ID, site.BlogID, statusConfirmedDown, changeTime); err != nil {
 			return fmt.Errorf("project site_status: %w", err)
 		}
 	}
@@ -2560,13 +2568,13 @@ func (o *Orchestrator) promoteToDownOnce(blogID, eventID int64, changeTime time.
 
 // closeEvent closes an open event with the given resolution reason and projects
 // site_status to the given v1 value in the same transaction.
-func (o *Orchestrator) closeEvent(blogID, eventID int64, reason string, projectedStatus int, changeTime time.Time, meta json.RawMessage) error {
-	return o.withEventMutationRetry(blogID, "close_event", func() error {
-		return o.closeEventOnce(blogID, eventID, reason, projectedStatus, changeTime, meta)
+func (o *Orchestrator) closeEvent(site db.Site, eventID int64, reason string, projectedStatus int, changeTime time.Time, meta json.RawMessage) error {
+	return o.withEventMutationRetry(site.BlogID, "close_event", func() error {
+		return o.closeEventOnce(site, eventID, reason, projectedStatus, changeTime, meta)
 	})
 }
 
-func (o *Orchestrator) closeEventOnce(blogID, eventID int64, reason string, projectedStatus int, changeTime time.Time, meta json.RawMessage) error {
+func (o *Orchestrator) closeEventOnce(site db.Site, eventID int64, reason string, projectedStatus int, changeTime time.Time, meta json.RawMessage) error {
 	tx, err := o.ev().Begin(o.ctx)
 	if err != nil {
 		return err
@@ -2578,7 +2586,7 @@ func (o *Orchestrator) closeEventOnce(blogID, eventID int64, reason string, proj
 	}
 
 	if config.LegacyStatusProjectionEnabled() && tx.Tx() != nil {
-		if err := db.UpdateSiteStatusTx(o.ctx, tx.Tx(), blogID, projectedStatus, changeTime); err != nil {
+		if err := db.UpdateSiteStatusTxForMonitorSite(o.ctx, tx.Tx(), site.ID, site.BlogID, projectedStatus, changeTime); err != nil {
 			return fmt.Errorf("project site_status: %w", err)
 		}
 	}
@@ -2591,13 +2599,13 @@ func (o *Orchestrator) closeEventOnce(blogID, eventID int64, reason string, proj
 // retry entry) it is used directly; otherwise the active event is looked up
 // inside the transaction. site_status is projected back to SITE_RUNNING in the
 // same tx.
-func (o *Orchestrator) closeRecoveredEvent(blogID, knownEventID int64, changeTime time.Time, res checker.Result) error {
-	return o.withEventMutationRetry(blogID, "close_recovered_event", func() error {
-		return o.closeRecoveredEventOnce(blogID, knownEventID, changeTime, res)
+func (o *Orchestrator) closeRecoveredEvent(site db.Site, knownEventID int64, changeTime time.Time, res checker.Result) error {
+	return o.withEventMutationRetry(site.BlogID, "close_recovered_event", func() error {
+		return o.closeRecoveredEventOnce(site, knownEventID, changeTime, res)
 	})
 }
 
-func (o *Orchestrator) closeRecoveredEventOnce(blogID, knownEventID int64, changeTime time.Time, res checker.Result) error {
+func (o *Orchestrator) closeRecoveredEventOnce(site db.Site, knownEventID int64, changeTime time.Time, res checker.Result) error {
 	tx, err := o.ev().Begin(o.ctx)
 	if err != nil {
 		return err
@@ -2617,13 +2625,13 @@ func (o *Orchestrator) closeRecoveredEventOnce(blogID, knownEventID int64, chang
 			return fmt.Errorf("read event state: %w", err)
 		}
 	case tx.Tx() != nil:
-		ae, err := tx.FindActiveByBlog(o.ctx, blogID, checkTypeHTTP)
+		ae, err := tx.FindActive(o.ctx, httpEventIdentity(site))
 		if err != nil {
 			if errors.Is(err, eventstore.ErrEventNotFound) {
 				// site_status disagreed with the event store (no open event but
 				// projection said non-running). Just project back to running.
 				if config.LegacyStatusProjectionEnabled() {
-					if err := db.UpdateSiteStatusTx(o.ctx, tx.Tx(), blogID, statusRunning, changeTime); err != nil {
+					if err := db.UpdateSiteStatusTxForMonitorSite(o.ctx, tx.Tx(), site.ID, site.BlogID, statusRunning, changeTime); err != nil {
 						return fmt.Errorf("project site_status: %w", err)
 					}
 				}
@@ -2648,14 +2656,14 @@ func (o *Orchestrator) closeRecoveredEventOnce(blogID, knownEventID int64, chang
 		return fmt.Errorf("close event: %w", err)
 	}
 	if config.LegacyStatusProjectionEnabled() && tx.Tx() != nil {
-		if err := db.UpdateSiteStatusTx(o.ctx, tx.Tx(), blogID, statusRunning, changeTime); err != nil {
+		if err := db.UpdateSiteStatusTxForMonitorSite(o.ctx, tx.Tx(), site.ID, site.BlogID, statusRunning, changeTime); err != nil {
 			return fmt.Errorf("project site_status: %w", err)
 		}
 	}
 	return tx.Commit()
 }
 
-func (o *Orchestrator) closeMaintenanceEvent(blogID, knownEventID int64, changeTime time.Time, meta json.RawMessage) error {
+func (o *Orchestrator) closeMaintenanceEvent(site db.Site, knownEventID int64, changeTime time.Time, meta json.RawMessage) error {
 	tx, err := o.ev().Begin(o.ctx)
 	if err != nil {
 		return err
@@ -2667,11 +2675,11 @@ func (o *Orchestrator) closeMaintenanceEvent(blogID, knownEventID int64, changeT
 	case knownEventID > 0 && tx.Tx() != nil:
 		eventID = knownEventID
 	case tx.Tx() != nil:
-		ae, err := tx.FindActiveByBlog(o.ctx, blogID, checkTypeHTTP)
+		ae, err := tx.FindActive(o.ctx, httpEventIdentity(site))
 		if err != nil {
 			if errors.Is(err, eventstore.ErrEventNotFound) {
 				if config.LegacyStatusProjectionEnabled() {
-					if err := db.UpdateSiteStatusTx(o.ctx, tx.Tx(), blogID, statusRunning, changeTime); err != nil {
+					if err := db.UpdateSiteStatusTxForMonitorSite(o.ctx, tx.Tx(), site.ID, site.BlogID, statusRunning, changeTime); err != nil {
 						return fmt.Errorf("project site_status: %w", err)
 					}
 				}
@@ -2688,7 +2696,7 @@ func (o *Orchestrator) closeMaintenanceEvent(blogID, knownEventID int64, changeT
 		return fmt.Errorf("close event: %w", err)
 	}
 	if config.LegacyStatusProjectionEnabled() && tx.Tx() != nil {
-		if err := db.UpdateSiteStatusTx(o.ctx, tx.Tx(), blogID, statusRunning, changeTime); err != nil {
+		if err := db.UpdateSiteStatusTxForMonitorSite(o.ctx, tx.Tx(), site.ID, site.BlogID, statusRunning, changeTime); err != nil {
 			return fmt.Errorf("project site_status: %w", err)
 		}
 	}

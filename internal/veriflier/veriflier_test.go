@@ -33,12 +33,12 @@ func checkReqBody(t *testing.T, sites []CheckRequest) *bytes.Buffer {
 
 func TestServerHandleCheckSuccess(t *testing.T) {
 	_, ts := newTestServer(func(req CheckRequest) CheckResult {
-		return CheckResult{BlogID: req.BlogID, Success: true, HTTPCode: 200}
+		return CheckResult{Success: true, HTTPCode: 200}
 	})
 	defer ts.Close()
 
 	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/check", checkReqBody(t, []CheckRequest{
-		{BlogID: 42, URL: "https://example.com"},
+		{MonitorSiteID: 1234, BlogID: 42, URL: "https://example.com"},
 	}))
 	req.Header.Set("Authorization", "Bearer secret")
 	req.Header.Set("Content-Type", "application/json")
@@ -67,6 +67,9 @@ func TestServerHandleCheckSuccess(t *testing.T) {
 	}
 	if result.Results[0].BlogID != 42 {
 		t.Fatalf("BlogID = %d, want 42", result.Results[0].BlogID)
+	}
+	if result.Results[0].MonitorSiteID != 1234 {
+		t.Fatalf("MonitorSiteID = %d, want 1234", result.Results[0].MonitorSiteID)
 	}
 }
 

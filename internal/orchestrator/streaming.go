@@ -100,8 +100,8 @@ type streamingDueWheel struct {
 }
 
 type streamingDueBucket struct {
-	dueUnix int64
-	blogIDs []int64
+	dueUnix   int64
+	targetIDs []int64
 }
 
 func newStreamingDueWheel(capacity int) streamingDueWheel {
@@ -111,11 +111,11 @@ func newStreamingDueWheel(capacity int) streamingDueWheel {
 	return streamingDueWheel{buckets: make(map[int64][]int64, capacity)}
 }
 
-func (w *streamingDueWheel) schedule(dueUnix, blogID int64) {
+func (w *streamingDueWheel) schedule(dueUnix, targetID int64) {
 	if w.buckets == nil {
 		w.buckets = make(map[int64][]int64)
 	}
-	w.buckets[dueUnix] = append(w.buckets[dueUnix], blogID)
+	w.buckets[dueUnix] = append(w.buckets[dueUnix], targetID)
 	if w.nextDueUnix == 0 || dueUnix < w.nextDueUnix {
 		w.nextDueUnix = dueUnix
 	}
@@ -145,11 +145,11 @@ func (w *streamingDueWheel) popReady(nowUnix int64) []streamingDueBucket {
 	})
 	ready := make([]streamingDueBucket, 0, len(readyTimes))
 	for _, dueUnix := range readyTimes {
-		blogIDs := w.buckets[dueUnix]
+		targetIDs := w.buckets[dueUnix]
 		delete(w.buckets, dueUnix)
 		ready = append(ready, streamingDueBucket{
-			dueUnix: dueUnix,
-			blogIDs: blogIDs,
+			dueUnix:   dueUnix,
+			targetIDs: targetIDs,
 		})
 	}
 	w.refreshNextDue()
@@ -204,8 +204,9 @@ func streamingDueWheelInitialCapacity(sites []db.Site) int {
 func (p *streamingPlanner) merge(sites []db.Site, now time.Time) (added, updated, removed int) {
 	seen := make(map[int64]struct{}, len(sites))
 	for _, site := range sites {
-		seen[site.BlogID] = struct{}{}
-		if target, ok := p.targets[site.BlogID]; ok {
+		targetID := monitorTargetID(site)
+		seen[targetID] = struct{}{}
+		if target, ok := p.targets[targetID]; ok {
 			if !streamingSiteCheckConfigEqual(target.site, site) {
 				target.checkRequestDirty = true
 			}
@@ -222,7 +223,7 @@ func (p *streamingPlanner) merge(sites []db.Site, now time.Time) (added, updated
 		if site.LastCheckedAt != nil {
 			target.lastProjectedAt = site.LastCheckedAt.UTC()
 		}
-		p.targets[site.BlogID] = target
+		p.targets[targetID] = target
 		p.scheduleAt(target, initialStreamingDueAt(site, now))
 		added++
 	}
@@ -295,7 +296,7 @@ func (p *streamingPlanner) scheduleAfterResult(target *streamingTarget, res chec
 
 func (p *streamingPlanner) scheduleAtNextPhaseAfter(target *streamingTarget, after time.Time) {
 	interval := streamingCheckCadence(target.site)
-	phase := streamingPhaseOffset(target.site.BlogID, interval)
+	phase := streamingPhaseOffset(monitorTargetID(target.site), interval)
 	p.scheduleAt(target, nextStreamingPhaseAt(after.Add(time.Second), interval, phase))
 }
 
@@ -303,15 +304,15 @@ func (p *streamingPlanner) scheduleAt(target *streamingTarget, dueAt time.Time) 
 	dueAt = dueAt.UTC().Truncate(time.Second)
 	target.dueAt = dueAt
 	dueUnix := dueAt.Unix()
-	p.due.schedule(dueUnix, target.site.BlogID)
+	p.due.schedule(dueUnix, monitorTargetID(target.site))
 }
 
 func (p *streamingPlanner) popDue(now time.Time) []*streamingTarget {
 	nowUnix := now.UTC().Unix()
 	var due []*streamingTarget
 	for _, bucket := range p.due.popReady(nowUnix) {
-		for _, blogID := range bucket.blogIDs {
-			target, ok := p.targets[blogID]
+		for _, targetID := range bucket.targetIDs {
+			target, ok := p.targets[targetID]
 			if !ok || !target.active || target.inFlight || target.queued || target.dueAt.Unix() != bucket.dueUnix {
 				continue
 			}
@@ -438,6 +439,7 @@ type streamingSideEffectJob struct {
 }
 
 type streamingSideEffectReport struct {
+	targetID      int64
 	blogID        int64
 	status        int
 	resultFailure bool
@@ -479,8 +481,8 @@ func (o *Orchestrator) newStreamingSideEffectProcessor(shards, queueCap int) *st
 
 func (p *streamingSideEffectProcessor) runShard(o *Orchestrator, jobs <-chan streamingSideEffectJob) {
 	defer p.wg.Done()
-	statusByBlog := make(map[int64]int)
-	sslExpiryByBlog := make(map[int64]*time.Time)
+	statusByTarget := make(map[int64]int)
+	sslExpiryByTarget := make(map[int64]*time.Time)
 	historyRows := make([]db.CheckHistoryRow, 0, streamingHistoryBatchSize)
 	historyTicker := time.NewTicker(streamingHistoryFlushInterval)
 	defer historyTicker.Stop()
@@ -513,19 +515,20 @@ func (p *streamingSideEffectProcessor) runShard(o *Orchestrator, jobs <-chan str
 				return
 			}
 			site := job.site
-			if status, ok := statusByBlog[site.BlogID]; ok {
+			targetID := monitorTargetID(site)
+			if status, ok := statusByTarget[targetID]; ok {
 				site.SiteStatus = status
 			}
-			if expiry, ok := sslExpiryByBlog[site.BlogID]; ok {
+			if expiry, ok := sslExpiryByTarget[targetID]; ok {
 				site.SSLExpiryDate = expiry
 			}
 			summary, updated := o.processStreamingSideEffects(site, job.res)
-			statusByBlog[site.BlogID] = updated.SiteStatus
+			statusByTarget[targetID] = updated.SiteStatus
 			if updated.SSLExpiryDate != nil {
 				expiry := *updated.SSLExpiryDate
-				sslExpiryByBlog[site.BlogID] = &expiry
+				sslExpiryByTarget[targetID] = &expiry
 			} else {
-				delete(sslExpiryByBlog, site.BlogID)
+				delete(sslExpiryByTarget, targetID)
 			}
 			if job.res.IsFailure() {
 				historyRows = append(historyRows, checkHistoryRowForResult(site.BlogID, job.res))
@@ -535,6 +538,7 @@ func (p *streamingSideEffectProcessor) runShard(o *Orchestrator, jobs <-chan str
 			}
 			select {
 			case p.reports <- streamingSideEffectReport{
+				targetID:      targetID,
 				blogID:        site.BlogID,
 				status:        updated.SiteStatus,
 				resultFailure: job.res.IsFailure(),
@@ -552,7 +556,7 @@ func (p *streamingSideEffectProcessor) enqueue(job streamingSideEffectJob) bool 
 	if len(p.shards) == 0 {
 		return false
 	}
-	ch := p.shards[streamingSideEffectShard(job.site.BlogID, len(p.shards))]
+	ch := p.shards[streamingSideEffectShard(monitorTargetID(job.site), len(p.shards))]
 	select {
 	case ch <- job:
 		return true
@@ -565,7 +569,7 @@ func (p *streamingSideEffectProcessor) tryEnqueue(job streamingSideEffectJob) bo
 	if len(p.shards) == 0 {
 		return false
 	}
-	ch := p.shards[streamingSideEffectShard(job.site.BlogID, len(p.shards))]
+	ch := p.shards[streamingSideEffectShard(monitorTargetID(job.site), len(p.shards))]
 	select {
 	case ch <- job:
 		return true
@@ -764,7 +768,8 @@ func (o *Orchestrator) runStreamingEngine() {
 	}
 
 	handleResult := func(res checker.Result, now time.Time) {
-		target, ok := planner.targets[res.BlogID]
+		targetID := checkResultTargetID(res)
+		target, ok := planner.targets[targetID]
 		if !ok || !target.inFlight {
 			stats.staleResults++
 			return
@@ -795,7 +800,7 @@ func (o *Orchestrator) runStreamingEngine() {
 					return
 				}
 			}
-			pendingSideEffects[target.site.BlogID]++
+			pendingSideEffects[targetID]++
 		}
 		planner.scheduleAfterResult(target, res, checkedAt, streamingAllowImmediateRetry(target, res, o.retries, pressureActive))
 		o.queueStreamingProjection(cfg, target, checkedAt, now, pendingProjection)
@@ -939,14 +944,14 @@ func (o *Orchestrator) runStreamingEngine() {
 			handleProjectionFlushResult(result)
 		case report := <-sideEffects.reportsChannel():
 			stats.addSideEffects(report.summary)
-			if report.blogID != 0 {
-				if pendingSideEffects[report.blogID] <= 1 {
-					delete(pendingSideEffects, report.blogID)
+			if report.targetID != 0 {
+				if pendingSideEffects[report.targetID] <= 1 {
+					delete(pendingSideEffects, report.targetID)
 				} else {
-					pendingSideEffects[report.blogID]--
+					pendingSideEffects[report.targetID]--
 				}
-				sideEffectStatus[report.blogID] = report.status
-				if target, ok := planner.targets[report.blogID]; ok {
+				sideEffectStatus[report.targetID] = report.status
+				if target, ok := planner.targets[report.targetID]; ok {
 					target.site.SiteStatus = report.status
 					rescheduleStreamingAfterSideEffect(planner, target, report)
 				}
@@ -1004,11 +1009,11 @@ func (o *Orchestrator) loadStreamingSites(cfg *config.Config) ([]db.Site, error)
 func (o *Orchestrator) loadStreamingSitesForRange(ctx context.Context, cfg *config.Config, bucketMin, bucketMax int) ([]db.Site, error) {
 	pageSize := streamingLoadPageSize(cfg)
 	var (
-		afterBlogID int64
-		sites       []db.Site
+		afterMonitorSiteID int64
+		sites              []db.Site
 	)
 	for {
-		page, err := dbListActiveSites(ctx, bucketMin, bucketMax, afterBlogID, pageSize)
+		page, err := dbListActiveSites(ctx, bucketMin, bucketMax, afterMonitorSiteID, pageSize)
 		if err != nil {
 			return nil, err
 		}
@@ -1016,7 +1021,7 @@ func (o *Orchestrator) loadStreamingSitesForRange(ctx context.Context, cfg *conf
 			return sites, nil
 		}
 		sites = append(sites, page...)
-		afterBlogID = page[len(page)-1].BlogID
+		afterMonitorSiteID = page[len(page)-1].ID
 		if len(page) < pageSize {
 			return sites, nil
 		}
@@ -1079,9 +1084,9 @@ func (o *Orchestrator) processStreamingSideEffects(site db.Site, res checker.Res
 		site.SiteStatus = statusRunning
 	} else {
 		failureActive := o.handleFailure(site, res)
-		if retry := o.retries.get(site.BlogID); retry != nil && (failureActive || retry.eventID > 0) {
+		if retry := o.retries.get(monitorTargetID(site)); retry != nil && (failureActive || retry.eventID > 0) {
 			site.SiteStatus = statusDown
-		} else if status, err := dbGetSiteStatus(o.ctx, site.BlogID); err != nil {
+		} else if status, err := dbGetSiteStatus(o.ctx, site.ID, site.BlogID); err != nil {
 			log.Printf("orchestrator: streaming refresh site status blog_id=%d: %v", site.BlogID, err)
 		} else {
 			site.SiteStatus = status
@@ -1126,15 +1131,15 @@ func streamingSideEffectsNeeded(target *streamingTarget, res checker.Result, pen
 	if streamingSideEffectsSuppressedByPressure(target, res, pending, statusCache, retries, pressure) {
 		return false
 	}
-	blogID := target.site.BlogID
-	if pending[blogID] > 0 {
+	targetID := monitorTargetID(target.site)
+	if pending[targetID] > 0 {
 		return true
 	}
 	status := target.site.SiteStatus
-	if cached, ok := statusCache[blogID]; ok {
+	if cached, ok := statusCache[targetID]; ok {
 		status = cached
 	}
-	retrying := retries != nil && retries.get(blogID) != nil
+	retrying := retries != nil && retries.get(targetID) != nil
 	if res.IsFailure() || res.TLSVersion != 0 || res.SSLExpiry != nil {
 		return true
 	}
@@ -1148,15 +1153,15 @@ func streamingSideEffectsSuppressedByPressure(target *streamingTarget, res check
 	if !pressure || target == nil {
 		return false
 	}
-	blogID := target.site.BlogID
-	if pending[blogID] > 0 {
+	targetID := monitorTargetID(target.site)
+	if pending[targetID] > 0 {
 		return false
 	}
 	status := target.site.SiteStatus
-	if cached, ok := statusCache[blogID]; ok {
+	if cached, ok := statusCache[targetID]; ok {
 		status = cached
 	}
-	retrying := retries != nil && retries.get(blogID) != nil
+	retrying := retries != nil && retries.get(targetID) != nil
 	return status == statusRunning && !retrying && streamingLocalPressureFailure(res)
 }
 
@@ -1186,7 +1191,7 @@ func streamingAllowImmediateRetry(target *streamingTarget, res checker.Result, r
 	if target.site.SiteStatus != statusRunning {
 		return true
 	}
-	return retries != nil && retries.get(target.site.BlogID) != nil
+	return retries != nil && retries.get(monitorTargetID(target.site)) != nil
 }
 
 func streamingSuppressPostRecoveryImmediateRetry(target *streamingTarget, res checker.Result, retries *retryQueue) bool {
@@ -1799,7 +1804,7 @@ func streamingDispatchFastCatchup(maxLag time.Duration, resultDepth, workerTarge
 
 func initialStreamingDueAt(site db.Site, now time.Time) time.Time {
 	interval := streamingCheckCadence(site)
-	phase := streamingPhaseOffset(site.BlogID, interval)
+	phase := streamingPhaseOffset(monitorTargetID(site), interval)
 	return nextStreamingPhaseAt(now, interval, phase)
 }
 

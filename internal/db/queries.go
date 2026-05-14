@@ -60,7 +60,7 @@ func GetSitesForBucket(ctx context.Context, bucketMin, bucketMax, batchSize int,
 // scheduler. It intentionally ignores last_checked_at and next_check_at: those
 // are legacy scheduler projections, while streaming mode maintains due time in
 // memory and writes coarse rollback freshness separately.
-func ListActiveSitesForBucketRange(ctx context.Context, bucketMin, bucketMax int, afterBlogID int64, limit int) ([]Site, error) {
+func ListActiveSitesForBucketRange(ctx context.Context, bucketMin, bucketMax int, afterMonitorSiteID int64, limit int) ([]Site, error) {
 	if limit <= 0 {
 		limit = 5000
 	}
@@ -76,10 +76,10 @@ func ListActiveSitesForBucketRange(ctx context.Context, bucketMin, bucketMax int
 		LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id
 		WHERE s.monitor_active = 1
 		  AND s.bucket_no BETWEEN ? AND ?
-		  AND s.blog_id > ?
-		ORDER BY s.blog_id ASC
+		  AND s.jetpack_monitor_site_id > ?
+		ORDER BY s.jetpack_monitor_site_id ASC
 		LIMIT ?`,
-		bucketMin, bucketMax, afterBlogID, limit,
+		bucketMin, bucketMax, afterMonitorSiteID, limit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("query active sites: %w", err)
@@ -189,6 +189,20 @@ func CountDueSitesForBucketRange(ctx context.Context, bucketMin, bucketMax int, 
 
 // UpdateSiteStatus updates site_status and last_status_change for a site.
 func UpdateSiteStatus(ctx context.Context, blogID int64, status int, changedAt time.Time) error {
+	return UpdateSiteStatusForMonitorSite(ctx, 0, blogID, status, changedAt)
+}
+
+// UpdateSiteStatusForMonitorSite updates the legacy projection for one monitor
+// row when monitorSiteID is known, falling back to the historical blog_id update
+// for callers that are still site-level.
+func UpdateSiteStatusForMonitorSite(ctx context.Context, monitorSiteID, blogID int64, status int, changedAt time.Time) error {
+	if monitorSiteID > 0 {
+		_, err := db.ExecContext(ctx,
+			`UPDATE jetpack_monitor_sites SET site_status = ?, last_status_change = ? WHERE jetpack_monitor_site_id = ?`,
+			status, changedAt.UTC(), monitorSiteID,
+		)
+		return err
+	}
 	_, err := db.ExecContext(ctx,
 		`UPDATE jetpack_monitor_sites SET site_status = ?, last_status_change = ? WHERE blog_id = ?`,
 		status, changedAt.UTC(), blogID,
@@ -200,7 +214,24 @@ func UpdateSiteStatus(ctx context.Context, blogID int64, status int, changedAt t
 // mode uses this sparingly after verifier escalation so its in-memory target
 // state does not send a recovery notification after a false alarm.
 func GetSiteStatus(ctx context.Context, blogID int64) (int, error) {
+	return GetSiteStatusForMonitorSite(ctx, 0, blogID)
+}
+
+// GetSiteStatusForMonitorSite reads the legacy status projection for one
+// monitor row when monitorSiteID is known, falling back to the historical
+// blog_id lookup for site-level callers.
+func GetSiteStatusForMonitorSite(ctx context.Context, monitorSiteID, blogID int64) (int, error) {
 	var status int
+	if monitorSiteID > 0 {
+		err := db.QueryRowContext(ctx,
+			`SELECT site_status FROM jetpack_monitor_sites WHERE jetpack_monitor_site_id = ?`,
+			monitorSiteID,
+		).Scan(&status)
+		if err != nil {
+			return 0, fmt.Errorf("get site status: %w", err)
+		}
+		return status, nil
+	}
 	err := db.QueryRowContext(ctx,
 		`SELECT site_status FROM jetpack_monitor_sites WHERE blog_id = ?`,
 		blogID,
@@ -214,6 +245,19 @@ func GetSiteStatus(ctx context.Context, blogID int64) (int, error) {
 // UpdateSiteStatusTx is the transaction-aware variant of UpdateSiteStatus, used
 // when the projection write must commit atomically with an event mutation.
 func UpdateSiteStatusTx(ctx context.Context, tx *sql.Tx, blogID int64, status int, changedAt time.Time) error {
+	return UpdateSiteStatusTxForMonitorSite(ctx, tx, 0, blogID, status, changedAt)
+}
+
+// UpdateSiteStatusTxForMonitorSite is the transaction-aware variant of
+// UpdateSiteStatusForMonitorSite.
+func UpdateSiteStatusTxForMonitorSite(ctx context.Context, tx *sql.Tx, monitorSiteID, blogID int64, status int, changedAt time.Time) error {
+	if monitorSiteID > 0 {
+		_, err := tx.ExecContext(ctx,
+			`UPDATE jetpack_monitor_sites SET site_status = ?, last_status_change = ? WHERE jetpack_monitor_site_id = ?`,
+			status, changedAt.UTC(), monitorSiteID,
+		)
+		return err
+	}
 	_, err := tx.ExecContext(ctx,
 		`UPDATE jetpack_monitor_sites SET site_status = ?, last_status_change = ? WHERE blog_id = ?`,
 		status, changedAt.UTC(), blogID,
@@ -240,6 +284,7 @@ func CountLegacyProjectionDrift(ctx context.Context, bucketMin, bucketMax int) (
 			  FROM jetpack_monitor_sites s
 			  LEFT JOIN jetmon_events e
 			    ON e.blog_id = s.blog_id
+			   AND (e.endpoint_id = s.jetpack_monitor_site_id OR e.endpoint_id IS NULL)
 			   AND e.check_type = 'http'
 			   AND e.ended_at IS NULL
 			 WHERE s.monitor_active = 1
@@ -317,6 +362,7 @@ func ListLegacyProjectionDrift(ctx context.Context, bucketMin, bucketMax, limit 
 			  FROM jetpack_monitor_sites s
 			  LEFT JOIN jetmon_events e
 			    ON e.blog_id = s.blog_id
+			   AND (e.endpoint_id = s.jetpack_monitor_site_id OR e.endpoint_id IS NULL)
 			   AND e.check_type = 'http'
 			   AND e.ended_at IS NULL
 			 WHERE s.monitor_active = 1
@@ -396,6 +442,7 @@ func SummarizeLegacyProjectionDrift(ctx context.Context, bucketMin, bucketMax, l
 			  FROM jetpack_monitor_sites s
 			  LEFT JOIN jetmon_events e
 			    ON e.blog_id = s.blog_id
+			   AND (e.endpoint_id = s.jetpack_monitor_site_id OR e.endpoint_id IS NULL)
 			   AND e.check_type = 'http'
 			   AND e.ended_at IS NULL
 			 WHERE s.monitor_active = 1

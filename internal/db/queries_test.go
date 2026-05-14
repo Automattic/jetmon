@@ -358,6 +358,33 @@ func TestMarkSitesCheckedBatchesUpdates(t *testing.T) {
 	}
 }
 
+func TestMonitorSiteStatusUsesEndpointIdentity(t *testing.T) {
+	mock, cleanup := withMockDB(t)
+	defer cleanup()
+
+	changedAt := time.Date(2026, 5, 13, 18, 0, 0, 0, time.UTC)
+	mock.ExpectExec("UPDATE jetpack_monitor_sites SET site_status").
+		WithArgs(2, changedAt, int64(1234)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT site_status FROM jetpack_monitor_sites").
+		WithArgs(int64(1234)).
+		WillReturnRows(sqlmock.NewRows([]string{"site_status"}).AddRow(2))
+
+	if err := UpdateSiteStatusForMonitorSite(context.Background(), 1234, 42, 2, changedAt); err != nil {
+		t.Fatalf("UpdateSiteStatusForMonitorSite: %v", err)
+	}
+	status, err := GetSiteStatusForMonitorSite(context.Background(), 1234, 42)
+	if err != nil {
+		t.Fatalf("GetSiteStatusForMonitorSite: %v", err)
+	}
+	if status != 2 {
+		t.Fatalf("status = %d, want 2", status)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestMarkSitesCheckedRetriesDeadlock(t *testing.T) {
 	mock, cleanup := withMockDB(t)
 	defer cleanup()
