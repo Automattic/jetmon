@@ -362,6 +362,20 @@ production telemetry branches:
 - [x] Add a rollout state report that summarizes ownership mode, bucket
   coverage, drift, recent activity, delivery owner state, and suggested next
   action.
+- [x] Add `jetmon2 rollout production-data-audit` so production rehearsals can
+  inspect the real v1 `jetpack_monitor_sites` shape before a host window:
+  observed bucket space, active/non-active counts, status and interval
+  distributions, malformed URL counts, existing non-running projections, and
+  duplicate active `blog_id` rows.
+- [x] Add an explicit `jetmon2 rollout legacy-status-bootstrap` write step for
+  existing v1 non-running rows so v2 event state can be seeded before
+  `projection-drift` is treated as a hard rollout gate. The command is dry-run
+  by default and refuses duplicate active `blog_id` rows unless the operator
+  deliberately overrides the guardrail.
+- [ ] Move monitor runtime/config/event identity from per-`blog_id` state to
+  explicit endpoint identity, using the existing `jetpack_monitor_site_id` row
+  as the durable source during migration. This is required for the small but
+  real production cohort where one `blog_id` has multiple active monitor URLs.
 
 ### Rollout Host Preflight Polish TODO
 

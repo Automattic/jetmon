@@ -111,6 +111,30 @@ GROUP BY bucket_no
 ORDER BY bucket_no;
 ```
 
+Run the production-data audit before approving the first host window. This
+read-only gate summarizes the real legacy table shape without printing monitor
+URLs, including active row count, observed bucket space, status distribution,
+check-interval distribution, malformed URL counts, active duplicate `blog_id`
+rows, and existing non-running v1 projections:
+
+```bash
+./jetmon2 rollout production-data-audit --bucket-min=0 --bucket-max=<max>
+```
+
+If the audit reports existing active non-running rows, bootstrap matching v2
+events before treating `projection-drift` as a hard gate. The bootstrap is
+read-only unless `--execute` is provided:
+
+```bash
+./jetmon2 rollout legacy-status-bootstrap --bucket-min=0 --bucket-max=<max>
+./jetmon2 rollout legacy-status-bootstrap --bucket-min=0 --bucket-max=<max> --execute
+```
+
+Do not force the bootstrap past active duplicate `blog_id` blockers during the
+initial rollout. Current v2 rollout state is still keyed by `blog_id`; duplicate
+active rows need endpoint-identity support or explicit data cleanup before they
+can be handled safely.
+
 Export the approved host-to-bucket plan to CSV before touching any hosts:
 
 ```csv
@@ -789,6 +813,11 @@ Only remove v1 after rollout signoff.
 
 - [ ] v1 host inventory complete
 - [ ] bucket ranges complete and non-overlapping
+- [ ] `rollout production-data-audit` reviewed for the production table
+- [ ] existing non-running v1 rows bootstrapped with
+      `rollout legacy-status-bootstrap --execute` if present
+- [ ] active duplicate `blog_id` rows resolved or endpoint-identity support
+      approved before rollout
 - [ ] `rollout static-plan-check` passes for the approved v1 bucket plan
 - [ ] DB backup and restore path confirmed
 - [ ] v2 binaries built and tested

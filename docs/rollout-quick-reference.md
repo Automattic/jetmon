@@ -232,6 +232,25 @@ When `projection-drift` fails, start with the summary and cause lines before
 the row table. The command is read-only and gives repair guidance; it does not
 change `site_status` automatically.
 
+## Production Data Audit
+
+Before the first host window, run the read-only production-data audit against
+the approved bucket range:
+
+```bash
+./jetmon2 rollout production-data-audit --bucket-min=0 --bucket-max=<max>
+```
+
+Resolve hard blockers before rollout. In particular, active duplicate
+`blog_id` rows are not safe for the current per-blog runtime identity model.
+Existing active non-running v1 projections are expected in production, but they
+must be represented in v2 events before `projection-drift` becomes a hard gate:
+
+```bash
+./jetmon2 rollout legacy-status-bootstrap --bucket-min=0 --bucket-max=<max>
+./jetmon2 rollout legacy-status-bootstrap --bucket-min=0 --bucket-max=<max> --execute
+```
+
 ## Automation
 
 Rollout gate commands support JSON output:

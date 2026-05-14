@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Automattic/jetmon/internal/config"
 	"github.com/Automattic/jetmon/internal/db"
+	"github.com/Automattic/jetmon/internal/eventstore"
 )
 
 func TestRunRolloutCommandOutputJSON(t *testing.T) {
@@ -2052,6 +2054,140 @@ func TestBuildRolloutStateReportDynamicIssues(t *testing.T) {
 	}
 	if !strings.Contains(report.SuggestedNextAction, "Fix jetmon_hosts bucket coverage") {
 		t.Fatalf("suggested action = %q", report.SuggestedNextAction)
+	}
+}
+
+func TestRunProductionDataAuditFlagsProductionShape(t *testing.T) {
+	cfg := &config.Config{BucketTotal: 512}
+	minBucket, maxBucket := 0, 511
+	audit := db.LegacySiteTableAudit{
+		BucketMin:              minBucket,
+		BucketMax:              maxBucket,
+		TotalRows:              1000,
+		ActiveRows:             100,
+		ObservedBucketMin:      &minBucket,
+		ObservedBucketMax:      &maxBucket,
+		ObservedBucketDistinct: 512,
+		ActiveBucketDistinct:   512,
+		ActiveBucketLoad:       db.BucketLoadSummary{Distinct: 512, MinRows: 1, MaxRows: 3, AvgRows: 2},
+		MonitorActiveValues:    []db.ValueCount{{Value: 0, Total: 900}, {Value: 1, Total: 100, Active: 100}},
+		SiteStatusValues:       []db.ValueCount{{Value: 1, Total: 990, Active: 90}, {Value: 2, Total: 10, Active: 10}},
+		CheckIntervalValues:    []db.ValueCount{{Value: 5, Total: 1000, Active: 100}},
+		ActiveNonRunningRows:   10,
+		ActiveMalformedURLRows: 2,
+		ActiveNullStatusChange: 4,
+		ActiveDuplicateBlogs:   db.DuplicateBlogSummary{Groups: 1, Rows: 2, MaxRowsPerBlog: 2},
+	}
+	deps := productionDataAuditDeps{
+		BuildLegacySiteTableAudit: func(context.Context, int, int) (db.LegacySiteTableAudit, error) {
+			return audit, nil
+		},
+	}
+
+	var out bytes.Buffer
+	err := runProductionDataAudit(context.Background(), &out, cfg, -1, -1, deps)
+	if err == nil {
+		t.Fatal("runProductionDataAudit returned nil, want duplicate blog_id blocker")
+	}
+	text := out.String()
+	for _, want := range []string{
+		"INFO legacy_rows_total=1000 active=100",
+		"WARN production_data_audit=\"active non-running legacy rows=10",
+		"FAIL production_data_audit=\"active duplicate blog_id rows groups=1 rows=2",
+		"FAIL production_data_audit=blocked",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("audit output missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestRunLegacyStatusBootstrapDryRunBlocksDuplicateBlogs(t *testing.T) {
+	cfg := &config.Config{BucketTotal: 10}
+	audit := db.LegacySiteTableAudit{
+		BucketMin:            0,
+		BucketMax:            9,
+		ActiveNonRunningRows: 3,
+		ActiveDuplicateBlogs: db.DuplicateBlogSummary{Groups: 1, Rows: 2},
+	}
+	deps := legacyStatusBootstrapDeps{
+		BuildLegacySiteTableAudit: func(context.Context, int, int) (db.LegacySiteTableAudit, error) {
+			return audit, nil
+		},
+		ListLegacyNonRunningSites: func(context.Context, int, int, int64, int) ([]db.LegacyNonRunningSite, error) {
+			t.Fatal("ListLegacyNonRunningSites should not run when duplicate blog IDs block bootstrap")
+			return nil, nil
+		},
+	}
+
+	var out bytes.Buffer
+	err := runLegacyStatusBootstrap(context.Background(), &out, cfg, legacyStatusBootstrapOptions{BucketMin: 0, BucketMax: 9, BatchSize: 1000}, deps)
+	if err == nil {
+		t.Fatal("runLegacyStatusBootstrap returned nil, want duplicate blog_id blocker")
+	}
+	if !strings.Contains(out.String(), "FAIL bootstrap_blocked_by_duplicate_blog_ids groups=1 rows=2") {
+		t.Fatalf("bootstrap output = %s", out.String())
+	}
+}
+
+func TestRunLegacyStatusBootstrapExecutesIdempotentPages(t *testing.T) {
+	cfg := &config.Config{BucketTotal: 10}
+	audit := db.LegacySiteTableAudit{BucketMin: 0, BucketMax: 9, ActiveNonRunningRows: 3}
+	var opened []int64
+	deps := legacyStatusBootstrapDeps{
+		BuildLegacySiteTableAudit: func(context.Context, int, int) (db.LegacySiteTableAudit, error) {
+			return audit, nil
+		},
+		ListLegacyNonRunningSites: func(_ context.Context, _, _ int, after int64, _ int) ([]db.LegacyNonRunningSite, error) {
+			switch after {
+			case 0:
+				return []db.LegacyNonRunningSite{
+					{MonitorSiteID: 10, BlogID: 100, BucketNo: 1, SiteStatus: 0},
+					{MonitorSiteID: 11, BlogID: 101, BucketNo: 1, SiteStatus: 2},
+				}, nil
+			case 11:
+				return []db.LegacyNonRunningSite{
+					{MonitorSiteID: 12, BlogID: 102, BucketNo: 1, SiteStatus: 2},
+				}, nil
+			default:
+				return nil, nil
+			}
+		},
+		OpenLegacyStatusEvent: func(_ context.Context, site db.LegacyNonRunningSite) (bool, error) {
+			opened = append(opened, site.BlogID)
+			return site.BlogID != 101, nil
+		},
+	}
+
+	var out bytes.Buffer
+	err := runLegacyStatusBootstrap(context.Background(), &out, cfg, legacyStatusBootstrapOptions{BucketMin: 0, BucketMax: 9, BatchSize: 2, Execute: true}, deps)
+	if err != nil {
+		t.Fatalf("runLegacyStatusBootstrap: %v\n%s", err, out.String())
+	}
+	if !reflect.DeepEqual(opened, []int64{100, 101, 102}) {
+		t.Fatalf("opened blogs = %#v", opened)
+	}
+	if !strings.Contains(out.String(), "PASS legacy_status_bootstrap=complete candidates=3 opened=2 existing=1") {
+		t.Fatalf("bootstrap output = %s", out.String())
+	}
+}
+
+func TestLegacyStatusEventShape(t *testing.T) {
+	tests := []struct {
+		status   int
+		state    string
+		severity uint8
+		ok       bool
+	}{
+		{status: 0, state: eventstore.StateSeemsDown, severity: eventstore.SeveritySeemsDown, ok: true},
+		{status: 2, state: eventstore.StateDown, severity: eventstore.SeverityDown, ok: true},
+		{status: 1, ok: false},
+	}
+	for _, tt := range tests {
+		state, severity, ok := legacyStatusEventShape(tt.status)
+		if state != tt.state || severity != tt.severity || ok != tt.ok {
+			t.Fatalf("legacyStatusEventShape(%d) = (%q,%d,%t), want (%q,%d,%t)", tt.status, state, severity, ok, tt.state, tt.severity, tt.ok)
+		}
 	}
 }
 

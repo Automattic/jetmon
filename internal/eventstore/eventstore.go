@@ -33,6 +33,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // State labels written to jetmon_events.state and jetmon_event_transitions.state_*.
@@ -102,11 +103,12 @@ type Identity struct {
 
 // OpenInput carries the fields needed to open (or reopen) an event.
 type OpenInput struct {
-	Identity Identity
-	Severity uint8
-	State    string
-	Source   string          // who detected the failure: "local", "veriflier:us-west", …
-	Metadata json.RawMessage // optional check-type-specific payload
+	Identity  Identity
+	Severity  uint8
+	State     string
+	Source    string          // who detected the failure: "local", "veriflier:us-west", …
+	Metadata  json.RawMessage // optional check-type-specific payload
+	StartedAt *time.Time      // optional legacy/bootstrap incident start time
 }
 
 // OpenResult describes the outcome of an Open call.
@@ -200,11 +202,12 @@ func (t *Tx) Open(ctx context.Context, in OpenInput) (OpenResult, error) {
 	// LAST_INSERT_ID(id) on the UPDATE branch makes the driver return the
 	// existing row's id. RowsAffected is 1 on insert, 2 on update (per the
 	// MySQL driver convention). We only write an "opened" transition on insert.
-	res, err := t.tx.ExecContext(ctx, `
+	insertSQL := `
 		INSERT INTO jetmon_events
 			(blog_id, endpoint_id, check_type, discriminator, severity, state, metadata)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
-		ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id)`,
+		ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id)`
+	args := []any{
 		in.Identity.BlogID,
 		nullableEndpoint(in.Identity.EndpointID),
 		in.Identity.CheckType,
@@ -212,7 +215,25 @@ func (t *Tx) Open(ctx context.Context, in OpenInput) (OpenResult, error) {
 		in.Severity,
 		in.State,
 		nullableJSON(in.Metadata),
-	)
+	}
+	if in.StartedAt != nil {
+		insertSQL = `
+			INSERT INTO jetmon_events
+				(blog_id, endpoint_id, check_type, discriminator, severity, state, started_at, metadata)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id)`
+		args = []any{
+			in.Identity.BlogID,
+			nullableEndpoint(in.Identity.EndpointID),
+			in.Identity.CheckType,
+			nullableDiscriminator(in.Identity.Discriminator),
+			in.Severity,
+			in.State,
+			in.StartedAt.UTC(),
+			nullableJSON(in.Metadata),
+		}
+	}
+	res, err := t.tx.ExecContext(ctx, insertSQL, args...)
 	if err != nil {
 		return OpenResult{}, fmt.Errorf("insert event: %w", err)
 	}
@@ -242,6 +263,7 @@ func (t *Tx) Open(ctx context.Context, in OpenInput) (OpenResult, error) {
 			reason:         ReasonOpened,
 			source:         in.Source,
 			metadata:       in.Metadata,
+			changedAt:      in.StartedAt,
 		}); err != nil {
 			return OpenResult{}, err
 		}
@@ -642,12 +664,28 @@ type transitionInput struct {
 	reason         string
 	source         string
 	metadata       json.RawMessage
+	changedAt      *time.Time
 }
 
 func writeTransition(ctx context.Context, tx *sql.Tx, t transitionInput) error {
 	source := t.source
 	if source == "" {
 		source = "local"
+	}
+	if t.changedAt != nil {
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO jetmon_event_transitions
+				(event_id, blog_id, severity_before, severity_after,
+				 state_before, state_after, reason, source, metadata, changed_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			t.eventID, t.blogID, nullableUint8(t.severityBefore), nullableUint8(t.severityAfter),
+			nullableString(t.stateBefore), nullableString(t.stateAfter),
+			t.reason, source, nullableJSON(t.metadata), t.changedAt.UTC(),
+		)
+		if err != nil {
+			return fmt.Errorf("insert transition: %w", err)
+		}
+		return nil
 	}
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO jetmon_event_transitions

@@ -75,7 +75,7 @@ type hostPreflightDeps struct {
 
 func cmdRollout(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout <guided|rehearsal-plan|host-preflight|static-plan-check|pinned-check|cutover-check|rollback-check|dynamic-check|activity-check|projection-drift|state-report> [args]")
+		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout <guided|rehearsal-plan|host-preflight|static-plan-check|pinned-check|cutover-check|rollback-check|dynamic-check|activity-check|projection-drift|state-report|production-data-audit|legacy-status-bootstrap> [args]")
 		os.Exit(1)
 	}
 
@@ -102,8 +102,12 @@ func cmdRollout(args []string) {
 		cmdRolloutProjectionDrift(args[1:])
 	case "state-report":
 		cmdRolloutStateReport(args[1:])
+	case "production-data-audit":
+		cmdRolloutProductionDataAudit(args[1:])
+	case "legacy-status-bootstrap":
+		cmdRolloutLegacyStatusBootstrap(args[1:])
 	default:
-		fmt.Fprintf(os.Stderr, "unknown rollout subcommand %q (want: guided, rehearsal-plan, host-preflight, static-plan-check, pinned-check, cutover-check, rollback-check, dynamic-check, activity-check, projection-drift, state-report)\n", args[0])
+		fmt.Fprintf(os.Stderr, "unknown rollout subcommand %q (want: guided, rehearsal-plan, host-preflight, static-plan-check, pinned-check, cutover-check, rollback-check, dynamic-check, activity-check, projection-drift, state-report, production-data-audit, legacy-status-bootstrap)\n", args[0])
 		os.Exit(1)
 	}
 }
