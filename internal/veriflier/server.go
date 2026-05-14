@@ -2,12 +2,16 @@ package veriflier
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
+	"github.com/Automattic/jetmon/internal/checkmode"
 	"github.com/Automattic/jetmon/internal/metrics"
 )
 
@@ -23,11 +27,23 @@ import (
 // closing the listener.
 type Server struct {
 	authToken string
-	checkFn   func(req CheckRequest) CheckResult
 	addr      string
 	hostname  string
 	version   string
+	vantage   Vantage
+	agent     Agent
+	executor  *Executor
 	httpSrv   *http.Server
+	legacy    bool
+}
+
+type ServerOptions struct {
+	CheckFunc      CheckFunc
+	Vantage        Vantage
+	AgentID        string
+	MaxConcurrency int
+	QueueCapacity  int
+	EnableLegacy   bool
 }
 
 // Timeout defaults for the verifier HTTP server. These are conservative — the
@@ -48,32 +64,78 @@ const maxRequestBodyBytes = 10 * 1024 * 1024
 
 // NewServer creates a Server that calls checkFn for each check request.
 //
-// authToken must be non-empty in production. An empty token would create a
+// authToken must be non-empty. An empty token would create a
 // dangerous edge case where any request with `Authorization: Bearer ` (with
-// a trailing space and nothing else) would be accepted; callers that
-// receive an empty token from config should reject it before reaching here.
-// We don't validate at construct time because tests exercise the empty-token
-// path via httptest, but veriflier2/cmd/main.go does check at startup.
+// a trailing space and nothing else) would be accepted. The handler rejects
+// empty server tokens even if a caller constructs a Server directly.
 func NewServer(addr, authToken, hostname, version string, checkFn func(CheckRequest) CheckResult) *Server {
+	return NewServerWithOptions(addr, authToken, hostname, version, ServerOptions{
+		CheckFunc: func(_ context.Context, req CheckRequest) ProbeResult {
+			if checkFn == nil {
+				return ProbeResult{CheckResult: CheckResult{
+					BlogID:    req.BlogID,
+					URL:       req.URL,
+					Success:   false,
+					ErrorCode: 1,
+				}, Outcome: OutcomeUnknown}
+			}
+			res := checkFn(req)
+			return ProbeResult{
+				CheckResult: res,
+				Outcome:     outcomeFromResult(res),
+			}
+		},
+		EnableLegacy: true,
+	})
+}
+
+func NewServerWithOptions(addr, authToken, hostname, version string, opts ServerOptions) *Server {
+	if hostname == "" {
+		hostname, _ = os.Hostname()
+	}
+	vantage := opts.Vantage
+	if vantage.ID == "" {
+		vantage.ID = hostname
+	}
+	agentID := opts.AgentID
+	if agentID == "" {
+		agentID = hostname
+	}
+	executor := NewExecutor(opts.CheckFunc, opts.MaxConcurrency, opts.QueueCapacity)
 	return &Server{
 		addr:      addr,
 		authToken: authToken,
 		hostname:  hostname,
 		version:   version,
-		checkFn:   checkFn,
+		vantage:   vantage,
+		agent: Agent{
+			ID:       agentID,
+			Host:     hostname,
+			Version:  version,
+			Protocol: ProtocolV2,
+		},
+		executor: executor,
+		legacy:   opts.EnableLegacy,
 	}
+}
+
+func (s *Server) handler() http.Handler {
+	mux := http.NewServeMux()
+	if s.legacy {
+		mux.HandleFunc("/check", s.handleCheck)
+		mux.HandleFunc("/status", s.handleStatus)
+	}
+	mux.HandleFunc("/v2/check", s.handleV2Check)
+	mux.HandleFunc("/v2/status", s.handleV2Status)
+	return mux
 }
 
 // Listen starts the HTTP server. Blocks until the server exits via Shutdown
 // or an unrecoverable error. Returns http.ErrServerClosed on a clean Shutdown.
 func (s *Server) Listen() error {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/check", s.handleCheck)
-	mux.HandleFunc("/status", s.handleStatus)
-
 	s.httpSrv = &http.Server{
 		Addr:              s.addr,
-		Handler:           mux,
+		Handler:           s.handler(),
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,
 		WriteTimeout:      writeTimeout,
@@ -89,9 +151,16 @@ func (s *Server) Listen() error {
 // underlying http.Server is nil-checked.
 func (s *Server) Shutdown(ctx context.Context) error {
 	if s.httpSrv == nil {
+		if s.executor != nil {
+			s.executor.Shutdown()
+		}
 		return nil
 	}
-	return s.httpSrv.Shutdown(ctx)
+	err := s.httpSrv.Shutdown(ctx)
+	if s.executor != nil {
+		s.executor.Shutdown()
+	}
+	return err
 }
 
 func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
@@ -102,8 +171,7 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token := r.Header.Get("Authorization")
-	if token != "Bearer "+s.authToken {
+	if !s.authorized(r) {
 		incrementMetric("verifier.auth.rejected.count", 1)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -134,20 +202,32 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	results := make([]CheckResult, 0, len(req.Sites))
-	for _, site := range req.Sites {
+	for i := range req.Sites {
+		if req.Sites[i].RequestID == "" {
+			req.Sites[i].RequestID = NewRequestID()
+		}
 		// Echo RequestID so the orchestrator can correlate this reply with the
 		// audit row it wrote when escalating.
-		log.Printf("veriflier: check blog_id=%d request_id=%s url=%s", site.BlogID, site.RequestID, site.URL)
-		res := s.checkFn(site)
-		if res.MonitorSiteID == 0 {
-			res.MonitorSiteID = site.MonitorSiteID
+		log.Printf("veriflier: check blog_id=%d request_id=%s url=%s", req.Sites[i].BlogID, req.Sites[i].RequestID, req.Sites[i].URL)
+	}
+
+	probeResults, err := s.executor.ExecuteBatch(r.Context(), req.Sites)
+	if err != nil {
+		if errors.Is(err, ErrOverloaded) {
+			incrementMetric("verifier.checks.overloaded.count", 1)
+			http.Error(w, "veriflier overloaded", http.StatusServiceUnavailable)
+			return
 		}
-		if res.BlogID == 0 {
-			res.BlogID = site.BlogID
-		}
+		http.Error(w, err.Error(), http.StatusGatewayTimeout)
+		return
+	}
+	results := make([]CheckResult, 0, len(probeResults))
+	for _, probeResult := range probeResults {
+		res := probeResult.CheckResult
 		res.Host = s.hostname
-		res.RequestID = site.RequestID
+		if res.RequestID == "" {
+			res.RequestID = probeResult.RequestID
+		}
 		results = append(results, res)
 	}
 
@@ -163,6 +243,224 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]string{
 		"status":  "OK",
 		"version": s.version,
+	})
+}
+
+func (s *Server) handleV2Check(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.authorized(r) {
+		incrementMetric("verifier.auth.rejected.count", 1)
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+	var req CheckV2BatchRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err.Error() == "http: request body too large" {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		http.Error(w, fmt.Sprintf("decode: %v", err), http.StatusBadRequest)
+		return
+	}
+	if len(req.Requests) == 0 {
+		http.Error(w, "requests is required", http.StatusBadRequest)
+		return
+	}
+
+	ctx := r.Context()
+	var cancel context.CancelFunc
+	if req.DeadlineMS > 0 {
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(req.DeadlineMS)*time.Millisecond)
+		defer cancel()
+	}
+
+	legacyReqs := make([]CheckRequest, 0, len(req.Requests))
+	for _, site := range req.Requests {
+		legacyReq, err := v2RequestToLegacy(site)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		legacyReqs = append(legacyReqs, legacyReq)
+		log.Printf("veriflier: v2 check blog_id=%d request_id=%s url=%s", legacyReq.BlogID, legacyReq.RequestID, legacyReq.URL)
+	}
+
+	probeResults, err := s.executor.ExecuteBatch(ctx, legacyReqs)
+	if err != nil {
+		if errors.Is(err, ErrOverloaded) {
+			incrementMetric("verifier.checks.overloaded.count", 1)
+			writeV2Error(w, http.StatusServiceUnavailable, OutcomeAgentOverloaded, "veriflier overloaded")
+			return
+		}
+		writeV2Error(w, http.StatusGatewayTimeout, OutcomeUnknown, err.Error())
+		return
+	}
+
+	results := make([]CheckV2Result, 0, len(probeResults))
+	for _, probeResult := range probeResults {
+		results = append(results, s.v2Result(probeResult))
+	}
+
+	incrementMetric("verifier.checks.received.count", len(req.Requests))
+	timingMetric("verifier.checks.duration.timer", time.Since(start))
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(CheckV2BatchResponse{
+		BatchID: req.BatchID,
+		Vantage: s.vantage,
+		Agent:   s.agent,
+		Results: results,
+	})
+}
+
+func (s *Server) handleV2Status(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(s.Status())
+}
+
+func (s *Server) Status() StatusV2Response {
+	protocols := []string{ProtocolV2}
+	if s.legacy {
+		protocols = append(protocols, ProtocolLegacy)
+	}
+	return StatusV2Response{
+		Status:    "OK",
+		Version:   s.version,
+		Protocols: protocols,
+		Vantage:   s.vantage,
+		Agent:     s.agent,
+		Capacity:  s.executor.Capacity(),
+	}
+}
+
+func (s *Server) authorized(r *http.Request) bool {
+	if s.authToken == "" {
+		return false
+	}
+	got := r.Header.Get("Authorization")
+	want := "Bearer " + s.authToken
+	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
+}
+
+func (s *Server) v2Result(res ProbeResult) CheckV2Result {
+	outcome := res.Outcome
+	if outcome == "" {
+		outcome = outcomeFromResult(res.CheckResult)
+	}
+	return CheckV2Result{
+		RequestID: res.RequestID,
+		BlogID:    res.BlogID,
+		URL:       res.URL,
+		VantageID: s.vantage.ID,
+		AgentID:   s.agent.ID,
+		Outcome:   outcome,
+		Success:   res.Success,
+		HTTPCode:  res.HTTPCode,
+		ErrorCode: res.ErrorCode,
+		RTTMs:     res.RTTMs,
+		TimingsMS: res.TimingsMS,
+	}
+}
+
+func v2RequestToLegacy(req CheckV2Request) (CheckRequest, error) {
+	if req.URL == "" {
+		return CheckRequest{}, fmt.Errorf("url is required")
+	}
+	method, err := checkmode.NormalizeMethod(req.Method, checkmode.MethodGET)
+	if err != nil {
+		return CheckRequest{}, fmt.Errorf("unsupported method %q", req.Method)
+	}
+	profile, err := checkmode.NormalizeProfile(req.DetectionProfile, checkmode.ProfileFull)
+	if err != nil {
+		return CheckRequest{}, fmt.Errorf("unsupported detection_profile %q", req.DetectionProfile)
+	}
+	profile = checkmode.EffectiveProfile(method, profile)
+	requestID := req.RequestID
+	if requestID == "" {
+		requestID = NewRequestID()
+	}
+	timeoutSeconds := int32(0)
+	if req.TimeoutMS > 0 {
+		timeoutSeconds = int32((req.TimeoutMS + 999) / 1000)
+	}
+	legacyReq := CheckRequest{
+		BlogID:              req.BlogID,
+		URL:                 req.URL,
+		Method:              method,
+		DetectionProfile:    profile,
+		TimeoutSeconds:      timeoutSeconds,
+		BodyReadMaxBytes:    req.BodyReadMaxBytes,
+		BodyReadMaxMS:       req.BodyReadMaxMS,
+		KeywordReadMaxBytes: req.KeywordReadMaxBytes,
+		KeywordReadMaxMS:    req.KeywordReadMaxMS,
+		CustomHeaders:       req.Headers,
+		RedirectPolicy:      req.RedirectPolicy,
+		RequestID:           requestID,
+	}
+	if len(req.BodyRules.Required) > 1 {
+		return CheckRequest{}, fmt.Errorf("only one required body rule is supported")
+	}
+	if len(req.BodyRules.Required) > 0 {
+		legacyReq.Keyword = req.BodyRules.Required[0]
+	}
+	if len(req.BodyRules.Forbidden) > 0 {
+		legacyReq.ForbiddenKeywords = append([]string(nil), req.BodyRules.Forbidden...)
+	}
+	return legacyReq, nil
+}
+
+func legacyRequestToV2(req CheckRequest) CheckV2Request {
+	method, err := checkmode.NormalizeMethod(req.Method, checkmode.MethodGET)
+	if err != nil {
+		method = checkmode.MethodGET
+	}
+	profile, err := checkmode.NormalizeProfile(req.DetectionProfile, checkmode.ProfileFull)
+	if err != nil {
+		profile = checkmode.ProfileFull
+	}
+	profile = checkmode.EffectiveProfile(method, profile)
+
+	out := CheckV2Request{
+		RequestID:           req.RequestID,
+		BlogID:              req.BlogID,
+		URL:                 req.URL,
+		Method:              method,
+		DetectionProfile:    profile,
+		Headers:             req.CustomHeaders,
+		RedirectPolicy:      req.RedirectPolicy,
+		BodyReadMaxBytes:    req.BodyReadMaxBytes,
+		BodyReadMaxMS:       req.BodyReadMaxMS,
+		KeywordReadMaxBytes: req.KeywordReadMaxBytes,
+		KeywordReadMaxMS:    req.KeywordReadMaxMS,
+	}
+	if req.TimeoutSeconds > 0 {
+		out.TimeoutMS = int64(req.TimeoutSeconds) * 1000
+	}
+	if req.Keyword != "" {
+		out.BodyRules.Required = []string{req.Keyword}
+	}
+	if req.ForbiddenKeyword != "" {
+		out.BodyRules.Forbidden = append(out.BodyRules.Forbidden, req.ForbiddenKeyword)
+	}
+	if len(req.ForbiddenKeywords) > 0 {
+		out.BodyRules.Forbidden = append(out.BodyRules.Forbidden, req.ForbiddenKeywords...)
+	}
+	return out
+}
+
+func writeV2Error(w http.ResponseWriter, status int, outcome, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"outcome": outcome,
+		"error":   message,
 	})
 }
 

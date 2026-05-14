@@ -225,12 +225,25 @@ Local dry-run evidence:
   drift, missed checks, oldest selected age, stale heartbeats, WPCOM
   notification failures, delivery backlog, API errors, MySQL errors, and
   verifier agreement.
-- [ ] Owner: `Jetmon`, `Systems` - Confirm host and fleet dashboards expose the
-  needed rollout signals.
+- [x] Owner: `Jetmon` - Confirm host and fleet dashboards expose the Jetmon-owned
+  rollout signals: process heartbeats, bucket ownership, delivery posture,
+  projection drift, dependency health, Veriflier v2 contract status, trusted
+  vantages, agent telemetry, capacity, discovery mode posture, and suggested
+  next actions.
+- [ ] Owner: `Systems` - Confirm the host and fleet dashboard signals are
+  sufficient for the rollout room and existing production monitoring posture.
 - [ ] Owner: `Jetmon`, `Systems` - Confirm StatsD metrics and log paths remain
   compatible with existing monitoring.
-- [ ] Owner: `Jetmon`, `Systems` - Confirm `jetmon_process_health` heartbeats
-  are visible and stale thresholds are understood.
+- [x] Owner: `Jetmon` - Confirm `jetmon_process_health` heartbeats are exposed
+  through the fleet dashboard with stale thresholds.
+- [ ] Owner: `Systems` - Confirm `jetmon_process_health` heartbeat/staleness
+  thresholds are understood by operators before rollout.
+- [x] Owner: `Jetmon` - Add read-only Veriflier discovery shadow comparison via
+  `jetmon2 verifliers discovery-report`.
+- [x] Owner: `Jetmon` - Add local Veriflier discovery-drift soak coverage for
+  duplicate static vantages, missing trusted registry rows, incomplete registry
+  rows, endpoint/auth-presence drift, untrusted agents, duplicate agent
+  endpoints, active-mode fallback, and recovery to green.
 - [ ] Owner: `Jetmon`, `Systems` - Define a written pause protocol.
 - [ ] Owner: `Jetmon`, `Systems` - Define a written rollback-now protocol.
 
@@ -240,6 +253,9 @@ Evidence:
 - Threshold table
 - Rollout room checklist
 - Alert names and owners
+- `make test-veriflier-soak`
+- `jetmon2 verifliers discovery-report`
+- ADR-0010: trusted Veriflier discovery with monitor-collected telemetry
 
 Initial stop/go threshold worksheet:
 
@@ -254,6 +270,20 @@ Initial stop/go threshold worksheet:
 | API errors | Health, dashboard, and required API smoke checks pass with no sustained 5xx responses | Keep API internal; investigate before any gateway or automation dependency |
 | MySQL errors | No sustained connection failures, query errors, or lock wait spikes during the rollout window | Pause host changes; review DB health before retrying |
 | Veriflier agreement | Quorum floor remains intact and verifier health loss is explained | Pause confirmed-down expansion; avoid customer-visible downtime notifications from degraded quorum |
+
+Jetmon-owned Veriflier discovery evidence:
+
+- Host and fleet dashboards expose Veriflier v2 contract status, trusted
+  registry state, monitor-collected agent telemetry, capacity, discovery mode
+  posture, stale telemetry, and duplicate endpoint warnings.
+- `jetmon2 verifliers discovery-report` provides a read-only shadow-mode gate
+  for static-vs-registry-vs-agent comparison without printing auth token
+  values.
+- `make test-veriflier-soak` covers local Veriflier v2 contract soak scenarios
+  and discovery-drift soak scenarios.
+- ADR-0010 records the trust boundary: operator-approved vantages are quorum
+  trust, monitor-collected agents are telemetry, and Veriflier hosts do not
+  need database credentials.
 
 ### 6. Internal Consumer Inventory
 

@@ -12,37 +12,87 @@ service Veriflier {
 }
 
 message CheckRequest {
-    int64  blog_id            = 1;
-    string url                = 2;
-    int32  timeout_seconds    = 3;
-    string keyword            = 4;
-    string forbidden_keyword  = 5;
-    string method             = 6;
-    string detection_profile  = 7;
+    int64  blog_id                     = 1;
+    string url                         = 2;
+    int32  timeout_seconds             = 3;
+    string keyword                     = 4;
+    string forbidden_keyword           = 5;
+    string method                      = 6;
+    string detection_profile           = 7;
+    string request_id                  = 8;
+    int64  body_read_max_bytes         = 9;
+    int32  body_read_max_ms            = 10;
+    int64  keyword_read_max_bytes      = 11;
+    int32  keyword_read_max_ms         = 12;
+    repeated string forbidden_keywords = 13;
+    map<string, string> custom_headers = 14;
+    string redirect_policy             = 15;
 }
 
 message CheckBatch {
-    repeated CheckRequest sites      = 1;
-    string                auth_token = 2;
+    repeated CheckRequest sites       = 1;
+    string                auth_token  = 2;
+    string                batch_id    = 3;
+    int64                 deadline_ms = 4;
 }
 
 message CheckResult {
-    int64  blog_id    = 1;
-    string url        = 2;
-    string host       = 3;
-    bool   success    = 4;
-    int32  http_code  = 5;
-    int32  error_code = 6;
-    int64  rtt_ms     = 7;
+    int64    blog_id    = 1;
+    string   url        = 2;
+    string   host       = 3;
+    bool     success    = 4;
+    int32    http_code  = 5;
+    int32    error_code = 6;
+    int64    rtt_ms     = 7;
+    string   request_id = 8;
+    string   outcome    = 9;
+    Timings  timings_ms = 10;
+    string   vantage_id = 11;
+    string   agent_id   = 12;
 }
 
 message CheckBatchResult {
     repeated CheckResult results = 1;
+    Vantage              vantage = 2;
+    Agent                agent   = 3;
+    string               batch_id = 4;
 }
 
 message StatusRequest {}
 
 message StatusResponse {
-    string status  = 1;
-    string version = 2;
+    string          status    = 1;
+    string          version   = 2;
+    repeated string protocols = 3;
+    Vantage         vantage   = 4;
+    Agent           agent     = 5;
+    Capacity        capacity  = 6;
+}
+
+message Vantage {
+    string id       = 1;
+    string region   = 2;
+    string provider = 3;
+}
+
+message Agent {
+    string id       = 1;
+    string host     = 2;
+    string version  = 3;
+    string protocol = 4;
+}
+
+message Capacity {
+    int32 max_concurrency = 1;
+    int32 queue_capacity  = 2;
+    int32 queue_depth     = 3;
+    int32 active          = 4;
+    int32 in_flight       = 5;
+}
+
+message Timings {
+    int64 dns  = 1;
+    int64 tcp  = 2;
+    int64 tls  = 3;
+    int64 ttfb = 4;
 }

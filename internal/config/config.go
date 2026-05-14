@@ -22,6 +22,12 @@ type VerifierConfig struct {
 	AuthToken string `json:"auth_token"`
 }
 
+const (
+	VeriflierDiscoveryModeStatic = "static"
+	VeriflierDiscoveryModeShadow = "shadow"
+	VeriflierDiscoveryModeActive = "active"
+)
+
 // TransportPort returns the canonical JSON-over-HTTP Veriflier port,
 // accepting grpc_port as a deprecated config alias.
 func (v VerifierConfig) TransportPort() string {
@@ -74,6 +80,12 @@ type Config struct {
 	SQLUpdateBatch     int `json:"SQL_UPDATE_BATCH"`
 	DBConfigUpdatesMin int `json:"DB_CONFIG_UPDATES_MIN"`
 	PeerOfflineLimit   int `json:"PEER_OFFLINE_LIMIT"`
+
+	// VeriflierDiscoveryMode controls whether the monitor reads Veriflier
+	// endpoints from the trusted DB registry. "static" preserves the VERIFIERS
+	// list behavior, "shadow" reports registry drift without changing traffic,
+	// and "active" uses the registry with static fallback if discovery fails.
+	VeriflierDiscoveryMode string `json:"VERIFLIER_DISCOVERY_MODE"`
 
 	NumOfChecks          int `json:"NUM_OF_CHECKS"`
 	TimeBetweenChecksSec int `json:"TIME_BETWEEN_CHECKS_SEC"`
@@ -226,6 +238,7 @@ func defaults() *Config {
 		SQLUpdateBatch:                       1,
 		DBConfigUpdatesMin:                   10,
 		PeerOfflineLimit:                     3,
+		VeriflierDiscoveryMode:               VeriflierDiscoveryModeStatic,
 		NumOfChecks:                          3,
 		TimeBetweenChecksSec:                 30,
 		AlertCooldownMinutes:                 30,
@@ -396,6 +409,12 @@ func validate(cfg *Config) error {
 	if cfg.StreamingTargetReloadSec < 0 {
 		return fmt.Errorf("STREAMING_TARGET_RELOAD_SEC must be > 0")
 	}
+	cfg.VeriflierDiscoveryMode = normalizeVeriflierDiscoveryMode(cfg.VeriflierDiscoveryMode)
+	switch cfg.VeriflierDiscoveryMode {
+	case VeriflierDiscoveryModeStatic, VeriflierDiscoveryModeShadow, VeriflierDiscoveryModeActive:
+	default:
+		return fmt.Errorf("VERIFLIER_DISCOVERY_MODE must be one of: static, shadow, active")
+	}
 	if cfg.LogFormat != "text" && cfg.LogFormat != "json" {
 		return fmt.Errorf("LOG_FORMAT must be 'text' or 'json'")
 	}
@@ -468,6 +487,21 @@ func normalizeCheckDNSResolver(raw string) (string, error) {
 		return "", fmt.Errorf("resolver port must be between 1 and 65535")
 	}
 	return net.JoinHostPort(ip.String(), strconv.Itoa(n)), nil
+}
+
+func normalizeVeriflierDiscoveryMode(mode string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" {
+		return VeriflierDiscoveryModeStatic
+	}
+	return mode
+}
+
+func (cfg *Config) VeriflierDiscoveryModeOrDefault() string {
+	if cfg == nil {
+		return VeriflierDiscoveryModeStatic
+	}
+	return normalizeVeriflierDiscoveryMode(cfg.VeriflierDiscoveryMode)
 }
 
 func validatePinnedBucketRange(cfg *Config) error {

@@ -193,6 +193,23 @@ func TestValidate(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:   "empty veriflier discovery mode defaults to static",
+			mutate: func(c *Config) { c.VeriflierDiscoveryMode = "" },
+		},
+		{
+			name:   "shadow veriflier discovery mode is valid",
+			mutate: func(c *Config) { c.VeriflierDiscoveryMode = "shadow" },
+		},
+		{
+			name:   "active veriflier discovery mode is valid",
+			mutate: func(c *Config) { c.VeriflierDiscoveryMode = "ACTIVE" },
+		},
+		{
+			name:    "invalid veriflier discovery mode",
+			mutate:  func(c *Config) { c.VeriflierDiscoveryMode = "auto" },
+			wantErr: true,
+		},
+		{
 			name:    "invalid log format",
 			mutate:  func(c *Config) { c.LogFormat = "xml" },
 			wantErr: true,
@@ -376,6 +393,9 @@ func TestLoadAndGet(t *testing.T) {
 	}
 	if cfg.DeliveryOwnerHost != "jetmon-api-1" {
 		t.Fatalf("DeliveryOwnerHost = %q, want jetmon-api-1", cfg.DeliveryOwnerHost)
+	}
+	if cfg.VeriflierDiscoveryMode != VeriflierDiscoveryModeStatic {
+		t.Fatalf("VeriflierDiscoveryMode = %q, want static", cfg.VeriflierDiscoveryMode)
 	}
 	if cfg.BodyReadMaxBytes != 1048576 {
 		t.Fatalf("BodyReadMaxBytes = %d, want 1048576", cfg.BodyReadMaxBytes)
@@ -673,5 +693,8 @@ func TestDefaults(t *testing.T) {
 	}
 	if cfg.LogFormat != "text" && cfg.LogFormat != "json" {
 		t.Fatalf("defaults().LogFormat = %q, want text or json", cfg.LogFormat)
+	}
+	if got := cfg.VeriflierDiscoveryModeOrDefault(); got != VeriflierDiscoveryModeStatic {
+		t.Fatalf("defaults().VeriflierDiscoveryMode = %q, want static", got)
 	}
 }

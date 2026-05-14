@@ -131,6 +131,47 @@ to v1" and keep the transcript with the incident record.
      --bucket-total=<total>
    ```
 
+5. Deploy the new `veriflier2` fleet first and confirm it serves the v2
+   contract from the v2 runtime host:
+
+   ```bash
+   ./jetmon2 validate-config
+   curl -fsS http://<veriflier-host>:7803/v2/status
+   ```
+
+   The preferred migration uses fresh v2 Veriflier endpoints. Keep v1 Monitors
+   pointed at the original v1 Verifliers until monitor cutover, and point v2
+   Monitors only at the new `veriflier2` fleet. The original v1 Veriflier uses
+   the old TLS/custom transport; the v2 Monitor's legacy `/check` fallback is
+   only for `veriflier2`'s opt-in compatibility endpoint. Keep
+   `VERIFLIER_ENABLE_LEGACY_HTTP=false` unless the endpoint is part of an
+   explicit lab or emergency compatibility test. Roll one v2 endpoint at a time
+   and leave database credentials unset on Veriflier hosts.
+
+   `/v2/status` should advertise `v2-json-http`, a stable `vantage.id`, the
+   serving `agent.id`, and non-zero capacity. Horizontally scaled replicas behind
+   one endpoint must share the same `vantage.id`; do not add each replica as a
+   separate monitor-side Veriflier unless it should count as an independent
+   quorum vote. `validate-config` fails missing or duplicate v2 vantage IDs and
+   warns on unreachable or legacy-only Verifliers.
+
+   This is separate from the staged site check policy. The initial replacement
+   phase can default all sites to `HEAD` + `legacy` probe behavior while remote
+   confirmation still uses `POST /v2/check`; it does not require enabling
+   `veriflier2`'s legacy-compatible `/check` endpoint.
+
+   For auto-discovery, keep `VERIFLIER_DISCOVERY_MODE=shadow` until the
+   registry matches the static `VERIFIERS` fleet. Seed
+   `jetmon_veriflier_vantages` with one enabled row per trusted quorum vantage;
+   do not rely on `jetmon_veriflier_agents` telemetry alone, because agent rows
+   never create trusted votes. Move to `active` only after
+   `validate-config` and the read-only discovery report show usable registry
+   vantages and no shadow drift:
+
+   ```bash
+   ./jetmon2 verifliers discovery-report --output=text
+   ```
+
 ## Per-Host Cutover
 
 1. Confirm the pre-stop host gate passes:

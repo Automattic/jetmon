@@ -90,9 +90,13 @@ services:
     environment:
       VERIFLIER_AUTH_TOKEN: ${VERIFLIER_AUTH_TOKEN:-veriflier_1_auth_token}
       VERIFLIER_PORT: "7803"
+      VERIFLIER_VANTAGE_ID: ${VERIFLIER_VANTAGE_ID:-local-veriflier}
+      VERIFLIER_REGION: ${VERIFLIER_REGION:-local}
+      VERIFLIER_PROVIDER: ${VERIFLIER_PROVIDER:-docker}
+      VERIFLIER_ENABLE_LEGACY_HTTP: ${VERIFLIER_ENABLE_LEGACY_HTTP:-false}
       STATSD_ADDR: statsd:8125
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7803/status"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7803/v2/status"]
       interval: 10s
       timeout: 5s
       retries: 12

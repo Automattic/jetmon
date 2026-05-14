@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -51,9 +52,12 @@ func main() {
 		return
 	}
 
+	if isVersionCommand(os.Args[1]) {
+		printVersion(os.Stdout)
+		return
+	}
+
 	switch os.Args[1] {
-	case "version":
-		fmt.Printf("jetmon2 %s (built %s with %s)\n", version, buildDate, goVersion)
 	case "migrate":
 		cmdMigrate()
 	case "validate-config":
@@ -74,11 +78,26 @@ func main() {
 		cmdSiteTenants(os.Args[2:])
 	case "telemetry":
 		cmdTelemetry(os.Args[2:])
+	case "verifliers":
+		cmdVerifliers(os.Args[2:])
 	case "rollout":
 		cmdRollout(os.Args[2:])
 	default:
 		runServe()
 	}
+}
+
+func isVersionCommand(arg string) bool {
+	switch arg {
+	case "version", "--version", "-version":
+		return true
+	default:
+		return false
+	}
+}
+
+func printVersion(w io.Writer) {
+	fmt.Fprintf(w, "jetmon2 %s (built %s with %s)\n", version, buildDate, goVersion)
 }
 
 // runServe is the main entry point for the monitoring service.
@@ -389,13 +408,237 @@ func cmdValidateConfig() {
 	if level, msg := deliveryOwnerStatus(cfg, db.Hostname()); msg != "" {
 		fmt.Printf("%s %s\n", level, msg)
 	}
-	for _, v := range cfg.Verifiers {
-		addr := fmt.Sprintf("%s:%s", v.Host, v.TransportPort())
-		// Listing configured Verifliers is operator context, not a reachability check.
-		fmt.Printf("INFO veriflier %q at %s\n", v.Name, addr)
+	readiness := probeConfiguredVerifliers(context.Background(), cfg, dashboardHealthTimeout)
+	readinessLines, readinessFailed := renderVeriflierReadiness(readiness)
+	for _, line := range readinessLines {
+		fmt.Println(line)
+	}
+	discoverySnapshot, discoveryErr := veriflierDiscoverySnapshotForConfig(context.Background(), cfg)
+	discoveryLines, discoveryFailed := renderVeriflierDiscoveryReadiness(cfg.VeriflierDiscoveryModeOrDefault(), discoverySnapshot, discoveryErr, readiness)
+	for _, line := range discoveryLines {
+		fmt.Println(line)
+	}
+	if readinessFailed || discoveryFailed {
+		os.Exit(1)
 	}
 
 	fmt.Println("\nvalidation passed")
+}
+
+type veriflierReadinessResult struct {
+	Name    string
+	Addr    string
+	Status  *veriflier.StatusV2Response
+	Err     error
+	Latency time.Duration
+}
+
+func probeConfiguredVerifliers(ctx context.Context, cfg *config.Config, timeout time.Duration) []veriflierReadinessResult {
+	if cfg == nil || len(cfg.Verifiers) == 0 {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	out := make([]veriflierReadinessResult, 0, len(cfg.Verifiers))
+	for i, v := range cfg.Verifiers {
+		name := configuredVeriflierName(v, i)
+		addr := fmt.Sprintf("%s:%s", v.Host, v.TransportPort())
+		result := veriflierReadinessResult{Name: name, Addr: addr}
+		if v.Host == "" || v.TransportPort() == "" {
+			result.Err = fmt.Errorf("host or port is not configured")
+			out = append(out, result)
+			continue
+		}
+
+		probeCtx, cancel := context.WithTimeout(ctx, timeout)
+		start := time.Now()
+		status, err := veriflier.NewVeriflierClient(addr, v.AuthToken).Status(probeCtx)
+		cancel()
+		result.Latency = time.Since(start)
+		result.Status = status
+		result.Err = err
+		out = append(out, result)
+	}
+	return out
+}
+
+func renderVeriflierReadiness(results []veriflierReadinessResult) ([]string, bool) {
+	if len(results) == 0 {
+		return nil, false
+	}
+	vantageCounts := duplicateVantageCounts(results)
+	lines := make([]string, 0, len(results)*2)
+	failed := false
+	for _, result := range results {
+		lines = append(lines, fmt.Sprintf("INFO veriflier %q at %s", result.Name, result.Addr))
+		if result.Err != nil {
+			lines = append(lines, fmt.Sprintf("WARN veriflier_status name=%q addr=%q error=%q", result.Name, result.Addr, result.Err.Error()))
+			continue
+		}
+		if result.Status == nil {
+			lines = append(lines, fmt.Sprintf("WARN veriflier_status name=%q addr=%q error=%q", result.Name, result.Addr, "empty status response"))
+			continue
+		}
+		if !statusSupportsProtocol(result.Status, veriflier.ProtocolV2) {
+			lines = append(lines, fmt.Sprintf("WARN veriflier_contract name=%q addr=%q protocol=%s version=%q", result.Name, result.Addr, veriflier.ProtocolLegacy, result.Status.Version))
+			continue
+		}
+		vantageID := strings.TrimSpace(result.Status.Vantage.ID)
+		if vantageID == "" {
+			failed = true
+			lines = append(lines, fmt.Sprintf("FAIL veriflier_vantage_missing name=%q addr=%q", result.Name, result.Addr))
+			continue
+		}
+		if vantageCounts[vantageID] > 1 {
+			failed = true
+			lines = append(lines, fmt.Sprintf("FAIL veriflier_vantage_duplicate id=%q name=%q addr=%q", vantageID, result.Name, result.Addr))
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("PASS veriflier_contract name=%q addr=%q protocol=%s vantage_id=%q agent_id=%q capacity=%q",
+			result.Name, result.Addr, veriflier.ProtocolV2, vantageID, result.Status.Agent.ID, verifierCapacitySummary(result.Status.Capacity)))
+	}
+	return lines, failed
+}
+
+func veriflierDiscoverySnapshotForConfig(ctx context.Context, cfg *config.Config) (db.VeriflierDiscoverySnapshot, error) {
+	if cfg == nil || cfg.VeriflierDiscoveryModeOrDefault() == config.VeriflierDiscoveryModeStatic {
+		return db.VeriflierDiscoverySnapshot{}, nil
+	}
+	queryCtx, cancel := context.WithTimeout(ctx, dashboardHealthTimeout)
+	defer cancel()
+	return db.ListVeriflierDiscoverySnapshot(queryCtx, db.VeriflierDiscoveryDefaultStaleAfter)
+}
+
+func renderVeriflierDiscoveryReadiness(mode string, snapshot db.VeriflierDiscoverySnapshot, err error, staticResults []veriflierReadinessResult) ([]string, bool) {
+	mode = (&config.Config{VeriflierDiscoveryMode: mode}).VeriflierDiscoveryModeOrDefault()
+	if mode == config.VeriflierDiscoveryModeStatic {
+		return []string{"INFO veriflier_discovery=static"}, false
+	}
+
+	failed := false
+	if err != nil {
+		line := fmt.Sprintf("WARN veriflier_discovery mode=%s error=%q", mode, err.Error())
+		if mode == config.VeriflierDiscoveryModeActive {
+			line = fmt.Sprintf("FAIL veriflier_discovery mode=%s error=%q", mode, err.Error())
+			failed = true
+		}
+		return []string{line}, failed
+	}
+
+	enabled, usable := 0, 0
+	for _, vantage := range snapshot.Vantages {
+		if !vantage.Enabled {
+			continue
+		}
+		enabled++
+		if vantage.Usable() {
+			usable++
+		}
+	}
+
+	lines := []string{fmt.Sprintf(
+		"INFO veriflier_discovery mode=%s enabled_vantages=%d usable_vantages=%d recent_agents=%d",
+		mode, enabled, usable, len(snapshot.Agents),
+	)}
+	for _, vantage := range snapshot.Vantages {
+		if !vantage.Enabled || vantage.Usable() {
+			continue
+		}
+		level := "WARN"
+		if mode == config.VeriflierDiscoveryModeActive {
+			level = "FAIL"
+			failed = true
+		}
+		lines = append(lines, fmt.Sprintf("%s veriflier_discovery_incomplete vantage_id=%q endpoint_host=%q endpoint_port=%q auth_token_present=%t",
+			level, vantage.VantageID, vantage.EndpointHost, vantage.EndpointPort, strings.TrimSpace(vantage.AuthToken) != ""))
+	}
+	if mode == config.VeriflierDiscoveryModeActive && usable == 0 {
+		lines = append(lines, "FAIL veriflier_discovery_active usable_vantages=0")
+		failed = true
+	}
+	if mode == config.VeriflierDiscoveryModeShadow {
+		lines = append(lines, veriflierDiscoveryDriftLines(snapshot, staticResults)...)
+	}
+	return lines, failed
+}
+
+func veriflierDiscoveryDriftLines(snapshot db.VeriflierDiscoverySnapshot, staticResults []veriflierReadinessResult) []string {
+	staticVantages := make(map[string]struct{})
+	for _, result := range staticResults {
+		if result.Err != nil || result.Status == nil || !statusSupportsProtocol(result.Status, veriflier.ProtocolV2) {
+			continue
+		}
+		id := strings.TrimSpace(result.Status.Vantage.ID)
+		if id != "" {
+			staticVantages[id] = struct{}{}
+		}
+	}
+	discovered := make(map[string]struct{})
+	for _, vantage := range snapshot.Vantages {
+		if vantage.Enabled {
+			discovered[strings.TrimSpace(vantage.VantageID)] = struct{}{}
+		}
+	}
+
+	var lines []string
+	for id := range discovered {
+		if id == "" {
+			continue
+		}
+		if _, ok := staticVantages[id]; !ok {
+			lines = append(lines, fmt.Sprintf("WARN veriflier_discovery_extra vantage_id=%q", id))
+		}
+	}
+	for id := range staticVantages {
+		if _, ok := discovered[id]; !ok {
+			lines = append(lines, fmt.Sprintf("WARN veriflier_discovery_missing vantage_id=%q", id))
+		}
+	}
+	sort.Strings(lines)
+	if len(lines) == 0 {
+		lines = append(lines, "PASS veriflier_discovery_shadow static_vantages_match_registry")
+	}
+	return lines
+}
+
+func configuredVeriflierName(v config.VerifierConfig, index int) string {
+	if strings.TrimSpace(v.Name) != "" {
+		return v.Name
+	}
+	return fmt.Sprintf("veriflier-%d", index+1)
+}
+
+func statusSupportsProtocol(status *veriflier.StatusV2Response, protocol string) bool {
+	if status == nil {
+		return false
+	}
+	for _, p := range status.Protocols {
+		if p == protocol {
+			return true
+		}
+	}
+	return false
+}
+
+func duplicateVantageCounts(results []veriflierReadinessResult) map[string]int {
+	counts := make(map[string]int)
+	for _, result := range results {
+		if result.Err != nil || result.Status == nil || !statusSupportsProtocol(result.Status, veriflier.ProtocolV2) {
+			continue
+		}
+		vantageID := strings.TrimSpace(result.Status.Vantage.ID)
+		if vantageID == "" {
+			continue
+		}
+		counts[vantageID]++
+	}
+	return counts
+}
+
+func verifierCapacitySummary(c veriflier.Capacity) string {
+	return fmt.Sprintf("active=%d in_flight=%d max_concurrency=%d queue=%d/%d",
+		c.Active, c.InFlight, c.MaxConcurrency, c.QueueDepth, c.QueueCapacity)
 }
 
 func enabledLabel(b bool) string {
@@ -535,6 +778,9 @@ func dashboardHealthEntries(ctx context.Context, cfg *config.Config, sqlDB *sql.
 		diskHealthEntry("stats", checkedAt),
 	}
 	entries = append(entries, veriflierHealthEntries(ctx, cfg, checkedAt)...)
+	if entry, ok := veriflierDiscoveryHealthEntry(ctx, cfg, checkedAt); ok {
+		entries = append(entries, entry)
+	}
 	return entries
 }
 
@@ -625,38 +871,94 @@ func veriflierHealthEntries(ctx context.Context, cfg *config.Config, checkedAt t
 		}}
 	}
 
-	entries := make([]dashboard.HealthEntry, 0, len(cfg.Verifiers))
-	for _, v := range cfg.Verifiers {
-		addr := fmt.Sprintf("%s:%s", v.Host, v.TransportPort())
-		name := "veriflier:" + v.Name
-		if v.Name == "" {
-			name = "veriflier:" + addr
+	results := probeConfiguredVerifliers(ctx, cfg, dashboardHealthTimeout)
+	vantageCounts := duplicateVantageCounts(results)
+	entries := make([]dashboard.HealthEntry, 0, len(results))
+	for _, result := range results {
+		entry := dashboard.HealthEntry{
+			Name:      "veriflier:" + result.Name,
+			Latency:   result.Latency.Milliseconds(),
+			CheckedAt: checkedAt,
 		}
-		entry := dashboard.HealthEntry{Name: name, CheckedAt: checkedAt}
-		if v.Host == "" || v.TransportPort() == "" {
+		if result.Err != nil {
 			entry.Status = "red"
-			entry.LastError = "host or port is not configured"
+			entry.LastError = result.Err.Error()
 			entries = append(entries, entry)
 			continue
 		}
-
-		pingCtx, cancel := context.WithTimeout(ctx, dashboardHealthTimeout)
-		start := time.Now()
-		version, err := veriflier.NewVeriflierClient(addr, v.AuthToken).Ping(pingCtx)
-		cancel()
-		entry.Latency = time.Since(start).Milliseconds()
-		if err != nil {
+		if result.Status == nil {
 			entry.Status = "red"
-			entry.LastError = err.Error()
-		} else {
-			entry.Status = "green"
-			if version != "" {
-				entry.Name = fmt.Sprintf("%s (%s)", entry.Name, version)
-			}
+			entry.LastError = "empty status response"
+			entries = append(entries, entry)
+			continue
 		}
+		if !statusSupportsProtocol(result.Status, veriflier.ProtocolV2) {
+			entry.Status = "amber"
+			entry.LastError = "legacy verifier status endpoint; v2 status metadata unavailable"
+			if result.Status.Version != "" {
+				entry.Name = fmt.Sprintf("%s (%s)", entry.Name, result.Status.Version)
+			}
+			entries = append(entries, entry)
+			continue
+		}
+		vantageID := strings.TrimSpace(result.Status.Vantage.ID)
+		if vantageID == "" {
+			entry.Status = "red"
+			entry.LastError = "v2 verifier status did not report a vantage id"
+			entries = append(entries, entry)
+			continue
+		}
+		if vantageCounts[vantageID] > 1 {
+			entry.Status = "red"
+			entry.LastError = fmt.Sprintf("duplicate v2 verifier vantage id %q", vantageID)
+			entries = append(entries, entry)
+			continue
+		}
+		entry.Status = "green"
+		entry.Name = fmt.Sprintf("%s (%s vantage=%s %s)", entry.Name, result.Status.Version, vantageID, verifierCapacitySummary(result.Status.Capacity))
 		entries = append(entries, entry)
 	}
 	return entries
+}
+
+func veriflierDiscoveryHealthEntry(ctx context.Context, cfg *config.Config, checkedAt time.Time) (dashboard.HealthEntry, bool) {
+	mode := cfg.VeriflierDiscoveryModeOrDefault()
+	if mode == config.VeriflierDiscoveryModeStatic {
+		return dashboard.HealthEntry{}, false
+	}
+	entry := dashboard.HealthEntry{Name: "veriflier-discovery", CheckedAt: checkedAt}
+	start := time.Now()
+	snapshot, err := veriflierDiscoverySnapshotForConfig(ctx, cfg)
+	entry.Latency = time.Since(start).Milliseconds()
+	if err != nil {
+		if mode == config.VeriflierDiscoveryModeActive {
+			entry.Status = "red"
+		} else {
+			entry.Status = "amber"
+		}
+		entry.LastError = err.Error()
+		return entry, true
+	}
+	enabled, usable := 0, 0
+	for _, vantage := range snapshot.Vantages {
+		if !vantage.Enabled {
+			continue
+		}
+		enabled++
+		if vantage.Usable() {
+			usable++
+		}
+	}
+	entry.Name = fmt.Sprintf("veriflier-discovery:%s enabled=%d usable=%d agents=%d", mode, enabled, usable, len(snapshot.Agents))
+	entry.Status = "green"
+	if mode == config.VeriflierDiscoveryModeActive && usable == 0 {
+		entry.Status = "red"
+		entry.LastError = "active discovery has no usable enabled vantages"
+	} else if mode == config.VeriflierDiscoveryModeShadow && enabled == 0 {
+		entry.Status = "amber"
+		entry.LastError = "shadow discovery registry has no enabled vantages"
+	}
+	return entry, true
 }
 
 func wpcomHealthEntry(wp *wpcom.Client, checkedAt time.Time) dashboard.HealthEntry {

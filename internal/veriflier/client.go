@@ -6,9 +6,12 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -18,6 +21,8 @@ type VeriflierClient struct {
 	addr       string
 	authToken  string
 	httpClient *http.Client
+	mu         sync.RWMutex
+	protocol   string
 }
 
 // NewVeriflierClient creates a client targeting the given address (host:port).
@@ -77,6 +82,26 @@ func (c *VeriflierClient) Check(ctx context.Context, req CheckRequest) (*CheckRe
 // CheckBatch sends multiple check requests to the Veriflier. Each request
 // without a RequestID is given a fresh one; existing RequestIDs are preserved.
 func (c *VeriflierClient) CheckBatch(ctx context.Context, reqs []CheckRequest) ([]CheckResult, error) {
+	switch c.cachedProtocol() {
+	case ProtocolLegacy:
+		return c.checkBatchLegacy(ctx, reqs)
+	case ProtocolV2:
+		return c.checkBatchV2(ctx, reqs)
+	default:
+		results, err := c.checkBatchV2(ctx, reqs)
+		if err == nil {
+			c.setProtocol(ProtocolV2)
+			return results, nil
+		}
+		if !isV2Unsupported(err) {
+			return nil, err
+		}
+		c.setProtocol(ProtocolLegacy)
+		return c.checkBatchLegacy(ctx, reqs)
+	}
+}
+
+func (c *VeriflierClient) checkBatchLegacy(ctx context.Context, reqs []CheckRequest) ([]CheckResult, error) {
 	type batchReq struct {
 		Sites []CheckRequest `json:"sites"`
 	}
@@ -120,20 +145,110 @@ func (c *VeriflierClient) CheckBatch(ctx context.Context, reqs []CheckRequest) (
 	return br.Results, nil
 }
 
+func (c *VeriflierClient) checkBatchV2(ctx context.Context, reqs []CheckRequest) ([]CheckResult, error) {
+	type batchResp struct {
+		Results []CheckV2Result `json:"results"`
+	}
+
+	v2Reqs := make([]CheckV2Request, len(reqs))
+	reqByRequestID := make(map[string]CheckRequest, len(reqs))
+	for i := range reqs {
+		if reqs[i].RequestID == "" {
+			reqs[i].RequestID = NewRequestID()
+		}
+		reqByRequestID[reqs[i].RequestID] = reqs[i]
+		v2Reqs[i] = legacyRequestToV2(reqs[i])
+	}
+	batchReq := CheckV2BatchRequest{
+		BatchID:  NewRequestID(),
+		Requests: v2Reqs,
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(deadline); remaining > 0 {
+			batchReq.DeadlineMS = remaining.Milliseconds()
+		}
+	}
+	body, err := json.Marshal(batchReq)
+	if err != nil {
+		return nil, err
+	}
+
+	url := fmt.Sprintf("http://%s/v2/check", c.addr)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+c.authToken)
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, v2TransportError{endpoint: "/v2/check", err: err}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, statusError{endpoint: "/v2/check", status: resp.StatusCode}
+	}
+
+	var br batchResp
+	if err := json.NewDecoder(resp.Body).Decode(&br); err != nil {
+		return nil, fmt.Errorf("decode veriflier v2 response: %w", err)
+	}
+	results := make([]CheckResult, 0, len(br.Results))
+	for i, res := range br.Results {
+		orig := reqByRequestID[res.RequestID]
+		if orig.MonitorSiteID == 0 && i < len(reqs) {
+			orig = reqs[i]
+		}
+		results = append(results, CheckResult{
+			MonitorSiteID: orig.MonitorSiteID,
+			BlogID:        res.BlogID,
+			URL:           res.URL,
+			Host:          res.VantageID,
+			VantageID:     res.VantageID,
+			AgentID:       res.AgentID,
+			Outcome:       res.Outcome,
+			Success:       res.Success,
+			HTTPCode:      res.HTTPCode,
+			ErrorCode:     res.ErrorCode,
+			RTTMs:         res.RTTMs,
+			RequestID:     res.RequestID,
+		})
+	}
+	return results, nil
+}
+
 // Ping checks whether the Veriflier is reachable and returns its version.
 func (c *VeriflierClient) Ping(ctx context.Context) (string, error) {
+	status, err := c.Status(ctx)
+	if err != nil {
+		return "", err
+	}
+	return status.Version, nil
+}
+
+func (c *VeriflierClient) Status(ctx context.Context) (*StatusV2Response, error) {
+	status, err := c.statusV2(ctx)
+	if err == nil {
+		c.setProtocol(ProtocolV2)
+		return status, nil
+	}
+	if !isV2Unsupported(err) {
+		return nil, err
+	}
 	url := fmt.Sprintf("http://%s/status", c.addr)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", err
+		return nil, v2TransportError{endpoint: "/v2/status", err: err}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("veriflier status returned %d", resp.StatusCode)
+		return nil, fmt.Errorf("veriflier status returned %d", resp.StatusCode)
 	}
 
 	var s struct {
@@ -141,7 +256,33 @@ func (c *VeriflierClient) Ping(ctx context.Context) (string, error) {
 		Version string `json:"version"`
 	}
 	_ = json.NewDecoder(resp.Body).Decode(&s)
-	return s.Version, nil
+	c.setProtocol(ProtocolLegacy)
+	return &StatusV2Response{
+		Status:    s.Status,
+		Version:   s.Version,
+		Protocols: []string{ProtocolLegacy},
+	}, nil
+}
+
+func (c *VeriflierClient) statusV2(ctx context.Context) (*StatusV2Response, error) {
+	url := fmt.Sprintf("http://%s/v2/status", c.addr)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, statusError{endpoint: "/v2/status", status: resp.StatusCode}
+	}
+	var s StatusV2Response
+	if err := json.NewDecoder(resp.Body).Decode(&s); err != nil {
+		return nil, fmt.Errorf("decode veriflier v2 status: %w", err)
+	}
+	return &s, nil
 }
 
 // NewRequestID returns a 16-byte random id, hex-encoded (32 chars). Used as
@@ -155,4 +296,53 @@ func NewRequestID() string {
 		return fmt.Sprintf("ts-%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(b[:])
+}
+
+func (c *VeriflierClient) cachedProtocol() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.protocol
+}
+
+func (c *VeriflierClient) setProtocol(protocol string) {
+	c.mu.Lock()
+	c.protocol = protocol
+	c.mu.Unlock()
+}
+
+type statusError struct {
+	endpoint string
+	status   int
+}
+
+func (e statusError) Error() string {
+	return fmt.Sprintf("veriflier %s returned %d", e.endpoint, e.status)
+}
+
+type v2TransportError struct {
+	endpoint string
+	err      error
+}
+
+func (e v2TransportError) Error() string {
+	return fmt.Sprintf("veriflier %s request failed: %v", e.endpoint, e.err)
+}
+
+func (e v2TransportError) Unwrap() error {
+	return e.err
+}
+
+func isV2Unsupported(err error) bool {
+	var se statusError
+	if errors.As(err, &se) {
+		return se.status == http.StatusNotFound ||
+			se.status == http.StatusMethodNotAllowed ||
+			se.status == http.StatusNotImplemented
+	}
+
+	var te v2TransportError
+	if errors.As(err, &te) {
+		return errors.Is(te.err, io.EOF) || errors.Is(te.err, io.ErrUnexpectedEOF)
+	}
+	return false
 }

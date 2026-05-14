@@ -7,16 +7,56 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
 func newTestServer(checkFn func(CheckRequest) CheckResult) (*Server, *httptest.Server) {
-	srv := NewServer("", "secret", "test-host", "1.0", checkFn)
-	mux := http.NewServeMux()
-	mux.HandleFunc("/check", srv.handleCheck)
-	mux.HandleFunc("/status", srv.handleStatus)
-	ts := httptest.NewServer(mux)
+	srv := NewServerWithOptions("", "secret", "test-host", "1.0", ServerOptions{
+		CheckFunc: func(_ context.Context, req CheckRequest) ProbeResult {
+			res := checkFn(req)
+			return ProbeResult{CheckResult: res, Outcome: outcomeFromResult(res)}
+		},
+		MaxConcurrency: 4,
+		QueueCapacity:  4,
+		EnableLegacy:   true,
+	})
+	ts := httptest.NewServer(srv.handler())
+	return srv, ts
+}
+
+func newV2TestServer(checkFn CheckFunc, opts ...ServerOptions) (*Server, *httptest.Server) {
+	cfg := ServerOptions{
+		CheckFunc:      checkFn,
+		Vantage:        Vantage{ID: "test-vantage", Region: "test-region", Provider: "test-provider"},
+		AgentID:        "test-agent",
+		MaxConcurrency: 4,
+		QueueCapacity:  4,
+	}
+	if len(opts) > 0 {
+		override := opts[0]
+		if override.CheckFunc != nil {
+			cfg.CheckFunc = override.CheckFunc
+		}
+		if override.Vantage.ID != "" {
+			cfg.Vantage = override.Vantage
+		}
+		if override.AgentID != "" {
+			cfg.AgentID = override.AgentID
+		}
+		if override.MaxConcurrency != 0 {
+			cfg.MaxConcurrency = override.MaxConcurrency
+		}
+		if override.QueueCapacity != 0 {
+			cfg.QueueCapacity = override.QueueCapacity
+		}
+		if override.EnableLegacy {
+			cfg.EnableLegacy = true
+		}
+	}
+	srv := NewServerWithOptions("", "secret", "test-host", "1.0", cfg)
+	ts := httptest.NewServer(srv.handler())
 	return srv, ts
 }
 
@@ -192,7 +232,7 @@ func TestClientPingRejectsErrorStatus(t *testing.T) {
 	if err == nil {
 		t.Fatal("Ping() expected error")
 	}
-	if err.Error() != "veriflier status returned 503" {
+	if err.Error() != "veriflier /v2/status returned 503" {
 		t.Fatalf("Ping() error = %v", err)
 	}
 }
@@ -352,4 +392,574 @@ func TestServerShutdownDrains(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatalf("in-flight check failed: %v", err)
 	}
+}
+
+func TestServerHandleV2Status(t *testing.T) {
+	srv, ts := newV2TestServer(func(_ context.Context, req CheckRequest) ProbeResult {
+		return ProbeResult{}
+	})
+	defer srv.executor.Shutdown()
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/v2/status")
+	if err != nil {
+		t.Fatalf("request error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	var status StatusV2Response
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if status.Vantage.ID != "test-vantage" {
+		t.Fatalf("vantage id = %q, want test-vantage", status.Vantage.ID)
+	}
+	if status.Agent.ID != "test-agent" {
+		t.Fatalf("agent id = %q, want test-agent", status.Agent.ID)
+	}
+	if status.Capacity.MaxConcurrency != 4 {
+		t.Fatalf("max concurrency = %d, want 4", status.Capacity.MaxConcurrency)
+	}
+	if len(status.Protocols) != 1 || status.Protocols[0] != ProtocolV2 {
+		t.Fatalf("protocols = %#v, want v2-only by default", status.Protocols)
+	}
+}
+
+func TestServerLegacyEndpointsDisabledByDefault(t *testing.T) {
+	srv, ts := newV2TestServer(func(_ context.Context, req CheckRequest) ProbeResult {
+		t.Fatal("checkFn should not be called for disabled legacy endpoint")
+		return ProbeResult{}
+	})
+	defer srv.executor.Shutdown()
+	defer ts.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/check", checkReqBody(t, []CheckRequest{{BlogID: 1, URL: "https://example.com"}}))
+	req.Header.Set("Authorization", "Bearer secret")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("POST /check status = %d, want 404 when legacy disabled", resp.StatusCode)
+	}
+
+	resp, err = http.Get(ts.URL + "/status")
+	if err != nil {
+		t.Fatalf("status request error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET /status status = %d, want 404 when legacy disabled", resp.StatusCode)
+	}
+}
+
+func TestServerLegacyEndpointsOptIn(t *testing.T) {
+	srv, ts := newV2TestServer(func(_ context.Context, req CheckRequest) ProbeResult {
+		return ProbeResult{CheckResult: CheckResult{
+			BlogID:   req.BlogID,
+			URL:      req.URL,
+			Success:  true,
+			HTTPCode: 200,
+		}, Outcome: OutcomeUp}
+	}, ServerOptions{EnableLegacy: true})
+	defer srv.executor.Shutdown()
+	defer ts.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/check", checkReqBody(t, []CheckRequest{{BlogID: 1, URL: "https://example.com"}}))
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /check status = %d, want 200 when legacy enabled", resp.StatusCode)
+	}
+
+	statusResp, err := http.Get(ts.URL + "/v2/status")
+	if err != nil {
+		t.Fatalf("v2 status request error: %v", err)
+	}
+	defer statusResp.Body.Close()
+	var status StatusV2Response
+	if err := json.NewDecoder(statusResp.Body).Decode(&status); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if len(status.Protocols) != 2 || status.Protocols[0] != ProtocolV2 || status.Protocols[1] != ProtocolLegacy {
+		t.Fatalf("protocols = %+v, want v2 plus legacy when enabled", status.Protocols)
+	}
+}
+
+func TestServerHandleV2Check(t *testing.T) {
+	srv, ts := newV2TestServer(func(_ context.Context, req CheckRequest) ProbeResult {
+		if req.Method != http.MethodHead {
+			t.Fatalf("method = %q, want HEAD", req.Method)
+		}
+		if req.DetectionProfile != "legacy" {
+			t.Fatalf("detection profile = %q, want legacy", req.DetectionProfile)
+		}
+		if req.Keyword != "needle" {
+			t.Fatalf("keyword = %q, want needle", req.Keyword)
+		}
+		if len(req.ForbiddenKeywords) != 1 || req.ForbiddenKeywords[0] != "bad" {
+			t.Fatalf("forbidden keywords = %#v", req.ForbiddenKeywords)
+		}
+		return ProbeResult{
+			CheckResult: CheckResult{
+				BlogID:    req.BlogID,
+				URL:       req.URL,
+				Success:   false,
+				HTTPCode:  500,
+				ErrorCode: 0,
+				RTTMs:     123,
+			},
+			Outcome:   OutcomeDown,
+			TimingsMS: TimingsMS{DNS: 1, TCP: 2, TLS: 3, TTFB: 4},
+		}
+	})
+	defer srv.executor.Shutdown()
+	defer ts.Close()
+
+	body := bytes.NewBuffer(nil)
+	if err := json.NewEncoder(body).Encode(CheckV2BatchRequest{
+		BatchID: "batch-1",
+		Requests: []CheckV2Request{{
+			RequestID:        "req-1",
+			BlogID:           42,
+			URL:              "https://example.com",
+			TimeoutMS:        1500,
+			Method:           http.MethodHead,
+			DetectionProfile: "legacy",
+			RedirectPolicy:   "follow",
+			BodyRules: BodyRules{
+				Required:  []string{"needle"},
+				Forbidden: []string{"bad"},
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v2/check", body)
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	var result CheckV2BatchResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if result.BatchID != "batch-1" {
+		t.Fatalf("batch id = %q, want batch-1", result.BatchID)
+	}
+	if result.Vantage.ID != "test-vantage" || result.Agent.ID != "test-agent" {
+		t.Fatalf("identity = vantage:%q agent:%q", result.Vantage.ID, result.Agent.ID)
+	}
+	if len(result.Results) != 1 {
+		t.Fatalf("results len = %d, want 1", len(result.Results))
+	}
+	got := result.Results[0]
+	if got.RequestID != "req-1" || got.VantageID != "test-vantage" || got.AgentID != "test-agent" {
+		t.Fatalf("result identity = %+v", got)
+	}
+	if got.Outcome != OutcomeDown || got.Success || got.HTTPCode != 500 || got.RTTMs != 123 {
+		t.Fatalf("result = %+v", got)
+	}
+	if got.TimingsMS.DNS != 1 || got.TimingsMS.TTFB != 4 {
+		t.Fatalf("timings = %+v", got.TimingsMS)
+	}
+}
+
+func TestServerHandleV2CheckAppliesBatchDeadline(t *testing.T) {
+	srv, ts := newV2TestServer(func(ctx context.Context, req CheckRequest) ProbeResult {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Fatal("check context has no deadline")
+		}
+		if remaining := time.Until(deadline); remaining <= 0 || remaining > time.Second {
+			t.Fatalf("remaining deadline = %s, want a short positive deadline", remaining)
+		}
+		return ProbeResult{CheckResult: CheckResult{
+			BlogID:   req.BlogID,
+			URL:      req.URL,
+			Success:  true,
+			HTTPCode: 200,
+		}, Outcome: OutcomeUp}
+	})
+	defer srv.executor.Shutdown()
+	defer ts.Close()
+
+	body := bytes.NewBuffer(nil)
+	if err := json.NewEncoder(body).Encode(CheckV2BatchRequest{
+		DeadlineMS: 250,
+		Requests: []CheckV2Request{{
+			BlogID: 1,
+			URL:    "https://example.com",
+		}},
+	}); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v2/check", body)
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestServerHandleV2CheckRejectsMultipleRequiredBodyRules(t *testing.T) {
+	srv, ts := newV2TestServer(func(_ context.Context, req CheckRequest) ProbeResult {
+		t.Fatal("checkFn should not be called for invalid body rules")
+		return ProbeResult{}
+	})
+	defer srv.executor.Shutdown()
+	defer ts.Close()
+
+	body := bytes.NewBuffer(nil)
+	if err := json.NewEncoder(body).Encode(CheckV2BatchRequest{
+		Requests: []CheckV2Request{{
+			BlogID: 1,
+			URL:    "https://example.com",
+			BodyRules: BodyRules{
+				Required: []string{"a", "b"},
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v2/check", body)
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestClientPrefersV2WhenAvailable(t *testing.T) {
+	srv, ts := newV2TestServer(func(_ context.Context, req CheckRequest) ProbeResult {
+		return ProbeResult{CheckResult: CheckResult{
+			BlogID:   req.BlogID,
+			URL:      req.URL,
+			Success:  true,
+			HTTPCode: 200,
+		}, Outcome: OutcomeUp}
+	}, ServerOptions{
+		Vantage:        Vantage{ID: "edge-us-east"},
+		AgentID:        "agent-1",
+		MaxConcurrency: 2,
+		QueueCapacity:  2,
+	})
+	defer srv.executor.Shutdown()
+	defer ts.Close()
+
+	client := NewVeriflierClient(ts.Listener.Addr().String(), "secret")
+	res, err := client.Check(context.Background(), CheckRequest{BlogID: 1, URL: "https://example.com"})
+	if err != nil {
+		t.Fatalf("Check() error = %v", err)
+	}
+	if res.Host != "edge-us-east" {
+		t.Fatalf("Host = %q, want v2 vantage identity", res.Host)
+	}
+	if res.VantageID != "edge-us-east" || res.AgentID != "agent-1" || res.Outcome != OutcomeUp {
+		t.Fatalf("v2 identity = vantage:%q agent:%q outcome:%q", res.VantageID, res.AgentID, res.Outcome)
+	}
+	if client.cachedProtocol() != ProtocolV2 {
+		t.Fatalf("cached protocol = %q, want %q", client.cachedProtocol(), ProtocolV2)
+	}
+}
+
+func TestClientFallsBackToLegacyWhenUnknownV2ConnectionCloses(t *testing.T) {
+	var v2Hits atomic.Int64
+	var legacyHits atomic.Int64
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v2/check", func(w http.ResponseWriter, r *http.Request) {
+		v2Hits.Add(1)
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Fatalf("hijack: %v", err)
+		}
+		_ = conn.Close()
+	})
+	mux.HandleFunc("/check", func(w http.ResponseWriter, r *http.Request) {
+		legacyHits.Add(1)
+		var req struct {
+			Sites []CheckRequest `json:"sites"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode legacy request: %v", err)
+		}
+		results := make([]CheckResult, 0, len(req.Sites))
+		for _, site := range req.Sites {
+			results = append(results, CheckResult{
+				MonitorSiteID: site.MonitorSiteID,
+				BlogID:        site.BlogID,
+				URL:           site.URL,
+				RequestID:     site.RequestID,
+				Success:       true,
+				HTTPCode:      200,
+			})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(struct {
+			Results []CheckResult `json:"results"`
+		}{Results: results})
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	client := NewVeriflierClient(ts.Listener.Addr().String(), "secret")
+	res, err := client.Check(context.Background(), CheckRequest{
+		MonitorSiteID: 44,
+		BlogID:        99,
+		URL:           "https://example.com",
+	})
+	if err != nil {
+		t.Fatalf("Check() error = %v", err)
+	}
+	if !res.Success || res.BlogID != 99 || res.MonitorSiteID != 44 {
+		t.Fatalf("legacy fallback result = %+v", res)
+	}
+	if client.cachedProtocol() != ProtocolLegacy {
+		t.Fatalf("cached protocol = %q, want %q", client.cachedProtocol(), ProtocolLegacy)
+	}
+	if v2Hits.Load() != 1 || legacyHits.Load() != 1 {
+		t.Fatalf("hits after first check v2=%d legacy=%d, want 1/1", v2Hits.Load(), legacyHits.Load())
+	}
+
+	if _, err := client.Check(context.Background(), CheckRequest{BlogID: 100, URL: "https://example.org"}); err != nil {
+		t.Fatalf("cached legacy Check() error = %v", err)
+	}
+	if v2Hits.Load() != 1 || legacyHits.Load() != 2 {
+		t.Fatalf("hits after cached legacy check v2=%d legacy=%d, want 1/2", v2Hits.Load(), legacyHits.Load())
+	}
+}
+
+func TestClientDoesNotFallbackWhenV2ProtocolCached(t *testing.T) {
+	var legacyHits atomic.Int64
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v2/check", func(w http.ResponseWriter, r *http.Request) {
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Fatalf("hijack: %v", err)
+		}
+		_ = conn.Close()
+	})
+	mux.HandleFunc("/check", func(w http.ResponseWriter, r *http.Request) {
+		legacyHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	client := NewVeriflierClient(ts.Listener.Addr().String(), "secret")
+	client.setProtocol(ProtocolV2)
+	_, err := client.Check(context.Background(), CheckRequest{BlogID: 1, URL: "https://example.com"})
+	if err == nil {
+		t.Fatal("Check() expected v2 transport error")
+	}
+	if legacyHits.Load() != 0 {
+		t.Fatalf("legacy hits = %d, want 0 for cached v2 protocol", legacyHits.Load())
+	}
+}
+
+func TestClientV2SendsContextDeadline(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/check" {
+			http.NotFound(w, r)
+			return
+		}
+		var req CheckV2BatchRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if req.DeadlineMS <= 0 {
+			t.Fatalf("deadline_ms = %d, want positive", req.DeadlineMS)
+		}
+		if len(req.Requests) != 1 || req.Requests[0].TimeoutMS != 2000 {
+			t.Fatalf("requests = %+v", req.Requests)
+		}
+		if req.Requests[0].Method != http.MethodHead || req.Requests[0].DetectionProfile != "legacy" {
+			t.Fatalf("method/profile = %s/%s, want HEAD/legacy", req.Requests[0].Method, req.Requests[0].DetectionProfile)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(CheckV2BatchResponse{
+			Vantage: Vantage{ID: "vantage"},
+			Agent:   Agent{ID: "agent"},
+			Results: []CheckV2Result{{
+				RequestID: req.Requests[0].RequestID,
+				BlogID:    req.Requests[0].BlogID,
+				URL:       req.Requests[0].URL,
+				VantageID: "vantage",
+				AgentID:   "agent",
+				Outcome:   OutcomeUp,
+				Success:   true,
+				HTTPCode:  200,
+			}},
+		})
+	}))
+	defer ts.Close()
+
+	client := NewVeriflierClient(ts.Listener.Addr().String(), "secret")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	res, err := client.Check(ctx, CheckRequest{
+		MonitorSiteID:    1234,
+		BlogID:           9,
+		URL:              "https://example.com",
+		Method:           http.MethodHead,
+		DetectionProfile: "legacy",
+		TimeoutSeconds:   2,
+	})
+	if err != nil {
+		t.Fatalf("Check() error = %v", err)
+	}
+	if res.Host != "vantage" {
+		t.Fatalf("Host = %q, want vantage", res.Host)
+	}
+	if res.VantageID != "vantage" || res.AgentID != "agent" || res.Outcome != OutcomeUp {
+		t.Fatalf("v2 identity = vantage:%q agent:%q outcome:%q", res.VantageID, res.AgentID, res.Outcome)
+	}
+	if res.MonitorSiteID != 1234 {
+		t.Fatalf("MonitorSiteID = %d, want 1234", res.MonitorSiteID)
+	}
+}
+
+func TestServerHandleV2CheckRejectsOverload(t *testing.T) {
+	var called atomic.Int64
+	srv, ts := newV2TestServer(func(_ context.Context, req CheckRequest) ProbeResult {
+		called.Add(1)
+		return ProbeResult{CheckResult: CheckResult{BlogID: req.BlogID, URL: req.URL}}
+	}, ServerOptions{
+		MaxConcurrency: 1,
+		QueueCapacity:  1,
+	})
+	defer srv.executor.Shutdown()
+	defer ts.Close()
+
+	body := bytes.NewBuffer(nil)
+	if err := json.NewEncoder(body).Encode(CheckV2BatchRequest{
+		Requests: []CheckV2Request{
+			{BlogID: 1, URL: "https://example.com/1"},
+			{BlogID: 2, URL: "https://example.com/2"},
+			{BlogID: 3, URL: "https://example.com/3"},
+		},
+	}); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v2/check", body)
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", resp.StatusCode)
+	}
+	if called.Load() != 0 {
+		t.Fatalf("check function called %d times for overloaded batch", called.Load())
+	}
+}
+
+func TestServerExecutesLegacyBatchConcurrently(t *testing.T) {
+	var active atomic.Int64
+	var peak atomic.Int64
+	release := make(chan struct{})
+	started := make(chan struct{}, 2)
+
+	srv, ts := newV2TestServer(func(_ context.Context, req CheckRequest) ProbeResult {
+		now := active.Add(1)
+		for {
+			old := peak.Load()
+			if now <= old || peak.CompareAndSwap(old, now) {
+				break
+			}
+		}
+		started <- struct{}{}
+		<-release
+		active.Add(-1)
+		return ProbeResult{CheckResult: CheckResult{
+			BlogID:   req.BlogID,
+			URL:      req.URL,
+			Success:  true,
+			HTTPCode: 200,
+		}, Outcome: OutcomeUp}
+	}, ServerOptions{
+		MaxConcurrency: 2,
+		QueueCapacity:  2,
+		EnableLegacy:   true,
+	})
+	defer srv.executor.Shutdown()
+	defer ts.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/check", checkReqBody(t, []CheckRequest{
+		{BlogID: 1, URL: "https://example.com/1"},
+		{BlogID: 2, URL: "https://example.com/2"},
+	}))
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Content-Type", "application/json")
+
+	done := make(chan error, 1)
+	go func() {
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			done <- err
+			return
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			done <- errStatus(resp.StatusCode)
+			return
+		}
+		done <- nil
+	}()
+
+	for range 2 {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for concurrent checks to start")
+		}
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	if peak.Load() != 2 {
+		t.Fatalf("peak concurrency = %d, want 2", peak.Load())
+	}
+}
+
+type errStatus int
+
+func (e errStatus) Error() string {
+	return http.StatusText(int(e))
 }

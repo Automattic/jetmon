@@ -16,10 +16,99 @@ These are scoped branches worth considering after the merged API CLI, rollout
 preflight, deliverer hardening, API CLI fixture workflow, dashboard, and
 production telemetry branches:
 
-- `feature/pr-101-followups` - close out stale PR #101 by retaining only the
-  ideas not superseded by the #104 streaming engine work: permanent WPCOM
-  status handling, streaming-aware failure-storm suppression, and evidence-led
-  evaluation of any remaining `jetpack_monitor_sites` point-lookup indexes.
+- `veriflier-production-soak`: run production-like Veriflier load, overload,
+  duplicate-vantage, and long-outage promotion/recovery rehearsals against the
+  Go Veriflier v2 contract before first production cutover.
+
+### Veriflier Rebuild and Contract TODO
+
+- [x] Rebuild the Veriflier as a Go binary with the v2 JSON-over-HTTP transport
+  as the production Monitor-to-Veriflier contract while keeping legacy-compatible
+  `/check` and `/status` endpoints available behind an opt-in
+  `VERIFLIER_ENABLE_LEGACY_HTTP` switch for lab/emergency transition testing.
+- [x] Keep the external monitor behavior compatible while allowing the internal
+  Monitor-to-Veriflier contract to evolve for Jetmon v2: v2 requests now carry
+  request IDs, client deadlines, body rules, header rules, redirect policy, and
+  bounded body-read settings.
+- [x] Return structured v2 verifier outcomes instead of raw success booleans:
+  `up`, `down`, `timeout`, `probe_error`, `agent_overloaded`, and `unknown`,
+  with HTTP code, error code, RTT, timing breakdown, and request correlation.
+- [x] Add Veriflier vantage identity and agent identity to the v2 status and
+  check response model. Quorum counts vantages; agent identity is diagnostic.
+- [x] Add bounded vertical scaling inside each Veriflier through an executor
+  sized from available CPU and file descriptor limits, with explicit queue
+  capacity and `agent_overloaded` / HTTP 503 behavior when saturated.
+- [x] Minimize new Veriflier config to identity metadata plus the existing bind
+  address, port, and auth token; default concurrency and queue sizing are
+  derived automatically.
+- [x] Make the Monitor client prefer `/v2/check` and `/v2/status`, cache the
+  successful protocol, and fall back only to `veriflier2`'s legacy-compatible
+  HTTP contract for transition-safe unsupported-v2 responses. The rollout plan
+  deploys a fresh v2 Veriflier fleet first and points v2 Monitors only at that
+  fleet; original v1 Verifliers are not v2 Monitor fallback targets.
+- [x] Count only unique Veriflier vantage identities in downtime quorum math,
+  emit duplicate-vote metrics, preserve duplicate replies in audit metadata,
+  and include quorum/vote evidence in event transition metadata.
+- [x] Add a multi-Veriflier quorum floor so a degraded fleet cannot collapse to
+  a single confirming vote unless operators explicitly set `PEER_OFFLINE_LIMIT`
+  to `1`; single-Veriflier dev/test layouts continue to work.
+- [x] Extend `jetmon2 validate-config` to probe configured Verifliers, report
+  v2 versus legacy contract status, show vantage/agent/capacity metadata, warn
+  on unreachable or legacy-only agents, and fail on duplicate or missing v2
+  vantage IDs.
+- [x] Extend operator dashboard dependency health so Verifliers expose v2
+  version, vantage, capacity, and duplicate-vantage failures instead of a plain
+  ping-only status.
+- [x] Update the proto file as a schema reference for the v2 JSON contract,
+  without reintroducing generated proto/gRPC as a build-time dependency.
+- [x] Add repo-local Veriflier soak coverage for high concurrency, overload
+  recovery, auth failure, deadline timeout recovery, and mixed success/down
+  outcomes through the v2 contract. Run with `make test-veriflier-soak`.
+- [ ] Run production-like Veriflier soak coverage for deployed-like network
+  behavior, duplicate-vantage misconfiguration, mixed-vantage responses, and
+  long outage promotion/recovery.
+- [x] Add Veriflier auto-discovery in a shadow-first rollout:
+  - trusted DB-backed `jetmon_veriflier_vantages` registry for quorum identities
+  - monitor-collected `jetmon_veriflier_agents` rows for process capacity and
+    liveness without giving Veriflier hosts DB access
+  - monitor discovery mode `static|shadow|active`, defaulting to static
+  - no self-created quorum votes; new vantages must be pre-approved by
+    operators before monitors count them
+  - fallback to static config if active discovery fails during rollout
+- [x] Add `jetmon2 verifliers discovery-report` as a read-only shadow-mode gate
+  comparing configured static Verifliers, trusted registry vantages, and recent
+  monitor-collected agent telemetry without exposing auth token values.
+- [x] Backfill ADR-0010 for the Veriflier discovery trust model:
+  operator-approved vantages are trust, monitor-collected agent rows are
+  telemetry, and Veriflier hosts do not need database credentials.
+- [x] Add an operator checklist for Veriflier dashboard and discovery-report
+  green/amber/red warnings before active-discovery rollout.
+- [x] Expand repo-local `make test-veriflier-soak` coverage with Veriflier
+  discovery drift scenarios: duplicate static vantages, incomplete or missing
+  trusted registry rows, endpoint/auth-presence mismatches, untrusted agents,
+  duplicate active agent endpoints, active-mode fallback, and recovery to green.
+- [ ] Run Veriflier auto-discovery in production-like shadow mode and compare
+  static configured vantages to the DB registry before enabling active mode.
+- [ ] Add an uptime-bench scenario long enough to exercise full
+  `Seems Down -> Down -> verifier_cleared` behavior with v2 vote evidence.
+- [x] Decide when legacy-compatible `veriflier2` fallback can be removed: keep
+  the server-side legacy-compatible endpoint code behind
+  `VERIFLIER_ENABLE_LEGACY_HTTP` as an explicit lab/emergency guard, but leave
+  it disabled for normal production v2 endpoints and do not rely on it for
+  original v1 Verifliers. Remove it only after every configured v2 Veriflier
+  endpoint reports v2 status, `validate-config` has no legacy-only Veriflier
+  warnings for the fleet, production-like soak passes, and telemetry shows
+  stable v2 verifier reply/vote evidence. Exact gates are documented in
+  `docs/v1-to-v2-migration.md`.
+- [x] Decide naming for v2: keep the historical `veriflier` / `veriflier2`
+  names through the v2 rollout to avoid operational churn. If v3 introduces a
+  central scheduler plus regional primary probes, name the new role
+  `probe-agent` or `vantage-agent` instead of renaming the v2 compatibility
+  binary in place.
+- [ ] Revisit durable verifier/probe jobs after v2 production data. Keep v2
+  confirmation probes simple for rollout; use collected latency, overload,
+  false-alarm, and mixed-vantage evidence to decide whether v3 needs a central
+  job bus for regional probe agents.
 
 ### v2 Prelaunch Readiness TODO
 
@@ -90,6 +179,10 @@ production telemetry branches:
 - [x] Include `jetmon2 telemetry report` in guided rollout, generated rehearsal
   plans, and operator runbooks as read-only WPCOM parity evidence after the
   full-round cutover gate and at fleet completion.
+- [x] Add Veriflier v2 vote-evidence rollups to `jetmon2 telemetry report`:
+  vote-bearing transitions, duplicate votes ignored for quorum, transitions
+  with duplicate votes, transitions blocked by the minimum-healthy floor, and
+  observed max quorum/healthy-vantage counts.
 - [ ] Revisit report thresholds and suggested actions after v2 has enough real
   production traffic to show which rates should be considered normal.
 - [x] Add richer incident observation metadata for HTTP failures and recovery
@@ -149,12 +242,13 @@ production telemetry branches:
   intended Jetmon region semantics, and support story for partial regional
   failures; if Jetmon remains single-region until the probe-agent work, document
   that this benchmark class is not directly comparable yet.
-- [ ] Preserve Veriflier vote evidence as an interim regional-diagnostics aid
-  without exposing customer-visible regional state. A small v2 follow-up can
-  store/report which Veriflier locations observed success, failure, timeout, or
-  mixed outcomes. Defer customer-facing regional classifications until the
-  probe-agent architecture exists because current Verifliers are confirmation
-  probes after local failure, not continuous per-vantage primary checks.
+- [x] Preserve Veriflier vote evidence as an interim regional-diagnostics aid
+  without exposing customer-visible regional state. Transition metadata and
+  audit rows now preserve which Veriflier vantages observed success, failure,
+  timeout, or probe errors. Defer customer-facing regional classifications
+  until the probe-agent architecture exists because current Verifliers are
+  confirmation probes after local failure, not continuous per-vantage primary
+  checks.
 - [ ] Add an uptime-bench service scenario that lasts long enough to exercise
   the verifier-confirmed `Seems Down` -> `Down` path. The latest 10-hour v2
   services run proved the fast transient `probe_cleared` path, but it did not
@@ -473,6 +567,9 @@ production telemetry branches:
   do not mistake `runtime.MemStats.Sys` for operating-system RSS.
 - [x] Build the global fleet dashboard from `jetmon_process_health`,
   `jetmon_hosts`, delivery queues, projection drift, and Veriflier health.
+- [x] Add dedicated fleet Veriflier discovery views for trusted vantages,
+  monitor-collected agent telemetry, capacity, discovery mode posture, and
+  duplicate endpoint warnings without exposing auth tokens.
 - [x] Add stale-heartbeat thresholds and fleet-level suggested next actions for
   rollout handoffs.
 - [x] Add explicit fleet delivery-ownership posture so operators can

@@ -51,8 +51,8 @@ docker run --rm \
 ```
 
 The entrypoint renders `config/veriflier.json` from `veriflier-sample.json` on
-first start using the env vars above. Health check: `curl http://localhost:7803/status`
-should return `{"status":"ok",...}`.
+first start using the env vars above. Health check: `curl http://localhost:7803/v2/status`
+should return `{"status":"OK",...}`.
 
 Required env vars:
 
@@ -60,6 +60,7 @@ Required env vars:
 |---|---|
 | `VERIFLIER_AUTH_TOKEN` | Must match the value Jetmon uses to call this verifier. |
 | `VERIFLIER_PORT` | Defaults to `7803`. |
+| `VERIFLIER_ENABLE_LEGACY_HTTP` | Optional. Defaults to `false`; set to `true` only for lab/emergency compatibility with `veriflier2`'s legacy HTTP `/check` and `/status` endpoints. |
 
 ## Run Jetmon
 

@@ -42,6 +42,8 @@ writes only the v1 compatibility projection fields `site_status` and
 | `jetmon_audit_log` | Operational trail for checks, retries, WPCOM calls, suppression, API access, and reloads |
 | `jetmon_check_history` | Request method plus RTT and timing samples for trending |
 | `jetmon_false_positives` | Veriflier non-confirmation records |
+| `jetmon_veriflier_vantages` | Trusted quorum-counted Veriflier vantage registry |
+| `jetmon_veriflier_agents` | Concrete Veriflier process telemetry and capacity hints |
 | `jetmon_api_keys` | Internal REST API Bearer-token registry |
 | `jetmon_webhooks` | Webhook registrations and HMAC signing secrets |
 | `jetmon_webhook_deliveries` | Outbound webhook delivery attempts and retry state |
@@ -166,6 +168,20 @@ The fleet dashboard combines this table with `jetmon_hosts`, outbound delivery
 queues, and projection-drift counts. Dependency health stored in the process
 snapshot is also used to roll up shared dependencies such as Verifliers, MySQL,
 WPCOM, and StatsD across hosts.
+
+## Veriflier Discovery
+
+`jetmon_veriflier_vantages` stores the trusted identities that monitors may use
+for downtime quorum. `enabled` defaults to false, so a newly running Veriflier
+cannot mint its own vote. Usable active-discovery rows need `vantage_id`,
+`endpoint_host`, `endpoint_port`, and `auth_token`.
+
+`jetmon_veriflier_agents` stores concrete process telemetry collected by
+monitors from authenticated Veriflier `/v2/status` responses. Agents report
+`agent_id`, `vantage_id`, version, supported protocols, endpoint host/port,
+capacity, and `last_seen`. These rows are operational telemetry and endpoint
+hints only; they are ignored for quorum unless the matching vantage is
+pre-approved and enabled.
 
 ## Check History
 

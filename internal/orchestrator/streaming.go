@@ -667,7 +667,24 @@ func (o *Orchestrator) runStreamingEngine() {
 		reloadInFlight      bool
 		projectionResults   = make(chan streamingProjectionFlushResult, 1)
 		projectionInFlight  bool
+		telemetryResults    = make(chan struct{}, 1)
+		telemetryInFlight   bool
 	)
+
+	startVeriflierTelemetrySync := func(syncCfg *config.Config) {
+		if telemetryInFlight {
+			return
+		}
+		telemetryInFlight = true
+		go func() {
+			o.syncVeriflierAgentTelemetry(syncCfg)
+			select {
+			case telemetryResults <- struct{}{}:
+			case <-o.ctx.Done():
+			}
+		}()
+	}
+	startVeriflierTelemetrySync(cfg)
 
 	applyReload := func(reload streamingReloadResult) {
 		reloadInFlight = false
@@ -872,6 +889,7 @@ func (o *Orchestrator) runStreamingEngine() {
 			if err != nil {
 				log.Printf("orchestrator: streaming bucket refresh failed: %v", err)
 			}
+			startVeriflierTelemetrySync(cfg)
 			if bucketsChanged {
 				lastReload = time.Time{}
 				reloadReason = "bucket_change"
@@ -958,6 +976,8 @@ func (o *Orchestrator) runStreamingEngine() {
 			}
 		case reload := <-reloadResults:
 			applyReload(reload)
+		case <-telemetryResults:
+			telemetryInFlight = false
 		case res := <-o.pool.Results():
 			now := nowFunc().UTC()
 			handleResult(res, now)

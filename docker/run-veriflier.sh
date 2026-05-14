@@ -12,6 +12,9 @@ render_config() {
 	sed \
 		-e "s|<VERIFLIER_PORT>|$(sed_escape "${VERIFLIER_PORT}")|g" \
 		-e "s|<VERIFLIER_AUTH_TOKEN>|$(sed_escape "${VERIFLIER_AUTH_TOKEN:-veriflier_1_auth_token}")|g" \
+		-e "s|<VERIFLIER_VANTAGE_ID>|$(sed_escape "${VERIFLIER_VANTAGE_ID:-local-veriflier}")|g" \
+		-e "s|<VERIFLIER_REGION>|$(sed_escape "${VERIFLIER_REGION:-local}")|g" \
+		-e "s|<VERIFLIER_PROVIDER>|$(sed_escape "${VERIFLIER_PROVIDER:-docker}")|g" \
 		config/veriflier-sample.json > "${target}"
 }
 
@@ -25,6 +28,9 @@ config_target() {
 }
 
 export VERIFLIER_PORT="${VERIFLIER_PORT:-${VERIFLIER_GRPC_PORT:-7803}}"
+export VERIFLIER_VANTAGE_ID="${VERIFLIER_VANTAGE_ID:-local-veriflier}"
+export VERIFLIER_REGION="${VERIFLIER_REGION:-local}"
+export VERIFLIER_PROVIDER="${VERIFLIER_PROVIDER:-docker}"
 
 if [ ! -f config/veriflier.json ]; then
 	render_config "$(config_target)"

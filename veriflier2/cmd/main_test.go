@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -24,6 +25,24 @@ func TestEnvOrDefault(t *testing.T) {
 	}
 }
 
+func TestParseBool(t *testing.T) {
+	for _, value := range []string{"1", "true", "TRUE", "yes", "on", "enabled"} {
+		got, err := parseBool(value)
+		if err != nil || !got {
+			t.Fatalf("parseBool(%q) = %v, %v; want true, nil", value, got, err)
+		}
+	}
+	for _, value := range []string{"0", "false", "FALSE", "no", "off", "disabled"} {
+		got, err := parseBool(value)
+		if err != nil || got {
+			t.Fatalf("parseBool(%q) = %v, %v; want false, nil", value, got, err)
+		}
+	}
+	if _, err := parseBool("sometimes"); err == nil {
+		t.Fatal("parseBool accepted invalid value")
+	}
+}
+
 func TestStringPtr(t *testing.T) {
 	if got := stringPtr(""); got != nil {
 		t.Fatalf("stringPtr(empty) = %v, want nil", got)
@@ -36,7 +55,7 @@ func TestStringPtr(t *testing.T) {
 
 func TestLoadConfigFromFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "veriflier.json")
-	if err := os.WriteFile(path, []byte(`{"auth_token":"secret","port":"7804"}`), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(`{"auth_token":"secret","port":"7804","vantage_id":"us-east","region":"iad","provider":"test","enable_legacy_http":true}`), 0644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -46,6 +65,12 @@ func TestLoadConfigFromFile(t *testing.T) {
 	}
 	if cfg.AuthToken != "secret" || cfg.TransportPort() != "7804" {
 		t.Fatalf("config = %+v", cfg)
+	}
+	if cfg.VantageID != "us-east" || cfg.Region != "iad" || cfg.Provider != "test" {
+		t.Fatalf("vantage config = %+v", cfg)
+	}
+	if !cfg.LegacyHTTP {
+		t.Fatalf("LegacyHTTP = false, want true")
 	}
 }
 
@@ -101,6 +126,15 @@ func TestLoadConfigRejectsMalformedJSON(t *testing.T) {
 	}
 }
 
+func TestVeriflierAgentIDIncludesPort(t *testing.T) {
+	if got := veriflierAgentID("host-a", "7803"); got != "host-a:7803" {
+		t.Fatalf("veriflierAgentID() = %q, want host-a:7803", got)
+	}
+	if got := veriflierAgentID("", ""); got != "unknown" {
+		t.Fatalf("veriflierAgentID(empty) = %q, want unknown", got)
+	}
+}
+
 func TestPerformCheckSuccess(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("X-Test"); got != "present" {
@@ -123,6 +157,29 @@ func TestPerformCheckSuccess(t *testing.T) {
 	}
 	if res.BlogID != 42 || res.HTTPCode != http.StatusOK {
 		t.Fatalf("performCheck result = %+v", res)
+	}
+}
+
+func TestPerformCheckContextOutcomeAndTimings(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	res := performCheckContext(context.Background(), veriflier.CheckRequest{
+		BlogID:         45,
+		URL:            srv.URL,
+		TimeoutSeconds: 2,
+		RedirectPolicy: string(checker.RedirectFollow),
+	})
+	if res.Outcome != veriflier.OutcomeUp {
+		t.Fatalf("outcome = %q, want up; result=%+v", res.Outcome, res)
+	}
+	if !res.Success || res.HTTPCode != http.StatusOK {
+		t.Fatalf("check result = %+v", res.CheckResult)
+	}
+	if res.RTTMs < 0 || res.TimingsMS.TTFB < 0 {
+		t.Fatalf("negative timings = %+v", res.TimingsMS)
 	}
 }
 

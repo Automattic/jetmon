@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -22,9 +23,13 @@ var version = "dev"
 const shutdownGracePeriod = 30 * time.Second
 
 type veriflierConfig struct {
-	AuthToken string `json:"auth_token"`
-	Port      string `json:"port"`
-	GRPCPort  string `json:"grpc_port"` // Deprecated alias for Port.
+	AuthToken  string `json:"auth_token"`
+	Port       string `json:"port"`
+	GRPCPort   string `json:"grpc_port"` // Deprecated alias for Port.
+	VantageID  string `json:"vantage_id"`
+	Region     string `json:"region"`
+	Provider   string `json:"provider"`
+	LegacyHTTP bool   `json:"enable_legacy_http"`
 }
 
 func main() {
@@ -46,6 +51,22 @@ func main() {
 	} else if v := os.Getenv("VERIFLIER_GRPC_PORT"); v != "" {
 		cfg.Port = v
 	}
+	if v := os.Getenv("VERIFLIER_VANTAGE_ID"); v != "" {
+		cfg.VantageID = v
+	}
+	if v := os.Getenv("VERIFLIER_REGION"); v != "" {
+		cfg.Region = v
+	}
+	if v := os.Getenv("VERIFLIER_PROVIDER"); v != "" {
+		cfg.Provider = v
+	}
+	if v := os.Getenv("VERIFLIER_ENABLE_LEGACY_HTTP"); v != "" {
+		enabled, err := parseBool(v)
+		if err != nil {
+			log.Fatalf("VERIFLIER_ENABLE_LEGACY_HTTP: %v", err)
+		}
+		cfg.LegacyHTTP = enabled
+	}
 
 	if cfg.TransportPort() == "" {
 		log.Fatalf("VERIFLIER_PORT is not set")
@@ -58,6 +79,7 @@ func main() {
 		log.Fatalf("VERIFLIER_AUTH_TOKEN is not set; refusing to start with no authentication")
 	}
 	addr := fmt.Sprintf(":%s", cfg.TransportPort())
+	agentID := veriflierAgentID(hostname, cfg.TransportPort())
 
 	// Optional StatsD metrics. STATSD_ADDR is unset in standalone deploys,
 	// "statsd:8125" in the docker compose stack. metrics.Init failure logs and
@@ -70,7 +92,16 @@ func main() {
 		}
 	}
 
-	srv := veriflier.NewServer(addr, cfg.AuthToken, hostname, version, performCheck)
+	srv := veriflier.NewServerWithOptions(addr, cfg.AuthToken, hostname, version, veriflier.ServerOptions{
+		CheckFunc: performCheckContext,
+		Vantage: veriflier.Vantage{
+			ID:       cfg.VantageID,
+			Region:   cfg.Region,
+			Provider: cfg.Provider,
+		},
+		AgentID:      agentID,
+		EnableLegacy: cfg.LegacyHTTP,
+	})
 
 	// Graceful shutdown: SIGINT/SIGTERM triggers Shutdown(ctx) with a drain
 	// budget so in-flight checks can complete before the listener closes.
@@ -86,16 +117,32 @@ func main() {
 		}
 	}()
 
-	log.Printf("veriflier2 %s starting on %s", version, addr)
+	log.Printf("veriflier2 %s starting on %s legacy_http=%s", version, addr, enabledLabel(cfg.LegacyHTTP))
 	if err := srv.Listen(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("listen: %v", err)
 	}
 	log.Println("veriflier2: shutdown complete")
 }
 
+func veriflierAgentID(hostname, port string) string {
+	hostname = strings.TrimSpace(hostname)
+	port = strings.TrimSpace(port)
+	if hostname == "" {
+		hostname = "unknown"
+	}
+	if port == "" {
+		return hostname
+	}
+	return hostname + ":" + port
+}
+
 // performCheck runs a single HTTP check and returns the result for the server.
 func performCheck(req veriflier.CheckRequest) veriflier.CheckResult {
-	res := checker.Check(context.Background(), checker.Request{
+	return performCheckContext(context.Background(), req).CheckResult
+}
+
+func performCheckContext(ctx context.Context, req veriflier.CheckRequest) veriflier.ProbeResult {
+	res := checker.Check(ctx, checker.Request{
 		MonitorSiteID:       req.MonitorSiteID,
 		BlogID:              req.BlogID,
 		URL:                 req.URL,
@@ -113,7 +160,7 @@ func performCheck(req veriflier.CheckRequest) veriflier.CheckResult {
 		RedirectPolicy:      checker.RedirectPolicy(req.RedirectPolicy),
 	})
 
-	return veriflier.CheckResult{
+	checkResult := veriflier.CheckResult{
 		MonitorSiteID: res.MonitorSiteID,
 		BlogID:        res.BlogID,
 		URL:           res.URL,
@@ -121,6 +168,16 @@ func performCheck(req veriflier.CheckRequest) veriflier.CheckResult {
 		HTTPCode:      int32(res.HTTPCode),
 		ErrorCode:     int32(res.ErrorCode),
 		RTTMs:         res.RTT.Milliseconds(),
+	}
+	return veriflier.ProbeResult{
+		CheckResult: checkResult,
+		Outcome:     outcomeFromCheckerResult(res),
+		TimingsMS: veriflier.TimingsMS{
+			DNS:  res.DNS.Milliseconds(),
+			TCP:  res.TCP.Milliseconds(),
+			TLS:  res.TLS.Milliseconds(),
+			TTFB: res.TTFB.Milliseconds(),
+		},
 	}
 }
 
@@ -156,9 +213,43 @@ func (c veriflierConfig) TransportPort() string {
 	return c.GRPCPort
 }
 
+func outcomeFromCheckerResult(res checker.Result) string {
+	if res.Success {
+		return veriflier.OutcomeUp
+	}
+	if res.ErrorCode == checker.ErrorTimeout {
+		return veriflier.OutcomeTimeout
+	}
+	if res.HTTPCode >= http.StatusBadRequest {
+		return veriflier.OutcomeDown
+	}
+	if res.ErrorCode != checker.ErrorNone {
+		return veriflier.OutcomeProbeError
+	}
+	return veriflier.OutcomeUnknown
+}
+
 func envOrDefault(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
 	}
 	return def
+}
+
+func parseBool(raw string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "t", "true", "y", "yes", "on", "enabled":
+		return true, nil
+	case "0", "f", "false", "n", "no", "off", "disabled":
+		return false, nil
+	default:
+		return false, fmt.Errorf("expected boolean value, got %q", raw)
+	}
+}
+
+func enabledLabel(enabled bool) string {
+	if enabled {
+		return "enabled"
+	}
+	return "disabled"
 }

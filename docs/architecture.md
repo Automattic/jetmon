@@ -185,8 +185,10 @@ Failure Escalation Detail
           └── veriflier-N:  same policy  ──►  {success: true,  http: 200}
                                                     ↑ false positive
 
-  Quorum = min(healthyVerifliers, PeerOfflineLimit)  // floor: 1
-  confirmations = count of verifliers reporting !success
+  healthyUniqueVantages = count of unique healthy verifier vote identities
+  minHealthyFloor = 2 for multi-verifier fleets unless PeerOfflineLimit=1
+  Quorum = max(min(healthyUniqueVantages, PeerOfflineLimit), minHealthyFloor)
+  confirmations = count of unique verifier vantages reporting !success
 
   confirmations >= quorum?
       YES  ──►  confirmDown() → WPCOM notified
@@ -320,7 +322,65 @@ Veriflier Transport
   ──────────────────────              ──────────────────
   veriflier.VeriflierClient           veriflier.Server
 
+  Preferred v2 contract:
+
   CheckBatch(ctx, []CheckRequest)
+    POST /v2/check
+    Authorization: Bearer <token>
+    Content-Type: application/json
+    Body: {
+      "batch_id": "...",
+      "deadline_ms": 12000,
+      "requests": [{
+        "request_id": "...",
+        "blog_id": 123,
+        "url": "https://example.com",
+        "timeout_ms": 10000,
+        "method": "GET",
+        "detection_profile": "full",
+        "headers": {},
+        "body_rules": {"required": ["needle"], "forbidden": ["bad"]},
+        "redirect_policy": "follow"
+      }]
+    }
+                        ─────────────────────────────►
+                                                        bounded admission queue
+                                                        concurrent HEAD/GET probes
+                                                        typed outcomes
+                        ◄─────────────────────────────
+    Body: {
+      "batch_id": "...",
+      "vantage": {"id": "us-east-1", "region": "us-east", "provider": "..."},
+      "agent": {"id": "host-a", "host": "host-a", "version": "..."},
+      "results": [{
+        "request_id": "...",
+        "blog_id": 123,
+        "url": "https://example.com",
+        "vantage_id": "us-east-1",
+        "agent_id": "host-a",
+        "outcome": "down",
+        "success": false,
+        "http_code": 500,
+        "error_code": 0,
+        "rtt_ms": 214,
+        "timings_ms": {"dns": 4, "tcp": 18, "tls": 36, "ttfb": 190}
+      }]
+    }
+
+  Status(ctx)
+    GET /v2/status
+    ◄── {
+          "status": "OK",
+          "version": "1.2.3",
+          "protocols": ["v2-json-http"],
+          "vantage": {...},
+          "agent": {...},
+          "capacity": {"max_concurrency": 512, "queue_depth": 0, ...}
+        }
+
+  Optional legacy-compatible HTTP contract
+  (only when VERIFLIER_ENABLE_LEGACY_HTTP=true):
+
     POST /check
     Authorization: Bearer <token>
     Content-Type: application/json
@@ -337,9 +397,50 @@ Veriflier Transport
     ◄── {"status":"OK","version":"1.2.3"}
 ```
 
+Veriflier discovery is staged through `VERIFLIER_DISCOVERY_MODE`:
+`static` uses the configured `VERIFIERS` list, `shadow` reads the DB registry
+and reports drift without changing traffic, and `active` uses enabled usable
+rows from `jetmon_veriflier_vantages` with fallback to static config if the
+registry is unavailable or empty. Monitors poll Veriflier `/v2/status` and write
+`jetmon_veriflier_agents` capacity/liveness telemetry; Veriflier hosts do not
+need DB access. Agent telemetry never creates trusted quorum votes by itself;
+operators must pre-approve each enabled vantage.
+
 The transport is JSON-over-HTTP for v2 production. `proto/veriflier.proto`
 remains as a schema reference for a possible future transport, but generated
 gRPC stubs are not required to build or deploy v2.
+
+The monitor prefers `/v2/check` and falls back to `/check` only for
+`veriflier2`'s legacy-compatible HTTP endpoint when v2 is unavailable. The
+preferred rollout deploys a fresh v2 Veriflier fleet first and points v2
+Monitors only at that fleet; original v1 Verifliers use the old TLS/custom
+transport and are not v2 Monitor fallback targets.
+
+This transport fallback is distinct from site probe policy. `HEAD` + `legacy`
+checks are v1-compatible probe semantics carried in the versioned `/v2/check`
+payload, not a reason to enable the legacy-compatible `/check` transport.
+
+`vantage.id` is the quorum identity. Horizontal replicas behind the same
+regional or provider endpoint must report the same `vantage.id`; `agent.id`
+identifies only the process that handled the request and is diagnostic metadata,
+not an extra vote. This keeps vertical and horizontal Veriflier scaling from
+changing the meaning of `PEER_OFFLINE_LIMIT`.
+
+Duplicate `vantage.id` values across monitor-configured Veriflier entries are
+treated as one vote. The duplicate replies are still written to audit metadata
+for debugging, but they do not increase quorum. In multi-Veriflier fleets the
+effective quorum has a two-healthy-vantage floor unless operators intentionally
+configure `PEER_OFFLINE_LIMIT=1`; this prevents a degraded verifier set from
+collapsing to one confirming vote.
+
+The v2 server executes accepted batches through a bounded concurrent executor.
+If the local queue is full, it rejects the whole batch with HTTP 503. The
+monitor treats that endpoint as unhealthy/no-vote rather than interpreting
+overload as customer-site downtime.
+
+`body_rules.required` is an array for future extensibility, but the current
+checker supports zero or one required keyword. `body_rules.forbidden` supports
+multiple forbidden keywords.
 
 
 Bucket Distribution — Multi-Host Scaling
@@ -458,6 +559,12 @@ Database Tables
 
   jetmon_false_positives  Checks local failed but verifliers passed
     blog_id, http_code, error_code, rtt_ms
+
+  jetmon_veriflier_vantages Trusted Veriflier quorum identities
+    vantage_id, region/provider, endpoint_host/port, auth_token, enabled
+
+  jetmon_veriflier_agents Concrete Veriflier process telemetry
+    agent_id, vantage_id, version, protocols, capacity, last_seen
 
   jetmon_api_keys         Internal API Bearer-token registry
     key_hash, consumer_name, scope, rate_limit_per_minute

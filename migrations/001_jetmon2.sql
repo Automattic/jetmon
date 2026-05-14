@@ -100,3 +100,40 @@ CREATE TABLE IF NOT EXISTS jetmon_site_runtime (
     INDEX idx_next_check (next_check_at, blog_id),
     INDEX idx_last_checked (last_checked_at, blog_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Trusted Veriflier vantage registry for monitor-side discovery.
+CREATE TABLE IF NOT EXISTS jetmon_veriflier_vantages (
+    vantage_id    VARCHAR(128) NOT NULL PRIMARY KEY,
+    region        VARCHAR(128) NOT NULL DEFAULT '',
+    provider      VARCHAR(128) NOT NULL DEFAULT '',
+    endpoint_host VARCHAR(255) NOT NULL DEFAULT '',
+    endpoint_port VARCHAR(16) NOT NULL DEFAULT '',
+    auth_token    VARCHAR(255) NOT NULL DEFAULT '',
+    enabled       TINYINT UNSIGNED NOT NULL DEFAULT 0,
+    created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_enabled (enabled),
+    INDEX idx_endpoint (endpoint_host, endpoint_port)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Concrete Veriflier process telemetry and capacity hints.
+CREATE TABLE IF NOT EXISTS jetmon_veriflier_agents (
+    agent_id        VARCHAR(128) NOT NULL PRIMARY KEY,
+    vantage_id      VARCHAR(128) NOT NULL,
+    hostname        VARCHAR(255) NOT NULL DEFAULT '',
+    endpoint_host   VARCHAR(255) NOT NULL DEFAULT '',
+    endpoint_port   VARCHAR(16) NOT NULL DEFAULT '',
+    version         VARCHAR(64) NOT NULL DEFAULT '',
+    protocols       JSON NULL,
+    max_concurrency INT UNSIGNED NOT NULL DEFAULT 0,
+    queue_capacity  INT UNSIGNED NOT NULL DEFAULT 0,
+    queue_depth     INT UNSIGNED NOT NULL DEFAULT 0,
+    active          INT UNSIGNED NOT NULL DEFAULT 0,
+    in_flight       INT UNSIGNED NOT NULL DEFAULT 0,
+    status          ENUM('starting','active','draining','stopped') NOT NULL DEFAULT 'active',
+    last_seen       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_vantage_seen (vantage_id, last_seen),
+    INDEX idx_status_seen (status, last_seen)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
