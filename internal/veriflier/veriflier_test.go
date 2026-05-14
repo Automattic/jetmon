@@ -670,6 +670,7 @@ func TestClientV2SendsContextDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	res, err := client.Check(ctx, CheckRequest{
+		MonitorSiteID:    1234,
 		BlogID:           9,
 		URL:              "https://example.com",
 		Method:           http.MethodHead,
@@ -684,6 +685,9 @@ func TestClientV2SendsContextDeadline(t *testing.T) {
 	}
 	if res.VantageID != "vantage" || res.AgentID != "agent" || res.Outcome != OutcomeUp {
 		t.Fatalf("v2 identity = vantage:%q agent:%q outcome:%q", res.VantageID, res.AgentID, res.Outcome)
+	}
+	if res.MonitorSiteID != 1234 {
+		t.Fatalf("MonitorSiteID = %d, want 1234", res.MonitorSiteID)
 	}
 }
 
