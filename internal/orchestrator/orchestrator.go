@@ -145,16 +145,17 @@ type roundSummary struct {
 	historyErrors     int
 	sslErrors         int
 
-	checkSuccesses     int
-	checkFailures      int
-	checkHTTPFailures  int
-	checkTimeouts      int
-	checkConnectErrors int
-	checkSSLErrors     int
-	checkRedirects     int
-	checkKeywords      int
-	checkTLSDeprecated int
-	checkCohorts       map[checkCohortKey]int
+	checkSuccesses       int
+	checkFailures        int
+	checkHTTPFailures    int
+	checkTimeouts        int
+	checkConnectErrors   int
+	checkSSLErrors       int
+	checkRedirects       int
+	checkRedirectTimeouts int
+	checkKeywords        int
+	checkTLSDeprecated   int
+	checkCohorts         map[checkCohortKey]int
 }
 
 func (s *roundSummary) add(other roundSummary) {
@@ -192,6 +193,7 @@ func (s *roundSummary) add(other roundSummary) {
 	s.checkConnectErrors += other.checkConnectErrors
 	s.checkSSLErrors += other.checkSSLErrors
 	s.checkRedirects += other.checkRedirects
+	s.checkRedirectTimeouts += other.checkRedirectTimeouts
 	s.checkKeywords += other.checkKeywords
 	s.checkTLSDeprecated += other.checkTLSDeprecated
 	mergeCheckCohorts(&s.checkCohorts, other.checkCohorts)
@@ -212,16 +214,17 @@ type resultProcessSummary struct {
 	historyErrors     int
 	sslErrors         int
 
-	checkSuccesses     int
-	checkFailures      int
-	checkHTTPFailures  int
-	checkTimeouts      int
-	checkConnectErrors int
-	checkSSLErrors     int
-	checkRedirects     int
-	checkKeywords      int
-	checkTLSDeprecated int
-	checkCohorts       map[checkCohortKey]int
+	checkSuccesses       int
+	checkFailures        int
+	checkHTTPFailures    int
+	checkTimeouts        int
+	checkConnectErrors   int
+	checkSSLErrors       int
+	checkRedirects       int
+	checkRedirectTimeouts int
+	checkKeywords        int
+	checkTLSDeprecated   int
+	checkCohorts         map[checkCohortKey]int
 
 	markCheckedDuration time.Duration
 	historyDuration     time.Duration
@@ -543,6 +546,7 @@ process:
 	summary.checkConnectErrors += processSummary.checkConnectErrors
 	summary.checkSSLErrors += processSummary.checkSSLErrors
 	summary.checkRedirects += processSummary.checkRedirects
+	summary.checkRedirectTimeouts += processSummary.checkRedirectTimeouts
 	summary.checkKeywords += processSummary.checkKeywords
 	summary.checkTLSDeprecated += processSummary.checkTLSDeprecated
 	mergeCheckCohorts(&summary.checkCohorts, processSummary.checkCohorts)
@@ -581,6 +585,7 @@ func emitPageMetrics(summary roundSummary) {
 	m.Increment("scheduler.page.check.connect_error.count", summary.checkConnectErrors)
 	m.Increment("scheduler.page.check.ssl_error.count", summary.checkSSLErrors)
 	m.Increment("scheduler.page.check.redirect.count", summary.checkRedirects)
+	m.Increment("scheduler.page.check.redirect_timeout.count", summary.checkRedirectTimeouts)
 	m.Increment("scheduler.page.check.keyword.count", summary.checkKeywords)
 	m.Increment("scheduler.page.check.tls_deprecated.count", summary.checkTLSDeprecated)
 	emitCheckCohortCounters(m, "scheduler.page", summary.checkCohorts)
@@ -588,7 +593,7 @@ func emitPageMetrics(summary roundSummary) {
 
 func logPageSummary(pageNumber, sites int, summary roundSummary) {
 	log.Printf(
-		"orchestrator: page summary page=%d sites=%d dispatched=%d completed=%d outstanding=%d dispatch=%s wait=%s process=%s mark_checked=%s history=%s ssl=%s events=%s checks_success=%d checks_failure=%d checks_http_failure=%d checks_timeout=%d checks_connect_error=%d checks_ssl_error=%d checks_redirect=%d checks_keyword=%d checks_tls_deprecated=%d mark_checked_rows=%d history_rows=%d ssl_rows=%d mark_checked_errors=%d history_errors=%d ssl_errors=%d",
+		"orchestrator: page summary page=%d sites=%d dispatched=%d completed=%d outstanding=%d dispatch=%s wait=%s process=%s mark_checked=%s history=%s ssl=%s events=%s checks_success=%d checks_failure=%d checks_http_failure=%d checks_timeout=%d checks_connect_error=%d checks_ssl_error=%d checks_redirect=%d checks_redirect_timeout=%d checks_keyword=%d checks_tls_deprecated=%d mark_checked_rows=%d history_rows=%d ssl_rows=%d mark_checked_errors=%d history_errors=%d ssl_errors=%d",
 		pageNumber,
 		sites,
 		summary.dispatched,
@@ -608,6 +613,7 @@ func logPageSummary(pageNumber, sites int, summary roundSummary) {
 		summary.checkConnectErrors,
 		summary.checkSSLErrors,
 		summary.checkRedirects,
+		summary.checkRedirectTimeouts,
 		summary.checkKeywords,
 		summary.checkTLSDeprecated,
 		summary.markCheckedRows,
@@ -989,8 +995,10 @@ func addCheckOutcome(summary *resultProcessSummary, res checker.Result) {
 		summary.checkConnectErrors++
 	case checker.ErrorSSL, checker.ErrorTLSExpired:
 		summary.checkSSLErrors++
-	case checker.ErrorRedirect:
+	case checker.ErrorRedirect, checker.ErrorRedirectLoop:
 		summary.checkRedirects++
+	case checker.ErrorRedirectTimeout:
+		summary.checkRedirectTimeouts++
 	case checker.ErrorKeyword:
 		summary.checkKeywords++
 	case checker.ErrorTLSDeprecated:
@@ -1376,7 +1384,9 @@ func detectorClass(res checker.Result) string {
 		return "content_failure"
 	case res.ErrorCode == checker.ErrorTimeout:
 		return "timeout"
-	case res.ErrorCode == checker.ErrorRedirect:
+	case res.ErrorCode == checker.ErrorRedirectTimeout:
+		return "redirect_timeout"
+	case res.ErrorCode == checker.ErrorRedirect || res.ErrorCode == checker.ErrorRedirectLoop:
 		return "redirect"
 	case res.ErrorCode == checker.ErrorSSL || res.ErrorCode == checker.ErrorTLSExpired:
 		return "tls_failure"

@@ -27,7 +27,9 @@ func TestResultStatusType(t *testing.T) {
 		{name: "tls expired", res: Result{ErrorCode: ErrorTLSExpired}, want: "https"},
 		{name: "timeout", res: Result{ErrorCode: ErrorTimeout}, want: "intermittent"},
 		{name: "body read", res: Result{ErrorCode: ErrorBodyRead}, want: "intermittent"},
+		{name: "redirect timeout", res: Result{ErrorCode: ErrorRedirectTimeout}, want: "intermittent"},
 		{name: "redirect", res: Result{ErrorCode: ErrorRedirect}, want: "redirect"},
+		{name: "redirect loop", res: Result{ErrorCode: ErrorRedirectLoop}, want: "redirect"},
 		{name: "403 blocked", res: Result{HTTPCode: 403}, want: "blocked"},
 		{name: "500 server error", res: Result{HTTPCode: 500}, want: "server"},
 		{name: "503 server error", res: Result{HTTPCode: 503}, want: "server"},
@@ -676,6 +678,48 @@ func TestCheckRedirectFail(t *testing.T) {
 	}
 	if res.ErrorDetail == "" {
 		t.Fatal("ErrorDetail is empty, want redirect diagnostic context")
+	}
+}
+
+func TestCheckRedirectLoop(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/a":
+			http.Redirect(w, r, "/b", http.StatusMovedPermanently)
+		case "/b":
+			http.Redirect(w, r, "/a", http.StatusMovedPermanently)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{BlogID: 1, URL: srv.URL + "/a", TimeoutSeconds: 5})
+	if res.ErrorCode != ErrorRedirectLoop {
+		t.Fatalf("ErrorCode = %d, want ErrorRedirectLoop", res.ErrorCode)
+	}
+}
+
+func TestCheckRedirectChainTimeout(t *testing.T) {
+	redirectCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirectCount++
+		time.Sleep(400 * time.Millisecond)
+		if redirectCount > 5 {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.Redirect(w, r, r.URL.Path+"/step"+strconv.Itoa(redirectCount), http.StatusMovedPermanently)
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	res := Check(ctx, Request{BlogID: 1, URL: srv.URL + "/start", TimeoutSeconds: 1})
+	if res.ErrorCode != ErrorRedirectTimeout && res.ErrorCode != ErrorTimeout {
+		t.Logf("ErrorDetail: %s", res.ErrorDetail)
+		t.Fatalf("ErrorCode = %d, want ErrorRedirectTimeout/ErrorTimeout (got %d redirects)", res.ErrorCode, res.RedirectCount)
 	}
 }
 

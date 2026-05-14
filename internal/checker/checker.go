@@ -33,6 +33,13 @@ const (
 	ErrorTLSDeprecated = 7
 	ErrorBodyRead      = 8
 	ErrorBodyTruncated = ErrorBodyRead
+	ErrorRedirectLoop    = 9
+	ErrorRedirectTimeout = 10
+)
+
+var (
+	errRedirectLoop         = errors.New("redirect loop detected")
+	errRedirectChainTimeout = errors.New("redirect chain timeout")
 )
 
 const (
@@ -683,9 +690,9 @@ func (r *Result) StatusType() string {
 		return "success"
 	case r.ErrorCode == ErrorSSL || r.ErrorCode == ErrorTLSExpired:
 		return "https"
-	case r.ErrorCode == ErrorTimeout || r.ErrorCode == ErrorBodyRead:
+	case r.ErrorCode == ErrorTimeout || r.ErrorCode == ErrorBodyRead || r.ErrorCode == ErrorRedirectTimeout:
 		return "intermittent"
-	case r.ErrorCode == ErrorRedirect:
+	case r.ErrorCode == ErrorRedirect || r.ErrorCode == ErrorRedirectLoop:
 		return "redirect"
 	case r.HTTPCode == 403:
 		return "blocked"
@@ -768,12 +775,23 @@ func Check(ctx context.Context, req Request) Result {
 		redirectPolicyStr = string(RedirectFollow)
 	}
 
+	checkStart := time.Now()
+	seenURLs := map[string]bool{req.URL: true}
+
 	client := &http.Client{
 		Transport: transportForRequestURL(req.URL),
 		CheckRedirect: func(r *http.Request, via []*http.Request) error {
-			redirectChain = append(redirectChain, r.URL.String())
+			urlStr := r.URL.String()
+			if seenURLs[urlStr] {
+				return errRedirectLoop
+			}
+			seenURLs[urlStr] = true
+			redirectChain = append(redirectChain, urlStr)
 			if redirectPolicyStr == string(RedirectFail) {
 				return fmt.Errorf("redirect policy: fail")
+			}
+			if time.Since(checkStart) >= timeout {
+				return errRedirectChainTimeout
 			}
 			if len(redirectChain) > 10 {
 				return fmt.Errorf("too many redirects")
@@ -827,7 +845,11 @@ func Check(ctx context.Context, req Request) Result {
 	if err != nil {
 		res.ErrorDetail = boundedErrorDetail(err)
 		res.DNSFailureKind, res.DNSFailureName, res.DNSFailureServer = classifyDNSError(err)
-		if ctx.Err() != nil {
+		if errors.Is(err, errRedirectLoop) {
+			res.ErrorCode = ErrorRedirectLoop
+		} else if errors.Is(err, errRedirectChainTimeout) {
+			res.ErrorCode = ErrorRedirectTimeout
+		} else if ctx.Err() != nil {
 			res.ErrorCode = ErrorTimeout
 		} else if strings.Contains(err.Error(), "redirect") {
 			res.ErrorCode = ErrorRedirect
