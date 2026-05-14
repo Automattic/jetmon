@@ -1,0 +1,25 @@
+name = "jetmon-veriflier"
+main = "deploy/workers/worker/index.ts"
+compatibility_date = "2026-05-01"
+
+[limits]
+cpu_ms = 300_000
+
+[[containers]]
+class_name = "Veriflier"
+image = "registry.cloudflare.com/3b077620baa2949fe19ad62e0d91c811/veriflier:5531c128d99c"
+max_instances = 10
+
+[[durable_objects.bindings]]
+class_name = "Veriflier"
+name = "VERIFLIER"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Veriflier"]
+
+[observability]
+enabled = true
+
+[env.staging]
+name = "jetmon-veriflier-staging"
