@@ -54,6 +54,14 @@ the initial replacement phase. Per-site overrides live in
 After migration, switch the process defaults to `GET` and `full`; keep
 per-site `HEAD` overrides only for sites that truly require legacy semantics.
 
+Terminology matters during this rollout. A site using `HEAD` plus the `legacy`
+detection profile is only using v1-compatible **probe behavior**. It still runs
+through the v2 Monitor and should still use the v2 Monitor-to-Veriflier
+transport, `POST /v2/check`. That is separate from `veriflier2`'s optional
+legacy-compatible HTTP endpoints, `POST /check` and `GET /status`, which are
+disabled by default and only enabled with `VERIFLIER_ENABLE_LEGACY_HTTP=true`
+for lab or emergency compatibility tests.
+
 ## Success Criteria
 
 The migration is complete only when:
@@ -305,6 +313,11 @@ They can optionally serve a legacy-compatible HTTP contract for lab or
 emergency rollback testing by setting `VERIFLIER_ENABLE_LEGACY_HTTP=true`:
 
 - legacy-compatible HTTP: `POST /check`, `GET /status`
+
+This transport switch is independent of the site check method. Monitors can
+send `HEAD` + `legacy` checks to Verifliers over `POST /v2/check`; enabling
+legacy-compatible `/check` is not required for a Monitor rollout that starts
+with all sites in legacy HEAD mode.
 
 Deploy the new v2 Veriflier fleet before switching monitor hosts. The preferred
 rollout uses fresh Veriflier servers, proves that fleet independently, then

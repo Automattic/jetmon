@@ -416,6 +416,10 @@ preferred rollout deploys a fresh v2 Veriflier fleet first and points v2
 Monitors only at that fleet; original v1 Verifliers use the old TLS/custom
 transport and are not v2 Monitor fallback targets.
 
+This transport fallback is distinct from site probe policy. `HEAD` + `legacy`
+checks are v1-compatible probe semantics carried in the versioned `/v2/check`
+payload, not a reason to enable the legacy-compatible `/check` transport.
+
 `vantage.id` is the quorum identity. Horizontal replicas behind the same
 regional or provider endpoint must report the same `vantage.id`; `agent.id`
 identifies only the process that handled the request and is diagnostic metadata,

@@ -561,6 +561,9 @@ Important metric groups include:
   `scheduler.*.check.method.<method>.profile.<profile>.count`, using the
   effective runtime method/profile for `HEAD` / `GET` and `legacy` /
   `simple_http` / `full`
+- In those metrics, `legacy` is a detection profile, not the Veriflier
+  transport. `HEAD` + `legacy` cohorts can and should still be checked through
+  the v2 `/v2/check` Veriflier contract.
 - WPCOM API attempts, deliveries, retries, queued circuit-open responses,
   permanent 404/410 failures, errors, and final failures
 - Veriflier response times and vote counters

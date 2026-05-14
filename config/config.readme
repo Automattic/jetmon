@@ -164,6 +164,12 @@ Allowed values:
   simple_http because body-based checks cannot run against HEAD responses.
 Default: full.
 
+"legacy" here describes the site probe policy, not the Veriflier transport.
+During rollout, DEFAULT_CHECK_METHOD=HEAD plus DEFAULT_DETECTION_PROFILE=legacy
+still uses the v2 Veriflier transport (POST /v2/check) when remote confirmation
+is needed. It does not require enabling the Veriflier's legacy-compatible
+/check endpoint.
+
 USE_VARIABLE_CHECK_INTERVALS
 Set to true to respect the check_interval column per site instead of running
 all sites every fixed-cadence pass. Recommended for production freshness
@@ -295,6 +301,11 @@ only POST /v2/check plus GET /v2/status. Enable legacy HTTP only for lab runs,
 emergency rollback experiments, or explicit compatibility tests. The original
 v1 Veriflier used a TLS/custom transport and is not equivalent to this
 legacy-compatible HTTP switch.
+
+Do not enable this switch just because Monitor site policy starts at HEAD +
+legacy. HEAD/GET and detection profiles are request-level probe settings carried
+inside POST /v2/check. enable_legacy_http controls only whether veriflier2 also
+serves the compatibility transport paths POST /check and GET /status.
 
 The Veriflier derives its concurrency from the Go runtime and local file
 descriptor limit, then exposes current capacity through GET /v2/status. Normal

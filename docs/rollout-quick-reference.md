@@ -155,6 +155,11 @@ to v1" and keep the transcript with the incident record.
    quorum vote. `validate-config` fails missing or duplicate v2 vantage IDs and
    warns on unreachable or legacy-only Verifliers.
 
+   This is separate from the staged site check policy. The initial replacement
+   phase can default all sites to `HEAD` + `legacy` probe behavior while remote
+   confirmation still uses `POST /v2/check`; it does not require enabling
+   `veriflier2`'s legacy-compatible `/check` endpoint.
+
    For auto-discovery, keep `VERIFLIER_DISCOVERY_MODE=shadow` until the
    registry matches the static `VERIFIERS` fleet. Seed
    `jetmon_veriflier_vantages` with one enabled row per trusted quorum vantage;

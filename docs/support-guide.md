@@ -69,7 +69,9 @@ customer stacks block `HEAD`, route it differently, or return a status that does
 not match a real page load. Jetmon 2 supports a staged migration: initial
 rollout can keep `HEAD` + `legacy` behavior, then selected cohorts can move to
 `GET` + `simple_http`, and finally to `GET` + `full` detections. GET checks
-better match what visitors and customer-facing uptime tools see.
+better match what visitors and customer-facing uptime tools see. That staged
+site policy does not mean the Veriflier is using legacy HTTP endpoints; v2
+Verifliers carry both `HEAD` and `GET` probes through `/v2/check`.
 
 When an alert differs from old v1 behavior, check the site's effective
 `request_method` and `detection_profile` first. v2 may be surfacing a real

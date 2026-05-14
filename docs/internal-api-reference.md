@@ -478,6 +478,11 @@ creates without tenant context keep the existing unscoped behavior.
 default. During rollout, use `HEAD` + `legacy`, then `GET` + `simple_http`,
 then `GET` + `full`.
 
+`legacy` here means v1-compatible probe behavior for that site. It does not
+mean the Monitor or Veriflier should use the optional legacy-compatible
+Veriflier HTTP endpoints; v2 Verifliers carry `HEAD` and `GET` requests through
+the `/v2/check` contract.
+
 **Errors:**
 
 | Code | Meaning |
