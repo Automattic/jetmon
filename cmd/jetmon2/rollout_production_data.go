@@ -34,10 +34,12 @@ type productionDataAuditEvaluation struct {
 }
 
 type legacyStatusBootstrapOptions struct {
-	BucketMin             int
-	BucketMax             int
-	BatchSize             int
-	Execute               bool
+	BucketMin int
+	BucketMax int
+	BatchSize int
+	Execute   bool
+	// Deprecated no-op retained so older runbooks do not break while endpoint
+	// identity support rolls out.
 	AllowDuplicateBlogIDs bool
 }
 
@@ -84,7 +86,7 @@ func cmdRolloutLegacyStatusBootstrap(args []string) {
 	bucketMax := fs.Int("bucket-max", -1, "inclusive bucket maximum (default pinned range or BUCKET_TOTAL-1)")
 	batchSize := fs.Int("batch-size", 1000, "rows to scan per bootstrap page")
 	execute := fs.Bool("execute", false, "write missing v2 events; default is read-only dry-run")
-	allowDuplicateBlogIDs := fs.Bool("allow-duplicate-blog-ids", false, "allow bootstrap even when active duplicate blog_id rows exist")
+	allowDuplicateBlogIDs := fs.Bool("allow-duplicate-blog-ids", false, "deprecated no-op; duplicate blog_id rows are endpoint-aware")
 	output := rolloutOutputFlag(fs)
 	_ = fs.Parse(args)
 	if fs.NArg() != 0 {
@@ -164,10 +166,10 @@ func evaluateProductionDataAudit(cfg *config.Config, audit db.LegacySiteTableAud
 		eval.Blockers = append(eval.Blockers, "site_status has unexpected value(s): "+unexpected)
 	}
 	if audit.ActiveDuplicateBlogs.Groups > 0 {
-		eval.Blockers = append(eval.Blockers, fmt.Sprintf("active duplicate blog_id rows groups=%d rows=%d max_rows_per_blog=%d", audit.ActiveDuplicateBlogs.Groups, audit.ActiveDuplicateBlogs.Rows, audit.ActiveDuplicateBlogs.MaxRowsPerBlog))
+		eval.Warnings = append(eval.Warnings, fmt.Sprintf("active duplicate blog_id rows groups=%d rows=%d max_rows_per_blog=%d; v2 tracks endpoint runtime by jetpack_monitor_site_id", audit.ActiveDuplicateBlogs.Groups, audit.ActiveDuplicateBlogs.Rows, audit.ActiveDuplicateBlogs.MaxRowsPerBlog))
 	}
 	if audit.ActiveDuplicateBlogs.StatusConflicts > 0 {
-		eval.Blockers = append(eval.Blockers, fmt.Sprintf("active duplicate blog_id rows have status conflicts groups=%d", audit.ActiveDuplicateBlogs.StatusConflicts))
+		eval.Warnings = append(eval.Warnings, fmt.Sprintf("active duplicate blog_id rows have status conflicts groups=%d; inspect these before relying on the legacy site_status projection", audit.ActiveDuplicateBlogs.StatusConflicts))
 	}
 	if audit.ActiveNonRunningRows > 0 {
 		eval.Warnings = append(eval.Warnings, fmt.Sprintf("active non-running legacy rows=%d; run legacy-status-bootstrap before projection-drift is a hard gate", audit.ActiveNonRunningRows))
@@ -229,12 +231,8 @@ func runLegacyStatusBootstrap(ctx context.Context, out io.Writer, cfg *config.Co
 		return err
 	}
 	fmt.Fprintf(out, "INFO bootstrap_range=%d-%d execute=%t\n", minBucket, maxBucket, opts.Execute)
-	if audit.ActiveDuplicateBlogs.Groups > 0 && !opts.AllowDuplicateBlogIDs {
-		fmt.Fprintf(out, "FAIL bootstrap_blocked_by_duplicate_blog_ids groups=%d rows=%d\n", audit.ActiveDuplicateBlogs.Groups, audit.ActiveDuplicateBlogs.Rows)
-		return errors.New("legacy status bootstrap requires endpoint identity support or --allow-duplicate-blog-ids")
-	}
 	if audit.ActiveDuplicateBlogs.Groups > 0 {
-		fmt.Fprintf(out, "WARN bootstrap_duplicate_blog_ids_allowed groups=%d rows=%d\n", audit.ActiveDuplicateBlogs.Groups, audit.ActiveDuplicateBlogs.Rows)
+		fmt.Fprintf(out, "WARN bootstrap_duplicate_blog_ids_endpoint_aware groups=%d rows=%d\n", audit.ActiveDuplicateBlogs.Groups, audit.ActiveDuplicateBlogs.Rows)
 	}
 
 	if !opts.Execute {
@@ -288,13 +286,14 @@ func openLegacyStatusEvent(ctx context.Context, store *eventstore.Store, site db
 	if err != nil {
 		return false, err
 	}
+	endpointID := site.MonitorSiteID
 	tx, err := store.Begin(ctx)
 	if err != nil {
 		return false, err
 	}
 	defer func() { _ = tx.Rollback() }()
 	res, err := tx.Open(ctx, eventstore.OpenInput{
-		Identity:  eventstore.Identity{BlogID: site.BlogID, CheckType: "http"},
+		Identity:  eventstore.Identity{BlogID: site.BlogID, EndpointID: &endpointID, CheckType: "http"},
 		Severity:  severity,
 		State:     state,
 		Source:    legacyStatusBootstrapSource,

@@ -59,13 +59,21 @@ func (s *Server) handleListSiteEvents(w http.ResponseWriter, r *http.Request) {
 			"site id must be a positive integer")
 		return
 	}
-	if !s.ensureSiteVisibleForRequest(w, r, siteID) {
+	switch r.URL.Query().Get("active") {
+	case "true", "1", "false", "0", "":
+	default:
+		writeError(w, r, http.StatusBadRequest, "invalid_active",
+			"active must be 'true' or 'false'")
 		return
 	}
-	s.listEvents(w, r, siteID)
+	ident, ok := s.ensureEndpointVisibleForRequest(w, r, siteID)
+	if !ok {
+		return
+	}
+	s.listEvents(w, r, ident)
 }
 
-func (s *Server) listEvents(w http.ResponseWriter, r *http.Request, siteID int64) {
+func (s *Server) listEvents(w http.ResponseWriter, r *http.Request, ident siteIdentity) {
 	q := r.URL.Query()
 
 	limit, err := parseLimit(q.Get("limit"), 50, 200)
@@ -117,14 +125,15 @@ func (s *Server) listEvents(w http.ResponseWriter, r *http.Request, siteID int64
 	// Build the query. Events list walks backwards on id (id desc) — id is
 	// monotonically increasing because it's an auto-increment PK, so id desc
 	// matches started_at desc within the resolution we care about.
-	args := []any{siteID}
+	args := []any{ident.BlogID, ident.EndpointID}
 	sb := strings.Builder{}
 	sb.WriteString(`
 		SELECT id, blog_id, endpoint_id, check_type, discriminator,
 		       severity, state, started_at, ended_at, resolution_reason,
 		       cause_event_id, metadata
 		  FROM jetmon_events
-		 WHERE blog_id = ?`)
+		 WHERE blog_id = ?
+		   AND (endpoint_id = ? OR endpoint_id IS NULL)`)
 
 	if cursor > 0 {
 		sb.WriteString(" AND id < ?")
@@ -273,22 +282,28 @@ func (s *Server) respondEvent(w http.ResponseWriter, r *http.Request, eventID in
 			"event query failed: "+err.Error())
 		return
 	}
-	if siteIDFilter != nil && ev.SiteID != *siteIDFilter {
-		writeError(w, r, http.StatusNotFound, "event_not_found",
-			fmt.Sprintf("Event %d does not belong to site %d", eventID, *siteIDFilter))
-		return
+	if siteIDFilter != nil {
+		ident, ok := s.ensureEndpointVisibleForRequest(w, r, *siteIDFilter)
+		if !ok {
+			return
+		}
+		if ev.SiteID != ident.BlogID || (ev.EndpointID != nil && *ev.EndpointID != ident.EndpointID) {
+			writeError(w, r, http.StatusNotFound, "event_not_found",
+				fmt.Sprintf("Event %d does not belong to site %d", eventID, *siteIDFilter))
+			return
+		}
+	} else {
+		visible, err := s.siteVisibleToRequest(ctx, r, ev.SiteID)
+		if err != nil {
+			writeError(w, r, http.StatusInternalServerError, "db_error",
+				"site tenant lookup failed: "+err.Error())
+			return
+		}
+		if !visible {
+			writeEventNotFound(w, r, eventID)
+			return
+		}
 	}
-	visible, err := s.siteVisibleToRequest(ctx, r, ev.SiteID)
-	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, "db_error",
-			"site tenant lookup failed: "+err.Error())
-		return
-	}
-	if !visible {
-		writeEventNotFound(w, r, eventID)
-		return
-	}
-
 	transitions, err := s.queryTransitions(ctx, eventID)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, "db_error",
@@ -320,10 +335,17 @@ func (s *Server) handleListTransitions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify the event exists and belongs to the site before we paginate.
-	var blogID int64
+	// Verify the event exists and belongs to the endpoint before we paginate.
+	ident, ok := s.ensureEndpointVisibleForRequest(w, r, siteID)
+	if !ok {
+		return
+	}
+	var (
+		blogID     int64
+		endpointID sql.NullInt64
+	)
 	if err := s.db.QueryRowContext(r.Context(),
-		`SELECT blog_id FROM jetmon_events WHERE id = ?`, eventID).Scan(&blogID); err != nil {
+		`SELECT blog_id, endpoint_id FROM jetmon_events WHERE id = ?`, eventID).Scan(&blogID, &endpointID); err != nil {
 		if err == sql.ErrNoRows {
 			writeError(w, r, http.StatusNotFound, "event_not_found",
 				fmt.Sprintf("Event %d does not exist", eventID))
@@ -333,22 +355,11 @@ func (s *Server) handleListTransitions(w http.ResponseWriter, r *http.Request) {
 			"event lookup failed: "+err.Error())
 		return
 	}
-	if blogID != siteID {
+	if blogID != ident.BlogID || (endpointID.Valid && endpointID.Int64 != ident.EndpointID) {
 		writeError(w, r, http.StatusNotFound, "event_not_found",
 			fmt.Sprintf("Event %d does not belong to site %d", eventID, siteID))
 		return
 	}
-	visible, err := s.siteVisibleToRequest(r.Context(), r, blogID)
-	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, "db_error",
-			"site tenant lookup failed: "+err.Error())
-		return
-	}
-	if !visible {
-		writeEventNotFound(w, r, eventID)
-		return
-	}
-
 	q := r.URL.Query()
 	limit, err := parseLimit(q.Get("limit"), 100, 200)
 	if err != nil {

@@ -11,23 +11,23 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
-const sitesListSQL = ` SELECT s.blog_id, s.blog_id AS public_id, s.monitor_url, s.monitor_active, s.bucket_no, s.check_interval, s.site_status, r.last_checked_at, s.last_status_change, r.ssl_expiry_date, c.check_keyword, c.forbidden_keyword, c.forbidden_keywords, c.redirect_policy, c.request_method, c.detection_profile, c.maintenance_start, c.maintenance_end, c.alert_cooldown_minutes FROM jetpack_monitor_sites s LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id WHERE s.blog_id > ? ORDER BY s.blog_id ASC LIMIT ?`
+const sitesListSQL = ` SELECT s.jetpack_monitor_site_id, s.blog_id, s.monitor_url, s.monitor_active, s.bucket_no, s.check_interval, s.site_status, COALESCE(er.last_checked_at, r.last_checked_at), s.last_status_change, COALESCE(er.ssl_expiry_date, r.ssl_expiry_date), COALESCE(ec.check_keyword, c.check_keyword), COALESCE(ec.forbidden_keyword, c.forbidden_keyword), COALESCE(ec.forbidden_keywords, c.forbidden_keywords), COALESCE(ec.redirect_policy, c.redirect_policy), COALESCE(ec.request_method, c.request_method), COALESCE(ec.detection_profile, c.detection_profile), COALESCE(ec.maintenance_start, c.maintenance_start), COALESCE(ec.maintenance_end, c.maintenance_end), COALESCE(ec.alert_cooldown_minutes, c.alert_cooldown_minutes) FROM jetpack_monitor_sites s LEFT JOIN jetmon_endpoint_check_config ec ON ec.source_site_id = s.jetpack_monitor_site_id LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id LEFT JOIN jetmon_endpoint_runtime er ON er.source_site_id = s.jetpack_monitor_site_id LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id WHERE s.jetpack_monitor_site_id > ? ORDER BY s.jetpack_monitor_site_id ASC LIMIT ?`
 
-const sitesListForTenantSQL = ` SELECT s.blog_id, s.blog_id AS public_id, s.monitor_url, s.monitor_active, s.bucket_no, s.check_interval, s.site_status, r.last_checked_at, s.last_status_change, r.ssl_expiry_date, c.check_keyword, c.forbidden_keyword, c.forbidden_keywords, c.redirect_policy, c.request_method, c.detection_profile, c.maintenance_start, c.maintenance_end, c.alert_cooldown_minutes FROM jetpack_monitor_sites s LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id JOIN jetmon_site_tenants st ON st.blog_id = s.blog_id AND st.tenant_id = ? WHERE s.blog_id > ? ORDER BY s.blog_id ASC LIMIT ?`
+const sitesListForTenantSQL = ` SELECT s.jetpack_monitor_site_id, s.blog_id, s.monitor_url, s.monitor_active, s.bucket_no, s.check_interval, s.site_status, COALESCE(er.last_checked_at, r.last_checked_at), s.last_status_change, COALESCE(er.ssl_expiry_date, r.ssl_expiry_date), COALESCE(ec.check_keyword, c.check_keyword), COALESCE(ec.forbidden_keyword, c.forbidden_keyword), COALESCE(ec.forbidden_keywords, c.forbidden_keywords), COALESCE(ec.redirect_policy, c.redirect_policy), COALESCE(ec.request_method, c.request_method), COALESCE(ec.detection_profile, c.detection_profile), COALESCE(ec.maintenance_start, c.maintenance_start), COALESCE(ec.maintenance_end, c.maintenance_end), COALESCE(ec.alert_cooldown_minutes, c.alert_cooldown_minutes) FROM jetpack_monitor_sites s LEFT JOIN jetmon_endpoint_check_config ec ON ec.source_site_id = s.jetpack_monitor_site_id LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id LEFT JOIN jetmon_endpoint_runtime er ON er.source_site_id = s.jetpack_monitor_site_id LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id JOIN jetmon_site_tenants st ON st.blog_id = s.blog_id AND st.tenant_id = ? WHERE s.jetpack_monitor_site_id > ? ORDER BY s.jetpack_monitor_site_id ASC LIMIT ?`
 
-const sitesListWithCLIMetadataSQL = ` SELECT s.blog_id, s.blog_id AS public_id, s.monitor_url, s.monitor_active, s.bucket_no, s.check_interval, s.site_status, r.last_checked_at, s.last_status_change, r.ssl_expiry_date, c.check_keyword, c.forbidden_keyword, c.forbidden_keywords, c.redirect_policy, c.request_method, c.detection_profile, c.maintenance_start, c.maintenance_end, c.alert_cooldown_minutes, c.custom_headers FROM jetpack_monitor_sites s LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id WHERE s.blog_id > ? ORDER BY s.blog_id ASC LIMIT ?`
+const sitesListWithCLIMetadataSQL = ` SELECT s.jetpack_monitor_site_id, s.blog_id, s.monitor_url, s.monitor_active, s.bucket_no, s.check_interval, s.site_status, COALESCE(er.last_checked_at, r.last_checked_at), s.last_status_change, COALESCE(er.ssl_expiry_date, r.ssl_expiry_date), COALESCE(ec.check_keyword, c.check_keyword), COALESCE(ec.forbidden_keyword, c.forbidden_keyword), COALESCE(ec.forbidden_keywords, c.forbidden_keywords), COALESCE(ec.redirect_policy, c.redirect_policy), COALESCE(ec.request_method, c.request_method), COALESCE(ec.detection_profile, c.detection_profile), COALESCE(ec.maintenance_start, c.maintenance_start), COALESCE(ec.maintenance_end, c.maintenance_end), COALESCE(ec.alert_cooldown_minutes, c.alert_cooldown_minutes), COALESCE(ec.custom_headers, c.custom_headers) FROM jetpack_monitor_sites s LEFT JOIN jetmon_endpoint_check_config ec ON ec.source_site_id = s.jetpack_monitor_site_id LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id LEFT JOIN jetmon_endpoint_runtime er ON er.source_site_id = s.jetpack_monitor_site_id LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id WHERE s.jetpack_monitor_site_id > ? ORDER BY s.jetpack_monitor_site_id ASC LIMIT ?`
 
-const singleSiteSQL = ` SELECT s.blog_id, s.blog_id AS public_id, s.monitor_url, s.monitor_active, s.bucket_no, s.check_interval, s.site_status, r.last_checked_at, s.last_status_change, r.ssl_expiry_date, c.check_keyword, c.forbidden_keyword, c.forbidden_keywords, c.redirect_policy, c.request_method, c.detection_profile, c.maintenance_start, c.maintenance_end, c.alert_cooldown_minutes FROM jetpack_monitor_sites s LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id WHERE s.blog_id = ?`
+const singleSiteSQL = ` SELECT s.jetpack_monitor_site_id, s.blog_id, s.monitor_url, s.monitor_active, s.bucket_no, s.check_interval, s.site_status, COALESCE(er.last_checked_at, r.last_checked_at), s.last_status_change, COALESCE(er.ssl_expiry_date, r.ssl_expiry_date), COALESCE(ec.check_keyword, c.check_keyword), COALESCE(ec.forbidden_keyword, c.forbidden_keyword), COALESCE(ec.forbidden_keywords, c.forbidden_keywords), COALESCE(ec.redirect_policy, c.redirect_policy), COALESCE(ec.request_method, c.request_method), COALESCE(ec.detection_profile, c.detection_profile), COALESCE(ec.maintenance_start, c.maintenance_start), COALESCE(ec.maintenance_end, c.maintenance_end), COALESCE(ec.alert_cooldown_minutes, c.alert_cooldown_minutes) FROM jetpack_monitor_sites s LEFT JOIN jetmon_endpoint_check_config ec ON ec.source_site_id = s.jetpack_monitor_site_id LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id LEFT JOIN jetmon_endpoint_runtime er ON er.source_site_id = s.jetpack_monitor_site_id LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id WHERE s.jetpack_monitor_site_id = ?`
 
-const singleSiteWithCLIMetadataSQL = ` SELECT s.blog_id, s.blog_id AS public_id, s.monitor_url, s.monitor_active, s.bucket_no, s.check_interval, s.site_status, r.last_checked_at, s.last_status_change, r.ssl_expiry_date, c.check_keyword, c.forbidden_keyword, c.forbidden_keywords, c.redirect_policy, c.request_method, c.detection_profile, c.maintenance_start, c.maintenance_end, c.alert_cooldown_minutes, c.custom_headers FROM jetpack_monitor_sites s LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id WHERE s.blog_id = ?`
+const singleSiteWithCLIMetadataSQL = ` SELECT s.jetpack_monitor_site_id, s.blog_id, s.monitor_url, s.monitor_active, s.bucket_no, s.check_interval, s.site_status, COALESCE(er.last_checked_at, r.last_checked_at), s.last_status_change, COALESCE(er.ssl_expiry_date, r.ssl_expiry_date), COALESCE(ec.check_keyword, c.check_keyword), COALESCE(ec.forbidden_keyword, c.forbidden_keyword), COALESCE(ec.forbidden_keywords, c.forbidden_keywords), COALESCE(ec.redirect_policy, c.redirect_policy), COALESCE(ec.request_method, c.request_method), COALESCE(ec.detection_profile, c.detection_profile), COALESCE(ec.maintenance_start, c.maintenance_start), COALESCE(ec.maintenance_end, c.maintenance_end), COALESCE(ec.alert_cooldown_minutes, c.alert_cooldown_minutes), COALESCE(ec.custom_headers, c.custom_headers) FROM jetpack_monitor_sites s LEFT JOIN jetmon_endpoint_check_config ec ON ec.source_site_id = s.jetpack_monitor_site_id LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id LEFT JOIN jetmon_endpoint_runtime er ON er.source_site_id = s.jetpack_monitor_site_id LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id WHERE s.jetpack_monitor_site_id = ?`
 
-const activeEventsSQL = ` SELECT id, check_type, severity, state, started_at FROM jetmon_events WHERE blog_id = ? AND ended_at IS NULL ORDER BY severity DESC, started_at ASC`
+const activeEventsSQL = ` SELECT id, check_type, severity, state, started_at FROM jetmon_events WHERE blog_id = ? AND (endpoint_id = ? OR endpoint_id IS NULL) AND ended_at IS NULL ORDER BY severity DESC, started_at ASC`
 
 func activeEventRollupsSQL(placeholders string) string {
-	return ` SELECT id, blog_id, severity, state, started_at FROM jetmon_events WHERE ended_at IS NULL AND blog_id IN (` + placeholders + `)`
+	return ` SELECT id, blog_id, endpoint_id, severity, state, started_at FROM jetmon_events WHERE ended_at IS NULL AND ( endpoint_id IN (` + placeholders + `) OR (endpoint_id IS NULL AND blog_id IN (` + placeholders + `)) )`
 }
 
-var activeEventRollupColumns = []string{"id", "blog_id", "severity", "state", "started_at"}
+var activeEventRollupColumns = []string{"id", "blog_id", "endpoint_id", "severity", "state", "started_at"}
 
 // makeSiteRow returns a row builder pre-loaded with sane defaults the tests
 // can override. blog_id is the only required field.
@@ -82,9 +82,9 @@ func TestListSitesReturnsRows(t *testing.T) {
 		WithArgs(int64(0), 51).
 		WillReturnRows(rows)
 	mock.ExpectQuery(activeEventRollupsSQL("?,?")).
-		WithArgs(int64(101), int64(102)).
+		WithArgs(int64(101), int64(102), int64(101), int64(102)).
 		WillReturnRows(sqlmock.NewRows(activeEventRollupColumns).
-			AddRow(int64(9), int64(102), uint8(4), "Down", time.Now().UTC()))
+			AddRow(int64(9), int64(102), int64(102), uint8(4), "Down", time.Now().UTC()))
 
 	req := requestWithKey("GET", "/api/v1/sites", key)
 	rec := invokeAuthed(s, req, s.handleListSites)
@@ -130,7 +130,7 @@ func TestListSitesWithGatewayTenantScopesRows(t *testing.T) {
 		WithArgs("tenant-a", int64(0), 51).
 		WillReturnRows(rows)
 	mock.ExpectQuery(activeEventRollupsSQL("?")).
-		WithArgs(int64(101)).
+		WithArgs(int64(101), int64(101)).
 		WillReturnRows(sqlmock.NewRows(activeEventRollupColumns))
 
 	req := httptest.NewRequest("GET", "/api/v1/sites", nil)
@@ -164,7 +164,7 @@ func TestListSitesIncludesCLIBatchOnlyWhenRequested(t *testing.T) {
 			`{"X-Jetmon-CLI-Batch":"local-smoke"}`,
 		))
 	mock.ExpectQuery(activeEventRollupsSQL("?")).
-		WithArgs(int64(101)).
+		WithArgs(int64(101), int64(101)).
 		WillReturnRows(sqlmock.NewRows(activeEventRollupColumns))
 
 	req := requestWithKey("GET", "/api/v1/sites?include_cli_metadata=true", key)
@@ -200,10 +200,10 @@ func TestListSitesPicksWorstOpenEventPerSite(t *testing.T) {
 	//   - id=12: severity 4 ("Down"), opened later
 	// Highest severity wins, so the rollup should report id=12.
 	mock.ExpectQuery(activeEventRollupsSQL("?")).
-		WithArgs(int64(201)).
+		WithArgs(int64(201), int64(201)).
 		WillReturnRows(sqlmock.NewRows(activeEventRollupColumns).
-			AddRow(int64(11), int64(201), uint8(2), "Degraded", earlier).
-			AddRow(int64(12), int64(201), uint8(4), "Down", later))
+			AddRow(int64(11), int64(201), int64(201), uint8(2), "Degraded", earlier).
+			AddRow(int64(12), int64(201), int64(201), uint8(4), "Down", later))
 
 	req := requestWithKey("GET", "/api/v1/sites", key)
 	rec := invokeAuthed(s, req, s.handleListSites)
@@ -243,10 +243,10 @@ func TestListSitesPicksEarliestOnSeverityTie(t *testing.T) {
 	later := time.Now().UTC().Add(-1 * time.Hour)
 	// Same severity on both events: tie-break goes to the earlier started_at.
 	mock.ExpectQuery(activeEventRollupsSQL("?")).
-		WithArgs(int64(202)).
+		WithArgs(int64(202), int64(202)).
 		WillReturnRows(sqlmock.NewRows(activeEventRollupColumns).
-			AddRow(int64(22), int64(202), uint8(3), "SeemsDown", later).
-			AddRow(int64(21), int64(202), uint8(3), "SeemsDown", earlier))
+			AddRow(int64(22), int64(202), int64(202), uint8(3), "SeemsDown", later).
+			AddRow(int64(21), int64(202), int64(202), uint8(3), "SeemsDown", earlier))
 
 	req := requestWithKey("GET", "/api/v1/sites", key)
 	rec := invokeAuthed(s, req, s.handleListSites)
@@ -282,7 +282,7 @@ func TestListSitesAppliesPaginationCursor(t *testing.T) {
 		WithArgs(int64(0), 3). // limit+1 = 3
 		WillReturnRows(rows)
 	mock.ExpectQuery(activeEventRollupsSQL("?,?,?")).
-		WithArgs(int64(10), int64(20), int64(30)).
+		WithArgs(int64(10), int64(20), int64(30), int64(10), int64(20), int64(30)).
 		WillReturnRows(sqlmock.NewRows(activeEventRollupColumns))
 
 	req := requestWithKey("GET", "/api/v1/sites?limit=2", key)
@@ -328,7 +328,7 @@ func TestListSitesKeepsCursorWhenFilteredPageHasMoreRows(t *testing.T) {
 		WithArgs(int64(0), 3).
 		WillReturnRows(rows)
 	mock.ExpectQuery(activeEventRollupsSQL("?,?,?")).
-		WithArgs(int64(10), int64(20), int64(30)).
+		WithArgs(int64(10), int64(20), int64(30), int64(10), int64(20), int64(30)).
 		WillReturnRows(sqlmock.NewRows(activeEventRollupColumns))
 
 	req := requestWithKey("GET", "/api/v1/sites?limit=2&state=Down", key)
@@ -364,7 +364,7 @@ func TestListSitesFiltersByMonitorActive(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
 
-	expected := ` SELECT s.blog_id, s.blog_id AS public_id, s.monitor_url, s.monitor_active, s.bucket_no, s.check_interval, s.site_status, r.last_checked_at, s.last_status_change, r.ssl_expiry_date, c.check_keyword, c.forbidden_keyword, c.forbidden_keywords, c.redirect_policy, c.request_method, c.detection_profile, c.maintenance_start, c.maintenance_end, c.alert_cooldown_minutes FROM jetpack_monitor_sites s LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id WHERE s.blog_id > ? AND s.monitor_active = 1 ORDER BY s.blog_id ASC LIMIT ?`
+	expected := ` SELECT s.jetpack_monitor_site_id, s.blog_id, s.monitor_url, s.monitor_active, s.bucket_no, s.check_interval, s.site_status, COALESCE(er.last_checked_at, r.last_checked_at), s.last_status_change, COALESCE(er.ssl_expiry_date, r.ssl_expiry_date), COALESCE(ec.check_keyword, c.check_keyword), COALESCE(ec.forbidden_keyword, c.forbidden_keyword), COALESCE(ec.forbidden_keywords, c.forbidden_keywords), COALESCE(ec.redirect_policy, c.redirect_policy), COALESCE(ec.request_method, c.request_method), COALESCE(ec.detection_profile, c.detection_profile), COALESCE(ec.maintenance_start, c.maintenance_start), COALESCE(ec.maintenance_end, c.maintenance_end), COALESCE(ec.alert_cooldown_minutes, c.alert_cooldown_minutes) FROM jetpack_monitor_sites s LEFT JOIN jetmon_endpoint_check_config ec ON ec.source_site_id = s.jetpack_monitor_site_id LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id LEFT JOIN jetmon_endpoint_runtime er ON er.source_site_id = s.jetpack_monitor_site_id LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id WHERE s.jetpack_monitor_site_id > ? AND s.monitor_active = 1 ORDER BY s.jetpack_monitor_site_id ASC LIMIT ?`
 	mock.ExpectQuery(expected).
 		WithArgs(int64(0), 51).
 		WillReturnRows(sqlmock.NewRows(columnsSite))
@@ -412,7 +412,7 @@ func TestScanSiteRowIgnoresLegacyStatusWhenProjectionDisabled(t *testing.T) {
 
 	mock.ExpectQuery(singleSiteSQL).WithArgs(int64(501)).
 		WillReturnRows(makeSiteRow(501, "https://stale.example", 2))
-	mock.ExpectQuery(activeEventsSQL).WithArgs(int64(501)).
+	mock.ExpectQuery(activeEventsSQL).WithArgs(int64(501), int64(501)).
 		WillReturnRows(sqlmock.NewRows(columnsActiveEvent))
 
 	req := requestWithKey("GET", "/api/v1/sites/501", key)
@@ -435,6 +435,8 @@ func TestGetSiteWithGatewayTenantRejectsUnmappedSite(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
 
+	mock.ExpectQuery(singleSiteSQL).WithArgs(int64(501)).
+		WillReturnRows(makeSiteRow(501, "https://stale.example", 1))
 	mock.ExpectQuery(siteTenantCheckSQL).
 		WithArgs("tenant-a", int64(501)).
 		WillReturnRows(sqlmock.NewRows([]string{"1"}))
@@ -491,7 +493,7 @@ func TestGetSiteFound(t *testing.T) {
 
 	// active_events query — return one active event.
 	startedAt := time.Date(2026, 4, 25, 3, 18, 38, 329_000_000, time.UTC)
-	mock.ExpectQuery(activeEventsSQL).WithArgs(int64(42)).WillReturnRows(
+	mock.ExpectQuery(activeEventsSQL).WithArgs(int64(42), int64(42)).WillReturnRows(
 		sqlmock.NewRows(columnsActiveEvent).
 			AddRow(int64(7), "http", uint8(4), "Down", startedAt),
 	)
@@ -534,7 +536,7 @@ func TestGetSiteIncludesCLIBatchOnlyWhenRequested(t *testing.T) {
 			`{"X-Jetmon-CLI-Batch":"local-smoke"}`,
 		),
 	)
-	mock.ExpectQuery(activeEventsSQL).WithArgs(int64(42)).
+	mock.ExpectQuery(activeEventsSQL).WithArgs(int64(42), int64(42)).
 		WillReturnRows(sqlmock.NewRows(columnsActiveEvent))
 
 	req := requestWithKey("GET", "/api/v1/sites/42?include_cli_metadata=true", key)

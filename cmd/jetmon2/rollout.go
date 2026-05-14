@@ -3272,11 +3272,12 @@ func resolveExplicitRolloutBucketRange(cfg *config.Config, bucketMin, bucketMax 
 }
 
 func printProjectionDriftRows(out io.Writer, rows []db.ProjectionDriftRow) {
-	fmt.Fprintf(out, "%-12s %-8s %-22s %-22s %-10s %-11s %-35s %s\n",
-		"BLOG_ID", "BUCKET", "SITE_STATUS", "EXPECTED", "EVENT_ID", "OPEN_EVENTS", "CAUSE", "EVENT_STATE")
+	fmt.Fprintf(out, "%-12s %-12s %-8s %-22s %-22s %-10s %-11s %-35s %s\n",
+		"ENDPOINT_ID", "BLOG_ID", "BUCKET", "SITE_STATUS", "EXPECTED", "EVENT_ID", "OPEN_EVENTS", "CAUSE", "EVENT_STATE")
 	for _, row := range rows {
 		cause := classifyProjectionDriftCause(row.SiteStatus, row.ExpectedStatus, row.EventState, row.OpenEventCount)
-		fmt.Fprintf(out, "%-12d %-8d %-22s %-22s %-10s %-11d %-35s %s\n",
+		fmt.Fprintf(out, "%-12d %-12d %-8d %-22s %-22s %-10s %-11d %-35s %s\n",
+			row.MonitorSiteID,
 			row.BlogID,
 			row.BucketNo,
 			formatLegacySiteStatus(row.SiteStatus),
@@ -3294,16 +3295,17 @@ func printProjectionDriftSummaries(out io.Writer, summaries []db.ProjectionDrift
 		fmt.Fprintln(out, "INFO projection_drift_summary=none")
 		return
 	}
-	fmt.Fprintf(out, "%-8s %-7s %-22s %-22s %-11s %-12s %-35s %s\n",
-		"BUCKET", "COUNT", "SITE_STATUS", "EXPECTED", "OPEN_EVENTS", "SAMPLE_BLOG", "CAUSE", "EVENT_STATE")
+	fmt.Fprintf(out, "%-8s %-7s %-22s %-22s %-11s %-15s %-12s %-35s %s\n",
+		"BUCKET", "COUNT", "SITE_STATUS", "EXPECTED", "OPEN_EVENTS", "SAMPLE_ENDPOINT", "SAMPLE_BLOG", "CAUSE", "EVENT_STATE")
 	for _, row := range summaries {
 		cause := classifyProjectionDriftCause(row.SiteStatus, row.ExpectedStatus, row.EventState, row.MaxOpenEventCount)
-		fmt.Fprintf(out, "%-8d %-7d %-22s %-22s %-11d %-12d %-35s %s\n",
+		fmt.Fprintf(out, "%-8d %-7d %-22s %-22s %-11d %-15d %-12d %-35s %s\n",
 			row.BucketNo,
 			row.DriftCount,
 			formatLegacySiteStatus(row.SiteStatus),
 			formatLegacySiteStatus(row.ExpectedStatus),
 			row.MaxOpenEventCount,
+			row.SampleEndpointID,
 			row.SampleBlogID,
 			cause.Code,
 			formatOptionalString(row.EventState),

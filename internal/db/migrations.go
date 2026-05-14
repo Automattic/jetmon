@@ -556,6 +556,54 @@ var migrations = []migration{
 	{39, `ALTER TABLE jetmon_check_targets
 		DROP INDEX uk_blog_id,
 		ADD UNIQUE KEY uk_source_site_id (source_site_id)`},
+
+	// Migration 40 adds endpoint-scoped check config. The older
+	// jetmon_site_check_config table remains as a blog-level fallback, but
+	// monitor-row writes should use source_site_id so duplicate active blog_id
+	// rows can carry independent rollout/check policy.
+	{40, `CREATE TABLE IF NOT EXISTS jetmon_endpoint_check_config (
+		source_site_id          BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+		blog_id                 BIGINT UNSIGNED NOT NULL,
+		request_method          ENUM('HEAD','GET') NULL,
+		detection_profile       ENUM('legacy','simple_http','full') NULL,
+		check_keyword           VARCHAR(500) NULL,
+		forbidden_keyword       VARCHAR(500) NULL,
+		forbidden_keywords      JSON NULL,
+		maintenance_start       DATETIME NULL,
+		maintenance_end         DATETIME NULL,
+		custom_headers          JSON NULL,
+		timeout_seconds         TINYINT UNSIGNED NULL,
+		redirect_policy         ENUM('follow','alert','fail') NULL DEFAULT NULL,
+		alert_cooldown_minutes  SMALLINT UNSIGNED NULL,
+		created_at              TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at              TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+		INDEX idx_blog_id (blog_id),
+		INDEX idx_request_method (request_method),
+		INDEX idx_detection_profile (detection_profile)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
+
+	// Migration 41 adds endpoint-scoped runtime state. The older
+	// jetmon_site_runtime table remains readable as a migration fallback; new
+	// freshness, alert cooldown, and SSL observations should be written here.
+	{41, `CREATE TABLE IF NOT EXISTS jetmon_endpoint_runtime (
+		source_site_id     BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+		blog_id            BIGINT UNSIGNED NOT NULL,
+		last_checked_at    DATETIME NULL,
+		next_check_at      DATETIME NULL,
+		last_alert_sent_at DATETIME NULL,
+		ssl_expiry_date    DATE NULL,
+		updated_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+		INDEX idx_blog_id (blog_id),
+		INDEX idx_next_check (next_check_at, source_site_id),
+		INDEX idx_last_checked (last_checked_at, source_site_id)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
+
+	// Migration 42 records the endpoint identity for high-volume check history.
+	// blog_id stays denormalized for site-level rollups; endpoint_id lets API and
+	// support tooling distinguish multiple active monitor URLs for one site.
+	{42, `ALTER TABLE jetmon_check_history
+		ADD COLUMN endpoint_id BIGINT UNSIGNED NULL AFTER blog_id,
+		ADD INDEX idx_endpoint_checked (endpoint_id, checked_at)`},
 }
 
 // Migrate applies all pending migrations idempotently.

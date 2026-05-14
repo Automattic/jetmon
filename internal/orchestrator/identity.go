@@ -21,7 +21,11 @@ func checkResultTargetID(res checker.Result) int64 {
 }
 
 func httpEventIdentity(site db.Site) eventstore.Identity {
-	identity := eventstore.Identity{BlogID: site.BlogID, CheckType: checkTypeHTTP}
+	return eventIdentity(site, checkTypeHTTP)
+}
+
+func eventIdentity(site db.Site, checkType string) eventstore.Identity {
+	identity := eventstore.Identity{BlogID: site.BlogID, CheckType: checkType}
 	if site.ID > 0 {
 		endpointID := site.ID
 		identity.EndpointID = &endpointID

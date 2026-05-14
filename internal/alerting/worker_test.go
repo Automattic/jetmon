@@ -245,7 +245,7 @@ func TestEventTypeForReason(t *testing.T) {
 
 func TestBuildPayload(t *testing.T) {
 	occurredAt := time.Date(2026, 4, 27, 12, 0, 0, 123, time.UTC)
-	payload, err := buildPayload("alert.opened", 10, 20, 30, "opened", "Seems Down", 1, 4, occurredAt)
+	payload, err := buildPayload("alert.opened", 10, 20, 30, sql.NullInt64{}, "opened", "Seems Down", 1, 4, occurredAt)
 	if err != nil {
 		t.Fatalf("buildPayload: %v", err)
 	}
@@ -314,7 +314,7 @@ func TestBuildNotificationUsesSiteURLAndRecoveryFlag(t *testing.T) {
 
 	occurredAt := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC)
 	payload, err := buildPayload(
-		"alert.closed", 10, 20, 30, "verifier_cleared", "Resolved",
+		"alert.closed", 10, 20, 30, sql.NullInt64{}, "verifier_cleared", "Resolved",
 		eventstore.SeverityDown, eventstore.SeverityUp, occurredAt,
 	)
 	if err != nil {
@@ -354,7 +354,7 @@ func TestBuildNotificationFallsBackToSiteID(t *testing.T) {
 	defer db.Close()
 
 	payload, err := buildPayload(
-		"alert.opened", 10, 20, 30, "opened", "Down",
+		"alert.opened", 10, 20, 30, sql.NullInt64{}, "opened", "Down",
 		eventstore.SeverityUp, eventstore.SeverityDown, time.Now().UTC(),
 	)
 	if err != nil {

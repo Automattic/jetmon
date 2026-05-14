@@ -428,19 +428,17 @@ func (t *Tx) Close(ctx context.Context, eventID int64, resolutionReason, source 
 }
 
 // ActiveEvent is the minimal snapshot of an open event needed by callers that
-// found it via FindActiveByBlog and now want to close, promote, or otherwise
-// mutate it without a second round-trip to read its state.
+// found it via FindActive and now want to close, promote, or otherwise mutate
+// it without a second round-trip to read its state.
 type ActiveEvent struct {
 	ID       int64
 	Severity uint8
 	State    string
 }
 
-// FindActiveByBlog returns the open event for (blog_id, check_type) — the
-// most common lookup the orchestrator needs on recovery. Returns
-// ErrEventNotFound if no open event exists. Used when the caller doesn't have
-// the event id cached (e.g. a recovery in a round after the open was forgotten
-// across a process restart).
+// FindActiveByBlog returns the first open site-level event for
+// (blog_id, check_type). Prefer FindActive with EndpointID for monitor check
+// results; this helper remains for explicit site-level event callers and tests.
 func (t *Tx) FindActiveByBlog(ctx context.Context, blogID int64, checkType string) (ActiveEvent, error) {
 	return t.FindActive(ctx, Identity{BlogID: blogID, CheckType: checkType})
 }

@@ -130,9 +130,12 @@ until the site is upgraded.
 ## Check SSL Certificate Status
 
 ```sql
-SELECT s.blog_id, s.monitor_url, r.ssl_expiry_date
+SELECT s.jetpack_monitor_site_id AS endpoint_id,
+       s.blog_id,
+       s.monitor_url,
+       r.ssl_expiry_date
 FROM jetpack_monitor_sites s
-LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id
+LEFT JOIN jetmon_endpoint_runtime r ON r.source_site_id = s.jetpack_monitor_site_id
 WHERE s.blog_id = 12345;
 ```
 
@@ -170,10 +173,17 @@ what follow-up is needed before calling the site down.
 
 Use maintenance windows for planned work:
 
+Use the monitor endpoint row id (`jetpack_monitor_site_id`) as
+`source_site_id`. This matters when one `blog_id` has multiple active monitor
+URLs; writing by `blog_id` would apply one policy to every endpoint for that
+site.
+
 ```sql
-INSERT INTO jetmon_site_check_config (blog_id, maintenance_start, maintenance_end)
-VALUES (12345, '2026-04-20 02:00:00', '2026-04-20 04:00:00')
+INSERT INTO jetmon_endpoint_check_config
+    (source_site_id, blog_id, maintenance_start, maintenance_end)
+VALUES (987654, 12345, '2026-04-20 02:00:00', '2026-04-20 04:00:00')
 ON DUPLICATE KEY UPDATE
+    blog_id = VALUES(blog_id),
     maintenance_start = VALUES(maintenance_start),
     maintenance_end = VALUES(maintenance_end);
 ```
@@ -188,9 +198,11 @@ silently suppress alerts indefinitely.
 Clear a window after maintenance:
 
 ```sql
-INSERT INTO jetmon_site_check_config (blog_id, maintenance_start, maintenance_end)
-VALUES (12345, NULL, NULL)
+INSERT INTO jetmon_endpoint_check_config
+    (source_site_id, blog_id, maintenance_start, maintenance_end)
+VALUES (987654, 12345, NULL, NULL)
 ON DUPLICATE KEY UPDATE
+    blog_id = VALUES(blog_id),
     maintenance_start = NULL,
     maintenance_end = NULL;
 ```
@@ -200,9 +212,12 @@ ON DUPLICATE KEY UPDATE
 Use per-site cooldowns to reduce repeated alerts from a flapping site:
 
 ```sql
-INSERT INTO jetmon_site_check_config (blog_id, alert_cooldown_minutes)
-VALUES (12345, 60)
-ON DUPLICATE KEY UPDATE alert_cooldown_minutes = VALUES(alert_cooldown_minutes);
+INSERT INTO jetmon_endpoint_check_config
+    (source_site_id, blog_id, alert_cooldown_minutes)
+VALUES (987654, 12345, 60)
+ON DUPLICATE KEY UPDATE
+    blog_id = VALUES(blog_id),
+    alert_cooldown_minutes = VALUES(alert_cooldown_minutes);
 ```
 
 Global promotion behavior is controlled by `NUM_OF_CHECKS`: that many

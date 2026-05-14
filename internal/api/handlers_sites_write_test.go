@@ -76,16 +76,13 @@ func TestCreateSiteHappyPath(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
 
-	// existence check returns no rows
-	mock.ExpectQuery(siteExistsCheckSQL).WithArgs(int64(12345)).
-		WillReturnRows(sqlmock.NewRows([]string{"1"}))
 	// insert
 	mock.ExpectExec(insertSiteSQL).
 		WithArgs(int64(12345), 12, "https://example.com", 1, 9).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	// read-back
-	mock.ExpectQuery(singleSiteSQL).WithArgs(int64(12345)).
-		WillReturnRows(makeSiteRowWithSchedule(12345, "https://example.com", 1, 12, 9))
+	mock.ExpectQuery(singleSiteSQL).WithArgs(int64(1)).
+		WillReturnRows(endpointSiteRow(1, 12345, "https://example.com", 1, 12, 9))
 
 	body := []byte(`{"blog_id": 12345, "monitor_url": "https://example.com", "bucket_no": 12, "check_interval": 9}`)
 	req := newPOSTWithBody("/api/v1/sites", body)
@@ -97,7 +94,7 @@ func TestCreateSiteHappyPath(t *testing.T) {
 	}
 	var resp siteResponse
 	readJSON(t, rec.Body, &resp)
-	if resp.ID != 12345 || resp.MonitorURL != "https://example.com" {
+	if resp.ID != 1 || resp.BlogID != 12345 || resp.MonitorURL != "https://example.com" {
 		t.Errorf("response site = %+v", resp)
 	}
 	if resp.BucketNo != 12 || resp.CheckInterval != 9 {
@@ -109,8 +106,6 @@ func TestCreateSiteWithGatewayTenantAssignsMapping(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
 
-	mock.ExpectQuery(siteExistsCheckSQL).WithArgs(int64(12345)).
-		WillReturnRows(sqlmock.NewRows([]string{"1"}))
 	mock.ExpectBegin()
 	mock.ExpectExec(insertSiteSQL).
 		WithArgs(int64(12345), 0, "https://example.com", 1, 5).
@@ -119,8 +114,8 @@ func TestCreateSiteWithGatewayTenantAssignsMapping(t *testing.T) {
 		WithArgs("tenant-a", int64(12345)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
-	mock.ExpectQuery(singleSiteSQL).WithArgs(int64(12345)).
-		WillReturnRows(makeSiteRow(12345, "https://example.com", 1))
+	mock.ExpectQuery(singleSiteSQL).WithArgs(int64(1)).
+		WillReturnRows(endpointSiteRow(1, 12345, "https://example.com", 1, 0, 5))
 
 	body := []byte(`{"blog_id": 12345, "monitor_url": "https://example.com"}`)
 	req := newPOSTWithBody("/api/v1/sites", body)
@@ -191,22 +186,22 @@ func TestCreateSiteRejectsBadRedirectPolicy(t *testing.T) {
 	}
 }
 
-func TestCreateSiteConflictOnExisting(t *testing.T) {
+func TestCreateSiteAllowsDuplicateBlogID(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
 
-	mock.ExpectQuery(siteExistsCheckSQL).WithArgs(int64(12345)).
-		WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
+	mock.ExpectExec(insertSiteSQL).
+		WithArgs(int64(12345), 0, "https://example.com", 1, 5).
+		WillReturnResult(sqlmock.NewResult(77, 1))
+	mock.ExpectQuery(singleSiteSQL).WithArgs(int64(77)).
+		WillReturnRows(endpointSiteRow(77, 12345, "https://example.com", 1, 0, 5))
 
 	body := []byte(`{"blog_id": 12345, "monitor_url": "https://example.com"}`)
 	req := setAuthCtx(newPOSTWithBody("/api/v1/sites", body), key)
 	rec := invokeAuthed(s, req, s.handleCreateSite)
 
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("status = %d, want 409", rec.Code)
-	}
-	if got := readErrorBody(t, rec.Body).Code; got != "site_exists" {
-		t.Errorf("code = %q, want site_exists", got)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body=%s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -214,18 +209,18 @@ func TestUpdateSiteHappyPath(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
 
-	mock.ExpectQuery(siteExistsCheckSQL).WithArgs(int64(42)).
-		WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
+	mock.ExpectQuery(siteIdentitySQL).WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"jetpack_monitor_site_id", "blog_id"}).AddRow(int64(42), int64(4200)))
 	mock.ExpectBegin()
-	mock.ExpectExec(`UPDATE jetpack_monitor_sites SET monitor_url = ? WHERE blog_id = ?`).
+	mock.ExpectExec(`UPDATE jetpack_monitor_sites SET monitor_url = ? WHERE jetpack_monitor_site_id = ?`).
 		WithArgs("https://new.example.com", int64(42)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec(`INSERT INTO jetmon_site_check_config (blog_id, redirect_policy) VALUES (?, ?) ON DUPLICATE KEY UPDATE redirect_policy = VALUES(redirect_policy)`).
-		WithArgs(int64(42), "alert").
+	mock.ExpectExec(`INSERT INTO jetmon_endpoint_check_config (source_site_id, blog_id, redirect_policy) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE blog_id = VALUES(blog_id), redirect_policy = VALUES(redirect_policy)`).
+		WithArgs(int64(42), int64(4200), "alert").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 	mock.ExpectQuery(singleSiteSQL).WithArgs(int64(42)).
-		WillReturnRows(makeSiteRow(42, "https://new.example.com", 1))
+		WillReturnRows(endpointSiteRow(42, 4200, "https://new.example.com", 1, 0, 5))
 
 	body := []byte(`{"monitor_url": "https://new.example.com", "redirect_policy": "alert"}`)
 	req := newPATCHWithBody("/api/v1/sites/42", body)
@@ -242,6 +237,8 @@ func TestUpdateSiteWithGatewayTenantRejectsUnmappedSite(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
 
+	mock.ExpectQuery(siteIdentitySQL).WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"jetpack_monitor_site_id", "blog_id"}).AddRow(int64(42), int64(42)))
 	mock.ExpectQuery(siteTenantCheckSQL).
 		WithArgs("tenant-a", int64(42)).
 		WillReturnRows(sqlmock.NewRows([]string{"1"}))
@@ -267,8 +264,8 @@ func TestUpdateSiteEmptyBodyReturnsCurrent(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
 
-	mock.ExpectQuery(siteExistsCheckSQL).WithArgs(int64(42)).
-		WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
+	mock.ExpectQuery(siteIdentitySQL).WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"jetpack_monitor_site_id", "blog_id"}).AddRow(int64(42), int64(42)))
 	mock.ExpectQuery(singleSiteSQL).WithArgs(int64(42)).
 		WillReturnRows(makeSiteRow(42, "https://x", 1))
 
@@ -287,8 +284,8 @@ func TestUpdateSiteNotFound(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
 
-	mock.ExpectQuery(siteExistsCheckSQL).WithArgs(int64(999)).
-		WillReturnRows(sqlmock.NewRows([]string{"1"}))
+	mock.ExpectQuery(siteIdentitySQL).WithArgs(int64(999)).
+		WillReturnRows(sqlmock.NewRows([]string{"jetpack_monitor_site_id", "blog_id"}))
 
 	body := []byte(`{"monitor_url": "https://x"}`)
 	req := newPATCHWithBody("/api/v1/sites/999", body)
@@ -305,13 +302,13 @@ func TestDeleteSiteSoftDeletes(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
 
-	mock.ExpectQuery(siteExistsCheckSQL).WithArgs(int64(42)).
-		WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
+	mock.ExpectQuery(siteIdentitySQL).WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"jetpack_monitor_site_id", "blog_id"}).AddRow(int64(42), int64(42)))
 	// closeAllActiveEvents queries for active events; return none.
-	mock.ExpectQuery(`SELECT id FROM jetmon_events WHERE blog_id = ? AND ended_at IS NULL`).
-		WithArgs(int64(42)).WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	mock.ExpectQuery(activeEndpointEventsSQL).
+		WithArgs(int64(42), int64(42)).WillReturnRows(sqlmock.NewRows([]string{"id"}))
 	// soft-delete UPDATE
-	mock.ExpectExec(`UPDATE jetpack_monitor_sites SET monitor_active = 0 WHERE blog_id = ?`).
+	mock.ExpectExec(`UPDATE jetpack_monitor_sites SET monitor_active = 0 WHERE jetpack_monitor_site_id = ?`).
 		WithArgs(int64(42)).WillReturnResult(sqlmock.NewResult(0, 1))
 
 	req := httptest.NewRequest("DELETE", "/api/v1/sites/42", nil)
@@ -328,11 +325,11 @@ func TestPauseSiteClosesActiveEvents(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
 
-	mock.ExpectQuery(siteExistsCheckSQL).WithArgs(int64(42)).
-		WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
+	mock.ExpectQuery(siteIdentitySQL).WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"jetpack_monitor_site_id", "blog_id"}).AddRow(int64(42), int64(42)))
 	// One active event to close.
-	mock.ExpectQuery(`SELECT id FROM jetmon_events WHERE blog_id = ? AND ended_at IS NULL`).
-		WithArgs(int64(42)).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(7)))
+	mock.ExpectQuery(activeEndpointEventsSQL).
+		WithArgs(int64(42), int64(42)).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(7)))
 
 	// closeEvent runs in a tx: BeginTx → SELECT FOR UPDATE → UPDATE event → INSERT transition → Commit
 	mock.ExpectBegin()
@@ -346,14 +343,14 @@ func TestPauseSiteClosesActiveEvents(t *testing.T) {
 	mock.ExpectExec(` INSERT INTO jetmon_event_transitions (event_id, blog_id, severity_before, severity_after, state_before, state_after, reason, source, metadata) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)`).
 		WithArgs(int64(7), int64(42), uint8(4), "Down", "Resolved", "manual_override", "api", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectQuery(countActiveEventsSQL).WithArgs(int64(42)).
+	mock.ExpectQuery(countActiveEventsSQL).WithArgs(int64(42), int64(42)).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 	mock.ExpectExec(projectRunningSQL).
 		WithArgs(sqlmock.AnyArg(), int64(42)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
-	mock.ExpectExec(`UPDATE jetpack_monitor_sites SET monitor_active = ?, last_status_change = ? WHERE blog_id = ?`).
+	mock.ExpectExec(`UPDATE jetpack_monitor_sites SET monitor_active = ?, last_status_change = ? WHERE jetpack_monitor_site_id = ?`).
 		WithArgs(0, sqlmock.AnyArg(), int64(42)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(singleSiteSQL).WithArgs(int64(42)).
@@ -373,9 +370,9 @@ func TestResumeSiteSetsActive(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
 
-	mock.ExpectQuery(siteExistsCheckSQL).WithArgs(int64(42)).
-		WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
-	mock.ExpectExec(`UPDATE jetpack_monitor_sites SET monitor_active = ?, last_status_change = ? WHERE blog_id = ?`).
+	mock.ExpectQuery(siteIdentitySQL).WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"jetpack_monitor_site_id", "blog_id"}).AddRow(int64(42), int64(42)))
+	mock.ExpectExec(`UPDATE jetpack_monitor_sites SET monitor_active = ?, last_status_change = ? WHERE jetpack_monitor_site_id = ?`).
 		WithArgs(1, sqlmock.AnyArg(), int64(42)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(singleSiteSQL).WithArgs(int64(42)).

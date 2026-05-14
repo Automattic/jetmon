@@ -712,18 +712,26 @@ func queryFleetProjectionDrift(ctx context.Context, db *sql.DB, bucketTotal int)
 	var count int
 	err := db.QueryRowContext(ctx, `
 		SELECT COUNT(*)
-		  FROM jetpack_monitor_sites s
-		  LEFT JOIN jetmon_events e
-		    ON e.blog_id = s.blog_id
-		   AND e.check_type = 'http'
-		   AND e.ended_at IS NULL
-		 WHERE s.monitor_active = 1
-		   AND s.bucket_no BETWEEN 0 AND ?
-		   AND s.site_status <> CASE
-		     WHEN e.state = 'Down' THEN 2
-		     WHEN e.state = 'Seems Down' THEN 0
-		     ELSE 1
-		   END`,
+		  FROM (
+			SELECT s.jetpack_monitor_site_id,
+			       s.blog_id,
+			       s.site_status,
+			       CASE
+			         WHEN SUM(CASE WHEN e.state = 'Down' THEN 1 ELSE 0 END) > 0 THEN 2
+			         WHEN SUM(CASE WHEN e.state = 'Seems Down' THEN 1 ELSE 0 END) > 0 THEN 0
+			         ELSE 1
+			       END AS expected_status
+			  FROM jetpack_monitor_sites s
+			  LEFT JOIN jetmon_events e
+			    ON e.blog_id = s.blog_id
+			   AND (e.endpoint_id = s.jetpack_monitor_site_id OR e.endpoint_id IS NULL)
+			   AND e.check_type = 'http'
+			   AND e.ended_at IS NULL
+			 WHERE s.monitor_active = 1
+			   AND s.bucket_no BETWEEN 0 AND ?
+			 GROUP BY s.jetpack_monitor_site_id, s.blog_id, s.site_status
+		  ) drift
+		 WHERE drift.site_status <> drift.expected_status`,
 		bucketTotal-1,
 	).Scan(&count)
 	if err != nil {

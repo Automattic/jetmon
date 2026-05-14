@@ -277,14 +277,14 @@ func TestSimpleMutationQueries(t *testing.T) {
 	mock.ExpectExec("UPDATE jetpack_monitor_sites SET site_status").
 		WithArgs(2, now, int64(42)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("INSERT INTO jetmon_site_runtime").
-		WithArgs(int64(42), now, next).
+	mock.ExpectExec("INSERT INTO jetmon_endpoint_runtime").
+		WithArgs(int64(1001), int64(42), now, next).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("INSERT INTO jetmon_site_runtime").
-		WithArgs(int64(42), now).
+	mock.ExpectExec("INSERT INTO jetmon_endpoint_runtime").
+		WithArgs(int64(1001), int64(42), now).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("INSERT INTO jetmon_site_runtime").
-		WithArgs(int64(42), now).
+	mock.ExpectExec("INSERT INTO jetmon_endpoint_runtime").
+		WithArgs(int64(1001), int64(42), now).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("UPDATE jetmon_hosts SET last_heartbeat").
 		WithArgs("host-a").
@@ -299,19 +299,19 @@ func TestSimpleMutationQueries(t *testing.T) {
 		WithArgs(int64(42), 500, 1, int64(123)).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("INSERT INTO jetmon_check_history").
-		WithArgs(int64(42), "GET", 200, 0, int64(100), int64(1), int64(2), int64(3), int64(4)).
+		WithArgs(int64(42), int64(1001), "GET", 200, 0, int64(100), int64(1), int64(2), int64(3), int64(4)).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	if err := UpdateSiteStatus(context.Background(), 42, 2, now); err != nil {
 		t.Fatalf("UpdateSiteStatus: %v", err)
 	}
-	if err := MarkSiteChecked(context.Background(), 42, now, next); err != nil {
+	if err := MarkSiteChecked(context.Background(), 1001, 42, now, next); err != nil {
 		t.Fatalf("MarkSiteChecked: %v", err)
 	}
-	if err := UpdateLastAlertSent(context.Background(), 42, now); err != nil {
+	if err := UpdateLastAlertSent(context.Background(), 1001, 42, now); err != nil {
 		t.Fatalf("UpdateLastAlertSent: %v", err)
 	}
-	if err := UpdateSSLExpiry(context.Background(), 42, now); err != nil {
+	if err := UpdateSSLExpiry(context.Background(), 1001, 42, now); err != nil {
 		t.Fatalf("UpdateSSLExpiry: %v", err)
 	}
 	if err := Heartbeat(context.Background(), "host-a"); err != nil {
@@ -326,7 +326,7 @@ func TestSimpleMutationQueries(t *testing.T) {
 	if err := RecordFalsePositive(42, 500, 1, 123); err != nil {
 		t.Fatalf("RecordFalsePositive: %v", err)
 	}
-	if err := RecordCheckHistory(42, "GET", 200, 0, 100, 1, 2, 3, 4); err != nil {
+	if err := RecordCheckHistory(1001, 42, "GET", 200, 0, 100, 1, 2, 3, 4); err != nil {
 		t.Fatalf("RecordCheckHistory: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -342,13 +342,13 @@ func TestMarkSitesCheckedBatchesUpdates(t *testing.T) {
 	second := first.Add(time.Minute)
 	firstNext := first.Add(5 * time.Minute)
 	secondNext := second.Add(5 * time.Minute)
-	mock.ExpectExec("INSERT INTO jetmon_site_runtime").
-		WithArgs(int64(7), first, firstNext, int64(42), second, secondNext).
+	mock.ExpectExec("INSERT INTO jetmon_endpoint_runtime").
+		WithArgs(int64(7), int64(700), first, firstNext, int64(42), int64(4200), second, secondNext).
 		WillReturnResult(sqlmock.NewResult(0, 2))
 
 	err := MarkSitesChecked(context.Background(), []SiteCheck{
-		{BlogID: 42, CheckedAt: second, NextCheckAt: secondNext},
-		{BlogID: 7, CheckedAt: first, NextCheckAt: firstNext},
+		{MonitorSiteID: 42, BlogID: 4200, CheckedAt: second, NextCheckAt: secondNext},
+		{MonitorSiteID: 7, BlogID: 700, CheckedAt: first, NextCheckAt: firstNext},
 	})
 	if err != nil {
 		t.Fatalf("MarkSitesChecked: %v", err)
@@ -391,15 +391,15 @@ func TestMarkSitesCheckedRetriesDeadlock(t *testing.T) {
 
 	checkedAt := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
 	nextAt := checkedAt.Add(5 * time.Minute)
-	args := []driver.Value{int64(42), checkedAt, nextAt}
-	mock.ExpectExec("INSERT INTO jetmon_site_runtime").
+	args := []driver.Value{int64(1001), int64(42), checkedAt, nextAt}
+	mock.ExpectExec("INSERT INTO jetmon_endpoint_runtime").
 		WithArgs(args...).
 		WillReturnError(&mysql.MySQLError{Number: 1213, Message: "Deadlock found when trying to get lock"})
-	mock.ExpectExec("INSERT INTO jetmon_site_runtime").
+	mock.ExpectExec("INSERT INTO jetmon_endpoint_runtime").
 		WithArgs(args...).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
-	if err := MarkSitesChecked(context.Background(), []SiteCheck{{BlogID: 42, CheckedAt: checkedAt, NextCheckAt: nextAt}}); err != nil {
+	if err := MarkSitesChecked(context.Background(), []SiteCheck{{MonitorSiteID: 1001, BlogID: 42, CheckedAt: checkedAt, NextCheckAt: nextAt}}); err != nil {
 		t.Fatalf("MarkSitesChecked: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -415,14 +415,14 @@ func TestRecordCheckHistoriesBatchesInserts(t *testing.T) {
 	second := first.Add(time.Minute)
 	mock.ExpectExec("INSERT INTO jetmon_check_history").
 		WithArgs(
-			int64(7), "GET", 201, 1, int64(10), int64(1), int64(2), int64(3), int64(4), first,
-			int64(42), "POST", 200, 0, int64(100), int64(5), int64(6), int64(7), int64(8), second,
+			int64(700), int64(7), "GET", 201, 1, int64(10), int64(1), int64(2), int64(3), int64(4), first,
+			int64(4200), int64(42), "POST", 200, 0, int64(100), int64(5), int64(6), int64(7), int64(8), second,
 		).
 		WillReturnResult(sqlmock.NewResult(1, 2))
 
 	err := RecordCheckHistories(context.Background(), []CheckHistoryRow{
-		{BlogID: 42, RequestMethod: "post", HTTPCode: 200, ErrorCode: 0, RTTMs: 100, DNSMs: 5, TCPMs: 6, TLSMs: 7, TTFBMs: 8, CheckedAt: second},
-		{BlogID: 7, HTTPCode: 201, ErrorCode: 1, RTTMs: 10, DNSMs: 1, TCPMs: 2, TLSMs: 3, TTFBMs: 4, CheckedAt: first},
+		{MonitorSiteID: 42, BlogID: 4200, RequestMethod: "post", HTTPCode: 200, ErrorCode: 0, RTTMs: 100, DNSMs: 5, TCPMs: 6, TLSMs: 7, TTFBMs: 8, CheckedAt: second},
+		{MonitorSiteID: 7, BlogID: 700, HTTPCode: 201, ErrorCode: 1, RTTMs: 10, DNSMs: 1, TCPMs: 2, TLSMs: 3, TTFBMs: 4, CheckedAt: first},
 	})
 	if err != nil {
 		t.Fatalf("RecordCheckHistories: %v", err)
@@ -438,13 +438,13 @@ func TestUpdateSSLExpiriesBatchesUpdates(t *testing.T) {
 
 	first := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	second := first.AddDate(0, 1, 0)
-	mock.ExpectExec("INSERT INTO jetmon_site_runtime").
-		WithArgs(int64(7), first, int64(42), second).
+	mock.ExpectExec("INSERT INTO jetmon_endpoint_runtime").
+		WithArgs(int64(7), int64(700), first, int64(42), int64(4200), second).
 		WillReturnResult(sqlmock.NewResult(0, 2))
 
 	err := UpdateSSLExpiries(context.Background(), []SiteSSLExpiry{
-		{BlogID: 42, Expiry: second},
-		{BlogID: 7, Expiry: first},
+		{MonitorSiteID: 42, BlogID: 4200, Expiry: second},
+		{MonitorSiteID: 7, BlogID: 700, Expiry: first},
 	})
 	if err != nil {
 		t.Fatalf("UpdateSSLExpiries: %v", err)
@@ -565,13 +565,13 @@ func TestListLegacyProjectionDrift(t *testing.T) {
 	mock, cleanup := withMockDB(t)
 	defer cleanup()
 
-	mock.ExpectQuery("SELECT drift.blog_id").
+	mock.ExpectQuery("SELECT drift.jetpack_monitor_site_id").
 		WithArgs(0, 99, 50).
 		WillReturnRows(sqlmock.NewRows([]string{
-			"blog_id", "bucket_no", "site_status", "expected_status", "id", "state", "open_event_count",
+			"jetpack_monitor_site_id", "blog_id", "bucket_no", "site_status", "expected_status", "id", "state", "open_event_count",
 		}).
-			AddRow(int64(42), 7, 1, 2, int64(123), "Down", 1).
-			AddRow(int64(43), 8, 0, 1, nil, nil, 0))
+			AddRow(int64(4200), int64(42), 7, 1, 2, int64(123), "Down", 1).
+			AddRow(int64(4300), int64(43), 8, 0, 1, nil, nil, 0))
 
 	rows, err := ListLegacyProjectionDrift(context.Background(), 0, 99, 0)
 	if err != nil {
@@ -580,7 +580,7 @@ func TestListLegacyProjectionDrift(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatalf("rows len = %d, want 2", len(rows))
 	}
-	if rows[0].BlogID != 42 || rows[0].BucketNo != 7 || rows[0].SiteStatus != 1 || rows[0].ExpectedStatus != 2 {
+	if rows[0].MonitorSiteID != 4200 || rows[0].BlogID != 42 || rows[0].BucketNo != 7 || rows[0].SiteStatus != 1 || rows[0].ExpectedStatus != 2 {
 		t.Fatalf("row 0 = %+v", rows[0])
 	}
 	if rows[0].EventID == nil || *rows[0].EventID != 123 {
@@ -607,10 +607,10 @@ func TestSummarizeLegacyProjectionDrift(t *testing.T) {
 	mock.ExpectQuery("SELECT drift.bucket_no").
 		WithArgs(0, 99, 20).
 		WillReturnRows(sqlmock.NewRows([]string{
-			"bucket_no", "site_status", "expected_status", "expected_state", "max_open_event_count", "drift_count", "sample_blog_id",
+			"bucket_no", "site_status", "expected_status", "expected_state", "max_open_event_count", "drift_count", "sample_endpoint_id", "sample_blog_id",
 		}).
-			AddRow(7, 1, 2, "Down", 1, 3, int64(42)).
-			AddRow(8, 0, 1, nil, 0, 2, int64(43)))
+			AddRow(7, 1, 2, "Down", 1, 3, int64(4200), int64(42)).
+			AddRow(8, 0, 1, nil, 0, 2, int64(4300), int64(43)))
 
 	rows, err := SummarizeLegacyProjectionDrift(context.Background(), 0, 99, 0)
 	if err != nil {
@@ -619,7 +619,7 @@ func TestSummarizeLegacyProjectionDrift(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatalf("rows len = %d, want 2", len(rows))
 	}
-	if rows[0].BucketNo != 7 || rows[0].SiteStatus != 1 || rows[0].ExpectedStatus != 2 || rows[0].DriftCount != 3 || rows[0].SampleBlogID != 42 {
+	if rows[0].BucketNo != 7 || rows[0].SiteStatus != 1 || rows[0].ExpectedStatus != 2 || rows[0].DriftCount != 3 || rows[0].SampleEndpointID != 4200 || rows[0].SampleBlogID != 42 {
 		t.Fatalf("row 0 = %+v", rows[0])
 	}
 	if rows[0].EventState == nil || *rows[0].EventState != "Down" {

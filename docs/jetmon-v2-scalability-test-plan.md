@@ -8,12 +8,12 @@ efficiency changes after the successful 1,000-site capacity run.
 `feature/jetmon-v2-scalability-efficiency` adds these scaling changes on top of
 the completed 1,000-site capacity branch:
 
-- Maintained `jetmon_site_runtime.next_check_at` timestamps for indexed
+- Maintained `jetmon_endpoint_runtime.next_check_at` timestamps for indexed
   variable-interval due selection without altering the legacy site table.
 - One-minute sampling for exact due-count and projection-drift reporting in
   variable-interval mode.
 - Shared bounded HTTP transport for local site checks.
-- Batched `jetmon_site_runtime.ssl_expiry_date` writes when observed
+- Batched `jetmon_endpoint_runtime.ssl_expiry_date` writes when observed
   certificate dates change.
 
 Do not stack larger persistence changes, such as async check-history writes, on
@@ -41,7 +41,7 @@ these changes from the previous successful 1,000-site baseline.
 
 Capture `EXPLAIN` for both scheduler modes before the capacity run.
 
-Variable-interval selection should use `jetmon_site_runtime.idx_next_check` and
+Variable-interval selection should use `jetmon_endpoint_runtime.idx_next_check` and
 should not show `Using filesort`:
 
 ```sql
@@ -50,16 +50,16 @@ SELECT s.jetpack_monitor_site_id, s.blog_id, s.bucket_no, s.monitor_url,
        s.monitor_active, s.site_status, s.last_status_change, s.check_interval,
        r.last_checked_at, r.next_check_at
   FROM jetpack_monitor_sites s
-  LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id
+  LEFT JOIN jetmon_endpoint_runtime r ON r.source_site_id = s.jetpack_monitor_site_id
  WHERE s.monitor_active = 1
    AND s.bucket_no BETWEEN 0 AND 999
    AND (r.next_check_at IS NULL OR r.next_check_at <= NOW())
- ORDER BY r.next_check_at ASC, s.blog_id ASC
+ ORDER BY r.next_check_at ASC, s.jetpack_monitor_site_id ASC
  LIMIT 100;
 ```
 
 Fixed-cadence selection should continue to use
-`jetmon_site_runtime.idx_last_checked` and should not show `Using filesort`:
+`jetmon_endpoint_runtime.idx_last_checked` and should not show `Using filesort`:
 
 ```sql
 EXPLAIN
@@ -67,10 +67,10 @@ SELECT s.jetpack_monitor_site_id, s.blog_id, s.bucket_no, s.monitor_url,
        s.monitor_active, s.site_status, s.last_status_change, s.check_interval,
        r.last_checked_at, r.next_check_at
   FROM jetpack_monitor_sites s
-  LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id
+  LEFT JOIN jetmon_endpoint_runtime r ON r.source_site_id = s.jetpack_monitor_site_id
  WHERE s.monitor_active = 1
    AND s.bucket_no BETWEEN 0 AND 999
- ORDER BY r.last_checked_at ASC, s.blog_id ASC
+ ORDER BY r.last_checked_at ASC, s.jetpack_monitor_site_id ASC
  LIMIT 100;
 ```
 

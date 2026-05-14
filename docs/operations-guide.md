@@ -61,9 +61,9 @@ Scheduler behavior:
   being dropped.
 - With `USE_VARIABLE_CHECK_INTERVALS=true`, Jetmon polls for newly due work on a
   short idle interval and uses each site's maintained
-  `jetmon_site_runtime.next_check_at` timestamp to decide what to check.
+  `jetmon_endpoint_runtime.next_check_at` timestamp to decide what to check.
   `next_check_at` is recalculated after every check: successful checks use
-  `jetmon_site_runtime.last_checked_at + check_interval`, while failed checks
+  `jetmon_endpoint_runtime.last_checked_at + check_interval`, while failed checks
   are scheduled for a bounded one-minute follow-up when the normal interval is
   longer. `MIN_TIME_BETWEEN_ROUNDS_SEC` is only the fixed-cadence pass interval
   when variable intervals are disabled. Use this mode for production-like

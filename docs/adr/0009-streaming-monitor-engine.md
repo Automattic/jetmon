@@ -10,7 +10,7 @@ internal-only capacity validation through 2 million active sites.
 The legacy-compatible v2 scheduler still behaves like a round/page system: query
 due rows, dispatch a page, collect results, then write freshness and history for
 every completed probe. Batched writes and indexed
-`jetmon_site_runtime.next_check_at` made that model viable for the current test
+`jetmon_endpoint_runtime.next_check_at` made that model viable for the current test
 sizes, but the shape does not scale cleanly to the next target: hundreds of
 thousands to one million sites on five-minute intervals.
 
@@ -25,15 +25,15 @@ Add a v2-native streaming scheduler behind `SCHEDULER_ENGINE=streaming`.
 
 The streaming engine:
 
-- loads active site identity, bucket, cadence, and projection state from
+- loads active endpoint identity, bucket, cadence, and projection state from
   `jetpack_monitor_sites`, with v2-only check config from
-  `jetmon_site_check_config`;
+  `jetmon_endpoint_check_config` and the older blog-level sidecar as fallback;
 - assigns each site a stable phase inside its configured check interval so work
   is naturally spread over time instead of lumped into round boundaries;
 - keeps due scheduling in memory and reschedules each target as results return;
 - auto-sizes the checker pool from required check rate and observed latency,
   using `NUM_WORKERS` as a floor rather than a throughput ceiling;
-- avoids per-success writes to `jetmon_site_runtime.last_checked_at` and
+- avoids per-success writes to `jetmon_endpoint_runtime.last_checked_at` and
   `jetmon_check_history`;
 - writes failure history, event transitions, recoveries, SSL/TLS event changes,
   verifier state changes, audit entries, and WPCOM notifications through the
@@ -64,7 +64,7 @@ legacy `site_status` projection maintained by the same eventstore paths already
 used by the legacy-compatible v2 scheduler.
 
 The deliberate compatibility tradeoff is freshness precision:
-`jetmon_site_runtime.last_checked_at` and `next_check_at` are no longer updated
+`jetmon_endpoint_runtime.last_checked_at` and `next_check_at` are no longer updated
 after every healthy probe in streaming mode. Operators accepted a 5-15 minute
 worst-case rollback freshness loss window; the default projection interval is
 15 minutes.

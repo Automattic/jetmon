@@ -192,15 +192,17 @@ func (w *Worker) dispatchTick() error {
 		id         int64
 		eventID    int64
 		blogID     int64
+		endpointID sql.NullInt64
 		stateAfter sql.NullString
 		reason     string
 		changedAt  time.Time
 	}
 	rows, err := w.cfg.DB.QueryContext(ctx, `
-		SELECT id, event_id, blog_id, state_after, reason, changed_at
-		  FROM jetmon_event_transitions
-		 WHERE id > ?
-		 ORDER BY id ASC
+		SELECT t.id, t.event_id, t.blog_id, e.endpoint_id, t.state_after, t.reason, t.changed_at
+		  FROM jetmon_event_transitions t
+		  LEFT JOIN jetmon_events e ON e.id = t.event_id
+		 WHERE t.id > ?
+		 ORDER BY t.id ASC
 		 LIMIT ?`, lastID, w.cfg.BatchSize)
 	if err != nil {
 		return fmt.Errorf("query transitions: %w", err)
@@ -210,7 +212,7 @@ func (w *Worker) dispatchTick() error {
 	var transitions []transitionRow
 	for rows.Next() {
 		var t transitionRow
-		if err := rows.Scan(&t.id, &t.eventID, &t.blogID, &t.stateAfter, &t.reason, &t.changedAt); err != nil {
+		if err := rows.Scan(&t.id, &t.eventID, &t.blogID, &t.endpointID, &t.stateAfter, &t.reason, &t.changedAt); err != nil {
 			return fmt.Errorf("scan transition: %w", err)
 		}
 		transitions = append(transitions, t)
@@ -241,7 +243,7 @@ func (w *Worker) dispatchTick() error {
 			if !h.Matches(eventType, t.blogID, state) {
 				continue
 			}
-			payload, err := w.buildPayload(eventType, t.id, t.eventID, t.blogID, t.reason, state, t.changedAt)
+			payload, err := w.buildPayload(eventType, t.id, t.eventID, t.blogID, t.endpointID, t.reason, state, t.changedAt)
 			if err != nil {
 				log.Printf("webhooks: build payload event_id=%d transition_id=%d: %v",
 					t.eventID, t.id, err)
@@ -272,17 +274,25 @@ func (w *Worker) dispatchTick() error {
 //
 // Shape is flat: type, occurred_at, ids, and the relevant event/transition
 // fields. Consumers who want full event detail call GET /events/{id}.
-func (w *Worker) buildPayload(eventType string, transitionID, eventID, blogID int64, reason, state string, occurredAt time.Time) (json.RawMessage, error) {
+func (w *Worker) buildPayload(eventType string, transitionID, eventID, blogID int64, endpointID sql.NullInt64, reason, state string, occurredAt time.Time) (json.RawMessage, error) {
 	body := map[string]any{
 		"type":          eventType,
 		"occurred_at":   occurredAt.UTC().Format(time.RFC3339Nano),
 		"transition_id": transitionID,
 		"event_id":      eventID,
 		"site_id":       blogID,
+		"endpoint_id":   nullableInt64(endpointID),
 		"reason":        reason,
 		"state":         state,
 	}
 	return json.Marshal(body)
+}
+
+func nullableInt64(v sql.NullInt64) any {
+	if !v.Valid {
+		return nil
+	}
+	return v.Int64
 }
 
 // loadProgress reads the last_transition_id high-water mark for this

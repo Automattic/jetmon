@@ -9,7 +9,7 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
-const eventLookupMinSQL = `SELECT blog_id, ended_at FROM jetmon_events WHERE id = ?`
+const eventLookupMinSQL = `SELECT blog_id, endpoint_id, ended_at FROM jetmon_events WHERE id = ?`
 
 const closeEventTxSelectSQL = `SELECT severity, state, ended_at FROM jetmon_events WHERE id = ? FOR UPDATE`
 
@@ -17,9 +17,9 @@ const closeEventUpdateSQL = ` UPDATE jetmon_events SET ended_at = CURRENT_TIMEST
 
 const closeEventInsertTransitionSQL = ` INSERT INTO jetmon_event_transitions (event_id, blog_id, severity_before, severity_after, state_before, state_after, reason, source, metadata) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)`
 
-const countActiveEventsSQL = `SELECT COUNT(*) FROM jetmon_events WHERE blog_id = ? AND ended_at IS NULL`
+const countActiveEventsSQL = `SELECT COUNT(*) FROM jetmon_events WHERE blog_id = ? AND (endpoint_id = ? OR endpoint_id IS NULL) AND ended_at IS NULL`
 
-const projectRunningSQL = `UPDATE jetpack_monitor_sites SET site_status = 1, last_status_change = ? WHERE blog_id = ?`
+const projectRunningSQL = `UPDATE jetpack_monitor_sites SET site_status = 1, last_status_change = ? WHERE jetpack_monitor_site_id = ?`
 
 func expectCloseEventTx(mock sqlmock.Sqlmock, eventID, blogID int64, severity uint8, state, reason string) {
 	mock.ExpectBegin()
@@ -33,7 +33,7 @@ func expectCloseEventTx(mock sqlmock.Sqlmock, eventID, blogID int64, severity ui
 	mock.ExpectExec(closeEventInsertTransitionSQL).
 		WithArgs(eventID, blogID, severity, state, "Resolved", reason, "api", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectQuery(countActiveEventsSQL).WithArgs(blogID).
+	mock.ExpectQuery(countActiveEventsSQL).WithArgs(blogID, blogID).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 	mock.ExpectExec(projectRunningSQL).
 		WithArgs(sqlmock.AnyArg(), blogID).
@@ -46,9 +46,12 @@ func TestCloseEventHappyPath(t *testing.T) {
 	defer cleanup()
 
 	// Event exists and belongs to site 42, currently open.
+	mock.ExpectQuery(siteIdentitySQL).
+		WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"jetpack_monitor_site_id", "blog_id"}).AddRow(int64(42), int64(42)))
 	mock.ExpectQuery(eventLookupMinSQL).WithArgs(int64(7)).
-		WillReturnRows(sqlmock.NewRows([]string{"blog_id", "ended_at"}).
-			AddRow(int64(42), nil))
+		WillReturnRows(sqlmock.NewRows([]string{"blog_id", "endpoint_id", "ended_at"}).
+			AddRow(int64(42), int64(42), nil))
 
 	expectCloseEventTx(mock, 7, 42, 4, "Down", "manual_override")
 
@@ -76,6 +79,9 @@ func TestCloseEventWithGatewayTenantRejectsUnmappedSite(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
 
+	mock.ExpectQuery(siteIdentitySQL).
+		WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"jetpack_monitor_site_id", "blog_id"}).AddRow(int64(42), int64(42)))
 	mock.ExpectQuery(siteTenantCheckSQL).
 		WithArgs("tenant-a", int64(42)).
 		WillReturnRows(sqlmock.NewRows([]string{"1"}))
@@ -102,8 +108,11 @@ func TestCloseEventNotFound(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
 
+	mock.ExpectQuery(siteIdentitySQL).
+		WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"jetpack_monitor_site_id", "blog_id"}).AddRow(int64(42), int64(42)))
 	mock.ExpectQuery(eventLookupMinSQL).WithArgs(int64(999)).
-		WillReturnRows(sqlmock.NewRows([]string{"blog_id", "ended_at"}))
+		WillReturnRows(sqlmock.NewRows([]string{"blog_id", "endpoint_id", "ended_at"}))
 
 	body := []byte(`{}`)
 	req := newPOSTWithBody("/api/v1/sites/42/events/999/close", body)
@@ -122,9 +131,12 @@ func TestCloseEventCrossSiteRejected(t *testing.T) {
 	defer cleanup()
 
 	// Event 7 belongs to site 42, request says site 99.
+	mock.ExpectQuery(siteIdentitySQL).
+		WithArgs(int64(99)).
+		WillReturnRows(sqlmock.NewRows([]string{"jetpack_monitor_site_id", "blog_id"}).AddRow(int64(99), int64(99)))
 	mock.ExpectQuery(eventLookupMinSQL).WithArgs(int64(7)).
-		WillReturnRows(sqlmock.NewRows([]string{"blog_id", "ended_at"}).
-			AddRow(int64(42), nil))
+		WillReturnRows(sqlmock.NewRows([]string{"blog_id", "endpoint_id", "ended_at"}).
+			AddRow(int64(42), int64(42), nil))
 
 	body := []byte(`{}`)
 	req := newPOSTWithBody("/api/v1/sites/99/events/7/close", body)
@@ -147,9 +159,12 @@ func TestCloseEventAlreadyClosedIsIdempotent(t *testing.T) {
 
 	// Event already has ended_at set.
 	closedAt := time.Date(2026, 4, 25, 3, 0, 0, 0, time.UTC)
+	mock.ExpectQuery(siteIdentitySQL).
+		WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"jetpack_monitor_site_id", "blog_id"}).AddRow(int64(42), int64(42)))
 	mock.ExpectQuery(eventLookupMinSQL).WithArgs(int64(7)).
-		WillReturnRows(sqlmock.NewRows([]string{"blog_id", "ended_at"}).
-			AddRow(int64(42), closedAt))
+		WillReturnRows(sqlmock.NewRows([]string{"blog_id", "endpoint_id", "ended_at"}).
+			AddRow(int64(42), int64(42), closedAt))
 
 	// Read-back happens directly without re-closing.
 	startedAt := closedAt.Add(-1 * time.Hour)
@@ -176,9 +191,12 @@ func TestCloseEventDefaultReason(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
 
+	mock.ExpectQuery(siteIdentitySQL).
+		WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"jetpack_monitor_site_id", "blog_id"}).AddRow(int64(42), int64(42)))
 	mock.ExpectQuery(eventLookupMinSQL).WithArgs(int64(7)).
-		WillReturnRows(sqlmock.NewRows([]string{"blog_id", "ended_at"}).
-			AddRow(int64(42), nil))
+		WillReturnRows(sqlmock.NewRows([]string{"blog_id", "endpoint_id", "ended_at"}).
+			AddRow(int64(42), int64(42), nil))
 	expectCloseEventTx(mock, 7, 42, 4, "Down", "manual_override")
 	startedAt := time.Date(2026, 4, 25, 3, 0, 0, 0, time.UTC)
 	mock.ExpectQuery(` SELECT id, blog_id, endpoint_id, check_type, discriminator, severity, state, started_at, ended_at, resolution_reason, cause_event_id, metadata FROM jetmon_events WHERE id = ?`).
@@ -230,6 +248,9 @@ func TestTriggerNowWithGatewayTenantRejectsUnmappedSite(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
 
+	mock.ExpectQuery(readSiteForCheckSQL).WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows(columnsSiteForCheck).
+			AddRow(int64(42), int64(42), "https://example.com", nil, nil, nil, nil, nil, "follow", nil, nil, 1))
 	mock.ExpectQuery(siteTenantCheckSQL).
 		WithArgs("tenant-a", int64(42)).
 		WillReturnRows(sqlmock.NewRows([]string{"1"}))

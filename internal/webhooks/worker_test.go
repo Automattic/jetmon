@@ -245,7 +245,7 @@ func TestHandleResultSchedulesRetryAndForcedAbandon(t *testing.T) {
 func TestBuildPayload(t *testing.T) {
 	occurredAt := time.Date(2026, 4, 27, 12, 0, 0, 123, time.UTC)
 	w := &Worker{}
-	payload, err := w.buildPayload(EventOpened, 10, 20, 30, "opened", "Seems Down", occurredAt)
+	payload, err := w.buildPayload(EventOpened, 10, 20, 30, sql.NullInt64{}, "opened", "Seems Down", occurredAt)
 	if err != nil {
 		t.Fatalf("buildPayload: %v", err)
 	}

@@ -531,7 +531,7 @@ func (p *streamingSideEffectProcessor) runShard(o *Orchestrator, jobs <-chan str
 				delete(sslExpiryByTarget, targetID)
 			}
 			if job.res.IsFailure() {
-				historyRows = append(historyRows, checkHistoryRowForResult(site.BlogID, job.res))
+				historyRows = append(historyRows, checkHistoryRowForResult(site, job.res))
 				if len(historyRows) >= streamingHistoryBatchSize && !flushHistory() {
 					return
 				}
@@ -1067,8 +1067,9 @@ func (o *Orchestrator) processStreamingSideEffects(site db.Site, res checker.Res
 		if res.SSLExpiry != nil {
 			if shouldUpdateSSLExpiry(site.SSLExpiryDate, *res.SSLExpiry) {
 				o.updateSSLExpiries([]db.SiteSSLExpiry{{
-					BlogID: site.BlogID,
-					Expiry: *res.SSLExpiry,
+					MonitorSiteID: site.ID,
+					BlogID:        site.BlogID,
+					Expiry:        *res.SSLExpiry,
 				}}, &summary)
 				expiry := *res.SSLExpiry
 				site.SSLExpiryDate = &expiry
@@ -1220,10 +1221,11 @@ func (o *Orchestrator) queueStreamingProjection(cfg *config.Config, target *stre
 	if projectedAt.Before(resultAt) {
 		projectedAt = resultAt
 	}
-	pending[target.site.BlogID] = db.SiteCheck{
-		BlogID:      target.site.BlogID,
-		CheckedAt:   projectedAt,
-		NextCheckAt: target.dueAt,
+	pending[monitorTargetID(target.site)] = db.SiteCheck{
+		MonitorSiteID: target.site.ID,
+		BlogID:        target.site.BlogID,
+		CheckedAt:     projectedAt,
+		NextCheckAt:   target.dueAt,
 	}
 	target.lastProjectedAt = projectedAt
 }

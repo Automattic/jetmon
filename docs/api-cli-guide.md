@@ -132,8 +132,10 @@ require `--allow-remote`.
 
 ## Site Management
 
-Sites are keyed by the existing `blog_id`. The typed site commands cover list,
-get, create, update, delete, pause, resume, and trigger-now.
+Sites are keyed by the monitor endpoint row id returned as `id`.
+`blog_id` remains visible as the WPCOM/site identity and can repeat when one
+site has multiple active monitor URLs. The typed site commands cover list, get,
+create, update, delete, pause, resume, and trigger-now.
 
 ```bash
 ./bin/jetmon2 api sites list --limit 20 --output table

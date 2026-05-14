@@ -56,9 +56,9 @@ type createSiteRequest struct {
 
 // handleCreateSite implements POST /api/v1/sites.
 //
-// blog_id is caller-supplied (it's the canonical identity from WPCOM) and
-// must not already exist in jetpack_monitor_sites. Successful creation
-// returns 201 with the full site object.
+// blog_id is caller-supplied (it's the canonical identity from WPCOM), but it
+// is not the row identity. Multiple monitor endpoints can share one blog_id;
+// the returned id is jetpack_monitor_site_id.
 func (s *Server) handleCreateSite(w http.ResponseWriter, r *http.Request) {
 	var body createSiteRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -90,21 +90,6 @@ func (s *Server) handleCreateSite(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-
-	// Fast-path duplicate check. The actual race is closed by the UNIQUE
-	// constraint on blog_id + the INSERT below; this just produces a clean
-	// 409 for the common case.
-	exists, err := s.siteExists(ctx, *body.BlogID)
-	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, "db_error",
-			"site existence check failed: "+err.Error())
-		return
-	}
-	if exists {
-		writeError(w, r, http.StatusConflict, "site_exists",
-			fmt.Sprintf("Site %d already exists", *body.BlogID))
-		return
-	}
 
 	// Apply defaults for optional fields. Pointers stay nil if the column
 	// is nullable in the schema; non-nullable columns get explicit defaults.
@@ -153,6 +138,7 @@ func (s *Server) handleCreateSite(w http.ResponseWriter, r *http.Request) {
 		{set: body.AlertCooldownMinutes != nil, name: "alert_cooldown_minutes", value: nullableIntPtr(body.AlertCooldownMinutes)},
 	}
 	tenantID, tenantScoped := ownerTenantIDFromRequest(r)
+	var endpointID int64
 	if tenantScoped || configFields.hasSet() {
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
@@ -161,15 +147,22 @@ func (s *Server) handleCreateSite(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer func() { _ = tx.Rollback() }()
-		if _, err := tx.ExecContext(ctx, `
+		res, err := tx.ExecContext(ctx, `
 		INSERT INTO jetpack_monitor_sites
 			(blog_id, bucket_no, monitor_url, monitor_active, site_status, check_interval)
-		VALUES (?, ?, ?, ?, 1, ?)`, insertArgs...); err != nil {
+		VALUES (?, ?, ?, ?, 1, ?)`, insertArgs...)
+		if err != nil {
 			writeError(w, r, http.StatusInternalServerError, "db_error",
 				"site insert failed: "+err.Error())
 			return
 		}
-		if err := s.upsertSiteCheckConfig(ctx, tx, *body.BlogID, configFields); err != nil {
+		endpointID, err = res.LastInsertId()
+		if err != nil {
+			writeError(w, r, http.StatusInternalServerError, "db_error",
+				"site insert id lookup failed: "+err.Error())
+			return
+		}
+		if err := s.upsertSiteCheckConfig(ctx, tx, endpointID, *body.BlogID, configFields); err != nil {
 			writeError(w, r, http.StatusInternalServerError, "db_error",
 				"site check config insert failed: "+err.Error())
 			return
@@ -187,18 +180,25 @@ func (s *Server) handleCreateSite(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		if _, err := s.db.ExecContext(ctx, `
+		res, err := s.db.ExecContext(ctx, `
 		INSERT INTO jetpack_monitor_sites
 			(blog_id, bucket_no, monitor_url, monitor_active, site_status, check_interval)
-		VALUES (?, ?, ?, ?, 1, ?)`, insertArgs...); err != nil {
+		VALUES (?, ?, ?, ?, 1, ?)`, insertArgs...)
+		if err != nil {
 			writeError(w, r, http.StatusInternalServerError, "db_error",
 				"site insert failed: "+err.Error())
+			return
+		}
+		endpointID, err = res.LastInsertId()
+		if err != nil {
+			writeError(w, r, http.StatusInternalServerError, "db_error",
+				"site insert id lookup failed: "+err.Error())
 			return
 		}
 	}
 
 	// Read back the row to return it as the response body.
-	site, err := s.readSite(ctx, *body.BlogID)
+	site, err := s.readSite(ctx, endpointID)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, "db_error",
 			"read-back failed: "+err.Error())
@@ -267,17 +267,8 @@ func (s *Server) handleUpdateSite(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	if !s.ensureSiteVisibleForRequest(w, r, siteID) {
-		return
-	}
-	exists, err := s.siteExists(ctx, siteID)
-	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, "db_error",
-			"site lookup failed: "+err.Error())
-		return
-	}
-	if !exists {
-		writeSiteNotFound(w, r, siteID)
+	ident, ok := s.ensureEndpointVisibleForRequest(w, r, siteID)
+	if !ok {
 		return
 	}
 
@@ -306,7 +297,7 @@ func (s *Server) handleUpdateSite(w http.ResponseWriter, r *http.Request) {
 
 	if !configFields.hasSet() && body.CheckInterval == nil {
 		args = append(args, siteID)
-		query := "UPDATE jetpack_monitor_sites SET " + joinSetClauses(setClauses) + " WHERE blog_id = ?"
+		query := "UPDATE jetpack_monitor_sites SET " + joinSetClauses(setClauses) + " WHERE jetpack_monitor_site_id = ?"
 		if _, err := s.db.ExecContext(ctx, query, args...); err != nil {
 			writeError(w, r, http.StatusInternalServerError, "db_error",
 				"site update failed: "+err.Error())
@@ -322,7 +313,7 @@ func (s *Server) handleUpdateSite(w http.ResponseWriter, r *http.Request) {
 		defer func() { _ = tx.Rollback() }()
 		if len(setClauses) > 0 {
 			args = append(args, siteID)
-			query := "UPDATE jetpack_monitor_sites SET " + joinSetClauses(setClauses) + " WHERE blog_id = ?"
+			query := "UPDATE jetpack_monitor_sites SET " + joinSetClauses(setClauses) + " WHERE jetpack_monitor_site_id = ?"
 			if _, err := tx.ExecContext(ctx, query, args...); err != nil {
 				writeError(w, r, http.StatusInternalServerError, "db_error",
 					"site update failed: "+err.Error())
@@ -330,14 +321,14 @@ func (s *Server) handleUpdateSite(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if configFields.hasSet() {
-			if err := s.upsertSiteCheckConfig(ctx, tx, siteID, configFields); err != nil {
+			if err := s.upsertSiteCheckConfig(ctx, tx, ident.EndpointID, ident.BlogID, configFields); err != nil {
 				writeError(w, r, http.StatusInternalServerError, "db_error",
 					"site check config update failed: "+err.Error())
 				return
 			}
 		}
 		if body.CheckInterval != nil {
-			if err := jetdb.RescheduleSiteRuntime(ctx, tx, siteID, *body.CheckInterval); err != nil {
+			if err := jetdb.RescheduleSiteRuntime(ctx, tx, ident.EndpointID, ident.BlogID, *body.CheckInterval); err != nil {
 				writeError(w, r, http.StatusInternalServerError, "db_error",
 					"site runtime reschedule failed: "+err.Error())
 				return
@@ -374,28 +365,19 @@ func (s *Server) handleDeleteSite(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	if !s.ensureSiteVisibleForRequest(w, r, siteID) {
-		return
-	}
-	exists, err := s.siteExists(ctx, siteID)
-	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, "db_error",
-			"site lookup failed: "+err.Error())
-		return
-	}
-	if !exists {
-		writeSiteNotFound(w, r, siteID)
+	ident, ok := s.ensureEndpointVisibleForRequest(w, r, siteID)
+	if !ok {
 		return
 	}
 
-	if err := s.closeAllActiveEvents(ctx, siteID, "manual_override", "site deleted via API"); err != nil {
+	if err := s.closeAllActiveEvents(ctx, ident.EndpointID, ident.BlogID, "manual_override", "site deleted via API"); err != nil {
 		writeError(w, r, http.StatusInternalServerError, "db_error",
 			"close events failed: "+err.Error())
 		return
 	}
 
 	_, err = s.db.ExecContext(ctx,
-		`UPDATE jetpack_monitor_sites SET monitor_active = 0 WHERE blog_id = ?`, siteID)
+		`UPDATE jetpack_monitor_sites SET monitor_active = 0 WHERE jetpack_monitor_site_id = ?`, siteID)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, "db_error",
 			"site delete failed: "+err.Error())
@@ -432,17 +414,8 @@ func (s *Server) toggleSiteActive(w http.ResponseWriter, r *http.Request, active
 	}
 
 	ctx := r.Context()
-	if !s.ensureSiteVisibleForRequest(w, r, siteID) {
-		return
-	}
-	exists, err := s.siteExists(ctx, siteID)
-	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, "db_error",
-			"site lookup failed: "+err.Error())
-		return
-	}
-	if !exists {
-		writeSiteNotFound(w, r, siteID)
+	ident, ok := s.ensureEndpointVisibleForRequest(w, r, siteID)
+	if !ok {
 		return
 	}
 
@@ -450,7 +423,7 @@ func (s *Server) toggleSiteActive(w http.ResponseWriter, r *http.Request, active
 	// can move cleanly to "running" (which we then stamp as paused via the
 	// monitor_active flag).
 	if !active {
-		if err := s.closeAllActiveEvents(ctx, siteID, "manual_override", closeNote); err != nil {
+		if err := s.closeAllActiveEvents(ctx, ident.EndpointID, ident.BlogID, "manual_override", closeNote); err != nil {
 			writeError(w, r, http.StatusInternalServerError, "db_error",
 				"close events failed: "+err.Error())
 			return
@@ -458,7 +431,7 @@ func (s *Server) toggleSiteActive(w http.ResponseWriter, r *http.Request, active
 	}
 
 	_, err = s.db.ExecContext(ctx,
-		`UPDATE jetpack_monitor_sites SET monitor_active = ?, last_status_change = ? WHERE blog_id = ?`,
+		`UPDATE jetpack_monitor_sites SET monitor_active = ?, last_status_change = ? WHERE jetpack_monitor_site_id = ?`,
 		boolToTinyint(active), time.Now().UTC(), siteID)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, "db_error",
@@ -475,12 +448,13 @@ func (s *Server) toggleSiteActive(w http.ResponseWriter, r *http.Request, active
 	writeJSON(w, http.StatusOK, site)
 }
 
-// closeAllActiveEvents closes every open event for a site in a single tx
-// using the eventstore. Used by delete/pause/resume paths and any other
-// "the site is going away cleanly" flow.
-func (s *Server) closeAllActiveEvents(ctx context.Context, siteID int64, reason, note string) error {
+// closeAllActiveEvents closes every open endpoint-scoped event for one monitor
+// row. blog_id-level events are intentionally left alone because duplicated
+// blog rows can share those site-level events.
+func (s *Server) closeAllActiveEvents(ctx context.Context, endpointID, blogID int64, reason, note string) error {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id FROM jetmon_events WHERE blog_id = ? AND ended_at IS NULL`, siteID)
+		`SELECT id FROM jetmon_events WHERE blog_id = ? AND endpoint_id = ? AND ended_at IS NULL`,
+		blogID, endpointID)
 	if err != nil {
 		return err
 	}
@@ -504,7 +478,7 @@ func (s *Server) closeAllActiveEvents(ctx context.Context, siteID int64, reason,
 		// reference to it, but the standalone Close handles its own tx.
 		// For now, run the write inline with the orchestrator's eventstore
 		// shape.
-		if err := s.closeEvent(ctx, eventID, siteID, reason, meta); err != nil {
+		if err := s.closeEvent(ctx, eventID, endpointID, blogID, reason, meta); err != nil {
 			return fmt.Errorf("close event %d: %w", eventID, err)
 		}
 	}
@@ -516,7 +490,7 @@ func (s *Server) closeAllActiveEvents(ctx context.Context, siteID int64, reason,
 // this was the site's last active event.
 // Mirrors what eventstore.Tx.Close does without pulling the package in
 // here — keeps the import graph flat.
-func (s *Server) closeEvent(ctx context.Context, eventID, blogID int64, reason string, metadata []byte) error {
+func (s *Server) closeEvent(ctx context.Context, eventID, endpointID, blogID int64, reason string, metadata []byte) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -562,14 +536,17 @@ func (s *Server) closeEvent(ctx context.Context, eventID, blogID int64, reason s
 	if config.LegacyStatusProjectionEnabled() {
 		var activeCount int
 		if err := tx.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM jetmon_events WHERE blog_id = ? AND ended_at IS NULL`, blogID,
-		).Scan(&activeCount); err != nil {
+			`SELECT COUNT(*) FROM jetmon_events
+			  WHERE blog_id = ?
+			    AND (endpoint_id = ? OR endpoint_id IS NULL)
+			    AND ended_at IS NULL`,
+			blogID, endpointID).Scan(&activeCount); err != nil {
 			return fmt.Errorf("count active events: %w", err)
 		}
 		if activeCount == 0 {
 			if _, err := tx.ExecContext(ctx,
-				`UPDATE jetpack_monitor_sites SET site_status = 1, last_status_change = ? WHERE blog_id = ?`,
-				time.Now().UTC(), blogID); err != nil {
+				`UPDATE jetpack_monitor_sites SET site_status = 1, last_status_change = ? WHERE jetpack_monitor_site_id = ?`,
+				time.Now().UTC(), endpointID); err != nil {
 				return fmt.Errorf("project site_status: %w", err)
 			}
 		}
@@ -577,15 +554,17 @@ func (s *Server) closeEvent(ctx context.Context, eventID, blogID int64, reason s
 	return tx.Commit()
 }
 
-// readSite returns the API-shaped site object for blog_id. Used by the
+// readSite returns the API-shaped site object for jetpack_monitor_site_id. Used by the
 // write handlers' read-back step.
-func (s *Server) readSite(ctx context.Context, blogID int64) (siteResponse, error) {
+func (s *Server) readSite(ctx context.Context, endpointID int64) (siteResponse, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT `+siteSelectColumns("s.", "c.", "r.", false)+`
 		  FROM jetpack_monitor_sites s
+		  LEFT JOIN jetmon_endpoint_check_config ec ON ec.source_site_id = s.jetpack_monitor_site_id
 		  LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id
+		  LEFT JOIN jetmon_endpoint_runtime er ON er.source_site_id = s.jetpack_monitor_site_id
 		  LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id
-		 WHERE s.blog_id = ?`, blogID)
+		 WHERE s.jetpack_monitor_site_id = ?`, endpointID)
 	return scanSiteRow(row, false)
 }
 
@@ -772,14 +751,14 @@ func buildSiteCheckConfigFields(body updateSiteRequest, requestMethod, detection
 	return fields, nil
 }
 
-func (s *Server) upsertSiteCheckConfig(ctx context.Context, tx *sql.Tx, blogID int64, fields siteCheckConfigFields) error {
+func (s *Server) upsertSiteCheckConfig(ctx context.Context, tx *sql.Tx, endpointID, blogID int64, fields siteCheckConfigFields) error {
 	if !fields.hasSet() {
 		return nil
 	}
-	cols := []string{"blog_id"}
-	placeholders := []string{"?"}
+	cols := []string{"source_site_id", "blog_id"}
+	placeholders := []string{"?", "?"}
 	updates := []string{}
-	args := []any{blogID}
+	args := []any{endpointID, blogID}
 	for _, field := range fields {
 		if !field.set {
 			continue
@@ -790,9 +769,9 @@ func (s *Server) upsertSiteCheckConfig(ctx context.Context, tx *sql.Tx, blogID i
 		args = append(args, field.value)
 	}
 	query := fmt.Sprintf(`
-		INSERT INTO jetmon_site_check_config (%s)
+		INSERT INTO jetmon_endpoint_check_config (%s)
 		VALUES (%s)
-		ON DUPLICATE KEY UPDATE %s`,
+		ON DUPLICATE KEY UPDATE blog_id = VALUES(blog_id), %s`,
 		strings.Join(cols, ", "),
 		strings.Join(placeholders, ", "),
 		strings.Join(updates, ", "),

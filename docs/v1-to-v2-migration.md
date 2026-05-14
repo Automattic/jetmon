@@ -49,8 +49,9 @@ three-step check-policy migration:
 
 Set `DEFAULT_CHECK_METHOD=HEAD` and `DEFAULT_DETECTION_PROFILE=legacy` during
 the initial replacement phase. Per-site overrides live in
-`jetmon_site_check_config`; use that table or the API/CLI fields
-`request_method` and `detection_profile` to move batches through the phases.
+`jetmon_endpoint_check_config`; use that table or the API/CLI fields
+`request_method` and `detection_profile` to move endpoint batches through the
+phases. `jetmon_site_check_config` remains a blog-level fallback only.
 After migration, switch the process defaults to `GET` and `full`; keep
 per-site `HEAD` overrides only for sites that truly require legacy semantics.
 
@@ -476,7 +477,7 @@ are the fallback/reference path and match what the guided command walks through.
 
     `cutover-check` runs the pinned preflight, recent activity check,
     dashboard status check, and projection-drift report. Its activity section
-    proves the range has fresh `jetmon_site_runtime.last_checked_at` writes,
+    proves the range has fresh `jetmon_endpoint_runtime.last_checked_at` writes,
     not which process wrote them. Keep v1 stopped and use logs or the dashboard
     to confirm v2 is checking only the pinned range.
 11. After one full expected round, run:
@@ -603,7 +604,7 @@ For every replaced range, verify:
   ```
 
   After a full expected round, require every active site in the range to have a
-  fresh `jetmon_site_runtime.last_checked_at`:
+  fresh `jetmon_endpoint_runtime.last_checked_at`:
 
   ```bash
   ./jetmon2 rollout activity-check \
@@ -771,7 +772,7 @@ After v2 has replaced v1 and the fleet is stable, migrate probe semantics in
 separate batches:
 
 1. Select a small cohort and set `request_method='GET'`,
-   `detection_profile='simple_http'` in `jetmon_site_check_config` or through
+   `detection_profile='simple_http'` in `jetmon_endpoint_check_config` or through
    the API/CLI. Watch for false-positive floods, verifier disagreement, WPCOM
    parity issues, and support reports.
 2. Expand the `GET` + `simple_http` cohort only after the previous cohort is
@@ -789,7 +790,7 @@ separate batches:
    }
    ```
 
-5. Leave rows in `jetmon_site_check_config` only for sites that need an
+5. Leave rows in `jetmon_endpoint_check_config` only for endpoints that need an
    exception from the defaults, such as long-term `HEAD` compatibility.
 
 ## Phase 5: Tear Down v1

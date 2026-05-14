@@ -86,7 +86,10 @@ for a bounded one-minute follow-up when the normal interval is longer. Default:
 30.
 
 ALERT_COOLDOWN_MINUTES
-Minimum minutes between repeated down-alerts for the same site. Prevents alert storms during flapping. Default: 30. Can be overridden per site through the API or jetmon_site_check_config.alert_cooldown_minutes.
+Minimum minutes between repeated down-alerts for the same monitor endpoint.
+Prevents alert storms during flapping. Default: 30. Can be overridden through
+the API or jetmon_endpoint_check_config.alert_cooldown_minutes; the older
+jetmon_site_check_config value is used only as a blog-level fallback.
 
 STATS_UPDATE_INTERVAL_MS
 Milliseconds between StatsD metric flushes and stats file updates. Default: 10000.
@@ -104,7 +107,8 @@ true, the scheduler uses a short idle poll and the SQL due predicate decides
 which sites are ready to check. Default: 300.
 
 NET_COMMS_TIMEOUT
-Default HTTP request timeout in seconds. Can be overridden per site through the API or jetmon_site_check_config.timeout_seconds. Default: 10.
+Default HTTP request timeout in seconds. Can be overridden per endpoint through
+the API or jetmon_endpoint_check_config.timeout_seconds. Default: 10.
 
 CHECK_DNS_RESOLVERS
 Optional list of recursive resolver IPs for HTTP checks. Entries may include
@@ -125,16 +129,21 @@ Maximum response-body bytes checker will read when a keyword check is configured
 Set 0 to use the default budget.
 
 KEYWORD_READ_MAX_MS
-Keyword body-read budget in milliseconds. Set to 0 to inherit the request timeout envelope (NET_COMMS_TIMEOUT or a per-site jetmon_site_check_config.timeout_seconds override). If set > 0 and exhausted before the keyword is found, the check fails as timeout (ErrorTimeout), not keyword mismatch. Default: 0.
+Keyword body-read budget in milliseconds. Set to 0 to inherit the request
+timeout envelope (NET_COMMS_TIMEOUT or a per-endpoint
+jetmon_endpoint_check_config.timeout_seconds override). If set > 0 and
+exhausted before the keyword is found, the check fails as timeout
+(ErrorTimeout), not keyword mismatch. Default: 0.
 
 DEFAULT_CHECK_METHOD
-Default HTTP method for sites without a row in jetmon_site_check_config.
+Default HTTP method for endpoints without a row in jetmon_endpoint_check_config.
 Allowed values: HEAD or GET. Use HEAD during the first v1-to-v2 replacement
 phase when v2 should behave like the legacy monitor; use GET after the fleet is
 ready to exercise visitor-path checks by default. Default: GET.
 
 DEFAULT_DETECTION_PROFILE
-Default detection profile for sites without a row in jetmon_site_check_config.
+Default detection profile for endpoints without a row in
+jetmon_endpoint_check_config.
 Allowed values:
 - legacy: v1-compatible reachability semantics; no body checks, redirect
   advisory/fail policy, TLS advisory events, or body-read integrity failures.
@@ -151,7 +160,7 @@ Set to true to respect the check_interval column per site instead of running
 all sites every fixed-cadence pass. Recommended for production freshness
 testing because newly due sites are discovered without waiting for
 MIN_TIME_BETWEEN_ROUNDS_SEC. In legacy round-scheduler mode, Jetmon maintains
-jetmon_site_runtime.next_check_at after each completed check so due-site
+jetmon_endpoint_runtime.next_check_at after each completed check so due-site
 selection can use an indexed sidecar timestamp range instead of recomputing
 each row's interval on every poll. Successful checks use the site's normal
 check_interval; failed checks get a bounded one-minute follow-up when the
@@ -169,7 +178,8 @@ Default: legacy.
 
 STREAMING_LEGACY_PROJECTION_INTERVAL_MIN
 Coarse freshness projection interval used only when SCHEDULER_ENGINE is
-"streaming". Streaming mode does not update jetmon_site_runtime.last_checked_at
+"streaming". Streaming mode does not update
+jetmon_endpoint_runtime.last_checked_at
 after every successful probe; instead it batches the latest observation for each
 site at this cadence so a rollback to the legacy scheduler loses at most this
 many minutes of freshness data in normal operation. The accepted rollout window

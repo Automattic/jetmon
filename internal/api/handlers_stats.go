@@ -145,21 +145,12 @@ func (s *Server) handleSiteUptime(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "invalid_window", werr.Error())
 		return
 	}
-	if !s.ensureSiteVisibleForRequest(w, r, siteID) {
+	ident, ok := s.ensureEndpointVisibleForRequest(w, r, siteID)
+	if !ok {
 		return
 	}
 
-	// Verify the site exists. This guards against returning a 100% uptime
-	// answer for a nonexistent site, which would be confusing.
-	if exists, err := s.siteExists(r.Context(), siteID); err != nil {
-		writeError(w, r, http.StatusInternalServerError, "db_error", "site lookup failed: "+err.Error())
-		return
-	} else if !exists {
-		writeSiteNotFound(w, r, siteID)
-		return
-	}
-
-	stats, err := s.computeUptime(r.Context(), siteID, from, to)
+	stats, err := s.computeUptime(r.Context(), ident, from, to)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, "db_error",
 			"uptime query failed: "+err.Error())
@@ -204,14 +195,15 @@ type uptimeStats struct {
 // computeUptime walks events overlapping [from, to] and accumulates per-state
 // duration. Events that started before the window are clipped to from; events
 // still open at to are clipped to to.
-func (s *Server) computeUptime(ctx context.Context, siteID int64, from, to time.Time) (uptimeStats, error) {
+func (s *Server) computeUptime(ctx context.Context, ident siteIdentity, from, to time.Time) (uptimeStats, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT severity, state, started_at, ended_at
 		  FROM jetmon_events
 		 WHERE blog_id = ?
+		   AND (endpoint_id = ? OR endpoint_id IS NULL)
 		   AND started_at < ?
 		   AND (ended_at IS NULL OR ended_at > ?)`,
-		siteID, to, from)
+		ident.BlogID, ident.EndpointID, to, from)
 	if err != nil {
 		return uptimeStats{}, err
 	}
@@ -283,12 +275,12 @@ func (s *Server) computeUptime(ctx context.Context, siteID int64, from, to time.
 // handleSiteResponseTime returns p50/p95/p99/max/mean of total RTT over a
 // window, sourced from jetmon_check_history.
 func (s *Server) handleSiteResponseTime(w http.ResponseWriter, r *http.Request) {
-	siteID, from, to, ok := s.parseStatsRequest(w, r)
+	ident, from, to, ok := s.parseStatsRequest(w, r)
 	if !ok {
 		return
 	}
 
-	samples, truncated, err := s.queryRTTSamples(r.Context(), siteID, from, to)
+	samples, truncated, err := s.queryRTTSamples(r.Context(), ident, from, to)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, "db_error",
 			"response time query failed: "+err.Error())
@@ -321,12 +313,12 @@ func (s *Server) handleSiteResponseTime(w http.ResponseWriter, r *http.Request) 
 // handleSiteTimingBreakdown returns the same percentile shape as
 // handleSiteResponseTime but per-component (DNS/TCP/TLS/TTFB).
 func (s *Server) handleSiteTimingBreakdown(w http.ResponseWriter, r *http.Request) {
-	siteID, from, to, ok := s.parseStatsRequest(w, r)
+	ident, from, to, ok := s.parseStatsRequest(w, r)
 	if !ok {
 		return
 	}
 
-	rows, truncated, err := s.queryTimingSamples(r.Context(), siteID, from, to)
+	rows, truncated, err := s.queryTimingSamples(r.Context(), ident, from, to)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, "db_error",
 			"timing breakdown query failed: "+err.Error())
@@ -372,39 +364,30 @@ func (s *Server) handleSiteTimingBreakdown(w http.ResponseWriter, r *http.Reques
 // timing-breakdown handlers — validates id, parses window, verifies site
 // exists. Returns (siteID, from, to, true) on success or writes the error
 // response and returns ok=false.
-func (s *Server) parseStatsRequest(w http.ResponseWriter, r *http.Request) (siteID int64, from, to time.Time, ok bool) {
+func (s *Server) parseStatsRequest(w http.ResponseWriter, r *http.Request) (ident siteIdentity, from, to time.Time, ok bool) {
 	siteID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || siteID <= 0 {
 		writeError(w, r, http.StatusBadRequest, "invalid_site_id",
 			"site id must be a positive integer")
-		return 0, time.Time{}, time.Time{}, false
+		return siteIdentity{}, time.Time{}, time.Time{}, false
 	}
 	from, to, werr := resolveWindow(r.URL.Query())
 	if werr != nil {
 		writeError(w, r, http.StatusBadRequest, "invalid_window", werr.Error())
-		return 0, time.Time{}, time.Time{}, false
+		return siteIdentity{}, time.Time{}, time.Time{}, false
 	}
-	if !s.ensureSiteVisibleForRequest(w, r, siteID) {
-		return 0, time.Time{}, time.Time{}, false
+	ident, visible := s.ensureEndpointVisibleForRequest(w, r, siteID)
+	if !visible {
+		return siteIdentity{}, time.Time{}, time.Time{}, false
 	}
-	exists, err := s.siteExists(r.Context(), siteID)
-	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, "db_error",
-			"site lookup failed: "+err.Error())
-		return 0, time.Time{}, time.Time{}, false
-	}
-	if !exists {
-		writeSiteNotFound(w, r, siteID)
-		return 0, time.Time{}, time.Time{}, false
-	}
-	return siteID, from, to, true
+	return ident, from, to, true
 }
 
 // siteExists is a cheap existence check used by stats handlers.
 func (s *Server) siteExists(ctx context.Context, siteID int64) (bool, error) {
 	var dummy int64
 	err := s.db.QueryRowContext(ctx,
-		`SELECT 1 FROM jetpack_monitor_sites WHERE blog_id = ? LIMIT 1`, siteID,
+		`SELECT 1 FROM jetpack_monitor_sites WHERE jetpack_monitor_site_id = ? LIMIT 1`, siteID,
 	).Scan(&dummy)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -418,15 +401,15 @@ func (s *Server) siteExists(ctx context.Context, siteID int64) (bool, error) {
 // queryRTTSamples pulls rtt_ms values for a site within the window. Uses a
 // hard cap (maxSamples) and orders by checked_at DESC so a window with more
 // data than we can sort still returns the most recent sample.
-func (s *Server) queryRTTSamples(ctx context.Context, siteID int64, from, to time.Time) ([]int64, bool, error) {
+func (s *Server) queryRTTSamples(ctx context.Context, ident siteIdentity, from, to time.Time) ([]int64, bool, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT rtt_ms FROM jetmon_check_history
-		 WHERE blog_id = ?
+		 WHERE endpoint_id = ?
 		   AND checked_at >= ?
 		   AND checked_at < ?
 		   AND rtt_ms IS NOT NULL
 		 ORDER BY checked_at DESC
-		 LIMIT ?`, siteID, from, to, maxSamples+1)
+		 LIMIT ?`, ident.EndpointID, from, to, maxSamples+1)
 	if err != nil {
 		return nil, false, err
 	}
@@ -457,14 +440,14 @@ type timingRow struct {
 	dns, tcp, tls, ttfb int64
 }
 
-func (s *Server) queryTimingSamples(ctx context.Context, siteID int64, from, to time.Time) ([]timingRow, bool, error) {
+func (s *Server) queryTimingSamples(ctx context.Context, ident siteIdentity, from, to time.Time) ([]timingRow, bool, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT dns_ms, tcp_ms, tls_ms, ttfb_ms FROM jetmon_check_history
-		 WHERE blog_id = ?
+		 WHERE endpoint_id = ?
 		   AND checked_at >= ?
 		   AND checked_at < ?
 		 ORDER BY checked_at DESC
-		 LIMIT ?`, siteID, from, to, maxSamples+1)
+		 LIMIT ?`, ident.EndpointID, from, to, maxSamples+1)
 	if err != nil {
 		return nil, false, err
 	}

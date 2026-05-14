@@ -188,7 +188,7 @@ Reasoning: keeping list and single-resource shapes distinct means consumers don'
 
 ### Resource IDs
 
-All resource `id` fields are raw `BIGINT UNSIGNED` integers serialized as JSON numbers (not strings). Sites use the existing `blog_id`; events, transitions, webhooks, deliveries, and contacts use their respective table's auto-increment primary key. There is no type prefix or ULID encoding.
+All resource `id` fields are raw `BIGINT UNSIGNED` integers serialized as JSON numbers (not strings). Site `id` is the `jetpack_monitor_sites.jetpack_monitor_site_id` endpoint row id. `blog_id` remains exposed separately as the WPCOM/site identity and is not assumed to be unique across active monitor rows. Events, transitions, webhooks, deliveries, and contacts use their respective table's auto-increment primary key. There is no type prefix or ULID encoding.
 
 Type context comes from the **endpoint path** (`/api/v1/sites/12345` vs `/api/v1/events/12345`) and from explicit `type` fields where ambiguity would otherwise hurt — for example, error messages always name the resource type:
 
@@ -382,11 +382,14 @@ see rows mapped to `X-Jetmon-Tenant-ID` in `jetmon_site_tenants`.
 }
 ```
 
-`id` and `blog_id` are the same value for now; `id` is the public field name (`blog_id` is the historical column name). Consumers should rely on `id`.
+`id` is the monitor endpoint row id and `blog_id` is the WPCOM/site identity.
+Multiple active rows can share one `blog_id`, so consumers must use `id` for
+site-management, endpoint statistics, trigger-now, and pause/resume operations.
 
 The response intentionally merges v1-shaped `jetpack_monitor_sites` fields with
-v2-owned sidecar state from `jetmon_site_check_config` and
-`jetmon_site_runtime`; callers should use the API contract instead of assuming
+v2-owned endpoint sidecar state from `jetmon_endpoint_check_config` and
+`jetmon_endpoint_runtime`, falling back to the older blog-level sidecars when an
+endpoint row is absent. Callers should use the API contract instead of assuming
 all fields live in the legacy site table.
 
 `cli_batch` is an opt-in local-tooling projection. It is present only when
@@ -471,7 +474,9 @@ Create a site.
 
 When the `gateway` consumer creates a site with tenant context, Jetmon inserts
 the site row and the `(tenant_id, blog_id)` mapping in one transaction. Internal
-creates without tenant context keep the existing unscoped behavior.
+creates without tenant context keep the existing unscoped behavior. Creating
+multiple monitor URLs for the same `blog_id` is allowed; the response `id`
+identifies the endpoint row to use for later updates.
 
 `request_method` accepts `HEAD` or `GET`. `detection_profile` accepts
 `legacy`, `simple_http`, or `full`. Omit either field to inherit the process
@@ -488,7 +493,6 @@ then `GET` + `full`.
 | `invalid_check_policy` | `request_method` or `detection_profile` is not supported |
 | `invalid_custom_headers` | `custom_headers` is not a valid string map |
 | `invalid_forbidden_keywords` | `forbidden_keywords` is too large or contains invalid entries |
-| `site_exists` | A site with this `blog_id` already exists |
 
 #### `PATCH /api/v1/sites/{id}`
 
@@ -563,7 +567,7 @@ Incident history for a site. Default sort: most recent `started_at` first.
     {
       "id": 487291,
       "site_id": 12345,
-      "endpoint_id": null,
+      "endpoint_id": 678901,
       "check_type": "http",
       "discriminator": null,
       "severity": 4,
@@ -600,6 +604,10 @@ Incident history for a site. Default sort: most recent `started_at` first.
   "page": { "next": "eyJ...", "limit": 50 }
 }
 ```
+
+`site_id` in event and delivery payloads is the historical `blog_id`; for
+HTTP endpoint events, `endpoint_id` identifies the specific
+`jetpack_monitor_sites` row. Site-level events keep `endpoint_id: null`.
 
 `duration_ms` is a server-computed convenience: `(ended_at or now) - started_at`. `transition_count` lets the consumer decide whether to fetch the full transition log.
 
@@ -794,6 +802,12 @@ AND state    ∈ state_filter.states (or state_filter == {})
 ```
 
 Empty fields mean "no restriction on this dimension," matching the everyday English meaning of an empty filter. Same convention as Stripe, GitHub, and Slack webhooks — consumers can omit dimensions they don't care about and progressively narrow as needed. Blacklist/exclude fields are not supported in v1.
+
+`site_filter.site_ids` matches the historical `blog_id` / `site_id`, not
+`endpoint_id`. When one blog has multiple monitored endpoints, the filter
+matches all endpoints for that blog. Endpoint-specific delivery filters can be
+added later without changing existing payloads because `endpoint_id` is already
+included.
 
 #### Webhook delivery format
 
@@ -993,6 +1007,9 @@ Alert contacts use a simpler filter model than webhooks: **site list + severity 
 site_id ∈ site_filter.site_ids   (or site_filter == {} → all sites)
 AND new_severity >= min_severity (Up=0 < Warning=1 < Degraded=2 < SeemsDown=3 < Down=4)
 ```
+
+As with webhooks, `site_filter.site_ids` matches `blog_id` / `site_id` and not
+the monitor endpoint row id.
 
 Empty `site_filter` means "all sites." `min_severity` is required and defaults to `Down` on create — this is the most common case (page me only on real outages) and avoids accidental noise from new contacts.
 

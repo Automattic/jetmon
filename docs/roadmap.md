@@ -27,14 +27,15 @@ production telemetry branches:
   v1 with v2 using `HEAD` + `legacy`, then migrate controlled cohorts to
   `GET` + `simple_http`, then enable `GET` + `full` detections after stability
   is proven.
-- [x] Store per-site rollout check policy in `jetmon_site_check_config` instead
-  of adding more fields to `jetpack_monitor_sites`, reducing hot-schema-change
-  pressure on the legacy compatibility table.
+- [x] Store rollout check policy in v2-owned sidecar tables instead of adding
+  more fields to `jetpack_monitor_sites`, reducing hot-schema-change pressure
+  on the legacy compatibility table.
 - [x] Move remaining v2-only site options and runtime freshness fields out of
   `jetpack_monitor_sites` into v2-owned side tables before production. The
   legacy table remains v1-shaped for rollout compatibility, while
-  `jetmon_site_check_config` owns advanced per-site check policy/config and
-  `jetmon_site_runtime` owns freshness, due-time, alert, and SSL bookkeeping.
+  `jetmon_endpoint_check_config` owns advanced endpoint check policy/config and
+  `jetmon_endpoint_runtime` owns endpoint freshness, due-time, alert, and SSL
+  bookkeeping. The older `jetmon_site_*` sidecars remain blog-level fallbacks.
 - [x] Bring the service handoff recommendations and rollout prelaunch checklist
   into the repo as `docs/jetmon-v2-prelaunch-readiness.md`, linked from the
   docs index and migration runbook.
@@ -266,7 +267,7 @@ production telemetry branches:
   processing, sidecar freshness writes, check-history writes, SSL updates, and
   event handling so the next capacity retest can identify the exact slow stage.
 - [x] Batch passive per-check DB writes for
-  `jetmon_site_runtime.last_checked_at` freshness updates and
+  `jetmon_endpoint_runtime.last_checked_at` freshness updates and
   `jetmon_check_history` timing samples so healthy high-volume sweeps are not
   dominated by one UPDATE plus one INSERT per site.
 - [x] Avoid rewriting unchanged `ssl_expiry_date` values on every HTTPS check
@@ -294,7 +295,7 @@ production telemetry branches:
 - [ ] If MySQL CPU remains the limiting factor after batched writes, evaluate
   an asynchronous bounded check-history writer or lower-resolution history
   retention for healthy probes while keeping runtime freshness synchronous.
-- [x] Add maintained `jetmon_site_runtime.next_check_at` values and scheduler
+- [x] Add maintained `jetmon_endpoint_runtime.next_check_at` values and scheduler
   indexes so variable-interval due selection uses a simple indexed range
   predicate instead of computing `DATE_ADD(last_checked_at, INTERVAL
   GREATEST(check_interval, 1) MINUTE)` during every scheduler fetch. The
@@ -375,9 +376,8 @@ production telemetry branches:
 - [x] Add an explicit `jetmon2 rollout legacy-status-bootstrap` write step for
   existing v1 non-running rows so v2 event state can be seeded before
   `projection-drift` is treated as a hard rollout gate. The command is dry-run
-  by default and refuses duplicate active `blog_id` rows unless the operator
-  deliberately overrides the guardrail.
-- [ ] Move monitor runtime/config/event identity from per-`blog_id` state to
+  by default and is endpoint-aware when active duplicate `blog_id` rows exist.
+- [x] Move monitor runtime/config/event identity from per-`blog_id` state to
   explicit endpoint identity, using the existing `jetpack_monitor_site_id` row
   as the durable source during migration. This is required for the small but
   real production cohort where one `blog_id` has multiple active monitor URLs.
@@ -441,7 +441,7 @@ production telemetry branches:
   rollback simulations.
 - [x] Automate v2 service start failure after v1 stops, unwritable rollout log
   directory refusal, bad DB connection refusal, and real
-  `jetmon_site_runtime.last_checked_at` activity from the `jetmon2` service.
+  `jetmon_endpoint_runtime.last_checked_at` activity from the `jetmon2` service.
 - [x] Add snapshot-backed replay for every named VM lab smoke flow.
 
 ### Dashboard and Fleet Health TODO
@@ -971,7 +971,7 @@ The decisions affected:
 | Webhook signing | HMAC-SHA256 with shared secret per webhook | Asymmetric (Ed25519) becomes more attractive — public key at a well-known URL, no per-customer secret to leak |
 | Rate limiting | Per-key bucket sized for service protection | Per-tenant bucket sized for commerce/abuse |
 | Idempotency keys | Scoped by `(api_key_id, key)` | Scoped by `(tenant_id, api_key_id, key)` to prevent cross-tenant collisions |
-| Site `id` (= `blog_id`) | Numeric, canonical from WPCOM | Probably still numeric, but tenant-scoped on lookup |
+| Site `id` / `blog_id` | `id` is the monitor endpoint row id; `blog_id` is the WPCOM/site identity | Public API should expose a tenant-safe stable site identity and model monitor endpoints explicitly |
 
 The migrations are individually clean (each is "add a column, filter on it, deprecate the unscoped version") but they touch most of the API surface. A public-API exposure would be a significant project, not a flag flip.
 

@@ -40,7 +40,7 @@ writes only the v1 compatibility projection fields `site_status` and
 | `jetmon_events` | Authoritative current state of every incident |
 | `jetmon_event_transitions` | Append-only mutation history for events |
 | `jetmon_audit_log` | Operational trail for checks, retries, WPCOM calls, suppression, API access, and reloads |
-| `jetmon_check_history` | Request method plus RTT and timing samples for trending |
+| `jetmon_check_history` | Endpoint id, request method, RTT, and timing samples for trending |
 | `jetmon_false_positives` | Veriflier non-confirmation records |
 | `jetmon_api_keys` | Internal REST API Bearer-token registry |
 | `jetmon_webhooks` | Webhook registrations and HMAC signing secrets |
@@ -52,17 +52,22 @@ writes only the v1 compatibility projection fields `site_status` and
 | `jetmon_site_tenants` | Tenant-to-site mapping for gateway-scoped API access |
 | `jetmon_process_health` | Durable per-process heartbeat snapshots for host and fleet dashboards |
 | `jetmon_check_targets` | V2-native scheduling target state for the streaming monitor engine |
-| `jetmon_site_check_config` | Per-site v2 check config: rollout method/profile, body rules, maintenance windows, custom headers, timeout, redirect policy, and cooldown overrides |
-| `jetmon_site_runtime` | V2 runtime freshness and derived observation state such as last checked time, next due time, last alert time, and SSL expiry |
+| `jetmon_endpoint_check_config` | Primary per-endpoint v2 check config: rollout method/profile, body rules, maintenance windows, custom headers, timeout, redirect policy, and cooldown overrides |
+| `jetmon_endpoint_runtime` | Primary per-endpoint runtime freshness and derived observation state such as last checked time, next due time, last alert time, and SSL expiry |
+| `jetmon_site_check_config` | Legacy blog-level v2 check config fallback used while older tooling is phased out |
+| `jetmon_site_runtime` | Legacy blog-level runtime fallback/projection used while older tooling is phased out |
 
 ## Site Check Policy
 
-`jetmon_site_check_config` keeps staged rollout policy and rich v2 probe config
-out of `jetpack_monitor_sites`:
+`jetmon_endpoint_check_config` keeps staged rollout policy and rich v2 probe
+config out of `jetpack_monitor_sites`. It is keyed by
+`jetpack_monitor_sites.jetpack_monitor_site_id` so multiple active monitor URLs
+for one `blog_id` can use independent policy:
 
 ```sql
-CREATE TABLE `jetmon_site_check_config` (
-  `blog_id` bigint(20) unsigned NOT NULL PRIMARY KEY,
+CREATE TABLE `jetmon_endpoint_check_config` (
+  `source_site_id` bigint(20) unsigned NOT NULL PRIMARY KEY,
+  `blog_id` bigint(20) unsigned NOT NULL,
   `request_method` enum('HEAD','GET') NULL,
   `detection_profile` enum('legacy','simple_http','full') NULL,
   `check_keyword` varchar(500) NULL,
@@ -90,21 +95,27 @@ The API can expose a derived `cli_batch` field for local API CLI test data when
 `include_cli_metadata=true` is requested and `custom_headers` contains
 `X-Jetmon-CLI-Batch`; it is not a dedicated database column.
 
+`jetmon_site_check_config` has the same policy columns keyed by `blog_id`.
+Readers fall back to it when no endpoint row exists, but new API and rollout
+writes should target `jetmon_endpoint_check_config`.
+
 ## Site Runtime
 
-`jetmon_site_runtime` keeps v2 freshness and derived observations out of the
-legacy table:
+`jetmon_endpoint_runtime` keeps v2 freshness and derived observations out of
+the legacy table. It is keyed by endpoint row id for the same reason as the
+endpoint config table:
 
 ```sql
-CREATE TABLE `jetmon_site_runtime` (
-  `blog_id` bigint(20) unsigned NOT NULL PRIMARY KEY,
+CREATE TABLE `jetmon_endpoint_runtime` (
+  `source_site_id` bigint(20) unsigned NOT NULL PRIMARY KEY,
+  `blog_id` bigint(20) unsigned NOT NULL,
   `last_checked_at` datetime NULL,
   `next_check_at` datetime NULL,
   `last_alert_sent_at` datetime NULL,
   `ssl_expiry_date` date NULL,
   `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
-  INDEX `idx_next_check` (`next_check_at`, `blog_id`),
-  INDEX `idx_last_checked` (`last_checked_at`, `blog_id`)
+  INDEX `idx_next_check` (`next_check_at`, `source_site_id`),
+  INDEX `idx_last_checked` (`last_checked_at`, `source_site_id`)
 );
 ```
 
@@ -112,15 +123,19 @@ CREATE TABLE `jetmon_site_runtime` (
 checks, rollback visibility, and the legacy round scheduler without requiring
 v2 to rewrite the v1 compatibility table after every probe. The streaming
 scheduler keeps its hot due-time state in memory and in `jetmon_check_targets`;
-`jetmon_site_runtime` is a compatibility/readability projection, not the
+`jetmon_endpoint_runtime` is a compatibility/readability projection, not the
 high-frequency source of truth for streaming mode.
+
+`jetmon_site_runtime` remains readable as a blog-level fallback while older
+deployment artifacts are retired.
 
 ## Streaming Check Targets
 
 `jetmon_check_targets` is additive scheduling infrastructure for
 `SCHEDULER_ENGINE=streaming`. During migration, `jetpack_monitor_sites` remains
 the source of truth for v1-owned site identity and current legacy status, while
-`jetmon_site_check_config` carries v2-only probe config. The target table stores
+`jetmon_endpoint_check_config` carries v2-only probe config with
+`jetmon_site_check_config` as a blog-level fallback. The target table stores
 derived scheduling details such as source site row, bucket, interval, stable
 phase slot, config hash, and coarse last outcome fields so later iterations can
 sync scheduling state without repeatedly scanning the legacy table or writing

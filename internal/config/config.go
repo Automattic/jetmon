@@ -98,7 +98,7 @@ type Config struct {
 
 	// StreamingLegacyProjectionIntervalMin controls the coarse compatibility
 	// freshness write interval used by the streaming scheduler. It intentionally
-	// does not affect check cadence; it only bounds jetmon_site_runtime
+	// does not affect check cadence; it only bounds jetmon_endpoint_runtime
 	// freshness staleness for rollback to the legacy scheduler.
 	StreamingLegacyProjectionIntervalMin int `json:"STREAMING_LEGACY_PROJECTION_INTERVAL_MIN"`
 	StreamingTargetReloadSec             int `json:"STREAMING_TARGET_RELOAD_SEC"`

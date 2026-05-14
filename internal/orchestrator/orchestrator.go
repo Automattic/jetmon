@@ -947,8 +947,9 @@ func (o *Orchestrator) processResults(results map[int64]checker.Result, sites ma
 		if record.res.SSLExpiry != nil {
 			if shouldUpdateSSLExpiry(record.site.SSLExpiryDate, *record.res.SSLExpiry) {
 				sslUpdates = append(sslUpdates, db.SiteSSLExpiry{
-					BlogID: record.blogID,
-					Expiry: *record.res.SSLExpiry,
+					MonitorSiteID: record.site.ID,
+					BlogID:        record.blogID,
+					Expiry:        *record.res.SSLExpiry,
 				})
 			}
 			o.checkSSLAlerts(record.site, *record.res.SSLExpiry)
@@ -1066,7 +1067,7 @@ func (o *Orchestrator) updateSSLExpiries(updates []db.SiteSSLExpiry, summary *re
 		summary.sslErrors++
 		log.Printf("orchestrator: batch update ssl expiries rows=%d: %v", len(updates), err)
 		for _, update := range updates {
-			if err := dbUpdateSSLExpiry(o.ctx, update.BlogID, update.Expiry); err != nil {
+			if err := dbUpdateSSLExpiry(o.ctx, update.MonitorSiteID, update.BlogID, update.Expiry); err != nil {
 				summary.sslErrors++
 				log.Printf("orchestrator: update ssl expiry blog_id=%d: %v", update.BlogID, err)
 				continue
@@ -1106,9 +1107,10 @@ func (o *Orchestrator) markResultsChecked(records []siteCheckResult, summary *re
 	checks := make([]db.SiteCheck, 0, len(records))
 	for _, record := range records {
 		checks = append(checks, db.SiteCheck{
-			BlogID:      record.blogID,
-			CheckedAt:   resultCheckedAt(record.res),
-			NextCheckAt: nextCheckAt(record.site, record.res),
+			MonitorSiteID: record.site.ID,
+			BlogID:        record.blogID,
+			CheckedAt:     resultCheckedAt(record.res),
+			NextCheckAt:   nextCheckAt(record.site, record.res),
 		})
 	}
 
@@ -1117,7 +1119,7 @@ func (o *Orchestrator) markResultsChecked(records []siteCheckResult, summary *re
 		summary.markCheckedErrors++
 		log.Printf("orchestrator: batch mark checked sites=%d: %v", len(checks), err)
 		for _, check := range checks {
-			if err := dbMarkSiteChecked(o.ctx, check.BlogID, check.CheckedAt, check.NextCheckAt); err != nil {
+			if err := dbMarkSiteChecked(o.ctx, check.MonitorSiteID, check.BlogID, check.CheckedAt, check.NextCheckAt); err != nil {
 				summary.markCheckedErrors++
 				log.Printf("orchestrator: mark checked blog_id=%d: %v", check.BlogID, err)
 				continue
@@ -1133,7 +1135,7 @@ func (o *Orchestrator) markResultsChecked(records []siteCheckResult, summary *re
 func (o *Orchestrator) recordResultHistories(records []siteCheckResult, summary *resultProcessSummary) {
 	histories := make([]db.CheckHistoryRow, 0, len(records))
 	for _, record := range records {
-		histories = append(histories, checkHistoryRowForResult(record.blogID, record.res))
+		histories = append(histories, checkHistoryRowForResult(record.site, record.res))
 	}
 
 	start := time.Now()
@@ -1142,6 +1144,7 @@ func (o *Orchestrator) recordResultHistories(records []siteCheckResult, summary 
 		log.Printf("orchestrator: batch record check history rows=%d: %v", len(histories), err)
 		for _, row := range histories {
 			if err := dbRecordCheckHistory(
+				row.MonitorSiteID,
 				row.BlogID,
 				row.RequestMethod,
 				row.HTTPCode,
@@ -1177,6 +1180,7 @@ func (o *Orchestrator) recordStreamingHistoryRows(rows []db.CheckHistoryRow) res
 		log.Printf("orchestrator: streaming batch record check history rows=%d: %v", len(rows), err)
 		for _, row := range rows {
 			if err := dbRecordCheckHistory(
+				row.MonitorSiteID,
 				row.BlogID,
 				row.RequestMethod,
 				row.HTTPCode,
@@ -1197,9 +1201,10 @@ func (o *Orchestrator) recordStreamingHistoryRows(rows []db.CheckHistoryRow) res
 	return summary
 }
 
-func checkHistoryRowForResult(blogID int64, res checker.Result) db.CheckHistoryRow {
+func checkHistoryRowForResult(site db.Site, res checker.Result) db.CheckHistoryRow {
 	return db.CheckHistoryRow{
-		BlogID:        blogID,
+		MonitorSiteID: site.ID,
+		BlogID:        site.BlogID,
 		RequestMethod: res.Method,
 		HTTPCode:      res.HTTPCode,
 		ErrorCode:     res.ErrorCode,
@@ -2018,7 +2023,7 @@ func (o *Orchestrator) sendNotification(site db.Site, res checker.Result, status
 	}
 	emitCounter("wpcom.notification.delivered.count", 1)
 	emitCounter("wpcom.notification.status."+wpcomStatus+".delivered.count", 1)
-	if err := dbUpdateLastAlertSent(o.ctx, site.BlogID, nowFunc().UTC()); err != nil {
+	if err := dbUpdateLastAlertSent(o.ctx, site.ID, site.BlogID, nowFunc().UTC()); err != nil {
 		log.Printf("orchestrator: update last alert sent blog_id=%d: %v", site.BlogID, err)
 	}
 }
@@ -2050,7 +2055,7 @@ func (o *Orchestrator) logWPCOMPermanentFailure(blogID int64, err error) {
 	o.wpcomPermanentSuppressed++
 }
 
-// checkSSLAlerts manages a site-level tls_expiry event that tracks the cert's
+// checkSSLAlerts manages an endpoint-level tls_expiry event that tracks the cert's
 // remaining lifetime. The event is opened idempotently — once it's open, every
 // HTTPS check is a no-op on the events table unless the threshold (and thus
 // severity) changes. The event closes when the cert is renewed beyond the
@@ -2070,8 +2075,8 @@ func (o *Orchestrator) checkSSLAlerts(site db.Site, expiry time.Time) {
 	)
 
 	if daysUntil > warnDays {
-		// Cert is healthy. Close any pre-existing tls_expiry event for this site.
-		if err := o.closeSSLExpiryIfOpen(site.BlogID); err != nil {
+		// Cert is healthy. Close any pre-existing tls_expiry event for this endpoint.
+		if err := o.closeSSLExpiryIfOpen(site); err != nil {
 			log.Printf("orchestrator: close tls_expiry event blog_id=%d: %v", site.BlogID, err)
 		}
 		return
@@ -2089,25 +2094,25 @@ func (o *Orchestrator) checkSSLAlerts(site db.Site, expiry time.Time) {
 		"expires_at": expiry.UTC().Format(time.RFC3339),
 	})
 
-	if err := o.openOrUpdateSSLExpiry(site.BlogID, severity, state, daysUntil, meta); err != nil {
+	if err := o.openOrUpdateSSLExpiry(site, severity, state, daysUntil, meta); err != nil {
 		log.Printf("orchestrator: tls_expiry event blog_id=%d days=%d: %v", site.BlogID, daysUntil, err)
 		return
 	}
 	log.Printf("orchestrator: blog_id=%d SSL cert expires in %d days (severity %d)", site.BlogID, daysUntil, severity)
 }
 
-// openOrUpdateSSLExpiry opens a tls_expiry event for the site if none exists,
+// openOrUpdateSSLExpiry opens a tls_expiry event for the endpoint if none exists,
 // or escalates / de-escalates the existing event's severity if a threshold has
 // been crossed. site_status is intentionally not projected — TLS expiry
 // warnings don't affect the Up/Down state of the site (Layer 2 issue, not a
 // Layer 4 outage).
-func (o *Orchestrator) openOrUpdateSSLExpiry(blogID int64, severity uint8, state string, daysUntil int, meta json.RawMessage) error {
-	return o.withEventMutationRetry(blogID, "open_update_ssl_expiry", func() error {
-		return o.openOrUpdateSSLExpiryOnce(blogID, severity, state, daysUntil, meta)
+func (o *Orchestrator) openOrUpdateSSLExpiry(site db.Site, severity uint8, state string, daysUntil int, meta json.RawMessage) error {
+	return o.withEventMutationRetry(site.BlogID, "open_update_ssl_expiry", func() error {
+		return o.openOrUpdateSSLExpiryOnce(site, severity, state, daysUntil, meta)
 	})
 }
 
-func (o *Orchestrator) openOrUpdateSSLExpiryOnce(blogID int64, severity uint8, state string, daysUntil int, meta json.RawMessage) error {
+func (o *Orchestrator) openOrUpdateSSLExpiryOnce(site db.Site, severity uint8, state string, daysUntil int, meta json.RawMessage) error {
 	tx, err := o.ev().Begin(o.ctx)
 	if err != nil {
 		return err
@@ -2115,7 +2120,7 @@ func (o *Orchestrator) openOrUpdateSSLExpiryOnce(blogID int64, severity uint8, s
 	defer func() { _ = tx.Rollback() }()
 
 	out, err := tx.Open(o.ctx, eventstore.OpenInput{
-		Identity: eventstore.Identity{BlogID: blogID, CheckType: checkTypeTLSExpiry},
+		Identity: eventIdentity(site, checkTypeTLSExpiry),
 		Severity: severity,
 		State:    state,
 		Source:   o.hostname,
@@ -2139,15 +2144,15 @@ func (o *Orchestrator) openOrUpdateSSLExpiryOnce(blogID int64, severity uint8, s
 	return tx.Commit()
 }
 
-// closeSSLExpiryIfOpen closes an open tls_expiry event for the site, if any.
+// closeSSLExpiryIfOpen closes an open tls_expiry event for the endpoint, if any.
 // No-op if no event exists.
-func (o *Orchestrator) closeSSLExpiryIfOpen(blogID int64) error {
-	return o.withEventMutationRetry(blogID, "close_ssl_expiry", func() error {
-		return o.closeSSLExpiryIfOpenOnce(blogID)
+func (o *Orchestrator) closeSSLExpiryIfOpen(site db.Site) error {
+	return o.withEventMutationRetry(site.BlogID, "close_ssl_expiry", func() error {
+		return o.closeSSLExpiryIfOpenOnce(site)
 	})
 }
 
-func (o *Orchestrator) closeSSLExpiryIfOpenOnce(blogID int64) error {
+func (o *Orchestrator) closeSSLExpiryIfOpenOnce(site db.Site) error {
 	tx, err := o.ev().Begin(o.ctx)
 	if err != nil {
 		return err
@@ -2157,7 +2162,7 @@ func (o *Orchestrator) closeSSLExpiryIfOpenOnce(blogID int64) error {
 	if tx.Tx() == nil {
 		return tx.Commit()
 	}
-	ae, err := tx.FindActiveByBlog(o.ctx, blogID, checkTypeTLSExpiry)
+	ae, err := tx.FindActive(o.ctx, eventIdentity(site, checkTypeTLSExpiry))
 	if err != nil {
 		if errors.Is(err, eventstore.ErrEventNotFound) {
 			return tx.Commit()
@@ -2178,19 +2183,19 @@ func (o *Orchestrator) checkTLSDeprecated(site db.Site, res checker.Result) {
 			"cipher_suite":     tls.CipherSuiteName(res.CipherSuite),
 			"cipher_suite_id":  fmt.Sprintf("0x%04x", res.CipherSuite),
 		})
-		if err := o.openTLSDeprecated(site.BlogID, meta); err != nil {
+		if err := o.openTLSDeprecated(site, meta); err != nil {
 			log.Printf("orchestrator: tls_deprecated event blog_id=%d version=%s: %v",
 				site.BlogID, tlsVersionName(res.TLSVersion), err)
 		}
 		return
 	}
 
-	if err := o.closeTLSDeprecatedIfOpen(site.BlogID); err != nil {
+	if err := o.closeTLSDeprecatedIfOpen(site); err != nil {
 		log.Printf("orchestrator: close tls_deprecated event blog_id=%d: %v", site.BlogID, err)
 	}
 }
 
-func (o *Orchestrator) openTLSDeprecated(blogID int64, meta json.RawMessage) error {
+func (o *Orchestrator) openTLSDeprecated(site db.Site, meta json.RawMessage) error {
 	tx, err := o.ev().Begin(o.ctx)
 	if err != nil {
 		return err
@@ -2198,7 +2203,7 @@ func (o *Orchestrator) openTLSDeprecated(blogID int64, meta json.RawMessage) err
 	defer func() { _ = tx.Rollback() }()
 
 	if _, err := tx.Open(o.ctx, eventstore.OpenInput{
-		Identity: eventstore.Identity{BlogID: blogID, CheckType: checkTypeTLSDeprecated},
+		Identity: eventIdentity(site, checkTypeTLSDeprecated),
 		Severity: eventstore.SeverityWarning,
 		State:    eventstore.StateWarning,
 		Source:   o.hostname,
@@ -2209,7 +2214,7 @@ func (o *Orchestrator) openTLSDeprecated(blogID int64, meta json.RawMessage) err
 	return tx.Commit()
 }
 
-func (o *Orchestrator) closeTLSDeprecatedIfOpen(blogID int64) error {
+func (o *Orchestrator) closeTLSDeprecatedIfOpen(site db.Site) error {
 	tx, err := o.ev().Begin(o.ctx)
 	if err != nil {
 		return err
@@ -2219,7 +2224,7 @@ func (o *Orchestrator) closeTLSDeprecatedIfOpen(blogID int64) error {
 	if tx.Tx() == nil {
 		return tx.Commit()
 	}
-	ae, err := tx.FindActiveByBlog(o.ctx, blogID, checkTypeTLSDeprecated)
+	ae, err := tx.FindActive(o.ctx, eventIdentity(site, checkTypeTLSDeprecated))
 	if err != nil {
 		if errors.Is(err, eventstore.ErrEventNotFound) {
 			return tx.Commit()

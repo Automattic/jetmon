@@ -166,6 +166,7 @@ func (w *Worker) dispatchTick() error {
 		id             int64
 		eventID        int64
 		blogID         int64
+		endpointID     sql.NullInt64
 		severityBefore sql.NullInt64
 		severityAfter  sql.NullInt64
 		stateAfter     sql.NullString
@@ -174,10 +175,11 @@ func (w *Worker) dispatchTick() error {
 	}
 
 	rows, err := w.cfg.DB.QueryContext(ctx, `
-		SELECT id, event_id, blog_id, severity_before, severity_after, state_after, reason, changed_at
-		  FROM jetmon_event_transitions
-		 WHERE id > ?
-		 ORDER BY id ASC
+		SELECT t.id, t.event_id, t.blog_id, e.endpoint_id, t.severity_before, t.severity_after, t.state_after, t.reason, t.changed_at
+		  FROM jetmon_event_transitions t
+		  LEFT JOIN jetmon_events e ON e.id = t.event_id
+		 WHERE t.id > ?
+		 ORDER BY t.id ASC
 		 LIMIT ?`, lastID, w.cfg.BatchSize)
 	if err != nil {
 		return fmt.Errorf("query transitions: %w", err)
@@ -187,7 +189,7 @@ func (w *Worker) dispatchTick() error {
 	var transitions []transitionRow
 	for rows.Next() {
 		var t transitionRow
-		if err := rows.Scan(&t.id, &t.eventID, &t.blogID, &t.severityBefore, &t.severityAfter, &t.stateAfter, &t.reason, &t.changedAt); err != nil {
+		if err := rows.Scan(&t.id, &t.eventID, &t.blogID, &t.endpointID, &t.severityBefore, &t.severityAfter, &t.stateAfter, &t.reason, &t.changedAt); err != nil {
 			return fmt.Errorf("scan transition: %w", err)
 		}
 		transitions = append(transitions, t)
@@ -232,7 +234,7 @@ func (w *Worker) dispatchTick() error {
 			if !c.Matches(prev, next, t.blogID) {
 				continue
 			}
-			payload, err := buildPayload(eventType, t.id, t.eventID, t.blogID, t.reason, state, prev, next, t.changedAt)
+			payload, err := buildPayload(eventType, t.id, t.eventID, t.blogID, t.endpointID, t.reason, state, prev, next, t.changedAt)
 			if err != nil {
 				log.Printf("alerting: build payload event_id=%d transition_id=%d: %v", t.eventID, t.id, err)
 				continue
@@ -280,19 +282,27 @@ func eventTypeForReason(reason string) string {
 // buildPayload returns the JSON body stored on the delivery row. Frozen
 // at enqueue time. Includes both severity values so the renderer at
 // dispatch time can correctly distinguish escalation from recovery.
-func buildPayload(eventType string, transitionID, eventID, blogID int64, reason, state string, prev, next uint8, occurredAt time.Time) (json.RawMessage, error) {
+func buildPayload(eventType string, transitionID, eventID, blogID int64, endpointID sql.NullInt64, reason, state string, prev, next uint8, occurredAt time.Time) (json.RawMessage, error) {
 	body := map[string]any{
 		"type":            eventType,
 		"occurred_at":     occurredAt.UTC().Format(time.RFC3339Nano),
 		"transition_id":   transitionID,
 		"event_id":        eventID,
 		"site_id":         blogID,
+		"endpoint_id":     nullableInt64(endpointID),
 		"reason":          reason,
 		"state":           state,
 		"severity_before": prev,
 		"severity_after":  next,
 	}
 	return json.Marshal(body)
+}
+
+func nullableInt64(v sql.NullInt64) any {
+	if !v.Valid {
+		return nil
+	}
+	return v.Int64
 }
 
 // loadProgress / saveProgress mirror the webhooks worker on the
@@ -442,6 +452,7 @@ func (w *Worker) deliver(d Delivery) {
 func (w *Worker) buildNotification(ctx context.Context, contact *AlertContact, d Delivery) (Notification, error) {
 	var p struct {
 		SiteID         int64     `json:"site_id"`
+		EndpointID     *int64    `json:"endpoint_id"`
 		EventID        int64     `json:"event_id"`
 		EventType      string    `json:"type"`
 		Reason         string    `json:"reason"`
@@ -454,7 +465,7 @@ func (w *Worker) buildNotification(ctx context.Context, contact *AlertContact, d
 		return Notification{}, fmt.Errorf("decode payload: %w", err)
 	}
 
-	siteURL := lookupSiteURL(ctx, w.cfg.DB, p.SiteID)
+	siteURL := lookupSiteURL(ctx, w.cfg.DB, p.EndpointID, p.SiteID)
 	if siteURL == "" {
 		siteURL = fmt.Sprintf("site:%d", p.SiteID)
 	}
@@ -477,8 +488,17 @@ func (w *Worker) buildNotification(ctx context.Context, contact *AlertContact, d
 	}, nil
 }
 
-func lookupSiteURL(ctx context.Context, db *sql.DB, blogID int64) string {
+func lookupSiteURL(ctx context.Context, db *sql.DB, endpointID *int64, blogID int64) string {
 	var url sql.NullString
+	if endpointID != nil && *endpointID > 0 {
+		err := db.QueryRowContext(ctx,
+			`SELECT monitor_url FROM jetpack_monitor_sites WHERE jetpack_monitor_site_id = ?`,
+			*endpointID,
+		).Scan(&url)
+		if err == nil && url.Valid {
+			return url.String
+		}
+	}
 	err := db.QueryRowContext(ctx,
 		`SELECT monitor_url FROM jetpack_monitor_sites WHERE blog_id = ? LIMIT 1`,
 		blogID,

@@ -218,7 +218,7 @@ orchestrator.Run()
           │     ├─ collect results (deadline-bounded)
           │     │
           │     ├─ processResults()
-          │     │     ├─ dbMarkSitesChecked()       // jetmon_site_runtime freshness
+          │     │     ├─ dbMarkSitesChecked()       // jetmon_endpoint_runtime freshness
           │     │     ├─ dbRecordCheckHistories()   // method + RTT + DNS/TCP/TLS/TTFB
           │     │     ├─ dbUpdateSSLExpiries() + checkSSLAlerts()
           │     │     └─ handleRecovery(), handleFailure(),
@@ -399,7 +399,9 @@ Database Tables
     site_status           Legacy v1 projection; derived from v2 events
     last_status_change    Legacy v1 projection; derived from v2 transitions
 
-  jetmon_site_check_config V2-only per-site probe config
+  jetmon_endpoint_check_config V2-only per-endpoint probe config
+    source_site_id       jetpack_monitor_site_id endpoint identity
+    blog_id              WPCOM/site identity; not necessarily unique
     request_method        HEAD / GET rollout policy override
     detection_profile     legacy / simple_http / full detection profile
     check_keyword         Optional body text to require
@@ -411,7 +413,9 @@ Database Tables
     redirect_policy       follow / alert / fail
     alert_cooldown_minutes Per-site override for notification cooldown
 
-  jetmon_site_runtime     V2-only runtime/freshness projection
+  jetmon_endpoint_runtime V2-only runtime/freshness projection
+    source_site_id       jetpack_monitor_site_id endpoint identity
+    blog_id              WPCOM/site identity; not necessarily unique
     last_checked_at       Last completed local check timestamp
     next_check_at         Materialized variable-interval due time
     ssl_expiry_date       Updated after HTTPS checks

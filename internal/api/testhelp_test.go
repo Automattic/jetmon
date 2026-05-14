@@ -119,13 +119,21 @@ func invokeAuthed(_ *Server, req *http.Request, h http.HandlerFunc) *httptest.Re
 
 // columnsSite is the column set returned by the site list query.
 var columnsSite = []string{
-	"blog_id", "public_id", "monitor_url", "monitor_active", "bucket_no",
+	"jetpack_monitor_site_id", "blog_id", "monitor_url", "monitor_active", "bucket_no",
 	"check_interval", "site_status", "last_checked_at", "last_status_change",
 	"ssl_expiry_date", "check_keyword", "forbidden_keyword", "forbidden_keywords", "redirect_policy",
 	"request_method", "detection_profile", "maintenance_start", "maintenance_end", "alert_cooldown_minutes",
 }
 
 var columnsSiteWithCLIMetadata = append(append([]string{}, columnsSite...), "custom_headers")
+
+func endpointSiteRow(endpointID, blogID int64, monitorURL string, siteStatus int, bucketNo int, checkInterval int) *sqlmock.Rows {
+	return sqlmock.NewRows(columnsSite).AddRow(
+		endpointID, blogID, monitorURL, 1, bucketNo, checkInterval, siteStatus,
+		nil, nil, nil, nil, nil, nil,
+		"follow", nil, nil, nil, nil, nil,
+	)
+}
 
 // columnsActiveEvent is the column set returned by queryActiveEvents.
 var columnsActiveEvent = []string{
@@ -148,3 +156,5 @@ var columnsTransition = []string{
 const siteTenantCheckSQL = `SELECT 1 FROM jetmon_site_tenants WHERE tenant_id = ? AND blog_id = ? LIMIT 1`
 
 const insertSiteTenantTestSQL = ` INSERT INTO jetmon_site_tenants (tenant_id, blog_id, source) VALUES (?, ?, 'gateway') ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP`
+
+const siteIdentitySQL = `SELECT jetpack_monitor_site_id, blog_id FROM jetpack_monitor_sites WHERE jetpack_monitor_site_id = ?`

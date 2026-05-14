@@ -46,6 +46,44 @@ func (s *Server) siteVisibleToRequest(ctx context.Context, r *http.Request, blog
 	return true, nil
 }
 
+type siteIdentity struct {
+	EndpointID int64
+	BlogID     int64
+}
+
+func (s *Server) lookupSiteIdentity(ctx context.Context, endpointID int64) (siteIdentity, error) {
+	var ident siteIdentity
+	err := s.db.QueryRowContext(ctx,
+		`SELECT jetpack_monitor_site_id, blog_id FROM jetpack_monitor_sites WHERE jetpack_monitor_site_id = ?`,
+		endpointID,
+	).Scan(&ident.EndpointID, &ident.BlogID)
+	return ident, err
+}
+
+func (s *Server) ensureEndpointVisibleForRequest(w http.ResponseWriter, r *http.Request, endpointID int64) (siteIdentity, bool) {
+	ident, err := s.lookupSiteIdentity(r.Context(), endpointID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeSiteNotFound(w, r, endpointID)
+			return siteIdentity{}, false
+		}
+		writeError(w, r, http.StatusInternalServerError, "db_error",
+			"site lookup failed: "+err.Error())
+		return siteIdentity{}, false
+	}
+	ok, err := s.siteVisibleToRequest(r.Context(), r, ident.BlogID)
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, "db_error",
+			"site tenant lookup failed: "+err.Error())
+		return siteIdentity{}, false
+	}
+	if !ok {
+		writeSiteNotFound(w, r, endpointID)
+		return siteIdentity{}, false
+	}
+	return ident, true
+}
+
 func (s *Server) ensureSiteVisibleForRequest(w http.ResponseWriter, r *http.Request, blogID int64) bool {
 	ok, err := s.siteVisibleToRequest(r.Context(), r, blogID)
 	if err != nil {

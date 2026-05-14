@@ -16,6 +16,7 @@ import (
 	"github.com/Automattic/jetmon/internal/config"
 	"github.com/Automattic/jetmon/internal/db"
 	"github.com/Automattic/jetmon/internal/eventstore"
+	"github.com/DATA-DOG/go-sqlmock"
 )
 
 func TestRunRolloutCommandOutputJSON(t *testing.T) {
@@ -2057,7 +2058,7 @@ func TestBuildRolloutStateReportDynamicIssues(t *testing.T) {
 	}
 }
 
-func TestRunProductionDataAuditFlagsProductionShape(t *testing.T) {
+func TestRunProductionDataAuditWarnsOnDuplicateBlogRows(t *testing.T) {
 	cfg := &config.Config{BucketTotal: 512}
 	minBucket, maxBucket := 0, 511
 	audit := db.LegacySiteTableAudit{
@@ -2086,15 +2087,15 @@ func TestRunProductionDataAuditFlagsProductionShape(t *testing.T) {
 
 	var out bytes.Buffer
 	err := runProductionDataAudit(context.Background(), &out, cfg, -1, -1, deps)
-	if err == nil {
-		t.Fatal("runProductionDataAudit returned nil, want duplicate blog_id blocker")
+	if err != nil {
+		t.Fatalf("runProductionDataAudit returned error: %v", err)
 	}
 	text := out.String()
 	for _, want := range []string{
 		"INFO legacy_rows_total=1000 active=100",
 		"WARN production_data_audit=\"active non-running legacy rows=10",
-		"FAIL production_data_audit=\"active duplicate blog_id rows groups=1 rows=2",
-		"FAIL production_data_audit=blocked",
+		"WARN production_data_audit=\"active duplicate blog_id rows groups=1 rows=2",
+		"PASS production_data_audit=ready",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("audit output missing %q:\n%s", want, text)
@@ -2102,7 +2103,7 @@ func TestRunProductionDataAuditFlagsProductionShape(t *testing.T) {
 	}
 }
 
-func TestRunLegacyStatusBootstrapDryRunBlocksDuplicateBlogs(t *testing.T) {
+func TestRunLegacyStatusBootstrapDryRunWarnsForDuplicateBlogs(t *testing.T) {
 	cfg := &config.Config{BucketTotal: 10}
 	audit := db.LegacySiteTableAudit{
 		BucketMin:            0,
@@ -2115,17 +2116,20 @@ func TestRunLegacyStatusBootstrapDryRunBlocksDuplicateBlogs(t *testing.T) {
 			return audit, nil
 		},
 		ListLegacyNonRunningSites: func(context.Context, int, int, int64, int) ([]db.LegacyNonRunningSite, error) {
-			t.Fatal("ListLegacyNonRunningSites should not run when duplicate blog IDs block bootstrap")
+			t.Fatal("ListLegacyNonRunningSites should not run during dry-run")
 			return nil, nil
 		},
 	}
 
 	var out bytes.Buffer
 	err := runLegacyStatusBootstrap(context.Background(), &out, cfg, legacyStatusBootstrapOptions{BucketMin: 0, BucketMax: 9, BatchSize: 1000}, deps)
-	if err == nil {
-		t.Fatal("runLegacyStatusBootstrap returned nil, want duplicate blog_id blocker")
+	if err != nil {
+		t.Fatalf("runLegacyStatusBootstrap returned error: %v", err)
 	}
-	if !strings.Contains(out.String(), "FAIL bootstrap_blocked_by_duplicate_blog_ids groups=1 rows=2") {
+	if !strings.Contains(out.String(), "WARN bootstrap_duplicate_blog_ids_endpoint_aware groups=1 rows=2") {
+		t.Fatalf("bootstrap output = %s", out.String())
+	}
+	if !strings.Contains(out.String(), "PASS legacy_status_bootstrap=dry_run") {
 		t.Fatalf("bootstrap output = %s", out.String())
 	}
 }
@@ -2169,6 +2173,42 @@ func TestRunLegacyStatusBootstrapExecutesIdempotentPages(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "PASS legacy_status_bootstrap=complete candidates=3 opened=2 existing=1") {
 		t.Fatalf("bootstrap output = %s", out.String())
+	}
+}
+
+func TestOpenLegacyStatusEventUsesEndpointIdentity(t *testing.T) {
+	sqlDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer sqlDB.Close()
+
+	started := time.Date(2026, 5, 14, 1, 2, 3, 0, time.UTC)
+	metaMatcher := sqlmock.AnyArg()
+	mock.ExpectBegin()
+	mock.ExpectExec("INSERT INTO jetmon_events").
+		WithArgs(int64(42), int64(4200), "http", nil, eventstore.SeverityDown, eventstore.StateDown, started, metaMatcher).
+		WillReturnResult(sqlmock.NewResult(99, 1))
+	mock.ExpectExec("INSERT INTO jetmon_event_transitions").
+		WithArgs(int64(99), int64(42), nil, eventstore.SeverityDown, nil, eventstore.StateDown, eventstore.ReasonOpened, legacyStatusBootstrapSource, metaMatcher, started).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	opened, err := openLegacyStatusEvent(context.Background(), eventstore.New(sqlDB), db.LegacyNonRunningSite{
+		MonitorSiteID:    4200,
+		BlogID:           42,
+		BucketNo:         7,
+		SiteStatus:       2,
+		LastStatusChange: &started,
+	})
+	if err != nil {
+		t.Fatalf("openLegacyStatusEvent: %v", err)
+	}
+	if !opened {
+		t.Fatal("opened = false, want true")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
 	}
 }
 
@@ -2929,7 +2969,7 @@ func TestRunProjectionDriftReportListsRowsAndFails(t *testing.T) {
 				t.Fatalf("summary args = %d-%d limit=%d, want 2-4 limit=2", min, max, limit)
 			}
 			return []db.ProjectionDriftSummaryRow{
-				{BucketNo: 3, SiteStatus: 1, ExpectedStatus: 2, EventState: &eventState, MaxOpenEventCount: 1, DriftCount: 2, SampleBlogID: 42},
+				{BucketNo: 3, SiteStatus: 1, ExpectedStatus: 2, EventState: &eventState, MaxOpenEventCount: 1, DriftCount: 2, SampleEndpointID: 4200, SampleBlogID: 42},
 			}, nil
 		},
 		ListLegacyProjectionDrift: func(_ context.Context, min, max, limit int) ([]db.ProjectionDriftRow, error) {
@@ -2937,7 +2977,7 @@ func TestRunProjectionDriftReportListsRowsAndFails(t *testing.T) {
 				t.Fatalf("list args = %d-%d limit=%d, want 2-4 limit=1", min, max, limit)
 			}
 			return []db.ProjectionDriftRow{
-				{BlogID: 42, BucketNo: 3, SiteStatus: 1, ExpectedStatus: 2, EventID: &eventID, EventState: &eventState, OpenEventCount: 1},
+				{MonitorSiteID: 4200, BlogID: 42, BucketNo: 3, SiteStatus: 1, ExpectedStatus: 2, EventID: &eventID, EventState: &eventState, OpenEventCount: 1},
 			}, nil
 		},
 	}
@@ -2954,9 +2994,11 @@ func TestRunProjectionDriftReportListsRowsAndFails(t *testing.T) {
 		"WARN legacy_projection_drift_requires_manual_review=2",
 		"projection_drift_next_step=",
 		"SAMPLE_BLOG",
+		"SAMPLE_ENDPOINT",
 		"missing_confirmed_down_projection",
 		"projection_drift_cause=missing_confirmed_down_projection count=2",
 		"BLOG_ID",
+		"ENDPOINT_ID",
 		"42",
 		"Down",
 		"INFO projection_drift_rows_truncated=1",
@@ -2978,19 +3020,21 @@ func TestRunProjectionDriftReportUsesAllSummariesForCauseGuidance(t *testing.T) 
 			var summaries []db.ProjectionDriftSummaryRow
 			for i := range defaultProjectionDriftSummaryLimit {
 				summaries = append(summaries, db.ProjectionDriftSummaryRow{
-					BucketNo:       i,
-					SiteStatus:     1,
-					ExpectedStatus: 2,
-					DriftCount:     1,
-					SampleBlogID:   int64(100 + i),
+					BucketNo:         i,
+					SiteStatus:       1,
+					ExpectedStatus:   2,
+					DriftCount:       1,
+					SampleEndpointID: int64(1000 + i),
+					SampleBlogID:     int64(100 + i),
 				})
 			}
 			summaries = append(summaries, db.ProjectionDriftSummaryRow{
-				BucketNo:       99,
-				SiteStatus:     0,
-				ExpectedStatus: 1,
-				DriftCount:     1,
-				SampleBlogID:   999,
+				BucketNo:         99,
+				SiteStatus:       0,
+				ExpectedStatus:   1,
+				DriftCount:       1,
+				SampleEndpointID: 9990,
+				SampleBlogID:     999,
 			})
 			return summaries, nil
 		},
