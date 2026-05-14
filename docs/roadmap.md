@@ -41,8 +41,10 @@ production telemetry branches:
   address, port, and auth token; default concurrency and queue sizing are
   derived automatically.
 - [x] Make the Monitor client prefer `/v2/check` and `/v2/status`, cache the
-  successful protocol, and fall back to legacy JSON-over-HTTP only for
-  transition-safe unsupported-status responses.
+  successful protocol, and fall back only to `veriflier2`'s legacy-compatible
+  HTTP contract for transition-safe unsupported-v2 responses. The rollout plan
+  deploys a fresh v2 Veriflier fleet first and points v2 Monitors only at that
+  fleet; original v1 Verifliers are not v2 Monitor fallback targets.
 - [x] Count only unique Veriflier vantage identities in downtime quorum math,
   emit duplicate-vote metrics, preserve duplicate replies in audit metadata,
   and include quorum/vote evidence in event transition metadata.
@@ -88,8 +90,9 @@ production telemetry branches:
   static configured vantages to the DB registry before enabling active mode.
 - [ ] Add an uptime-bench scenario long enough to exercise full
   `Seems Down -> Down -> verifier_cleared` behavior with v2 vote evidence.
-- [x] Decide when legacy Veriflier fallback can be removed: keep fallback
-  through v2 rollout, then remove it only after every configured endpoint
+- [x] Decide when legacy-compatible `veriflier2` fallback can be removed: keep
+  fallback through v2 rollout as a guard, but do not rely on it for original v1
+  Verifliers. Remove it only after every configured v2 Veriflier endpoint
   reports v2 status, `validate-config` has no legacy-only Veriflier warnings
   for the fleet, production-like soak passes, and telemetry shows stable v2
   verifier reply/vote evidence. Exact gates are documented in

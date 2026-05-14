@@ -39,14 +39,18 @@ because it is intentionally **not** drop-in with the Jetmon 1 wire format
 
 **New — Veriflier v2 contract:**
 - Added versioned JSON-over-HTTP endpoints `POST /v2/check` and `GET /v2/status`
-  while keeping legacy `/check` and `/status` for mixed-fleet rollout.
+  while keeping `veriflier2` legacy-compatible `/check` and `/status`
+  endpoints available during rollout.
 - `/v2/check` carries batch/request IDs, request deadlines, body rules, typed
   outcomes, timing breakdowns, quorum `vantage.id`, and diagnostic `agent.id`.
 - Veriflier checks now run through a bounded concurrent executor. Saturated
   Verifliers reject whole batches with HTTP 503 so overload is treated as
   no-vote/unhealthy, not as customer-site downtime.
-- Monitor clients prefer the v2 contract and fall back to the legacy contract
-  when an older Veriflier does not advertise or serve v2.
+- Monitor clients prefer the v2 contract and fall back to the `veriflier2`
+  legacy-compatible HTTP contract only for transition-safe unsupported-v2
+  responses. The preferred rollout deploys a fresh v2 Veriflier fleet first and
+  points v2 Monitors only at that fleet; the original v1 Veriflier TLS/custom
+  transport is not a v2 Monitor fallback target.
 - Downtime quorum now counts unique v2 `vantage.id` values rather than raw
   Veriflier agent replies. Duplicate vantage replies are audited but ignored
   for quorum, and multi-Veriflier fleets retain a two-healthy-vantage floor
@@ -78,9 +82,9 @@ because it is intentionally **not** drop-in with the Jetmon 1 wire format
 - `jetmon2 telemetry report` now includes v2 Veriflier vote-evidence rollups:
   duplicate votes ignored for quorum, duplicate-vote transitions,
   minimum-healthy-floor blocks, and max observed quorum/healthy-vantage counts.
-- Documented legacy Veriflier fallback removal gates and the v2 naming
-  decision: keep `veriflier` / `veriflier2` through rollout, use a clearer
-  probe-agent name only for a future v3 architecture.
+- Documented `veriflier2` legacy-compatible fallback removal gates and the v2
+  naming decision: keep `veriflier` / `veriflier2` through rollout, use a
+  clearer probe-agent name only for a future v3 architecture.
 
 **New — webhooks (Phase 3):**
 - `jetmon_webhooks` registry + `jetmon_webhook_deliveries` per-fire records

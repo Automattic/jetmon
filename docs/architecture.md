@@ -409,9 +409,11 @@ The transport is JSON-over-HTTP for v2 production. `proto/veriflier.proto`
 remains as a schema reference for a possible future transport, but generated
 gRPC stubs are not required to build or deploy v2.
 
-The monitor prefers `/v2/check` and falls back to `/check` when an older
-Veriflier returns a capability-style unsupported response. New Verifliers serve
-both contracts during rollout.
+The monitor prefers `/v2/check` and falls back to `/check` only for
+`veriflier2`'s legacy-compatible HTTP endpoint when v2 is unavailable. The
+preferred rollout deploys a fresh v2 Veriflier fleet first and points v2
+Monitors only at that fleet; original v1 Verifliers use the old TLS/custom
+transport and are not v2 Monitor fallback targets.
 
 `vantage.id` is the quorum identity. Horizontal replicas behind the same
 regional or provider endpoint must report the same `vantage.id`; `agent.id`

@@ -303,32 +303,34 @@ v2 JSON contract:
 - legacy: `POST /check`, `GET /status`
 - v2: `POST /v2/check`, `GET /v2/status`
 
-Deploy updated Verifliers before switching monitor hosts when possible. New
-monitors prefer `/v2/check` and automatically fall back to `/check` when an
-older Veriflier does not support the v2 endpoint, so a mixed fleet is expected
-during rollout.
+Deploy the new v2 Veriflier fleet before switching monitor hosts. The preferred
+rollout uses fresh Veriflier servers, proves that fleet independently, then
+points v2 Monitors only at those `veriflier2` endpoints. Keep the original v1
+Verifliers serving the original v1 Monitors until monitor cutover is complete.
 
-This Veriflier replacement is safe to do before the monitor rollout. v1
-monitors continue to use the legacy `/check` and `/status` endpoints; v2
-monitors use `/v2/check` and `/v2/status` when available. Keep the same
-Veriflier hostname, port, and shared auth token when replacing an existing
-endpoint, and both monitor generations can use the new `veriflier2` process.
+Do not depend on v2 Monitors talking to original v1 Verifliers. The original v1
+Veriflier uses the old TLS/custom transport, while the v2 Monitor speaks the Go
+JSON-over-HTTP Veriflier contract. The Monitor's legacy `/check` fallback is
+for `veriflier2`'s legacy-compatible endpoint, not for the original v1
+Veriflier process.
 
-Deploy one Veriflier endpoint at a time:
+Deploy one new v2 Veriflier endpoint at a time:
 
-1. Stage the new `veriflier2` binary and its config on the Veriflier host.
-2. Keep the existing listen port and monitor auth token unchanged.
+1. Stage the `veriflier2` binary and its config on the new Veriflier host.
+2. Set the listen port and monitor auth token that v2 Monitors will use.
 3. Set `VERIFLIER_VANTAGE_ID` to a stable regional/provider identity. Leave
    database settings unset; Veriflier hosts do not need database credentials.
-4. Restart the Veriflier service for that endpoint.
-5. From a monitor runtime host, verify both status endpoints and then resume
+4. Start or restart the Veriflier service for that endpoint.
+5. From a v2 monitor runtime host, verify both status endpoints and then resume
    with the next Veriflier endpoint.
 
 If the endpoint is a load-balanced pool, roll the backend replicas one at a
 time. All replicas behind the same monitor-side endpoint must share the same
 `VERIFLIER_VANTAGE_ID`, because that endpoint is one quorum vote. If a rollback
-is needed, restart the previous Veriflier binary on the same host, port, and
-token; no Jetmon database rollback is required for a Veriflier-only rollback.
+is needed before monitor cutover, remove that new v2 endpoint from the pending
+v2 Monitor config or restart the previous `veriflier2` binary on the same new
+endpoint. No Jetmon database rollback is required for a Veriflier-only
+rollback.
 
 For each Veriflier endpoint, set a stable `VERIFLIER_VANTAGE_ID` when the
 endpoint represents a region/provider vantage. Multiple horizontally scaled
@@ -342,9 +344,9 @@ duplicate reply is retained in audit metadata. In multi-Veriflier layouts,
 Jetmon keeps a two-healthy-vantage floor unless `PEER_OFFLINE_LIMIT=1` was
 intentionally configured.
 
-Before advancing a monitor range that depends on a newly staged Veriflier,
-run `validate-config` and verify both status endpoints from the monitor runtime
-host:
+Before advancing a monitor range that depends on the new v2 Veriflier fleet,
+run `validate-config` and verify both status endpoints from the v2 monitor
+runtime host:
 
 ```bash
 ./jetmon2 validate-config
@@ -391,8 +393,10 @@ liveness/capacity, so Veriflier hosts do not need database credentials. Those
 rows do not create quorum votes unless an operator has created and enabled the
 matching `jetmon_veriflier_vantages` row.
 
-Keep legacy `/check` fallback enabled through the v2 rollout. Remove it only in
-a follow-up branch after all of these are true:
+Keep `veriflier2`'s legacy `/check` fallback enabled through the v2 rollout as
+a compatibility guard, but do not treat it as support for original v1
+Verifliers. Remove the fallback only in a follow-up branch after all of these
+are true:
 
 - every configured Veriflier endpoint reports `/v2/status` with
   `v2-json-http`, a stable `vantage.id`, `agent.id`, and non-zero capacity
@@ -404,7 +408,8 @@ a follow-up branch after all of these are true:
   promotion/recovery
 - `./jetmon2 telemetry report` shows stable verifier reply and vote evidence
   with no verifier metadata gaps over the agreed production window
-- rollback plans no longer depend on any legacy Veriflier endpoint
+- rollback plans no longer depend on any legacy-compatible `veriflier2`
+  endpoint
 
 Keep the historical `veriflier` / `veriflier2` names during v2 rollout. A v3
 probe architecture can introduce a clearer `probe-agent` or `vantage-agent`
