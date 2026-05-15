@@ -32,6 +32,68 @@ type localConfigView struct {
 	EnvOverrides []string          `json:"env_overrides,omitempty"`
 }
 
+type localConfigKeyInfo struct {
+	Key         string `json:"key"`
+	Type        string `json:"type"`
+	Values      string `json:"values,omitempty"`
+	Default     string `json:"default,omitempty"`
+	Sensitive   bool   `json:"sensitive"`
+	Description string `json:"description"`
+}
+
+var localConfigKeys = []localConfigKeyInfo{
+	{
+		Key:         "base_url",
+		Type:        "url",
+		Default:     defaultAPIBaseURL,
+		Description: "API base URL used by `jetmon2 api` when --base-url and JETMON_API_URL are not set.",
+	},
+	{
+		Key:         "token",
+		Type:        "string",
+		Sensitive:   true,
+		Description: "Bearer token stored directly in the config file. Prefer token_file when possible.",
+	},
+	{
+		Key:         "token_file",
+		Type:        "path",
+		Sensitive:   true,
+		Description: "File containing the Bearer token. Relative paths are resolved from the config directory.",
+	},
+	{
+		Key:         "auth_policy",
+		Type:        "enum",
+		Values:      "same-origin, any-origin",
+		Default:     defaultAPIAuthPolicy,
+		Description: "Controls when automatic Authorization and Idempotency-Key headers are attached.",
+	},
+	{
+		Key:         "allow_remote",
+		Type:        "bool",
+		Default:     "false",
+		Description: "Allow API writes to non-local URLs by default. Production writes should still be deliberate.",
+	},
+	{
+		Key:         "timeout",
+		Type:        "duration",
+		Default:     "10s",
+		Description: "HTTP request timeout for API CLI calls, such as 10s or 2m.",
+	},
+	{
+		Key:         "output",
+		Type:        "enum",
+		Values:      "json, table",
+		Default:     "json",
+		Description: "Default response output format for API CLI commands.",
+	},
+	{
+		Key:         "pretty",
+		Type:        "bool",
+		Default:     "false",
+		Description: "Pretty-print JSON responses by default.",
+	},
+}
+
 func cmdLocalConfig(args []string) {
 	if len(args) == 0 {
 		printLocalConfigUsage(os.Stderr)
@@ -50,11 +112,13 @@ func cmdLocalConfig(args []string) {
 		err = cmdLocalConfigSet(args[1:], opts)
 	case "unset", "delete":
 		err = cmdLocalConfigUnset(args[1:], opts)
+	case "keys":
+		err = cmdLocalConfigKeys(args[1:], opts)
 	case "--help", "-h", "help":
 		printLocalConfigUsage(os.Stdout)
 		return
 	default:
-		fmt.Fprintf(os.Stderr, "unknown local-config subcommand %q (want: path, show, init, set, unset)\n", args[0])
+		fmt.Fprintf(os.Stderr, "unknown local-config subcommand %q (want: path, show, init, set, unset, keys)\n", args[0])
 		printLocalConfigUsage(os.Stderr)
 		os.Exit(1)
 	}
@@ -65,7 +129,7 @@ func cmdLocalConfig(args []string) {
 }
 
 func printLocalConfigUsage(w io.Writer) {
-	fmt.Fprintln(w, "usage: jetmon2 local-config <path|show|init|set|unset> [flags]")
+	fmt.Fprintln(w, "usage: jetmon2 local-config <path|show|init|set|unset|keys> [flags]")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Manage the local operator API config used by `jetmon2 api`.")
 	fmt.Fprintln(w, "This command does not edit the deployed Monitor service config.")
@@ -76,6 +140,7 @@ func printLocalConfigUsage(w io.Writer) {
 	fmt.Fprintln(w, "Examples:")
 	fmt.Fprintln(w, "  jetmon2 local-config init --base-url https://jetmon-v2-api.example.com --token-file jetmon2-api-token")
 	fmt.Fprintln(w, "  jetmon2 local-config show")
+	fmt.Fprintln(w, "  jetmon2 local-config keys")
 	fmt.Fprintln(w, "  jetmon2 local-config set output table")
 	fmt.Fprintln(w, "  jetmon2 local-config unset allow_remote")
 }
@@ -254,6 +319,30 @@ func cmdLocalConfigUnset(args []string, opts localConfigCommandOptions) error {
 	return err
 }
 
+func cmdLocalConfigKeys(args []string, opts localConfigCommandOptions) error {
+	fs := flag.NewFlagSet("local-config keys", flag.ContinueOnError)
+	fs.SetOutput(opts.errOut)
+	output := fs.String("output", "table", "output format: table or json")
+	fs.Usage = func() {
+		fmt.Fprintf(fs.Output(), "Usage of %s:\n", fs.Name())
+		printAPIFlagDefaults(fs.Output(), fs)
+	}
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("usage: jetmon2 local-config keys [--output=table|json]")
+	}
+	switch *output {
+	case "", "table", "text":
+		return writeLocalConfigKeysTable(opts.out, localConfigKeys)
+	case "json":
+		return writeJSONValue(opts.out, map[string]any{"keys": localConfigKeys}, true)
+	default:
+		return errors.New("output must be one of: table, json")
+	}
+}
+
 func buildLocalConfigView(path string, fileOnly bool) (localConfigView, error) {
 	view := localConfigView{
 		Path:   path,
@@ -402,6 +491,22 @@ func writeLocalConfigTable(w io.Writer, view localConfigView, fileOnly bool) err
 	}
 	if len(view.EnvOverrides) > 0 {
 		fmt.Fprintf(tw, "env_overrides\t%s\n", strings.Join(view.EnvOverrides, ","))
+	}
+	return tw.Flush()
+}
+
+func writeLocalConfigKeysTable(w io.Writer, keys []localConfigKeyInfo) error {
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "key\ttype\tvalues\tdefault\tsensitive\tdescription")
+	for _, key := range keys {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%t\t%s\n",
+			key.Key,
+			key.Type,
+			key.Values,
+			key.Default,
+			key.Sensitive,
+			key.Description,
+		)
 	}
 	return tw.Flush()
 }

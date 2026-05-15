@@ -41,6 +41,7 @@ For repeated operator use, put defaults in `~/.config/jetmon2.conf` or point
   --base-url=http://localhost:8090 \
   --token-file=jetmon2-api-token
 ./bin/jetmon2 local-config show
+./bin/jetmon2 local-config keys
 ```
 
 ```conf

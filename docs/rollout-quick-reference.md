@@ -20,6 +20,7 @@ Configure the operator CLI with `~/.config/jetmon2.conf` or
   --token-file=jetmon2-api-token \
   --default-output=table
 ./jetmon2 local-config show
+./jetmon2 local-config keys
 ```
 
 ```conf

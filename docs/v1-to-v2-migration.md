@@ -43,6 +43,7 @@ explicit `JETMON_API_CONFIG` path:
   --token-file=jetmon2-api-token \
   --default-output=table
 ./jetmon2 local-config show
+./jetmon2 local-config keys
 ```
 
 ```conf
@@ -681,6 +682,7 @@ mkdir -p ~/.config
   --token-file=jetmon2-api-token \
   --default-output=table
 ./jetmon2 local-config show
+./jetmon2 local-config keys
 ```
 
 ```conf

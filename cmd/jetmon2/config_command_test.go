@@ -98,3 +98,23 @@ func TestLocalConfigPathJSON(t *testing.T) {
 		t.Fatalf("output = %s, want path", out.String())
 	}
 }
+
+func TestLocalConfigKeysListsSupportedKeys(t *testing.T) {
+	var out bytes.Buffer
+	err := cmdLocalConfigKeys(nil, localConfigCommandOptions{
+		out:    &out,
+		errOut: ioDiscard{},
+	})
+	if err != nil {
+		t.Fatalf("cmdLocalConfigKeys() error = %v", err)
+	}
+	rendered := out.String()
+	for _, want := range []string{"base_url", "token_file", "auth_policy", "allow_remote", "timeout", "output", "pretty"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("keys output missing %q:\n%s", want, rendered)
+		}
+	}
+	if !strings.Contains(rendered, "same-origin, any-origin") {
+		t.Fatalf("keys output missing auth policy values:\n%s", rendered)
+	}
+}
