@@ -144,13 +144,17 @@ The guided command wraps these control-plane API primitives:
 ./jetmon2 api rollout activate-buckets --bucket-min=0 --bucket-max=99 --dry-run --allow-remote
 ./jetmon2 api rollout activate-buckets --bucket-min=0 --bucket-max=99 --execute --confirm=<token> --allow-remote
 ./jetmon2 api rollout status --allow-remote
+./jetmon2 api rollout bucket-coverage --bucket-min=0 --bucket-max=99 --allow-remote
+./jetmon2 api rollout activity-check --bucket-min=0 --bucket-max=99 --since=15m --allow-remote
+./jetmon2 api rollout projection-drift --bucket-min=0 --bucket-max=99 --allow-remote
+./jetmon2 api rollout release-buckets --bucket-min=0 --bucket-max=99 --dry-run --allow-remote
 ./jetmon2 api rollout release-buckets --bucket-min=0 --bucket-max=99 --execute --confirm=<token> --allow-remote
-./jetmon2 api rollout compare-methods --from=head-legacy --to=get-simple --sample-size=100 --allow-remote
-./jetmon2 api rollout stage-policy --method=GET --profile=simple_http --size=1000 --dry-run --allow-remote
-./jetmon2 api rollout stage-policy --method=GET --profile=simple_http --size=1000 --execute --confirm=<token> --allow-remote
-./jetmon2 api rollout stage-policy --method=GET --profile=full --size=1% --dry-run --allow-remote
-./jetmon2 api rollout stage-policy --mode=rollback-last-stage --dry-run --allow-remote
-./jetmon2 api rollout stage-policy --mode=rollback-all --dry-run --allow-remote
+./jetmon2 api rollout compare-methods --bucket-min=0 --bucket-max=99 --from=head-legacy --to=get-simple --sample-size=100 --allow-remote
+./jetmon2 api rollout stage-policy --bucket-min=0 --bucket-max=99 --method=GET --profile=simple_http --size=1000 --dry-run --allow-remote
+./jetmon2 api rollout stage-policy --bucket-min=0 --bucket-max=99 --method=GET --profile=simple_http --size=1000 --execute --confirm=<token> --allow-remote
+./jetmon2 api rollout stage-policy --bucket-min=0 --bucket-max=99 --method=GET --profile=full --size=1% --dry-run --allow-remote
+./jetmon2 api rollout stage-policy --bucket-min=0 --bucket-max=99 --mode=rollback-last-stage --dry-run --allow-remote
+./jetmon2 api rollout stage-policy --bucket-min=0 --bucket-max=99 --mode=rollback-all --dry-run --allow-remote
 ```
 
 Dangerous API rollout actions must be idempotent, admin-scoped, audited, and
@@ -160,6 +164,9 @@ operators cannot activate overlapping ranges at the same time. A Monitor owner
 may hold only one contiguous API-controlled range at a time; use separate
 Monitor hosts for parallel ranges, or release the current range before
 activating another range for the same host.
+Confirmation tokens are bound to the authenticated API key identity. Reusing a
+token from a different key should fail, even if both keys belong to the same
+team.
 
 ## What Changes For Customers
 

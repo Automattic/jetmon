@@ -24,6 +24,9 @@ func TestRolloutCapabilities(t *testing.T) {
 	if resp.ServerHost != "test-host" {
 		t.Fatalf("server_host = %q, want test-host", resp.ServerHost)
 	}
+	if resp.ConfirmationTokenTTLSeconds != int(rolloutConfirmationTTL.Seconds()) {
+		t.Fatalf("confirmation ttl = %d, want %d", resp.ConfirmationTokenTTLSeconds, int(rolloutConfirmationTTL.Seconds()))
+	}
 	if !containsString(resp.Features, "confirmation_tokens") {
 		t.Fatalf("features = %#v, want confirmation_tokens", resp.Features)
 	}
@@ -95,5 +98,15 @@ func TestRolloutStageSize(t *testing.T) {
 	}
 	if _, err := rolloutStageSize("0%", 100); err == nil {
 		t.Fatal("rolloutStageSize accepted zero percentage")
+	}
+}
+
+func TestRolloutOperatorBindsToAPIKeyID(t *testing.T) {
+	_, _, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	req := requestWithKey(http.MethodPost, "/api/v1/rollout/seed", key)
+	if got := rolloutOperator(req); got != "test-consumer#1" {
+		t.Fatalf("rolloutOperator = %q, want test-consumer#1", got)
 	}
 }

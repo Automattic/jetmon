@@ -156,8 +156,8 @@ confirmations and dry-run plans:
 ./bin/jetmon2 api rollout guided --bucket-min=0 --bucket-max=99 --rollback --allow-remote
 ```
 
-The backing API surface is admin-scoped for mutations and read-scoped for
-status/gates:
+The backing API surface is read-scoped for passive status gates. Anything that
+mutates state or causes the Monitor to run probes is admin-scoped:
 
 | Method | Path | Purpose |
 |--------|------|---------|
@@ -170,7 +170,7 @@ status/gates:
 | `POST` | `/api/v1/rollout/final-reconcile` | Repeat seed/adopt immediately before activation to catch changes since the first seed. |
 | `POST` | `/api/v1/rollout/activate-buckets` | Dry-run or execute durable bucket activation locks for this Monitor. |
 | `POST` | `/api/v1/rollout/release-buckets` | Dry-run or execute release of an activated v2 bucket range. |
-| `GET` | `/api/v1/rollout/status` | Current rollout sessions, active ranges, and recent jobs. |
+| `GET` | `/api/v1/rollout/status` | Current rollout mode, active ranges, and open session count. |
 | `GET` | `/api/v1/rollout/bucket-coverage` | Gate payload for active bucket coverage. |
 | `GET` | `/api/v1/rollout/activity-check` | Gate payload for recent check activity. |
 | `GET` | `/api/v1/rollout/projection-drift` | Gate payload for legacy projection drift. |
@@ -179,18 +179,23 @@ status/gates:
 
 The mutating operations use two-step execution. A dry-run request returns a
 short-lived confirmation token that is hashed at rest and bound to operation,
-range, run ID, operator, and request shape. The matching execute request must
-provide that token before any bucket lock or side-table mutation runs. One
-Monitor owner may hold only one contiguous active API-controlled range at a
-time; use another Monitor host for a separate range, or release the existing
-range before activating a different one for the same host.
+range, run ID, authenticated API key identity, and request shape. The matching
+execute request must provide that token before any bucket lock or side-table
+mutation runs. One Monitor owner may hold only one contiguous active
+API-controlled range at a time; use another Monitor host for a separate range,
+or release the existing range before activating a different one for the same
+host. The guided CLI sends idempotency keys on execute requests, so operators
+can retry after a lost HTTP response without accidentally applying the same
+mutation twice.
 
 `/api/v1/rollout/smoke` and `/api/v1/rollout/compare-methods` run synchronous
 sampled probes, so `sample_size` defaults to `100` and is capped at `1000` per
 request. These probes are intentionally non-authoritative: they do not write
 incident state, runtime freshness, check history, WPCOM notifications, or the
 legacy projection. Comparison deltas are persisted separately in
-`jetmon_rollout_comparison_results` for rollout analysis.
+`jetmon_rollout_comparison_results` for rollout analysis. If the selected
+bucket range has no active sites, the API returns a warning instead of treating
+an empty sample as proof that the range is healthy.
 
 `/api/v1/rollout/stage-policy` writes cohort changes to
 `jetmon_site_check_config` and records previous values in

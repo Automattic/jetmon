@@ -43,12 +43,13 @@ const (
 )
 
 type rolloutCapabilitiesResponse struct {
-	Status       string   `json:"status"`
-	APIVersion   string   `json:"api_version"`
-	ServerHost   string   `json:"server_host"`
-	RolloutMode  string   `json:"rollout_mode"`
-	Features     []string `json:"features"`
-	Requirements []string `json:"requirements"`
+	Status                      string   `json:"status"`
+	APIVersion                  string   `json:"api_version"`
+	ServerHost                  string   `json:"server_host"`
+	RolloutMode                 string   `json:"rollout_mode"`
+	ConfirmationTokenTTLSeconds int      `json:"confirmation_token_ttl_seconds"`
+	Features                    []string `json:"features"`
+	Requirements                []string `json:"requirements"`
 }
 
 type rolloutSessionRequest struct {
@@ -213,10 +214,11 @@ func (s *Server) handleRolloutCapabilities(w http.ResponseWriter, r *http.Reques
 		mode = cfg.RolloutMode
 	}
 	writeJSON(w, http.StatusOK, rolloutCapabilitiesResponse{
-		Status:      "ok",
-		APIVersion:  rolloutAPIVersion,
-		ServerHost:  s.hostname,
-		RolloutMode: mode,
+		Status:                      "ok",
+		APIVersion:                  rolloutAPIVersion,
+		ServerHost:                  s.hostname,
+		RolloutMode:                 mode,
+		ConfirmationTokenTTLSeconds: int(rolloutConfirmationTTL.Seconds()),
 		Features: []string{
 			"sessions",
 			"synchronous_jobs",
@@ -383,12 +385,16 @@ func (s *Server) handleRolloutSmoke(w http.ResponseWriter, r *http.Request) {
 	}
 	result := s.rolloutRunChecks(r.Context(), sites, mode, true)
 	result.ActiveSites = active
+	var warnings []string
+	if active == 0 {
+		warnings = append(warnings, "requested bucket range has no active sites")
+	}
 	if result.Failures > 0 {
-		resp := s.rolloutOperation(r, "smoke", body, "blocked", "read-only smoke checks found failures", result, nil, []string{"one or more sampled checks failed"})
+		resp := s.rolloutOperation(r, "smoke", body, "blocked", "read-only smoke checks found failures", result, warnings, []string{"one or more sampled checks failed"})
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
-	resp := s.rolloutOperation(r, "smoke", body, "ok", "read-only smoke checks completed", result, nil, nil)
+	resp := s.rolloutOperation(r, "smoke", body, "ok", "read-only smoke checks completed", result, warnings, nil)
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -665,16 +671,21 @@ func (s *Server) handleRolloutCompareMethods(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	comparison := s.rolloutCompareChecks(r.Context(), sites, from, to)
+	var warnings []string
+	if active == 0 {
+		warnings = append(warnings, "requested bucket range has no active sites")
+	}
 	result := map[string]any{
 		"from":         from,
 		"to":           to,
 		"active_sites": active,
 		"sample_size":  sample,
 		"checked":      len(comparison),
+		"read_only":    true,
 		"deltas":       rolloutComparisonDeltaCounts(comparison),
 		"sample":       rolloutComparisonSample(comparison, 20),
 	}
-	resp := s.rolloutOperation(r, "compare_methods", body, "ok", "method comparison completed", result, nil, nil)
+	resp := s.rolloutOperation(r, "compare_methods", body, "ok", "method comparison completed", result, warnings, nil)
 	if err := s.insertRolloutComparisonResults(r.Context(), resp.JobID, body.RunID, comparison); err != nil {
 		resp.Status = "blocked"
 		resp.Job.Status = "blocked"
@@ -716,6 +727,11 @@ func (s *Server) handleRolloutStagePolicy(w http.ResponseWriter, r *http.Request
 			summary = "policy stage plan is blocked"
 		}
 		resp := s.rolloutPlanResponseWithStatus(r, rolloutOpStagePolicy, body, status, summary, result, blockers)
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	if len(blockers) > 0 {
+		resp := s.rolloutOperation(r, rolloutOpStagePolicy, body, "blocked", "policy stage plan is blocked", result, nil, blockers)
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
@@ -2152,7 +2168,7 @@ func sha256Hex(s string) string {
 
 func rolloutOperator(r *http.Request) string {
 	if key := keyFromRequest(r); key != nil {
-		return key.ConsumerName
+		return fmt.Sprintf("%s#%d", key.ConsumerName, key.ID)
 	}
 	return ""
 }

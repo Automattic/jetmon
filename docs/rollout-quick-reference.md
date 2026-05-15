@@ -101,14 +101,15 @@ the operator types the requested confirmation:
 
    ```bash
    ./jetmon2 api rollout status --allow-remote
-   ./jetmon2 api rollout bucket-coverage --allow-remote
-   ./jetmon2 api rollout activity-check --since=15m --allow-remote
-   ./jetmon2 api rollout projection-drift --allow-remote
+   ./jetmon2 api rollout bucket-coverage --bucket-min=<min> --bucket-max=<max> --allow-remote
+   ./jetmon2 api rollout activity-check --bucket-min=<min> --bucket-max=<max> --since=15m --allow-remote
+   ./jetmon2 api rollout projection-drift --bucket-min=<min> --bucket-max=<max> --allow-remote
    ```
 
 8. Roll back by releasing the v2 range before Systems restarts v1:
 
    ```bash
+   ./jetmon2 api rollout release-buckets --bucket-min=<min> --bucket-max=<max> --dry-run --allow-remote
    ./jetmon2 api rollout release-buckets --bucket-min=<min> --bucket-max=<max> --execute --confirm=<token> --allow-remote
    ```
 
@@ -116,17 +117,21 @@ the operator types the requested confirmation:
    and staged policy transitions:
 
    ```bash
-   ./jetmon2 api rollout compare-methods --from=head-legacy --to=get-simple --sample-size=100 --allow-remote
-   ./jetmon2 api rollout stage-policy --method=GET --profile=simple_http --size=1000 --dry-run --allow-remote
-   ./jetmon2 api rollout stage-policy --method=GET --profile=simple_http --size=1000 --execute --confirm=<token> --allow-remote
-   ./jetmon2 api rollout stage-policy --method=GET --profile=full --size=1% --dry-run --allow-remote
-   ./jetmon2 api rollout stage-policy --mode=rollback-last-stage --dry-run --allow-remote
-   ./jetmon2 api rollout stage-policy --mode=rollback-all --dry-run --allow-remote
+   ./jetmon2 api rollout compare-methods --bucket-min=<min> --bucket-max=<max> --from=head-legacy --to=get-simple --sample-size=100 --allow-remote
+   ./jetmon2 api rollout stage-policy --bucket-min=<min> --bucket-max=<max> --method=GET --profile=simple_http --size=1000 --dry-run --allow-remote
+   ./jetmon2 api rollout stage-policy --bucket-min=<min> --bucket-max=<max> --method=GET --profile=simple_http --size=1000 --execute --confirm=<token> --allow-remote
+   ./jetmon2 api rollout stage-policy --bucket-min=<min> --bucket-max=<max> --method=GET --profile=full --size=1% --dry-run --allow-remote
+   ./jetmon2 api rollout stage-policy --bucket-min=<min> --bucket-max=<max> --mode=rollback-last-stage --dry-run --allow-remote
+   ./jetmon2 api rollout stage-policy --bucket-min=<min> --bucket-max=<max> --mode=rollback-all --dry-run --allow-remote
    ```
 
 The API commands above are the target control-plane surface behind the guided
 containerized rollout. They must remain idempotent, audited, admin-scoped, and
-protected by dry-run plans plus generated confirmation tokens.
+protected by dry-run plans plus generated confirmation tokens. The guided
+wrapper also sends idempotency keys on execute steps, so a lost HTTP response
+can be retried without re-running the mutation. Confirmation tokens are bound
+to the authenticated API key identity, not just the typed phrase shown to the
+operator.
 
 ## Host-Based Fallback Path
 

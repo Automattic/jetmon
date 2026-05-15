@@ -99,6 +99,9 @@ func TestRunAPIRolloutGuidedHappyPath(t *testing.T) {
 				writeTestJSON(t, w, map[string]string{"status": "ok", "confirmation_token": "seed-token"})
 				return
 			}
+			if got := r.Header.Get("Idempotency-Key"); got != "api-rollout:rol-test:seed-execute" {
+				t.Fatalf("seed execute Idempotency-Key = %q", got)
+			}
 			if body["execute"] != true || body["confirm"] != "seed-token" {
 				t.Fatalf("seed execute body = %#v, want execute with seed-token", body)
 			}
@@ -109,6 +112,9 @@ func TestRunAPIRolloutGuidedHappyPath(t *testing.T) {
 				writeTestJSON(t, w, map[string]string{"status": "ok", "confirmation_token": "reconcile-token"})
 				return
 			}
+			if got := r.Header.Get("Idempotency-Key"); got != "api-rollout:rol-test:final-reconcile-execute" {
+				t.Fatalf("final reconcile execute Idempotency-Key = %q", got)
+			}
 			if body["execute"] != true || body["confirm"] != "reconcile-token" {
 				t.Fatalf("final reconcile execute body = %#v, want execute with reconcile-token", body)
 			}
@@ -118,6 +124,9 @@ func TestRunAPIRolloutGuidedHappyPath(t *testing.T) {
 			if body["dry_run"] == true {
 				writeTestJSON(t, w, map[string]string{"status": "ok", "confirmation_token": "activate-token"})
 				return
+			}
+			if got := r.Header.Get("Idempotency-Key"); got != "api-rollout:rol-test:activate-execute" {
+				t.Fatalf("activate execute Idempotency-Key = %q", got)
 			}
 			if body["execute"] != true || body["confirm"] != "activate-token" {
 				t.Fatalf("activate execute body = %#v, want execute with activate-token", body)

@@ -416,6 +416,10 @@ func runAPIRolloutGuided(ctx context.Context, client *http.Client, opts apiCLIOp
 		if !guided.dryRun && (apiRolloutHasUnresolvedPlaceholder(target) || apiRolloutBodyHasUnresolvedPlaceholder(body)) {
 			return fmt.Errorf("%s: missing confirmation token from previous dry-run plan", step.Name)
 		}
+		idempotencyKey := expandAPIRolloutString(step.IDKey, state)
+		if !guided.dryRun && apiRolloutHasUnresolvedPlaceholder(idempotencyKey) {
+			return fmt.Errorf("%s: missing rollout state for idempotency key", step.Name)
+		}
 		if step.Confirm != "" {
 			if guided.dryRun {
 				fmt.Fprintf(opts.out, "DRY-RUN confirmation required: %s\n", apiRolloutPromptText(step))
@@ -433,7 +437,7 @@ func runAPIRolloutGuided(ctx context.Context, client *http.Client, opts apiCLIOp
 			fmt.Fprintln(opts.out)
 			continue
 		}
-		resp, err := apiWorkflowRequestJSON(ctx, client, opts, step.Method, target, body, step.IDKey)
+		resp, err := apiWorkflowRequestJSON(ctx, client, opts, step.Method, target, body, idempotencyKey)
 		if err != nil {
 			return fmt.Errorf("%s failed: %w%s", step.Name, err, apiRolloutEndpointHint(err))
 		}
@@ -504,6 +508,7 @@ func buildAPIRolloutGuidedSteps(g apiRolloutGuidedOptions) []apiRolloutStep {
 				Prompt:  "Release this v2 bucket range.",
 				Confirm: fmt.Sprintf("RELEASE %d-%d", g.bucketMin, g.bucketMax),
 				Danger:  true,
+				IDKey:   "api-rollout:{{run_id}}:release-execute",
 			},
 			apiRolloutRequestStep("status", "Check rollout status", "Confirm the Monitor reports the range as no longer active in v2.", http.MethodGet, "/api/v1/rollout/status", nil),
 		}
@@ -576,6 +581,7 @@ func buildAPIRolloutGuidedSteps(g apiRolloutGuidedOptions) []apiRolloutStep {
 				Prompt:  "Apply v2 side-state seed/adoption.",
 				Confirm: "EXECUTE SEED",
 				Danger:  true,
+				IDKey:   "api-rollout:{{run_id}}:seed-execute",
 			},
 		)
 	}
@@ -614,6 +620,7 @@ func buildAPIRolloutGuidedSteps(g apiRolloutGuidedOptions) []apiRolloutStep {
 			Prompt:  "Apply the final side-state reconcile.",
 			Confirm: "EXECUTE RECONCILE",
 			Danger:  true,
+			IDKey:   "api-rollout:{{run_id}}:final-reconcile-execute",
 		},
 		apiRolloutStep{
 			Name:    "activate_dry_run",
@@ -640,6 +647,7 @@ func buildAPIRolloutGuidedSteps(g apiRolloutGuidedOptions) []apiRolloutStep {
 			Prompt:  "Make v2 authoritative for this range.",
 			Confirm: fmt.Sprintf("ACTIVATE %d-%d", g.bucketMin, g.bucketMax),
 			Danger:  true,
+			IDKey:   "api-rollout:{{run_id}}:activate-execute",
 		},
 		apiRolloutRequestStep("status", "Check rollout status", "Confirm v2 reports the expected active rollout state.", http.MethodGet, "/api/v1/rollout/status", nil),
 		apiRolloutRequestStep("bucket_coverage", "Check bucket coverage", "Confirm the activated range is covered by v2 with no gaps or overlaps.", http.MethodGet, apiRolloutRangeQuery("/api/v1/rollout/bucket-coverage", g), nil),

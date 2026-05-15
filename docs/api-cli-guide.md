@@ -97,15 +97,14 @@ standalone operator `jetmon2` binary:
   --allow-remote
 ```
 
-The command walks API health, identity, API-controlled preflight, read-only
-`HEAD`/`legacy` smoke, rollout session creation, side-state seed/adopt, the
-manual v1-stop checkpoint, final reconcile, v2 bucket activation, and
-post-handoff gates. Destructive steps require typed phrases, and execute steps
-use confirmation tokens returned by dry-run plans. Use `--dry-run` to print the
-full request plan without contacting the API, `--run-id` to resume a known
-server-side rollout session, `--change-ref` to bind the run to a ticket/change
-record, and `--rollback` to release an activated v2 range back to standby before
-Systems restarts the matching v1 range.
+The command checks API health and identity, creates a rollout session, runs
+API-controlled preflight, runs read-only `HEAD`/`legacy` smoke probes, seeds v2
+side state, pauses for Systems to stop v1, runs final reconcile, activates v2,
+and then runs post-handoff gates. Mutating steps require typed phrases,
+dry-run confirmation tokens, and idempotency keys. Use `--dry-run` to print the
+plan without contacting the API, `--run-id` to resume a known server-side
+session, `--change-ref` to record the ticket/change, and `--rollback` to
+release an activated v2 range before Systems restarts v1.
 
 Non-dry-run guided sessions write a local transcript and resume state under
 `logs/api-rollout` by default. Re-run with the same bucket range and `--resume`
@@ -117,10 +116,17 @@ Useful primitive rollout commands:
 ```bash
 ./bin/jetmon2 api rollout capabilities --allow-remote
 ./bin/jetmon2 api rollout preflight --bucket-min=0 --bucket-max=99 --mode=api-controlled --allow-remote
+./bin/jetmon2 api rollout smoke --bucket-min=0 --bucket-max=99 --mode=head-legacy --sample-size=100 --read-only --allow-remote
 ./bin/jetmon2 api rollout seed --bucket-min=0 --bucket-max=99 --dry-run --allow-remote
 ./bin/jetmon2 api rollout final-reconcile --bucket-min=0 --bucket-max=99 --dry-run --allow-remote
 ./bin/jetmon2 api rollout activate-buckets --bucket-min=0 --bucket-max=99 --dry-run --allow-remote
 ./bin/jetmon2 api rollout status --allow-remote
+./bin/jetmon2 api rollout bucket-coverage --bucket-min=0 --bucket-max=99 --allow-remote
+./bin/jetmon2 api rollout activity-check --bucket-min=0 --bucket-max=99 --since=15m --allow-remote
+./bin/jetmon2 api rollout projection-drift --bucket-min=0 --bucket-max=99 --allow-remote
+./bin/jetmon2 api rollout release-buckets --bucket-min=0 --bucket-max=99 --dry-run --allow-remote
+./bin/jetmon2 api rollout compare-methods --bucket-min=0 --bucket-max=99 --from=head-legacy --to=get-simple --sample-size=100 --allow-remote
+./bin/jetmon2 api rollout stage-policy --bucket-min=0 --bucket-max=99 --method=GET --profile=simple_http --size=1000 --dry-run --allow-remote
 ./bin/jetmon2 api rollout jobs get <job-id> --allow-remote
 ```
 
