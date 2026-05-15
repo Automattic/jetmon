@@ -410,6 +410,11 @@ Verifier capacity is auto-sized from CPU and file-descriptor headroom. A typical
 8-core host reports `max_concurrency: 2048`; smaller hosts report less, and the
 queue absorbs short Monitor-side bursts before returning overload.
 
+The Veriflier does not emit one success log line per probe. Request IDs are
+echoed back in the response and joined to monitor-side audit rows there; keeping
+successful probe traffic out of stdout avoids log-volume bottlenecks and avoids
+writing customer URLs into high-rate container logs.
+
 The transport is JSON-over-HTTP for v2 production. `proto/veriflier.proto`
 remains as a schema reference for a possible future transport, but generated
 gRPC stubs are not required to build or deploy v2.
