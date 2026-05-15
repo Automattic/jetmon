@@ -84,6 +84,11 @@ var apiCommandCatalog = []apiCommandInfo{
 	{Command: "alert-contacts test", Description: "send a managed alert-contact test", Example: "jetmon2 api alert-contacts test 12 --idempotency-key alert-12-test --pretty"},
 	{Command: "alert-contacts deliveries", Description: "list managed alert delivery rows", Example: "jetmon2 api alert-contacts deliveries 12 --status failed --output table"},
 	{Command: "rollout guided", Description: "walk through the API-driven container rollout flow", Example: "jetmon2 api rollout guided --bucket-min 0 --bucket-max 99 --allow-remote"},
+	{Command: "rollout capabilities", Description: "show rollout API capabilities and server mode", Example: "jetmon2 api rollout capabilities --pretty"},
+	{Command: "rollout preflight", Description: "run rollout preflight gates", Example: "jetmon2 api rollout preflight --bucket-min 0 --bucket-max 99 --allow-remote"},
+	{Command: "rollout seed", Description: "plan or execute rollout side-state seeding", Example: "jetmon2 api rollout seed --bucket-min 0 --bucket-max 99 --dry-run --allow-remote"},
+	{Command: "rollout activate-buckets", Description: "activate an API-controlled v2 bucket range", Example: "jetmon2 api rollout activate-buckets --bucket-min 0 --bucket-max 99 --execute --confirm jmr_... --allow-remote"},
+	{Command: "rollout status", Description: "show API-driven rollout status", Example: "jetmon2 api rollout status --output table"},
 	{Command: "smoke", Description: "run the Docker-local API smoke workflow", Example: "jetmon2 api smoke --batch local-smoke --exercise webhook --pretty"},
 	{Command: "commands", Description: "list API CLI commands and examples", Example: "jetmon2 api commands --output table"},
 }

@@ -5,7 +5,8 @@ Use the full [migration runbook](v1-to-v2-migration.md) for preparation,
 approval, troubleshooting, revert details, and final v1 teardown.
 
 The preferred production rollout is now API-driven: deploy fresh v2 Veriflier
-and Monitor containers beside the existing v1 fleet, keep Monitors in standby,
+and Monitor containers beside the existing v1 fleet, keep Monitors in
+`ROLLOUT_MODE=api-controlled` standby,
 then activate bucket ranges through an authenticated Monitor API after Systems
 stops the matching v1 range. A standalone `jetmon2` binary can run from an
 operator workstation or bastion; direct shell access to the container hosts is
@@ -42,6 +43,7 @@ Preferred interactive wrapper:
 ./jetmon2 api rollout guided \
   --bucket-min=<min> \
   --bucket-max=<max> \
+  --change-ref=<ticket-or-change-id> \
   --allow-remote
 ```
 
@@ -50,6 +52,9 @@ contacting the API. Use `--rollback` to walk the release path when an activated
 range must return to v1 standby. After v2 is stable, add
 `--include-comparison` and `--include-policy-migration` to include the
 non-authoritative HEAD/GET comparison and staged policy planning steps.
+Non-dry-run guided sessions write a transcript and local resume state under
+`logs/api-rollout`; use `--resume` with the same range if the operator process
+is interrupted.
 
 The guided command wraps the API primitives below and stops at each gate until
 the operator types the requested confirmation:
@@ -57,28 +62,35 @@ the operator types the requested confirmation:
 1. Systems applies the additive v2 schema.
 2. Deploy the fresh v2 Veriflier fleet and validate `/v2/status`, stable
    `vantage.id` values, auth, capacity, and quorum.
-3. Deploy v2 Monitors in read-only standby with `HEAD` + `legacy` defaults.
-4. Run API preflight and read-only smoke from the operator CLI:
+3. Deploy v2 Monitors in `ROLLOUT_MODE=api-controlled` with `HEAD` + `legacy`
+   defaults.
+4. Run API preflight and read-only smoke planning from the operator CLI:
 
    ```bash
-   ./jetmon2 api rollout preflight --allow-remote
-   ./jetmon2 api rollout smoke --mode=head-legacy --sample-size=1000 --read-only --allow-remote
+   ./jetmon2 api rollout preflight --bucket-min=<min> --bucket-max=<max> --allow-remote
+   ./jetmon2 api rollout smoke --bucket-min=<min> --bucket-max=<max> --mode=head-legacy --sample-size=1000 --read-only --allow-remote
    ```
 
 5. Seed/adopt v2 side state without sending duplicate notifications:
 
    ```bash
-   ./jetmon2 api rollout seed --dry-run --allow-remote
-   ./jetmon2 api rollout seed --execute --confirm=<token> --allow-remote
+   ./jetmon2 api rollout seed --bucket-min=<min> --bucket-max=<max> --dry-run --allow-remote
+   ./jetmon2 api rollout seed --bucket-min=<min> --bucket-max=<max> --execute --confirm=<token> --allow-remote
    ```
 
-6. After Systems stops the matching v1 bucket range, explicitly activate that
-   range in v2:
+6. After Systems stops the matching v1 bucket range, run final reconcile and
+   explicitly activate that range in v2:
 
    ```bash
+   ./jetmon2 api rollout final-reconcile --bucket-min=<min> --bucket-max=<max> --dry-run --allow-remote
+   ./jetmon2 api rollout final-reconcile --bucket-min=<min> --bucket-max=<max> --execute --confirm=<token> --allow-remote
    ./jetmon2 api rollout activate-buckets --bucket-min=<min> --bucket-max=<max> --dry-run --allow-remote
    ./jetmon2 api rollout activate-buckets --bucket-min=<min> --bucket-max=<max> --execute --confirm=<token> --allow-remote
    ```
+
+   A single Monitor owner may hold only one contiguous API-controlled range at
+   a time. Use separate Monitor hosts for separate ranges, or release the
+   current range before activating a different range for the same host.
 
 7. Hold for health gates:
 

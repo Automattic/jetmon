@@ -628,6 +628,10 @@ func (o *Orchestrator) runStreamingEngine() {
 	if _, err := o.refreshStreamingBuckets(cfg); err != nil {
 		log.Printf("orchestrator: streaming bucket refresh failed: %v", err)
 	}
+	if cfg.RolloutMode == config.RolloutModeAPIControlled && o.bucketMax < o.bucketMin {
+		log.Printf("orchestrator: streaming scheduler waiting; no active API-controlled bucket lock")
+		return
+	}
 	sites, err := o.loadStreamingSites(cfg)
 	if err != nil {
 		log.Printf("orchestrator: streaming initial target load failed: %v", err)
@@ -661,6 +665,7 @@ func (o *Orchestrator) runStreamingEngine() {
 		lastProjectionFlush = lastReport
 		lastHeartbeat       = lastReport
 		lastActiveCountPoll = lastReport
+		lastRolloutPoll     = lastReport
 		pressureUntil       time.Time
 		hotPathPressure     bool
 		reloadResults       = make(chan streamingReloadResult, 1)
@@ -870,10 +875,38 @@ func (o *Orchestrator) runStreamingEngine() {
 		}
 	}
 
-	handleTick := func() {
+	stopStreaming := func() {
+		o.flushStreamingProjection(pendingProjection)
+		sideEffects.stop()
+		if o.pool != nil {
+			o.pool.Drain()
+		}
+	}
+
+	handleTick := func() bool {
 		now := nowFunc().UTC()
 		cfg = config.Get()
 		reloadReason := ""
+		if cfg.RolloutMode == config.RolloutModeStandby {
+			log.Printf("orchestrator: streaming scheduler stopping; rollout_mode=%s", cfg.RolloutMode)
+			return false
+		}
+		if cfg.RolloutMode == config.RolloutModeAPIControlled && now.Sub(lastRolloutPoll) >= schedulerAPIControlledRangePollInterval {
+			bucketsChanged, err := o.refreshStreamingBuckets(cfg)
+			if err != nil {
+				log.Printf("orchestrator: streaming API-controlled bucket refresh failed: %v", err)
+				return false
+			}
+			if o.bucketMax < o.bucketMin {
+				log.Printf("orchestrator: streaming scheduler stopping; API-controlled bucket lock released")
+				return false
+			}
+			if bucketsChanged {
+				lastReload = time.Time{}
+				reloadReason = "api_controlled_bucket_change"
+			}
+			lastRolloutPoll = now
+		}
 		drainResults(streamingResultDrainLimitFor(o.pool.ResultDepth()), true)
 		o.refreshVeriflierClients(cfg)
 		failurePressureActive := now.Before(pressureUntil) || streamingFailurePressure(stats)
@@ -885,9 +918,13 @@ func (o *Orchestrator) runStreamingEngine() {
 		}
 
 		if now.Sub(lastHeartbeat) >= schedulerBroadReportInterval {
-			bucketsChanged, err := o.refreshStreamingBuckets(cfg)
-			if err != nil {
-				log.Printf("orchestrator: streaming bucket refresh failed: %v", err)
+			var bucketsChanged bool
+			var err error
+			if cfg.RolloutMode != config.RolloutModeAPIControlled {
+				bucketsChanged, err = o.refreshStreamingBuckets(cfg)
+				if err != nil {
+					log.Printf("orchestrator: streaming bucket refresh failed: %v", err)
+				}
 			}
 			startVeriflierTelemetrySync(cfg)
 			if bucketsChanged {
@@ -941,13 +978,15 @@ func (o *Orchestrator) runStreamingEngine() {
 			stats = streamingStats{}
 			lastReport = now
 		}
+		return true
 	}
 
-	drainReadyTick := func() {
+	drainReadyTick := func() bool {
 		select {
 		case <-tick.C:
-			handleTick()
+			return handleTick()
 		default:
+			return true
 		}
 	}
 
@@ -983,9 +1022,15 @@ func (o *Orchestrator) runStreamingEngine() {
 			handleResult(res, now)
 			drainResults(streamingResultDrainLimitFor(o.pool.ResultDepth()), true)
 			dispatchPending(nowFunc().UTC(), false, streamingDispatchWakeInterval)
-			drainReadyTick()
+			if !drainReadyTick() {
+				stopStreaming()
+				return
+			}
 		case <-tick.C:
-			handleTick()
+			if !handleTick() {
+				stopStreaming()
+				return
+			}
 		}
 	}
 }
@@ -1011,6 +1056,22 @@ func (o *Orchestrator) configureStreamingPool(cfg *config.Config, planner *strea
 
 func (o *Orchestrator) refreshStreamingBuckets(cfg *config.Config) (bool, error) {
 	oldMin, oldMax := o.bucketMin, o.bucketMax
+	if cfg.RolloutMode == config.RolloutModeStandby {
+		o.bucketMin = 0
+		o.bucketMax = -1
+		return oldMin != o.bucketMin || oldMax != o.bucketMax, nil
+	}
+	if cfg.RolloutMode == config.RolloutModeAPIControlled {
+		ok, err := o.refreshAPIControlledRange()
+		if err != nil {
+			return false, err
+		}
+		if !ok {
+			o.bucketMin = 0
+			o.bucketMax = -1
+		}
+		return oldMin != o.bucketMin || oldMax != o.bucketMax, nil
+	}
 	if o.usesPinnedBuckets(cfg) {
 		err := o.ClaimBuckets()
 		return oldMin != o.bucketMin || oldMax != o.bucketMax, err

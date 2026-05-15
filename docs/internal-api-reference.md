@@ -156,6 +156,35 @@ confirmations and dry-run plans:
 ./bin/jetmon2 api rollout guided --bucket-min=0 --bucket-max=99 --rollback --allow-remote
 ```
 
+The backing API surface is admin-scoped for mutations and read-scoped for
+status/gates:
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/api/v1/rollout/capabilities` | API contract version, supported rollout features, required config mode, and token TTL. |
+| `POST` | `/api/v1/rollout/sessions` | Create a durable rollout session bound to a bucket range and optional change reference. |
+| `GET` | `/api/v1/rollout/jobs/{job_id}` | Fetch a rollout job record and stored result payload. |
+| `POST` | `/api/v1/rollout/preflight` | Validate standby/API-controlled config, DB access, schema version, and rollout blockers. |
+| `POST` | `/api/v1/rollout/smoke` | Read-only sampled rollout smoke plan for HEAD/legacy compatibility coverage. |
+| `POST` | `/api/v1/rollout/seed` | Dry-run or execute v2 side-table seeding for the requested range. |
+| `POST` | `/api/v1/rollout/final-reconcile` | Repeat seed/adopt immediately before activation to catch changes since the first seed. |
+| `POST` | `/api/v1/rollout/activate-buckets` | Dry-run or execute durable bucket activation locks for this Monitor. |
+| `POST` | `/api/v1/rollout/release-buckets` | Dry-run or execute release of an activated v2 bucket range. |
+| `GET` | `/api/v1/rollout/status` | Current rollout sessions, active ranges, and recent jobs. |
+| `GET` | `/api/v1/rollout/bucket-coverage` | Gate payload for active bucket coverage. |
+| `GET` | `/api/v1/rollout/activity-check` | Gate payload for recent check activity. |
+| `GET` | `/api/v1/rollout/projection-drift` | Gate payload for legacy projection drift. |
+| `POST` | `/api/v1/rollout/compare-methods` | Record a non-authoritative HEAD/GET comparison plan. |
+| `POST` | `/api/v1/rollout/stage-policy` | Record a staged check-policy migration plan. |
+
+The mutating operations use two-step execution. A dry-run request returns a
+short-lived confirmation token that is hashed at rest and bound to operation,
+range, run ID, operator, and request shape. The matching execute request must
+provide that token before any bucket lock or side-table mutation runs. One
+Monitor owner may hold only one contiguous active API-controlled range at a
+time; use another Monitor host for a separate range, or release the existing
+range before activating a different one for the same host.
+
 JSON is the default output for scripts. Add `--pretty` for readable JSON or
 `--output table` for stable human-readable tables on list and workflow summary
 commands.

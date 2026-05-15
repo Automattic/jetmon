@@ -62,7 +62,8 @@ intent explicit.
 
 The container rollout has three operating states:
 
-- **read-only standby:** v2 Monitors validate config, database schema,
+- **read-only standby:** v2 Monitors run with `ROLLOUT_MODE=standby` or
+  `ROLLOUT_MODE=api-controlled` before activation. They validate config, database schema,
   Veriflier reachability, and sampled probe behavior, but do not claim buckets,
   run scheduled checks, write events, update runtime/check-history rows, send
   WPCOM notifications, or run delivery workers.
@@ -77,37 +78,38 @@ The API-driven rollout flow is:
 1. Systems applies the additive v2 schema migrations.
 2. Deploy the fresh v2 Veriflier fleet and validate the v2 JSON contract,
    stable `vantage.id` values, auth tokens, capacity, and quorum settings.
-3. Deploy v2 Monitors in read-only standby with `HEAD` + `legacy` defaults,
+3. Deploy v2 Monitors in `ROLLOUT_MODE=api-controlled` with `HEAD` + `legacy` defaults,
    WPCOM notification disabled or explicitly guarded, and delivery workers
    disabled unless the delivery-owner plan has been approved.
 4. Run API preflight from the operator CLI. This validates Monitor config,
-   database access, schema version, Veriflier contract/quorum, delivery guards,
-   bucket-control state, and standby mode.
-5. Run read-only smoke checks against sampled sites and synthetic canaries.
-   Smoke checks may issue HTTP and Veriflier probes, but they must not write
-   incident state, runtime freshness, check history, WPCOM notifications, or
-   legacy projection updates.
+   database access, schema version, API-controlled rollout mode, delivery
+   guards, and bucket-control state.
+5. Run the read-only smoke planning gate against sampled sites. This gate must
+   not write incident state, runtime freshness, check history, WPCOM
+   notifications, or legacy projection updates. Full canary probe execution and
+   Veriflier contract checks are tracked as rollout API follow-ups.
 6. Seed/adopt v2 side state with a hybrid strategy: pre-seed scheduling/runtime
    rows and adopt existing v1 non-running projections into v2 event state before
    cutover, while allowing lazy creation for rows that are added or changed
    after the seed job. Adoption must not send duplicate down notifications.
-7. After the sysadmin team stops the matching v1 bucket range, explicitly
-   activate that range in v2 through the API. Do not rely on automatic v1
-   shutdown detection; the v1 schema does not provide a reliable heartbeat or
-   ownership record.
-8. Run post-handoff gates for bucket coverage, recent check activity,
+7. After the sysadmin team stops the matching v1 bucket range, run a final
+   reconcile job so sites added or changed after the first seed are adopted.
+8. Explicitly activate that range in v2 through the API. Do not rely on
+   automatic v1 shutdown detection; the v1 schema does not provide a reliable
+   heartbeat or ownership record.
+9. Run post-handoff gates for bucket coverage, recent check activity,
    projection drift, Veriflier health, canary down/recovery behavior, and
    delivery/WPCOM guard state.
-9. If rollback is needed, explicitly release the activated bucket range through
+10. If rollback is needed, explicitly release the activated bucket range through
    the API so v2 returns to standby for that range, then have the sysadmin team
    restart the matching v1 Monitor range.
-10. After v2 owns all buckets and proves stable, run sampled non-authoritative
+11. After v2 owns all buckets and proves stable, run sampled non-authoritative
     `GET` + `simple_http` comparison checks while `HEAD` + `legacy` remains the
     alerting source of truth.
-11. Transition cohorts from `HEAD` + `legacy` to `GET` + `simple_http` in
+12. Transition cohorts from `HEAD` + `legacy` to `GET` + `simple_http` in
     explicit stages with dry-run, execute, pause, rollback-last-stage, and
     rollback-all support.
-12. Transition stable cohorts from `GET` + `simple_http` to `GET` + `full`
+13. Transition stable cohorts from `GET` + `simple_http` to `GET` + `full`
     using the same staged controls.
 
 The preferred operator command is the guided API wrapper:
@@ -116,6 +118,7 @@ The preferred operator command is the guided API wrapper:
 ./jetmon2 api rollout guided \
   --bucket-min=0 \
   --bucket-max=99 \
+  --change-ref=SYSREQ-12345 \
   --allow-remote
 ```
 
@@ -124,14 +127,18 @@ before the window. Use `--rollback` to walk the release path if a range must
 return to v1 standby. After v2 owns all buckets and is stable, add
 `--include-comparison` and `--include-policy-migration` to extend the guided
 flow into sampled `HEAD`/`GET` comparison and staged check-policy planning.
+Non-dry-run sessions write a transcript and local resume state under
+`logs/api-rollout`; use `--resume` if the operator process is interrupted.
 
 The guided command wraps these control-plane API primitives:
 
 ```bash
-./jetmon2 api rollout preflight --allow-remote
-./jetmon2 api rollout smoke --mode=head-legacy --sample-size=1000 --read-only --allow-remote
-./jetmon2 api rollout seed --dry-run --allow-remote
-./jetmon2 api rollout seed --execute --confirm=<token> --allow-remote
+./jetmon2 api rollout preflight --bucket-min=0 --bucket-max=99 --allow-remote
+./jetmon2 api rollout smoke --bucket-min=0 --bucket-max=99 --mode=head-legacy --sample-size=1000 --read-only --allow-remote
+./jetmon2 api rollout seed --bucket-min=0 --bucket-max=99 --dry-run --allow-remote
+./jetmon2 api rollout seed --bucket-min=0 --bucket-max=99 --execute --confirm=<token> --allow-remote
+./jetmon2 api rollout final-reconcile --bucket-min=0 --bucket-max=99 --dry-run --allow-remote
+./jetmon2 api rollout final-reconcile --bucket-min=0 --bucket-max=99 --execute --confirm=<token> --allow-remote
 ./jetmon2 api rollout activate-buckets --bucket-min=0 --bucket-max=99 --dry-run --allow-remote
 ./jetmon2 api rollout activate-buckets --bucket-min=0 --bucket-max=99 --execute --confirm=<token> --allow-remote
 ./jetmon2 api rollout status --allow-remote
@@ -144,7 +151,10 @@ The guided command wraps these control-plane API primitives:
 Dangerous API rollout actions must be idempotent, admin-scoped, audited, and
 protected by dry-run plans plus generated confirmation tokens. Bucket activation
 and release must lock the requested range in durable database state so two
-operators cannot activate overlapping ranges at the same time.
+operators cannot activate overlapping ranges at the same time. A Monitor owner
+may hold only one contiguous API-controlled range at a time; use separate
+Monitor hosts for parallel ranges, or release the current range before
+activating another range for the same host.
 
 ## What Changes For Customers
 

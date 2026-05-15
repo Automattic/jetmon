@@ -56,6 +56,7 @@ const verifierTelemetryStatusTimeout = 2 * time.Second
 const schedulerBackpressurePollInterval = 10 * time.Millisecond
 const schedulerVariableIntervalPollInterval = 5 * time.Second
 const schedulerBacklogPollInterval = 5 * time.Second
+const schedulerAPIControlledRangePollInterval = 5 * time.Second
 const schedulerBroadReportInterval = time.Minute
 const eventMutationMaxAttempts = 3
 const eventMutationRetryBaseDelay = 25 * time.Millisecond
@@ -95,6 +96,7 @@ var (
 	dbCountProjectionDrift  = db.CountLegacyProjectionDrift
 	dbListVeriflierVantages = db.ListEnabledVeriflierVantages
 	dbUpsertVeriflierAgent  = db.UpsertVeriflierAgent
+	dbGetActiveRolloutRange = db.GetActiveRolloutRange
 	veriflierStatusFunc     = func(c *veriflier.VeriflierClient, ctx stdctx.Context) (*veriflier.StatusV2Response, error) {
 		return c.Status(ctx)
 	}
@@ -283,13 +285,14 @@ func New(cfg *config.Config, wp *wpcom.Client) *Orchestrator {
 	pool := checker.NewPool(cfg.NumWorkers/2, 1, cfg.NumWorkers)
 
 	o := &Orchestrator{
-		pool:     pool,
-		retries:  newRetryQueue(),
-		wpcom:    wp,
-		events:   eventstore.New(db.DB()),
-		hostname: db.Hostname(),
-		ctx:      ctx,
-		cancel:   cancel,
+		pool:      pool,
+		retries:   newRetryQueue(),
+		wpcom:     wp,
+		events:    eventstore.New(db.DB()),
+		hostname:  db.Hostname(),
+		bucketMax: -1,
+		ctx:       ctx,
+		cancel:    cancel,
 	}
 
 	o.refreshVeriflierClients(cfg)
@@ -314,6 +317,12 @@ func (o *Orchestrator) ev() *eventstore.Store {
 // ClaimBuckets registers this host in jetmon_hosts and sets the bucket range.
 func (o *Orchestrator) ClaimBuckets() error {
 	cfg := config.Get()
+	if cfg.RolloutMode == config.RolloutModeStandby || cfg.RolloutMode == config.RolloutModeAPIControlled {
+		o.bucketMin = 0
+		o.bucketMax = -1
+		log.Printf("orchestrator: rollout_mode=%s; dynamic bucket claiming disabled", cfg.RolloutMode)
+		return nil
+	}
 	if min, max, ok := cfg.PinnedBucketRange(); ok {
 		if o.bucketMin != min || o.bucketMax != max {
 			log.Printf("orchestrator: using pinned buckets %d-%d (dynamic bucket ownership disabled)", min, max)
@@ -349,8 +358,27 @@ func (o *Orchestrator) Run() {
 		}
 
 		cfg := config.Get()
+		if cfg.RolloutMode == config.RolloutModeStandby {
+			o.waitInRolloutStandby(cfg.RolloutMode)
+			continue
+		}
+		if cfg.RolloutMode == config.RolloutModeAPIControlled {
+			ok, err := o.refreshAPIControlledRange()
+			if err != nil {
+				log.Printf("orchestrator: api-controlled rollout range lookup failed: %v", err)
+				o.waitInRolloutStandby(cfg.RolloutMode)
+				continue
+			}
+			if !ok {
+				o.waitInRolloutStandby(cfg.RolloutMode)
+				continue
+			}
+		}
 		if cfg.SchedulerEngine == "streaming" {
 			o.runStreamingEngine()
+			if cfg.RolloutMode == config.RolloutModeAPIControlled {
+				continue
+			}
 			return
 		}
 		o.pool.SetMaxSize(cfg.NumWorkers)
@@ -369,6 +397,34 @@ func (o *Orchestrator) Run() {
 			}
 		}
 	}
+}
+
+func (o *Orchestrator) waitInRolloutStandby(mode string) {
+	if o.bucketMax >= o.bucketMin {
+		log.Printf("orchestrator: rollout_mode=%s entering standby; no active API bucket lock", mode)
+	}
+	o.bucketMin = 0
+	o.bucketMax = -1
+	select {
+	case <-time.After(5 * time.Second):
+	case <-o.ctx.Done():
+	}
+}
+
+func (o *Orchestrator) refreshAPIControlledRange() (bool, error) {
+	rng, ok, err := dbGetActiveRolloutRange(o.ctx, o.hostname)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, nil
+	}
+	if o.bucketMin != rng.BucketMin || o.bucketMax != rng.BucketMax {
+		log.Printf("orchestrator: api-controlled rollout range active buckets=%d-%d count=%d", rng.BucketMin, rng.BucketMax, rng.Count)
+		o.bucketMin = rng.BucketMin
+		o.bucketMax = rng.BucketMax
+	}
+	return true, nil
 }
 
 func (o *Orchestrator) shutdown() {

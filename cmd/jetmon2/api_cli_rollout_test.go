@@ -38,9 +38,12 @@ func TestRunAPIRolloutGuidedDryRun(t *testing.T) {
 		"Jetmon API rollout guided flow",
 		"bucket_range: 0-9",
 		"mode: dry-run",
+		"DRY-RUN request: GET /api/v1/rollout/capabilities",
+		"DRY-RUN request: POST /api/v1/rollout/sessions",
 		"DRY-RUN request: POST /api/v1/rollout/preflight",
-		`"mode":"standby"`,
+		`"mode":"api-controlled"`,
 		"DRY-RUN manual confirmation required: Confirm Systems has stopped v1 for this range. Type V1 STOPPED 0-9 to continue.",
+		"DRY-RUN request: POST /api/v1/rollout/final-reconcile",
 		"DRY-RUN request: POST /api/v1/rollout/compare-methods",
 		"DRY-RUN request: POST /api/v1/rollout/stage-policy",
 	} {
@@ -62,12 +65,22 @@ func TestRunAPIRolloutGuidedHappyPath(t *testing.T) {
 			writeTestJSON(t, w, map[string]string{"status": "ok"})
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/me":
 			writeTestJSON(t, w, map[string]any{"consumer_name": "rollout-test", "scope": "admin"})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/rollout/capabilities":
+			writeTestJSON(t, w, map[string]any{"status": "ok", "api_version": "test"})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/rollout/sessions":
+			body := decodeRolloutTestBody(t, r)
+			requireRolloutTestNumber(t, body, "bucket_min", 0)
+			requireRolloutTestNumber(t, body, "bucket_max", 99)
+			writeTestStatusJSON(t, w, http.StatusCreated, map[string]any{"status": "open", "run_id": "rol-test"})
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/rollout/preflight":
 			body := decodeRolloutTestBody(t, r)
 			requireRolloutTestNumber(t, body, "bucket_min", 0)
 			requireRolloutTestNumber(t, body, "bucket_max", 99)
-			if body["mode"] != "standby" {
-				t.Fatalf("preflight mode = %#v, want standby", body["mode"])
+			if body["run_id"] != "rol-test" {
+				t.Fatalf("preflight run_id = %#v, want rol-test", body["run_id"])
+			}
+			if body["mode"] != "api-controlled" {
+				t.Fatalf("preflight mode = %#v, want api-controlled", body["mode"])
 			}
 			writeTestJSON(t, w, map[string]any{"status": "ok", "summary": "preflight clean"})
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/rollout/smoke":
@@ -88,6 +101,16 @@ func TestRunAPIRolloutGuidedHappyPath(t *testing.T) {
 			}
 			if body["execute"] != true || body["confirm"] != "seed-token" {
 				t.Fatalf("seed execute body = %#v, want execute with seed-token", body)
+			}
+			writeTestJSON(t, w, map[string]string{"status": "ok"})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/rollout/final-reconcile":
+			body := decodeRolloutTestBody(t, r)
+			if body["dry_run"] == true {
+				writeTestJSON(t, w, map[string]string{"status": "ok", "confirmation_token": "reconcile-token"})
+				return
+			}
+			if body["execute"] != true || body["confirm"] != "reconcile-token" {
+				t.Fatalf("final reconcile execute body = %#v, want execute with reconcile-token", body)
 			}
 			writeTestJSON(t, w, map[string]string{"status": "ok"})
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/rollout/activate-buckets":
@@ -127,6 +150,8 @@ func TestRunAPIRolloutGuidedHappyPath(t *testing.T) {
 		"EXECUTE SEED",
 		"V1 STOPPED 0-99",
 		"YES",
+		"EXECUTE RECONCILE",
+		"YES",
 		"ACTIVATE 0-99",
 		"",
 	}, "\n")
@@ -151,10 +176,14 @@ func TestRunAPIRolloutGuidedHappyPath(t *testing.T) {
 	wantCalls := []string{
 		"GET /api/v1/health",
 		"GET /api/v1/me",
+		"GET /api/v1/rollout/capabilities",
+		"POST /api/v1/rollout/sessions",
 		"POST /api/v1/rollout/preflight",
 		"POST /api/v1/rollout/smoke",
 		"POST /api/v1/rollout/seed",
 		"POST /api/v1/rollout/seed",
+		"POST /api/v1/rollout/final-reconcile",
+		"POST /api/v1/rollout/final-reconcile",
 		"POST /api/v1/rollout/activate-buckets",
 		"POST /api/v1/rollout/activate-buckets",
 		"GET /api/v1/rollout/status",
@@ -177,6 +206,10 @@ func TestRunAPIRolloutGuidedMissingEndpointHint(t *testing.T) {
 			writeTestJSON(t, w, map[string]string{"status": "ok"})
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/me":
 			writeTestJSON(t, w, map[string]string{"status": "ok"})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/rollout/capabilities":
+			writeTestJSON(t, w, map[string]string{"status": "ok"})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/rollout/sessions":
+			writeTestStatusJSON(t, w, http.StatusCreated, map[string]string{"status": "open", "run_id": "rol-test"})
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/rollout/preflight":
 			writeTestStatusJSON(t, w, http.StatusNotFound, map[string]string{"error": "not found"})
 		default:
@@ -215,6 +248,10 @@ func TestRunAPIRolloutGuidedRequiresDryRunConfirmationToken(t *testing.T) {
 			writeTestJSON(t, w, map[string]string{"status": "ok"})
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/me":
 			writeTestJSON(t, w, map[string]string{"status": "ok"})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/rollout/capabilities":
+			writeTestJSON(t, w, map[string]string{"status": "ok"})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/rollout/sessions":
+			writeTestStatusJSON(t, w, http.StatusCreated, map[string]string{"status": "open", "run_id": "rol-test"})
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/rollout/preflight":
 			writeTestJSON(t, w, map[string]string{"status": "ok"})
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/rollout/smoke":

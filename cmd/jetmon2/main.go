@@ -115,6 +115,7 @@ func runServe() {
 	}
 	log.Printf("config: legacy_status_projection=%s", enabledLabel(cfg.LegacyStatusProjectionEnable))
 	log.Printf("config: bucket_ownership=%s", bucketOwnershipLabel(cfg))
+	log.Printf("config: rollout_mode=%s", cfg.RolloutMode)
 	log.Printf("config: scheduler=%s", schedulerConfigLabel(cfg))
 	log.Printf("config: default_check_policy=method:%s profile:%s", cfg.DefaultCheckMethod, cfg.DefaultDetectionProfile)
 	log.Printf("config: check_dns_resolvers=%s", checkDNSResolversLabel(checker.ConfiguredResolverServers()))
@@ -392,6 +393,7 @@ func cmdValidateConfig() {
 	cfg := config.Get()
 	fmt.Printf("INFO legacy_status_projection=%s\n", enabledLabel(cfg.LegacyStatusProjectionEnable))
 	fmt.Printf("INFO bucket_ownership=%s\n", bucketOwnershipLabel(cfg))
+	fmt.Printf("INFO rollout_mode=%s\n", cfg.RolloutMode)
 	fmt.Printf("INFO scheduler=%s\n", schedulerConfigLabel(cfg))
 	fmt.Printf("INFO default_check_policy=method:%s profile:%s\n", cfg.DefaultCheckMethod, cfg.DefaultDetectionProfile)
 	fmt.Printf("INFO wpcom_notify=%s\n", enabledLabel(cfg.WPCOMNotifyEnable))
@@ -1076,12 +1078,18 @@ func deliveryWorkersShouldStart(cfg *config.Config, hostname string) bool {
 	if cfg.APIPort <= 0 {
 		return false
 	}
+	if cfg.RolloutMode == config.RolloutModeStandby || cfg.RolloutMode == config.RolloutModeAPIControlled {
+		return false
+	}
 	owner := strings.TrimSpace(cfg.DeliveryOwnerHost)
 	return owner == "" || owner == hostname
 }
 
 func deliveryOwnerStatus(cfg *config.Config, hostname string) (string, string) {
 	owner := strings.TrimSpace(cfg.DeliveryOwnerHost)
+	if cfg.RolloutMode == config.RolloutModeStandby || cfg.RolloutMode == config.RolloutModeAPIControlled {
+		return "INFO", fmt.Sprintf("delivery_workers=disabled rollout_mode=%s", cfg.RolloutMode)
+	}
 	if cfg.APIPort <= 0 {
 		if owner == "" {
 			return "INFO", "delivery_workers=disabled api_port=disabled"

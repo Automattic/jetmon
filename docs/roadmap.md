@@ -452,28 +452,36 @@ production telemetry branches:
   commands from a workstation or bastion without shell access to container
   hosts.
 - [x] Add `jetmon2 api rollout guided` as the client-side interactive wrapper
-  for API-driven container rollout: health/identity checks, standby preflight,
+  for API-driven container rollout: health/identity checks, API-controlled preflight,
   read-only HEAD/legacy smoke, seed/adopt dry-run + execute, manual v1-stopped
   checkpoint, v2 activation, post-handoff gates, rollback release path, and
   optional HEAD/GET comparison plus staged policy planning.
-- [ ] Add a first-class Monitor standby mode for containerized rollout:
+- [x] Add a first-class Monitor standby mode for containerized rollout:
   read-only standby must not claim buckets, run scheduled checks, write
   events/runtime/check-history rows, send WPCOM notifications, or start
   delivery workers; armed standby may publish process health only.
-- [ ] Add admin-scoped API rollout preflight and read-only smoke endpoints for
-  validating config, schema, Verifliers, bucket-control state, synthetic
-  canaries, and sampled `HEAD` + `legacy` probe parity without mutating site
-  state.
-- [ ] Add idempotent API seed/adopt operations for v2 side tables and existing
+- [x] Add admin-scoped API rollout preflight and read-only smoke planning
+  endpoints for validating config, schema, API-controlled mode,
+  bucket-control state, and sampled `HEAD` + `legacy` coverage without mutating
+  site state.
+- [x] Add idempotent API seed/adopt operations for v2 side tables and existing
   v1 non-running projections, using dry-run plans and generated confirmation
   tokens while avoiding duplicate down notifications.
-- [ ] Add explicit API bucket activation/release operations for the container
+- [x] Add explicit API bucket activation/release operations for the container
   rollout. The v1 schema does not expose reliable v1 host liveness, so v2
   should take over ranges only after an operator confirms Systems stopped the
   matching v1 range.
 - [ ] Add non-authoritative `HEAD`/`GET` comparison reporting and staged
   check-policy transitions with pause, rollback-last-stage, and rollback-all
   support for `HEAD` + `legacy` -> `GET` + `simple_http` -> `GET` + `full`.
+- [ ] Expand the rollout API comparison and stage-policy endpoints from
+  durable job records into full execution workers: comparison should run sampled
+  non-authoritative probes and persist deltas, while policy staging should
+  update cohorts with pause, rollback-last-stage, and rollback-all support.
+- [ ] Add synthetic canary execution to the API rollout smoke/preflight gates.
+  The current API surface records the read-only smoke plan and basic DB/schema
+  blockers; canary probe execution should be added once production canary URLs
+  and expected states are finalized.
 - [x] Add `jetmon2 rollout rehearsal-plan` so operators can generate the exact
   same-server or fresh-server command sequence from a bucket CSV, host, bucket
   range, and rollout mode.

@@ -10,8 +10,10 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -25,7 +27,11 @@ type apiRolloutGuidedOptions struct {
 	sampleSize             int
 	compareSampleSize      int
 	since                  string
+	runID                  string
+	changeRef              string
+	logDir                 string
 	dryRun                 bool
+	resume                 bool
 	rollback               bool
 	skipSeed               bool
 	includeComparison      bool
@@ -46,6 +52,18 @@ type apiRolloutStep struct {
 	ManualOnly bool
 }
 
+type apiRolloutGuidedState struct {
+	Version        int               `json:"version"`
+	RunID          string            `json:"run_id,omitempty"`
+	BucketMin      int               `json:"bucket_min"`
+	BucketMax      int               `json:"bucket_max"`
+	Rollback       bool              `json:"rollback"`
+	ChangeRef      string            `json:"change_ref,omitempty"`
+	State          map[string]string `json:"state,omitempty"`
+	CompletedSteps map[string]bool   `json:"completed_steps,omitempty"`
+	UpdatedAt      string            `json:"updated_at"`
+}
+
 func cmdAPIRollout(args []string) error {
 	if len(args) == 0 {
 		printAPIRolloutUsage(os.Stderr)
@@ -54,11 +72,21 @@ func cmdAPIRollout(args []string) error {
 	switch args[0] {
 	case "guided":
 		return cmdAPIRolloutGuided(args[1:])
+	case "capabilities":
+		return cmdAPIRolloutCapabilities(args[1:])
+	case "preflight", "smoke", "seed", "final-reconcile", "activate-buckets", "release-buckets", "compare-methods", "stage-policy":
+		return cmdAPIRolloutPost(args[0], args[1:])
+	case "status":
+		return cmdAPIRolloutStatus(args[1:])
+	case "bucket-coverage", "activity-check", "projection-drift":
+		return cmdAPIRolloutGate(args[0], args[1:])
+	case "jobs":
+		return cmdAPIRolloutJobs(args[1:])
 	case "--help", "-h", "help":
 		printAPIRolloutUsage(os.Stdout)
 		return nil
 	default:
-		return fmt.Errorf("unknown api rollout subcommand %q (want: guided)", args[0])
+		return fmt.Errorf("unknown api rollout subcommand %q", args[0])
 	}
 }
 
@@ -66,7 +94,7 @@ func printAPIRolloutUsage(w io.Writer) {
 	if w == nil {
 		w = io.Discard
 	}
-	fmt.Fprintln(w, "usage: jetmon2 api rollout <guided> [flags]")
+	fmt.Fprintln(w, "usage: jetmon2 api rollout <guided|capabilities|preflight|smoke|seed|final-reconcile|activate-buckets|release-buckets|status|bucket-coverage|activity-check|projection-drift|compare-methods|stage-policy|jobs> [flags]")
 }
 
 func cmdAPIRolloutGuided(args []string) error {
@@ -84,7 +112,11 @@ func cmdAPIRolloutGuided(args []string) error {
 	fs.IntVar(&guided.sampleSize, "sample-size", guided.sampleSize, "read-only smoke sample size")
 	fs.IntVar(&guided.compareSampleSize, "compare-sample-size", guided.compareSampleSize, "HEAD/GET comparison sample size")
 	fs.StringVar(&guided.since, "since", guided.since, "recent activity window for post-activation gates")
+	fs.StringVar(&guided.runID, "run-id", "", "existing rollout run id to use")
+	fs.StringVar(&guided.changeRef, "change-ref", "", "change ticket/reference recorded with rollout API actions")
+	fs.StringVar(&guided.logDir, "log-dir", "logs/api-rollout", "directory for guided API rollout transcript and resume state")
 	fs.BoolVar(&guided.dryRun, "dry-run", false, "print the guided plan without contacting the API")
+	fs.BoolVar(&guided.resume, "resume", false, "resume a guided API rollout from --log-dir state")
 	fs.BoolVar(&guided.rollback, "rollback", false, "release an activated v2 bucket range back to standby")
 	fs.BoolVar(&guided.skipSeed, "skip-seed", false, "skip v2 side-state seed/adopt steps")
 	fs.BoolVar(&guided.includeComparison, "include-comparison", false, "run non-authoritative HEAD/GET comparison after activation gates")
@@ -96,6 +128,160 @@ func cmdAPIRolloutGuided(args []string) error {
 		return errors.New("usage: jetmon2 api rollout guided [flags]")
 	}
 	return runAPIRolloutGuided(context.Background(), nil, opts, guided)
+}
+
+func cmdAPIRolloutCapabilities(args []string) error {
+	opts := defaultAPIOptions()
+	fs := newAPIFlagSet("api rollout capabilities", &opts)
+	if err := parseAPIFlags(fs, args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("usage: jetmon2 api rollout capabilities [flags]")
+	}
+	return executeAPIRequest(context.Background(), nil, opts, http.MethodGet, "/api/v1/rollout/capabilities", nil)
+}
+
+type apiRolloutPrimitiveOptions struct {
+	bucketMin  int
+	bucketMax  int
+	runID      string
+	changeRef  string
+	ownerHost  string
+	mode       string
+	sampleSize int
+	readOnly   bool
+	dryRun     bool
+	execute    bool
+	confirm    string
+	since      string
+	from       string
+	to         string
+	method     string
+	profile    string
+	size       string
+}
+
+func cmdAPIRolloutPost(command string, args []string) error {
+	opts := defaultAPIOptions()
+	fs := newAPIFlagSet("api rollout "+command, &opts)
+	prim := apiRolloutPrimitiveOptions{bucketMin: -1, bucketMax: -1, since: "15m"}
+	fs.IntVar(&prim.bucketMin, "bucket-min", prim.bucketMin, "inclusive bucket range minimum")
+	fs.IntVar(&prim.bucketMax, "bucket-max", prim.bucketMax, "inclusive bucket range maximum")
+	fs.StringVar(&prim.runID, "run-id", "", "rollout run id")
+	fs.StringVar(&prim.changeRef, "change-ref", "", "change ticket/reference recorded with this rollout action")
+	fs.StringVar(&prim.ownerHost, "owner-host", "", "monitor host that should own activated buckets (default selected API host)")
+	fs.StringVar(&prim.mode, "mode", "", "rollout check mode")
+	fs.IntVar(&prim.sampleSize, "sample-size", 0, "sample size for smoke or comparison operations")
+	fs.BoolVar(&prim.readOnly, "read-only", false, "require read-only behavior")
+	fs.BoolVar(&prim.dryRun, "dry-run", false, "plan without mutating state")
+	fs.BoolVar(&prim.execute, "execute", false, "execute a previously planned operation")
+	fs.StringVar(&prim.confirm, "confirm", "", "confirmation token returned by a dry-run plan")
+	fs.StringVar(&prim.from, "from", "", "source check method/profile cohort")
+	fs.StringVar(&prim.to, "to", "", "target check method/profile cohort")
+	fs.StringVar(&prim.method, "method", "", "target HTTP method for staged policy")
+	fs.StringVar(&prim.profile, "profile", "", "target detection profile for staged policy")
+	fs.StringVar(&prim.size, "size", "", "cohort size for staged policy")
+	if err := parseAPIFlags(fs, args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("usage: jetmon2 api rollout %s [flags]", command)
+	}
+	if prim.bucketMin < 0 || prim.bucketMax < 0 || prim.bucketMin > prim.bucketMax {
+		return errors.New("--bucket-min and --bucket-max are required with min <= max")
+	}
+	body := map[string]any{
+		"bucket_min": prim.bucketMin,
+		"bucket_max": prim.bucketMax,
+	}
+	addNonEmpty(body, "run_id", prim.runID)
+	addNonEmpty(body, "change_ref", prim.changeRef)
+	addNonEmpty(body, "owner_host", prim.ownerHost)
+	addNonEmpty(body, "mode", prim.mode)
+	addNonEmpty(body, "confirm", prim.confirm)
+	addNonEmpty(body, "from", prim.from)
+	addNonEmpty(body, "to", prim.to)
+	addNonEmpty(body, "method", prim.method)
+	addNonEmpty(body, "profile", prim.profile)
+	if prim.sampleSize > 0 {
+		body["sample_size"] = prim.sampleSize
+	}
+	if prim.readOnly {
+		body["read_only"] = true
+	}
+	if prim.dryRun {
+		body["dry_run"] = true
+	}
+	if prim.execute {
+		body["execute"] = true
+	}
+	if prim.size != "" {
+		body["size"] = prim.size
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	return executeAPIRequest(context.Background(), nil, opts, http.MethodPost, "/api/v1/rollout/"+command, payload)
+}
+
+func cmdAPIRolloutStatus(args []string) error {
+	opts := defaultAPIOptions()
+	fs := newAPIFlagSet("api rollout status", &opts)
+	if err := parseAPIFlags(fs, args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("usage: jetmon2 api rollout status [flags]")
+	}
+	return executeAPIRequest(context.Background(), nil, opts, http.MethodGet, "/api/v1/rollout/status", nil)
+}
+
+func cmdAPIRolloutGate(command string, args []string) error {
+	opts := defaultAPIOptions()
+	fs := newAPIFlagSet("api rollout "+command, &opts)
+	bucketMin := fs.Int("bucket-min", -1, "inclusive bucket range minimum")
+	bucketMax := fs.Int("bucket-max", -1, "inclusive bucket range maximum")
+	since := fs.String("since", "15m", "recent activity window")
+	if err := parseAPIFlags(fs, args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("usage: jetmon2 api rollout %s [flags]", command)
+	}
+	if *bucketMin < 0 || *bucketMax < 0 || *bucketMin > *bucketMax {
+		return errors.New("--bucket-min and --bucket-max are required with min <= max")
+	}
+	values := url.Values{}
+	values.Set("bucket_min", strconv.Itoa(*bucketMin))
+	values.Set("bucket_max", strconv.Itoa(*bucketMax))
+	if command == "activity-check" {
+		values.Set("since", *since)
+	}
+	return executeAPIRequest(context.Background(), nil, opts, http.MethodGet, "/api/v1/rollout/"+command+"?"+values.Encode(), nil)
+}
+
+func cmdAPIRolloutJobs(args []string) error {
+	if len(args) < 2 || args[0] != "get" {
+		return errors.New("usage: jetmon2 api rollout jobs get <job-id> [flags]")
+	}
+	opts := defaultAPIOptions()
+	fs := newAPIFlagSet("api rollout jobs get", &opts)
+	if err := parseAPIFlags(fs, args[2:]); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("usage: jetmon2 api rollout jobs get <job-id> [flags]")
+	}
+	return executeAPIRequest(context.Background(), nil, opts, http.MethodGet, "/api/v1/rollout/jobs/"+url.PathEscape(args[1]), nil)
+}
+
+func addNonEmpty(body map[string]any, key, value string) {
+	value = strings.TrimSpace(value)
+	if value != "" {
+		body[key] = value
+	}
 }
 
 func runAPIRolloutGuided(ctx context.Context, client *http.Client, opts apiCLIOptions, guided apiRolloutGuidedOptions) error {
@@ -120,6 +306,36 @@ func runAPIRolloutGuided(ctx context.Context, client *http.Client, opts apiCLIOp
 	if strings.TrimSpace(guided.since) == "" {
 		return errors.New("since must be non-empty")
 	}
+	guided.runID = strings.TrimSpace(guided.runID)
+	guided.changeRef = strings.TrimSpace(guided.changeRef)
+	var stateFile string
+	if strings.TrimSpace(guided.logDir) != "" && !guided.dryRun {
+		if err := os.MkdirAll(guided.logDir, 0700); err != nil {
+			return fmt.Errorf("create rollout log directory: %w", err)
+		}
+		stateFile = apiRolloutGuidedStatePath(guided)
+		if guided.resume {
+			saved, err := readAPIRolloutGuidedState(stateFile)
+			if err != nil {
+				return err
+			}
+			if err := validateAPIRolloutGuidedState(saved, guided); err != nil {
+				return err
+			}
+			if guided.runID == "" {
+				guided.runID = saved.RunID
+			}
+		}
+		logPath := apiRolloutGuidedLogPath(guided)
+		logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+		if err != nil {
+			return fmt.Errorf("open guided API rollout log: %w", err)
+		}
+		defer logFile.Close()
+		opts.out = io.MultiWriter(opts.out, logFile)
+		fmt.Fprintf(opts.out, "INFO api_rollout_log=%s\n", logPath)
+		fmt.Fprintf(opts.out, "INFO api_rollout_state=%s\n", stateFile)
+	}
 	if !guided.dryRun {
 		if _, err := requireAPILocalOrAllowRemote(opts, opts.allowRemote, "api rollout guided"); err != nil {
 			return err
@@ -138,12 +354,39 @@ func runAPIRolloutGuided(ctx context.Context, client *http.Client, opts apiCLIOp
 	} else {
 		fmt.Fprintln(opts.out, "path: forward")
 	}
+	if guided.runID != "" {
+		fmt.Fprintf(opts.out, "run_id: %s\n", guided.runID)
+	}
+	if guided.changeRef != "" {
+		fmt.Fprintf(opts.out, "change_ref: %s\n", guided.changeRef)
+	}
 	fmt.Fprintln(opts.out)
 
 	state := map[string]string{}
+	if guided.runID != "" {
+		state["run_id"] = guided.runID
+	}
+	if guided.changeRef != "" {
+		state["change_ref"] = guided.changeRef
+	}
+	completed := map[string]bool{}
+	if stateFile != "" && guided.resume {
+		if saved, err := readAPIRolloutGuidedState(stateFile); err == nil {
+			for k, v := range saved.State {
+				state[k] = v
+			}
+			for k, v := range saved.CompletedSteps {
+				completed[k] = v
+			}
+		}
+	}
 	promptReader := bufio.NewReader(opts.in)
 	for i, step := range steps {
 		fmt.Fprintf(opts.out, "Step %d/%d: %s\n", i+1, len(steps), step.Title)
+		if completed[step.Name] {
+			fmt.Fprintf(opts.out, "SKIP %s already completed in resume state\n\n", step.Name)
+			continue
+		}
 		if strings.TrimSpace(step.Details) != "" {
 			fmt.Fprintf(opts.out, "%s\n", step.Details)
 		}
@@ -160,6 +403,12 @@ func runAPIRolloutGuided(ctx context.Context, client *http.Client, opts apiCLIOp
 			}
 			fmt.Fprintln(opts.out, "PASS manual checkpoint")
 			fmt.Fprintln(opts.out)
+			completed[step.Name] = true
+			if stateFile != "" {
+				if err := writeAPIRolloutGuidedState(stateFile, guided, state, completed); err != nil {
+					return err
+				}
+			}
 			continue
 		}
 		target := expandAPIRolloutTarget(step.Target, state)
@@ -192,34 +441,53 @@ func runAPIRolloutGuided(ctx context.Context, client *http.Client, opts apiCLIOp
 			switch step.Name {
 			case "seed_dry_run":
 				state["seed_confirmation_token"] = token
+			case "final_reconcile_dry_run":
+				state["final_reconcile_confirmation_token"] = token
 			case "activate_dry_run":
 				state["activate_confirmation_token"] = token
 			case "release_dry_run":
 				state["release_confirmation_token"] = token
 			}
 		}
+		if runID := apiRolloutStringField(resp, "run_id"); runID != "" {
+			state["run_id"] = runID
+			guided.runID = runID
+		}
 		writeAPIRolloutStepResult(opts.out, step.Name, resp)
 		fmt.Fprintln(opts.out)
+		completed[step.Name] = true
+		if stateFile != "" {
+			if err := writeAPIRolloutGuidedState(stateFile, guided, state, completed); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
 
 func buildAPIRolloutGuidedSteps(g apiRolloutGuidedOptions) []apiRolloutStep {
 	if g.rollback {
-		return []apiRolloutStep{
+		steps := []apiRolloutStep{
 			apiRolloutRequestStep("health", "Check API health", "Confirm the selected Monitor API is reachable before attempting rollback.", http.MethodGet, "/api/v1/health", nil),
 			apiRolloutRequestStep("identity", "Check API identity", "Confirm the configured token can identify itself.", http.MethodGet, "/api/v1/me", nil),
+			apiRolloutRequestStep("capabilities", "Check rollout API capabilities", "Confirm this Monitor supports the API-driven rollout contract expected by this CLI.", http.MethodGet, "/api/v1/rollout/capabilities", nil),
+			{
+				Name:    "create_session",
+				Title:   "Create or resume rollout session",
+				Details: "Create a durable server-side session for audit and resume tracking.",
+				Method:  http.MethodPost,
+				Target:  "/api/v1/rollout/sessions",
+				Body:    apiRolloutSessionBody(g),
+			},
 			{
 				Name:    "release_dry_run",
 				Title:   "Plan v2 bucket release",
 				Details: "Ask the Monitor API to plan releasing this bucket range back to standby. This should not mutate state.",
 				Method:  http.MethodPost,
 				Target:  "/api/v1/rollout/release-buckets",
-				Body: map[string]any{
-					"bucket_min": g.bucketMin,
-					"bucket_max": g.bucketMax,
-					"dry_run":    true,
-				},
+				Body: apiRolloutRangeBody(g, map[string]any{
+					"dry_run": true,
+				}),
 				Prompt:  "Plan releasing this v2 bucket range.",
 				Confirm: "YES",
 			},
@@ -229,31 +497,39 @@ func buildAPIRolloutGuidedSteps(g apiRolloutGuidedOptions) []apiRolloutStep {
 				Details: "This returns the range to v2 standby. Systems should restart the matching v1 range only after this succeeds.",
 				Method:  http.MethodPost,
 				Target:  "/api/v1/rollout/release-buckets",
-				Body: map[string]any{
-					"bucket_min": g.bucketMin,
-					"bucket_max": g.bucketMax,
-					"execute":    true,
-					"confirm":    "{{release_confirmation_token}}",
-				},
+				Body: apiRolloutRangeBody(g, map[string]any{
+					"execute": true,
+					"confirm": "{{release_confirmation_token}}",
+				}),
 				Prompt:  "Release this v2 bucket range.",
 				Confirm: fmt.Sprintf("RELEASE %d-%d", g.bucketMin, g.bucketMax),
 				Danger:  true,
 			},
 			apiRolloutRequestStep("status", "Check rollout status", "Confirm the Monitor reports the range as no longer active in v2.", http.MethodGet, "/api/v1/rollout/status", nil),
 		}
+		return filterAPIRolloutSessionStep(steps, g)
 	}
 
 	steps := []apiRolloutStep{
 		apiRolloutRequestStep("health", "Check API health", "Confirm the selected standby Monitor API is reachable.", http.MethodGet, "/api/v1/health", nil),
 		apiRolloutRequestStep("identity", "Check API identity", "Confirm the configured token can identify itself before rollout operations.", http.MethodGet, "/api/v1/me", nil),
+		apiRolloutRequestStep("capabilities", "Check rollout API capabilities", "Confirm this Monitor supports sessions, confirmation tokens, range locks, and API-controlled rollout mode.", http.MethodGet, "/api/v1/rollout/capabilities", nil),
+		{
+			Name:    "create_session",
+			Title:   "Create or resume rollout session",
+			Details: "Create a durable server-side session for audit and resume tracking.",
+			Method:  http.MethodPost,
+			Target:  "/api/v1/rollout/sessions",
+			Body:    apiRolloutSessionBody(g),
+		},
 		{
 			Name:    "preflight",
-			Title:   "Run standby preflight",
-			Details: "Validate Monitor config, DB connectivity, schema version, Veriflier contract/quorum, delivery guards, bucket-control state, and standby mode.",
+			Title:   "Run API-controlled preflight",
+			Details: "Validate Monitor config, DB connectivity, schema version, API-controlled rollout mode, delivery guards, and bucket-control state.",
 			Method:  http.MethodPost,
 			Target:  "/api/v1/rollout/preflight",
 			Body: apiRolloutRangeBody(g, map[string]any{
-				"mode": "standby",
+				"mode": "api-controlled",
 			}),
 			Prompt:  "Run rollout preflight.",
 			Confirm: "YES",
@@ -261,7 +537,7 @@ func buildAPIRolloutGuidedSteps(g apiRolloutGuidedOptions) []apiRolloutStep {
 		{
 			Name:    "smoke",
 			Title:   "Run read-only HEAD/legacy smoke",
-			Details: "Sample sites and synthetic canaries through HEAD/legacy probes without writing incident state, runtime freshness, check history, WPCOM notifications, or legacy projection rows.",
+			Details: "Plan sampled HEAD/legacy read-only smoke coverage without writing incident state, runtime freshness, check history, WPCOM notifications, or legacy projection rows.",
 			Method:  http.MethodPost,
 			Target:  "/api/v1/rollout/smoke",
 			Body: apiRolloutRangeBody(g, map[string]any{
@@ -312,6 +588,32 @@ func buildAPIRolloutGuidedSteps(g apiRolloutGuidedOptions) []apiRolloutStep {
 			Confirm:    fmt.Sprintf("V1 STOPPED %d-%d", g.bucketMin, g.bucketMax),
 			ManualOnly: true,
 			Danger:     true,
+		},
+		apiRolloutStep{
+			Name:    "final_reconcile_dry_run",
+			Title:   "Plan final side-state reconcile",
+			Details: "After v1 is stopped, re-check rows added or changed since the first seed/adopt plan before v2 activation.",
+			Method:  http.MethodPost,
+			Target:  "/api/v1/rollout/final-reconcile",
+			Body: apiRolloutRangeBody(g, map[string]any{
+				"dry_run": true,
+			}),
+			Prompt:  "Plan the final side-state reconcile.",
+			Confirm: "YES",
+		},
+		apiRolloutStep{
+			Name:    "final_reconcile_execute",
+			Title:   "Execute final side-state reconcile",
+			Details: "Apply the final seed/adopt pass while v1 is stopped and before v2 becomes authoritative.",
+			Method:  http.MethodPost,
+			Target:  "/api/v1/rollout/final-reconcile",
+			Body: apiRolloutRangeBody(g, map[string]any{
+				"execute": true,
+				"confirm": "{{final_reconcile_confirmation_token}}",
+			}),
+			Prompt:  "Apply the final side-state reconcile.",
+			Confirm: "EXECUTE RECONCILE",
+			Danger:  true,
 		},
 		apiRolloutStep{
 			Name:    "activate_dry_run",
@@ -394,7 +696,93 @@ func buildAPIRolloutGuidedSteps(g apiRolloutGuidedOptions) []apiRolloutStep {
 			},
 		)
 	}
-	return steps
+	return filterAPIRolloutSessionStep(steps, g)
+}
+
+func filterAPIRolloutSessionStep(steps []apiRolloutStep, g apiRolloutGuidedOptions) []apiRolloutStep {
+	if strings.TrimSpace(g.runID) == "" {
+		return steps
+	}
+	out := steps[:0]
+	for _, step := range steps {
+		if step.Name == "create_session" {
+			continue
+		}
+		out = append(out, step)
+	}
+	return out
+}
+
+func apiRolloutGuidedStatePath(g apiRolloutGuidedOptions) string {
+	name := fmt.Sprintf("api-rollout-%d-%d", g.bucketMin, g.bucketMax)
+	if g.rollback {
+		name += "-rollback"
+	}
+	return filepath.Join(g.logDir, name+".state.json")
+}
+
+func apiRolloutGuidedLogPath(g apiRolloutGuidedOptions) string {
+	ts := time.Now().UTC().Format("20060102T150405Z")
+	name := fmt.Sprintf("api-rollout-%d-%d-%s", g.bucketMin, g.bucketMax, ts)
+	if g.rollback {
+		name += "-rollback"
+	}
+	return filepath.Join(g.logDir, name+".log")
+}
+
+func readAPIRolloutGuidedState(path string) (apiRolloutGuidedState, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return apiRolloutGuidedState{}, fmt.Errorf("read guided API rollout state: %w", err)
+	}
+	var state apiRolloutGuidedState
+	if err := json.Unmarshal(raw, &state); err != nil {
+		return apiRolloutGuidedState{}, fmt.Errorf("decode guided API rollout state: %w", err)
+	}
+	if state.Version != 1 {
+		return apiRolloutGuidedState{}, fmt.Errorf("guided API rollout state version %d is not supported", state.Version)
+	}
+	return state, nil
+}
+
+func validateAPIRolloutGuidedState(state apiRolloutGuidedState, g apiRolloutGuidedOptions) error {
+	if state.BucketMin != g.bucketMin || state.BucketMax != g.bucketMax || state.Rollback != g.rollback {
+		return fmt.Errorf("guided API rollout state does not match requested range/path")
+	}
+	if g.runID != "" && state.RunID != "" && g.runID != state.RunID {
+		return fmt.Errorf("guided API rollout state run_id=%q does not match requested run_id=%q", state.RunID, g.runID)
+	}
+	return nil
+}
+
+func writeAPIRolloutGuidedState(path string, g apiRolloutGuidedOptions, state map[string]string, completed map[string]bool) error {
+	runID := strings.TrimSpace(state["run_id"])
+	if runID == "" {
+		runID = g.runID
+	}
+	payload := apiRolloutGuidedState{
+		Version:        1,
+		RunID:          runID,
+		BucketMin:      g.bucketMin,
+		BucketMax:      g.bucketMax,
+		Rollback:       g.rollback,
+		ChangeRef:      g.changeRef,
+		State:          state,
+		CompletedSteps: completed,
+		UpdatedAt:      time.Now().UTC().Format(time.RFC3339),
+	}
+	raw, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0600); err != nil {
+		return fmt.Errorf("write guided API rollout state: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("replace guided API rollout state: %w", err)
+	}
+	return nil
 }
 
 func apiRolloutRequestStep(name, title, details, method, target string, body any) apiRolloutStep {
@@ -413,8 +801,27 @@ func apiRolloutRangeBody(g apiRolloutGuidedOptions, extra map[string]any) map[st
 		"bucket_min": g.bucketMin,
 		"bucket_max": g.bucketMax,
 	}
+	if g.runID != "" {
+		body["run_id"] = g.runID
+	} else {
+		body["run_id"] = "{{run_id}}"
+	}
+	if g.changeRef != "" {
+		body["change_ref"] = g.changeRef
+	}
 	for k, v := range extra {
 		body[k] = v
+	}
+	return body
+}
+
+func apiRolloutSessionBody(g apiRolloutGuidedOptions) map[string]any {
+	body := map[string]any{
+		"bucket_min": g.bucketMin,
+		"bucket_max": g.bucketMax,
+	}
+	if g.changeRef != "" {
+		body["change_ref"] = g.changeRef
 	}
 	return body
 }
@@ -481,6 +888,9 @@ func expandAPIRolloutBody(body any, state map[string]string) any {
 
 func expandAPIRolloutString(s string, state map[string]string) string {
 	for k, v := range state {
+		if v == "" {
+			continue
+		}
 		s = strings.ReplaceAll(s, "{{"+k+"}}", v)
 	}
 	return s
