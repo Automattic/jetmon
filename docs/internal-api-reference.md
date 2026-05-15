@@ -146,6 +146,16 @@ for a fuller feature guide and workflow examples:
 ./bin/jetmon2 api sites cleanup --batch local-smoke --count 3 --output table
 ```
 
+For containerized production rollout control, `jetmon2 api rollout guided`
+wraps the rollout API primitives into an interactive operator flow with typed
+confirmations and dry-run plans:
+
+```bash
+./bin/jetmon2 api rollout guided --bucket-min=0 --bucket-max=99 --allow-remote
+./bin/jetmon2 api rollout guided --bucket-min=0 --bucket-max=99 --dry-run
+./bin/jetmon2 api rollout guided --bucket-min=0 --bucket-max=99 --rollback --allow-remote
+```
+
 JSON is the default output for scripts. Add `--pretty` for readable JSON or
 `--output table` for stable human-readable tables on list and workflow summary
 commands.

@@ -83,6 +83,7 @@ var apiCommandCatalog = []apiCommandInfo{
 	{Command: "alert-contacts create", Description: "create an email, PagerDuty, Slack, or Teams contact", Example: "jetmon2 api alert-contacts create --label Local --transport email --address alerts@example.test --pretty"},
 	{Command: "alert-contacts test", Description: "send a managed alert-contact test", Example: "jetmon2 api alert-contacts test 12 --idempotency-key alert-12-test --pretty"},
 	{Command: "alert-contacts deliveries", Description: "list managed alert delivery rows", Example: "jetmon2 api alert-contacts deliveries 12 --status failed --output table"},
+	{Command: "rollout guided", Description: "walk through the API-driven container rollout flow", Example: "jetmon2 api rollout guided --bucket-min 0 --bucket-max 99 --allow-remote"},
 	{Command: "smoke", Description: "run the Docker-local API smoke workflow", Example: "jetmon2 api smoke --batch local-smoke --exercise webhook --pretty"},
 	{Command: "commands", Description: "list API CLI commands and examples", Example: "jetmon2 api commands --output table"},
 }
@@ -125,10 +126,12 @@ func cmdAPI(args []string) {
 		err = cmdAPIWebhooks(rest)
 	case "alert-contacts":
 		err = cmdAPIAlertContacts(rest)
+	case "rollout":
+		err = cmdAPIRollout(rest)
 	case "smoke":
 		err = cmdAPISmoke(rest)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown api subcommand %q (want: health, me, request, commands, sites, events, webhooks, alert-contacts, smoke)\n", sub)
+		fmt.Fprintf(os.Stderr, "unknown api subcommand %q (want: health, me, request, commands, sites, events, webhooks, alert-contacts, rollout, smoke)\n", sub)
 		printAPIUsage(os.Stderr)
 		os.Exit(1)
 	}
@@ -138,7 +141,7 @@ func cmdAPI(args []string) {
 }
 
 func printAPIUsage(w io.Writer) {
-	fmt.Fprintln(w, "usage: jetmon2 api <health|me|request|commands|sites|events|webhooks|alert-contacts|smoke> [flags]")
+	fmt.Fprintln(w, "usage: jetmon2 api <health|me|request|commands|sites|events|webhooks|alert-contacts|rollout|smoke> [flags]")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Run `jetmon2 api commands --output table` for the command catalog.")
 	fmt.Fprintln(w)

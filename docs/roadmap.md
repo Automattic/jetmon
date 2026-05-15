@@ -451,6 +451,11 @@ production telemetry branches:
   token-file support, so a standalone `jetmon2` binary can drive rollout
   commands from a workstation or bastion without shell access to container
   hosts.
+- [x] Add `jetmon2 api rollout guided` as the client-side interactive wrapper
+  for API-driven container rollout: health/identity checks, standby preflight,
+  read-only HEAD/legacy smoke, seed/adopt dry-run + execute, manual v1-stopped
+  checkpoint, v2 activation, post-handoff gates, rollback release path, and
+  optional HEAD/GET comparison plus staged policy planning.
 - [ ] Add a first-class Monitor standby mode for containerized rollout:
   read-only standby must not claim buckets, run scheduled checks, write
   events/runtime/check-history rows, send WPCOM notifications, or start

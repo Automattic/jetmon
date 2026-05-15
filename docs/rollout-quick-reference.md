@@ -36,6 +36,24 @@ still require `--allow-remote`.
 
 ## API-Driven Container Path
 
+Preferred interactive wrapper:
+
+```bash
+./jetmon2 api rollout guided \
+  --bucket-min=<min> \
+  --bucket-max=<max> \
+  --allow-remote
+```
+
+Use `--dry-run` to print every API request and typed confirmation without
+contacting the API. Use `--rollback` to walk the release path when an activated
+range must return to v1 standby. After v2 is stable, add
+`--include-comparison` and `--include-policy-migration` to include the
+non-authoritative HEAD/GET comparison and staged policy planning steps.
+
+The guided command wraps the API primitives below and stops at each gate until
+the operator types the requested confirmation:
+
 1. Systems applies the additive v2 schema.
 2. Deploy the fresh v2 Veriflier fleet and validate `/v2/status`, stable
    `vantage.id` values, auth, capacity, and quorum.
@@ -86,7 +104,7 @@ still require `--allow-remote`.
    ./jetmon2 api rollout stage-policy --method=GET --profile=full --size=1% --dry-run --allow-remote
    ```
 
-The API commands above are the target control-plane surface for the
+The API commands above are the target control-plane surface behind the guided
 containerized rollout. They must remain idempotent, audited, admin-scoped, and
 protected by dry-run plans plus generated confirmation tokens.
 

@@ -110,7 +110,22 @@ The API-driven rollout flow is:
 12. Transition stable cohorts from `GET` + `simple_http` to `GET` + `full`
     using the same staged controls.
 
-The API control-plane command shape for this rollout is:
+The preferred operator command is the guided API wrapper:
+
+```bash
+./jetmon2 api rollout guided \
+  --bucket-min=0 \
+  --bucket-max=99 \
+  --allow-remote
+```
+
+Use `--dry-run` to rehearse the exact API requests and typed confirmations
+before the window. Use `--rollback` to walk the release path if a range must
+return to v1 standby. After v2 owns all buckets and is stable, add
+`--include-comparison` and `--include-policy-migration` to extend the guided
+flow into sampled `HEAD`/`GET` comparison and staged check-policy planning.
+
+The guided command wraps these control-plane API primitives:
 
 ```bash
 ./jetmon2 api rollout preflight --allow-remote

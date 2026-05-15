@@ -134,7 +134,9 @@ one-page checklist during rehearsals and rollout windows:
 - Use API-driven standby/activate/release controls for the container rollout.
   The operator `jetmon2` binary can run from a workstation or bastion using
   `jetmon2 local-config` / `~/.config/jetmon2.conf`; production API writes
-  still require `--allow-remote`.
+  still require `--allow-remote`. Prefer `jetmon2 api rollout guided` during
+  rollout windows so the API gates, typed confirmations, and rollback path are
+  executed in one operator flow.
 - Keep the existing pinned host-by-host commands as the fallback path for
   same-server or fresh-server replacements where the operator has shell access.
 - Keep `LEGACY_STATUS_PROJECTION_ENABLE` on until legacy readers have moved to
