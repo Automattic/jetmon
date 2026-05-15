@@ -30,12 +30,13 @@ type VeriflierClient struct {
 }
 
 var (
-	singleCheckBatchMaxSize       = 512
-	singleCheckFullBatchMaxSize   = 128
-	singleCheckBatchMaxDelay      = 2 * time.Millisecond
-	singleCheckBatchMaxFlight     = 32
-	singleCheckBatchQueueSize     = 32768
-	singleCheckFullBatchQueueSize = 32768
+	singleCheckBatchMaxSize        = 512
+	singleCheckFullBatchMaxSize    = 128
+	singleCheckBatchMaxDelay       = 2 * time.Millisecond
+	singleCheckLightBatchMaxFlight = 32
+	singleCheckFullBatchMaxFlight  = 32
+	singleCheckBatchQueueSize      = 32768
+	singleCheckFullBatchQueueSize  = 32768
 )
 
 // NewVeriflierClient creates a client targeting the given address (host:port).
@@ -139,21 +140,23 @@ type singleCheckResponse struct {
 }
 
 type singleCheckBatcher struct {
-	client   *VeriflierClient
-	lightIn  chan singleCheckCall
-	fullIn   chan singleCheckCall
-	inFlight chan struct{}
+	client        *VeriflierClient
+	lightIn       chan singleCheckCall
+	fullIn        chan singleCheckCall
+	lightInFlight chan struct{}
+	fullInFlight  chan struct{}
 }
 
 func newSingleCheckBatcher(client *VeriflierClient) *singleCheckBatcher {
 	b := &singleCheckBatcher{
-		client:   client,
-		lightIn:  make(chan singleCheckCall, singleCheckBatchQueueSize),
-		fullIn:   make(chan singleCheckCall, singleCheckFullBatchQueueSize),
-		inFlight: make(chan struct{}, singleCheckBatchMaxFlight),
+		client:        client,
+		lightIn:       make(chan singleCheckCall, singleCheckBatchQueueSize),
+		fullIn:        make(chan singleCheckCall, singleCheckFullBatchQueueSize),
+		lightInFlight: make(chan struct{}, singleCheckLightBatchMaxFlight),
+		fullInFlight:  make(chan struct{}, singleCheckFullBatchMaxFlight),
 	}
-	go b.run(b.lightIn, singleCheckBatchMaxSize)
-	go b.run(b.fullIn, singleCheckFullBatchMaxSize)
+	go b.run(b.lightIn, singleCheckBatchMaxSize, b.lightInFlight)
+	go b.run(b.fullIn, singleCheckFullBatchMaxSize, b.fullInFlight)
 	return b
 }
 
@@ -170,9 +173,12 @@ func (b *singleCheckBatcher) submit(ctx context.Context, call singleCheckCall) e
 	}
 }
 
-func (b *singleCheckBatcher) run(in <-chan singleCheckCall, maxBatchSize int) {
+func (b *singleCheckBatcher) run(in <-chan singleCheckCall, maxBatchSize int, inFlight chan struct{}) {
 	if maxBatchSize <= 0 {
 		maxBatchSize = 1
+	}
+	if inFlight == nil {
+		inFlight = make(chan struct{}, 1)
 	}
 	for first := range in {
 		batch := []singleCheckCall{first}
@@ -189,9 +195,9 @@ func (b *singleCheckBatcher) run(in <-chan singleCheckCall, maxBatchSize int) {
 		if !timer.Stop() && collecting {
 			<-timer.C
 		}
-		b.inFlight <- struct{}{}
+		inFlight <- struct{}{}
 		go func() {
-			defer func() { <-b.inFlight }()
+			defer func() { <-inFlight }()
 			b.flush(batch)
 		}()
 	}

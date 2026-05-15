@@ -427,6 +427,107 @@ func TestClientCheckUsesSmallerBatchesForFullDetectionWork(t *testing.T) {
 	}
 }
 
+func TestClientCheckKeepsLightLaneMovingDuringFullBatch(t *testing.T) {
+	origDelay := singleCheckBatchMaxDelay
+	origLightMax := singleCheckBatchMaxSize
+	origFullMax := singleCheckFullBatchMaxSize
+	origLightFlight := singleCheckLightBatchMaxFlight
+	origFullFlight := singleCheckFullBatchMaxFlight
+	singleCheckBatchMaxDelay = 25 * time.Millisecond
+	singleCheckBatchMaxSize = 64
+	singleCheckFullBatchMaxSize = 7
+	singleCheckLightBatchMaxFlight = 1
+	singleCheckFullBatchMaxFlight = 1
+	defer func() {
+		singleCheckBatchMaxDelay = origDelay
+		singleCheckBatchMaxSize = origLightMax
+		singleCheckFullBatchMaxSize = origFullMax
+		singleCheckLightBatchMaxFlight = origLightFlight
+		singleCheckFullBatchMaxFlight = origFullFlight
+	}()
+
+	fullStarted := make(chan struct{})
+	var closeFullStarted sync.Once
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/check" {
+			http.NotFound(w, r)
+			return
+		}
+		var req CheckV2BatchRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if len(req.Requests) > 0 && req.Requests[0].DetectionProfile == "full" {
+			closeFullStarted.Do(func() { close(fullStarted) })
+			time.Sleep(150 * time.Millisecond)
+		}
+		results := make([]CheckV2Result, 0, len(req.Requests))
+		for _, check := range req.Requests {
+			results = append(results, CheckV2Result{
+				RequestID: check.RequestID,
+				BlogID:    check.BlogID,
+				URL:       check.URL,
+				VantageID: "test-vantage",
+				AgentID:   "test-agent",
+				Outcome:   OutcomeUp,
+				Success:   true,
+				HTTPCode:  200,
+			})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(CheckV2BatchResponse{Results: results})
+	}))
+	defer ts.Close()
+
+	client := NewVeriflierClient(ts.Listener.Addr().String(), "secret")
+	var wg sync.WaitGroup
+	errs := make(chan error, singleCheckFullBatchMaxSize)
+	for i := range singleCheckFullBatchMaxSize {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, err := client.Check(context.Background(), CheckRequest{
+				BlogID:           int64(i + 1),
+				URL:              "https://example.com/full",
+				Method:           http.MethodGet,
+				DetectionProfile: "full",
+			})
+			errs <- err
+		}(i)
+	}
+
+	select {
+	case <-fullStarted:
+	case <-time.After(time.Second):
+		t.Fatal("full batch did not start")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	res, err := client.Check(ctx, CheckRequest{
+		BlogID:           999,
+		URL:              "https://example.com/light",
+		Method:           http.MethodHead,
+		DetectionProfile: "legacy",
+	})
+	if err != nil {
+		t.Fatalf("light check blocked behind full batch: %v", err)
+	}
+	if res == nil || !res.Success || res.BlogID != 999 {
+		t.Fatalf("unexpected light result: %#v", res)
+	}
+
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("full check error: %v", err)
+		}
+	}
+}
+
 func TestClientRejectsUnauthorized(t *testing.T) {
 	_, ts := newTestServer(func(req CheckRequest) CheckResult { return CheckResult{} })
 	defer ts.Close()
