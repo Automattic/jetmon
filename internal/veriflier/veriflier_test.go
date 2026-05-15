@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -253,6 +255,88 @@ func TestClientBatchRoundTrip(t *testing.T) {
 	}
 	if len(res) != 2 {
 		t.Fatalf("CheckBatch() len = %d, want 2", len(res))
+	}
+}
+
+func TestClientCheckCoalescesConcurrentSingles(t *testing.T) {
+	origDelay := singleCheckBatchMaxDelay
+	singleCheckBatchMaxDelay = 25 * time.Millisecond
+	defer func() { singleCheckBatchMaxDelay = origDelay }()
+
+	var rpcCount atomic.Int32
+	var maxBatch atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/check" {
+			http.NotFound(w, r)
+			return
+		}
+		var req CheckV2BatchRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		rpcCount.Add(1)
+		for {
+			current := maxBatch.Load()
+			if int32(len(req.Requests)) <= current || maxBatch.CompareAndSwap(current, int32(len(req.Requests))) {
+				break
+			}
+		}
+		results := make([]CheckV2Result, 0, len(req.Requests))
+		for _, check := range req.Requests {
+			results = append(results, CheckV2Result{
+				RequestID: check.RequestID,
+				BlogID:    check.BlogID,
+				URL:       check.URL,
+				VantageID: "test-vantage",
+				AgentID:   "test-agent",
+				Outcome:   OutcomeUp,
+				Success:   true,
+				HTTPCode:  200,
+			})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(CheckV2BatchResponse{Results: results})
+	}))
+	defer ts.Close()
+
+	client := NewVeriflierClient(ts.Listener.Addr().String(), "secret")
+	const checks = 128
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	errs := make(chan error, checks)
+	for i := range checks {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			res, err := client.Check(context.Background(), CheckRequest{
+				BlogID: int64(i + 1),
+				URL:    "https://example.com",
+			})
+			if err != nil {
+				errs <- err
+				return
+			}
+			if res == nil || !res.Success || res.BlogID != int64(i+1) {
+				errs <- fmt.Errorf("unexpected result for blog_id=%d: %#v", i+1, res)
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if rpcCount.Load() >= checks {
+		t.Fatalf("rpc count = %d, want fewer than %d", rpcCount.Load(), checks)
+	}
+	if maxBatch.Load() < 2 {
+		t.Fatalf("max batch size = %d, want coalesced requests", maxBatch.Load())
 	}
 }
 

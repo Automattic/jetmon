@@ -18,12 +18,21 @@ import (
 // VeriflierClient sends check batches to a remote Veriflier over the v2
 // production JSON-over-HTTP transport.
 type VeriflierClient struct {
-	addr       string
-	authToken  string
-	httpClient *http.Client
-	mu         sync.RWMutex
-	protocol   string
+	addr          string
+	authToken     string
+	httpClient    *http.Client
+	mu            sync.RWMutex
+	protocol      string
+	singleOnce    sync.Once
+	singleBatcher *singleCheckBatcher
 }
+
+var (
+	singleCheckBatchMaxSize   = 512
+	singleCheckBatchMaxDelay  = 2 * time.Millisecond
+	singleCheckBatchMaxFlight = 32
+	singleCheckBatchQueueSize = 32768
+)
 
 // NewVeriflierClient creates a client targeting the given address (host:port).
 //
@@ -69,14 +78,22 @@ func (c *VeriflierClient) Check(ctx context.Context, req CheckRequest) (*CheckRe
 	if req.RequestID == "" {
 		req.RequestID = NewRequestID()
 	}
-	results, err := c.CheckBatch(ctx, []CheckRequest{req})
-	if err != nil {
-		return nil, err
+	call := singleCheckCall{
+		ctx:  ctx,
+		req:  req,
+		resp: make(chan singleCheckResponse, 1),
 	}
-	if len(results) == 0 {
-		return nil, fmt.Errorf("veriflier returned no results")
+	select {
+	case c.singleChecks().in <- call:
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
-	return &results[0], nil
+	select {
+	case resp := <-call.resp:
+		return resp.result, resp.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // CheckBatch sends multiple check requests to the Veriflier. Each request
@@ -98,6 +115,130 @@ func (c *VeriflierClient) CheckBatch(ctx context.Context, reqs []CheckRequest) (
 		}
 		c.setProtocol(ProtocolLegacy)
 		return c.checkBatchLegacy(ctx, reqs)
+	}
+}
+
+func (c *VeriflierClient) singleChecks() *singleCheckBatcher {
+	c.singleOnce.Do(func() {
+		c.singleBatcher = newSingleCheckBatcher(c)
+	})
+	return c.singleBatcher
+}
+
+type singleCheckCall struct {
+	ctx  context.Context
+	req  CheckRequest
+	resp chan singleCheckResponse
+}
+
+type singleCheckResponse struct {
+	result *CheckResult
+	err    error
+}
+
+type singleCheckBatcher struct {
+	client   *VeriflierClient
+	in       chan singleCheckCall
+	inFlight chan struct{}
+}
+
+func newSingleCheckBatcher(client *VeriflierClient) *singleCheckBatcher {
+	b := &singleCheckBatcher{
+		client:   client,
+		in:       make(chan singleCheckCall, singleCheckBatchQueueSize),
+		inFlight: make(chan struct{}, singleCheckBatchMaxFlight),
+	}
+	go b.run()
+	return b
+}
+
+func (b *singleCheckBatcher) run() {
+	for first := range b.in {
+		batch := []singleCheckCall{first}
+		timer := time.NewTimer(singleCheckBatchMaxDelay)
+		collecting := true
+		for collecting && len(batch) < singleCheckBatchMaxSize {
+			select {
+			case call := <-b.in:
+				batch = append(batch, call)
+			case <-timer.C:
+				collecting = false
+			}
+		}
+		if !timer.Stop() && collecting {
+			<-timer.C
+		}
+		b.inFlight <- struct{}{}
+		go func() {
+			defer func() { <-b.inFlight }()
+			b.flush(batch)
+		}()
+	}
+}
+
+func (b *singleCheckBatcher) flush(batch []singleCheckCall) {
+	reqs := make([]CheckRequest, 0, len(batch))
+	calls := make([]singleCheckCall, 0, len(batch))
+	var latestDeadline time.Time
+	for _, call := range batch {
+		if err := call.ctx.Err(); err != nil {
+			call.respond(nil, err)
+			continue
+		}
+		if call.req.RequestID == "" {
+			call.req.RequestID = NewRequestID()
+		}
+		if deadline, ok := call.ctx.Deadline(); ok {
+			if latestDeadline.IsZero() || deadline.After(latestDeadline) {
+				latestDeadline = deadline
+			}
+		}
+		reqs = append(reqs, call.req)
+		calls = append(calls, call)
+	}
+	if len(reqs) == 0 {
+		return
+	}
+
+	ctx := context.Background()
+	var cancel context.CancelFunc
+	if !latestDeadline.IsZero() {
+		ctx, cancel = context.WithDeadline(ctx, latestDeadline)
+	} else {
+		ctx, cancel = context.WithCancel(ctx)
+	}
+	results, err := b.client.CheckBatch(ctx, reqs)
+	cancel()
+	if err != nil {
+		for _, call := range calls {
+			call.respond(nil, err)
+		}
+		return
+	}
+
+	resultsByRequestID := make(map[string]CheckResult, len(results))
+	for _, result := range results {
+		if result.RequestID != "" {
+			resultsByRequestID[result.RequestID] = result
+		}
+	}
+	for i, call := range calls {
+		result, ok := resultsByRequestID[call.req.RequestID]
+		if !ok {
+			if i >= len(results) {
+				call.respond(nil, fmt.Errorf("veriflier returned %d results for %d requests", len(results), len(calls)))
+				continue
+			}
+			result = results[i]
+		}
+		call.respond(&result, nil)
+	}
+}
+
+func (c singleCheckCall) respond(result *CheckResult, err error) {
+	select {
+	case c.resp <- singleCheckResponse{result: result, err: err}:
+	default:
 	}
 }
 

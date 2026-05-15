@@ -410,6 +410,12 @@ Verifier capacity is auto-sized from CPU and file-descriptor headroom. A typical
 8-core host reports `max_concurrency: 2048`; smaller hosts report less, and the
 queue absorbs short Monitor-side bursts before returning overload.
 
+Monitor-side single-site `Check` calls are coalesced into small, bounded
+`CheckBatch` RPCs before they cross the network. This keeps the simple
+per-site quorum code path while avoiding one HTTP request per failed site during
+large outage waves. Explicit `CheckBatch` callers still send their supplied
+batch as-is.
+
 The Veriflier does not emit one success log line per probe. Request IDs are
 echoed back in the response and joined to monitor-side audit rows there; keeping
 successful probe traffic out of stdout avoids log-volume bottlenecks and avoids
