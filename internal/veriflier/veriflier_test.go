@@ -340,6 +340,93 @@ func TestClientCheckCoalescesConcurrentSingles(t *testing.T) {
 	}
 }
 
+func TestClientCheckUsesSmallerBatchesForFullDetectionWork(t *testing.T) {
+	origDelay := singleCheckBatchMaxDelay
+	origLightMax := singleCheckBatchMaxSize
+	origFullMax := singleCheckFullBatchMaxSize
+	singleCheckBatchMaxDelay = 25 * time.Millisecond
+	singleCheckBatchMaxSize = 64
+	singleCheckFullBatchMaxSize = 7
+	defer func() {
+		singleCheckBatchMaxDelay = origDelay
+		singleCheckBatchMaxSize = origLightMax
+		singleCheckFullBatchMaxSize = origFullMax
+	}()
+
+	var maxBatch atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/check" {
+			http.NotFound(w, r)
+			return
+		}
+		var req CheckV2BatchRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		for {
+			current := maxBatch.Load()
+			if int32(len(req.Requests)) <= current || maxBatch.CompareAndSwap(current, int32(len(req.Requests))) {
+				break
+			}
+		}
+		results := make([]CheckV2Result, 0, len(req.Requests))
+		for _, check := range req.Requests {
+			results = append(results, CheckV2Result{
+				RequestID: check.RequestID,
+				BlogID:    check.BlogID,
+				URL:       check.URL,
+				VantageID: "test-vantage",
+				AgentID:   "test-agent",
+				Outcome:   OutcomeUp,
+				Success:   true,
+				HTTPCode:  200,
+			})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(CheckV2BatchResponse{Results: results})
+	}))
+	defer ts.Close()
+
+	client := NewVeriflierClient(ts.Listener.Addr().String(), "secret")
+	const checks = 28
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	errs := make(chan error, checks)
+	for i := range checks {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			res, err := client.Check(context.Background(), CheckRequest{
+				BlogID:           int64(i + 1),
+				URL:              "https://example.com",
+				Method:           http.MethodGet,
+				DetectionProfile: "full",
+			})
+			if err != nil {
+				errs <- err
+				return
+			}
+			if res == nil || !res.Success {
+				errs <- fmt.Errorf("unexpected result for blog_id=%d: %#v", i+1, res)
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if maxBatch.Load() > int32(singleCheckFullBatchMaxSize) {
+		t.Fatalf("max batch size = %d, want <= full cap %d", maxBatch.Load(), singleCheckFullBatchMaxSize)
+	}
+}
+
 func TestClientRejectsUnauthorized(t *testing.T) {
 	_, ts := newTestServer(func(req CheckRequest) CheckResult { return CheckResult{} })
 	defer ts.Close()

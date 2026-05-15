@@ -13,6 +13,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/Automattic/jetmon/internal/checkmode"
 )
 
 // VeriflierClient sends check batches to a remote Veriflier over the v2
@@ -28,10 +30,12 @@ type VeriflierClient struct {
 }
 
 var (
-	singleCheckBatchMaxSize   = 512
-	singleCheckBatchMaxDelay  = 2 * time.Millisecond
-	singleCheckBatchMaxFlight = 32
-	singleCheckBatchQueueSize = 32768
+	singleCheckBatchMaxSize       = 512
+	singleCheckFullBatchMaxSize   = 384
+	singleCheckBatchMaxDelay      = 2 * time.Millisecond
+	singleCheckBatchMaxFlight     = 32
+	singleCheckBatchQueueSize     = 32768
+	singleCheckFullBatchQueueSize = 32768
 )
 
 // NewVeriflierClient creates a client targeting the given address (host:port).
@@ -83,10 +87,8 @@ func (c *VeriflierClient) Check(ctx context.Context, req CheckRequest) (*CheckRe
 		req:  req,
 		resp: make(chan singleCheckResponse, 1),
 	}
-	select {
-	case c.singleChecks().in <- call:
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	if err := c.singleChecks().submit(ctx, call); err != nil {
+		return nil, err
 	}
 	select {
 	case resp := <-call.resp:
@@ -138,28 +140,47 @@ type singleCheckResponse struct {
 
 type singleCheckBatcher struct {
 	client   *VeriflierClient
-	in       chan singleCheckCall
+	lightIn  chan singleCheckCall
+	fullIn   chan singleCheckCall
 	inFlight chan struct{}
 }
 
 func newSingleCheckBatcher(client *VeriflierClient) *singleCheckBatcher {
 	b := &singleCheckBatcher{
 		client:   client,
-		in:       make(chan singleCheckCall, singleCheckBatchQueueSize),
+		lightIn:  make(chan singleCheckCall, singleCheckBatchQueueSize),
+		fullIn:   make(chan singleCheckCall, singleCheckFullBatchQueueSize),
 		inFlight: make(chan struct{}, singleCheckBatchMaxFlight),
 	}
-	go b.run()
+	go b.run(b.lightIn, singleCheckBatchMaxSize)
+	go b.run(b.fullIn, singleCheckFullBatchMaxSize)
 	return b
 }
 
-func (b *singleCheckBatcher) run() {
-	for first := range b.in {
+func (b *singleCheckBatcher) submit(ctx context.Context, call singleCheckCall) error {
+	in := b.lightIn
+	if usesFullDetectionWork(call.req) {
+		in = b.fullIn
+	}
+	select {
+	case in <- call:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (b *singleCheckBatcher) run(in <-chan singleCheckCall, maxBatchSize int) {
+	if maxBatchSize <= 0 {
+		maxBatchSize = 1
+	}
+	for first := range in {
 		batch := []singleCheckCall{first}
 		timer := time.NewTimer(singleCheckBatchMaxDelay)
 		collecting := true
-		for collecting && len(batch) < singleCheckBatchMaxSize {
+		for collecting && len(batch) < maxBatchSize {
 			select {
-			case call := <-b.in:
+			case call := <-in:
 				batch = append(batch, call)
 			case <-timer.C:
 				collecting = false
@@ -174,6 +195,18 @@ func (b *singleCheckBatcher) run() {
 			b.flush(batch)
 		}()
 	}
+}
+
+func usesFullDetectionWork(req CheckRequest) bool {
+	method, err := checkmode.NormalizeMethod(req.Method, checkmode.MethodGET)
+	if err != nil {
+		method = checkmode.MethodGET
+	}
+	profile, err := checkmode.NormalizeProfile(req.DetectionProfile, checkmode.ProfileFull)
+	if err != nil {
+		profile = checkmode.ProfileFull
+	}
+	return checkmode.EffectiveProfile(method, profile) == checkmode.ProfileFull
 }
 
 func (b *singleCheckBatcher) flush(batch []singleCheckCall) {

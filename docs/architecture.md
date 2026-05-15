@@ -413,8 +413,10 @@ queue absorbs short Monitor-side bursts before returning overload.
 Monitor-side single-site `Check` calls are coalesced into small, bounded
 `CheckBatch` RPCs before they cross the network. This keeps the simple
 per-site quorum code path while avoiding one HTTP request per failed site during
-large outage waves. Explicit `CheckBatch` callers still send their supplied
-batch as-is.
+large outage waves. Light checks (`HEAD` + `legacy`, `GET` + `simple_http`) use
+a larger coalescing cap than `GET` + `full` checks because full checks can read
+response bodies and have higher tail latency at extreme rates. Explicit
+`CheckBatch` callers still send their supplied batch as-is.
 
 The Veriflier does not emit one success log line per probe. Request IDs are
 echoed back in the response and joined to monitor-side audit rows there; keeping
