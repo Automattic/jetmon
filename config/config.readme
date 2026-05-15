@@ -191,6 +191,19 @@ do not write per-probe freshness or history rows. Event, recovery, SSL, TLS,
 retry, and WPCOM behavior stays routed through the existing v2 incident code.
 Default: legacy.
 
+ROLLOUT_MODE
+Monitor authority mode. "active" is normal production behavior: the Monitor
+claims buckets through jetmon_hosts or uses PINNED_BUCKET_MIN/MAX when set, then
+runs scheduled checks. "standby" is read-only rollout mode: the Monitor may
+serve health/API checks, but it does not claim buckets, run scheduled checks, or
+mutate site state. "api-controlled" is the container rollout mode: the Monitor
+stays in standby until an admin-scoped rollout API activation writes durable
+bucket locks for this host, then it checks only that activated range. Releasing
+the API bucket lock returns the Monitor to standby. Embedded webhook and
+alert-contact delivery workers remain disabled in standby and api-controlled
+modes; use active mode after the rollout if this process should own delivery.
+Default: active.
+
 STREAMING_LEGACY_PROJECTION_INTERVAL_MIN
 Coarse freshness projection interval used only when SCHEDULER_ENGINE is
 "streaming". Streaming mode does not update jetmon_site_runtime.last_checked_at

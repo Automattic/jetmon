@@ -63,6 +63,31 @@ var phase2ReadEndpoints = []struct {
 	{"GET", "/api/v1/sites/42/timing-breakdown"},
 }
 
+var rolloutReadEndpoints = []struct {
+	method, path string
+}{
+	{"GET", "/api/v1/rollout/capabilities"},
+	{"GET", "/api/v1/rollout/jobs/rjob_test"},
+	{"GET", "/api/v1/rollout/status"},
+	{"GET", "/api/v1/rollout/bucket-coverage?bucket_min=0&bucket_max=1"},
+	{"GET", "/api/v1/rollout/activity-check?bucket_min=0&bucket_max=1"},
+	{"GET", "/api/v1/rollout/projection-drift?bucket_min=0&bucket_max=1"},
+}
+
+var rolloutAdminEndpoints = []struct {
+	method, path string
+}{
+	{"POST", "/api/v1/rollout/sessions"},
+	{"POST", "/api/v1/rollout/preflight"},
+	{"POST", "/api/v1/rollout/smoke"},
+	{"POST", "/api/v1/rollout/seed"},
+	{"POST", "/api/v1/rollout/final-reconcile"},
+	{"POST", "/api/v1/rollout/activate-buckets"},
+	{"POST", "/api/v1/rollout/release-buckets"},
+	{"POST", "/api/v1/rollout/compare-methods"},
+	{"POST", "/api/v1/rollout/stage-policy"},
+}
+
 func TestPhase2WriteEndpointsRejectReadToken(t *testing.T) {
 	// A read-scope token hitting a write endpoint must get 403
 	// insufficient_scope, not pass through to the handler.
@@ -142,6 +167,52 @@ func TestPhase2ReadEndpointsAcceptReadToken(t *testing.T) {
 			if rec.Code == http.StatusForbidden {
 				t.Errorf("read scope unexpectedly hit 403 on %s %s; body=%s",
 					ep.method, ep.path, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestRolloutReadEndpointsAcceptReadToken(t *testing.T) {
+	for _, ep := range rolloutReadEndpoints {
+		t.Run(ep.method+"_"+ep.path, func(t *testing.T) {
+			s, mock, _, cleanup := newTestServer(t)
+			defer cleanup()
+
+			expectAuthLookup(mock, "read")
+			mock.MatchExpectationsInOrder(false)
+
+			req := httptest.NewRequest(ep.method, ep.path, nil)
+			req.Header.Set("Authorization", "Bearer jm_TOKENXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX")
+			rec := httptest.NewRecorder()
+			s.routes().ServeHTTP(rec, req)
+
+			if rec.Code == http.StatusForbidden {
+				t.Errorf("read scope unexpectedly hit 403 on %s %s; body=%s",
+					ep.method, ep.path, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestRolloutAdminEndpointsRejectWriteToken(t *testing.T) {
+	for _, ep := range rolloutAdminEndpoints {
+		t.Run(ep.method+"_"+ep.path, func(t *testing.T) {
+			s, mock, _, cleanup := newTestServer(t)
+			defer cleanup()
+
+			expectAuthLookup(mock, "write")
+
+			req := httptest.NewRequest(ep.method, ep.path, bytes.NewReader([]byte(`{}`)))
+			req.Header.Set("Authorization", "Bearer jm_TOKENXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX")
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			s.routes().ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403; body=%s", rec.Code, rec.Body.String())
+			}
+			if got := readErrorBody(t, rec.Body).Code; got != "insufficient_scope" {
+				t.Errorf("code = %q, want insufficient_scope", got)
 			}
 		})
 	}

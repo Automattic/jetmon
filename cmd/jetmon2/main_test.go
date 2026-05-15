@@ -216,6 +216,26 @@ func TestDeliveryWorkersShouldStart(t *testing.T) {
 			wantMsg:   "delivery_owner_host is unset",
 		},
 		{
+			name: "standby disables delivery workers",
+			cfg: config.Config{
+				APIPort:     8090,
+				RolloutMode: config.RolloutModeStandby,
+			},
+			hostname:  "host-a",
+			wantLevel: "INFO",
+			wantMsg:   "rollout_mode=standby",
+		},
+		{
+			name: "api controlled disables delivery workers",
+			cfg: config.Config{
+				APIPort:     8090,
+				RolloutMode: config.RolloutModeAPIControlled,
+			},
+			hostname:  "host-a",
+			wantLevel: "INFO",
+			wantMsg:   "rollout_mode=api-controlled",
+		},
+		{
 			name: "matching owner starts workers",
 			cfg: config.Config{
 				APIPort:           8090,

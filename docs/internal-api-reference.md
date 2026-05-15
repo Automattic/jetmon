@@ -90,8 +90,31 @@ The CLI talks to the database directly (via `jetmon_api_keys`), prints the new t
 ## API CLI helper
 
 `jetmon2 api` is the local developer/operator helper for this API. It defaults
-to the Docker-local API listener and reads the Bearer token from the
-environment:
+to the Docker-local API listener. It can read operator defaults from
+`~/.config/jetmon2.conf` or a path named by `JETMON_API_CONFIG`, then environment
+variables, then command flags:
+
+```bash
+./bin/jetmon2 local-config init \
+  --base-url=http://localhost:8090 \
+  --token-file=jetmon2-api-token
+./bin/jetmon2 local-config show
+./bin/jetmon2 local-config keys
+```
+
+```conf
+base_url = http://localhost:8090
+token_file = jetmon2-api-token
+auth_policy = same-origin
+timeout = 10s
+output = json
+```
+
+The config file supports `base_url`, `token`, `token_file`, `auth_policy`,
+`allow_remote`, `timeout`, `output`, and `pretty`. If `token` or `token_file`
+is present, the config file must be mode `0600`; token files must also be mode
+`0600`. `JETMON_API_URL`, `JETMON_API_TOKEN`, and
+`JETMON_API_AUTH_POLICY` override the config file:
 
 ```bash
 export JETMON_API_URL=http://localhost:8090
@@ -122,6 +145,74 @@ for a fuller feature guide and workflow examples:
 ./bin/jetmon2 api sites simulate-failure --batch local-smoke --mode http-500 --wait 30s --expect-event-state 'Seems Down' --expect-transition-reason opened --pretty
 ./bin/jetmon2 api sites cleanup --batch local-smoke --count 3 --output table
 ```
+
+For containerized production rollout control, `jetmon2 api rollout guided`
+wraps the rollout API primitives into an interactive operator flow with typed
+confirmations and dry-run plans:
+
+```bash
+./bin/jetmon2 api rollout guided --bucket-min=0 --bucket-max=99 --allow-remote
+./bin/jetmon2 api rollout guided --bucket-min=0 --bucket-max=99 --dry-run
+./bin/jetmon2 api rollout guided --bucket-min=0 --bucket-max=99 --rollback --allow-remote
+```
+
+The backing API surface is read-scoped for passive status gates. Anything that
+mutates state or causes the Monitor to run probes is admin-scoped:
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/api/v1/rollout/capabilities` | API contract version, supported rollout features, required config mode, and token TTL. |
+| `POST` | `/api/v1/rollout/sessions` | Create a durable rollout session bound to a bucket range and optional change reference. |
+| `GET` | `/api/v1/rollout/jobs/{job_id}` | Fetch a rollout job record and stored result payload. |
+| `POST` | `/api/v1/rollout/preflight` | Validate standby/API-controlled config, DB access, schema version, v2 Veriflier contract/quorum coverage, and rollout blockers. |
+| `POST` | `/api/v1/rollout/smoke` | Run read-only sampled rollout smoke probes for HEAD/legacy compatibility coverage. |
+| `POST` | `/api/v1/rollout/seed` | Dry-run or execute v2 side-table seeding and legacy non-running projection adoption for the requested range. |
+| `POST` | `/api/v1/rollout/final-reconcile` | Repeat seed/adopt immediately before activation to catch changes since the first seed. |
+| `POST` | `/api/v1/rollout/activate-buckets` | Dry-run or execute durable bucket activation locks for this Monitor. |
+| `POST` | `/api/v1/rollout/release-buckets` | Dry-run or execute release of an activated v2 bucket range. |
+| `GET` | `/api/v1/rollout/status` | Current rollout mode, active ranges, and open session count. |
+| `GET` | `/api/v1/rollout/bucket-coverage` | Gate payload for active bucket coverage. |
+| `GET` | `/api/v1/rollout/activity-check` | Gate payload for recent check activity. |
+| `GET` | `/api/v1/rollout/projection-drift` | Gate payload for legacy projection drift. |
+| `POST` | `/api/v1/rollout/compare-methods` | Run non-authoritative sampled HEAD/GET comparison probes and persist delta rows. |
+| `POST` | `/api/v1/rollout/stage-policy` | Dry-run or execute staged check-policy migration, pause checkpoints, and rollback-last-stage / rollback-all operations. |
+
+The mutating operations use two-step execution. A dry-run request returns a
+short-lived confirmation token that is hashed at rest and bound to operation,
+range, run ID, authenticated API key identity, and request shape. The matching
+execute request must provide that token before any bucket lock or side-table
+mutation runs. One Monitor owner may hold only one contiguous active
+API-controlled range at a time; use another Monitor host for a separate range,
+or release the existing range before activating a different one for the same
+host. The guided CLI sends idempotency keys on execute requests, so operators
+can retry after a lost HTTP response without accidentally applying the same
+mutation twice.
+
+`/api/v1/rollout/smoke` and `/api/v1/rollout/compare-methods` run synchronous
+sampled probes, so `sample_size` defaults to `100` and is capped at `1000` per
+request. These probes are intentionally non-authoritative: they do not write
+incident state, runtime freshness, check history, WPCOM notifications, or the
+legacy projection. Comparison deltas are persisted separately in
+`jetmon_rollout_comparison_results` for rollout analysis. If the selected
+bucket range has no active sites, the API returns a warning instead of treating
+an empty sample as proof that the range is healthy.
+
+Smoke probes are not a substitute for the launch canary plan. Before production
+activation, run the approved synthetic canary sequence from the prelaunch
+readiness tracker and attach its evidence to the rollout record. API-native
+canary execution is tracked as a follow-up because the production canary URLs,
+expected states, and rollback thresholds need owner approval before they become
+hard-coded rollout gates.
+
+`/api/v1/rollout/stage-policy` writes cohort changes to
+`jetmon_site_check_config` and records previous values in
+`jetmon_rollout_policy_stage_rows`. Use `mode=rollback-last-stage` to restore
+the most recent staged batch in the range, or `mode=rollback-all` to unwind all
+unrolled-back stage rows for the run/range. NULL previous values are restored
+as NULL so sites return to inheriting the fleet default. Staging requires an
+explicit `size` value, either an integer cohort count or a percentage such as
+`1%`; omitting `size` is rejected so a typo cannot migrate the whole eligible
+range.
 
 JSON is the default output for scripts. Add `--pretty` for readable JSON or
 `--output table` for stable human-readable tables on list and workflow summary

@@ -33,6 +33,31 @@ export JETMON_API_URL=http://localhost:${API_HOST_PORT:-8090}
 export JETMON_API_TOKEN=jm_replace_with_the_printed_token
 ```
 
+For repeated operator use, put defaults in `~/.config/jetmon2.conf` or point
+`JETMON_API_CONFIG` at another file:
+
+```bash
+./bin/jetmon2 local-config init \
+  --base-url=http://localhost:8090 \
+  --token-file=jetmon2-api-token
+./bin/jetmon2 local-config show
+./bin/jetmon2 local-config keys
+```
+
+```conf
+base_url = http://localhost:8090
+token_file = jetmon2-api-token
+auth_policy = same-origin
+timeout = 10s
+output = json
+```
+
+Supported keys are `base_url`, `token`, `token_file`, `auth_policy`,
+`allow_remote`, `timeout`, `output`, and `pretty`. `token_file` can be absolute
+or relative to the config file directory. If the config contains `token` or
+`token_file`, both the config and token file must be mode `0600`. Environment
+variables override the config file, and command flags override both.
+
 The token helpers use the Docker Compose stack from the repository root. Use
 `API_CLI_TOKEN_CONSUMER`, `API_CLI_TOKEN_SCOPE`, `API_CLI_TOKEN_TTL`, and
 `API_CLI_TOKEN_CREATED_BY` to vary token creation. Use
@@ -59,6 +84,51 @@ targets, `smoke`, `sites bulk-add`, `sites cleanup`, and
 `sites simulate-failure` also require `--batch`, and remote cleanup/simulation
 keep the CLI batch marker check mandatory. Dry-run planning does not contact
 the API and is not blocked.
+
+## Guided API rollout
+
+For the containerized v1-to-v2 rollout, use the guided API flow from a
+standalone operator `jetmon2` binary:
+
+```bash
+./bin/jetmon2 api rollout guided \
+  --bucket-min=0 \
+  --bucket-max=99 \
+  --allow-remote
+```
+
+The command checks API health and identity, creates a rollout session, runs
+API-controlled preflight, runs read-only `HEAD`/`legacy` smoke probes, seeds v2
+side state, pauses for Systems to stop v1, runs final reconcile, activates v2,
+and then runs post-handoff gates. Mutating steps require typed phrases,
+dry-run confirmation tokens, and idempotency keys. Use `--dry-run` to print the
+plan without contacting the API, `--run-id` to resume a known server-side
+session, `--change-ref` to record the ticket/change, and `--rollback` to
+release an activated v2 range before Systems restarts v1.
+
+Non-dry-run guided sessions write a local transcript and resume state under
+`logs/api-rollout` by default. Re-run with the same bucket range and `--resume`
+after an interrupted operator session; completed steps are skipped and the next
+pending confirmation is shown again.
+
+Useful primitive rollout commands:
+
+```bash
+./bin/jetmon2 api rollout capabilities --allow-remote
+./bin/jetmon2 api rollout preflight --bucket-min=0 --bucket-max=99 --mode=api-controlled --allow-remote
+./bin/jetmon2 api rollout smoke --bucket-min=0 --bucket-max=99 --mode=head-legacy --sample-size=100 --read-only --allow-remote
+./bin/jetmon2 api rollout seed --bucket-min=0 --bucket-max=99 --dry-run --allow-remote
+./bin/jetmon2 api rollout final-reconcile --bucket-min=0 --bucket-max=99 --dry-run --allow-remote
+./bin/jetmon2 api rollout activate-buckets --bucket-min=0 --bucket-max=99 --dry-run --allow-remote
+./bin/jetmon2 api rollout status --allow-remote
+./bin/jetmon2 api rollout bucket-coverage --bucket-min=0 --bucket-max=99 --allow-remote
+./bin/jetmon2 api rollout activity-check --bucket-min=0 --bucket-max=99 --since=15m --allow-remote
+./bin/jetmon2 api rollout projection-drift --bucket-min=0 --bucket-max=99 --allow-remote
+./bin/jetmon2 api rollout release-buckets --bucket-min=0 --bucket-max=99 --dry-run --allow-remote
+./bin/jetmon2 api rollout compare-methods --bucket-min=0 --bucket-max=99 --from=head-legacy --to=get-simple --sample-size=100 --allow-remote
+./bin/jetmon2 api rollout stage-policy --bucket-min=0 --bucket-max=99 --method=GET --profile=simple_http --size=1000 --dry-run --allow-remote
+./bin/jetmon2 api rollout jobs get <job-id> --allow-remote
+```
 
 Security notes:
 - Prefer `--auth-policy any-origin` as a one-command flag. Exporting

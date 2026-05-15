@@ -599,6 +599,149 @@ var migrations = []migration{
 		INDEX idx_vantage_seen (vantage_id, last_seen),
 		INDEX idx_status_seen (status, last_seen)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
+
+	// Migration 42 creates durable rollout sessions for the API-driven
+	// container rollout. A session is the audit/root object for one operator
+	// handoff range and lets the CLI resume without relying only on local state.
+	{42, `CREATE TABLE IF NOT EXISTS jetmon_rollout_sessions (
+		run_id       VARCHAR(64) NOT NULL PRIMARY KEY,
+		bucket_min   SMALLINT UNSIGNED NOT NULL,
+		bucket_max   SMALLINT UNSIGNED NOT NULL,
+		owner_host   VARCHAR(255) NOT NULL DEFAULT '',
+		change_ref   VARCHAR(255) NOT NULL DEFAULT '',
+		operator     VARCHAR(128) NOT NULL DEFAULT '',
+		status       ENUM('open','completed','aborted') NOT NULL DEFAULT 'open',
+		metadata     JSON NULL,
+		created_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+		INDEX idx_status_created (status, created_at),
+		INDEX idx_range (bucket_min, bucket_max)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
+
+	// Migration 43 records range-level activation/release history. It is
+	// intentionally append-friendly: released rows stay behind as rollout
+	// evidence, while live overlap prevention happens in jetmon_rollout_bucket_locks.
+	{43, `CREATE TABLE IF NOT EXISTS jetmon_rollout_range_locks (
+		id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+		run_id        VARCHAR(64) NOT NULL,
+		bucket_min    SMALLINT UNSIGNED NOT NULL,
+		bucket_max    SMALLINT UNSIGNED NOT NULL,
+		owner_host    VARCHAR(255) NOT NULL,
+		change_ref    VARCHAR(255) NOT NULL DEFAULT '',
+		status        ENUM('active','released') NOT NULL DEFAULT 'active',
+		activated_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		released_at   TIMESTAMP NULL,
+		metadata      JSON NULL,
+		INDEX idx_status_range (status, bucket_min, bucket_max),
+		INDEX idx_owner_status (owner_host, status),
+		INDEX idx_run_id (run_id)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
+
+	// Migration 44 stores one row per active rollout bucket. The primary key is
+	// the range-lock guardrail: overlapping activations conflict even if two
+	// operators race after both dry-runs looked clean.
+	{44, `CREATE TABLE IF NOT EXISTS jetmon_rollout_bucket_locks (
+		bucket_no    SMALLINT UNSIGNED NOT NULL PRIMARY KEY,
+		run_id       VARCHAR(64) NOT NULL,
+		range_lock_id BIGINT UNSIGNED NOT NULL,
+		owner_host   VARCHAR(255) NOT NULL,
+		status       ENUM('active') NOT NULL DEFAULT 'active',
+		activated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		INDEX idx_owner (owner_host),
+		INDEX idx_run_id (run_id),
+		INDEX idx_range_lock (range_lock_id)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
+
+	// Migration 45 records rollout API jobs. Most current operations complete
+	// synchronously, but the job shape lets the API grow into async smoke,
+	// seed, comparison, and policy migration work without changing clients.
+	{45, `CREATE TABLE IF NOT EXISTS jetmon_rollout_jobs (
+		job_id      VARCHAR(64) NOT NULL PRIMARY KEY,
+		run_id      VARCHAR(64) NOT NULL DEFAULT '',
+		operation   VARCHAR(64) NOT NULL,
+		status      ENUM('queued','running','completed','failed','blocked') NOT NULL DEFAULT 'completed',
+		progress    TINYINT UNSIGNED NOT NULL DEFAULT 100,
+		summary     VARCHAR(1024) NOT NULL DEFAULT '',
+		result      JSON NULL,
+		error_code  VARCHAR(64) NOT NULL DEFAULT '',
+		error_message VARCHAR(1024) NOT NULL DEFAULT '',
+		created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+		INDEX idx_run_operation (run_id, operation),
+		INDEX idx_status_created (status, created_at)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
+
+	// Migration 46 stores short-lived dry-run confirmation tokens. Tokens are
+	// sha256-hashed at rest and bound to operation, bucket range, run id,
+	// operator, and request hash so execute calls cannot reuse stale plans.
+	{46, `CREATE TABLE IF NOT EXISTS jetmon_rollout_confirmation_tokens (
+		token_hash    CHAR(64) NOT NULL PRIMARY KEY,
+		run_id        VARCHAR(64) NOT NULL DEFAULT '',
+		operation     VARCHAR(64) NOT NULL,
+		request_hash  CHAR(64) NOT NULL,
+		bucket_min    SMALLINT UNSIGNED NOT NULL,
+		bucket_max    SMALLINT UNSIGNED NOT NULL,
+		operator      VARCHAR(128) NOT NULL DEFAULT '',
+		expires_at    TIMESTAMP NOT NULL,
+		used_at       TIMESTAMP NULL,
+		created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		INDEX idx_run_operation (run_id, operation),
+		INDEX idx_expires (expires_at)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
+
+	// Migration 47 stores non-authoritative method/profile comparison samples
+	// collected during rollout. These rows let operators compare HEAD legacy
+	// behavior with GET simple/full behavior without changing the authoritative
+	// site state or firing customer alerts.
+	{47, `CREATE TABLE IF NOT EXISTS jetmon_rollout_comparison_results (
+		id                 BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+		job_id             VARCHAR(64) NOT NULL,
+		run_id             VARCHAR(64) NOT NULL DEFAULT '',
+		blog_id            BIGINT UNSIGNED NOT NULL,
+		source_site_id     BIGINT UNSIGNED NOT NULL,
+		bucket_no          SMALLINT UNSIGNED NOT NULL,
+		monitor_url        VARCHAR(2083) NOT NULL,
+		from_method        VARCHAR(16) NOT NULL,
+		from_profile       VARCHAR(32) NOT NULL,
+		to_method          VARCHAR(16) NOT NULL,
+		to_profile         VARCHAR(32) NOT NULL,
+		from_success       TINYINT(1) NOT NULL,
+		to_success         TINYINT(1) NOT NULL,
+		from_http_code     INT NOT NULL DEFAULT 0,
+		to_http_code       INT NOT NULL DEFAULT 0,
+		from_error_code    INT NOT NULL DEFAULT 0,
+		to_error_code      INT NOT NULL DEFAULT 0,
+		from_rtt_ms        INT NOT NULL DEFAULT 0,
+		to_rtt_ms          INT NOT NULL DEFAULT 0,
+		delta_class        ENUM('same','get_better','get_worse','different_failure') NOT NULL DEFAULT 'same',
+		created_at         TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+		INDEX idx_job (job_id),
+		INDEX idx_run_created (run_id, created_at),
+		INDEX idx_delta_created (delta_class, created_at),
+		INDEX idx_site (blog_id, source_site_id)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
+
+	// Migration 48 records staged rollout policy mutations so a batch can be
+	// rolled back without relying on local CLI transcripts. The previous values
+	// are nullable because NULL means "inherit the fleet default" in
+	// jetmon_site_check_config.
+	{48, `CREATE TABLE IF NOT EXISTS jetmon_rollout_policy_stage_rows (
+		id                         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+		job_id                     VARCHAR(64) NOT NULL,
+		run_id                     VARCHAR(64) NOT NULL DEFAULT '',
+		blog_id                    BIGINT UNSIGNED NOT NULL,
+		bucket_no                  SMALLINT UNSIGNED NOT NULL,
+		previous_request_method    VARCHAR(16) NULL,
+		previous_detection_profile VARCHAR(32) NULL,
+		new_request_method         VARCHAR(16) NOT NULL,
+		new_detection_profile      VARCHAR(32) NOT NULL,
+		rolled_back_at            TIMESTAMP(3) NULL,
+		created_at                 TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+		INDEX idx_job (job_id),
+		INDEX idx_run_created (run_id, created_at),
+		INDEX idx_rollback (run_id, rolled_back_at, created_at),
+		INDEX idx_blog (blog_id)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
 }
 
 // Migrate applies all pending migrations idempotently.

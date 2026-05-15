@@ -20,6 +20,7 @@ import (
 const (
 	scopeRead  = apikeys.ScopeRead
 	scopeWrite = apikeys.ScopeWrite
+	scopeAdmin = apikeys.ScopeAdmin
 )
 
 // ctxKey is an unexported type so handlers from other packages can't trample

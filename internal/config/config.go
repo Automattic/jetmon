@@ -28,6 +28,12 @@ const (
 	VeriflierDiscoveryModeActive = "active"
 )
 
+const (
+	RolloutModeActive        = "active"
+	RolloutModeStandby       = "standby"
+	RolloutModeAPIControlled = "api-controlled"
+)
+
 // TransportPort returns the canonical JSON-over-HTTP Veriflier port,
 // accepting grpc_port as a deprecated config alias.
 func (v VerifierConfig) TransportPort() string {
@@ -107,6 +113,7 @@ type Config struct {
 	DefaultDetectionProfile   string   `json:"DEFAULT_DETECTION_PROFILE"`
 	UseVariableCheckIntervals bool     `json:"USE_VARIABLE_CHECK_INTERVALS"`
 	SchedulerEngine           string   `json:"SCHEDULER_ENGINE"`
+	RolloutMode               string   `json:"ROLLOUT_MODE"`
 
 	// StreamingLegacyProjectionIntervalMin controls the coarse compatibility
 	// freshness write interval used by the streaming scheduler. It intentionally
@@ -254,6 +261,7 @@ func defaults() *Config {
 		DefaultCheckMethod:                   checkmode.MethodGET,
 		DefaultDetectionProfile:              checkmode.ProfileFull,
 		SchedulerEngine:                      "legacy",
+		RolloutMode:                          RolloutModeActive,
 		StreamingLegacyProjectionIntervalMin: 15,
 		StreamingTargetReloadSec:             300,
 		LogFormat:                            "text",
@@ -394,6 +402,12 @@ func validate(cfg *Config) error {
 	default:
 		return fmt.Errorf("SCHEDULER_ENGINE must be 'legacy' or 'streaming'")
 	}
+	cfg.RolloutMode = normalizeRolloutMode(cfg.RolloutMode)
+	switch cfg.RolloutMode {
+	case RolloutModeActive, RolloutModeStandby, RolloutModeAPIControlled:
+	default:
+		return fmt.Errorf("ROLLOUT_MODE must be one of: active, standby, api-controlled")
+	}
 	if cfg.StreamingLegacyProjectionIntervalMin == 0 {
 		cfg.StreamingLegacyProjectionIntervalMin = 15
 	}
@@ -493,6 +507,14 @@ func normalizeVeriflierDiscoveryMode(mode string) string {
 	mode = strings.ToLower(strings.TrimSpace(mode))
 	if mode == "" {
 		return VeriflierDiscoveryModeStatic
+	}
+	return mode
+}
+
+func normalizeRolloutMode(mode string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" {
+		return RolloutModeActive
 	}
 	return mode
 }

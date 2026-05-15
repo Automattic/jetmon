@@ -39,6 +39,7 @@ type apiCLIOptions struct {
 	errOut         io.Writer
 	in             io.Reader
 	commandName    string
+	configError    error
 }
 
 type apiHeaderFlags []string
@@ -82,6 +83,21 @@ var apiCommandCatalog = []apiCommandInfo{
 	{Command: "alert-contacts create", Description: "create an email, PagerDuty, Slack, or Teams contact", Example: "jetmon2 api alert-contacts create --label Local --transport email --address alerts@example.test --pretty"},
 	{Command: "alert-contacts test", Description: "send a managed alert-contact test", Example: "jetmon2 api alert-contacts test 12 --idempotency-key alert-12-test --pretty"},
 	{Command: "alert-contacts deliveries", Description: "list managed alert delivery rows", Example: "jetmon2 api alert-contacts deliveries 12 --status failed --output table"},
+	{Command: "rollout guided", Description: "walk through the API-driven container rollout flow", Example: "jetmon2 api rollout guided --bucket-min 0 --bucket-max 99 --allow-remote"},
+	{Command: "rollout capabilities", Description: "show rollout API capabilities and server mode", Example: "jetmon2 api rollout capabilities --pretty"},
+	{Command: "rollout preflight", Description: "run rollout preflight gates", Example: "jetmon2 api rollout preflight --bucket-min 0 --bucket-max 99 --allow-remote"},
+	{Command: "rollout smoke", Description: "run read-only sampled HEAD/GET rollout probes", Example: "jetmon2 api rollout smoke --bucket-min 0 --bucket-max 99 --mode head-legacy --sample-size 100 --read-only --allow-remote"},
+	{Command: "rollout seed", Description: "plan or execute rollout side-state seeding", Example: "jetmon2 api rollout seed --bucket-min 0 --bucket-max 99 --dry-run --allow-remote"},
+	{Command: "rollout final-reconcile", Description: "repeat seed/adopt after v1 stops", Example: "jetmon2 api rollout final-reconcile --bucket-min 0 --bucket-max 99 --dry-run --allow-remote"},
+	{Command: "rollout activate-buckets", Description: "activate an API-controlled v2 bucket range", Example: "jetmon2 api rollout activate-buckets --bucket-min 0 --bucket-max 99 --execute --confirm jmr_... --allow-remote"},
+	{Command: "rollout release-buckets", Description: "release an activated v2 bucket range", Example: "jetmon2 api rollout release-buckets --bucket-min 0 --bucket-max 99 --dry-run --allow-remote"},
+	{Command: "rollout status", Description: "show API-driven rollout status", Example: "jetmon2 api rollout status --output table"},
+	{Command: "rollout bucket-coverage", Description: "verify active v2 coverage for a bucket range", Example: "jetmon2 api rollout bucket-coverage --bucket-min 0 --bucket-max 99 --output table"},
+	{Command: "rollout activity-check", Description: "verify recent checks for a bucket range", Example: "jetmon2 api rollout activity-check --bucket-min 0 --bucket-max 99 --since 15m --output table"},
+	{Command: "rollout projection-drift", Description: "verify v2 event state matches legacy projection", Example: "jetmon2 api rollout projection-drift --bucket-min 0 --bucket-max 99 --output table"},
+	{Command: "rollout compare-methods", Description: "compare HEAD/legacy with GET cohorts without changing alerting", Example: "jetmon2 api rollout compare-methods --bucket-min 0 --bucket-max 99 --from head-legacy --to get-simple --sample-size 100 --allow-remote"},
+	{Command: "rollout stage-policy", Description: "plan, execute, pause, or roll back staged check-policy cohorts", Example: "jetmon2 api rollout stage-policy --bucket-min 0 --bucket-max 99 --method GET --profile simple_http --size 100 --dry-run --allow-remote"},
+	{Command: "rollout jobs get", Description: "show one rollout job result", Example: "jetmon2 api rollout jobs get rjob_... --pretty"},
 	{Command: "smoke", Description: "run the Docker-local API smoke workflow", Example: "jetmon2 api smoke --batch local-smoke --exercise webhook --pretty"},
 	{Command: "commands", Description: "list API CLI commands and examples", Example: "jetmon2 api commands --output table"},
 }
@@ -124,10 +140,12 @@ func cmdAPI(args []string) {
 		err = cmdAPIWebhooks(rest)
 	case "alert-contacts":
 		err = cmdAPIAlertContacts(rest)
+	case "rollout":
+		err = cmdAPIRollout(rest)
 	case "smoke":
 		err = cmdAPISmoke(rest)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown api subcommand %q (want: health, me, request, commands, sites, events, webhooks, alert-contacts, smoke)\n", sub)
+		fmt.Fprintf(os.Stderr, "unknown api subcommand %q (want: health, me, request, commands, sites, events, webhooks, alert-contacts, rollout, smoke)\n", sub)
 		printAPIUsage(os.Stderr)
 		os.Exit(1)
 	}
@@ -137,9 +155,13 @@ func cmdAPI(args []string) {
 }
 
 func printAPIUsage(w io.Writer) {
-	fmt.Fprintln(w, "usage: jetmon2 api <health|me|request|commands|sites|events|webhooks|alert-contacts|smoke> [flags]")
+	fmt.Fprintln(w, "usage: jetmon2 api <health|me|request|commands|sites|events|webhooks|alert-contacts|rollout|smoke> [flags]")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Run `jetmon2 api commands --output table` for the command catalog.")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Config:")
+	fmt.Fprintln(w, "  ~/.config/jetmon2.conf  operator CLI defaults; override with JETMON_API_CONFIG")
+	fmt.Fprintln(w, "  Manage with `jetmon2 local-config`.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Environment:")
 	fmt.Fprintln(w, "  JETMON_API_URL          API base URL (default: http://localhost:8090)")
@@ -209,7 +231,7 @@ func writeAPICommands(opts apiCLIOptions) error {
 }
 
 func defaultAPIOptions() apiCLIOptions {
-	return apiCLIOptions{
+	opts := apiCLIOptions{
 		baseURL:    envOrDefault("JETMON_API_URL", defaultAPIBaseURL),
 		token:      os.Getenv("JETMON_API_TOKEN"),
 		authPolicy: envOrDefault("JETMON_API_AUTH_POLICY", defaultAPIAuthPolicy),
@@ -218,12 +240,16 @@ func defaultAPIOptions() apiCLIOptions {
 		errOut:     os.Stderr,
 		in:         os.Stdin,
 	}
+	applyAPICLIConfigDefaults(&opts)
+	applyAPICLIEnvDefaults(&opts)
+	return opts
 }
 
 func newAPIFlagSet(name string, opts *apiCLIOptions) *flag.FlagSet {
 	opts.commandName = name
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(opts.errOut)
+	rememberAPIConfigError(fs, opts.configError)
 	fs.StringVar(&opts.baseURL, "base-url", opts.baseURL, "API base URL")
 	fs.StringVar(&opts.token, "token", opts.token, "Bearer token")
 	if tokenFlag := fs.Lookup("token"); tokenFlag != nil {
@@ -253,7 +279,13 @@ type apiBoolFlag interface {
 
 func parseAPIFlags(fs *flag.FlagSet, args []string) error {
 	normalized := normalizeAPIFlagArgs(fs, args)
-	return fs.Parse(normalized)
+	if err := fs.Parse(normalized); err != nil {
+		return err
+	}
+	if err := apiCLIConfigErrorForFlagSet(fs); err != nil {
+		return err
+	}
+	return nil
 }
 
 func normalizeAPIFlagArgs(fs *flag.FlagSet, args []string) []string {

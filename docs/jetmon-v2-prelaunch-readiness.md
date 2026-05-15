@@ -64,6 +64,47 @@ Exit criteria:
 - One written rollout posture statement exists.
 - Every team knows which v2 features are hidden during the drop-in rollout.
 
+## Launch-Critical Checklist
+
+Use this as the short prelaunch list before opening the first production
+rollout window. The detailed owner work remains in the sections below, but the
+rollout should not start until each item here has an owner, evidence, and a
+clear stop/go threshold.
+
+- [ ] Launch posture approved by WPCOM/Product/Support: v2 starts as a backend
+  replacement, not a new customer-facing Monitor product.
+- [ ] Schema migrations approved by Systems, with rollback expectations clear:
+  schema is additive and should not be rolled back during a service rollback.
+- [ ] Fresh v2 Veriflier fleet deployed, v2-only endpoints validated, quorum
+  floor understood, and discovery/static-vantage posture approved.
+- [ ] v2 Monitors deployed in standby/API-controlled mode and verified to avoid
+  bucket claims, scheduled checks, delivery workers, WPCOM notifications, and
+  site-state writes until activation.
+- [ ] Operator API config, API key scopes, `--allow-remote` usage, transcript
+  location, and API-guided rollback path rehearsed.
+- [ ] Projection parity checked on production-like data with an approved drift
+  threshold.
+- [ ] WPCOM notification parity checked for down, confirmed-down, false-alarm,
+  recovery, inactive, URL-mismatch, and blacklisted-site cases.
+- [ ] Support/WAF guidance approved for v2 `GET`, `HEAD` compatibility mode,
+  `jetmon/2.0`, blocked requests, false positives, and `Unknown`.
+- [ ] Synthetic canary tests defined and run before launch. At minimum, cover a
+  known-up site, controlled down, controlled recovery, WPCOM notification
+  parity, Veriflier-confirmed down, and a WAF/blocked-style case. Record the
+  command sequence, expected state, observed state, and rollback trigger.
+- [ ] Rollout stop/go thresholds approved for projection drift, missed checks,
+  oldest selected age, WPCOM notification failures, API errors, MySQL errors,
+  delivery backlog, Veriflier agreement, and stale process/bucket ownership.
+- [ ] Failure-mode drills completed or explicitly waived by the rollout owner:
+  API unavailable, Veriflier degraded, WPCOM unavailable, MySQL errors,
+  delivery backlog, stale heartbeat, bad deploy rollback, WAF false positive,
+  and monitor-side `Unknown`.
+
+The API rollout smoke gate is necessary but not sufficient for launch. Until
+synthetic canary execution is built into the API rollout gates, run the approved
+canary plan through uptime-bench, a manual controlled test harness, or another
+production-approved test path and attach the evidence to the rollout record.
+
 ## Hard Gates
 
 ### 1. Legacy Status And Projection Parity
@@ -200,6 +241,10 @@ Evidence:
   available.
 - [ ] Owner: `Jetmon`, `Systems` - Confirm `DELIVERY_OWNER_HOST` posture is
   intentional for rollout.
+- [ ] Owner: `Jetmon`, `Systems` - Run the approved synthetic canary sequence
+  before first production activation and capture the evidence in the rollout
+  record. This is required even while canary execution is still outside the API
+  rollout smoke gate.
 
 Evidence:
 
@@ -208,6 +253,8 @@ Evidence:
 - VM lab transcript
 - Generated rehearsal plan for the actual rollout mode, including the
   post-cutover `jetmon2 telemetry report` parity evidence command
+- Synthetic canary transcript covering known-up, controlled down, recovery,
+  WPCOM parity, Veriflier-confirmed down, and WAF/blocked-style behavior
 
 Local dry-run evidence:
 
@@ -347,6 +394,11 @@ first controlled canary.
   cohort matrix and exact expansion/rollback thresholds.
 - [ ] Owner: `Jetmon`, `Systems` - Define canary size, duration, rollback
   threshold, and expansion threshold.
+- [ ] Owner: `Jetmon`, `Systems` - Run the approved synthetic canary checks
+  before launch and again before each detection-profile expansion. Required
+  cases: known-up, controlled down, controlled recovery, WPCOM notification
+  parity, Veriflier-confirmed down, WAF/blocked-style failure, and at least one
+  customer-safe false-alarm/non-confirmation case.
 - [ ] Owner: `WPCOM` - Build or script read-only shadow comparisons for v2
   status, event list/detail, and uptime summary while customers still see
   legacy output.

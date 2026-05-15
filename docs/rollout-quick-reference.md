@@ -3,6 +3,147 @@
 This is the short operator checklist for a production v1-to-v2 monitor rollout.
 Use the full [migration runbook](v1-to-v2-migration.md) for preparation,
 approval, troubleshooting, revert details, and final v1 teardown.
+Use the [prelaunch readiness tracker](jetmon-v2-prelaunch-readiness.md) as the
+single launch-critical checklist. The first production activation should not
+start until the launch posture, parity gates, observability thresholds,
+failure drills, and synthetic canary tests have written evidence.
+
+The preferred production rollout is now API-driven: deploy fresh v2 Veriflier
+and Monitor containers beside the existing v1 fleet, keep Monitors in
+`ROLLOUT_MODE=api-controlled` standby,
+then activate bucket ranges through an authenticated Monitor API after Systems
+stops the matching v1 range. A standalone `jetmon2` binary can run from an
+operator workstation or bastion; direct shell access to the container hosts is
+not required for the control-plane steps.
+
+Configure the operator CLI with `~/.config/jetmon2.conf` or
+`JETMON_API_CONFIG=/path/to/jetmon2.conf`:
+
+```bash
+./jetmon2 local-config init \
+  --base-url=https://jetmon-v2-api.example.com \
+  --token-file=jetmon2-api-token \
+  --default-output=table
+./jetmon2 local-config show
+./jetmon2 local-config keys
+```
+
+```conf
+base_url = https://jetmon-v2-api.example.com
+token_file = jetmon2-api-token
+auth_policy = same-origin
+timeout = 30s
+output = table
+```
+
+Keep the config and token file mode `0600`. Production writes to a remote API
+still require `--allow-remote`.
+
+## API-Driven Container Path
+
+Preferred interactive wrapper:
+
+```bash
+./jetmon2 api rollout guided \
+  --bucket-min=<min> \
+  --bucket-max=<max> \
+  --change-ref=<ticket-or-change-id> \
+  --allow-remote
+```
+
+Use `--dry-run` to print every API request and typed confirmation without
+contacting the API. Use `--rollback` to walk the release path when an activated
+range must return to v1 standby. After v2 is stable, add
+`--include-comparison` and `--include-policy-migration` to include the
+non-authoritative HEAD/GET comparison and staged policy planning steps.
+Non-dry-run guided sessions write a transcript and local resume state under
+`logs/api-rollout`; use `--resume` with the same range if the operator process
+is interrupted.
+
+The guided command wraps the API primitives below and stops at each gate until
+the operator types the requested confirmation:
+
+1. Systems applies the additive v2 schema.
+2. Deploy the fresh v2 Veriflier fleet and validate `/v2/status`, stable
+   `vantage.id` values, auth, capacity, and quorum.
+3. Deploy v2 Monitors in `ROLLOUT_MODE=api-controlled` with `HEAD` + `legacy`
+   defaults.
+4. Run API preflight and read-only smoke checks from the operator CLI:
+
+   ```bash
+   ./jetmon2 api rollout preflight --bucket-min=<min> --bucket-max=<max> --allow-remote
+   ./jetmon2 api rollout smoke --bucket-min=<min> --bucket-max=<max> --mode=head-legacy --sample-size=100 --read-only --allow-remote
+   ```
+
+   Preflight validates the configured v2 Veriflier contract and unique
+   quorum-counted `vantage.id` coverage. Smoke runs sampled standby probes and
+   remains read-only for incident state, runtime freshness, check history,
+   WPCOM notifications, and the legacy projection.
+
+5. Seed/adopt v2 side state without sending duplicate notifications:
+
+   ```bash
+   ./jetmon2 api rollout seed --bucket-min=<min> --bucket-max=<max> --dry-run --allow-remote
+   ./jetmon2 api rollout seed --bucket-min=<min> --bucket-max=<max> --execute --confirm=<token> --allow-remote
+   ```
+
+6. After Systems stops the matching v1 bucket range, run final reconcile and
+   explicitly activate that range in v2:
+
+   ```bash
+   ./jetmon2 api rollout final-reconcile --bucket-min=<min> --bucket-max=<max> --dry-run --allow-remote
+   ./jetmon2 api rollout final-reconcile --bucket-min=<min> --bucket-max=<max> --execute --confirm=<token> --allow-remote
+   ./jetmon2 api rollout activate-buckets --bucket-min=<min> --bucket-max=<max> --dry-run --allow-remote
+   ./jetmon2 api rollout activate-buckets --bucket-min=<min> --bucket-max=<max> --execute --confirm=<token> --allow-remote
+   ```
+
+   A single Monitor owner may hold only one contiguous API-controlled range at
+   a time. Use separate Monitor hosts for separate ranges, or release the
+   current range before activating a different range for the same host.
+
+7. Hold for health gates:
+
+   ```bash
+   ./jetmon2 api rollout status --allow-remote
+   ./jetmon2 api rollout bucket-coverage --bucket-min=<min> --bucket-max=<max> --allow-remote
+   ./jetmon2 api rollout activity-check --bucket-min=<min> --bucket-max=<max> --since=15m --allow-remote
+   ./jetmon2 api rollout projection-drift --bucket-min=<min> --bucket-max=<max> --allow-remote
+   ```
+
+   Also run the approved synthetic canary sequence and attach the evidence to
+   the rollout record. Until canary execution is built into the API rollout
+   gate, this remains a separate required check covering known-up, controlled
+   down, controlled recovery, WPCOM notification parity, Veriflier-confirmed
+   down, and WAF/blocked-style behavior.
+
+8. Roll back by releasing the v2 range before Systems restarts v1:
+
+   ```bash
+   ./jetmon2 api rollout release-buckets --bucket-min=<min> --bucket-max=<max> --dry-run --allow-remote
+   ./jetmon2 api rollout release-buckets --bucket-min=<min> --bucket-max=<max> --execute --confirm=<token> --allow-remote
+   ```
+
+9. After all buckets are stable on v2, run non-authoritative comparison checks
+   and staged policy transitions:
+
+   ```bash
+   ./jetmon2 api rollout compare-methods --bucket-min=<min> --bucket-max=<max> --from=head-legacy --to=get-simple --sample-size=100 --allow-remote
+   ./jetmon2 api rollout stage-policy --bucket-min=<min> --bucket-max=<max> --method=GET --profile=simple_http --size=1000 --dry-run --allow-remote
+   ./jetmon2 api rollout stage-policy --bucket-min=<min> --bucket-max=<max> --method=GET --profile=simple_http --size=1000 --execute --confirm=<token> --allow-remote
+   ./jetmon2 api rollout stage-policy --bucket-min=<min> --bucket-max=<max> --method=GET --profile=full --size=1% --dry-run --allow-remote
+   ./jetmon2 api rollout stage-policy --bucket-min=<min> --bucket-max=<max> --mode=rollback-last-stage --dry-run --allow-remote
+   ./jetmon2 api rollout stage-policy --bucket-min=<min> --bucket-max=<max> --mode=rollback-all --dry-run --allow-remote
+   ```
+
+The API commands above are the target control-plane surface behind the guided
+containerized rollout. They must remain idempotent, audited, admin-scoped, and
+protected by dry-run plans plus generated confirmation tokens. The guided
+wrapper also sends idempotency keys on execute steps, so a lost HTTP response
+can be retried without re-running the mutation. Confirmation tokens are bound
+to the authenticated API key identity, not just the typed phrase shown to the
+operator.
+
+## Host-Based Fallback Path
 
 Run this runbook from the staged v2 runtime host for the bucket range. Do not
 run it from a separate orchestration host unless that host is also the intended

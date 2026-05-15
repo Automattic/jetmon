@@ -56,6 +56,13 @@ writes only the v1 compatibility projection fields `site_status` and
 | `jetmon_check_targets` | V2-native scheduling target state for the streaming monitor engine |
 | `jetmon_site_check_config` | Per-site v2 check config: rollout method/profile, body rules, maintenance windows, custom headers, timeout, redirect policy, and cooldown overrides |
 | `jetmon_site_runtime` | V2 runtime freshness and derived observation state such as last checked time, next due time, last alert time, and SSL expiry |
+| `jetmon_rollout_sessions` | API-driven container rollout sessions bound to bucket ranges and operator/change metadata |
+| `jetmon_rollout_range_locks` | Durable activation/release history for API-controlled bucket ranges |
+| `jetmon_rollout_bucket_locks` | One active lock row per bucket, used to prevent overlapping v2 range activation |
+| `jetmon_rollout_jobs` | Synchronous rollout operation audit records and result payloads |
+| `jetmon_rollout_confirmation_tokens` | Short-lived hashed dry-run confirmation tokens for mutating rollout operations |
+| `jetmon_rollout_comparison_results` | Non-authoritative sampled HEAD/GET comparison deltas collected during policy migration |
+| `jetmon_rollout_policy_stage_rows` | Per-cohort policy mutation history used by rollback-last-stage and rollback-all |
 
 ## Site Check Policy
 
