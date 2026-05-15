@@ -446,10 +446,11 @@ production telemetry branches:
 
 ### Rollout Simplification TODO
 
-- [x] Add operator-side API CLI config defaults through
-  `~/.config/jetmon2.conf` / `JETMON_API_CONFIG`, including secure token-file
-  support, so a standalone `jetmon2` binary can drive rollout commands from a
-  workstation or bastion without shell access to container hosts.
+- [x] Add `jetmon2 local-config` and operator-side API CLI config defaults
+  through `~/.config/jetmon2.conf` / `JETMON_API_CONFIG`, including secure
+  token-file support, so a standalone `jetmon2` binary can drive rollout
+  commands from a workstation or bastion without shell access to container
+  hosts.
 - [ ] Add a first-class Monitor standby mode for containerized rollout:
   read-only standby must not claim buckets, run scheduled checks, write
   events/runtime/check-history rows, send WPCOM notifications, or start

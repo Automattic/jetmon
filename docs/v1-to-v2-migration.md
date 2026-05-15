@@ -37,6 +37,14 @@ in the audit trail.
 The operator CLI should be configured with `~/.config/jetmon2.conf` or an
 explicit `JETMON_API_CONFIG` path:
 
+```bash
+./jetmon2 local-config init \
+  --base-url=https://jetmon-v2-api.example.com \
+  --token-file=jetmon2-api-token \
+  --default-output=table
+./jetmon2 local-config show
+```
+
 ```conf
 base_url = https://jetmon-v2-api.example.com
 token_file = jetmon2-api-token
@@ -668,8 +676,11 @@ copying tokens into shell history:
 
 ```bash
 mkdir -p ~/.config
-install -m 600 /dev/null ~/.config/jetmon2.conf
-$EDITOR ~/.config/jetmon2.conf
+./jetmon2 local-config init \
+  --base-url=https://jetmon-v2-api.example.com \
+  --token-file=jetmon2-api-token \
+  --default-output=table
+./jetmon2 local-config show
 ```
 
 ```conf

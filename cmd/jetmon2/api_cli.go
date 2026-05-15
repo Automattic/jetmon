@@ -144,6 +144,7 @@ func printAPIUsage(w io.Writer) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Config:")
 	fmt.Fprintln(w, "  ~/.config/jetmon2.conf  operator CLI defaults; override with JETMON_API_CONFIG")
+	fmt.Fprintln(w, "  Manage with `jetmon2 local-config`.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Environment:")
 	fmt.Fprintln(w, "  JETMON_API_URL          API base URL (default: http://localhost:8090)")

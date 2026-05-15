@@ -14,6 +14,14 @@ not required for the control-plane steps.
 Configure the operator CLI with `~/.config/jetmon2.conf` or
 `JETMON_API_CONFIG=/path/to/jetmon2.conf`:
 
+```bash
+./jetmon2 local-config init \
+  --base-url=https://jetmon-v2-api.example.com \
+  --token-file=jetmon2-api-token \
+  --default-output=table
+./jetmon2 local-config show
+```
+
 ```conf
 base_url = https://jetmon-v2-api.example.com
 token_file = jetmon2-api-token

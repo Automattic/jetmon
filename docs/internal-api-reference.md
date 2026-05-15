@@ -94,6 +94,13 @@ to the Docker-local API listener. It can read operator defaults from
 `~/.config/jetmon2.conf` or a path named by `JETMON_API_CONFIG`, then environment
 variables, then command flags:
 
+```bash
+./bin/jetmon2 local-config init \
+  --base-url=http://localhost:8090 \
+  --token-file=jetmon2-api-token
+./bin/jetmon2 local-config show
+```
+
 ```conf
 base_url = http://localhost:8090
 token_file = jetmon2-api-token

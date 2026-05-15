@@ -36,6 +36,13 @@ export JETMON_API_TOKEN=jm_replace_with_the_printed_token
 For repeated operator use, put defaults in `~/.config/jetmon2.conf` or point
 `JETMON_API_CONFIG` at another file:
 
+```bash
+./bin/jetmon2 local-config init \
+  --base-url=http://localhost:8090 \
+  --token-file=jetmon2-api-token
+./bin/jetmon2 local-config show
+```
+
 ```conf
 base_url = http://localhost:8090
 token_file = jetmon2-api-token

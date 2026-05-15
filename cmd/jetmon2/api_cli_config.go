@@ -70,6 +70,14 @@ func apiCLIConfigPath() (string, bool) {
 }
 
 func loadAPICLIConfig(path string, required bool) (apiCLIConfig, error) {
+	return loadAPICLIConfigFile(path, required, true)
+}
+
+func loadRawAPICLIConfig(path string, required bool) (apiCLIConfig, error) {
+	return loadAPICLIConfigFile(path, required, false)
+}
+
+func loadAPICLIConfigFile(path string, required bool, resolveTokenFile bool) (apiCLIConfig, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) && !required {
@@ -117,7 +125,7 @@ func loadAPICLIConfig(path string, required bool) (apiCLIConfig, error) {
 			return apiCLIConfig{}, fmt.Errorf("API CLI config %s contains token material; run chmod 600 %s", path, path)
 		}
 	}
-	if cfg.TokenFile != "" {
+	if resolveTokenFile && cfg.TokenFile != "" {
 		tokenPath := cfg.TokenFile
 		if !filepath.IsAbs(tokenPath) {
 			tokenPath = filepath.Join(filepath.Dir(path), tokenPath)
