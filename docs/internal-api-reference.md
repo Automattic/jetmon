@@ -90,8 +90,23 @@ The CLI talks to the database directly (via `jetmon_api_keys`), prints the new t
 ## API CLI helper
 
 `jetmon2 api` is the local developer/operator helper for this API. It defaults
-to the Docker-local API listener and reads the Bearer token from the
-environment:
+to the Docker-local API listener. It can read operator defaults from
+`~/.config/jetmon2.conf` or a path named by `JETMON_API_CONFIG`, then environment
+variables, then command flags:
+
+```conf
+base_url = http://localhost:8090
+token_file = jetmon2-api-token
+auth_policy = same-origin
+timeout = 10s
+output = json
+```
+
+The config file supports `base_url`, `token`, `token_file`, `auth_policy`,
+`allow_remote`, `timeout`, `output`, and `pretty`. If `token` or `token_file`
+is present, the config file must be mode `0600`; token files must also be mode
+`0600`. `JETMON_API_URL`, `JETMON_API_TOKEN`, and
+`JETMON_API_AUTH_POLICY` override the config file:
 
 ```bash
 export JETMON_API_URL=http://localhost:8090

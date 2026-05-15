@@ -33,6 +33,23 @@ export JETMON_API_URL=http://localhost:${API_HOST_PORT:-8090}
 export JETMON_API_TOKEN=jm_replace_with_the_printed_token
 ```
 
+For repeated operator use, put defaults in `~/.config/jetmon2.conf` or point
+`JETMON_API_CONFIG` at another file:
+
+```conf
+base_url = http://localhost:8090
+token_file = jetmon2-api-token
+auth_policy = same-origin
+timeout = 10s
+output = json
+```
+
+Supported keys are `base_url`, `token`, `token_file`, `auth_policy`,
+`allow_remote`, `timeout`, `output`, and `pretty`. `token_file` can be absolute
+or relative to the config file directory. If the config contains `token` or
+`token_file`, both the config and token file must be mode `0600`. Environment
+variables override the config file, and command flags override both.
+
 The token helpers use the Docker Compose stack from the repository root. Use
 `API_CLI_TOKEN_CONSUMER`, `API_CLI_TOKEN_SCOPE`, `API_CLI_TOKEN_TTL`, and
 `API_CLI_TOKEN_CREATED_BY` to vary token creation. Use

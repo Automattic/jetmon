@@ -118,28 +118,25 @@ Longer design decisions live in [docs/adr/](docs/adr/).
 
 ## Production Posture
 
-Jetmon 2 is designed for a cautious host-by-host rollout. The complete process
-is in [docs/v1-to-v2-migration.md](docs/v1-to-v2-migration.md). Use
+Jetmon 2 is designed for a cautious rollout from v1. The preferred production
+shape deploys fresh v2 Veriflier and Monitor containers beside the existing v1
+fleet, keeps v2 Monitors in standby, and activates bucket ranges through the
+Monitor API after Systems stops the matching v1 range. The complete process is
+in [docs/v1-to-v2-migration.md](docs/v1-to-v2-migration.md). Use
 [docs/rollout-quick-reference.md](docs/rollout-quick-reference.md) as the
-one-page command checklist during rehearsals and rollout windows:
+one-page checklist during rehearsals and rollout windows:
 
 - Run `./jetmon2 migrate` before first start. Migrations are embedded and
   additive.
-- Run `./jetmon2 validate-config` before deploy to check config shape,
-  database connectivity, email transport mode, verifier config, and rollout
-  safety commands.
-- Use pinned bucket mode for the first v1-to-v2 migration so one v1 host can be
-  replaced by one v2 host with the same bucket range.
-- Prefer `rollout guided` during production rollout windows so operators get a
-  transcript, resume state, typed confirmations, and fail-closed rollout gates.
-  Run it from the staged v2 runtime host. For fresh-server takeovers, that
-  runtime host must have SSH access to the old v1 host when the configured v1
-  stop/start commands use SSH.
-  Use `rollout static-plan-check`, `rollout host-preflight`,
-  `rollout cutover-check`, `rollout rollback-check`, and targeted
-  `rollout activity-check` / `rollout projection-drift` from the migration
-  runbook before changing the next host. Use `rollout state-report` for a
-  quick handoff snapshot.
+- Run `./jetmon2 validate-config` or the API preflight before deploy to check
+  config shape, database connectivity, email transport mode, verifier config,
+  and rollout safety commands.
+- Use API-driven standby/activate/release controls for the container rollout.
+  The operator `jetmon2` binary can run from a workstation or bastion using
+  `~/.config/jetmon2.conf`; production API writes still require
+  `--allow-remote`.
+- Keep the existing pinned host-by-host commands as the fallback path for
+  same-server or fresh-server replacements where the operator has shell access.
 - Keep `LEGACY_STATUS_PROJECTION_ENABLE` on until legacy readers have moved to
   the v2 API or event tables.
 - Use `SIGINT` or `./jetmon2 drain` for graceful shutdown.

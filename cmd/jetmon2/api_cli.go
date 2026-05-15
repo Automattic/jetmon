@@ -39,6 +39,7 @@ type apiCLIOptions struct {
 	errOut         io.Writer
 	in             io.Reader
 	commandName    string
+	configError    error
 }
 
 type apiHeaderFlags []string
@@ -141,6 +142,9 @@ func printAPIUsage(w io.Writer) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Run `jetmon2 api commands --output table` for the command catalog.")
 	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Config:")
+	fmt.Fprintln(w, "  ~/.config/jetmon2.conf  operator CLI defaults; override with JETMON_API_CONFIG")
+	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Environment:")
 	fmt.Fprintln(w, "  JETMON_API_URL          API base URL (default: http://localhost:8090)")
 	fmt.Fprintln(w, "  JETMON_API_TOKEN        Bearer token for authenticated routes")
@@ -209,7 +213,7 @@ func writeAPICommands(opts apiCLIOptions) error {
 }
 
 func defaultAPIOptions() apiCLIOptions {
-	return apiCLIOptions{
+	opts := apiCLIOptions{
 		baseURL:    envOrDefault("JETMON_API_URL", defaultAPIBaseURL),
 		token:      os.Getenv("JETMON_API_TOKEN"),
 		authPolicy: envOrDefault("JETMON_API_AUTH_POLICY", defaultAPIAuthPolicy),
@@ -218,12 +222,16 @@ func defaultAPIOptions() apiCLIOptions {
 		errOut:     os.Stderr,
 		in:         os.Stdin,
 	}
+	applyAPICLIConfigDefaults(&opts)
+	applyAPICLIEnvDefaults(&opts)
+	return opts
 }
 
 func newAPIFlagSet(name string, opts *apiCLIOptions) *flag.FlagSet {
 	opts.commandName = name
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(opts.errOut)
+	rememberAPIConfigError(fs, opts.configError)
 	fs.StringVar(&opts.baseURL, "base-url", opts.baseURL, "API base URL")
 	fs.StringVar(&opts.token, "token", opts.token, "Bearer token")
 	if tokenFlag := fs.Lookup("token"); tokenFlag != nil {
@@ -253,7 +261,13 @@ type apiBoolFlag interface {
 
 func parseAPIFlags(fs *flag.FlagSet, args []string) error {
 	normalized := normalizeAPIFlagArgs(fs, args)
-	return fs.Parse(normalized)
+	if err := fs.Parse(normalized); err != nil {
+		return err
+	}
+	if err := apiCLIConfigErrorForFlagSet(fs); err != nil {
+		return err
+	}
+	return nil
 }
 
 func normalizeAPIFlagArgs(fs *flag.FlagSet, args []string) []string {

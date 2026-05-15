@@ -7,6 +7,8 @@ import (
 	"flag"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -209,6 +211,71 @@ func TestExecuteAPIRequestRejectsInvalidAuthPolicy(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "invalid auth policy") {
 		t.Fatalf("error = %v, want invalid auth policy", err)
+	}
+}
+
+func TestDefaultAPIOptionsLoadsOperatorConfig(t *testing.T) {
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "token")
+	if err := os.WriteFile(tokenPath, []byte("token-from-file\n"), 0600); err != nil {
+		t.Fatalf("write token file: %v", err)
+	}
+	configPath := filepath.Join(dir, "jetmon2.conf")
+	configBody := strings.Join([]string{
+		"base_url = https://jetmon-api.example.test",
+		"token_file = token",
+		"auth_policy = any-origin",
+		"timeout = 25s",
+		"output = table",
+		"pretty = true",
+		"allow_remote = true",
+		"",
+	}, "\n")
+	if err := os.WriteFile(configPath, []byte(configBody), 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("JETMON_API_CONFIG", configPath)
+	t.Setenv("JETMON_API_URL", "")
+	t.Setenv("JETMON_API_TOKEN", "")
+	t.Setenv("JETMON_API_AUTH_POLICY", "")
+
+	opts := defaultAPIOptions()
+	if opts.configError != nil {
+		t.Fatalf("configError = %v", opts.configError)
+	}
+	if opts.baseURL != "https://jetmon-api.example.test" {
+		t.Fatalf("baseURL = %q", opts.baseURL)
+	}
+	if opts.token != "token-from-file" {
+		t.Fatalf("token = %q", opts.token)
+	}
+	if opts.authPolicy != "any-origin" {
+		t.Fatalf("authPolicy = %q", opts.authPolicy)
+	}
+	if opts.timeout != 25*time.Second {
+		t.Fatalf("timeout = %s", opts.timeout)
+	}
+	if opts.output != "table" || !opts.pretty || !opts.allowRemote {
+		t.Fatalf("output/pretty/allowRemote = %q/%v/%v", opts.output, opts.pretty, opts.allowRemote)
+	}
+}
+
+func TestAPIConfigRejectsLooseTokenPermissions(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "jetmon2.conf")
+	if err := os.WriteFile(configPath, []byte("token = secret\n"), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("JETMON_API_CONFIG", configPath)
+	t.Setenv("JETMON_API_URL", "")
+	t.Setenv("JETMON_API_TOKEN", "")
+	t.Setenv("JETMON_API_AUTH_POLICY", "")
+
+	opts := defaultAPIOptions()
+	fs := newAPIFlagSet("api health", &opts)
+	err := parseAPIFlags(fs, nil)
+	if err == nil || !strings.Contains(err.Error(), "chmod 600") {
+		t.Fatalf("parseAPIFlags() error = %v, want chmod 600 refusal", err)
 	}
 }
 

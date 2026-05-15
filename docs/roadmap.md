@@ -446,6 +446,28 @@ production telemetry branches:
 
 ### Rollout Simplification TODO
 
+- [x] Add operator-side API CLI config defaults through
+  `~/.config/jetmon2.conf` / `JETMON_API_CONFIG`, including secure token-file
+  support, so a standalone `jetmon2` binary can drive rollout commands from a
+  workstation or bastion without shell access to container hosts.
+- [ ] Add a first-class Monitor standby mode for containerized rollout:
+  read-only standby must not claim buckets, run scheduled checks, write
+  events/runtime/check-history rows, send WPCOM notifications, or start
+  delivery workers; armed standby may publish process health only.
+- [ ] Add admin-scoped API rollout preflight and read-only smoke endpoints for
+  validating config, schema, Verifliers, bucket-control state, synthetic
+  canaries, and sampled `HEAD` + `legacy` probe parity without mutating site
+  state.
+- [ ] Add idempotent API seed/adopt operations for v2 side tables and existing
+  v1 non-running projections, using dry-run plans and generated confirmation
+  tokens while avoiding duplicate down notifications.
+- [ ] Add explicit API bucket activation/release operations for the container
+  rollout. The v1 schema does not expose reliable v1 host liveness, so v2
+  should take over ranges only after an operator confirms Systems stopped the
+  matching v1 range.
+- [ ] Add non-authoritative `HEAD`/`GET` comparison reporting and staged
+  check-policy transitions with pause, rollback-last-stage, and rollback-all
+  support for `HEAD` + `legacy` -> `GET` + `simple_http` -> `GET` + `full`.
 - [x] Add `jetmon2 rollout rehearsal-plan` so operators can generate the exact
   same-server or fresh-server command sequence from a bucket CSV, host, bucket
   range, and rollout mode.
