@@ -11,6 +11,13 @@ import (
 
 var ErrOverloaded = errors.New("veriflier overloaded")
 
+const (
+	defaultConcurrencyPerCPU = 256
+	minDefaultConcurrency    = 256
+	maxDefaultConcurrency    = 32768
+	defaultQueueMultiplier   = 8
+)
+
 type CheckFunc func(context.Context, CheckRequest) ProbeResult
 
 type Executor struct {
@@ -54,7 +61,7 @@ func NewExecutor(checkFn CheckFunc, maxConcurrency, queueCapacity int) *Executor
 		queueCapacity = 0
 	}
 	if queueCapacity == 0 {
-		queueCapacity = maxConcurrency * 4
+		queueCapacity = defaultQueueCapacity(maxConcurrency)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -204,17 +211,35 @@ func (e *Executor) releaseSlots(n int) {
 }
 
 func defaultMaxConcurrency() int {
-	workers := runtime.GOMAXPROCS(0) * 64
-	if workers < 32 {
-		workers = 32
+	return defaultMaxConcurrencyFor(runtime.GOMAXPROCS(0), fdConcurrencyCap())
+}
+
+func defaultMaxConcurrencyFor(procs, fdCap int) int {
+	if procs < 1 {
+		procs = 1
 	}
-	if fdCap := fdConcurrencyCap(); fdCap > 0 && workers > fdCap {
+	workers := procs * defaultConcurrencyPerCPU
+	if workers < minDefaultConcurrency {
+		workers = minDefaultConcurrency
+	}
+	if fdCap > 0 && workers > fdCap {
 		workers = fdCap
 	}
-	if workers > 4096 {
-		workers = 4096
+	if workers > maxDefaultConcurrency {
+		workers = maxDefaultConcurrency
 	}
 	return workers
+}
+
+func defaultQueueCapacity(maxConcurrency int) int {
+	if maxConcurrency <= 0 {
+		return 0
+	}
+	queue := maxConcurrency * defaultQueueMultiplier
+	if queue/maxConcurrency != defaultQueueMultiplier {
+		return maxConcurrency
+	}
+	return queue
 }
 
 func fdConcurrencyCap() int {

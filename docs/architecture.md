@@ -375,7 +375,7 @@ Veriflier Transport
           "protocols": ["v2-json-http"],
           "vantage": {...},
           "agent": {...},
-          "capacity": {"max_concurrency": 512, "queue_depth": 0, ...}
+          "capacity": {"max_concurrency": 2048, "queue_depth": 0, ...}
         }
 
   Optional legacy-compatible HTTP contract
@@ -405,6 +405,10 @@ registry is unavailable or empty. Monitors poll Veriflier `/v2/status` and write
 `jetmon_veriflier_agents` capacity/liveness telemetry; Veriflier hosts do not
 need DB access. Agent telemetry never creates trusted quorum votes by itself;
 operators must pre-approve each enabled vantage.
+
+Verifier capacity is auto-sized from CPU and file-descriptor headroom. A typical
+8-core host reports `max_concurrency: 2048`; smaller hosts report less, and the
+queue absorbs short Monitor-side bursts before returning overload.
 
 The transport is JSON-over-HTTP for v2 production. `proto/veriflier.proto`
 remains as a schema reference for a possible future transport, but generated

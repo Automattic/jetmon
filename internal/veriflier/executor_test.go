@@ -112,6 +112,37 @@ func TestExecutorCapacityReflectsInFlightWork(t *testing.T) {
 	}
 }
 
+func TestDefaultMaxConcurrencyScalesWithCPUAndFDCap(t *testing.T) {
+	tests := []struct {
+		name  string
+		procs int
+		fdCap int
+		want  int
+	}{
+		{name: "single cpu floor", procs: 1, want: 256},
+		{name: "eight cpu host", procs: 8, want: 2048},
+		{name: "fd cap wins", procs: 8, fdCap: 300, want: 300},
+		{name: "global ceiling", procs: 256, want: 32768},
+		{name: "bad gomaxprocs uses one cpu", procs: 0, want: 256},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := defaultMaxConcurrencyFor(tt.procs, tt.fdCap); got != tt.want {
+				t.Fatalf("defaultMaxConcurrencyFor(%d, %d) = %d, want %d", tt.procs, tt.fdCap, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDefaultQueueCapacityProvidesBurstHeadroom(t *testing.T) {
+	if got := defaultQueueCapacity(512); got != 4096 {
+		t.Fatalf("defaultQueueCapacity(512) = %d, want 4096", got)
+	}
+	if got := defaultQueueCapacity(0); got != 0 {
+		t.Fatalf("defaultQueueCapacity(0) = %d, want 0", got)
+	}
+}
+
 func TestExecutorShutdownCancelsInFlightBatch(t *testing.T) {
 	started := make(chan struct{}, 1)
 	exec := NewExecutor(func(ctx context.Context, req CheckRequest) ProbeResult {
