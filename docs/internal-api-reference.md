@@ -197,6 +197,13 @@ legacy projection. Comparison deltas are persisted separately in
 bucket range has no active sites, the API returns a warning instead of treating
 an empty sample as proof that the range is healthy.
 
+Smoke probes are not a substitute for the launch canary plan. Before production
+activation, run the approved synthetic canary sequence from the prelaunch
+readiness tracker and attach its evidence to the rollout record. API-native
+canary execution is tracked as a follow-up because the production canary URLs,
+expected states, and rollback thresholds need owner approval before they become
+hard-coded rollout gates.
+
 `/api/v1/rollout/stage-policy` writes cohort changes to
 `jetmon_site_check_config` and records previous values in
 `jetmon_rollout_policy_stage_rows`. Use `mode=rollback-last-stage` to restore

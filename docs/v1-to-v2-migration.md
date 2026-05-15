@@ -10,7 +10,11 @@ this runbook, this runbook wins.
 Use [jetmon-v2-prelaunch-readiness.md](jetmon-v2-prelaunch-readiness.md) before
 attempting the rollout to track launch posture, parity gates, support/WAF
 readiness, rehearsal evidence, observability thresholds, consumer inventory, and
-failure-mode drills.
+failure-mode drills. That tracker is also the launch-critical checklist for
+work that must be buttoned up before the first production activation, including
+synthetic canary tests. The API smoke gate samples real sites, but it is not a
+replacement for controlled canary evidence until canary execution is built into
+the rollout API.
 
 Use this document for:
 
@@ -102,6 +106,11 @@ The API-driven rollout flow is:
 9. Run post-handoff gates for bucket coverage, recent check activity,
    projection drift, Veriflier health, canary down/recovery behavior, and
    delivery/WPCOM guard state.
+   The canary gate must use approved controlled sites or uptime-bench fixtures
+   that prove known-up, controlled down, controlled recovery, WPCOM parity,
+   Veriflier-confirmed down, and WAF/blocked-style behavior. Record the
+   evidence outside the API smoke result until synthetic canaries are first
+   class API rollout gates.
 10. If rollback is needed, explicitly release the activated bucket range through
    the API so v2 returns to standby for that range, then have the sysadmin team
    restart the matching v1 Monitor range.

@@ -3,6 +3,10 @@
 This is the short operator checklist for a production v1-to-v2 monitor rollout.
 Use the full [migration runbook](v1-to-v2-migration.md) for preparation,
 approval, troubleshooting, revert details, and final v1 teardown.
+Use the [prelaunch readiness tracker](jetmon-v2-prelaunch-readiness.md) as the
+single launch-critical checklist. The first production activation should not
+start until the launch posture, parity gates, observability thresholds,
+failure drills, and synthetic canary tests have written evidence.
 
 The preferred production rollout is now API-driven: deploy fresh v2 Veriflier
 and Monitor containers beside the existing v1 fleet, keep Monitors in
@@ -105,6 +109,12 @@ the operator types the requested confirmation:
    ./jetmon2 api rollout activity-check --bucket-min=<min> --bucket-max=<max> --since=15m --allow-remote
    ./jetmon2 api rollout projection-drift --bucket-min=<min> --bucket-max=<max> --allow-remote
    ```
+
+   Also run the approved synthetic canary sequence and attach the evidence to
+   the rollout record. Until canary execution is built into the API rollout
+   gate, this remains a separate required check covering known-up, controlled
+   down, controlled recovery, WPCOM notification parity, Veriflier-confirmed
+   down, and WAF/blocked-style behavior.
 
 8. Roll back by releasing the v2 range before Systems restarts v1:
 

@@ -165,6 +165,12 @@ production telemetry branches:
   historically noisy, high-traffic, and multi-endpoint sites.
 - [ ] Get WPCOM/Product/Support approval for the canary cohort matrix and exact
   expansion/rollback thresholds.
+- [ ] Run and record the approved synthetic canary checks before first
+  production activation. Cover known-up, controlled down, controlled recovery,
+  WPCOM notification parity, Veriflier-confirmed down, WAF/blocked-style
+  behavior, and one customer-safe false-alarm/non-confirmation case. Until
+  API-native canary execution exists, this evidence comes from uptime-bench,
+  manual controlled fixtures, or another approved test path.
 
 ### Production Telemetry Reports TODO
 
@@ -481,7 +487,10 @@ production telemetry branches:
 - [ ] Add synthetic canary execution to the API rollout smoke/preflight gates.
   The current API surface executes sampled site smoke probes and validates the
   v2 Veriflier contract/quorum shape, but canary-specific probe execution
-  should be added once production canary URLs and expected states are finalized.
+  should be added once production canary URLs, expected states, and stop/go
+  thresholds are finalized. This is a tooling follow-up; it does not remove the
+  launch requirement to run and record synthetic canary evidence before first
+  production activation.
 - [x] Add `jetmon2 rollout rehearsal-plan` so operators can generate the exact
   same-server or fresh-server command sequence from a bucket CSV, host, bucket
   range, and rollout mode.
