@@ -3,6 +3,8 @@ package api
 import (
 	"net/http"
 	"testing"
+
+	"github.com/Automattic/jetmon/internal/checkmode"
 )
 
 func TestRolloutCapabilities(t *testing.T) {
@@ -37,4 +39,61 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestRolloutModeFromString(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		method  string
+		profile string
+	}{
+		{name: "empty fallback", input: "", method: checkmode.MethodHEAD, profile: checkmode.ProfileLegacy},
+		{name: "head legacy", input: "head-legacy", method: checkmode.MethodHEAD, profile: checkmode.ProfileLegacy},
+		{name: "get simple alias", input: "get-simple_http", method: checkmode.MethodGET, profile: checkmode.ProfileSimpleHTTP},
+		{name: "get full", input: "get-full", method: checkmode.MethodGET, profile: checkmode.ProfileFull},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := rolloutModeFromString(tt.input, rolloutModeSpec{Label: "head-legacy", Method: checkmode.MethodHEAD, Profile: checkmode.ProfileLegacy})
+			if err != nil {
+				t.Fatalf("rolloutModeFromString(%q): %v", tt.input, err)
+			}
+			if got.Method != tt.method || got.Profile != tt.profile {
+				t.Fatalf("mode = %#v, want method=%s profile=%s", got, tt.method, tt.profile)
+			}
+		})
+	}
+	if _, err := rolloutModeFromString("post-full", rolloutModeSpec{}); err == nil {
+		t.Fatal("rolloutModeFromString accepted unsupported mode")
+	}
+}
+
+func TestRolloutStageSize(t *testing.T) {
+	tests := []struct {
+		name     string
+		value    any
+		eligible int
+		want     int
+	}{
+		{name: "nil selects all", value: nil, eligible: 100, want: 100},
+		{name: "integer caps at eligible", value: float64(150), eligible: 100, want: 100},
+		{name: "string integer", value: "25", eligible: 100, want: 25},
+		{name: "percentage rounds up to one", value: "1%", eligible: 10, want: 1},
+		{name: "percentage", value: "12.5%", eligible: 200, want: 25},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := rolloutStageSize(tt.value, tt.eligible)
+			if err != nil {
+				t.Fatalf("rolloutStageSize(%v, %d): %v", tt.value, tt.eligible, err)
+			}
+			if got != tt.want {
+				t.Fatalf("rolloutStageSize(%v, %d) = %d, want %d", tt.value, tt.eligible, got, tt.want)
+			}
+		})
+	}
+	if _, err := rolloutStageSize("0%", 100); err == nil {
+		t.Fatal("rolloutStageSize accepted zero percentage")
+	}
 }

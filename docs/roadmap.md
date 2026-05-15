@@ -460,10 +460,10 @@ production telemetry branches:
   read-only standby must not claim buckets, run scheduled checks, write
   events/runtime/check-history rows, send WPCOM notifications, or start
   delivery workers; armed standby may publish process health only.
-- [x] Add admin-scoped API rollout preflight and read-only smoke planning
-  endpoints for validating config, schema, API-controlled mode,
-  bucket-control state, and sampled `HEAD` + `legacy` coverage without mutating
-  site state.
+- [x] Add admin-scoped API rollout preflight and read-only smoke endpoints for
+  validating config, schema, API-controlled mode, bucket-control state,
+  configured v2 Veriflier contract/quorum identity, and sampled `HEAD` +
+  `legacy` probe coverage without mutating site state.
 - [x] Add idempotent API seed/adopt operations for v2 side tables and existing
   v1 non-running projections, using dry-run plans and generated confirmation
   tokens while avoiding duplicate down notifications.
@@ -471,17 +471,17 @@ production telemetry branches:
   rollout. The v1 schema does not expose reliable v1 host liveness, so v2
   should take over ranges only after an operator confirms Systems stopped the
   matching v1 range.
-- [ ] Add non-authoritative `HEAD`/`GET` comparison reporting and staged
+- [x] Add non-authoritative `HEAD`/`GET` comparison reporting and staged
   check-policy transitions with pause, rollback-last-stage, and rollback-all
   support for `HEAD` + `legacy` -> `GET` + `simple_http` -> `GET` + `full`.
-- [ ] Expand the rollout API comparison and stage-policy endpoints from
+- [x] Expand the rollout API comparison and stage-policy endpoints from
   durable job records into full execution workers: comparison should run sampled
   non-authoritative probes and persist deltas, while policy staging should
   update cohorts with pause, rollback-last-stage, and rollback-all support.
 - [ ] Add synthetic canary execution to the API rollout smoke/preflight gates.
-  The current API surface records the read-only smoke plan and basic DB/schema
-  blockers; canary probe execution should be added once production canary URLs
-  and expected states are finalized.
+  The current API surface executes sampled site smoke probes and validates the
+  v2 Veriflier contract/quorum shape, but canary-specific probe execution
+  should be added once production canary URLs and expected states are finalized.
 - [x] Add `jetmon2 rollout rehearsal-plan` so operators can generate the exact
   same-server or fresh-server command sequence from a bucket CSV, host, bucket
   range, and rollout mode.

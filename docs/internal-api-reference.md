@@ -164,9 +164,9 @@ status/gates:
 | `GET` | `/api/v1/rollout/capabilities` | API contract version, supported rollout features, required config mode, and token TTL. |
 | `POST` | `/api/v1/rollout/sessions` | Create a durable rollout session bound to a bucket range and optional change reference. |
 | `GET` | `/api/v1/rollout/jobs/{job_id}` | Fetch a rollout job record and stored result payload. |
-| `POST` | `/api/v1/rollout/preflight` | Validate standby/API-controlled config, DB access, schema version, and rollout blockers. |
-| `POST` | `/api/v1/rollout/smoke` | Read-only sampled rollout smoke plan for HEAD/legacy compatibility coverage. |
-| `POST` | `/api/v1/rollout/seed` | Dry-run or execute v2 side-table seeding for the requested range. |
+| `POST` | `/api/v1/rollout/preflight` | Validate standby/API-controlled config, DB access, schema version, v2 Veriflier contract/quorum coverage, and rollout blockers. |
+| `POST` | `/api/v1/rollout/smoke` | Run read-only sampled rollout smoke probes for HEAD/legacy compatibility coverage. |
+| `POST` | `/api/v1/rollout/seed` | Dry-run or execute v2 side-table seeding and legacy non-running projection adoption for the requested range. |
 | `POST` | `/api/v1/rollout/final-reconcile` | Repeat seed/adopt immediately before activation to catch changes since the first seed. |
 | `POST` | `/api/v1/rollout/activate-buckets` | Dry-run or execute durable bucket activation locks for this Monitor. |
 | `POST` | `/api/v1/rollout/release-buckets` | Dry-run or execute release of an activated v2 bucket range. |
@@ -174,8 +174,8 @@ status/gates:
 | `GET` | `/api/v1/rollout/bucket-coverage` | Gate payload for active bucket coverage. |
 | `GET` | `/api/v1/rollout/activity-check` | Gate payload for recent check activity. |
 | `GET` | `/api/v1/rollout/projection-drift` | Gate payload for legacy projection drift. |
-| `POST` | `/api/v1/rollout/compare-methods` | Record a non-authoritative HEAD/GET comparison plan. |
-| `POST` | `/api/v1/rollout/stage-policy` | Record a staged check-policy migration plan. |
+| `POST` | `/api/v1/rollout/compare-methods` | Run non-authoritative sampled HEAD/GET comparison probes and persist delta rows. |
+| `POST` | `/api/v1/rollout/stage-policy` | Dry-run or execute staged check-policy migration, pause checkpoints, and rollback-last-stage / rollback-all operations. |
 
 The mutating operations use two-step execution. A dry-run request returns a
 short-lived confirmation token that is hashed at rest and bound to operation,
@@ -184,6 +184,23 @@ provide that token before any bucket lock or side-table mutation runs. One
 Monitor owner may hold only one contiguous active API-controlled range at a
 time; use another Monitor host for a separate range, or release the existing
 range before activating a different one for the same host.
+
+`/api/v1/rollout/smoke` and `/api/v1/rollout/compare-methods` run synchronous
+sampled probes, so `sample_size` defaults to `100` and is capped at `1000` per
+request. These probes are intentionally non-authoritative: they do not write
+incident state, runtime freshness, check history, WPCOM notifications, or the
+legacy projection. Comparison deltas are persisted separately in
+`jetmon_rollout_comparison_results` for rollout analysis.
+
+`/api/v1/rollout/stage-policy` writes cohort changes to
+`jetmon_site_check_config` and records previous values in
+`jetmon_rollout_policy_stage_rows`. Use `mode=rollback-last-stage` to restore
+the most recent staged batch in the range, or `mode=rollback-all` to unwind all
+unrolled-back stage rows for the run/range. NULL previous values are restored
+as NULL so sites return to inheriting the fleet default. Staging requires an
+explicit `size` value, either an integer cohort count or a percentage such as
+`1%`; omitting `size` is rejected so a typo cannot migrate the whole eligible
+range.
 
 JSON is the default output for scripts. Add `--pretty` for readable JSON or
 `--output table` for stable human-readable tables on list and workflow summary

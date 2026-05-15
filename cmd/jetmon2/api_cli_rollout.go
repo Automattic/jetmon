@@ -103,14 +103,14 @@ func cmdAPIRolloutGuided(args []string) error {
 	guided := apiRolloutGuidedOptions{
 		bucketMin:         -1,
 		bucketMax:         -1,
-		sampleSize:        1000,
-		compareSampleSize: 10000,
+		sampleSize:        100,
+		compareSampleSize: 100,
 		since:             "15m",
 	}
 	fs.IntVar(&guided.bucketMin, "bucket-min", guided.bucketMin, "inclusive bucket range minimum")
 	fs.IntVar(&guided.bucketMax, "bucket-max", guided.bucketMax, "inclusive bucket range maximum")
-	fs.IntVar(&guided.sampleSize, "sample-size", guided.sampleSize, "read-only smoke sample size")
-	fs.IntVar(&guided.compareSampleSize, "compare-sample-size", guided.compareSampleSize, "HEAD/GET comparison sample size")
+	fs.IntVar(&guided.sampleSize, "sample-size", guided.sampleSize, "read-only smoke sample size (max 1000)")
+	fs.IntVar(&guided.compareSampleSize, "compare-sample-size", guided.compareSampleSize, "HEAD/GET comparison sample size (max 1000)")
 	fs.StringVar(&guided.since, "since", guided.since, "recent activity window for post-activation gates")
 	fs.StringVar(&guided.runID, "run-id", "", "existing rollout run id to use")
 	fs.StringVar(&guided.changeRef, "change-ref", "", "change ticket/reference recorded with rollout API actions")
@@ -171,8 +171,8 @@ func cmdAPIRolloutPost(command string, args []string) error {
 	fs.StringVar(&prim.runID, "run-id", "", "rollout run id")
 	fs.StringVar(&prim.changeRef, "change-ref", "", "change ticket/reference recorded with this rollout action")
 	fs.StringVar(&prim.ownerHost, "owner-host", "", "monitor host that should own activated buckets (default selected API host)")
-	fs.StringVar(&prim.mode, "mode", "", "rollout check mode")
-	fs.IntVar(&prim.sampleSize, "sample-size", 0, "sample size for smoke or comparison operations")
+	fs.StringVar(&prim.mode, "mode", "", "rollout check mode or stage-policy mode")
+	fs.IntVar(&prim.sampleSize, "sample-size", 0, "sample size for smoke or comparison operations (default 100, max 1000)")
 	fs.BoolVar(&prim.readOnly, "read-only", false, "require read-only behavior")
 	fs.BoolVar(&prim.dryRun, "dry-run", false, "plan without mutating state")
 	fs.BoolVar(&prim.execute, "execute", false, "execute a previously planned operation")
@@ -525,7 +525,7 @@ func buildAPIRolloutGuidedSteps(g apiRolloutGuidedOptions) []apiRolloutStep {
 		{
 			Name:    "preflight",
 			Title:   "Run API-controlled preflight",
-			Details: "Validate Monitor config, DB connectivity, schema version, API-controlled rollout mode, delivery guards, and bucket-control state.",
+			Details: "Validate Monitor config, DB connectivity, schema version, API-controlled rollout mode, delivery guards, v2 Veriflier contract/quorum identity, and bucket-control state.",
 			Method:  http.MethodPost,
 			Target:  "/api/v1/rollout/preflight",
 			Body: apiRolloutRangeBody(g, map[string]any{
@@ -537,7 +537,7 @@ func buildAPIRolloutGuidedSteps(g apiRolloutGuidedOptions) []apiRolloutStep {
 		{
 			Name:    "smoke",
 			Title:   "Run read-only HEAD/legacy smoke",
-			Details: "Plan sampled HEAD/legacy read-only smoke coverage without writing incident state, runtime freshness, check history, WPCOM notifications, or legacy projection rows.",
+			Details: "Execute sampled HEAD/legacy read-only smoke probes without writing incident state, runtime freshness, check history, WPCOM notifications, or legacy projection rows.",
 			Method:  http.MethodPost,
 			Target:  "/api/v1/rollout/smoke",
 			Body: apiRolloutRangeBody(g, map[string]any{

@@ -64,12 +64,17 @@ the operator types the requested confirmation:
    `vantage.id` values, auth, capacity, and quorum.
 3. Deploy v2 Monitors in `ROLLOUT_MODE=api-controlled` with `HEAD` + `legacy`
    defaults.
-4. Run API preflight and read-only smoke planning from the operator CLI:
+4. Run API preflight and read-only smoke checks from the operator CLI:
 
    ```bash
    ./jetmon2 api rollout preflight --bucket-min=<min> --bucket-max=<max> --allow-remote
-   ./jetmon2 api rollout smoke --bucket-min=<min> --bucket-max=<max> --mode=head-legacy --sample-size=1000 --read-only --allow-remote
+   ./jetmon2 api rollout smoke --bucket-min=<min> --bucket-max=<max> --mode=head-legacy --sample-size=100 --read-only --allow-remote
    ```
+
+   Preflight validates the configured v2 Veriflier contract and unique
+   quorum-counted `vantage.id` coverage. Smoke runs sampled standby probes and
+   remains read-only for incident state, runtime freshness, check history,
+   WPCOM notifications, and the legacy projection.
 
 5. Seed/adopt v2 side state without sending duplicate notifications:
 
@@ -111,9 +116,12 @@ the operator types the requested confirmation:
    and staged policy transitions:
 
    ```bash
-   ./jetmon2 api rollout compare-methods --from=head-legacy --to=get-simple --sample-size=10000 --allow-remote
+   ./jetmon2 api rollout compare-methods --from=head-legacy --to=get-simple --sample-size=100 --allow-remote
    ./jetmon2 api rollout stage-policy --method=GET --profile=simple_http --size=1000 --dry-run --allow-remote
+   ./jetmon2 api rollout stage-policy --method=GET --profile=simple_http --size=1000 --execute --confirm=<token> --allow-remote
    ./jetmon2 api rollout stage-policy --method=GET --profile=full --size=1% --dry-run --allow-remote
+   ./jetmon2 api rollout stage-policy --mode=rollback-last-stage --dry-run --allow-remote
+   ./jetmon2 api rollout stage-policy --mode=rollback-all --dry-run --allow-remote
    ```
 
 The API commands above are the target control-plane surface behind the guided

@@ -63,9 +63,10 @@ intent explicit.
 The container rollout has three operating states:
 
 - **read-only standby:** v2 Monitors run with `ROLLOUT_MODE=standby` or
-  `ROLLOUT_MODE=api-controlled` before activation. They validate config, database schema,
-  Veriflier reachability, and sampled probe behavior, but do not claim buckets,
-  run scheduled checks, write events, update runtime/check-history rows, send
+  `ROLLOUT_MODE=api-controlled` before activation. They validate config,
+  database schema, Veriflier reachability, Veriflier v2 contract/quorum
+  identity, and sampled probe behavior, but do not claim buckets, run scheduled
+  checks, write event/check state, update runtime/check-history rows, send
   WPCOM notifications, or run delivery workers.
 - **armed standby:** v2 Monitors may publish process health and dependency
   health for dashboards, but still do not check customer sites or mutate site
@@ -83,11 +84,12 @@ The API-driven rollout flow is:
    disabled unless the delivery-owner plan has been approved.
 4. Run API preflight from the operator CLI. This validates Monitor config,
    database access, schema version, API-controlled rollout mode, delivery
-   guards, and bucket-control state.
-5. Run the read-only smoke planning gate against sampled sites. This gate must
-   not write incident state, runtime freshness, check history, WPCOM
-   notifications, or legacy projection updates. Full canary probe execution and
-   Veriflier contract checks are tracked as rollout API follow-ups.
+   guards, configured Veriflier `/v2/status` contract, stable `vantage.id`
+   coverage, and bucket-control state.
+5. Run the read-only smoke gate against sampled sites. This executes sampled
+   `HEAD` + `legacy` probes from the standby Monitor and blocks on failures,
+   but must not write incident state, runtime freshness, check history, WPCOM
+   notifications, or legacy projection updates.
 6. Seed/adopt v2 side state with a hybrid strategy: pre-seed scheduling/runtime
    rows and adopt existing v1 non-running projections into v2 event state before
    cutover, while allowing lazy creation for rows that are added or changed
@@ -126,7 +128,7 @@ Use `--dry-run` to rehearse the exact API requests and typed confirmations
 before the window. Use `--rollback` to walk the release path if a range must
 return to v1 standby. After v2 owns all buckets and is stable, add
 `--include-comparison` and `--include-policy-migration` to extend the guided
-flow into sampled `HEAD`/`GET` comparison and staged check-policy planning.
+flow into sampled `HEAD`/`GET` comparison and staged check-policy execution.
 Non-dry-run sessions write a transcript and local resume state under
 `logs/api-rollout`; use `--resume` if the operator process is interrupted.
 
@@ -134,7 +136,7 @@ The guided command wraps these control-plane API primitives:
 
 ```bash
 ./jetmon2 api rollout preflight --bucket-min=0 --bucket-max=99 --allow-remote
-./jetmon2 api rollout smoke --bucket-min=0 --bucket-max=99 --mode=head-legacy --sample-size=1000 --read-only --allow-remote
+./jetmon2 api rollout smoke --bucket-min=0 --bucket-max=99 --mode=head-legacy --sample-size=100 --read-only --allow-remote
 ./jetmon2 api rollout seed --bucket-min=0 --bucket-max=99 --dry-run --allow-remote
 ./jetmon2 api rollout seed --bucket-min=0 --bucket-max=99 --execute --confirm=<token> --allow-remote
 ./jetmon2 api rollout final-reconcile --bucket-min=0 --bucket-max=99 --dry-run --allow-remote
@@ -143,9 +145,12 @@ The guided command wraps these control-plane API primitives:
 ./jetmon2 api rollout activate-buckets --bucket-min=0 --bucket-max=99 --execute --confirm=<token> --allow-remote
 ./jetmon2 api rollout status --allow-remote
 ./jetmon2 api rollout release-buckets --bucket-min=0 --bucket-max=99 --execute --confirm=<token> --allow-remote
-./jetmon2 api rollout compare-methods --from=head-legacy --to=get-simple --sample-size=10000 --allow-remote
+./jetmon2 api rollout compare-methods --from=head-legacy --to=get-simple --sample-size=100 --allow-remote
 ./jetmon2 api rollout stage-policy --method=GET --profile=simple_http --size=1000 --dry-run --allow-remote
+./jetmon2 api rollout stage-policy --method=GET --profile=simple_http --size=1000 --execute --confirm=<token> --allow-remote
 ./jetmon2 api rollout stage-policy --method=GET --profile=full --size=1% --dry-run --allow-remote
+./jetmon2 api rollout stage-policy --mode=rollback-last-stage --dry-run --allow-remote
+./jetmon2 api rollout stage-policy --mode=rollback-all --dry-run --allow-remote
 ```
 
 Dangerous API rollout actions must be idempotent, admin-scoped, audited, and

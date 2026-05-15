@@ -688,6 +688,60 @@ var migrations = []migration{
 		INDEX idx_run_operation (run_id, operation),
 		INDEX idx_expires (expires_at)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
+
+	// Migration 47 stores non-authoritative method/profile comparison samples
+	// collected during rollout. These rows let operators compare HEAD legacy
+	// behavior with GET simple/full behavior without changing the authoritative
+	// site state or firing customer alerts.
+	{47, `CREATE TABLE IF NOT EXISTS jetmon_rollout_comparison_results (
+		id                 BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+		job_id             VARCHAR(64) NOT NULL,
+		run_id             VARCHAR(64) NOT NULL DEFAULT '',
+		blog_id            BIGINT UNSIGNED NOT NULL,
+		source_site_id     BIGINT UNSIGNED NOT NULL,
+		bucket_no          SMALLINT UNSIGNED NOT NULL,
+		monitor_url        VARCHAR(2083) NOT NULL,
+		from_method        VARCHAR(16) NOT NULL,
+		from_profile       VARCHAR(32) NOT NULL,
+		to_method          VARCHAR(16) NOT NULL,
+		to_profile         VARCHAR(32) NOT NULL,
+		from_success       TINYINT(1) NOT NULL,
+		to_success         TINYINT(1) NOT NULL,
+		from_http_code     INT NOT NULL DEFAULT 0,
+		to_http_code       INT NOT NULL DEFAULT 0,
+		from_error_code    INT NOT NULL DEFAULT 0,
+		to_error_code      INT NOT NULL DEFAULT 0,
+		from_rtt_ms        INT NOT NULL DEFAULT 0,
+		to_rtt_ms          INT NOT NULL DEFAULT 0,
+		delta_class        ENUM('same','get_better','get_worse','different_failure') NOT NULL DEFAULT 'same',
+		created_at         TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+		INDEX idx_job (job_id),
+		INDEX idx_run_created (run_id, created_at),
+		INDEX idx_delta_created (delta_class, created_at),
+		INDEX idx_site (blog_id, source_site_id)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
+
+	// Migration 48 records staged rollout policy mutations so a batch can be
+	// rolled back without relying on local CLI transcripts. The previous values
+	// are nullable because NULL means "inherit the fleet default" in
+	// jetmon_site_check_config.
+	{48, `CREATE TABLE IF NOT EXISTS jetmon_rollout_policy_stage_rows (
+		id                         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+		job_id                     VARCHAR(64) NOT NULL,
+		run_id                     VARCHAR(64) NOT NULL DEFAULT '',
+		blog_id                    BIGINT UNSIGNED NOT NULL,
+		bucket_no                  SMALLINT UNSIGNED NOT NULL,
+		previous_request_method    VARCHAR(16) NULL,
+		previous_detection_profile VARCHAR(32) NULL,
+		new_request_method         VARCHAR(16) NOT NULL,
+		new_detection_profile      VARCHAR(32) NOT NULL,
+		rolled_back_at            TIMESTAMP(3) NULL,
+		created_at                 TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+		INDEX idx_job (job_id),
+		INDEX idx_run_created (run_id, created_at),
+		INDEX idx_rollback (run_id, rolled_back_at, created_at),
+		INDEX idx_blog (blog_id)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
 }
 
 // Migrate applies all pending migrations idempotently.
