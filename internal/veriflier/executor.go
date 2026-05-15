@@ -39,8 +39,14 @@ type Executor struct {
 
 type execJob struct {
 	ctx    context.Context
+	index  int
 	req    CheckRequest
-	result chan ProbeResult
+	result chan execResult
+}
+
+type execResult struct {
+	index  int
+	result ProbeResult
 }
 
 func NewExecutor(checkFn CheckFunc, maxConcurrency, queueCapacity int) *Executor {
@@ -105,13 +111,13 @@ func (e *Executor) ExecuteBatch(ctx context.Context, reqs []CheckRequest) ([]Pro
 	}
 
 	results := make([]ProbeResult, len(reqs))
-	resultChans := make([]chan ProbeResult, len(reqs))
+	resultCh := make(chan execResult, len(reqs))
 	for i, req := range reqs {
-		resultChans[i] = make(chan ProbeResult, 1)
 		job := execJob{
 			ctx:    ctx,
+			index:  i,
 			req:    req,
-			result: resultChans[i],
+			result: resultCh,
 		}
 		select {
 		case e.jobs <- job:
@@ -127,7 +133,7 @@ func (e *Executor) ExecuteBatch(ctx context.Context, reqs []CheckRequest) ([]Pro
 		results[i].URL = req.URL
 	}
 
-	for i, resultCh := range resultChans {
+	for range reqs {
 		if err := e.ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -140,7 +146,7 @@ func (e *Executor) ExecuteBatch(ctx context.Context, reqs []CheckRequest) ([]Pro
 			if err := e.ctx.Err(); err != nil {
 				return nil, err
 			}
-			results[i] = res
+			results[res.index] = res.result
 		}
 	}
 	return results, nil
@@ -192,7 +198,7 @@ func (e *Executor) worker(ctx context.Context) {
 			e.completed.Add(1)
 			e.active.Add(-1)
 			select {
-			case job.result <- res:
+			case job.result <- execResult{index: job.index, result: res}:
 			default:
 			}
 			<-e.slots
