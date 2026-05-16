@@ -255,11 +255,11 @@ func TestDefaultMaxConcurrencyScalesWithCPUAndFDCap(t *testing.T) {
 		fdCap int
 		want  int
 	}{
-		{name: "single cpu floor", procs: 1, want: 256},
-		{name: "eight cpu host", procs: 8, want: 2048},
+		{name: "single cpu floor", procs: 1, want: 512},
+		{name: "eight cpu host", procs: 8, want: 4096},
 		{name: "fd cap wins", procs: 8, fdCap: 300, want: 300},
 		{name: "global ceiling", procs: 256, want: 32768},
-		{name: "bad gomaxprocs uses one cpu", procs: 0, want: 256},
+		{name: "bad gomaxprocs uses one cpu", procs: 0, want: 512},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

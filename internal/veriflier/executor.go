@@ -13,8 +13,8 @@ import (
 var ErrOverloaded = errors.New("veriflier overloaded")
 
 const (
-	defaultConcurrencyPerCPU = 256
-	minDefaultConcurrency    = 256
+	defaultConcurrencyPerCPU = 512
+	minDefaultConcurrency    = 512
 	maxDefaultConcurrency    = 32768
 	defaultQueueMultiplier   = 8
 	defaultCheckEstimate     = 50 * time.Millisecond
