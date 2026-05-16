@@ -285,10 +285,13 @@ func (e *Executor) worker(ctx context.Context) {
 			res := e.checkFn(jobCtx, job.req)
 			stopShutdownCancel()
 			cancel()
-			if shouldTreatResultAsOperationalOverload(job.ctx, res) {
+			operationalOverload := shouldTreatResultAsOperationalOverload(job.ctx, res)
+			if operationalOverload {
 				res = agentOverloadedProbeResult(job.req)
 			}
-			e.observeDuration(time.Since(start))
+			if !operationalOverload {
+				e.observeDuration(time.Since(start))
+			}
 			if res.RequestID == "" {
 				res.RequestID = job.req.RequestID
 			}

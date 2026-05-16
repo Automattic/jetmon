@@ -146,6 +146,77 @@ func TestExecutorDeadlineCancellationReturnsAgentOverloaded(t *testing.T) {
 	}
 }
 
+func TestExecutorDeadlineOverloadDoesNotPoisonAverageDuration(t *testing.T) {
+	started := make(chan struct{})
+	exec := NewExecutor(func(ctx context.Context, req CheckRequest) ProbeResult {
+		if req.BlogID == 1 {
+			close(started)
+			<-ctx.Done()
+			return ProbeResult{CheckResult: CheckResult{
+				BlogID:    req.BlogID,
+				URL:       req.URL,
+				RequestID: req.RequestID,
+				Success:   false,
+				ErrorCode: 1,
+			}, Outcome: OutcomeTimeout}
+		}
+		time.Sleep(2 * time.Millisecond)
+		return ProbeResult{CheckResult: CheckResult{
+			BlogID:    req.BlogID,
+			URL:       req.URL,
+			RequestID: req.RequestID,
+			Success:   true,
+			HTTPCode:  200,
+		}, Outcome: OutcomeUp}
+	}, 1, 1)
+	defer exec.Shutdown()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	results, err := exec.ExecuteBatch(ctx, []CheckRequest{{BlogID: 1, URL: "https://example.com/slow", RequestID: "req-1"}})
+	if err != nil {
+		t.Fatalf("ExecuteBatch() deadline error = %v", err)
+	}
+	select {
+	case <-started:
+	default:
+		t.Fatal("deadline check did not start")
+	}
+	if len(results) != 1 || results[0].Outcome != OutcomeAgentOverloaded {
+		t.Fatalf("deadline results = %+v, want agent_overloaded", results)
+	}
+	waitForExecutorCapacity(t, exec, func(c Capacity) bool {
+		return c.Active == 0 && c.InFlight == 0
+	})
+	if got := exec.avgNanos.Load(); got != 0 {
+		t.Fatalf("avg nanos after operational overload = %d, want 0", got)
+	}
+
+	results, err = exec.ExecuteBatch(context.Background(), []CheckRequest{{BlogID: 2, URL: "https://example.com/fast", RequestID: "req-2"}})
+	if err != nil {
+		t.Fatalf("ExecuteBatch() success error = %v", err)
+	}
+	if len(results) != 1 || !results[0].Success {
+		t.Fatalf("success results = %+v, want successful probe", results)
+	}
+	if got := exec.avgNanos.Load(); got <= 0 {
+		t.Fatalf("avg nanos after successful probe = %d, want positive", got)
+	}
+}
+
+func waitForExecutorCapacity(t *testing.T, exec *Executor, ok func(Capacity) bool) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		capacity := exec.Capacity()
+		if ok(capacity) {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("executor capacity did not reach expected state: %+v", exec.Capacity())
+}
+
 func TestExecutorContextCancellationKeepsCompletedResults(t *testing.T) {
 	slowStarted := make(chan struct{})
 	fastReturned := make(chan struct{})
