@@ -33,7 +33,7 @@ var (
 	singleCheckBatchMaxSize         = 512
 	singleCheckFullBatchMaxSize     = 64
 	singleCheckBatchMaxDelay        = 2 * time.Millisecond
-	singleCheckBatchDeadlineReserve = 250 * time.Millisecond
+	singleCheckBatchDeadlineReserve = time.Second
 	singleCheckLightBatchMaxFlight  = 32
 	singleCheckFullBatchMaxFlight   = 32
 	singleCheckBatchQueueSize       = 32768
