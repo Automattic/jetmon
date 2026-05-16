@@ -30,13 +30,14 @@ type VeriflierClient struct {
 }
 
 var (
-	singleCheckBatchMaxSize        = 256
-	singleCheckFullBatchMaxSize    = 64
-	singleCheckBatchMaxDelay       = 2 * time.Millisecond
-	singleCheckLightBatchMaxFlight = 32
-	singleCheckFullBatchMaxFlight  = 32
-	singleCheckBatchQueueSize      = 32768
-	singleCheckFullBatchQueueSize  = 32768
+	singleCheckBatchMaxSize         = 512
+	singleCheckFullBatchMaxSize     = 64
+	singleCheckBatchMaxDelay        = 2 * time.Millisecond
+	singleCheckBatchDeadlineReserve = 250 * time.Millisecond
+	singleCheckLightBatchMaxFlight  = 32
+	singleCheckFullBatchMaxFlight   = 32
+	singleCheckBatchQueueSize       = 32768
+	singleCheckFullBatchQueueSize   = 32768
 )
 
 // NewVeriflierClient creates a client targeting the given address (host:port).
@@ -345,7 +346,14 @@ func (c *VeriflierClient) checkBatchV2(ctx context.Context, reqs []CheckRequest)
 	}
 	if deadline, ok := ctx.Deadline(); ok {
 		if remaining := time.Until(deadline); remaining > 0 {
-			batchReq.DeadlineMS = remaining.Milliseconds()
+			serverRemaining := remaining
+			if remaining > singleCheckBatchDeadlineReserve {
+				serverRemaining = remaining - singleCheckBatchDeadlineReserve
+			}
+			if serverRemaining < time.Millisecond {
+				serverRemaining = time.Millisecond
+			}
+			batchReq.DeadlineMS = serverRemaining.Milliseconds()
 		}
 	}
 	body, err := json.Marshal(batchReq)

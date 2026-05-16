@@ -209,8 +209,18 @@ func TestV2SoakDeadlineTimeoutThenRecovers(t *testing.T) {
 		DeadlineMS: 10,
 		Requests:   []CheckV2Request{{BlogID: 1, URL: "https://example.com/slow"}},
 	})
-	if status != http.StatusGatewayTimeout {
-		t.Fatalf("deadline status = %d body=%s, want 504", status, body)
+	if status != http.StatusOK {
+		t.Fatalf("deadline status = %d body=%s, want 200", status, body)
+	}
+	var deadlineResp CheckV2BatchResponse
+	if err := json.Unmarshal(body, &deadlineResp); err != nil {
+		t.Fatalf("decode deadline body: %v", err)
+	}
+	if len(deadlineResp.Results) != 1 {
+		t.Fatalf("deadline results len = %d, want 1", len(deadlineResp.Results))
+	}
+	if deadlineResp.Results[0].Outcome != OutcomeTimeout || deadlineResp.Results[0].Success {
+		t.Fatalf("deadline result = %+v, want per-request timeout", deadlineResp.Results[0])
 	}
 
 	waitForCapacity(t, client, func(c Capacity) bool {

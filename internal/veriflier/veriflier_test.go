@@ -258,6 +258,61 @@ func TestClientBatchRoundTrip(t *testing.T) {
 	}
 }
 
+func TestClientBatchSendsServerDeadlineWithReserve(t *testing.T) {
+	origReserve := singleCheckBatchDeadlineReserve
+	singleCheckBatchDeadlineReserve = 750 * time.Millisecond
+	defer func() { singleCheckBatchDeadlineReserve = origReserve }()
+
+	var gotDeadline atomic.Int64
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/check" {
+			http.NotFound(w, r)
+			return
+		}
+		var req CheckV2BatchRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		gotDeadline.Store(req.DeadlineMS)
+		results := make([]CheckV2Result, 0, len(req.Requests))
+		for _, check := range req.Requests {
+			results = append(results, CheckV2Result{
+				RequestID: check.RequestID,
+				BlogID:    check.BlogID,
+				URL:       check.URL,
+				VantageID: "test-vantage",
+				AgentID:   "test-agent",
+				Outcome:   OutcomeUp,
+				Success:   true,
+				HTTPCode:  200,
+			})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(CheckV2BatchResponse{Results: results})
+	}))
+	defer ts.Close()
+
+	client := NewVeriflierClient(ts.Listener.Addr().String(), "secret")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if _, err := client.CheckBatch(ctx, []CheckRequest{{BlogID: 1, URL: "https://example.com"}}); err != nil {
+		t.Fatalf("CheckBatch() error = %v", err)
+	}
+
+	got := gotDeadline.Load()
+	if got <= 0 {
+		t.Fatal("DeadlineMS was not sent")
+	}
+	if got >= 3000 {
+		t.Fatalf("DeadlineMS = %d, want less than caller deadline", got)
+	}
+	if got < 2000 {
+		t.Fatalf("DeadlineMS = %d, want reserve without excessive deadline loss", got)
+	}
+}
+
 func TestClientCheckCoalescesConcurrentSingles(t *testing.T) {
 	origDelay := singleCheckBatchMaxDelay
 	singleCheckBatchMaxDelay = 25 * time.Millisecond

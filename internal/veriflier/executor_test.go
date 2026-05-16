@@ -58,7 +58,7 @@ func TestExecutorRejectsOverCapacityBatch(t *testing.T) {
 	}
 }
 
-func TestExecutorContextCancellation(t *testing.T) {
+func TestExecutorContextCancellationReturnsTimeoutResult(t *testing.T) {
 	exec := NewExecutor(func(ctx context.Context, req CheckRequest) ProbeResult {
 		<-ctx.Done()
 		return ProbeResult{CheckResult: CheckResult{
@@ -72,9 +72,57 @@ func TestExecutorContextCancellation(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
-	_, err := exec.ExecuteBatch(ctx, []CheckRequest{{BlogID: 1, URL: "https://example.com"}})
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("ExecuteBatch() error = %v, want DeadlineExceeded", err)
+	results, err := exec.ExecuteBatch(ctx, []CheckRequest{{BlogID: 1, URL: "https://example.com", RequestID: "req-1"}})
+	if err != nil {
+		t.Fatalf("ExecuteBatch() error = %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("results len = %d, want 1", len(results))
+	}
+	if results[0].Success || results[0].Outcome != OutcomeTimeout || results[0].ErrorCode != 1 || results[0].RequestID != "req-1" {
+		t.Fatalf("timeout result = %+v, want timeout for req-1", results[0])
+	}
+}
+
+func TestExecutorContextCancellationKeepsCompletedResults(t *testing.T) {
+	exec := NewExecutor(func(ctx context.Context, req CheckRequest) ProbeResult {
+		if req.BlogID == 2 {
+			<-ctx.Done()
+			return ProbeResult{CheckResult: CheckResult{
+				BlogID:    req.BlogID,
+				URL:       req.URL,
+				RequestID: req.RequestID,
+				Success:   false,
+				ErrorCode: 1,
+			}, Outcome: OutcomeTimeout}
+		}
+		return ProbeResult{CheckResult: CheckResult{
+			BlogID:    req.BlogID,
+			URL:       req.URL,
+			RequestID: req.RequestID,
+			Success:   true,
+			HTTPCode:  200,
+		}, Outcome: OutcomeUp}
+	}, 2, 2)
+	defer exec.Shutdown()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	results, err := exec.ExecuteBatch(ctx, []CheckRequest{
+		{BlogID: 1, URL: "https://example.com/fast", RequestID: "fast"},
+		{BlogID: 2, URL: "https://example.com/slow", RequestID: "slow"},
+	})
+	if err != nil {
+		t.Fatalf("ExecuteBatch() error = %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("results len = %d, want 2", len(results))
+	}
+	if !results[0].Success || results[0].Outcome != OutcomeUp || results[0].RequestID != "fast" {
+		t.Fatalf("fast result = %+v, want success for fast", results[0])
+	}
+	if results[1].Success || results[1].Outcome != OutcomeTimeout || results[1].ErrorCode != 1 || results[1].RequestID != "slow" {
+		t.Fatalf("slow result = %+v, want timeout for slow", results[1])
 	}
 }
 

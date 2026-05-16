@@ -421,6 +421,13 @@ in-flight gates so a slow body-reading batch does not block cheap reachability
 checks during a mixed rollout. Explicit `CheckBatch` callers still send their
 supplied batch as-is.
 
+The v2 batch deadline is treated as a soft server-side deadline with a small
+client reserve. If the deadline is reached after work has been accepted, the
+Veriflier returns completed probe results plus per-request timeout results for
+unfinished probes instead of failing the whole RPC. This keeps one slow target
+from turning an otherwise successful batch into hundreds of monitor-side
+transport errors.
+
 The Veriflier does not emit one success log line per probe. Request IDs are
 echoed back in the response and joined to monitor-side audit rows there; keeping
 successful probe traffic out of stdout avoids log-volume bottlenecks and avoids

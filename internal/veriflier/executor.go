@@ -113,6 +113,7 @@ func (e *Executor) ExecuteBatch(ctx context.Context, reqs []CheckRequest) ([]Pro
 	results := make([]ProbeResult, len(reqs))
 	resultCh := make(chan execResult, len(reqs))
 	for i, req := range reqs {
+		results[i] = timeoutProbeResult(req)
 		job := execJob{
 			ctx:    ctx,
 			index:  i,
@@ -128,9 +129,6 @@ func (e *Executor) ExecuteBatch(ctx context.Context, reqs []CheckRequest) ([]Pro
 			e.releaseSlots(len(reqs) - i)
 			return nil, ctx.Err()
 		}
-		results[i].RequestID = req.RequestID
-		results[i].BlogID = req.BlogID
-		results[i].URL = req.URL
 	}
 
 	for range reqs {
@@ -141,7 +139,8 @@ func (e *Executor) ExecuteBatch(ctx context.Context, reqs []CheckRequest) ([]Pro
 		case <-e.ctx.Done():
 			return nil, e.ctx.Err()
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			drainReadyResults(results, resultCh)
+			return results, nil
 		case res := <-resultCh:
 			if err := e.ctx.Err(); err != nil {
 				return nil, err
@@ -150,6 +149,32 @@ func (e *Executor) ExecuteBatch(ctx context.Context, reqs []CheckRequest) ([]Pro
 		}
 	}
 	return results, nil
+}
+
+func drainReadyResults(results []ProbeResult, resultCh <-chan execResult) {
+	for {
+		select {
+		case res := <-resultCh:
+			results[res.index] = res.result
+		default:
+			return
+		}
+	}
+}
+
+func timeoutProbeResult(req CheckRequest) ProbeResult {
+	return ProbeResult{
+		CheckResult: CheckResult{
+			MonitorSiteID: req.MonitorSiteID,
+			BlogID:        req.BlogID,
+			URL:           req.URL,
+			Outcome:       OutcomeTimeout,
+			Success:       false,
+			ErrorCode:     1,
+			RequestID:     req.RequestID,
+		},
+		Outcome: OutcomeTimeout,
+	}
 }
 
 func (e *Executor) Capacity() Capacity {
