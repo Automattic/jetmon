@@ -154,15 +154,15 @@ func TestV2SoakOverloadThenRecovers(t *testing.T) {
 	status, body := postV2Batch(t, ts.URL, "secret", CheckV2BatchRequest{
 		Requests: []CheckV2Request{{BlogID: 3, URL: "https://example.com/3"}},
 	})
-	if status != http.StatusServiceUnavailable {
-		t.Fatalf("overload status = %d body=%s, want 503", status, body)
+	if status != http.StatusOK {
+		t.Fatalf("overload status = %d body=%s, want 200 with agent_overloaded result", status, body)
 	}
-	var errBody map[string]string
-	if err := json.Unmarshal(body, &errBody); err != nil {
-		t.Fatalf("decode overload body: %v", err)
+	var overloadResp CheckV2BatchResponse
+	if err := json.Unmarshal(body, &overloadResp); err != nil {
+		t.Fatalf("decode overload response: %v", err)
 	}
-	if errBody["outcome"] != OutcomeAgentOverloaded {
-		t.Fatalf("overload outcome = %q, want %q", errBody["outcome"], OutcomeAgentOverloaded)
+	if len(overloadResp.Results) != 1 || overloadResp.Results[0].Outcome != OutcomeAgentOverloaded {
+		t.Fatalf("overload response = %+v, want one agent_overloaded result", overloadResp.Results)
 	}
 
 	close(block)
@@ -206,7 +206,7 @@ func TestV2SoakDeadlineTimeoutThenRecovers(t *testing.T) {
 
 	client := NewVeriflierClient(ts.Listener.Addr().String(), "secret")
 	status, body := postV2Batch(t, ts.URL, "secret", CheckV2BatchRequest{
-		DeadlineMS: 10,
+		DeadlineMS: 100,
 		Requests:   []CheckV2Request{{BlogID: 1, URL: "https://example.com/slow"}},
 	})
 	if status != http.StatusOK {

@@ -79,6 +79,9 @@ type Capacity struct {
 	QueueDepth     int `json:"queue_depth"`
 	Active         int `json:"active"`
 	InFlight       int `json:"in_flight"`
+	Completed      int `json:"completed,omitempty"`
+	Rejected       int `json:"rejected,omitempty"`
+	AvgCheckMS     int `json:"avg_check_ms,omitempty"`
 }
 
 type StatusV2Response struct {

@@ -37,29 +37,40 @@ func TestExecutorPreservesInputOrder(t *testing.T) {
 	}
 }
 
-func TestExecutorRejectsOverCapacityBatch(t *testing.T) {
+func TestExecutorPartiallyShedsOverCapacityBatch(t *testing.T) {
 	var called atomic.Int64
 	exec := NewExecutor(func(_ context.Context, req CheckRequest) ProbeResult {
 		called.Add(1)
-		return ProbeResult{CheckResult: CheckResult{BlogID: req.BlogID, URL: req.URL}}
+		return ProbeResult{CheckResult: CheckResult{BlogID: req.BlogID, URL: req.URL, Success: true}, Outcome: OutcomeUp}
 	}, 1, 1)
 	defer exec.Shutdown()
 
-	_, err := exec.ExecuteBatch(context.Background(), []CheckRequest{
+	results, err := exec.ExecuteBatch(context.Background(), []CheckRequest{
 		{BlogID: 1, URL: "https://example.com/1"},
 		{BlogID: 2, URL: "https://example.com/2"},
 		{BlogID: 3, URL: "https://example.com/3"},
 	})
-	if !errors.Is(err, ErrOverloaded) {
-		t.Fatalf("ExecuteBatch() error = %v, want ErrOverloaded", err)
+	if err != nil {
+		t.Fatalf("ExecuteBatch() error = %v", err)
 	}
-	if called.Load() != 0 {
-		t.Fatalf("check function called %d times for rejected batch", called.Load())
+	if called.Load() != 2 {
+		t.Fatalf("check function called %d times, want 2 admitted checks", called.Load())
+	}
+	if len(results) != 3 {
+		t.Fatalf("results len = %d, want 3", len(results))
+	}
+	if !results[0].Success || !results[1].Success {
+		t.Fatalf("admitted results = %+v, want successes", results[:2])
+	}
+	if results[2].Success || results[2].Outcome != OutcomeAgentOverloaded {
+		t.Fatalf("shed result = %+v, want agent_overloaded", results[2])
 	}
 }
 
 func TestExecutorContextCancellationReturnsTimeoutResult(t *testing.T) {
+	started := make(chan struct{})
 	exec := NewExecutor(func(ctx context.Context, req CheckRequest) ProbeResult {
+		close(started)
 		<-ctx.Done()
 		return ProbeResult{CheckResult: CheckResult{
 			BlogID:    req.BlogID,
@@ -70,9 +81,26 @@ func TestExecutorContextCancellationReturnsTimeoutResult(t *testing.T) {
 	}, 1, 1)
 	defer exec.Shutdown()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
-	defer cancel()
-	results, err := exec.ExecuteBatch(ctx, []CheckRequest{{BlogID: 1, URL: "https://example.com", RequestID: "req-1"}})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct {
+		results []ProbeResult
+		err     error
+	}, 1)
+	go func() {
+		results, err := exec.ExecuteBatch(ctx, []CheckRequest{{BlogID: 1, URL: "https://example.com", RequestID: "req-1"}})
+		done <- struct {
+			results []ProbeResult
+			err     error
+		}{results: results, err: err}
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for check to start")
+	}
+	cancel()
+	out := <-done
+	results, err := out.results, out.err
 	if err != nil {
 		t.Fatalf("ExecuteBatch() error = %v", err)
 	}
@@ -85,8 +113,10 @@ func TestExecutorContextCancellationReturnsTimeoutResult(t *testing.T) {
 }
 
 func TestExecutorContextCancellationKeepsCompletedResults(t *testing.T) {
+	slowStarted := make(chan struct{})
 	exec := NewExecutor(func(ctx context.Context, req CheckRequest) ProbeResult {
 		if req.BlogID == 2 {
+			close(slowStarted)
 			<-ctx.Done()
 			return ProbeResult{CheckResult: CheckResult{
 				BlogID:    req.BlogID,
@@ -106,12 +136,29 @@ func TestExecutorContextCancellationKeepsCompletedResults(t *testing.T) {
 	}, 2, 2)
 	defer exec.Shutdown()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	results, err := exec.ExecuteBatch(ctx, []CheckRequest{
-		{BlogID: 1, URL: "https://example.com/fast", RequestID: "fast"},
-		{BlogID: 2, URL: "https://example.com/slow", RequestID: "slow"},
-	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct {
+		results []ProbeResult
+		err     error
+	}, 1)
+	go func() {
+		results, err := exec.ExecuteBatch(ctx, []CheckRequest{
+			{BlogID: 1, URL: "https://example.com/fast", RequestID: "fast"},
+			{BlogID: 2, URL: "https://example.com/slow", RequestID: "slow"},
+		})
+		done <- struct {
+			results []ProbeResult
+			err     error
+		}{results: results, err: err}
+	}()
+	select {
+	case <-slowStarted:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for slow check to start")
+	}
+	cancel()
+	out := <-done
+	results, err := out.results, out.err
 	if err != nil {
 		t.Fatalf("ExecuteBatch() error = %v", err)
 	}

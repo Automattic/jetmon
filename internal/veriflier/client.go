@@ -108,9 +108,9 @@ func (c *VeriflierClient) CheckBatch(ctx context.Context, reqs []CheckRequest) (
 	case ProtocolLegacy:
 		return c.checkBatchLegacy(ctx, reqs)
 	case ProtocolV2:
-		return c.checkBatchV2(ctx, reqs, true)
+		return c.checkBatchV2(ctx, reqs)
 	default:
-		results, err := c.checkBatchV2(ctx, reqs, false)
+		results, err := c.checkBatchV2(ctx, reqs)
 		if err == nil {
 			c.setProtocol(ProtocolV2)
 			return results, nil
@@ -139,10 +139,6 @@ type singleCheckCall struct {
 type singleCheckResponse struct {
 	result *CheckResult
 	err    error
-}
-
-type checkBatchV2Response struct {
-	Results []CheckV2Result `json:"results"`
 }
 
 type singleCheckBatcher struct {
@@ -331,7 +327,11 @@ func (c *VeriflierClient) checkBatchLegacy(ctx context.Context, reqs []CheckRequ
 	return br.Results, nil
 }
 
-func (c *VeriflierClient) checkBatchV2(ctx context.Context, reqs []CheckRequest, retryTransient bool) ([]CheckResult, error) {
+func (c *VeriflierClient) checkBatchV2(ctx context.Context, reqs []CheckRequest) ([]CheckResult, error) {
+	type batchResp struct {
+		Results []CheckV2Result `json:"results"`
+	}
+
 	v2Reqs := make([]CheckV2Request, len(reqs))
 	reqByRequestID := make(map[string]CheckRequest, len(reqs))
 	for i := range reqs {
@@ -363,25 +363,26 @@ func (c *VeriflierClient) checkBatchV2(ctx context.Context, reqs []CheckRequest,
 	}
 
 	url := fmt.Sprintf("http://%s/v2/check", c.addr)
-	var br checkBatchV2Response
-	var lastErr error
-	maxAttempts := 1
-	if retryTransient {
-		maxAttempts = 2
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
 	}
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		br, err = c.doCheckBatchV2(ctx, url, body)
-		if err == nil {
-			lastErr = nil
-			break
-		}
-		lastErr = err
-		if attempt == maxAttempts-1 || !shouldRetryV2Batch(ctx, err) {
-			return nil, err
-		}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+c.authToken)
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, v2TransportError{endpoint: "/v2/check", err: err}
 	}
-	if lastErr != nil {
-		return nil, lastErr
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, statusError{endpoint: "/v2/check", status: resp.StatusCode}
+	}
+
+	var br batchResp
+	if err := json.NewDecoder(resp.Body).Decode(&br); err != nil {
+		return nil, fmt.Errorf("decode veriflier v2 response: %w", err)
 	}
 
 	results := make([]CheckResult, 0, len(br.Results))
@@ -406,50 +407,6 @@ func (c *VeriflierClient) checkBatchV2(ctx context.Context, reqs []CheckRequest,
 		})
 	}
 	return results, nil
-}
-
-func (c *VeriflierClient) doCheckBatchV2(ctx context.Context, url string, body []byte) (checkBatchV2Response, error) {
-	var br checkBatchV2Response
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		return br, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+c.authToken)
-
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return br, v2TransportError{endpoint: "/v2/check", err: err}
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return br, statusError{endpoint: "/v2/check", status: resp.StatusCode}
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&br); err != nil {
-		return br, fmt.Errorf("decode veriflier v2 response: %w", err)
-	}
-	return br, nil
-}
-
-func shouldRetryV2Batch(ctx context.Context, err error) bool {
-	if err == nil || ctx.Err() != nil {
-		return false
-	}
-	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < 250*time.Millisecond {
-		return false
-	}
-
-	var transportErr v2TransportError
-	if errors.As(err, &transportErr) {
-		return true
-	}
-	var status statusError
-	if errors.As(err, &status) {
-		return status.status == http.StatusBadGateway || status.status == http.StatusGatewayTimeout || status.status == http.StatusRequestTimeout
-	}
-	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
 }
 
 func checkBatchDeadlineReserve(_ []CheckRequest) time.Duration {

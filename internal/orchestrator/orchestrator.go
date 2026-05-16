@@ -1826,6 +1826,12 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 		if duplicateVote {
 			continue
 		}
+		if verifierOperationalNonVote(vr.res) {
+			emitCounter("verifier.vote.non_vote.count", 1)
+			emitCounter("verifier.host."+hostSegment+".vote.non_vote.count", 1)
+			log.Printf("orchestrator: veriflier %s returned operational non-vote outcome %q; leaving decision pending", vr.host, vr.res.Outcome)
+			continue
+		}
 
 		healthyVerifliers++
 		vResults = append(vResults, *vr.res)
@@ -1866,6 +1872,18 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 		Confirmed:      confirmations,
 		Disagreed:      healthyVerifliers - confirmations,
 		DuplicateVotes: duplicateVotes,
+	}
+
+	if healthyVerifliers < minHealthy {
+		emitCounter("detection.verifier.insufficient_healthy.count", 1)
+		log.Printf(
+			"orchestrator: blog_id=%d verifier decision pending; healthy=%d min_healthy=%d confirmations=%d",
+			site.BlogID,
+			healthyVerifliers,
+			minHealthy,
+			confirmations,
+		)
+		return
 	}
 
 	if confirmations >= quorum {
@@ -1923,6 +1941,18 @@ func verifierVoteID(addr string, res *veriflier.CheckResult) string {
 		}
 	}
 	return strings.TrimSpace(addr)
+}
+
+func verifierOperationalNonVote(res *veriflier.CheckResult) bool {
+	if res == nil {
+		return true
+	}
+	switch res.Outcome {
+	case veriflier.OutcomeAgentOverloaded, veriflier.OutcomeUnknown:
+		return true
+	default:
+		return false
+	}
 }
 
 func verifierMinHealthyFloor(peerOfflineLimit, configuredVerifiers int) int {

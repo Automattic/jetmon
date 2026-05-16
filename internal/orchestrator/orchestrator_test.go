@@ -856,8 +856,11 @@ func TestEscalateToVerifliersIgnoresDuplicateVoteIdentities(t *testing.T) {
 	entry := o.retries.get(655)
 	o.escalateToVerifliers(db.Site{BlogID: 655, MonitorURL: "https://example.com", SiteStatus: statusRunning}, entry)
 
-	if falsePositiveBlogID != 655 {
-		t.Fatalf("false positive blog_id = %d, want 655", falsePositiveBlogID)
+	if falsePositiveBlogID != 0 {
+		t.Fatalf("false positive blog_id = %d, want none while duplicate votes leave health below floor", falsePositiveBlogID)
+	}
+	if entry := o.retries.get(655); entry == nil {
+		t.Fatal("retry entry was cleared despite duplicate votes leaving verifier health below floor")
 	}
 	if got := rec.counter("verifier.vote.duplicate_identity.count"); got != 1 {
 		t.Fatalf("duplicate identity counter = %d, want 1", got)
@@ -915,8 +918,11 @@ func TestEscalateToVerifliersRequiresTwoHealthyVotesForMultiVerifierFleet(t *tes
 	entry := o.retries.get(656)
 	o.escalateToVerifliers(db.Site{BlogID: 656, MonitorURL: "https://example.com", SiteStatus: statusRunning}, entry)
 
-	if falsePositiveBlogID != 656 {
-		t.Fatalf("false positive blog_id = %d, want 656", falsePositiveBlogID)
+	if falsePositiveBlogID != 0 {
+		t.Fatalf("false positive blog_id = %d, want none while verifier health is below floor", falsePositiveBlogID)
+	}
+	if entry := o.retries.get(656); entry == nil {
+		t.Fatal("retry entry was cleared despite insufficient healthy verifier votes")
 	}
 }
 
@@ -959,6 +965,63 @@ func TestEscalateToVerifliersAllowsSingleConfiguredVerifier(t *testing.T) {
 
 	if notifyCalls != 1 {
 		t.Fatalf("notify calls = %d, want 1", notifyCalls)
+	}
+}
+
+func TestEscalateToVerifliersKeepsRetryOnOperationalNonVote(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+
+	cfg := setTestConfig(t)
+	cfg.PeerOfflineLimit = 1
+
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+	dbRecordFalsePositive = func(blogID int64, _ int, _ int, _ int64) error {
+		t.Fatalf("false positive recorded for operational non-vote blog_id=%d", blogID)
+		return nil
+	}
+	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error {
+		t.Fatal("operational non-vote should not confirm downtime")
+		return nil
+	}
+	veriflierCheckFunc = func(c *veriflier.VeriflierClient, _ context.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
+		return &veriflier.CheckResult{
+			BlogID:    req.BlogID,
+			Host:      c.Addr(),
+			Success:   false,
+			ErrorCode: 1,
+			Outcome:   veriflier.OutcomeAgentOverloaded,
+			RequestID: req.RequestID,
+		}, nil
+	}
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		ctx:      context.Background(),
+		hostname: "local-host",
+		veriflierClients: []*veriflier.VeriflierClient{
+			veriflier.NewVeriflierClient("v1", ""),
+		},
+	}
+
+	fail := checkerResultFailure(658)
+	o.retries.record(fail)
+	entry := o.retries.get(658)
+	o.escalateToVerifliers(db.Site{BlogID: 658, MonitorURL: "https://example.com", SiteStatus: statusRunning}, entry)
+
+	if entry := o.retries.get(658); entry == nil {
+		t.Fatal("retry entry was cleared after operational non-vote")
+	}
+	if got := rec.counter("verifier.vote.non_vote.count"); got != 1 {
+		t.Fatalf("non-vote counter = %d, want 1", got)
+	}
+	if got := rec.counter("detection.verifier.insufficient_healthy.count"); got != 1 {
+		t.Fatalf("insufficient healthy counter = %d, want 1", got)
+	}
+	if got := rec.counter("detection.verifier.false_alarm.count"); got != 0 {
+		t.Fatalf("false alarm counter = %d, want 0", got)
 	}
 }
 

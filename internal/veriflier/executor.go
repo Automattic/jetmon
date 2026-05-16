@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 )
 
 var ErrOverloaded = errors.New("veriflier overloaded")
@@ -16,6 +17,9 @@ const (
 	minDefaultConcurrency    = 256
 	maxDefaultConcurrency    = 32768
 	defaultQueueMultiplier   = 8
+	defaultCheckEstimate     = 50 * time.Millisecond
+	deadlineAdmissionReserve = 250 * time.Millisecond
+	deadlineResultDrainGrace = 25 * time.Millisecond
 )
 
 type CheckFunc func(context.Context, CheckRequest) ProbeResult
@@ -32,6 +36,7 @@ type Executor struct {
 	active    atomic.Int64
 	completed atomic.Uint64
 	rejected  atomic.Uint64
+	avgNanos  atomic.Int64
 
 	maxConcurrency int
 	queueCapacity  int
@@ -92,28 +97,37 @@ func (e *Executor) ExecuteBatch(ctx context.Context, reqs []CheckRequest) ([]Pro
 		return nil, nil
 	}
 
-	acquired := 0
-	for range reqs {
-		select {
-		case e.slots <- struct{}{}:
-			acquired++
-		case <-e.ctx.Done():
-			e.releaseSlots(acquired)
-			return nil, e.ctx.Err()
-		case <-ctx.Done():
-			e.releaseSlots(acquired)
-			return nil, ctx.Err()
-		default:
-			e.rejected.Add(1)
-			e.releaseSlots(acquired)
-			return nil, ErrOverloaded
-		}
+	results := make([]ProbeResult, len(reqs))
+	for i, req := range reqs {
+		results[i] = agentOverloadedProbeResult(req)
 	}
 
-	results := make([]ProbeResult, len(reqs))
 	resultCh := make(chan execResult, len(reqs))
+	enqueued := 0
 	for i, req := range reqs {
-		results[i] = timeoutProbeResult(req)
+		if err := e.ctx.Err(); err != nil {
+			return nil, err
+		}
+		if ctx.Err() != nil {
+			drainReadyResults(results, resultCh)
+			return results, nil
+		}
+		if e.shouldShedForDeadline(ctx) {
+			e.rejected.Add(1)
+			continue
+		}
+		select {
+		case e.slots <- struct{}{}:
+		case <-e.ctx.Done():
+			return nil, e.ctx.Err()
+		case <-ctx.Done():
+			drainReadyResults(results, resultCh)
+			return results, nil
+		default:
+			e.rejected.Add(1)
+			continue
+		}
+
 		job := execJob{
 			ctx:    ctx,
 			index:  i,
@@ -122,16 +136,18 @@ func (e *Executor) ExecuteBatch(ctx context.Context, reqs []CheckRequest) ([]Pro
 		}
 		select {
 		case e.jobs <- job:
+			enqueued++
 		case <-e.ctx.Done():
-			e.releaseSlots(len(reqs) - i)
+			e.releaseSlots(1)
 			return nil, e.ctx.Err()
 		case <-ctx.Done():
-			e.releaseSlots(len(reqs) - i)
-			return nil, ctx.Err()
+			e.releaseSlots(1)
+			drainReadyResults(results, resultCh)
+			return results, nil
 		}
 	}
 
-	for range reqs {
+	for range enqueued {
 		if err := e.ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -139,7 +155,7 @@ func (e *Executor) ExecuteBatch(ctx context.Context, reqs []CheckRequest) ([]Pro
 		case <-e.ctx.Done():
 			return nil, e.ctx.Err()
 		case <-ctx.Done():
-			drainReadyResults(results, resultCh)
+			drainReadyResultsWithGrace(results, resultCh, deadlineResultDrainGrace)
 			return results, nil
 		case res := <-resultCh:
 			if err := e.ctx.Err(); err != nil {
@@ -149,6 +165,38 @@ func (e *Executor) ExecuteBatch(ctx context.Context, reqs []CheckRequest) ([]Pro
 		}
 	}
 	return results, nil
+}
+
+func (e *Executor) shouldShedForDeadline(ctx context.Context) bool {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return false
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return true
+	}
+	avg := time.Duration(e.avgNanos.Load())
+	if avg <= 0 {
+		avg = defaultCheckEstimate
+	}
+	prospectivePosition := len(e.slots) + 1
+	queuedAhead := prospectivePosition - e.maxConcurrency
+	if queuedAhead < 0 {
+		queuedAhead = 0
+	}
+	if queuedAhead == 0 {
+		return false
+	}
+	if remaining <= deadlineAdmissionReserve {
+		return true
+	}
+	wavesAhead := queuedAhead / e.maxConcurrency
+	if queuedAhead%e.maxConcurrency != 0 {
+		wavesAhead++
+	}
+	estimatedWait := time.Duration(wavesAhead) * avg
+	return estimatedWait+deadlineAdmissionReserve >= remaining
 }
 
 func drainReadyResults(results []ProbeResult, resultCh <-chan execResult) {
@@ -162,28 +210,51 @@ func drainReadyResults(results []ProbeResult, resultCh <-chan execResult) {
 	}
 }
 
-func timeoutProbeResult(req CheckRequest) ProbeResult {
+func drainReadyResultsWithGrace(results []ProbeResult, resultCh <-chan execResult, grace time.Duration) {
+	drainReadyResults(results, resultCh)
+	if grace <= 0 {
+		return
+	}
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
+	for {
+		select {
+		case res := <-resultCh:
+			results[res.index] = res.result
+		case <-timer.C:
+			return
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+}
+
+func agentOverloadedProbeResult(req CheckRequest) ProbeResult {
 	return ProbeResult{
 		CheckResult: CheckResult{
 			MonitorSiteID: req.MonitorSiteID,
 			BlogID:        req.BlogID,
 			URL:           req.URL,
-			Outcome:       OutcomeTimeout,
+			Outcome:       OutcomeAgentOverloaded,
 			Success:       false,
 			ErrorCode:     1,
 			RequestID:     req.RequestID,
 		},
-		Outcome: OutcomeTimeout,
+		Outcome: OutcomeAgentOverloaded,
 	}
 }
 
 func (e *Executor) Capacity() Capacity {
+	avgMS := int(time.Duration(e.avgNanos.Load()).Milliseconds())
 	return Capacity{
 		MaxConcurrency: e.maxConcurrency,
 		QueueCapacity:  e.queueCapacity,
 		QueueDepth:     len(e.jobs),
 		Active:         int(e.active.Load()),
 		InFlight:       len(e.slots),
+		Completed:      int(e.completed.Load()),
+		Rejected:       int(e.rejected.Load()),
+		AvgCheckMS:     avgMS,
 	}
 }
 
@@ -199,12 +270,22 @@ func (e *Executor) worker(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case job := <-e.jobs:
+			if err := job.ctx.Err(); err != nil {
+				select {
+				case job.result <- execResult{index: job.index, result: agentOverloadedProbeResult(job.req)}:
+				default:
+				}
+				<-e.slots
+				continue
+			}
 			e.active.Add(1)
+			start := time.Now()
 			jobCtx, cancel := context.WithCancel(job.ctx)
 			stopShutdownCancel := context.AfterFunc(ctx, cancel)
 			res := e.checkFn(jobCtx, job.req)
 			stopShutdownCancel()
 			cancel()
+			e.observeDuration(time.Since(start))
 			if res.RequestID == "" {
 				res.RequestID = job.req.RequestID
 			}
@@ -227,6 +308,23 @@ func (e *Executor) worker(ctx context.Context) {
 			default:
 			}
 			<-e.slots
+		}
+	}
+}
+
+func (e *Executor) observeDuration(d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	nanos := int64(d)
+	for {
+		old := e.avgNanos.Load()
+		next := nanos
+		if old > 0 {
+			next = old + (nanos-old)/16
+		}
+		if e.avgNanos.CompareAndSwap(old, next) {
+			return
 		}
 	}
 }
