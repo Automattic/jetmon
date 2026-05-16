@@ -259,6 +259,70 @@ func TestClientBatchRoundTrip(t *testing.T) {
 	}
 }
 
+func TestClientBatchMapsOutOfOrderV2ResultsByRequestID(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/check" {
+			http.NotFound(w, r)
+			return
+		}
+		var req CheckV2BatchRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if len(req.Requests) != 2 {
+			t.Errorf("request len = %d, want 2", len(req.Requests))
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		results := []CheckV2Result{
+			{
+				RequestID: req.Requests[1].RequestID,
+				BlogID:    req.Requests[1].BlogID,
+				URL:       req.Requests[1].URL,
+				VantageID: "test-vantage",
+				AgentID:   "test-agent",
+				Outcome:   OutcomeUp,
+				Success:   true,
+				HTTPCode:  200,
+			},
+			{
+				RequestID: req.Requests[0].RequestID,
+				BlogID:    req.Requests[0].BlogID,
+				URL:       req.Requests[0].URL,
+				VantageID: "test-vantage",
+				AgentID:   "test-agent",
+				Outcome:   OutcomeUp,
+				Success:   true,
+				HTTPCode:  200,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(CheckV2BatchResponse{Results: results})
+	}))
+	defer ts.Close()
+
+	client := NewVeriflierClient(ts.Listener.Addr().String(), "secret")
+	client.setProtocol(ProtocolV2)
+	res, err := client.CheckBatch(context.Background(), []CheckRequest{
+		{MonitorSiteID: 101, BlogID: 1, URL: "https://example.com/one", RequestID: "one"},
+		{MonitorSiteID: 0, BlogID: 2, URL: "https://example.com/two", RequestID: "two"},
+	})
+	if err != nil {
+		t.Fatalf("CheckBatch() error = %v", err)
+	}
+	if len(res) != 2 {
+		t.Fatalf("CheckBatch() len = %d, want 2", len(res))
+	}
+	if res[0].RequestID != "two" || res[0].MonitorSiteID != 0 || res[0].BlogID != 2 {
+		t.Fatalf("first result = %+v, want request two metadata", res[0])
+	}
+	if res[1].RequestID != "one" || res[1].MonitorSiteID != 101 || res[1].BlogID != 1 {
+		t.Fatalf("second result = %+v, want request one metadata", res[1])
+	}
+}
+
 func TestClientBatchSendsServerDeadlineWithReserve(t *testing.T) {
 	origReserve := singleCheckBatchDeadlineReserve
 	origLargeReserve := singleCheckLargeBatchDeadlineReserve
@@ -530,6 +594,86 @@ func TestClientCheckCoalescesConcurrentSingles(t *testing.T) {
 	}
 	if maxBatch.Load() < 2 {
 		t.Fatalf("max batch size = %d, want coalesced requests", maxBatch.Load())
+	}
+}
+
+func TestSingleCheckBatcherMapsOutOfOrderResultsByRequestID(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/check" {
+			http.NotFound(w, r)
+			return
+		}
+		var req CheckV2BatchRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if len(req.Requests) != 2 {
+			t.Errorf("request len = %d, want 2", len(req.Requests))
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		results := []CheckV2Result{
+			{
+				RequestID: req.Requests[1].RequestID,
+				BlogID:    req.Requests[1].BlogID,
+				URL:       req.Requests[1].URL,
+				VantageID: "test-vantage",
+				AgentID:   "test-agent",
+				Outcome:   OutcomeUp,
+				Success:   true,
+				HTTPCode:  200,
+			},
+			{
+				RequestID: req.Requests[0].RequestID,
+				BlogID:    req.Requests[0].BlogID,
+				URL:       req.Requests[0].URL,
+				VantageID: "test-vantage",
+				AgentID:   "test-agent",
+				Outcome:   OutcomeUp,
+				Success:   true,
+				HTTPCode:  200,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(CheckV2BatchResponse{Results: results})
+	}))
+	defer ts.Close()
+
+	client := NewVeriflierClient(ts.Listener.Addr().String(), "secret")
+	client.setProtocol(ProtocolV2)
+	batcher := &singleCheckBatcher{client: client}
+	calls := []singleCheckCall{
+		{
+			ctx:  context.Background(),
+			req:  CheckRequest{BlogID: 1, URL: "https://example.com/one", RequestID: "one"},
+			resp: make(chan singleCheckResponse, 1),
+		},
+		{
+			ctx:  context.Background(),
+			req:  CheckRequest{BlogID: 2, URL: "https://example.com/two", RequestID: "two"},
+			resp: make(chan singleCheckResponse, 1),
+		},
+	}
+	batcher.flush(calls)
+
+	seen := map[string]CheckResult{}
+	for _, call := range calls {
+		got := <-call.resp
+		if got.err != nil {
+			t.Fatalf("Check() error = %v", got.err)
+		}
+		if got.result == nil {
+			t.Fatal("Check() returned nil result")
+		}
+		seen[got.result.RequestID] = *got.result
+	}
+	if seen["one"].BlogID != 1 {
+		t.Fatalf("request one result = %+v", seen["one"])
+	}
+	if seen["two"].BlogID != 2 {
+		t.Fatalf("request two result = %+v", seen["two"])
 	}
 }
 

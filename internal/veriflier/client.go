@@ -280,12 +280,15 @@ func (b *singleCheckBatcher) flush(batch []singleCheckCall) {
 		return
 	}
 
-	resultsByRequestID := make(map[string]CheckResult, len(results))
-	for _, result := range results {
-		if result.RequestID != "" {
-			resultsByRequestID[result.RequestID] = result
+	if len(results) == len(calls) && resultsMatchCallOrder(results, calls) {
+		for i, call := range calls {
+			result := results[i]
+			call.respond(&result, nil)
 		}
+		return
 	}
+
+	resultsByRequestID := checkResultsByRequestID(results)
 	for i, call := range calls {
 		result, ok := resultsByRequestID[call.req.RequestID]
 		if !ok {
@@ -297,6 +300,28 @@ func (b *singleCheckBatcher) flush(batch []singleCheckCall) {
 		}
 		call.respond(&result, nil)
 	}
+}
+
+func resultsMatchCallOrder(results []CheckResult, calls []singleCheckCall) bool {
+	if len(results) != len(calls) {
+		return false
+	}
+	for i := range results {
+		if results[i].RequestID != "" && results[i].RequestID != calls[i].req.RequestID {
+			return false
+		}
+	}
+	return true
+}
+
+func checkResultsByRequestID(results []CheckResult) map[string]CheckResult {
+	out := make(map[string]CheckResult, len(results))
+	for _, result := range results {
+		if result.RequestID != "" {
+			out[result.RequestID] = result
+		}
+	}
+	return out
 }
 
 func (c singleCheckCall) respond(result *CheckResult, err error) {
@@ -381,12 +406,10 @@ func (c *VeriflierClient) checkBatchV2(ctx context.Context, reqs []CheckRequest)
 	}
 
 	v2Reqs := make([]CheckV2Request, len(reqs))
-	reqByRequestID := make(map[string]CheckRequest, len(reqs))
 	for i := range reqs {
 		if reqs[i].RequestID == "" {
 			reqs[i].RequestID = NewRequestID()
 		}
-		reqByRequestID[reqs[i].RequestID] = reqs[i]
 		v2Reqs[i] = legacyRequestToV2(reqs[i])
 	}
 	batchReq := CheckV2BatchRequest{
@@ -434,10 +457,20 @@ func (c *VeriflierClient) checkBatchV2(ctx context.Context, reqs []CheckRequest)
 	}
 
 	results := make([]CheckResult, 0, len(br.Results))
+	var reqByRequestID map[string]CheckRequest
 	for i, res := range br.Results {
-		orig := reqByRequestID[res.RequestID]
-		if orig.MonitorSiteID == 0 && i < len(reqs) {
+		var orig CheckRequest
+		if i < len(reqs) && (res.RequestID == "" || res.RequestID == reqs[i].RequestID) {
 			orig = reqs[i]
+		} else {
+			if reqByRequestID == nil {
+				reqByRequestID = checkRequestsByRequestID(reqs)
+			}
+			var ok bool
+			orig, ok = reqByRequestID[res.RequestID]
+			if !ok && i < len(reqs) {
+				orig = reqs[i]
+			}
 		}
 		results = append(results, CheckResult{
 			MonitorSiteID: orig.MonitorSiteID,
@@ -455,6 +488,16 @@ func (c *VeriflierClient) checkBatchV2(ctx context.Context, reqs []CheckRequest)
 		})
 	}
 	return results, nil
+}
+
+func checkRequestsByRequestID(reqs []CheckRequest) map[string]CheckRequest {
+	out := make(map[string]CheckRequest, len(reqs))
+	for _, req := range reqs {
+		if req.RequestID != "" {
+			out[req.RequestID] = req
+		}
+	}
+	return out
 }
 
 func checkBatchDeadlineReserve(_ []CheckRequest) time.Duration {
