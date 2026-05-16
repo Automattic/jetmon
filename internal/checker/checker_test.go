@@ -435,6 +435,34 @@ func TestCheckTimeout(t *testing.T) {
 	}
 }
 
+func TestCheckContextCancelsBodyRead(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		select {
+		case <-r.Context().Done():
+		case <-time.After(2 * time.Second):
+		}
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	res := Check(ctx, Request{BlogID: 1, URL: srv.URL, TimeoutSeconds: 5})
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("Check() took %s, want context cancellation to stop body read promptly", elapsed)
+	}
+	if res.ErrorCode != ErrorBodyRead {
+		t.Fatalf("ErrorCode = %d, want ErrorBodyRead after response-body cancellation", res.ErrorCode)
+	}
+	if res.BodyReadError == "" {
+		t.Fatal("BodyReadError is empty, want cancellation detail")
+	}
+}
+
 func TestCheckKeywordMatch(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)

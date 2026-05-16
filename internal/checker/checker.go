@@ -54,7 +54,9 @@ const (
 
 // defaultTransport is shared across checks so the checker does not allocate a
 // fresh connection pool for every probe. The http.Client stays per request so
-// timeout and redirect policy remain isolated to that site check.
+// redirect policy remains isolated to that site check. Timeouts are carried by
+// the request context instead of http.Client.Timeout so each probe does not pay
+// for a second timer on the hot path.
 var defaultTransport = newCheckTransport()
 var defaultHTTPIPTransport = newHTTPIPPoolTransport()
 var defaultDNSCache = newCheckDNSCache(checkDNSCacheTTL, checkDNSCacheMaxEntries)
@@ -780,7 +782,6 @@ func Check(ctx context.Context, req Request) Result {
 			}
 			return nil
 		},
-		Timeout: timeout,
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, method, req.URL, nil)
