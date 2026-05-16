@@ -12,7 +12,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -39,7 +38,7 @@ var (
 	singleCheckBatchMaxDelay             = 2 * time.Millisecond
 	singleCheckBatchDeadlineReserve      = 250 * time.Millisecond
 	singleCheckLargeBatchDeadlineReserve = time.Second
-	singleCheckLightBatchMaxFlight       = defaultSingleCheckLightBatchMaxFlight()
+	singleCheckLightBatchMaxFlight       = 32
 	singleCheckFullBatchMaxFlight        = 32
 	singleCheckBatchQueueSize            = 32768
 	singleCheckFullBatchQueueSize        = 32768
@@ -176,21 +175,6 @@ func newSingleCheckBatcher(client *VeriflierClient) *singleCheckBatcher {
 	go b.run(b.lightIn, singleCheckBatchMaxSize, b.lightInFlight)
 	go b.run(b.fullIn, singleCheckFullBatchMaxSize, b.fullInFlight)
 	return b
-}
-
-func defaultSingleCheckLightBatchMaxFlight() int {
-	procs := runtime.GOMAXPROCS(0)
-	if procs < 1 {
-		procs = 1
-	}
-	flight := procs * 16
-	if flight < 32 {
-		return 32
-	}
-	if flight > 128 {
-		return 128
-	}
-	return flight
 }
 
 func (b *singleCheckBatcher) submit(ctx context.Context, call singleCheckCall) error {

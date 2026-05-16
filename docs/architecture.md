@@ -414,15 +414,12 @@ Monitor-side single-site `Check` calls are coalesced into small, bounded
 `CheckBatch` RPCs before they cross the network. This keeps the simple
 per-site quorum code path while avoiding one HTTP request per failed site during
 large outage waves. Light checks (`HEAD` + `legacy`, `GET` + `simple_http`) use
-a larger coalescing cap than `GET` + `full` checks and auto-scale their
-in-flight gate with CPU headroom. The gate remains bounded so a regional outage
-does not become an unbounded RPC flood, but it is large enough for cheap
-reachability checks to keep the Veriflier executor busy on larger hosts. The
-full/body-reading lane remains more conservative because those requests are
-more likely to pin response bodies and hold sockets longer. The light and full
-lanes have independent gates so a slow body-reading batch does not block cheap
-reachability checks during a mixed rollout. Explicit `CheckBatch` callers still
-send their supplied batch as-is.
+a larger coalescing cap than `GET` + `full` checks, but the cap remains modest
+so otherwise-fast checks are not held behind a rare slow request in the same
+RPC at rollout-scale rates. The light and full lanes also have independent
+in-flight gates so a slow body-reading batch does not block cheap reachability
+checks during a mixed rollout. Explicit `CheckBatch` callers still send their
+supplied batch as-is.
 
 The v2 batch deadline is treated as a soft server-side deadline with client
 response headroom. If the deadline is reached after work has been accepted, the
