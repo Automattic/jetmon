@@ -38,10 +38,14 @@ var (
 	singleCheckBatchMaxDelay             = 2 * time.Millisecond
 	singleCheckBatchDeadlineReserve      = 250 * time.Millisecond
 	singleCheckLargeBatchDeadlineReserve = time.Second
-	singleCheckLightBatchMaxFlight       = 32
-	singleCheckFullBatchMaxFlight        = 32
-	singleCheckBatchQueueSize            = 32768
-	singleCheckFullBatchQueueSize        = 32768
+	// These are batch-flight caps, not check caps. At multi-million-check flood
+	// rates most elapsed time is remote probe I/O, so allowing more batches in
+	// flight keeps the Veriflier executor fed without changing alert semantics:
+	// deadline/overload pressure still returns agent_overloaded non-votes.
+	singleCheckLightBatchMaxFlight = 96
+	singleCheckFullBatchMaxFlight  = 64
+	singleCheckBatchQueueSize      = 32768
+	singleCheckFullBatchQueueSize  = 32768
 )
 
 var (
