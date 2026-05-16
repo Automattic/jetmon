@@ -30,7 +30,7 @@ type VeriflierClient struct {
 }
 
 var (
-	singleCheckBatchMaxSize              = 512
+	singleCheckBatchMaxSize              = 384
 	singleCheckFullBatchMaxSize          = 64
 	singleCheckBatchMaxDelay             = 2 * time.Millisecond
 	singleCheckBatchDeadlineReserve      = 250 * time.Millisecond

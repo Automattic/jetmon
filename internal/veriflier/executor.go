@@ -110,19 +110,12 @@ func (e *Executor) ExecuteBatch(ctx context.Context, reqs []CheckRequest) ([]Pro
 		}
 	}
 
-	batchCtx, batchCancel := context.WithCancel(ctx)
-	stopShutdownCancel := context.AfterFunc(e.ctx, batchCancel)
-	defer func() {
-		stopShutdownCancel()
-		batchCancel()
-	}()
-
 	results := make([]ProbeResult, len(reqs))
 	resultCh := make(chan execResult, len(reqs))
 	for i, req := range reqs {
 		results[i] = timeoutProbeResult(req)
 		job := execJob{
-			ctx:    batchCtx,
+			ctx:    ctx,
 			index:  i,
 			req:    req,
 			result: resultCh,
@@ -146,7 +139,6 @@ func (e *Executor) ExecuteBatch(ctx context.Context, reqs []CheckRequest) ([]Pro
 		case <-e.ctx.Done():
 			return nil, e.ctx.Err()
 		case <-ctx.Done():
-			batchCancel()
 			drainReadyResults(results, resultCh)
 			return results, nil
 		case res := <-resultCh:
@@ -208,7 +200,11 @@ func (e *Executor) worker(ctx context.Context) {
 			return
 		case job := <-e.jobs:
 			e.active.Add(1)
-			res := e.checkFn(job.ctx, job.req)
+			jobCtx, cancel := context.WithCancel(job.ctx)
+			stopShutdownCancel := context.AfterFunc(ctx, cancel)
+			res := e.checkFn(jobCtx, job.req)
+			stopShutdownCancel()
+			cancel()
 			if res.RequestID == "" {
 				res.RequestID = job.req.RequestID
 			}

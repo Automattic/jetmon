@@ -3,7 +3,6 @@ package veriflier
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -218,46 +217,5 @@ func TestExecutorShutdownCancelsInFlightBatch(t *testing.T) {
 	exec.Shutdown()
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("ExecuteBatch() error = %v, want context.Canceled", err)
-	}
-}
-
-func BenchmarkExecutorFastChecks(b *testing.B) {
-	for _, batchSize := range []int{64, 512} {
-		b.Run(fmt.Sprintf("batch-%d", batchSize), func(b *testing.B) {
-			exec := NewExecutor(func(_ context.Context, req CheckRequest) ProbeResult {
-				return ProbeResult{
-					CheckResult: CheckResult{
-						BlogID:    req.BlogID,
-						URL:       req.URL,
-						RequestID: req.RequestID,
-						Success:   true,
-						HTTPCode:  200,
-					},
-					Outcome: OutcomeUp,
-				}
-			}, 256, 1024)
-			defer exec.Shutdown()
-
-			reqs := make([]CheckRequest, batchSize)
-			for i := range reqs {
-				reqs[i] = CheckRequest{
-					BlogID:    int64(i + 1),
-					URL:       "http://example.test/",
-					RequestID: fmt.Sprintf("req-%d", i),
-				}
-			}
-
-			b.ReportAllocs()
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				results, err := exec.ExecuteBatch(context.Background(), reqs)
-				if err != nil {
-					b.Fatalf("ExecuteBatch() error = %v", err)
-				}
-				if len(results) != len(reqs) {
-					b.Fatalf("results len = %d, want %d", len(results), len(reqs))
-				}
-			}
-		})
 	}
 }
