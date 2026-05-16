@@ -218,14 +218,14 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusGatewayTimeout)
 		return
 	}
-	results := make([]CheckResult, 0, len(probeResults))
-	for _, probeResult := range probeResults {
+	results := make([]CheckResult, len(probeResults))
+	for i, probeResult := range probeResults {
 		res := probeResult.CheckResult
 		res.Host = s.hostname
 		if res.RequestID == "" {
 			res.RequestID = probeResult.RequestID
 		}
-		results = append(results, res)
+		results[i] = res
 	}
 
 	incrementMetric("verifier.checks.received.count", len(req.Sites))
@@ -278,14 +278,14 @@ func (s *Server) handleV2Check(w http.ResponseWriter, r *http.Request) {
 		defer cancel()
 	}
 
-	legacyReqs := make([]CheckRequest, 0, len(req.Requests))
-	for _, site := range req.Requests {
+	legacyReqs := make([]CheckRequest, len(req.Requests))
+	for i, site := range req.Requests {
 		legacyReq, err := v2RequestToLegacy(site)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		legacyReqs = append(legacyReqs, legacyReq)
+		legacyReqs[i] = legacyReq
 	}
 
 	probeResults, err := s.executor.ExecuteBatch(ctx, legacyReqs)
@@ -299,9 +299,9 @@ func (s *Server) handleV2Check(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	results := make([]CheckV2Result, 0, len(probeResults))
-	for _, probeResult := range probeResults {
-		results = append(results, s.v2Result(probeResult))
+	results := make([]CheckV2Result, len(probeResults))
+	for i, probeResult := range probeResults {
+		results[i] = s.v2Result(probeResult)
 	}
 
 	incrementMetric("verifier.checks.received.count", len(req.Requests))

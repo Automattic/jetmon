@@ -452,7 +452,7 @@ func (c *VeriflierClient) checkBatchV2(ctx context.Context, reqs []CheckRequest)
 		return nil, fmt.Errorf("decode veriflier v2 response: %w", err)
 	}
 
-	results := make([]CheckResult, 0, len(br.Results))
+	results := make([]CheckResult, len(br.Results))
 	var reqByRequestID map[string]CheckRequest
 	for i, res := range br.Results {
 		var orig CheckRequest
@@ -488,7 +488,7 @@ func (c *VeriflierClient) checkBatchV2(ctx context.Context, reqs []CheckRequest)
 		if agentID == "" {
 			agentID = br.Agent.ID
 		}
-		results = append(results, CheckResult{
+		results[i] = CheckResult{
 			MonitorSiteID: orig.MonitorSiteID,
 			BlogID:        blogID,
 			URL:           url,
@@ -501,7 +501,7 @@ func (c *VeriflierClient) checkBatchV2(ctx context.Context, reqs []CheckRequest)
 			ErrorCode:     res.ErrorCode,
 			RTTMs:         res.RTTMs,
 			RequestID:     requestID,
-		})
+		}
 	}
 	return results, nil
 }
