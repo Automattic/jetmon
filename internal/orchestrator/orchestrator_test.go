@@ -1106,6 +1106,74 @@ func TestHandleFailureBacksOffVerifierAfterOperationalNonVotes(t *testing.T) {
 	}
 }
 
+func TestHandleFailureSkipsVerifierDuringOperationalCooldown(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+
+	cfg := setTestConfig(t)
+	cfg.NumOfChecks = 1
+	cfg.PeerOfflineLimit = 1
+
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+
+	now := time.Date(2026, 5, 16, 12, 30, 0, 0, time.UTC)
+	nowFunc = func() time.Time { return now }
+
+	var calls atomic.Int64
+	veriflierCheckFunc = func(c *veriflier.VeriflierClient, _ context.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
+		calls.Add(1)
+		return &veriflier.CheckResult{
+			BlogID:    req.BlogID,
+			Host:      c.Addr(),
+			Success:   false,
+			ErrorCode: 1,
+			Outcome:   veriflier.OutcomeAgentOverloaded,
+			RequestID: req.RequestID,
+		}, nil
+	}
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		ctx:      context.Background(),
+		hostname: "local-host",
+		veriflierClients: []*veriflier.VeriflierClient{
+			veriflier.NewVeriflierClient("v1", ""),
+		},
+	}
+	failureAt := func(blogID int64) checker.Result {
+		res := checkerResultFailure(blogID)
+		res.Timestamp = now
+		return res
+	}
+
+	o.handleFailure(db.Site{BlogID: 660, MonitorURL: "https://example.com/a", CheckInterval: 1, SiteStatus: statusRunning}, failureAt(660))
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("verifier calls after first operational non-vote = %d, want 1", got)
+	}
+
+	o.handleFailure(db.Site{BlogID: 661, MonitorURL: "https://example.com/b", CheckInterval: 1, SiteStatus: statusRunning}, failureAt(661))
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("verifier calls while verifier is in cooldown = %d, want still 1", got)
+	}
+	if got := rec.counter("detection.verifier.cooldown_skipped.count"); got != 1 {
+		t.Fatalf("cooldown skipped counter = %d, want 1", got)
+	}
+	if got := rec.counter("detection.verifier.deferred.count"); got != 2 {
+		t.Fatalf("deferred counter = %d, want 2", got)
+	}
+	if entry := o.retries.get(661); entry == nil || entry.verifierDeferrals != 1 || entry.verifierDeferredUntil.IsZero() {
+		t.Fatalf("second retry entry = %+v, want verifier deferral without an RPC", entry)
+	}
+
+	now = now.Add(verifierOperationalCooldownBase + time.Second)
+	o.handleFailure(db.Site{BlogID: 662, MonitorURL: "https://example.com/c", CheckInterval: 1, SiteStatus: statusRunning}, failureAt(662))
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("verifier calls after cooldown expires = %d, want 2", got)
+	}
+}
+
 func TestVerifierOperationalBackoffBoundsToSiteIntervalAndCap(t *testing.T) {
 	setTestConfig(t)
 
