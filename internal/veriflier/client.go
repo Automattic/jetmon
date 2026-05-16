@@ -30,7 +30,7 @@ type VeriflierClient struct {
 }
 
 var (
-	singleCheckBatchMaxSize              = 384
+	singleCheckBatchMaxSize              = 512
 	singleCheckFullBatchMaxSize          = 64
 	singleCheckBatchMaxDelay             = 2 * time.Millisecond
 	singleCheckBatchDeadlineReserve      = 250 * time.Millisecond
@@ -143,7 +143,8 @@ type singleCheckResponse struct {
 
 type singleCheckBatcher struct {
 	client        *VeriflierClient
-	lightIn       chan singleCheckCall
+	headIn        chan singleCheckCall
+	simpleIn      chan singleCheckCall
 	fullIn        chan singleCheckCall
 	lightInFlight chan struct{}
 	fullInFlight  chan struct{}
@@ -152,20 +153,27 @@ type singleCheckBatcher struct {
 func newSingleCheckBatcher(client *VeriflierClient) *singleCheckBatcher {
 	b := &singleCheckBatcher{
 		client:        client,
-		lightIn:       make(chan singleCheckCall, singleCheckBatchQueueSize),
+		headIn:        make(chan singleCheckCall, singleCheckBatchQueueSize),
+		simpleIn:      make(chan singleCheckCall, singleCheckBatchQueueSize),
 		fullIn:        make(chan singleCheckCall, singleCheckFullBatchQueueSize),
 		lightInFlight: make(chan struct{}, singleCheckLightBatchMaxFlight),
 		fullInFlight:  make(chan struct{}, singleCheckFullBatchMaxFlight),
 	}
-	go b.run(b.lightIn, singleCheckBatchMaxSize, b.lightInFlight)
+	go b.run(b.headIn, singleCheckBatchMaxSize, b.lightInFlight)
+	go b.run(b.simpleIn, singleCheckBatchMaxSize, b.lightInFlight)
 	go b.run(b.fullIn, singleCheckFullBatchMaxSize, b.fullInFlight)
 	return b
 }
 
 func (b *singleCheckBatcher) submit(ctx context.Context, call singleCheckCall) error {
-	in := b.lightIn
-	if usesFullDetectionWork(call.req) {
+	var in chan singleCheckCall
+	switch {
+	case usesFullDetectionWork(call.req):
 		in = b.fullIn
+	case usesHEADProbe(call.req):
+		in = b.headIn
+	default:
+		in = b.simpleIn
 	}
 	select {
 	case in <- call:
@@ -215,6 +223,14 @@ func usesFullDetectionWork(req CheckRequest) bool {
 		profile = checkmode.ProfileFull
 	}
 	return checkmode.EffectiveProfile(method, profile) == checkmode.ProfileFull
+}
+
+func usesHEADProbe(req CheckRequest) bool {
+	method, err := checkmode.NormalizeMethod(req.Method, checkmode.MethodGET)
+	if err != nil {
+		method = checkmode.MethodGET
+	}
+	return method == checkmode.MethodHEAD
 }
 
 func (b *singleCheckBatcher) flush(batch []singleCheckCall) {
