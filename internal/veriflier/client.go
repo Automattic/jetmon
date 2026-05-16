@@ -256,8 +256,10 @@ func pruneExpiredSingleCheckCalls(calls []singleCheckCall) []singleCheckCall {
 		if err := call.ctx.Err(); err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
 				call.respond(agentOverloadedCheckResult(call.req), nil)
+				incrementMetric("verifier.client.batch.expired_while_waiting.count", 1)
 			} else {
 				call.respond(nil, err)
+				incrementMetric("verifier.client.batch.canceled_while_waiting.count", 1)
 			}
 			continue
 		}
