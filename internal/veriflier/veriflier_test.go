@@ -532,6 +532,40 @@ func TestClientCheckCoalescesConcurrentSingles(t *testing.T) {
 	}
 }
 
+func TestClientCheckReturnsAgentOverloadedOnDeadlinePressure(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/check" {
+			http.NotFound(w, r)
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(CheckV2BatchResponse{Results: []CheckV2Result{{
+			RequestID: "late",
+			BlogID:    1,
+			URL:       "https://example.com",
+			VantageID: "test-vantage",
+			AgentID:   "test-agent",
+			Outcome:   OutcomeUp,
+			Success:   true,
+			HTTPCode:  200,
+		}}})
+	}))
+	defer ts.Close()
+
+	client := NewVeriflierClient(ts.Listener.Addr().String(), "secret")
+	client.setProtocol(ProtocolV2)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	res, err := client.Check(ctx, CheckRequest{BlogID: 1, URL: "https://example.com"})
+	if err != nil {
+		t.Fatalf("Check() error = %v", err)
+	}
+	if res == nil || res.Outcome != OutcomeAgentOverloaded || res.Success {
+		t.Fatalf("result = %+v, want agent_overloaded non-success", res)
+	}
+}
+
 func TestClientCheckUsesSmallerBatchesForFullDetectionWork(t *testing.T) {
 	origDelay := singleCheckBatchMaxDelay
 	origLightMax := singleCheckBatchMaxSize

@@ -91,12 +91,18 @@ func (c *VeriflierClient) Check(ctx context.Context, req CheckRequest) (*CheckRe
 		resp: make(chan singleCheckResponse, 1),
 	}
 	if err := c.singleChecks().submit(ctx, call); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return agentOverloadedCheckResult(req), nil
+		}
 		return nil, err
 	}
 	select {
 	case resp := <-call.resp:
 		return resp.result, resp.err
 	case <-ctx.Done():
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return agentOverloadedCheckResult(req), nil
+		}
 		return nil, ctx.Err()
 	}
 }
@@ -223,7 +229,11 @@ func (b *singleCheckBatcher) flush(batch []singleCheckCall) {
 	var latestDeadline time.Time
 	for _, call := range batch {
 		if err := call.ctx.Err(); err != nil {
-			call.respond(nil, err)
+			if errors.Is(err, context.DeadlineExceeded) {
+				call.respond(agentOverloadedCheckResult(call.req), nil)
+			} else {
+				call.respond(nil, err)
+			}
 			continue
 		}
 		if call.req.RequestID == "" {
@@ -252,7 +262,11 @@ func (b *singleCheckBatcher) flush(batch []singleCheckCall) {
 	cancel()
 	if err != nil {
 		for _, call := range calls {
-			call.respond(nil, err)
+			if errors.Is(err, context.DeadlineExceeded) {
+				call.respond(agentOverloadedCheckResult(call.req), nil)
+			} else {
+				call.respond(nil, err)
+			}
 		}
 		return
 	}
@@ -280,6 +294,18 @@ func (c singleCheckCall) respond(result *CheckResult, err error) {
 	select {
 	case c.resp <- singleCheckResponse{result: result, err: err}:
 	default:
+	}
+}
+
+func agentOverloadedCheckResult(req CheckRequest) *CheckResult {
+	return &CheckResult{
+		MonitorSiteID: req.MonitorSiteID,
+		BlogID:        req.BlogID,
+		URL:           req.URL,
+		Outcome:       OutcomeAgentOverloaded,
+		Success:       false,
+		ErrorCode:     1,
+		RequestID:     req.RequestID,
 	}
 }
 
