@@ -38,10 +38,14 @@ var (
 	singleCheckBatchMaxDelay             = 2 * time.Millisecond
 	singleCheckBatchDeadlineReserve      = 250 * time.Millisecond
 	singleCheckLargeBatchDeadlineReserve = time.Second
-	singleCheckLightBatchMaxFlight       = 32
-	singleCheckFullBatchMaxFlight        = 32
-	singleCheckBatchQueueSize            = 32768
-	singleCheckFullBatchQueueSize        = 32768
+	// Keep more light batches in flight than full-detection batches so flood
+	// recovery can use warm HTTP connections without letting expensive probes
+	// monopolize the Veriflier. The server still performs admission control and
+	// returns agent_overloaded non-votes when it cannot meet a request deadline.
+	singleCheckLightBatchMaxFlight = 96
+	singleCheckFullBatchMaxFlight  = 64
+	singleCheckBatchQueueSize      = 32768
+	singleCheckFullBatchQueueSize  = 32768
 )
 
 var (
