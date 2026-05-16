@@ -318,7 +318,7 @@ func TestClientBatchSendsServerDeadlineWithReserve(t *testing.T) {
 	}
 }
 
-func TestClientBatchUsesLargerDeadlineReserveForLargeBatches(t *testing.T) {
+func TestClientBatchUsesLargerDeadlineReserveForLightBatches(t *testing.T) {
 	origReserve := singleCheckBatchDeadlineReserve
 	origLargeReserve := singleCheckLargeBatchDeadlineReserve
 	singleCheckBatchDeadlineReserve = 250 * time.Millisecond
@@ -361,7 +361,12 @@ func TestClientBatchUsesLargerDeadlineReserveForLargeBatches(t *testing.T) {
 
 	reqs := make([]CheckRequest, singleCheckFullBatchMaxSize+1)
 	for i := range reqs {
-		reqs[i] = CheckRequest{BlogID: int64(i + 1), URL: "https://example.com"}
+		reqs[i] = CheckRequest{
+			BlogID:           int64(i + 1),
+			URL:              "https://example.com",
+			Method:           http.MethodHead,
+			DetectionProfile: "legacy",
+		}
 	}
 	client := NewVeriflierClient(ts.Listener.Addr().String(), "secret")
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -376,6 +381,72 @@ func TestClientBatchUsesLargerDeadlineReserveForLargeBatches(t *testing.T) {
 	}
 	if got < 1900 {
 		t.Fatalf("DeadlineMS = %d, want reserve without excessive deadline loss", got)
+	}
+}
+
+func TestClientBatchKeepsSmallDeadlineReserveForFullBatches(t *testing.T) {
+	origReserve := singleCheckBatchDeadlineReserve
+	origLargeReserve := singleCheckLargeBatchDeadlineReserve
+	singleCheckBatchDeadlineReserve = 250 * time.Millisecond
+	singleCheckLargeBatchDeadlineReserve = time.Second
+	defer func() {
+		singleCheckBatchDeadlineReserve = origReserve
+		singleCheckLargeBatchDeadlineReserve = origLargeReserve
+	}()
+
+	var gotDeadline atomic.Int64
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/check" {
+			http.NotFound(w, r)
+			return
+		}
+		var req CheckV2BatchRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		gotDeadline.Store(req.DeadlineMS)
+		results := make([]CheckV2Result, 0, len(req.Requests))
+		for _, check := range req.Requests {
+			results = append(results, CheckV2Result{
+				RequestID: check.RequestID,
+				BlogID:    check.BlogID,
+				URL:       check.URL,
+				VantageID: "test-vantage",
+				AgentID:   "test-agent",
+				Outcome:   OutcomeUp,
+				Success:   true,
+				HTTPCode:  200,
+			})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(CheckV2BatchResponse{Results: results})
+	}))
+	defer ts.Close()
+
+	reqs := make([]CheckRequest, singleCheckFullBatchMaxSize+1)
+	for i := range reqs {
+		reqs[i] = CheckRequest{
+			BlogID:           int64(i + 1),
+			URL:              "https://example.com",
+			Method:           http.MethodGet,
+			DetectionProfile: "full",
+		}
+	}
+	client := NewVeriflierClient(ts.Listener.Addr().String(), "secret")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if _, err := client.CheckBatch(ctx, reqs); err != nil {
+		t.Fatalf("CheckBatch() error = %v", err)
+	}
+
+	got := gotDeadline.Load()
+	if got < 2600 {
+		t.Fatalf("DeadlineMS = %d, want small reserve for full batch", got)
+	}
+	if got >= 3000 {
+		t.Fatalf("DeadlineMS = %d, want less than caller deadline", got)
 	}
 }
 
