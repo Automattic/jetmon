@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -12,26 +13,51 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"time"
+
+	"github.com/Automattic/jetmon/internal/checkmode"
 )
 
 // VeriflierClient sends check batches to a remote Veriflier over the v2
 // production JSON-over-HTTP transport.
 type VeriflierClient struct {
-	addr       string
-	authToken  string
-	httpClient *http.Client
-	mu         sync.RWMutex
-	protocol   string
+	addr          string
+	authToken     string
+	httpClient    *http.Client
+	mu            sync.RWMutex
+	protocol      string
+	singleOnce    sync.Once
+	singleBatcher *singleCheckBatcher
 }
+
+var (
+	singleCheckBatchMaxSize              = 128
+	singleCheckFullBatchMaxSize          = 64
+	singleCheckBatchMaxDelay             = 2 * time.Millisecond
+	singleCheckBatchDeadlineReserve      = 250 * time.Millisecond
+	singleCheckLargeBatchDeadlineReserve = time.Second
+	singleCheckBatchFlightWaitPoll       = 5 * time.Millisecond
+	singleCheckLightBatchMaxFlight       = 32
+	singleCheckFullBatchMaxFlight        = 32
+	singleCheckBatchQueueSize            = 32768
+	singleCheckFullBatchQueueSize        = 32768
+)
+
+var (
+	requestIDPrefix  = newRequestIDPrefix()
+	requestIDCounter atomic.Uint64
+)
 
 // NewVeriflierClient creates a client targeting the given address (host:port).
 //
 // The HTTP transport is tuned for the orchestrator's hot-path use: many
 // short-lived RPCs to the same verifier host during outage waves. Default
 // MaxIdleConnsPerHost=2 forces frequent reconnects under any concurrency above
-// 2; we raise it so the orchestrator's per-verifier escalation goroutines
-// reuse a small pool of warm connections.
+// 2; we raise it so the orchestrator's per-verifier escalation goroutines can
+// reuse warm connections even when client-side batches are intentionally kept
+// smaller to limit head-of-line blocking during flood tests.
 //
 // No client-level Timeout is set. Per-call deadlines come from the caller's
 // context (the orchestrator wraps each escalation with NET_COMMS_TIMEOUT +
@@ -45,8 +71,8 @@ func NewVeriflierClient(addr, authToken string) *VeriflierClient {
 			Timeout:   5 * time.Second,
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
-		MaxIdleConns:          100,
-		MaxIdleConnsPerHost:   20,
+		MaxIdleConns:          4096,
+		MaxIdleConnsPerHost:   1024,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   5 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
@@ -69,14 +95,26 @@ func (c *VeriflierClient) Check(ctx context.Context, req CheckRequest) (*CheckRe
 	if req.RequestID == "" {
 		req.RequestID = NewRequestID()
 	}
-	results, err := c.CheckBatch(ctx, []CheckRequest{req})
-	if err != nil {
+	call := singleCheckCall{
+		ctx:  ctx,
+		req:  req,
+		resp: make(chan singleCheckResponse, 1),
+	}
+	if err := c.singleChecks().submit(ctx, call); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return agentOverloadedCheckResult(req), nil
+		}
 		return nil, err
 	}
-	if len(results) == 0 {
-		return nil, fmt.Errorf("veriflier returned no results")
+	select {
+	case resp := <-call.resp:
+		return resp.result, resp.err
+	case <-ctx.Done():
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return agentOverloadedCheckResult(req), nil
+		}
+		return nil, ctx.Err()
 	}
-	return &results[0], nil
 }
 
 // CheckBatch sends multiple check requests to the Veriflier. Each request
@@ -99,6 +137,271 @@ func (c *VeriflierClient) CheckBatch(ctx context.Context, reqs []CheckRequest) (
 		c.setProtocol(ProtocolLegacy)
 		return c.checkBatchLegacy(ctx, reqs)
 	}
+}
+
+func (c *VeriflierClient) singleChecks() *singleCheckBatcher {
+	c.singleOnce.Do(func() {
+		c.singleBatcher = newSingleCheckBatcher(c)
+	})
+	return c.singleBatcher
+}
+
+type singleCheckCall struct {
+	ctx  context.Context
+	req  CheckRequest
+	resp chan singleCheckResponse
+}
+
+type singleCheckResponse struct {
+	result *CheckResult
+	err    error
+}
+
+type singleCheckBatcher struct {
+	client        *VeriflierClient
+	lightIn       chan singleCheckCall
+	fullIn        chan singleCheckCall
+	lightInFlight chan struct{}
+	fullInFlight  chan struct{}
+}
+
+func newSingleCheckBatcher(client *VeriflierClient) *singleCheckBatcher {
+	b := &singleCheckBatcher{
+		client:        client,
+		lightIn:       make(chan singleCheckCall, singleCheckBatchQueueSize),
+		fullIn:        make(chan singleCheckCall, singleCheckFullBatchQueueSize),
+		lightInFlight: make(chan struct{}, singleCheckLightBatchMaxFlight),
+		fullInFlight:  make(chan struct{}, singleCheckFullBatchMaxFlight),
+	}
+	go b.run(b.lightIn, singleCheckBatchMaxSize, b.lightInFlight)
+	go b.run(b.fullIn, singleCheckFullBatchMaxSize, b.fullInFlight)
+	return b
+}
+
+func (b *singleCheckBatcher) submit(ctx context.Context, call singleCheckCall) error {
+	in := b.lightIn
+	if usesFullDetectionWork(call.req) {
+		in = b.fullIn
+	}
+	select {
+	case in <- call:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (b *singleCheckBatcher) run(in <-chan singleCheckCall, maxBatchSize int, inFlight chan struct{}) {
+	if maxBatchSize <= 0 {
+		maxBatchSize = 1
+	}
+	if inFlight == nil {
+		inFlight = make(chan struct{}, 1)
+	}
+	for first := range in {
+		batch := []singleCheckCall{first}
+		timer := time.NewTimer(singleCheckBatchMaxDelay)
+		collecting := true
+		for collecting && len(batch) < maxBatchSize {
+			select {
+			case call := <-in:
+				batch = append(batch, call)
+			case <-timer.C:
+				collecting = false
+			}
+		}
+		if !timer.Stop() && collecting {
+			<-timer.C
+		}
+		var acquired bool
+		batch, acquired = waitForSingleCheckFlight(batch, inFlight)
+		if !acquired {
+			continue
+		}
+		go func() {
+			defer func() { <-inFlight }()
+			b.flush(batch)
+		}()
+	}
+}
+
+func waitForSingleCheckFlight(batch []singleCheckCall, inFlight chan struct{}) ([]singleCheckCall, bool) {
+	batch = pruneExpiredSingleCheckCalls(batch)
+	if len(batch) == 0 {
+		return nil, false
+	}
+	ticker := time.NewTicker(singleCheckBatchFlightWaitPoll)
+	defer ticker.Stop()
+	for {
+		select {
+		case inFlight <- struct{}{}:
+			batch = pruneExpiredSingleCheckCalls(batch)
+			if len(batch) == 0 {
+				<-inFlight
+				return nil, false
+			}
+			return batch, true
+		case <-ticker.C:
+			batch = pruneExpiredSingleCheckCalls(batch)
+			if len(batch) == 0 {
+				return nil, false
+			}
+		}
+	}
+}
+
+func pruneExpiredSingleCheckCalls(calls []singleCheckCall) []singleCheckCall {
+	kept := calls[:0]
+	for _, call := range calls {
+		if err := call.ctx.Err(); err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				call.respond(agentOverloadedCheckResult(call.req), nil)
+				incrementMetric("verifier.client.batch.expired_while_waiting.count", 1)
+			} else {
+				call.respond(nil, err)
+				incrementMetric("verifier.client.batch.canceled_while_waiting.count", 1)
+			}
+			continue
+		}
+		kept = append(kept, call)
+	}
+	return kept
+}
+
+func usesFullDetectionWork(req CheckRequest) bool {
+	method, err := checkmode.NormalizeMethod(req.Method, checkmode.MethodGET)
+	if err != nil {
+		method = checkmode.MethodGET
+	}
+	profile, err := checkmode.NormalizeProfile(req.DetectionProfile, checkmode.ProfileFull)
+	if err != nil {
+		profile = checkmode.ProfileFull
+	}
+	return checkmode.EffectiveProfile(method, profile) == checkmode.ProfileFull
+}
+
+func (b *singleCheckBatcher) flush(batch []singleCheckCall) {
+	reqs := make([]CheckRequest, 0, len(batch))
+	calls := make([]singleCheckCall, 0, len(batch))
+	var latestDeadline time.Time
+	for _, call := range batch {
+		if err := call.ctx.Err(); err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				call.respond(agentOverloadedCheckResult(call.req), nil)
+			} else {
+				call.respond(nil, err)
+			}
+			continue
+		}
+		if call.req.RequestID == "" {
+			call.req.RequestID = NewRequestID()
+		}
+		if deadline, ok := call.ctx.Deadline(); ok {
+			if latestDeadline.IsZero() || deadline.After(latestDeadline) {
+				latestDeadline = deadline
+			}
+		}
+		reqs = append(reqs, call.req)
+		calls = append(calls, call)
+	}
+	if len(reqs) == 0 {
+		return
+	}
+
+	ctx := context.Background()
+	var cancel context.CancelFunc
+	if !latestDeadline.IsZero() {
+		ctx, cancel = context.WithDeadline(ctx, latestDeadline)
+	} else {
+		ctx, cancel = context.WithCancel(ctx)
+	}
+	results, err := b.client.CheckBatch(ctx, reqs)
+	cancel()
+	if err != nil {
+		for _, call := range calls {
+			if operationalOverloadError(err) {
+				call.respond(agentOverloadedCheckResult(call.req), nil)
+			} else {
+				call.respond(nil, err)
+			}
+		}
+		return
+	}
+
+	if len(results) == len(calls) && resultsMatchCallOrder(results, calls) {
+		for i, call := range calls {
+			result := results[i]
+			call.respond(&result, nil)
+		}
+		return
+	}
+
+	resultsByRequestID := checkResultsByRequestID(results)
+	for i, call := range calls {
+		result, ok := resultsByRequestID[call.req.RequestID]
+		if !ok {
+			if i >= len(results) {
+				call.respond(nil, fmt.Errorf("veriflier returned %d results for %d requests", len(results), len(calls)))
+				continue
+			}
+			result = results[i]
+		}
+		call.respond(&result, nil)
+	}
+}
+
+func resultsMatchCallOrder(results []CheckResult, calls []singleCheckCall) bool {
+	if len(results) != len(calls) {
+		return false
+	}
+	for i := range results {
+		if results[i].RequestID != "" && results[i].RequestID != calls[i].req.RequestID {
+			return false
+		}
+	}
+	return true
+}
+
+func checkResultsByRequestID(results []CheckResult) map[string]CheckResult {
+	out := make(map[string]CheckResult, len(results))
+	for _, result := range results {
+		if result.RequestID != "" {
+			out[result.RequestID] = result
+		}
+	}
+	return out
+}
+
+func (c singleCheckCall) respond(result *CheckResult, err error) {
+	select {
+	case c.resp <- singleCheckResponse{result: result, err: err}:
+	default:
+	}
+}
+
+func agentOverloadedCheckResult(req CheckRequest) *CheckResult {
+	return &CheckResult{
+		MonitorSiteID: req.MonitorSiteID,
+		BlogID:        req.BlogID,
+		URL:           req.URL,
+		Outcome:       OutcomeAgentOverloaded,
+		Success:       false,
+		ErrorCode:     1,
+		RequestID:     req.RequestID,
+	}
+}
+
+func operationalOverloadError(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var transportErr v2TransportError
+	if errors.As(err, &transportErr) {
+		return errors.Is(transportErr.err, io.EOF) ||
+			errors.Is(transportErr.err, io.ErrUnexpectedEOF) ||
+			errors.Is(transportErr.err, syscall.ECONNRESET)
+	}
+	return false
 }
 
 func (c *VeriflierClient) checkBatchLegacy(ctx context.Context, reqs []CheckRequest) ([]CheckResult, error) {
@@ -151,12 +454,10 @@ func (c *VeriflierClient) checkBatchV2(ctx context.Context, reqs []CheckRequest)
 	}
 
 	v2Reqs := make([]CheckV2Request, len(reqs))
-	reqByRequestID := make(map[string]CheckRequest, len(reqs))
 	for i := range reqs {
 		if reqs[i].RequestID == "" {
 			reqs[i].RequestID = NewRequestID()
 		}
-		reqByRequestID[reqs[i].RequestID] = reqs[i]
 		v2Reqs[i] = legacyRequestToV2(reqs[i])
 	}
 	batchReq := CheckV2BatchRequest{
@@ -165,7 +466,14 @@ func (c *VeriflierClient) checkBatchV2(ctx context.Context, reqs []CheckRequest)
 	}
 	if deadline, ok := ctx.Deadline(); ok {
 		if remaining := time.Until(deadline); remaining > 0 {
-			batchReq.DeadlineMS = remaining.Milliseconds()
+			serverRemaining := remaining
+			if reserve := checkBatchDeadlineReserve(reqs); remaining > reserve {
+				serverRemaining = remaining - reserve
+			}
+			if serverRemaining < time.Millisecond {
+				serverRemaining = time.Millisecond
+			}
+			batchReq.DeadlineMS = serverRemaining.Milliseconds()
 		}
 	}
 	body, err := json.Marshal(batchReq)
@@ -195,11 +503,22 @@ func (c *VeriflierClient) checkBatchV2(ctx context.Context, reqs []CheckRequest)
 	if err := json.NewDecoder(resp.Body).Decode(&br); err != nil {
 		return nil, fmt.Errorf("decode veriflier v2 response: %w", err)
 	}
+
 	results := make([]CheckResult, 0, len(br.Results))
+	var reqByRequestID map[string]CheckRequest
 	for i, res := range br.Results {
-		orig := reqByRequestID[res.RequestID]
-		if orig.MonitorSiteID == 0 && i < len(reqs) {
+		var orig CheckRequest
+		if i < len(reqs) && (res.RequestID == "" || res.RequestID == reqs[i].RequestID) {
 			orig = reqs[i]
+		} else {
+			if reqByRequestID == nil {
+				reqByRequestID = checkRequestsByRequestID(reqs)
+			}
+			var ok bool
+			orig, ok = reqByRequestID[res.RequestID]
+			if !ok && i < len(reqs) {
+				orig = reqs[i]
+			}
 		}
 		results = append(results, CheckResult{
 			MonitorSiteID: orig.MonitorSiteID,
@@ -217,6 +536,24 @@ func (c *VeriflierClient) checkBatchV2(ctx context.Context, reqs []CheckRequest)
 		})
 	}
 	return results, nil
+}
+
+func checkRequestsByRequestID(reqs []CheckRequest) map[string]CheckRequest {
+	out := make(map[string]CheckRequest, len(reqs))
+	for _, req := range reqs {
+		if req.RequestID != "" {
+			out[req.RequestID] = req
+		}
+	}
+	return out
+}
+
+func checkBatchDeadlineReserve(_ []CheckRequest) time.Duration {
+	reserve := singleCheckBatchDeadlineReserve
+	if singleCheckLargeBatchDeadlineReserve > reserve {
+		reserve = singleCheckLargeBatchDeadlineReserve
+	}
+	return reserve
 }
 
 // Ping checks whether the Veriflier is reachable and returns its version.
@@ -285,17 +622,25 @@ func (c *VeriflierClient) statusV2(ctx context.Context) (*StatusV2Response, erro
 	return &s, nil
 }
 
-// NewRequestID returns a 16-byte random id, hex-encoded (32 chars). Used as
-// the RPC correlation id between Monitor and Verifier. Crypto/rand backed so
-// IDs are unpredictable; this isn't a security primitive but it's free.
+// NewRequestID returns a 16-byte correlation id, hex-encoded (32 chars). Used
+// as the RPC correlation id between Monitor and Verifier. It is not a security
+// token; use the bearer auth token for authorization. Keeping a random
+// per-process prefix plus an atomic counter avoids kernel randomness on every
+// hot-path check while preserving the existing 32-character hex shape.
 func NewRequestID() string {
 	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		// Fall back to a timestamp-based id; collisions are vanishingly
-		// unlikely at our request rates and the id is correlation-only.
-		return fmt.Sprintf("ts-%d", time.Now().UnixNano())
-	}
+	copy(b[:8], requestIDPrefix[:])
+	binary.BigEndian.PutUint64(b[8:], requestIDCounter.Add(1))
 	return hex.EncodeToString(b[:])
+}
+
+func newRequestIDPrefix() [8]byte {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err == nil {
+		return b
+	}
+	binary.BigEndian.PutUint64(b[:], uint64(time.Now().UnixNano()))
+	return b
 }
 
 func (c *VeriflierClient) cachedProtocol() string {

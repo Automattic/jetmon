@@ -6,9 +6,8 @@ package veriflier
 // CheckRequest is a single site to check, sent from Monitor to Veriflier.
 //
 // RequestID is a client-generated correlation id (16-byte hex). The verifier
-// echoes it back in the response and stamps it on its server-side log line so
-// that "the orchestrator escalated → this verifier observed → this audit row
-// in the monitor DB" can be reconstructed without timestamp matching.
+// echoes it back in the response so the monitor can join dispatch audit rows to
+// verifier results without timestamp matching.
 type CheckRequest struct {
 	MonitorSiteID       int64
 	BlogID              int64
@@ -80,6 +79,9 @@ type Capacity struct {
 	QueueDepth     int `json:"queue_depth"`
 	Active         int `json:"active"`
 	InFlight       int `json:"in_flight"`
+	Completed      int `json:"completed,omitempty"`
+	Rejected       int `json:"rejected,omitempty"`
+	AvgCheckMS     int `json:"avg_check_ms,omitempty"`
 }
 
 type StatusV2Response struct {

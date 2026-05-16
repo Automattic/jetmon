@@ -206,9 +206,6 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 		if req.Sites[i].RequestID == "" {
 			req.Sites[i].RequestID = NewRequestID()
 		}
-		// Echo RequestID so the orchestrator can correlate this reply with the
-		// audit row it wrote when escalating.
-		log.Printf("veriflier: check blog_id=%d request_id=%s url=%s", req.Sites[i].BlogID, req.Sites[i].RequestID, req.Sites[i].URL)
 	}
 
 	probeResults, err := s.executor.ExecuteBatch(r.Context(), req.Sites)
@@ -289,7 +286,6 @@ func (s *Server) handleV2Check(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		legacyReqs = append(legacyReqs, legacyReq)
-		log.Printf("veriflier: v2 check blog_id=%d request_id=%s url=%s", legacyReq.BlogID, legacyReq.RequestID, legacyReq.URL)
 	}
 
 	probeResults, err := s.executor.ExecuteBatch(ctx, legacyReqs)

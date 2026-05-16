@@ -64,6 +64,11 @@ const failedCheckRetryInterval = time.Minute
 const maxPostRecoveryTransientFailureWindow = 5 * time.Minute
 const minPostFalseAlarmTransientFailureWindow = 5 * time.Minute
 const maxPostFalseAlarmTransientFailureWindow = 10 * time.Minute
+const verifierOperationalBackoffBase = 15 * time.Second
+const verifierOperationalBackoffMax = 2 * time.Minute
+const verifierOperationalCooldownBase = 30 * time.Second
+const verifierOperationalCooldownMax = 2 * time.Minute
+const verifierOperationalCooldownMemory = 10 * time.Minute
 const wpcomPermanentFailureLogInterval = 10 * time.Second
 
 // VariableIntervalPollInterval returns the idle scheduler poll interval used
@@ -250,16 +255,18 @@ type siteCheckResult struct {
 
 // Orchestrator drives the main check loop.
 type Orchestrator struct {
-	pool             *checker.Pool
-	retries          *retryQueue
-	wpcom            *wpcom.Client
-	events           *eventstore.Store
-	veriflierClients []*veriflier.VeriflierClient
-	veriflierAddrs   []string // parallel slice of "addr|token" for change detection
-	veriflierMu      sync.RWMutex
-	hostname         string
-	bucketMin        int
-	bucketMax        int
+	pool                *checker.Pool
+	retries             *retryQueue
+	wpcom               *wpcom.Client
+	events              *eventstore.Store
+	veriflierClients    []*veriflier.VeriflierClient
+	veriflierAddrs      []string // parallel slice of "addr|token" for change detection
+	veriflierMu         sync.RWMutex
+	veriflierCooldownMu sync.Mutex
+	veriflierCooldowns  map[string]verifierCooldown
+	hostname            string
+	bucketMin           int
+	bucketMax           int
 
 	totalChecked int
 	roundStart   time.Time
@@ -1600,6 +1607,25 @@ func (o *Orchestrator) handleFailure(site db.Site, res checker.Result) bool {
 		return entry.eventID > 0
 	}
 
+	if shouldDeferVerifierRetry(entry, resultCheckedAt(res)) {
+		emitCounter("detection.verifier.deferred_retry_skipped.count", 1)
+		metaMap := checkResultMetadata(site, res, entry.firstFailAt)
+		metaMap["event_id"] = entry.eventID
+		metaMap["attempt"] = entry.failCount
+		metaMap["deferred_until"] = entry.verifierDeferredUntil.UTC().Format(time.RFC3339)
+		metaMap["deferrals"] = entry.verifierDeferrals
+		meta, _ := json.Marshal(metaMap)
+		o.auditLog(audit.Entry{
+			BlogID:    site.BlogID,
+			EventID:   entry.eventID,
+			EventType: audit.EventRetryDispatched,
+			Source:    o.hostname,
+			Detail:    "verifier retry deferred",
+			Metadata:  meta,
+		})
+		return entry.eventID > 0
+	}
+
 	// Escalate to verifliers.
 	o.escalateToVerifliers(site, entry)
 	if lowConfidenceDNS {
@@ -1678,12 +1704,56 @@ func postFalseAlarmTransientFailureWindow(site db.Site) time.Duration {
 }
 
 func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
-	clients := o.veriflierSnapshot()
+	allClients := o.veriflierSnapshot()
 	emitCounter("detection.verifier.escalation.count", 1)
 	emitTimingSince("detection.first_failure_to_verification.time", entry.firstFailAt, nowFunc().UTC())
-	if len(clients) == 0 {
+	if len(allClients) == 0 {
 		emitCounter("detection.verifier.no_clients.count", 1)
 		o.confirmDown(site, entry, nil)
+		return
+	}
+	clients, cooldownSkipped := o.availableVeriflierClients(allClients, nowFunc().UTC())
+	if cooldownSkipped > 0 {
+		emitCounter("detection.verifier.cooldown_skipped.count", cooldownSkipped)
+		emitGauge("detection.verifier.cooldown_skipped_active.count", cooldownSkipped)
+	}
+	if len(clients) == 0 {
+		minHealthy := verifierMinHealthyFloor(config.Get().PeerOfflineLimit, len(allClients))
+		now := nowFunc().UTC()
+		delay := verifierOperationalBackoff(site, entry.verifierDeferrals)
+		entry.verifierDeferrals++
+		entry.verifierDeferredUntil = now.Add(delay)
+		emitCounter("detection.verifier.deferred.count", 1)
+		emitCounter("detection.verifier.insufficient_healthy.count", 1)
+		emitGauge("detection.verifier.healthy.count", 0)
+		emitGauge("detection.verifier.confirmations.count", 0)
+		emitGauge("detection.verifier.quorum.count", minHealthy)
+		emitGauge("detection.verifier.min_healthy.count", minHealthy)
+		meta, _ := json.Marshal(map[string]any{
+			"event_id":                    entry.eventID,
+			"verifier_configured":         len(allClients),
+			"verifier_available":          0,
+			"verifier_cooldown_skipped":   cooldownSkipped,
+			"verifier_min_healthy":        minHealthy,
+			"deferrals":                   entry.verifierDeferrals,
+			"retry_after_seconds":         int(delay / time.Second),
+			"deferred_until":              entry.verifierDeferredUntil.UTC().Format(time.RFC3339),
+			"all_verifiers_in_cooldown":   true,
+			"site_check_interval_seconds": int(siteCheckInterval(site) / time.Second),
+		})
+		o.auditLog(audit.Entry{
+			BlogID:    site.BlogID,
+			EventID:   entry.eventID,
+			EventType: audit.EventRetryDispatched,
+			Source:    o.hostname,
+			Detail:    "verifier decision deferred",
+			Metadata:  meta,
+		})
+		log.Printf(
+			"orchestrator: blog_id=%d verifier decision pending; all configured verifliers are in operational cooldown retry_after=%s",
+			site.BlogID,
+			delay,
+		)
 		return
 	}
 
@@ -1716,10 +1786,12 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 	}
 
 	escalateMeta, _ := json.Marshal(map[string]any{
-		"verifier_count":    len(clients),
-		"request_id":        req.RequestID,
-		"method":            method,
-		"detection_profile": profile,
+		"verifier_count":            len(clients),
+		"verifier_configured_count": len(allClients),
+		"verifier_cooldown_skipped": cooldownSkipped,
+		"request_id":                req.RequestID,
+		"method":                    method,
+		"detection_profile":         profile,
 	})
 	o.auditLog(audit.Entry{
 		BlogID:    site.BlogID,
@@ -1769,12 +1841,22 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 		if vr.err != nil {
 			emitCounter("verifier.rpc.error.count", 1)
 			emitCounter("verifier.host."+hostSegment+".rpc.error.count", 1)
+			delay := o.markVeriflierOperationalFailure(vr.host, nowFunc().UTC())
+			if delay > 0 {
+				emitCounter("verifier.host."+hostSegment+".cooldown.count", 1)
+				emitTiming("verifier.host."+hostSegment+".cooldown.duration", delay)
+			}
 			log.Printf("orchestrator: veriflier %s error: %v", vr.host, vr.err)
 			continue
 		}
 		if vr.res == nil {
 			emitCounter("verifier.rpc.error.count", 1)
 			emitCounter("verifier.host."+hostSegment+".rpc.error.count", 1)
+			delay := o.markVeriflierOperationalFailure(vr.host, nowFunc().UTC())
+			if delay > 0 {
+				emitCounter("verifier.host."+hostSegment+".cooldown.count", 1)
+				emitTiming("verifier.host."+hostSegment+".cooldown.duration", delay)
+			}
 			log.Printf("orchestrator: veriflier %s returned no result", vr.host)
 			continue
 		}
@@ -1826,7 +1908,19 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 		if duplicateVote {
 			continue
 		}
+		if verifierOperationalNonVote(vr.res) {
+			emitCounter("verifier.vote.non_vote.count", 1)
+			emitCounter("verifier.host."+hostSegment+".vote.non_vote.count", 1)
+			delay := o.markVeriflierOperationalFailure(vr.host, nowFunc().UTC())
+			if delay > 0 {
+				emitCounter("verifier.host."+hostSegment+".cooldown.count", 1)
+				emitTiming("verifier.host."+hostSegment+".cooldown.duration", delay)
+			}
+			log.Printf("orchestrator: veriflier %s returned operational non-vote outcome %q; leaving decision pending", vr.host, vr.res.Outcome)
+			continue
+		}
 
+		o.markVeriflierHealthy(vr.host)
 		healthyVerifliers++
 		vResults = append(vResults, *vr.res)
 		if !vr.res.Success {
@@ -1850,7 +1944,7 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 	if quorum < 1 {
 		quorum = 1
 	}
-	minHealthy := verifierMinHealthyFloor(config.Get().PeerOfflineLimit, len(clients))
+	minHealthy := verifierMinHealthyFloor(config.Get().PeerOfflineLimit, len(allClients))
 	if quorum < minHealthy {
 		quorum = minHealthy
 	}
@@ -1866,6 +1960,46 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 		Confirmed:      confirmations,
 		Disagreed:      healthyVerifliers - confirmations,
 		DuplicateVotes: duplicateVotes,
+	}
+
+	if healthyVerifliers < minHealthy {
+		now := nowFunc().UTC()
+		delay := verifierOperationalBackoff(site, entry.verifierDeferrals)
+		entry.verifierDeferrals++
+		entry.verifierDeferredUntil = now.Add(delay)
+		emitCounter("detection.verifier.deferred.count", 1)
+		emitGauge("detection.verifier.deferrals.count", entry.verifierDeferrals)
+		meta, _ := json.Marshal(map[string]any{
+			"event_id":                 entry.eventID,
+			"verifier_quorum":          quorum,
+			"verifier_min_healthy":     minHealthy,
+			"verifier_healthy":         healthyVerifliers,
+			"verifier_confirmed":       confirmations,
+			"verifier_disagreed":       healthyVerifliers - confirmations,
+			"verifier_duplicate_votes": duplicateVotes,
+			"deferrals":                entry.verifierDeferrals,
+			"retry_after_seconds":      int(delay / time.Second),
+			"deferred_until":           entry.verifierDeferredUntil.UTC().Format(time.RFC3339),
+			"verifier_results":         summarizeVerifierResults(vResults),
+		})
+		o.auditLog(audit.Entry{
+			BlogID:    site.BlogID,
+			EventID:   entry.eventID,
+			EventType: audit.EventRetryDispatched,
+			Source:    o.hostname,
+			Detail:    "verifier decision deferred",
+			Metadata:  meta,
+		})
+		emitCounter("detection.verifier.insufficient_healthy.count", 1)
+		log.Printf(
+			"orchestrator: blog_id=%d verifier decision pending; healthy=%d min_healthy=%d confirmations=%d retry_after=%s",
+			site.BlogID,
+			healthyVerifliers,
+			minHealthy,
+			confirmations,
+			delay,
+		)
+		return
 	}
 
 	if confirmations >= quorum {
@@ -1913,6 +2047,11 @@ type verifierDecision struct {
 	DuplicateVotes int
 }
 
+type verifierCooldown struct {
+	until    time.Time
+	failures int
+}
+
 func verifierVoteID(addr string, res *veriflier.CheckResult) string {
 	if res != nil {
 		if vantageID := strings.TrimSpace(res.VantageID); vantageID != "" {
@@ -1923,6 +2062,49 @@ func verifierVoteID(addr string, res *veriflier.CheckResult) string {
 		}
 	}
 	return strings.TrimSpace(addr)
+}
+
+func verifierOperationalNonVote(res *veriflier.CheckResult) bool {
+	if res == nil {
+		return true
+	}
+	switch res.Outcome {
+	case veriflier.OutcomeAgentOverloaded, veriflier.OutcomeUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+func shouldDeferVerifierRetry(entry *retryEntry, checkedAt time.Time) bool {
+	if entry == nil || entry.verifierDeferredUntil.IsZero() {
+		return false
+	}
+	if checkedAt.IsZero() {
+		checkedAt = nowFunc().UTC()
+	}
+	return checkedAt.UTC().Before(entry.verifierDeferredUntil.UTC())
+}
+
+func verifierOperationalBackoff(site db.Site, deferrals int) time.Duration {
+	if deferrals < 0 {
+		deferrals = 0
+	}
+	delay := verifierOperationalBackoffBase
+	for range deferrals {
+		if delay >= verifierOperationalBackoffMax {
+			break
+		}
+		delay *= 2
+	}
+	if delay > verifierOperationalBackoffMax {
+		delay = verifierOperationalBackoffMax
+	}
+	interval := siteCheckInterval(site)
+	if interval > 0 && delay > interval {
+		return interval
+	}
+	return delay
 }
 
 func verifierMinHealthyFloor(peerOfflineLimit, configuredVerifiers int) int {
@@ -3100,6 +3282,92 @@ func (o *Orchestrator) veriflierSnapshot() []*veriflier.VeriflierClient {
 	out := make([]*veriflier.VeriflierClient, len(o.veriflierClients))
 	copy(out, o.veriflierClients)
 	return out
+}
+
+func (o *Orchestrator) availableVeriflierClients(clients []*veriflier.VeriflierClient, now time.Time) ([]*veriflier.VeriflierClient, int) {
+	if len(clients) == 0 {
+		return nil, 0
+	}
+	if now.IsZero() {
+		now = nowFunc().UTC()
+	}
+	now = now.UTC()
+	o.veriflierCooldownMu.Lock()
+	defer o.veriflierCooldownMu.Unlock()
+	if len(o.veriflierCooldowns) == 0 {
+		return clients, 0
+	}
+	out := make([]*veriflier.VeriflierClient, 0, len(clients))
+	skipped := 0
+	for _, client := range clients {
+		addr := client.Addr()
+		cooldown, ok := o.veriflierCooldowns[addr]
+		if !ok {
+			out = append(out, client)
+			continue
+		}
+		until := cooldown.until.UTC()
+		if now.Before(until) {
+			skipped++
+			continue
+		}
+		if verifierOperationalCooldownMemory > 0 && now.Sub(until) > verifierOperationalCooldownMemory {
+			delete(o.veriflierCooldowns, addr)
+		}
+		out = append(out, client)
+	}
+	return out, skipped
+}
+
+func (o *Orchestrator) markVeriflierOperationalFailure(addr string, now time.Time) time.Duration {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return 0
+	}
+	if now.IsZero() {
+		now = nowFunc().UTC()
+	}
+	now = now.UTC()
+	o.veriflierCooldownMu.Lock()
+	defer o.veriflierCooldownMu.Unlock()
+	if o.veriflierCooldowns == nil {
+		o.veriflierCooldowns = make(map[string]verifierCooldown)
+	}
+	current := o.veriflierCooldowns[addr]
+	failures := current.failures + 1
+	delay := verifierOperationalCooldown(failures - 1)
+	o.veriflierCooldowns[addr] = verifierCooldown{
+		failures: failures,
+		until:    now.Add(delay),
+	}
+	return delay
+}
+
+func (o *Orchestrator) markVeriflierHealthy(addr string) {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return
+	}
+	o.veriflierCooldownMu.Lock()
+	defer o.veriflierCooldownMu.Unlock()
+	delete(o.veriflierCooldowns, addr)
+}
+
+func verifierOperationalCooldown(failures int) time.Duration {
+	if failures < 0 {
+		failures = 0
+	}
+	delay := verifierOperationalCooldownBase
+	for range failures {
+		if delay >= verifierOperationalCooldownMax {
+			break
+		}
+		delay *= 2
+	}
+	if delay > verifierOperationalCooldownMax {
+		return verifierOperationalCooldownMax
+	}
+	return delay
 }
 
 func timeoutForSite(cfg *config.Config, site db.Site) int {

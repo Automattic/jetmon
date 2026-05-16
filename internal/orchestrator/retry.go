@@ -17,6 +17,9 @@ type retryEntry struct {
 	lastResult  checker.Result
 	checks      []checker.Result // all check results since first failure
 	eventID     int64            // jetmon_events.id for the open Seems Down event; 0 if not yet opened or eventstore unavailable
+
+	verifierDeferrals     int
+	verifierDeferredUntil time.Time
 }
 
 // retryQueue holds sites awaiting local retry or veriflier escalation.

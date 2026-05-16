@@ -856,8 +856,11 @@ func TestEscalateToVerifliersIgnoresDuplicateVoteIdentities(t *testing.T) {
 	entry := o.retries.get(655)
 	o.escalateToVerifliers(db.Site{BlogID: 655, MonitorURL: "https://example.com", SiteStatus: statusRunning}, entry)
 
-	if falsePositiveBlogID != 655 {
-		t.Fatalf("false positive blog_id = %d, want 655", falsePositiveBlogID)
+	if falsePositiveBlogID != 0 {
+		t.Fatalf("false positive blog_id = %d, want none while duplicate votes leave health below floor", falsePositiveBlogID)
+	}
+	if entry := o.retries.get(655); entry == nil {
+		t.Fatal("retry entry was cleared despite duplicate votes leaving verifier health below floor")
 	}
 	if got := rec.counter("verifier.vote.duplicate_identity.count"); got != 1 {
 		t.Fatalf("duplicate identity counter = %d, want 1", got)
@@ -915,8 +918,11 @@ func TestEscalateToVerifliersRequiresTwoHealthyVotesForMultiVerifierFleet(t *tes
 	entry := o.retries.get(656)
 	o.escalateToVerifliers(db.Site{BlogID: 656, MonitorURL: "https://example.com", SiteStatus: statusRunning}, entry)
 
-	if falsePositiveBlogID != 656 {
-		t.Fatalf("false positive blog_id = %d, want 656", falsePositiveBlogID)
+	if falsePositiveBlogID != 0 {
+		t.Fatalf("false positive blog_id = %d, want none while verifier health is below floor", falsePositiveBlogID)
+	}
+	if entry := o.retries.get(656); entry == nil {
+		t.Fatal("retry entry was cleared despite insufficient healthy verifier votes")
 	}
 }
 
@@ -959,6 +965,275 @@ func TestEscalateToVerifliersAllowsSingleConfiguredVerifier(t *testing.T) {
 
 	if notifyCalls != 1 {
 		t.Fatalf("notify calls = %d, want 1", notifyCalls)
+	}
+}
+
+func TestEscalateToVerifliersKeepsRetryOnOperationalNonVote(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+
+	cfg := setTestConfig(t)
+	cfg.PeerOfflineLimit = 1
+
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+	dbRecordFalsePositive = func(blogID int64, _ int, _ int, _ int64) error {
+		t.Fatalf("false positive recorded for operational non-vote blog_id=%d", blogID)
+		return nil
+	}
+	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error {
+		t.Fatal("operational non-vote should not confirm downtime")
+		return nil
+	}
+	veriflierCheckFunc = func(c *veriflier.VeriflierClient, _ context.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
+		return &veriflier.CheckResult{
+			BlogID:    req.BlogID,
+			Host:      c.Addr(),
+			Success:   false,
+			ErrorCode: 1,
+			Outcome:   veriflier.OutcomeAgentOverloaded,
+			RequestID: req.RequestID,
+		}, nil
+	}
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		ctx:      context.Background(),
+		hostname: "local-host",
+		veriflierClients: []*veriflier.VeriflierClient{
+			veriflier.NewVeriflierClient("v1", ""),
+		},
+	}
+
+	fail := checkerResultFailure(658)
+	o.retries.record(fail)
+	entry := o.retries.get(658)
+	o.escalateToVerifliers(db.Site{BlogID: 658, MonitorURL: "https://example.com", SiteStatus: statusRunning}, entry)
+
+	if entry := o.retries.get(658); entry == nil {
+		t.Fatal("retry entry was cleared after operational non-vote")
+	}
+	if got := rec.counter("verifier.vote.non_vote.count"); got != 1 {
+		t.Fatalf("non-vote counter = %d, want 1", got)
+	}
+	if got := rec.counter("detection.verifier.insufficient_healthy.count"); got != 1 {
+		t.Fatalf("insufficient healthy counter = %d, want 1", got)
+	}
+	if got := rec.counter("detection.verifier.deferred.count"); got != 1 {
+		t.Fatalf("deferred counter = %d, want 1", got)
+	}
+	if got := rec.counter("detection.verifier.false_alarm.count"); got != 0 {
+		t.Fatalf("false alarm counter = %d, want 0", got)
+	}
+	if entry := o.retries.get(658); entry == nil || entry.verifierDeferrals != 1 || entry.verifierDeferredUntil.IsZero() {
+		t.Fatalf("retry entry deferral = %+v, want one deferred verification", entry)
+	}
+}
+
+func TestHandleFailureBacksOffVerifierAfterOperationalNonVotes(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+
+	cfg := setTestConfig(t)
+	cfg.NumOfChecks = 1
+	cfg.PeerOfflineLimit = 1
+
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+
+	now := time.Date(2026, 5, 16, 12, 0, 0, 0, time.UTC)
+	nowFunc = func() time.Time { return now }
+
+	var calls atomic.Int64
+	veriflierCheckFunc = func(c *veriflier.VeriflierClient, _ context.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
+		calls.Add(1)
+		return &veriflier.CheckResult{
+			BlogID:    req.BlogID,
+			Host:      c.Addr(),
+			Success:   false,
+			ErrorCode: 1,
+			Outcome:   veriflier.OutcomeAgentOverloaded,
+			RequestID: req.RequestID,
+		}, nil
+	}
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		ctx:      context.Background(),
+		hostname: "local-host",
+		veriflierClients: []*veriflier.VeriflierClient{
+			veriflier.NewVeriflierClient("v1", ""),
+		},
+	}
+	site := db.Site{BlogID: 659, MonitorURL: "https://example.com", CheckInterval: 1, SiteStatus: statusRunning}
+	failureAt := func() checker.Result {
+		res := checkerResultFailure(659)
+		res.Timestamp = now
+		return res
+	}
+
+	o.handleFailure(site, failureAt())
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("verifier calls after first failure = %d, want 1", got)
+	}
+	entry := o.retries.get(659)
+	if entry == nil || entry.verifierDeferrals != 1 {
+		t.Fatalf("retry entry after first operational non-vote = %+v, want one deferral", entry)
+	}
+	firstDeferredUntil := entry.verifierDeferredUntil
+
+	now = now.Add(5 * time.Second)
+	o.handleFailure(site, failureAt())
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("verifier calls during deferral = %d, want still 1", got)
+	}
+	if got := rec.counter("detection.verifier.deferred_retry_skipped.count"); got != 1 {
+		t.Fatalf("deferred retry skipped counter = %d, want 1", got)
+	}
+	if !o.retries.get(659).verifierDeferredUntil.Equal(firstDeferredUntil) {
+		t.Fatalf("deferred retry should not extend deferral window on skipped attempt")
+	}
+
+	now = firstDeferredUntil.Add(time.Second)
+	o.handleFailure(site, failureAt())
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("verifier calls while verifier cooldown is still active = %d, want still 1", got)
+	}
+	entry = o.retries.get(659)
+	if entry == nil || entry.verifierDeferrals != 2 {
+		t.Fatalf("retry entry after cooldown skip = %+v, want two deferrals", entry)
+	}
+
+	now = entry.verifierDeferredUntil.Add(time.Second)
+	o.handleFailure(site, failureAt())
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("verifier calls after deferral and cooldown expire = %d, want 2", got)
+	}
+	if got := o.retries.get(659).verifierDeferrals; got != 3 {
+		t.Fatalf("verifier deferrals = %d, want 3 after second operational non-vote", got)
+	}
+}
+
+func TestHandleFailureSkipsVerifierDuringOperationalCooldown(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+
+	cfg := setTestConfig(t)
+	cfg.NumOfChecks = 1
+	cfg.PeerOfflineLimit = 1
+
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+
+	now := time.Date(2026, 5, 16, 12, 30, 0, 0, time.UTC)
+	nowFunc = func() time.Time { return now }
+
+	var calls atomic.Int64
+	veriflierCheckFunc = func(c *veriflier.VeriflierClient, _ context.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
+		calls.Add(1)
+		return &veriflier.CheckResult{
+			BlogID:    req.BlogID,
+			Host:      c.Addr(),
+			Success:   false,
+			ErrorCode: 1,
+			Outcome:   veriflier.OutcomeAgentOverloaded,
+			RequestID: req.RequestID,
+		}, nil
+	}
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		ctx:      context.Background(),
+		hostname: "local-host",
+		veriflierClients: []*veriflier.VeriflierClient{
+			veriflier.NewVeriflierClient("v1", ""),
+		},
+	}
+	failureAt := func(blogID int64) checker.Result {
+		res := checkerResultFailure(blogID)
+		res.Timestamp = now
+		return res
+	}
+
+	o.handleFailure(db.Site{BlogID: 660, MonitorURL: "https://example.com/a", CheckInterval: 1, SiteStatus: statusRunning}, failureAt(660))
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("verifier calls after first operational non-vote = %d, want 1", got)
+	}
+
+	o.handleFailure(db.Site{BlogID: 661, MonitorURL: "https://example.com/b", CheckInterval: 1, SiteStatus: statusRunning}, failureAt(661))
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("verifier calls while verifier is in cooldown = %d, want still 1", got)
+	}
+	if got := rec.counter("detection.verifier.cooldown_skipped.count"); got != 1 {
+		t.Fatalf("cooldown skipped counter = %d, want 1", got)
+	}
+	if got := rec.counter("detection.verifier.deferred.count"); got != 2 {
+		t.Fatalf("deferred counter = %d, want 2", got)
+	}
+	if entry := o.retries.get(661); entry == nil || entry.verifierDeferrals != 1 || entry.verifierDeferredUntil.IsZero() {
+		t.Fatalf("second retry entry = %+v, want verifier deferral without an RPC", entry)
+	}
+
+	now = now.Add(verifierOperationalCooldownBase + time.Second)
+	o.handleFailure(db.Site{BlogID: 662, MonitorURL: "https://example.com/c", CheckInterval: 1, SiteStatus: statusRunning}, failureAt(662))
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("verifier calls after cooldown expires = %d, want 2", got)
+	}
+}
+
+func TestVeriflierOperationalCooldownRetainsFailureHistoryUntilHealthy(t *testing.T) {
+	o := &Orchestrator{}
+	now := time.Date(2026, 5, 16, 14, 0, 0, 0, time.UTC)
+	client := veriflier.NewVeriflierClient("v1", "")
+
+	if got := o.markVeriflierOperationalFailure("v1", now); got != verifierOperationalCooldownBase {
+		t.Fatalf("first cooldown = %s, want %s", got, verifierOperationalCooldownBase)
+	}
+	clients, skipped := o.availableVeriflierClients([]*veriflier.VeriflierClient{client}, now.Add(verifierOperationalCooldownBase+time.Second))
+	if skipped != 0 || len(clients) != 1 {
+		t.Fatalf("available after cooldown = len %d skipped %d, want one available", len(clients), skipped)
+	}
+	if got := o.markVeriflierOperationalFailure("v1", now.Add(verifierOperationalCooldownBase+2*time.Second)); got != 2*verifierOperationalCooldownBase {
+		t.Fatalf("second cooldown = %s, want %s", got, 2*verifierOperationalCooldownBase)
+	}
+
+	o.markVeriflierHealthy("v1")
+	if got := o.markVeriflierOperationalFailure("v1", now.Add(time.Hour)); got != verifierOperationalCooldownBase {
+		t.Fatalf("cooldown after healthy vote = %s, want reset to %s", got, verifierOperationalCooldownBase)
+	}
+}
+
+func TestAvailableVeriflierClientsForgetsStaleCooldownHistory(t *testing.T) {
+	o := &Orchestrator{}
+	now := time.Date(2026, 5, 16, 14, 30, 0, 0, time.UTC)
+	client := veriflier.NewVeriflierClient("v1", "")
+
+	if got := o.markVeriflierOperationalFailure("v1", now); got != verifierOperationalCooldownBase {
+		t.Fatalf("first cooldown = %s, want %s", got, verifierOperationalCooldownBase)
+	}
+	clients, skipped := o.availableVeriflierClients([]*veriflier.VeriflierClient{client}, now.Add(verifierOperationalCooldownBase+verifierOperationalCooldownMemory+time.Second))
+	if skipped != 0 || len(clients) != 1 {
+		t.Fatalf("available after stale cooldown = len %d skipped %d, want one available", len(clients), skipped)
+	}
+	if got := o.markVeriflierOperationalFailure("v1", now.Add(time.Hour)); got != verifierOperationalCooldownBase {
+		t.Fatalf("cooldown after stale memory = %s, want %s", got, verifierOperationalCooldownBase)
+	}
+}
+
+func TestVerifierOperationalBackoffBoundsToSiteIntervalAndCap(t *testing.T) {
+	setTestConfig(t)
+
+	if got := verifierOperationalBackoff(db.Site{CheckInterval: 1}, 0); got != 15*time.Second {
+		t.Fatalf("initial backoff = %s, want 15s", got)
+	}
+	if got := verifierOperationalBackoff(db.Site{CheckInterval: 1}, 2); got != time.Minute {
+		t.Fatalf("interval-bounded backoff = %s, want 1m", got)
+	}
+	if got := verifierOperationalBackoff(db.Site{CheckInterval: 10}, 20); got != verifierOperationalBackoffMax {
+		t.Fatalf("max backoff = %s, want %s", got, verifierOperationalBackoffMax)
 	}
 }
 
