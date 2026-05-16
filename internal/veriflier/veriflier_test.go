@@ -780,6 +780,12 @@ func TestNewRequestID(t *testing.T) {
 	}
 }
 
+func BenchmarkNewRequestID(b *testing.B) {
+	for b.Loop() {
+		_ = NewRequestID()
+	}
+}
+
 func TestRequestIDIsEchoed(t *testing.T) {
 	// Server should reflect each request's RequestID into the corresponding result.
 	_, ts := newTestServer(func(req CheckRequest) CheckResult {

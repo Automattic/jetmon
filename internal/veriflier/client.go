@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -40,6 +42,11 @@ var (
 	singleCheckFullBatchMaxFlight        = 32
 	singleCheckBatchQueueSize            = 32768
 	singleCheckFullBatchQueueSize        = 32768
+)
+
+var (
+	requestIDPrefix  = newRequestIDPrefix()
+	requestIDCounter atomic.Uint64
 )
 
 // NewVeriflierClient creates a client targeting the given address (host:port).
@@ -524,17 +531,25 @@ func (c *VeriflierClient) statusV2(ctx context.Context) (*StatusV2Response, erro
 	return &s, nil
 }
 
-// NewRequestID returns a 16-byte random id, hex-encoded (32 chars). Used as
-// the RPC correlation id between Monitor and Verifier. Crypto/rand backed so
-// IDs are unpredictable; this isn't a security primitive but it's free.
+// NewRequestID returns a 16-byte correlation id, hex-encoded (32 chars). Used
+// as the RPC correlation id between Monitor and Verifier. It is not a security
+// token; use the bearer auth token for authorization. Keeping a random
+// per-process prefix plus an atomic counter avoids kernel randomness on every
+// hot-path check while preserving the existing 32-character hex shape.
 func NewRequestID() string {
 	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		// Fall back to a timestamp-based id; collisions are vanishingly
-		// unlikely at our request rates and the id is correlation-only.
-		return fmt.Sprintf("ts-%d", time.Now().UnixNano())
-	}
+	copy(b[:8], requestIDPrefix[:])
+	binary.BigEndian.PutUint64(b[8:], requestIDCounter.Add(1))
 	return hex.EncodeToString(b[:])
+}
+
+func newRequestIDPrefix() [8]byte {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err == nil {
+		return b
+	}
+	binary.BigEndian.PutUint64(b[:], uint64(time.Now().UnixNano()))
+	return b
 }
 
 func (c *VeriflierClient) cachedProtocol() string {
