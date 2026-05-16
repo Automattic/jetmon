@@ -1220,8 +1220,11 @@ func TestServerHandleV2Check(t *testing.T) {
 		t.Fatalf("results len = %d, want 1", len(result.Results))
 	}
 	got := result.Results[0]
-	if got.RequestID != "req-1" || got.VantageID != "test-vantage" || got.AgentID != "test-agent" {
-		t.Fatalf("result identity = %+v", got)
+	if got.RequestID != "req-1" {
+		t.Fatalf("result request id = %+v", got)
+	}
+	if got.VantageID != "" || got.AgentID != "" {
+		t.Fatalf("result duplicated batch identity: %+v", got)
 	}
 	if got.Outcome != OutcomeDown || got.Success || got.HTTPCode != 500 || got.RTTMs != 123 {
 		t.Fatalf("result = %+v", got)
@@ -1332,6 +1335,9 @@ func TestClientPrefersV2WhenAvailable(t *testing.T) {
 	}
 	if res.Host != "edge-us-east" {
 		t.Fatalf("Host = %q, want v2 vantage identity", res.Host)
+	}
+	if res.URL != "https://example.com" {
+		t.Fatalf("URL = %q, want original request URL filled from compact v2 response", res.URL)
 	}
 	if res.VantageID != "edge-us-east" || res.AgentID != "agent-1" || res.Outcome != OutcomeUp {
 		t.Fatalf("v2 identity = vantage:%q agent:%q outcome:%q", res.VantageID, res.AgentID, res.Outcome)

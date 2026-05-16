@@ -401,10 +401,6 @@ func (c *VeriflierClient) checkBatchLegacy(ctx context.Context, reqs []CheckRequ
 }
 
 func (c *VeriflierClient) checkBatchV2(ctx context.Context, reqs []CheckRequest) ([]CheckResult, error) {
-	type batchResp struct {
-		Results []CheckV2Result `json:"results"`
-	}
-
 	v2Reqs := make([]CheckV2Request, len(reqs))
 	for i := range reqs {
 		if reqs[i].RequestID == "" {
@@ -451,7 +447,7 @@ func (c *VeriflierClient) checkBatchV2(ctx context.Context, reqs []CheckRequest)
 		return nil, statusError{endpoint: "/v2/check", status: resp.StatusCode}
 	}
 
-	var br batchResp
+	var br CheckV2BatchResponse
 	if err := json.NewDecoder(resp.Body).Decode(&br); err != nil {
 		return nil, fmt.Errorf("decode veriflier v2 response: %w", err)
 	}
@@ -472,19 +468,39 @@ func (c *VeriflierClient) checkBatchV2(ctx context.Context, reqs []CheckRequest)
 				orig = reqs[i]
 			}
 		}
+		blogID := res.BlogID
+		if blogID == 0 {
+			blogID = orig.BlogID
+		}
+		url := res.URL
+		if url == "" {
+			url = orig.URL
+		}
+		requestID := res.RequestID
+		if requestID == "" {
+			requestID = orig.RequestID
+		}
+		vantageID := res.VantageID
+		if vantageID == "" {
+			vantageID = br.Vantage.ID
+		}
+		agentID := res.AgentID
+		if agentID == "" {
+			agentID = br.Agent.ID
+		}
 		results = append(results, CheckResult{
 			MonitorSiteID: orig.MonitorSiteID,
-			BlogID:        res.BlogID,
-			URL:           res.URL,
-			Host:          res.VantageID,
-			VantageID:     res.VantageID,
-			AgentID:       res.AgentID,
+			BlogID:        blogID,
+			URL:           url,
+			Host:          vantageID,
+			VantageID:     vantageID,
+			AgentID:       agentID,
 			Outcome:       res.Outcome,
 			Success:       res.Success,
 			HTTPCode:      res.HTTPCode,
 			ErrorCode:     res.ErrorCode,
 			RTTMs:         res.RTTMs,
-			RequestID:     res.RequestID,
+			RequestID:     requestID,
 		})
 	}
 	return results, nil
