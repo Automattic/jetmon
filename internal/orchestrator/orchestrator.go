@@ -64,6 +64,8 @@ const failedCheckRetryInterval = time.Minute
 const maxPostRecoveryTransientFailureWindow = 5 * time.Minute
 const minPostFalseAlarmTransientFailureWindow = 5 * time.Minute
 const maxPostFalseAlarmTransientFailureWindow = 10 * time.Minute
+const verifierOperationalBackoffBase = 15 * time.Second
+const verifierOperationalBackoffMax = 2 * time.Minute
 const wpcomPermanentFailureLogInterval = 10 * time.Second
 
 // VariableIntervalPollInterval returns the idle scheduler poll interval used
@@ -1600,6 +1602,25 @@ func (o *Orchestrator) handleFailure(site db.Site, res checker.Result) bool {
 		return entry.eventID > 0
 	}
 
+	if shouldDeferVerifierRetry(entry, resultCheckedAt(res)) {
+		emitCounter("detection.verifier.deferred_retry_skipped.count", 1)
+		metaMap := checkResultMetadata(site, res, entry.firstFailAt)
+		metaMap["event_id"] = entry.eventID
+		metaMap["attempt"] = entry.failCount
+		metaMap["deferred_until"] = entry.verifierDeferredUntil.UTC().Format(time.RFC3339)
+		metaMap["deferrals"] = entry.verifierDeferrals
+		meta, _ := json.Marshal(metaMap)
+		o.auditLog(audit.Entry{
+			BlogID:    site.BlogID,
+			EventID:   entry.eventID,
+			EventType: audit.EventRetryDispatched,
+			Source:    o.hostname,
+			Detail:    "verifier retry deferred",
+			Metadata:  meta,
+		})
+		return entry.eventID > 0
+	}
+
 	// Escalate to verifliers.
 	o.escalateToVerifliers(site, entry)
 	if lowConfidenceDNS {
@@ -1875,13 +1896,41 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 	}
 
 	if healthyVerifliers < minHealthy {
+		now := nowFunc().UTC()
+		delay := verifierOperationalBackoff(site, entry.verifierDeferrals)
+		entry.verifierDeferrals++
+		entry.verifierDeferredUntil = now.Add(delay)
+		emitCounter("detection.verifier.deferred.count", 1)
+		emitGauge("detection.verifier.deferrals.count", entry.verifierDeferrals)
+		meta, _ := json.Marshal(map[string]any{
+			"event_id":                 entry.eventID,
+			"verifier_quorum":          quorum,
+			"verifier_min_healthy":     minHealthy,
+			"verifier_healthy":         healthyVerifliers,
+			"verifier_confirmed":       confirmations,
+			"verifier_disagreed":       healthyVerifliers - confirmations,
+			"verifier_duplicate_votes": duplicateVotes,
+			"deferrals":                entry.verifierDeferrals,
+			"retry_after_seconds":      int(delay / time.Second),
+			"deferred_until":           entry.verifierDeferredUntil.UTC().Format(time.RFC3339),
+			"verifier_results":         summarizeVerifierResults(vResults),
+		})
+		o.auditLog(audit.Entry{
+			BlogID:    site.BlogID,
+			EventID:   entry.eventID,
+			EventType: audit.EventRetryDispatched,
+			Source:    o.hostname,
+			Detail:    "verifier decision deferred",
+			Metadata:  meta,
+		})
 		emitCounter("detection.verifier.insufficient_healthy.count", 1)
 		log.Printf(
-			"orchestrator: blog_id=%d verifier decision pending; healthy=%d min_healthy=%d confirmations=%d",
+			"orchestrator: blog_id=%d verifier decision pending; healthy=%d min_healthy=%d confirmations=%d retry_after=%s",
 			site.BlogID,
 			healthyVerifliers,
 			minHealthy,
 			confirmations,
+			delay,
 		)
 		return
 	}
@@ -1953,6 +2002,37 @@ func verifierOperationalNonVote(res *veriflier.CheckResult) bool {
 	default:
 		return false
 	}
+}
+
+func shouldDeferVerifierRetry(entry *retryEntry, checkedAt time.Time) bool {
+	if entry == nil || entry.verifierDeferredUntil.IsZero() {
+		return false
+	}
+	if checkedAt.IsZero() {
+		checkedAt = nowFunc().UTC()
+	}
+	return checkedAt.UTC().Before(entry.verifierDeferredUntil.UTC())
+}
+
+func verifierOperationalBackoff(site db.Site, deferrals int) time.Duration {
+	if deferrals < 0 {
+		deferrals = 0
+	}
+	delay := verifierOperationalBackoffBase
+	for range deferrals {
+		if delay >= verifierOperationalBackoffMax {
+			break
+		}
+		delay *= 2
+	}
+	if delay > verifierOperationalBackoffMax {
+		delay = verifierOperationalBackoffMax
+	}
+	interval := siteCheckInterval(site)
+	if interval > 0 && delay > interval {
+		return interval
+	}
+	return delay
 }
 
 func verifierMinHealthyFloor(peerOfflineLimit, configuredVerifiers int) int {
