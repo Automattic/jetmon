@@ -30,14 +30,15 @@ type VeriflierClient struct {
 }
 
 var (
-	singleCheckBatchMaxSize         = 512
-	singleCheckFullBatchMaxSize     = 64
-	singleCheckBatchMaxDelay        = 2 * time.Millisecond
-	singleCheckBatchDeadlineReserve = time.Second
-	singleCheckLightBatchMaxFlight  = 32
-	singleCheckFullBatchMaxFlight   = 32
-	singleCheckBatchQueueSize       = 32768
-	singleCheckFullBatchQueueSize   = 32768
+	singleCheckBatchMaxSize              = 512
+	singleCheckFullBatchMaxSize          = 64
+	singleCheckBatchMaxDelay             = 2 * time.Millisecond
+	singleCheckBatchDeadlineReserve      = 250 * time.Millisecond
+	singleCheckLargeBatchDeadlineReserve = time.Second
+	singleCheckLightBatchMaxFlight       = 32
+	singleCheckFullBatchMaxFlight        = 32
+	singleCheckBatchQueueSize            = 32768
+	singleCheckFullBatchQueueSize        = 32768
 )
 
 // NewVeriflierClient creates a client targeting the given address (host:port).
@@ -347,8 +348,8 @@ func (c *VeriflierClient) checkBatchV2(ctx context.Context, reqs []CheckRequest)
 	if deadline, ok := ctx.Deadline(); ok {
 		if remaining := time.Until(deadline); remaining > 0 {
 			serverRemaining := remaining
-			if remaining > singleCheckBatchDeadlineReserve {
-				serverRemaining = remaining - singleCheckBatchDeadlineReserve
+			if reserve := checkBatchDeadlineReserve(reqs); remaining > reserve {
+				serverRemaining = remaining - reserve
 			}
 			if serverRemaining < time.Millisecond {
 				serverRemaining = time.Millisecond
@@ -405,6 +406,14 @@ func (c *VeriflierClient) checkBatchV2(ctx context.Context, reqs []CheckRequest)
 		})
 	}
 	return results, nil
+}
+
+func checkBatchDeadlineReserve(reqs []CheckRequest) time.Duration {
+	reserve := singleCheckBatchDeadlineReserve
+	if len(reqs) > singleCheckFullBatchMaxSize && singleCheckLargeBatchDeadlineReserve > reserve {
+		reserve = singleCheckLargeBatchDeadlineReserve
+	}
+	return reserve
 }
 
 // Ping checks whether the Veriflier is reachable and returns its version.
