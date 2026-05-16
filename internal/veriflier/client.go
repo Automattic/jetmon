@@ -262,7 +262,7 @@ func (b *singleCheckBatcher) flush(batch []singleCheckCall) {
 	cancel()
 	if err != nil {
 		for _, call := range calls {
-			if errors.Is(err, context.DeadlineExceeded) {
+			if operationalOverloadError(err) {
 				call.respond(agentOverloadedCheckResult(call.req), nil)
 			} else {
 				call.respond(nil, err)
@@ -307,6 +307,17 @@ func agentOverloadedCheckResult(req CheckRequest) *CheckResult {
 		ErrorCode:     1,
 		RequestID:     req.RequestID,
 	}
+}
+
+func operationalOverloadError(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var transportErr v2TransportError
+	if errors.As(err, &transportErr) {
+		return errors.Is(transportErr.err, io.EOF) || errors.Is(transportErr.err, io.ErrUnexpectedEOF)
+	}
+	return false
 }
 
 func (c *VeriflierClient) checkBatchLegacy(ctx context.Context, reqs []CheckRequest) ([]CheckResult, error) {

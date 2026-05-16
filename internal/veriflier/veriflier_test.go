@@ -1257,7 +1257,7 @@ func TestClientFallsBackToLegacyWhenUnknownV2ConnectionCloses(t *testing.T) {
 	}
 }
 
-func TestClientDoesNotFallbackWhenV2ProtocolCached(t *testing.T) {
+func TestClientTreatsCachedV2EOFAsAgentOverloaded(t *testing.T) {
 	var legacyHits atomic.Int64
 
 	mux := http.NewServeMux()
@@ -1277,9 +1277,12 @@ func TestClientDoesNotFallbackWhenV2ProtocolCached(t *testing.T) {
 
 	client := NewVeriflierClient(ts.Listener.Addr().String(), "secret")
 	client.setProtocol(ProtocolV2)
-	_, err := client.Check(context.Background(), CheckRequest{BlogID: 1, URL: "https://example.com"})
-	if err == nil {
-		t.Fatal("Check() expected v2 transport error")
+	res, err := client.Check(context.Background(), CheckRequest{BlogID: 1, URL: "https://example.com"})
+	if err != nil {
+		t.Fatalf("Check() error = %v", err)
+	}
+	if res == nil || res.Outcome != OutcomeAgentOverloaded || res.Success {
+		t.Fatalf("result = %+v, want agent_overloaded non-success", res)
 	}
 	if legacyHits.Load() != 0 {
 		t.Fatalf("legacy hits = %d, want 0 for cached v2 protocol", legacyHits.Load())
