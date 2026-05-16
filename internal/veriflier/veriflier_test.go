@@ -313,12 +313,12 @@ func TestClientBatchSendsServerDeadlineWithReserve(t *testing.T) {
 	if got >= 3000 {
 		t.Fatalf("DeadlineMS = %d, want less than caller deadline", got)
 	}
-	if got < 2000 {
+	if got < 1000 {
 		t.Fatalf("DeadlineMS = %d, want reserve without excessive deadline loss", got)
 	}
 }
 
-func TestClientBatchUsesLargerDeadlineReserveForLightBatches(t *testing.T) {
+func TestClientBatchUsesLargerDeadlineReserveForBatches(t *testing.T) {
 	origReserve := singleCheckBatchDeadlineReserve
 	origLargeReserve := singleCheckLargeBatchDeadlineReserve
 	singleCheckBatchDeadlineReserve = 250 * time.Millisecond
@@ -384,7 +384,7 @@ func TestClientBatchUsesLargerDeadlineReserveForLightBatches(t *testing.T) {
 	}
 }
 
-func TestClientBatchKeepsSmallDeadlineReserveForFullBatches(t *testing.T) {
+func TestClientBatchUsesLargerDeadlineReserveForFullBatches(t *testing.T) {
 	origReserve := singleCheckBatchDeadlineReserve
 	origLargeReserve := singleCheckLargeBatchDeadlineReserve
 	singleCheckBatchDeadlineReserve = 250 * time.Millisecond
@@ -442,11 +442,11 @@ func TestClientBatchKeepsSmallDeadlineReserveForFullBatches(t *testing.T) {
 	}
 
 	got := gotDeadline.Load()
-	if got < 2600 {
-		t.Fatalf("DeadlineMS = %d, want small reserve for full batch", got)
+	if got >= 2250 {
+		t.Fatalf("DeadlineMS = %d, want reserve to leave about 1s for full batch", got)
 	}
-	if got >= 3000 {
-		t.Fatalf("DeadlineMS = %d, want less than caller deadline", got)
+	if got < 1900 {
+		t.Fatalf("DeadlineMS = %d, want reserve without excessive deadline loss", got)
 	}
 }
 

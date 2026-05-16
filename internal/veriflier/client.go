@@ -408,24 +408,12 @@ func (c *VeriflierClient) checkBatchV2(ctx context.Context, reqs []CheckRequest)
 	return results, nil
 }
 
-func checkBatchDeadlineReserve(reqs []CheckRequest) time.Duration {
+func checkBatchDeadlineReserve(_ []CheckRequest) time.Duration {
 	reserve := singleCheckBatchDeadlineReserve
-	if !allRequestsUseFullDetectionWork(reqs) && singleCheckLargeBatchDeadlineReserve > reserve {
+	if singleCheckLargeBatchDeadlineReserve > reserve {
 		reserve = singleCheckLargeBatchDeadlineReserve
 	}
 	return reserve
-}
-
-func allRequestsUseFullDetectionWork(reqs []CheckRequest) bool {
-	if len(reqs) == 0 {
-		return false
-	}
-	for _, req := range reqs {
-		if !usesFullDetectionWork(req) {
-			return false
-		}
-	}
-	return true
 }
 
 // Ping checks whether the Veriflier is reachable and returns its version.
