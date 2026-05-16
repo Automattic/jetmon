@@ -148,6 +148,7 @@ func TestExecutorDeadlineCancellationReturnsAgentOverloaded(t *testing.T) {
 
 func TestExecutorContextCancellationKeepsCompletedResults(t *testing.T) {
 	slowStarted := make(chan struct{})
+	fastReturned := make(chan struct{})
 	exec := NewExecutor(func(ctx context.Context, req CheckRequest) ProbeResult {
 		if req.BlogID == 2 {
 			close(slowStarted)
@@ -160,6 +161,7 @@ func TestExecutorContextCancellationKeepsCompletedResults(t *testing.T) {
 				ErrorCode: 1,
 			}, Outcome: OutcomeTimeout}
 		}
+		close(fastReturned)
 		return ProbeResult{CheckResult: CheckResult{
 			BlogID:    req.BlogID,
 			URL:       req.URL,
@@ -189,6 +191,11 @@ func TestExecutorContextCancellationKeepsCompletedResults(t *testing.T) {
 	case <-slowStarted:
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for slow check to start")
+	}
+	select {
+	case <-fastReturned:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for fast check to complete")
 	}
 	cancel()
 	out := <-done

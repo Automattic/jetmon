@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/Automattic/jetmon/internal/checkmode"
@@ -316,7 +317,9 @@ func operationalOverloadError(err error) bool {
 	}
 	var transportErr v2TransportError
 	if errors.As(err, &transportErr) {
-		return errors.Is(transportErr.err, io.EOF) || errors.Is(transportErr.err, io.ErrUnexpectedEOF)
+		return errors.Is(transportErr.err, io.EOF) ||
+			errors.Is(transportErr.err, io.ErrUnexpectedEOF) ||
+			errors.Is(transportErr.err, syscall.ECONNRESET)
 	}
 	return false
 }
