@@ -112,6 +112,40 @@ func TestExecutorContextCancellationReturnsTimeoutResult(t *testing.T) {
 	}
 }
 
+func TestExecutorDeadlineCancellationReturnsAgentOverloaded(t *testing.T) {
+	started := make(chan struct{})
+	exec := NewExecutor(func(ctx context.Context, req CheckRequest) ProbeResult {
+		close(started)
+		<-ctx.Done()
+		return ProbeResult{CheckResult: CheckResult{
+			BlogID:    req.BlogID,
+			URL:       req.URL,
+			RequestID: req.RequestID,
+			Success:   false,
+			ErrorCode: 1,
+		}, Outcome: OutcomeTimeout}
+	}, 1, 1)
+	defer exec.Shutdown()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	results, err := exec.ExecuteBatch(ctx, []CheckRequest{{BlogID: 1, URL: "https://example.com", RequestID: "req-1"}})
+	if err != nil {
+		t.Fatalf("ExecuteBatch() error = %v", err)
+	}
+	select {
+	case <-started:
+	default:
+		t.Fatal("check did not start")
+	}
+	if len(results) != 1 {
+		t.Fatalf("results len = %d, want 1", len(results))
+	}
+	if results[0].Success || results[0].Outcome != OutcomeAgentOverloaded || results[0].ErrorCode != 1 || results[0].RequestID != "req-1" {
+		t.Fatalf("deadline result = %+v, want agent_overloaded for req-1", results[0])
+	}
+}
+
 func TestExecutorContextCancellationKeepsCompletedResults(t *testing.T) {
 	slowStarted := make(chan struct{})
 	exec := NewExecutor(func(ctx context.Context, req CheckRequest) ProbeResult {

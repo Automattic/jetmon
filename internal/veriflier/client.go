@@ -30,7 +30,7 @@ type VeriflierClient struct {
 }
 
 var (
-	singleCheckBatchMaxSize              = 512
+	singleCheckBatchMaxSize              = 128
 	singleCheckFullBatchMaxSize          = 64
 	singleCheckBatchMaxDelay             = 2 * time.Millisecond
 	singleCheckBatchDeadlineReserve      = 250 * time.Millisecond
@@ -46,8 +46,9 @@ var (
 // The HTTP transport is tuned for the orchestrator's hot-path use: many
 // short-lived RPCs to the same verifier host during outage waves. Default
 // MaxIdleConnsPerHost=2 forces frequent reconnects under any concurrency above
-// 2; we raise it so the orchestrator's per-verifier escalation goroutines
-// reuse a small pool of warm connections.
+// 2; we raise it so the orchestrator's per-verifier escalation goroutines can
+// reuse warm connections even when client-side batches are intentionally kept
+// smaller to limit head-of-line blocking during flood tests.
 //
 // No client-level Timeout is set. Per-call deadlines come from the caller's
 // context (the orchestrator wraps each escalation with NET_COMMS_TIMEOUT +
@@ -61,8 +62,8 @@ func NewVeriflierClient(addr, authToken string) *VeriflierClient {
 			Timeout:   5 * time.Second,
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
-		MaxIdleConns:          100,
-		MaxIdleConnsPerHost:   20,
+		MaxIdleConns:          4096,
+		MaxIdleConnsPerHost:   1024,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   5 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,

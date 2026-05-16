@@ -285,6 +285,9 @@ func (e *Executor) worker(ctx context.Context) {
 			res := e.checkFn(jobCtx, job.req)
 			stopShutdownCancel()
 			cancel()
+			if shouldTreatResultAsOperationalOverload(job.ctx, res) {
+				res = agentOverloadedProbeResult(job.req)
+			}
 			e.observeDuration(time.Since(start))
 			if res.RequestID == "" {
 				res.RequestID = job.req.RequestID
@@ -310,6 +313,20 @@ func (e *Executor) worker(ctx context.Context) {
 			<-e.slots
 		}
 	}
+}
+
+func shouldTreatResultAsOperationalOverload(ctx context.Context, res ProbeResult) bool {
+	if ctx == nil || ctx.Err() == nil || res.Success {
+		return false
+	}
+	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return false
+	}
+	outcome := res.Outcome
+	if outcome == "" {
+		outcome = outcomeFromResult(res.CheckResult)
+	}
+	return outcome == OutcomeTimeout || res.ErrorCode == 1
 }
 
 func (e *Executor) observeDuration(d time.Duration) {

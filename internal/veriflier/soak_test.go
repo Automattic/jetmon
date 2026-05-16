@@ -219,8 +219,8 @@ func TestV2SoakDeadlineTimeoutThenRecovers(t *testing.T) {
 	if len(deadlineResp.Results) != 1 {
 		t.Fatalf("deadline results len = %d, want 1", len(deadlineResp.Results))
 	}
-	if deadlineResp.Results[0].Outcome != OutcomeTimeout || deadlineResp.Results[0].Success {
-		t.Fatalf("deadline result = %+v, want per-request timeout", deadlineResp.Results[0])
+	if deadlineResp.Results[0].Outcome != OutcomeAgentOverloaded || deadlineResp.Results[0].Success {
+		t.Fatalf("deadline result = %+v, want agent_overloaded non-vote", deadlineResp.Results[0])
 	}
 
 	waitForCapacity(t, client, func(c Capacity) bool {
