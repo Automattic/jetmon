@@ -38,14 +38,10 @@ var (
 	singleCheckBatchMaxDelay             = 2 * time.Millisecond
 	singleCheckBatchDeadlineReserve      = 250 * time.Millisecond
 	singleCheckLargeBatchDeadlineReserve = time.Second
-	// These are batch-flight caps, not check caps. At multi-million-check flood
-	// rates most elapsed time is remote probe I/O, so allowing more batches in
-	// flight keeps the Veriflier executor fed without changing alert semantics:
-	// deadline/overload pressure still returns agent_overloaded non-votes.
-	singleCheckLightBatchMaxFlight = 96
-	singleCheckFullBatchMaxFlight  = 64
-	singleCheckBatchQueueSize      = 32768
-	singleCheckFullBatchQueueSize  = 32768
+	singleCheckLightBatchMaxFlight       = 32
+	singleCheckFullBatchMaxFlight        = 32
+	singleCheckBatchQueueSize            = 32768
+	singleCheckFullBatchQueueSize        = 32768
 )
 
 var (
@@ -405,6 +401,10 @@ func (c *VeriflierClient) checkBatchLegacy(ctx context.Context, reqs []CheckRequ
 }
 
 func (c *VeriflierClient) checkBatchV2(ctx context.Context, reqs []CheckRequest) ([]CheckResult, error) {
+	type batchResp struct {
+		Results []CheckV2Result `json:"results"`
+	}
+
 	v2Reqs := make([]CheckV2Request, len(reqs))
 	for i := range reqs {
 		if reqs[i].RequestID == "" {
@@ -451,12 +451,12 @@ func (c *VeriflierClient) checkBatchV2(ctx context.Context, reqs []CheckRequest)
 		return nil, statusError{endpoint: "/v2/check", status: resp.StatusCode}
 	}
 
-	var br CheckV2BatchResponse
+	var br batchResp
 	if err := json.NewDecoder(resp.Body).Decode(&br); err != nil {
 		return nil, fmt.Errorf("decode veriflier v2 response: %w", err)
 	}
 
-	results := make([]CheckResult, len(br.Results))
+	results := make([]CheckResult, 0, len(br.Results))
 	var reqByRequestID map[string]CheckRequest
 	for i, res := range br.Results {
 		var orig CheckRequest
@@ -472,40 +472,20 @@ func (c *VeriflierClient) checkBatchV2(ctx context.Context, reqs []CheckRequest)
 				orig = reqs[i]
 			}
 		}
-		blogID := res.BlogID
-		if blogID == 0 {
-			blogID = orig.BlogID
-		}
-		url := res.URL
-		if url == "" {
-			url = orig.URL
-		}
-		requestID := res.RequestID
-		if requestID == "" {
-			requestID = orig.RequestID
-		}
-		vantageID := res.VantageID
-		if vantageID == "" {
-			vantageID = br.Vantage.ID
-		}
-		agentID := res.AgentID
-		if agentID == "" {
-			agentID = br.Agent.ID
-		}
-		results[i] = CheckResult{
+		results = append(results, CheckResult{
 			MonitorSiteID: orig.MonitorSiteID,
-			BlogID:        blogID,
-			URL:           url,
-			Host:          vantageID,
-			VantageID:     vantageID,
-			AgentID:       agentID,
+			BlogID:        res.BlogID,
+			URL:           res.URL,
+			Host:          res.VantageID,
+			VantageID:     res.VantageID,
+			AgentID:       res.AgentID,
 			Outcome:       res.Outcome,
 			Success:       res.Success,
 			HTTPCode:      res.HTTPCode,
 			ErrorCode:     res.ErrorCode,
 			RTTMs:         res.RTTMs,
-			RequestID:     requestID,
-		}
+			RequestID:     res.RequestID,
+		})
 	}
 	return results, nil
 }

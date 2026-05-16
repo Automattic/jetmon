@@ -1333,9 +1333,6 @@ func TestClientPrefersV2WhenAvailable(t *testing.T) {
 	if res.Host != "edge-us-east" {
 		t.Fatalf("Host = %q, want v2 vantage identity", res.Host)
 	}
-	if res.URL != "https://example.com" {
-		t.Fatalf("URL = %q, want original request URL filled from compact v2 response", res.URL)
-	}
 	if res.VantageID != "edge-us-east" || res.AgentID != "agent-1" || res.Outcome != OutcomeUp {
 		t.Fatalf("v2 identity = vantage:%q agent:%q outcome:%q", res.VantageID, res.AgentID, res.Outcome)
 	}
