@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -795,6 +796,26 @@ func TestClientCheckUsesSmallerBatchesForFullDetectionWork(t *testing.T) {
 	}
 	if maxBatch.Load() > int32(singleCheckFullBatchMaxSize) {
 		t.Fatalf("max batch size = %d, want <= full cap %d", maxBatch.Load(), singleCheckFullBatchMaxSize)
+	}
+}
+
+func TestDefaultLightBatchFlightScalesWithCPUWithinBounds(t *testing.T) {
+	orig := runtime.GOMAXPROCS(0)
+	defer runtime.GOMAXPROCS(orig)
+
+	runtime.GOMAXPROCS(1)
+	if got := defaultSingleCheckLightBatchMaxFlight(); got != 32 {
+		t.Fatalf("flight for 1 proc = %d, want 32 minimum", got)
+	}
+
+	runtime.GOMAXPROCS(4)
+	if got := defaultSingleCheckLightBatchMaxFlight(); got != 64 {
+		t.Fatalf("flight for 4 procs = %d, want 64", got)
+	}
+
+	runtime.GOMAXPROCS(64)
+	if got := defaultSingleCheckLightBatchMaxFlight(); got != 128 {
+		t.Fatalf("flight for 64 procs = %d, want 128 cap", got)
 	}
 }
 
