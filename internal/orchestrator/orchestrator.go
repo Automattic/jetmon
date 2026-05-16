@@ -66,8 +66,9 @@ const minPostFalseAlarmTransientFailureWindow = 5 * time.Minute
 const maxPostFalseAlarmTransientFailureWindow = 10 * time.Minute
 const verifierOperationalBackoffBase = 15 * time.Second
 const verifierOperationalBackoffMax = 2 * time.Minute
-const verifierOperationalCooldownBase = 2 * time.Second
-const verifierOperationalCooldownMax = 30 * time.Second
+const verifierOperationalCooldownBase = 30 * time.Second
+const verifierOperationalCooldownMax = 2 * time.Minute
+const verifierOperationalCooldownMemory = 10 * time.Minute
 const wpcomPermanentFailureLogInterval = 10 * time.Second
 
 // VariableIntervalPollInterval returns the idle scheduler poll interval used
@@ -3301,14 +3302,19 @@ func (o *Orchestrator) availableVeriflierClients(clients []*veriflier.VeriflierC
 	for _, client := range clients {
 		addr := client.Addr()
 		cooldown, ok := o.veriflierCooldowns[addr]
-		if !ok || !now.Before(cooldown.until.UTC()) {
-			if ok {
-				delete(o.veriflierCooldowns, addr)
-			}
+		if !ok {
 			out = append(out, client)
 			continue
 		}
-		skipped++
+		until := cooldown.until.UTC()
+		if now.Before(until) {
+			skipped++
+			continue
+		}
+		if verifierOperationalCooldownMemory > 0 && now.Sub(until) > verifierOperationalCooldownMemory {
+			delete(o.veriflierCooldowns, addr)
+		}
+		out = append(out, client)
 	}
 	return out, skipped
 }

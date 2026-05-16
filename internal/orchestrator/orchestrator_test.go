@@ -1098,11 +1098,21 @@ func TestHandleFailureBacksOffVerifierAfterOperationalNonVotes(t *testing.T) {
 
 	now = firstDeferredUntil.Add(time.Second)
 	o.handleFailure(site, failureAt())
-	if got := calls.Load(); got != 2 {
-		t.Fatalf("verifier calls after deferral expires = %d, want 2", got)
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("verifier calls while verifier cooldown is still active = %d, want still 1", got)
 	}
-	if got := o.retries.get(659).verifierDeferrals; got != 2 {
-		t.Fatalf("verifier deferrals = %d, want 2 after second operational non-vote", got)
+	entry = o.retries.get(659)
+	if entry == nil || entry.verifierDeferrals != 2 {
+		t.Fatalf("retry entry after cooldown skip = %+v, want two deferrals", entry)
+	}
+
+	now = entry.verifierDeferredUntil.Add(time.Second)
+	o.handleFailure(site, failureAt())
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("verifier calls after deferral and cooldown expire = %d, want 2", got)
+	}
+	if got := o.retries.get(659).verifierDeferrals; got != 3 {
+		t.Fatalf("verifier deferrals = %d, want 3 after second operational non-vote", got)
 	}
 }
 
@@ -1171,6 +1181,45 @@ func TestHandleFailureSkipsVerifierDuringOperationalCooldown(t *testing.T) {
 	o.handleFailure(db.Site{BlogID: 662, MonitorURL: "https://example.com/c", CheckInterval: 1, SiteStatus: statusRunning}, failureAt(662))
 	if got := calls.Load(); got != 2 {
 		t.Fatalf("verifier calls after cooldown expires = %d, want 2", got)
+	}
+}
+
+func TestVeriflierOperationalCooldownRetainsFailureHistoryUntilHealthy(t *testing.T) {
+	o := &Orchestrator{}
+	now := time.Date(2026, 5, 16, 14, 0, 0, 0, time.UTC)
+	client := veriflier.NewVeriflierClient("v1", "")
+
+	if got := o.markVeriflierOperationalFailure("v1", now); got != verifierOperationalCooldownBase {
+		t.Fatalf("first cooldown = %s, want %s", got, verifierOperationalCooldownBase)
+	}
+	clients, skipped := o.availableVeriflierClients([]*veriflier.VeriflierClient{client}, now.Add(verifierOperationalCooldownBase+time.Second))
+	if skipped != 0 || len(clients) != 1 {
+		t.Fatalf("available after cooldown = len %d skipped %d, want one available", len(clients), skipped)
+	}
+	if got := o.markVeriflierOperationalFailure("v1", now.Add(verifierOperationalCooldownBase+2*time.Second)); got != 2*verifierOperationalCooldownBase {
+		t.Fatalf("second cooldown = %s, want %s", got, 2*verifierOperationalCooldownBase)
+	}
+
+	o.markVeriflierHealthy("v1")
+	if got := o.markVeriflierOperationalFailure("v1", now.Add(time.Hour)); got != verifierOperationalCooldownBase {
+		t.Fatalf("cooldown after healthy vote = %s, want reset to %s", got, verifierOperationalCooldownBase)
+	}
+}
+
+func TestAvailableVeriflierClientsForgetsStaleCooldownHistory(t *testing.T) {
+	o := &Orchestrator{}
+	now := time.Date(2026, 5, 16, 14, 30, 0, 0, time.UTC)
+	client := veriflier.NewVeriflierClient("v1", "")
+
+	if got := o.markVeriflierOperationalFailure("v1", now); got != verifierOperationalCooldownBase {
+		t.Fatalf("first cooldown = %s, want %s", got, verifierOperationalCooldownBase)
+	}
+	clients, skipped := o.availableVeriflierClients([]*veriflier.VeriflierClient{client}, now.Add(verifierOperationalCooldownBase+verifierOperationalCooldownMemory+time.Second))
+	if skipped != 0 || len(clients) != 1 {
+		t.Fatalf("available after stale cooldown = len %d skipped %d, want one available", len(clients), skipped)
+	}
+	if got := o.markVeriflierOperationalFailure("v1", now.Add(time.Hour)); got != verifierOperationalCooldownBase {
+		t.Fatalf("cooldown after stale memory = %s, want %s", got, verifierOperationalCooldownBase)
 	}
 }
 
