@@ -258,6 +258,83 @@ func TestClientBatchRoundTrip(t *testing.T) {
 	}
 }
 
+func TestClientBatchRetriesTransientV2GatewayError(t *testing.T) {
+	var attempts atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/check" {
+			http.NotFound(w, r)
+			return
+		}
+		if attempts.Add(1) == 1 {
+			http.Error(w, "bad gateway", http.StatusBadGateway)
+			return
+		}
+
+		var req CheckV2BatchRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		results := make([]CheckV2Result, 0, len(req.Requests))
+		for _, check := range req.Requests {
+			results = append(results, CheckV2Result{
+				RequestID: check.RequestID,
+				BlogID:    check.BlogID,
+				URL:       check.URL,
+				VantageID: "test-vantage",
+				AgentID:   "test-agent",
+				Outcome:   OutcomeUp,
+				Success:   true,
+				HTTPCode:  200,
+			})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(CheckV2BatchResponse{Results: results})
+	}))
+	defer ts.Close()
+
+	client := NewVeriflierClient(ts.Listener.Addr().String(), "secret")
+	client.setProtocol(ProtocolV2)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	res, err := client.CheckBatch(ctx, []CheckRequest{{BlogID: 10, URL: "https://example.com"}})
+	if err != nil {
+		t.Fatalf("CheckBatch() error = %v", err)
+	}
+	if attempts.Load() != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts.Load())
+	}
+	if len(res) != 1 || !res[0].Success || res[0].BlogID != 10 {
+		t.Fatalf("unexpected result: %#v", res)
+	}
+}
+
+func TestClientBatchDoesNotRetryV2Overload(t *testing.T) {
+	var attempts atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/check" {
+			http.NotFound(w, r)
+			return
+		}
+		attempts.Add(1)
+		http.Error(w, "overloaded", http.StatusServiceUnavailable)
+	}))
+	defer ts.Close()
+
+	client := NewVeriflierClient(ts.Listener.Addr().String(), "secret")
+	_, err := client.CheckBatch(context.Background(), []CheckRequest{{BlogID: 10, URL: "https://example.com"}})
+	if err == nil {
+		t.Fatal("CheckBatch() expected overload error")
+	}
+	if attempts.Load() != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts.Load())
+	}
+	if err.Error() != "veriflier /v2/check returned 503" {
+		t.Fatalf("CheckBatch() error = %v", err)
+	}
+}
+
 func TestClientBatchSendsServerDeadlineWithReserve(t *testing.T) {
 	origReserve := singleCheckBatchDeadlineReserve
 	origLargeReserve := singleCheckLargeBatchDeadlineReserve

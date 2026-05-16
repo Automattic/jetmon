@@ -108,9 +108,9 @@ func (c *VeriflierClient) CheckBatch(ctx context.Context, reqs []CheckRequest) (
 	case ProtocolLegacy:
 		return c.checkBatchLegacy(ctx, reqs)
 	case ProtocolV2:
-		return c.checkBatchV2(ctx, reqs)
+		return c.checkBatchV2(ctx, reqs, true)
 	default:
-		results, err := c.checkBatchV2(ctx, reqs)
+		results, err := c.checkBatchV2(ctx, reqs, false)
 		if err == nil {
 			c.setProtocol(ProtocolV2)
 			return results, nil
@@ -141,10 +141,13 @@ type singleCheckResponse struct {
 	err    error
 }
 
+type checkBatchV2Response struct {
+	Results []CheckV2Result `json:"results"`
+}
+
 type singleCheckBatcher struct {
 	client        *VeriflierClient
-	headIn        chan singleCheckCall
-	simpleIn      chan singleCheckCall
+	lightIn       chan singleCheckCall
 	fullIn        chan singleCheckCall
 	lightInFlight chan struct{}
 	fullInFlight  chan struct{}
@@ -153,27 +156,20 @@ type singleCheckBatcher struct {
 func newSingleCheckBatcher(client *VeriflierClient) *singleCheckBatcher {
 	b := &singleCheckBatcher{
 		client:        client,
-		headIn:        make(chan singleCheckCall, singleCheckBatchQueueSize),
-		simpleIn:      make(chan singleCheckCall, singleCheckBatchQueueSize),
+		lightIn:       make(chan singleCheckCall, singleCheckBatchQueueSize),
 		fullIn:        make(chan singleCheckCall, singleCheckFullBatchQueueSize),
 		lightInFlight: make(chan struct{}, singleCheckLightBatchMaxFlight),
 		fullInFlight:  make(chan struct{}, singleCheckFullBatchMaxFlight),
 	}
-	go b.run(b.headIn, singleCheckBatchMaxSize, b.lightInFlight)
-	go b.run(b.simpleIn, singleCheckBatchMaxSize, b.lightInFlight)
+	go b.run(b.lightIn, singleCheckBatchMaxSize, b.lightInFlight)
 	go b.run(b.fullIn, singleCheckFullBatchMaxSize, b.fullInFlight)
 	return b
 }
 
 func (b *singleCheckBatcher) submit(ctx context.Context, call singleCheckCall) error {
-	var in chan singleCheckCall
-	switch {
-	case usesFullDetectionWork(call.req):
+	in := b.lightIn
+	if usesFullDetectionWork(call.req) {
 		in = b.fullIn
-	case usesHEADProbe(call.req):
-		in = b.headIn
-	default:
-		in = b.simpleIn
 	}
 	select {
 	case in <- call:
@@ -223,14 +219,6 @@ func usesFullDetectionWork(req CheckRequest) bool {
 		profile = checkmode.ProfileFull
 	}
 	return checkmode.EffectiveProfile(method, profile) == checkmode.ProfileFull
-}
-
-func usesHEADProbe(req CheckRequest) bool {
-	method, err := checkmode.NormalizeMethod(req.Method, checkmode.MethodGET)
-	if err != nil {
-		method = checkmode.MethodGET
-	}
-	return method == checkmode.MethodHEAD
 }
 
 func (b *singleCheckBatcher) flush(batch []singleCheckCall) {
@@ -343,11 +331,7 @@ func (c *VeriflierClient) checkBatchLegacy(ctx context.Context, reqs []CheckRequ
 	return br.Results, nil
 }
 
-func (c *VeriflierClient) checkBatchV2(ctx context.Context, reqs []CheckRequest) ([]CheckResult, error) {
-	type batchResp struct {
-		Results []CheckV2Result `json:"results"`
-	}
-
+func (c *VeriflierClient) checkBatchV2(ctx context.Context, reqs []CheckRequest, retryTransient bool) ([]CheckResult, error) {
 	v2Reqs := make([]CheckV2Request, len(reqs))
 	reqByRequestID := make(map[string]CheckRequest, len(reqs))
 	for i := range reqs {
@@ -379,27 +363,27 @@ func (c *VeriflierClient) checkBatchV2(ctx context.Context, reqs []CheckRequest)
 	}
 
 	url := fmt.Sprintf("http://%s/v2/check", c.addr)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
+	var br checkBatchV2Response
+	var lastErr error
+	maxAttempts := 1
+	if retryTransient {
+		maxAttempts = 2
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+c.authToken)
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		br, err = c.doCheckBatchV2(ctx, url, body)
+		if err == nil {
+			lastErr = nil
+			break
+		}
+		lastErr = err
+		if attempt == maxAttempts-1 || !shouldRetryV2Batch(ctx, err) {
+			return nil, err
+		}
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
 
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, v2TransportError{endpoint: "/v2/check", err: err}
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, statusError{endpoint: "/v2/check", status: resp.StatusCode}
-	}
-
-	var br batchResp
-	if err := json.NewDecoder(resp.Body).Decode(&br); err != nil {
-		return nil, fmt.Errorf("decode veriflier v2 response: %w", err)
-	}
 	results := make([]CheckResult, 0, len(br.Results))
 	for i, res := range br.Results {
 		orig := reqByRequestID[res.RequestID]
@@ -422,6 +406,50 @@ func (c *VeriflierClient) checkBatchV2(ctx context.Context, reqs []CheckRequest)
 		})
 	}
 	return results, nil
+}
+
+func (c *VeriflierClient) doCheckBatchV2(ctx context.Context, url string, body []byte) (checkBatchV2Response, error) {
+	var br checkBatchV2Response
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return br, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+c.authToken)
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return br, v2TransportError{endpoint: "/v2/check", err: err}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return br, statusError{endpoint: "/v2/check", status: resp.StatusCode}
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&br); err != nil {
+		return br, fmt.Errorf("decode veriflier v2 response: %w", err)
+	}
+	return br, nil
+}
+
+func shouldRetryV2Batch(ctx context.Context, err error) bool {
+	if err == nil || ctx.Err() != nil {
+		return false
+	}
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < 250*time.Millisecond {
+		return false
+	}
+
+	var transportErr v2TransportError
+	if errors.As(err, &transportErr) {
+		return true
+	}
+	var status statusError
+	if errors.As(err, &status) {
+		return status.status == http.StatusBadGateway || status.status == http.StatusGatewayTimeout || status.status == http.StatusRequestTimeout
+	}
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
 }
 
 func checkBatchDeadlineReserve(_ []CheckRequest) time.Duration {
