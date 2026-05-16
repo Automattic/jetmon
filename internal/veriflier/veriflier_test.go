@@ -1220,11 +1220,8 @@ func TestServerHandleV2Check(t *testing.T) {
 		t.Fatalf("results len = %d, want 1", len(result.Results))
 	}
 	got := result.Results[0]
-	if got.RequestID != "req-1" {
-		t.Fatalf("result request id = %+v", got)
-	}
-	if got.VantageID != "" || got.AgentID != "" {
-		t.Fatalf("result duplicated batch identity: %+v", got)
+	if got.RequestID != "req-1" || got.VantageID != "test-vantage" || got.AgentID != "test-agent" {
+		t.Fatalf("result identity = %+v", got)
 	}
 	if got.Outcome != OutcomeDown || got.Success || got.HTTPCode != 500 || got.RTTMs != 123 {
 		t.Fatalf("result = %+v", got)

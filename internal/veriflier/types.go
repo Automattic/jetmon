@@ -130,9 +130,9 @@ type TimingsMS struct {
 type CheckV2Result struct {
 	RequestID string    `json:"request_id"`
 	BlogID    int64     `json:"blog_id"`
-	URL       string    `json:"url,omitempty"`
-	VantageID string    `json:"vantage_id,omitempty"`
-	AgentID   string    `json:"agent_id,omitempty"`
+	URL       string    `json:"url"`
+	VantageID string    `json:"vantage_id"`
+	AgentID   string    `json:"agent_id"`
 	Outcome   string    `json:"outcome"`
 	Success   bool      `json:"success"`
 	HTTPCode  int32     `json:"http_code"`

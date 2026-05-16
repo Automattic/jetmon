@@ -353,6 +353,9 @@ func (s *Server) v2Result(res ProbeResult) CheckV2Result {
 	return CheckV2Result{
 		RequestID: res.RequestID,
 		BlogID:    res.BlogID,
+		URL:       res.URL,
+		VantageID: s.vantage.ID,
+		AgentID:   s.agent.ID,
 		Outcome:   outcome,
 		Success:   res.Success,
 		HTTPCode:  res.HTTPCode,
