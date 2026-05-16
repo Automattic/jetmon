@@ -38,6 +38,7 @@ var (
 	singleCheckBatchMaxDelay             = 2 * time.Millisecond
 	singleCheckBatchDeadlineReserve      = 250 * time.Millisecond
 	singleCheckLargeBatchDeadlineReserve = time.Second
+	singleCheckBatchFlightWaitPoll       = 5 * time.Millisecond
 	singleCheckLightBatchMaxFlight       = 32
 	singleCheckFullBatchMaxFlight        = 32
 	singleCheckBatchQueueSize            = 32768
@@ -212,12 +213,57 @@ func (b *singleCheckBatcher) run(in <-chan singleCheckCall, maxBatchSize int, in
 		if !timer.Stop() && collecting {
 			<-timer.C
 		}
-		inFlight <- struct{}{}
+		var acquired bool
+		batch, acquired = waitForSingleCheckFlight(batch, inFlight)
+		if !acquired {
+			continue
+		}
 		go func() {
 			defer func() { <-inFlight }()
 			b.flush(batch)
 		}()
 	}
+}
+
+func waitForSingleCheckFlight(batch []singleCheckCall, inFlight chan struct{}) ([]singleCheckCall, bool) {
+	batch = pruneExpiredSingleCheckCalls(batch)
+	if len(batch) == 0 {
+		return nil, false
+	}
+	ticker := time.NewTicker(singleCheckBatchFlightWaitPoll)
+	defer ticker.Stop()
+	for {
+		select {
+		case inFlight <- struct{}{}:
+			batch = pruneExpiredSingleCheckCalls(batch)
+			if len(batch) == 0 {
+				<-inFlight
+				return nil, false
+			}
+			return batch, true
+		case <-ticker.C:
+			batch = pruneExpiredSingleCheckCalls(batch)
+			if len(batch) == 0 {
+				return nil, false
+			}
+		}
+	}
+}
+
+func pruneExpiredSingleCheckCalls(calls []singleCheckCall) []singleCheckCall {
+	kept := calls[:0]
+	for _, call := range calls {
+		if err := call.ctx.Err(); err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				call.respond(agentOverloadedCheckResult(call.req), nil)
+			} else {
+				call.respond(nil, err)
+			}
+			continue
+		}
+		kept = append(kept, call)
+	}
+	return kept
 }
 
 func usesFullDetectionWork(req CheckRequest) bool {

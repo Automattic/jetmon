@@ -899,6 +899,51 @@ func TestClientCheckKeepsLightLaneMovingDuringFullBatch(t *testing.T) {
 	}
 }
 
+func TestSingleCheckBatcherPrunesExpiredCallsWhileWaitingForFlight(t *testing.T) {
+	origPoll := singleCheckBatchFlightWaitPoll
+	singleCheckBatchFlightWaitPoll = time.Millisecond
+	defer func() { singleCheckBatchFlightWaitPoll = origPoll }()
+
+	inFlight := make(chan struct{}, 1)
+	inFlight <- struct{}{}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+	defer cancel()
+	resp := make(chan singleCheckResponse, 1)
+	batch := []singleCheckCall{{
+		ctx: ctx,
+		req: CheckRequest{
+			BlogID:    42,
+			URL:       "https://example.com",
+			RequestID: "req-42",
+		},
+		resp: resp,
+	}}
+
+	kept, acquired := waitForSingleCheckFlight(batch, inFlight)
+	if acquired {
+		t.Fatal("expired batch should not acquire an in-flight slot")
+	}
+	if len(kept) != 0 {
+		t.Fatalf("kept calls = %d, want 0", len(kept))
+	}
+	if len(inFlight) != 1 {
+		t.Fatalf("in-flight slots = %d, want still occupied by caller", len(inFlight))
+	}
+
+	select {
+	case got := <-resp:
+		if got.err != nil {
+			t.Fatalf("expired call returned error = %v, want agent_overloaded result", got.err)
+		}
+		if got.result == nil || got.result.Outcome != OutcomeAgentOverloaded || got.result.RequestID != "req-42" {
+			t.Fatalf("expired call result = %+v, want agent_overloaded for req-42", got.result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expired call was not answered while waiting for flight")
+	}
+}
+
 func TestClientRejectsUnauthorized(t *testing.T) {
 	_, ts := newTestServer(func(req CheckRequest) CheckResult { return CheckResult{} })
 	defer ts.Close()
