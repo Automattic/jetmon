@@ -393,11 +393,13 @@ Evidence:
 
 - [ ] Owner: `Jetmon`, `Systems` - Run an end-to-end MariaDB 11.4 runtime
   exercise against versions matching the production patch range. Migration
-  smoke on `mariadb:11.4.8` and `mariadb:11.4.10` is useful evidence, but the
-  rollout gate must also exercise runtime write paths.
+  smoke on `mariadb:11.4.8` and `mariadb:11.4.10` is covered by
+  `make migration-smoke`, but the rollout gate must also exercise runtime write
+  paths.
 - [ ] Owner: `Jetmon`, `Systems` - Include bucket claiming, runtime freshness
   writes, SSL expiry updates, `ON DUPLICATE KEY UPDATE ... VALUES(...)`, and
-  webhook / alert delivery row claims in the MariaDB runtime exercise.
+  webhook / alert delivery row claims in the MariaDB runtime exercise. Local
+  delivery row-claim lock behavior is covered by `make delivery-claim-smoke`.
 - [ ] Owner: `Jetmon` - Add or open follow-up tracking for scheduled
   `jetmon_site_safety_flags` reporting so unsafe legacy row counts and runtime
   probe-safety blocks are visible before and after API rejection rolls out.
