@@ -801,7 +801,12 @@ func monitorProcessHealthSnapshot(hostname string, startedAt time.Time, state st
 	if st.UpdatedAt.IsZero() {
 		st.UpdatedAt = time.Now().UTC()
 	}
-	bucketMin, bucketMax := st.BucketMin, st.BucketMax
+	var bucketMinPtr, bucketMaxPtr *int
+	if st.BucketMin >= 0 && st.BucketMax >= st.BucketMin {
+		bucketMin, bucketMax := st.BucketMin, st.BucketMax
+		bucketMinPtr = &bucketMin
+		bucketMaxPtr = &bucketMax
+	}
 	apiPort, dashboardPort := cfg.APIPort, cfg.DashboardPort
 	healthStatus := dashboard.SummarizeHost(st, health).Status
 	if state == fleethealth.StateStopping || state == fleethealth.StateStopped {
@@ -818,8 +823,8 @@ func monitorProcessHealthSnapshot(hostname string, startedAt time.Time, state st
 		HealthStatus:              healthStatus,
 		StartedAt:                 startedAt,
 		UpdatedAt:                 time.Now().UTC(),
-		BucketMin:                 &bucketMin,
-		BucketMax:                 &bucketMax,
+		BucketMin:                 bucketMinPtr,
+		BucketMax:                 bucketMaxPtr,
 		BucketOwnership:           st.BucketOwnership,
 		APIPort:                   &apiPort,
 		DashboardPort:             &dashboardPort,

@@ -690,6 +690,21 @@ func TestMonitorProcessHealthSnapshot(t *testing.T) {
 	}
 }
 
+func TestMonitorProcessHealthSnapshotOmitsInactiveBucketRange(t *testing.T) {
+	started := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
+	cfg := &config.Config{APIPort: 8090, DashboardPort: 8080}
+	st := dashboard.State{
+		BucketMin:       0,
+		BucketMax:       -1,
+		BucketOwnership: "rollout_mode=api-controlled standby",
+	}
+
+	snapshot := monitorProcessHealthSnapshot("host-a", started, fleethealth.StateRunning, cfg, st, nil)
+	if snapshot.BucketMin != nil || snapshot.BucketMax != nil {
+		t.Fatalf("bucket range = %v-%v, want nils for inactive range", snapshot.BucketMin, snapshot.BucketMax)
+	}
+}
+
 func TestDashboardListenAddrDefaultsLocalhost(t *testing.T) {
 	cfg := &config.Config{DashboardPort: 8080}
 	if got := dashboardListenAddr(cfg); got != "127.0.0.1:8080" {
