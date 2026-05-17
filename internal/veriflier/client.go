@@ -77,6 +77,12 @@ func NewVeriflierClient(addr, authToken string) *VeriflierClient {
 		TLSHandshakeTimeout:   5 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 		ForceAttemptHTTP2:     true,
+		HTTP2: &http.HTTP2Config{
+			StrictMaxConcurrentRequests: true,
+			SendPingTimeout:             30 * time.Second,
+			PingTimeout:                 5 * time.Second,
+			WriteByteTimeout:            5 * time.Second,
+		},
 	}
 	return &VeriflierClient{
 		addr:       addr,
