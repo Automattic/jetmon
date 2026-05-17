@@ -40,6 +40,9 @@ func newCaptureServer() *captureServer {
 
 func (c *captureServer) URL() string { return c.srv.URL }
 func (c *captureServer) Close()      { c.srv.Close() }
+func (c *captureServer) Client() *http.Client {
+	return c.srv.Client()
+}
 
 // ─── PagerDuty ────────────────────────────────────────────────────────
 
@@ -47,7 +50,7 @@ func TestPagerDutyTriggerHappyPath(t *testing.T) {
 	cap := newCaptureServer()
 	defer cap.Close()
 
-	d := &PagerDutyDispatcher{Endpoint: cap.URL()}
+	d := &PagerDutyDispatcher{Endpoint: cap.URL(), HTTPClient: cap.Client()}
 	dest := json.RawMessage(`{"integration_key":"PDKEY"}`)
 	n := makeTestNotification()
 
@@ -84,7 +87,7 @@ func TestPagerDutyResolveOnRecovery(t *testing.T) {
 	cap := newCaptureServer()
 	defer cap.Close()
 
-	d := &PagerDutyDispatcher{Endpoint: cap.URL()}
+	d := &PagerDutyDispatcher{Endpoint: cap.URL(), HTTPClient: cap.Client()}
 	n := makeTestNotification()
 	n.Recovery = true
 	n.Severity = eventstore.SeverityUp
@@ -108,7 +111,7 @@ func TestPagerDutyTestUsesDistinctDedupKey(t *testing.T) {
 	cap := newCaptureServer()
 	defer cap.Close()
 
-	d := &PagerDutyDispatcher{Endpoint: cap.URL()}
+	d := &PagerDutyDispatcher{Endpoint: cap.URL(), HTTPClient: cap.Client()}
 	n := makeTestNotification()
 	n.IsTest = true
 
@@ -157,7 +160,7 @@ func TestPagerDutySurfacesUpstreamError(t *testing.T) {
 	cap.respBody = `{"error":"missing routing_key"}`
 	defer cap.Close()
 
-	d := &PagerDutyDispatcher{Endpoint: cap.URL()}
+	d := &PagerDutyDispatcher{Endpoint: cap.URL(), HTTPClient: cap.Client()}
 	status, body, err := d.Send(context.Background(), json.RawMessage(`{"integration_key":"K"}`), makeTestNotification())
 	if err == nil {
 		t.Fatal("expected error on 400")
@@ -176,7 +179,7 @@ func TestSlackHappyPath(t *testing.T) {
 	cap := newCaptureServer()
 	defer cap.Close()
 
-	d := &SlackDispatcher{}
+	d := &SlackDispatcher{HTTPClient: cap.Client()}
 	dest, _ := json.Marshal(slackDestination{WebhookURL: cap.URL()})
 
 	status, _, err := d.Send(context.Background(), dest, makeTestNotification())
@@ -210,7 +213,7 @@ func TestSlackRecoveryHeader(t *testing.T) {
 	cap := newCaptureServer()
 	defer cap.Close()
 
-	d := &SlackDispatcher{}
+	d := &SlackDispatcher{HTTPClient: cap.Client()}
 	dest, _ := json.Marshal(slackDestination{WebhookURL: cap.URL()})
 	n := makeTestNotification()
 	n.Recovery = true
@@ -229,7 +232,7 @@ func TestSlackTestHeader(t *testing.T) {
 	cap := newCaptureServer()
 	defer cap.Close()
 
-	d := &SlackDispatcher{}
+	d := &SlackDispatcher{HTTPClient: cap.Client()}
 	dest, _ := json.Marshal(slackDestination{WebhookURL: cap.URL()})
 	n := makeTestNotification()
 	n.IsTest = true
@@ -249,6 +252,7 @@ func TestSlackRejectsBadDestination(t *testing.T) {
 	for _, dest := range []json.RawMessage{
 		json.RawMessage(`{}`),
 		json.RawMessage(`{"webhook_url":""}`),
+		json.RawMessage(`{"webhook_url":"http://127.0.0.1/hook"}`),
 		json.RawMessage(`not json`),
 	} {
 		if _, _, err := d.Send(context.Background(), dest, makeTestNotification()); err == nil {
@@ -263,7 +267,7 @@ func TestTeamsHappyPath(t *testing.T) {
 	cap := newCaptureServer()
 	defer cap.Close()
 
-	d := &TeamsDispatcher{}
+	d := &TeamsDispatcher{HTTPClient: cap.Client()}
 	dest, _ := json.Marshal(teamsDestination{WebhookURL: cap.URL()})
 
 	status, _, err := d.Send(context.Background(), dest, makeTestNotification())
@@ -306,7 +310,7 @@ func TestTeamsRecoveryHeader(t *testing.T) {
 	cap := newCaptureServer()
 	defer cap.Close()
 
-	d := &TeamsDispatcher{}
+	d := &TeamsDispatcher{HTTPClient: cap.Client()}
 	dest, _ := json.Marshal(teamsDestination{WebhookURL: cap.URL()})
 	n := makeTestNotification()
 	n.Recovery = true
@@ -324,6 +328,7 @@ func TestTeamsRejectsBadDestination(t *testing.T) {
 	for _, dest := range []json.RawMessage{
 		json.RawMessage(`{}`),
 		json.RawMessage(`{"webhook_url":""}`),
+		json.RawMessage(`{"webhook_url":"http://127.0.0.1/hook"}`),
 		json.RawMessage(`not json`),
 	} {
 		if _, _, err := d.Send(context.Background(), dest, makeTestNotification()); err == nil {

@@ -171,6 +171,8 @@ type checkResultPayload struct {
 // a hung target site doesn't pin a connection forever.
 const triggerNowTimeout = 30 * time.Second
 
+var triggerNowEnforceTargetSafety = true
+
 // handleTriggerNow implements POST /api/v1/sites/{id}/trigger-now.
 //
 // Runs a single HTTP check inline using the checker package, returns the
@@ -224,13 +226,14 @@ func (s *Server) handleTriggerNow(w http.ResponseWriter, r *http.Request) {
 	profile := site.effectiveDetectionProfile(method)
 
 	req := checker.Request{
-		BlogID:           siteID,
-		URL:              site.monitorURL,
-		Method:           method,
-		DetectionProfile: profile,
-		TimeoutSeconds:   timeoutSec,
-		CustomHeaders:    headers,
-		RedirectPolicy:   checker.RedirectFollow,
+		BlogID:              siteID,
+		URL:                 site.monitorURL,
+		Method:              method,
+		DetectionProfile:    profile,
+		TimeoutSeconds:      timeoutSec,
+		CustomHeaders:       headers,
+		RedirectPolicy:      checker.RedirectFollow,
+		EnforceTargetSafety: triggerNowEnforceTargetSafety,
 	}
 	if profile == checkmode.ProfileFull {
 		req.Keyword = site.checkKeywordPtr()

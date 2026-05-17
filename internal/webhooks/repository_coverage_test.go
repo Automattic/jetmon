@@ -86,6 +86,9 @@ func TestCreateWebhookRejectsInvalidInputBeforeDB(t *testing.T) {
 	if _, _, err := Create(context.Background(), db, CreateInput{}); err == nil {
 		t.Fatal("Create accepted an empty URL")
 	}
+	if _, _, err := Create(context.Background(), db, CreateInput{URL: "http://127.0.0.1/hook"}); err == nil {
+		t.Fatal("Create accepted an unsafe URL")
+	}
 	if _, _, err := Create(context.Background(), db, CreateInput{
 		URL:    "https://consumer.example/hook",
 		Events: []string{"event.bogus"},
@@ -262,6 +265,22 @@ func TestUpdateWebhookAppliesPatchAndFetchesRecord(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestUpdateWebhookRejectsUnsafeURLBeforeDB(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	url := "http://127.0.0.1/hook"
+	if _, err := Update(context.Background(), db, 5, UpdateInput{URL: &url}); err == nil {
+		t.Fatal("Update accepted an unsafe URL")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unexpected sql calls: %v", err)
 	}
 }
 

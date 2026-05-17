@@ -1369,6 +1369,7 @@ func rolloutCheckRequest(cfg *config.Config, site jetdb.Site, mode rolloutModeSp
 		BodyReadMaxBytes:    1048576,
 		BodyReadMaxMS:       250,
 		KeywordReadMaxBytes: 1048576,
+		EnforceTargetSafety: true,
 	}
 	if cfg != nil {
 		req.BodyReadMaxBytes = cfg.BodyReadMaxBytes

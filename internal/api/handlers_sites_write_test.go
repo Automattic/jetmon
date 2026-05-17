@@ -2,8 +2,10 @@ package api
 
 import (
 	"bytes"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -404,6 +406,14 @@ func TestValidateMonitorURL(t *testing.T) {
 		{"ftp://example.com", false},
 		{"http://", false}, // empty host
 		{"https:///path", false},
+		{"http://localhost", false},
+		{"http://127.0.0.1", false},
+		{"http://[::1]/", false},
+		{"http://169.254.169.254/latest/meta-data/", false},
+		{"http://10.0.0.1", false},
+		{"https://adonislounge.local/nyc", false},
+		{"http://host.docker.internal:99", false},
+		{"http://user@example.com", false},
 	}
 	for _, c := range cases {
 		err := validateMonitorURL(c.in)
@@ -435,6 +445,37 @@ func TestEncodeCustomHeaders(t *testing.T) {
 	bad := map[string]string{"": "bad"}
 	if _, err := encodeCustomHeaders(&bad); err == nil {
 		t.Error("empty header name should error")
+	}
+}
+
+func TestEncodeCustomHeadersRejectsUnsafeNamesAndValues(t *testing.T) {
+	cases := []map[string]string{
+		{"X-Bad\r\nInjected": "1"},
+		{"Connection": "close"},
+		{"Transfer-Encoding": "chunked"},
+		{"Host": "other.example"},
+		{"X-Value": "ok\r\nX-Injected: yes"},
+		{"X-Null": "ok\x00bad"},
+	}
+	for _, headers := range cases {
+		if _, err := encodeCustomHeaders(&headers); err == nil {
+			t.Fatalf("encodeCustomHeaders(%#v) error = nil, want rejection", headers)
+		}
+	}
+}
+
+func TestEncodeCustomHeadersRejectsLargeInput(t *testing.T) {
+	tooMany := make(map[string]string, maxCustomHeaders+1)
+	for i := 0; i < maxCustomHeaders+1; i++ {
+		tooMany[fmt.Sprintf("X-Test-%d", i)] = "ok"
+	}
+	if _, err := encodeCustomHeaders(&tooMany); err == nil {
+		t.Fatal("encodeCustomHeaders() error = nil for too many headers")
+	}
+
+	largeValue := map[string]string{"X-Large": strings.Repeat("a", maxCustomHeaderValueBytes+1)}
+	if _, err := encodeCustomHeaders(&largeValue); err == nil {
+		t.Fatal("encodeCustomHeaders() error = nil for oversized value")
 	}
 }
 

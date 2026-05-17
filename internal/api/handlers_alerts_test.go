@@ -158,6 +158,7 @@ func TestCreateAlertContactRejectsMissingDestinationFields(t *testing.T) {
 	}{
 		{`{"label":"x","transport":"email","destination":{}}`, "invalid_alert_contact"},
 		{`{"label":"x","transport":"slack","destination":{"webhook_url":""}}`, "invalid_alert_contact"},
+		{`{"label":"x","transport":"slack","destination":{"webhook_url":"http://127.0.0.1/hook"}}`, "invalid_alert_contact"},
 		{`{"label":"","transport":"slack","destination":{"webhook_url":"https://x"}}`, "invalid_alert_contact"},
 	}
 	for _, c := range cases {

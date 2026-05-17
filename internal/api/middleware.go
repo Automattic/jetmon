@@ -160,6 +160,13 @@ func (s *Server) requireScope(required apikeys.Scope, h http.HandlerFunc) http.H
 	}
 }
 
+func (s *Server) withJSONBodyLimit(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, maxAPIJSONBodyBytes)
+		h(w, r)
+	}
+}
+
 func parseGatewayContext(r *http.Request, key *apikeys.Key) (*gatewayContext, int, string, string) {
 	hasContext := false
 	for _, h := range []string{

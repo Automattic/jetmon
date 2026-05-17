@@ -188,6 +188,34 @@ func TestIdempotencyMiddlewareConflictOnDifferentBody(t *testing.T) {
 	}
 }
 
+func TestIdempotencyMiddlewareRejectsOversizedJSONBody(t *testing.T) {
+	s, _, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	called := 0
+	wrapped := s.withJSONBodyLimit(s.withIdempotency(func(w http.ResponseWriter, r *http.Request) {
+		called++
+		w.WriteHeader(http.StatusCreated)
+	}))
+
+	req := requestWithKey("POST", "/", key)
+	req.Header.Set(idempotencyHeader, "too-large")
+	req.Body = bodyReader(bytes.Repeat([]byte("a"), maxAPIJSONBodyBytes+1))
+	rec := httptest.NewRecorder()
+	wrapped(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413; body=%s", rec.Code, rec.Body.String())
+	}
+	if called != 0 {
+		t.Fatalf("handler called %d times, want 0", called)
+	}
+	body := readErrorBody(t, rec.Body)
+	if body.Code != "request_body_too_large" {
+		t.Fatalf("error code = %q, want request_body_too_large", body.Code)
+	}
+}
+
 func TestIdempotencyMiddlewareIsolatesByKeyID(t *testing.T) {
 	// Two different API keys with the same idempotency string don't share
 	// cached entries — the cache key includes the API key id.

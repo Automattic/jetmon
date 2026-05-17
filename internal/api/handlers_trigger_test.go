@@ -13,6 +13,13 @@ const readSiteForCheckSQL = ` SELECT s.monitor_url, c.timeout_seconds, c.check_k
 
 var columnsSiteForCheck = []string{"monitor_url", "timeout_seconds", "check_keyword", "forbidden_keyword", "forbidden_keywords", "custom_headers", "redirect_policy", "request_method", "detection_profile", "site_status"}
 
+func allowUnsafeTriggerTargetsForTest(t *testing.T) {
+	t.Helper()
+	old := triggerNowEnforceTargetSafety
+	triggerNowEnforceTargetSafety = false
+	t.Cleanup(func() { triggerNowEnforceTargetSafety = old })
+}
+
 func TestTriggerNowSiteNotFound(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
@@ -35,6 +42,8 @@ func TestTriggerNowSiteNotFound(t *testing.T) {
 }
 
 func TestTriggerNowSuccessNoActiveEvents(t *testing.T) {
+	allowUnsafeTriggerTargetsForTest(t)
+
 	// Spin up a fake target that returns 200 OK so checker.Check returns success.
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -74,6 +83,8 @@ func TestTriggerNowSuccessNoActiveEvents(t *testing.T) {
 }
 
 func TestTriggerNowForbiddenKeywordFailsCheck(t *testing.T) {
+	allowUnsafeTriggerTargetsForTest(t)
+
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("OK FORBIDDEN OK"))
@@ -109,6 +120,8 @@ func TestTriggerNowForbiddenKeywordFailsCheck(t *testing.T) {
 }
 
 func TestTriggerNowWithGatewayTenantAllowsMappedSite(t *testing.T) {
+	allowUnsafeTriggerTargetsForTest(t)
+
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -146,6 +159,8 @@ func TestTriggerNowWithGatewayTenantAllowsMappedSite(t *testing.T) {
 }
 
 func TestTriggerNowSuccessClosesActiveEvent(t *testing.T) {
+	allowUnsafeTriggerTargetsForTest(t)
+
 	// Same as above but with one active event that should be closed
 	// with reason=probe_cleared on success.
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -180,6 +195,38 @@ func TestTriggerNowSuccessClosesActiveEvent(t *testing.T) {
 	}
 	if resp.CurrentState != "Up" {
 		t.Errorf("current_state = %q, want Up after close-on-success", resp.CurrentState)
+	}
+}
+
+func TestTriggerNowUnsafeStoredURLIsProbeSafetyBlock(t *testing.T) {
+	s, mock, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	mock.ExpectQuery(readSiteForCheckSQL).WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows(columnsSiteForCheck).
+			AddRow("http://127.0.0.1/admin", nil, nil, nil, nil, nil, "follow", nil, nil, 2))
+
+	req := httptest.NewRequest("POST", "/api/v1/sites/42/trigger-now", nil)
+	req.SetPathValue("id", "42")
+	req = setAuthCtx(req, key)
+	rec := invokeAuthed(s, req, s.handleTriggerNow)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp triggerNowResponse
+	readJSON(t, rec.Body, &resp)
+	if resp.Result.ErrorCode != checker.ErrorProbeSafety {
+		t.Fatalf("error_code = %d, want %d", resp.Result.ErrorCode, checker.ErrorProbeSafety)
+	}
+	if resp.Result.Success {
+		t.Fatalf("success = true, want false for probe safety block")
+	}
+	if len(resp.ActiveEventsClosed) != 0 {
+		t.Fatalf("active_events_closed = %v, want empty", resp.ActiveEventsClosed)
+	}
+	if resp.CurrentState != "Down" {
+		t.Fatalf("current_state = %q, want unchanged Down", resp.CurrentState)
 	}
 }
 

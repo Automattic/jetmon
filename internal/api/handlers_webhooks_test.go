@@ -101,6 +101,7 @@ func TestCreateWebhookRejectsBadURL(t *testing.T) {
 		[]byte(`{"url":""}`),
 		[]byte(`{"url":"not-a-url"}`),
 		[]byte(`{"url":"ftp://example.com"}`),
+		[]byte(`{"url":"http://127.0.0.1/hook"}`),
 	}
 	for _, body := range cases {
 		req := newPOSTWithBody("/api/v1/webhooks", body)
