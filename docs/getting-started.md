@@ -120,10 +120,12 @@ make api-cli-smoke
 ```
 
 Run the fuller live validation pass against the guide examples, local failure
-fixture, and webhook delivery/signature flow:
+fixture, and webhook delivery/signature flow. Use the public-fixture target when
+you want Monitor target safety to stay enabled during the deterministic failure
+checks:
 
 ```bash
-make api-cli-validate
+make api-cli-public-fixture-validate
 ```
 
 Set `API_VALIDATE_SKIP_WEBHOOK=1` for a shorter pass that avoids the outbound
@@ -142,6 +144,10 @@ The Docker Compose environment includes `api-fixture`, a deterministic local
 site fixture. Jetmon containers reach it at `http://api-fixture:8091` and
 `https://api-fixture:8443`; the host can inspect it at
 `http://localhost:18091` and `https://localhost:18443` by default.
+Target-safety-enabled checks intentionally block that Docker hostname as a
+private target, so fixture-backed failure validation should use
+`make api-cli-public-fixture-validate` or pass a public-looking Docker-internal
+fixture URL explicitly.
 
 The fixture exposes endpoints for response codes, redirects, keyword mismatch,
 slow responses, TLS, and webhook capture.

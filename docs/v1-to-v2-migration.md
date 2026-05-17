@@ -710,13 +710,17 @@ For a fuller Docker-local pass against the feature-guide examples, failure
 fixture, webhook receiver, signature verification, and cleanup path, run:
 
 ```bash
-make api-cli-validate
+make api-cli-public-fixture-validate
 ```
 
 Set `API_VALIDATE_SKIP_WEBHOOK=1` when the environment does not have outbound
 delivery workers enabled. Any API CLI write against a non-local API URL must
 use `--allow-remote`, and remote smoke, bulk-add, cleanup, and failure
 simulation must also use `--batch`.
+
+Use the public-fixture target for target-safety-preserving rehearsals. The
+plain Docker `api-fixture` hostname resolves to a private container address and
+is expected to be blocked by hardened Monitor checks.
 
 For production-style operator use, prefer a local config file over repeatedly
 copying tokens into shell history:
