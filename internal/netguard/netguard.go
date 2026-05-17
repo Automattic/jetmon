@@ -53,7 +53,7 @@ func mustParseCIDRs(rawCIDRs []string) []*net.IPNet {
 // that resolve arbitrary hostnames should also apply UnsafeIP to every
 // resolved address before connecting.
 func UnsafeHost(host string) bool {
-	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	host = NormalizeHost(host)
 	if host == "" || host == "localhost" || host == "local" {
 		return true
 	}
@@ -71,23 +71,37 @@ func UnsafeHost(host string) bool {
 	return false
 }
 
+func NormalizeHost(host string) string {
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+}
+
 func looksLikeNonCanonicalIPv4(host string) bool {
 	if host == "" || strings.Contains(host, ":") {
 		return false
 	}
-	for _, label := range strings.Split(host, ".") {
-		if label == "" {
+	labelStart := 0
+	for i := 0; i <= len(host); i++ {
+		if i < len(host) && host[i] != '.' {
+			continue
+		}
+		if !looksLikeNumericIPv4Label(host[labelStart:i]) {
 			return false
 		}
-		if allDigits(label) {
-			continue
-		}
-		if len(label) > 2 && label[0] == '0' && (label[1] == 'x' || label[1] == 'X') && allHexDigits(label[2:]) {
-			continue
-		}
-		return false
+		labelStart = i + 1
 	}
 	return true
+}
+
+func looksLikeNumericIPv4Label(label string) bool {
+	if label == "" {
+		return false
+	}
+	if allDigits(label) {
+		return true
+	}
+	return len(label) > 2 && label[0] == '0' &&
+		(label[1] == 'x' || label[1] == 'X') &&
+		allHexDigits(label[2:])
 }
 
 func allDigits(s string) bool {
@@ -96,6 +110,62 @@ func allDigits(s string) bool {
 	}
 	for i := 0; i < len(s); i++ {
 		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func ValidOutboundHeader(name, value string) bool {
+	return ValidHTTPHeaderName(name) && !ForbiddenOutboundHeaderName(name) && ValidHTTPHeaderValue(value)
+}
+
+func ValidHTTPHeaderName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		if !isHTTPTokenChar(name[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func isHTTPTokenChar(c byte) bool {
+	switch {
+	case c >= 'a' && c <= 'z':
+		return true
+	case c >= 'A' && c <= 'Z':
+		return true
+	case c >= '0' && c <= '9':
+		return true
+	}
+	switch c {
+	case '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~':
+		return true
+	default:
+		return false
+	}
+}
+
+func ForbiddenOutboundHeaderName(name string) bool {
+	switch strings.ToLower(name) {
+	case "connection", "content-length", "host", "keep-alive", "proxy-authenticate",
+		"proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade":
+		return true
+	default:
+		return false
+	}
+}
+
+func ValidHTTPHeaderValue(value string) bool {
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		if c == '\t' {
+			continue
+		}
+		if c < 0x20 || c == 0x7f {
 			return false
 		}
 	}
@@ -126,7 +196,7 @@ func ParsePublicHTTPURL(rawURL, field string) (*url.URL, error) {
 	if rawURL == "" {
 		return nil, fmt.Errorf("%s is required", field)
 	}
-	if len([]byte(rawURL)) > MaxPublicHTTPURLBytes {
+	if len(rawURL) > MaxPublicHTTPURLBytes {
 		return nil, fmt.Errorf("%s must be %d bytes or fewer", field, MaxPublicHTTPURLBytes)
 	}
 	u, err := url.Parse(rawURL)
@@ -142,7 +212,7 @@ func ParsePublicHTTPURL(rawURL, field string) (*url.URL, error) {
 	if u.User != nil {
 		return nil, fmt.Errorf("%s must not include userinfo", field)
 	}
-	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	host := NormalizeHost(u.Hostname())
 	if UnsafeHost(host) {
 		return nil, fmt.Errorf("%s host %q is not a public target", field, host)
 	}

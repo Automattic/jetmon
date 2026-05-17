@@ -1416,6 +1416,27 @@ func TestCheckBlocksUnsafeDirectTargetWhenSafetyEnforced(t *testing.T) {
 	}
 }
 
+func TestCheckTargetSafetyDNSFailureIsConnectFailure(t *testing.T) {
+	dnsAddr := startTestNXDomainDNSServer(t)
+	withTestResolver(t, dnsAddr, time.Millisecond)
+
+	res := Check(context.Background(), Request{
+		BlogID:              1,
+		URL:                 "http://missing.example/security-check",
+		TimeoutSeconds:      2,
+		EnforceTargetSafety: true,
+	})
+	if res.ErrorCode != ErrorConnect {
+		t.Fatalf("ErrorCode = %d, want ErrorConnect; result=%+v", res.ErrorCode, res)
+	}
+	if res.IsProbeSafetyBlock() {
+		t.Fatal("IsProbeSafetyBlock = true for DNS failure, want false")
+	}
+	if res.DNSFailureKind != "nxdomain" {
+		t.Fatalf("DNSFailureKind = %q, want nxdomain; detail=%q", res.DNSFailureKind, res.ErrorDetail)
+	}
+}
+
 func TestCheckConnectionRefused(t *testing.T) {
 	// Start a server to get a free port, then stop it so connections are refused.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
@@ -1570,6 +1591,30 @@ func startTestDNSServer(t *testing.T, answerBatches [][]net.IP) string {
 	return pc.LocalAddr().String()
 }
 
+func startTestNXDomainDNSServer(t *testing.T) string {
+	t.Helper()
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("ListenPacket: %v", err)
+	}
+	t.Cleanup(func() { _ = pc.Close() })
+
+	go func() {
+		buf := make([]byte, 1500)
+		for {
+			n, addr, err := pc.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			resp := buildTestDNSNXDomainResponse(buf[:n])
+			if len(resp) > 0 {
+				_, _ = pc.WriteTo(resp, addr)
+			}
+		}
+	}()
+	return pc.LocalAddr().String()
+}
+
 func buildTestDNSAResponse(query []byte, ips []net.IP) []byte {
 	if len(query) < 12 {
 		return nil
@@ -1605,6 +1650,27 @@ func buildTestDNSAResponse(query []byte, ips []net.IP) []byte {
 			ip[0], ip[1], ip[2], ip[3],
 		)
 	}
+	return resp
+}
+
+func buildTestDNSNXDomainResponse(query []byte) []byte {
+	if len(query) < 12 {
+		return nil
+	}
+	qEnd := 12
+	for qEnd < len(query) && query[qEnd] != 0 {
+		qEnd += int(query[qEnd]) + 1
+	}
+	if qEnd+5 > len(query) {
+		return nil
+	}
+	question := query[12 : qEnd+5]
+	resp := make([]byte, 0, 12+len(question))
+	resp = append(resp, query[0], query[1], 0x81, 0x83)
+	resp = append(resp, 0x00, 0x01)
+	resp = append(resp, 0x00, 0x00)
+	resp = append(resp, 0x00, 0x00, 0x00, 0x00)
+	resp = append(resp, question...)
 	return resp
 }
 

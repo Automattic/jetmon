@@ -901,7 +901,12 @@ func Check(ctx context.Context, req Request) Result {
 	initialRedirectHost = normalizedURLHost(httpReq.URL)
 	if req.EnforceTargetSafety {
 		if err := validateInitialTarget(ctx, httpReq.URL); err != nil {
-			res.ErrorCode = ErrorProbeSafety
+			if errors.Is(err, errProbeSafetyBlock) {
+				res.ErrorCode = ErrorProbeSafety
+			} else {
+				res.ErrorCode = ErrorConnect
+				res.DNSFailureKind, res.DNSFailureName, res.DNSFailureServer = classifyDNSError(err)
+			}
 			res.ErrorDetail = boundedErrorDetail(err)
 			return res
 		}
@@ -909,7 +914,7 @@ func Check(ctx context.Context, req Request) Result {
 
 	httpReq.Header.Set("User-Agent", "jetmon/2.0 (Jetpack Site Uptime Monitor by WordPress.com)")
 	for k, v := range headers {
-		if !validOutboundCustomHeader(k, v) {
+		if !netguard.ValidOutboundHeader(k, v) {
 			continue
 		}
 		httpReq.Header.Set(k, v)
@@ -1060,7 +1065,7 @@ func normalizedURLHost(u *url.URL) string {
 	if u == nil {
 		return ""
 	}
-	return strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	return netguard.NormalizeHost(u.Hostname())
 }
 
 func validateRedirectTarget(ctx context.Context, initialHost string, target *url.URL) error {
@@ -1082,20 +1087,20 @@ func validateRedirectTarget(ctx context.Context, initialHost string, target *url
 
 func validateInitialTarget(ctx context.Context, target *url.URL) error {
 	if target == nil {
-		return fmt.Errorf("probe safety check: target URL is required")
+		return fmt.Errorf("%w: probe safety check: target URL is required", errProbeSafetyBlock)
 	}
 	if target.Scheme != "http" && target.Scheme != "https" {
-		return fmt.Errorf("probe safety check: target URL must use http or https")
+		return fmt.Errorf("%w: probe safety check: target URL must use http or https", errProbeSafetyBlock)
 	}
 	targetHost := normalizedURLHost(target)
 	if targetHost == "" {
-		return fmt.Errorf("probe safety check: target URL must include a host")
+		return fmt.Errorf("%w: probe safety check: target URL must include a host", errProbeSafetyBlock)
 	}
 	if target.User != nil {
-		return fmt.Errorf("probe safety check: target URL must not include userinfo")
+		return fmt.Errorf("%w: probe safety check: target URL must not include userinfo", errProbeSafetyBlock)
 	}
 	if netguard.UnsafeHost(targetHost) {
-		return fmt.Errorf("probe safety check: target host %q is not public", targetHost)
+		return fmt.Errorf("%w: probe safety check: target host %q is not public", errProbeSafetyBlock, targetHost)
 	}
 	return validateResolvedTarget(ctx, "probe safety check", targetHost)
 }
@@ -1107,7 +1112,7 @@ func validateResolvedTarget(ctx context.Context, detailPrefix, targetHost string
 	}
 	addrs, err := defaultDNSCache.lookup(ctx, resolver, targetHost, "tcp")
 	if err != nil {
-		return fmt.Errorf("%w: %s: resolve target %q: %w", errProbeSafetyBlock, detailPrefix, targetHost, err)
+		return fmt.Errorf("%s: resolve target %q: %w", detailPrefix, targetHost, err)
 	}
 	for _, addr := range addrs {
 		if netguard.UnsafeIP(addr.IP) {
@@ -1166,13 +1171,10 @@ func readResponseBody(resp *http.Response, needKeyword bool, req Request) bodyRe
 	}
 
 	stopBudget := startBodyReadBudget(resp.Body, responseBodyReadBudget(mode, needKeyword, req))
-	defer func() {
-		_ = stopBudget()
-	}()
 
 	if !needKeyword {
 		n, err := io.Copy(io.Discard, io.LimitReader(resp.Body, limit+1))
-		if stopBudget() {
+		if stopBodyReadBudget(stopBudget) {
 			err = bodyReadBudgetError(err)
 		}
 		result := bodyReadResult{
@@ -1193,7 +1195,7 @@ func readResponseBody(resp *http.Response, needKeyword bool, req Request) bodyRe
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
-	if stopBudget() {
+	if stopBodyReadBudget(stopBudget) {
 		err = bodyReadBudgetError(err)
 	}
 	result := bodyReadResult{
@@ -1234,7 +1236,7 @@ func responseBodyReadBudget(mode string, needKeyword bool, req Request) time.Dur
 
 func startBodyReadBudget(body io.Closer, budget time.Duration) func() bool {
 	if body == nil || budget <= 0 {
-		return func() bool { return false }
+		return nil
 	}
 	var timedOut atomic.Bool
 	timer := time.AfterFunc(budget, func() {
@@ -1247,67 +1249,18 @@ func startBodyReadBudget(body io.Closer, budget time.Duration) func() bool {
 	}
 }
 
+func stopBodyReadBudget(stop func() bool) bool {
+	if stop == nil {
+		return false
+	}
+	return stop()
+}
+
 func bodyReadBudgetError(err error) error {
 	if err == nil {
 		return errBodyReadBudgetExceeded
 	}
 	return fmt.Errorf("%w: %v", errBodyReadBudgetExceeded, err)
-}
-
-func validOutboundCustomHeader(name, value string) bool {
-	return validHTTPHeaderName(name) && !forbiddenOutboundCustomHeader(name) && validHTTPHeaderValue(value)
-}
-
-func validHTTPHeaderName(name string) bool {
-	if name == "" {
-		return false
-	}
-	for i := 0; i < len(name); i++ {
-		if !isHTTPTokenChar(name[i]) {
-			return false
-		}
-	}
-	return true
-}
-
-func isHTTPTokenChar(c byte) bool {
-	switch {
-	case c >= 'a' && c <= 'z':
-		return true
-	case c >= 'A' && c <= 'Z':
-		return true
-	case c >= '0' && c <= '9':
-		return true
-	}
-	switch c {
-	case '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~':
-		return true
-	default:
-		return false
-	}
-}
-
-func forbiddenOutboundCustomHeader(name string) bool {
-	switch strings.ToLower(name) {
-	case "connection", "content-length", "host", "keep-alive", "proxy-authenticate",
-		"proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade":
-		return true
-	default:
-		return false
-	}
-}
-
-func validHTTPHeaderValue(value string) bool {
-	for i := 0; i < len(value); i++ {
-		c := value[i]
-		if c == '\t' {
-			continue
-		}
-		if c < 0x20 || c == 0x7f {
-			return false
-		}
-	}
-	return true
 }
 
 func collectForbiddenKeywords(single *string, many []string) []string {
@@ -1335,7 +1288,7 @@ func ParseCustomHeaders(raw *string) map[string]string {
 	}
 	out := make(map[string]string, len(m))
 	for k, v := range m {
-		if validOutboundCustomHeader(k, v) {
+		if netguard.ValidOutboundHeader(k, v) {
 			out[k] = v
 		}
 	}

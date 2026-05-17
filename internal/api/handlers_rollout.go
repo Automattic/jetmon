@@ -246,8 +246,7 @@ func (s *Server) handleRolloutCapabilities(w http.ResponseWriter, r *http.Reques
 
 func (s *Server) handleCreateRolloutSession(w http.ResponseWriter, r *http.Request) {
 	var body rolloutSessionRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, r, http.StatusBadRequest, "invalid_body", "request body must be valid JSON: "+err.Error())
+	if !decodeJSONBody(w, r, &body) {
 		return
 	}
 	if err := validateRolloutRange(body.BucketMin, body.BucketMax); err != nil {
@@ -855,8 +854,7 @@ func (s *Server) updateRolloutJobResult(ctx context.Context, jobID string, resul
 
 func (s *Server) decodeRolloutRangeBody(w http.ResponseWriter, r *http.Request) (rolloutRangeRequest, bool) {
 	var body rolloutRangeRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, r, http.StatusBadRequest, "invalid_body", "request body must be valid JSON: "+err.Error())
+	if !decodeJSONBody(w, r, &body) {
 		return body, false
 	}
 	if err := validateRolloutRange(body.BucketMin, body.BucketMax); err != nil {

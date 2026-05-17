@@ -70,12 +70,13 @@ func TestRunSiteSafetyUnsafeURLsExecuteDeactivates(t *testing.T) {
 	mock.ExpectQuery("SELECT jetpack_monitor_site_id, blog_id, monitor_url").
 		WithArgs(int64(0), int64(10)).
 		WillReturnRows(sqlmock.NewRows([]string{"jetpack_monitor_site_id", "blog_id", "monitor_url"}).
-			AddRow(int64(2), int64(102), "http://127.0.0.1"))
+			AddRow(int64(2), int64(102), "http://127.0.0.1").
+			AddRow(int64(3), int64(103), "http://2130706433"))
 	mock.ExpectExec("UPDATE jetpack_monitor_sites").
-		WithArgs(int64(2)).
-		WillReturnResult(sqlmock.NewResult(0, 1))
+		WithArgs(int64(2), int64(3)).
+		WillReturnResult(sqlmock.NewResult(0, 2))
 	mock.ExpectQuery("SELECT jetpack_monitor_site_id, blog_id, monitor_url").
-		WithArgs(int64(2), int64(10)).
+		WithArgs(int64(3), int64(10)).
 		WillReturnRows(sqlmock.NewRows([]string{"jetpack_monitor_site_id", "blog_id", "monitor_url"}))
 
 	report, err := runSiteSafetyUnsafeURLs(context.Background(), nil, conn, siteSafetyUnsafeURLOptions{
@@ -85,7 +86,7 @@ func TestRunSiteSafetyUnsafeURLsExecuteDeactivates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runSiteSafetyUnsafeURLs: %v", err)
 	}
-	if report.UnsafeRows != 1 || report.Deactivated != 1 {
+	if report.UnsafeRows != 2 || report.Deactivated != 2 {
 		t.Fatalf("report = %+v", report)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {

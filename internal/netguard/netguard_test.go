@@ -72,6 +72,28 @@ func TestParsePublicHTTPURL(t *testing.T) {
 	}
 }
 
+func TestOutboundHeaderValidation(t *testing.T) {
+	tests := []struct {
+		name        string
+		headerName  string
+		headerValue string
+		want        bool
+	}{
+		{"valid", "X-Test", "ok\tvalue", true},
+		{"empty name", "", "ok", false},
+		{"bad name", "Bad\r\nName", "ok", false},
+		{"forbidden name", "Connection", "close", false},
+		{"bad value", "X-Bad", "ok\r\nInjected: yes", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ValidOutboundHeader(tt.headerName, tt.headerValue); got != tt.want {
+				t.Fatalf("ValidOutboundHeader(%q, %q) = %v, want %v", tt.headerName, tt.headerValue, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestUnsafeIP(t *testing.T) {
 	if !UnsafeIP(net.ParseIP("0.0.0.0")) {
 		t.Fatal("UnsafeIP(0.0.0.0) = false, want true")

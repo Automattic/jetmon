@@ -185,21 +185,8 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 		Results []CheckResult `json:"results"`
 	}
 
-	// Cap the body before decoding. An overlong body produces a clear 413
-	// rather than streaming through the JSON decoder until something else
-	// times out.
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
-
 	var req batchReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		// MaxBytesReader's "http: request body too large" error is the
-		// signal we want to surface as 413; everything else is a malformed
-		// JSON payload (400).
-		if err.Error() == "http: request body too large" {
-			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
-			return
-		}
-		http.Error(w, fmt.Sprintf("decode: %v", err), http.StatusBadRequest)
+	if !decodeLimitedJSON(w, r, &req) {
 		return
 	}
 	for i := range req.Sites {
@@ -263,14 +250,8 @@ func (s *Server) handleV2Check(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	var req CheckV2BatchRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		if err.Error() == "http: request body too large" {
-			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
-			return
-		}
-		http.Error(w, fmt.Sprintf("decode: %v", err), http.StatusBadRequest)
+	if !decodeLimitedJSON(w, r, &req) {
 		return
 	}
 	if len(req.Requests) == 0 {
@@ -326,6 +307,20 @@ func (s *Server) handleV2Check(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleV2Status(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(s.Status())
+}
+
+func decodeLimitedJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return false
+		}
+		http.Error(w, fmt.Sprintf("decode: %v", err), http.StatusBadRequest)
+		return false
+	}
+	return true
 }
 
 func (s *Server) Status() StatusV2Response {

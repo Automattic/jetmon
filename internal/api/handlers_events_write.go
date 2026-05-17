@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"time"
@@ -54,14 +53,8 @@ func (s *Server) handleCloseEvent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body closeEventRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		// Empty body is OK — defaults below kick in. json.NewDecoder
-		// surfaces io.EOF for an empty/missing body.
-		if !errors.Is(err, io.EOF) {
-			writeError(w, r, http.StatusBadRequest, "invalid_body",
-				"request body must be valid JSON: "+err.Error())
-			return
-		}
+	if !decodeOptionalJSONBody(w, r, &body) {
+		return
 	}
 	reason := body.Reason
 	if reason == "" {

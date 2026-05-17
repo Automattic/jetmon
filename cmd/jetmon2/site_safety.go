@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/Automattic/jetmon/internal/config"
@@ -125,6 +126,7 @@ func runSiteSafetyUnsafeURLs(ctx context.Context, out io.Writer, conn *sql.DB, o
 		}
 
 		batchRows := 0
+		var unsafeIDs []int64
 		for rows.Next() {
 			var row siteSafetyUnsafeURLRow
 			if err := rows.Scan(&row.SiteID, &row.BlogID, &row.URL); err != nil {
@@ -144,12 +146,7 @@ func runSiteSafetyUnsafeURLs(ctx context.Context, out io.Writer, conn *sql.DB, o
 				report.Samples = append(report.Samples, row)
 			}
 			if opts.Execute {
-				n, err := deactivateUnsafeMonitorURL(ctx, conn, row.SiteID)
-				if err != nil {
-					rows.Close()
-					return report, err
-				}
-				report.Deactivated += n
+				unsafeIDs = append(unsafeIDs, row.SiteID)
 			}
 		}
 		if err := rows.Err(); err != nil {
@@ -157,6 +154,13 @@ func runSiteSafetyUnsafeURLs(ctx context.Context, out io.Writer, conn *sql.DB, o
 			return report, fmt.Errorf("iterate monitor URL rows: %w", err)
 		}
 		rows.Close()
+		if opts.Execute && len(unsafeIDs) > 0 {
+			n, err := deactivateUnsafeMonitorURLs(ctx, conn, unsafeIDs)
+			if err != nil {
+				return report, err
+			}
+			report.Deactivated += n
+		}
 		if batchRows == 0 {
 			break
 		}
@@ -176,18 +180,44 @@ func classifyUnsafeMonitorURL(rawURL string) string {
 	return ""
 }
 
-func deactivateUnsafeMonitorURL(ctx context.Context, conn *sql.DB, siteID int64) (int64, error) {
+func deactivateUnsafeMonitorURLs(ctx context.Context, conn *sql.DB, siteIDs []int64) (int64, error) {
+	const maxDeactivateBatch = 1000
+	var total int64
+	for len(siteIDs) > 0 {
+		chunk := siteIDs
+		if len(chunk) > maxDeactivateBatch {
+			chunk = chunk[:maxDeactivateBatch]
+		}
+		n, err := deactivateUnsafeMonitorURLBatch(ctx, conn, chunk)
+		if err != nil {
+			return total, err
+		}
+		total += n
+		siteIDs = siteIDs[len(chunk):]
+	}
+	return total, nil
+}
+
+func deactivateUnsafeMonitorURLBatch(ctx context.Context, conn *sql.DB, siteIDs []int64) (int64, error) {
+	if len(siteIDs) == 0 {
+		return 0, nil
+	}
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(siteIDs)), ",")
+	args := make([]any, 0, len(siteIDs))
+	for _, siteID := range siteIDs {
+		args = append(args, siteID)
+	}
 	res, err := conn.ExecContext(ctx, `
 		UPDATE jetpack_monitor_sites
 		   SET monitor_active = 0
-		 WHERE jetpack_monitor_site_id = ?
-		   AND monitor_active = 1`, siteID)
+		 WHERE monitor_active = 1
+		   AND jetpack_monitor_site_id IN (`+placeholders+`)`, args...)
 	if err != nil {
-		return 0, fmt.Errorf("deactivate unsafe monitor URL site_id=%d: %w", siteID, err)
+		return 0, fmt.Errorf("deactivate unsafe monitor URLs: %w", err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
-		return 0, fmt.Errorf("deactivate unsafe monitor URL site_id=%d rows affected: %w", siteID, err)
+		return 0, fmt.Errorf("deactivate unsafe monitor URLs rows affected: %w", err)
 	}
 	return n, nil
 }

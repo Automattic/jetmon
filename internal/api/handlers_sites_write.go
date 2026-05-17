@@ -64,9 +64,7 @@ type createSiteRequest struct {
 // returns 201 with the full site object.
 func (s *Server) handleCreateSite(w http.ResponseWriter, r *http.Request) {
 	var body createSiteRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, r, http.StatusBadRequest, "invalid_body",
-			"request body must be valid JSON: "+err.Error())
+	if !decodeJSONBody(w, r, &body) {
 		return
 	}
 
@@ -241,9 +239,7 @@ func (s *Server) handleUpdateSite(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body updateSiteRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, r, http.StatusBadRequest, "invalid_body",
-			"request body must be valid JSON: "+err.Error())
+	if !decodeJSONBody(w, r, &body) {
 		return
 	}
 
@@ -623,74 +619,22 @@ func validateCustomHeader(name, value string) error {
 	if name == "" {
 		return errors.New("custom_headers must not contain empty header names")
 	}
-	if len([]byte(name)) > maxCustomHeaderNameBytes {
+	if len(name) > maxCustomHeaderNameBytes {
 		return fmt.Errorf("custom_headers names must be %d bytes or fewer", maxCustomHeaderNameBytes)
 	}
-	if len([]byte(value)) > maxCustomHeaderValueBytes {
+	if len(value) > maxCustomHeaderValueBytes {
 		return fmt.Errorf("custom_headers values must be %d bytes or fewer", maxCustomHeaderValueBytes)
 	}
-	if !validHTTPHeaderName(name) {
+	if !netguard.ValidHTTPHeaderName(name) {
 		return fmt.Errorf("custom_headers contains invalid header name %q", name)
 	}
-	if forbiddenCustomHeaderName(name) {
+	if netguard.ForbiddenOutboundHeaderName(name) {
 		return fmt.Errorf("custom_headers may not set hop-by-hop or request-framing header %q", name)
 	}
-	if !validHTTPHeaderValue(value) {
+	if !netguard.ValidHTTPHeaderValue(value) {
 		return fmt.Errorf("custom_headers contains invalid value for %q", name)
 	}
 	return nil
-}
-
-func validHTTPHeaderName(name string) bool {
-	if name == "" {
-		return false
-	}
-	for i := 0; i < len(name); i++ {
-		if !isHTTPTokenChar(name[i]) {
-			return false
-		}
-	}
-	return true
-}
-
-func isHTTPTokenChar(c byte) bool {
-	switch {
-	case c >= 'a' && c <= 'z':
-		return true
-	case c >= 'A' && c <= 'Z':
-		return true
-	case c >= '0' && c <= '9':
-		return true
-	}
-	switch c {
-	case '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~':
-		return true
-	default:
-		return false
-	}
-}
-
-func forbiddenCustomHeaderName(name string) bool {
-	switch strings.ToLower(name) {
-	case "connection", "content-length", "host", "keep-alive", "proxy-authenticate",
-		"proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade":
-		return true
-	default:
-		return false
-	}
-}
-
-func validHTTPHeaderValue(value string) bool {
-	for i := 0; i < len(value); i++ {
-		c := value[i]
-		if c == '\t' {
-			continue
-		}
-		if c < 0x20 || c == 0x7f {
-			return false
-		}
-	}
-	return true
 }
 
 // encodeForbiddenKeywords marshals explicit bad-content body strings into the
