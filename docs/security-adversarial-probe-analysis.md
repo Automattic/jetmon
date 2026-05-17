@@ -156,9 +156,11 @@ Tests added:
 - `TestUnsafeHost`
 - `TestParsePublicHTTPURL`
 - `TestCheckBlocksUnsafeDirectTargetWhenSafetyEnforced`
+- `TestCheckTargetSafetyDNSFailureIsConnectFailure`
 - `TestProcessResultsProbeSafetyBlockAuditsWithoutStateChange`
 - `TestServerHandleCheckRejectsUnsafeURL`
 - `TestServerHandleV2CheckRejectsUnsafeURL`
+- `TestCheckerProbeSafetyErrorCodeContract`
 - `TestTransportSafetyBlocksUnsafeIPBeforeDial`
 
 ### DNS Cache Burst Smoothing
@@ -183,6 +185,8 @@ Tests added:
 ### API And Delivery URL Hardening
 
 API JSON routes now wrap request bodies with a 1 MiB `MaxBytesReader`, and idempotency-key hashing applies the same cap before `io.ReadAll`. Outbound webhook registrations are validated in the webhooks package as well as the API handler. Slack and Teams alert-contact destinations are validated on create/update, and default alert delivery uses a protected HTTP client that rejects unsafe redirects and non-public resolved dial addresses.
+
+Protected delivery clients intentionally do not use `http.ProxyFromEnvironment`. A proxy would make the Jetmon process dial the proxy rather than the final consumer URL, so this process could no longer prove that the final resolved target is public. If production egress requires proxy support for webhook or alert delivery, add an explicit trusted-proxy mode with documented proxy-side SSRF controls rather than honoring ambient proxy environment variables by default.
 
 Tests added:
 
@@ -282,17 +286,17 @@ Most checks added here are constant-time string or URL-shape checks. The meaning
 
 The response-header cap has no steady-state cost. Body-read timing adds a timer only for budgeted response-body reads. Custom-header validation happens at write time, and checker-side header filtering is proportional to the small configured header map size.
 
-Benchmarks were run on `jetmon-service-host-5` with prebuilt Linux test binaries from clean `v2` and this branch. CPU: `Intel(R) Core(TM) i5-6500T CPU @ 2.50GHz`. A default-benchtime pass was noisy, so the comparable table below uses `-test.benchtime=3s -test.count=3 -test.cpu=1`; values are medians.
+Benchmarks were refreshed locally from clean `v2` and this branch. CPU: `13th Gen Intel(R) Core(TM) i5-1340P`. A default-benchtime pass was noisy, so the comparable table below uses `-test.benchtime=3s -test.count=3 -test.cpu=1`; values are medians.
 
 | Benchmark | v2 | this branch | delta |
 |---|---:|---:|---:|
-| `BenchmarkCheckNoKeywordLargeBody` | 1,502,320 ns/op, 1,078,222 B/op, 180 allocs/op | 1,384,076 ns/op, 1,078,339 B/op, 181 allocs/op | -7.9% time, +117 B, +1 alloc |
-| `BenchmarkCheckKeywordLargeBody` | 2,882,773 ns/op, 4,371,827 B/op, 225 allocs/op | 2,576,229 ns/op, 4,371,812 B/op, 225 allocs/op | -10.6% time, -15 B, no alloc change |
-| `BenchmarkProbeTargetSafetyCached` | n/a | 596 ns/op, 96 B/op, 3 allocs/op | added hot-path target guard |
-| `BenchmarkParsePublicHTTPURL` | n/a | 547 ns/op, 224 B/op, 3 allocs/op | API / Veriflier admission guard |
-| `BenchmarkProbeTargetSafetyBlockedLiteral` | n/a | 895 ns/op, 272 B/op, 5 allocs/op | unsafe literal rejection |
+| `BenchmarkCheckNoKeywordLargeBody` | 901,947 ns/op, 1,078,171 B/op, 180 allocs/op | 857,896 ns/op, 1,078,201 B/op, 181 allocs/op | -4.9% time, +30 B, +1 alloc |
+| `BenchmarkCheckKeywordLargeBody` | 2,339,498 ns/op, 4,372,204 B/op, 225 allocs/op | 2,153,608 ns/op, 4,372,397 B/op, 226 allocs/op | -7.9% time, +193 B, +1 alloc |
+| `BenchmarkProbeTargetSafetyCached` | n/a | 341.8 ns/op, 64 B/op, 2 allocs/op | added hot-path target guard |
+| `BenchmarkParsePublicHTTPURL` | n/a | 327.6 ns/op, 192 B/op, 2 allocs/op | API / Veriflier admission guard |
+| `BenchmarkProbeTargetSafetyBlockedLiteral` | n/a | 578.9 ns/op, 272 B/op, 5 allocs/op | unsafe literal rejection |
 
-The large-body benchmarks are intentionally conservative and noisy: they include `httptest`, large response-body reads, and do not enable the target-safety flag. The direct safety benchmark is the better estimate for the added per-check validation cost after DNS cache warmup: about 0.6 microseconds and 96 bytes per check. A previous draft created a fresh resolver during validation and measured around 23 microseconds / 4.8 KiB per cached check; this branch now reuses the checker resolver and transport cache.
+The large-body benchmarks are intentionally conservative and noisy: they include `httptest`, large response-body reads, and do not enable the target-safety flag. The direct safety benchmark is the better estimate for the added per-check validation cost after DNS cache warmup: about 0.34 microseconds and 64 bytes per check. A previous draft created a fresh resolver during validation and measured around 23 microseconds / 4.8 KiB per cached check; this branch now reuses the checker resolver and transport cache.
 
 ## Probe-Safety Event Options
 
@@ -311,6 +315,12 @@ Product options:
 4. Treat public-host hostile responses as degraded states only after repeat evidence. Oversized headers, body-read budget exhaustion, and TLS pathology can be real site problems or adversarial behavior. If represented as events, they should use thresholds and cooldowns to avoid opening transient one-probe noise.
 
 API behavior should remain strict regardless of which product option is chosen: new or updated monitor URLs should be rejected at write time when they are shape-unsafe, and runtime target-safety should remain in place for already-stored rows and DNS changes.
+
+## Probe Error-Code Contract
+
+The Veriflier maps checker probe-safety blocks to `OutcomeUnknown` so unsafe targets are not treated as regional proof of customer-site downtime. Today that mapping uses a private wire-compatible copy of the checker error code and a test asserts it stays equal to `checker.ErrorProbeSafety`. This avoids adding a production dependency from `internal/veriflier` back to `internal/checker` for one constant.
+
+If more checker result fields become shared protocol semantics, move the stable error-code constants into a neutral contract package used by both checker and Veriflier. That change is worth doing when there are multiple duplicated result constants, when a non-Go transport starts consuming the same codes, or when the result schema needs versioning. Until then, the test guard is lower risk than a broader package split.
 
 ## Remaining High-Value Scenarios
 

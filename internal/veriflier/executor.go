@@ -20,7 +20,10 @@ const (
 	defaultCheckEstimate     = 50 * time.Millisecond
 	deadlineAdmissionReserve = 250 * time.Millisecond
 	deadlineResultDrainGrace = 25 * time.Millisecond
-	checkerErrorProbeSafety  = 9
+	// Wire-compatible checker error code for probe safety blocks. Keep this
+	// private to avoid a production dependency from veriflier back to checker;
+	// executor tests assert it stays in sync with checker.ErrorProbeSafety.
+	checkerErrorProbeSafety = 9
 )
 
 type CheckFunc func(context.Context, CheckRequest) ProbeResult

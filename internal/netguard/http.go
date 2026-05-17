@@ -40,6 +40,10 @@ func NewProtectedHTTPTransport(resolver *net.Resolver) *http.Transport {
 		TLSHandshakeTimeout:    5 * time.Second,
 		ExpectContinueTimeout:  1 * time.Second,
 		ForceAttemptHTTP2:      true,
+		// Intentionally omit Proxy / ProxyFromEnvironment. If a proxy resolves
+		// the final URL, this process can no longer prove the dialed target is
+		// public. Add an explicit trusted-proxy mode if production egress ever
+		// requires proxy support for untrusted destinations.
 	}
 }
 
