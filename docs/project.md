@@ -182,7 +182,11 @@ The Docker Compose environment includes an `api-fixture` service for determinist
 
 `make api-cli-smoke` exercises the normal local API smoke path, and
 `make api-cli-validate` runs the broader guide validation with fixture-backed
-failure simulation and optional webhook signature verification.
+failure simulation and optional webhook signature verification. For the same
+validation with target safety enabled, use
+`make api-cli-public-fixture-validate`; it runs an isolated Docker stack with
+WPCOM disabled, Mailpit-only email, and a public-looking Docker-internal
+fixture address.
 
 **Structured Logging**
 All log output is available in two formats: the existing plain-text line format (for drop-in compatibility with current log consumers) and an optional structured JSON format enabled via `config.json`. The JSON format emits the same fields — level, timestamp, message, blog_id, http_code, error_code, RTT — as a machine-readable object, making log ingestion into Elasticsearch, Loki, or any log aggregation platform straightforward without a custom parser. Both formats write to the same log file paths.

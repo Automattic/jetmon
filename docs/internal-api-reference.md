@@ -221,15 +221,22 @@ commands.
 Use `make api-cli-validate` with `JETMON_API_URL` and `JETMON_API_TOKEN` set for
 a live Docker-local validation pass covering the guide's core examples, the
 smoke workflow, webhook delivery/signature verification, and a deterministic
-failure-simulation assertion. Set `API_VALIDATE_SKIP_WEBHOOK=1` when you need a
-shorter pass that avoids the outbound webhook worker.
+failure-simulation assertion. When target-safety behavior is part of the
+validation, prefer `make api-cli-public-fixture-validate`: it starts an isolated
+Docker stack with WPCOM disabled, Mailpit-only email, and a public-looking
+Docker-internal fixture IP so Monitor and Veriflier safety checks stay enabled
+without sending target traffic off-host. Set `API_VALIDATE_SKIP_WEBHOOK=1` when
+you need a shorter pass that avoids the outbound webhook worker.
 
-When Docker Compose is running, `sites simulate-failure` probes
-`http://localhost:18091/health` and uses the Docker-internal fixture URL
+When plain Docker Compose is running, `sites simulate-failure` probes
+`http://localhost:18091/health` and can use the Docker-internal fixture URL
 `http://api-fixture:8091` for deterministic HTTP 500, HTTP 403, redirect,
-keyword, timeout, and TLS scenarios. Use `--fixture-url=off` to force the
-public endpoint fallback, or set `JETMON_API_FIXTURE_URL` /
-`JETMON_API_FIXTURE_PROBE_URL` for custom local fixtures.
+keyword, timeout, and TLS scenarios. That Docker hostname resolves to a private
+container address, so target-safety-enabled Monitor checks will block it as a
+non-public target. Use `--fixture-url=off` to force the public endpoint
+fallback, set `JETMON_API_FIXTURE_URL` / `JETMON_API_FIXTURE_PROBE_URL` for a
+custom safe fixture, or use `make api-cli-public-fixture-validate` for the
+standard target-safety-preserving Docker setup.
 
 For strict rehearsal or CI checks, add `--expect-event-state`,
 `--expect-event-severity`, `--require-transition`, or

@@ -490,6 +490,19 @@ you need to vary the default batch label or failure scenario. Set
 `API_VALIDATE_SKIP_WEBHOOK=1` or `API_VALIDATE_SKIP_FAILURE=1` to skip the
 longer webhook or failure-simulation checks.
 
+For the full delivery/failure validation with target safety enabled, use the
+public-fixture harness instead:
+
+```bash
+make api-cli-public-fixture-validate
+```
+
+That target starts an isolated Docker stack with WPCOM disabled, sends email
+only to Mailpit, and puts the deterministic fixture on a public-looking
+Docker-internal address. The older plain `api-fixture` hostname resolves to a
+private container address and is expected to be blocked by Monitor target
+safety during trigger-now and failure-simulation checks.
+
 ## Failure Simulation
 
 `sites simulate-failure` mutates one or more sites into a known failure mode,
@@ -520,10 +533,13 @@ marker.
 Against a non-local API, simulation requires `--allow-remote --batch` and
 rejects `--allow-unmarked`.
 
-When Docker Compose is running, the command probes
-`http://localhost:18091/health` and uses the Docker-internal `api-fixture`
+When plain Docker Compose is running, the command probes
+`http://localhost:18091/health` and can use the Docker-internal `api-fixture`
 service for deterministic HTTP status, redirect, keyword, timeout, and TLS
-cases. Force public endpoint fallbacks with `--fixture-url=off`.
+cases. Target-safety-enabled Monitor checks block that default Docker hostname
+because it resolves to a private container address. Force public endpoint
+fallbacks with `--fixture-url=off`, pass a safe `--fixture-url`, or use
+`make api-cli-public-fixture-validate` for the standard isolated fixture network.
 
 Use assertions when a CI or rehearsal run should fail unless the expected API
 state appears before the wait window expires:
