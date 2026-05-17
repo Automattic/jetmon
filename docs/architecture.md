@@ -646,11 +646,14 @@ Error Codes (checker.ErrorCode)
   ErrorTLSExpired    6   Certificate has passed NotAfter date
   ErrorTLSDeprecated 7   TLS 1.0 or 1.1 detected (advisory only, not a failure)
   ErrorBodyRead      8   GET response body closed early or could not be read
+  ErrorProbeSafety   9   Probe skipped because the target is unsafe for an untrusted check
 ```
 
-`IsFailure()` returns true for all codes except `ErrorNone` and
-`ErrorTLSDeprecated`. `StatusType()` maps codes to the string values
-expected by the WPCOM API (e.g. "https", "intermittent", "redirect").
+`IsFailure()` returns true for all codes except `ErrorNone`,
+`ErrorTLSDeprecated`, and `ErrorProbeSafety`. `ErrorProbeSafety` is audited
+as a probe-safety block and must not open or close customer-site downtime.
+`StatusType()` maps codes to the string values expected by the WPCOM API
+(e.g. "https", "intermittent", "redirect").
 Body integrity reads are capped to a bounded prefix so Jetmon can catch
 truncated successful GET responses without buffering unbounded response
 bodies. Keyword checks retain their larger bounded body window.
