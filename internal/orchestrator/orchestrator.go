@@ -101,6 +101,7 @@ var (
 	dbCountProjectionDrift  = db.CountLegacyProjectionDrift
 	dbListVeriflierVantages = db.ListEnabledVeriflierVantages
 	dbUpsertVeriflierAgent  = db.UpsertVeriflierAgent
+	dbUpsertSiteSafetyFlag  = db.UpsertSiteSafetyFlag
 	dbGetActiveRolloutRange = db.GetActiveRolloutRange
 	veriflierStatusFunc     = func(c *veriflier.VeriflierClient, ctx stdctx.Context) (*veriflier.StatusV2Response, error) {
 		return c.Status(ctx)
@@ -1641,6 +1642,22 @@ func (o *Orchestrator) handleFailure(site db.Site, res checker.Result) bool {
 
 func (o *Orchestrator) handleProbeSafetyBlock(site db.Site, res checker.Result) {
 	emitCounter("detection.probe_safety_blocked.count", 1)
+	if site.ID > 0 {
+		ctx := o.ctx
+		if ctx == nil {
+			ctx = stdctx.Background()
+		}
+		if err := dbUpsertSiteSafetyFlag(ctx, db.DB(), db.SiteSafetyFlag{
+			BlogID:        site.BlogID,
+			MonitorSiteID: site.ID,
+			FlagType:      db.SiteSafetyFlagProbeSafetyBlock,
+			Reason:        res.ErrorDetail,
+			MonitorURL:    site.MonitorURL,
+			Status:        db.SiteSafetyStatusOpen,
+		}); err != nil {
+			log.Printf("orchestrator: record probe safety flag blog_id=%d site_id=%d: %v", site.BlogID, site.ID, err)
+		}
+	}
 	metaMap := checkResultMetadata(site, res, resultCheckedAt(res))
 	metaMap["probe_safety_blocked"] = true
 	meta, _ := json.Marshal(metaMap)

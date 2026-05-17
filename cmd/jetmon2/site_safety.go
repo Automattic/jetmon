@@ -25,6 +25,7 @@ type siteSafetyUnsafeURLOptions struct {
 type siteSafetyUnsafeURLReport struct {
 	ScannedActive int64
 	UnsafeRows    int64
+	Flagged       int64
 	Deactivated   int64
 	Samples       []siteSafetyUnsafeURLRow
 }
@@ -126,7 +127,7 @@ func runSiteSafetyUnsafeURLs(ctx context.Context, out io.Writer, conn *sql.DB, o
 		}
 
 		batchRows := 0
-		var unsafeIDs []int64
+		var unsafeRows []siteSafetyUnsafeURLRow
 		for rows.Next() {
 			var row siteSafetyUnsafeURLRow
 			if err := rows.Scan(&row.SiteID, &row.BlogID, &row.URL); err != nil {
@@ -146,7 +147,7 @@ func runSiteSafetyUnsafeURLs(ctx context.Context, out io.Writer, conn *sql.DB, o
 				report.Samples = append(report.Samples, row)
 			}
 			if opts.Execute {
-				unsafeIDs = append(unsafeIDs, row.SiteID)
+				unsafeRows = append(unsafeRows, row)
 			}
 		}
 		if err := rows.Err(); err != nil {
@@ -154,12 +155,13 @@ func runSiteSafetyUnsafeURLs(ctx context.Context, out io.Writer, conn *sql.DB, o
 			return report, fmt.Errorf("iterate monitor URL rows: %w", err)
 		}
 		rows.Close()
-		if opts.Execute && len(unsafeIDs) > 0 {
-			n, err := deactivateUnsafeMonitorURLs(ctx, conn, unsafeIDs)
+		if opts.Execute && len(unsafeRows) > 0 {
+			flagged, deactivated, err := flagAndDeactivateUnsafeMonitorURLs(ctx, conn, unsafeRows)
 			if err != nil {
 				return report, err
 			}
-			report.Deactivated += n
+			report.Flagged += flagged
+			report.Deactivated += deactivated
 		}
 		if batchRows == 0 {
 			break
@@ -169,7 +171,7 @@ func runSiteSafetyUnsafeURLs(ctx context.Context, out io.Writer, conn *sql.DB, o
 	for _, row := range report.Samples {
 		fmt.Fprintf(out, "WARN unsafe_url site_id=%d blog_id=%d reason=%q url=%q\n", row.SiteID, row.BlogID, row.Reason, row.URL)
 	}
-	fmt.Fprintf(out, "INFO scanned_active=%d unsafe=%d deactivated=%d\n", report.ScannedActive, report.UnsafeRows, report.Deactivated)
+	fmt.Fprintf(out, "INFO scanned_active=%d unsafe=%d flagged=%d deactivated=%d\n", report.ScannedActive, report.UnsafeRows, report.Flagged, report.Deactivated)
 	return report, nil
 }
 
@@ -180,44 +182,78 @@ func classifyUnsafeMonitorURL(rawURL string) string {
 	return ""
 }
 
-func deactivateUnsafeMonitorURLs(ctx context.Context, conn *sql.DB, siteIDs []int64) (int64, error) {
+func flagAndDeactivateUnsafeMonitorURLs(ctx context.Context, conn *sql.DB, rows []siteSafetyUnsafeURLRow) (int64, int64, error) {
 	const maxDeactivateBatch = 1000
-	var total int64
-	for len(siteIDs) > 0 {
-		chunk := siteIDs
+	var flaggedTotal int64
+	var deactivatedTotal int64
+	for len(rows) > 0 {
+		chunk := rows
 		if len(chunk) > maxDeactivateBatch {
 			chunk = chunk[:maxDeactivateBatch]
 		}
-		n, err := deactivateUnsafeMonitorURLBatch(ctx, conn, chunk)
+		flagged, deactivated, err := flagAndDeactivateUnsafeMonitorURLBatch(ctx, conn, chunk)
 		if err != nil {
-			return total, err
+			return flaggedTotal, deactivatedTotal, err
 		}
-		total += n
-		siteIDs = siteIDs[len(chunk):]
+		flaggedTotal += flagged
+		deactivatedTotal += deactivated
+		rows = rows[len(chunk):]
 	}
-	return total, nil
+	return flaggedTotal, deactivatedTotal, nil
 }
 
-func deactivateUnsafeMonitorURLBatch(ctx context.Context, conn *sql.DB, siteIDs []int64) (int64, error) {
-	if len(siteIDs) == 0 {
-		return 0, nil
+func flagAndDeactivateUnsafeMonitorURLBatch(ctx context.Context, conn *sql.DB, rows []siteSafetyUnsafeURLRow) (int64, int64, error) {
+	if len(rows) == 0 {
+		return 0, 0, nil
 	}
-	placeholders := strings.TrimRight(strings.Repeat("?,", len(siteIDs)), ",")
-	args := make([]any, 0, len(siteIDs))
-	for _, siteID := range siteIDs {
-		args = append(args, siteID)
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, fmt.Errorf("begin unsafe monitor URL cleanup transaction: %w", err)
 	}
-	res, err := conn.ExecContext(ctx, `
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	deactivatedAt := time.Now().UTC()
+	var flagged int64
+	for _, row := range rows {
+		if err := db.UpsertSiteSafetyFlag(ctx, tx, db.SiteSafetyFlag{
+			BlogID:        row.BlogID,
+			MonitorSiteID: row.SiteID,
+			FlagType:      db.SiteSafetyFlagUnsafeMonitorURL,
+			Reason:        row.Reason,
+			MonitorURL:    row.URL,
+			Status:        db.SiteSafetyStatusDeactivated,
+			DeactivatedAt: &deactivatedAt,
+		}); err != nil {
+			return flagged, 0, err
+		}
+		flagged++
+	}
+
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(rows)), ",")
+	args := make([]any, 0, len(rows))
+	for _, row := range rows {
+		args = append(args, row.SiteID)
+	}
+	res, err := tx.ExecContext(ctx, `
 		UPDATE jetpack_monitor_sites
 		   SET monitor_active = 0
 		 WHERE monitor_active = 1
 		   AND jetpack_monitor_site_id IN (`+placeholders+`)`, args...)
 	if err != nil {
-		return 0, fmt.Errorf("deactivate unsafe monitor URLs: %w", err)
+		return flagged, 0, fmt.Errorf("deactivate unsafe monitor URLs: %w", err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
-		return 0, fmt.Errorf("deactivate unsafe monitor URLs rows affected: %w", err)
+		return flagged, 0, fmt.Errorf("deactivate unsafe monitor URLs rows affected: %w", err)
 	}
-	return n, nil
+	if err := tx.Commit(); err != nil {
+		return flagged, 0, fmt.Errorf("commit unsafe monitor URL cleanup transaction: %w", err)
+	}
+	committed = true
+	return flagged, n, nil
 }

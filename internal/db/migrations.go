@@ -742,6 +742,29 @@ var migrations = []migration{
 		INDEX idx_rollback (run_id, rolled_back_at, created_at),
 		INDEX idx_blog (blog_id)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
+
+	// Migration 49 records non-downtime probe safety findings separately from
+	// customer incident events. This gives operators a durable remediation
+	// trail for unsafe legacy monitor URLs without mutating v1 site-table
+	// semantics beyond an explicit deactivation when requested.
+	{49, `CREATE TABLE IF NOT EXISTS jetmon_site_safety_flags (
+		id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+		blog_id         BIGINT UNSIGNED NOT NULL,
+		monitor_site_id BIGINT UNSIGNED NOT NULL,
+		flag_type       ENUM('unsafe_monitor_url','probe_safety_block') NOT NULL,
+		reason          VARCHAR(1024) NOT NULL,
+		monitor_url     VARCHAR(2083) NOT NULL,
+		status          ENUM('open','deactivated','ignored','resolved') NOT NULL DEFAULT 'open',
+		first_seen_at   TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+		last_seen_at    TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+		deactivated_at  TIMESTAMP(3) NULL,
+		created_at      TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+		updated_at      TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+		UNIQUE KEY uniq_site_flag (monitor_site_id, flag_type),
+		INDEX idx_blog_status (blog_id, status),
+		INDEX idx_status_seen (status, last_seen_at),
+		INDEX idx_type_status (flag_type, status)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
 }
 
 // Migrate applies all pending migrations idempotently.

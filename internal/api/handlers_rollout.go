@@ -40,6 +40,8 @@ const (
 	rolloutDefaultProbeSample     = 100
 	rolloutMaxSynchronousSample   = 1000
 	rolloutDefaultProbeConcurrent = 16
+
+	requiredRolloutSchemaMigration = 49
 )
 
 type rolloutCapabilitiesResponse struct {
@@ -336,8 +338,8 @@ func (s *Server) handleRolloutPreflight(w http.ResponseWriter, r *http.Request) 
 	maxMigration, err := s.maxSchemaMigration(r.Context())
 	if err != nil {
 		blockers = append(blockers, "schema migration lookup failed: "+err.Error())
-	} else if maxMigration < 48 {
-		blockers = append(blockers, fmt.Sprintf("schema migration %d is older than required rollout migration 48", maxMigration))
+	} else if maxMigration < requiredRolloutSchemaMigration {
+		blockers = append(blockers, fmt.Sprintf("schema migration %d is older than required rollout migration %d", maxMigration, requiredRolloutSchemaMigration))
 	}
 	summary := "preflight passed"
 	status := "ok"

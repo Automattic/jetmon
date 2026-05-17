@@ -1348,6 +1348,7 @@ func stubOrchestratorDeps() func() {
 	origDBCountProjectionDrift := dbCountProjectionDrift
 	origDBListVeriflierVantages := dbListVeriflierVantages
 	origDBUpsertVeriflierAgent := dbUpsertVeriflierAgent
+	origDBUpsertSiteSafetyFlag := dbUpsertSiteSafetyFlag
 	origNotify := wpcomNotifyFunc
 	origVeriflierStatus := veriflierStatusFunc
 	origVeriflierCheck := veriflierCheckFunc
@@ -1373,6 +1374,9 @@ func stubOrchestratorDeps() func() {
 	dbCountProjectionDrift = func(context.Context, int, int) (int, error) { return 0, nil }
 	dbListVeriflierVantages = func(context.Context, time.Duration) ([]db.VeriflierVantage, error) { return nil, nil }
 	dbUpsertVeriflierAgent = func(context.Context, db.VeriflierAgentHeartbeat) error { return nil }
+	dbUpsertSiteSafetyFlag = func(context.Context, db.SiteSafetyFlagExecer, db.SiteSafetyFlag) error {
+		return nil
+	}
 	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error { return nil }
 	veriflierStatusFunc = func(c *veriflier.VeriflierClient, ctx context.Context) (*veriflier.StatusV2Response, error) {
 		return c.Status(ctx)
@@ -1402,6 +1406,7 @@ func stubOrchestratorDeps() func() {
 		dbCountProjectionDrift = origDBCountProjectionDrift
 		dbListVeriflierVantages = origDBListVeriflierVantages
 		dbUpsertVeriflierAgent = origDBUpsertVeriflierAgent
+		dbUpsertSiteSafetyFlag = origDBUpsertSiteSafetyFlag
 		wpcomNotifyFunc = origNotify
 		veriflierStatusFunc = origVeriflierStatus
 		veriflierCheckFunc = origVeriflierCheck
@@ -2089,6 +2094,11 @@ func TestProcessResultsProbeSafetyBlockAuditsWithoutStateChange(t *testing.T) {
 		t.Fatal("probe safety block must not send notifications")
 		return nil
 	}
+	var safetyFlag db.SiteSafetyFlag
+	dbUpsertSiteSafetyFlag = func(_ context.Context, _ db.SiteSafetyFlagExecer, flag db.SiteSafetyFlag) error {
+		safetyFlag = flag
+		return nil
+	}
 
 	mock.ExpectExec(`INSERT INTO jetmon_audit_log`).
 		WithArgs(int64(42), nil, audit.EventProbeSafetyBlock, "local", "probe safety blocked outbound check", sqlmock.AnyArg()).
@@ -2109,11 +2119,14 @@ func TestProcessResultsProbeSafetyBlockAuditsWithoutStateChange(t *testing.T) {
 		ErrorDetail: "probe safety check: target host \"127.0.0.1\" is not public",
 		Timestamp:   time.Now().UTC(),
 	}
-	sites := map[int64]db.Site{42: {BlogID: 42, MonitorURL: "http://127.0.0.1", SiteStatus: statusRunning, CheckInterval: 5}}
+	sites := map[int64]db.Site{42: {ID: 123, BlogID: 42, MonitorURL: "http://127.0.0.1", SiteStatus: statusRunning, CheckInterval: 5}}
 	o.processResults(map[int64]checker.Result{42: res}, sites)
 
 	if retry := o.retries.get(42); retry != nil {
 		t.Fatalf("retry entry = %+v, want nil for probe safety block", retry)
+	}
+	if safetyFlag.BlogID != 42 || safetyFlag.MonitorSiteID != 123 || safetyFlag.FlagType != db.SiteSafetyFlagProbeSafetyBlock || safetyFlag.Status != db.SiteSafetyStatusOpen {
+		t.Fatalf("safety flag = %+v", safetyFlag)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("audit expectations: %v", err)

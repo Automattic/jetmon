@@ -101,6 +101,28 @@ CREATE TABLE IF NOT EXISTS jetmon_site_runtime (
     INDEX idx_last_checked (last_checked_at, blog_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Durable, non-downtime safety findings for unsafe legacy monitor URLs and
+-- runtime probe-safety blocks. These rows let operators remediate or ignore
+-- unsafe targets without representing them as customer-site downtime events.
+CREATE TABLE IF NOT EXISTS jetmon_site_safety_flags (
+    id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    blog_id         BIGINT UNSIGNED NOT NULL,
+    monitor_site_id BIGINT UNSIGNED NOT NULL,
+    flag_type       ENUM('unsafe_monitor_url','probe_safety_block') NOT NULL,
+    reason          VARCHAR(1024) NOT NULL,
+    monitor_url     VARCHAR(2083) NOT NULL,
+    status          ENUM('open','deactivated','ignored','resolved') NOT NULL DEFAULT 'open',
+    first_seen_at   TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    last_seen_at    TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    deactivated_at  TIMESTAMP(3) NULL,
+    created_at      TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at      TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    UNIQUE KEY uniq_site_flag (monitor_site_id, flag_type),
+    INDEX idx_blog_status (blog_id, status),
+    INDEX idx_status_seen (status, last_seen_at),
+    INDEX idx_type_status (flag_type, status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- Trusted Veriflier vantage registry for monitor-side discovery.
 CREATE TABLE IF NOT EXISTS jetmon_veriflier_vantages (
     vantage_id    VARCHAR(128) NOT NULL PRIMARY KEY,
