@@ -160,6 +160,7 @@ Tests added:
 - `TestProcessResultsProbeSafetyBlockAuditsWithoutStateChange`
 - `TestServerHandleCheckRejectsUnsafeURL`
 - `TestServerHandleV2CheckRejectsUnsafeURL`
+- `TestServerHandleV2CheckRejectsOversizedBody`
 - `TestCheckerProbeSafetyErrorCodeContract`
 - `TestTransportSafetyBlocksUnsafeIPBeforeDial`
 
@@ -196,6 +197,7 @@ Tests added:
 - `TestValidateDestinationRejectsUnsafeWebhookURLs`
 - `TestProtectedDialContextRejectsUnsafeLiteral`
 - `TestProtectedHTTPClientRejectsUnsafeRedirectURL`
+- `TestProtectedHTTPClientDoesNotUseAmbientProxy`
 
 ### Legacy Cleanup Path
 
@@ -206,6 +208,7 @@ Tests added:
 - `TestClassifyUnsafeMonitorURL`
 - `TestRunSiteSafetyUnsafeURLsDryRun`
 - `TestRunSiteSafetyUnsafeURLsExecuteDeactivates`
+- `TestDeactivateUnsafeMonitorURLsChunksLargeBatches`
 
 ### Custom Header Safety
 
@@ -298,6 +301,19 @@ Benchmarks were refreshed locally from clean `v2` and this branch. CPU: `13th Ge
 
 The large-body benchmarks are intentionally conservative and noisy: they include `httptest`, large response-body reads, and do not enable the target-safety flag. The direct safety benchmark is the better estimate for the added per-check validation cost after DNS cache warmup: about 0.34 microseconds and 64 bytes per check. A previous draft created a fresh resolver during validation and measured around 23 microseconds / 4.8 KiB per cached check; this branch now reuses the checker resolver and transport cache.
 
+## Dependency And Toolchain Audit
+
+`govulncheck` was initially run with the local Go toolchain (`go1.26.2`) against `./...`. It reported two reachable standard-library vulnerabilities, both fixed in Go `1.26.3`:
+
+- `GO-2026-4971`: `net` panic in `Dial` and `LookupPort` with NUL byte input. Example reachable traces include StatsD `net.Dial`, database dial paths, checker DNS lookup, and protected delivery DNS lookup.
+- `GO-2026-4918`: HTTP/2 transport infinite loop on a bad `SETTINGS_MAX_FRAME_SIZE`. Example reachable traces include checker `http.Client.Do` and other HTTP client paths.
+
+It also reported additional package/module-level standard-library findings in the local toolchain that do not appear reachable from this code. The repo-level floor is now explicit: `go.mod` requires Go `1.26.3`, and Docker builder images use `golang:1.26.3`. A refreshed `govulncheck ./...` pass under Go `1.26.3` reported no vulnerabilities.
+
+Production database compatibility should be validated against MariaDB 11.4, not just MySQL 8.0. Current production database servers are MariaDB 11.4.8 through 11.4.10; MariaDB lists 11.4 as an LTS series with Community maintenance through May 29, 2029, and MariaDB announced 11.4.10 as a February 6, 2026 maintenance release. The local Docker Compose file now defaults `JETMON_DB_IMAGE` to `mariadb:11.4` while still allowing explicit database-image overrides for compatibility checks.
+
+`github.com/go-sql-driver/mysql` remains the right driver family: its current README says maintainers support MariaDB 10.5+ as well as MySQL 5.7+. The project now uses `v1.10.0`. Before production rollout, run MariaDB 11.4 integration tests that cover migrations, JSON columns, generated columns, `ON DUPLICATE KEY UPDATE ... VALUES(...)`, bucket claiming, and runtime write batching.
+
 ## Probe-Safety Event Options
 
 Current branch behavior is intentionally conservative:
@@ -327,6 +343,6 @@ If more checker result fields become shared protocol semantics, move the stable 
 1. Decide whether to implement `Probe Safety Blocked` as a non-downtime event state before rollout, or keep the current audit/metrics-only behavior for this branch.
 2. If cleanup will be run on production data, decide whether deactivation alone is acceptable or whether an additive reason table is needed first.
 3. Add a scheduled or operator-invoked cleanup dry-run report so the unsafe legacy row count can be watched before and after API rejection rolls out.
-3. Exercise DNS rebinding with an authoritative test DNS responder: public address on first lookup, private address on a redirect hop or later check.
-4. Exercise TLS pathology with uptime-bench responders: TLS 1.0/1.1, no common cipher, handshake close/alert, large certificate chains, expired/self-signed/hostname mismatch certificates.
-5. Consider streaming keyword matching that can stop as soon as a required-only keyword is found instead of reading until EOF/limit/budget.
+4. Exercise DNS rebinding with an authoritative test DNS responder: public address on first lookup, private address on a redirect hop or later check.
+5. Exercise TLS pathology with uptime-bench responders: TLS 1.0/1.1, no common cipher, handshake close/alert, large certificate chains, expired/self-signed/hostname mismatch certificates.
+6. Consider streaming keyword matching that can stop as soon as a required-only keyword is found instead of reading until EOF/limit/budget.

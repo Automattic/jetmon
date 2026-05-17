@@ -5,12 +5,17 @@ live in [operations-guide.md](operations-guide.md).
 
 ## Requirements
 
-- Go 1.22 or newer
+- Go 1.26.3 or newer
 - Docker and Docker Compose
 - `make`
 
-The Docker environment provides MySQL, StatsD/Graphite, Mailpit, the monitor,
-the Go Veriflier, and the API failure fixture.
+The Docker environment provides a local database, StatsD/Graphite, Mailpit, the
+monitor, the Go Veriflier, and the API failure fixture. `docker/.env-sample`
+defaults to `JETMON_DB_IMAGE=mariadb:11.4`, matching the current production
+database family. If you change this value for compatibility testing, recreate
+the database volume before comparing behavior across engines. Existing local
+volumes created with the old `mysql:8.0` default should be recreated with
+`docker compose down -v` before first starting the MariaDB default.
 
 ## Start Docker
 
@@ -61,7 +66,7 @@ when present. Override with `make GO=/path/to/go ...` for other layouts.
 ./bin/jetmon2 validate-config
 ```
 
-Validation checks required keys, value ranges, MySQL connectivity, legacy
+Validation checks required keys, value ranges, database connectivity, legacy
 projection mode, email transport mode, and configured Verifliers. Veriflier
 reachability is reported as operational context rather than a hard validation
 failure.

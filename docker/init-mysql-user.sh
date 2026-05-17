@@ -29,7 +29,11 @@ app_user=$(sql_string "${MYSQL_USER}")
 app_password=$(sql_string "${MYSQL_PASSWORD}")
 
 mysql_root() {
-	MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" mysql \
+	local client=mysql
+	if command -v mariadb >/dev/null 2>&1; then
+		client=mariadb
+	fi
+	MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" "${client}" \
 		--protocol=tcp \
 		--host=mysqldb \
 		--user=root \
