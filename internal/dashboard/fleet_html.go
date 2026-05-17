@@ -170,7 +170,7 @@ const fleetDashboardHTML = `<!DOCTYPE html>
   <h2>Processes</h2>
   <table>
     <thead>
-      <tr><th>Process</th><th>Health</th><th>State</th><th>Heartbeat</th><th>Buckets</th><th>Queues</th><th>Memory</th></tr>
+      <tr><th>Process</th><th>Health</th><th>State</th><th>Heartbeat</th><th>Buckets</th><th>Queues</th><th>Memory</th><th>Runtime</th></tr>
     </thead>
     <tbody id="processes"></tbody>
   </table>
@@ -234,6 +234,12 @@ function row(cells) {
 function rangeLabel(item) {
   if (item.bucket_min === undefined || item.bucket_max === undefined || item.bucket_min === null || item.bucket_max === null) return item.bucket_ownership || '-';
   return item.bucket_min + '-' + item.bucket_max;
+}
+
+function runtimeLabel(process) {
+  return 'goroutines=' + (process.runtime_goroutines || 0) +
+    ' runnable=' + (process.runtime_goroutines_runnable || 0) +
+    ' threads=' + (process.runtime_threads || 0);
 }
 
 function ageLabel(seconds) {
@@ -354,11 +360,12 @@ function render(snapshot) {
       ageLabel(process.last_heartbeat_age_sec),
       rangeLabel(process),
       'active=' + (process.active_checks || 0) + ' queue=' + (process.queue_depth || 0) + ' retry=' + (process.retry_queue_size || 0),
-      'rss=' + formatMem(process.rss_mem_mb) + ' go=' + formatMem(process.go_sys_mem_mb)
+      'rss=' + formatMem(process.rss_mem_mb) + ' go=' + formatMem(process.go_sys_mem_mb),
+      runtimeLabel(process)
     ]));
   });
   if (processes.length === 0) {
-    processBody.appendChild(row(['No process-health snapshots found', '', '', '', '', '', '']));
+    processBody.appendChild(row(['No process-health snapshots found', '', '', '', '', '', '', '']));
   }
 
   const depBody = document.getElementById('dependencies');

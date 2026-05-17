@@ -300,6 +300,12 @@ func TestHandleIndex(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "id=\"go-sys\"") {
 		t.Fatal("body does not contain Go system memory card")
 	}
+	if !strings.Contains(w.Body.String(), "id=\"runtime-goroutines\"") {
+		t.Fatal("body does not contain runtime goroutines card")
+	}
+	if !strings.Contains(w.Body.String(), "id=\"runtime-threads\"") {
+		t.Fatal("body does not contain runtime threads card")
+	}
 	if !strings.Contains(w.Body.String(), "id=\"health\"") {
 		t.Fatal("body does not contain dependency health grid")
 	}
@@ -325,6 +331,9 @@ func TestHandleFleetIndex(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "Fleet dashboard") {
 		t.Fatal("body does not contain fleet dashboard label")
+	}
+	if !strings.Contains(w.Body.String(), "<th>Runtime</th>") {
+		t.Fatal("body does not contain process runtime column")
 	}
 }
 
