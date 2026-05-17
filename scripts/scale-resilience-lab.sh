@@ -10,6 +10,9 @@ PUBLIC_SUBNET="${JETMON_SCALE_LAB_SUBNET:-93.184.217.0/24}"
 FIXTURE_IP="${JETMON_SCALE_LAB_FIXTURE_IP:-93.184.217.20}"
 SITE_COUNT="${JETMON_SCALE_LAB_SITE_COUNT:-600}"
 BUCKET_TOTAL="${JETMON_SCALE_LAB_BUCKET_TOTAL:-12}"
+DB_RUNTIME_LOCK_SEC="${JETMON_SCALE_LAB_DB_RUNTIME_LOCK_SEC:-10}"
+DB_READ_ONLY_SEC="${JETMON_SCALE_LAB_DB_READ_ONLY_SEC:-10}"
+DB_PAUSE_SEC="${JETMON_SCALE_LAB_DB_PAUSE_SEC:-10}"
 WORK_DIR="$REPO_ROOT/logs/scale-resilience-lab"
 CONFIG_FILE="$REPO_ROOT/config/config.json"
 COMPOSE=(docker compose -p "$PROJECT" -f "$REPO_ROOT/docker/docker-compose.yml" -f "$REPO_ROOT/docker/docker-compose.scale-lab.yml")
@@ -43,6 +46,12 @@ Runs an isolated Docker resilience lab that:
   7. stops Verifliers and verifies telemetry/dashboard visibility
 
 No WPCOM calls or alert deliveries are configured.
+
+Useful overrides:
+  JETMON_SCALE_LAB_SITE_COUNT=600
+  JETMON_SCALE_LAB_DB_RUNTIME_LOCK_SEC=10
+  JETMON_SCALE_LAB_DB_READ_ONLY_SEC=10
+  JETMON_SCALE_LAB_DB_PAUSE_SEC=10
 USAGE
 }
 
@@ -65,6 +74,12 @@ fail() {
 
 need_cmd() {
 	command -v "$1" >/dev/null 2>&1 || fail "missing command: $1"
+}
+
+require_non_negative_int() {
+	local name="$1"
+	local value="$2"
+	[[ "$value" =~ ^[0-9]+$ ]] || fail "$name must be a non-negative integer, got $value"
 }
 
 compose() {
@@ -464,8 +479,8 @@ recover_monitor() {
 
 inject_db_runtime_lock() {
 	local label="db-runtime-lock"
-	log "injecting temporary database table lock"
-	(root_sql -e "LOCK TABLES jetmon_site_runtime WRITE; DO SLEEP(10); UNLOCK TABLES;" "${MYSQL_DATABASE:-jetmon_db}" >/dev/null) &
+	log "injecting temporary database table lock duration_sec=$DB_RUNTIME_LOCK_SEC"
+	(root_sql -e "LOCK TABLES jetmon_site_runtime WRITE; DO SLEEP($DB_RUNTIME_LOCK_SEC); UNLOCK TABLES;" "${MYSQL_DATABASE:-jetmon_db}" >/dev/null) &
 	local lock_pid=$!
 	sleep 2
 	capture_fleet_snapshot "$label-during" "any" "any" "any" "any"
@@ -478,9 +493,9 @@ inject_db_runtime_lock() {
 
 inject_db_read_only() {
 	local label="db-read-only"
-	log "enabling temporary database read-only mode"
+	log "enabling temporary database read-only mode duration_sec=$DB_READ_ONLY_SEC"
 	root_sql -e "SET GLOBAL read_only = ON"
-	sleep 10
+	sleep "$DB_READ_ONLY_SEC"
 	root_sql -e "SET GLOBAL read_only = OFF"
 	pass "$label disabled"
 	validate_activity_step "$label-recovery" 4 stable green green 3
@@ -488,9 +503,9 @@ inject_db_read_only() {
 
 inject_db_pause() {
 	local label="db-pause"
-	log "pausing database container"
+	log "pausing database container duration_sec=$DB_PAUSE_SEC"
 	compose pause mysqldb >/dev/null
-	sleep 10
+	sleep "$DB_PAUSE_SEC"
 	compose unpause mysqldb >/dev/null
 	wait_for_sql "$label"
 	validate_activity_step "$label-recovery" 4 stable green green 3
@@ -507,6 +522,9 @@ inject_db_restart() {
 run_lab() {
 	need_cmd docker
 	need_cmd jq
+	require_non_negative_int JETMON_SCALE_LAB_DB_RUNTIME_LOCK_SEC "$DB_RUNTIME_LOCK_SEC"
+	require_non_negative_int JETMON_SCALE_LAB_DB_READ_ONLY_SEC "$DB_READ_ONLY_SEC"
+	require_non_negative_int JETMON_SCALE_LAB_DB_PAUSE_SEC "$DB_PAUSE_SEC"
 	cd "$REPO_ROOT"
 	cleanup >/dev/null 2>&1 || true
 	prepare_config

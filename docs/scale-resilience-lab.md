@@ -85,4 +85,7 @@ hard failures are still recovered by the normal heartbeat/grace-period path.
 | `JETMON_SCALE_LAB_FIXTURE_IP` | `93.184.217.20` |
 | `JETMON_SCALE_LAB_SITE_COUNT` | `600` |
 | `JETMON_SCALE_LAB_BUCKET_TOTAL` | `12` |
+| `JETMON_SCALE_LAB_DB_RUNTIME_LOCK_SEC` | `10` |
+| `JETMON_SCALE_LAB_DB_READ_ONLY_SEC` | `10` |
+| `JETMON_SCALE_LAB_DB_PAUSE_SEC` | `10` |
 | `MAILPIT_HOST_PORT` | `17125` |
