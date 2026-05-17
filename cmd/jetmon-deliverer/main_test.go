@@ -226,6 +226,9 @@ func TestDelivererProcessHealthSnapshot(t *testing.T) {
 	if snapshot.HealthStatus != fleethealth.HealthGreen {
 		t.Fatalf("HealthStatus = %q, want green", snapshot.HealthStatus)
 	}
+	if snapshot.RuntimeGoroutines <= 0 || snapshot.RuntimeThreads <= 0 || snapshot.RuntimeGoroutinesCreated == 0 {
+		t.Fatalf("runtime fields = %+v, want scheduler metrics", snapshot)
+	}
 	if len(snapshot.DependencyHealth) != 1 {
 		t.Fatalf("DependencyHealth len = %d, want 1", len(snapshot.DependencyHealth))
 	}

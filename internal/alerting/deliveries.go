@@ -76,11 +76,13 @@ const claimLockDuration = 60 * time.Second
 
 // ClaimReady returns up to limit pending deliveries whose
 // next_attempt_at is in the past. It claims rows with SELECT ... FOR UPDATE
-// inside a transaction so active-active delivery workers cannot claim the same
-// row. Each claimed row then gets an in-flight lease by pushing next_attempt_at
-// to NOW + claimLockDuration before the transaction commits, so subsequent
-// ticks don't re-claim a row whose dispatch is still in-flight. The dispatch
-// goroutine overwrites next_attempt_at with its real value when it finishes.
+// SKIP LOCKED inside a transaction so active-active delivery workers cannot
+// claim the same row and do not wait behind rows another worker is already
+// claiming. Each claimed row then gets an in-flight lease by pushing
+// next_attempt_at to NOW + claimLockDuration before the transaction commits, so
+// subsequent ticks don't re-claim a row whose dispatch is still in-flight. The
+// dispatch goroutine overwrites next_attempt_at with its real value when it
+// finishes.
 //
 // Without the in-flight lease, the deliver loop's 1-second tick re-claims
 // any in-flight row up to the per-contact cap, producing concurrent
@@ -107,7 +109,7 @@ func ClaimReady(ctx context.Context, db *sql.DB, limit int) ([]Delivery, error) 
 		   AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP)
 		 ORDER BY next_attempt_at ASC
 		 LIMIT ?
-		 FOR UPDATE`, limit)
+		 FOR UPDATE SKIP LOCKED`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("alerting: claim ready: %w", err)
 	}

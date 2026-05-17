@@ -77,6 +77,12 @@ func NewVeriflierClient(addr, authToken string) *VeriflierClient {
 		TLSHandshakeTimeout:   5 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 		ForceAttemptHTTP2:     true,
+		HTTP2: &http.HTTP2Config{
+			StrictMaxConcurrentRequests: true,
+			SendPingTimeout:             30 * time.Second,
+			PingTimeout:                 5 * time.Second,
+			WriteByteTimeout:            5 * time.Second,
+		},
 	}
 	return &VeriflierClient{
 		addr:       addr,
@@ -395,8 +401,7 @@ func operationalOverloadError(err error) bool {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
-	var transportErr v2TransportError
-	if errors.As(err, &transportErr) {
+	if transportErr, ok := errors.AsType[v2TransportError](err); ok {
 		return errors.Is(transportErr.err, io.EOF) ||
 			errors.Is(transportErr.err, io.ErrUnexpectedEOF) ||
 			errors.Is(transportErr.err, syscall.ECONNRESET)
@@ -678,15 +683,13 @@ func (e v2TransportError) Unwrap() error {
 }
 
 func isV2Unsupported(err error) bool {
-	var se statusError
-	if errors.As(err, &se) {
+	if se, ok := errors.AsType[statusError](err); ok {
 		return se.status == http.StatusNotFound ||
 			se.status == http.StatusMethodNotAllowed ||
 			se.status == http.StatusNotImplemented
 	}
 
-	var te v2TransportError
-	if errors.As(err, &te) {
+	if te, ok := errors.AsType[v2TransportError](err); ok {
 		return errors.Is(te.err, io.EOF) || errors.Is(te.err, io.ErrUnexpectedEOF)
 	}
 	return false

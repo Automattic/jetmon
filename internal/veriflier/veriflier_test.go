@@ -237,6 +237,32 @@ func TestClientAddr(t *testing.T) {
 	}
 }
 
+func TestClientHTTP2TransportTuning(t *testing.T) {
+	client := NewVeriflierClient("host1:7803", "token")
+	transport, ok := client.httpClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport type = %T, want *http.Transport", client.httpClient.Transport)
+	}
+	if !transport.ForceAttemptHTTP2 {
+		t.Fatal("ForceAttemptHTTP2 = false, want true")
+	}
+	if transport.HTTP2 == nil {
+		t.Fatal("HTTP2 config = nil, want explicit config")
+	}
+	if !transport.HTTP2.StrictMaxConcurrentRequests {
+		t.Fatal("StrictMaxConcurrentRequests = false, want true")
+	}
+	if transport.HTTP2.SendPingTimeout != 30*time.Second {
+		t.Fatalf("SendPingTimeout = %v, want 30s", transport.HTTP2.SendPingTimeout)
+	}
+	if transport.HTTP2.PingTimeout != 5*time.Second {
+		t.Fatalf("PingTimeout = %v, want 5s", transport.HTTP2.PingTimeout)
+	}
+	if transport.HTTP2.WriteByteTimeout != 5*time.Second {
+		t.Fatalf("WriteByteTimeout = %v, want 5s", transport.HTTP2.WriteByteTimeout)
+	}
+}
+
 func TestClientPing(t *testing.T) {
 	_, ts := newTestServer(func(req CheckRequest) CheckResult { return CheckResult{} })
 	defer ts.Close()

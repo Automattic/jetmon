@@ -72,6 +72,9 @@ func TestHandleState(t *testing.T) {
 	if processmetrics.CurrentMemory().RSSMemMB > 0 && st.RSSMemMB <= 0 {
 		t.Fatalf("RSSMemMB = %d, want positive RSS when procfs is available", st.RSSMemMB)
 	}
+	if st.RuntimeGoroutines <= 0 || st.RuntimeThreads <= 0 || st.RuntimeGoroutinesCreated == 0 {
+		t.Fatalf("runtime fields = %+v, want scheduler metrics", st)
+	}
 	if st.BucketOwnership != "pinned range=0-99" {
 		t.Fatalf("BucketOwnership = %q, want pinned range=0-99", st.BucketOwnership)
 	}
@@ -297,6 +300,12 @@ func TestHandleIndex(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "id=\"go-sys\"") {
 		t.Fatal("body does not contain Go system memory card")
 	}
+	if !strings.Contains(w.Body.String(), "id=\"runtime-goroutines\"") {
+		t.Fatal("body does not contain runtime goroutines card")
+	}
+	if !strings.Contains(w.Body.String(), "id=\"runtime-threads\"") {
+		t.Fatal("body does not contain runtime threads card")
+	}
 	if !strings.Contains(w.Body.String(), "id=\"health\"") {
 		t.Fatal("body does not contain dependency health grid")
 	}
@@ -322,6 +331,9 @@ func TestHandleFleetIndex(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "Fleet dashboard") {
 		t.Fatal("body does not contain fleet dashboard label")
+	}
+	if !strings.Contains(w.Body.String(), "<th>Runtime</th>") {
+		t.Fatal("body does not contain process runtime column")
 	}
 }
 

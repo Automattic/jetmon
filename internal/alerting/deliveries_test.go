@@ -2,13 +2,18 @@ package alerting
 
 import (
 	"context"
+	"database/sql"
+	"os"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	_ "github.com/go-sql-driver/mysql"
 )
 
-const selectClaimReadySQL = ` SELECT id, alert_contact_id, transition_id, event_id, event_type, severity, payload, status, attempt, next_attempt_at, last_status_code, last_response, last_attempt_at, delivered_at, created_at FROM jetmon_alert_deliveries WHERE status = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP) ORDER BY next_attempt_at ASC LIMIT ? FOR UPDATE`
+const selectClaimReadySQL = ` SELECT id, alert_contact_id, transition_id, event_id, event_type, severity, payload, status, attempt, next_attempt_at, last_status_code, last_response, last_attempt_at, delivered_at, created_at FROM jetmon_alert_deliveries WHERE status = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP) ORDER BY next_attempt_at ASC LIMIT ? FOR UPDATE SKIP LOCKED`
 
 const leaseClaimedSQL = ` UPDATE jetmon_alert_deliveries SET next_attempt_at = ? WHERE id = ? AND status = 'pending'`
 
@@ -19,8 +24,8 @@ var columnsClaimedDelivery = []string{
 }
 
 // TestClaimReadyClaimsRowsTransactionally verifies that ClaimReady uses
-// row-level locks and then leases each claimed row so subsequent ticks do not
-// re-claim a still-in-flight delivery.
+// row-level locks that skip rows claimed elsewhere and then leases each claimed
+// row so subsequent ticks do not re-claim a still-in-flight delivery.
 func TestClaimReadyClaimsRowsTransactionally(t *testing.T) {
 	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
 	if err != nil {
@@ -54,6 +59,180 @@ func TestClaimReadyClaimsRowsTransactionally(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("expectations: %v", err)
+	}
+}
+
+func TestClaimReadySkipsLockedRowsMariaDB(t *testing.T) {
+	dsn := os.Getenv("JETMON_DELIVERY_CLAIM_TEST_DSN")
+	if dsn == "" {
+		t.Skip("JETMON_DELIVERY_CLAIM_TEST_DSN is not set")
+	}
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		t.Fatalf("PingContext: %v", err)
+	}
+	requireDeliveryClaimSmokeDB(t, ctx, db)
+
+	alertContactID := time.Now().UnixNano()
+	ids := make([]int64, 0, 3)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = db.ExecContext(cleanupCtx, `DELETE FROM jetmon_alert_deliveries WHERE alert_contact_id = ?`, alertContactID)
+	})
+	for i := int64(0); i < 3; i++ {
+		res, err := db.ExecContext(ctx, `
+			INSERT INTO jetmon_alert_deliveries
+				(alert_contact_id, transition_id, event_id, event_type, severity, payload, status, attempt, next_attempt_at)
+			VALUES (?, ?, ?, 'alert.opened', 4, ?, 'pending', 0, ?)`,
+			alertContactID,
+			alertContactID+i,
+			alertContactID+i,
+			[]byte(`{"smoke":true}`),
+			time.Now().Add(-time.Duration(10-i)*time.Second).UTC(),
+		)
+		if err != nil {
+			t.Fatalf("insert delivery %d: %v", i, err)
+		}
+		id, err := res.LastInsertId()
+		if err != nil {
+			t.Fatalf("insert delivery %d last id: %v", i, err)
+		}
+		ids = append(ids, id)
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("BeginTx: %v", err)
+	}
+	defer tx.Rollback()
+	lockedID := ids[0]
+	if err := tx.QueryRowContext(ctx, `
+		SELECT id
+		  FROM jetmon_alert_deliveries
+		 WHERE id = ?
+		 FOR UPDATE`, lockedID).Scan(&lockedID); err != nil {
+		t.Fatalf("lock oldest delivery: %v", err)
+	}
+
+	claimCtx, claimCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer claimCancel()
+	claimed, err := ClaimReady(claimCtx, db, 2)
+	if err != nil {
+		t.Fatalf("ClaimReady with one locked row: %v", err)
+	}
+	if len(claimed) != 2 {
+		t.Fatalf("claimed len = %d, want 2", len(claimed))
+	}
+	for _, delivery := range claimed {
+		if delivery.ID == lockedID {
+			t.Fatalf("ClaimReady claimed locked row id=%d", lockedID)
+		}
+	}
+}
+
+func TestClaimReadyConcurrentClaimersMariaDB(t *testing.T) {
+	dsn := os.Getenv("JETMON_DELIVERY_CLAIM_TEST_DSN")
+	if dsn == "" {
+		t.Skip("JETMON_DELIVERY_CLAIM_TEST_DSN is not set")
+	}
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		t.Fatalf("PingContext: %v", err)
+	}
+	requireDeliveryClaimSmokeDB(t, ctx, db)
+
+	const claimers = 8
+	const perClaimer = 4
+	const total = claimers * perClaimer
+	alertContactID := time.Now().UnixNano()
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = db.ExecContext(cleanupCtx, `DELETE FROM jetmon_alert_deliveries WHERE alert_contact_id = ?`, alertContactID)
+	})
+	for i := int64(0); i < total; i++ {
+		_, err := db.ExecContext(ctx, `
+			INSERT INTO jetmon_alert_deliveries
+				(alert_contact_id, transition_id, event_id, event_type, severity, payload, status, attempt, next_attempt_at)
+			VALUES (?, ?, ?, 'alert.opened', 4, ?, 'pending', 0, ?)`,
+			alertContactID,
+			alertContactID+i,
+			alertContactID+i,
+			[]byte(`{"smoke":true}`),
+			time.Now().Add(-time.Second).UTC(),
+		)
+		if err != nil {
+			t.Fatalf("insert delivery %d: %v", i, err)
+		}
+	}
+
+	start := make(chan struct{})
+	results := make(chan []Delivery, claimers)
+	errs := make(chan error, claimers)
+	var wg sync.WaitGroup
+	wg.Add(claimers)
+	begin := time.Now()
+	for i := 0; i < claimers; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			claimCtx, claimCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer claimCancel()
+			out, err := ClaimReady(claimCtx, db, perClaimer)
+			if err != nil {
+				errs <- err
+				return
+			}
+			results <- out
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	close(errs)
+	elapsed := time.Since(begin)
+	for err := range errs {
+		t.Fatalf("ClaimReady: %v", err)
+	}
+
+	seen := make(map[int64]struct{}, total)
+	for deliveries := range results {
+		for _, delivery := range deliveries {
+			if _, ok := seen[delivery.ID]; ok {
+				t.Fatalf("delivery id %d claimed more than once", delivery.ID)
+			}
+			seen[delivery.ID] = struct{}{}
+		}
+	}
+	if len(seen) != total {
+		t.Fatalf("claimed %d unique deliveries, want %d", len(seen), total)
+	}
+	t.Logf("claimed %d alert deliveries with %d concurrent claimers in %s", total, claimers, elapsed)
+}
+
+func requireDeliveryClaimSmokeDB(t *testing.T, ctx context.Context, db *sql.DB) {
+	t.Helper()
+	var name string
+	if err := db.QueryRowContext(ctx, `SELECT DATABASE()`).Scan(&name); err != nil {
+		t.Fatalf("SELECT DATABASE(): %v", err)
+	}
+	if !strings.Contains(name, "smoke") && os.Getenv("JETMON_DELIVERY_CLAIM_TEST_UNSAFE_ALLOW") != "1" {
+		t.Fatalf("refusing delivery claim integration test against database %q; use a smoke database or set JETMON_DELIVERY_CLAIM_TEST_UNSAFE_ALLOW=1", name)
 	}
 }
 

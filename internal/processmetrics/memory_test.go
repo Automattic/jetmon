@@ -41,4 +41,13 @@ func TestCurrentMemory(t *testing.T) {
 	if snapshot.RSSMemMB < 0 {
 		t.Fatalf("RSSMemMB = %d, want non-negative RSS", snapshot.RSSMemMB)
 	}
+	if snapshot.RuntimeGoroutines <= 0 {
+		t.Fatalf("RuntimeGoroutines = %d, want positive goroutine count", snapshot.RuntimeGoroutines)
+	}
+	if snapshot.RuntimeThreads <= 0 {
+		t.Fatalf("RuntimeThreads = %d, want positive thread count", snapshot.RuntimeThreads)
+	}
+	if snapshot.RuntimeGoroutinesCreated == 0 {
+		t.Fatal("RuntimeGoroutinesCreated = 0, want non-zero count")
+	}
 }

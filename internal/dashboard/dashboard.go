@@ -26,6 +26,13 @@ type State struct {
 	WPCOMQueueDepth               int       `json:"wpcom_queue_depth"`
 	GoSysMemMB                    int       `json:"go_sys_mem_mb"`
 	RSSMemMB                      int       `json:"rss_mem_mb"`
+	RuntimeGoroutines             int       `json:"runtime_goroutines"`
+	RuntimeGoroutinesRunnable     int       `json:"runtime_goroutines_runnable"`
+	RuntimeGoroutinesRunning      int       `json:"runtime_goroutines_running"`
+	RuntimeGoroutinesWaiting      int       `json:"runtime_goroutines_waiting"`
+	RuntimeGoroutinesNotInGo      int       `json:"runtime_goroutines_not_in_go"`
+	RuntimeGoroutinesCreated      uint64    `json:"runtime_goroutines_created"`
+	RuntimeThreads                int       `json:"runtime_threads"`
 	BucketMin                     int       `json:"bucket_min"`
 	BucketMax                     int       `json:"bucket_max"`
 	BucketOwnership               string    `json:"bucket_ownership"`
@@ -98,6 +105,13 @@ func (s *Server) Update(st State) {
 	mem := processmetrics.CurrentMemory()
 	st.GoSysMemMB = mem.GoSysMemMB
 	st.RSSMemMB = mem.RSSMemMB
+	st.RuntimeGoroutines = mem.RuntimeGoroutines
+	st.RuntimeGoroutinesRunnable = mem.RuntimeGoroutinesRunnable
+	st.RuntimeGoroutinesRunning = mem.RuntimeGoroutinesRunning
+	st.RuntimeGoroutinesWaiting = mem.RuntimeGoroutinesWaiting
+	st.RuntimeGoroutinesNotInGo = mem.RuntimeGoroutinesNotInGo
+	st.RuntimeGoroutinesCreated = mem.RuntimeGoroutinesCreated
+	st.RuntimeThreads = mem.RuntimeThreads
 
 	s.mu.Lock()
 	s.state = st
@@ -498,6 +512,14 @@ const dashboardHTML = `<!DOCTYPE html>
     <div class="card"><div class="label">Go Sys Memory</div><div class="value" id="go-sys">-</div></div>
   </div>
 
+  <h2>Runtime</h2>
+  <div class="grid">
+    <div class="card"><div class="label">Runtime Goroutines</div><div class="value" id="runtime-goroutines">-</div></div>
+    <div class="card"><div class="label">Runnable Goroutines</div><div class="value" id="runtime-runnable">-</div></div>
+    <div class="card"><div class="label">Runtime Threads</div><div class="value" id="runtime-threads">-</div></div>
+    <div class="card"><div class="label">Goroutines Created</div><div class="value" id="runtime-created">-</div></div>
+  </div>
+
   <h2>Rollout State</h2>
   <div class="grid">
     <div class="card"><div class="label">Ownership</div><div class="value" id="ownership">-</div></div>
@@ -543,6 +565,10 @@ function renderState(d) {
   setText('buckets', d.bucket_min + '-' + d.bucket_max);
   setText('rss-mem', formatMem(d.rss_mem_mb));
   setText('go-sys', formatMem(d.go_sys_mem_mb));
+  setText('runtime-goroutines', d.runtime_goroutines);
+  setText('runtime-runnable', d.runtime_goroutines_runnable);
+  setText('runtime-threads', d.runtime_threads);
+  setText('runtime-created', d.runtime_goroutines_created);
   setText('ownership', d.bucket_ownership || '-');
   setText('projection', d.legacy_status_projection_enabled ? 'enabled' : 'disabled');
   setText('delivery', d.delivery_workers_enabled ? 'enabled' : 'disabled');

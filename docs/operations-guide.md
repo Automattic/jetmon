@@ -526,10 +526,11 @@ FROM jetmon_process_health
 ORDER BY process_type, host_id;
 ```
 
-For health rollups and memory:
+For health rollups, memory, and runtime scheduler pressure:
 
 ```sql
-SELECT process_id, state, health_status, rss_mem_mb, go_sys_mem_mb, updated_at
+SELECT process_id, state, health_status, rss_mem_mb, go_sys_mem_mb,
+       runtime_goroutines, runtime_threads, updated_at
 FROM jetmon_process_health
 ORDER BY health_status DESC, updated_at;
 ```

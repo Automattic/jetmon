@@ -636,19 +636,26 @@ func TestMonitorProcessHealthSnapshot(t *testing.T) {
 	started := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
 	cfg := &config.Config{APIPort: 8090, DashboardPort: 8080, DeliveryOwnerHost: "host-a"}
 	st := dashboard.State{
-		WorkerCount:            12,
-		ActiveChecks:           3,
-		QueueDepth:             4,
-		RetryQueueSize:         5,
-		BucketMin:              0,
-		BucketMax:              99,
-		BucketOwnership:        "pinned range=0-99",
-		DeliveryWorkersEnabled: true,
-		DeliveryConfigEligible: true,
-		DeliveryOwnerHost:      "host-a",
-		WPCOMQueueDepth:        2,
-		GoSysMemMB:             88,
-		RSSMemMB:               99,
+		WorkerCount:               12,
+		ActiveChecks:              3,
+		QueueDepth:                4,
+		RetryQueueSize:            5,
+		BucketMin:                 0,
+		BucketMax:                 99,
+		BucketOwnership:           "pinned range=0-99",
+		DeliveryWorkersEnabled:    true,
+		DeliveryConfigEligible:    true,
+		DeliveryOwnerHost:         "host-a",
+		WPCOMQueueDepth:           2,
+		GoSysMemMB:                88,
+		RSSMemMB:                  99,
+		RuntimeGoroutines:         41,
+		RuntimeGoroutinesRunnable: 2,
+		RuntimeGoroutinesRunning:  3,
+		RuntimeGoroutinesWaiting:  35,
+		RuntimeGoroutinesNotInGo:  1,
+		RuntimeGoroutinesCreated:  412,
+		RuntimeThreads:            7,
 	}
 	health := []dashboard.HealthEntry{{
 		Name:      "mysql",
@@ -674,6 +681,9 @@ func TestMonitorProcessHealthSnapshot(t *testing.T) {
 	}
 	if snapshot.GoSysMemMB != 88 || snapshot.RSSMemMB != 99 {
 		t.Fatalf("memory fields = go=%d rss=%d, want go=88 rss=99", snapshot.GoSysMemMB, snapshot.RSSMemMB)
+	}
+	if snapshot.RuntimeGoroutines != 41 || snapshot.RuntimeGoroutinesRunnable != 2 || snapshot.RuntimeGoroutinesRunning != 3 || snapshot.RuntimeGoroutinesWaiting != 35 || snapshot.RuntimeGoroutinesNotInGo != 1 || snapshot.RuntimeGoroutinesCreated != 412 || snapshot.RuntimeThreads != 7 {
+		t.Fatalf("runtime fields = %+v, want scheduler metrics copied from dashboard state", snapshot)
 	}
 	if len(snapshot.DependencyHealth) != 1 || snapshot.DependencyHealth[0].Name != "mysql" {
 		t.Fatalf("DependencyHealth = %+v, want mysql entry", snapshot.DependencyHealth)

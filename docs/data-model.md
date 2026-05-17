@@ -178,7 +178,8 @@ snapshot:
   health and rollout-relevant warnings
 - monitor state: bucket range, ownership mode, worker counts, queue depths,
   WPCOM circuit/queue state, delivery-owner state, API/dashboard ports, RSS
-  memory, and Go runtime system memory
+  memory, Go runtime system memory, and Go scheduler counters for goroutines
+  and OS threads
 - dependency health JSON: MySQL, Verifliers, WPCOM, StatsD, and local writable
   directories where applicable
 

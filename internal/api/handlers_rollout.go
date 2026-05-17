@@ -41,7 +41,7 @@ const (
 	rolloutMaxSynchronousSample   = 1000
 	rolloutDefaultProbeConcurrent = 16
 
-	requiredRolloutSchemaMigration = 49
+	requiredRolloutSchemaMigration = 50
 )
 
 type rolloutCapabilitiesResponse struct {
@@ -2362,6 +2362,6 @@ func boolInt(value bool) int {
 }
 
 func isDuplicateKey(err error) bool {
-	var mysqlErr *mysql.MySQLError
-	return errors.As(err, &mysqlErr) && mysqlErr.Number == 1062
+	mysqlErr, ok := errors.AsType[*mysql.MySQLError](err)
+	return ok && mysqlErr.Number == 1062
 }

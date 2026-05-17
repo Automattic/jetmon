@@ -560,8 +560,7 @@ func markSitesCheckedChunk(ctx context.Context, checks []SiteCheck) error {
 }
 
 func isRetryableWriteConflict(err error) bool {
-	var mysqlErr *mysql.MySQLError
-	if errors.As(err, &mysqlErr) {
+	if mysqlErr, ok := errors.AsType[*mysql.MySQLError](err); ok {
 		return mysqlErr.Number == 1205 || mysqlErr.Number == 1213
 	}
 	return false

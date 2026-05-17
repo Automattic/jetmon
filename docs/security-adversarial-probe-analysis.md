@@ -294,6 +294,8 @@ make lint
 make all
 make test-race
 make test-veriflier-soak
+make migration-smoke
+make delivery-claim-smoke
 make rollout-docs-verify
 go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 go mod verify
@@ -301,7 +303,9 @@ go mod verify
 
 Docker image builds were also refreshed for `Dockerfile_jetmon`, `Dockerfile_veriflier`, and `Dockerfile_api_fixture` using the updated `golang:1.26.3` builder image.
 
-MariaDB migration smoke tests were run against isolated local Docker Compose stacks for `mariadb:11.4.8` and `mariadb:11.4.10`. In both cases app-user setup succeeded, `./bin/jetmon2 migrate` applied all migrations, an immediate second migrate was idempotent, `jetmon_schema_migrations` reported `COUNT(*)=49` and `MAX(id)=49`, and `jetmon_site_safety_flags` existed.
+MariaDB migration smoke tests were run against isolated local Docker containers for `mariadb:11.4.8` and `mariadb:11.4.10`. In both cases app-user setup succeeded, `./bin/jetmon2 migrate` applied all migrations, an immediate second migrate was idempotent, `jetmon_schema_migrations` reported `COUNT(*)=50` and `MAX(id)=50`, and the process-health runtime scheduler columns existed.
+
+Delivery claim smoke tests now run through `make delivery-claim-smoke`. The target creates an isolated MariaDB 11.4 database, applies migrations, compiles the webhook and alerting package test binaries, locks one pending delivery row, and verifies that each real `ClaimReady` path skips the locked row while claiming other due rows.
 
 ## Performance Notes
 
