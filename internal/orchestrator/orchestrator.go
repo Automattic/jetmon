@@ -2811,8 +2811,8 @@ func (o *Orchestrator) withEventMutationRetry(blogID int64, operation string, fn
 }
 
 func isRetryableMySQLError(err error) bool {
-	var mysqlErr *mysql.MySQLError
-	if !errors.As(err, &mysqlErr) {
+	mysqlErr, ok := errors.AsType[*mysql.MySQLError](err)
+	if !ok {
 		return false
 	}
 	switch mysqlErr.Number {
