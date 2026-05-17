@@ -53,6 +53,21 @@ func TestHTTPGetErrorStatus(t *testing.T) {
 	}
 }
 
+func TestHTTPGetRejectsOversizedBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(strings.Repeat("a", httpGetMaxBodyBytes+1)))
+	}))
+	defer srv.Close()
+
+	_, err := httpGet(srv.URL)
+	if err == nil {
+		t.Fatalf("httpGet() expected oversized body error")
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("httpGet() error = %v, want body cap", err)
+	}
+}
+
 func TestEnvOrDefault(t *testing.T) {
 	const key = "JETMON_TEST_ENV_OR_DEFAULT"
 	t.Setenv(key, "")
