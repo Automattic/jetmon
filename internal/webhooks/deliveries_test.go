@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -135,6 +136,93 @@ func TestClaimReadySkipsLockedRowsMariaDB(t *testing.T) {
 			t.Fatalf("ClaimReady claimed locked row id=%d", lockedID)
 		}
 	}
+}
+
+func TestClaimReadyConcurrentClaimersMariaDB(t *testing.T) {
+	dsn := os.Getenv("JETMON_DELIVERY_CLAIM_TEST_DSN")
+	if dsn == "" {
+		t.Skip("JETMON_DELIVERY_CLAIM_TEST_DSN is not set")
+	}
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		t.Fatalf("PingContext: %v", err)
+	}
+	requireDeliveryClaimSmokeDB(t, ctx, db)
+
+	const claimers = 8
+	const perClaimer = 4
+	const total = claimers * perClaimer
+	webhookID := time.Now().UnixNano()
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = db.ExecContext(cleanupCtx, `DELETE FROM jetmon_webhook_deliveries WHERE webhook_id = ?`, webhookID)
+	})
+	for i := int64(0); i < total; i++ {
+		_, err := db.ExecContext(ctx, `
+			INSERT INTO jetmon_webhook_deliveries
+				(webhook_id, transition_id, event_id, event_type, payload, status, attempt, next_attempt_at)
+			VALUES (?, ?, ?, 'event.opened', ?, 'pending', 0, ?)`,
+			webhookID,
+			webhookID+i,
+			webhookID+i,
+			[]byte(`{"smoke":true}`),
+			time.Now().Add(-time.Second).UTC(),
+		)
+		if err != nil {
+			t.Fatalf("insert delivery %d: %v", i, err)
+		}
+	}
+
+	start := make(chan struct{})
+	results := make(chan []Delivery, claimers)
+	errs := make(chan error, claimers)
+	var wg sync.WaitGroup
+	wg.Add(claimers)
+	begin := time.Now()
+	for i := 0; i < claimers; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			claimCtx, claimCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer claimCancel()
+			out, err := ClaimReady(claimCtx, db, perClaimer)
+			if err != nil {
+				errs <- err
+				return
+			}
+			results <- out
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	close(errs)
+	elapsed := time.Since(begin)
+	for err := range errs {
+		t.Fatalf("ClaimReady: %v", err)
+	}
+
+	seen := make(map[int64]struct{}, total)
+	for deliveries := range results {
+		for _, delivery := range deliveries {
+			if _, ok := seen[delivery.ID]; ok {
+				t.Fatalf("delivery id %d claimed more than once", delivery.ID)
+			}
+			seen[delivery.ID] = struct{}{}
+		}
+	}
+	if len(seen) != total {
+		t.Fatalf("claimed %d unique deliveries, want %d", len(seen), total)
+	}
+	t.Logf("claimed %d webhook deliveries with %d concurrent claimers in %s", total, claimers, elapsed)
 }
 
 func requireDeliveryClaimSmokeDB(t *testing.T, ctx context.Context, db *sql.DB) {

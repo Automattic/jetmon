@@ -85,8 +85,8 @@ docker cp "$work_dir/webhooks.test" "$container:/tmp/webhooks.test" >/dev/null
 docker cp "$work_dir/alerting.test" "$container:/tmp/alerting.test" >/dev/null
 dsn="${db_user}:${db_password}@tcp(127.0.0.1:3306)/${db_name}?parseTime=true"
 docker exec -e JETMON_DELIVERY_CLAIM_TEST_DSN="$dsn" "$container" \
-	/tmp/webhooks.test -test.run TestClaimReadySkipsLockedRowsMariaDB -test.v
+	/tmp/webhooks.test -test.run 'TestClaimReady(SkipsLockedRows|ConcurrentClaimers)MariaDB' -test.v
 docker exec -e JETMON_DELIVERY_CLAIM_TEST_DSN="$dsn" "$container" \
-	/tmp/alerting.test -test.run TestClaimReadySkipsLockedRowsMariaDB -test.v
+	/tmp/alerting.test -test.run 'TestClaimReady(SkipsLockedRows|ConcurrentClaimers)MariaDB' -test.v
 
 printf '\nDelivery claim concurrency smoke passed for %s\n' "$image"
