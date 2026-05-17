@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +14,7 @@ import (
 	"github.com/Automattic/jetmon/internal/checkmode"
 	"github.com/Automattic/jetmon/internal/config"
 	jetdb "github.com/Automattic/jetmon/internal/db"
+	"github.com/Automattic/jetmon/internal/netguard"
 )
 
 // validRedirectPolicies bounds the redirect_policy field. Matches the ENUM in
@@ -26,8 +26,11 @@ var validRedirectPolicies = map[string]struct{}{
 }
 
 const (
-	maxForbiddenKeywords     = 20
-	maxForbiddenKeywordBytes = 500
+	maxForbiddenKeywords      = 20
+	maxForbiddenKeywordBytes  = 500
+	maxCustomHeaders          = 32
+	maxCustomHeaderNameBytes  = 128
+	maxCustomHeaderValueBytes = 4096
 )
 
 // createSiteRequest is the body shape for POST /api/v1/sites.
@@ -61,9 +64,7 @@ type createSiteRequest struct {
 // returns 201 with the full site object.
 func (s *Server) handleCreateSite(w http.ResponseWriter, r *http.Request) {
 	var body createSiteRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, r, http.StatusBadRequest, "invalid_body",
-			"request body must be valid JSON: "+err.Error())
+	if !decodeJSONBody(w, r, &body) {
 		return
 	}
 
@@ -238,9 +239,7 @@ func (s *Server) handleUpdateSite(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body updateSiteRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, r, http.StatusBadRequest, "invalid_body",
-			"request body must be valid JSON: "+err.Error())
+	if !decodeJSONBody(w, r, &body) {
 		return
 	}
 
@@ -591,20 +590,8 @@ func (s *Server) readSite(ctx context.Context, blogID int64) (siteResponse, erro
 
 // validateMonitorURL accepts only http and https URLs with a non-empty host.
 func validateMonitorURL(s string) error {
-	if s == "" {
-		return errors.New("monitor_url is required")
-	}
-	u, err := url.Parse(s)
-	if err != nil {
-		return fmt.Errorf("monitor_url is not a valid URL: %v", err)
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return errors.New("monitor_url must use http or https")
-	}
-	if u.Host == "" {
-		return errors.New("monitor_url must include a host")
-	}
-	return nil
+	_, err := netguard.ParsePublicHTTPURL(s, "monitor_url")
+	return err
 }
 
 // encodeCustomHeaders marshals a map[string]string into the JSON shape the
@@ -613,9 +600,12 @@ func encodeCustomHeaders(h *map[string]string) (any, error) {
 	if h == nil || len(*h) == 0 {
 		return nil, nil
 	}
-	for k := range *h {
-		if k == "" {
-			return nil, errors.New("custom_headers must not contain empty header names")
+	if len(*h) > maxCustomHeaders {
+		return nil, fmt.Errorf("custom_headers supports at most %d entries", maxCustomHeaders)
+	}
+	for k, v := range *h {
+		if err := validateCustomHeader(k, v); err != nil {
+			return nil, err
 		}
 	}
 	b, err := json.Marshal(*h)
@@ -623,6 +613,28 @@ func encodeCustomHeaders(h *map[string]string) (any, error) {
 		return nil, fmt.Errorf("encode custom_headers: %v", err)
 	}
 	return string(b), nil
+}
+
+func validateCustomHeader(name, value string) error {
+	if name == "" {
+		return errors.New("custom_headers must not contain empty header names")
+	}
+	if len(name) > maxCustomHeaderNameBytes {
+		return fmt.Errorf("custom_headers names must be %d bytes or fewer", maxCustomHeaderNameBytes)
+	}
+	if len(value) > maxCustomHeaderValueBytes {
+		return fmt.Errorf("custom_headers values must be %d bytes or fewer", maxCustomHeaderValueBytes)
+	}
+	if !netguard.ValidHTTPHeaderName(name) {
+		return fmt.Errorf("custom_headers contains invalid header name %q", name)
+	}
+	if netguard.ForbiddenOutboundHeaderName(name) {
+		return fmt.Errorf("custom_headers may not set hop-by-hop or request-framing header %q", name)
+	}
+	if !netguard.ValidHTTPHeaderValue(value) {
+		return fmt.Errorf("custom_headers contains invalid value for %q", name)
+	}
+	return nil
 }
 
 // encodeForbiddenKeywords marshals explicit bad-content body strings into the

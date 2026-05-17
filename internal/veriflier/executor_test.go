@@ -6,7 +6,19 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/Automattic/jetmon/internal/checker"
 )
+
+func TestCheckerProbeSafetyErrorCodeContract(t *testing.T) {
+	if checkerErrorProbeSafety != checker.ErrorProbeSafety {
+		t.Fatalf("checkerErrorProbeSafety = %d, want checker.ErrorProbeSafety %d", checkerErrorProbeSafety, checker.ErrorProbeSafety)
+	}
+	got := outcomeFromResult(CheckResult{Success: false, ErrorCode: int32(checkerErrorProbeSafety)})
+	if got != OutcomeUnknown {
+		t.Fatalf("outcomeFromResult(probe safety) = %q, want %q", got, OutcomeUnknown)
+	}
+}
 
 func TestExecutorPreservesInputOrder(t *testing.T) {
 	exec := NewExecutor(func(_ context.Context, req CheckRequest) ProbeResult {

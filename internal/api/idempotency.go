@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
 	"net/http"
 	"sync"
@@ -153,9 +154,17 @@ func (s *Server) withIdempotency(h http.HandlerFunc) http.HandlerFunc {
 
 		// Read the body so we can both hash it (for conflict detection) and
 		// re-supply it to the handler. Body size is bounded by the server's
-		// ReadTimeout; a future MaxBytesReader would tighten this.
+		// JSON body cap so authenticated retries cannot force unbounded
+		// idempotency hashing or response caching work.
+		r.Body = http.MaxBytesReader(w, r.Body, maxAPIJSONBodyBytes)
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
+			var maxBytesErr *http.MaxBytesError
+			if errors.As(err, &maxBytesErr) {
+				writeError(w, r, http.StatusRequestEntityTooLarge, "request_body_too_large",
+					"request body exceeds the maximum supported JSON payload size")
+				return
+			}
 			writeError(w, r, http.StatusBadRequest, "invalid_body",
 				"failed to read request body: "+err.Error())
 			return

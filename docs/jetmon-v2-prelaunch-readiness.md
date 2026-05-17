@@ -99,6 +99,13 @@ clear stop/go threshold.
   API unavailable, Veriflier degraded, WPCOM unavailable, MySQL errors,
   delivery backlog, stale heartbeat, bad deploy rollback, WAF false positive,
   and monitor-side `Unknown`.
+- [ ] MariaDB 11.4 runtime validation completed against the production patch
+  range, not just migration smoke. Cover bucket claiming, runtime freshness
+  writes, SSL expiry batches, `ON DUPLICATE KEY UPDATE ... VALUES(...)`, and
+  webhook / alert delivery claims.
+- [ ] Probe-safety follow-up work is tracked before rollout: scheduled
+  `jetmon_site_safety_flags` reporting, authoritative DNS rebinding tests,
+  deeper TLS pathology tests, and optional streaming keyword short-circuiting.
 
 The API rollout smoke gate is necessary but not sufficient for launch. Until
 synthetic canary execution is built into the API rollout gates, run the approved
@@ -381,6 +388,36 @@ Evidence:
 
 - Drill notes with command sequence, expected behavior, observed behavior, and
   follow-up items.
+
+### 8. Probe Safety And Database Runtime Validation
+
+- [ ] Owner: `Jetmon`, `Systems` - Run an end-to-end MariaDB 11.4 runtime
+  exercise against versions matching the production patch range. Migration
+  smoke on `mariadb:11.4.8` and `mariadb:11.4.10` is useful evidence, but the
+  rollout gate must also exercise runtime write paths.
+- [ ] Owner: `Jetmon`, `Systems` - Include bucket claiming, runtime freshness
+  writes, SSL expiry updates, `ON DUPLICATE KEY UPDATE ... VALUES(...)`, and
+  webhook / alert delivery row claims in the MariaDB runtime exercise.
+- [ ] Owner: `Jetmon` - Add or open follow-up tracking for scheduled
+  `jetmon_site_safety_flags` reporting so unsafe legacy row counts and runtime
+  probe-safety blocks are visible before and after API rejection rolls out.
+- [ ] Owner: `Jetmon` - Add or open follow-up tracking for authoritative DNS
+  rebinding coverage: public address on first lookup, then private/reserved
+  address on redirect or later check.
+- [ ] Owner: `Jetmon` - Add or open follow-up tracking for deeper TLS pathology
+  coverage: TLS 1.0/1.1, no common cipher, handshake close/alert, large
+  certificate chains, expired/self-signed certificates, and hostname mismatch.
+- [ ] Owner: `Jetmon` - Decide whether streaming keyword matching should
+  short-circuit when a required-only keyword is found. This is an optimization
+  follow-up, not a production rollout blocker unless body-read cost becomes a
+  measured canary issue.
+
+Evidence:
+
+- MariaDB runtime exercise transcript, including server versions and pass/fail
+  output for each covered write path.
+- Links to follow-up issues or roadmap entries for safety-flag reporting, DNS
+  rebinding tests, TLS pathology tests, and keyword short-circuiting.
 
 ## Early Canary Gates
 

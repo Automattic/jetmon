@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Automattic/jetmon/internal/eventstore"
+	"github.com/Automattic/jetmon/internal/netguard"
 )
 
 // defaultTransportTimeout bounds every outbound HTTP transport call.
@@ -26,7 +27,7 @@ func httpClientOrDefault(c *http.Client) *http.Client {
 	if c != nil {
 		return c
 	}
-	return &http.Client{Timeout: defaultTransportTimeout}
+	return netguard.NewProtectedHTTPClient(defaultTransportTimeout)
 }
 
 // truncateResponseBody caps a transport response at the
@@ -202,6 +203,11 @@ func (d *SlackDispatcher) Send(ctx context.Context, destination json.RawMessage,
 	if dest.WebhookURL == "" {
 		return 0, "destination missing webhook_url", errors.New("alerting/slack: destination missing webhook_url")
 	}
+	if d.HTTPClient == nil {
+		if _, err := netguard.ParsePublicHTTPURL(dest.WebhookURL, "slack webhook_url"); err != nil {
+			return 0, "unsafe webhook_url", fmt.Errorf("alerting/slack: %w", err)
+		}
+	}
 
 	body := slackMessage{
 		Text:   slackFallbackText(n),
@@ -297,6 +303,11 @@ func (d *TeamsDispatcher) Send(ctx context.Context, destination json.RawMessage,
 	}
 	if dest.WebhookURL == "" {
 		return 0, "destination missing webhook_url", errors.New("alerting/teams: destination missing webhook_url")
+	}
+	if d.HTTPClient == nil {
+		if _, err := netguard.ParsePublicHTTPURL(dest.WebhookURL, "teams webhook_url"); err != nil {
+			return 0, "unsafe webhook_url", fmt.Errorf("alerting/teams: %w", err)
+		}
 	}
 
 	header := fmt.Sprintf("**%s** — %s", n.SeverityName, n.SiteURL)

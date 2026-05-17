@@ -3,13 +3,16 @@ package checker
 import (
 	"context"
 	"crypto/tls"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptrace"
+	"net/url"
 	"os"
 	"runtime"
 	"strconv"
@@ -19,6 +22,7 @@ import (
 	"time"
 
 	"github.com/Automattic/jetmon/internal/checkmode"
+	"github.com/Automattic/jetmon/internal/netguard"
 )
 
 // ErrorCode mirrors the status change email types from the original Jetmon.
@@ -32,16 +36,23 @@ const (
 	ErrorTLSExpired    = 6
 	ErrorTLSDeprecated = 7
 	ErrorBodyRead      = 8
+	ErrorProbeSafety   = 9
 	ErrorBodyTruncated = ErrorBodyRead
 )
 
 const (
 	maxBodyIntegrityBytes      int64 = 64 << 10
 	maxKeywordBodyBytes        int64 = 1 << 20
+	maxResultURLDetailBytes          = 2048
+	maxResponseHeaderBytes     int64 = 64 << 10
 	checkDNSCacheTTL                 = 15 * time.Minute
+	checkDNSCacheTTLJitter           = 3 * time.Minute
 	checkDNSCacheMaxEntries          = 2000000
 	checkDNSCachePurgeInterval       = 10000
 )
+
+var errBodyReadBudgetExceeded = errors.New("response body read budget exceeded")
+var errProbeSafetyBlock = errors.New("probe safety block")
 
 // RedirectPolicy controls how redirect responses are handled.
 type RedirectPolicy string
@@ -57,12 +68,26 @@ const (
 // redirect policy remains isolated to that site check. Timeouts are carried by
 // the request context instead of http.Client.Timeout so each probe does not pay
 // for a second timer on the hot path.
-var defaultTransport = newCheckTransport()
-var defaultHTTPIPTransport = newHTTPIPPoolTransport()
+var defaultResolver = newCheckResolver()
+var defaultTransport = newCheckTransportWithResolver(defaultResolver)
+var defaultHTTPIPTransport = newHTTPIPPoolTransportWithFallbackAndResolver(defaultTransport, defaultResolver)
 var defaultDNSCache = newCheckDNSCache(checkDNSCacheTTL, checkDNSCacheMaxEntries)
 var defaultDNSLookupLimiter = newCheckDNSLookupLimiter()
 var configuredResolverMu sync.RWMutex
 var configuredResolverServers []string
+
+type checkContextKey int
+
+const checkContextKeyTargetSafety checkContextKey = iota
+
+func withTargetSafety(ctx context.Context) context.Context {
+	return context.WithValue(ctx, checkContextKeyTargetSafety, true)
+}
+
+func targetSafetyEnabled(ctx context.Context) bool {
+	enabled, _ := ctx.Value(checkContextKeyTargetSafety).(bool)
+	return enabled
+}
 
 type checkDNSLookupLimiter struct {
 	slots chan struct{}
@@ -105,12 +130,14 @@ func ConfigureResolverServers(rawServers []string) error {
 	configuredResolverServers = servers
 	configuredResolverMu.Unlock()
 
-	newTransport := newCheckTransport()
-	newHTTPIPTransport := newHTTPIPPoolTransportWithFallback(newTransport)
+	newResolver := newCheckResolver()
+	newTransport := newCheckTransportWithResolver(newResolver)
+	newHTTPIPTransport := newHTTPIPPoolTransportWithFallbackAndResolver(newTransport, newResolver)
 
 	configuredResolverMu.Lock()
 	oldTransport := defaultTransport
 	oldHTTPIPTransport := defaultHTTPIPTransport
+	defaultResolver = newResolver
 	defaultTransport = newTransport
 	defaultHTTPIPTransport = newHTTPIPTransport
 	defaultDNSCache = newCheckDNSCache(checkDNSCacheTTL, checkDNSCacheMaxEntries)
@@ -137,6 +164,8 @@ func ConfiguredResolverServers() []string {
 type checkDNSCache struct {
 	mu         sync.RWMutex
 	ttl        time.Duration
+	jitter     time.Duration
+	salt       uint64
 	maxEntries int
 	writes     int
 	entries    map[string]checkDNSCacheEntry
@@ -150,6 +179,8 @@ type checkDNSCacheEntry struct {
 func newCheckDNSCache(ttl time.Duration, maxEntries int) *checkDNSCache {
 	return &checkDNSCache{
 		ttl:        ttl,
+		jitter:     checkDNSCacheTTLJitter,
+		salt:       newDNSCacheSalt(),
 		maxEntries: maxEntries,
 		entries:    make(map[string]checkDNSCacheEntry),
 	}
@@ -199,8 +230,36 @@ func (c *checkDNSCache) lookup(ctx context.Context, resolver *net.Resolver, host
 	if err != nil || len(addrs) == 0 {
 		return addrs, err
 	}
-	c.store(key, addrs, now.Add(c.ttl))
+	c.store(key, addrs, c.expiresAt(key, now))
 	return addrs, nil
+}
+
+func (c *checkDNSCache) expiresAt(key string, now time.Time) time.Time {
+	if c == nil || c.ttl <= 0 {
+		return now
+	}
+	jitter := c.jitter
+	if jitter <= 0 || jitter >= c.ttl {
+		return now.Add(c.ttl)
+	}
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(key))
+	var salt [8]byte
+	binary.LittleEndian.PutUint64(salt[:], c.salt)
+	_, _ = h.Write(salt[:])
+	offset := time.Duration(h.Sum64() % uint64(jitter))
+	return now.Add(c.ttl - jitter + offset)
+}
+
+func newDNSCacheSalt() uint64 {
+	h := fnv.New64a()
+	if hostname, err := os.Hostname(); err == nil {
+		_, _ = h.Write([]byte(hostname))
+	}
+	var now [8]byte
+	binary.LittleEndian.PutUint64(now[:], uint64(time.Now().UnixNano()))
+	_, _ = h.Write(now[:])
+	return h.Sum64()
 }
 
 func (c *checkDNSCache) store(key string, addrs []net.IPAddr, expires time.Time) {
@@ -291,8 +350,12 @@ func cloneIPAddrs(addrs []net.IPAddr) []net.IPAddr {
 }
 
 func newCheckTransport() *http.Transport {
+	return newCheckTransportWithResolver(newCheckResolver())
+}
+
+func newCheckTransportWithResolver(resolver *net.Resolver) *http.Transport {
 	return &http.Transport{
-		DialContext: newCheckDialContext(newCheckResolver()),
+		DialContext: newCheckDialContext(resolver),
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: false,
 			// Deprecated TLS versions are still site-reachability signals.
@@ -300,7 +363,8 @@ func newCheckTransport() *http.Transport {
 			// tls_deprecated event instead of reporting customer downtime.
 			MinVersion: tls.VersionTLS10,
 		},
-		TLSHandshakeTimeout: 10 * time.Second,
+		TLSHandshakeTimeout:    10 * time.Second,
+		MaxResponseHeaderBytes: maxResponseHeaderBytes,
 		// Jetmon checks huge fleets of mostly-unique hostnames on minute-scale
 		// cadences. Connections would usually expire before reuse, while the
 		// shared idle pool becomes a global lock and goroutine-pressure point at
@@ -320,7 +384,11 @@ func newHTTPIPPoolTransport() *httpIPPoolTransport {
 }
 
 func newHTTPIPPoolTransportWithFallback(fallback *http.Transport) *httpIPPoolTransport {
-	inner := newCheckTransport()
+	return newHTTPIPPoolTransportWithFallbackAndResolver(fallback, newCheckResolver())
+}
+
+func newHTTPIPPoolTransportWithFallbackAndResolver(fallback *http.Transport, resolver *net.Resolver) *httpIPPoolTransport {
+	inner := newCheckTransportWithResolver(resolver)
 	inner.DisableKeepAlives = false
 	inner.MaxIdleConns = 8192
 	inner.MaxIdleConnsPerHost = 2048
@@ -328,7 +396,7 @@ func newHTTPIPPoolTransportWithFallback(fallback *http.Transport) *httpIPPoolTra
 	return &httpIPPoolTransport{
 		inner:    inner,
 		fallback: fallback,
-		resolver: newCheckResolver(),
+		resolver: resolver,
 	}
 }
 
@@ -366,6 +434,13 @@ func (t *httpIPPoolTransport) RoundTrip(req *http.Request) (*http.Response, erro
 
 	var firstErr error
 	for _, addr := range ordered {
+		if targetSafetyEnabled(req.Context()) && netguard.UnsafeIP(addr.IP) {
+			err := fmt.Errorf("%w: target %q resolves to non-public address %s", errProbeSafetyBlock, host, addr.IP)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
 		resp, err := t.roundTripResolvedIP(req, addr, port)
 		if err == nil || resp != nil {
 			return resp, err
@@ -433,6 +508,9 @@ func newCheckDialContext(resolver *net.Resolver) func(context.Context, string, s
 			return nil, err
 		}
 		if ip := net.ParseIP(host); ip != nil {
+			if targetSafetyEnabled(ctx) && netguard.UnsafeIP(ip) {
+				return nil, fmt.Errorf("%w: target address %s is not public", errProbeSafetyBlock, ip)
+			}
 			return dialer.DialContext(ctx, network, address)
 		}
 
@@ -450,6 +528,13 @@ func newCheckDialContext(resolver *net.Resolver) func(context.Context, string, s
 
 		var firstErr error
 		for _, addr := range orderedResolverAddrs(addrs, network) {
+			if targetSafetyEnabled(ctx) && netguard.UnsafeIP(addr.IP) {
+				err := fmt.Errorf("%w: target %q resolves to non-public address %s", errProbeSafetyBlock, host, addr.IP)
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
 			target := net.JoinHostPort(addr.IP.String(), port)
 			conn, err := dialer.DialContext(ctx, network, target)
 			if err == nil {
@@ -636,6 +721,7 @@ type Request struct {
 	ForbiddenKeywords   []string
 	CustomHeaders       map[string]string
 	RedirectPolicy      RedirectPolicy
+	EnforceTargetSafety bool
 }
 
 // Result holds the outcome of a single HTTP check.
@@ -683,6 +769,8 @@ func (r *Result) StatusType() string {
 	switch {
 	case r.Success:
 		return "success"
+	case r.ErrorCode == ErrorProbeSafety:
+		return "probe_safety"
 	case r.ErrorCode == ErrorSSL || r.ErrorCode == ErrorTLSExpired:
 		return "https"
 	case r.ErrorCode == ErrorTimeout || r.ErrorCode == ErrorBodyRead:
@@ -702,6 +790,9 @@ func (r *Result) StatusType() string {
 
 // IsFailure reports whether the result should enter the downtime pipeline.
 func (r *Result) IsFailure() bool {
+	if r.ErrorCode == ErrorProbeSafety {
+		return false
+	}
 	if !r.Success {
 		return true
 	}
@@ -711,6 +802,12 @@ func (r *Result) IsFailure() bool {
 	default:
 		return true
 	}
+}
+
+// IsProbeSafetyBlock reports that Jetmon intentionally skipped the outbound
+// probe because the target would be unsafe for an untrusted remote site check.
+func (r *Result) IsProbeSafetyBlock() bool {
+	return r != nil && r.ErrorCode == ErrorProbeSafety
 }
 
 // Check performs an HTTP check and returns the result.
@@ -741,6 +838,9 @@ func Check(ctx context.Context, req Request) Result {
 
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	if req.EnforceTargetSafety {
+		ctx = withTargetSafety(ctx)
+	}
 
 	var (
 		dnsStart, tcpStart, tlsStart, reqStart time.Time
@@ -762,6 +862,7 @@ func Check(ctx context.Context, req Request) Result {
 	headers := req.CustomHeaders
 
 	var redirectChain []string
+	var initialRedirectHost string
 	redirectPolicyStr := string(req.RedirectPolicy)
 	if redirectPolicyStr == "" {
 		redirectPolicyStr = string(RedirectFollow)
@@ -773,12 +874,15 @@ func Check(ctx context.Context, req Request) Result {
 	client := &http.Client{
 		Transport: transportForRequestURL(req.URL),
 		CheckRedirect: func(r *http.Request, via []*http.Request) error {
-			redirectChain = append(redirectChain, r.URL.String())
+			redirectChain = append(redirectChain, boundedURLDetail(r.URL.String()))
 			if redirectPolicyStr == string(RedirectFail) {
 				return fmt.Errorf("redirect policy: fail")
 			}
 			if len(redirectChain) > 10 {
 				return fmt.Errorf("too many redirects")
+			}
+			if err := validateRedirectTarget(r.Context(), initialRedirectHost, r.URL); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -786,13 +890,33 @@ func Check(ctx context.Context, req Request) Result {
 
 	httpReq, err := http.NewRequestWithContext(ctx, method, req.URL, nil)
 	if err != nil {
-		res.ErrorCode = ErrorConnect
+		if req.EnforceTargetSafety {
+			res.ErrorCode = ErrorProbeSafety
+		} else {
+			res.ErrorCode = ErrorConnect
+		}
 		res.ErrorDetail = boundedErrorDetail(err)
 		return res
+	}
+	initialRedirectHost = normalizedURLHost(httpReq.URL)
+	if req.EnforceTargetSafety {
+		if err := validateInitialTarget(ctx, httpReq.URL); err != nil {
+			if errors.Is(err, errProbeSafetyBlock) {
+				res.ErrorCode = ErrorProbeSafety
+			} else {
+				res.ErrorCode = ErrorConnect
+				res.DNSFailureKind, res.DNSFailureName, res.DNSFailureServer = classifyDNSError(err)
+			}
+			res.ErrorDetail = boundedErrorDetail(err)
+			return res
+		}
 	}
 
 	httpReq.Header.Set("User-Agent", "jetmon/2.0 (Jetpack Site Uptime Monitor by WordPress.com)")
 	for k, v := range headers {
+		if !netguard.ValidOutboundHeader(k, v) {
+			continue
+		}
 		httpReq.Header.Set(k, v)
 	}
 
@@ -804,7 +928,7 @@ func Check(ctx context.Context, req Request) Result {
 		res.RedirectChain = append([]string(nil), redirectChain...)
 	}
 	if resp != nil && resp.Request != nil && resp.Request.URL != nil {
-		res.FinalURL = resp.Request.URL.String()
+		res.FinalURL = boundedURLDetail(resp.Request.URL.String())
 	}
 
 	// Only record a phase duration when BOTH start and end fired. If a
@@ -830,6 +954,8 @@ func Check(ctx context.Context, req Request) Result {
 		res.DNSFailureKind, res.DNSFailureName, res.DNSFailureServer = classifyDNSError(err)
 		if ctx.Err() != nil {
 			res.ErrorCode = ErrorTimeout
+		} else if errors.Is(err, errProbeSafetyBlock) {
+			res.ErrorCode = ErrorProbeSafety
 		} else if strings.Contains(err.Error(), "redirect") {
 			res.ErrorCode = ErrorRedirect
 		} else if strings.Contains(err.Error(), "tls") || strings.Contains(err.Error(), "certificate") {
@@ -883,7 +1009,11 @@ func Check(ctx context.Context, req Request) Result {
 			res.BodyReadError = boundedErrorDetail(bodyRead.Err)
 		}
 		if bodyRead.Err != nil && res.HTTPCode < http.StatusBadRequest {
-			res.ErrorCode = ErrorBodyRead
+			if needsBody && errors.Is(bodyRead.Err, errBodyReadBudgetExceeded) {
+				res.ErrorCode = ErrorTimeout
+			} else {
+				res.ErrorCode = ErrorBodyRead
+			}
 			res.ErrorDetail = res.BodyReadError
 			return res
 		}
@@ -922,6 +1052,74 @@ func boundedErrorDetail(err error) string {
 		return detail
 	}
 	return detail[:maxErrorDetail] + "..."
+}
+
+func boundedURLDetail(rawURL string) string {
+	if len(rawURL) <= maxResultURLDetailBytes {
+		return rawURL
+	}
+	return rawURL[:maxResultURLDetailBytes] + "..."
+}
+
+func normalizedURLHost(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+	return netguard.NormalizeHost(u.Hostname())
+}
+
+func validateRedirectTarget(ctx context.Context, initialHost string, target *url.URL) error {
+	if target != nil && target.Scheme != "" && target.Scheme != "http" && target.Scheme != "https" {
+		return fmt.Errorf("%w: redirect safety check: target must use http or https", errProbeSafetyBlock)
+	}
+	if target != nil && target.User != nil {
+		return fmt.Errorf("%w: redirect safety check: target must not include userinfo", errProbeSafetyBlock)
+	}
+	targetHost := normalizedURLHost(target)
+	if targetHost == "" || targetHost == initialHost {
+		return nil
+	}
+	if netguard.UnsafeHost(targetHost) {
+		return fmt.Errorf("%w: redirect safety check: target host %q is not public", errProbeSafetyBlock, targetHost)
+	}
+	return validateResolvedTarget(ctx, "redirect safety check", targetHost)
+}
+
+func validateInitialTarget(ctx context.Context, target *url.URL) error {
+	if target == nil {
+		return fmt.Errorf("%w: probe safety check: target URL is required", errProbeSafetyBlock)
+	}
+	if target.Scheme != "http" && target.Scheme != "https" {
+		return fmt.Errorf("%w: probe safety check: target URL must use http or https", errProbeSafetyBlock)
+	}
+	targetHost := normalizedURLHost(target)
+	if targetHost == "" {
+		return fmt.Errorf("%w: probe safety check: target URL must include a host", errProbeSafetyBlock)
+	}
+	if target.User != nil {
+		return fmt.Errorf("%w: probe safety check: target URL must not include userinfo", errProbeSafetyBlock)
+	}
+	if netguard.UnsafeHost(targetHost) {
+		return fmt.Errorf("%w: probe safety check: target host %q is not public", errProbeSafetyBlock, targetHost)
+	}
+	return validateResolvedTarget(ctx, "probe safety check", targetHost)
+}
+
+func validateResolvedTarget(ctx context.Context, detailPrefix, targetHost string) error {
+	resolver := defaultResolver
+	if resolver == nil {
+		resolver = net.DefaultResolver
+	}
+	addrs, err := defaultDNSCache.lookup(ctx, resolver, targetHost, "tcp")
+	if err != nil {
+		return fmt.Errorf("%s: resolve target %q: %w", detailPrefix, targetHost, err)
+	}
+	for _, addr := range addrs {
+		if netguard.UnsafeIP(addr.IP) {
+			return fmt.Errorf("%w: %s: target %q resolves to non-public address %s", errProbeSafetyBlock, detailPrefix, targetHost, addr.IP)
+		}
+	}
+	return nil
 }
 
 func classifyDNSError(err error) (kind, name, server string) {
@@ -972,8 +1170,13 @@ func readResponseBody(resp *http.Response, needKeyword bool, req Request) bodyRe
 		mode = "strict_finite"
 	}
 
+	stopBudget := startBodyReadBudget(resp.Body, responseBodyReadBudget(mode, needKeyword, req))
+
 	if !needKeyword {
 		n, err := io.Copy(io.Discard, io.LimitReader(resp.Body, limit+1))
+		if stopBodyReadBudget(stopBudget) {
+			err = bodyReadBudgetError(err)
+		}
 		result := bodyReadResult{
 			Err:           err,
 			Mode:          mode,
@@ -992,6 +1195,9 @@ func readResponseBody(resp *http.Response, needKeyword bool, req Request) bodyRe
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if stopBodyReadBudget(stopBudget) {
+		err = bodyReadBudgetError(err)
+	}
 	result := bodyReadResult{
 		Body:          body,
 		Err:           err,
@@ -1015,6 +1221,48 @@ func readResponseBody(resp *http.Response, needKeyword bool, req Request) bodyRe
 	return result
 }
 
+func responseBodyReadBudget(mode string, needKeyword bool, req Request) time.Duration {
+	if needKeyword {
+		if req.KeywordReadMaxMS <= 0 {
+			return 0
+		}
+		return time.Duration(req.KeywordReadMaxMS) * time.Millisecond
+	}
+	if mode == "strict_finite" || req.BodyReadMaxMS <= 0 {
+		return 0
+	}
+	return time.Duration(req.BodyReadMaxMS) * time.Millisecond
+}
+
+func startBodyReadBudget(body io.Closer, budget time.Duration) func() bool {
+	if body == nil || budget <= 0 {
+		return nil
+	}
+	var timedOut atomic.Bool
+	timer := time.AfterFunc(budget, func() {
+		timedOut.Store(true)
+		_ = body.Close()
+	})
+	return func() bool {
+		timer.Stop()
+		return timedOut.Load()
+	}
+}
+
+func stopBodyReadBudget(stop func() bool) bool {
+	if stop == nil {
+		return false
+	}
+	return stop()
+}
+
+func bodyReadBudgetError(err error) error {
+	if err == nil {
+		return errBodyReadBudgetExceeded
+	}
+	return fmt.Errorf("%w: %v", errBodyReadBudgetExceeded, err)
+}
+
 func collectForbiddenKeywords(single *string, many []string) []string {
 	out := make([]string, 0, 1+len(many))
 	if single != nil && *single != "" {
@@ -1035,7 +1283,19 @@ func ParseCustomHeaders(raw *string) map[string]string {
 	}
 	var m map[string]string
 	_ = json.Unmarshal([]byte(*raw), &m)
-	return m
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		if netguard.ValidOutboundHeader(k, v) {
+			out[k] = v
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // ParseForbiddenKeywords deserialises a JSON array of body strings that must

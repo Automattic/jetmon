@@ -25,10 +25,11 @@ import (
 // the verifier's defaults because some endpoints (uptime stats over long
 // windows, full transition lists) legitimately do more work.
 const (
-	readHeaderTimeout = 5 * time.Second
-	readTimeout       = 60 * time.Second
-	writeTimeout      = 65 * time.Second
-	idleTimeout       = 120 * time.Second
+	readHeaderTimeout   = 5 * time.Second
+	readTimeout         = 60 * time.Second
+	writeTimeout        = 65 * time.Second
+	idleTimeout         = 120 * time.Second
+	maxAPIJSONBodyBytes = 1 << 20
 )
 
 // Server hosts the API on a single addr. Lifecycle mirrors the verifier:

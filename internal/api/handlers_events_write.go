@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"time"
@@ -54,14 +53,8 @@ func (s *Server) handleCloseEvent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body closeEventRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		// Empty body is OK — defaults below kick in. json.NewDecoder
-		// surfaces io.EOF for an empty/missing body.
-		if !errors.Is(err, io.EOF) {
-			writeError(w, r, http.StatusBadRequest, "invalid_body",
-				"request body must be valid JSON: "+err.Error())
-			return
-		}
+	if !decodeOptionalJSONBody(w, r, &body) {
+		return
 	}
 	reason := body.Reason
 	if reason == "" {
@@ -171,6 +164,8 @@ type checkResultPayload struct {
 // a hung target site doesn't pin a connection forever.
 const triggerNowTimeout = 30 * time.Second
 
+var triggerNowEnforceTargetSafety = true
+
 // handleTriggerNow implements POST /api/v1/sites/{id}/trigger-now.
 //
 // Runs a single HTTP check inline using the checker package, returns the
@@ -224,13 +219,14 @@ func (s *Server) handleTriggerNow(w http.ResponseWriter, r *http.Request) {
 	profile := site.effectiveDetectionProfile(method)
 
 	req := checker.Request{
-		BlogID:           siteID,
-		URL:              site.monitorURL,
-		Method:           method,
-		DetectionProfile: profile,
-		TimeoutSeconds:   timeoutSec,
-		CustomHeaders:    headers,
-		RedirectPolicy:   checker.RedirectFollow,
+		BlogID:              siteID,
+		URL:                 site.monitorURL,
+		Method:              method,
+		DetectionProfile:    profile,
+		TimeoutSeconds:      timeoutSec,
+		CustomHeaders:       headers,
+		RedirectPolicy:      checker.RedirectFollow,
+		EnforceTargetSafety: triggerNowEnforceTargetSafety,
 	}
 	if profile == checkmode.ProfileFull {
 		req.Keyword = site.checkKeywordPtr()

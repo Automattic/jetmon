@@ -23,6 +23,8 @@ import (
 	"fmt"
 	"strconv"
 	"time"
+
+	"github.com/Automattic/jetmon/internal/netguard"
 )
 
 // Storage note: the raw secret is stored in plaintext in jetmon_webhooks.
@@ -155,6 +157,9 @@ type UpdateInput struct {
 func Create(ctx context.Context, db *sql.DB, in CreateInput) (rawSecret string, w *Webhook, err error) {
 	if in.URL == "" {
 		return "", nil, errors.New("webhooks: URL is required")
+	}
+	if _, err := netguard.ParsePublicHTTPURL(in.URL, "webhook url"); err != nil {
+		return "", nil, fmt.Errorf("webhooks: %w", err)
 	}
 	if err := validateEvents(in.Events); err != nil {
 		return "", nil, err
@@ -304,6 +309,11 @@ func UpdateForTenant(ctx context.Context, db *sql.DB, id int64, ownerTenantID st
 }
 
 func update(ctx context.Context, db *sql.DB, id int64, ownerTenantID string, in UpdateInput) (*Webhook, error) {
+	if in.URL != nil {
+		if _, err := netguard.ParsePublicHTTPURL(*in.URL, "webhook url"); err != nil {
+			return nil, fmt.Errorf("webhooks: %w", err)
+		}
+	}
 	if in.Events != nil {
 		if err := validateEvents(*in.Events); err != nil {
 			return nil, err

@@ -13,6 +13,7 @@ import (
 
 	"github.com/Automattic/jetmon/internal/checkmode"
 	"github.com/Automattic/jetmon/internal/metrics"
+	"github.com/Automattic/jetmon/internal/netguard"
 )
 
 // Server listens for inbound connections from the Monitor and dispatches
@@ -184,22 +185,15 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 		Results []CheckResult `json:"results"`
 	}
 
-	// Cap the body before decoding. An overlong body produces a clear 413
-	// rather than streaming through the JSON decoder until something else
-	// times out.
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
-
 	var req batchReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		// MaxBytesReader's "http: request body too large" error is the
-		// signal we want to surface as 413; everything else is a malformed
-		// JSON payload (400).
-		if err.Error() == "http: request body too large" {
-			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+	if !decodeLimitedJSON(w, r, &req) {
+		return
+	}
+	for i := range req.Sites {
+		if err := validateCheckURL(req.Sites[i].URL); err != nil {
+			http.Error(w, fmt.Sprintf("site %d: %v", i, err), http.StatusBadRequest)
 			return
 		}
-		http.Error(w, fmt.Sprintf("decode: %v", err), http.StatusBadRequest)
-		return
 	}
 
 	for i := range req.Sites {
@@ -256,14 +250,8 @@ func (s *Server) handleV2Check(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	var req CheckV2BatchRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		if err.Error() == "http: request body too large" {
-			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
-			return
-		}
-		http.Error(w, fmt.Sprintf("decode: %v", err), http.StatusBadRequest)
+	if !decodeLimitedJSON(w, r, &req) {
 		return
 	}
 	if len(req.Requests) == 0 {
@@ -321,6 +309,20 @@ func (s *Server) handleV2Status(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(s.Status())
 }
 
+func decodeLimitedJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return false
+		}
+		http.Error(w, fmt.Sprintf("decode: %v", err), http.StatusBadRequest)
+		return false
+	}
+	return true
+}
+
 func (s *Server) Status() StatusV2Response {
 	protocols := []string{ProtocolV2}
 	if s.legacy {
@@ -366,8 +368,8 @@ func (s *Server) v2Result(res ProbeResult) CheckV2Result {
 }
 
 func v2RequestToLegacy(req CheckV2Request) (CheckRequest, error) {
-	if req.URL == "" {
-		return CheckRequest{}, fmt.Errorf("url is required")
+	if err := validateCheckURL(req.URL); err != nil {
+		return CheckRequest{}, err
 	}
 	method, err := checkmode.NormalizeMethod(req.Method, checkmode.MethodGET)
 	if err != nil {
@@ -410,6 +412,11 @@ func v2RequestToLegacy(req CheckV2Request) (CheckRequest, error) {
 		legacyReq.ForbiddenKeywords = append([]string(nil), req.BodyRules.Forbidden...)
 	}
 	return legacyReq, nil
+}
+
+func validateCheckURL(rawURL string) error {
+	_, err := netguard.ParsePublicHTTPURL(rawURL, "url")
+	return err
 }
 
 func legacyRequestToV2(req CheckRequest) CheckV2Request {

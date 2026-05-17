@@ -119,6 +119,21 @@ func TestDestinationPreviewByTransport(t *testing.T) {
 	}
 }
 
+func TestValidateDestinationRejectsUnsafeWebhookURLs(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		transport Transport
+		dest      json.RawMessage
+	}{
+		{"slack localhost", TransportSlack, json.RawMessage(`{"webhook_url":"http://localhost/hook"}`)},
+		{"teams private", TransportTeams, json.RawMessage(`{"webhook_url":"http://10.0.0.1/hook"}`)},
+	} {
+		if err := validateDestination(tc.transport, tc.dest); err == nil {
+			t.Fatalf("%s: validateDestination accepted unsafe URL", tc.name)
+		}
+	}
+}
+
 func TestGetContactNotFound(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

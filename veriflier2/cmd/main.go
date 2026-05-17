@@ -19,6 +19,7 @@ import (
 )
 
 var version = "dev"
+var enforceOutboundTargetSafety = true
 
 const shutdownGracePeriod = 30 * time.Second
 
@@ -158,6 +159,7 @@ func performCheckContext(ctx context.Context, req veriflier.CheckRequest) verifl
 		ForbiddenKeywords:   req.ForbiddenKeywords,
 		CustomHeaders:       req.CustomHeaders,
 		RedirectPolicy:      checker.RedirectPolicy(req.RedirectPolicy),
+		EnforceTargetSafety: enforceOutboundTargetSafety,
 	})
 
 	checkResult := veriflier.CheckResult{
@@ -216,6 +218,9 @@ func (c veriflierConfig) TransportPort() string {
 func outcomeFromCheckerResult(res checker.Result) string {
 	if res.Success {
 		return veriflier.OutcomeUp
+	}
+	if res.ErrorCode == checker.ErrorProbeSafety {
+		return veriflier.OutcomeUnknown
 	}
 	if res.ErrorCode == checker.ErrorTimeout {
 		return veriflier.OutcomeTimeout

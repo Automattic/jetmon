@@ -120,6 +120,22 @@ keeps legacy `failure_class` for WPCOM-compatible status types and adds
 operator-facing `detector_class` plus `body_read` evidence for partial/truncated
 responses.
 
+## Probe Safety Cleanup
+
+Use `./jetmon2 site-safety unsafe-urls` to scan active legacy
+`jetpack_monitor_sites.monitor_url` values with the same public-target guard
+used by API admission and runtime probe execution. The default mode is a
+dry-run: it prints bounded examples plus `scanned_active`, `unsafe`, `flagged`,
+and `deactivated` counts without changing rows.
+
+Run with `--execute` only after reviewing the dry-run output. Execution records
+one `jetmon_site_safety_flags` row for each unsafe active monitor URL, then sets
+that legacy row's `monitor_active` value to false. It does not delete site
+rows, does not create downtime events, and does not send WPCOM down/recovery,
+webhook, or alert-contact notifications. Runtime probe-safety blocks also write
+open `jetmon_site_safety_flags` rows when the monitor row is known, so
+operators can query one table for cleanup and recurring unsafe-target findings.
+
 ## Production Host Setup
 
 1. Install `bin/jetmon2` as `/opt/jetmon2/jetmon2`, or update the service unit

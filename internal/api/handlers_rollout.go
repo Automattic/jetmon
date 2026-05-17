@@ -40,6 +40,8 @@ const (
 	rolloutDefaultProbeSample     = 100
 	rolloutMaxSynchronousSample   = 1000
 	rolloutDefaultProbeConcurrent = 16
+
+	requiredRolloutSchemaMigration = 49
 )
 
 type rolloutCapabilitiesResponse struct {
@@ -246,8 +248,7 @@ func (s *Server) handleRolloutCapabilities(w http.ResponseWriter, r *http.Reques
 
 func (s *Server) handleCreateRolloutSession(w http.ResponseWriter, r *http.Request) {
 	var body rolloutSessionRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, r, http.StatusBadRequest, "invalid_body", "request body must be valid JSON: "+err.Error())
+	if !decodeJSONBody(w, r, &body) {
 		return
 	}
 	if err := validateRolloutRange(body.BucketMin, body.BucketMax); err != nil {
@@ -337,8 +338,8 @@ func (s *Server) handleRolloutPreflight(w http.ResponseWriter, r *http.Request) 
 	maxMigration, err := s.maxSchemaMigration(r.Context())
 	if err != nil {
 		blockers = append(blockers, "schema migration lookup failed: "+err.Error())
-	} else if maxMigration < 48 {
-		blockers = append(blockers, fmt.Sprintf("schema migration %d is older than required rollout migration 48", maxMigration))
+	} else if maxMigration < requiredRolloutSchemaMigration {
+		blockers = append(blockers, fmt.Sprintf("schema migration %d is older than required rollout migration %d", maxMigration, requiredRolloutSchemaMigration))
 	}
 	summary := "preflight passed"
 	status := "ok"
@@ -855,8 +856,7 @@ func (s *Server) updateRolloutJobResult(ctx context.Context, jobID string, resul
 
 func (s *Server) decodeRolloutRangeBody(w http.ResponseWriter, r *http.Request) (rolloutRangeRequest, bool) {
 	var body rolloutRangeRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, r, http.StatusBadRequest, "invalid_body", "request body must be valid JSON: "+err.Error())
+	if !decodeJSONBody(w, r, &body) {
 		return body, false
 	}
 	if err := validateRolloutRange(body.BucketMin, body.BucketMax); err != nil {
@@ -1369,6 +1369,7 @@ func rolloutCheckRequest(cfg *config.Config, site jetdb.Site, mode rolloutModeSp
 		BodyReadMaxBytes:    1048576,
 		BodyReadMaxMS:       250,
 		KeywordReadMaxBytes: 1048576,
+		EnforceTargetSafety: true,
 	}
 	if cfg != nil {
 		req.BodyReadMaxBytes = cfg.BodyReadMaxBytes

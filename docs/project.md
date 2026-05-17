@@ -167,7 +167,7 @@ Store `redirect_policy` in `jetmon_site_check_config` with three options: `follo
 ## Tooling and Developer Experience
 
 **Docker Compose Environment**
-The existing Docker Compose setup is updated for the Go binary. A single `docker compose up` starts MySQL, the Jetmon 2 binary, one or more Veriflier instances, Mailpit for local email capture, StatsD + Graphite, the operator dashboard, and the deterministic API fixture. No npm, no node-gyp, no manual build steps. `docker compose up --build` rebuilds the Go binaries in a reproducible multi-stage Docker build.
+The existing Docker Compose setup is updated for the Go binary. A single `docker compose up` starts a local MySQL-compatible database, the Jetmon 2 binary, one or more Veriflier instances, Mailpit for local email capture, StatsD + Graphite, the operator dashboard, and the deterministic API fixture. No npm, no node-gyp, no manual build steps. `docker compose up --build` rebuilds the Go binaries in a reproducible multi-stage Docker build.
 
 **Docker-Local API Fixture**
 The Docker Compose environment includes an `api-fixture` service for deterministic local API CLI and event-flow rehearsals without depending on public endpoint timing. It exposes:

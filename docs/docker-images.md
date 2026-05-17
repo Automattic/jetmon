@@ -64,9 +64,9 @@ Required env vars:
 
 ## Run Jetmon
 
-Jetmon needs MySQL connectivity and (in production) at least one reachable
-Veriflier. The simplest invocation against an already-running MySQL and
-Veriflier:
+Jetmon needs MySQL-compatible database connectivity and (in production) at
+least one reachable Veriflier. The simplest invocation against an
+already-running database and Veriflier:
 
 ```bash
 docker pull ghcr.io/automattic/jetmon:latest
@@ -105,7 +105,7 @@ Required env vars:
 
 | Var | Notes |
 |---|---|
-| `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` | MySQL connection. |
+| `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` | MySQL-compatible database connection. |
 | `VERIFLIER_AUTH_TOKEN`, `VERIFLIER_PORT` | Shared with each Veriflier. |
 | `WPCOM_AUTH_TOKEN` | Set to `change_me` for non-WPCOM environments. |
 | `EMAIL_TRANSPORT` | `stub` for dev; `smtp` plus `SMTP_*` vars for real delivery. |
@@ -155,9 +155,10 @@ services:
       - ./jetmon-stats:/jetmon/stats
 ```
 
-MySQL is intentionally not in this snippet — pre-built images are for talking
-to an existing database. For the full local stack including MySQL, Mailpit, and
-StatsD, keep using the build-from-source compose file under `docker/`.
+The database is intentionally not in this snippet; pre-built images are for
+talking to an existing database. For the full local stack including the
+database, Mailpit, and StatsD, keep using the build-from-source compose file
+under `docker/`.
 
 ## Validate Config Inside The Container
 
@@ -170,7 +171,7 @@ docker run --rm \
 ```
 
 The entrypoint renders a config first, then `validate-config` checks shape,
-MySQL connectivity, email transport mode, and Veriflier reachability.
+database connectivity, email transport mode, and Veriflier reachability.
 
 ## Reload And Drain
 
@@ -199,7 +200,7 @@ before the workflow runs.
 | Symptom | Check |
 |---|---|
 | `denied: requested access to the resource is denied` on pull | The package is still private — authenticate with `docker login ghcr.io` using a PAT with `read:packages`, or have a maintainer flip the package visibility. |
-| Container starts but Jetmon exits with a MySQL error | `DB_HOST` is reachable from inside the container — remember `localhost` inside the container is not the host. Use the host IP, a docker network, or `host.docker.internal`. |
+| Container starts but Jetmon exits with a database error | `DB_HOST` is reachable from inside the container — remember `localhost` inside the container is not the host. Use the host IP, a docker network, or `host.docker.internal`. |
 | `reload` / `drain` reports "no PID file" | Mount a writable volume at `/jetmon/stats`. The PID file lives at `/jetmon/stats/jetmon2.pid`. |
 | Config changes do not persist across container restarts | Either mount `/jetmon/config` and edit the file directly, or rely on env vars — the rendered `config.json` is rebuilt from env vars on every fresh start. |
 | Jetmon cannot reach Veriflier | `VERIFLIER_AUTH_TOKEN` must match on both sides, and `VERIFLIER_PORT` (default `7803`) must be reachable from the Jetmon container. |

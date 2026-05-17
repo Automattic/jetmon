@@ -1,6 +1,8 @@
 package checker
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -8,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,6 +31,7 @@ func TestResultStatusType(t *testing.T) {
 		{name: "timeout", res: Result{ErrorCode: ErrorTimeout}, want: "intermittent"},
 		{name: "body read", res: Result{ErrorCode: ErrorBodyRead}, want: "intermittent"},
 		{name: "redirect", res: Result{ErrorCode: ErrorRedirect}, want: "redirect"},
+		{name: "probe safety", res: Result{ErrorCode: ErrorProbeSafety}, want: "probe_safety"},
 		{name: "403 blocked", res: Result{HTTPCode: 403}, want: "blocked"},
 		{name: "500 server error", res: Result{HTTPCode: 500}, want: "server"},
 		{name: "503 server error", res: Result{HTTPCode: 503}, want: "server"},
@@ -68,6 +72,12 @@ func TestParseCustomHeaders(t *testing.T) {
 	if got["X-Foo"] != "bar" {
 		t.Fatalf("ParseCustomHeaders()[\"X-Foo\"] = %q, want %q", got["X-Foo"], "bar")
 	}
+
+	mixed := `{"X-Good":"ok","Connection":"close","Bad\r\nName":"x","X-Bad":"ok\r\nInjected: yes"}`
+	got = ParseCustomHeaders(&mixed)
+	if len(got) != 1 || got["X-Good"] != "ok" {
+		t.Fatalf("ParseCustomHeaders(mixed) = %#v, want only X-Good", got)
+	}
 }
 
 func TestResultIsFailure(t *testing.T) {
@@ -100,6 +110,11 @@ func TestResultIsFailure(t *testing.T) {
 			name: "transport failure is hard failure",
 			res:  Result{Success: false, ErrorCode: ErrorConnect},
 			want: true,
+		},
+		{
+			name: "probe safety block is non-downtime",
+			res:  Result{Success: false, ErrorCode: ErrorProbeSafety},
+			want: false,
 		},
 	}
 
@@ -682,6 +697,125 @@ func TestCheckBodyReadMaxBytesUnknownLengthOverLimitSucceeds(t *testing.T) {
 	}
 }
 
+func TestCheckCompressedLargeBodyIsCappedAfterDecompression(t *testing.T) {
+	const bodyReadLimit = int64(1024)
+
+	var compressed bytes.Buffer
+	zw := gzip.NewWriter(&compressed)
+	_, _ = zw.Write([]byte(strings.Repeat("a", int(bodyReadLimit)*128)))
+	if err := zw.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Content-Length", strconv.Itoa(compressed.Len()))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(compressed.Bytes())
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{
+		BlogID:           1,
+		URL:              srv.URL,
+		TimeoutSeconds:   5,
+		BodyReadMaxBytes: bodyReadLimit,
+	})
+	if !res.Success {
+		t.Fatalf("Success = false for compressed body over read cap, want true; result=%+v", res)
+	}
+	if res.ErrorCode != ErrorNone {
+		t.Fatalf("ErrorCode = %d, want ErrorNone", res.ErrorCode)
+	}
+	if res.BodyBytesRead != bodyReadLimit {
+		t.Fatalf("BodyBytesRead = %d, want cap %d", res.BodyBytesRead, bodyReadLimit)
+	}
+}
+
+func TestCheckBodyReadMaxMSTimesOutBudgetedRead(t *testing.T) {
+	srv := slowStreamingBodyServer(t, "x", 200*time.Millisecond)
+	defer srv.Close()
+
+	start := time.Now()
+	res := Check(context.Background(), Request{
+		BlogID:           1,
+		URL:              srv.URL,
+		TimeoutSeconds:   5,
+		BodyReadMaxBytes: 1024,
+		BodyReadMaxMS:    50,
+	})
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("Check() took %s, want body-read budget to stop promptly", elapsed)
+	}
+	if res.Success {
+		t.Fatalf("Success = true for body-read budget exhaustion, want false; result=%+v", res)
+	}
+	if res.ErrorCode != ErrorBodyRead {
+		t.Fatalf("ErrorCode = %d, want ErrorBodyRead", res.ErrorCode)
+	}
+	if !strings.Contains(res.BodyReadError, "response body read budget exceeded") {
+		t.Fatalf("BodyReadError = %q, want budget diagnostic", res.BodyReadError)
+	}
+}
+
+func TestCheckBodyReadMaxMSDoesNotFailStrictFiniteBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", "2")
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		time.Sleep(75 * time.Millisecond)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{
+		BlogID:           1,
+		URL:              srv.URL,
+		TimeoutSeconds:   5,
+		BodyReadMaxBytes: 1024,
+		BodyReadMaxMS:    10,
+	})
+	if !res.Success {
+		t.Fatalf("Success = false for slow strict finite body, want true; result=%+v", res)
+	}
+	if res.ErrorCode != ErrorNone {
+		t.Fatalf("ErrorCode = %d, want ErrorNone", res.ErrorCode)
+	}
+	if res.BodyReadMode != "strict_finite" {
+		t.Fatalf("BodyReadMode = %q, want strict_finite", res.BodyReadMode)
+	}
+}
+
+func TestCheckKeywordReadMaxMSTimesOutAsTimeout(t *testing.T) {
+	srv := slowStreamingBodyServer(t, "x", 200*time.Millisecond)
+	defer srv.Close()
+
+	kw := "needle"
+	start := time.Now()
+	res := Check(context.Background(), Request{
+		BlogID:              1,
+		URL:                 srv.URL,
+		TimeoutSeconds:      5,
+		Keyword:             &kw,
+		KeywordReadMaxBytes: 1024,
+		KeywordReadMaxMS:    50,
+	})
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("Check() took %s, want keyword-read budget to stop promptly", elapsed)
+	}
+	if res.Success {
+		t.Fatalf("Success = true for keyword-read budget exhaustion, want false; result=%+v", res)
+	}
+	if res.ErrorCode != ErrorTimeout {
+		t.Fatalf("ErrorCode = %d, want ErrorTimeout", res.ErrorCode)
+	}
+	if !strings.Contains(res.BodyReadError, "response body read budget exceeded") {
+		t.Fatalf("BodyReadError = %q, want budget diagnostic", res.BodyReadError)
+	}
+}
+
 func TestCheckRedirectFail(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
@@ -704,6 +838,138 @@ func TestCheckRedirectFail(t *testing.T) {
 	}
 	if res.ErrorDetail == "" {
 		t.Fatal("ErrorDetail is empty, want redirect diagnostic context")
+	}
+}
+
+func TestCheckRedirectMetadataBoundsLargeLocation(t *testing.T) {
+	longQuery := strings.Repeat("a", maxResultURLDetailBytes*2)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			http.Redirect(w, r, "/final?x="+longQuery, http.StatusFound)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{BlogID: 1, URL: srv.URL, TimeoutSeconds: 5, RedirectPolicy: RedirectAlert})
+	if !res.Success {
+		t.Fatalf("Success = false after long redirect, want true; result=%+v", res)
+	}
+	if len(res.RedirectChain) != 1 {
+		t.Fatalf("RedirectChain len = %d, want 1", len(res.RedirectChain))
+	}
+	if len(res.RedirectChain[0]) != maxResultURLDetailBytes+3 || !strings.HasSuffix(res.RedirectChain[0], "...") {
+		t.Fatalf("RedirectChain[0] length/suffix = %d/%q, want bounded ellipsis", len(res.RedirectChain[0]), res.RedirectChain[0][len(res.RedirectChain[0])-3:])
+	}
+	if len(res.FinalURL) != maxResultURLDetailBytes+3 || !strings.HasSuffix(res.FinalURL, "...") {
+		t.Fatalf("FinalURL length/suffix = %d/%q, want bounded ellipsis", len(res.FinalURL), res.FinalURL[len(res.FinalURL)-3:])
+	}
+}
+
+func TestCheckRejectsCrossHostRedirectToUnsafeAddress(t *testing.T) {
+	privateTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer privateTarget.Close()
+	privateURL := strings.Replace(privateTarget.URL, "127.0.0.1", "localhost", 1)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, privateURL, http.StatusFound)
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{BlogID: 1, URL: srv.URL, TimeoutSeconds: 5, RedirectPolicy: RedirectFollow})
+	if res.Success {
+		t.Fatalf("Success = true for unsafe cross-host redirect, want false; result=%+v", res)
+	}
+	if res.ErrorCode != ErrorProbeSafety {
+		t.Fatalf("ErrorCode = %d, want ErrorProbeSafety", res.ErrorCode)
+	}
+	if res.IsFailure() {
+		t.Fatal("IsFailure = true for unsafe redirect, want false")
+	}
+	if !strings.Contains(res.ErrorDetail, "redirect safety check") {
+		t.Fatalf("ErrorDetail = %q, want redirect safety diagnostic", res.ErrorDetail)
+	}
+	if res.RedirectCount != 1 {
+		t.Fatalf("RedirectCount = %d, want 1", res.RedirectCount)
+	}
+}
+
+func TestCheckRejectsSameHostRedirectWithUserinfo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			u := *r.URL
+			u.Scheme = "http"
+			u.Host = r.Host
+			u.Path = "/final"
+			u.User = url.User("user")
+			http.Redirect(w, r, u.String(), http.StatusFound)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{BlogID: 1, URL: srv.URL, TimeoutSeconds: 5, RedirectPolicy: RedirectFollow})
+	if res.Success {
+		t.Fatalf("Success = true for userinfo redirect, want false; result=%+v", res)
+	}
+	if res.ErrorCode != ErrorProbeSafety {
+		t.Fatalf("ErrorCode = %d, want ErrorProbeSafety", res.ErrorCode)
+	}
+	if res.IsFailure() {
+		t.Fatal("IsFailure = true for unsafe userinfo redirect, want false")
+	}
+	if !strings.Contains(res.ErrorDetail, "userinfo") {
+		t.Fatalf("ErrorDetail = %q, want userinfo diagnostic", res.ErrorDetail)
+	}
+}
+
+func TestTransportSafetyBlocksUnsafeIPBeforeDial(t *testing.T) {
+	ctx := withTargetSafety(context.Background())
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://127.0.0.1/", nil)
+	if err != nil {
+		t.Fatalf("NewRequestWithContext: %v", err)
+	}
+
+	_, err = defaultHTTPIPTransport.RoundTrip(req)
+	if !errors.Is(err, errProbeSafetyBlock) {
+		t.Fatalf("RoundTrip err = %v, want errProbeSafetyBlock", err)
+	}
+}
+
+func TestCheckDNSCacheExpiryUsesJitter(t *testing.T) {
+	cache := newCheckDNSCache(15*time.Minute, 10)
+	cache.jitter = 3 * time.Minute
+	cache.salt = 1
+	now := time.Date(2026, 5, 16, 12, 0, 0, 0, time.UTC)
+
+	expires := cache.expiresAt("example.com|ip4", now)
+	min := now.Add(12 * time.Minute)
+	max := now.Add(15 * time.Minute)
+	if expires.Before(min) || !expires.Before(max) {
+		t.Fatalf("expiresAt = %s, want in [%s, %s)", expires, min, max)
+	}
+}
+
+func TestCheckRejectsOversizedResponseHeaders(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Large-Header", strings.Repeat("a", int(maxResponseHeaderBytes)+1024))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{BlogID: 1, URL: srv.URL, TimeoutSeconds: 5})
+	if res.Success {
+		t.Fatalf("Success = true for oversized response headers, want false; result=%+v", res)
+	}
+	if res.ErrorCode != ErrorConnect {
+		t.Fatalf("ErrorCode = %d, want ErrorConnect", res.ErrorCode)
+	}
+	if !strings.Contains(res.ErrorDetail, "server response headers exceeded") {
+		t.Fatalf("ErrorDetail = %q, want oversized-header diagnostic", res.ErrorDetail)
 	}
 }
 
@@ -982,6 +1248,43 @@ func TestCheckDNSCacheReturnsCachedAddresses(t *testing.T) {
 	}
 }
 
+func TestValidateResolvedTargetRejectsMixedPublicPrivateDNSAnswers(t *testing.T) {
+	dnsAddr := startTestDNSServer(t, [][]net.IP{{
+		net.ParseIP("93.184.216.34"),
+		net.ParseIP("127.0.0.1"),
+	}})
+	withTestResolver(t, dnsAddr, 15*time.Minute)
+
+	err := validateResolvedTarget(context.Background(), "probe safety check", "mixed.test")
+	if err == nil {
+		t.Fatal("validateResolvedTarget accepted mixed public/private DNS answers")
+	}
+	if !strings.Contains(err.Error(), "non-public address") {
+		t.Fatalf("err = %v, want non-public address diagnostic", err)
+	}
+}
+
+func TestValidateResolvedTargetRejectsDNSRebindAfterCacheExpiry(t *testing.T) {
+	dnsAddr := startTestDNSServer(t, [][]net.IP{
+		{net.ParseIP("93.184.216.34")},
+		{net.ParseIP("127.0.0.1")},
+	})
+	withTestResolver(t, dnsAddr, time.Millisecond)
+
+	if err := validateResolvedTarget(context.Background(), "probe safety check", "rebind.test"); err != nil {
+		t.Fatalf("first validateResolvedTarget() error = %v, want nil", err)
+	}
+	time.Sleep(5 * time.Millisecond)
+
+	err := validateResolvedTarget(context.Background(), "probe safety check", "rebind.test")
+	if err == nil {
+		t.Fatal("validateResolvedTarget accepted rebound private DNS answer")
+	}
+	if !strings.Contains(err.Error(), "non-public address") {
+		t.Fatalf("err = %v, want non-public address diagnostic", err)
+	}
+}
+
 func TestPreferredLookupFamily(t *testing.T) {
 	if got := preferredLookupFamily("tcp"); got != "ip4" {
 		t.Fatalf("preferredLookupFamily(tcp) = %q, want ip4", got)
@@ -1058,6 +1361,21 @@ func TestCheckTLS11IsAdvisoryNotOutage(t *testing.T) {
 	}
 }
 
+func TestCheckSelfSignedTLSFailsAsSSL(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{BlogID: 1, URL: srv.URL, TimeoutSeconds: 5})
+	if res.Success {
+		t.Fatalf("Success = true for untrusted TLS cert, want false; result=%+v", res)
+	}
+	if res.ErrorCode != ErrorSSL {
+		t.Fatalf("ErrorCode = %d, want ErrorSSL; detail=%q", res.ErrorCode, res.ErrorDetail)
+	}
+}
+
 func TestCheckInvalidURL(t *testing.T) {
 	res := Check(context.Background(), Request{BlogID: 1, URL: "://invalid-url", TimeoutSeconds: 5})
 	if res.ErrorCode != ErrorConnect {
@@ -1065,6 +1383,57 @@ func TestCheckInvalidURL(t *testing.T) {
 	}
 	if res.ErrorDetail == "" {
 		t.Fatal("ErrorDetail is empty, want invalid-url diagnostic context")
+	}
+}
+
+func TestCheckBlocksUnsafeDirectTargetWhenSafetyEnforced(t *testing.T) {
+	for _, rawURL := range []string{
+		"http://127.0.0.1/admin",
+		"www.example.com",
+		"file:///etc/passwd",
+		"http://user@example.com",
+	} {
+		t.Run(rawURL, func(t *testing.T) {
+			res := Check(context.Background(), Request{
+				BlogID:              1,
+				URL:                 rawURL,
+				TimeoutSeconds:      5,
+				EnforceTargetSafety: true,
+			})
+			if res.ErrorCode != ErrorProbeSafety {
+				t.Fatalf("ErrorCode = %d, want ErrorProbeSafety; result=%+v", res.ErrorCode, res)
+			}
+			if !res.IsProbeSafetyBlock() {
+				t.Fatal("IsProbeSafetyBlock = false, want true")
+			}
+			if res.IsFailure() {
+				t.Fatal("IsFailure = true for probe safety block, want non-downtime result")
+			}
+			if !strings.Contains(res.ErrorDetail, "probe safety check") {
+				t.Fatalf("ErrorDetail = %q, want probe safety diagnostic", res.ErrorDetail)
+			}
+		})
+	}
+}
+
+func TestCheckTargetSafetyDNSFailureIsConnectFailure(t *testing.T) {
+	dnsAddr := startTestNXDomainDNSServer(t)
+	withTestResolver(t, dnsAddr, time.Millisecond)
+
+	res := Check(context.Background(), Request{
+		BlogID:              1,
+		URL:                 "http://missing.example/security-check",
+		TimeoutSeconds:      2,
+		EnforceTargetSafety: true,
+	})
+	if res.ErrorCode != ErrorConnect {
+		t.Fatalf("ErrorCode = %d, want ErrorConnect; result=%+v", res.ErrorCode, res)
+	}
+	if res.IsProbeSafetyBlock() {
+		t.Fatal("IsProbeSafetyBlock = true for DNS failure, want false")
+	}
+	if res.DNSFailureKind != "nxdomain" {
+		t.Fatalf("DNSFailureKind = %q, want nxdomain; detail=%q", res.DNSFailureKind, res.ErrorDetail)
 	}
 }
 
@@ -1170,6 +1539,164 @@ func truncatedBodyServerWithContentLength(t *testing.T, contentLength int64, bod
 			return
 		}
 		_ = conn.Close()
+	}))
+}
+
+func withTestResolver(t *testing.T, dnsAddr string, ttl time.Duration) {
+	t.Helper()
+	oldResolver := defaultResolver
+	oldCache := defaultDNSCache
+	defaultResolver = &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			d := net.Dialer{Timeout: time.Second}
+			return d.DialContext(ctx, network, dnsAddr)
+		},
+	}
+	defaultDNSCache = newCheckDNSCache(ttl, 100)
+	defaultDNSCache.jitter = 0
+	t.Cleanup(func() {
+		defaultResolver = oldResolver
+		defaultDNSCache = oldCache
+	})
+}
+
+func startTestDNSServer(t *testing.T, answerBatches [][]net.IP) string {
+	t.Helper()
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("ListenPacket: %v", err)
+	}
+	t.Cleanup(func() { _ = pc.Close() })
+
+	var queryCount atomic.Uint64
+	go func() {
+		buf := make([]byte, 1500)
+		for {
+			n, addr, err := pc.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			query := append([]byte(nil), buf[:n]...)
+			idx := int(queryCount.Add(1)) - 1
+			if idx >= len(answerBatches) {
+				idx = len(answerBatches) - 1
+			}
+			resp := buildTestDNSAResponse(query, answerBatches[idx])
+			if len(resp) > 0 {
+				_, _ = pc.WriteTo(resp, addr)
+			}
+		}
+	}()
+	return pc.LocalAddr().String()
+}
+
+func startTestNXDomainDNSServer(t *testing.T) string {
+	t.Helper()
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("ListenPacket: %v", err)
+	}
+	t.Cleanup(func() { _ = pc.Close() })
+
+	go func() {
+		buf := make([]byte, 1500)
+		for {
+			n, addr, err := pc.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			resp := buildTestDNSNXDomainResponse(buf[:n])
+			if len(resp) > 0 {
+				_, _ = pc.WriteTo(resp, addr)
+			}
+		}
+	}()
+	return pc.LocalAddr().String()
+}
+
+func buildTestDNSAResponse(query []byte, ips []net.IP) []byte {
+	if len(query) < 12 {
+		return nil
+	}
+	qEnd := 12
+	for qEnd < len(query) && query[qEnd] != 0 {
+		qEnd += int(query[qEnd]) + 1
+	}
+	if qEnd+5 > len(query) {
+		return nil
+	}
+	question := query[12 : qEnd+5]
+	answers := make([]net.IP, 0, len(ips))
+	for _, ip := range ips {
+		if ip4 := ip.To4(); ip4 != nil {
+			answers = append(answers, ip4)
+		}
+	}
+
+	resp := make([]byte, 0, 12+len(question)+len(answers)*16)
+	resp = append(resp, query[0], query[1], 0x81, 0x80)
+	resp = append(resp, 0x00, 0x01)
+	resp = append(resp, byte(len(answers)>>8), byte(len(answers)))
+	resp = append(resp, 0x00, 0x00, 0x00, 0x00)
+	resp = append(resp, question...)
+	for _, ip := range answers {
+		resp = append(resp,
+			0xc0, 0x0c,
+			0x00, 0x01,
+			0x00, 0x01,
+			0x00, 0x00, 0x00, 0x01,
+			0x00, 0x04,
+			ip[0], ip[1], ip[2], ip[3],
+		)
+	}
+	return resp
+}
+
+func buildTestDNSNXDomainResponse(query []byte) []byte {
+	if len(query) < 12 {
+		return nil
+	}
+	qEnd := 12
+	for qEnd < len(query) && query[qEnd] != 0 {
+		qEnd += int(query[qEnd]) + 1
+	}
+	if qEnd+5 > len(query) {
+		return nil
+	}
+	question := query[12 : qEnd+5]
+	resp := make([]byte, 0, 12+len(question))
+	resp = append(resp, query[0], query[1], 0x81, 0x83)
+	resp = append(resp, 0x00, 0x01)
+	resp = append(resp, 0x00, 0x00)
+	resp = append(resp, 0x00, 0x00, 0x00, 0x00)
+	resp = append(resp, question...)
+	return resp
+}
+
+func slowStreamingBodyServer(t *testing.T, chunk string, delay time.Duration) *httptest.Server {
+	t.Helper()
+
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		ticker := time.NewTicker(delay)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-ticker.C:
+				if _, err := w.Write([]byte(chunk)); err != nil {
+					return
+				}
+				if flusher, ok := w.(http.Flusher); ok {
+					flusher.Flush()
+				}
+			}
+		}
 	}))
 }
 

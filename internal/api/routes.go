@@ -43,6 +43,9 @@ func (r routeDef) register(s *Server, mux *http.ServeMux) {
 	if r.Idempotency {
 		handler = s.withIdempotency(handler)
 	}
+	if r.JSONBody {
+		handler = s.withJSONBodyLimit(handler)
+	}
 	if r.authenticated() {
 		handler = s.requireScope(r.Scope, handler)
 	}

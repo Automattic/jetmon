@@ -546,6 +546,12 @@ Database Tables
     ssl_expiry_date       Updated after HTTPS checks
     last_alert_sent_at    Tracks cooldown window
 
+  jetmon_site_safety_flags Non-downtime remediation state
+    monitor_site_id/blog_id Source monitor row and site identifiers
+    flag_type/status       unsafe_monitor_url / probe_safety_block lifecycle
+    reason/monitor_url     Bounded explanation and target URL snapshot
+    first_seen/last_seen   Finding timestamps for operator cleanup
+
   jetmon_hosts            Active monitor instances and bucket leases
     host_id               System hostname (PRIMARY KEY)
     bucket_min/max        Owned bucket range
@@ -646,11 +652,14 @@ Error Codes (checker.ErrorCode)
   ErrorTLSExpired    6   Certificate has passed NotAfter date
   ErrorTLSDeprecated 7   TLS 1.0 or 1.1 detected (advisory only, not a failure)
   ErrorBodyRead      8   GET response body closed early or could not be read
+  ErrorProbeSafety   9   Probe skipped because the target is unsafe for an untrusted check
 ```
 
-`IsFailure()` returns true for all codes except `ErrorNone` and
-`ErrorTLSDeprecated`. `StatusType()` maps codes to the string values
-expected by the WPCOM API (e.g. "https", "intermittent", "redirect").
+`IsFailure()` returns true for all codes except `ErrorNone`,
+`ErrorTLSDeprecated`, and `ErrorProbeSafety`. `ErrorProbeSafety` is audited
+as a probe-safety block and must not open or close customer-site downtime.
+`StatusType()` maps codes to the string values expected by the WPCOM API
+(e.g. "https", "intermittent", "redirect").
 Body integrity reads are capped to a bounded prefix so Jetmon can catch
 truncated successful GET responses without buffering unbounded response
 bodies. Keyword checks retain their larger bounded body window.

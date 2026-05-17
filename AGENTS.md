@@ -252,6 +252,7 @@ New tables introduced by Jetmon 2:
 | `jetmon_check_history` | RTT and timing samples for trending |
 | `jetmon_site_check_config` | V2-only per-site check policy/config: HEAD/GET mode, detection profile, keywords, maintenance windows, headers, timeout, redirect policy, cooldown |
 | `jetmon_site_runtime` | V2-only runtime freshness and observation projection: last checked, next check, last alert, SSL expiry |
+| `jetmon_site_safety_flags` | Non-downtime remediation state for unsafe legacy monitor URLs and runtime probe-safety blocks |
 | `jetmon_false_positives` | Veriflier non-confirmation events |
 
 ## Multi-Host Bucket Coordination

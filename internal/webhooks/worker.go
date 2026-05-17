@@ -9,11 +9,12 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/Automattic/jetmon/internal/netguard"
 )
 
 // retrySchedule maps the *next* attempt number to its delay from the
@@ -59,6 +60,7 @@ type WorkerConfig struct {
 	PerWebhookCap int           // per-webhook in-flight cap; default 3
 	HTTPTimeout   time.Duration // per-delivery HTTP timeout; default 30s
 	BatchSize     int           // dispatcher's transition fetch + deliverer's claim batch; default 200
+	HTTPClient    *http.Client  // optional test/client override; nil uses SSRF-guarded client
 }
 
 func (c *WorkerConfig) applyDefaults() {
@@ -108,26 +110,20 @@ type Worker struct {
 // NewWorker constructs a Worker. Call Start to launch the goroutines.
 func NewWorker(cfg WorkerConfig) *Worker {
 	cfg.applyDefaults()
-	transport := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
-		DialContext: (&net.Dialer{
-			Timeout:   5 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-		MaxIdleConns:          100,
-		MaxIdleConnsPerHost:   10,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   5 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-		ForceAttemptHTTP2:     true,
-	}
 	return &Worker{
 		cfg:        cfg,
-		httpClient: &http.Client{Transport: transport, Timeout: cfg.HTTPTimeout},
+		httpClient: httpClientOrProtected(cfg.HTTPClient, cfg.HTTPTimeout),
 		inFlight:   make(map[int64]int),
 		stop:       make(chan struct{}),
 		done:       make(chan struct{}),
 	}
+}
+
+func httpClientOrProtected(client *http.Client, timeout time.Duration) *http.Client {
+	if client != nil {
+		return client
+	}
+	return netguard.NewProtectedHTTPClient(timeout)
 }
 
 // Start launches the dispatcher and deliverer goroutines. Call Stop to
@@ -400,6 +396,10 @@ func (w *Worker) deliver(d Delivery) {
 		// Webhook was paused between dispatch and deliver. Abandon: the
 		// caller doesn't want this delivery anymore.
 		w.handleResult(ctx, d, 0, "webhook is inactive", true)
+		return
+	}
+	if _, err := netguard.ParsePublicHTTPURL(hook.URL, "webhook url"); err != nil {
+		w.handleResult(ctx, d, 0, fmt.Sprintf("webhook url rejected: %v", err), true)
 		return
 	}
 

@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/Automattic/jetmon/internal/netguard"
 )
 
 // Create inserts a new alert contact and returns the persisted record.
@@ -354,6 +356,9 @@ func validateDestination(t Transport, dest json.RawMessage) error {
 		if d.WebhookURL == "" {
 			return errors.New("alerting: slack destination requires a webhook_url")
 		}
+		if _, err := netguard.ParsePublicHTTPURL(d.WebhookURL, "slack webhook_url"); err != nil {
+			return fmt.Errorf("alerting: %w", err)
+		}
 	case TransportTeams:
 		var d teamsDestination
 		if err := json.Unmarshal(dest, &d); err != nil {
@@ -361,6 +366,9 @@ func validateDestination(t Transport, dest json.RawMessage) error {
 		}
 		if d.WebhookURL == "" {
 			return errors.New("alerting: teams destination requires a webhook_url")
+		}
+		if _, err := netguard.ParsePublicHTTPURL(d.WebhookURL, "teams webhook_url"); err != nil {
+			return fmt.Errorf("alerting: %w", err)
 		}
 	default:
 		return fmt.Errorf("%w: %q", ErrInvalidTransport, t)

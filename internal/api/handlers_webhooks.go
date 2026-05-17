@@ -2,7 +2,6 @@ package api
 
 import (
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -79,9 +78,7 @@ type updateWebhookRequest struct {
 // after this response, only secret_preview is returned.
 func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 	var body createWebhookRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, r, http.StatusBadRequest, "invalid_body",
-			"request body must be valid JSON: "+err.Error())
+	if !decodeJSONBody(w, r, &body) {
 		return
 	}
 	if err := validateMonitorURL(body.URL); err != nil {
@@ -183,9 +180,7 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body updateWebhookRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, r, http.StatusBadRequest, "invalid_body",
-			"request body must be valid JSON: "+err.Error())
+	if !decodeJSONBody(w, r, &body) {
 		return
 	}
 	if body.URL != nil {

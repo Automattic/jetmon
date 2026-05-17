@@ -152,6 +152,33 @@ func TestServerHandleCheckMethodNotAllowed(t *testing.T) {
 	}
 }
 
+func TestServerHandleCheckRejectsUnsafeURL(t *testing.T) {
+	var called atomic.Bool
+	_, ts := newTestServer(func(req CheckRequest) CheckResult {
+		called.Store(true)
+		return CheckResult{Success: true}
+	})
+	defer ts.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/check", checkReqBody(t, []CheckRequest{
+		{BlogID: 1, URL: "http://127.0.0.1/admin"},
+	}))
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+	if called.Load() {
+		t.Fatal("check function was called for unsafe URL")
+	}
+}
+
 func TestServerHandleStatus(t *testing.T) {
 	_, ts := newTestServer(func(req CheckRequest) CheckResult { return CheckResult{} })
 	defer ts.Close()
@@ -970,7 +997,7 @@ func TestNewRequestID(t *testing.T) {
 }
 
 func BenchmarkNewRequestID(b *testing.B) {
-	for b.Loop() {
+	for i := 0; i < b.N; i++ {
 		_ = NewRequestID()
 	}
 }
@@ -1027,18 +1054,10 @@ func TestServerRejectsOversizedBody(t *testing.T) {
 	})
 	defer ts.Close()
 
-	// Build a body just over the 10MB cap. Padding lives in a custom_headers
-	// value so the JSON shape is still valid (we want to confirm the cap
-	// fires, not that the JSON is malformed).
-	pad := make([]byte, 11*1024*1024)
-	for i := range pad {
-		pad[i] = 'x'
-	}
-	body := bytes.NewBuffer(nil)
-	body.WriteString(`{"sites":[{"BlogID":1,"URL":"https://example.com","CustomHeaders":{"X-Pad":"`)
-	body.Write(pad)
-	body.WriteString(`"}}]}`)
-
+	body := oversizedJSONBody(
+		`{"sites":[{"BlogID":1,"URL":"https://example.com","CustomHeaders":{"X-Pad":"`,
+		`"}}]}`,
+	)
 	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/check", body)
 	req.Header.Set("Authorization", "Bearer secret")
 	req.Header.Set("Content-Type", "application/json")
@@ -1052,6 +1071,44 @@ func TestServerRejectsOversizedBody(t *testing.T) {
 	if resp.StatusCode != http.StatusRequestEntityTooLarge {
 		t.Fatalf("status = %d, want 413", resp.StatusCode)
 	}
+}
+
+func TestServerHandleV2CheckRejectsOversizedBody(t *testing.T) {
+	var called atomic.Bool
+	_, ts := newV2TestServer(func(_ context.Context, req CheckRequest) ProbeResult {
+		called.Store(true)
+		return ProbeResult{CheckResult: CheckResult{BlogID: req.BlogID, URL: req.URL, Success: true}, Outcome: OutcomeUp}
+	})
+	defer ts.Close()
+
+	body := oversizedJSONBody(
+		`{"requests":[{"blog_id":1,"url":"https://example.com","headers":{"X-Pad":"`,
+		`"}}]}`,
+	)
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v2/check", body)
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413", resp.StatusCode)
+	}
+	if called.Load() {
+		t.Fatal("checkFn should not be called for oversized v2 body")
+	}
+}
+
+func oversizedJSONBody(prefix, suffix string) *bytes.Buffer {
+	pad := bytes.Repeat([]byte("x"), maxRequestBodyBytes+1)
+	body := bytes.NewBuffer(nil)
+	body.WriteString(prefix)
+	body.Write(pad)
+	body.WriteString(suffix)
+	return body
 }
 
 func TestServerShutdownDrains(t *testing.T) {
@@ -1273,6 +1330,42 @@ func TestServerHandleV2Check(t *testing.T) {
 	}
 	if got.TimingsMS.DNS != 1 || got.TimingsMS.TTFB != 4 {
 		t.Fatalf("timings = %+v", got.TimingsMS)
+	}
+}
+
+func TestServerHandleV2CheckRejectsUnsafeURL(t *testing.T) {
+	var called atomic.Bool
+	srv, ts := newV2TestServer(func(_ context.Context, req CheckRequest) ProbeResult {
+		called.Store(true)
+		return ProbeResult{CheckResult: CheckResult{Success: true}, Outcome: OutcomeUp}
+	})
+	defer srv.executor.Shutdown()
+	defer ts.Close()
+
+	body := bytes.NewBuffer(nil)
+	if err := json.NewEncoder(body).Encode(CheckV2BatchRequest{
+		Requests: []CheckV2Request{{
+			RequestID: "req-unsafe",
+			BlogID:    42,
+			URL:       "http://169.254.169.254/latest/meta-data/",
+		}},
+	}); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v2/check", body)
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+	if called.Load() {
+		t.Fatal("check function was called for unsafe URL")
 	}
 }
 

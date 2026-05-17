@@ -1,25 +1,29 @@
 services:
   mysqldb:
-    image: mysql:8.0
+    image: ${JETMON_DB_IMAGE:-mariadb:11.4}
     restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-123456}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-jetmon_db}
       MYSQL_USER: ${MYSQL_USER:-jetmon}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:-jetmon_dev_password}
+      MARIADB_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-123456}
+      MARIADB_DATABASE: ${MYSQL_DATABASE:-jetmon_db}
+      MARIADB_USER: ${MYSQL_USER:-jetmon}
+      MARIADB_PASSWORD: ${MYSQL_PASSWORD:-jetmon_dev_password}
     ports:
       - "${BIND_ADDR:-127.0.0.1}:${MYSQL_HOST_PORT:-3307}:3306"
     volumes:
       - db:/var/lib/mysql
     healthcheck:
-      test: ["CMD-SHELL", "MYSQL_PWD=$$MYSQL_ROOT_PASSWORD mysqladmin ping --protocol=tcp -h 127.0.0.1 -u root --silent"]
+      test: ["CMD-SHELL", "if command -v healthcheck.sh >/dev/null 2>&1; then healthcheck.sh --connect --innodb_initialized; else MYSQL_PWD=$$MYSQL_ROOT_PASSWORD mysqladmin ping --protocol=tcp -h 127.0.0.1 -u root --silent; fi"]
       interval: 5s
       timeout: 5s
       retries: 10
       start_period: 10s
 
   mysql-user:
-    image: mysql:8.0
+    image: ${JETMON_DB_IMAGE:-mariadb:11.4}
     restart: "no"
     depends_on:
       mysqldb:
