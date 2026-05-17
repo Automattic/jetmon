@@ -1349,6 +1349,7 @@ func stubOrchestratorDeps() func() {
 	origDBListVeriflierVantages := dbListVeriflierVantages
 	origDBUpsertVeriflierAgent := dbUpsertVeriflierAgent
 	origDBUpsertSiteSafetyFlag := dbUpsertSiteSafetyFlag
+	origDBGetActiveRolloutRange := dbGetActiveRolloutRange
 	origNotify := wpcomNotifyFunc
 	origVeriflierStatus := veriflierStatusFunc
 	origVeriflierCheck := veriflierCheckFunc
@@ -1376,6 +1377,9 @@ func stubOrchestratorDeps() func() {
 	dbUpsertVeriflierAgent = func(context.Context, db.VeriflierAgentHeartbeat) error { return nil }
 	dbUpsertSiteSafetyFlag = func(context.Context, db.SiteSafetyFlagExecer, db.SiteSafetyFlag) error {
 		return nil
+	}
+	dbGetActiveRolloutRange = func(context.Context, string) (db.RolloutActiveRange, bool, error) {
+		return db.RolloutActiveRange{}, false, nil
 	}
 	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error { return nil }
 	veriflierStatusFunc = func(c *veriflier.VeriflierClient, ctx context.Context) (*veriflier.StatusV2Response, error) {
@@ -1407,6 +1411,7 @@ func stubOrchestratorDeps() func() {
 		dbListVeriflierVantages = origDBListVeriflierVantages
 		dbUpsertVeriflierAgent = origDBUpsertVeriflierAgent
 		dbUpsertSiteSafetyFlag = origDBUpsertSiteSafetyFlag
+		dbGetActiveRolloutRange = origDBGetActiveRolloutRange
 		wpcomNotifyFunc = origNotify
 		veriflierStatusFunc = origVeriflierStatus
 		veriflierCheckFunc = origVeriflierCheck
@@ -2750,6 +2755,43 @@ func TestRunRoundSkipsHeartbeatWhenPinned(t *testing.T) {
 
 	if heartbeatCalled {
 		t.Fatal("runRound updated jetmon_hosts heartbeat in pinned mode")
+	}
+}
+
+func TestRunRoundUsesAPIControlledRangeWithoutDynamicClaim(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	cfg := setTestConfig(t)
+	cfg.RolloutMode = config.RolloutModeAPIControlled
+
+	var heartbeatCalled bool
+	var dynamicClaimCalled bool
+	dbHeartbeat = func(context.Context, string) error {
+		heartbeatCalled = true
+		return nil
+	}
+	dbClaimBuckets = func(string, int, int, int) (int, int, error) {
+		dynamicClaimCalled = true
+		return 0, 0, nil
+	}
+	dbGetSitesForBucket = func(_ context.Context, gotMin, gotMax, _ int, _ bool) ([]db.Site, error) {
+		if gotMin != 7 || gotMax != 9 {
+			t.Fatalf("fetch buckets = %d-%d, want 7-9", gotMin, gotMax)
+		}
+		return nil, nil
+	}
+
+	o := &Orchestrator{ctx: context.Background(), hostname: "host-a", bucketMin: 7, bucketMax: 9}
+	o.runRound()
+
+	if heartbeatCalled {
+		t.Fatal("runRound updated jetmon_hosts heartbeat in api-controlled mode")
+	}
+	if dynamicClaimCalled {
+		t.Fatal("runRound called dynamic jetmon_hosts claim in api-controlled mode")
+	}
+	if o.bucketMin != 7 || o.bucketMax != 9 {
+		t.Fatalf("bucket range = %d-%d, want preserved 7-9", o.bucketMin, o.bucketMax)
 	}
 }
 

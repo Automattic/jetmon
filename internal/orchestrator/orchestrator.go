@@ -438,7 +438,7 @@ func (o *Orchestrator) refreshAPIControlledRange() (bool, error) {
 func (o *Orchestrator) shutdown() {
 	log.Println("orchestrator: shutting down")
 	cfg := config.Get()
-	if !o.usesPinnedBuckets(cfg) {
+	if o.usesDynamicBuckets(cfg) {
 		if err := dbMarkHostDraining(stdctx.Background(), o.hostname); err != nil {
 			log.Printf("orchestrator: mark draining: %v", err)
 		}
@@ -446,8 +446,8 @@ func (o *Orchestrator) shutdown() {
 	if o.pool != nil {
 		o.pool.Drain()
 	}
-	if o.usesPinnedBuckets(cfg) {
-		log.Println("orchestrator: pinned bucket mode active; no jetmon_hosts row to release")
+	if !o.usesDynamicBuckets(cfg) {
+		log.Printf("orchestrator: rollout_mode=%s or pinned bucket mode active; no jetmon_hosts row to release", cfg.RolloutMode)
 	} else if err := dbReleaseHost(stdctx.Background(), o.hostname, cfg.BucketTotal, cfg.BucketTarget); err != nil {
 		log.Printf("orchestrator: release host: %v", err)
 	}
@@ -466,11 +466,18 @@ func (o *Orchestrator) runRound() roundSummary {
 		o.roundStart = time.Now()
 	}
 
-	if o.usesPinnedBuckets(cfg) {
+	switch {
+	case cfg.RolloutMode == config.RolloutModeAPIControlled:
+		if o.bucketMax < o.bucketMin {
+			log.Println("orchestrator: api-controlled rollout round skipped; no active bucket lock")
+			o.finishRound(cfg, summary)
+			return summary
+		}
+	case o.usesPinnedBuckets(cfg):
 		if err := o.ClaimBuckets(); err != nil {
 			log.Printf("orchestrator: pinned bucket claim failed: %v", err)
 		}
-	} else {
+	default:
 		// Update heartbeat.
 		if err := dbHeartbeat(o.ctx, o.hostname); err != nil {
 			log.Printf("orchestrator: heartbeat failed: %v", err)
@@ -2690,6 +2697,12 @@ func (o *Orchestrator) BucketRange() (int, int) {
 func (o *Orchestrator) usesPinnedBuckets(cfg *config.Config) bool {
 	_, _, ok := cfg.PinnedBucketRange()
 	return ok
+}
+
+func (o *Orchestrator) usesDynamicBuckets(cfg *config.Config) bool {
+	return cfg.RolloutMode != config.RolloutModeStandby &&
+		cfg.RolloutMode != config.RolloutModeAPIControlled &&
+		!o.usesPinnedBuckets(cfg)
 }
 
 // WorkerCount returns the live worker count.

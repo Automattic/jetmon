@@ -38,6 +38,10 @@ Mailpit captures local alert-contact email. Open it at
 `http://localhost:8025` by default, or at the `BIND_ADDR` /
 `MAILPIT_HOST_PORT` values from `docker/.env`.
 
+The local API port also binds to loopback by default. Set
+`API_BIND_ADDR=0.0.0.0` only when the Docker host is on a trusted network and
+remote API access is intentional.
+
 ## Build And Test
 
 From the repository root:

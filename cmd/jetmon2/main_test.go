@@ -53,6 +53,21 @@ func TestHTTPGetErrorStatus(t *testing.T) {
 	}
 }
 
+func TestHTTPGetRejectsOversizedBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(strings.Repeat("a", httpGetMaxBodyBytes+1)))
+	}))
+	defer srv.Close()
+
+	_, err := httpGet(srv.URL)
+	if err == nil {
+		t.Fatalf("httpGet() expected oversized body error")
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("httpGet() error = %v, want body cap", err)
+	}
+}
+
 func TestEnvOrDefault(t *testing.T) {
 	const key = "JETMON_TEST_ENV_OR_DEFAULT"
 	t.Setenv(key, "")
@@ -687,6 +702,21 @@ func TestMonitorProcessHealthSnapshot(t *testing.T) {
 	}
 	if len(snapshot.DependencyHealth) != 1 || snapshot.DependencyHealth[0].Name != "mysql" {
 		t.Fatalf("DependencyHealth = %+v, want mysql entry", snapshot.DependencyHealth)
+	}
+}
+
+func TestMonitorProcessHealthSnapshotOmitsInactiveBucketRange(t *testing.T) {
+	started := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
+	cfg := &config.Config{APIPort: 8090, DashboardPort: 8080}
+	st := dashboard.State{
+		BucketMin:       0,
+		BucketMax:       -1,
+		BucketOwnership: "rollout_mode=api-controlled standby",
+	}
+
+	snapshot := monitorProcessHealthSnapshot("host-a", started, fleethealth.StateRunning, cfg, st, nil)
+	if snapshot.BucketMin != nil || snapshot.BucketMax != nil {
+		t.Fatalf("bucket range = %v-%v, want nils for inactive range", snapshot.BucketMin, snapshot.BucketMax)
 	}
 }
 

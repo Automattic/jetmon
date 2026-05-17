@@ -37,7 +37,11 @@ import (
 	"github.com/Automattic/jetmon/internal/wpcom"
 )
 
-const processHealthWriteTimeout = 2 * time.Second
+const (
+	processHealthWriteTimeout = 2 * time.Second
+	httpGetTimeout            = 10 * time.Second
+	httpGetMaxBodyBytes       = 1 << 20
+)
 
 // Injected at build time via -ldflags.
 var (
@@ -801,7 +805,12 @@ func monitorProcessHealthSnapshot(hostname string, startedAt time.Time, state st
 	if st.UpdatedAt.IsZero() {
 		st.UpdatedAt = time.Now().UTC()
 	}
-	bucketMin, bucketMax := st.BucketMin, st.BucketMax
+	var bucketMinPtr, bucketMaxPtr *int
+	if st.BucketMin >= 0 && st.BucketMax >= st.BucketMin {
+		bucketMin, bucketMax := st.BucketMin, st.BucketMax
+		bucketMinPtr = &bucketMin
+		bucketMaxPtr = &bucketMax
+	}
 	apiPort, dashboardPort := cfg.APIPort, cfg.DashboardPort
 	healthStatus := dashboard.SummarizeHost(st, health).Status
 	if state == fleethealth.StateStopping || state == fleethealth.StateStopped {
@@ -818,8 +827,8 @@ func monitorProcessHealthSnapshot(hostname string, startedAt time.Time, state st
 		HealthStatus:              healthStatus,
 		StartedAt:                 startedAt,
 		UpdatedAt:                 time.Now().UTC(),
-		BucketMin:                 &bucketMin,
-		BucketMax:                 &bucketMax,
+		BucketMin:                 bucketMinPtr,
+		BucketMax:                 bucketMaxPtr,
 		BucketOwnership:           st.BucketOwnership,
 		APIPort:                   &apiPort,
 		DashboardPort:             &dashboardPort,
@@ -1420,14 +1429,18 @@ func envOrDefault(key, def string) string {
 }
 
 func httpGet(url string) (string, error) {
-	resp, err := http.Get(url)
+	client := &http.Client{Timeout: httpGetTimeout}
+	resp, err := client.Get(url)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, httpGetMaxBodyBytes+1))
 	if err != nil {
 		return "", err
+	}
+	if len(body) > httpGetMaxBodyBytes {
+		return "", fmt.Errorf("response body exceeds %d bytes", httpGetMaxBodyBytes)
 	}
 	if resp.StatusCode >= 400 {
 		return "", fmt.Errorf("http %d: %s", resp.StatusCode, string(body))
