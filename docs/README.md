@@ -25,6 +25,8 @@ including the Veriflier discovery trust decision in
 | [`operations-guide.md`](operations-guide.md) | Production configuration, host setup, rollout modes, delivery workers, metrics, dashboard checks, and debugging. |
 | [`rollout-quick-reference.md`](rollout-quick-reference.md) | One-page operator checklist for the v1-to-v2 rollout, linked back to the full migration runbook. |
 | [`rollout-vm-lab.md`](rollout-vm-lab.md) | KVM/libvirt lab harness for rehearsing rollout flows with DB, v1, and fresh v2 VMs plus snapshots. |
+| [`scale-resilience-lab.md`](scale-resilience-lab.md) | Internal-only Docker lab for dynamic bucket ownership, Monitor failure takeover, Veriflier telemetry, and DB disruption recovery. |
+| [`v2-soak-lab.md`](v2-soak-lab.md) | Internal-only Docker soak for sustained normal v2 operation with Monitors, Verifliers, fixture sites, and no outbound side effects. |
 | [`jetmon-v2-prelaunch-readiness.md`](jetmon-v2-prelaunch-readiness.md) | Launch-readiness gates, canary checks, owner split, and service-side hardening map for the v2 drop-in rollout. |
 | [`data-model.md`](data-model.md) | Legacy and v2 tables, additive migrations, event-sourced incident state, legacy projection, and tenant mapping. |
 | [`support-guide.md`](support-guide.md) | Happiness Engineer workflows for explaining alerts, missed alerts, false positives, maintenance windows, and WPCOM payloads. |
