@@ -38,8 +38,9 @@ Runs an isolated Docker resilience lab that:
   2. seeds many public-looking Docker-internal fixture sites
   3. validates dynamic bucket coverage and recent site activity
   4. adds Monitors to two and then four active owners
-  5. stops Monitors and verifies surviving owners take over
-  6. stops Verifliers and verifies telemetry/dashboard visibility
+  5. stops and hard-kills Monitors and verifies surviving owners take over
+  6. injects isolated database disruption and verifies recovery
+  7. stops Verifliers and verifies telemetry/dashboard visibility
 
 No WPCOM calls or alert deliveries are configured.
 USAGE
@@ -76,6 +77,11 @@ sql() {
 		"${MYSQL_DATABASE:-jetmon_db}" "$@"
 }
 
+root_sql() {
+	compose exec -T mysqldb mariadb \
+		-u root "-p${MYSQL_ROOT_PASSWORD:-123456}" "$@"
+}
+
 api() {
 	compose exec -T \
 		-e JETMON_API_URL=http://127.0.0.1:8090 \
@@ -104,6 +110,7 @@ prepare_config() {
 		| .API_PORT = 8090
 		| .DASHBOARD_PORT = 8080
 		| .DASHBOARD_BIND_ADDR = "127.0.0.1"
+		| .DELIVERY_OWNER_HOST = "jetmon-scale-1"
 		| .DEBUG_PORT = 0
 		| .ROLLOUT_MODE = "active"
 		| .DEFAULT_CHECK_METHOD = "GET"
@@ -257,6 +264,19 @@ scalar_sql() {
 	sql --batch --skip-column-names -e "$1" | tr -d '[:space:]'
 }
 
+wait_for_sql() {
+	local label="$1"
+	local deadline=$((SECONDS + 120))
+	while (( SECONDS < deadline )); do
+		if root_sql --batch --skip-column-names -e "SELECT 1" >/dev/null 2>&1; then
+			pass "$label db_available"
+			return
+		fi
+		sleep 2
+	done
+	fail "$label database did not become available"
+}
+
 wait_for_host_count() {
 	local expected="$1"
 	local label="$2"
@@ -352,20 +372,131 @@ wait_for_fresh_veriflier_agents() {
 
 capture_fleet_snapshot() {
 	local label="$1"
-	compose exec -T jetmon curl -fsS http://127.0.0.1:8080/api/fleet >"$WORK_DIR/fleet-$label.json"
-	jq -r '"summary=\(.summary.status) monitors=\(.summary.monitor_processes) bucket=\(.bucket_coverage.status) verifliers=\(.verifliers.status) fresh_agents=\(.verifliers.fresh_agents)"' "$WORK_DIR/fleet-$label.json"
-	pass "$label fleet_snapshot=$WORK_DIR/fleet-$label.json"
+	local expected_summary="${2:-any}"
+	local expected_bucket="${3:-green}"
+	local expected_verifliers="${4:-green}"
+	local expected_fresh_agents="${5:-3}"
+	local snapshot="$WORK_DIR/fleet-$label.json"
+	local summary
+	local bucket
+	local verifliers
+	local fresh_agents
+	local monitor_processes
+
+	compose exec -T jetmon curl -fsS http://127.0.0.1:8080/api/fleet >"$snapshot"
+	summary="$(jq -r '.summary.status' "$snapshot")"
+	bucket="$(jq -r '.bucket_coverage.status' "$snapshot")"
+	verifliers="$(jq -r '.verifliers.status' "$snapshot")"
+	fresh_agents="$(jq -r '.verifliers.fresh_agents' "$snapshot")"
+	monitor_processes="$(jq -r '.summary.monitor_processes' "$snapshot")"
+
+	if [[ "$expected_bucket" != "any" && "$bucket" != "$expected_bucket" ]]; then
+		fail "$label bucket_status=$bucket want=$expected_bucket snapshot=$snapshot"
+	fi
+	if [[ "$expected_verifliers" != "any" && "$verifliers" != "$expected_verifliers" ]]; then
+		fail "$label veriflier_status=$verifliers want=$expected_verifliers snapshot=$snapshot"
+	fi
+	if [[ "$expected_fresh_agents" != "any" && "$fresh_agents" != "$expected_fresh_agents" ]]; then
+		fail "$label fresh_veriflier_agents=$fresh_agents want=$expected_fresh_agents snapshot=$snapshot"
+	fi
+	case "$expected_summary" in
+		any)
+			;;
+		stable)
+			if [[ "$summary" != "green" ]]; then
+				fail "$label summary=$summary want=green snapshot=$snapshot"
+			fi
+			;;
+		degraded)
+			if [[ "$summary" != "red" && "$summary" != "amber" ]]; then
+				fail "$label summary=$summary want=red_or_amber snapshot=$snapshot"
+			fi
+			;;
+		green | amber | red)
+			if [[ "$summary" != "$expected_summary" ]]; then
+				fail "$label summary=$summary want=$expected_summary snapshot=$snapshot"
+			fi
+			;;
+		*)
+			fail "$label unknown expected summary class: $expected_summary"
+			;;
+	esac
+
+	jq -r '"summary=\(.summary.status) monitors=\(.summary.monitor_processes) bucket=\(.bucket_coverage.status) verifliers=\(.verifliers.status) fresh_agents=\(.verifliers.fresh_agents)"' "$snapshot"
+	pass "$label fleet_snapshot=$snapshot expected_summary=$expected_summary monitor_processes=$monitor_processes"
 }
 
 validate_activity_step() {
 	local label="$1"
 	local expected_hosts="$2"
+	local expected_summary="${3:-stable}"
+	local expected_bucket="${4:-green}"
+	local expected_verifliers="${5:-green}"
+	local expected_fresh_agents="${6:-3}"
 	local since
 	wait_for_host_count "$expected_hosts" "$label"
 	run_dynamic_check "$label"
 	since="$(checkpoint_utc)"
 	wait_for_checked_since "$label" "$since"
-	capture_fleet_snapshot "$label"
+	capture_fleet_snapshot "$label" "$expected_summary" "$expected_bucket" "$expected_verifliers" "$expected_fresh_agents"
+}
+
+hard_kill_monitor() {
+	local service="$1"
+	local cid
+	cid="$(compose ps -q "$service")"
+	[[ -n "$cid" ]] || fail "could not find container for $service"
+	docker update --restart=no "$cid" >/dev/null
+	docker kill --signal=SIGKILL "$cid" >/dev/null
+	pass "$service hard_killed"
+}
+
+recover_monitor() {
+	local service="$1"
+	compose up -d --build --force-recreate "$service" >/dev/null
+	pass "$service recovered"
+}
+
+inject_db_runtime_lock() {
+	local label="db-runtime-lock"
+	log "injecting temporary database table lock"
+	(root_sql -e "LOCK TABLES jetmon_site_runtime WRITE; DO SLEEP(10); UNLOCK TABLES;" "${MYSQL_DATABASE:-jetmon_db}" >/dev/null) &
+	local lock_pid=$!
+	sleep 2
+	capture_fleet_snapshot "$label-during" "any" "any" "any" "any"
+	if ! wait "$lock_pid"; then
+		fail "$label lock session failed"
+	fi
+	pass "$label released"
+	validate_activity_step "$label-recovery" 4 stable green green 3
+}
+
+inject_db_read_only() {
+	local label="db-read-only"
+	log "enabling temporary database read-only mode"
+	root_sql -e "SET GLOBAL read_only = ON"
+	sleep 10
+	root_sql -e "SET GLOBAL read_only = OFF"
+	pass "$label disabled"
+	validate_activity_step "$label-recovery" 4 stable green green 3
+}
+
+inject_db_pause() {
+	local label="db-pause"
+	log "pausing database container"
+	compose pause mysqldb >/dev/null
+	sleep 10
+	compose unpause mysqldb >/dev/null
+	wait_for_sql "$label"
+	validate_activity_step "$label-recovery" 4 stable green green 3
+}
+
+inject_db_restart() {
+	local label="db-restart"
+	log "restarting database container"
+	compose restart mysqldb >/dev/null
+	wait_for_sql "$label"
+	validate_activity_step "$label-recovery" 4 stable green green 3
 }
 
 run_lab() {
@@ -377,54 +508,70 @@ run_lab() {
 	prepare_fixture_sites
 	ensure_public_network
 
+	log "building lab images"
+	compose build api-fixture jetmon jetmon2 jetmon3 jetmon4 veriflier veriflier2 veriflier3
+
 	log "starting base services project=$PROJECT"
-	compose up -d --build mysqldb mysql-user mailpit statsd api-fixture veriflier veriflier2 veriflier3 jetmon
+	compose up -d mysqldb mysql-user mailpit statsd api-fixture veriflier veriflier2 veriflier3 jetmon
 	wait_for_api
 	create_api_token
 	compose exec -T jetmon curl -fsS "http://$FIXTURE_IP:8091/health" >/dev/null
 	pass "fixture_reachable_from_monitor=$FIXTURE_IP"
 	seed_sites
 
-	validate_activity_step single-monitor 1
+	validate_activity_step single-monitor 1 stable green green 3
 	wait_for_worker_scale 13
 	wait_for_fresh_veriflier_agents 3 verifliers-initial
 
 	log "adding second Monitor"
-	compose up -d jetmon2
-	validate_activity_step two-monitors 2
+	compose up -d --build jetmon2
+	validate_activity_step two-monitors 2 stable green green 3
 
 	log "adding two more Monitors"
-	compose up -d jetmon3 jetmon4
-	validate_activity_step four-monitors 4
+	compose up -d --build jetmon3 jetmon4
+	validate_activity_step four-monitors 4 stable green green 3
 
 	log "stopping one Monitor"
 	compose stop jetmon2 >/dev/null
-	validate_activity_step three-monitors-after-failure 3
+	validate_activity_step three-monitors-after-failure 3 degraded green green 3
 
 	log "stopping another Monitor"
 	compose stop jetmon3 >/dev/null
-	validate_activity_step two-monitors-after-failure 2
+	validate_activity_step two-monitors-after-failure 2 degraded green green 3
 
 	log "recovering stopped Monitors"
-	compose up -d jetmon2 jetmon3
-	validate_activity_step four-monitors-recovered 4
+	compose up -d --build jetmon2 jetmon3
+	validate_activity_step four-monitors-recovered 4 stable green green 3
+
+	log "hard-killing one Monitor"
+	hard_kill_monitor jetmon2
+	validate_activity_step three-monitors-after-hard-kill 3 degraded green green 3
+
+	log "recovering hard-killed Monitor"
+	recover_monitor jetmon2
+	validate_activity_step four-monitors-after-hard-kill-recovery 4 stable green green 3
+
+	inject_db_runtime_lock
+	inject_db_read_only
+	inject_db_pause
+	inject_db_restart
 
 	log "stopping one Veriflier"
 	compose stop veriflier3 >/dev/null
 	wait_for_fresh_veriflier_agents 2 veriflier-one-failed
-	capture_fleet_snapshot veriflier-one-failed
+	capture_fleet_snapshot veriflier-one-failed degraded green amber 2
 
 	log "stopping second Veriflier"
 	compose stop veriflier2 >/dev/null
 	wait_for_fresh_veriflier_agents 1 veriflier-two-failed
-	capture_fleet_snapshot veriflier-two-failed
+	capture_fleet_snapshot veriflier-two-failed degraded green amber 1
 	since="$(checkpoint_utc)"
 	wait_for_checked_since veriflier-degraded-monitor-activity "$since"
 
 	log "recovering Verifliers"
 	compose up -d veriflier2 veriflier3
 	wait_for_fresh_veriflier_agents 3 verifliers-recovered
-	capture_fleet_snapshot verifliers-recovered
+	capture_fleet_snapshot verifliers-recovered stable green green 3
 
 	pass "scale_resilience_lab_complete project=$PROJECT sites=$SITE_COUNT bucket_total=$BUCKET_TOTAL logs=$WORK_DIR"
 }
