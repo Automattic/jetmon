@@ -8,7 +8,7 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
-const selectClaimReadySQL = ` SELECT id, alert_contact_id, transition_id, event_id, event_type, severity, payload, status, attempt, next_attempt_at, last_status_code, last_response, last_attempt_at, delivered_at, created_at FROM jetmon_alert_deliveries WHERE status = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP) ORDER BY next_attempt_at ASC LIMIT ? FOR UPDATE`
+const selectClaimReadySQL = ` SELECT id, alert_contact_id, transition_id, event_id, event_type, severity, payload, status, attempt, next_attempt_at, last_status_code, last_response, last_attempt_at, delivered_at, created_at FROM jetmon_alert_deliveries WHERE status = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP) ORDER BY next_attempt_at ASC LIMIT ? FOR UPDATE SKIP LOCKED`
 
 const leaseClaimedSQL = ` UPDATE jetmon_alert_deliveries SET next_attempt_at = ? WHERE id = ? AND status = 'pending'`
 
@@ -19,8 +19,8 @@ var columnsClaimedDelivery = []string{
 }
 
 // TestClaimReadyClaimsRowsTransactionally verifies that ClaimReady uses
-// row-level locks and then leases each claimed row so subsequent ticks do not
-// re-claim a still-in-flight delivery.
+// row-level locks that skip rows claimed elsewhere and then leases each claimed
+// row so subsequent ticks do not re-claim a still-in-flight delivery.
 func TestClaimReadyClaimsRowsTransactionally(t *testing.T) {
 	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
 	if err != nil {
