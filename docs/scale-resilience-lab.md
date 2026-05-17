@@ -45,8 +45,9 @@ The lab script:
    Monitor.
 5. Adds a second Monitor and verifies bucket redistribution.
 6. Adds two more Monitors and verifies four-way redistribution.
-7. Stops one Monitor and then a second Monitor, verifying the survivors reclaim
-   bucket coverage and keep checking every site after each change.
+7. Gracefully stops one Monitor and then a second Monitor, verifying the
+   survivors reclaim bucket coverage and every site continues being checked
+   after each change.
 8. Recovers stopped Monitors and verifies four-way coverage again.
 9. Hard-kills one Monitor without graceful release, waits for heartbeat/grace
    takeover, verifies full bucket coverage and site activity, then recovers it.
@@ -62,9 +63,12 @@ JSON outputs are written under `logs/scale-resilience-lab/`.
 
 Fleet snapshots are asserted against expected states. Stable checkpoints must
 report green summary, green bucket coverage, green Verifliers, and three fresh
-Veriflier agents. Intentional failure checkpoints must report degraded
-red/amber summaries while still proving bucket coverage or Veriflier telemetry
-is in the expected state.
+Veriflier agents. Graceful Monitor stops must keep bucket coverage green and
+site checks fresh; the fleet summary may be green or temporarily degraded
+depending on process-health cache timing and whether the stopped Monitor row is
+still visible. Ungraceful Monitor failures and Veriflier failure checkpoints
+must report degraded red/amber summaries while still proving bucket coverage or
+Veriflier telemetry is in the expected state.
 
 The lab validates graceful shutdown rebalancing as well as startup claiming.
 When a Monitor exits cleanly, it releases its `jetmon_hosts` row and the
@@ -81,3 +85,4 @@ hard failures are still recovered by the normal heartbeat/grace-period path.
 | `JETMON_SCALE_LAB_FIXTURE_IP` | `93.184.217.20` |
 | `JETMON_SCALE_LAB_SITE_COUNT` | `600` |
 | `JETMON_SCALE_LAB_BUCKET_TOTAL` | `12` |
+| `MAILPIT_HOST_PORT` | `17125` |

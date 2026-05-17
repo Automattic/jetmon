@@ -22,7 +22,7 @@ export API_HOST_PORT="${API_HOST_PORT:-17090}"
 export VERIFLIER_HOST_PORT="${VERIFLIER_HOST_PORT:-17813}"
 export API_FIXTURE_HTTP_HOST_PORT="${API_FIXTURE_HTTP_HOST_PORT:-18191}"
 export API_FIXTURE_HTTPS_HOST_PORT="${API_FIXTURE_HTTPS_HOST_PORT:-18543}"
-export MAILPIT_HOST_PORT="${MAILPIT_HOST_PORT:-18125}"
+export MAILPIT_HOST_PORT="${MAILPIT_HOST_PORT:-17125}"
 export GRAPHITE_HOST_PORT="${GRAPHITE_HOST_PORT:-18188}"
 export STATSD_HOST_PORT="${STATSD_HOST_PORT:-18225}"
 export EMAIL_TRANSPORT=stub
@@ -412,6 +412,11 @@ capture_fleet_snapshot() {
 				fail "$label summary=$summary want=red_or_amber snapshot=$snapshot"
 			fi
 			;;
+		stable_or_degraded)
+			if [[ "$summary" != "green" && "$summary" != "red" && "$summary" != "amber" ]]; then
+				fail "$label summary=$summary want=green_or_red_or_amber snapshot=$snapshot"
+			fi
+			;;
 		green | amber | red)
 			if [[ "$summary" != "$expected_summary" ]]; then
 				fail "$label summary=$summary want=$expected_summary snapshot=$snapshot"
@@ -533,11 +538,11 @@ run_lab() {
 
 	log "stopping one Monitor"
 	compose stop jetmon2 >/dev/null
-	validate_activity_step three-monitors-after-failure 3 degraded green green 3
+	validate_activity_step three-monitors-after-graceful-stop 3 stable_or_degraded green green 3
 
 	log "stopping another Monitor"
 	compose stop jetmon3 >/dev/null
-	validate_activity_step two-monitors-after-failure 2 degraded green green 3
+	validate_activity_step two-monitors-after-graceful-stop 2 stable_or_degraded green green 3
 
 	log "recovering stopped Monitors"
 	compose up -d --build jetmon2 jetmon3
