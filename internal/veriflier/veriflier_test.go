@@ -134,6 +134,35 @@ func TestServerHandleCheckUnauthorized(t *testing.T) {
 	}
 }
 
+func TestServerRejectsTrailingJSONValue(t *testing.T) {
+	_, ts := newV2TestServer(func(_ context.Context, req CheckRequest) ProbeResult {
+		t.Fatalf("unexpected check execution for trailing JSON request: %+v", req)
+		return ProbeResult{}
+	})
+	defer ts.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v2/check", bytes.NewBufferString(`{"requests":[]} {"requests":[]}`))
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+	var body bytes.Buffer
+	if _, err := body.ReadFrom(resp.Body); err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if !bytes.Contains(body.Bytes(), []byte("single JSON value")) {
+		t.Fatalf("body = %q, want single-value diagnostic", body.String())
+	}
+}
+
 func TestServerHandleCheckMethodNotAllowed(t *testing.T) {
 	_, ts := newTestServer(func(req CheckRequest) CheckResult { return CheckResult{} })
 	defer ts.Close()

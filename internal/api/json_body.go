@@ -8,7 +8,7 @@ import (
 )
 
 func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) bool {
-	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
+	if err := decodeSingleJSONValue(json.NewDecoder(r.Body), dst); err != nil {
 		writeJSONBodyDecodeError(w, r, err)
 		return false
 	}
@@ -16,7 +16,7 @@ func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) bool {
 }
 
 func decodeOptionalJSONBody(w http.ResponseWriter, r *http.Request, dst any) bool {
-	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
+	if err := decodeSingleJSONValue(json.NewDecoder(r.Body), dst); err != nil {
 		if errors.Is(err, io.EOF) {
 			return true
 		}
@@ -24,6 +24,20 @@ func decodeOptionalJSONBody(w http.ResponseWriter, r *http.Request, dst any) boo
 		return false
 	}
 	return true
+}
+
+func decodeSingleJSONValue(dec *json.Decoder, dst any) error {
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	var extra json.RawMessage
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return errors.New("request body must contain a single JSON value")
+		}
+		return err
+	}
+	return nil
 }
 
 func writeJSONBodyDecodeError(w http.ResponseWriter, r *http.Request, err error) {
