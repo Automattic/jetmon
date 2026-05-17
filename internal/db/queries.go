@@ -665,18 +665,21 @@ func ClaimBuckets(hostID string, bucketTotal, bucketTarget int, graceSec int) (i
 		return 0, 0, fmt.Errorf("delete expired hosts: %w", err)
 	}
 
-	rows, err := tx.Query(`SELECT host_id FROM jetmon_hosts WHERE host_id != ? AND status = 'active' FOR UPDATE`, hostID)
+	rows, err := tx.Query(`SELECT host_id, last_heartbeat FROM jetmon_hosts WHERE host_id != ? AND status = 'active' FOR UPDATE`, hostID)
 	if err != nil {
 		return 0, 0, fmt.Errorf("query hosts: %w", err)
 	}
 	hostIDs := []string{hostID}
+	lastHeartbeats := make(map[string]time.Time)
 	for rows.Next() {
 		var id string
-		if err := rows.Scan(&id); err != nil {
+		var lastHeartbeat time.Time
+		if err := rows.Scan(&id, &lastHeartbeat); err != nil {
 			rows.Close()
 			return 0, 0, err
 		}
 		hostIDs = append(hostIDs, id)
+		lastHeartbeats[id] = lastHeartbeat
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -688,13 +691,24 @@ func ClaimBuckets(hostID string, bucketTotal, bucketTarget int, graceSec int) (i
 
 	for _, id := range hostIDs {
 		rng := assignments[id]
-		_, err = tx.Exec(
-			`INSERT INTO jetmon_hosts (host_id, bucket_min, bucket_max, last_heartbeat, status)
-			 VALUES (?, ?, ?, NOW(), 'active')
-			 ON DUPLICATE KEY UPDATE bucket_min = VALUES(bucket_min), bucket_max = VALUES(bucket_max),
-			 last_heartbeat = NOW(), status = 'active'`,
-			id, rng[0], rng[1],
-		)
+		if id == hostID {
+			_, err = tx.Exec(
+				`INSERT INTO jetmon_hosts (host_id, bucket_min, bucket_max, last_heartbeat, status)
+				 VALUES (?, ?, ?, NOW(), 'active')
+				 ON DUPLICATE KEY UPDATE bucket_min = VALUES(bucket_min), bucket_max = VALUES(bucket_max),
+				 last_heartbeat = NOW(), status = 'active'`,
+				id, rng[0], rng[1],
+			)
+		} else {
+			// MariaDB can advance TIMESTAMP columns when bucket columns change
+			// even when the table definition does not print an ON UPDATE clause.
+			// Preserve peer heartbeats with the locked value so dead peers can
+			// age out instead of being refreshed by survivors.
+			_, err = tx.Exec(
+				`UPDATE jetmon_hosts SET bucket_min = ?, bucket_max = ?, last_heartbeat = ? WHERE host_id = ?`,
+				rng[0], rng[1], lastHeartbeats[id], id,
+			)
+		}
 		if err != nil {
 			return 0, 0, fmt.Errorf("upsert host %s: %w", id, err)
 		}
@@ -752,6 +766,62 @@ func MarkHostDraining(ctx context.Context, hostID string) error {
 func ReleaseHost(ctx context.Context, hostID string) error {
 	_, err := db.ExecContext(ctx, `DELETE FROM jetmon_hosts WHERE host_id = ?`, hostID)
 	return err
+}
+
+// ReleaseHostAndRebalance removes this host's row and immediately redistributes
+// buckets across the remaining active hosts. This shortens the graceful rolling
+// restart window where jetmon_hosts can have a coverage gap until a surviving
+// monitor reaches its next round.
+func ReleaseHostAndRebalance(ctx context.Context, hostID string, bucketTotal, bucketTarget int) error {
+	if bucketTotal <= 0 || bucketTarget <= 0 {
+		return ReleaseHost(ctx, hostID)
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM jetmon_hosts WHERE host_id = ?`, hostID); err != nil {
+		return fmt.Errorf("delete host: %w", err)
+	}
+
+	rows, err := tx.QueryContext(ctx, `SELECT host_id, last_heartbeat FROM jetmon_hosts WHERE status = 'active' ORDER BY host_id FOR UPDATE`)
+	if err != nil {
+		return fmt.Errorf("query active hosts: %w", err)
+	}
+	var hostIDs []string
+	lastHeartbeats := make(map[string]time.Time)
+	for rows.Next() {
+		var id string
+		var lastHeartbeat time.Time
+		if err := rows.Scan(&id, &lastHeartbeat); err != nil {
+			rows.Close()
+			return err
+		}
+		hostIDs = append(hostIDs, id)
+		lastHeartbeats[id] = lastHeartbeat
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	assignments := assignBucketRanges(hostIDs, bucketTotal, bucketTarget)
+	for _, id := range hostIDs {
+		rng := assignments[id]
+		// Preserve peer heartbeats explicitly; bucket redistribution must not
+		// make stale hosts appear alive.
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE jetmon_hosts SET bucket_min = ?, bucket_max = ?, last_heartbeat = ? WHERE host_id = ?`,
+			rng[0], rng[1], lastHeartbeats[id], id,
+		); err != nil {
+			return fmt.Errorf("update host %s: %w", id, err)
+		}
+	}
+
+	return tx.Commit()
 }
 
 // HostRowExists reports whether a host currently has a jetmon_hosts ownership

@@ -659,15 +659,16 @@ func TestClaimBucketsRebalancesKnownHosts(t *testing.T) {
 	mock, cleanup := withMockDB(t)
 	defer cleanup()
 
+	now := time.Now().UTC()
 	mock.ExpectBegin()
 	mock.ExpectExec("DELETE FROM jetmon_hosts").
 		WithArgs(60, "host-b").
 		WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectQuery("SELECT host_id FROM jetmon_hosts").
+	mock.ExpectQuery("SELECT host_id, last_heartbeat FROM jetmon_hosts").
 		WithArgs("host-b").
-		WillReturnRows(sqlmock.NewRows([]string{"host_id"}).AddRow("host-a"))
-	mock.ExpectExec("INSERT INTO jetmon_hosts").
-		WithArgs("host-a", 0, 4).
+		WillReturnRows(sqlmock.NewRows([]string{"host_id", "last_heartbeat"}).AddRow("host-a", now))
+	mock.ExpectExec("last_heartbeat = \\?").
+		WithArgs(0, 4, now, "host-a").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO jetmon_hosts").
 		WithArgs("host-b", 5, 9).
@@ -680,6 +681,66 @@ func TestClaimBucketsRebalancesKnownHosts(t *testing.T) {
 	}
 	if minBucket != 5 || maxBucket != 9 {
 		t.Fatalf("claimed range = %d..%d, want 5..9", minBucket, maxBucket)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestClaimBucketsDeletesExpiredHostWithoutRefreshingPeers(t *testing.T) {
+	mock, cleanup := withMockDB(t)
+	defer cleanup()
+
+	now := time.Now().UTC()
+	mock.ExpectBegin()
+	mock.ExpectExec("DELETE FROM jetmon_hosts").
+		WithArgs(8, "host-c").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT host_id, last_heartbeat FROM jetmon_hosts").
+		WithArgs("host-c").
+		WillReturnRows(sqlmock.NewRows([]string{"host_id", "last_heartbeat"}).AddRow("host-a", now))
+	mock.ExpectExec("last_heartbeat = \\?").
+		WithArgs(0, 4, now, "host-a").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO jetmon_hosts").
+		WithArgs("host-c", 5, 9).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	minBucket, maxBucket, err := ClaimBuckets("host-c", 10, 10, 8)
+	if err != nil {
+		t.Fatalf("ClaimBuckets: %v", err)
+	}
+	if minBucket != 5 || maxBucket != 9 {
+		t.Fatalf("claimed range = %d..%d, want 5..9", minBucket, maxBucket)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestReleaseHostAndRebalanceUpdatesRemainingHosts(t *testing.T) {
+	mock, cleanup := withMockDB(t)
+	defer cleanup()
+
+	nowA := time.Now().UTC()
+	nowC := nowA.Add(time.Second)
+	mock.ExpectBegin()
+	mock.ExpectExec("DELETE FROM jetmon_hosts").
+		WithArgs("host-b").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT host_id, last_heartbeat FROM jetmon_hosts").
+		WillReturnRows(sqlmock.NewRows([]string{"host_id", "last_heartbeat"}).AddRow("host-a", nowA).AddRow("host-c", nowC))
+	mock.ExpectExec("last_heartbeat = \\?").
+		WithArgs(0, 4, nowA, "host-a").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("last_heartbeat = \\?").
+		WithArgs(5, 9, nowC, "host-c").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	if err := ReleaseHostAndRebalance(context.Background(), "host-b", 10, 10); err != nil {
+		t.Fatalf("ReleaseHostAndRebalance: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)

@@ -82,7 +82,7 @@ var (
 	nowFunc                 = time.Now
 	dbClaimBuckets          = db.ClaimBuckets
 	dbHeartbeat             = db.Heartbeat
-	dbReleaseHost           = db.ReleaseHost
+	dbReleaseHost           = db.ReleaseHostAndRebalance
 	dbMarkHostDraining      = db.MarkHostDraining
 	dbGetSitesForBucket     = db.GetSitesForBucket
 	dbListActiveSites       = db.ListActiveSitesForBucketRange
@@ -448,7 +448,7 @@ func (o *Orchestrator) shutdown() {
 	}
 	if !o.usesDynamicBuckets(cfg) {
 		log.Printf("orchestrator: rollout_mode=%s or pinned bucket mode active; no jetmon_hosts row to release", cfg.RolloutMode)
-	} else if err := dbReleaseHost(stdctx.Background(), o.hostname); err != nil {
+	} else if err := dbReleaseHost(stdctx.Background(), o.hostname, cfg.BucketTotal, cfg.BucketTarget); err != nil {
 		log.Printf("orchestrator: release host: %v", err)
 	}
 }
