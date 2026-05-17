@@ -283,6 +283,23 @@ Remote targeted tests on `jetmon-service-host-5`:
 
 All targeted tests passed.
 
+Final branch readiness checks:
+
+```bash
+make test
+make lint
+make all
+make test-race
+make test-veriflier-soak
+make rollout-docs-verify
+go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+go mod verify
+```
+
+Docker image builds were also refreshed for `Dockerfile_jetmon`, `Dockerfile_veriflier`, and `Dockerfile_api_fixture` using the updated `golang:1.26.3` builder image.
+
+MariaDB migration smoke tests were run against isolated local Docker Compose stacks for `mariadb:11.4.8` and `mariadb:11.4.10`. In both cases app-user setup succeeded, `./bin/jetmon2 migrate` applied all migrations, an immediate second migrate was idempotent, and `jetmon_schema_migrations` reported `COUNT(*)=48` and `MAX(id)=48`.
+
 ## Performance Notes
 
 Most checks added here are constant-time string or URL-shape checks. The meaningful added work is target-safety DNS validation for production Monitor / Veriflier checks. That validation runs at check time for already-stored legacy rows, not once at write time, because the v1 table does not have a persisted safety-vetted projection. It uses the existing 15-minute checker DNS cache, so repeated checks of the same hostname on a five-minute cadence should normally reuse cached resolution.
@@ -312,7 +329,7 @@ It also reported additional package/module-level standard-library findings in th
 
 Production database compatibility should be validated against MariaDB 11.4, not just MySQL 8.0. Current production database servers are MariaDB 11.4.8 through 11.4.10; MariaDB lists 11.4 as an LTS series with Community maintenance through May 29, 2029, and MariaDB announced 11.4.10 as a February 6, 2026 maintenance release. The local Docker Compose file now defaults `JETMON_DB_IMAGE` to `mariadb:11.4` while still allowing explicit database-image overrides for compatibility checks.
 
-`github.com/go-sql-driver/mysql` remains the right driver family: its current README says maintainers support MariaDB 10.5+ as well as MySQL 5.7+. The project now uses `v1.10.0`. Before production rollout, run MariaDB 11.4 integration tests that cover migrations, JSON columns, generated columns, `ON DUPLICATE KEY UPDATE ... VALUES(...)`, bucket claiming, and runtime write batching.
+`github.com/go-sql-driver/mysql` remains the right driver family: its current README says maintainers support MariaDB 10.5+ as well as MySQL 5.7+. The project now uses `v1.10.0`. The migration smoke coverage above verifies schema compatibility across the production MariaDB patch range. Before production rollout, still run an end-to-end MariaDB 11.4 exercise that covers runtime write paths such as bucket claiming, runtime freshness writes, SSL expiry batches, `ON DUPLICATE KEY UPDATE ... VALUES(...)`, and webhook / alert delivery claims.
 
 ## Probe-Safety Event Options
 
