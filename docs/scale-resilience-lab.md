@@ -50,6 +50,11 @@ The lab script:
 
 JSON outputs are written under `logs/scale-resilience-lab/`.
 
+The lab validates graceful shutdown rebalancing as well as startup claiming.
+When a Monitor exits cleanly, it releases its `jetmon_hosts` row and the
+remaining active host rows are redistributed in the same database transaction;
+hard failures are still recovered by the normal heartbeat/grace-period path.
+
 ## Environment Overrides
 
 | Variable | Default |

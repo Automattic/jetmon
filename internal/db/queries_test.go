@@ -686,6 +686,32 @@ func TestClaimBucketsRebalancesKnownHosts(t *testing.T) {
 	}
 }
 
+func TestReleaseHostAndRebalanceUpdatesRemainingHosts(t *testing.T) {
+	mock, cleanup := withMockDB(t)
+	defer cleanup()
+
+	mock.ExpectBegin()
+	mock.ExpectExec("DELETE FROM jetmon_hosts").
+		WithArgs("host-b").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT host_id FROM jetmon_hosts").
+		WillReturnRows(sqlmock.NewRows([]string{"host_id"}).AddRow("host-a").AddRow("host-c"))
+	mock.ExpectExec("UPDATE jetmon_hosts SET bucket_min").
+		WithArgs(0, 4, "host-a").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE jetmon_hosts SET bucket_min").
+		WithArgs(5, 9, "host-c").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	if err := ReleaseHostAndRebalance(context.Background(), "host-b", 10, 10); err != nil {
+		t.Fatalf("ReleaseHostAndRebalance: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestMigrateAppliesOnlyPendingMigrations(t *testing.T) {
 	mock, cleanup := withMockDB(t)
 	defer cleanup()

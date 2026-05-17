@@ -754,6 +754,57 @@ func ReleaseHost(ctx context.Context, hostID string) error {
 	return err
 }
 
+// ReleaseHostAndRebalance removes this host's row and immediately redistributes
+// buckets across the remaining active hosts. This shortens the graceful rolling
+// restart window where jetmon_hosts can have a coverage gap until a surviving
+// monitor reaches its next round.
+func ReleaseHostAndRebalance(ctx context.Context, hostID string, bucketTotal, bucketTarget int) error {
+	if bucketTotal <= 0 || bucketTarget <= 0 {
+		return ReleaseHost(ctx, hostID)
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM jetmon_hosts WHERE host_id = ?`, hostID); err != nil {
+		return fmt.Errorf("delete host: %w", err)
+	}
+
+	rows, err := tx.QueryContext(ctx, `SELECT host_id FROM jetmon_hosts WHERE status = 'active' ORDER BY host_id FOR UPDATE`)
+	if err != nil {
+		return fmt.Errorf("query active hosts: %w", err)
+	}
+	var hostIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		hostIDs = append(hostIDs, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	assignments := assignBucketRanges(hostIDs, bucketTotal, bucketTarget)
+	for _, id := range hostIDs {
+		rng := assignments[id]
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE jetmon_hosts SET bucket_min = ?, bucket_max = ?, last_heartbeat = NOW() WHERE host_id = ?`,
+			rng[0], rng[1], id,
+		); err != nil {
+			return fmt.Errorf("update host %s: %w", id, err)
+		}
+	}
+
+	return tx.Commit()
+}
+
 // HostRowExists reports whether a host currently has a jetmon_hosts ownership
 // row.
 func HostRowExists(ctx context.Context, hostID string) (bool, error) {

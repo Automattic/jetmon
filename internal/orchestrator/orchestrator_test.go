@@ -1357,7 +1357,7 @@ func stubOrchestratorDeps() func() {
 	nowFunc = time.Now
 	dbClaimBuckets = func(string, int, int, int) (int, int, error) { return 0, 0, nil }
 	dbHeartbeat = func(context.Context, string) error { return nil }
-	dbReleaseHost = func(context.Context, string) error { return nil }
+	dbReleaseHost = func(context.Context, string, int, int) error { return nil }
 	dbMarkHostDraining = func(context.Context, string) error { return nil }
 	dbGetSitesForBucket = func(context.Context, int, int, int, bool) ([]db.Site, error) { return nil, nil }
 	dbUpdateSiteStatus = func(context.Context, int64, int, time.Time) error { return nil }

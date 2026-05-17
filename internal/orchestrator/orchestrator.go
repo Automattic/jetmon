@@ -82,7 +82,7 @@ var (
 	nowFunc                 = time.Now
 	dbClaimBuckets          = db.ClaimBuckets
 	dbHeartbeat             = db.Heartbeat
-	dbReleaseHost           = db.ReleaseHost
+	dbReleaseHost           = db.ReleaseHostAndRebalance
 	dbMarkHostDraining      = db.MarkHostDraining
 	dbGetSitesForBucket     = db.GetSitesForBucket
 	dbListActiveSites       = db.ListActiveSitesForBucketRange
@@ -437,7 +437,8 @@ func (o *Orchestrator) refreshAPIControlledRange() (bool, error) {
 
 func (o *Orchestrator) shutdown() {
 	log.Println("orchestrator: shutting down")
-	if !o.usesPinnedBuckets(config.Get()) {
+	cfg := config.Get()
+	if !o.usesPinnedBuckets(cfg) {
 		if err := dbMarkHostDraining(stdctx.Background(), o.hostname); err != nil {
 			log.Printf("orchestrator: mark draining: %v", err)
 		}
@@ -445,9 +446,9 @@ func (o *Orchestrator) shutdown() {
 	if o.pool != nil {
 		o.pool.Drain()
 	}
-	if o.usesPinnedBuckets(config.Get()) {
+	if o.usesPinnedBuckets(cfg) {
 		log.Println("orchestrator: pinned bucket mode active; no jetmon_hosts row to release")
-	} else if err := dbReleaseHost(stdctx.Background(), o.hostname); err != nil {
+	} else if err := dbReleaseHost(stdctx.Background(), o.hostname, cfg.BucketTotal, cfg.BucketTarget); err != nil {
 		log.Printf("orchestrator: release host: %v", err)
 	}
 }
