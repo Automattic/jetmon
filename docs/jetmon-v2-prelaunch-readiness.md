@@ -135,6 +135,28 @@ production-approved test path and attach the evidence to the rollout record.
 
 Evidence:
 
+- 2026-05-17, `post-merge-validation-hardening`: internal-only Docker evidence
+  covered several failure drills without WPCOM contact:
+  - `scripts/scale-resilience-lab.sh run` passed with 600 fixture sites, one to
+    four Monitors, graceful Monitor stop, hard-killed Monitor recovery,
+    Veriflier degradation/recovery, DB restart, runtime table lock, read-only
+    mode, and DB pause.
+  - The same scale lab passed with extended DB disruption windows:
+    `JETMON_SCALE_LAB_DB_RUNTIME_LOCK_SEC=30`,
+    `JETMON_SCALE_LAB_DB_READ_ONLY_SEC=30`, and
+    `JETMON_SCALE_LAB_DB_PAUSE_SEC=60`.
+  - A 1,200-site, 10-minute `scripts/v2-soak-lab.sh run` pass kept all sites
+    fresh on every sample and asserted zero WPCOM audit rows, webhooks, alert
+    contacts, and Mailpit messages.
+  - `scripts/api-cli-public-fixture-validate.sh run` passed alert-contact
+    send-test through Docker-local Mailpit, webhook HMAC delivery/signature
+    verification, and HTTP-500 failure assertions with target safety enabled.
+  - `govulncheck ./...` reported no reachable known vulnerabilities.
+- Remaining gap: these Docker labs validate multi-Monitor behavior on one
+  physical host. A multi-physical-host drill across service hosts should still
+  be scheduled when hosts 3-5 are not running other tests, or explicitly waived
+  by the rollout owner. That drill should confirm dashboard/fleet signals,
+  bucket handoff, Veriflier telemetry, and DB behavior with real host loss.
 - `jetmon2 rollout projection-drift`
 - `jetmon2 telemetry report`
 - Sampled incident comparison table
