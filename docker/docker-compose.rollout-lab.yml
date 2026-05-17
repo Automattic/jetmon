@@ -1,0 +1,21 @@
+services:
+  jetmon:
+    networks:
+      default:
+      rollout_public:
+
+  veriflier:
+    networks:
+      default:
+      rollout_public:
+
+  api-fixture:
+    networks:
+      default:
+      rollout_public:
+        ipv4_address: ${ROLLOUT_LAB_FIXTURE_IP:-93.184.216.20}
+
+networks:
+  rollout_public:
+    name: ${ROLLOUT_LAB_PUBLIC_NETWORK:-jetmon-rollout-lab-public}
+    external: true
