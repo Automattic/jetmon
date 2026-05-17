@@ -72,6 +72,9 @@ func TestHandleState(t *testing.T) {
 	if processmetrics.CurrentMemory().RSSMemMB > 0 && st.RSSMemMB <= 0 {
 		t.Fatalf("RSSMemMB = %d, want positive RSS when procfs is available", st.RSSMemMB)
 	}
+	if st.RuntimeGoroutines <= 0 || st.RuntimeThreads <= 0 || st.RuntimeGoroutinesCreated == 0 {
+		t.Fatalf("runtime fields = %+v, want scheduler metrics", st)
+	}
 	if st.BucketOwnership != "pinned range=0-99" {
 		t.Fatalf("BucketOwnership = %q, want pinned range=0-99", st.BucketOwnership)
 	}

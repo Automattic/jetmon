@@ -166,35 +166,42 @@ type FleetSummary struct {
 
 // FleetProcess is one process-health row with dashboard-derived freshness.
 type FleetProcess struct {
-	ProcessID              string                         `json:"process_id"`
-	HostID                 string                         `json:"host_id"`
-	ProcessType            string                         `json:"process_type"`
-	PID                    int                            `json:"pid"`
-	Version                string                         `json:"version"`
-	BuildDate              string                         `json:"build_date"`
-	GoVersion              string                         `json:"go_version"`
-	State                  string                         `json:"state"`
-	HealthStatus           string                         `json:"health_status"`
-	StartedAt              time.Time                      `json:"started_at,omitempty"`
-	UpdatedAt              time.Time                      `json:"updated_at"`
-	LastHeartbeatAgeSec    int64                          `json:"last_heartbeat_age_sec"`
-	Stale                  bool                           `json:"stale"`
-	BucketMin              *int                           `json:"bucket_min,omitempty"`
-	BucketMax              *int                           `json:"bucket_max,omitempty"`
-	BucketOwnership        string                         `json:"bucket_ownership"`
-	APIPort                *int                           `json:"api_port,omitempty"`
-	DashboardPort          *int                           `json:"dashboard_port,omitempty"`
-	DeliveryWorkersEnabled bool                           `json:"delivery_workers_enabled"`
-	DeliveryOwnerHost      string                         `json:"delivery_owner_host"`
-	WorkerCount            int                            `json:"worker_count"`
-	ActiveChecks           int                            `json:"active_checks"`
-	QueueDepth             int                            `json:"queue_depth"`
-	RetryQueueSize         int                            `json:"retry_queue_size"`
-	WPCOMCircuitOpen       bool                           `json:"wpcom_circuit_open"`
-	WPCOMQueueDepth        int                            `json:"wpcom_queue_depth"`
-	GoSysMemMB             int                            `json:"go_sys_mem_mb"`
-	RSSMemMB               int                            `json:"rss_mem_mb"`
-	DependencyHealth       []fleethealth.DependencyHealth `json:"dependency_health,omitempty"`
+	ProcessID                 string                         `json:"process_id"`
+	HostID                    string                         `json:"host_id"`
+	ProcessType               string                         `json:"process_type"`
+	PID                       int                            `json:"pid"`
+	Version                   string                         `json:"version"`
+	BuildDate                 string                         `json:"build_date"`
+	GoVersion                 string                         `json:"go_version"`
+	State                     string                         `json:"state"`
+	HealthStatus              string                         `json:"health_status"`
+	StartedAt                 time.Time                      `json:"started_at,omitempty"`
+	UpdatedAt                 time.Time                      `json:"updated_at"`
+	LastHeartbeatAgeSec       int64                          `json:"last_heartbeat_age_sec"`
+	Stale                     bool                           `json:"stale"`
+	BucketMin                 *int                           `json:"bucket_min,omitempty"`
+	BucketMax                 *int                           `json:"bucket_max,omitempty"`
+	BucketOwnership           string                         `json:"bucket_ownership"`
+	APIPort                   *int                           `json:"api_port,omitempty"`
+	DashboardPort             *int                           `json:"dashboard_port,omitempty"`
+	DeliveryWorkersEnabled    bool                           `json:"delivery_workers_enabled"`
+	DeliveryOwnerHost         string                         `json:"delivery_owner_host"`
+	WorkerCount               int                            `json:"worker_count"`
+	ActiveChecks              int                            `json:"active_checks"`
+	QueueDepth                int                            `json:"queue_depth"`
+	RetryQueueSize            int                            `json:"retry_queue_size"`
+	WPCOMCircuitOpen          bool                           `json:"wpcom_circuit_open"`
+	WPCOMQueueDepth           int                            `json:"wpcom_queue_depth"`
+	GoSysMemMB                int                            `json:"go_sys_mem_mb"`
+	RSSMemMB                  int                            `json:"rss_mem_mb"`
+	RuntimeGoroutines         int                            `json:"runtime_goroutines"`
+	RuntimeGoroutinesRunnable int                            `json:"runtime_goroutines_runnable"`
+	RuntimeGoroutinesRunning  int                            `json:"runtime_goroutines_running"`
+	RuntimeGoroutinesWaiting  int                            `json:"runtime_goroutines_waiting"`
+	RuntimeGoroutinesNotInGo  int                            `json:"runtime_goroutines_not_in_go"`
+	RuntimeGoroutinesCreated  uint64                         `json:"runtime_goroutines_created"`
+	RuntimeThreads            int                            `json:"runtime_threads"`
+	DependencyHealth          []fleethealth.DependencyHealth `json:"dependency_health,omitempty"`
 }
 
 // FleetBucketCoverage summarizes jetmon_hosts dynamic bucket ownership.
@@ -352,35 +359,42 @@ func summarizeFleetProcesses(rows []fleethealth.Snapshot, now time.Time, heartbe
 			age = 0
 		}
 		out = append(out, FleetProcess{
-			ProcessID:              row.ProcessID,
-			HostID:                 row.HostID,
-			ProcessType:            row.ProcessType,
-			PID:                    row.PID,
-			Version:                row.Version,
-			BuildDate:              row.BuildDate,
-			GoVersion:              row.GoVersion,
-			State:                  row.State,
-			HealthStatus:           row.HealthStatus,
-			StartedAt:              row.StartedAt,
-			UpdatedAt:              row.UpdatedAt,
-			LastHeartbeatAgeSec:    int64(age.Round(time.Second) / time.Second),
-			Stale:                  age > heartbeatGrace,
-			BucketMin:              row.BucketMin,
-			BucketMax:              row.BucketMax,
-			BucketOwnership:        row.BucketOwnership,
-			APIPort:                row.APIPort,
-			DashboardPort:          row.DashboardPort,
-			DeliveryWorkersEnabled: row.DeliveryWorkersEnabled,
-			DeliveryOwnerHost:      row.DeliveryOwnerHost,
-			WorkerCount:            row.WorkerCount,
-			ActiveChecks:           row.ActiveChecks,
-			QueueDepth:             row.QueueDepth,
-			RetryQueueSize:         row.RetryQueueSize,
-			WPCOMCircuitOpen:       row.WPCOMCircuitOpen,
-			WPCOMQueueDepth:        row.WPCOMQueueDepth,
-			GoSysMemMB:             row.GoSysMemMB,
-			RSSMemMB:               row.RSSMemMB,
-			DependencyHealth:       append([]fleethealth.DependencyHealth(nil), row.DependencyHealth...),
+			ProcessID:                 row.ProcessID,
+			HostID:                    row.HostID,
+			ProcessType:               row.ProcessType,
+			PID:                       row.PID,
+			Version:                   row.Version,
+			BuildDate:                 row.BuildDate,
+			GoVersion:                 row.GoVersion,
+			State:                     row.State,
+			HealthStatus:              row.HealthStatus,
+			StartedAt:                 row.StartedAt,
+			UpdatedAt:                 row.UpdatedAt,
+			LastHeartbeatAgeSec:       int64(age.Round(time.Second) / time.Second),
+			Stale:                     age > heartbeatGrace,
+			BucketMin:                 row.BucketMin,
+			BucketMax:                 row.BucketMax,
+			BucketOwnership:           row.BucketOwnership,
+			APIPort:                   row.APIPort,
+			DashboardPort:             row.DashboardPort,
+			DeliveryWorkersEnabled:    row.DeliveryWorkersEnabled,
+			DeliveryOwnerHost:         row.DeliveryOwnerHost,
+			WorkerCount:               row.WorkerCount,
+			ActiveChecks:              row.ActiveChecks,
+			QueueDepth:                row.QueueDepth,
+			RetryQueueSize:            row.RetryQueueSize,
+			WPCOMCircuitOpen:          row.WPCOMCircuitOpen,
+			WPCOMQueueDepth:           row.WPCOMQueueDepth,
+			GoSysMemMB:                row.GoSysMemMB,
+			RSSMemMB:                  row.RSSMemMB,
+			RuntimeGoroutines:         row.RuntimeGoroutines,
+			RuntimeGoroutinesRunnable: row.RuntimeGoroutinesRunnable,
+			RuntimeGoroutinesRunning:  row.RuntimeGoroutinesRunning,
+			RuntimeGoroutinesWaiting:  row.RuntimeGoroutinesWaiting,
+			RuntimeGoroutinesNotInGo:  row.RuntimeGoroutinesNotInGo,
+			RuntimeGoroutinesCreated:  row.RuntimeGoroutinesCreated,
+			RuntimeThreads:            row.RuntimeThreads,
+			DependencyHealth:          append([]fleethealth.DependencyHealth(nil), row.DependencyHealth...),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {

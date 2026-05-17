@@ -41,7 +41,7 @@ const (
 	rolloutMaxSynchronousSample   = 1000
 	rolloutDefaultProbeConcurrent = 16
 
-	requiredRolloutSchemaMigration = 49
+	requiredRolloutSchemaMigration = 50
 )
 
 type rolloutCapabilitiesResponse struct {

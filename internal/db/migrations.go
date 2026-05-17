@@ -765,6 +765,18 @@ var migrations = []migration{
 		INDEX idx_status_seen (status, last_seen_at),
 		INDEX idx_type_status (flag_type, status)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
+
+	// Migration 50 persists Go 1.26 scheduler metrics in process heartbeat
+	// rows so fleet views can spot goroutine or OS-thread growth without
+	// requiring pprof access during an incident.
+	{50, `ALTER TABLE jetmon_process_health
+		ADD COLUMN runtime_goroutines INT UNSIGNED NOT NULL DEFAULT 0 AFTER rss_mem_mb,
+		ADD COLUMN runtime_goroutines_runnable INT UNSIGNED NOT NULL DEFAULT 0 AFTER runtime_goroutines,
+		ADD COLUMN runtime_goroutines_running INT UNSIGNED NOT NULL DEFAULT 0 AFTER runtime_goroutines_runnable,
+		ADD COLUMN runtime_goroutines_waiting INT UNSIGNED NOT NULL DEFAULT 0 AFTER runtime_goroutines_running,
+		ADD COLUMN runtime_goroutines_not_in_go INT UNSIGNED NOT NULL DEFAULT 0 AFTER runtime_goroutines_waiting,
+		ADD COLUMN runtime_goroutines_created BIGINT UNSIGNED NOT NULL DEFAULT 0 AFTER runtime_goroutines_not_in_go,
+		ADD COLUMN runtime_threads INT UNSIGNED NOT NULL DEFAULT 0 AFTER runtime_goroutines_created`},
 }
 
 // Migrate applies all pending migrations idempotently.

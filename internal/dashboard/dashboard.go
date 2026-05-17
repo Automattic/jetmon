@@ -26,6 +26,13 @@ type State struct {
 	WPCOMQueueDepth               int       `json:"wpcom_queue_depth"`
 	GoSysMemMB                    int       `json:"go_sys_mem_mb"`
 	RSSMemMB                      int       `json:"rss_mem_mb"`
+	RuntimeGoroutines             int       `json:"runtime_goroutines"`
+	RuntimeGoroutinesRunnable     int       `json:"runtime_goroutines_runnable"`
+	RuntimeGoroutinesRunning      int       `json:"runtime_goroutines_running"`
+	RuntimeGoroutinesWaiting      int       `json:"runtime_goroutines_waiting"`
+	RuntimeGoroutinesNotInGo      int       `json:"runtime_goroutines_not_in_go"`
+	RuntimeGoroutinesCreated      uint64    `json:"runtime_goroutines_created"`
+	RuntimeThreads                int       `json:"runtime_threads"`
 	BucketMin                     int       `json:"bucket_min"`
 	BucketMax                     int       `json:"bucket_max"`
 	BucketOwnership               string    `json:"bucket_ownership"`
@@ -98,6 +105,13 @@ func (s *Server) Update(st State) {
 	mem := processmetrics.CurrentMemory()
 	st.GoSysMemMB = mem.GoSysMemMB
 	st.RSSMemMB = mem.RSSMemMB
+	st.RuntimeGoroutines = mem.RuntimeGoroutines
+	st.RuntimeGoroutinesRunnable = mem.RuntimeGoroutinesRunnable
+	st.RuntimeGoroutinesRunning = mem.RuntimeGoroutinesRunning
+	st.RuntimeGoroutinesWaiting = mem.RuntimeGoroutinesWaiting
+	st.RuntimeGoroutinesNotInGo = mem.RuntimeGoroutinesNotInGo
+	st.RuntimeGoroutinesCreated = mem.RuntimeGoroutinesCreated
+	st.RuntimeThreads = mem.RuntimeThreads
 
 	s.mu.Lock()
 	s.state = st

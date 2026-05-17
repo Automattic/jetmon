@@ -301,7 +301,7 @@ go mod verify
 
 Docker image builds were also refreshed for `Dockerfile_jetmon`, `Dockerfile_veriflier`, and `Dockerfile_api_fixture` using the updated `golang:1.26.3` builder image.
 
-MariaDB migration smoke tests were run against isolated local Docker Compose stacks for `mariadb:11.4.8` and `mariadb:11.4.10`. In both cases app-user setup succeeded, `./bin/jetmon2 migrate` applied all migrations, an immediate second migrate was idempotent, `jetmon_schema_migrations` reported `COUNT(*)=49` and `MAX(id)=49`, and `jetmon_site_safety_flags` existed.
+MariaDB migration smoke tests were run against isolated local Docker containers for `mariadb:11.4.8` and `mariadb:11.4.10`. In both cases app-user setup succeeded, `./bin/jetmon2 migrate` applied all migrations, an immediate second migrate was idempotent, `jetmon_schema_migrations` reported `COUNT(*)=50` and `MAX(id)=50`, and the process-health runtime scheduler columns existed.
 
 ## Performance Notes
 

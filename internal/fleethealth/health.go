@@ -37,33 +37,40 @@ type DependencyHealth struct {
 
 // Snapshot is the local process state written to jetmon_process_health.
 type Snapshot struct {
-	ProcessID              string
-	HostID                 string
-	ProcessType            string
-	PID                    int
-	Version                string
-	BuildDate              string
-	GoVersion              string
-	State                  string
-	HealthStatus           string
-	StartedAt              time.Time
-	UpdatedAt              time.Time
-	BucketMin              *int
-	BucketMax              *int
-	BucketOwnership        string
-	APIPort                *int
-	DashboardPort          *int
-	DeliveryWorkersEnabled bool
-	DeliveryOwnerHost      string
-	WorkerCount            int
-	ActiveChecks           int
-	QueueDepth             int
-	RetryQueueSize         int
-	WPCOMCircuitOpen       bool
-	WPCOMQueueDepth        int
-	GoSysMemMB             int
-	RSSMemMB               int
-	DependencyHealth       []DependencyHealth
+	ProcessID                 string
+	HostID                    string
+	ProcessType               string
+	PID                       int
+	Version                   string
+	BuildDate                 string
+	GoVersion                 string
+	State                     string
+	HealthStatus              string
+	StartedAt                 time.Time
+	UpdatedAt                 time.Time
+	BucketMin                 *int
+	BucketMax                 *int
+	BucketOwnership           string
+	APIPort                   *int
+	DashboardPort             *int
+	DeliveryWorkersEnabled    bool
+	DeliveryOwnerHost         string
+	WorkerCount               int
+	ActiveChecks              int
+	QueueDepth                int
+	RetryQueueSize            int
+	WPCOMCircuitOpen          bool
+	WPCOMQueueDepth           int
+	GoSysMemMB                int
+	RSSMemMB                  int
+	RuntimeGoroutines         int
+	RuntimeGoroutinesRunnable int
+	RuntimeGoroutinesRunning  int
+	RuntimeGoroutinesWaiting  int
+	RuntimeGoroutinesNotInGo  int
+	RuntimeGoroutinesCreated  uint64
+	RuntimeThreads            int
+	DependencyHealth          []DependencyHealth
 }
 
 // ProcessID returns the stable row key for one process type on one host.
@@ -117,6 +124,13 @@ func Upsert(ctx context.Context, db *sql.DB, snapshot Snapshot) error {
 		normalized.WPCOMQueueDepth,
 		normalized.GoSysMemMB,
 		normalized.RSSMemMB,
+		normalized.RuntimeGoroutines,
+		normalized.RuntimeGoroutinesRunnable,
+		normalized.RuntimeGoroutinesRunning,
+		normalized.RuntimeGoroutinesWaiting,
+		normalized.RuntimeGoroutinesNotInGo,
+		normalized.RuntimeGoroutinesCreated,
+		normalized.RuntimeThreads,
 		string(deps),
 	)
 	if err != nil {
@@ -184,6 +198,13 @@ func ListSnapshots(ctx context.Context, db *sql.DB) ([]Snapshot, error) {
 		       wpcom_queue_depth,
 		       go_sys_mem_mb,
 		       rss_mem_mb,
+		       runtime_goroutines,
+		       runtime_goroutines_runnable,
+		       runtime_goroutines_running,
+		       runtime_goroutines_waiting,
+		       runtime_goroutines_not_in_go,
+		       runtime_goroutines_created,
+		       runtime_threads,
 		       dependency_health
 		  FROM jetmon_process_health
 		 ORDER BY process_type, host_id, process_id`)
@@ -226,6 +247,13 @@ func ListSnapshots(ctx context.Context, db *sql.DB) ([]Snapshot, error) {
 			&snapshot.WPCOMQueueDepth,
 			&snapshot.GoSysMemMB,
 			&snapshot.RSSMemMB,
+			&snapshot.RuntimeGoroutines,
+			&snapshot.RuntimeGoroutinesRunnable,
+			&snapshot.RuntimeGoroutinesRunning,
+			&snapshot.RuntimeGoroutinesWaiting,
+			&snapshot.RuntimeGoroutinesNotInGo,
+			&snapshot.RuntimeGoroutinesCreated,
+			&snapshot.RuntimeThreads,
 			&dependencyHealth,
 		); err != nil {
 			return nil, fmt.Errorf("scan process health: %w", err)
@@ -383,8 +411,15 @@ INSERT INTO jetmon_process_health (
 	wpcom_queue_depth,
 	go_sys_mem_mb,
 	rss_mem_mb,
+	runtime_goroutines,
+	runtime_goroutines_runnable,
+	runtime_goroutines_running,
+	runtime_goroutines_waiting,
+	runtime_goroutines_not_in_go,
+	runtime_goroutines_created,
+	runtime_threads,
 	dependency_health
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON DUPLICATE KEY UPDATE
 	host_id = VALUES(host_id),
 	process_type = VALUES(process_type),
@@ -411,4 +446,11 @@ ON DUPLICATE KEY UPDATE
 	wpcom_queue_depth = VALUES(wpcom_queue_depth),
 	go_sys_mem_mb = VALUES(go_sys_mem_mb),
 	rss_mem_mb = VALUES(rss_mem_mb),
+	runtime_goroutines = VALUES(runtime_goroutines),
+	runtime_goroutines_runnable = VALUES(runtime_goroutines_runnable),
+	runtime_goroutines_running = VALUES(runtime_goroutines_running),
+	runtime_goroutines_waiting = VALUES(runtime_goroutines_waiting),
+	runtime_goroutines_not_in_go = VALUES(runtime_goroutines_not_in_go),
+	runtime_goroutines_created = VALUES(runtime_goroutines_created),
+	runtime_threads = VALUES(runtime_threads),
 	dependency_health = VALUES(dependency_health)`

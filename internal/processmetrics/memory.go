@@ -2,8 +2,10 @@ package processmetrics
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"runtime"
+	runtimemetrics "runtime/metrics"
 	"strconv"
 	"strings"
 )
@@ -15,12 +17,21 @@ type MemorySnapshot struct {
 	RSSMemMB       int
 	GoSysMemMB     int
 	HeapAllocMemMB int
+
+	RuntimeGoroutines         int
+	RuntimeGoroutinesRunnable int
+	RuntimeGoroutinesRunning  int
+	RuntimeGoroutinesWaiting  int
+	RuntimeGoroutinesNotInGo  int
+	RuntimeGoroutinesCreated  uint64
+	RuntimeThreads            int
 }
 
 // CurrentMemory returns a single memory sample suitable for dashboards and
 // metrics. RSS is best-effort because it depends on Linux procfs availability.
 func CurrentMemory() MemorySnapshot {
 	mem := currentRuntimeMemory()
+	addRuntimeSchedulerMetrics(&mem)
 	mem.RSSMemMB = rssMemMB()
 	return mem
 }
@@ -32,6 +43,36 @@ func currentRuntimeMemory() MemorySnapshot {
 		GoSysMemMB:     int(ms.Sys / bytesPerMB),
 		HeapAllocMemMB: int(ms.HeapAlloc / bytesPerMB),
 	}
+}
+
+func addRuntimeSchedulerMetrics(snapshot *MemorySnapshot) {
+	if snapshot == nil {
+		return
+	}
+	samples := []runtimemetrics.Sample{
+		{Name: "/sched/goroutines:goroutines"},
+		{Name: "/sched/goroutines/runnable:goroutines"},
+		{Name: "/sched/goroutines/running:goroutines"},
+		{Name: "/sched/goroutines/waiting:goroutines"},
+		{Name: "/sched/goroutines/not-in-go:goroutines"},
+		{Name: "/sched/goroutines-created:goroutines"},
+		{Name: "/sched/threads/total:threads"},
+	}
+	runtimemetrics.Read(samples)
+	snapshot.RuntimeGoroutines = metricUint64ToInt(samples[0].Value.Uint64())
+	snapshot.RuntimeGoroutinesRunnable = metricUint64ToInt(samples[1].Value.Uint64())
+	snapshot.RuntimeGoroutinesRunning = metricUint64ToInt(samples[2].Value.Uint64())
+	snapshot.RuntimeGoroutinesWaiting = metricUint64ToInt(samples[3].Value.Uint64())
+	snapshot.RuntimeGoroutinesNotInGo = metricUint64ToInt(samples[4].Value.Uint64())
+	snapshot.RuntimeGoroutinesCreated = samples[5].Value.Uint64()
+	snapshot.RuntimeThreads = metricUint64ToInt(samples[6].Value.Uint64())
+}
+
+func metricUint64ToInt(v uint64) int {
+	if v > uint64(math.MaxInt) {
+		return math.MaxInt
+	}
+	return int(v)
 }
 
 // rssMemMB returns this process' resident set size in MiB when the operating
