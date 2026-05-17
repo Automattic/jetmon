@@ -78,6 +78,8 @@ func main() {
 		cmdAPI(os.Args[2:])
 	case "site-tenants":
 		cmdSiteTenants(os.Args[2:])
+	case "site-safety":
+		cmdSiteSafety(os.Args[2:])
 	case "telemetry":
 		cmdTelemetry(os.Args[2:])
 	case "verifliers":
