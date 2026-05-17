@@ -546,6 +546,12 @@ Database Tables
     ssl_expiry_date       Updated after HTTPS checks
     last_alert_sent_at    Tracks cooldown window
 
+  jetmon_site_safety_flags Non-downtime remediation state
+    monitor_site_id/blog_id Source monitor row and site identifiers
+    flag_type/status       unsafe_monitor_url / probe_safety_block lifecycle
+    reason/monitor_url     Bounded explanation and target URL snapshot
+    first_seen/last_seen   Finding timestamps for operator cleanup
+
   jetmon_hosts            Active monitor instances and bucket leases
     host_id               System hostname (PRIMARY KEY)
     bucket_min/max        Owned bucket range

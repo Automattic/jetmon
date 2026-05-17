@@ -22,11 +22,12 @@ Fixes landed in this branch:
 - Cap authenticated API JSON request bodies at 1 MiB, including idempotency-key hashing and replay caching.
 - Apply public-target validation and guarded HTTP clients to outbound webhook and Slack / Teams alert delivery URLs.
 - Add `jetmon2 site-safety unsafe-urls`, a dry-run-first cleanup tool that scans active legacy rows with the same URL guard and can deactivate unsafe rows when run with `--execute`.
-- Block already-stored unsafe or malformed direct targets in the checker hot path with a non-downtime `ErrorProbeSafety` result. The orchestrator audits these as `probe_safety_blocked` and does not open or close downtime incidents.
+- Add `jetmon_site_safety_flags`, a durable non-downtime remediation table for unsafe legacy URLs and runtime probe-safety blocks.
+- Block already-stored unsafe or malformed direct targets in the checker hot path with a non-downtime `ErrorProbeSafety` result. The orchestrator audits these as `probe_safety_blocked`, records an open safety flag, and does not open or close downtime incidents.
 - Classify unsafe redirect targets as `ErrorProbeSafety` rather than generic redirect failures, so redirect SSRF blocks are not counted as customer-site downtime.
 - Add regression coverage for gzip expansion, slow/infinite body streaming, oversized response headers, unsafe redirects, unsafe Veriflier URLs, and custom header injection/framing attempts.
 
-The remaining product/design question is whether these probe-safety blocks should also be visible as first-class event/degradation states. This branch records them in the audit log and metrics, but intentionally does not create customer-site downtime events.
+This branch intentionally does not create customer-site downtime events for probe-safety blocks. Durable safety flags are the operator remediation trail; a first-class non-downtime event state remains optional future product work if dashboard/API event visibility needs to be richer than flags plus audit rows.
 
 ## Evidence Reviewed
 
@@ -90,9 +91,9 @@ Representative active examples:
 Cleanup command exercise against the temporary database copy:
 
 ```text
-dry-run:        scanned_active=594377 unsafe=61 deactivated=0
-execute:        scanned_active=594377 unsafe=61 deactivated=61
-follow-up dry:  scanned_active=594316 unsafe=0 deactivated=0
+dry-run:        scanned_active=594377 unsafe=61 flagged=0  deactivated=0
+execute:        scanned_active=594377 unsafe=61 flagged=61 deactivated=61
+follow-up dry:  scanned_active=594316 unsafe=0  flagged=0  deactivated=0
 ```
 
 The command only changed the temporary restored copy. The container was stopped after validation.
@@ -201,7 +202,7 @@ Tests added:
 
 ### Legacy Cleanup Path
 
-`jetmon2 site-safety unsafe-urls` scans active `jetpack_monitor_sites` rows and classifies `monitor_url` with the same admission-time shape/literal guard, `netguard.ParsePublicHTTPURL`. By default it is a dry run and prints counts plus bounded examples. Passing `--execute` deactivates matching active rows by setting `monitor_active = 0`; it does not delete rows. Runtime DNS safety checks still remain necessary for hostnames whose resolution changes later.
+`jetmon2 site-safety unsafe-urls` scans active `jetpack_monitor_sites` rows and classifies `monitor_url` with the same admission-time shape/literal guard, `netguard.ParsePublicHTTPURL`. By default it is a dry run and prints counts plus bounded examples. Passing `--execute` records a `jetmon_site_safety_flags` row for each unsafe active row, then deactivates that monitor row by setting `monitor_active = 0`; it does not delete rows. The flag preserves `blog_id`, `monitor_site_id`, `flag_type`, reason, URL, first/last seen timestamps, and deactivation time. Runtime DNS safety checks still remain necessary for hostnames whose resolution changes later.
 
 Tests added:
 
@@ -209,6 +210,8 @@ Tests added:
 - `TestRunSiteSafetyUnsafeURLsDryRun`
 - `TestRunSiteSafetyUnsafeURLsExecuteDeactivates`
 - `TestDeactivateUnsafeMonitorURLsChunksLargeBatches`
+- `TestUpsertSiteSafetyFlag`
+- `TestProcessResultsProbeSafetyBlockAuditsWithoutStateChange`
 
 ### Custom Header Safety
 
@@ -298,7 +301,7 @@ go mod verify
 
 Docker image builds were also refreshed for `Dockerfile_jetmon`, `Dockerfile_veriflier`, and `Dockerfile_api_fixture` using the updated `golang:1.26.3` builder image.
 
-MariaDB migration smoke tests were run against isolated local Docker Compose stacks for `mariadb:11.4.8` and `mariadb:11.4.10`. In both cases app-user setup succeeded, `./bin/jetmon2 migrate` applied all migrations, an immediate second migrate was idempotent, and `jetmon_schema_migrations` reported `COUNT(*)=48` and `MAX(id)=48`.
+MariaDB migration smoke tests were run against isolated local Docker Compose stacks for `mariadb:11.4.8` and `mariadb:11.4.10`. In both cases app-user setup succeeded, `./bin/jetmon2 migrate` applied all migrations, an immediate second migrate was idempotent, `jetmon_schema_migrations` reported `COUNT(*)=49` and `MAX(id)=49`, and `jetmon_site_safety_flags` existed.
 
 ## Performance Notes
 
@@ -331,21 +334,24 @@ Production database compatibility should be validated against MariaDB 11.4, not 
 
 `github.com/go-sql-driver/mysql` remains the right driver family: its current README says maintainers support MariaDB 10.5+ as well as MySQL 5.7+. The project now uses `v1.10.0`. The migration smoke coverage above verifies schema compatibility across the production MariaDB patch range. Before production rollout, still run an end-to-end MariaDB 11.4 exercise that covers runtime write paths such as bucket claiming, runtime freshness writes, SSL expiry batches, `ON DUPLICATE KEY UPDATE ... VALUES(...)`, and webhook / alert delivery claims.
 
-## Probe-Safety Event Options
+## Probe-Safety Visibility Decision
 
 Current branch behavior is intentionally conservative:
 
 - Unsafe direct targets and unsafe redirects return `ErrorProbeSafety`.
 - The checker marks them non-failures for downtime purposes.
 - The orchestrator writes `probe_safety_blocked` audit rows and metrics.
+- The orchestrator upserts an open `jetmon_site_safety_flags` row for runtime probe-safety blocks when the source monitor row is known.
+- `site-safety unsafe-urls --execute` records `unsafe_monitor_url` flags with `status='deactivated'` before setting `monitor_active = 0`.
 - No customer downtime event is opened, promoted, or closed.
 
-Product options:
+The branch implements the stored remediation-label option instead of a first-class event state. That keeps SLA, WPCOM down/recovery, webhook, and alert-contact behavior unchanged while giving operators a durable reason table for cleanup and runtime blocks.
 
-1. Keep audit + metrics only. This is lowest risk for rollout and avoids confusing unsafe URL cleanup with customer downtime. It is weaker operationally because dashboards and event consumers must know to inspect audit rows.
-2. Add a first-class non-downtime event state, for example `Probe Blocked` or `Probe Safety Blocked`, with severity 2 and `check_type=probe_safety`. It should be excluded from SLA downtime and WPCOM down/recovery notifications. This is my recommendation if operators need persistent visibility into unsafe legacy rows without paging customers.
-3. Add a separate stored label/deactivation reason for cleanup. The current cleanup command can deactivate unsafe rows but the v1 table has no explicit reason column. An additive v2-side table such as `jetmon_site_safety_flags` could preserve `site_id`, reason, first_seen, last_seen, and remediation status without mutating v1 semantics beyond `monitor_active=0`.
-4. Treat public-host hostile responses as degraded states only after repeat evidence. Oversized headers, body-read budget exhaustion, and TLS pathology can be real site problems or adversarial behavior. If represented as events, they should use thresholds and cooldowns to avoid opening transient one-probe noise.
+Deferred product options:
+
+1. Add a first-class non-downtime event state, for example `Probe Blocked` or `Probe Safety Blocked`, with severity 2 and `check_type=probe_safety`. Do this if dashboards or API consumers need probe-safety findings in the normal event feed. It must be excluded from SLA downtime and WPCOM down/recovery notifications.
+2. Treat public-host hostile responses as degraded states only after repeat evidence. Oversized headers, body-read budget exhaustion, and TLS pathology can be real site problems or adversarial behavior. If represented as events, they should use thresholds and cooldowns to avoid opening transient one-probe noise.
+3. Add scheduled reporting over `jetmon_site_safety_flags` and dry-run scans so operators can watch unsafe legacy row counts before and after API rejection rolls out.
 
 API behavior should remain strict regardless of which product option is chosen: new or updated monitor URLs should be rejected at write time when they are shape-unsafe, and runtime target-safety should remain in place for already-stored rows and DNS changes.
 
@@ -357,9 +363,8 @@ If more checker result fields become shared protocol semantics, move the stable 
 
 ## Remaining High-Value Scenarios
 
-1. Decide whether to implement `Probe Safety Blocked` as a non-downtime event state before rollout, or keep the current audit/metrics-only behavior for this branch.
-2. If cleanup will be run on production data, decide whether deactivation alone is acceptable or whether an additive reason table is needed first.
-3. Add a scheduled or operator-invoked cleanup dry-run report so the unsafe legacy row count can be watched before and after API rejection rolls out.
-4. Exercise DNS rebinding with an authoritative test DNS responder: public address on first lookup, private address on a redirect hop or later check.
-5. Exercise TLS pathology with uptime-bench responders: TLS 1.0/1.1, no common cipher, handshake close/alert, large certificate chains, expired/self-signed/hostname mismatch certificates.
-6. Consider streaming keyword matching that can stop as soon as a required-only keyword is found instead of reading until EOF/limit/budget.
+1. Run an end-to-end MariaDB 11.4 runtime exercise before production rollout, covering bucket claiming, runtime freshness writes, SSL expiry batches, `ON DUPLICATE KEY UPDATE ... VALUES(...)`, and webhook / alert delivery claims.
+2. Add scheduled reporting over `jetmon_site_safety_flags` and dry-run scans so the unsafe legacy row count can be watched before and after API rejection rolls out.
+3. Exercise DNS rebinding with an authoritative test DNS responder: public address on first lookup, private address on a redirect hop or later check.
+4. Exercise TLS pathology with uptime-bench responders: TLS 1.0/1.1, no common cipher, handshake close/alert, large certificate chains, expired/self-signed/hostname mismatch certificates.
+5. Consider streaming keyword matching that can stop as soon as a required-only keyword is found instead of reading until EOF/limit/budget.

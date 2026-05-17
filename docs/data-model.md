@@ -56,6 +56,7 @@ writes only the v1 compatibility projection fields `site_status` and
 | `jetmon_check_targets` | V2-native scheduling target state for the streaming monitor engine |
 | `jetmon_site_check_config` | Per-site v2 check config: rollout method/profile, body rules, maintenance windows, custom headers, timeout, redirect policy, and cooldown overrides |
 | `jetmon_site_runtime` | V2 runtime freshness and derived observation state such as last checked time, next due time, last alert time, and SSL expiry |
+| `jetmon_site_safety_flags` | Non-downtime remediation state for unsafe legacy monitor URLs and runtime probe-safety blocks |
 | `jetmon_rollout_sessions` | API-driven container rollout sessions bound to bucket ranges and operator/change metadata |
 | `jetmon_rollout_range_locks` | Durable activation/release history for API-controlled bucket ranges |
 | `jetmon_rollout_bucket_locks` | One active lock row per bucket, used to prevent overlapping v2 range activation |
@@ -98,6 +99,20 @@ and forbidden-content checks require `GET`.
 The API can expose a derived `cli_batch` field for local API CLI test data when
 `include_cli_metadata=true` is requested and `custom_headers` contains
 `X-Jetmon-CLI-Batch`; it is not a dedicated database column.
+
+## Site Safety Flags
+
+`jetmon_site_safety_flags` tracks unsafe targets separately from customer
+downtime events. Runtime probe-safety blocks are inserted as open flags with
+`flag_type='probe_safety_block'`; `jetmon2 site-safety unsafe-urls --execute`
+inserts `flag_type='unsafe_monitor_url'` rows with `status='deactivated'`
+before it sets the legacy row's `monitor_active` value to false.
+
+The table preserves the monitor row id, blog id, URL, reason, first/last seen
+timestamps, and remediation status. It intentionally does not replace the
+legacy site table or event tables: `monitor_active` still controls whether a
+site is checked, and probe-safety blocks remain excluded from SLA downtime,
+WPCOM down/recovery notifications, webhooks, and alert-contact delivery.
 
 ## Site Runtime
 
