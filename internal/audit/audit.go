@@ -29,6 +29,7 @@ const (
 	EventAlertSuppressed   = "alert_suppressed"
 	EventConfigChange      = "config_change"
 	EventAPIAccess         = "api_access"
+	EventProbeSafetyBlock  = "probe_safety_blocked"
 )
 
 var db *sql.DB

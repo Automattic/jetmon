@@ -20,6 +20,7 @@ const (
 	defaultCheckEstimate     = 50 * time.Millisecond
 	deadlineAdmissionReserve = 250 * time.Millisecond
 	deadlineResultDrainGrace = 25 * time.Millisecond
+	checkerErrorProbeSafety  = 9
 )
 
 type CheckFunc func(context.Context, CheckRequest) ProbeResult
@@ -408,6 +409,9 @@ func fdConcurrencyCap() int {
 func outcomeFromResult(res CheckResult) string {
 	if res.Success {
 		return OutcomeUp
+	}
+	if res.ErrorCode == checkerErrorProbeSafety {
+		return OutcomeUnknown
 	}
 	if res.ErrorCode == 1 {
 		return OutcomeTimeout

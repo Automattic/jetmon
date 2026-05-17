@@ -13,6 +13,7 @@ import (
 
 	"github.com/Automattic/jetmon/internal/checkmode"
 	"github.com/Automattic/jetmon/internal/metrics"
+	"github.com/Automattic/jetmon/internal/netguard"
 )
 
 // Server listens for inbound connections from the Monitor and dispatches
@@ -201,6 +202,12 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("decode: %v", err), http.StatusBadRequest)
 		return
 	}
+	for i := range req.Sites {
+		if err := validateCheckURL(req.Sites[i].URL); err != nil {
+			http.Error(w, fmt.Sprintf("site %d: %v", i, err), http.StatusBadRequest)
+			return
+		}
+	}
 
 	for i := range req.Sites {
 		if req.Sites[i].RequestID == "" {
@@ -366,8 +373,8 @@ func (s *Server) v2Result(res ProbeResult) CheckV2Result {
 }
 
 func v2RequestToLegacy(req CheckV2Request) (CheckRequest, error) {
-	if req.URL == "" {
-		return CheckRequest{}, fmt.Errorf("url is required")
+	if err := validateCheckURL(req.URL); err != nil {
+		return CheckRequest{}, err
 	}
 	method, err := checkmode.NormalizeMethod(req.Method, checkmode.MethodGET)
 	if err != nil {
@@ -410,6 +417,11 @@ func v2RequestToLegacy(req CheckV2Request) (CheckRequest, error) {
 		legacyReq.ForbiddenKeywords = append([]string(nil), req.BodyRules.Forbidden...)
 	}
 	return legacyReq, nil
+}
+
+func validateCheckURL(rawURL string) error {
+	_, err := netguard.ParsePublicHTTPURL(rawURL, "url")
+	return err
 }
 
 func legacyRequestToV2(req CheckRequest) CheckV2Request {

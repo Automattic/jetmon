@@ -12,6 +12,13 @@ import (
 	"github.com/Automattic/jetmon/internal/veriflier"
 )
 
+func allowUnsafeOutboundTargetsForTest(t *testing.T) {
+	t.Helper()
+	old := enforceOutboundTargetSafety
+	enforceOutboundTargetSafety = false
+	t.Cleanup(func() { enforceOutboundTargetSafety = old })
+}
+
 func TestEnvOrDefault(t *testing.T) {
 	const key = "VERIFLIER_TEST_ENV_OR_DEFAULT"
 	t.Setenv(key, "")
@@ -136,6 +143,8 @@ func TestVeriflierAgentIDIncludesPort(t *testing.T) {
 }
 
 func TestPerformCheckSuccess(t *testing.T) {
+	allowUnsafeOutboundTargetsForTest(t)
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("X-Test"); got != "present" {
 			t.Fatalf("X-Test header = %q, want present", got)
@@ -161,6 +170,8 @@ func TestPerformCheckSuccess(t *testing.T) {
 }
 
 func TestPerformCheckContextOutcomeAndTimings(t *testing.T) {
+	allowUnsafeOutboundTargetsForTest(t)
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	}))
@@ -184,6 +195,8 @@ func TestPerformCheckContextOutcomeAndTimings(t *testing.T) {
 }
 
 func TestPerformCheckKeywordFailure(t *testing.T) {
+	allowUnsafeOutboundTargetsForTest(t)
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("different"))
 	}))
@@ -205,6 +218,8 @@ func TestPerformCheckKeywordFailure(t *testing.T) {
 }
 
 func TestPerformCheckTruncatedBodyFailure(t *testing.T) {
+	allowUnsafeOutboundTargetsForTest(t)
+
 	srv := truncatedBodyServer(t, "needle but incomplete")
 	defer srv.Close()
 
@@ -223,6 +238,21 @@ func TestPerformCheckTruncatedBodyFailure(t *testing.T) {
 	}
 	if res.ErrorCode != int32(checker.ErrorBodyRead) {
 		t.Fatalf("error code = %d, want %d", res.ErrorCode, checker.ErrorBodyRead)
+	}
+}
+
+func TestPerformCheckProbeSafetyOutcomeUnknown(t *testing.T) {
+	res := performCheckContext(context.Background(), veriflier.CheckRequest{
+		BlogID:         46,
+		URL:            "http://127.0.0.1/admin",
+		TimeoutSeconds: 2,
+		RedirectPolicy: string(checker.RedirectFollow),
+	})
+	if res.Outcome != veriflier.OutcomeUnknown {
+		t.Fatalf("outcome = %q, want unknown; result=%+v", res.Outcome, res)
+	}
+	if res.ErrorCode != int32(checker.ErrorProbeSafety) {
+		t.Fatalf("error code = %d, want %d", res.ErrorCode, checker.ErrorProbeSafety)
 	}
 }
 

@@ -152,6 +152,33 @@ func TestServerHandleCheckMethodNotAllowed(t *testing.T) {
 	}
 }
 
+func TestServerHandleCheckRejectsUnsafeURL(t *testing.T) {
+	var called atomic.Bool
+	_, ts := newTestServer(func(req CheckRequest) CheckResult {
+		called.Store(true)
+		return CheckResult{Success: true}
+	})
+	defer ts.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/check", checkReqBody(t, []CheckRequest{
+		{BlogID: 1, URL: "http://127.0.0.1/admin"},
+	}))
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+	if called.Load() {
+		t.Fatal("check function was called for unsafe URL")
+	}
+}
+
 func TestServerHandleStatus(t *testing.T) {
 	_, ts := newTestServer(func(req CheckRequest) CheckResult { return CheckResult{} })
 	defer ts.Close()
@@ -970,7 +997,7 @@ func TestNewRequestID(t *testing.T) {
 }
 
 func BenchmarkNewRequestID(b *testing.B) {
-	for b.Loop() {
+	for i := 0; i < b.N; i++ {
 		_ = NewRequestID()
 	}
 }
@@ -1273,6 +1300,42 @@ func TestServerHandleV2Check(t *testing.T) {
 	}
 	if got.TimingsMS.DNS != 1 || got.TimingsMS.TTFB != 4 {
 		t.Fatalf("timings = %+v", got.TimingsMS)
+	}
+}
+
+func TestServerHandleV2CheckRejectsUnsafeURL(t *testing.T) {
+	var called atomic.Bool
+	srv, ts := newV2TestServer(func(_ context.Context, req CheckRequest) ProbeResult {
+		called.Store(true)
+		return ProbeResult{CheckResult: CheckResult{Success: true}, Outcome: OutcomeUp}
+	})
+	defer srv.executor.Shutdown()
+	defer ts.Close()
+
+	body := bytes.NewBuffer(nil)
+	if err := json.NewEncoder(body).Encode(CheckV2BatchRequest{
+		Requests: []CheckV2Request{{
+			RequestID: "req-unsafe",
+			BlogID:    42,
+			URL:       "http://169.254.169.254/latest/meta-data/",
+		}},
+	}); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v2/check", body)
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+	if called.Load() {
+		t.Fatal("check function was called for unsafe URL")
 	}
 }
 

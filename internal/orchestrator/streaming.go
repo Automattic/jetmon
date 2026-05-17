@@ -1160,7 +1160,9 @@ func (o *Orchestrator) processStreamingSideEffects(site db.Site, res checker.Res
 	summary.sslDuration += time.Since(sslStart)
 
 	eventStart := time.Now()
-	if !res.IsFailure() {
+	if res.IsProbeSafetyBlock() {
+		o.handleProbeSafetyBlock(site, res)
+	} else if !res.IsFailure() {
 		o.handleRecovery(site, res)
 		site.SiteStatus = statusRunning
 	} else {

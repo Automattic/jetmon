@@ -748,6 +748,7 @@ func checkRequestForSite(cfg *config.Config, site db.Site) checker.Request {
 		KeywordReadMaxMS:    cfg.KeywordReadMaxMS,
 		CustomHeaders:       checker.ParseCustomHeaders(site.CustomHeaders),
 		RedirectPolicy:      checker.RedirectFollow,
+		EnforceTargetSafety: true,
 	}
 	if profile == checkmode.ProfileFull {
 		req.Keyword = site.CheckKeyword
@@ -1031,7 +1032,9 @@ func (o *Orchestrator) processResults(results map[int64]checker.Result, sites ma
 	for _, record := range records {
 		// Per-check data is recorded in jetmon_check_history (above); duplicating
 		// it in jetmon_audit_log was retired with the operational/site-state split.
-		if !record.res.IsFailure() {
+		if record.res.IsProbeSafetyBlock() {
+			o.handleProbeSafetyBlock(record.site, record.res)
+		} else if !record.res.IsFailure() {
 			o.handleRecovery(record.site, record.res)
 		} else {
 			o.handleFailure(record.site, record.res)
@@ -1448,6 +1451,8 @@ func detectorClass(res checker.Result) string {
 		return "timeout"
 	case res.ErrorCode == checker.ErrorRedirect:
 		return "redirect"
+	case res.ErrorCode == checker.ErrorProbeSafety:
+		return "probe_safety"
 	case res.ErrorCode == checker.ErrorSSL || res.ErrorCode == checker.ErrorTLSExpired:
 		return "tls_failure"
 	case res.ErrorCode == checker.ErrorTLSDeprecated:
@@ -1632,6 +1637,20 @@ func (o *Orchestrator) handleFailure(site db.Site, res checker.Result) bool {
 		return entry.eventID > 0
 	}
 	return true
+}
+
+func (o *Orchestrator) handleProbeSafetyBlock(site db.Site, res checker.Result) {
+	emitCounter("detection.probe_safety_blocked.count", 1)
+	metaMap := checkResultMetadata(site, res, resultCheckedAt(res))
+	metaMap["probe_safety_blocked"] = true
+	meta, _ := json.Marshal(metaMap)
+	o.auditLog(audit.Entry{
+		BlogID:    site.BlogID,
+		EventType: audit.EventProbeSafetyBlock,
+		Source:    o.hostname,
+		Detail:    "probe safety blocked outbound check",
+		Metadata:  meta,
+	})
 }
 
 func (o *Orchestrator) shouldSuppressPostRecoveryTransientFailure(site db.Site, res checker.Result) bool {

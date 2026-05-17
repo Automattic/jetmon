@@ -2068,6 +2068,58 @@ func TestProcessResultsMarksChecked(t *testing.T) {
 	}
 }
 
+func TestProcessResultsProbeSafetyBlockAuditsWithoutStateChange(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig(t)
+
+	sqlDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer sqlDB.Close()
+	audit.Init(sqlDB)
+	t.Cleanup(func() { audit.Init(nil) })
+
+	dbUpdateSiteStatus = func(context.Context, int64, int, time.Time) error {
+		t.Fatal("probe safety block must not update site status")
+		return nil
+	}
+	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error {
+		t.Fatal("probe safety block must not send notifications")
+		return nil
+	}
+
+	mock.ExpectExec(`INSERT INTO jetmon_audit_log`).
+		WithArgs(int64(42), nil, audit.EventProbeSafetyBlock, "local", "probe safety blocked outbound check", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local",
+		ctx:      context.Background(),
+	}
+
+	res := checker.Result{
+		BlogID:      42,
+		URL:         "http://127.0.0.1",
+		Success:     false,
+		ErrorCode:   checker.ErrorProbeSafety,
+		ErrorDetail: "probe safety check: target host \"127.0.0.1\" is not public",
+		Timestamp:   time.Now().UTC(),
+	}
+	sites := map[int64]db.Site{42: {BlogID: 42, MonitorURL: "http://127.0.0.1", SiteStatus: statusRunning, CheckInterval: 5}}
+	o.processResults(map[int64]checker.Result{42: res}, sites)
+
+	if retry := o.retries.get(42); retry != nil {
+		t.Fatalf("retry entry = %+v, want nil for probe safety block", retry)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("audit expectations: %v", err)
+	}
+}
+
 func TestProcessResultsSchedulesFailedChecksSoonerThanNormalInterval(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
