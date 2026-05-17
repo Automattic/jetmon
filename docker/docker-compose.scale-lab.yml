@@ -1,0 +1,140 @@
+x-jetmon-scale-env: &jetmon_scale_env
+  DB_HOST: mysqldb
+  DB_USER: ${MYSQL_USER:-jetmon}
+  DB_PASSWORD: ${MYSQL_PASSWORD:-jetmon_dev_password}
+  DB_NAME: ${MYSQL_DATABASE:-jetmon_db}
+  DB_PORT: "3306"
+  VERIFLIER_AUTH_TOKEN: ${VERIFLIER_AUTH_TOKEN:-veriflier_1_auth_token}
+  VERIFLIER_PORT: "7803"
+  WPCOM_AUTH_TOKEN: ${WPCOM_AUTH_TOKEN:-change_me}
+  EMAIL_TRANSPORT: ${EMAIL_TRANSPORT:-stub}
+  EMAIL_FROM: ${EMAIL_FROM:-jetmon@noreply.invalid}
+  SMTP_HOST: ${SMTP_HOST:-mailpit}
+  SMTP_PORT: ${SMTP_PORT:-1025}
+  SMTP_USERNAME: ${SMTP_USERNAME:-}
+  SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+  SMTP_USE_TLS: ${SMTP_USE_TLS:-false}
+
+x-jetmon-scale-service: &jetmon_scale_service
+  build:
+    context: ../
+    dockerfile: docker/Dockerfile_jetmon
+  init: true
+  restart: unless-stopped
+  user: "${UID:-1000}:${GID:-1000}"
+  volumes:
+    - ../config:/jetmon/config
+    - ../logs:/jetmon/logs
+    - ../stats:/jetmon/stats
+  depends_on:
+    mysql-user:
+      condition: service_completed_successfully
+    mailpit:
+      condition: service_healthy
+  healthcheck:
+    test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8090/api/v1/health"]
+    interval: 10s
+    timeout: 5s
+    retries: 12
+    start_period: 30s
+  networks:
+    default:
+    scale_public:
+
+x-veriflier-scale-service: &veriflier_scale_service
+  build:
+    context: ../
+    dockerfile: docker/Dockerfile_veriflier
+  init: true
+  restart: unless-stopped
+  environment:
+    VERIFLIER_AUTH_TOKEN: ${VERIFLIER_AUTH_TOKEN:-veriflier_1_auth_token}
+    VERIFLIER_PORT: "7803"
+    VERIFLIER_REGION: ${VERIFLIER_REGION:-scale-lab}
+    VERIFLIER_PROVIDER: ${VERIFLIER_PROVIDER:-docker}
+    VERIFLIER_ENABLE_LEGACY_HTTP: ${VERIFLIER_ENABLE_LEGACY_HTTP:-false}
+    STATSD_ADDR: statsd:8125
+  healthcheck:
+    test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7803/v2/status"]
+    interval: 10s
+    timeout: 5s
+    retries: 12
+    start_period: 10s
+  networks:
+    default:
+    scale_public:
+
+services:
+  jetmon:
+    hostname: jetmon-scale-1
+    environment:
+      <<: *jetmon_scale_env
+      JETMON_PID_FILE: /jetmon/stats/jetmon2-scale-1.pid
+    networks:
+      default:
+      scale_public:
+
+  jetmon2:
+    <<: *jetmon_scale_service
+    hostname: jetmon-scale-2
+    environment:
+      <<: *jetmon_scale_env
+      JETMON_PID_FILE: /jetmon/stats/jetmon2-scale-2.pid
+
+  jetmon3:
+    <<: *jetmon_scale_service
+    hostname: jetmon-scale-3
+    environment:
+      <<: *jetmon_scale_env
+      JETMON_PID_FILE: /jetmon/stats/jetmon2-scale-3.pid
+
+  jetmon4:
+    <<: *jetmon_scale_service
+    hostname: jetmon-scale-4
+    environment:
+      <<: *jetmon_scale_env
+      JETMON_PID_FILE: /jetmon/stats/jetmon2-scale-4.pid
+
+  veriflier:
+    environment:
+      VERIFLIER_VANTAGE_ID: scale-v1
+      VERIFLIER_REGION: scale-lab
+      VERIFLIER_PROVIDER: docker
+    networks:
+      default:
+      scale_public:
+
+  veriflier2:
+    <<: *veriflier_scale_service
+    hostname: veriflier-scale-2
+    environment:
+      VERIFLIER_AUTH_TOKEN: ${VERIFLIER_AUTH_TOKEN:-veriflier_1_auth_token}
+      VERIFLIER_PORT: "7803"
+      VERIFLIER_VANTAGE_ID: scale-v2
+      VERIFLIER_REGION: scale-lab
+      VERIFLIER_PROVIDER: docker
+      VERIFLIER_ENABLE_LEGACY_HTTP: ${VERIFLIER_ENABLE_LEGACY_HTTP:-false}
+      STATSD_ADDR: statsd:8125
+
+  veriflier3:
+    <<: *veriflier_scale_service
+    hostname: veriflier-scale-3
+    environment:
+      VERIFLIER_AUTH_TOKEN: ${VERIFLIER_AUTH_TOKEN:-veriflier_1_auth_token}
+      VERIFLIER_PORT: "7803"
+      VERIFLIER_VANTAGE_ID: scale-v3
+      VERIFLIER_REGION: scale-lab
+      VERIFLIER_PROVIDER: docker
+      VERIFLIER_ENABLE_LEGACY_HTTP: ${VERIFLIER_ENABLE_LEGACY_HTTP:-false}
+      STATSD_ADDR: statsd:8125
+
+  api-fixture:
+    networks:
+      default:
+      scale_public:
+        ipv4_address: ${SCALE_LAB_FIXTURE_IP:-93.184.217.20}
+
+networks:
+  scale_public:
+    name: ${SCALE_LAB_PUBLIC_NETWORK:-jetmon-scale-lab-public}
+    external: true
