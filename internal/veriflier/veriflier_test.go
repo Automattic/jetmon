@@ -1054,18 +1054,10 @@ func TestServerRejectsOversizedBody(t *testing.T) {
 	})
 	defer ts.Close()
 
-	// Build a body just over the 10MB cap. Padding lives in a custom_headers
-	// value so the JSON shape is still valid (we want to confirm the cap
-	// fires, not that the JSON is malformed).
-	pad := make([]byte, 11*1024*1024)
-	for i := range pad {
-		pad[i] = 'x'
-	}
-	body := bytes.NewBuffer(nil)
-	body.WriteString(`{"sites":[{"BlogID":1,"URL":"https://example.com","CustomHeaders":{"X-Pad":"`)
-	body.Write(pad)
-	body.WriteString(`"}}]}`)
-
+	body := oversizedJSONBody(
+		`{"sites":[{"BlogID":1,"URL":"https://example.com","CustomHeaders":{"X-Pad":"`,
+		`"}}]}`,
+	)
 	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/check", body)
 	req.Header.Set("Authorization", "Bearer secret")
 	req.Header.Set("Content-Type", "application/json")
@@ -1079,6 +1071,44 @@ func TestServerRejectsOversizedBody(t *testing.T) {
 	if resp.StatusCode != http.StatusRequestEntityTooLarge {
 		t.Fatalf("status = %d, want 413", resp.StatusCode)
 	}
+}
+
+func TestServerHandleV2CheckRejectsOversizedBody(t *testing.T) {
+	var called atomic.Bool
+	_, ts := newV2TestServer(func(_ context.Context, req CheckRequest) ProbeResult {
+		called.Store(true)
+		return ProbeResult{CheckResult: CheckResult{BlogID: req.BlogID, URL: req.URL, Success: true}, Outcome: OutcomeUp}
+	})
+	defer ts.Close()
+
+	body := oversizedJSONBody(
+		`{"requests":[{"blog_id":1,"url":"https://example.com","headers":{"X-Pad":"`,
+		`"}}]}`,
+	)
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v2/check", body)
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413", resp.StatusCode)
+	}
+	if called.Load() {
+		t.Fatal("checkFn should not be called for oversized v2 body")
+	}
+}
+
+func oversizedJSONBody(prefix, suffix string) *bytes.Buffer {
+	pad := bytes.Repeat([]byte("x"), maxRequestBodyBytes+1)
+	body := bytes.NewBuffer(nil)
+	body.WriteString(prefix)
+	body.Write(pad)
+	body.WriteString(suffix)
+	return body
 }
 
 func TestServerShutdownDrains(t *testing.T) {

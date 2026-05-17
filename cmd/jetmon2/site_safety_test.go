@@ -93,3 +93,31 @@ func TestRunSiteSafetyUnsafeURLsExecuteDeactivates(t *testing.T) {
 		t.Fatalf("unmet expectations: %v", err)
 	}
 }
+
+func TestDeactivateUnsafeMonitorURLsChunksLargeBatches(t *testing.T) {
+	conn, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer conn.Close()
+
+	ids := make([]int64, 1001)
+	for i := range ids {
+		ids[i] = int64(i + 1)
+	}
+	mock.ExpectExec("UPDATE jetpack_monitor_sites").
+		WillReturnResult(sqlmock.NewResult(0, 1000))
+	mock.ExpectExec("UPDATE jetpack_monitor_sites").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	deactivated, err := deactivateUnsafeMonitorURLs(context.Background(), conn, ids)
+	if err != nil {
+		t.Fatalf("deactivateUnsafeMonitorURLs: %v", err)
+	}
+	if deactivated != 1001 {
+		t.Fatalf("deactivated = %d, want 1001", deactivated)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
