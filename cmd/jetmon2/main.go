@@ -37,7 +37,11 @@ import (
 	"github.com/Automattic/jetmon/internal/wpcom"
 )
 
-const processHealthWriteTimeout = 2 * time.Second
+const (
+	processHealthWriteTimeout = 2 * time.Second
+	httpGetTimeout            = 10 * time.Second
+	httpGetMaxBodyBytes       = 1 << 20
+)
 
 // Injected at build time via -ldflags.
 var (
@@ -1420,14 +1424,18 @@ func envOrDefault(key, def string) string {
 }
 
 func httpGet(url string) (string, error) {
-	resp, err := http.Get(url)
+	client := &http.Client{Timeout: httpGetTimeout}
+	resp, err := client.Get(url)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, httpGetMaxBodyBytes+1))
 	if err != nil {
 		return "", err
+	}
+	if len(body) > httpGetMaxBodyBytes {
+		return "", fmt.Errorf("response body exceeds %d bytes", httpGetMaxBodyBytes)
 	}
 	if resp.StatusCode >= 400 {
 		return "", fmt.Errorf("http %d: %s", resp.StatusCode, string(body))
