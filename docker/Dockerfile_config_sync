@@ -1,0 +1,22 @@
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash \
+    ca-certificates \
+    subversion \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd -r jetmon && useradd --no-log-init -r -g jetmon jetmon
+
+WORKDIR /jetmon
+
+COPY scripts/jetmon-config-update.sh /usr/local/bin/jetmon-config-update.sh
+COPY scripts/jetmon-config-sync-loop.sh /usr/local/bin/jetmon-config-sync-loop.sh
+
+RUN chmod +x /usr/local/bin/jetmon-config-update.sh /usr/local/bin/jetmon-config-sync-loop.sh \
+    && mkdir -p /var/lib/jetmon/config-svn /jetmon/config-source \
+    && chown -R jetmon:jetmon /var/lib/jetmon /jetmon
+
+USER jetmon
+
+ENTRYPOINT ["/usr/local/bin/jetmon-config-sync-loop.sh"]

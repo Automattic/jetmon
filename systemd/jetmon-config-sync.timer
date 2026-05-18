@@ -1,0 +1,13 @@
+[Unit]
+Description=Periodically sync Jetmon database server map
+Documentation=https://github.com/Automattic/jetmon
+
+[Timer]
+OnBootSec=2m
+OnUnitActiveSec=10m
+RandomizedDelaySec=2m
+AccuracySec=1m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

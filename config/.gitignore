@@ -1,3 +1,4 @@
 config.json
 db-config.conf
-
+jetmon-config-sync.env
+*secret*.env
