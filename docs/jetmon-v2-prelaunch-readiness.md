@@ -82,6 +82,11 @@ clear stop/go threshold.
   site-state writes until activation.
 - [ ] Operator API config, API key scopes, `--allow-remote` usage, transcript
   location, and API-guided rollback path rehearsed.
+- [ ] API authorization design reviewed before broader API rollout. Confirm
+  whether coarse `read` / `write` / `admin` scopes are sufficient for launch,
+  and whether a follow-up model is required for customer-scoped access by
+  `blog_id`, tag-scoped access such as VIP or Agency, and per-key permission
+  limits that prevent one consumer from managing unrelated sites.
 - [ ] Projection parity checked on production-like data with an approved drift
   threshold.
 - [ ] WPCOM notification parity checked for down, confirmed-down, false-alarm,
