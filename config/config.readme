@@ -34,6 +34,16 @@ Set to true while Jetmon v2 is running in shadow-v2-state migration mode. When e
 DB_UPDATES_ENABLE
 Deprecated alias for LEGACY_STATUS_PROJECTION_ENABLE. If both keys are present, LEGACY_STATUS_PROJECTION_ENABLE wins.
 
+DB_CONFIG_UPDATES_MIN
+Legacy database server-map refresh cadence in minutes. Jetmon v2 parses this
+setting for compatibility, but the current process reads DB_HOST, DB_PORT,
+DB_USER, DB_PASSWORD, and DB_NAME at startup. During the first container
+rollout, use this value as the config-sync sidecar cadence for syncing
+db-servers.php and recreate one Monitor at a time when the selected DB endpoint
+changes. Host-side systemd sync is a fallback if docker-deploy cannot support
+the sidecar shape. In-process pool reload requires the database config manager
+described in docs/production-teamcity-rollout.md. Default: 10.
+
 BUCKET_TOTAL
 Total number of buckets in the system across all hosts. Must match the range of bucket_no values in the jetpack_monitor_sites table. Default: 1000.
 
@@ -108,6 +118,29 @@ Minimum minutes between repeated down-alerts for the same site. Prevents alert s
 
 STATS_UPDATE_INTERVAL_MS
 Milliseconds between StatsD metric flushes and stats file updates. Default: 10000.
+
+STATSD_ADDR
+Environment variable, not a JSON config key. UDP host:port used for StatsD
+metrics. Monitor and deliverer default to statsd:8125 so Docker Compose can run
+with a co-located StatsD service. Veriflier leaves StatsD disabled unless this
+is set. TeamCity Monitor production should set this to the host-local StatsD
+proxy endpoint reachable from inside the container. Set
+STATSD_ADDR=127.0.0.1:8125 only for systemd/host-networked runs where the
+process can reach the host proxy via loopback. Set it explicitly empty to
+disable StatsD in safe smoke tests.
+
+STATSD_HOSTNAME
+Environment variable, not a JSON config key. Optional host identity used in the
+StatsD metric prefix `com.jetpack.jetmon.<hostname>`. Set this in production
+container deployments to the v1-compatible Graphite path segment, such as
+`<datacenter>.<node>`, so dashboards do not depend on Docker container
+hostnames. For example, if the v1 host was
+`jetmon-prod-1.dfw1.example.com`, set `STATSD_HOSTNAME=dfw1.jetmon-prod-1`.
+Use only stable, low-cardinality deployment identity here: datacenter/region
+plus logical host or Veriflier vantage is appropriate; container IDs, release
+SHAs, ports, process IDs, and random suffixes are not. Dots are preserved for
+Graphite hierarchy; unsafe characters are replaced with underscores. Leave
+unset or empty for local/dev runs to use the runtime hostname fallback.
 
 STATSD_SEND_MEM_USAGE
 Set to true to emit Go runtime memory stats to StatsD each interval. Default: false.

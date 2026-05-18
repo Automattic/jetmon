@@ -1,0 +1,47 @@
+services:
+  veriflier:
+    image: ${VERIFLIER_IMAGE:-ghcr.io/automattic/veriflier:latest}
+    init: true
+    restart: unless-stopped
+    ports:
+      - "${VERIFLIER_BIND_ADDR:-0.0.0.0}:${VERIFLIER_HOST_PORT:-7803}:7803"
+    environment:
+      VERIFLIER_AUTH_TOKEN: ${VERIFLIER_AUTH_TOKEN:?set VERIFLIER_AUTH_TOKEN}
+      VERIFLIER_PORT: "7803"
+      VERIFLIER_VANTAGE_ID: ${VERIFLIER_VANTAGE_ID:?set VERIFLIER_VANTAGE_ID}
+      VERIFLIER_REGION: ${VERIFLIER_REGION:?set VERIFLIER_REGION}
+      VERIFLIER_PROVIDER: ${VERIFLIER_PROVIDER:-vps}
+      VERIFLIER_ENABLE_LEGACY_HTTP: ${VERIFLIER_ENABLE_LEGACY_HTTP:-false}
+      STATSD_ADDR: statsd:8125
+      STATSD_HOSTNAME: ${STATSD_HOSTNAME:-}
+    depends_on:
+      statsd:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7803/v2/status"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    volumes:
+      - veriflier-config:/opt/veriflier/config
+
+  statsd:
+    image: ${STATSD_GRAPHITE_IMAGE:-graphiteapp/graphite-statsd}
+    restart: unless-stopped
+    ports:
+      - "${GRAPHITE_BIND_ADDR:-127.0.0.1}:${GRAPHITE_HOST_PORT:-8088}:80"
+    volumes:
+      - statsd-graphite-storage:/opt/graphite/storage
+      - statsd-logs:/var/log
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1/', timeout=2).close()\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+volumes:
+  veriflier-config:
+  statsd-graphite-storage:
+  statsd-logs:

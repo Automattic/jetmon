@@ -41,6 +41,7 @@ const (
 	processHealthWriteTimeout = 2 * time.Second
 	httpGetTimeout            = 10 * time.Second
 	httpGetMaxBodyBytes       = 1 << 20
+	defaultStatsDAddr         = "statsd:8125"
 )
 
 // Injected at build time via -ldflags.
@@ -150,8 +151,12 @@ func runServe() {
 
 	audit.Init(db.DB())
 
-	if err := metrics.Init("statsd:8125", db.Hostname()); err != nil {
+	if addr, enabled, err := metrics.InitFromEnv(db.Hostname(), defaultStatsDAddr); err != nil {
 		log.Printf("warning: statsd init failed: %v", err)
+	} else if enabled {
+		log.Printf("metrics: sending StatsD to %s", addr)
+	} else {
+		log.Printf("metrics: StatsD disabled")
 	}
 
 	hostname := db.Hostname()

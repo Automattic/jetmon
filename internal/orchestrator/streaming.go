@@ -330,6 +330,7 @@ type streamingStats struct {
 	backpressureWaits  int
 	staleResults       int
 	checkFailures      int
+	checkOffline       int
 	checkSuccesses     int
 	historyRows        int
 	historyErrors      int
@@ -361,13 +362,16 @@ type streamingStats struct {
 	checkCohorts       map[checkCohortKey]int
 }
 
-func (s *streamingStats) addResult(res checker.Result, lag time.Duration) {
+func (s *streamingStats) addResult(res checker.Result, lag time.Duration, siteStatus int) {
 	s.completed++
 	s.checkCohorts = incrementCheckCohort(s.checkCohorts, res)
 	if res.Success {
 		s.checkSuccesses++
 	} else {
 		s.checkFailures++
+		if siteStatus == statusConfirmedDown {
+			s.checkOffline++
+		}
 	}
 	if res.RTT > 0 {
 		s.latencyTotal += res.RTT
@@ -802,7 +806,7 @@ func (o *Orchestrator) runStreamingEngine() {
 		if lag < 0 {
 			lag = 0
 		}
-		stats.addResult(res, lag)
+		stats.addResult(res, lag, target.site.SiteStatus)
 		failurePressureActive := now.Before(pressureUntil)
 		if streamingFailurePressure(stats) {
 			pressureUntil = now.Add(streamingFailurePressureHold)
@@ -1466,8 +1470,18 @@ func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streami
 		m.Timing("scheduler.streaming.history.time", stats.historyDuration)
 		m.Timing("scheduler.streaming.ssl.time", stats.sslDuration)
 		m.Timing("scheduler.streaming.events.time", stats.eventDuration)
-		metrics.WriteStatsFiles(sps, queueDepth, o.totalChecked)
 	}
+	metrics.WriteStatsFiles(metrics.StatsFilesSnapshot{
+		SitesPerSec: sps,
+		QueueSize:   queueDepth,
+		Working:     activeChecks,
+		Waiting:     nonNegative(workers - activeChecks),
+		Halting:     0,
+		Error:       nonNegative(stats.checkFailures - stats.checkOffline),
+		Offline:     stats.checkOffline,
+		Success:     stats.checkSuccesses,
+		Total:       stats.completed,
+	})
 
 	log.Printf("orchestrator: streaming summary active=%d required_rate=%.2f/s selected=%d dispatched=%d completed=%d side_effects=%d pending=%d active_checks=%d queue_depth=%d result_depth=%d side_effect_depth=%d workers=%d worker_target=%d sps=%d elapsed=%s max_lag=%s avg_latency=%s scale_latency=%s successes=%d failures=%d failure_pressure=%t pressure_suppressed=%d error_timeout=%d error_connect=%d error_ssl=%d error_redirect=%d error_keyword=%d error_body_read=%d error_tls_expired=%d error_tls_deprecated=%d error_other=%d history_rows=%d ssl_rows=%d stale_results=%d backpressure_waits=%d side_effect_waits=%d result_pauses=%d side_effect_pauses=%d dispatch_limited=%d",
 		planner.activeCount(),

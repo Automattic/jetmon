@@ -77,6 +77,17 @@ func apiRoutes() []routeDef {
 		},
 		{
 			Method:         http.MethodGet,
+			Path:           "/api/v1/monitor/stats",
+			OperationID:    "getMonitorStats",
+			Summary:        "Return the latest Monitor stats snapshot",
+			Tags:           []string{"Utility"},
+			Scope:          scopeRead,
+			SuccessStatus:  http.StatusOK,
+			ResponseSchema: "MonitorStatsResponse",
+			Handler:        (*Server).handleMonitorStats,
+		},
+		{
+			Method:         http.MethodGet,
 			Path:           "/api/v1/me",
 			OperationID:    "getCurrentAPIKey",
 			Summary:        "Return the authenticated API key identity",

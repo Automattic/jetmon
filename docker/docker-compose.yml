@@ -65,6 +65,8 @@ services:
       SMTP_USERNAME: ${SMTP_USERNAME:-}
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       SMTP_USE_TLS: ${SMTP_USE_TLS:-false}
+      STATSD_ADDR: ${STATSD_ADDR-statsd:8125}
+      STATSD_HOSTNAME: ${STATSD_HOSTNAME:-}
       JETMON_PID_FILE: /jetmon/stats/jetmon2.pid
     ports:
       - "${BIND_ADDR:-127.0.0.1}:${DASHBOARD_HOST_PORT:-8080}:8080"
@@ -73,6 +75,8 @@ services:
       mysql-user:
         condition: service_completed_successfully
       mailpit:
+        condition: service_healthy
+      statsd:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8090/api/v1/health"]
@@ -98,7 +102,11 @@ services:
       VERIFLIER_REGION: ${VERIFLIER_REGION:-local}
       VERIFLIER_PROVIDER: ${VERIFLIER_PROVIDER:-docker}
       VERIFLIER_ENABLE_LEGACY_HTTP: ${VERIFLIER_ENABLE_LEGACY_HTTP:-false}
-      STATSD_ADDR: statsd:8125
+      STATSD_ADDR: ${STATSD_ADDR-statsd:8125}
+      STATSD_HOSTNAME: ${STATSD_HOSTNAME:-}
+    depends_on:
+      statsd:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7803/v2/status"]
       interval: 10s

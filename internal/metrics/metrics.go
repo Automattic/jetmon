@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,7 +18,58 @@ type Client struct {
 	mu     sync.Mutex
 }
 
+// StatsFilesSnapshot is the legacy text-file status surface written under
+// stats/. Keep the field names aligned with v1's file labels.
+type StatsFilesSnapshot struct {
+	SitesPerSec int
+	QueueSize   int
+	Working     int
+	Waiting     int
+	Halting     int
+	Error       int
+	Offline     int
+	Success     int
+	Total       int
+}
+
+type LegacyStatsFiles struct {
+	SitesPerSec string
+	SitesQueue  string
+	Totals      string
+}
+
 var global *Client
+
+var statsFilesState = struct {
+	sync.RWMutex
+	snapshot  StatsFilesSnapshot
+	updatedAt time.Time
+	available bool
+}{}
+
+const (
+	EnvStatsDAddr     = "STATSD_ADDR"
+	EnvStatsDHostname = "STATSD_HOSTNAME"
+)
+
+// AddrFromEnv returns the configured StatsD address. An explicitly empty
+// STATSD_ADDR disables StatsD; an unset STATSD_ADDR uses defaultAddr.
+func AddrFromEnv(defaultAddr string) string {
+	if addr, ok := os.LookupEnv(EnvStatsDAddr); ok {
+		return strings.TrimSpace(addr)
+	}
+	return strings.TrimSpace(defaultAddr)
+}
+
+// InitFromEnv initializes the global StatsD client from STATSD_ADDR or a
+// caller-provided default. It returns enabled=false when StatsD is disabled.
+func InitFromEnv(hostname, defaultAddr string) (addr string, enabled bool, err error) {
+	addr = AddrFromEnv(defaultAddr)
+	if addr == "" {
+		return "", false, nil
+	}
+	return addr, true, Init(addr, hostname)
+}
 
 // Init creates the global StatsD client.
 // host:port is the StatsD server address (e.g. "statsd:8125").
@@ -30,10 +80,22 @@ func Init(addr, hostname string) error {
 		return fmt.Errorf("statsd dial %s: %w", addr, err)
 	}
 	global = &Client{
-		prefix: "com.jetpack.jetmon." + sanitize(hostname),
+		prefix: "com.jetpack.jetmon." + HostnameFromEnv(hostname),
 		conn:   conn,
 	}
 	return nil
+}
+
+// HostnameFromEnv returns the metric hostname used in the StatsD prefix.
+// STATSD_HOSTNAME preserves dots so production can keep the v1 Graphite
+// hierarchy, e.g. com.jetpack.jetmon.<dc>.<node>.<metric>.
+func HostnameFromEnv(defaultHostname string) string {
+	if hostname, ok := os.LookupEnv(EnvStatsDHostname); ok {
+		if hostname = sanitizeMetricPath(hostname); hostname != "" {
+			return hostname
+		}
+	}
+	return sanitize(defaultHostname)
 }
 
 // Client returns the global metrics client. Panics if Init was not called.
@@ -79,16 +141,90 @@ func (c *Client) EmitMemStats() {
 
 // WriteStatsFiles writes sitespersec, sitesqueue, and totals to the stats/
 // directory so existing monitoring and the README examples continue to work.
-func WriteStatsFiles(sitesPerSec, queueSize, totalChecked int) {
-	writeFile("stats/sitespersec", strconv.Itoa(sitesPerSec))
-	writeFile("stats/sitesqueue", strconv.Itoa(queueSize))
-	writeFile("stats/totals", strconv.Itoa(totalChecked))
+func WriteStatsFiles(snapshot StatsFilesSnapshot) {
+	StoreStatsFilesSnapshot(snapshot)
+	files := RenderLegacyStatsFiles(snapshot)
+	writeFile("stats/sitespersec", files.SitesPerSec)
+	writeFile("stats/sitesqueue", files.SitesQueue)
+	writeFile("stats/totals", files.Totals)
+}
+
+// StoreStatsFilesSnapshot updates the in-memory copy used by API consumers.
+func StoreStatsFilesSnapshot(snapshot StatsFilesSnapshot) {
+	statsFilesState.Lock()
+	defer statsFilesState.Unlock()
+	statsFilesState.snapshot = snapshot
+	statsFilesState.updatedAt = time.Now().UTC()
+	statsFilesState.available = true
+}
+
+// LastStatsFilesSnapshot returns the most recent stats/ snapshot.
+func LastStatsFilesSnapshot() (StatsFilesSnapshot, time.Time, bool) {
+	statsFilesState.RLock()
+	defer statsFilesState.RUnlock()
+	return statsFilesState.snapshot, statsFilesState.updatedAt, statsFilesState.available
+}
+
+// RenderLegacyStatsFiles returns the exact text written to v1-compatible stats/
+// files. API handlers use this instead of reading the files back from disk.
+func RenderLegacyStatsFiles(snapshot StatsFilesSnapshot) LegacyStatsFiles {
+	return LegacyStatsFiles{
+		SitesPerSec: fmt.Sprintf("sites per second: %d\n", snapshot.SitesPerSec),
+		SitesQueue:  fmt.Sprintf("sites in queue: %d\n", snapshot.QueueSize),
+		Totals: fmt.Sprintf(
+			"working : %d\n"+
+				"waiting : %d\n"+
+				"halting : %d\n"+
+				"error   : %d\n"+
+				"offline : %d\n"+
+				"success : %d\n"+
+				"total   : %d\n",
+			snapshot.Working,
+			snapshot.Waiting,
+			snapshot.Halting,
+			snapshot.Error,
+			snapshot.Offline,
+			snapshot.Success,
+			snapshot.Total,
+		),
+	}
 }
 
 func writeFile(path, content string) {
-	_ = os.WriteFile(path, []byte(content+"\n"), 0644)
+	_ = os.WriteFile(path, []byte(content), 0644)
 }
 
 func sanitize(s string) string {
 	return strings.NewReplacer(".", "_", "-", "_").Replace(s)
+}
+
+func sanitizeMetricPath(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.Trim(s, ".")
+	if s == "" {
+		return ""
+	}
+
+	var b strings.Builder
+	lastDot := false
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z',
+			r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9',
+			r == '_',
+			r == '-':
+			b.WriteRune(r)
+			lastDot = false
+		case r == '.':
+			if b.Len() > 0 && !lastDot {
+				b.WriteByte('.')
+				lastDot = true
+			}
+		default:
+			b.WriteByte('_')
+			lastDot = false
+		}
+	}
+	return strings.Trim(b.String(), ".")
 }

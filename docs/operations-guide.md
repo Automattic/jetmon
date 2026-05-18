@@ -109,6 +109,12 @@ Scheduler behavior:
 See [../config/config.readme](../config/config.readme) for the full option
 reference.
 
+Production database server-map refresh is handled by a config-sync sidecar for
+the first TeamCity/docker-deploy rollout, with host-side systemd sync kept as a
+fallback. Use [production-teamcity-rollout.md](production-teamcity-rollout.md)
+for the deployment plan, secret boundary, and the current
+restart-on-material-DB-change policy.
+
 Checker policy note: HTTP `>= 400` responses are classified immediately by status
 code and do not depend on body drain completion. Strict EOF/truncation validation
 applies only to eligible successful finite responses and is skipped for `101`,
@@ -146,13 +152,20 @@ operators can query one table for cleanup and recurring unsafe-target findings.
 4. Create `/opt/jetmon2/logs` and `/opt/jetmon2/stats`, owned by the `jetmon`
    service user.
 5. Create `/opt/jetmon2/config/jetmon2.env` with database credentials and auth
-   tokens. See `config/db-config-sample.conf`.
-6. Copy or generate `config/config.json`.
-7. Set `BUCKET_TARGET` to the desired maximum bucket count for the host.
-8. Run `./jetmon2 migrate`.
-9. Run `systemd-analyze verify /etc/systemd/system/jetmon2.service` after the
+   tokens. See `config/db-config-sample.conf`. For container rollout, keep the
+   real env/config files host-local and out of the image.
+6. For TeamCity/docker-deploy rollout, provide `config-sync.env` from
+   `config/jetmon-config-sync-sample.env` to the config-sync sidecar and share
+   only the generated config-source path with the Monitor. If docker-deploy
+   cannot support that sidecar shape, install
+   `systemd/jetmon-config-sync.service` and
+   `systemd/jetmon-config-sync.timer` as the host-side fallback.
+7. Copy or generate `config/config.json`.
+8. Set `BUCKET_TARGET` to the desired maximum bucket count for the host.
+9. Run `./jetmon2 migrate`.
+10. Run `systemd-analyze verify /etc/systemd/system/jetmon2.service` after the
    binary exists at the path used by `ExecStart`.
-10. Start the service with
+11. Start the service with
     `systemctl enable --now jetmon2 && systemctl is-active --quiet jetmon2`.
 
 Manual commands such as `migrate`, `validate-config`, and `rollout` need the
@@ -306,6 +319,21 @@ Status and reload commands:
 ./jetmon2 reload
 ./jetmon2 drain
 ```
+
+Monitor stats compatibility checks:
+
+```bash
+./jetmon2 api request --pretty GET /api/v1/monitor/stats
+./jetmon2 api request GET '/api/v1/monitor/stats?file=totals'
+```
+
+`/api/v1/monitor/stats` is the preferred production-compatible replacement for
+external readers of `stats/sitespersec`, `stats/sitesqueue`, and `stats/totals`.
+It renders from the Monitor's in-memory snapshot rather than reading the files
+back from disk, so TeamCity/docker-deploy consumers do not need a host bind
+mount just to inspect the legacy stats surface. Keep direct file reads only for
+local debugging, host-side fallback installs, or an explicitly approved Systems
+mount.
 
 The operator dashboard is available on `DASHBOARD_BIND_ADDR:DASHBOARD_PORT`
 when enabled. It defaults to `127.0.0.1`, because the host and fleet dashboards
@@ -558,6 +586,15 @@ StatsD metrics retain the v1 prefix:
 com.jetpack.jetmon.<hostname>
 ```
 
+In production containers, set `STATSD_HOSTNAME` to the v1-compatible Graphite
+identity, normally `<datacenter>.<node>`, so the prefix stays stable even when
+the Docker runtime hostname is a container ID. For example,
+`jetmon-prod-1.dfw1.example.com` should use
+`STATSD_HOSTNAME=dfw1.jetmon-prod-1`. Keep the value stable and low-cardinality:
+do not include container IDs, release SHAs, process IDs, ports, or random
+suffixes. Leave it unset or empty for local development to use the process
+hostname fallback.
+
 Important metric groups include:
 
 - Worker pool capacity and active goroutines
@@ -590,8 +627,15 @@ Important metric groups include:
 - Legacy projection drift
 - RSS and Go Sys memory usage
 
-StatsD is the primary metrics transport. Expose Graphite/StatsD data through the
-existing metrics pipeline when external systems need it.
+StatsD is the primary metrics transport. Monitor and deliverer read
+`STATSD_ADDR` and default to `statsd:8125`; Veriflier sends StatsD metrics only
+when `STATSD_ADDR` is set. Production Monitor containers should point
+`STATSD_ADDR` at the existing host-local StatsD proxy rather than starting a
+StatsD/Graphite container, and set `STATSD_HOSTNAME` to preserve the existing
+Graphite path hierarchy. Production Veriflier VPS Compose stacks include
+StatsD/Graphite locally so central Grafana can query the Veriflier host's
+Graphite endpoint. Expose Graphite/StatsD data through the approved metrics
+pipeline when external systems need it.
 
 For repeatable capacity and scalability tests, use
 [`jetmon-v2-scalability-test-plan.md`](jetmon-v2-scalability-test-plan.md).

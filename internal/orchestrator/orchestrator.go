@@ -161,6 +161,7 @@ type roundSummary struct {
 
 	checkSuccesses     int
 	checkFailures      int
+	checkOffline       int
 	checkHTTPFailures  int
 	checkTimeouts      int
 	checkConnectErrors int
@@ -201,6 +202,7 @@ func (s *roundSummary) add(other roundSummary) {
 	s.sslErrors += other.sslErrors
 	s.checkSuccesses += other.checkSuccesses
 	s.checkFailures += other.checkFailures
+	s.checkOffline += other.checkOffline
 	s.checkHTTPFailures += other.checkHTTPFailures
 	s.checkTimeouts += other.checkTimeouts
 	s.checkConnectErrors += other.checkConnectErrors
@@ -228,6 +230,7 @@ type resultProcessSummary struct {
 
 	checkSuccesses     int
 	checkFailures      int
+	checkOffline       int
 	checkHTTPFailures  int
 	checkTimeouts      int
 	checkConnectErrors int
@@ -617,6 +620,7 @@ process:
 	summary.sslErrors += processSummary.sslErrors
 	summary.checkSuccesses += processSummary.checkSuccesses
 	summary.checkFailures += processSummary.checkFailures
+	summary.checkOffline += processSummary.checkOffline
 	summary.checkHTTPFailures += processSummary.checkHTTPFailures
 	summary.checkTimeouts += processSummary.checkTimeouts
 	summary.checkConnectErrors += processSummary.checkConnectErrors
@@ -852,6 +856,13 @@ func boolInt(value bool) int {
 	return 0
 }
 
+func nonNegative(value int) int {
+	if value < 0 {
+		return 0
+	}
+	return value
+}
+
 func schedulerSleepDuration(cfg *config.Config, summary roundSummary, elapsed time.Duration) time.Duration {
 	if summary.interrupted {
 		return 0
@@ -881,18 +892,21 @@ func (o *Orchestrator) finishRound(cfg *config.Config, summary roundSummary) {
 	o.lastRoundDur = roundDuration
 	o.statsMu.Unlock()
 
+	activeChecks := 0
+	queueDepth := 0
+	workerCount := 0
+	if o.pool != nil {
+		activeChecks = o.pool.ActiveCount()
+		queueDepth = o.pool.QueueDepth()
+		workerCount = o.pool.WorkerCount()
+	}
+	retryQueueSize := 0
+	if o.retries != nil {
+		retryQueueSize = o.retries.size()
+	}
+
 	m := metricsClientFunc()
 	if m != nil {
-		activeChecks := 0
-		queueDepth := 0
-		if o.pool != nil {
-			activeChecks = o.pool.ActiveCount()
-			queueDepth = o.pool.QueueDepth()
-		}
-		retryQueueSize := 0
-		if o.retries != nil {
-			retryQueueSize = o.retries.size()
-		}
 		m.Timing("round.complete.time", roundDuration)
 		m.Gauge("worker.queue.active", activeChecks)
 		m.Gauge("worker.queue.queue_size", queueDepth)
@@ -943,9 +957,18 @@ func (o *Orchestrator) finishRound(cfg *config.Config, summary roundSummary) {
 		if cfg.StatsdSendMemUsage {
 			m.EmitMemStats()
 		}
-
-		metrics.WriteStatsFiles(sps, queueDepth, o.totalChecked)
 	}
+	metrics.WriteStatsFiles(metrics.StatsFilesSnapshot{
+		SitesPerSec: sps,
+		QueueSize:   queueDepth,
+		Working:     activeChecks,
+		Waiting:     nonNegative(workerCount - activeChecks),
+		Halting:     0,
+		Error:       nonNegative(summary.checkFailures - summary.checkOffline),
+		Offline:     summary.checkOffline,
+		Success:     summary.checkSuccesses,
+		Total:       summary.completed,
+	})
 	logRoundSummary(summary, roundDuration, sps)
 }
 
@@ -1007,7 +1030,7 @@ func (o *Orchestrator) processResults(results map[int64]checker.Result, sites ma
 		return summary
 	}
 	for _, record := range records {
-		addCheckOutcome(&summary, record.res)
+		addCheckOutcome(&summary, record.res, record.site.SiteStatus)
 	}
 
 	o.markResultsChecked(records, &summary)
@@ -1053,12 +1076,15 @@ func (o *Orchestrator) processResults(results map[int64]checker.Result, sites ma
 	return summary
 }
 
-func addCheckOutcome(summary *resultProcessSummary, res checker.Result) {
+func addCheckOutcome(summary *resultProcessSummary, res checker.Result, siteStatus int) {
 	summary.checkCohorts = incrementCheckCohort(summary.checkCohorts, res)
 	if res.Success {
 		summary.checkSuccesses++
 	} else {
 		summary.checkFailures++
+		if siteStatus == statusConfirmedDown {
+			summary.checkOffline++
+		}
 	}
 
 	if !res.Success && res.HTTPCode >= 400 {

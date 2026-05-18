@@ -34,6 +34,38 @@ docker compose down
 docker compose down --remove-orphans
 ```
 
+## Local Database Selection
+
+Local testing does not use the production SVN `db-servers.php` sync path. The
+Monitor reads its database connection from `DB_HOST`, `DB_PORT`, `DB_USER`,
+`DB_PASSWORD`, and `DB_NAME` at process startup.
+
+In the default Docker Compose stack, those values point at the local
+`mysqldb` service:
+
+```yaml
+DB_HOST: mysqldb
+DB_PORT: "3306"
+```
+
+Use `docker/.env` to change the local database image, database name, user, and
+password. If you need the Monitor container to connect to a specific external
+database instead of the Compose `mysqldb` service, add a local Compose override
+that changes the `jetmon.environment` `DB_*` values, or run the pre-built image
+directly with explicit `DB_*` environment variables as shown in
+[docker-images.md](docker-images.md). The SVN config-sync sidecar is only for
+production rollout planning and is not required for local smoke tests.
+
+## Local StatsD
+
+The default Docker Compose stack runs a local `statsd` service backed by the
+`graphiteapp/graphite-statsd` image. Monitor and Veriflier containers send UDP
+metrics to `STATSD_ADDR=statsd:8125` by default in Compose. Set `STATSD_ADDR`
+in `docker/.env` if you want both services to send to a different StatsD
+endpoint, or set it to an empty value to disable StatsD for a smoke test. Leave
+`STATSD_HOSTNAME` unset locally unless you need metrics to land under a specific
+Graphite path while testing dashboard changes.
+
 Mailpit captures local alert-contact email. Open it at
 `http://localhost:8025` by default, or at the `BIND_ADDR` /
 `MAILPIT_HOST_PORT` values from `docker/.env`.
@@ -109,9 +141,17 @@ export JETMON_API_TOKEN=jm_replace_with_the_printed_token
 
 ./bin/jetmon2 api health --pretty
 ./bin/jetmon2 api me --pretty
+./bin/jetmon2 api request --pretty GET /api/v1/monitor/stats
+./bin/jetmon2 api request GET '/api/v1/monitor/stats?file=totals'
 ./bin/jetmon2 api commands --output table
 ./bin/jetmon2 api sites list --output table
 ```
+
+`/api/v1/monitor/stats` is the API migration path for consumers that used to
+read `stats/sitespersec`, `stats/sitesqueue`, or `stats/totals` directly from a
+host filesystem. The JSON response contains parsed counters plus the exact
+legacy file bodies, and the `?file=` form returns one legacy body as
+`text/plain`. It requires a normal read-scope API key.
 
 Run the standard smoke sequence:
 

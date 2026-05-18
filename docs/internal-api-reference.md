@@ -1224,6 +1224,50 @@ This is the only API surface for keys. **Creation, listing, and revocation are C
 
 Unauthenticated. Returns `{ "status": "ok" }` if the API can talk to the database. For load balancers and external uptime monitors (yes, including external monitors monitoring the monitor).
 
+#### `GET /api/v1/monitor/stats`
+
+Requires `read` scope. Returns the latest in-memory Monitor stats snapshot used
+to write the legacy `stats/sitespersec`, `stats/sitesqueue`, and `stats/totals`
+files. The handler does not read those files from disk; it renders from the same
+snapshot so Docker deployments do not need host bind mounts for read-only stats
+consumers.
+
+```json
+{
+  "available": true,
+  "updated_at": "2026-05-18T18:12:03Z",
+  "sites_per_sec": 12,
+  "queue_size": 34,
+  "working": 5,
+  "waiting": 55,
+  "halting": 0,
+  "error": 3,
+  "offline": 2,
+  "success": 95,
+  "total": 100,
+  "legacy": {
+    "sitespersec": "sites per second: 12\n",
+    "sitesqueue": "sites in queue: 34\n",
+    "totals": "working : 5\nwaiting : 55\nhalting : 0\nerror   : 3\noffline : 2\nsuccess : 95\ntotal   : 100\n"
+  }
+}
+```
+
+To migrate a consumer that currently reads one legacy stats file, pass `file` to
+receive the exact file body as `text/plain`:
+
+```bash
+curl -H "Authorization: Bearer $JETMON_API_TOKEN" \
+  "$JETMON_API_URL/api/v1/monitor/stats?file=totals"
+```
+
+`file` must be one of `sitespersec`, `sitesqueue`, or `totals`.
+
+The endpoint returns `503 stats_unavailable` if the Monitor API starts before
+the first scheduler stats snapshot has been published. Treat that as a warm-up
+state; use `/api/v1/health` for process/liveness checks that must be green
+before the first monitoring round completes.
+
 #### `GET /api/v1/openapi.json`
 
 Returns the route-driven OpenAPI 3.1 contract for the internal API. Requires `read` scope like other internal introspection routes. The spec is generated from the same route table used to build the running server mux, so new routes must be added to that table before they can be served or documented.
@@ -1235,7 +1279,10 @@ The current contract publishes paths, methods, auth scope, idempotency headers, 
 ## What we deliberately did not include
 
 - **No Statuspage-style public status pages.** That's a separate product; Jetmon focuses on monitoring. If you want a public status page, the API gives you what you need to build one.
-- **No "monitor groups" / "tags" in v1.** Most consumers organize by `owner_blog_id`; tagging is a complexity multiplier we'd rather defer until requested.
+- **No customer-facing "monitor groups" / "tags" in the current API.** Most
+  existing consumers organize by `owner_blog_id`. Tag-scoped API authorization
+  for roles such as VIP or Agency is now tracked as a pre-rollout design review
+  item before any broader direct API exposure.
 - **No GraphQL.** REST + cursor pagination + filters covers everything the v1 use cases need. If a future consumer needs nested-fetch optimization (sites + active events + recent transitions in one round-trip), we'd add a single `/api/v1/sites/{id}/full` endpoint before reaching for GraphQL.
 - **No per-region SLA breakdown.** All sites are checked from the orchestrator's bucket assignment, not a multi-region fleet (yet — see `taxonomy.md` v2/v3 vantage-point work). When that ships, the SLA endpoint gains a `?vantage_point=us-west-1` filter.
 - **No streaming.** Webhooks cover event-driven needs; long-poll/SSE/WebSocket support is overkill for the current consumer set. Could be added on `/api/v1/sites/{id}/events/stream` if a consumer asks.

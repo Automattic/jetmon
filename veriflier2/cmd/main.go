@@ -85,12 +85,10 @@ func main() {
 	// Optional StatsD metrics. STATSD_ADDR is unset in standalone deploys,
 	// "statsd:8125" in the docker compose stack. metrics.Init failure logs and
 	// continues — the verifier should still run with metrics disabled.
-	if statsdAddr := os.Getenv("STATSD_ADDR"); statsdAddr != "" {
-		if err := metrics.Init(statsdAddr, hostname); err != nil {
-			log.Printf("metrics: init failed (%v) — running without metrics", err)
-		} else {
-			log.Printf("metrics: sending to %s", statsdAddr)
-		}
+	if statsdAddr, enabled, err := metrics.InitFromEnv(hostname, ""); err != nil {
+		log.Printf("metrics: init failed (%v) — running without metrics", err)
+	} else if enabled {
+		log.Printf("metrics: sending to %s", statsdAddr)
 	}
 
 	srv := veriflier.NewServerWithOptions(addr, cfg.AuthToken, hostname, version, veriflier.ServerOptions{

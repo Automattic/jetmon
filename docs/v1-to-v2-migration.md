@@ -983,6 +983,21 @@ cat stats/sitesqueue
 cat stats/totals
 ```
 
+For TeamCity/docker-deploy Monitor deployments, prefer the API equivalent over
+host filesystem reads unless Systems explicitly approves a bind mount for
+`stats/`:
+
+```bash
+./jetmon2 api request --pretty GET /api/v1/monitor/stats
+./jetmon2 api request GET '/api/v1/monitor/stats?file=sitespersec'
+./jetmon2 api request GET '/api/v1/monitor/stats?file=sitesqueue'
+./jetmon2 api request GET '/api/v1/monitor/stats?file=totals'
+```
+
+The `?file=` form returns exact v1-style file text as `text/plain`, allowing
+existing parsers to migrate from `cat stats/totals` to HTTP without changing
+their line parser.
+
 ## Phase 3: Revert Safely
 
 ### Revert On The Existing Server

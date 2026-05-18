@@ -1,12 +1,16 @@
 # Running Jetmon And Veriflier From GHCR
 
-The CI workflow `.github/workflows/docker-publish.yml` publishes two images to
-GitHub Container Registry:
+The CI workflow `.github/workflows/docker-publish.yml` publishes the two runtime
+application images to GitHub Container Registry:
 
 | Image | Source Dockerfile |
 |---|---|
 | `ghcr.io/automattic/jetmon` | `docker/Dockerfile_jetmon` |
 | `ghcr.io/automattic/veriflier` | `docker/Dockerfile_veriflier` |
+
+Production TeamCity rollout can additionally build the config-sync sidecar from
+`docker/Dockerfile_config_sync`; that image is not part of the public GHCR
+development workflow.
 
 This guide is for running those pre-built images. The build-from-source flow
 for local development stays in
@@ -61,6 +65,8 @@ Required env vars:
 | `VERIFLIER_AUTH_TOKEN` | Must match the value Jetmon uses to call this verifier. |
 | `VERIFLIER_PORT` | Defaults to `7803`. |
 | `VERIFLIER_ENABLE_LEGACY_HTTP` | Optional. Defaults to `false`; set to `true` only for lab/emergency compatibility with `veriflier2`'s legacy HTTP `/check` and `/status` endpoints. |
+| `STATSD_ADDR` | Optional UDP StatsD endpoint. Leave unset to run without Veriflier metrics, or set to `statsd:8125` / `127.0.0.1:8125` / another approved endpoint. |
+| `STATSD_HOSTNAME` | Optional StatsD prefix identity. Use a stable low-cardinality value such as `<region>.<vantage>` when the Graphite path should differ from the container runtime hostname; do not include container IDs, release SHAs, ports, or random suffixes. |
 
 ## Run Jetmon
 
@@ -84,10 +90,16 @@ docker run --rm \
   -e VERIFLIER_PORT=7803 \
   -e WPCOM_AUTH_TOKEN=change_me \
   -e EMAIL_TRANSPORT=stub \
+  -e STATSD_ADDR= \
   -v "$(pwd)/jetmon-logs:/jetmon/logs" \
   -v "$(pwd)/jetmon-stats:/jetmon/stats" \
   ghcr.io/automattic/jetmon:latest
 ```
+
+The single-container Jetmon example disables StatsD because no `statsd`
+service is present in that `docker run` network. In Compose or production,
+point `STATSD_ADDR` at the Compose StatsD service, the production host-local
+StatsD proxy, or another approved UDP endpoint.
 
 The entrypoint runs `./jetmon2 migrate` before starting the monitor — migrations
 are embedded and additive. The first run renders `config/config.json` from
@@ -109,14 +121,32 @@ Required env vars:
 | `VERIFLIER_AUTH_TOKEN`, `VERIFLIER_PORT` | Shared with each Veriflier. |
 | `WPCOM_AUTH_TOKEN` | Set to `change_me` for non-WPCOM environments. |
 | `EMAIL_TRANSPORT` | `stub` for dev; `smtp` plus `SMTP_*` vars for real delivery. |
+| `STATSD_ADDR` | Optional override for the UDP StatsD endpoint. Monitor and deliverer default to `statsd:8125`; set it to the host-local proxy endpoint for TeamCity Monitor production, or explicitly empty to disable StatsD. |
+| `STATSD_HOSTNAME` | Optional StatsD prefix identity. For Monitor production, use the v1-compatible `<datacenter>.<node>` format, for example `dfw1.jetmon-prod-1`; do not include container IDs, release SHAs, ports, or random suffixes. |
 
 Optional volume mounts:
 
 | Path | Reason |
 |---|---|
 | `/jetmon/config` | Mount when you want to manage `config.json` outside the container instead of relying on env-driven rendering. |
+| `/jetmon/config-source` | Production-only mount for generated private files such as `db-servers.php`; mount read-only in the Monitor. In the recommended TeamCity rollout, the config-sync sidecar writes this path. |
 | `/jetmon/logs` | Persist `jetmon.log` and `status-change.log`. |
-| `/jetmon/stats` | Persist counters and the `jetmon2.pid` file used by `reload` / `drain`. |
+| `/jetmon/stats` | Persist counters and the `jetmon2.pid` file used by `reload` / `drain`. Production TeamCity consumers should prefer `GET /api/v1/monitor/stats` or StatsD over host filesystem reads unless Systems explicitly approves a bind mount. |
+
+For production TeamCity rollout and database server-map sync, see
+[production-teamcity-rollout.md](production-teamcity-rollout.md).
+
+## Production Config-Sync Sidecar
+
+The config-sync sidecar image is for production docker-deploy only. It contains
+`svn`, [../scripts/jetmon-config-update.sh](../scripts/jetmon-config-update.sh),
+and [../scripts/jetmon-config-sync-loop.sh](../scripts/jetmon-config-sync-loop.sh).
+It expects a secret `config-sync.env` file or equivalent environment injection
+at runtime, syncs `db-servers.php` from SVN, and writes only the generated file
+into the shared config-source path.
+
+Do not bake `config-sync.env`, SVN credentials, or generated production
+`db-servers.php` content into this image.
 
 ## Run Both Together
 
@@ -131,12 +161,19 @@ services:
     environment:
       VERIFLIER_AUTH_TOKEN: replace_me
       VERIFLIER_PORT: "7803"
+      STATSD_ADDR: statsd:8125
     ports:
       - "7803:7803"
 
+  statsd:
+    image: graphiteapp/graphite-statsd
+    ports:
+      - "127.0.0.1:8088:80"
+      - "127.0.0.1:8125:8125/udp"
+
   jetmon:
     image: ghcr.io/automattic/jetmon:latest
-    depends_on: [veriflier]
+    depends_on: [veriflier, statsd]
     environment:
       DB_HOST: mysql.internal
       DB_PORT: "3306"
@@ -147,6 +184,7 @@ services:
       VERIFLIER_PORT: "7803"
       WPCOM_AUTH_TOKEN: change_me
       EMAIL_TRANSPORT: stub
+      STATSD_ADDR: statsd:8125
     ports:
       - "8080:8080"
       - "8090:8090"
@@ -156,9 +194,13 @@ services:
 ```
 
 The database is intentionally not in this snippet; pre-built images are for
-talking to an existing database. For the full local stack including the
-database, Mailpit, and StatsD, keep using the build-from-source compose file
-under `docker/`.
+talking to an existing database. The StatsD service is shown for ad-hoc Compose
+runs and Veriflier VPS deployments. TeamCity Monitor production should instead
+point `STATSD_ADDR` at the existing host-local StatsD proxy and should not add a
+StatsD/Graphite container to the Monitor stack. For the full local stack
+including the database, Mailpit, and StatsD, keep using the build-from-source
+compose file under `docker/`. For the VPS Veriflier production shape, see
+[production-veriflier-compose.md](production-veriflier-compose.md).
 
 ## Validate Config Inside The Container
 
