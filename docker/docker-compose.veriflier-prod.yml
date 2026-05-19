@@ -56,7 +56,8 @@ services:
       GRAPHITE_SMOKE_URL: http://statsd
     volumes:
       - ./veriflier-metrics-smoke.py:/usr/local/bin/veriflier-metrics-smoke.py:ro
-    command: ["python3", "/usr/local/bin/veriflier-metrics-smoke.py"]
+    entrypoint: ["python3"]
+    command: ["/usr/local/bin/veriflier-metrics-smoke.py"]
     restart: "no"
 
 volumes:

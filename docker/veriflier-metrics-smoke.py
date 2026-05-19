@@ -20,6 +20,7 @@ sock.sendto(f"{metric}:1|c\n".encode("utf-8"), (udp_host, udp_port))
 sock.close()
 
 targets = [
+    f"stats.{metric}",
     f"stats_counts.{metric}",
     metric,
 ]
