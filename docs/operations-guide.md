@@ -621,14 +621,16 @@ StatsD metrics retain the v1 prefix:
 com.jetpack.jetmon.<hostname>
 ```
 
-In production containers, set `HOSTNAME` in config or `JETMON_HOSTNAME` in env
-to the v1-compatible identity, normally `<datacenter>.<node>`, so process
-health and metric prefixes stay stable even when the Docker runtime hostname is
-a container ID. For example, `jetmon-prod-1.dfw1.example.com` should use
-`JETMON_HOSTNAME=dfw1.jetmon-prod-1`. Keep the value stable and low-cardinality:
-do not include container IDs, release SHAs, process IDs, ports, or random
-suffixes. Leave it unset or empty for local development to use the process
-hostname fallback.
+In production containers, set `HOSTNAME` in config to the v1-compatible
+identity, normally `<datacenter>.<node>`, so process health and metric prefixes
+stay stable even when the Docker runtime hostname is a container ID. The Docker
+entrypoint accepts `JETMON_HOSTNAME` as the env input when rendering config.
+For example, `jetmon-prod-1.dfw1.example.com` should use
+`JETMON_HOSTNAME=dfw1.jetmon-prod-1` during config rendering. If both are
+present at runtime, `HOSTNAME` from config wins. Keep the value stable and
+low-cardinality: do not include container IDs, release SHAs, process IDs,
+ports, or random suffixes. Leave it unset or empty for local development to use
+the process hostname fallback.
 
 Important metric groups include:
 
@@ -676,11 +678,12 @@ central Grafana can query the Veriflier host's Graphite endpoint. Expose
 Graphite/StatsD data through the approved metrics pipeline when external
 systems need it.
 
-StatsD uses UDP, so Jetmon can confirm only that the client was configured and
-created. Treat dashboard `statsd` health as a local configuration signal, not
-proof that Graphite ingested the metric. Production rollout validation should
-also check the expected Graphite series under
-`com.jetpack.jetmon.<JETMON_HOSTNAME>`.
+StatsD uses UDP, so Monitor dashboard `statsd` health can confirm only that the
+client was configured and created. Treat it as a local configuration signal,
+not proof that the production StatsD/Graphite pipeline ingested the metric. The
+Veriflier Compose stack owns its StatsD/Graphite containers and includes an
+optional metrics smoke test that sends one test metric and queries Graphite for
+it.
 
 For repeatable capacity and scalability tests, use
 [`jetmon-v2-scalability-test-plan.md`](jetmon-v2-scalability-test-plan.md).

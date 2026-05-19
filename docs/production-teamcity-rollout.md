@@ -268,10 +268,11 @@ Deliverer, and Veriflier all support `STATSD_ADDR`:
   can reach the host-local StatsD proxy.
 - Setting `STATSD_ADDR` explicitly empty disables StatsD for safe smoke tests.
 
-Production roles should also set `HOSTNAME` in config or `JETMON_HOSTNAME` in
-container env to the v1-compatible identity. The recommended Monitor format is
-`<datacenter>.<node>`, matching v1's hostname transform. For example, a v1 host named
-`jetmon-prod-1.dfw1.example.com` should use:
+Production roles should also set `HOSTNAME` in config to the v1-compatible
+identity. The Docker entrypoint accepts `JETMON_HOSTNAME` as the env input when
+rendering that config value. The recommended Monitor format is
+`<datacenter>.<node>`, matching v1's hostname transform. For example, a v1 host
+named `jetmon-prod-1.dfw1.example.com` should render:
 
 ```text
 JETMON_HOSTNAME=dfw1.jetmon-prod-1
@@ -283,9 +284,9 @@ This controls process identity and the metric prefix:
 com.jetpack.jetmon.<JETMON_HOSTNAME>.<metric>
 ```
 
-Leaving `HOSTNAME` / `JETMON_HOSTNAME` unset falls back to the runtime
-hostname, which is acceptable for local Docker runs but may become a container
-ID or service name under docker-deploy.
+Leaving both unset falls back to the runtime hostname, which is acceptable for
+local Docker runs but may become a container ID or service name under
+docker-deploy. If both are present at runtime, `HOSTNAME` from config wins.
 
 Keep this value stable and low-cardinality. Do not include container IDs,
 release SHAs, process IDs, ports, or random suffixes. For Verifliers, use a
@@ -305,8 +306,9 @@ bridge-networked container; that address points inside the container, not at
 the host proxy.
 
 Because StatsD is UDP, Monitor health can confirm only local client setup.
-Rollout smoke tests should also confirm that Graphite shows a fresh series
-under the configured `com.jetpack.jetmon.<JETMON_HOSTNAME>` path.
+Since Jetmon does not control production Monitor StatsD or Graphite, Graphite
+ingestion should not be a Monitor rollout gate unless Systems provides an
+external check.
 
 Local development still uses `docker/docker-compose.yml` with
 `graphiteapp/graphite-statsd` so developers get a local StatsD receiver and

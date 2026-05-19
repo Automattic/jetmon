@@ -66,7 +66,7 @@ Required env vars:
 | `VERIFLIER_PORT` | Defaults to `7803`. |
 | `VERIFLIER_ENABLE_LEGACY_HTTP` | Optional. Defaults to `false`; set to `true` only for lab/emergency compatibility with `veriflier2`'s legacy HTTP `/check` and `/status` endpoints. |
 | `STATSD_ADDR` | Optional UDP StatsD endpoint. Leave unset to run without Veriflier metrics, or set to `statsd:8125` / another approved endpoint. |
-| `JETMON_HOSTNAME` | Optional stable process and metric identity. Use a low-cardinality value such as `<region>.<vantage>` when the Graphite path should differ from the container runtime hostname; do not include container IDs, release SHAs, ports, or random suffixes. |
+| `JETMON_HOSTNAME` | Optional env input used by the Docker entrypoint when rendering the Veriflier `hostname` config. Use a low-cardinality value such as `<region>.<vantage>` when the Graphite path should differ from the container runtime hostname; do not include container IDs, release SHAs, ports, or random suffixes. |
 
 ## Run Jetmon
 
@@ -132,7 +132,7 @@ Required env vars:
 | `WPCOM_NOTIFY_LEGACY_CERT_PATH`, `WPCOM_NOTIFY_LEGACY_KEY_PATH` | Required runtime secret paths when `WPCOM_NOTIFY_ENABLE=true` and `WPCOM_NOTIFY_MODE=legacy`. |
 | `EMAIL_TRANSPORT` | `stub` for dev; `smtp` plus `SMTP_*` vars for real delivery. |
 | `STATSD_ADDR` | Optional override for the UDP StatsD endpoint. Local Compose and Veriflier production Compose set this to `statsd:8125`. For TeamCity Monitor production, set `STATSD_ADDR=host.docker.internal:8125` and add Docker's `host.docker.internal:host-gateway` mapping, or set it explicitly empty to disable StatsD. |
-| `HOSTNAME` / `JETMON_HOSTNAME` | Stable process and metric identity. For Monitor production, use the v1-compatible `<datacenter>.<node>` format, for example `dfw1.jetmon-prod-1`; do not include container IDs, release SHAs, ports, or random suffixes. |
+| `HOSTNAME` / `JETMON_HOSTNAME` | Stable process and metric identity. `HOSTNAME` is the rendered config key; `JETMON_HOSTNAME` is the Docker env input used by the entrypoint when rendering config. For Monitor production, use the v1-compatible `<datacenter>.<node>` format, for example `dfw1.jetmon-prod-1`; do not include container IDs, release SHAs, ports, or random suffixes. |
 
 Optional volume mounts:
 
@@ -215,7 +215,8 @@ database, Mailpit, and StatsD, keep using the build-from-source compose file
 under `docker/`. For the VPS Veriflier production shape, see
 [production-veriflier-compose.md](production-veriflier-compose.md). The
 repo-provided Compose files mount a Graphite storage schema for Jetmon metrics
-with `10s:6h, 1m:7d, 10m:5y` retention.
+with `10s:6h, 1m:7d, 10m:5y` retention and include an optional
+`metrics-smoke` profile for Veriflier StatsD-to-Graphite ingestion checks.
 
 Runtime logs are written only to stdout/stderr for Docker or the deployment
 platform to collect. The image does not create or maintain v1

@@ -61,10 +61,12 @@ func main() {
 	if v := os.Getenv("VERIFLIER_PROVIDER"); v != "" {
 		cfg.Provider = v
 	}
-	if v := os.Getenv("VERIFLIER_HOSTNAME"); v != "" {
-		cfg.Hostname = v
-	} else if v := os.Getenv("JETMON_HOSTNAME"); v != "" {
-		cfg.Hostname = v
+	if strings.TrimSpace(cfg.Hostname) == "" {
+		if v := os.Getenv("VERIFLIER_HOSTNAME"); v != "" {
+			cfg.Hostname = v
+		} else if v := os.Getenv("JETMON_HOSTNAME"); v != "" {
+			cfg.Hostname = v
+		}
 	}
 	if v := os.Getenv("VERIFLIER_ENABLE_LEGACY_HTTP"); v != "" {
 		enabled, err := parseBool(v)

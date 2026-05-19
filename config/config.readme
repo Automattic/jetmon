@@ -8,8 +8,8 @@ Set it in production to the v1-compatible logical host path, such as
 `dfw1.jetmon-prod-1`, instead of relying on a Docker container hostname.
 Leave empty to use the runtime OS hostname. `JETMON_HOSTNAME` is the container
 env form of the same setting: the Docker entrypoint writes it into HOSTNAME
-when rendering config, and the process also accepts it as an env override.
-Do not set HOSTNAME and JETMON_HOSTNAME to different values. Default: empty.
+when rendering config. At runtime, HOSTNAME from the loaded config wins;
+JETMON_HOSTNAME is used only when HOSTNAME is empty. Default: empty.
 
 NUM_WORKERS
 Initial/floor number of goroutines in the check pool. In the legacy scheduler,

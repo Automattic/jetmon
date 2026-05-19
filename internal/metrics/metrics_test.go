@@ -68,27 +68,21 @@ func TestAddrFromEnvEmptyDisables(t *testing.T) {
 	}
 }
 
-func TestHostnameFromEnvDefaultSanitizesRuntimeHostname(t *testing.T) {
-	t.Setenv(EnvJetmonHostname, "")
-
-	if got := HostnameFromEnv("my-host.example"); got != "my-host.example" {
-		t.Fatalf("HostnameFromEnv(default) = %q, want my-host.example", got)
+func TestMetricHostnameDefaultSanitizesRuntimeHostname(t *testing.T) {
+	if got := MetricHostname("my-host.example"); got != "my-host.example" {
+		t.Fatalf("MetricHostname(default) = %q, want my-host.example", got)
 	}
 }
 
-func TestHostnameFromEnvOverridePreservesGraphitePath(t *testing.T) {
-	t.Setenv(EnvJetmonHostname, " dfw1.jetmon-prod-1 ")
-
-	if got := HostnameFromEnv("container-id"); got != "dfw1.jetmon-prod-1" {
-		t.Fatalf("HostnameFromEnv(override) = %q, want dfw1.jetmon-prod-1", got)
+func TestMetricHostnamePreservesGraphitePath(t *testing.T) {
+	if got := MetricHostname(" dfw1.jetmon-prod-1 "); got != "dfw1.jetmon-prod-1" {
+		t.Fatalf("MetricHostname(path) = %q, want dfw1.jetmon-prod-1", got)
 	}
 }
 
-func TestHostnameFromEnvOverrideSanitizesUnsafeCharacters(t *testing.T) {
-	t.Setenv(EnvJetmonHostname, ".dfw1.jetmon prod:1|blue.")
-
-	if got := HostnameFromEnv("container-id"); got != "dfw1.jetmon_prod_1_blue" {
-		t.Fatalf("HostnameFromEnv(sanitize) = %q, want dfw1.jetmon_prod_1_blue", got)
+func TestMetricHostnameSanitizesUnsafeCharacters(t *testing.T) {
+	if got := MetricHostname(".dfw1.jetmon prod:1|blue."); got != "dfw1.jetmon_prod_1_blue" {
+		t.Fatalf("MetricHostname(sanitize) = %q, want dfw1.jetmon_prod_1_blue", got)
 	}
 }
 
@@ -302,8 +296,6 @@ func assertFileContent(t *testing.T, path, want string) {
 }
 
 func TestInitSetsGlobalClient(t *testing.T) {
-	t.Setenv(EnvJetmonHostname, "")
-
 	pc, err := net.ListenPacket("udp4", "127.0.0.1:0")
 	if err != nil {
 		t.Skipf("udp listener unavailable: %v", err)

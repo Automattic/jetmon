@@ -42,6 +42,22 @@ services:
       retries: 12
       start_period: 20s
 
+  metrics-smoke:
+    image: ${STATSD_GRAPHITE_IMAGE:-graphiteapp/graphite-statsd}
+    profiles: ["smoke"]
+    depends_on:
+      statsd:
+        condition: service_healthy
+    environment:
+      METRICS_SMOKE_METRIC: ${METRICS_SMOKE_METRIC:-com.jetpack.jetmon.compose.metrics_smoke}
+      STATSD_SMOKE_UDP_HOST: statsd
+      STATSD_SMOKE_UDP_PORT: "8125"
+      GRAPHITE_SMOKE_URL: http://statsd
+    volumes:
+      - ./veriflier-metrics-smoke.py:/usr/local/bin/veriflier-metrics-smoke.py:ro
+    command: ["python3", "/usr/local/bin/veriflier-metrics-smoke.py"]
+    restart: "no"
+
 volumes:
   veriflier-config:
   statsd-graphite-storage:

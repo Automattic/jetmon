@@ -68,10 +68,17 @@ curl -fsS http://127.0.0.1:8088/
 If `GRAPHITE_BIND_ADDR` is not loopback, also confirm the central Grafana host
 can reach `http://<GRAPHITE_BIND_ADDR>:<GRAPHITE_HOST_PORT>/`.
 
-StatsD is UDP, so Veriflier health confirms only that the service is running.
-After startup, confirm Graphite has a fresh
-`com.jetpack.jetmon.<JETMON_HOSTNAME>` series before treating metrics as fully
-validated.
+StatsD is UDP, so the normal container health checks cannot prove metric
+ingestion. Because this Compose stack owns both StatsD and Graphite, run the
+optional smoke profile after startup or after metrics config changes:
+
+```bash
+docker compose -f docker-compose.veriflier-prod.yml --profile smoke run --rm metrics-smoke
+```
+
+That one-shot service sends a single low-cardinality StatsD counter and queries
+Graphite for the resulting series. Passing this check validates the local
+Veriflier metrics path without exposing the StatsD UDP port on the host.
 
 ## Security Notes
 
