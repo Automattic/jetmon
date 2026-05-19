@@ -621,11 +621,11 @@ StatsD metrics retain the v1 prefix:
 com.jetpack.jetmon.<hostname>
 ```
 
-In production containers, set `STATSD_HOSTNAME` to the v1-compatible Graphite
-identity, normally `<datacenter>.<node>`, so the prefix stays stable even when
-the Docker runtime hostname is a container ID. For example,
-`jetmon-prod-1.dfw1.example.com` should use
-`STATSD_HOSTNAME=dfw1.jetmon-prod-1`. Keep the value stable and low-cardinality:
+In production containers, set `HOSTNAME` in config or `JETMON_HOSTNAME` in env
+to the v1-compatible identity, normally `<datacenter>.<node>`, so process
+health and metric prefixes stay stable even when the Docker runtime hostname is
+a container ID. For example, `jetmon-prod-1.dfw1.example.com` should use
+`JETMON_HOSTNAME=dfw1.jetmon-prod-1`. Keep the value stable and low-cardinality:
 do not include container IDs, release SHAs, process IDs, ports, or random
 suffixes. Leave it unset or empty for local development to use the process
 hostname fallback.
@@ -663,14 +663,23 @@ Important metric groups include:
 - RSS and Go Sys memory usage
 
 StatsD is the primary metrics transport. Monitor and deliverer read
-`STATSD_ADDR` and default to `statsd:8125`; Veriflier sends StatsD metrics only
-when `STATSD_ADDR` is set. Production Monitor containers should point
-`STATSD_ADDR` at the existing host-local StatsD proxy rather than starting a
-StatsD/Graphite container, and set `STATSD_HOSTNAME` to preserve the existing
-Graphite path hierarchy. Production Veriflier VPS Compose stacks include
-StatsD/Graphite locally so central Grafana can query the Veriflier host's
-Graphite endpoint. Expose Graphite/StatsD data through the approved metrics
-pipeline when external systems need it.
+`STATSD_ADDR` and default to `127.0.0.1:8125`; local Docker Compose overrides
+that to `statsd:8125`. Veriflier sends StatsD metrics only when `STATSD_ADDR`
+is set. Production Monitor containers should point `STATSD_ADDR` at the
+existing host-local StatsD proxy through Docker bridge networking:
+`--add-host=host.docker.internal:host-gateway` plus
+`STATSD_ADDR=host.docker.internal:8125`. They should not use host networking
+and should not start a StatsD/Graphite container in the Monitor stack.
+Production Veriflier VPS Compose stacks include StatsD/Graphite locally so
+central Grafana can query the Veriflier host's Graphite endpoint. Expose
+Graphite/StatsD data through the approved metrics pipeline when external
+systems need it.
+
+StatsD uses UDP, so Jetmon can confirm only that the client was configured and
+created. Treat dashboard `statsd` health as a local configuration signal, not
+proof that Graphite ingested the metric. Production rollout validation should
+also check the expected Graphite series under
+`com.jetpack.jetmon.<JETMON_HOSTNAME>`.
 
 For repeatable capacity and scalability tests, use
 [`jetmon-v2-scalability-test-plan.md`](jetmon-v2-scalability-test-plan.md).

@@ -62,7 +62,7 @@ func TestStringPtr(t *testing.T) {
 
 func TestLoadConfigFromFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "veriflier.json")
-	if err := os.WriteFile(path, []byte(`{"auth_token":"secret","port":"7804","vantage_id":"us-east","region":"iad","provider":"test","enable_legacy_http":true}`), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(`{"auth_token":"secret","port":"7804","hostname":"do-nyc3-1","vantage_id":"us-east","region":"iad","provider":"test","enable_legacy_http":true}`), 0644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -72,6 +72,9 @@ func TestLoadConfigFromFile(t *testing.T) {
 	}
 	if cfg.AuthToken != "secret" || cfg.TransportPort() != "7804" {
 		t.Fatalf("config = %+v", cfg)
+	}
+	if cfg.Hostname != "do-nyc3-1" {
+		t.Fatalf("Hostname = %q, want do-nyc3-1", cfg.Hostname)
 	}
 	if cfg.VantageID != "us-east" || cfg.Region != "iad" || cfg.Provider != "test" {
 		t.Fatalf("vantage config = %+v", cfg)
@@ -99,6 +102,7 @@ func TestLoadConfigSupportsLegacyGRPCPort(t *testing.T) {
 func TestLoadConfigFallsBackToEnvironment(t *testing.T) {
 	t.Setenv("VERIFLIER_AUTH_TOKEN", "env-secret")
 	t.Setenv("VERIFLIER_PORT", "7900")
+	t.Setenv("VERIFLIER_HOSTNAME", "do-nyc3-1")
 
 	cfg, err := loadConfig(filepath.Join(t.TempDir(), "missing.json"))
 	if err != nil {
@@ -106,6 +110,29 @@ func TestLoadConfigFallsBackToEnvironment(t *testing.T) {
 	}
 	if cfg.AuthToken != "env-secret" || cfg.TransportPort() != "7900" {
 		t.Fatalf("config = %+v", cfg)
+	}
+	if cfg.Hostname != "do-nyc3-1" {
+		t.Fatalf("Hostname = %q, want do-nyc3-1", cfg.Hostname)
+	}
+}
+
+func TestLoadConfigHostnameEnvironmentPrecedence(t *testing.T) {
+	t.Setenv("VERIFLIER_HOSTNAME", "")
+	t.Setenv("JETMON_HOSTNAME", "generic-host")
+	t.Setenv("STATSD_HOSTNAME", "legacy-host")
+
+	cfg, err := loadConfig(filepath.Join(t.TempDir(), "missing.json"))
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.Hostname != "generic-host" {
+		t.Fatalf("Hostname = %q, want generic-host", cfg.Hostname)
+	}
+}
+
+func TestConfiguredHostnameTrimsConfiguredValue(t *testing.T) {
+	if got := configuredHostname(" do-nyc3-1 "); got != "do-nyc3-1" {
+		t.Fatalf("configuredHostname = %q, want do-nyc3-1", got)
 	}
 }
 

@@ -1,6 +1,16 @@
 DEBUG
 Set to true to enable more verbose log messages. Default: false.
 
+HOSTNAME
+Stable Jetmon process identity. This value is used for dynamic host ownership,
+process health rows, outbound delivery identity, and the StatsD metric prefix.
+Set it in production to the v1-compatible logical host path, such as
+`dfw1.jetmon-prod-1`, instead of relying on a Docker container hostname.
+Leave empty to use the runtime OS hostname. `JETMON_HOSTNAME` can set the same
+identity from container env. `STATSD_HOSTNAME` remains a deprecated env alias
+for older rollout drafts, but new config should use `HOSTNAME` or
+`JETMON_HOSTNAME`. Default: empty.
+
 NUM_WORKERS
 Initial/floor number of goroutines in the check pool. In the legacy scheduler,
 the pool auto-scales between 1 and NUM_WORKERS based on queue depth. In the
@@ -218,26 +228,33 @@ Milliseconds between StatsD metric flushes and stats file updates. Default: 1000
 
 STATSD_ADDR
 Environment variable, not a JSON config key. UDP host:port used for StatsD
-metrics. Monitor and deliverer default to statsd:8125 so Docker Compose can run
-with a co-located StatsD service. Veriflier leaves StatsD disabled unless this
-is set. TeamCity Monitor production should set this to the host-local StatsD
-proxy endpoint reachable from inside the container. Set
-STATSD_ADDR=127.0.0.1:8125 only for systemd/host-networked runs where the
-process can reach the host proxy via loopback. Set it explicitly empty to
-disable StatsD in safe smoke tests.
+metrics. Monitor and deliverer default to 127.0.0.1:8125 for host/systemd-style
+runs. Docker Compose overrides this to statsd:8125 so local dev can use the
+co-located StatsD service. Veriflier leaves StatsD disabled unless this is set.
+TeamCity Monitor production should set this to the host-local StatsD proxy
+endpoint reachable from inside the bridge-networked container. With Docker's
+host-gateway mapping, use:
+
+  --add-host=host.docker.internal:host-gateway
+  STATSD_ADDR=host.docker.internal:8125
+
+Do not use STATSD_ADDR=127.0.0.1:8125 from a bridge-networked production
+container; that loopback address is inside the container. Set STATSD_ADDR
+explicitly empty to disable StatsD in safe smoke tests.
+
+JETMON_HOSTNAME
+Environment variable equivalent of the HOSTNAME JSON key. It sets the stable
+process identity and the StatsD metric prefix
+`com.jetpack.jetmon.<hostname>`. Use only stable, low-cardinality deployment
+identity here: datacenter/region plus logical host or Veriflier vantage is
+appropriate; container IDs, release SHAs, ports, process IDs, and random
+suffixes are not. Dots are preserved for Graphite hierarchy; unsafe characters
+are replaced with underscores. Leave unset or empty for local/dev runs to use
+the runtime hostname fallback.
 
 STATSD_HOSTNAME
-Environment variable, not a JSON config key. Optional host identity used in the
-StatsD metric prefix `com.jetpack.jetmon.<hostname>`. Set this in production
-container deployments to the v1-compatible Graphite path segment, such as
-`<datacenter>.<node>`, so dashboards do not depend on Docker container
-hostnames. For example, if the v1 host was
-`jetmon-prod-1.dfw1.example.com`, set `STATSD_HOSTNAME=dfw1.jetmon-prod-1`.
-Use only stable, low-cardinality deployment identity here: datacenter/region
-plus logical host or Veriflier vantage is appropriate; container IDs, release
-SHAs, ports, process IDs, and random suffixes are not. Dots are preserved for
-Graphite hierarchy; unsafe characters are replaced with underscores. Leave
-unset or empty for local/dev runs to use the runtime hostname fallback.
+Deprecated environment alias for JETMON_HOSTNAME, retained so earlier rollout
+drafts continue to work. Do not use it in new production config.
 
 STATSD_SEND_MEM_USAGE
 Set to true to emit Go runtime memory stats to StatsD each interval. Default: false.

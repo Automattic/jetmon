@@ -28,6 +28,7 @@ type veriflierConfig struct {
 	AuthToken  string `json:"auth_token"`
 	Port       string `json:"port"`
 	GRPCPort   string `json:"grpc_port"` // Deprecated alias for Port.
+	Hostname   string `json:"hostname"`
 	VantageID  string `json:"vantage_id"`
 	Region     string `json:"region"`
 	Provider   string `json:"provider"`
@@ -41,8 +42,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
-
-	hostname, _ := os.Hostname()
 
 	// Override auth token and port from environment if set (Docker entrypoint).
 	if v := os.Getenv("VERIFLIER_AUTH_TOKEN"); v != "" {
@@ -62,6 +61,14 @@ func main() {
 	if v := os.Getenv("VERIFLIER_PROVIDER"); v != "" {
 		cfg.Provider = v
 	}
+	if v := os.Getenv("VERIFLIER_HOSTNAME"); v != "" {
+		cfg.Hostname = v
+	} else if v := os.Getenv("JETMON_HOSTNAME"); v != "" {
+		cfg.Hostname = v
+	} else if v := os.Getenv("STATSD_HOSTNAME"); v != "" {
+		// Backward-compatible alias from the earlier production rollout draft.
+		cfg.Hostname = v
+	}
 	if v := os.Getenv("VERIFLIER_ENABLE_LEGACY_HTTP"); v != "" {
 		enabled, err := parseBool(v)
 		if err != nil {
@@ -80,6 +87,7 @@ func main() {
 	if cfg.AuthToken == "" {
 		log.Fatalf("VERIFLIER_AUTH_TOKEN is not set; refusing to start with no authentication")
 	}
+	hostname := configuredHostname(cfg.Hostname)
 	addr := fmt.Sprintf(":%s", cfg.TransportPort())
 	agentID := veriflierAgentID(hostname, cfg.TransportPort())
 
@@ -196,6 +204,7 @@ func loadConfig(path string) (*veriflierConfig, error) {
 		return &veriflierConfig{
 			AuthToken: os.Getenv("VERIFLIER_AUTH_TOKEN"),
 			Port:      envOrDefault("VERIFLIER_PORT", envOrDefault("VERIFLIER_GRPC_PORT", "7803")),
+			Hostname:  firstNonEmpty(os.Getenv("VERIFLIER_HOSTNAME"), os.Getenv("JETMON_HOSTNAME"), os.Getenv("STATSD_HOSTNAME")),
 		}, nil
 	}
 	defer f.Close()
@@ -212,6 +221,26 @@ func (c veriflierConfig) TransportPort() string {
 		return c.Port
 	}
 	return c.GRPCPort
+}
+
+func configuredHostname(configured string) string {
+	if h := strings.TrimSpace(configured); h != "" {
+		return h
+	}
+	h, err := os.Hostname()
+	if err != nil || strings.TrimSpace(h) == "" {
+		return "unknown"
+	}
+	return h
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func outcomeFromCheckerResult(res checker.Result) string {

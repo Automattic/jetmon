@@ -16,7 +16,7 @@ The production Veriflier VPS stack has two containers:
 - `statsd`: `graphiteapp/graphite-statsd`, reachable only on the internal
   Docker network for StatsD UDP and exposed through Graphite HTTP for Grafana.
 
-Veriflier sends metrics to `STATSD_ADDR=statsd:8125`. Set `STATSD_HOSTNAME`
+Veriflier sends metrics to `STATSD_ADDR=statsd:8125`. Set `JETMON_HOSTNAME`
 when the Graphite path should be stable and different from the container
 runtime hostname. Use a stable low-cardinality value such as
 `<region>.<vantage>` or another Grafana-approved Veriflier grouping; do not use
@@ -25,9 +25,10 @@ not published on the host. Graphite HTTP is published on
 `GRAPHITE_BIND_ADDR:GRAPHITE_HOST_PORT`; set `GRAPHITE_BIND_ADDR` to a
 private/VPN/firewalled address that central Grafana can reach.
 
-If the central Grafana dashboards depend on v1 retention or aggregation
-behavior, use a Systems-approved StatsD/Graphite image or mounted Graphite
-configuration rather than relying blindly on the upstream image defaults.
+The Compose file mounts
+[../docker/graphite-storage-schemas.conf](../docker/graphite-storage-schemas.conf)
+so Jetmon metrics use the requested retention schedule:
+`10s:6h, 1m:7d, 10m:5y`.
 
 ## Setup
 
@@ -44,6 +45,7 @@ VERIFLIER_AUTH_TOKEN=<secret shared with Monitors>
 VERIFLIER_VANTAGE_ID=do-nyc3-1
 VERIFLIER_REGION=nyc3
 VERIFLIER_PROVIDER=digitalocean
+JETMON_HOSTNAME=nyc3.do-nyc3-1
 GRAPHITE_BIND_ADDR=<private-or-vpn-address>
 GRAPHITE_HOST_PORT=8088
 ```
@@ -65,6 +67,11 @@ curl -fsS http://127.0.0.1:8088/
 
 If `GRAPHITE_BIND_ADDR` is not loopback, also confirm the central Grafana host
 can reach `http://<GRAPHITE_BIND_ADDR>:<GRAPHITE_HOST_PORT>/`.
+
+StatsD is UDP, so Veriflier health confirms only that the service is running.
+After startup, confirm Graphite has a fresh
+`com.jetpack.jetmon.<JETMON_HOSTNAME>` series before treating metrics as fully
+validated.
 
 ## Security Notes
 

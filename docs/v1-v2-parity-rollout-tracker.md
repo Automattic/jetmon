@@ -86,7 +86,8 @@ Implementation notes:
 
 ## 2. StatsD Hostname And Metric Path Compatibility
 
-Status: implemented in this branch with `STATSD_HOSTNAME`
+Status: implemented in this branch with generic `HOSTNAME` / `JETMON_HOSTNAME`
+identity; `STATSD_HOSTNAME` is retained only as a deprecated env alias.
 
 Key difference:
 
@@ -116,22 +117,23 @@ Current v2 way:
 
 Resolution options:
 
-- Add `STATSD_HOSTNAME` to explicitly set the metric host segment.
+- Add `HOSTNAME` / `JETMON_HOSTNAME` to explicitly set the process and metric
+  host segment.
 - Preserve the v1 hostname transform by default and allow override.
 - Keep current v2 behavior and migrate dashboards.
 
 Recommended solution:
 
-- Add `STATSD_HOSTNAME` and use it in TeamCity production config. Keep the
-  current sanitized hostname as the fallback for local/dev runs. This avoids
-  brittle hostname inference while preserving production dashboards.
+- Add `HOSTNAME` / `JETMON_HOSTNAME` and use it in TeamCity production config.
+  Keep the current sanitized hostname as the fallback for local/dev runs. This
+  avoids brittle hostname inference while preserving production dashboards.
 
 Implementation notes:
 
 - `STATSD_ADDR` selects the UDP endpoint.
-- `STATSD_HOSTNAME` selects the Graphite path identity used in
+- `HOSTNAME` / `JETMON_HOSTNAME` selects the Graphite path identity used in
   `com.jetpack.jetmon.<hostname>`.
-- Explicit `STATSD_HOSTNAME` values preserve dots so production can set
+- Explicit `JETMON_HOSTNAME` values preserve dots so production can set
   `<datacenter>.<node>`, for example `dfw1.jetmon-prod-1` for
   `jetmon-prod-1.dfw1.example.com`. Unsafe characters are normalized to
   underscores.

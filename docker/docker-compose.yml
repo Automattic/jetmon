@@ -67,7 +67,7 @@ services:
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       SMTP_USE_TLS: ${SMTP_USE_TLS:-false}
       STATSD_ADDR: ${STATSD_ADDR-statsd:8125}
-      STATSD_HOSTNAME: ${STATSD_HOSTNAME:-}
+      JETMON_HOSTNAME: ${JETMON_HOSTNAME:-}
       JETMON_PID_FILE: /jetmon/stats/jetmon2.pid
     ports:
       - "${BIND_ADDR:-127.0.0.1}:${DASHBOARD_HOST_PORT:-8080}:8080"
@@ -104,7 +104,7 @@ services:
       VERIFLIER_PROVIDER: ${VERIFLIER_PROVIDER:-docker}
       VERIFLIER_ENABLE_LEGACY_HTTP: ${VERIFLIER_ENABLE_LEGACY_HTTP:-false}
       STATSD_ADDR: ${STATSD_ADDR-statsd:8125}
-      STATSD_HOSTNAME: ${STATSD_HOSTNAME:-}
+      JETMON_HOSTNAME: ${JETMON_HOSTNAME:-}
     depends_on:
       statsd:
         condition: service_healthy
@@ -157,6 +157,7 @@ services:
       - "${BIND_ADDR:-127.0.0.1}:${STATSD_HOST_PORT:-8125}:8125/udp"
     volumes:
       - statsd-graphite-storage:/opt/graphite/storage
+      - ./graphite-storage-schemas.conf:/opt/graphite/conf/storage-schemas.conf:ro
       - statsd-logs:/var/log
     healthcheck:
       test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1/', timeout=2).close()\""]

@@ -367,6 +367,7 @@ func TestLoadAndGet(t *testing.T) {
 	p := writeConfigFile(t, `{
 		"AUTH_TOKEN": "loaded-token",
 		"NUM_WORKERS": 7,
+		"HOSTNAME": "dfw1.jetmon-prod-1",
 		"BUCKET_TOTAL": 100,
 		"BUCKET_TARGET": 50,
 		"NET_COMMS_TIMEOUT": 10,
@@ -387,6 +388,9 @@ func TestLoadAndGet(t *testing.T) {
 	}
 	if cfg.NumWorkers != 7 {
 		t.Fatalf("NumWorkers = %d, want 7", cfg.NumWorkers)
+	}
+	if cfg.Hostname != "dfw1.jetmon-prod-1" {
+		t.Fatalf("Hostname = %q, want dfw1.jetmon-prod-1", cfg.Hostname)
 	}
 	if cfg.LogFormat != "json" {
 		t.Fatalf("LogFormat = %q, want json", cfg.LogFormat)

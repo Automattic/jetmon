@@ -24,7 +24,7 @@ import (
 
 const (
 	processHealthWriteTimeout = 2 * time.Second
-	defaultStatsDAddr         = "statsd:8125"
+	defaultStatsDAddr         = "127.0.0.1:8125"
 )
 
 // Injected at build time via -ldflags.

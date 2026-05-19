@@ -1,5 +1,6 @@
 {
 	"DEBUG"             : false,
+	"HOSTNAME"          : "",
 	"NUM_WORKERS"       : 60,
 	"NUM_TO_PROCESS"    : 40,
 	"DATASET_SIZE"      : 100,

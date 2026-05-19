@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/Automattic/jetmon/internal/config"
@@ -139,6 +140,18 @@ func Ping() error {
 
 // Hostname returns the system hostname used as the host_id in jetmon_hosts.
 func Hostname() string {
+	if h := strings.TrimSpace(os.Getenv("JETMON_HOSTNAME")); h != "" {
+		return h
+	}
+	if cfg := config.Get(); cfg != nil {
+		if h := strings.TrimSpace(cfg.Hostname); h != "" {
+			return h
+		}
+	}
+	if h := strings.TrimSpace(os.Getenv("STATSD_HOSTNAME")); h != "" {
+		// Backward-compatible alias from the earlier production rollout draft.
+		return h
+	}
 	h, err := os.Hostname()
 	if err != nil {
 		return "unknown"

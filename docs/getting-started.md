@@ -72,7 +72,7 @@ The default Docker Compose stack runs a local `statsd` service backed by the
 metrics to `STATSD_ADDR=statsd:8125` by default in Compose. Set `STATSD_ADDR`
 in `docker/.env` if you want both services to send to a different StatsD
 endpoint, or set it to an empty value to disable StatsD for a smoke test. Leave
-`STATSD_HOSTNAME` unset locally unless you need metrics to land under a specific
+`JETMON_HOSTNAME` unset locally unless you need metrics to land under a specific
 Graphite path while testing dashboard changes.
 
 Mailpit captures local alert-contact email. Open it at

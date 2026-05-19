@@ -69,15 +69,17 @@ func TestAddrFromEnvEmptyDisables(t *testing.T) {
 }
 
 func TestHostnameFromEnvDefaultSanitizesRuntimeHostname(t *testing.T) {
+	t.Setenv(EnvJetmonHostname, "")
 	t.Setenv(EnvStatsDHostname, "")
 
-	if got := HostnameFromEnv("my-host.example"); got != "my_host_example" {
-		t.Fatalf("HostnameFromEnv(default) = %q, want my_host_example", got)
+	if got := HostnameFromEnv("my-host.example"); got != "my-host.example" {
+		t.Fatalf("HostnameFromEnv(default) = %q, want my-host.example", got)
 	}
 }
 
 func TestHostnameFromEnvOverridePreservesGraphitePath(t *testing.T) {
-	t.Setenv(EnvStatsDHostname, " dfw1.jetmon-prod-1 ")
+	t.Setenv(EnvJetmonHostname, " dfw1.jetmon-prod-1 ")
+	t.Setenv(EnvStatsDHostname, "old.value")
 
 	if got := HostnameFromEnv("container-id"); got != "dfw1.jetmon-prod-1" {
 		t.Fatalf("HostnameFromEnv(override) = %q, want dfw1.jetmon-prod-1", got)
@@ -85,10 +87,19 @@ func TestHostnameFromEnvOverridePreservesGraphitePath(t *testing.T) {
 }
 
 func TestHostnameFromEnvOverrideSanitizesUnsafeCharacters(t *testing.T) {
-	t.Setenv(EnvStatsDHostname, ".dfw1.jetmon prod:1|blue.")
+	t.Setenv(EnvJetmonHostname, ".dfw1.jetmon prod:1|blue.")
 
 	if got := HostnameFromEnv("container-id"); got != "dfw1.jetmon_prod_1_blue" {
 		t.Fatalf("HostnameFromEnv(sanitize) = %q, want dfw1.jetmon_prod_1_blue", got)
+	}
+}
+
+func TestHostnameFromEnvLegacyStatsDHostnameAlias(t *testing.T) {
+	t.Setenv(EnvJetmonHostname, "")
+	t.Setenv(EnvStatsDHostname, " dfw1.jetmon-prod-1 ")
+
+	if got := HostnameFromEnv(""); got != "dfw1.jetmon-prod-1" {
+		t.Fatalf("HostnameFromEnv(legacy alias) = %q, want dfw1.jetmon-prod-1", got)
 	}
 }
 
@@ -302,6 +313,7 @@ func assertFileContent(t *testing.T, path, want string) {
 }
 
 func TestInitSetsGlobalClient(t *testing.T) {
+	t.Setenv(EnvJetmonHostname, "")
 	t.Setenv(EnvStatsDHostname, "")
 
 	pc, err := net.ListenPacket("udp4", "127.0.0.1:0")
@@ -324,12 +336,13 @@ func TestInitSetsGlobalClient(t *testing.T) {
 	if Global() == nil {
 		t.Fatal("Global() = nil after Init")
 	}
-	if Global().prefix != "com.jetpack.jetmon.my_host_example" {
+	if Global().prefix != "com.jetpack.jetmon.my-host.example" {
 		t.Fatalf("prefix = %q", Global().prefix)
 	}
 }
 
-func TestInitUsesStatsDHostnameOverride(t *testing.T) {
+func TestInitUsesResolvedHostnameBeforeLegacyStatsDHostname(t *testing.T) {
+	t.Setenv(EnvJetmonHostname, "")
 	t.Setenv(EnvStatsDHostname, "dfw1.jetmon-prod-1")
 
 	pc, err := net.ListenPacket("udp4", "127.0.0.1:0")
@@ -352,7 +365,7 @@ func TestInitUsesStatsDHostnameOverride(t *testing.T) {
 	if Global() == nil {
 		t.Fatal("Global() = nil after Init")
 	}
-	if Global().prefix != "com.jetpack.jetmon.dfw1.jetmon-prod-1" {
+	if Global().prefix != "com.jetpack.jetmon.container-id" {
 		t.Fatalf("prefix = %q", Global().prefix)
 	}
 }

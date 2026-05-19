@@ -59,6 +59,11 @@ func (v VerifierConfig) TransportPort() string {
 type Config struct {
 	Debug bool `json:"DEBUG"`
 
+	// Hostname is the stable Jetmon identity used for host ownership, process
+	// health, outbound notification identity, and StatsD metric prefixes.
+	// Leave empty to use the runtime OS hostname.
+	Hostname string `json:"HOSTNAME"`
+
 	NumWorkers     int `json:"NUM_WORKERS"`
 	NumToProcess   int `json:"NUM_TO_PROCESS"`
 	DatasetSize    int `json:"DATASET_SIZE"`

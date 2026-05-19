@@ -13,7 +13,7 @@ services:
       VERIFLIER_PROVIDER: ${VERIFLIER_PROVIDER:-vps}
       VERIFLIER_ENABLE_LEGACY_HTTP: ${VERIFLIER_ENABLE_LEGACY_HTTP:-false}
       STATSD_ADDR: statsd:8125
-      STATSD_HOSTNAME: ${STATSD_HOSTNAME:-}
+      JETMON_HOSTNAME: ${JETMON_HOSTNAME:-}
     depends_on:
       statsd:
         condition: service_healthy
@@ -34,6 +34,7 @@ services:
     volumes:
       - statsd-graphite-storage:/opt/graphite/storage
       - statsd-logs:/var/log
+      - ./graphite-storage-schemas.conf:/opt/graphite/conf/storage-schemas.conf:ro
     healthcheck:
       test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1/', timeout=2).close()\""]
       interval: 10s
