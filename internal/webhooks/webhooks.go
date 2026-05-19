@@ -486,7 +486,7 @@ func GenerateSecret() (string, error) {
 //
 // The timestamp is part of the signature input so consumers can reject
 // stale (replayed) deliveries by checking the t= value against their
-// own clock and refusing anything older than ~5 minutes.
+// own clock and refusing anything older than VerifyMaxAge.
 func Sign(timestamp time.Time, body []byte, secret string) string {
 	ts := strconv.FormatInt(timestamp.Unix(), 10)
 	mac := hmac.New(sha256.New, []byte(secret))
@@ -495,6 +495,95 @@ func Sign(timestamp time.Time, body []byte, secret string) string {
 	mac.Write(body)
 	sig := hex.EncodeToString(mac.Sum(nil))
 	return "t=" + ts + ",v1=" + sig
+}
+
+// VerifyMaxAge is the recommended replay-protection window for webhook
+// consumers. Deliveries older than this (timestamp-wise) should be rejected.
+// 5 minutes matches Stripe's default and gives enough headroom for retries
+// while keeping the replay window narrow.
+const VerifyMaxAge = 5 * time.Minute
+
+// VerifyMaxClockSkew bounds how far the signed timestamp may sit in the
+// future relative to the verifier's clock. Without this, a verifier with a
+// slightly slow clock would reject deliveries from a faster-clock sender.
+const VerifyMaxClockSkew = 1 * time.Minute
+
+// Webhook signature verification errors. Consumers and tests that need to
+// distinguish reasons (e.g. for logging or specific HTTP responses) can use
+// errors.Is.
+var (
+	ErrSignatureMalformed = errors.New("webhook signature header is malformed")
+	ErrSignatureMismatch  = errors.New("webhook signature mismatch")
+	ErrSignatureStale     = errors.New("webhook signature timestamp is outside the allowed window")
+)
+
+// Verify checks an X-Jetmon-Signature header against body using secret. It
+// enforces both signature equality (constant-time) and the timestamp window
+// (now-maxAge < t < now+VerifyMaxClockSkew). A zero maxAge falls back to
+// VerifyMaxAge.
+//
+// Consumers can call this directly when they vendor the package, or use it
+// as the reference implementation when porting verification to another
+// language (the docs show equivalents in PHP and Python).
+func Verify(header string, body []byte, secret string, maxAge time.Duration, now time.Time) error {
+	if maxAge <= 0 {
+		maxAge = VerifyMaxAge
+	}
+	ts, sig, err := parseSignatureHeader(header)
+	if err != nil {
+		return err
+	}
+	signedAt := time.Unix(ts, 0)
+	skew := now.Sub(signedAt)
+	if skew > maxAge {
+		return fmt.Errorf("%w: %s old", ErrSignatureStale, skew.Round(time.Second))
+	}
+	if -skew > VerifyMaxClockSkew {
+		return fmt.Errorf("%w: %s in the future", ErrSignatureStale, (-skew).Round(time.Second))
+	}
+	expected := Sign(signedAt, body, secret)
+	_, expectedSig, _ := parseSignatureHeader(expected)
+	if !hmac.Equal([]byte(sig), []byte(expectedSig)) {
+		return ErrSignatureMismatch
+	}
+	return nil
+}
+
+// parseSignatureHeader parses "t=<unix>,v1=<hex>". Returns the timestamp,
+// the hex signature, and any malformed-header error.
+func parseSignatureHeader(header string) (int64, string, error) {
+	var tsPart, sigPart string
+	for _, part := range splitComma(header) {
+		switch {
+		case len(part) > 2 && part[:2] == "t=":
+			tsPart = part[2:]
+		case len(part) > 3 && part[:3] == "v1=":
+			sigPart = part[3:]
+		}
+	}
+	if tsPart == "" || sigPart == "" {
+		return 0, "", fmt.Errorf("%w: expected \"t=<unix>,v1=<hex>\"", ErrSignatureMalformed)
+	}
+	ts, err := strconv.ParseInt(tsPart, 10, 64)
+	if err != nil {
+		return 0, "", fmt.Errorf("%w: invalid timestamp %q", ErrSignatureMalformed, tsPart)
+	}
+	return ts, sigPart, nil
+}
+
+// splitComma is strings.Split(s, ",") inlined to avoid importing strings
+// just for one call.
+func splitComma(s string) []string {
+	out := make([]string, 0, 2)
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == ',' {
+			out = append(out, s[start:i])
+			start = i + 1
+		}
+	}
+	out = append(out, s[start:])
+	return out
 }
 
 // EventTypeForReason maps a jetmon_event_transitions.reason value to the

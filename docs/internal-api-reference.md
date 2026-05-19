@@ -967,7 +967,66 @@ A delivery succeeds when any attempt returns 2xx. After 6 failed attempts, the r
 
 #### Signing and secret rotation
 
-Signature: HMAC-SHA256 of `{timestamp}.{body}` with the webhook's secret, sent as `X-Jetmon-Signature: t=<unix_ts>,v1=<hex>`. The timestamp prevents replay; consumers should reject deliveries older than 5 minutes.
+Signature: HMAC-SHA256 of `{timestamp}.{body}` with the webhook's secret, sent as `X-Jetmon-Signature: t=<unix_ts>,v1=<hex>`. The timestamp prevents replay; consumers must reject deliveries older than 5 minutes (`webhooks.VerifyMaxAge`) or more than 1 minute in the future (`webhooks.VerifyMaxClockSkew`).
+
+**Verifying a delivery (reference implementations).** All three examples enforce the same two checks: constant-time signature equality and the timestamp window. Pick the language for your consumer; the algorithm is identical.
+
+Go (drop-in via `internal/webhooks`):
+
+```go
+import "github.com/Automattic/jetmon/internal/webhooks"
+
+if err := webhooks.Verify(
+    r.Header.Get("X-Jetmon-Signature"),
+    body,
+    secret,
+    0,            // 0 = use webhooks.VerifyMaxAge (5 min)
+    time.Now(),
+); err != nil {
+    http.Error(w, "invalid signature", http.StatusUnauthorized)
+    return
+}
+```
+
+PHP:
+
+```php
+function verify_jetmon_signature(string $header, string $body, string $secret): bool {
+    if (!preg_match('/^t=(\d+),v1=([a-f0-9]+)$/', $header, $m)) {
+        return false;
+    }
+    [$_, $ts, $sig] = $m;
+    $age = time() - (int) $ts;
+    if ($age > 300 || $age < -60) { // 5 min stale, 1 min skew
+        return false;
+    }
+    $expected = hash_hmac('sha256', $ts . '.' . $body, $secret);
+    return hash_equals($expected, $sig);
+}
+```
+
+Python:
+
+```python
+import hashlib, hmac, time, re
+
+_SIG_RE = re.compile(r"^t=(\d+),v1=([a-f0-9]+)$")
+
+def verify_jetmon_signature(header: str, body: bytes, secret: str) -> bool:
+    m = _SIG_RE.match(header)
+    if not m:
+        return False
+    ts, sig = int(m.group(1)), m.group(2)
+    age = time.time() - ts
+    if age > 300 or age < -60:  # 5 min stale, 1 min skew
+        return False
+    expected = hmac.new(
+        secret.encode(), f"{ts}.".encode() + body, hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(expected, sig)
+```
+
+All three reject on: malformed header, missing `t=` or `v1=`, signed timestamp older than 5 min or further than 1 min ahead, mismatched HMAC. Don't skip either gate: signature-only allows replay; timestamp-only allows forgery.
 
 Format chosen for: wide library support across consumer languages, explicit version (`v1=`) to allow future algorithm rotation without breaking consumers, replay protection via timestamp baked into the signature input, and the ability to coexist with multiple `v1=` values during a grace-period rotation (deferred). Alternatives considered and not chosen: GitHub-style (no replay protection), Slack-style (functionally equivalent, two-header form), JWT-based (wrong abstraction for "POST JSON + signature header"), HTTP Message Signatures / RFC 9421 (over-engineered for our scope), asymmetric / Ed25519 (compelling for public APIs without a gateway in front; not warranted while a gateway re-signs for end customers).
 
