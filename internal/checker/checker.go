@@ -80,16 +80,18 @@ var defaultDNSLookupLimiter = newCheckDNSLookupLimiter()
 var configuredResolverMu sync.RWMutex
 var configuredResolverServers []string
 
-type checkContextKey int
-
-const checkContextKeyTargetSafety checkContextKey = iota
+// targetSafetyKey is the context key marking a check as requiring SSRF
+// safety re-validation at dial time. The empty-struct type follows the
+// stdlib convention: the key's uniqueness comes from the type itself, so no
+// other package can collide with it even by accident.
+type targetSafetyKey struct{}
 
 func withTargetSafety(ctx context.Context) context.Context {
-	return context.WithValue(ctx, checkContextKeyTargetSafety, true)
+	return context.WithValue(ctx, targetSafetyKey{}, true)
 }
 
 func targetSafetyEnabled(ctx context.Context) bool {
-	enabled, _ := ctx.Value(checkContextKeyTargetSafety).(bool)
+	enabled, _ := ctx.Value(targetSafetyKey{}).(bool)
 	return enabled
 }
 
