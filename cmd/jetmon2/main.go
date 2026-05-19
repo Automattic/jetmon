@@ -41,7 +41,7 @@ const (
 	processHealthWriteTimeout = 2 * time.Second
 	httpGetTimeout            = 10 * time.Second
 	httpGetMaxBodyBytes       = 1 << 20
-	defaultStatsDAddr         = "127.0.0.1:8125"
+	defaultStatsDAddr         = ""
 )
 
 // Injected at build time via -ldflags.

@@ -663,10 +663,11 @@ Important metric groups include:
 - RSS and Go Sys memory usage
 
 StatsD is the primary metrics transport. Monitor and deliverer read
-`STATSD_ADDR` and default to `127.0.0.1:8125`; local Docker Compose overrides
-that to `statsd:8125`. Veriflier sends StatsD metrics only when `STATSD_ADDR`
-is set. Production Monitor containers should point `STATSD_ADDR` at the
-existing host-local StatsD proxy through Docker bridge networking:
+`STATSD_ADDR`; Jetmon binaries do not assume a production StatsD endpoint when
+it is unset. Local Docker Compose and Veriflier production Compose set
+`STATSD_ADDR=statsd:8125` explicitly for their bundled StatsD container.
+Production Monitor containers should point `STATSD_ADDR` at the existing
+host-local StatsD proxy through Docker bridge networking:
 `--add-host=host.docker.internal:host-gateway` plus
 `STATSD_ADDR=host.docker.internal:8125`. They should not use host networking
 and should not start a StatsD/Graphite container in the Monitor stack.

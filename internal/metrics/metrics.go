@@ -50,7 +50,6 @@ var statsFilesState = struct {
 const (
 	EnvStatsDAddr     = "STATSD_ADDR"
 	EnvJetmonHostname = "JETMON_HOSTNAME"
-	EnvStatsDHostname = "STATSD_HOSTNAME"
 )
 
 // AddrFromEnv returns the configured StatsD address. An explicitly empty
@@ -89,10 +88,9 @@ func Init(addr, hostname string) error {
 
 // HostnameFromEnv returns the metric hostname used in the StatsD prefix.
 // JETMON_HOSTNAME preserves dots so production can keep the v1 Graphite
-// hierarchy, e.g. com.jetpack.jetmon.<dc>.<node>.<metric>. STATSD_HOSTNAME is
-// retained as a deprecated alias for rollout configs created before the host
-// identity was generalized. Callers should pass the already-resolved generic
-// hostname as defaultHostname so metrics and process identity remain aligned.
+// hierarchy, e.g. com.jetpack.jetmon.<dc>.<node>.<metric>. Callers should pass
+// the already-resolved generic hostname as defaultHostname so metrics and
+// process identity remain aligned.
 func HostnameFromEnv(defaultHostname string) string {
 	if hostname, ok := os.LookupEnv(EnvJetmonHostname); ok {
 		if hostname = sanitizeMetricPath(hostname); hostname != "" {
@@ -101,11 +99,6 @@ func HostnameFromEnv(defaultHostname string) string {
 	}
 	if hostname := sanitizeMetricPath(defaultHostname); hostname != "" {
 		return hostname
-	}
-	if hostname, ok := os.LookupEnv(EnvStatsDHostname); ok {
-		if hostname = sanitizeMetricPath(hostname); hostname != "" {
-			return hostname
-		}
 	}
 	return "unknown"
 }

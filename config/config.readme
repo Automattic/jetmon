@@ -6,10 +6,10 @@ Stable Jetmon process identity. This value is used for dynamic host ownership,
 process health rows, outbound delivery identity, and the StatsD metric prefix.
 Set it in production to the v1-compatible logical host path, such as
 `dfw1.jetmon-prod-1`, instead of relying on a Docker container hostname.
-Leave empty to use the runtime OS hostname. `JETMON_HOSTNAME` can set the same
-identity from container env. `STATSD_HOSTNAME` remains a deprecated env alias
-for older rollout drafts, but new config should use `HOSTNAME` or
-`JETMON_HOSTNAME`. Default: empty.
+Leave empty to use the runtime OS hostname. `JETMON_HOSTNAME` is the container
+env form of the same setting: the Docker entrypoint writes it into HOSTNAME
+when rendering config, and the process also accepts it as an env override.
+Do not set HOSTNAME and JETMON_HOSTNAME to different values. Default: empty.
 
 NUM_WORKERS
 Initial/floor number of goroutines in the check pool. In the legacy scheduler,
@@ -228,12 +228,11 @@ Milliseconds between StatsD metric flushes and stats file updates. Default: 1000
 
 STATSD_ADDR
 Environment variable, not a JSON config key. UDP host:port used for StatsD
-metrics. Monitor and deliverer default to 127.0.0.1:8125 for host/systemd-style
-runs. Docker Compose overrides this to statsd:8125 so local dev can use the
-co-located StatsD service. Veriflier leaves StatsD disabled unless this is set.
-TeamCity Monitor production should set this to the host-local StatsD proxy
-endpoint reachable from inside the bridge-networked container. With Docker's
-host-gateway mapping, use:
+metrics. Jetmon binaries do not assume a production StatsD endpoint when this
+is unset. Docker Compose files set this explicitly: local and Veriflier Compose
+use `statsd:8125`, while Monitor production should use the host-local StatsD
+proxy endpoint reachable from inside the bridge-networked container. With
+Docker's host-gateway mapping, use:
 
   --add-host=host.docker.internal:host-gateway
   STATSD_ADDR=host.docker.internal:8125
@@ -251,10 +250,6 @@ appropriate; container IDs, release SHAs, ports, process IDs, and random
 suffixes are not. Dots are preserved for Graphite hierarchy; unsafe characters
 are replaced with underscores. Leave unset or empty for local/dev runs to use
 the runtime hostname fallback.
-
-STATSD_HOSTNAME
-Deprecated environment alias for JETMON_HOSTNAME, retained so earlier rollout
-drafts continue to work. Do not use it in new production config.
 
 STATSD_SEND_MEM_USAGE
 Set to true to emit Go runtime memory stats to StatsD each interval. Default: false.

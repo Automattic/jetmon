@@ -65,9 +65,6 @@ func main() {
 		cfg.Hostname = v
 	} else if v := os.Getenv("JETMON_HOSTNAME"); v != "" {
 		cfg.Hostname = v
-	} else if v := os.Getenv("STATSD_HOSTNAME"); v != "" {
-		// Backward-compatible alias from the earlier production rollout draft.
-		cfg.Hostname = v
 	}
 	if v := os.Getenv("VERIFLIER_ENABLE_LEGACY_HTTP"); v != "" {
 		enabled, err := parseBool(v)
@@ -204,7 +201,7 @@ func loadConfig(path string) (*veriflierConfig, error) {
 		return &veriflierConfig{
 			AuthToken: os.Getenv("VERIFLIER_AUTH_TOKEN"),
 			Port:      envOrDefault("VERIFLIER_PORT", envOrDefault("VERIFLIER_GRPC_PORT", "7803")),
-			Hostname:  firstNonEmpty(os.Getenv("VERIFLIER_HOSTNAME"), os.Getenv("JETMON_HOSTNAME"), os.Getenv("STATSD_HOSTNAME")),
+			Hostname:  firstNonEmpty(os.Getenv("VERIFLIER_HOSTNAME"), os.Getenv("JETMON_HOSTNAME")),
 		}, nil
 	}
 	defer f.Close()

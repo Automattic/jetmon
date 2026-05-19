@@ -70,7 +70,6 @@ func TestAddrFromEnvEmptyDisables(t *testing.T) {
 
 func TestHostnameFromEnvDefaultSanitizesRuntimeHostname(t *testing.T) {
 	t.Setenv(EnvJetmonHostname, "")
-	t.Setenv(EnvStatsDHostname, "")
 
 	if got := HostnameFromEnv("my-host.example"); got != "my-host.example" {
 		t.Fatalf("HostnameFromEnv(default) = %q, want my-host.example", got)
@@ -79,7 +78,6 @@ func TestHostnameFromEnvDefaultSanitizesRuntimeHostname(t *testing.T) {
 
 func TestHostnameFromEnvOverridePreservesGraphitePath(t *testing.T) {
 	t.Setenv(EnvJetmonHostname, " dfw1.jetmon-prod-1 ")
-	t.Setenv(EnvStatsDHostname, "old.value")
 
 	if got := HostnameFromEnv("container-id"); got != "dfw1.jetmon-prod-1" {
 		t.Fatalf("HostnameFromEnv(override) = %q, want dfw1.jetmon-prod-1", got)
@@ -91,15 +89,6 @@ func TestHostnameFromEnvOverrideSanitizesUnsafeCharacters(t *testing.T) {
 
 	if got := HostnameFromEnv("container-id"); got != "dfw1.jetmon_prod_1_blue" {
 		t.Fatalf("HostnameFromEnv(sanitize) = %q, want dfw1.jetmon_prod_1_blue", got)
-	}
-}
-
-func TestHostnameFromEnvLegacyStatsDHostnameAlias(t *testing.T) {
-	t.Setenv(EnvJetmonHostname, "")
-	t.Setenv(EnvStatsDHostname, " dfw1.jetmon-prod-1 ")
-
-	if got := HostnameFromEnv(""); got != "dfw1.jetmon-prod-1" {
-		t.Fatalf("HostnameFromEnv(legacy alias) = %q, want dfw1.jetmon-prod-1", got)
 	}
 }
 
@@ -314,7 +303,6 @@ func assertFileContent(t *testing.T, path, want string) {
 
 func TestInitSetsGlobalClient(t *testing.T) {
 	t.Setenv(EnvJetmonHostname, "")
-	t.Setenv(EnvStatsDHostname, "")
 
 	pc, err := net.ListenPacket("udp4", "127.0.0.1:0")
 	if err != nil {
@@ -337,35 +325,6 @@ func TestInitSetsGlobalClient(t *testing.T) {
 		t.Fatal("Global() = nil after Init")
 	}
 	if Global().prefix != "com.jetpack.jetmon.my-host.example" {
-		t.Fatalf("prefix = %q", Global().prefix)
-	}
-}
-
-func TestInitUsesResolvedHostnameBeforeLegacyStatsDHostname(t *testing.T) {
-	t.Setenv(EnvJetmonHostname, "")
-	t.Setenv(EnvStatsDHostname, "dfw1.jetmon-prod-1")
-
-	pc, err := net.ListenPacket("udp4", "127.0.0.1:0")
-	if err != nil {
-		t.Skipf("udp listener unavailable: %v", err)
-	}
-	defer pc.Close()
-
-	orig := global
-	t.Cleanup(func() {
-		if global != nil && global.conn != nil {
-			_ = global.conn.Close()
-		}
-		global = orig
-	})
-
-	if err := Init(pc.LocalAddr().String(), "container-id"); err != nil {
-		t.Fatalf("Init: %v", err)
-	}
-	if Global() == nil {
-		t.Fatal("Global() = nil after Init")
-	}
-	if Global().prefix != "com.jetpack.jetmon.container-id" {
 		t.Fatalf("prefix = %q", Global().prefix)
 	}
 }

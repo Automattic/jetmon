@@ -259,11 +259,13 @@ writable and the rollout is allowed to perform Monitor work.
 Jetmon v2 keeps the v1-compatible metric prefix and StatsD transport. Monitor,
 Deliverer, and Veriflier all support `STATSD_ADDR`:
 
-- Monitor and Deliverer default to `127.0.0.1:8125` for host/systemd-style
-  runs. Docker Compose overrides this to `statsd:8125` for local service
-  discovery.
-- Veriflier leaves StatsD disabled unless `STATSD_ADDR` is set, which keeps
-  standalone Veriflier runs simple.
+- Jetmon binaries do not assume a production StatsD endpoint when
+  `STATSD_ADDR` is unset.
+- Local Docker Compose and Veriflier production Compose set
+  `STATSD_ADDR=statsd:8125` explicitly for their bundled StatsD container.
+- Monitor production Compose should set `STATSD_ADDR=host.docker.internal:8125`
+  and include Docker's host-gateway mapping so the bridge-networked container
+  can reach the host-local StatsD proxy.
 - Setting `STATSD_ADDR` explicitly empty disables StatsD for safe smoke tests.
 
 Production roles should also set `HOSTNAME` in config or `JETMON_HOSTNAME` in
@@ -283,8 +285,7 @@ com.jetpack.jetmon.<JETMON_HOSTNAME>.<metric>
 
 Leaving `HOSTNAME` / `JETMON_HOSTNAME` unset falls back to the runtime
 hostname, which is acceptable for local Docker runs but may become a container
-ID or service name under docker-deploy. `STATSD_HOSTNAME` is still accepted as a
-deprecated alias for older rollout drafts, but new roles should not use it.
+ID or service name under docker-deploy.
 
 Keep this value stable and low-cardinality. Do not include container IDs,
 release SHAs, process IDs, ports, or random suffixes. For Verifliers, use a

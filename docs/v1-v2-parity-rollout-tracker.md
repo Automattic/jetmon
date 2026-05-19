@@ -87,7 +87,7 @@ Implementation notes:
 ## 2. StatsD Hostname And Metric Path Compatibility
 
 Status: implemented in this branch with generic `HOSTNAME` / `JETMON_HOSTNAME`
-identity; `STATSD_HOSTNAME` is retained only as a deprecated env alias.
+identity.
 
 Key difference:
 

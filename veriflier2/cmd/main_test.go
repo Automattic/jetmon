@@ -119,7 +119,6 @@ func TestLoadConfigFallsBackToEnvironment(t *testing.T) {
 func TestLoadConfigHostnameEnvironmentPrecedence(t *testing.T) {
 	t.Setenv("VERIFLIER_HOSTNAME", "")
 	t.Setenv("JETMON_HOSTNAME", "generic-host")
-	t.Setenv("STATSD_HOSTNAME", "legacy-host")
 
 	cfg, err := loadConfig(filepath.Join(t.TempDir(), "missing.json"))
 	if err != nil {

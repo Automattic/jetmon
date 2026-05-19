@@ -148,10 +148,6 @@ func Hostname() string {
 			return h
 		}
 	}
-	if h := strings.TrimSpace(os.Getenv("STATSD_HOSTNAME")); h != "" {
-		// Backward-compatible alias from the earlier production rollout draft.
-		return h
-	}
 	h, err := os.Hostname()
 	if err != nil {
 		return "unknown"
