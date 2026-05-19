@@ -77,6 +77,11 @@ clear stop/go threshold.
   schema is additive and should not be rolled back during a service rollback.
 - [ ] Fresh v2 Veriflier fleet deployed, v2-only endpoints validated, quorum
   floor understood, and discovery/static-vantage posture approved.
+- [ ] Monitor API and Veriflier transport API design reviewed before rollout.
+  Confirm whether the current `/api/v1/...` Monitor API and `/v2/...`
+  Veriflier transport distinction is acceptable for launch, or whether a
+  follow-up alignment plan is needed after the tested rollout contract is
+  stable.
 - [ ] v2 Monitors deployed in standby/API-controlled mode and verified to avoid
   bucket claims, scheduled checks, delivery workers, WPCOM notifications, and
   site-state writes until activation.
