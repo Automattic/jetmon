@@ -773,7 +773,22 @@ curl http://localhost:6060/debug/pprof/heap > heap.prof
 go tool pprof heap.prof
 ```
 
-The debug listener binds to localhost only. Set `DEBUG_PORT` to 0 to disable it.
+The pprof debug listener is **off by default** in production builds: it only
+starts when `DEBUG_PORT > 0` (see `config.readme` for the default of `6060`
+in the sample config and `0` in production envs that do not set it). The
+listener always binds `127.0.0.1` regardless of value, so a stray
+`0.0.0.0`-style override is not possible from this knob alone. Set
+`DEBUG_PORT=0` to confirm the port is closed:
+
+```bash
+ss -ltn 'sport = :6060' | tail -n +2 | wc -l   # 0 = disabled
+```
+
+The `net/http/pprof` package registers its handlers on
+`http.DefaultServeMux` at import time, so they exist in the binary even when
+disabled — but with no listener, no external traffic can reach them. Treat
+`DEBUG_PORT > 0` as a deliberate opt-in for an investigation window, not a
+steady-state setting.
 
 If `WORKER_MAX_MEM_MB` is greater than 0 and Go runtime memory exceeds that
 threshold, the goroutine pool shrinks by 10 percent via graceful drain. The
