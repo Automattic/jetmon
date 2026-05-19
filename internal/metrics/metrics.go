@@ -147,9 +147,10 @@ func (c *Client) EmitMemStats() {
 	c.Gauge("runtime.threads.count", mem.RuntimeThreads)
 }
 
-// EmitDBStats emits a compact snapshot of one database pool. These are gauges,
-// including the cumulative sql.DB counters, so callers do not need to retain
-// previous values or add synchronization to the metrics client.
+// EmitDBStats emits a compact snapshot of one database pool. Current pool state
+// is emitted as gauges. Cumulative sql.DB counters are also emitted as gauges
+// with _total suffixes so downstream Graphite functions can derive rates
+// without callers retaining previous values.
 func (c *Client) EmitDBStats(prefix string, stats sql.DBStats) {
 	prefix = strings.Trim(strings.TrimSpace(prefix), ".")
 	if prefix == "" {
@@ -159,11 +160,11 @@ func (c *Client) EmitDBStats(prefix string, stats sql.DBStats) {
 	c.Gauge(prefix+".open_connections", stats.OpenConnections)
 	c.Gauge(prefix+".in_use", stats.InUse)
 	c.Gauge(prefix+".idle", stats.Idle)
-	c.Gauge(prefix+".wait_count", int(stats.WaitCount))
-	c.Gauge(prefix+".wait_duration_ms", int(stats.WaitDuration.Milliseconds()))
-	c.Gauge(prefix+".max_idle_closed", int(stats.MaxIdleClosed))
-	c.Gauge(prefix+".max_idle_time_closed", int(stats.MaxIdleTimeClosed))
-	c.Gauge(prefix+".max_lifetime_closed", int(stats.MaxLifetimeClosed))
+	c.Gauge(prefix+".wait_count_total", int(stats.WaitCount))
+	c.Gauge(prefix+".wait_duration_ms_total", int(stats.WaitDuration.Milliseconds()))
+	c.Gauge(prefix+".max_idle_closed_total", int(stats.MaxIdleClosed))
+	c.Gauge(prefix+".max_idle_time_closed_total", int(stats.MaxIdleTimeClosed))
+	c.Gauge(prefix+".max_lifetime_closed_total", int(stats.MaxLifetimeClosed))
 }
 
 // WriteStatsFiles writes sitespersec, sitesqueue, and totals to the stats/

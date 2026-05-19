@@ -354,11 +354,11 @@ doneReading:
 		"com.jetpack.jetmon.host_name.db.write_pool.open_connections:12|g",
 		"com.jetpack.jetmon.host_name.db.write_pool.in_use:7|g",
 		"com.jetpack.jetmon.host_name.db.write_pool.idle:5|g",
-		"com.jetpack.jetmon.host_name.db.write_pool.wait_count:9|g",
-		"com.jetpack.jetmon.host_name.db.write_pool.wait_duration_ms:1500|g",
-		"com.jetpack.jetmon.host_name.db.write_pool.max_idle_closed:3|g",
-		"com.jetpack.jetmon.host_name.db.write_pool.max_idle_time_closed:2|g",
-		"com.jetpack.jetmon.host_name.db.write_pool.max_lifetime_closed:1|g",
+		"com.jetpack.jetmon.host_name.db.write_pool.wait_count_total:9|g",
+		"com.jetpack.jetmon.host_name.db.write_pool.wait_duration_ms_total:1500|g",
+		"com.jetpack.jetmon.host_name.db.write_pool.max_idle_closed_total:3|g",
+		"com.jetpack.jetmon.host_name.db.write_pool.max_idle_time_closed_total:2|g",
+		"com.jetpack.jetmon.host_name.db.write_pool.max_lifetime_closed_total:1|g",
 	} {
 		if !got[want] {
 			t.Fatalf("missing DB metric line %q in %v", want, got)
