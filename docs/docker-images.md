@@ -132,7 +132,7 @@ Required env vars:
 | `WPCOM_NOTIFY_LEGACY_CERT_PATH`, `WPCOM_NOTIFY_LEGACY_KEY_PATH` | Required runtime secret paths when `WPCOM_NOTIFY_ENABLE=true` and `WPCOM_NOTIFY_MODE=legacy`. |
 | `EMAIL_TRANSPORT` | `stub` for dev; `smtp` plus `SMTP_*` vars for real delivery. |
 | `STATSD_ADDR` | Optional override for the UDP StatsD endpoint. Local Compose and Veriflier production Compose set this to `statsd:8125`. For TeamCity Monitor production, set `STATSD_ADDR=host.docker.internal:8125` and add Docker's `host.docker.internal:host-gateway` mapping, or set it explicitly empty to disable StatsD. |
-| `HOSTNAME` / `JETMON_HOSTNAME` | Stable process and metric identity. `HOSTNAME` is the rendered config key; `JETMON_HOSTNAME` is the Docker env input used by the entrypoint when rendering config. For Monitor production, use the v1-compatible `<datacenter>.<node>` format, for example `dfw1.jetmon-prod-1`; do not include container IDs, release SHAs, ports, or random suffixes. |
+| `HOSTNAME` / `JETMON_HOSTNAME` | Stable process and metric identity. `HOSTNAME` is the rendered config key; `JETMON_HOSTNAME` is the Docker env input used by the entrypoint when rendering config. For Monitor production, use the v1-compatible `<datacenter>.<node>` format derived by reversing the first two labels of the v1 hostname, for example `jetmon-prod-1.dfw1.example.com` -> `dfw1.jetmon-prod-1`; do not include container IDs, release SHAs, ports, or random suffixes. |
 
 Optional volume mounts:
 

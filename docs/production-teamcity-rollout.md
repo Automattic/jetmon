@@ -271,8 +271,10 @@ Deliverer, and Veriflier all support `STATSD_ADDR`:
 Production roles should also set `HOSTNAME` in config to the v1-compatible
 identity. The Docker entrypoint accepts `JETMON_HOSTNAME` as the env input when
 rendering that config value. The recommended Monitor format is
-`<datacenter>.<node>`, matching v1's hostname transform. For example, a v1 host
-named `jetmon-prod-1.dfw1.example.com` should render:
+`<datacenter>.<node>`, matching v1's hostname transform. v1 took the first two
+labels of the production hostname and reversed them:
+`<node>.<datacenter>.<domain>` became `<datacenter>.<node>`. For example, a v1
+host named `jetmon-prod-1.dfw1.example.com` should render:
 
 ```text
 JETMON_HOSTNAME=dfw1.jetmon-prod-1
@@ -281,12 +283,14 @@ JETMON_HOSTNAME=dfw1.jetmon-prod-1
 This controls process identity and the metric prefix:
 
 ```text
-com.jetpack.jetmon.<JETMON_HOSTNAME>.<metric>
+com.jetpack.jetmon.dfw1.jetmon-prod-1.<metric>
 ```
 
-Leaving both unset falls back to the runtime hostname, which is acceptable for
-local Docker runs but may become a container ID or service name under
-docker-deploy. If both are present at runtime, `HOSTNAME` from config wins.
+Set the transformed v1-compatible value, not the raw FQDN, unless dashboard
+series migration is intentional. Leaving both unset falls back to the runtime
+hostname, which is acceptable for local Docker runs but may become a container
+ID or service name under docker-deploy. If both are present at runtime,
+`HOSTNAME` from config wins.
 
 Keep this value stable and low-cardinality. Do not include container IDs,
 release SHAs, process IDs, ports, or random suffixes. For Verifliers, use a

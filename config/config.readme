@@ -4,8 +4,13 @@ Set to true to enable more verbose log messages. Default: false.
 HOSTNAME
 Stable Jetmon process identity. This value is used for dynamic host ownership,
 process health rows, outbound delivery identity, and the StatsD metric prefix.
-Set it in production to the v1-compatible logical host path, such as
-`dfw1.jetmon-prod-1`, instead of relying on a Docker container hostname.
+Set it in production to the v1-compatible metric host segment, not the raw
+FQDN. v1 derived this by taking the first two labels of the production hostname
+and reversing them: `<node>.<datacenter>.<domain>` became
+`<datacenter>.<node>`. For example, `jetmon-prod-1.dfw1.example.com` should use
+`dfw1.jetmon-prod-1`. This preserves StatsD paths such as
+`com.jetpack.jetmon.dfw1.jetmon-prod-1.<metric>` instead of using a Docker
+container hostname.
 Leave empty to use the runtime OS hostname. `JETMON_HOSTNAME` is the container
 env form of the same setting: the Docker entrypoint writes it into HOSTNAME
 when rendering config. At runtime, HOSTNAME from the loaded config wins;

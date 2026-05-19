@@ -624,13 +624,16 @@ com.jetpack.jetmon.<hostname>
 In production containers, set `HOSTNAME` in config to the v1-compatible
 identity, normally `<datacenter>.<node>`, so process health and metric prefixes
 stay stable even when the Docker runtime hostname is a container ID. The Docker
-entrypoint accepts `JETMON_HOSTNAME` as the env input when rendering config.
-For example, `jetmon-prod-1.dfw1.example.com` should use
-`JETMON_HOSTNAME=dfw1.jetmon-prod-1` during config rendering. If both are
-present at runtime, `HOSTNAME` from config wins. Keep the value stable and
-low-cardinality: do not include container IDs, release SHAs, process IDs,
-ports, or random suffixes. Leave it unset or empty for local development to use
-the process hostname fallback.
+entrypoint accepts `JETMON_HOSTNAME` as the env input when rendering config. v1
+derived this value by taking the first two labels of the production hostname and
+reversing them: `<node>.<datacenter>.<domain>` became
+`<datacenter>.<node>`. For example, `jetmon-prod-1.dfw1.example.com` should use
+`JETMON_HOSTNAME=dfw1.jetmon-prod-1` during config rendering. That produces
+`com.jetpack.jetmon.dfw1.jetmon-prod-1.<metric>`, matching the v1 dashboard path
+shape. If both are present at runtime, `HOSTNAME` from config wins. Keep the
+value stable and low-cardinality: do not include container IDs, release SHAs,
+process IDs, ports, or random suffixes. Leave it unset or empty for local
+development to use the process hostname fallback.
 
 Important metric groups include:
 
