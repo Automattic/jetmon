@@ -465,6 +465,11 @@ New `veriflier2` binaries serve the versioned v2 JSON contract by default:
 
 - v2: `POST /v2/check`, `GET /v2/status`
 
+This is the private Monitor-to-Veriflier transport version, not the Monitor
+REST API version. The Monitor operator/product API remains under `/api/v1/...`;
+the Veriflier transport uses `/v2/...` because it replaces the original v1
+Veriflier protocol.
+
 They can optionally serve a legacy-compatible HTTP contract for lab or
 emergency rollback testing by setting `VERIFLIER_ENABLE_LEGACY_HTTP=true`:
 

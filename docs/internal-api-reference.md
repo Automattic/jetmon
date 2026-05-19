@@ -254,6 +254,11 @@ https://api.jetmon.example.com/api/v1
 
 Hosted in the `jetmon2` binary on a dedicated port (`API_PORT`), separate from the operator dashboard (`DASHBOARD_PORT`) and the Veriflier transport port (`VERIFLIER_PORT`).
 
+This version applies to the Monitor's internal REST API only. The Veriflier
+`/v2/check` and `/v2/status` paths are a separate Monitor-to-Veriflier transport
+contract, named `v2` because they replace the original v1 Veriflier protocol.
+They are intentionally not under `/api/v1`.
+
 ### Content negotiation
 
 `Content-Type: application/json` for both request and response. UTF-8. No XML, no form-encoded, no JSON-API envelope (Better Stack uses JSON:API; we don't because it adds an `attributes` indirection that obscures field names without buying us anything Jetmon-specific).

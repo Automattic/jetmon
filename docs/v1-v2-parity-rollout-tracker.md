@@ -227,7 +227,8 @@ Recommended solution:
 
 ## 5. Legacy Monitor Health/Status Endpoint Replacement
 
-Status: rollout validation item recommended; code evidence reviewed
+Status: resolved; use v2 health endpoints and leave `/get/status` out unless a
+consumer need is later confirmed
 
 Key difference:
 
@@ -259,6 +260,19 @@ Evidence:
   production monitoring consumer was found, so the remaining risk is external
   Systems or monitoring configuration outside this repository.
 
+API versioning note:
+
+- The Monitor's `/api/v1/...` surface is the internal operator/product REST API
+  and is versioned from its first public contract.
+- The Veriflier's `/v2/...` surface is not the Monitor REST API; it is the
+  Monitor-to-Veriflier transport contract. It is called `v2` because it
+  replaces the original v1 Veriflier TLS/custom protocol and optional
+  `/check`/`/status` compatibility endpoints.
+- This is visually inconsistent, but changing it before rollout would add
+  churn to the already-tested Veriflier contract. Keep the paths as-is and
+  document the distinction. If a future Veriflier API grows beyond this narrow
+  transport contract, revisit an `/api/vN/...` shape then.
+
 V1 way:
 
 - Pros: simple health check and already deployed.
@@ -280,9 +294,9 @@ Resolution options:
 
 Recommended solution:
 
-- Prefer updating docker-deploy/monitoring to the v2 health endpoint. Add a
-  compatibility `OK` endpoint only if Systems cannot update health checks before
-  rollout.
+- Update docker-deploy/monitoring to the v2 health endpoint. Do not add a
+  compatibility `OK` endpoint unless Systems later confirms a consumer that
+  cannot be changed before rollout.
 
 ## 6. DB Server-Map Parser Behavior And Documentation
 
