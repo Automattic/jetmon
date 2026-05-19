@@ -66,7 +66,12 @@ var (
 // it unset means ctx is the only deadline and is honored exactly.
 func NewVeriflierClient(addr, authToken string) *VeriflierClient {
 	transport := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
+		// Verifliers are internal-network services. http.ProxyFromEnvironment
+		// would silently route Monitor→Veriflier traffic through HTTPS_PROXY
+		// if a developer's shell exports one for unrelated purposes; that
+		// breaks the internal-only assumption and would expose bearer tokens
+		// to an unintended hop. Explicit nil keeps the dial direct.
+		Proxy: nil,
 		DialContext: (&net.Dialer{
 			Timeout:   5 * time.Second,
 			KeepAlive: 30 * time.Second,
