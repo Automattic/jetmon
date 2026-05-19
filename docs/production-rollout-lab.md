@@ -66,6 +66,9 @@ Use these as a lab pool, not as fixed assignments. A good first topology is:
 - Compose includes `--add-host=host.docker.internal:host-gateway`.
 - Monitor/Deliverer `STATSD_ADDR=host.docker.internal:8125`.
 - Host-local StatsD and Graphite are installed and running on the Monitor hosts.
+- Monitor-host StatsD should bind only to localhost or a private lab interface,
+  not a public interface. The lab may expose Graphite on a private/admin bind
+  address for evidence capture.
 - API is enabled only on the intended Monitor control surface.
 
 ### Veriflier Hosts
