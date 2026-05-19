@@ -481,6 +481,69 @@ func TestLegacyStatusProjectionConfig(t *testing.T) {
 	}
 }
 
+func TestLoadWarnsForDeprecatedNoopAndUnknownKeys(t *testing.T) {
+	saveConfigState(t)
+
+	p := writeConfigFile(t, `{
+		"AUTH_TOKEN": "token",
+		"NUM_WORKERS": 7,
+		"NUM_TO_PROCESS": 40,
+		"WORKER_MAX_CHECKS": 10000,
+		"TIMEOUT_FOR_REQUESTS_SEC": 60,
+		"BUCKET_TOTAL": 100,
+		"BUCKET_TARGET": 50,
+		"BUCKET_NO_MIN": 0,
+		"BUCKET_NO_MAX": 49,
+		"BATCH_SIZE": 32,
+		"VERIFLIER_BATCH_SIZE": 200,
+		"SQL_UPDATE_BATCH": 1,
+		"TIME_BETWEEN_CHECKS_SEC": 30,
+		"TIME_BETWEEN_NOTICES_MIN": 59,
+		"NET_COMMS_TIMEOUT": 10,
+		"LOG_FORMAT": "text",
+		"UNEXPECTED_V1_KEY": true,
+		"VERIFIERS": [
+			{
+				"name": "legacy verifier",
+				"host": "veriflier",
+				"grpc_port": "7803",
+				"auth_token": "token"
+			}
+		]
+	}`)
+
+	if err := Load(p); err != nil {
+		t.Fatalf("Load() should warn but not fail: %v", err)
+	}
+	warnings := warningsByKey(Get().Warnings)
+	for _, key := range []string{
+		"NUM_TO_PROCESS",
+		"WORKER_MAX_CHECKS",
+		"TIMEOUT_FOR_REQUESTS_SEC",
+		"BUCKET_NO_MIN",
+		"BUCKET_NO_MAX",
+		"BATCH_SIZE",
+		"VERIFLIER_BATCH_SIZE",
+		"SQL_UPDATE_BATCH",
+		"TIME_BETWEEN_CHECKS_SEC",
+		"TIME_BETWEEN_NOTICES_MIN",
+		"UNEXPECTED_V1_KEY",
+		"VERIFIERS[0].grpc_port",
+	} {
+		if warnings[key] == "" {
+			t.Fatalf("missing warning for %s; got %#v", key, warnings)
+		}
+	}
+}
+
+func warningsByKey(warnings []ConfigWarning) map[string]string {
+	out := make(map[string]string, len(warnings))
+	for _, warning := range warnings {
+		out[warning.Key] = warning.Message
+	}
+	return out
+}
+
 func TestWPCOMNotifyConfig(t *testing.T) {
 	saveConfigState(t)
 	p := writeConfigFile(t, `{

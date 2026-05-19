@@ -12,7 +12,8 @@ NUM_TO_PROCESS
 Legacy compatibility setting retained so copied v1-style configs continue to
 parse. The Go scheduler uses DATASET_SIZE as the fetch page and NUM_WORKERS as
 the concurrency guardrail; NUM_TO_PROCESS does not cap scheduler throughput.
-Default: 40.
+Startup and validate-config warn when this key is present so copied v1 configs
+do not silently imply an active throughput limit. Default: 40.
 
 DATASET_SIZE
 Maximum number of sites to fetch from the database per scheduler page. The
@@ -27,12 +28,14 @@ limit be the real ceiling. This avoids silently reducing check throughput during
 capacity tests and production runs unless an operator has intentionally set a
 local safety cap. If capacity tests show memory-pressure drain logs, investigate
 runtime memory and pprof data before raising or re-enabling the cap. Default: 0.
+This is not the same as v1's per-worker-process memory recycle behavior.
 
 LEGACY_STATUS_PROJECTION_ENABLE
 Set to true while Jetmon v2 is running in shadow-v2-state migration mode. When enabled, v2 writes its authoritative incident state to jetmon_events / jetmon_event_transitions and also projects v1-compatible site_status + last_status_change values back into jetpack_monitor_sites for legacy consumers. Set to false only after downstream readers have moved to the v2 event/API surface. Default: true.
 
 DB_UPDATES_ENABLE
 Deprecated alias for LEGACY_STATUS_PROJECTION_ENABLE. If both keys are present, LEGACY_STATUS_PROJECTION_ENABLE wins.
+Startup and validate-config warn when this alias is present.
 
 DB_CONFIG_UPDATES_MIN
 Database server-map refresh cadence in minutes. When DB_SERVER_MAP_PATH is set,
@@ -67,6 +70,36 @@ Which host:port column to use from db-servers.php: internet or internal.
 The default is internet to match v1's effective behavior. Use internal only
 when the deployment network can reach the internal addresses. Default: internet.
 
+V1 COMPATIBILITY AND DEPRECATED KEYS
+Jetmon v2 intentionally accepts copied v1-style config files, but startup and
+validate-config warn for keys whose v1 meaning no longer applies.
+
+Deprecated aliases with real v2 behavior:
+  DB_UPDATES_ENABLE - alias for LEGACY_STATUS_PROJECTION_ENABLE
+  BUCKET_NO_MIN / BUCKET_NO_MAX - aliases for PINNED_BUCKET_MIN /
+                                  PINNED_BUCKET_MAX during pinned rollout
+  VERIFIERS[].grpc_port - alias for VERIFIERS[].port
+
+Accepted compatibility keys with no production tuning effect in v2:
+  NUM_TO_PROCESS - no scheduler throughput cap; use NUM_WORKERS, DATASET_SIZE,
+                   and SCHEDULER_ENGINE
+  BATCH_SIZE - no scheduler effect; use DATASET_SIZE
+  VERIFLIER_BATCH_SIZE - no tuning effect on the current v2 Veriflier transport
+  SQL_UPDATE_BATCH - does not control v2 DB write batching
+  TIME_BETWEEN_CHECKS_SEC - does not control v2 retry cadence
+  TIME_BETWEEN_NOTICES_MIN - does not gate v2 WPCOM status-change notifications
+  WORKER_MAX_CHECKS - ignored; v2 has no Node worker recycle-by-check-count
+  TIMEOUT_FOR_REQUESTS_SEC - ignored; v2 retry/escalation has separate logic
+
+Active keys with changed meaning from v1:
+  NUM_WORKERS - goroutine pool floor/guardrail, not process count
+  DATASET_SIZE - DB fetch page size, not total work per round
+  WORKER_MAX_MEM_MB - process memory drain guardrail, not per-worker recycle
+  MIN_TIME_BETWEEN_ROUNDS_SEC - fixed-cadence full-round delay only when
+                                USE_VARIABLE_CHECK_INTERVALS is false
+  USE_VARIABLE_CHECK_INTERVALS - uses v2 runtime due state and short idle polls
+                                 instead of v1's minute-loop semantics
+
 BUCKET_TOTAL
 Total number of buckets in the system across all hosts. Must match the range of bucket_no values in the jetpack_monitor_sites table. Default: 1000.
 
@@ -84,11 +117,13 @@ Migration-only static bucket range for replacing one v1 host with one v2 host du
 
 BUCKET_NO_MIN / BUCKET_NO_MAX
 Deprecated v1 names accepted as aliases for PINNED_BUCKET_MIN / PINNED_BUCKET_MAX. They must be set together and must match PINNED_BUCKET_* if both forms are present.
+Startup and validate-config warn when these aliases are present.
 
 BATCH_SIZE
 Legacy compatibility setting retained so copied v1-style configs continue to
 parse. It is not used by the Go scheduler; scheduler DB paging is controlled by
-DATASET_SIZE. Default: 32.
+DATASET_SIZE. Startup and validate-config warn when this key is present.
+Default: 32.
 
 AUTH_TOKEN
 Shared secret used to authenticate outbound WPCOM API calls. Required.
@@ -132,9 +167,16 @@ compatibility. Set false only after confirming the WPCOM legacy endpoint works
 with normal TLS verification from the production container network.
 
 VERIFLIER_BATCH_SIZE
-Legacy compatibility setting retained for verifier batching compatibility. The
-current JSON-over-HTTP verifier path can send multiple sites per request, but
-confirmation escalation still commonly sends one site at a time. Default: 200.
+Legacy compatibility setting retained so copied v1-style configs parse. The
+current v2 Veriflier transport owns request batching internally, so this key has
+no production tuning effect. Startup and validate-config warn when this key is
+present. Default: 200.
+
+SQL_UPDATE_BATCH
+Legacy compatibility setting retained so copied v1-style configs parse. Jetmon
+v2 write paths use their own batching and transaction rules, so this key does
+not control DB write batching. Startup and validate-config warn when this key is
+present. Default: 1.
 
 PEER_OFFLINE_LIMIT
 Minimum number of verifliers that must confirm a site is down before it is declared confirmed-down. Default: 3.
@@ -165,8 +207,8 @@ Legacy compatibility setting retained so copied v1-style configs parse.
 Jetmon v2 scheduler cadence is controlled by the v1 check_interval field plus
 v2 sidecar runtime due state in variable-interval mode and by
 MIN_TIME_BETWEEN_ROUNDS_SEC in fixed-cadence mode. Failed checks are scheduled
-for a bounded one-minute follow-up when the normal interval is longer. Default:
-30.
+for a bounded one-minute follow-up when the normal interval is longer. Startup
+and validate-config warn when this key is present. Default: 30.
 
 ALERT_COOLDOWN_MINUTES
 Minimum minutes between repeated down-alerts for the same site. Prevents alert storms during flapping. Default: 30. Can be overridden per site through the API or jetmon_site_check_config.alert_cooldown_minutes.
@@ -201,7 +243,10 @@ STATSD_SEND_MEM_USAGE
 Set to true to emit Go runtime memory stats to StatsD each interval. Default: false.
 
 TIME_BETWEEN_NOTICES_MIN
-Minimum minutes between a site going down and a confirmed-down notification being sent. Default: 59.
+Legacy compatibility setting retained so copied v1-style configs parse. Jetmon
+v2 WPCOM status-change notifications are driven by incident state transitions
+and Veriflier confirmation, not by this v1 delay knob. Startup and
+validate-config warn when this key is present. Default: 59.
 
 MIN_TIME_BETWEEN_ROUNDS_SEC
 Minimum seconds between fixed-cadence full-fleet passes when

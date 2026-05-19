@@ -367,7 +367,7 @@ Recommended solution:
 
 ## 7. Deprecated V1 Config Key Handling
 
-Status: docs/validation update recommended
+Status: implemented with startup and `validate-config` warnings
 
 Key difference:
 
@@ -403,6 +403,20 @@ Recommended solution:
 - Accept copied v1 configs but warn clearly for deprecated no-op keys during
   `validate-config` and startup. This keeps rollout forgiving without hiding
   semantic changes.
+
+Implementation notes:
+
+- Startup, SIGHUP reload, and `jetmon2 validate-config` report
+  `WARN config_key=...` lines for deprecated aliases, ignored v1-only keys,
+  unknown top-level keys, and `VERIFIERS[].grpc_port`.
+- Ignored v1-only keys include `WORKER_MAX_CHECKS` and
+  `TIMEOUT_FOR_REQUESTS_SEC`.
+- Accepted compatibility keys that warn because their v1 tuning meaning no
+  longer applies include `NUM_TO_PROCESS`, `BATCH_SIZE`,
+  `VERIFLIER_BATCH_SIZE`, `SQL_UPDATE_BATCH`, `TIME_BETWEEN_CHECKS_SEC`, and
+  `TIME_BETWEEN_NOTICES_MIN`.
+- Deprecated aliases with real behavior still load but warn:
+  `DB_UPDATES_ENABLE`, `BUCKET_NO_MIN/MAX`, and `VERIFIERS[].grpc_port`.
 
 ## 8. Full Codebase Simplification And Legacy-Surface Review
 

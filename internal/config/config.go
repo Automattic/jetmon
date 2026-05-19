@@ -6,6 +6,8 @@ import (
 	"log"
 	"net"
 	"os"
+	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -165,6 +167,15 @@ type Config struct {
 	SMTPUseTLS          bool   `json:"SMTP_USE_TLS"`
 
 	Verifiers []VerifierConfig `json:"VERIFIERS"`
+
+	Warnings []ConfigWarning `json:"-"`
+}
+
+// ConfigWarning reports a compatibility or ignored-key issue discovered while
+// loading a config file. Warnings never block parsing.
+type ConfigWarning struct {
+	Key     string
+	Message string
 }
 
 // DBConfig holds MySQL connection parameters loaded from environment variables.
@@ -208,6 +219,7 @@ func reload() error {
 	if err := json.Unmarshal(raw, cfg); err != nil {
 		return fmt.Errorf("parse config: %w", err)
 	}
+	cfg.Warnings = collectConfigWarnings(raw)
 	applyDeprecatedAliases(raw, cfg)
 
 	if err := validate(cfg); err != nil {
@@ -314,6 +326,130 @@ func applyDeprecatedAliases(raw []byte, cfg *Config) {
 	if _, hasOld := keys["DB_UPDATES_ENABLE"]; hasOld {
 		cfg.LegacyStatusProjectionEnable = cfg.DBUpdatesEnable
 	}
+}
+
+type deprecatedConfigKeyWarning struct {
+	key     string
+	message string
+}
+
+var deprecatedConfigKeyWarnings = []deprecatedConfigKeyWarning{
+	{
+		key:     "WORKER_MAX_CHECKS",
+		message: "ignored by Jetmon v2; Node worker recycle-by-check-count does not apply to Go goroutine workers",
+	},
+	{
+		key:     "TIMEOUT_FOR_REQUESTS_SEC",
+		message: "ignored by Jetmon v2; Veriflier retry queue expiration is handled by the v2 retry and escalation flow",
+	},
+	{
+		key:     "DB_UPDATES_ENABLE",
+		message: "deprecated alias; use LEGACY_STATUS_PROJECTION_ENABLE",
+	},
+	{
+		key:     "BUCKET_NO_MIN",
+		message: "deprecated migration alias; use PINNED_BUCKET_MIN during v1-to-v2 pinned rollout",
+	},
+	{
+		key:     "BUCKET_NO_MAX",
+		message: "deprecated migration alias; use PINNED_BUCKET_MAX during v1-to-v2 pinned rollout",
+	},
+	{
+		key:     "NUM_TO_PROCESS",
+		message: "parsed for copied v1 config compatibility but does not cap v2 scheduler throughput; tune NUM_WORKERS, DATASET_SIZE, and scheduler mode instead",
+	},
+	{
+		key:     "BATCH_SIZE",
+		message: "parsed for copied v1 config compatibility but is not used by the v2 scheduler; use DATASET_SIZE for database fetch paging",
+	},
+	{
+		key:     "VERIFLIER_BATCH_SIZE",
+		message: "parsed for copied v1 config compatibility but has no production tuning effect on the current v2 Veriflier transport",
+	},
+	{
+		key:     "SQL_UPDATE_BATCH",
+		message: "parsed for copied v1 config compatibility but does not control v2 database write batching",
+	},
+	{
+		key:     "TIME_BETWEEN_CHECKS_SEC",
+		message: "parsed for copied v1 config compatibility but does not control v2 retry cadence; v2 uses per-site check intervals, runtime due state, and bounded retry scheduling",
+	},
+	{
+		key:     "TIME_BETWEEN_NOTICES_MIN",
+		message: "parsed for copied v1 config compatibility but does not gate v2 WPCOM status-change notifications; v2 notification timing follows incident state and Veriflier confirmation",
+	},
+}
+
+func collectConfigWarnings(raw []byte) []ConfigWarning {
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &keys); err != nil {
+		return nil
+	}
+
+	warnings := make([]ConfigWarning, 0)
+	deprecated := make(map[string]struct{}, len(deprecatedConfigKeyWarnings))
+	for _, item := range deprecatedConfigKeyWarnings {
+		deprecated[item.key] = struct{}{}
+		if _, ok := keys[item.key]; ok {
+			warnings = append(warnings, ConfigWarning{Key: item.key, Message: item.message})
+		}
+	}
+
+	known := knownConfigJSONKeys()
+	var unknown []string
+	for key := range keys {
+		if _, ok := known[key]; ok {
+			continue
+		}
+		if _, ok := deprecated[key]; ok {
+			continue
+		}
+		unknown = append(unknown, key)
+	}
+	sort.Strings(unknown)
+	for _, key := range unknown {
+		warnings = append(warnings, ConfigWarning{
+			Key:     key,
+			Message: "not recognized by Jetmon v2 and will be ignored; check for typos or remove it",
+		})
+	}
+
+	warnings = append(warnings, collectVerifierConfigWarnings(keys["VERIFIERS"])...)
+	return warnings
+}
+
+func knownConfigJSONKeys() map[string]struct{} {
+	known := make(map[string]struct{})
+	t := reflect.TypeOf(Config{})
+	for i := 0; i < t.NumField(); i++ {
+		tag := t.Field(i).Tag.Get("json")
+		name := strings.Split(tag, ",")[0]
+		if name == "" || name == "-" {
+			continue
+		}
+		known[name] = struct{}{}
+	}
+	return known
+}
+
+func collectVerifierConfigWarnings(raw json.RawMessage) []ConfigWarning {
+	if len(raw) == 0 {
+		return nil
+	}
+	var verifiers []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &verifiers); err != nil {
+		return nil
+	}
+	warnings := make([]ConfigWarning, 0)
+	for i, verifier := range verifiers {
+		if _, ok := verifier["grpc_port"]; ok {
+			warnings = append(warnings, ConfigWarning{
+				Key:     fmt.Sprintf("VERIFIERS[%d].grpc_port", i),
+				Message: "deprecated Veriflier port alias; use port",
+			})
+		}
+	}
+	return warnings
 }
 
 // LegacyStatusProjectionEnabled reports whether v2 should maintain the legacy

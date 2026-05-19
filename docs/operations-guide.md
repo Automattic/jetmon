@@ -112,6 +112,18 @@ Scheduler behavior:
 See [../config/config.readme](../config/config.readme) for the full option
 reference.
 
+Copied v1 config files are accepted, but startup and `jetmon2 validate-config`
+warn for deprecated aliases, ignored v1-only keys, and compatibility keys whose
+meaning changed in v2. Treat these warnings as cleanup work before production
+activation. The most important ignored v1-only keys are
+`WORKER_MAX_CHECKS` and `TIMEOUT_FOR_REQUESTS_SEC`; common compatibility keys
+such as `NUM_TO_PROCESS`, `BATCH_SIZE`, `VERIFLIER_BATCH_SIZE`,
+`SQL_UPDATE_BATCH`, `TIME_BETWEEN_CHECKS_SEC`, and
+`TIME_BETWEEN_NOTICES_MIN` also warn because they no longer tune the v2
+scheduler or notification flow. `DB_UPDATES_ENABLE`, `BUCKET_NO_MIN/MAX`, and
+`VERIFIERS[].grpc_port` remain aliases but should be replaced with their v2
+names.
+
 Production database server-map refresh is handled by a config-sync sidecar for
 the first TeamCity/docker-deploy rollout, with host-side systemd sync kept as a
 fallback. Use [production-teamcity-rollout.md](production-teamcity-rollout.md)

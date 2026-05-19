@@ -121,6 +121,7 @@ func runServe() {
 		log.Fatalf("configure check DNS resolvers: %v", err)
 	}
 	log.Printf("jetmon2: starting rollout_mode=%s scheduler=%s bucket_ownership=%s wpcom_notify=%s wpcom_mode=%s", cfg.RolloutMode, schedulerConfigLabel(cfg), bucketOwnershipLabel(cfg), enabledLabel(cfg.WPCOMNotifyEnable), cfg.WPCOMNotifyMode)
+	logConfigWarnings(cfg)
 	config.Debugf("config: legacy_status_projection=%s", enabledLabel(cfg.LegacyStatusProjectionEnable))
 	config.Debugf("config: default_check_policy=method:%s profile:%s", cfg.DefaultCheckMethod, cfg.DefaultDetectionProfile)
 	config.Debugf("config: check_dns_resolvers=%s", checkDNSResolversLabel(checker.ConfiguredResolverServers()))
@@ -351,6 +352,7 @@ func runServe() {
 					if dash != nil {
 						dash.SetFleetSource(newFleetDashboardStore(config.Get()))
 					}
+					logConfigWarnings(config.Get())
 					log.Println("config reloaded; CHECK_DNS_RESOLVERS changes require restart")
 				}
 			case syscall.SIGINT, syscall.SIGTERM:
@@ -409,6 +411,8 @@ func cmdValidateConfig() {
 		os.Exit(1)
 	}
 	fmt.Println("PASS config parse")
+	cfg := config.Get()
+	printConfigWarnings(os.Stdout, cfg)
 
 	config.LoadDB()
 	if err := db.ConnectWithRetry(3); err != nil {
@@ -417,7 +421,6 @@ func cmdValidateConfig() {
 	}
 	fmt.Println("PASS db connect")
 
-	cfg := config.Get()
 	fmt.Printf("INFO legacy_status_projection=%s\n", enabledLabel(cfg.LegacyStatusProjectionEnable))
 	fmt.Printf("INFO bucket_ownership=%s\n", bucketOwnershipLabel(cfg))
 	fmt.Printf("INFO rollout_mode=%s\n", cfg.RolloutMode)
@@ -680,6 +683,28 @@ func enabledLabel(b bool) string {
 		return "enabled"
 	}
 	return "disabled"
+}
+
+func configWarningLine(w config.ConfigWarning) string {
+	return fmt.Sprintf("WARN config_key=%q message=%q", w.Key, w.Message)
+}
+
+func printConfigWarnings(w io.Writer, cfg *config.Config) {
+	if cfg == nil {
+		return
+	}
+	for _, warning := range cfg.Warnings {
+		fmt.Fprintln(w, configWarningLine(warning))
+	}
+}
+
+func logConfigWarnings(cfg *config.Config) {
+	if cfg == nil {
+		return
+	}
+	for _, warning := range cfg.Warnings {
+		log.Print(configWarningLine(warning))
+	}
 }
 
 func wpcomClientForConfig(cfg *config.Config, hostname string) *wpcom.Client {
