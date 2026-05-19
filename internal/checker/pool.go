@@ -26,6 +26,11 @@ type Pool struct {
 	wg      sync.WaitGroup
 	minSize int
 	maxSize int
+	// scaleSignal wakes autoScale ahead of its 5s ticker when Submit observes
+	// queue pressure. Capacity 1 so a burst of submits coalesces into a
+	// single nudge: only the first signal matters, the autoscaler will pick
+	// up whatever queue depth exists at the time it runs.
+	scaleSignal chan struct{}
 }
 
 // NewPool creates a Pool with the given initial, min, and max worker counts.
@@ -45,13 +50,14 @@ func NewPoolWithQueueCap(initial, min, max, queueCap int) *Pool {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	p := &Pool{
-		work:    make(chan Request, queueCap),
-		results: make(chan Result, queueCap),
-		retire:  make(chan struct{}, max),
-		cancel:  cancel,
-		ctx:     ctx,
-		minSize: min,
-		maxSize: max,
+		work:        make(chan Request, queueCap),
+		results:     make(chan Result, queueCap),
+		retire:      make(chan struct{}, max),
+		cancel:      cancel,
+		ctx:         ctx,
+		minSize:     min,
+		maxSize:     max,
+		scaleSignal: make(chan struct{}, 1),
 	}
 	for range initial {
 		p.spawnWorker()
@@ -61,6 +67,11 @@ func NewPoolWithQueueCap(initial, min, max, queueCap int) *Pool {
 }
 
 // Submit enqueues a check request. Non-blocking; drops if queue is full.
+//
+// After enqueue, if the current queue depth exceeds the worker count and we
+// have headroom below maxSize, signal autoScale to wake immediately instead
+// of waiting up to 5s for its ticker. The signal channel has capacity 1 and
+// a non-blocking send, so a burst of submits coalesces into a single nudge.
 func (p *Pool) Submit(req Request) bool {
 	p.workMu.RLock()
 	defer p.workMu.RUnlock()
@@ -69,9 +80,27 @@ func (p *Pool) Submit(req Request) bool {
 	}
 	select {
 	case p.work <- req:
+		p.maybeSignalScale()
 		return true
 	default:
 		return false
+	}
+}
+
+// maybeSignalScale wakes autoScale early when the queue is growing faster
+// than the current worker count can drain. Non-blocking; if a signal is
+// already pending the existing one will serve this burst.
+func (p *Pool) maybeSignalScale() {
+	current := int(p.size.Load())
+	if current >= p.maxSize {
+		return
+	}
+	if len(p.work) <= current {
+		return
+	}
+	select {
+	case p.scaleSignal <- struct{}{}:
+	default:
 	}
 }
 
@@ -146,7 +175,9 @@ func (p *Pool) spawnWorker() {
 }
 
 // autoScale adjusts the pool size every 5 seconds based on queue depth and
-// process memory usage.
+// process memory usage. It also wakes early when Submit signals that the
+// queue is growing faster than the current worker count, so a flash backlog
+// gets workers in microseconds rather than up to 5 seconds.
 func (p *Pool) autoScale() {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
@@ -155,6 +186,8 @@ func (p *Pool) autoScale() {
 		case <-p.ctx.Done():
 			return
 		case <-ticker.C:
+			p.scale()
+		case <-p.scaleSignal:
 			p.scale()
 		}
 	}

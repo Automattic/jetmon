@@ -256,6 +256,76 @@ func TestDrainCalledTwice(t *testing.T) {
 	p.Drain() // second Drain must be a no-op, not block or panic
 }
 
+func TestSubmitSignalsScaleAheadOfTicker(t *testing.T) {
+	// Stub the per-check function so workers block on a release channel
+	// rather than doing HTTP I/O. Each worker that pulls a request gets
+	// pinned as "busy" until release closes.
+	origCheck := poolCheckFunc
+	release := make(chan struct{})
+	poolCheckFunc = func(_ context.Context, req Request) Result {
+		<-release
+		return Result{BlogID: req.BlogID}
+	}
+
+	// Start with 1 worker, room for up to 5. Submit twice maxSize so the
+	// queue stays deeper than the worker count even after every worker has
+	// pulled one request — that ensures every submit-after-the-first triggers
+	// the signal path until the pool is at maxSize.
+	const maxSize = 5
+	p := NewPoolWithQueueCap(1, 1, maxSize, 32)
+	// release MUST close before Drain so workers can finish; t.Cleanup is
+	// LIFO so we register Drain first.
+	t.Cleanup(func() {
+		poolCheckFunc = origCheck
+	})
+	t.Cleanup(p.Drain)
+	t.Cleanup(func() { close(release) })
+
+	for i := range maxSize * 2 {
+		if !p.Submit(Request{BlogID: int64(i + 1), URL: "http://stub"}) {
+			t.Fatalf("Submit %d returned false on non-full queue", i)
+		}
+	}
+
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		if p.WorkerCount() >= maxSize {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("WorkerCount() = %d after backlog submit + 1s, want %d (autoscale signal should have fired)",
+		p.WorkerCount(), maxSize)
+}
+
+func TestSubmitDoesNotSignalWhenAtMaxSize(t *testing.T) {
+	// When the pool is already at maxSize, Submit should not push to the
+	// signal channel — there's nothing autoscale could do.
+	origCheck := poolCheckFunc
+	release := make(chan struct{})
+	poolCheckFunc = func(_ context.Context, req Request) Result {
+		<-release
+		return Result{BlogID: req.BlogID}
+	}
+
+	p := NewPoolWithQueueCap(2, 1, 2, 10)
+	t.Cleanup(func() {
+		poolCheckFunc = origCheck
+	})
+	t.Cleanup(p.Drain)
+	t.Cleanup(func() { close(release) })
+
+	// Submit enough to fill the queue. WorkerCount stays at maxSize.
+	for i := range 5 {
+		_ = p.Submit(Request{BlogID: int64(i + 1), URL: "http://stub"})
+	}
+	// Give autoscale a brief moment in case any spurious signal fires.
+	time.Sleep(50 * time.Millisecond)
+	if got := p.WorkerCount(); got != 2 {
+		t.Fatalf("WorkerCount() = %d, want 2 (capped at maxSize)", got)
+	}
+}
+
 func TestSubmitDropsWhenQueueFull(t *testing.T) {
 	// Zero workers means nothing drains the channel. Channel capacity = max*2 = 4.
 	p := NewPool(0, 0, 2)
