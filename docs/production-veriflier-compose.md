@@ -26,6 +26,11 @@ published on the host. Graphite HTTP is published on
 `GRAPHITE_BIND_ADDR:GRAPHITE_HOST_PORT`; set `GRAPHITE_BIND_ADDR` to a
 private/VPN/firewalled address that central Grafana can reach.
 
+When StatsD is configured, Veriflier emits a small process-resource gauge set
+every 10 seconds so capacity tests and dashboards can spot memory,
+file-descriptor, goroutine, or OS-thread pressure without adding per-target
+metric labels.
+
 The Compose file mounts
 [../docker/graphite-storage-schemas.conf](../docker/graphite-storage-schemas.conf)
 so Jetmon metrics use the requested retention schedule:

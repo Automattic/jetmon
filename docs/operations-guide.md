@@ -671,10 +671,12 @@ Important metric groups include:
   recovery, or false alarm
 - Detection outcome counters by local failure class
 - Legacy projection drift
-- Low-overhead process resource gauges when `STATSD_SEND_MEM_USAGE=true`: RSS
-  memory, Go runtime memory, heap allocation, open file descriptors, file
-  descriptor utilization percentage, goroutine/thread scheduler counts, and
-  read/write `sql.DB` pool pressure
+- Low-overhead process resource gauges: RSS memory, Go runtime memory, heap
+  allocation, open file descriptors, file descriptor utilization percentage,
+  and goroutine/thread scheduler counts. Monitors and standalone deliverers
+  emit these when `STATSD_SEND_MEM_USAGE=true`; Verifliers emit them whenever
+  `STATSD_ADDR` is configured. Monitors and deliverers also emit read/write
+  `sql.DB` pool pressure under the same `STATSD_SEND_MEM_USAGE` gate.
 
 StatsD is the primary metrics transport. Monitor and deliverer read
 `STATSD_ADDR`; Jetmon binaries do not assume a production StatsD endpoint when
