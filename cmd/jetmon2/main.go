@@ -152,15 +152,18 @@ func runServe() {
 
 	audit.Init(db.DB())
 
-	if addr, enabled, err := metrics.InitFromEnv(db.Hostname(), defaultStatsDAddr); err != nil {
+	hostname := db.Hostname()
+	if addr, enabled, err := metrics.InitFromEnv(cfg.StatsDMetricHost(hostname), defaultStatsDAddr); err != nil {
 		log.Printf("warning: statsd init failed: %v", err)
 	} else if enabled {
 		config.Debugf("metrics: sending StatsD to %s", addr)
+		if strings.TrimSpace(cfg.StatsDHostPath) == "" {
+			log.Printf("WARN: STATSD_HOST_PATH is unset; StatsD metrics will use host identity %q", hostname)
+		}
 	} else {
 		config.Debugf("metrics: StatsD disabled")
 	}
 
-	hostname := db.Hostname()
 	processStartedAt := time.Now().UTC()
 	processID := fleethealth.ProcessID(hostname, fleethealth.ProcessMonitor)
 
@@ -425,6 +428,10 @@ func cmdValidateConfig() {
 	fmt.Printf("INFO bucket_ownership=%s\n", bucketOwnershipLabel(cfg))
 	fmt.Printf("INFO rollout_mode=%s\n", cfg.RolloutMode)
 	fmt.Printf("INFO scheduler=%s\n", schedulerConfigLabel(cfg))
+	fmt.Printf("INFO statsd_host_path=%s\n", cfg.StatsDMetricHost(db.Hostname()))
+	if metrics.AddrFromEnv(defaultStatsDAddr) != "" && strings.TrimSpace(cfg.StatsDHostPath) == "" {
+		fmt.Printf("WARN STATSD_HOST_PATH is unset; StatsD metrics will fall back to host identity %q\n", db.Hostname())
+	}
 	fmt.Printf("INFO default_check_policy=method:%s profile:%s\n", cfg.DefaultCheckMethod, cfg.DefaultDetectionProfile)
 	fmt.Printf("INFO wpcom_notify=%s mode=%s\n", enabledLabel(cfg.WPCOMNotifyEnable), cfg.WPCOMNotifyMode)
 	for _, line := range wpcomNotifyAdviceLines(cfg) {

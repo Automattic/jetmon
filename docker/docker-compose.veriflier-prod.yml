@@ -14,6 +14,7 @@ services:
       VERIFLIER_ENABLE_LEGACY_HTTP: ${VERIFLIER_ENABLE_LEGACY_HTTP:-false}
       STATSD_ADDR: statsd:8125
       JETMON_HOSTNAME: ${JETMON_HOSTNAME:-}
+      STATSD_HOST_PATH: ${STATSD_HOST_PATH:-}
     depends_on:
       statsd:
         condition: service_healthy

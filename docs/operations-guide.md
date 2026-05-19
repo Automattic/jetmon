@@ -618,22 +618,28 @@ buckets reclaimed by peers on their next round.
 StatsD metrics retain the v1 prefix:
 
 ```text
-com.jetpack.jetmon.<hostname>
+com.jetpack.jetmon.<statsd_host_path>
 ```
 
-In production containers, set `HOSTNAME` in config to the v1-compatible
-identity, normally `<datacenter>.<node>`, so process health and metric prefixes
-stay stable even when the Docker runtime hostname is a container ID. The Docker
-entrypoint accepts `JETMON_HOSTNAME` as the env input when rendering config. v1
-derived this value by taking the first two labels of the production hostname and
-reversing them: `<node>.<datacenter>.<domain>` became
-`<datacenter>.<node>`. For example, `jetmon-prod-1.dfw1.example.com` should use
-`JETMON_HOSTNAME=dfw1.jetmon-prod-1` during config rendering. That produces
-`com.jetpack.jetmon.dfw1.jetmon-prod-1.<metric>`, matching the v1 dashboard path
-shape. If both are present at runtime, `HOSTNAME` from config wins. Keep the
-value stable and low-cardinality: do not include container IDs, release SHAs,
-process IDs, ports, or random suffixes. Leave it unset or empty for local
-development to use the process hostname fallback.
+In production containers, set `HOSTNAME` in config to a stable process identity
+and set `STATSD_HOST_PATH` to the v1-compatible metric path. The Docker
+entrypoint accepts `JETMON_HOSTNAME` and `STATSD_HOST_PATH` as env inputs when
+rendering config. v1 derived the StatsD path by taking the first two labels of
+the production hostname and reversing them: `<node>.<datacenter>.<domain>`
+became `<datacenter>.<node>`. For example:
+
+```text
+JETMON_HOSTNAME=jetmon-prod-1.dfw1.example.com
+STATSD_HOST_PATH=dfw1.jetmon-prod-1
+```
+
+That produces `com.jetpack.jetmon.dfw1.jetmon-prod-1.<metric>`, matching the v1
+dashboard path shape, while leaving process identity as the real host name.
+If `STATSD_HOST_PATH` is empty, metrics fall back to `HOSTNAME` and then the
+runtime hostname, which is acceptable for local development but should not be
+used for production Monitor rollout unless dashboard series migration is
+intentional. Keep both values stable and low-cardinality: do not include
+container IDs, release SHAs, process IDs, ports, or random suffixes.
 
 Important metric groups include:
 

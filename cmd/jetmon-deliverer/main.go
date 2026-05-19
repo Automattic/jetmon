@@ -149,15 +149,18 @@ func run() {
 	db.StartConfigReloader(dbReloadCtx, time.Duration(cfg.DBConfigUpdatesMin)*time.Minute)
 	audit.Init(db.DB())
 
-	if addr, enabled, err := metrics.InitFromEnv(db.Hostname(), defaultStatsDAddr); err != nil {
+	hostname := db.Hostname()
+	if addr, enabled, err := metrics.InitFromEnv(cfg.StatsDMetricHost(hostname), defaultStatsDAddr); err != nil {
 		log.Printf("warning: statsd init failed: %v", err)
 	} else if enabled {
 		config.Debugf("metrics: sending StatsD to %s", addr)
+		if strings.TrimSpace(cfg.StatsDHostPath) == "" {
+			log.Printf("WARN: STATSD_HOST_PATH is unset; StatsD metrics will use host identity %q", hostname)
+		}
 	} else {
 		config.Debugf("metrics: StatsD disabled")
 	}
 
-	hostname := db.Hostname()
 	processStartedAt := time.Now().UTC()
 	processID := fleethealth.ProcessID(hostname, fleethealth.ProcessDeliverer)
 	workersEnabled := deliveryWorkersShouldStart(cfg, hostname)

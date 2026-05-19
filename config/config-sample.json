@@ -1,6 +1,7 @@
 {
 	"DEBUG"             : false,
 	"HOSTNAME"          : "",
+	"STATSD_HOST_PATH"  : "",
 	"NUM_WORKERS"       : 60,
 	"NUM_TO_PROCESS"    : 40,
 	"DATASET_SIZE"      : 100,

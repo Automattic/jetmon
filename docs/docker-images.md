@@ -66,7 +66,8 @@ Required env vars:
 | `VERIFLIER_PORT` | Defaults to `7803`. |
 | `VERIFLIER_ENABLE_LEGACY_HTTP` | Optional. Defaults to `false`; set to `true` only for lab/emergency compatibility with `veriflier2`'s legacy HTTP `/check` and `/status` endpoints. |
 | `STATSD_ADDR` | Optional UDP StatsD endpoint. Leave unset to run without Veriflier metrics, or set to `statsd:8125` / another approved endpoint. |
-| `JETMON_HOSTNAME` | Optional env input used by the Docker entrypoint when rendering the Veriflier `hostname` config. Use a low-cardinality value such as `<region>.<vantage>` when the Graphite path should differ from the container runtime hostname; do not include container IDs, release SHAs, ports, or random suffixes. |
+| `JETMON_HOSTNAME` | Optional env input used by the Docker entrypoint when rendering the Veriflier `hostname` config. Use a low-cardinality value such as `<region>.<vantage>` for process identity; do not include container IDs, release SHAs, ports, or random suffixes. |
+| `STATSD_HOST_PATH` | Optional explicit Graphite host path. Leave empty to use the Veriflier hostname; set when metric grouping should differ from process identity. |
 
 ## Run Jetmon
 
@@ -93,7 +94,8 @@ docker run --rm \
   -e EMAIL_TRANSPORT=stub \
   --add-host=host.docker.internal:host-gateway \
   -e STATSD_ADDR=host.docker.internal:8125 \
-  -e JETMON_HOSTNAME=dfw1.jetmon-prod-1 \
+  -e JETMON_HOSTNAME=jetmon-prod-1.dfw1.example.com \
+  -e STATSD_HOST_PATH=dfw1.jetmon-prod-1 \
   -v "$(pwd)/jetmon-stats:/jetmon/stats" \
   ghcr.io/automattic/jetmon:latest
 ```
@@ -132,7 +134,8 @@ Required env vars:
 | `WPCOM_NOTIFY_LEGACY_CERT_PATH`, `WPCOM_NOTIFY_LEGACY_KEY_PATH` | Required runtime secret paths when `WPCOM_NOTIFY_ENABLE=true` and `WPCOM_NOTIFY_MODE=legacy`. |
 | `EMAIL_TRANSPORT` | `stub` for dev; `smtp` plus `SMTP_*` vars for real delivery. |
 | `STATSD_ADDR` | Optional override for the UDP StatsD endpoint. Local Compose and Veriflier production Compose set this to `statsd:8125`. For TeamCity Monitor production, set `STATSD_ADDR=host.docker.internal:8125` and add Docker's `host.docker.internal:host-gateway` mapping, or set it explicitly empty to disable StatsD. |
-| `HOSTNAME` / `JETMON_HOSTNAME` | Stable process and metric identity. `HOSTNAME` is the rendered config key; `JETMON_HOSTNAME` is the Docker env input used by the entrypoint when rendering config. For Monitor production, use the v1-compatible `<datacenter>.<node>` format derived by reversing the first two labels of the v1 hostname, for example `jetmon-prod-1.dfw1.example.com` -> `dfw1.jetmon-prod-1`; do not include container IDs, release SHAs, ports, or random suffixes. |
+| `HOSTNAME` / `JETMON_HOSTNAME` | Stable process identity. `HOSTNAME` is the rendered config key; `JETMON_HOSTNAME` is the Docker env input used by the entrypoint when rendering config. For Monitor production, use the real logical host name, for example `jetmon-prod-1.dfw1.example.com`; do not include container IDs, release SHAs, ports, or random suffixes. |
+| `STATSD_HOST_PATH` | Explicit StatsD metric host path. For Monitor production, use the v1-compatible `<datacenter>.<node>` format derived by reversing the first two labels of the v1 hostname, for example `jetmon-prod-1.dfw1.example.com` -> `dfw1.jetmon-prod-1`. Leave empty only for local/dev fallback or an intentional dashboard series migration. |
 
 Optional volume mounts:
 
@@ -172,6 +175,7 @@ services:
       VERIFLIER_PORT: "7803"
       STATSD_ADDR: statsd:8125
       JETMON_HOSTNAME: local.veriflier
+      STATSD_HOST_PATH: local.veriflier
     ports:
       - "7803:7803"
 
@@ -197,6 +201,7 @@ services:
       EMAIL_TRANSPORT: stub
       STATSD_ADDR: statsd:8125
       JETMON_HOSTNAME: local.jetmon
+      STATSD_HOST_PATH: local.jetmon
     ports:
       - "8080:8080"
       - "8090:8090"

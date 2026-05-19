@@ -19,7 +19,8 @@ deployment role:
 | `db-servers.php` | Generated inside the Docker service on a shared runtime path | Synced from SVN by the sidecar. The Monitor reads this file; it is not committed, baked into an image, or written to TeamCity logs. |
 | `config/config.json` or equivalent env | TeamCity secure parameters, docker-deploy role config, or another Systems-managed secret source | Non-image operational config for the Monitor. |
 | `STATSD_ADDR` | docker-deploy role config or TeamCity parameter | UDP StatsD endpoint for Monitor and Deliverer. Production Monitor hosts already run local StatsD proxies, so set this to the host-local proxy endpoint that is reachable from inside the bridge-networked container. |
-| `HOSTNAME` / `JETMON_HOSTNAME` | `config/config.json`, docker-deploy role config, or TeamCity parameter | Stable Jetmon process identity. Recommended format for Monitor production is the v1-compatible `<datacenter>.<node>` path segment, for example `dfw1.jetmon-prod-1`, so bucket ownership, process health, delivery identity, and metrics do not depend on a Docker container hostname. |
+| `HOSTNAME` / `JETMON_HOSTNAME` | `config/config.json`, docker-deploy role config, or TeamCity parameter | Stable Jetmon process identity. Recommended format for Monitor production is the real logical host name, for example `jetmon-prod-1.dfw1.example.com`, so bucket ownership, process health, and delivery identity do not depend on a Docker container hostname. |
+| `STATSD_HOST_PATH` | `config/config.json`, docker-deploy role config, or TeamCity parameter | Explicit StatsD metric host path. Recommended Monitor production format is the v1-compatible `<datacenter>.<node>` path segment, for example `dfw1.jetmon-prod-1`, so Graphite/Grafana series names remain stable. |
 | `WPCOM_NOTIFY_MODE` | docker-deploy role config or TeamCity parameter | Use `legacy` for the first production rollout. `modern` is retained only for WPCOM endpoint/auth contract testing until WPCOM signs off. |
 | WPCOM legacy client certificate/key | Systems-managed secret mount or secure file injection | Required when `WPCOM_NOTIFY_ENABLE=true` and `WPCOM_NOTIFY_MODE=legacy`. Mount outside the image and point `WPCOM_NOTIFY_LEGACY_CERT_PATH` / `WPCOM_NOTIFY_LEGACY_KEY_PATH` at the mounted files. |
 | Docker image tag | TeamCity build output | Use immutable Git SHA tags for rollout. |
@@ -87,9 +88,9 @@ The v1 flow is split between a shell updater and the Node database library:
   `graphiteapp/graphite-statsd`. Jetmon itself does not send directly to
   Grafana; Grafana reads from Graphite after StatsD/proxy ingestion.
 - v1 shaped the metric hostname as `<datacenter>.<node>` from the production
-  hostname. v2 supports generic `HOSTNAME` / `JETMON_HOSTNAME` identity so
-  TeamCity/docker-deploy can set the same path explicitly instead of relying on
-  the container runtime hostname.
+  hostname. v2 uses `STATSD_HOST_PATH` so TeamCity/docker-deploy can set the
+  same path explicitly instead of relying on hostname parsing or the container
+  runtime hostname.
 - v1 status-change notifications use a client-certificate HTTPS `GET` to the
   legacy `/jetmon/` endpoint with the auth token inside the JSON payload. V2
   defaults to the same compatibility mode through `WPCOM_NOTIFY_MODE=legacy`;
@@ -268,31 +269,37 @@ Deliverer, and Veriflier all support `STATSD_ADDR`:
   can reach the host-local StatsD proxy.
 - Setting `STATSD_ADDR` explicitly empty disables StatsD for safe smoke tests.
 
-Production roles should also set `HOSTNAME` in config to the v1-compatible
-identity. The Docker entrypoint accepts `JETMON_HOSTNAME` as the env input when
-rendering that config value. The recommended Monitor format is
-`<datacenter>.<node>`, matching v1's hostname transform. v1 took the first two
-labels of the production hostname and reversed them:
-`<node>.<datacenter>.<domain>` became `<datacenter>.<node>`. For example, a v1
-host named `jetmon-prod-1.dfw1.example.com` should render:
+Production roles should also set `HOSTNAME` in config to the stable process
+identity and `STATSD_HOST_PATH` to the v1-compatible metric identity. The
+Docker entrypoint accepts `JETMON_HOSTNAME` as the env input when rendering
+`HOSTNAME`, and `STATSD_HOST_PATH` as the env input for the metric path.
+
+The recommended Monitor `STATSD_HOST_PATH` format is `<datacenter>.<node>`,
+matching v1's hostname transform. v1 took the first two labels of the
+production hostname and reversed them: `<node>.<datacenter>.<domain>` became
+`<datacenter>.<node>`. For example, a v1 host named
+`jetmon-prod-1.dfw1.example.com` should render:
 
 ```text
-JETMON_HOSTNAME=dfw1.jetmon-prod-1
+JETMON_HOSTNAME=jetmon-prod-1.dfw1.example.com
+STATSD_HOST_PATH=dfw1.jetmon-prod-1
 ```
 
-This controls process identity and the metric prefix:
+`JETMON_HOSTNAME` controls process identity; `STATSD_HOST_PATH` controls the
+metric prefix:
 
 ```text
 com.jetpack.jetmon.dfw1.jetmon-prod-1.<metric>
 ```
 
-Set the transformed v1-compatible value, not the raw FQDN, unless dashboard
-series migration is intentional. Leaving both unset falls back to the runtime
-hostname, which is acceptable for local Docker runs but may become a container
-ID or service name under docker-deploy. If both are present at runtime,
-`HOSTNAME` from config wins.
+Set `STATSD_HOST_PATH` to the transformed v1-compatible value, not the raw
+FQDN, unless dashboard series migration is intentional. Leaving it unset falls
+back to `HOSTNAME`, then the runtime hostname, which is acceptable for local
+Docker runs but may become a container ID or service name under docker-deploy.
+If both `HOSTNAME` and `JETMON_HOSTNAME` are present at runtime, `HOSTNAME`
+from config wins.
 
-Keep this value stable and low-cardinality. Do not include container IDs,
+Keep these values stable and low-cardinality. Do not include container IDs,
 release SHAs, process IDs, ports, or random suffixes. For Verifliers, use a
 stable region/vantage identity that matches the intended Grafana grouping.
 
@@ -547,7 +554,8 @@ steps should mirror the Frontity build:
 5. Set `STATSD_ADDR` in the docker-deploy role to
    `host.docker.internal:8125` and include
    `--add-host=host.docker.internal:host-gateway`. Set `HOSTNAME` or
-   `JETMON_HOSTNAME` to the v1-compatible identity for that host.
+   `JETMON_HOSTNAME` to the stable process identity for that host, and set
+   `STATSD_HOST_PATH` to the v1-compatible metric path.
 6. Call docker-deploy, for example:
    `deploy-to-servers-by-role.sh docker-jetmon-monitor jetmon-monitor/<git-sha>`.
 7. Let the docker-deploy role roll hosts one at a time:
@@ -556,7 +564,8 @@ steps should mirror the Frontity build:
    - set `STATSD_ADDR` for the Monitor and any co-located Deliverer process to
      `host.docker.internal:8125`;
    - set `HOSTNAME` or `JETMON_HOSTNAME` for the Monitor and any co-located
-     Deliverer process to the v1-compatible identity for the host;
+     Deliverer process to the stable process identity for the host;
+   - set `STATSD_HOST_PATH` to the v1-compatible metric path for the host;
    - start the sidecar and wait for `db-servers.php` to appear;
    - start/recreate the Monitor with read-only access to the generated file and
      `DB_SERVER_MAP_PATH` set to that path;

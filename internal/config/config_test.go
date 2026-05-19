@@ -78,6 +78,32 @@ func TestValidate(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "statsd host path accepts v1-compatible path",
+			mutate: func(c *Config) {
+				c.StatsDHostPath = "dfw1.jetmon-prod-1"
+			},
+		},
+		{
+			name: "statsd host path trims whitespace",
+			mutate: func(c *Config) {
+				c.StatsDHostPath = " dfw1.jetmon-prod-1 "
+			},
+		},
+		{
+			name: "statsd host path rejects spaces",
+			mutate: func(c *Config) {
+				c.StatsDHostPath = "dfw1 jetmon-prod-1"
+			},
+			wantErr: true,
+		},
+		{
+			name: "statsd host path rejects empty segments",
+			mutate: func(c *Config) {
+				c.StatsDHostPath = "dfw1..jetmon-prod-1"
+			},
+			wantErr: true,
+		},
+		{
 			name: "check dns resolver accepts ip with port",
 			mutate: func(c *Config) {
 				c.CheckDNSResolvers = []string{"10.0.0.176:5353", "[2001:db8::1]:53"}
@@ -368,6 +394,7 @@ func TestLoadAndGet(t *testing.T) {
 		"AUTH_TOKEN": "loaded-token",
 		"NUM_WORKERS": 7,
 		"HOSTNAME": "dfw1.jetmon-prod-1",
+		"STATSD_HOST_PATH": "dfw1.jetmon-prod-1",
 		"BUCKET_TOTAL": 100,
 		"BUCKET_TARGET": 50,
 		"NET_COMMS_TIMEOUT": 10,
@@ -391,6 +418,12 @@ func TestLoadAndGet(t *testing.T) {
 	}
 	if cfg.Hostname != "dfw1.jetmon-prod-1" {
 		t.Fatalf("Hostname = %q, want dfw1.jetmon-prod-1", cfg.Hostname)
+	}
+	if cfg.StatsDHostPath != "dfw1.jetmon-prod-1" {
+		t.Fatalf("StatsDHostPath = %q, want dfw1.jetmon-prod-1", cfg.StatsDHostPath)
+	}
+	if got := cfg.StatsDMetricHost("container-id"); got != "dfw1.jetmon-prod-1" {
+		t.Fatalf("StatsDMetricHost(explicit) = %q, want dfw1.jetmon-prod-1", got)
 	}
 	if cfg.LogFormat != "json" {
 		t.Fatalf("LogFormat = %q, want json", cfg.LogFormat)
@@ -421,6 +454,13 @@ func TestLoadAndGet(t *testing.T) {
 	}
 	if cfg.WPCOMNotifyMode != WPCOMNotifyModeLegacy {
 		t.Fatalf("WPCOMNotifyMode = %q, want legacy", cfg.WPCOMNotifyMode)
+	}
+}
+
+func TestStatsDMetricHostFallsBackToResolvedHostname(t *testing.T) {
+	cfg := &Config{}
+	if got := cfg.StatsDMetricHost("jetmon-prod-1.dfw1.example.com"); got != "jetmon-prod-1.dfw1.example.com" {
+		t.Fatalf("StatsDMetricHost(fallback) = %q", got)
 	}
 }
 
@@ -537,6 +577,28 @@ func TestLoadWarnsForDeprecatedNoopAndUnknownKeys(t *testing.T) {
 		if warnings[key] == "" {
 			t.Fatalf("missing warning for %s; got %#v", key, warnings)
 		}
+	}
+}
+
+func TestLoadWarnsWhenStatsDHostPathLooksLikeRawHostname(t *testing.T) {
+	saveConfigState(t)
+
+	p := writeConfigFile(t, `{
+		"AUTH_TOKEN": "token",
+		"NUM_WORKERS": 7,
+		"STATSD_HOST_PATH": "jetmon-prod-1.dfw1.example.com",
+		"BUCKET_TOTAL": 100,
+		"BUCKET_TARGET": 50,
+		"NET_COMMS_TIMEOUT": 10,
+		"LOG_FORMAT": "text"
+	}`)
+
+	if err := Load(p); err != nil {
+		t.Fatalf("Load() should warn but not fail: %v", err)
+	}
+	warnings := warningsByKey(Get().Warnings)
+	if warnings["STATSD_HOST_PATH"] == "" {
+		t.Fatalf("missing STATSD_HOST_PATH warning; got %#v", warnings)
 	}
 }
 

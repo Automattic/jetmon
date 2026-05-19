@@ -62,35 +62,33 @@ func AddrFromEnv(defaultAddr string) string {
 
 // InitFromEnv initializes the global StatsD client from STATSD_ADDR or a
 // caller-provided default. It returns enabled=false when StatsD is disabled.
-func InitFromEnv(hostname, defaultAddr string) (addr string, enabled bool, err error) {
+func InitFromEnv(hostPath, defaultAddr string) (addr string, enabled bool, err error) {
 	addr = AddrFromEnv(defaultAddr)
 	if addr == "" {
 		return "", false, nil
 	}
-	return addr, true, Init(addr, hostname)
+	return addr, true, Init(addr, hostPath)
 }
 
 // Init creates the global StatsD client.
 // host:port is the StatsD server address (e.g. "statsd:8125").
-// hostname is used to build the metric prefix.
-func Init(addr, hostname string) error {
+// hostPath is used to build the metric prefix.
+func Init(addr, hostPath string) error {
 	conn, err := net.Dial("udp", addr)
 	if err != nil {
 		return fmt.Errorf("statsd dial %s: %w", addr, err)
 	}
 	global = &Client{
-		prefix: "com.jetpack.jetmon." + MetricHostname(hostname),
+		prefix: "com.jetpack.jetmon." + MetricHostPath(hostPath),
 		conn:   conn,
 	}
 	return nil
 }
 
-// MetricHostname returns the hostname segment used in the StatsD prefix.
-// Callers pass the already-resolved generic hostname so metrics and process
-// identity remain aligned.
-func MetricHostname(defaultHostname string) string {
-	if hostname := sanitizeMetricPath(defaultHostname); hostname != "" {
-		return hostname
+// MetricHostPath returns the host path segment used in the StatsD prefix.
+func MetricHostPath(path string) string {
+	if hostPath := sanitizeMetricPath(path); hostPath != "" {
+		return hostPath
 	}
 	return "unknown"
 }

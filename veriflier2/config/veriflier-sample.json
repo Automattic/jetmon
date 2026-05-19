@@ -2,6 +2,7 @@
 	"auth_token" : "<VERIFLIER_AUTH_TOKEN>",
 	"port"       : "<VERIFLIER_PORT>",
 	"hostname"   : "",
+	"statsd_host_path" : "",
 	"vantage_id" : "<VERIFLIER_VANTAGE_ID>",
 	"region"     : "<VERIFLIER_REGION>",
 	"provider"   : "<VERIFLIER_PROVIDER>",

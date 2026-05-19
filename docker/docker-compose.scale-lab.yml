@@ -18,6 +18,7 @@ x-jetmon-scale-env: &jetmon_scale_env
   SMTP_USE_TLS: ${SMTP_USE_TLS:-false}
   STATSD_ADDR: statsd:8125
   JETMON_HOSTNAME: ${JETMON_HOSTNAME:-}
+  STATSD_HOST_PATH: ${STATSD_HOST_PATH:-}
 
 x-jetmon-scale-service: &jetmon_scale_service
   build:
@@ -58,6 +59,7 @@ x-veriflier-scale-service: &veriflier_scale_service
     VERIFLIER_ENABLE_LEGACY_HTTP: ${VERIFLIER_ENABLE_LEGACY_HTTP:-false}
     STATSD_ADDR: statsd:8125
     JETMON_HOSTNAME: ${JETMON_HOSTNAME:-}
+    STATSD_HOST_PATH: ${STATSD_HOST_PATH:-}
   healthcheck:
     test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7803/v2/status"]
     interval: 10s
@@ -120,6 +122,7 @@ services:
       VERIFLIER_ENABLE_LEGACY_HTTP: ${VERIFLIER_ENABLE_LEGACY_HTTP:-false}
       STATSD_ADDR: statsd:8125
       JETMON_HOSTNAME: ${JETMON_HOSTNAME:-}
+      STATSD_HOST_PATH: ${STATSD_HOST_PATH:-}
 
   veriflier3:
     <<: *veriflier_scale_service
@@ -133,6 +136,7 @@ services:
       VERIFLIER_ENABLE_LEGACY_HTTP: ${VERIFLIER_ENABLE_LEGACY_HTTP:-false}
       STATSD_ADDR: statsd:8125
       JETMON_HOSTNAME: ${JETMON_HOSTNAME:-}
+      STATSD_HOST_PATH: ${STATSD_HOST_PATH:-}
 
   api-fixture:
     networks:

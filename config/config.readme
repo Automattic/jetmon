@@ -3,18 +3,27 @@ Set to true to enable more verbose log messages. Default: false.
 
 HOSTNAME
 Stable Jetmon process identity. This value is used for dynamic host ownership,
-process health rows, outbound delivery identity, and the StatsD metric prefix.
-Set it in production to the v1-compatible metric host segment, not the raw
-FQDN. v1 derived this by taking the first two labels of the production hostname
-and reversing them: `<node>.<datacenter>.<domain>` became
-`<datacenter>.<node>`. For example, `jetmon-prod-1.dfw1.example.com` should use
-`dfw1.jetmon-prod-1`. This preserves StatsD paths such as
-`com.jetpack.jetmon.dfw1.jetmon-prod-1.<metric>` instead of using a Docker
-container hostname.
+process health rows, outbound delivery identity, and the StatsD fallback host
+path when STATSD_HOST_PATH is empty. Set it in production to a stable logical
+host identity, normally the full production host name such as
+`jetmon-prod-1.dfw1.example.com`, instead of relying on a Docker container
+hostname.
 Leave empty to use the runtime OS hostname. `JETMON_HOSTNAME` is the container
 env form of the same setting: the Docker entrypoint writes it into HOSTNAME
 when rendering config. At runtime, HOSTNAME from the loaded config wins;
 JETMON_HOSTNAME is used only when HOSTNAME is empty. Default: empty.
+
+STATSD_HOST_PATH
+Optional explicit host path segment for StatsD metrics. Production Monitors
+should set this to the v1-compatible metric host path so existing Graphite /
+Grafana series stay stable. v1 derived this by taking the first two labels of
+the production hostname and reversing them: `<node>.<datacenter>.<domain>`
+became `<datacenter>.<node>`. For example,
+`jetmon-prod-1.dfw1.example.com` should use `dfw1.jetmon-prod-1`, producing
+`com.jetpack.jetmon.dfw1.jetmon-prod-1.<metric>`. Leave empty only for local/dev
+runs or when intentionally using HOSTNAME/runtime hostname as the StatsD path.
+Allowed characters: letters, numbers, dots, underscores, and hyphens. Default:
+empty.
 
 NUM_WORKERS
 Initial/floor number of goroutines in the check pool. In the legacy scheduler,
@@ -248,13 +257,16 @@ explicitly empty to disable StatsD in safe smoke tests.
 
 JETMON_HOSTNAME
 Environment variable equivalent of the HOSTNAME JSON key. It sets the stable
-process identity and the StatsD metric prefix
-`com.jetpack.jetmon.<hostname>`. Use only stable, low-cardinality deployment
-identity here: datacenter/region plus logical host or Veriflier vantage is
-appropriate; container IDs, release SHAs, ports, process IDs, and random
-suffixes are not. Dots are preserved for Graphite hierarchy; unsafe characters
-are replaced with underscores. Leave unset or empty for local/dev runs to use
-the runtime hostname fallback.
+process identity. If STATSD_HOST_PATH is empty, this also becomes the StatsD
+metric host path fallback. Use only stable, low-cardinality deployment identity
+here; container IDs, release SHAs, ports, process IDs, and random suffixes are
+not. Leave unset or empty for local/dev runs to use the runtime hostname
+fallback.
+
+STATSD_HOST_PATH
+Environment variable rendered into the STATSD_HOST_PATH JSON key by the Docker
+entrypoint. Use this for production metric path compatibility instead of
+encoding the StatsD path into HOSTNAME.
 
 STATSD_SEND_MEM_USAGE
 Set to true to emit Go runtime memory stats to StatsD each interval. Default: false.

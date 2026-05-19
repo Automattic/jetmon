@@ -60,9 +60,13 @@ type Config struct {
 	Debug bool `json:"DEBUG"`
 
 	// Hostname is the stable Jetmon identity used for host ownership, process
-	// health, outbound notification identity, and StatsD metric prefixes.
+	// health, and outbound notification identity.
 	// Leave empty to use the runtime OS hostname.
 	Hostname string `json:"HOSTNAME"`
+
+	// StatsDHostPath is the explicit host segment used in the StatsD metric
+	// prefix. Leave empty to use Hostname/runtime hostname as the fallback.
+	StatsDHostPath string `json:"STATSD_HOST_PATH"`
 
 	NumWorkers     int `json:"NUM_WORKERS"`
 	NumToProcess   int `json:"NUM_TO_PROCESS"`
@@ -419,8 +423,30 @@ func collectConfigWarnings(raw []byte) []ConfigWarning {
 		})
 	}
 
+	warnings = append(warnings, collectStatsDHostPathWarnings(keys["STATSD_HOST_PATH"])...)
 	warnings = append(warnings, collectVerifierConfigWarnings(keys["VERIFIERS"])...)
 	return warnings
+}
+
+func collectStatsDHostPathWarnings(raw json.RawMessage) []ConfigWarning {
+	if len(raw) == 0 {
+		return nil
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	if strings.Count(value, ".") >= 2 {
+		return []ConfigWarning{{
+			Key:     "STATSD_HOST_PATH",
+			Message: "looks like a raw hostname; Monitor production should use the v1-compatible metric host path <datacenter>.<node>, for example dfw1.jetmon-prod-1",
+		}}
+	}
+	return nil
 }
 
 func knownConfigJSONKeys() map[string]struct{} {
@@ -498,6 +524,11 @@ func (cfg *Config) PinnedBucketRange() (int, int, bool) {
 func validate(cfg *Config) error {
 	if cfg.AuthToken == "" {
 		return fmt.Errorf("AUTH_TOKEN is required")
+	}
+	cfg.Hostname = strings.TrimSpace(cfg.Hostname)
+	cfg.StatsDHostPath = strings.TrimSpace(cfg.StatsDHostPath)
+	if err := validateStatsDHostPath(cfg.StatsDHostPath); err != nil {
+		return err
 	}
 	if cfg.NumWorkers < 0 {
 		return fmt.Errorf("NUM_WORKERS must be >= 0")
@@ -652,6 +683,45 @@ func validate(cfg *Config) error {
 		}
 		if v.TransportPort() == "" {
 			return fmt.Errorf("VERIFIERS[%d] (%s): port is required", i, displayName(v, i))
+		}
+	}
+	return nil
+}
+
+// StatsDMetricHost returns the host path segment used in StatsD metric names.
+// An explicit STATSD_HOST_PATH wins so production can preserve v1 Graphite
+// paths without relying on hostname parsing. Empty falls back to the resolved
+// process identity for local/dev compatibility.
+func (cfg *Config) StatsDMetricHost(resolvedHostname string) string {
+	if cfg != nil {
+		if path := strings.TrimSpace(cfg.StatsDHostPath); path != "" {
+			return path
+		}
+	}
+	return strings.TrimSpace(resolvedHostname)
+}
+
+func validateStatsDHostPath(path string) error {
+	if path == "" {
+		return nil
+	}
+	if strings.HasPrefix(path, ".") || strings.HasSuffix(path, ".") {
+		return fmt.Errorf("STATSD_HOST_PATH must not start or end with a dot")
+	}
+	if strings.Contains(path, "..") {
+		return fmt.Errorf("STATSD_HOST_PATH must not contain empty path segments")
+	}
+	for _, r := range path {
+		switch {
+		case r >= 'a' && r <= 'z',
+			r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9',
+			r == '.',
+			r == '_',
+			r == '-':
+			continue
+		default:
+			return fmt.Errorf("STATSD_HOST_PATH may contain only letters, numbers, dots, underscores, and hyphens")
 		}
 	}
 	return nil

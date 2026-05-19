@@ -68,21 +68,21 @@ func TestAddrFromEnvEmptyDisables(t *testing.T) {
 	}
 }
 
-func TestMetricHostnameDefaultSanitizesRuntimeHostname(t *testing.T) {
-	if got := MetricHostname("my-host.example"); got != "my-host.example" {
-		t.Fatalf("MetricHostname(default) = %q, want my-host.example", got)
+func TestMetricHostPathDefaultSanitizesRuntimeHostname(t *testing.T) {
+	if got := MetricHostPath("my-host.example"); got != "my-host.example" {
+		t.Fatalf("MetricHostPath(default) = %q, want my-host.example", got)
 	}
 }
 
-func TestMetricHostnamePreservesGraphitePath(t *testing.T) {
-	if got := MetricHostname(" dfw1.jetmon-prod-1 "); got != "dfw1.jetmon-prod-1" {
-		t.Fatalf("MetricHostname(path) = %q, want dfw1.jetmon-prod-1", got)
+func TestMetricHostPathPreservesGraphitePath(t *testing.T) {
+	if got := MetricHostPath(" dfw1.jetmon-prod-1 "); got != "dfw1.jetmon-prod-1" {
+		t.Fatalf("MetricHostPath(path) = %q, want dfw1.jetmon-prod-1", got)
 	}
 }
 
-func TestMetricHostnameSanitizesUnsafeCharacters(t *testing.T) {
-	if got := MetricHostname(".dfw1.jetmon prod:1|blue."); got != "dfw1.jetmon_prod_1_blue" {
-		t.Fatalf("MetricHostname(sanitize) = %q, want dfw1.jetmon_prod_1_blue", got)
+func TestMetricHostPathSanitizesUnsafeCharacters(t *testing.T) {
+	if got := MetricHostPath(".dfw1.jetmon prod:1|blue."); got != "dfw1.jetmon_prod_1_blue" {
+		t.Fatalf("MetricHostPath(sanitize) = %q, want dfw1.jetmon_prod_1_blue", got)
 	}
 }
 

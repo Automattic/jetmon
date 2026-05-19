@@ -86,15 +86,15 @@ Implementation notes:
 
 ## 2. StatsD Hostname And Metric Path Compatibility
 
-Status: implemented in this branch with generic `HOSTNAME` / `JETMON_HOSTNAME`
+Status: implemented in this branch with explicit `STATSD_HOST_PATH` metric
 identity.
 
 Key difference:
 
 - v1 builds metric paths as `com.jetpack.jetmon.<dc>.<node>...` by taking the
   first two hostname labels and reversing them.
-- v2 currently uses the full runtime hostname after replacing dots and dashes
-  with underscores.
+- v2 now uses explicit `STATSD_HOST_PATH` when set, then falls back to the
+  resolved process hostname for local/dev compatibility.
 
 Why this is an issue:
 
@@ -109,7 +109,7 @@ V1 way:
   conventions.
 - Risks: malformed or changed hostnames produce confusing metric paths.
 
-Current v2 way:
+Initial v2 way:
 
 - Pros: simple, deterministic, and avoids hidden datacenter parsing logic.
 - Cons: likely changes existing metric series names.
@@ -119,24 +119,27 @@ Resolution options:
 
 - Add `HOSTNAME` / `JETMON_HOSTNAME` to explicitly set the process and metric
   host segment.
+- Add `STATSD_HOST_PATH` to explicitly set only the metric host segment while
+  leaving `HOSTNAME` as process identity.
 - Preserve the v1 hostname transform by default and allow override.
 - Keep current v2 behavior and migrate dashboards.
 
 Recommended solution:
 
-- Add `HOSTNAME` / `JETMON_HOSTNAME` and use it in TeamCity production config.
-  Keep the current sanitized hostname as the fallback for local/dev runs. This
-  avoids brittle hostname inference while preserving production dashboards.
+- Add `STATSD_HOST_PATH` and use it in TeamCity production config. Keep
+  `HOSTNAME` / `JETMON_HOSTNAME` as stable process identity. This avoids
+  brittle hostname inference while preserving production dashboards.
 
 Implementation notes:
 
 - `STATSD_ADDR` selects the UDP endpoint.
-- `HOSTNAME` / `JETMON_HOSTNAME` selects the Graphite path identity used in
+- `STATSD_HOST_PATH` selects the Graphite path identity used in
   `com.jetpack.jetmon.<hostname>`.
-- Explicit `JETMON_HOSTNAME` values preserve dots so production can set
+- `HOSTNAME` / `JETMON_HOSTNAME` selects process identity for bucket ownership,
+  process health rows, delivery ownership, and source/audit labels.
+- Production Monitor config should set `STATSD_HOST_PATH` to
   `<datacenter>.<node>`, for example `dfw1.jetmon-prod-1` for
-  `jetmon-prod-1.dfw1.example.com`. Unsafe characters are normalized to
-  underscores.
+  `jetmon-prod-1.dfw1.example.com`.
 - Keep the value stable and low-cardinality. Do not include container IDs,
   release SHAs, process IDs, ports, or random suffixes.
 
