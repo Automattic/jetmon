@@ -49,6 +49,10 @@ const (
 	checkDNSCacheTTLJitter           = 3 * time.Minute
 	checkDNSCacheMaxEntries          = 2000000
 	checkDNSCachePurgeInterval       = 10000
+	// checkDNSCacheNegativeTTL bounds how long NXDOMAIN answers are cached.
+	// Kept short so a freshly-registered domain becomes resolvable quickly,
+	// long enough to absorb a burst of checks for a clearly-missing host.
+	checkDNSCacheNegativeTTL = 5 * time.Second
 )
 
 var errBodyReadBudgetExceeded = errors.New("response body read budget exceeded")
@@ -173,7 +177,12 @@ type checkDNSCache struct {
 
 type checkDNSCacheEntry struct {
 	addrs   []net.IPAddr
+	err     error
 	expires time.Time
+	// negative marks the entry as a cached NXDOMAIN-like lookup failure. The
+	// addrs slice is nil for negative entries; err carries the original
+	// resolver error so callers see the same diagnostic as an uncached miss.
+	negative bool
 }
 
 func newCheckDNSCache(ttl time.Duration, maxEntries int) *checkDNSCache {
@@ -202,7 +211,12 @@ func (c *checkDNSCache) lookup(ctx context.Context, resolver *net.Resolver, host
 		// Returning the stored slice avoids an allocation on every repeated
 		// check for long-lived monitored sites.
 		addrs := entry.addrs
+		negative := entry.negative
+		cachedErr := entry.err
 		c.mu.RUnlock()
+		if negative {
+			return nil, cachedErr
+		}
 		return addrs, nil
 	}
 	c.mu.RUnlock()
@@ -221,17 +235,39 @@ func (c *checkDNSCache) lookup(ctx context.Context, resolver *net.Resolver, host
 		// Returning the stored slice avoids an allocation on every repeated
 		// check for long-lived monitored sites.
 		addrs := entry.addrs
+		negative := entry.negative
+		cachedErr := entry.err
 		c.mu.RUnlock()
+		if negative {
+			return nil, cachedErr
+		}
 		return addrs, nil
 	}
 	c.mu.RUnlock()
 
 	addrs, err := lookupResolverIPAddrs(ctx, resolver, host, network)
-	if err != nil || len(addrs) == 0 {
+	if err != nil {
+		if isDNSNotFoundErr(err) {
+			c.storeNegative(key, err, now.Add(checkDNSCacheNegativeTTL))
+		}
+		return addrs, err
+	}
+	if len(addrs) == 0 {
 		return addrs, err
 	}
 	c.store(key, addrs, c.expiresAt(key, now))
 	return addrs, nil
+}
+
+// isDNSNotFoundErr returns true when err is an NXDOMAIN-like response. Only
+// such errors are negative-cached; transient failures (timeouts, SERVFAIL) are
+// left to retry so a flaky resolver does not poison the cache.
+func isDNSNotFoundErr(err error) bool {
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return dnsErr.IsNotFound
+	}
+	return false
 }
 
 func (c *checkDNSCache) expiresAt(key string, now time.Time) time.Time {
@@ -272,6 +308,24 @@ func (c *checkDNSCache) store(key string, addrs []net.IPAddr, expires time.Time)
 		}
 	}
 	c.entries[key] = checkDNSCacheEntry{addrs: cloneIPAddrs(addrs), expires: expires}
+	c.writes++
+	if c.writes%checkDNSCachePurgeInterval == 0 {
+		c.purgeExpiredLocked(time.Now())
+	}
+}
+
+// storeNegative records an NXDOMAIN-like miss so a burst of checks for a
+// clearly-missing host short-circuits without re-hitting the resolver.
+func (c *checkDNSCache) storeNegative(key string, lookupErr error, expires time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.maxEntries > 0 && len(c.entries) >= c.maxEntries {
+		c.purgeExpiredLocked(time.Now())
+		if len(c.entries) >= c.maxEntries {
+			return
+		}
+	}
+	c.entries[key] = checkDNSCacheEntry{err: lookupErr, expires: expires, negative: true}
 	c.writes++
 	if c.writes%checkDNSCachePurgeInterval == 0 {
 		c.purgeExpiredLocked(time.Now())

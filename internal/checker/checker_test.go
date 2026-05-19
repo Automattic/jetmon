@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -1245,6 +1246,42 @@ func TestCheckDNSCacheReturnsCachedAddresses(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].IP.String() != "192.0.2.10" {
 		t.Fatalf("lookup() = %#v, want cached IPv4 address", got)
+	}
+}
+
+func TestCheckDNSCacheReturnsCachedNegativeEntry(t *testing.T) {
+	cache := newCheckDNSCache(time.Minute, 10)
+	wantErr := &net.DNSError{Err: "no such host", Name: "missing.test", IsNotFound: true}
+	cache.entries["missing.test|ip4"] = checkDNSCacheEntry{
+		err:      wantErr,
+		expires:  time.Now().Add(time.Minute),
+		negative: true,
+	}
+
+	addrs, err := cache.lookup(context.Background(), &net.Resolver{}, "missing.test", "tcp")
+	if err == nil {
+		t.Fatal("lookup() error = nil, want cached negative error")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("lookup() err = %v, want cached %v", err, wantErr)
+	}
+	if len(addrs) != 0 {
+		t.Fatalf("lookup() addrs = %#v, want empty", addrs)
+	}
+}
+
+func TestIsDNSNotFoundErrDistinguishesNXDOMAIN(t *testing.T) {
+	if !isDNSNotFoundErr(&net.DNSError{Err: "no such host", IsNotFound: true}) {
+		t.Fatal("isDNSNotFoundErr did not recognize an NXDOMAIN-like DNSError")
+	}
+	if isDNSNotFoundErr(&net.DNSError{Err: "i/o timeout", IsTimeout: true}) {
+		t.Fatal("isDNSNotFoundErr negative-cached a timeout (should not)")
+	}
+	if isDNSNotFoundErr(&net.DNSError{Err: "server misbehaving", IsTemporary: true}) {
+		t.Fatal("isDNSNotFoundErr negative-cached a temporary failure (should not)")
+	}
+	if isDNSNotFoundErr(fmt.Errorf("plain error")) {
+		t.Fatal("isDNSNotFoundErr returned true for a non-DNSError")
 	}
 }
 
