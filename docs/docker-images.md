@@ -65,6 +65,7 @@ Required env vars:
 | `VERIFLIER_AUTH_TOKEN` | Must match the value Jetmon uses to call this verifier. |
 | `VERIFLIER_PORT` | Defaults to `7803`. |
 | `VERIFLIER_ENABLE_LEGACY_HTTP` | Optional. Defaults to `false`; set to `true` only for lab/emergency compatibility with `veriflier2`'s legacy HTTP `/check` and `/status` endpoints. |
+| `VERIFLIER_ALLOW_UNSAFE_TARGETS` | Lab-only escape hatch for internal fixture testing. Defaults to `false`; when `true`, `VERIFLIER_UNSAFE_TARGETS_CONFIRM=internal-lab-only` is also required. Never set this in production. |
 | `STATSD_ADDR` | Optional UDP StatsD endpoint. Leave unset to run without Veriflier metrics, or set to `statsd:8125` / another approved endpoint. |
 | `JETMON_HOSTNAME` | Optional env input used by the Docker entrypoint when rendering the Veriflier `hostname` config. Use a low-cardinality value such as `<region>.<vantage>` for process identity; do not include container IDs, release SHAs, ports, or random suffixes. |
 | `STATSD_HOST_PATH` | Optional explicit Graphite host path. Leave empty to use the Veriflier hostname; set when metric grouping should differ from process identity. |

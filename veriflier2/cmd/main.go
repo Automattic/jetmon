@@ -23,7 +23,11 @@ import (
 var version = "dev"
 var enforceOutboundTargetSafety = true
 
-const shutdownGracePeriod = 30 * time.Second
+const (
+	shutdownGracePeriod             = 30 * time.Second
+	unsafeTargetsConfirmEnv         = "VERIFLIER_UNSAFE_TARGETS_CONFIRM"
+	unsafeTargetsConfirmInternalLab = "internal-lab-only"
+)
 
 type veriflierConfig struct {
 	AuthToken  string `json:"auth_token"`
@@ -83,6 +87,9 @@ func main() {
 			log.Fatalf("VERIFLIER_ENABLE_LEGACY_HTTP: %v", err)
 		}
 		cfg.LegacyHTTP = enabled
+	}
+	if err := configureOutboundTargetSafetyFromEnv(); err != nil {
+		log.Fatalf("VERIFLIER_ALLOW_UNSAFE_TARGETS: %v", err)
 	}
 
 	if cfg.TransportPort() == "" {
@@ -355,6 +362,27 @@ func parseBool(raw string) (bool, error) {
 	default:
 		return false, fmt.Errorf("expected boolean value, got %q", raw)
 	}
+}
+
+func configureOutboundTargetSafetyFromEnv() error {
+	enforceOutboundTargetSafety = true
+	raw := os.Getenv("VERIFLIER_ALLOW_UNSAFE_TARGETS")
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	allowUnsafe, err := parseBool(raw)
+	if err != nil {
+		return err
+	}
+	if !allowUnsafe {
+		return nil
+	}
+	if os.Getenv(unsafeTargetsConfirmEnv) != unsafeTargetsConfirmInternalLab {
+		return fmt.Errorf("%s must be set to %q before private/internal probe targets are allowed", unsafeTargetsConfirmEnv, unsafeTargetsConfirmInternalLab)
+	}
+	enforceOutboundTargetSafety = false
+	log.Printf("WARN: outbound target safety disabled for internal lab use; do not enable this on production Verifliers")
+	return nil
 }
 
 func enabledLabel(enabled bool) string {
