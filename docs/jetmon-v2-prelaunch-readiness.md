@@ -113,6 +113,11 @@ clear stop/go threshold.
   range, not just migration smoke. Cover bucket claiming, runtime freshness
   writes, SSL expiry batches, `ON DUPLICATE KEY UPDATE ... VALUES(...)`, and
   webhook / alert delivery claims.
+- [ ] DB server-map reload validation completed with a production-shaped
+  `db-servers.php`: confirm read/write endpoint selection, explicit
+  `DB_SERVER_MAP_DATACENTER`, fallback to write when no read rows exist, bad
+  map rejection while keeping old pools, and credential/endpoint hot reload on
+  `DB_CONFIG_UPDATES_MIN` or SIGHUP.
 - [ ] Probe-safety follow-up work is tracked before rollout: scheduled
   `jetmon_site_safety_flags` reporting, authoritative DNS rebinding tests,
   deeper TLS pathology tests, and optional streaming keyword short-circuiting.
@@ -432,6 +437,9 @@ Evidence:
   writes, SSL expiry updates, `ON DUPLICATE KEY UPDATE ... VALUES(...)`, and
   webhook / alert delivery row claims in the MariaDB runtime exercise. Local
   delivery row-claim lock behavior is covered by `make delivery-claim-smoke`.
+- [ ] Owner: `Jetmon`, `Systems` - Validate production DB server-map behavior:
+  v1-style `misc` parsing, read/write split, datacenter read preference, bad
+  map rejection, and hot reload after `db-servers.php` changes.
 - [ ] Owner: `Jetmon` - Add or open follow-up tracking for scheduled
   `jetmon_site_safety_flags` reporting so unsafe legacy row counts and runtime
   probe-safety blocks are visible before and after API rejection rolls out.

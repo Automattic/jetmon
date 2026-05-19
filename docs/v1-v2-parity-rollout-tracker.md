@@ -300,22 +300,24 @@ Recommended solution:
 
 ## 6. DB Server-Map Parser Behavior And Documentation
 
-Status: docs update now; code manager later
+Status: implemented; production validation recommended
 
 Key difference:
 
 - v1 parses only the `misc` dataset, uses `WRITE_MASTER` rows for writes, and
   builds local/failover read pools from datacenter matching. It also uses the
   `INTERNET_URI` field for host/port in the inspected code.
-- v2 currently reads a single `DB_*` environment config at startup. This branch
-  adds sync scaffolding but not an in-process DB pool manager.
+- v2 now supports the explicit `DB_*` startup path for local/dev and a
+  production `DB_SERVER_MAP_PATH` path that parses the `misc` dataset into
+  separate read and write pools.
 
 Why this is an issue:
 
-- The rollout plan must not imply v2 already hot-swaps DB pools or reads the
-  full v1 server map in process.
-- Documentation should mirror the real v1 parser behavior so TeamCity config
-  generation selects the same endpoints.
+- Production rollout must configure the server-map path and datacenter
+  explicitly so v2 selects the same write master and local/failover read
+  targets operators expect from v1.
+- Database credential rotation should not require a Monitor recreate shortly
+  after rollout.
 
 V1 way:
 
@@ -326,21 +328,25 @@ V1 way:
 
 Current v2 way:
 
-- Pros: simpler and easier to reason about; no hidden pool swaps.
-- Cons: endpoint changes require drain/recreate until a DB manager exists.
-- Risks: stale DB endpoint if server map changes while container stays up.
+- Pros: explicit local/dev path remains simple; production path separates
+  read/write pools, validates changed maps before publication, and hot-reloads
+  connection creation without printing secrets.
+- Cons: log-only reload visibility for now; dashboard/API reload status is a
+  useful follow-up.
+- Risks: if `DB_SERVER_MAP_DATACENTER` is omitted in containers, v2 falls back
+  to the v1 hostname heuristic and may not prefer the intended local reads.
 
 Resolution options:
 
-- Keep sidecar sync plus drain/recreate on material DB endpoint changes.
-- Add a host/TeamCity render step that converts `db-servers.php` into `DB_*`.
-- Build a first-class v2 DB config manager with read/write pools and hot reload.
+- Use explicit `DB_*` for local, smoke, and one-off read-only tests.
+- Use `DB_SERVER_MAP_PATH` plus `DB_SERVER_MAP_DATACENTER` for production
+  Monitor/Deliverer containers.
+- Add dashboard/API visibility for DB reload health after the first rollout.
 
 Recommended solution:
 
-- Short term: sidecar sync plus explicit drain/recreate on selected endpoint
-  changes, with docs corrected to match v1 parser behavior. Long term: build
-  the DB config manager only if production actually needs live pool reloads.
+- Use the new server-map manager for production rollout and keep the
+  config-sync sidecar as the only component that knows SVN credentials.
 
 ## 7. Deprecated V1 Config Key Handling
 

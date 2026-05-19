@@ -116,7 +116,10 @@ Required env vars:
 
 | Var | Notes |
 |---|---|
-| `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` | MySQL-compatible database connection. |
+| `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` | MySQL-compatible database connection for local/dev and explicit-DSN deployments. Used when `DB_SERVER_MAP_PATH` is unset. |
+| `DB_SERVER_MAP_PATH` | Optional production path to synced `db-servers.php`; when set, the Monitor reads the `misc` dataset and builds separate read/write DB pools. |
+| `DB_SERVER_MAP_DATACENTER` | Recommended with `DB_SERVER_MAP_PATH`; set to the host datacenter such as `dfw` or `dca` so local read replicas are preferred. |
+| `DB_SERVER_MAP_ADDRESS` | `internet` (default, v1-compatible) or `internal`; use `internal` only when the container network can reach internal DB hostnames. |
 | `VERIFLIER_AUTH_TOKEN`, `VERIFLIER_PORT` | Shared with each Veriflier. |
 | `WPCOM_AUTH_TOKEN` | Set to `change_me` for non-WPCOM environments. |
 | `EMAIL_TRANSPORT` | `stub` for dev; `smtp` plus `SMTP_*` vars for real delivery. |

@@ -106,27 +106,38 @@ The comments in the production file describe `R` as read attempt order and `W`
 as master/write eligibility. For blog datasets, database and user fields may be
 ignored; for Jetmon's `misc` dataset they are the connection credentials.
 
-## Current v2 Boundary
+## Current v2 Database Behavior
 
-Jetmon v2 currently reads a single database config from `DB_HOST`, `DB_PORT`,
-`DB_USER`, `DB_PASSWORD`, and `DB_NAME` at process startup. Multiple components
-then keep references to that `*sql.DB`: the orchestrator, event store, API,
-dashboard store, fleet health writer, and delivery workers.
+Jetmon v2 supports two database configuration modes:
 
-Because of that dependency shape, swapping a package-global `*sql.DB` pointer is
-not enough to update a running Monitor safely. The sidecar can keep
-`db-servers.php` fresh inside the Docker service, but until v2 has a
-first-class database config manager, the reliable production behavior for a
-material selected-endpoint change is:
+1. Explicit local/test DSN: `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, and
+   `DB_NAME`.
+2. Production server map: `DB_SERVER_MAP_PATH` points at the synced
+   `db-servers.php` file and v2 reads the `misc` dataset directly.
 
-1. Sync `db-servers.php` inside the config-sync sidecar.
-2. Derive or stage the `DB_*` environment used by the Monitor from the selected
-   write endpoint.
-3. Drain and recreate one Monitor container at a time when the relevant
-   database endpoint changes.
+When `DB_SERVER_MAP_PATH` is set, v2 builds separate read and write pools from
+the server map:
 
-This preserves the existing v2 rolling-update safety model: surviving Monitors
-absorb buckets while one host drains and restarts.
+- Writes and transactions use the first `misc` row marked as write master.
+- Reads use read-enabled non-`bak` rows, preferring rows whose datacenter
+  matches `DB_SERVER_MAP_DATACENTER` and keeping the remaining non-`bak` read
+  rows as connection-time failover targets.
+- If a map has no separate read rows, reads use the same endpoint as writes.
+- `DB_SERVER_MAP_ADDRESS=internet` matches v1's effective behavior. Use
+  `internal` only when the container network can reach the internal addresses.
+
+The Monitor and standalone deliverer re-parse `db-servers.php` on the
+`DB_CONFIG_UPDATES_MIN` cadence with per-host jitter. Changed endpoint maps are
+validated with read and write ping checks before publication. On success, the
+stable read/write `*sql.DB` pools keep their identity while their connectors
+start creating new connections from the new server-map details; idle
+connections are flushed so credential rotations do not require a process
+restart. On parse or connection failure, the process keeps the previous working
+pools and logs the reload failure without printing passwords.
+
+Set `DB_SERVER_MAP_DATACENTER` explicitly for container deployments. The v1
+hostname-derived datacenter heuristic is retained only as a fallback and may not
+work with container hostnames.
 
 ## Recommended First Rollout Shape
 
@@ -163,9 +174,9 @@ Monitor and config-sync.
    existing migration runbooks.
 11. Move to the next host only after the current host is healthy.
 
-On a material `db-servers.php` change, trigger the same drain and single-host
-restart path instead of hot-swapping the live process. The long-term database
-config manager below is the right fix for in-process pool reload.
+The rolling update path is still useful for image/config changes, but database
+credential or endpoint rotations in `db-servers.php` should hot-reload in place
+after the sidecar syncs the new file.
 
 ## Safe TeamCity Test Rollout
 
@@ -202,7 +213,8 @@ Recommended safe-test config:
 - `DELIVERY_OWNER_HOST` set to a non-matching sentinel value such as
   `disabled-for-teamcity-smoke`
 - `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, and `DB_NAME` set explicitly
-  to the read-only test database credentials
+  to the read-only test database credentials, or `DB_SERVER_MAP_PATH` pointed at
+  a redacted/internal-only test server map whose `misc` write target is safe
 - Veriflier entries pointed at internal test Verifliers, or omitted if the goal
   is only image/deploy/DB-connect validation
 
@@ -294,13 +306,10 @@ Recommended refresh behavior:
   generated file is written directly into the shared runtime path.
 - Keep the SVN working copy outside the Monitor-readable destination.
 - Mount only the generated destination into the Monitor, read-only.
-- Restart only when the selected `misc` endpoint used by this host changes, not
-  for unrelated dataset churn in `db-servers.php`.
-
-The last point needs a small host-side extractor or the longer-term in-process
-v2 database config manager below. For the first rollout, a conservative wrapper
-can restart on any `db-servers.php` content change; this is simpler but may
-restart more often than necessary.
+- Let the Monitor/Deliverer hot-reload selected `misc` endpoint changes in
+  process. A full container restart is still appropriate for image, config, or
+  environment changes, but not required for DB credential rotation in the
+  synced server map.
 
 If docker-deploy cannot support the required sidecar secret mount and shared
 runtime path, the included `jetmon-config-sync.service` /
@@ -329,8 +338,9 @@ Cons:
 - Needs Systems confirmation that docker-deploy role config can provide the
   secret `config-sync.env` and a shared runtime path between the sidecar and
   Monitor containers.
-- A Monitor recreate is still needed for material endpoint changes until the v2
-  database config manager exists.
+- Needs `DB_SERVER_MAP_PATH` and `DB_SERVER_MAP_DATACENTER` configured for the
+  Monitor so local read replica preference does not depend on container
+  hostname shape.
 
 Recommendation: use this for the first containerized production rollout if the
 docker-deploy role can support the shared runtime path.
@@ -457,34 +467,28 @@ Pros:
 
 Cons:
 
-- Needs a restart/recreate policy until v2 supports in-process DB manager
-  reloads.
+- Reintroduces host-level timer/service state that the sidecar shape avoids.
 - Needs jitter and observability so a bad SVN/config issue is visible.
 
 Recommendation: keep this ready as the fallback if docker-deploy cannot support
 the sidecar secret mount and shared runtime config path.
 
-## Longer-Term v2 Database Config Manager
+## Database Config Manager Follow-Ups
 
-For parity with v1 without process restarts, v2 should gain a database config
-manager with these properties:
+The v2 database config manager now handles the production-critical parts of v1
+parity: it parses `db-servers.php`, separates read/write endpoints, validates a
+changed map before publication, hot-reloads connection creation, and keeps the
+previous working config if the new map is bad.
 
-- Parse `db-servers.php` or consume a generated neutral format derived from it.
-- Build separate read and write pools from the `misc` dataset.
-- Prefer local datacenter read replicas and keep non-`bak` remote replicas as
-  failover reads, matching v1 intent.
-- Route writes and transactional mutations only to the write pool.
-- Route read-only scheduler/API/dashboard queries to the read pool when safe.
-- Watch file mtime/hash on the `DB_CONFIG_UPDATES_MIN` cadence with jitter.
-- Atomically publish new pools and drain old idle pools after in-flight work
-  completes.
-- Expose config-refresh success/failure, active endpoint identity, and last
-  reload time in logs/dashboard health.
+Two follow-ups remain useful after the first production rollout:
 
-This requires changing dependencies that currently capture `*sql.DB` directly.
-The safer implementation is to introduce a `db.Provider` or `db.Manager`
-interface and pass that through the orchestrator, API, event store, dashboard,
-fleet health, and deliverer code paths.
+- Add dashboard/API visibility for the last DB reload status, active endpoint
+  fingerprint, and last reload time. Current visibility is log-based and avoids
+  printing secrets.
+- Continue moving low-risk read-only API/dashboard queries from the write pool
+  to `db.ReadDB()` as those surfaces are reviewed. Core scheduler reads and
+  rollout audit reads already use the read pool; writes and transactions stay
+  on the write pool.
 
 ## TeamCity Job Skeleton
 
@@ -512,7 +516,11 @@ steps should mirror the Frontity build:
    - set `STATSD_HOSTNAME` for the Monitor and any co-located Deliverer process
      to the v1-compatible Graphite path segment for the host;
    - start the sidecar and wait for `db-servers.php` to appear;
-   - start/recreate the Monitor with read-only access to the generated file;
+   - start/recreate the Monitor with read-only access to the generated file and
+     `DB_SERVER_MAP_PATH` set to that path;
+   - set `DB_SERVER_MAP_DATACENTER` explicitly for the host and leave
+     `DB_SERVER_MAP_ADDRESS=internet` unless Systems confirms internal DB
+     hostnames are reachable from inside the container;
    - drain the existing Monitor before replacement;
    - run `./jetmon2 migrate`, `./jetmon2 status`, and rollout validation gates;
    - continue only if the host is healthy.

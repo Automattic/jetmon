@@ -112,8 +112,10 @@ reference.
 Production database server-map refresh is handled by a config-sync sidecar for
 the first TeamCity/docker-deploy rollout, with host-side systemd sync kept as a
 fallback. Use [production-teamcity-rollout.md](production-teamcity-rollout.md)
-for the deployment plan, secret boundary, and the current
-restart-on-material-DB-change policy.
+for the deployment plan, secret boundary, and DB server-map hot-reload details.
+When `DB_SERVER_MAP_PATH` is set, v2 reads `db-servers.php` directly, separates
+read/write endpoints from the `misc` dataset, and reloads changed connection
+details on the `DB_CONFIG_UPDATES_MIN` cadence after ping validation.
 
 Checker policy note: HTTP `>= 400` responses are classified immediately by status
 code and do not depend on body drain completion. Strict EOF/truncation validation
@@ -151,8 +153,10 @@ operators can query one table for cleanup and recurring unsafe-target findings.
 3. Create `/opt/jetmon2/config` and `/opt/jetmon2/stats`, owned by the `jetmon`
    service user.
 4. Create `/opt/jetmon2/config/jetmon2.env` with database credentials and auth
-   tokens. See `config/db-config-sample.conf`. For container rollout, keep the
-   real env/config files host-local and out of the image.
+   tokens. See `config/db-config-sample.conf`. For production server-map use,
+   set `DB_SERVER_MAP_PATH` and `DB_SERVER_MAP_DATACENTER` instead of baking
+   DB passwords into the env file. For container rollout, keep real env/config
+   files host-local and out of the image.
 5. For TeamCity/docker-deploy rollout, provide `config-sync.env` from
    `config/jetmon-config-sync-sample.env` to the config-sync sidecar and share
    only the generated config-source path with the Monitor. If docker-deploy

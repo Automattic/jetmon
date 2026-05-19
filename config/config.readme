@@ -35,14 +35,37 @@ DB_UPDATES_ENABLE
 Deprecated alias for LEGACY_STATUS_PROJECTION_ENABLE. If both keys are present, LEGACY_STATUS_PROJECTION_ENABLE wins.
 
 DB_CONFIG_UPDATES_MIN
-Legacy database server-map refresh cadence in minutes. Jetmon v2 parses this
-setting for compatibility, but the current process reads DB_HOST, DB_PORT,
-DB_USER, DB_PASSWORD, and DB_NAME at startup. During the first container
-rollout, use this value as the config-sync sidecar cadence for syncing
-db-servers.php and recreate one Monitor at a time when the selected DB endpoint
-changes. Host-side systemd sync is a fallback if docker-deploy cannot support
-the sidecar shape. In-process pool reload requires the database config manager
-described in docs/production-teamcity-rollout.md. Default: 10.
+Database server-map refresh cadence in minutes. When DB_SERVER_MAP_PATH is set,
+Jetmon v2 re-parses db-servers.php on this cadence with per-host jitter, keeps
+the existing pools on parse/connect failure, and hot-reloads the read/write
+connection targets after a changed map passes ping checks. The config-sync
+sidecar should use the same approximate cadence, with its own jitter, to keep
+the file fresh. When DB_SERVER_MAP_PATH is unset, DB_HOST, DB_PORT, DB_USER,
+DB_PASSWORD, and DB_NAME are read at startup and this cadence has no effect on
+database connection details. Default: 10.
+
+DB_SERVER_MAP_PATH
+Optional path to a synced WPCOM db-servers.php file. When set, Jetmon v2 reads
+the misc dataset from this file and builds separate read and write connection
+pools. Writes use the row marked as write master. Reads use read-enabled rows,
+preferring DB_SERVER_MAP_DATACENTER matches first and non-bak remote read rows
+as failover. If the dataset has no separate read rows, reads use the write
+endpoint. Default: unset.
+
+DB_SERVER_MAP_DATASET
+Dataset name to read from DB_SERVER_MAP_PATH. Jetmon production uses misc.
+Default: misc.
+
+DB_SERVER_MAP_DATACENTER
+Datacenter name used to prioritize local read replicas from db-servers.php,
+for example dfw or dca. Set this explicitly in containers; if unset, Jetmon
+attempts the v1 hostname-derived datacenter heuristic, which is often not
+reliable with container hostnames. Default: unset.
+
+DB_SERVER_MAP_ADDRESS
+Which host:port column to use from db-servers.php: internet or internal.
+The default is internet to match v1's effective behavior. Use internal only
+when the deployment network can reach the internal addresses. Default: internet.
 
 BUCKET_TOTAL
 Total number of buckets in the system across all hosts. Must match the range of bucket_no values in the jetpack_monitor_sites table. Default: 1000.

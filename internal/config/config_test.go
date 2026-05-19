@@ -642,6 +642,10 @@ func TestLoadDBAndGetDB(t *testing.T) {
 	t.Setenv("DB_USER", "testuser")
 	t.Setenv("DB_PASSWORD", "testpass")
 	t.Setenv("DB_NAME", "testdb")
+	t.Setenv("DB_SERVER_MAP_PATH", "/jetmon/config-source/db-servers.php")
+	t.Setenv("DB_SERVER_MAP_DATASET", "misc")
+	t.Setenv("DB_SERVER_MAP_DATACENTER", "dfw")
+	t.Setenv("DB_SERVER_MAP_ADDRESS", "internal")
 
 	cfg := LoadDB()
 	if cfg == nil {
@@ -652,6 +656,15 @@ func TestLoadDBAndGetDB(t *testing.T) {
 	}
 	if cfg.Port != "3307" {
 		t.Fatalf("Port = %q, want 3307", cfg.Port)
+	}
+	if cfg.ServerMapPath != "/jetmon/config-source/db-servers.php" {
+		t.Fatalf("ServerMapPath = %q", cfg.ServerMapPath)
+	}
+	if cfg.ServerMapDatacenter != "dfw" {
+		t.Fatalf("ServerMapDatacenter = %q, want dfw", cfg.ServerMapDatacenter)
+	}
+	if cfg.ServerMapAddress != "internal" {
+		t.Fatalf("ServerMapAddress = %q, want internal", cfg.ServerMapAddress)
 	}
 
 	got := GetDB()

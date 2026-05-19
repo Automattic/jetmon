@@ -138,6 +138,9 @@ func runServe() {
 	if err := db.ConnectWithRetry(10); err != nil {
 		log.Fatalf("db connect: %v", err)
 	}
+	dbReloadCtx, stopDBReload := context.WithCancel(context.Background())
+	defer stopDBReload()
+	db.StartConfigReloader(dbReloadCtx, time.Duration(cfg.DBConfigUpdatesMin)*time.Minute)
 
 	pidPath := envOrDefault("JETMON_PID_FILE", "/run/jetmon2/jetmon2.pid")
 	if err := writePIDFile(pidPath); err != nil {
@@ -337,6 +340,13 @@ func runServe() {
 				if err := config.Reload(); err != nil {
 					log.Printf("config reload failed: %v", err)
 				} else {
+					reloadCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+					if changed, err := db.ReloadConfig(reloadCtx); err != nil {
+						log.Printf("db config reload failed: %v", err)
+					} else if changed {
+						log.Printf("db config reloaded: %s", db.Summary())
+					}
+					cancel()
 					if dash != nil {
 						dash.SetFleetSource(newFleetDashboardStore(config.Get()))
 					}
@@ -345,6 +355,7 @@ func runServe() {
 			case syscall.SIGINT, syscall.SIGTERM:
 				log.Println("received shutdown signal, draining")
 				shuttingDown.Store(true)
+				stopDBReload()
 				stopHostPublisherOnce.Do(func() { close(stopHostPublisher) })
 				publishHostSnapshot(fleethealth.StateStopping, false)
 				if apiSrv != nil {

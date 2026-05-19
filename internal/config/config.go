@@ -153,11 +153,15 @@ type Config struct {
 
 // DBConfig holds MySQL connection parameters loaded from environment variables.
 type DBConfig struct {
-	Host     string
-	Port     string
-	User     string
-	Password string
-	Name     string
+	Host                string
+	Port                string
+	User                string
+	Password            string
+	Name                string
+	ServerMapPath       string
+	ServerMapDataset    string
+	ServerMapDatacenter string
+	ServerMapAddress    string
 }
 
 var (
@@ -211,11 +215,15 @@ func Get() *Config {
 // systemd EnvironmentFile, or the operator shell running CLI preflight commands.
 func LoadDB() *DBConfig {
 	db := &DBConfig{
-		Host:     envOrDefault("DB_HOST", "localhost"),
-		Port:     envOrDefault("DB_PORT", "3306"),
-		User:     envOrDefault("DB_USER", "root"),
-		Password: envOrDefault("DB_PASSWORD", ""),
-		Name:     envOrDefault("DB_NAME", "jetmon_db"),
+		Host:                envOrDefault("DB_HOST", "localhost"),
+		Port:                envOrDefault("DB_PORT", "3306"),
+		User:                envOrDefault("DB_USER", "root"),
+		Password:            envOrDefault("DB_PASSWORD", ""),
+		Name:                envOrDefault("DB_NAME", "jetmon_db"),
+		ServerMapPath:       strings.TrimSpace(os.Getenv("DB_SERVER_MAP_PATH")),
+		ServerMapDataset:    envOrDefault("DB_SERVER_MAP_DATASET", "misc"),
+		ServerMapDatacenter: strings.TrimSpace(os.Getenv("DB_SERVER_MAP_DATACENTER")),
+		ServerMapAddress:    envOrDefault("DB_SERVER_MAP_ADDRESS", "internet"),
 	}
 	mu.Lock()
 	dbConf = db

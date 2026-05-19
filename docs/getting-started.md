@@ -38,7 +38,7 @@ docker compose down --remove-orphans
 
 Local testing does not use the production SVN `db-servers.php` sync path. The
 Monitor reads its database connection from `DB_HOST`, `DB_PORT`, `DB_USER`,
-`DB_PASSWORD`, and `DB_NAME` at process startup.
+`DB_PASSWORD`, and `DB_NAME`.
 
 In the default Docker Compose stack, those values point at the local
 `mysqldb` service:
@@ -55,6 +55,12 @@ that changes the `jetmon.environment` `DB_*` values, or run the pre-built image
 directly with explicit `DB_*` environment variables as shown in
 [docker-images.md](docker-images.md). The SVN config-sync sidecar is only for
 production rollout planning and is not required for local smoke tests.
+
+Production-style DB server-map testing is available by setting
+`DB_SERVER_MAP_PATH` to a synced or synthetic `db-servers.php`. In that mode,
+Jetmon reads the `misc` dataset, uses the write-master row for writes, uses
+read-enabled rows for reads, and hot-reloads changed connection details on the
+`DB_CONFIG_UPDATES_MIN` cadence. Keep this unset for normal local development.
 
 ## Local StatsD
 

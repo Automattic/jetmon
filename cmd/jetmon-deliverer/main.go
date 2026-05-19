@@ -144,6 +144,9 @@ func run() {
 	if err := db.ConnectWithRetry(10); err != nil {
 		log.Fatalf("db connect: %v", err)
 	}
+	dbReloadCtx, stopDBReload := context.WithCancel(context.Background())
+	defer stopDBReload()
+	db.StartConfigReloader(dbReloadCtx, time.Duration(cfg.DBConfigUpdatesMin)*time.Minute)
 	audit.Init(db.DB())
 
 	if addr, enabled, err := metrics.InitFromEnv(db.Hostname(), defaultStatsDAddr); err != nil {
