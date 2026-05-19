@@ -34,6 +34,16 @@ const (
 	RolloutModeAPIControlled = "api-controlled"
 )
 
+const (
+	WPCOMNotifyModeLegacy = "legacy"
+	WPCOMNotifyModeModern = "modern"
+
+	defaultWPCOMNotifyModernEndpoint = "https://public-api.wordpress.com/wpcom/v2/jetpack-monitor/status-change"
+	defaultWPCOMNotifyLegacyEndpoint = "https://jetpack.wordpress.com/jetmon/"
+	defaultWPCOMNotifyLegacyCertPath = "certs/jetmon.crt"
+	defaultWPCOMNotifyLegacyKeyPath  = "certs/jetmon.key"
+)
+
 // TransportPort returns the canonical JSON-over-HTTP Veriflier port,
 // accepting grpc_port as a deprecated config alias.
 func (v VerifierConfig) TransportPort() string {
@@ -102,6 +112,12 @@ type Config struct {
 	StatsdSendMemUsage        bool     `json:"STATSD_SEND_MEM_USAGE"`
 	TimeBetweenNoticesMin     int      `json:"TIME_BETWEEN_NOTICES_MIN"`
 	WPCOMNotifyEnable         bool     `json:"WPCOM_NOTIFY_ENABLE"`
+	WPCOMNotifyMode           string   `json:"WPCOM_NOTIFY_MODE"`
+	WPCOMNotifyModernEndpoint string   `json:"WPCOM_NOTIFY_MODERN_ENDPOINT"`
+	WPCOMNotifyLegacyEndpoint string   `json:"WPCOM_NOTIFY_LEGACY_ENDPOINT"`
+	WPCOMNotifyLegacyCertPath string   `json:"WPCOM_NOTIFY_LEGACY_CERT_PATH"`
+	WPCOMNotifyLegacyKeyPath  string   `json:"WPCOM_NOTIFY_LEGACY_KEY_PATH"`
+	WPCOMNotifyLegacyInsecure bool     `json:"WPCOM_NOTIFY_LEGACY_INSECURE_SKIP_VERIFY"`
 	MinTimeBetweenRoundsSec   int      `json:"MIN_TIME_BETWEEN_ROUNDS_SEC"`
 	NetCommsTimeout           int      `json:"NET_COMMS_TIMEOUT"`
 	CheckDNSResolvers         []string `json:"CHECK_DNS_RESOLVERS"`
@@ -260,6 +276,12 @@ func defaults() *Config {
 		StatsUpdateIntervalMS:                10000,
 		TimeBetweenNoticesMin:                59,
 		WPCOMNotifyEnable:                    true,
+		WPCOMNotifyMode:                      WPCOMNotifyModeLegacy,
+		WPCOMNotifyModernEndpoint:            defaultWPCOMNotifyModernEndpoint,
+		WPCOMNotifyLegacyEndpoint:            defaultWPCOMNotifyLegacyEndpoint,
+		WPCOMNotifyLegacyCertPath:            defaultWPCOMNotifyLegacyCertPath,
+		WPCOMNotifyLegacyKeyPath:             defaultWPCOMNotifyLegacyKeyPath,
+		WPCOMNotifyLegacyInsecure:            true,
 		MinTimeBetweenRoundsSec:              300,
 		NetCommsTimeout:                      10,
 		BodyReadMaxBytes:                     1048576,
@@ -403,6 +425,25 @@ func validate(cfg *Config) error {
 	if cfg.MinTimeBetweenRoundsSec < 0 {
 		return fmt.Errorf("MIN_TIME_BETWEEN_ROUNDS_SEC must be >= 0")
 	}
+	applyWPCOMNotifyDefaults(cfg)
+	switch cfg.WPCOMNotifyMode {
+	case WPCOMNotifyModeLegacy:
+		if strings.TrimSpace(cfg.WPCOMNotifyLegacyEndpoint) == "" {
+			return fmt.Errorf("WPCOM_NOTIFY_LEGACY_ENDPOINT is required when WPCOM_NOTIFY_MODE is 'legacy'")
+		}
+		if strings.TrimSpace(cfg.WPCOMNotifyLegacyCertPath) == "" {
+			return fmt.Errorf("WPCOM_NOTIFY_LEGACY_CERT_PATH is required when WPCOM_NOTIFY_MODE is 'legacy'")
+		}
+		if strings.TrimSpace(cfg.WPCOMNotifyLegacyKeyPath) == "" {
+			return fmt.Errorf("WPCOM_NOTIFY_LEGACY_KEY_PATH is required when WPCOM_NOTIFY_MODE is 'legacy'")
+		}
+	case WPCOMNotifyModeModern:
+		if strings.TrimSpace(cfg.WPCOMNotifyModernEndpoint) == "" {
+			return fmt.Errorf("WPCOM_NOTIFY_MODERN_ENDPOINT is required when WPCOM_NOTIFY_MODE is 'modern'")
+		}
+	default:
+		return fmt.Errorf("WPCOM_NOTIFY_MODE must be one of: legacy, modern")
+	}
 	switch cfg.SchedulerEngine {
 	case "", "legacy":
 		cfg.SchedulerEngine = "legacy"
@@ -525,6 +566,30 @@ func normalizeRolloutMode(mode string) string {
 		return RolloutModeActive
 	}
 	return mode
+}
+
+func normalizeWPCOMNotifyMode(mode string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" {
+		return WPCOMNotifyModeLegacy
+	}
+	return mode
+}
+
+func applyWPCOMNotifyDefaults(cfg *Config) {
+	cfg.WPCOMNotifyMode = normalizeWPCOMNotifyMode(cfg.WPCOMNotifyMode)
+	if strings.TrimSpace(cfg.WPCOMNotifyModernEndpoint) == "" {
+		cfg.WPCOMNotifyModernEndpoint = defaultWPCOMNotifyModernEndpoint
+	}
+	if strings.TrimSpace(cfg.WPCOMNotifyLegacyEndpoint) == "" {
+		cfg.WPCOMNotifyLegacyEndpoint = defaultWPCOMNotifyLegacyEndpoint
+	}
+	if strings.TrimSpace(cfg.WPCOMNotifyLegacyCertPath) == "" {
+		cfg.WPCOMNotifyLegacyCertPath = defaultWPCOMNotifyLegacyCertPath
+	}
+	if strings.TrimSpace(cfg.WPCOMNotifyLegacyKeyPath) == "" {
+		cfg.WPCOMNotifyLegacyKeyPath = defaultWPCOMNotifyLegacyKeyPath
+	}
 }
 
 func (cfg *Config) VeriflierDiscoveryModeOrDefault() string {

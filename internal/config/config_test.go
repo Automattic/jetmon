@@ -415,6 +415,9 @@ func TestLoadAndGet(t *testing.T) {
 	if !cfg.WPCOMNotifyEnable {
 		t.Fatal("WPCOMNotifyEnable default should be true")
 	}
+	if cfg.WPCOMNotifyMode != WPCOMNotifyModeLegacy {
+		t.Fatalf("WPCOMNotifyMode = %q, want legacy", cfg.WPCOMNotifyMode)
+	}
 }
 
 func TestSampleConfigLoads(t *testing.T) {
@@ -495,6 +498,62 @@ func TestWPCOMNotifyConfig(t *testing.T) {
 	}
 	if WPCOMNotifyEnabled() {
 		t.Fatal("WPCOMNotifyEnabled() = true, want false")
+	}
+}
+
+func TestWPCOMNotifyModeConfig(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "default is legacy", body: "", want: WPCOMNotifyModeLegacy},
+		{name: "legacy accepted", body: `"WPCOM_NOTIFY_MODE": "legacy"`, want: WPCOMNotifyModeLegacy},
+		{name: "modern accepted", body: `"WPCOM_NOTIFY_MODE": "modern"`, want: WPCOMNotifyModeModern},
+		{name: "modern normalized", body: `"WPCOM_NOTIFY_MODE": " Modern "`, want: WPCOMNotifyModeModern},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			saveConfigState(t)
+			extra := tt.body
+			if extra != "" {
+				extra = "," + extra
+			}
+			p := writeConfigFile(t, `{
+				"AUTH_TOKEN": "token",
+				"NUM_WORKERS": 7,
+				"BUCKET_TOTAL": 100,
+				"BUCKET_TARGET": 50,
+				"NET_COMMS_TIMEOUT": 10,
+				"LOG_FORMAT": "text"
+				`+extra+`
+			}`)
+
+			if err := Load(p); err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if got := Get().WPCOMNotifyMode; got != tt.want {
+				t.Fatalf("WPCOMNotifyMode = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWPCOMNotifyModeRejectsInvalidValue(t *testing.T) {
+	saveConfigState(t)
+	p := writeConfigFile(t, `{
+		"AUTH_TOKEN": "token",
+		"NUM_WORKERS": 7,
+		"BUCKET_TOTAL": 100,
+		"BUCKET_TARGET": 50,
+		"NET_COMMS_TIMEOUT": 10,
+		"LOG_FORMAT": "text",
+		"WPCOM_NOTIFY_MODE": "both"
+	}`)
+
+	if err := Load(p); err == nil {
+		t.Fatal("Load() expected WPCOM_NOTIFY_MODE validation error")
 	}
 }
 

@@ -1160,7 +1160,13 @@ Same schedule as webhooks: 1m, 5m, 30m, 1h, 6h, then abandon. Different transpor
 
 #### Relationship to legacy WPCOM notifications
 
-The existing WPCOM notification flow (orchestrator-side, hard-coded recipients) **continues to operate independently** in v1. Alert contacts are a parallel programmable path; they don't replace WPCOM notifications, they coexist.
+The existing WPCOM notification flow (orchestrator-side, hard-coded recipients)
+**continues to operate independently**. During the v2 drop-in rollout,
+`WPCOM_NOTIFY_MODE=legacy` preserves the v1-compatible client-certificate
+`/jetmon/` notification path; `modern` mode is reserved for WPCOM contract
+testing until that endpoint/auth model is approved. Alert contacts are a
+parallel programmable path; they don't replace WPCOM notifications, they
+coexist.
 
 This means:
 - An incident may notify the same human twice if they're configured in both paths. Document this on the operator side and avoid duplicate configuration.

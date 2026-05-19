@@ -120,7 +120,7 @@ func runServe() {
 	if err := checker.ConfigureResolverServers(cfg.CheckDNSResolvers); err != nil {
 		log.Fatalf("configure check DNS resolvers: %v", err)
 	}
-	log.Printf("jetmon2: starting rollout_mode=%s scheduler=%s bucket_ownership=%s wpcom_notify=%s", cfg.RolloutMode, schedulerConfigLabel(cfg), bucketOwnershipLabel(cfg), enabledLabel(cfg.WPCOMNotifyEnable))
+	log.Printf("jetmon2: starting rollout_mode=%s scheduler=%s bucket_ownership=%s wpcom_notify=%s wpcom_mode=%s", cfg.RolloutMode, schedulerConfigLabel(cfg), bucketOwnershipLabel(cfg), enabledLabel(cfg.WPCOMNotifyEnable), cfg.WPCOMNotifyMode)
 	config.Debugf("config: legacy_status_projection=%s", enabledLabel(cfg.LegacyStatusProjectionEnable))
 	config.Debugf("config: default_check_policy=method:%s profile:%s", cfg.DefaultCheckMethod, cfg.DefaultDetectionProfile)
 	config.Debugf("config: check_dns_resolvers=%s", checkDNSResolversLabel(checker.ConfiguredResolverServers()))
@@ -163,7 +163,7 @@ func runServe() {
 	processStartedAt := time.Now().UTC()
 	processID := fleethealth.ProcessID(hostname, fleethealth.ProcessMonitor)
 
-	wp := wpcom.New(cfg.AuthToken, hostname)
+	wp := wpcomClientForConfig(cfg, hostname)
 
 	orch := orchestrator.New(cfg, wp)
 	if err := orch.ClaimBuckets(); err != nil {
@@ -347,6 +347,7 @@ func runServe() {
 						log.Printf("db config reloaded: %s", db.Summary())
 					}
 					cancel()
+					wp.Configure(wpcomClientConfig(config.Get(), hostname))
 					if dash != nil {
 						dash.SetFleetSource(newFleetDashboardStore(config.Get()))
 					}
@@ -422,7 +423,10 @@ func cmdValidateConfig() {
 	fmt.Printf("INFO rollout_mode=%s\n", cfg.RolloutMode)
 	fmt.Printf("INFO scheduler=%s\n", schedulerConfigLabel(cfg))
 	fmt.Printf("INFO default_check_policy=method:%s profile:%s\n", cfg.DefaultCheckMethod, cfg.DefaultDetectionProfile)
-	fmt.Printf("INFO wpcom_notify=%s\n", enabledLabel(cfg.WPCOMNotifyEnable))
+	fmt.Printf("INFO wpcom_notify=%s mode=%s\n", enabledLabel(cfg.WPCOMNotifyEnable), cfg.WPCOMNotifyMode)
+	for _, line := range wpcomNotifyAdviceLines(cfg) {
+		fmt.Println(line)
+	}
 	for _, line := range rolloutAdviceLines(cfg) {
 		fmt.Println(line)
 	}
@@ -676,6 +680,47 @@ func enabledLabel(b bool) string {
 		return "enabled"
 	}
 	return "disabled"
+}
+
+func wpcomClientForConfig(cfg *config.Config, hostname string) *wpcom.Client {
+	return wpcom.NewWithConfig(wpcomClientConfig(cfg, hostname))
+}
+
+func wpcomClientConfig(cfg *config.Config, hostname string) wpcom.ClientConfig {
+	if cfg == nil {
+		return wpcom.ClientConfig{Hostname: hostname}
+	}
+	return wpcom.ClientConfig{
+		AuthToken:         cfg.AuthToken,
+		Hostname:          hostname,
+		Mode:              cfg.WPCOMNotifyMode,
+		ModernEndpoint:    cfg.WPCOMNotifyModernEndpoint,
+		LegacyEndpoint:    cfg.WPCOMNotifyLegacyEndpoint,
+		LegacyCertPath:    cfg.WPCOMNotifyLegacyCertPath,
+		LegacyKeyPath:     cfg.WPCOMNotifyLegacyKeyPath,
+		LegacyInsecureTLS: cfg.WPCOMNotifyLegacyInsecure,
+	}
+}
+
+func wpcomNotifyAdviceLines(cfg *config.Config) []string {
+	if cfg == nil || !cfg.WPCOMNotifyEnable {
+		return nil
+	}
+	switch cfg.WPCOMNotifyMode {
+	case config.WPCOMNotifyModeModern:
+		return []string{"WARN wpcom_notify_mode=modern; use only after WPCOM endpoint/auth contract signoff"}
+	case config.WPCOMNotifyModeLegacy:
+		var lines []string
+		if _, err := os.Stat(cfg.WPCOMNotifyLegacyCertPath); err != nil {
+			lines = append(lines, fmt.Sprintf("WARN wpcom legacy client cert not readable at %s: %v", cfg.WPCOMNotifyLegacyCertPath, err))
+		}
+		if _, err := os.Stat(cfg.WPCOMNotifyLegacyKeyPath); err != nil {
+			lines = append(lines, fmt.Sprintf("WARN wpcom legacy client key not readable at %s: %v", cfg.WPCOMNotifyLegacyKeyPath, err))
+		}
+		return lines
+	default:
+		return nil
+	}
 }
 
 func checkDNSResolversLabel(servers []string) string {

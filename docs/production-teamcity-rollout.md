@@ -20,6 +20,8 @@ deployment role:
 | `config/config.json` or equivalent env | TeamCity secure parameters, docker-deploy role config, or another Systems-managed secret source | Non-image operational config for the Monitor. |
 | `STATSD_ADDR` | docker-deploy role config or TeamCity parameter | UDP StatsD endpoint for Monitor and Deliverer. Production Monitor hosts already run local StatsD proxies, so set this to the host-local proxy endpoint that is reachable from inside the container. |
 | `STATSD_HOSTNAME` | docker-deploy role config or TeamCity parameter | Optional Graphite identity for the StatsD prefix. Recommended format for Monitor production is the v1-compatible `<datacenter>.<node>` path segment, for example `dfw1.jetmon-prod-1`, so metrics land under the expected dashboard hierarchy instead of a Docker container hostname. |
+| `WPCOM_NOTIFY_MODE` | docker-deploy role config or TeamCity parameter | Use `legacy` for the first production rollout. `modern` is retained only for WPCOM endpoint/auth contract testing until WPCOM signs off. |
+| WPCOM legacy client certificate/key | Systems-managed secret mount or secure file injection | Required when `WPCOM_NOTIFY_ENABLE=true` and `WPCOM_NOTIFY_MODE=legacy`. Mount outside the image and point `WPCOM_NOTIFY_LEGACY_CERT_PATH` / `WPCOM_NOTIFY_LEGACY_KEY_PATH` at the mounted files. |
 | Docker image tag | TeamCity build output | Use immutable Git SHA tags for rollout. |
 
 Use [../config/jetmon-config-sync-sample.env](../config/jetmon-config-sync-sample.env)
@@ -88,6 +90,11 @@ The v1 flow is split between a shell updater and the Node database library:
   hostname. v2 supports `STATSD_HOSTNAME` so TeamCity/docker-deploy can set the
   same Graphite path explicitly instead of relying on the container runtime
   hostname.
+- v1 status-change notifications use a client-certificate HTTPS `GET` to the
+  legacy `/jetmon/` endpoint with the auth token inside the JSON payload. V2
+  defaults to the same compatibility mode through `WPCOM_NOTIFY_MODE=legacy`;
+  the bearer-token JSON `POST` path remains available as `modern` for contract
+  testing only.
 
 One local-v1 caveat needs Systems confirmation: the checked-out updater script
 prints `OK` on success, while the checked-out Node refresh path appears to treat
@@ -172,6 +179,10 @@ Monitor and config-sync.
    read-only from the Monitor's perspective.
 7. Stage the Monitor runtime config/env through docker-deploy role config or
    TeamCity secure parameters, not through image layers.
+   Keep `WPCOM_NOTIFY_MODE=legacy` for the initial rollout and inject the
+   legacy WPCOM client certificate/key as runtime secrets if
+   `WPCOM_NOTIFY_ENABLE=true`. Do not bake those files into the image or write
+   them to TeamCity logs.
    Use `/api/v1/monitor/stats` or StatsD for external stats consumers rather
    than host filesystem reads unless Systems explicitly approves host bind
    mounts for the legacy `stats/` directory.
@@ -210,6 +221,7 @@ fail closed.
 Recommended safe-test config:
 
 - `WPCOM_NOTIFY_ENABLE=false`
+- `WPCOM_NOTIFY_MODE=legacy`
 - `EMAIL_TRANSPORT=stub`
 - `API_PORT=0`
 - `DASHBOARD_PORT=0`

@@ -17,15 +17,18 @@ secret-free and should be updated as each decision is resolved.
 
 ## 1. WPCOM Notification Endpoint/Auth Parity
 
-Status: pending WPCOM contract confirmation
+Status: implemented with `WPCOM_NOTIFY_MODE`, pending WPCOM contract
+confirmation before using modern mode in production
 
 Key difference:
 
 - v1 sends a client-certificate HTTPS `GET` to
   `jetpack.wordpress.com/jetmon/?data=...`, with the auth token embedded in the
   JSON payload.
-- v2 sends bearer-token JSON `POST` requests to
+- v2 modern mode sends bearer-token JSON `POST` requests to
   `public-api.wordpress.com/wpcom/v2/jetpack-monitor/status-change`.
+- v2 legacy mode sends the v1-compatible `GET` request and is the production
+  default.
 
 Why this is an issue:
 
@@ -44,7 +47,7 @@ V1 way:
   production secret.
 - Risks: retaining it carries legacy TLS behavior and cert-management burden.
 
-Current v2 way:
+V2 modern mode:
 
 - Pros: cleaner HTTP semantics, easier testing, smaller secret surface, better
   fit for modern API routing and observability.
@@ -63,9 +66,23 @@ Resolution options:
 
 Recommended solution:
 
-- Confirm the new WPCOM endpoint/auth contract with the WPCOM owner and document
-  the decision. If confirmation is not available before rollout, add a
-  config-gated v1-compatible client mode as the conservative fallback.
+- Use `WPCOM_NOTIFY_MODE=legacy` for the initial production rollout. Keep
+  `WPCOM_NOTIFY_MODE=modern` available for local, staging, and WPCOM contract
+  testing until the WPCOM owner explicitly signs off on the new endpoint/auth
+  contract.
+
+Implementation notes:
+
+- The default is `legacy`.
+- Legacy mode sends the JSON payload as the `data` query parameter, includes
+  the configured `AUTH_TOKEN` as `token`, omits modern-only fields such as
+  `status_type`, and requires the configured client certificate/key when the
+  endpoint is HTTPS.
+- Modern mode keeps the bearer-token JSON `POST` path for future testing and
+  development.
+- `jetmon2 validate-config` reports the selected mode. With notifications
+  enabled, it warns when modern mode is selected and warns if legacy
+  certificate/key files are not readable.
 
 ## 2. StatsD Hostname And Metric Path Compatibility
 

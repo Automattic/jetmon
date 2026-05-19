@@ -83,6 +83,18 @@ The local API port also binds to loopback by default. Set
 `API_BIND_ADDR=0.0.0.0` only when the Docker host is on a trusted network and
 remote API access is intentional.
 
+## Local WPCOM Notifications
+
+The default Docker Compose stack sets `WPCOM_NOTIFY_ENABLE=false` so local
+checks cannot contact WPCOM. It still renders `WPCOM_NOTIFY_MODE=legacy` by
+default so local config shape matches the production rollout posture.
+
+Production Monitor rollout should use `WPCOM_NOTIFY_MODE=legacy`, which is the
+config default outside the local Docker override. That mode preserves the v1
+client-certificate `/jetmon/?data=...` notification contract. Set
+`WPCOM_NOTIFY_MODE=modern` explicitly only for WPCOM endpoint/auth contract
+testing until WPCOM signs off.
+
 ## Build And Test
 
 From the repository root:

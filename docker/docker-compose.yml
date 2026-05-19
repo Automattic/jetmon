@@ -57,6 +57,8 @@ services:
       VERIFLIER_AUTH_TOKEN: ${VERIFLIER_AUTH_TOKEN:-veriflier_1_auth_token}
       VERIFLIER_PORT: "7803"
       WPCOM_AUTH_TOKEN: ${WPCOM_AUTH_TOKEN:-change_me}
+      WPCOM_NOTIFY_ENABLE: ${WPCOM_NOTIFY_ENABLE:-false}
+      WPCOM_NOTIFY_MODE: ${WPCOM_NOTIFY_MODE:-legacy}
       EMAIL_TRANSPORT: ${EMAIL_TRANSPORT:-smtp}
       EMAIL_FROM: ${EMAIL_FROM:-jetmon@noreply.invalid}
       SMTP_HOST: ${SMTP_HOST:-mailpit}

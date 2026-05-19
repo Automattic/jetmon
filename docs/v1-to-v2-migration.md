@@ -225,7 +225,9 @@ The migration is complete only when:
 - no v1 monitor process is checking production buckets
 - `./jetmon2 rollout dynamic-check` passes after pinned mode is removed
 - legacy projection drift is zero while `LEGACY_STATUS_PROJECTION_ENABLE` is on
-- WPCOM notifications retain the v1 payload shape
+- WPCOM notifications retain the v1 endpoint/auth/payload shape with
+  `WPCOM_NOTIFY_MODE=legacy`; `modern` mode is reserved for WPCOM
+  endpoint/auth contract testing until WPCOM explicitly signs off
 - check throughput, round timing, WPCOM delivery, Veriflier health, StatsD, and
   stats writes are stable for the agreed observation window
 - old v1 software is retained until rollback signoff, then removed deliberately
@@ -900,7 +902,8 @@ For every replaced range, verify:
 - local checks use `HEAD` plus `legacy` detection during the first replacement
   phase
 - Veriflier confirmation works
-- WPCOM notifications retain the v1 payload shape
+- WPCOM notifications use `WPCOM_NOTIFY_MODE=legacy` and retain the v1
+  endpoint/auth/payload shape
 - `jetmon_events` receives event rows
 - `jetmon_event_transitions` receives transition rows for each mutation
 - `jetpack_monitor_sites.site_status` and `last_status_change` update while

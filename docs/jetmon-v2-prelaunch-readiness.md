@@ -95,7 +95,9 @@ clear stop/go threshold.
 - [ ] Projection parity checked on production-like data with an approved drift
   threshold.
 - [ ] WPCOM notification parity checked for down, confirmed-down, false-alarm,
-  recovery, inactive, URL-mismatch, and blacklisted-site cases.
+  recovery, inactive, URL-mismatch, and blacklisted-site cases while production
+  config uses `WPCOM_NOTIFY_MODE=legacy`; `modern` mode remains blocked from
+  production until WPCOM signs off on the new endpoint/auth contract.
 - [ ] Support/WAF guidance approved for v2 `GET`, `HEAD` compatibility mode,
   `jetmon/2.0`, blocked requests, false positives, and `Unknown`.
 - [ ] Synthetic canary tests defined and run before launch. At minimum, cover a
@@ -221,6 +223,9 @@ Search evidence reviewed:
 
 - [x] Owner: `Jetmon` - Verify the legacy WPCOM notification payload shape is
   unchanged.
+- [x] Owner: `Jetmon` - Default production WPCOM notifications to
+  `WPCOM_NOTIFY_MODE=legacy` and preserve `modern` mode only for WPCOM
+  contract testing.
 - [ ] Owner: `Jetmon`, `WPCOM` - Test WPCOM notification handling for site down,
   confirmed down, recovery, inactive site, URL mismatch, and blacklisted site
   behavior.
@@ -243,6 +248,7 @@ Jetmon-owned parity coverage:
 
 | Case | Owner | Status | Evidence |
 | --- | --- | --- | --- |
+| Legacy endpoint/auth mode is the default | Jetmon | covered | `internal/config` and `internal/wpcom` unit tests |
 | Legacy JSON field names and auth/header shape | Jetmon | covered | `internal/wpcom` unit test |
 | Confirmed-down payload with local and Veriflier checks | Jetmon | covered | `internal/orchestrator` unit test |
 | Recovery notification uses legacy running status | Jetmon | covered | `internal/orchestrator` unit test |

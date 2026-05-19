@@ -42,6 +42,9 @@ Key settings:
 | `API_PORT` | 0 | Internal REST API port, 0 disables it |
 | `DELIVERY_OWNER_HOST` | empty | Optional host allowed to run embedded delivery workers |
 | `DEBUG_PORT` | 6060 | localhost-only pprof port, 0 disables it |
+| `WPCOM_NOTIFY_ENABLE` | true | Allow legacy WPCOM status-change notification calls; set false for internal-only tests |
+| `WPCOM_NOTIFY_MODE` | `legacy` | `legacy` uses the v1-compatible `/jetmon/?data=...` client-certificate path; `modern` is retained for WPCOM contract testing only |
+| `WPCOM_NOTIFY_LEGACY_CERT_PATH` / `WPCOM_NOTIFY_LEGACY_KEY_PATH` | `certs/jetmon.crt` / `certs/jetmon.key` | Client certificate/key used when notifications are enabled in legacy mode |
 | `EMAIL_TRANSPORT` | `stub` | `stub`, `smtp`, or `wpcom` |
 | `SCHEDULER_ENGINE` | `legacy` | `legacy` round/page scheduler or `streaming` v2-native scheduler |
 | `STREAMING_LEGACY_PROJECTION_INTERVAL_MIN` | 15 | Coarse sidecar freshness rollback projection interval for streaming mode |
@@ -119,6 +122,15 @@ details on the `DB_CONFIG_UPDATES_MIN` cadence after ping validation. Check
 `GET /api/v1/monitor/db-config` or the dashboard `db-config` dependency to
 confirm the next scheduled check, last changed map observed, and last successful
 hot reload.
+
+Initial production rollout should keep `WPCOM_NOTIFY_MODE=legacy`. That mode
+matches v1's client-certificate HTTPS `GET` to the legacy `/jetmon/` endpoint
+and keeps the auth token inside the JSON payload. `WPCOM_NOTIFY_MODE=modern`
+uses the bearer-token JSON `POST` endpoint and should be limited to local,
+staging, or WPCOM contract tests until WPCOM explicitly approves it for
+production. `jetmon2 validate-config` reports the selected mode; when
+notifications are enabled it warns if modern mode is selected or if the legacy
+certificate/key files are not readable.
 
 Checker policy note: HTTP `>= 400` responses are classified immediately by status
 code and do not depend on body drain completion. Strict EOF/truncation validation

@@ -2,17 +2,27 @@ package wpcom
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 )
 
 const (
-	notifyEndpoint = "https://public-api.wordpress.com/wpcom/v2/jetpack-monitor/status-change"
+	NotifyModeLegacy = "legacy"
+	NotifyModeModern = "modern"
+
+	modernNotifyEndpoint  = "https://public-api.wordpress.com/wpcom/v2/jetpack-monitor/status-change"
+	legacyNotifyEndpoint  = "https://jetpack.wordpress.com/jetmon/"
+	defaultLegacyCertPath = "certs/jetmon.crt"
+	defaultLegacyKeyPath  = "certs/jetmon.key"
 
 	cbMaxFailures        = 5
 	cbResetTimeout       = 60 * time.Second
@@ -70,12 +80,47 @@ type Notification struct {
 	Checks           []CheckEntry `json:"checks"`
 }
 
+type ClientConfig struct {
+	AuthToken         string
+	Hostname          string
+	Mode              string
+	ModernEndpoint    string
+	LegacyEndpoint    string
+	LegacyCertPath    string
+	LegacyKeyPath     string
+	LegacyInsecureTLS bool
+	HTTPClient        *http.Client
+}
+
+type runtimeConfig struct {
+	authToken         string
+	hostname          string
+	mode              string
+	modernEndpoint    string
+	legacyEndpoint    string
+	legacyCertPath    string
+	legacyKeyPath     string
+	legacyInsecureTLS bool
+}
+
+type legacyNotification struct {
+	BlogID           int64        `json:"blog_id"`
+	MonitorURL       string       `json:"monitor_url"`
+	StatusID         int          `json:"status_id"`
+	LastCheck        string       `json:"last_check"`
+	LastStatusChange string       `json:"last_status_change"`
+	Checks           []CheckEntry `json:"checks"`
+	Token            string       `json:"token"`
+}
+
 // Client sends notifications to the WPCOM API with circuit breaker protection.
 type Client struct {
-	authToken  string
-	notifyURL  string // overrides notifyEndpoint when set (used in tests)
 	httpClient *http.Client
-	hostname   string
+
+	configMu       sync.RWMutex
+	config         runtimeConfig
+	legacyClient   *http.Client
+	legacyClientID string
 
 	mu            sync.Mutex
 	failures      int
@@ -94,13 +139,77 @@ type queuedNotification struct {
 
 // New creates a new WPCOM client.
 func New(authToken, hostname string) *Client {
-	return &Client{
-		authToken: authToken,
-		hostname:  hostname,
-		httpClient: &http.Client{
-			Timeout: 15 * time.Second,
-		},
+	return NewWithConfig(ClientConfig{
+		AuthToken:         authToken,
+		Hostname:          hostname,
+		LegacyInsecureTLS: true,
+	})
+}
+
+func NewWithConfig(cfg ClientConfig) *Client {
+	httpClient := cfg.HTTPClient
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 15 * time.Second}
 	}
+	c := &Client{httpClient: httpClient}
+	c.Configure(cfg)
+	return c
+}
+
+func (c *Client) Configure(cfg ClientConfig) {
+	if c == nil {
+		return
+	}
+	normalized := normalizeClientConfig(cfg)
+	c.configMu.Lock()
+	c.config = normalized
+	c.legacyClient = nil
+	c.legacyClientID = ""
+	if cfg.HTTPClient != nil {
+		c.httpClient = cfg.HTTPClient
+	} else if c.httpClient == nil {
+		c.httpClient = &http.Client{Timeout: 15 * time.Second}
+	}
+	c.configMu.Unlock()
+}
+
+func normalizeClientConfig(cfg ClientConfig) runtimeConfig {
+	mode := strings.ToLower(strings.TrimSpace(cfg.Mode))
+	if mode == "" {
+		mode = NotifyModeLegacy
+	}
+	modernEndpoint := strings.TrimSpace(cfg.ModernEndpoint)
+	if modernEndpoint == "" {
+		modernEndpoint = modernNotifyEndpoint
+	}
+	legacyEndpoint := strings.TrimSpace(cfg.LegacyEndpoint)
+	if legacyEndpoint == "" {
+		legacyEndpoint = legacyNotifyEndpoint
+	}
+	certPath := strings.TrimSpace(cfg.LegacyCertPath)
+	if certPath == "" {
+		certPath = defaultLegacyCertPath
+	}
+	keyPath := strings.TrimSpace(cfg.LegacyKeyPath)
+	if keyPath == "" {
+		keyPath = defaultLegacyKeyPath
+	}
+	return runtimeConfig{
+		authToken:         cfg.AuthToken,
+		hostname:          cfg.Hostname,
+		mode:              mode,
+		modernEndpoint:    modernEndpoint,
+		legacyEndpoint:    legacyEndpoint,
+		legacyCertPath:    certPath,
+		legacyKeyPath:     keyPath,
+		legacyInsecureTLS: cfg.LegacyInsecureTLS,
+	}
+}
+
+func (c *Client) configSnapshot() runtimeConfig {
+	c.configMu.RLock()
+	defer c.configMu.RUnlock()
+	return c.config
 }
 
 // Notify sends a status change notification. If the circuit is open, the
@@ -150,23 +259,31 @@ func (c *Client) Notify(n Notification) error {
 }
 
 func (c *Client) send(n Notification) error {
+	cfg := c.configSnapshot()
+	switch cfg.mode {
+	case NotifyModeModern:
+		return c.sendModern(cfg, n)
+	case NotifyModeLegacy:
+		return c.sendLegacy(cfg, n)
+	default:
+		return fmt.Errorf("unsupported wpcom notify mode %q", cfg.mode)
+	}
+}
+
+func (c *Client) sendModern(cfg runtimeConfig, n Notification) error {
 	body, err := json.Marshal(n)
 	if err != nil {
 		return fmt.Errorf("marshal notification: %w", err)
 	}
 
-	url := c.notifyURL
-	if url == "" {
-		url = notifyEndpoint
-	}
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, cfg.modernEndpoint, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.authToken)
+	req.Header.Set("Authorization", "Bearer "+cfg.authToken)
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.baseHTTPClient().Do(req)
 	if err != nil {
 		return fmt.Errorf("post notification: %w", err)
 	}
@@ -176,6 +293,126 @@ func (c *Client) send(n Notification) error {
 		return StatusError{StatusCode: resp.StatusCode}
 	}
 	return nil
+}
+
+func (c *Client) sendLegacy(cfg runtimeConfig, n Notification) error {
+	body, err := json.Marshal(legacyNotification{
+		BlogID:           n.BlogID,
+		MonitorURL:       n.MonitorURL,
+		StatusID:         n.StatusID,
+		LastCheck:        n.LastCheck,
+		LastStatusChange: n.LastStatusChange,
+		Checks:           n.Checks,
+		Token:            cfg.authToken,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal legacy notification: %w", err)
+	}
+	endpoint, err := legacyNotifyURL(cfg.legacyEndpoint, string(body))
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("build legacy request: %w", err)
+	}
+
+	client, err := c.legacyHTTPClient(cfg)
+	if err != nil {
+		return err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("legacy get notification: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return StatusError{StatusCode: resp.StatusCode}
+	}
+	replyBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read legacy notification response: %w", err)
+	}
+	if strings.TrimSpace(string(replyBody)) == "" {
+		return errors.New("legacy wpcom notification response was empty")
+	}
+	var reply struct {
+		Success bool            `json:"success"`
+		Data    json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(replyBody, &reply); err != nil {
+		return fmt.Errorf("parse legacy notification response: %w", err)
+	}
+	if !reply.Success {
+		return fmt.Errorf("legacy wpcom notification response success=false data=%s", strings.TrimSpace(string(reply.Data)))
+	}
+	return nil
+}
+
+func legacyNotifyURL(endpoint, encodedData string) (string, error) {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return "", fmt.Errorf("parse legacy endpoint: %w", err)
+	}
+	q := u.Query()
+	q.Set("data", encodedData)
+	u.RawQuery = q.Encode()
+	return u.String(), nil
+}
+
+func (c *Client) legacyHTTPClient(cfg runtimeConfig) (*http.Client, error) {
+	u, err := url.Parse(cfg.legacyEndpoint)
+	if err != nil {
+		return nil, fmt.Errorf("parse legacy endpoint: %w", err)
+	}
+	if u.Scheme != "https" {
+		return c.baseHTTPClient(), nil
+	}
+
+	clientID := strings.Join([]string{
+		cfg.legacyCertPath,
+		cfg.legacyKeyPath,
+		fmt.Sprint(cfg.legacyInsecureTLS),
+	}, "\x00")
+
+	c.configMu.RLock()
+	if c.legacyClient != nil && c.legacyClientID == clientID {
+		client := c.legacyClient
+		c.configMu.RUnlock()
+		return client, nil
+	}
+	c.configMu.RUnlock()
+
+	cert, err := tls.LoadX509KeyPair(cfg.legacyCertPath, cfg.legacyKeyPath)
+	if err != nil {
+		return nil, fmt.Errorf("load legacy wpcom client certificate: %w", err)
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = &tls.Config{
+		Certificates:       []tls.Certificate{cert},
+		InsecureSkipVerify: cfg.legacyInsecureTLS, // Preserve v1 production TLS behavior for this compatibility mode.
+	}
+	client := &http.Client{
+		Timeout:   c.baseHTTPClient().Timeout,
+		Transport: transport,
+	}
+
+	c.configMu.Lock()
+	c.legacyClient = client
+	c.legacyClientID = clientID
+	c.configMu.Unlock()
+	return client, nil
+}
+
+func (c *Client) baseHTTPClient() *http.Client {
+	c.configMu.RLock()
+	client := c.httpClient
+	c.configMu.RUnlock()
+	if client != nil {
+		return client
+	}
+	return &http.Client{Timeout: 15 * time.Second}
 }
 
 func (c *Client) enqueue(n Notification) {

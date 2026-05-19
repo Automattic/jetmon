@@ -67,7 +67,9 @@ the operator types the requested confirmation:
 2. Deploy the fresh v2 Veriflier fleet and validate `/v2/status`, stable
    `vantage.id` values, auth, capacity, and quorum.
 3. Deploy v2 Monitors in `ROLLOUT_MODE=api-controlled` with `HEAD` + `legacy`
-   defaults.
+   probe defaults and `WPCOM_NOTIFY_MODE=legacy`. Keep `modern` WPCOM notify
+   mode out of production until WPCOM signs off on the new endpoint/auth
+   contract.
 4. Run API preflight and read-only smoke checks from the operator CLI:
 
    ```bash

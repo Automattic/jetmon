@@ -99,6 +99,38 @@ outbound calls. Keep this enabled in production for v1 payload compatibility.
 Set false on isolated test fleets so capacity and outage simulations cannot
 attempt to notify WPCOM. Default: true.
 
+WPCOM_NOTIFY_MODE
+Outbound WPCOM status-change transport. Set to legacy for the initial
+production rollout unless the WPCOM owner has explicitly confirmed the modern
+endpoint/auth contract.
+  legacy - v1-compatible HTTPS GET to WPCOM with the JSON payload in the data
+           query parameter, AUTH_TOKEN embedded as token, and a client
+           certificate loaded from WPCOM_NOTIFY_LEGACY_CERT_PATH /
+           WPCOM_NOTIFY_LEGACY_KEY_PATH. This is the default.
+  modern - JSON POST to WPCOM_NOTIFY_MODERN_ENDPOINT with
+           Authorization: Bearer AUTH_TOKEN. Keep this for development and
+           contract testing until WPCOM signs off for production.
+Default: legacy.
+
+WPCOM_NOTIFY_MODERN_ENDPOINT
+Endpoint used when WPCOM_NOTIFY_MODE=modern. Default:
+https://public-api.wordpress.com/wpcom/v2/jetpack-monitor/status-change
+
+WPCOM_NOTIFY_LEGACY_ENDPOINT
+Endpoint used when WPCOM_NOTIFY_MODE=legacy. Jetmon appends a URL-encoded
+data=<json> query parameter. Default: https://jetpack.wordpress.com/jetmon/
+
+WPCOM_NOTIFY_LEGACY_CERT_PATH / WPCOM_NOTIFY_LEGACY_KEY_PATH
+Client certificate and private key used only in legacy WPCOM mode. These files
+are production secrets; mount or inject them outside the repo and image. The
+default paths match the v1 repo layout: certs/jetmon.crt and certs/jetmon.key.
+
+WPCOM_NOTIFY_LEGACY_INSECURE_SKIP_VERIFY
+Whether legacy WPCOM mode skips remote TLS certificate verification. Default:
+true to preserve v1's rejectUnauthorized=false behavior for initial
+compatibility. Set false only after confirming the WPCOM legacy endpoint works
+with normal TLS verification from the production container network.
+
 VERIFLIER_BATCH_SIZE
 Legacy compatibility setting retained for verifier batching compatibility. The
 current JSON-over-HTTP verifier path can send multiple sites per request, but
