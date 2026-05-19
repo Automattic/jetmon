@@ -339,13 +339,23 @@ Because bucket ownership is coordinated via MySQL, a multi-host deployment can b
 
 ## Auto-Scale and Auto-Heal
 
-Jetmon 2 achieves maximum uptime without requiring a Kubernetes cluster. Scaling and healing operate at three levels: within the process, at the host level via systemd, and across hosts via MySQL-coordinated bucket ownership.
+Jetmon 2 achieves maximum uptime without requiring a Kubernetes cluster.
+Scaling and healing operate at three levels: within the process, at the
+service-manager/container level, and across hosts via MySQL-coordinated bucket
+ownership.
 
 **Goroutine Pool Auto-Scaling**
 The worker pool monitors queue depth against a configurable high-water mark. When queue depth exceeds the threshold for more than N seconds, new goroutine workers are added up to a configured maximum without any restart. When depth falls below a low-water mark for a sustained period, excess goroutines are drained gracefully. No process spawning, no IPC overhead — adding a worker is a channel send. This handles the vast majority of load variation entirely within a single process.
 
-**systemd Process Supervision**
-The binary ships with a systemd unit file. `Restart=on-failure` with a short `RestartSec` ensures the process is automatically restarted if it crashes or exits unexpectedly. `StartLimitIntervalSec` and `StartLimitBurst` prevent restart loops from hammering a broken dependency. The unit file also enforces resource limits (`MemoryMax`, `LimitNOFILE`) to keep the process within safe bounds on shared hosts. A watchdog integration via `sd_notify` lets systemd detect and restart a process that has stopped making progress without actually crashing.
+**Process Supervision**
+Production Monitor rollout is expected to use TeamCity/docker-deploy. The
+sample systemd unit remains useful for VM labs, emergency fallback deployments,
+and host-side validation tooling. When systemd is used, `Restart=on-failure`
+with a short `RestartSec` restarts crash exits, `StartLimitIntervalSec` and
+`StartLimitBurst` limit restart loops, and resource limits such as `MemoryMax`
+and `LimitNOFILE` keep the process within bounded host resources. The current
+unit is `Type=simple`; Jetmon does not currently implement `sd_notify` watchdog
+heartbeats.
 
 **MySQL-Coordinated Bucket Ownership**
 A `jetmon_hosts` table replaces the static `BUCKET_NO_MIN`/`BUCKET_NO_MAX` config values with runtime-negotiated bucket ownership. Hosts claim, hold, and release bucket ranges autonomously using MySQL transactions as the coordination mechanism — no cluster orchestrator required. For the initial v1-to-v2 production migration, `PINNED_BUCKET_MIN`/`PINNED_BUCKET_MAX` (with `BUCKET_NO_MIN`/`BUCKET_NO_MAX` accepted as aliases) temporarily pins a v2 host to the exact static range of the v1 host it replaces; remove those keys after the fleet is on v2 to enable dynamic ownership.

@@ -420,7 +420,7 @@ Implementation notes:
 
 ## 8. Full Codebase Simplification And Legacy-Surface Review
 
-Status: requested; run after the parity/rollout decisions above
+Status: initial cleanup implemented; keep as an ongoing post-rollout review
 
 Goal:
 
@@ -448,3 +448,23 @@ Recommended solution:
   are resolved. Treat each removal as evidence-driven: keep anything with a
   known production consumer, deprecate uncertain surfaces first, and remove
   clearly unused code/docs in small commits with focused tests.
+
+Implementation notes:
+
+- Stale Claude helper docs were the largest low-risk legacy surface found in
+  the first pass. They referenced `master`, C++/Node worker guidance, gRPC
+  Veriflier paths, MySQL 8.0, Go 1.22, and systemd watchdog behavior that no
+  longer matches the current v2 branch. They now point at `AGENTS.md`, target
+  `v2`, describe the JSON-over-HTTP Veriflier contract, and prefer internal
+  `api-fixture` targets for local Docker tests.
+- `docs/project.md` now describes process supervision generically instead of
+  presenting systemd as the production Monitor deployment layer. It also
+  removes the inaccurate `sd_notify` watchdog claim; the shipped unit is
+  currently `Type=simple`.
+- `docs/changelog.md` now names `VERIFIERS[].port` as the current Veriflier
+  config key and labels `grpc_port` as a warning compatibility alias.
+- No runtime code removal was made in this pass. Systemd units, lab tooling,
+  optional `veriflier2` legacy-compatible HTTP endpoints, stats files, pinned
+  bucket mode, and deprecated config aliases still have rollout, lab, or
+  compatibility value and should be removed only after the relevant production
+  migration gates close.

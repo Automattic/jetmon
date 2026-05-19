@@ -6,7 +6,8 @@ allowed-tools: Bash(git diff:*), Bash(git log:*), Bash(git status:*), Bash(git b
 
 # Create PR
 
-Create a PR for the current branch, targeting `master`.
+Create a PR for the current branch, targeting `v2` unless the user requests a
+different base branch.
 
 ## Usage
 
@@ -14,51 +15,35 @@ Create a PR for the current branch, targeting `master`.
 
 ## Process
 
-1. **Gather branch context**:
-   - Run `git fetch origin` to ensure we have the latest refs
-   - Run `git log origin/master..HEAD --oneline` to see all commits on the branch
-   - Run `git diff origin/master...HEAD --stat` to see what files changed
-   - Run `git diff origin/master...HEAD` to see the actual changes
+1. Gather branch context:
+   - Run `git fetch origin`.
+   - Run `git log origin/v2..HEAD --oneline`.
+   - Run `git diff origin/v2...HEAD --stat`.
+   - Run `git diff origin/v2...HEAD`.
+2. Take the whole branch into account, not just the most recent commit.
+3. Analyze affected components, rollout impact, config impact, and tests.
+4. Avoid secrets, tokens, internal credentials, and customer data in the PR
+   title, body, screenshots, and command output.
 
-2. **Take the entire branch into account**, not just the most recent commit. All commits since branching from `origin/master` should inform the PR description.
-
-3. **Analyze the changes** to understand:
-   - Which component(s) are affected (master process, worker, C++ addon, veriflier, config)
-   - What type of change this is (bug fix, feature, refactor, performance, config change)
-   - Any potential risks or testing considerations
-
-4. **Follow these style guidelines**:
-   - Use clear, concise titles that describe what the PR does
-   - Start the title with a verb (Add, Fix, Update, Remove, Refactor)
-   - For "Changes" section, use bullet points summarizing what changed
-   - Include any relevant configuration changes or deployment notes
-
-5. **Identify affected components** based on the changes:
+## Component Map
 
 | Component | Key Files |
 |-----------|-----------|
-| CLI / Entry Point | `cmd/jetmon2/main.go` |
+| CLI / Entry Point | `cmd/jetmon2/main.go`, `cmd/jetmon2/*.go` |
 | Orchestrator | `internal/orchestrator/` |
-| HTTP Checker | `internal/checker/checker.go` |
-| Goroutine Pool | `internal/checker/pool.go` |
-| Database | `internal/db/` |
-| Config | `internal/config/config.go`, `config/config.readme` |
-| gRPC / Veriflier Transport | `internal/grpc/` |
-| WPCOM Client | `internal/wpcom/client.go` |
-| Audit Log | `internal/audit/audit.go` |
-| Metrics | `internal/metrics/metrics.go` |
-| Operator Dashboard | `internal/dashboard/dashboard.go` |
-| Veriflier Binary | `veriflier2/cmd/main.go` |
-| Docker | `docker/docker-compose.yml`, `docker/Dockerfile*` |
-| Migrations | `internal/db/migrations.go`, `migrations/001_jetmon2.sql` |
+| HTTP Checker | `internal/checker/` |
+| Database / Migrations | `internal/db/`, `migrations/` |
+| Config | `internal/config/`, `config/config.readme`, `config/config-sample.json` |
+| Veriflier Transport | `internal/veriflier/`, `veriflier2/` |
+| WPCOM Client | `internal/wpcom/` |
+| Metrics | `internal/metrics/` |
+| API / Auth | `internal/api/`, `internal/apikeys/` |
+| Dashboard | `internal/dashboard/` |
+| Webhooks / Alerting | `internal/webhooks/`, `internal/alerting/` |
+| Docker / Deployment | `docker/`, `systemd/`, `docs/*rollout*`, `docs/operations-guide.md` |
+| Rollout Tooling | `scripts/`, `cmd/jetmon2/rollout*.go` |
 
-6. **Determine testing requirements**:
-   - Config changes: test with `./jetmon2 validate-config`
-   - DB/schema changes: test migration with `./jetmon2 migrate`
-   - All changes: test with Docker environment (`docker compose up --build`)
-   - Run `make test` to verify unit tests pass
-
-7. **Create the PR** using `gh pr create --draft --assignee @me` with this format:
+## PR Body
 
 ```markdown
 ## Summary
@@ -68,29 +53,22 @@ Brief description of what this PR accomplishes and why.
 ## Changes
 
 - Bullet points describing specific changes
-- Include technical details relevant to reviewers
-- Note any configuration changes required
-
-## Affected Components
-
-- List components from the table above that are modified
+- Include relevant config, deployment, or compatibility notes
 
 ## Testing
 
-- [ ] Tested locally with Docker environment (`docker compose up --build`)
-- [ ] `make test` passes
-- [ ] `./jetmon2 validate-config` passes (if config changes)
-- [ ] Migration tested with `./jetmon2 migrate` (if schema changes)
-- [ ] Tested configuration reload via `./jetmon2 reload` (if config changes)
+- [ ] `make test`
+- [ ] `make rollout-docs-verify` (if rollout docs changed)
+- [ ] Docker/local smoke test (if runtime behavior changed)
+- [ ] Migration smoke (if schema or DB behavior changed)
 
 ## Deployment Notes
 
-Any special deployment considerations (e.g., config changes, database migrations, Systems team coordination)
+Any required rollout steps, config changes, validation gates, or rollback notes.
 ```
 
-## Important Notes
+Create as draft unless the user explicitly says it is ready for review:
 
-- Jetmon is a private repository, but avoid including sensitive information (auth tokens, internal URLs) in PR descriptions
-- Changes require Systems team deployment to production hosts
-- Mention if the change affects bucket configuration or horizontal scaling
-- Note any metrics changes that would affect Grafana dashboards
+```bash
+gh pr create --draft --base v2 --assignee @me
+```
