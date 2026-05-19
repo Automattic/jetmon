@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"database/sql"
 	"fmt"
 	"net"
 	"os"
@@ -119,9 +120,9 @@ func (c *Client) send(msg string) {
 	_, _ = fmt.Fprintln(c.conn, msg)
 }
 
-// EmitMemStats emits legacy memory gauges. process.rss_mb uses operating-system
-// resident set size when available and falls back to Go runtime Sys memory when
-// procfs is unavailable; process.go_sys_mem_mb keeps the runtime value visible.
+// EmitMemStats emits low-overhead local process resource gauges. The method
+// keeps its historical name because it is controlled by the existing
+// STATSD_SEND_MEM_USAGE config key.
 func (c *Client) EmitMemStats() {
 	mem := processmetrics.CurrentMemory()
 	rssMB := mem.RSSMemMB
@@ -132,6 +133,37 @@ func (c *Client) EmitMemStats() {
 	c.Gauge("process.rss_mb", rssMB)
 	c.Gauge("process.go_sys_mem_mb", goSysMB)
 	c.Gauge("process.heap_alloc_mb", mem.HeapAllocMemMB)
+	c.Gauge("process.open_fds", mem.OpenFDs)
+	if mem.MaxFDs > 0 {
+		c.Gauge("process.max_fds", mem.MaxFDs)
+		c.Gauge("process.fd_utilization_pct", int(float64(mem.OpenFDs)*100/float64(mem.MaxFDs)))
+	}
+	c.Gauge("runtime.goroutines.count", mem.RuntimeGoroutines)
+	c.Gauge("runtime.goroutines.runnable", mem.RuntimeGoroutinesRunnable)
+	c.Gauge("runtime.goroutines.running", mem.RuntimeGoroutinesRunning)
+	c.Gauge("runtime.goroutines.waiting", mem.RuntimeGoroutinesWaiting)
+	c.Gauge("runtime.goroutines.not_in_go", mem.RuntimeGoroutinesNotInGo)
+	c.Gauge("runtime.goroutines.created_total", int(mem.RuntimeGoroutinesCreated))
+	c.Gauge("runtime.threads.count", mem.RuntimeThreads)
+}
+
+// EmitDBStats emits a compact snapshot of one database pool. These are gauges,
+// including the cumulative sql.DB counters, so callers do not need to retain
+// previous values or add synchronization to the metrics client.
+func (c *Client) EmitDBStats(prefix string, stats sql.DBStats) {
+	prefix = strings.Trim(strings.TrimSpace(prefix), ".")
+	if prefix == "" {
+		prefix = "db.pool"
+	}
+	c.Gauge(prefix+".max_open_connections", stats.MaxOpenConnections)
+	c.Gauge(prefix+".open_connections", stats.OpenConnections)
+	c.Gauge(prefix+".in_use", stats.InUse)
+	c.Gauge(prefix+".idle", stats.Idle)
+	c.Gauge(prefix+".wait_count", int(stats.WaitCount))
+	c.Gauge(prefix+".wait_duration_ms", int(stats.WaitDuration.Milliseconds()))
+	c.Gauge(prefix+".max_idle_closed", int(stats.MaxIdleClosed))
+	c.Gauge(prefix+".max_idle_time_closed", int(stats.MaxIdleTimeClosed))
+	c.Gauge(prefix+".max_lifetime_closed", int(stats.MaxLifetimeClosed))
 }
 
 // WriteStatsFiles writes sitespersec, sitesqueue, and totals to the stats/

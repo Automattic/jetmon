@@ -365,6 +365,10 @@ production telemetry branches:
 - [x] Add per-page scheduler phase timings for dispatch, wait, result
   processing, sidecar freshness writes, check-history writes, SSL updates, and
   event handling so the next capacity retest can identify the exact slow stage.
+- [x] Add low-overhead process and DB-pool StatsD gauges so capacity runs can
+  correlate throughput changes with RSS/heap memory, file-descriptor pressure,
+  goroutine/thread pressure, and read/write MySQL pool waits without adding
+  per-check writes or high-cardinality metric names.
 - [x] Batch passive per-check DB writes for
   `jetmon_site_runtime.last_checked_at` freshness updates and
   `jetmon_check_history` timing samples so healthy high-volume sweeps are not

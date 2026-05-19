@@ -56,6 +56,9 @@ func TestHandleState(t *testing.T) {
 	if !strings.Contains(body, `"go_sys_mem_mb"`) {
 		t.Fatalf("state body missing go_sys_mem_mb: %s", body)
 	}
+	if !strings.Contains(body, `"open_fds"`) {
+		t.Fatalf("state body missing open_fds: %s", body)
+	}
 	var st State
 	if err := json.NewDecoder(strings.NewReader(body)).Decode(&st); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -74,6 +77,9 @@ func TestHandleState(t *testing.T) {
 	}
 	if st.RuntimeGoroutines <= 0 || st.RuntimeThreads <= 0 || st.RuntimeGoroutinesCreated == 0 {
 		t.Fatalf("runtime fields = %+v, want scheduler metrics", st)
+	}
+	if st.OpenFDs < 0 || st.MaxFDs < 0 {
+		t.Fatalf("fd fields = open %d max %d, want non-negative", st.OpenFDs, st.MaxFDs)
 	}
 	if st.BucketOwnership != "pinned range=0-99" {
 		t.Fatalf("BucketOwnership = %q, want pinned range=0-99", st.BucketOwnership)
@@ -299,6 +305,9 @@ func TestHandleIndex(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "id=\"go-sys\"") {
 		t.Fatal("body does not contain Go system memory card")
+	}
+	if !strings.Contains(w.Body.String(), "id=\"file-descriptors\"") {
+		t.Fatal("body does not contain file descriptors card")
 	}
 	if !strings.Contains(w.Body.String(), "id=\"runtime-goroutines\"") {
 		t.Fatal("body does not contain runtime goroutines card")

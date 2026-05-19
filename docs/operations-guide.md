@@ -671,7 +671,10 @@ Important metric groups include:
   recovery, or false alarm
 - Detection outcome counters by local failure class
 - Legacy projection drift
-- RSS and Go Sys memory usage
+- Low-overhead process resource gauges when `STATSD_SEND_MEM_USAGE=true`: RSS
+  memory, Go runtime memory, heap allocation, open file descriptors, file
+  descriptor utilization percentage, goroutine/thread scheduler counts, and
+  read/write `sql.DB` pool pressure
 
 StatsD is the primary metrics transport. Monitor and deliverer read
 `STATSD_ADDR`; Jetmon binaries do not assume a production StatsD endpoint when

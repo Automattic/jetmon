@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"crypto/tls"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -3854,6 +3855,8 @@ func (r *recordingMetrics) Timing(stat string, d time.Duration) {
 }
 
 func (r *recordingMetrics) EmitMemStats() {}
+
+func (r *recordingMetrics) EmitDBStats(prefix string, stats sql.DBStats) {}
 
 func (r *recordingMetrics) counter(stat string) int {
 	r.mu.Lock()

@@ -50,4 +50,27 @@ func TestCurrentMemory(t *testing.T) {
 	if snapshot.RuntimeGoroutinesCreated == 0 {
 		t.Fatal("RuntimeGoroutinesCreated = 0, want non-zero count")
 	}
+	if snapshot.OpenFDs < 0 {
+		t.Fatalf("OpenFDs = %d, want non-negative file descriptor count", snapshot.OpenFDs)
+	}
+	if snapshot.MaxFDs < 0 {
+		t.Fatalf("MaxFDs = %d, want non-negative file descriptor limit", snapshot.MaxFDs)
+	}
+}
+
+func TestOpenFDCountFromDir(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"0", "1", "2"} {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte("fd"), 0644); err != nil {
+			t.Fatalf("WriteFile(%s): %v", name, err)
+		}
+	}
+	got, err := openFDCountFromDir(dir)
+	if err != nil {
+		t.Fatalf("openFDCountFromDir() error = %v", err)
+	}
+	if got != 3 {
+		t.Fatalf("openFDCountFromDir() = %d, want 3", got)
+	}
 }

@@ -8,6 +8,7 @@ import (
 	runtimemetrics "runtime/metrics"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 const bytesPerMB = 1024 * 1024
@@ -17,6 +18,8 @@ type MemorySnapshot struct {
 	RSSMemMB       int
 	GoSysMemMB     int
 	HeapAllocMemMB int
+	OpenFDs        int
+	MaxFDs         int
 
 	RuntimeGoroutines         int
 	RuntimeGoroutinesRunnable int
@@ -33,6 +36,8 @@ func CurrentMemory() MemorySnapshot {
 	mem := currentRuntimeMemory()
 	addRuntimeSchedulerMetrics(&mem)
 	mem.RSSMemMB = rssMemMB()
+	mem.OpenFDs = openFDCount()
+	mem.MaxFDs = maxFDLimit()
 	return mem
 }
 
@@ -104,4 +109,28 @@ func rssMemMBFromStatm(path string, pageSize int) (int, error) {
 		return 0, fmt.Errorf("parse resident pages: %w", err)
 	}
 	return int((residentPages * uint64(pageSize)) / bytesPerMB), nil
+}
+
+func openFDCount() int {
+	count, err := openFDCountFromDir("/proc/self/fd")
+	if err != nil {
+		return 0
+	}
+	return count
+}
+
+func openFDCountFromDir(path string) (int, error) {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return 0, err
+	}
+	return len(entries), nil
+}
+
+func maxFDLimit() int {
+	var limit syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &limit); err != nil {
+		return 0
+	}
+	return metricUint64ToInt(limit.Cur)
 }
