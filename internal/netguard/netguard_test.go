@@ -102,3 +102,18 @@ func TestUnsafeIP(t *testing.T) {
 		t.Fatal("UnsafeIP(8.8.8.8) = true, want false")
 	}
 }
+
+// TestUnsafeCIDRListParses guards the package-level unsafeCIDRs list against
+// regressions. parseStaticCIDRs log.Fatalf's on a malformed CIDR at package
+// init, which would crash the process on startup; we want CI to catch a typo
+// before it reaches production. A non-empty list is also a sanity check.
+func TestUnsafeCIDRListParses(t *testing.T) {
+	if len(unsafeCIDRs) == 0 {
+		t.Fatal("unsafeCIDRs is empty; SSRF protections would be neutered")
+	}
+	for _, network := range unsafeCIDRs {
+		if network == nil {
+			t.Fatal("unsafeCIDRs contains a nil entry")
+		}
+	}
+}
