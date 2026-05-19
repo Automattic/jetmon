@@ -1294,6 +1294,67 @@ This is the only API surface for keys. **Creation, listing, and revocation are C
 
 Unauthenticated. Returns `{ "status": "ok" }` if the API can talk to the database. For load balancers and external uptime monitors (yes, including external monitors monitoring the monitor).
 
+#### `GET /api/v1/monitor/drain-status`
+
+Requires `read` scope. Returns the in-flight work counters the local orchestrator publishes to `jetmon_process_health`. Used to confirm a clean shutdown is safe.
+
+```json
+{
+  "state": "stopping",
+  "active_checks": 0,
+  "queue_depth": 0,
+  "retry_queue_size": 0,
+  "wpcom_queue_depth": 0,
+  "heartbeat_age": "3s",
+  "done": true
+}
+```
+
+`done` is true when every counter is zero. A running host with non-zero counters is steady-state (response includes a `reason` explaining); a stopping host with non-zero counters is `"reason": "drain in progress"`.
+
+#### `GET /api/v1/verifliers/quorum-report`
+
+Requires `read` scope. Reports per-vantage health for quorum diagnostics. Auth tokens are never included in the response (only `auth_token_present` boolean).
+
+```json
+{
+  "generated_at": "2026-05-19T12:34:56Z",
+  "stale_after_seconds": 90,
+  "total_vantages": 3,
+  "enabled_count": 2,
+  "usable_count": 2,
+  "healthy_count": 2,
+  "vantages": [
+    {
+      "vantage_id": "v-us-east",
+      "region": "us-east",
+      "endpoint_host": "10.0.0.10",
+      "endpoint_port": "7803",
+      "auth_token_present": true,
+      "enabled": true,
+      "usable": true,
+      "healthy": true,
+      "active_agents": 2,
+      "last_seen": "2026-05-19T12:34:41Z",
+      "last_seen_age_sec": 15
+    }
+  ]
+}
+```
+
+A vantage is `healthy` when it is enabled, usable (has host+port+token), and has at least one agent that heartbeat within the last 90 seconds. Use `healthy_count` against the configured detection quorum to decide whether a vote is meaningful.
+
+#### `GET /api/v1/audit-log`
+
+Requires `read` scope. Paginated query over `jetmon_audit_log`. Filters: `blog_id`, `event_id`, `event_type` / `event_type__in=A,B,C`, `source`, `since` / `until` (RFC3339). Newest-first by id. Opaque `cursor` pagination, `limit` default 50 max 200.
+
+```bash
+curl -H "Authorization: Bearer $JETMON_API_TOKEN" \
+  "$JETMON_API_URL/api/v1/audit-log?event_type__in=wpcom_sent,wpcom_failure&since=2026-05-19T00:00:00Z&limit=100"
+```
+
+Each row carries `id`, `blog_id` (nullable for system events like `config_change`), `event_id` (nullable when not linked), `event_type`, `source`, `detail`, optional `metadata` JSON, and `created_at`. Replaces the previous "log into MySQL and `SELECT * FROM jetmon_audit_log`" workflow.
+
 #### `GET /api/v1/ready`
 
 Unauthenticated. Returns 200 with `{ "status": "ready", ... }` only when this Monitor host has finished starting up: the API can talk to the database, the local orchestrator has published a `jetmon_process_health` snapshot, and that snapshot is fresh (< 60 s), `state = running`, and `health_status = green`. Otherwise returns 503 with one of:

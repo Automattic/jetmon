@@ -224,6 +224,7 @@ func openAPISchemas() map[string]any {
 		"WebhookDeliveryListEnvelope": "WebhookDelivery",
 		"AlertContactListEnvelope":    "AlertContact",
 		"AlertDeliveryListEnvelope":   "AlertDelivery",
+		"AuditLogListEnvelope":        "AuditLogRow",
 	} {
 		schemas[name] = listEnvelopeSchema(item)
 	}
@@ -242,6 +243,9 @@ func openAPIComponentTypes() map[string]reflect.Type {
 		"RolloutStatusResponse":       reflect.TypeOf(rolloutStatusResponse{}),
 		"RolloutGateResponse":         reflect.TypeOf(rolloutGateResponse{}),
 		"MonitorStatsResponse":        reflect.TypeOf(monitorStatsResponse{}),
+		"DrainStatusResponse":         reflect.TypeOf(drainStatusResponse{}),
+		"QuorumReportResponse":        reflect.TypeOf(quorumReportResponse{}),
+		"AuditLogRow":                 reflect.TypeOf(auditLogRow{}),
 		"DBConfigStatusResponse":      reflect.TypeOf(dbConfigStatusResponse{}),
 		"Site":                        reflect.TypeOf(siteResponse{}),
 		"ActiveEventSummary":          reflect.TypeOf(activeEventSummary{}),

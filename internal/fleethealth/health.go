@@ -325,6 +325,46 @@ func LookupReadiness(ctx context.Context, db *sql.DB, hostID, processType string
 	return snap, nil
 }
 
+// DrainSnapshot is the trimmed view of a process_health row needed to answer
+// "is this host done with its in-flight work yet". Used by the operator
+// drain-status endpoint to confirm a clean shutdown is safe.
+type DrainSnapshot struct {
+	State           string
+	ActiveChecks    int
+	QueueDepth      int
+	RetryQueueSize  int
+	WPCOMQueueDepth int
+	UpdatedAt       time.Time
+}
+
+// LookupDrainStatus reads the in-flight work counters from process_health for
+// one (hostID, processType) row. Returns sql.ErrNoRows when no snapshot has
+// been published yet. The query is scoped to the columns the drain handler
+// actually uses so it stays cheap even when called frequently during a
+// shutdown wait.
+func LookupDrainStatus(ctx context.Context, db *sql.DB, hostID, processType string) (DrainSnapshot, error) {
+	if db == nil {
+		return DrainSnapshot{}, errors.New("database pool is not initialized")
+	}
+	hostID = strings.TrimSpace(hostID)
+	processType = strings.TrimSpace(processType)
+	if hostID == "" || processType == "" {
+		return DrainSnapshot{}, errors.New("host id and process type are required")
+	}
+	var snap DrainSnapshot
+	err := db.QueryRowContext(ctx, `
+		SELECT state, active_checks, queue_depth, retry_queue_size, wpcom_queue_depth, updated_at
+		  FROM jetmon_process_health
+		 WHERE process_id = ?`,
+		ProcessID(hostID, processType),
+	).Scan(&snap.State, &snap.ActiveChecks, &snap.QueueDepth, &snap.RetryQueueSize, &snap.WPCOMQueueDepth, &snap.UpdatedAt)
+	if err != nil {
+		return DrainSnapshot{}, err
+	}
+	snap.UpdatedAt = snap.UpdatedAt.UTC()
+	return snap, nil
+}
+
 func normalizeSnapshot(snapshot Snapshot) (Snapshot, error) {
 	snapshot.HostID = strings.TrimSpace(snapshot.HostID)
 	snapshot.ProcessType = strings.TrimSpace(snapshot.ProcessType)
