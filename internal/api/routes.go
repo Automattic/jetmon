@@ -66,6 +66,16 @@ func apiRoutes() []routeDef {
 		},
 		{
 			Method:         http.MethodGet,
+			Path:           "/api/v1/ready",
+			OperationID:    "getReady",
+			Summary:        "Check whether the host is ready to take traffic",
+			Tags:           []string{"Utility"},
+			SuccessStatus:  http.StatusOK,
+			ResponseSchema: "ReadyResponse",
+			Handler:        (*Server).handleReady,
+		},
+		{
+			Method:         http.MethodGet,
 			Path:           "/api/v1/openapi.json",
 			OperationID:    "getOpenAPI",
 			Summary:        "Return the OpenAPI 3.1 route contract",

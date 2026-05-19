@@ -5,9 +5,18 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/Automattic/jetmon/internal/apikeys"
+	"github.com/DATA-DOG/go-sqlmock"
 )
+
+// readinessLookupSQL must match fleethealth.LookupReadiness verbatim under
+// sqlmock.QueryMatcherEqual.
+const readinessLookupSQL = `
+		SELECT state, health_status, updated_at
+		  FROM jetmon_process_health
+		 WHERE process_id = ?`
 
 func TestHealthOK(t *testing.T) {
 	s, mock, _, cleanup := newTestServer(t)
@@ -102,6 +111,147 @@ func TestMeMissingKeyReturns500(t *testing.T) {
 	body := readErrorBody(t, rec.Body)
 	if body.Code != "auth_state_missing" {
 		t.Errorf("error code = %q, want auth_state_missing", body.Code)
+	}
+}
+
+func TestReadyOK(t *testing.T) {
+	s, mock, _, cleanup := newTestServer(t)
+	defer cleanup()
+
+	mock.ExpectPing()
+	mock.ExpectQuery(readinessLookupSQL).
+		WithArgs("test-host:monitor").
+		WillReturnRows(sqlmock.NewRows([]string{"state", "health_status", "updated_at"}).
+			AddRow("running", "green", time.Now().UTC()))
+
+	req := httptest.NewRequest("GET", "/api/v1/ready", nil)
+	rec := httptest.NewRecorder()
+	s.handleReady(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var body readyResponse
+	readJSON(t, rec.Body, &body)
+	if body.Status != "ready" {
+		t.Errorf("status = %q, want ready", body.Status)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+func TestReadyStartingWhenSnapshotMissing(t *testing.T) {
+	s, mock, _, cleanup := newTestServer(t)
+	defer cleanup()
+
+	mock.ExpectPing()
+	mock.ExpectQuery(readinessLookupSQL).
+		WithArgs("test-host:monitor").
+		WillReturnRows(sqlmock.NewRows([]string{"state", "health_status", "updated_at"}))
+
+	req := httptest.NewRequest("GET", "/api/v1/ready", nil)
+	rec := httptest.NewRecorder()
+	s.handleReady(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+	var body readyResponse
+	readJSON(t, rec.Body, &body)
+	if body.Status != "starting" {
+		t.Errorf("status = %q, want starting", body.Status)
+	}
+}
+
+func TestReadyStaleSnapshot(t *testing.T) {
+	s, mock, _, cleanup := newTestServer(t)
+	defer cleanup()
+
+	mock.ExpectPing()
+	mock.ExpectQuery(readinessLookupSQL).
+		WithArgs("test-host:monitor").
+		WillReturnRows(sqlmock.NewRows([]string{"state", "health_status", "updated_at"}).
+			AddRow("running", "green", time.Now().Add(-5*time.Minute).UTC()))
+
+	req := httptest.NewRequest("GET", "/api/v1/ready", nil)
+	rec := httptest.NewRecorder()
+	s.handleReady(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+	var body readyResponse
+	readJSON(t, rec.Body, &body)
+	if body.Status != "stale" {
+		t.Errorf("status = %q, want stale", body.Status)
+	}
+}
+
+func TestReadyNotRunning(t *testing.T) {
+	s, mock, _, cleanup := newTestServer(t)
+	defer cleanup()
+
+	mock.ExpectPing()
+	mock.ExpectQuery(readinessLookupSQL).
+		WithArgs("test-host:monitor").
+		WillReturnRows(sqlmock.NewRows([]string{"state", "health_status", "updated_at"}).
+			AddRow("stopping", "green", time.Now().UTC()))
+
+	req := httptest.NewRequest("GET", "/api/v1/ready", nil)
+	rec := httptest.NewRecorder()
+	s.handleReady(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+	var body readyResponse
+	readJSON(t, rec.Body, &body)
+	if body.Status != "not_running" {
+		t.Errorf("status = %q, want not_running", body.Status)
+	}
+}
+
+func TestReadyUnhealthy(t *testing.T) {
+	s, mock, _, cleanup := newTestServer(t)
+	defer cleanup()
+
+	mock.ExpectPing()
+	mock.ExpectQuery(readinessLookupSQL).
+		WithArgs("test-host:monitor").
+		WillReturnRows(sqlmock.NewRows([]string{"state", "health_status", "updated_at"}).
+			AddRow("running", "red", time.Now().UTC()))
+
+	req := httptest.NewRequest("GET", "/api/v1/ready", nil)
+	rec := httptest.NewRecorder()
+	s.handleReady(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+	var body readyResponse
+	readJSON(t, rec.Body, &body)
+	if body.Status != "unhealthy" {
+		t.Errorf("status = %q, want unhealthy", body.Status)
+	}
+}
+
+func TestReadyDBDown(t *testing.T) {
+	s, mock, _, cleanup := newTestServer(t)
+	defer cleanup()
+
+	mock.ExpectPing().WillReturnError(errPing{})
+
+	req := httptest.NewRequest("GET", "/api/v1/ready", nil)
+	rec := httptest.NewRecorder()
+	s.handleReady(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+	body := readErrorBody(t, rec.Body)
+	if body.Code != "db_unavailable" {
+		t.Errorf("error code = %q, want db_unavailable", body.Code)
 	}
 }
 

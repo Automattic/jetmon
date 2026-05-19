@@ -195,6 +195,17 @@ func openAPISchemas() map[string]any {
 				"status": map[string]any{"type": "string"},
 			},
 		},
+		"ReadyResponse": map[string]any{
+			"type":     "object",
+			"required": []string{"status"},
+			"properties": map[string]any{
+				"status":        map[string]any{"type": "string"},
+				"state":         map[string]any{"type": "string"},
+				"health_status": map[string]any{"type": "string"},
+				"heartbeat_age": map[string]any{"type": "string"},
+				"reason":        map[string]any{"type": "string"},
+			},
+		},
 		"OpenAPIDocument": map[string]any{
 			"type":                 "object",
 			"additionalProperties": true,

@@ -1235,6 +1235,26 @@ This is the only API surface for keys. **Creation, listing, and revocation are C
 
 Unauthenticated. Returns `{ "status": "ok" }` if the API can talk to the database. For load balancers and external uptime monitors (yes, including external monitors monitoring the monitor).
 
+#### `GET /api/v1/ready`
+
+Unauthenticated. Returns 200 with `{ "status": "ready", ... }` only when this Monitor host has finished starting up: the API can talk to the database, the local orchestrator has published a `jetmon_process_health` snapshot, and that snapshot is fresh (< 60 s), `state = running`, and `health_status = green`. Otherwise returns 503 with one of:
+
+- `"status": "starting"` — orchestrator has not yet published a snapshot
+- `"status": "stale"` — snapshot is older than 60 seconds (orchestrator likely stopped publishing)
+- `"status": "not_running"` — process is draining or stopped
+- `"status": "unhealthy"` — orchestrator reports `health_status != green` (Veriflier discovery missing, MySQL degraded, etc.)
+
+Distinct from `/health` so a load balancer can keep the process registered as live (`/health`) while not sending traffic to a host that has just restarted and is still claiming buckets or has hit a dependency failure. Both endpoints are unauthenticated and intended for infrastructure probes.
+
+```json
+{
+  "status": "ready",
+  "state": "running",
+  "health_status": "green",
+  "heartbeat_age": "5s"
+}
+```
+
 #### `GET /api/v1/monitor/stats`
 
 Requires `read` scope. Returns the latest in-memory Monitor stats snapshot used

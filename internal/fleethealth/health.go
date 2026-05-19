@@ -290,6 +290,41 @@ func nullableIntPtr(value sql.NullInt64) *int {
 	return &v
 }
 
+// ReadinessSnapshot is the trimmed view of a process_health row needed to
+// answer "is this host ready to serve traffic". Kept distinct from Snapshot
+// so the readiness handler can avoid the wide row scan.
+type ReadinessSnapshot struct {
+	State        string
+	HealthStatus string
+	UpdatedAt    time.Time
+}
+
+// LookupReadiness reads the readiness columns for one (hostID, processType)
+// row. Returns sql.ErrNoRows when the orchestrator has not yet published a
+// snapshot — that's the signal that this process is still starting up.
+func LookupReadiness(ctx context.Context, db *sql.DB, hostID, processType string) (ReadinessSnapshot, error) {
+	if db == nil {
+		return ReadinessSnapshot{}, errors.New("database pool is not initialized")
+	}
+	hostID = strings.TrimSpace(hostID)
+	processType = strings.TrimSpace(processType)
+	if hostID == "" || processType == "" {
+		return ReadinessSnapshot{}, errors.New("host id and process type are required")
+	}
+	var snap ReadinessSnapshot
+	err := db.QueryRowContext(ctx, `
+		SELECT state, health_status, updated_at
+		  FROM jetmon_process_health
+		 WHERE process_id = ?`,
+		ProcessID(hostID, processType),
+	).Scan(&snap.State, &snap.HealthStatus, &snap.UpdatedAt)
+	if err != nil {
+		return ReadinessSnapshot{}, err
+	}
+	snap.UpdatedAt = snap.UpdatedAt.UTC()
+	return snap, nil
+}
+
 func normalizeSnapshot(snapshot Snapshot) (Snapshot, error) {
 	snapshot.HostID = strings.TrimSpace(snapshot.HostID)
 	snapshot.ProcessType = strings.TrimSpace(snapshot.ProcessType)
