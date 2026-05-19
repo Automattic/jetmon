@@ -98,6 +98,12 @@ clear stop/go threshold.
   recovery, inactive, URL-mismatch, and blacklisted-site cases while production
   config uses `WPCOM_NOTIFY_MODE=legacy`; `modern` mode remains blocked from
   production until WPCOM signs off on the new endpoint/auth contract.
+- [ ] WPCOM legacy notification setup thoroughly tested and validated before
+  production activation: mounted client certificate/key readable only by the
+  Monitor, legacy `/jetmon/?data=...` request shape verified, WPCOM response
+  parsing and retry/circuit behavior exercised, and no secret material emitted
+  in TeamCity logs, container logs, dashboard/API output, or rollout
+  transcripts.
 - [ ] Support/WAF guidance approved for v2 `GET`, `HEAD` compatibility mode,
   `jetmon/2.0`, blocked requests, false positives, and `Unknown`.
 - [ ] Synthetic canary tests defined and run before launch. At minimum, cover a
