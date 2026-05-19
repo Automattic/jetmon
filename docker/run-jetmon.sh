@@ -54,6 +54,10 @@ if [ ! -f config/config.json ]; then
 	render_config "$(config_target)"
 fi
 
-./jetmon2 migrate
+if [ "${JETMON_AUTO_MIGRATE:-true}" = "true" ]; then
+	./jetmon2 migrate
+else
+	echo "JETMON_AUTO_MIGRATE=false; skipping automatic schema migration"
+fi
 
 exec ./jetmon2

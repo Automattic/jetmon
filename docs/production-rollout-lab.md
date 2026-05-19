@@ -45,6 +45,8 @@ Use these as a lab pool, not as fixed assignments. A good first topology is:
 - One writable MariaDB primary.
 - Two read replicas.
 - Jetmon schema migrations applied once against the primary.
+- Concurrent migration attempts are either prevented by deployment order or
+  serialized by Jetmon's database migration lock.
 - Internal-only fixture sites seeded into `jetpack_monitor_sites`.
 - V2 side tables seeded or adopted through the rollout API, not by ad hoc SQL,
   unless the test case is explicitly about migration repair.
@@ -65,6 +67,8 @@ Use these as a lab pool, not as fixed assignments. A good first topology is:
 - Containers use bridge networking, not host networking.
 - Compose includes `--add-host=host.docker.internal:host-gateway`.
 - Monitor/Deliverer `STATSD_ADDR=host.docker.internal:8125`.
+- Production-style Monitor containers should run with
+  `JETMON_AUTO_MIGRATE=false` after schema has been applied explicitly.
 - Host-local StatsD and Graphite are installed and running on the Monitor hosts.
 - Monitor-host StatsD should bind only to localhost or a private lab interface,
   not a public interface. The lab may expose Graphite on a private/admin bind

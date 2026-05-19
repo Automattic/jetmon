@@ -556,11 +556,17 @@ steps should mirror the Frontity build:
    `--add-host=host.docker.internal:host-gateway`. Set `HOSTNAME` or
    `JETMON_HOSTNAME` to the stable process identity for that host, and set
    `STATSD_HOST_PATH` to the v1-compatible metric path.
-6. Call docker-deploy, for example:
+6. Apply Jetmon schema migrations once before starting the Monitor containers.
+   Production-style Monitor containers should set `JETMON_AUTO_MIGRATE=false`
+   so schema changes remain an explicit rollout step. The binary also serializes
+   accidental concurrent migration attempts with a database advisory lock.
+7. Call docker-deploy, for example:
    `deploy-to-servers-by-role.sh docker-jetmon-monitor jetmon-monitor/<git-sha>`.
-7. Let the docker-deploy role roll hosts one at a time:
+8. Let the docker-deploy role roll hosts one at a time:
    - provide `config-sync.env` to the sidecar as a secret mount or equivalent
      secure injection readable by the sidecar's `jetmon` user;
+   - set `JETMON_AUTO_MIGRATE=false` for production Monitor containers after
+     the explicit schema migration step has completed;
    - set `STATSD_ADDR` for the Monitor and any co-located Deliverer process to
      `host.docker.internal:8125`;
    - set `HOSTNAME` or `JETMON_HOSTNAME` for the Monitor and any co-located
