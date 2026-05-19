@@ -956,10 +956,8 @@ func (o *Orchestrator) finishRound(cfg *config.Config, summary roundSummary) {
 		m.Increment("scheduler.round.check.tls_deprecated.count", summary.checkTLSDeprecated)
 		emitCheckCohortCounters(m, "scheduler.round", summary.checkCohorts)
 
-		if cfg.StatsdSendMemUsage {
-			m.EmitMemStats()
-			emitDBPoolStats(m)
-		}
+		m.EmitMemStats()
+		emitDBPoolStats(m)
 	}
 	metrics.WriteStatsFiles(metrics.StatsFilesSnapshot{
 		SitesPerSec: sps,

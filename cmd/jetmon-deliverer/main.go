@@ -166,9 +166,7 @@ func run() {
 	workersEnabled := deliveryWorkersShouldStart(cfg, hostname)
 	publishProcessHealth := func(state string) {
 		snapshot := delivererProcessHealthSnapshot(hostname, processStartedAt, state, cfg, workersEnabled, delivererDependencyHealth(context.Background(), db.DB(), metrics.Global() != nil, time.Now().UTC()))
-		if cfg.StatsdSendMemUsage {
-			emitDelivererResourceStats()
-		}
+		emitDelivererResourceStats()
 		ctx, cancel := context.WithTimeout(context.Background(), processHealthWriteTimeout)
 		if err := fleethealth.Upsert(ctx, db.DB(), snapshot); err != nil {
 			log.Printf("process health: %v", err)

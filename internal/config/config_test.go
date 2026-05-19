@@ -543,6 +543,7 @@ func TestLoadWarnsForDeprecatedNoopAndUnknownKeys(t *testing.T) {
 		"SQL_UPDATE_BATCH": 1,
 		"TIME_BETWEEN_CHECKS_SEC": 30,
 		"TIME_BETWEEN_NOTICES_MIN": 59,
+		"STATSD_SEND_MEM_USAGE": true,
 		"NET_COMMS_TIMEOUT": 10,
 		"LOG_FORMAT": "text",
 		"UNEXPECTED_V1_KEY": true,
@@ -571,6 +572,7 @@ func TestLoadWarnsForDeprecatedNoopAndUnknownKeys(t *testing.T) {
 		"SQL_UPDATE_BATCH",
 		"TIME_BETWEEN_CHECKS_SEC",
 		"TIME_BETWEEN_NOTICES_MIN",
+		"STATSD_SEND_MEM_USAGE",
 		"UNEXPECTED_V1_KEY",
 		"VERIFIERS[0].grpc_port",
 	} {

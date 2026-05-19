@@ -673,12 +673,11 @@ Important metric groups include:
 - Legacy projection drift
 - Low-overhead process resource gauges: RSS memory, Go runtime memory, heap
   allocation, open file descriptors, file descriptor utilization percentage,
-  and goroutine/thread scheduler counts. Monitors and standalone deliverers
-  emit these when `STATSD_SEND_MEM_USAGE=true`; Verifliers emit them whenever
-  `STATSD_ADDR` is configured. Monitors and deliverers also emit read/write
-  `sql.DB` pool pressure under the same `STATSD_SEND_MEM_USAGE` gate. Current
-  pool state is reported as gauges; cumulative `sql.DBStats` counters use
-  `_total` suffixes so dashboards can derive rates cleanly.
+  and goroutine/thread scheduler counts. Monitors, standalone deliverers, and
+  Verifliers emit these whenever `STATSD_ADDR` is configured. Monitors and
+  deliverers also emit read/write `sql.DB` pool pressure. Current pool state is
+  reported as gauges; cumulative `sql.DBStats` counters use `_total` suffixes
+  so dashboards can derive rates cleanly.
 
 StatsD is the primary metrics transport. Monitor and deliverer read
 `STATSD_ADDR`; Jetmon binaries do not assume a production StatsD endpoint when

@@ -121,8 +121,8 @@ func (c *Client) send(msg string) {
 }
 
 // EmitMemStats emits low-overhead local process resource gauges. The method
-// keeps its historical name because it is controlled by the existing
-// STATSD_SEND_MEM_USAGE config key.
+// keeps its historical name for API compatibility even though it now includes
+// file-descriptor and runtime scheduler pressure in addition to memory.
 func (c *Client) EmitMemStats() {
 	mem := processmetrics.CurrentMemory()
 	rssMB := mem.RSSMemMB
