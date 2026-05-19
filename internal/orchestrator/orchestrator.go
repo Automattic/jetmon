@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	mathrand "math/rand/v2"
 	runtimemetrics "runtime/metrics"
 	"sort"
 	"strings"
@@ -2858,6 +2859,11 @@ func (o *Orchestrator) withEventMutationRetry(blogID int64, operation string, fn
 		emitCounter("eventstore.mutation.retry.count", 1)
 		emitCounter("eventstore.mutation."+metricSegment(operation)+".retry.count", 1)
 		wait := time.Duration(attempt) * eventMutationRetryBaseDelay
+		// Add up to 20% jitter so concurrent retries against the same MySQL
+		// conflict don't land in lockstep and re-trigger the same deadlock.
+		if jitterMax := int64(wait / 5); jitterMax > 0 {
+			wait += time.Duration(mathrand.Int64N(jitterMax))
+		}
 		log.Printf("orchestrator: retrying event mutation blog_id=%d operation=%s attempt=%d/%d wait=%s err=%v",
 			blogID, operation, attempt+1, eventMutationMaxAttempts, wait, err)
 		timer := time.NewTimer(wait)
