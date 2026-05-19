@@ -26,7 +26,7 @@ COPY docker/run-jetmon.sh entrypoint.sh
 RUN chmod +x entrypoint.sh \
     && mkdir -p stats certs \
     && chown -R jetmon:jetmon /jetmon \
-    && chmod 777 stats certs
+    && chmod 755 stats certs
 
 EXPOSE 8080/tcp 8090/tcp
 
