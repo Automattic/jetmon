@@ -784,6 +784,16 @@ var migrations = []migration{
 		ADD COLUMN runtime_goroutines_not_in_go INT UNSIGNED NOT NULL DEFAULT 0 AFTER runtime_goroutines_waiting,
 		ADD COLUMN runtime_goroutines_created BIGINT UNSIGNED NOT NULL DEFAULT 0 AFTER runtime_goroutines_not_in_go,
 		ADD COLUMN runtime_threads INT UNSIGNED NOT NULL DEFAULT 0 AFTER runtime_goroutines_created`},
+
+	// Migration 51 adds a composite index that covers eventstore.FindActive,
+	// which filters jetmon_events by (blog_id, check_type, ended_at IS NULL).
+	// The existing idx_blog_id_active is only (blog_id, ended_at), so a
+	// blog with many open events across check types had to filter by
+	// check_type after the index seek. The new index lets the engine reach
+	// the matching row in one descent on the recovery path used after a
+	// process restart or projection rebuild.
+	{51, `ALTER TABLE jetmon_events
+		ADD INDEX idx_blog_id_check_type_active (blog_id, check_type, ended_at)`},
 }
 
 // Migrate applies all pending migrations idempotently.
