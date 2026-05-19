@@ -207,6 +207,29 @@ same `DB_*` environment that systemd reads from
 `/opt/jetmon2/config/jetmon2.env`; systemd's `EnvironmentFile` is not loaded for
 commands run directly from a shell.
 
+### Kernel tuning for high-fanout outbound
+
+Monitor hosts that drive >50K concurrent outbound checks can exhaust the
+default ephemeral-port range or accumulate `TIME_WAIT` sockets faster than
+the kernel reclaims them. The defaults are fine for sub-fleet rollouts and
+single-host testing; tune the values below once a host's
+`ss -s` shows `tw` counts approaching the ephemeral range.
+
+| `sysctl` key | Default (typical) | Suggested | Why |
+|---|---|---|---|
+| `net.ipv4.ip_local_port_range` | `32768 60999` | `10000 65535` | Widens the outbound source-port pool from ~28K to ~55K so connection bursts don't fail with `EADDRNOTAVAIL`. |
+| `net.ipv4.tcp_tw_reuse` | `2` | `1` | Allows the kernel to reuse `TIME_WAIT` sockets for new outbound connections when safe (clock-skew-protected, since Linux 4.12). |
+| `net.core.somaxconn` | `4096` | `8192` | Raises the accept-queue ceiling for the API server's listening socket. Only relevant when the API is fronted by an LB with sudden reconnect storms. |
+| `fs.file-max` and `LimitNOFILE` | host-default / 65536 | confirm `>= 131072` | Each outbound check consumes one FD until idle reap; the systemd unit ships `LimitNOFILE=65536` which is the floor, not the ceiling. |
+
+Apply via `/etc/sysctl.d/99-jetmon.conf`. Validate after reboot or
+`sysctl --system` with `sysctl net.ipv4.ip_local_port_range` etc.
+
+Container deployments inherit the host's sysctls unless run with
+`--sysctl` overrides or in a network namespace that re-defaults them. The
+docker-compose stack runs Jetmon on the host's namespace by default, so
+host-level tuning is sufficient.
+
 ## v1 To v2 Migration
 
 Use [v1-to-v2-migration.md](v1-to-v2-migration.md) for the full production
