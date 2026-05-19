@@ -88,6 +88,17 @@ func apiRoutes() []routeDef {
 		},
 		{
 			Method:         http.MethodGet,
+			Path:           "/api/v1/monitor/db-config",
+			OperationID:    "getMonitorDBConfigStatus",
+			Summary:        "Return sanitized DB config reload status",
+			Tags:           []string{"Utility"},
+			Scope:          scopeRead,
+			SuccessStatus:  http.StatusOK,
+			ResponseSchema: "DBConfigStatusResponse",
+			Handler:        (*Server).handleMonitorDBConfigStatus,
+		},
+		{
+			Method:         http.MethodGet,
 			Path:           "/api/v1/me",
 			OperationID:    "getCurrentAPIKey",
 			Summary:        "Return the authenticated API key identity",

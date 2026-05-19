@@ -802,6 +802,7 @@ const dashboardHealthTimeout = 2 * time.Second
 func dashboardHealthEntries(ctx context.Context, cfg *config.Config, sqlDB *sql.DB, wp *wpcom.Client, statsdReady bool, checkedAt time.Time) []dashboard.HealthEntry {
 	entries := []dashboard.HealthEntry{
 		mysqlHealthEntry(ctx, sqlDB, checkedAt),
+		dbConfigHealthEntry(checkedAt),
 		wpcomHealthEntry(wp, checkedAt),
 		statsdHealthEntry(statsdReady, checkedAt),
 		diskHealthEntry("stats", checkedAt),
@@ -874,6 +875,7 @@ func dashboardHealthToFleet(entries []dashboard.HealthEntry) []fleethealth.Depen
 			LatencyMS: entry.Latency,
 			LastError: entry.LastError,
 			CheckedAt: entry.CheckedAt,
+			Details:   cloneStringMap(entry.Details),
 		})
 	}
 	return out
@@ -900,6 +902,39 @@ func mysqlHealthEntry(ctx context.Context, sqlDB *sql.DB, checkedAt time.Time) d
 	entry.Status = "green"
 	entry.Latency = time.Since(start).Milliseconds()
 	return entry
+}
+
+func dbConfigHealthEntry(checkedAt time.Time) dashboard.HealthEntry {
+	status := db.ConfigStatusSnapshot()
+	entry := dashboard.HealthEntry{
+		Name:      "db-config",
+		Status:    "green",
+		CheckedAt: checkedAt,
+		Details:   status.Details(),
+	}
+	switch {
+	case status.Mode == "uninitialized":
+		entry.Status = "red"
+		entry.LastError = "database manager is not initialized"
+	case status.LastReloadError != "":
+		entry.Status = "amber"
+		entry.LastError = status.LastReloadError
+	case status.Mode == "server_map" && status.ReloadEnabled && status.NextCheckAt == nil:
+		entry.Status = "amber"
+		entry.LastError = "server-map reload is enabled but next check is not scheduled"
+	}
+	return entry
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 func veriflierHealthEntries(ctx context.Context, cfg *config.Config, checkedAt time.Time) []dashboard.HealthEntry {

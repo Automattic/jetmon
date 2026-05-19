@@ -135,6 +135,13 @@ connections are flushed so credential rotations do not require a process
 restart. On parse or connection failure, the process keeps the previous working
 pools and logs the reload failure without printing passwords.
 
+Operators can confirm reload state without reading container files by checking
+the host dashboard `db-config` dependency or
+`GET /api/v1/monitor/db-config`. Both surfaces report the next scheduled
+server-map check, the last changed map observed, the last successful hot reload,
+and the active endpoint fingerprint. They expose endpoint labels only, never
+passwords or full DSNs.
+
 Set `DB_SERVER_MAP_DATACENTER` explicitly for container deployments. The v1
 hostname-derived datacenter heuristic is retained only as a fallback and may not
 work with container hostnames.

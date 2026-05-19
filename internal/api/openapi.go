@@ -231,6 +231,7 @@ func openAPIComponentTypes() map[string]reflect.Type {
 		"RolloutStatusResponse":       reflect.TypeOf(rolloutStatusResponse{}),
 		"RolloutGateResponse":         reflect.TypeOf(rolloutGateResponse{}),
 		"MonitorStatsResponse":        reflect.TypeOf(monitorStatsResponse{}),
+		"DBConfigStatusResponse":      reflect.TypeOf(dbConfigStatusResponse{}),
 		"Site":                        reflect.TypeOf(siteResponse{}),
 		"ActiveEventSummary":          reflect.TypeOf(activeEventSummary{}),
 		"SiteDetail":                  reflect.TypeOf(singleSiteResponse{}),

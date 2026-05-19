@@ -304,6 +304,7 @@ func delivererProcessHealthSnapshot(hostname string, startedAt time.Time, state 
 func delivererDependencyHealth(ctx context.Context, sqlDB *sql.DB, statsdReady bool, checkedAt time.Time) []fleethealth.DependencyHealth {
 	return []fleethealth.DependencyHealth{
 		delivererMySQLHealth(ctx, sqlDB, checkedAt),
+		delivererDBConfigHealth(checkedAt),
 		delivererStatsDHealth(statsdReady, checkedAt),
 	}
 }
@@ -326,6 +327,28 @@ func delivererMySQLHealth(ctx context.Context, sqlDB *sql.DB, checkedAt time.Tim
 	}
 	entry.Status = "green"
 	entry.LatencyMS = time.Since(start).Milliseconds()
+	return entry
+}
+
+func delivererDBConfigHealth(checkedAt time.Time) fleethealth.DependencyHealth {
+	status := db.ConfigStatusSnapshot()
+	entry := fleethealth.DependencyHealth{
+		Name:      "db-config",
+		Status:    fleethealth.HealthGreen,
+		CheckedAt: checkedAt,
+		Details:   status.Details(),
+	}
+	switch {
+	case status.Mode == "uninitialized":
+		entry.Status = fleethealth.HealthRed
+		entry.LastError = "database manager is not initialized"
+	case status.LastReloadError != "":
+		entry.Status = fleethealth.HealthAmber
+		entry.LastError = status.LastReloadError
+	case status.Mode == "server_map" && status.ReloadEnabled && status.NextCheckAt == nil:
+		entry.Status = fleethealth.HealthAmber
+		entry.LastError = "server-map reload is enabled but next check is not scheduled"
+	}
 	return entry
 }
 

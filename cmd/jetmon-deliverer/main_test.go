@@ -244,14 +244,17 @@ func TestDelivererDependencyHealth(t *testing.T) {
 
 	checkedAt := time.Date(2026, 4, 30, 11, 1, 0, 0, time.UTC)
 	entries := delivererDependencyHealth(context.Background(), sqlDB, false, checkedAt)
-	if len(entries) != 2 {
-		t.Fatalf("entries len = %d, want 2", len(entries))
+	if len(entries) != 3 {
+		t.Fatalf("entries len = %d, want 3", len(entries))
 	}
 	if entries[0].Name != "mysql" || entries[0].Status != "green" {
 		t.Fatalf("mysql entry = %+v, want green", entries[0])
 	}
-	if entries[1].Name != "statsd" || entries[1].Status != "amber" {
-		t.Fatalf("statsd entry = %+v, want amber", entries[1])
+	if entries[1].Name != "db-config" || entries[1].Status != fleethealth.HealthRed {
+		t.Fatalf("db-config entry = %+v, want red", entries[1])
+	}
+	if entries[2].Name != "statsd" || entries[2].Status != "amber" {
+		t.Fatalf("statsd entry = %+v, want amber", entries[2])
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("sql expectations: %v", err)

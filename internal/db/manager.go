@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -38,6 +39,68 @@ type Manager struct {
 
 	mu        sync.RWMutex
 	selection endpointSelection
+
+	loadedAt          time.Time
+	reloadEnabled     bool
+	reloadInterval    time.Duration
+	lastCheckedAt     time.Time
+	nextCheckAt       time.Time
+	lastChangeSeenAt  time.Time
+	lastReloadedAt    time.Time
+	lastReloadError   string
+	lastReloadErrorAt time.Time
+}
+
+// ConfigStatus is a sanitized view of the active DB configuration source and
+// reload state. It intentionally exposes endpoint labels and fingerprints, not
+// DSNs or credentials.
+type ConfigStatus struct {
+	Mode                  string     `json:"mode"`
+	Source                string     `json:"source"`
+	ReloadEnabled         bool       `json:"reload_enabled"`
+	ReloadIntervalSeconds int64      `json:"reload_interval_seconds,omitempty"`
+	LoadedAt              *time.Time `json:"loaded_at,omitempty"`
+	LastCheckedAt         *time.Time `json:"last_checked_at,omitempty"`
+	NextCheckAt           *time.Time `json:"next_check_at,omitempty"`
+	LastChangeSeenAt      *time.Time `json:"last_change_seen_at,omitempty"`
+	LastReloadedAt        *time.Time `json:"last_reloaded_at,omitempty"`
+	LastReloadError       string     `json:"last_reload_error,omitempty"`
+	LastReloadErrorAt     *time.Time `json:"last_reload_error_at,omitempty"`
+	ActiveFingerprint     string     `json:"active_fingerprint,omitempty"`
+	ReadEndpoints         []string   `json:"read_endpoints,omitempty"`
+	WriteEndpoints        []string   `json:"write_endpoints,omitempty"`
+}
+
+func (s ConfigStatus) Details() map[string]string {
+	details := map[string]string{
+		"mode":               s.Mode,
+		"source":             s.Source,
+		"reload_enabled":     strconv.FormatBool(s.ReloadEnabled),
+		"active_fingerprint": s.ActiveFingerprint,
+	}
+	if s.ReloadIntervalSeconds > 0 {
+		details["reload_interval_seconds"] = strconv.FormatInt(s.ReloadIntervalSeconds, 10)
+	}
+	if len(s.ReadEndpoints) > 0 {
+		details["read_endpoints"] = strings.Join(s.ReadEndpoints, ",")
+	}
+	if len(s.WriteEndpoints) > 0 {
+		details["write_endpoints"] = strings.Join(s.WriteEndpoints, ",")
+	}
+	addStatusTimeDetail(details, "loaded_at", s.LoadedAt)
+	addStatusTimeDetail(details, "last_checked_at", s.LastCheckedAt)
+	addStatusTimeDetail(details, "next_check_at", s.NextCheckAt)
+	addStatusTimeDetail(details, "last_change_seen_at", s.LastChangeSeenAt)
+	addStatusTimeDetail(details, "last_reloaded_at", s.LastReloadedAt)
+	addStatusTimeDetail(details, "last_reload_error_at", s.LastReloadErrorAt)
+	return details
+}
+
+func addStatusTimeDetail(details map[string]string, key string, value *time.Time) {
+	if value == nil {
+		return
+	}
+	details[key] = value.UTC().Format(time.RFC3339)
 }
 
 type roleConnector struct {
@@ -75,6 +138,7 @@ func NewManager(dbCfg *config.DBConfig, appCfg *config.Config) (*Manager, error)
 		writeConnector: writeConnector,
 		settings:       settings,
 		selection:      sel,
+		loadedAt:       time.Now().UTC(),
 	}
 	m.readDB = sql.OpenDB(readConnector)
 	m.writeDB = sql.OpenDB(writeConnector)
@@ -223,6 +287,31 @@ func (m *Manager) Summary() string {
 	)
 }
 
+func (m *Manager) ConfigStatus() ConfigStatus {
+	if m == nil {
+		return ConfigStatus{Mode: "uninitialized", Source: "uninitialized"}
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	status := ConfigStatus{
+		Mode:                  selectionMode(m.selection.Source),
+		Source:                m.selection.Source,
+		ReloadEnabled:         m.reloadEnabled,
+		ReloadIntervalSeconds: int64(m.reloadInterval.Seconds()),
+		LoadedAt:              timePtr(m.loadedAt),
+		LastCheckedAt:         timePtr(m.lastCheckedAt),
+		NextCheckAt:           timePtr(m.nextCheckAt),
+		LastChangeSeenAt:      timePtr(m.lastChangeSeenAt),
+		LastReloadedAt:        timePtr(m.lastReloadedAt),
+		LastReloadError:       m.lastReloadError,
+		LastReloadErrorAt:     timePtr(m.lastReloadErrorAt),
+		ActiveFingerprint:     redactedSelectionFingerprint(m.selection.Signature),
+		ReadEndpoints:         endpointLabels(m.selection.Read),
+		WriteEndpoints:        endpointLabels(m.selection.Write),
+	}
+	return status
+}
+
 func endpointLabels(endpoints []endpointConfig) []string {
 	labels := make([]string, 0, len(endpoints))
 	for _, ep := range endpoints {
@@ -231,43 +320,74 @@ func endpointLabels(endpoints []endpointConfig) []string {
 	return labels
 }
 
+func selectionMode(source string) string {
+	switch {
+	case strings.HasPrefix(source, "server-map:"):
+		return "server_map"
+	case strings.HasPrefix(source, "env:"):
+		return "env"
+	case strings.TrimSpace(source) == "":
+		return "unknown"
+	default:
+		return "custom"
+	}
+}
+
 func redactedSelectionFingerprint(signature string) string {
 	sum := sha256.Sum256([]byte(signature))
 	return fmt.Sprintf("%x", sum[:6])
+}
+
+func timePtr(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	utc := t.UTC()
+	return &utc
 }
 
 func (m *Manager) Reload(ctx context.Context) (bool, error) {
 	if m == nil {
 		return false, errors.New("database manager is not initialized")
 	}
+	now := time.Now().UTC()
+	m.markReloadChecked(now)
 	m.mu.RLock()
 	current := m.selection
 	m.mu.RUnlock()
 	if !strings.HasPrefix(current.Source, "server-map:") {
+		m.markReloadSuccess(false, now)
 		return false, nil
 	}
 
 	dbCfg := config.GetDB()
 	next, err := loadEndpointSelection(dbCfg)
 	if err != nil {
+		m.markReloadError(now, err)
 		return false, err
 	}
 	if next.Signature == current.Signature {
+		m.markReloadSuccess(false, now)
 		return false, nil
 	}
+	m.markChangeSeen(now)
 
 	readSnap, err := buildConnectorSnapshot(next.Read)
 	if err != nil {
+		m.markReloadError(now, err)
 		return false, err
 	}
 	writeSnap, err := buildConnectorSnapshot(next.Write)
 	if err != nil {
+		m.markReloadError(now, err)
 		return false, err
 	}
 	if err := pingSnapshot(ctx, "write", writeSnap); err != nil {
+		m.markReloadError(now, err)
 		return false, err
 	}
 	if err := pingSnapshot(ctx, "read", readSnap); err != nil {
+		m.markReloadError(now, err)
 		return false, err
 	}
 
@@ -277,8 +397,52 @@ func (m *Manager) Reload(ctx context.Context) (bool, error) {
 
 	m.mu.Lock()
 	m.selection = next
+	m.lastReloadedAt = now
+	m.lastReloadError = ""
+	m.lastReloadErrorAt = time.Time{}
 	m.mu.Unlock()
 	return true, nil
+}
+
+func (m *Manager) markReloadChecked(now time.Time) {
+	m.mu.Lock()
+	m.lastCheckedAt = now
+	m.mu.Unlock()
+}
+
+func (m *Manager) markChangeSeen(now time.Time) {
+	m.mu.Lock()
+	m.lastChangeSeenAt = now
+	m.mu.Unlock()
+}
+
+func (m *Manager) markReloadSuccess(changed bool, now time.Time) {
+	m.mu.Lock()
+	if changed {
+		m.lastReloadedAt = now
+	}
+	m.lastReloadError = ""
+	m.lastReloadErrorAt = time.Time{}
+	m.mu.Unlock()
+}
+
+func (m *Manager) markReloadError(now time.Time, err error) {
+	m.mu.Lock()
+	m.lastReloadError = err.Error()
+	m.lastReloadErrorAt = now
+	m.mu.Unlock()
+}
+
+func (m *Manager) setReloadSchedule(enabled bool, interval time.Duration, next time.Time) {
+	m.mu.Lock()
+	m.reloadEnabled = enabled
+	m.reloadInterval = interval
+	if next.IsZero() {
+		m.nextCheckAt = time.Time{}
+	} else {
+		m.nextCheckAt = next.UTC()
+	}
+	m.mu.Unlock()
 }
 
 func pingSnapshot(ctx context.Context, role string, snap *connectorSnapshot) error {
@@ -314,17 +478,20 @@ func StartConfigReloader(ctx context.Context, interval time.Duration) {
 	source := m.selection.Source
 	m.mu.RUnlock()
 	if !strings.HasPrefix(source, "server-map:") {
+		m.setReloadSchedule(false, 0, time.Time{})
 		return
 	}
 	if interval <= 0 {
 		interval = 10 * time.Minute
 	}
+	initial := stableReloadJitter(interval)
+	m.setReloadSchedule(true, interval, time.Now().UTC().Add(initial))
 	go func() {
-		initial := stableReloadJitter(interval)
 		timer := time.NewTimer(initial)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
+			m.setReloadSchedule(false, interval, time.Time{})
 			return
 		case <-timer.C:
 		}
@@ -339,8 +506,10 @@ func StartConfigReloader(ctx context.Context, interval time.Duration) {
 			} else if changed {
 				log.Printf("db config reloaded: %s", m.Summary())
 			}
+			m.setReloadSchedule(true, interval, time.Now().UTC().Add(interval))
 			select {
 			case <-ctx.Done():
+				m.setReloadSchedule(false, interval, time.Time{})
 				return
 			case <-ticker.C:
 			}
@@ -360,6 +529,13 @@ func Summary() string {
 		return "uninitialized"
 	}
 	return manager.Summary()
+}
+
+func ConfigStatusSnapshot() ConfigStatus {
+	if manager == nil {
+		return ConfigStatus{Mode: "uninitialized", Source: "uninitialized"}
+	}
+	return manager.ConfigStatus()
 }
 
 func stableReloadJitter(interval time.Duration) time.Duration {

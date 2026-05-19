@@ -628,6 +628,7 @@ func TestDashboardHealthEntriesReportsCoreDependencies(t *testing.T) {
 
 	want := map[string]string{
 		"mysql":      "green",
+		"db-config":  "red",
 		"wpcom":      "red",
 		"statsd":     "amber",
 		"disk:stats": "green",

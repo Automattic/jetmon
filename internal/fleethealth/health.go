@@ -28,11 +28,12 @@ const (
 // DependencyHealth is a compact dependency status snapshot suitable for JSON
 // storage and fleet dashboard summaries.
 type DependencyHealth struct {
-	Name      string    `json:"name"`
-	Status    string    `json:"status"`
-	LatencyMS int64     `json:"latency_ms,omitempty"`
-	LastError string    `json:"last_error,omitempty"`
-	CheckedAt time.Time `json:"checked_at"`
+	Name      string            `json:"name"`
+	Status    string            `json:"status"`
+	LatencyMS int64             `json:"latency_ms,omitempty"`
+	LastError string            `json:"last_error,omitempty"`
+	CheckedAt time.Time         `json:"checked_at"`
+	Details   map[string]string `json:"details,omitempty"`
 }
 
 // Snapshot is the local process state written to jetmon_process_health.

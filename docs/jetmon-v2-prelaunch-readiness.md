@@ -117,7 +117,9 @@ clear stop/go threshold.
   `db-servers.php`: confirm read/write endpoint selection, explicit
   `DB_SERVER_MAP_DATACENTER`, fallback to write when no read rows exist, bad
   map rejection while keeping old pools, and credential/endpoint hot reload on
-  `DB_CONFIG_UPDATES_MIN` or SIGHUP.
+  `DB_CONFIG_UPDATES_MIN` or SIGHUP. Include a Systems/Jetmon review that the
+  config-sync sidecar path, env var names, file permissions, reload cadence,
+  and dashboard/API status output are the desired production setup.
 - [ ] Probe-safety follow-up work is tracked before rollout: scheduled
   `jetmon_site_safety_flags` reporting, authoritative DNS rebinding tests,
   deeper TLS pathology tests, and optional streaming keyword short-circuiting.
@@ -439,7 +441,11 @@ Evidence:
   delivery row-claim lock behavior is covered by `make delivery-claim-smoke`.
 - [ ] Owner: `Jetmon`, `Systems` - Validate production DB server-map behavior:
   v1-style `misc` parsing, read/write split, datacenter read preference, bad
-  map rejection, and hot reload after `db-servers.php` changes.
+  map rejection, and hot reload after `db-servers.php` changes. Treat this as
+  a config-design review as well as a test gate: confirm the sidecar-generated
+  file location, read-only Monitor mount, `DB_SERVER_MAP_*` values, reload
+  cadence, and `/api/v1/monitor/db-config` / dashboard status are acceptable
+  before rollout.
 - [ ] Owner: `Jetmon` - Add or open follow-up tracking for scheduled
   `jetmon_site_safety_flags` reporting so unsafe legacy row counts and runtime
   probe-safety blocks are visible before and after API rejection rolls out.

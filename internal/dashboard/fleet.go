@@ -1306,6 +1306,9 @@ func cloneFleetSnapshot(in FleetSnapshot) FleetSnapshot {
 	out.Processes = append([]FleetProcess(nil), in.Processes...)
 	for i := range out.Processes {
 		out.Processes[i].DependencyHealth = append([]fleethealth.DependencyHealth(nil), in.Processes[i].DependencyHealth...)
+		for j := range out.Processes[i].DependencyHealth {
+			out.Processes[i].DependencyHealth[j].Details = cloneStringMap(in.Processes[i].DependencyHealth[j].Details)
+		}
 	}
 	out.ProcessCounts = make(map[string]int, len(in.ProcessCounts))
 	for key, value := range in.ProcessCounts {
@@ -1324,6 +1327,17 @@ func cloneFleetSnapshot(in FleetSnapshot) FleetSnapshot {
 	out.Verifliers.Agents = append([]FleetVeriflierAgentSummary(nil), in.Verifliers.Agents...)
 	for i := range out.Verifliers.Agents {
 		out.Verifliers.Agents[i].Protocols = append([]string(nil), in.Verifliers.Agents[i].Protocols...)
+	}
+	return out
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
 	}
 	return out
 }

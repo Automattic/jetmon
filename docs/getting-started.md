@@ -61,6 +61,9 @@ Production-style DB server-map testing is available by setting
 Jetmon reads the `misc` dataset, uses the write-master row for writes, uses
 read-enabled rows for reads, and hot-reloads changed connection details on the
 `DB_CONFIG_UPDATES_MIN` cadence. Keep this unset for normal local development.
+When testing this mode, use `GET /api/v1/monitor/db-config` or the host
+dashboard `db-config` dependency to confirm the next reload check, last changed
+map observed, and last successful hot reload.
 
 ## Local StatsD
 

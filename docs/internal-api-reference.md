@@ -1273,6 +1273,37 @@ the first scheduler stats snapshot has been published. Treat that as a warm-up
 state; use `/api/v1/health` for process/liveness checks that must be green
 before the first monitoring round completes.
 
+#### `GET /api/v1/monitor/db-config`
+
+Requires `read` scope. Returns the active database config source and sanitized
+server-map reload status. It does not expose DSNs or passwords. Use this during
+production rollout to confirm when the next `db-servers.php` check is scheduled,
+when a changed credential/endpoint map was last observed, and when a changed map
+was last hot-reloaded into the running read/write pools.
+
+```json
+{
+  "mode": "server_map",
+  "source": "server-map:/jetmon/config-source/db-servers.php dataset=misc dc=dfw address=internet",
+  "reload_enabled": true,
+  "reload_interval_seconds": 600,
+  "loaded_at": "2026-05-18T18:00:00Z",
+  "last_checked_at": "2026-05-18T18:20:03Z",
+  "next_check_at": "2026-05-18T18:30:03Z",
+  "last_change_seen_at": "2026-05-18T18:10:03Z",
+  "last_reloaded_at": "2026-05-18T18:10:03Z",
+  "active_fingerprint": "7b08c2a5981d",
+  "read_endpoints": ["misc-ro-a:3306/misc"],
+  "write_endpoints": ["misc-rw-a:3306/misc"]
+}
+```
+
+When `DB_SERVER_MAP_PATH` is unset, `mode` is `env`, `reload_enabled` is
+`false`, and read/write endpoint labels describe the explicit `DB_*`
+environment configuration. If parsing or ping validation fails during a reload,
+`last_reload_error` and `last_reload_error_at` are set while the previously
+working pools stay active.
+
 #### `GET /api/v1/openapi.json`
 
 Returns the route-driven OpenAPI 3.1 contract for the internal API. Requires `read` scope like other internal introspection routes. The spec is generated from the same route table used to build the running server mux, so new routes must be added to that table before they can be served or documented.

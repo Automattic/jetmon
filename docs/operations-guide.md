@@ -115,7 +115,10 @@ fallback. Use [production-teamcity-rollout.md](production-teamcity-rollout.md)
 for the deployment plan, secret boundary, and DB server-map hot-reload details.
 When `DB_SERVER_MAP_PATH` is set, v2 reads `db-servers.php` directly, separates
 read/write endpoints from the `misc` dataset, and reloads changed connection
-details on the `DB_CONFIG_UPDATES_MIN` cadence after ping validation.
+details on the `DB_CONFIG_UPDATES_MIN` cadence after ping validation. Check
+`GET /api/v1/monitor/db-config` or the dashboard `db-config` dependency to
+confirm the next scheduled check, last changed map observed, and last successful
+hot reload.
 
 Checker policy note: HTTP `>= 400` responses are classified immediately by status
 code and do not depend on body drain completion. Strict EOF/truncation validation
@@ -332,6 +335,7 @@ Monitor stats compatibility checks:
 ```bash
 ./jetmon2 api request --pretty GET /api/v1/monitor/stats
 ./jetmon2 api request GET '/api/v1/monitor/stats?file=totals'
+./jetmon2 api request --pretty GET /api/v1/monitor/db-config
 ```
 
 `/api/v1/monitor/stats` is the preferred production-compatible replacement for
