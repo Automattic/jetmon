@@ -2565,7 +2565,7 @@ func (o *Orchestrator) openOrUpdateSSLExpiryOnce(blogID int64, severity uint8, s
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback() }()
+	defer rollbackEventTx(tx, "open_update_ssl_expiry")
 
 	out, err := tx.Open(o.ctx, eventstore.OpenInput{
 		Identity: eventstore.Identity{BlogID: blogID, CheckType: checkTypeTLSExpiry},
@@ -2605,7 +2605,7 @@ func (o *Orchestrator) closeSSLExpiryIfOpenOnce(blogID int64) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback() }()
+	defer rollbackEventTx(tx, "close_ssl_expiry")
 
 	if tx.Tx() == nil {
 		return tx.Commit()
@@ -2648,7 +2648,7 @@ func (o *Orchestrator) openTLSDeprecated(blogID int64, meta json.RawMessage) err
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback() }()
+	defer rollbackEventTx(tx, "open_tls_deprecated")
 
 	if _, err := tx.Open(o.ctx, eventstore.OpenInput{
 		Identity: eventstore.Identity{BlogID: blogID, CheckType: checkTypeTLSDeprecated},
@@ -2667,7 +2667,7 @@ func (o *Orchestrator) closeTLSDeprecatedIfOpen(blogID int64) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback() }()
+	defer rollbackEventTx(tx, "close_tls_deprecated")
 
 	if tx.Tx() == nil {
 		return tx.Commit()
@@ -2840,6 +2840,21 @@ func metricSegment(s string) string {
 	return out
 }
 
+// rollbackEventTx is the defer-able replacement for `_ = tx.Rollback()`. The
+// underlying eventstore.Tx.Rollback already returns nil for sql.ErrTxDone
+// (the expected post-commit case), so any non-nil error here is genuinely
+// worth knowing about: a rollback that failed for a connection-level or
+// driver reason. Tagging by operation makes the log line greppable to the
+// mutation site that owned the transaction.
+func rollbackEventTx(tx *eventstore.Tx, operation string) {
+	if tx == nil {
+		return
+	}
+	if err := tx.Rollback(); err != nil {
+		log.Printf("orchestrator: %s: rollback failed: %v", operation, err)
+	}
+}
+
 func (o *Orchestrator) withEventMutationRetry(blogID int64, operation string, fn func() error) error {
 	ctx := o.ctx
 	if ctx == nil {
@@ -2914,7 +2929,7 @@ func (o *Orchestrator) openSeemsDownOnce(site db.Site, res checker.Result, first
 	if err != nil {
 		return 0, false, err
 	}
-	defer func() { _ = tx.Rollback() }()
+	defer rollbackEventTx(tx, "open_seems_down")
 
 	meta, _ := json.Marshal(checkResultMetadata(site, res, firstFailAt))
 
@@ -2966,7 +2981,7 @@ func (o *Orchestrator) openConfirmedDownOnce(site db.Site, changeTime time.Time,
 	if err != nil {
 		return 0, false, err
 	}
-	defer func() { _ = tx.Rollback() }()
+	defer rollbackEventTx(tx, "open_confirmed_down")
 
 	out, err := tx.Open(o.ctx, eventstore.OpenInput{
 		Identity: httpEventIdentity(site),
@@ -3014,7 +3029,7 @@ func (o *Orchestrator) promoteToDownOnce(site db.Site, eventID int64, changeTime
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback() }()
+	defer rollbackEventTx(tx, "promote_to_down")
 
 	if _, err := tx.Promote(o.ctx, eventID,
 		eventstore.SeverityDown, eventstore.StateDown,
@@ -3043,7 +3058,7 @@ func (o *Orchestrator) closeEventOnce(site db.Site, eventID int64, reason string
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback() }()
+	defer rollbackEventTx(tx, "close_event")
 
 	if err := tx.Close(o.ctx, eventID, reason, o.hostname, meta); err != nil {
 		return fmt.Errorf("close event: %w", err)
@@ -3074,7 +3089,7 @@ func (o *Orchestrator) closeRecoveredEventOnce(site db.Site, knownEventID int64,
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback() }()
+	defer rollbackEventTx(tx, "close_recovered_event")
 
 	// Determine event id and current state. If knownEventID is set, read state
 	// directly; otherwise look up the active event for this blog.
@@ -3132,7 +3147,7 @@ func (o *Orchestrator) closeMaintenanceEvent(site db.Site, knownEventID int64, c
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback() }()
+	defer rollbackEventTx(tx, "close_maintenance_event")
 
 	var eventID int64
 	switch {
