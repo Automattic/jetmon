@@ -316,13 +316,19 @@ func New(cfg *config.Config, wp *wpcom.Client) *Orchestrator {
 	return o
 }
 
+// nopEventStore is the shared no-op store used when an Orchestrator is
+// constructed without an events field (tests). All Store methods short-circuit
+// when the backing db is nil, so sharing one instance across orchestrators is
+// safe and avoids an allocation on every ev() call on the hot path.
+var nopEventStore = eventstore.New(nil)
+
 // ev returns a non-nil event store. Tests that construct &Orchestrator{}
-// directly without setting events get a no-op store backed by a nil DB so
-// event-mutation paths run without panicking. Production always wires up a
-// real Store in New().
+// directly without setting events get the shared no-op store backed by a nil
+// DB so event-mutation paths run without panicking. Production always wires
+// up a real Store in New().
 func (o *Orchestrator) ev() *eventstore.Store {
 	if o.events == nil {
-		return eventstore.New(nil)
+		return nopEventStore
 	}
 	return o.events
 }
