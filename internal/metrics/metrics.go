@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -12,11 +13,35 @@ import (
 	"github.com/Automattic/jetmon/internal/processmetrics"
 )
 
+// statsdSafePacketSize bounds the per-UDP-datagram payload the sender
+// goroutine will pack into. Sized to stay under a typical 1500-byte MTU
+// after IP+UDP overhead so the packet does not fragment on the network.
+// StatsD line-protocol allows multiple metrics per packet separated by
+// newlines; the sender opportunistically packs many metrics into one
+// packet without ever delaying — see runSender.
+const statsdSafePacketSize = 1400
+
+// statsdChannelDepth is the producer→sender queue capacity. Sized large
+// enough that bursts (e.g. a recovery wave emitting dozens of metrics in
+// microseconds) never overflow. When the channel is full, dispatch falls
+// back to a direct UDP send so the hot path never blocks.
+const statsdChannelDepth = 1024
+
 // Client sends StatsD metrics via UDP and writes stats files.
+//
+// Internally the client runs a dedicated sender goroutine that reads
+// pre-formatted metric lines from a buffered channel and packs them into
+// MTU-sized UDP datagrams. It flushes opportunistically — whenever the
+// channel drains, regardless of how much is buffered — so individual
+// metrics become visible to the StatsD server with the same effective
+// latency as the original send-per-call implementation, while bursts of
+// metrics get coalesced into far fewer syscalls.
 type Client struct {
 	prefix string
 	conn   net.Conn
-	mu     sync.Mutex
+	mu     sync.Mutex // serializes conn writes (sender + fallback path)
+
+	pending chan []byte
 }
 
 // StatsFilesSnapshot is the legacy text-file status surface written under
@@ -79,10 +104,13 @@ func Init(addr, hostPath string) error {
 	if err != nil {
 		return fmt.Errorf("statsd dial %s: %w", addr, err)
 	}
-	global = &Client{
-		prefix: "com.jetpack.jetmon." + MetricHostPath(hostPath),
-		conn:   conn,
+	c := &Client{
+		prefix:  "com.jetpack.jetmon." + MetricHostPath(hostPath),
+		conn:    conn,
+		pending: make(chan []byte, statsdChannelDepth),
 	}
+	go c.runSender()
+	global = c
 	return nil
 }
 
@@ -101,23 +129,126 @@ func Global() *Client {
 
 // Increment sends a counter metric.
 func (c *Client) Increment(stat string, value int) {
-	c.send(fmt.Sprintf("%s.%s:%d|c", c.prefix, stat, value))
+	c.dispatch(buildMetricLine(c.prefix, stat, int64(value), 'c'))
 }
 
 // Gauge sends a gauge metric.
 func (c *Client) Gauge(stat string, value int) {
-	c.send(fmt.Sprintf("%s.%s:%d|g", c.prefix, stat, value))
+	c.dispatch(buildMetricLine(c.prefix, stat, int64(value), 'g'))
 }
 
 // Timing sends a timer metric in milliseconds.
 func (c *Client) Timing(stat string, d time.Duration) {
-	c.send(fmt.Sprintf("%s.%s:%d|ms", c.prefix, stat, d.Milliseconds()))
+	c.dispatch(buildTimingLine(c.prefix, stat, d.Milliseconds()))
 }
 
-func (c *Client) send(msg string) {
+// dispatch pushes a pre-formatted metric line to the sender. If the channel
+// is full (rare — would require a sustained backlog of statsdChannelDepth
+// items), fall back to a direct UDP write so the hot path never blocks.
+// Same "lose-metrics-rather-than-block" posture as the original
+// implementation, just with a coalescer in front.
+func (c *Client) dispatch(line []byte) {
+	select {
+	case c.pending <- line:
+	default:
+		c.writeUDP(line)
+	}
+}
+
+// runSender packs metric lines from c.pending into MTU-sized UDP packets
+// and flushes whenever the channel drains. The "flush on empty" semantics
+// give the same observed per-metric latency as a direct-send-per-call
+// implementation while reducing UDP syscalls by ~5–10x on bursts.
+//
+// The sender runs for the lifetime of the process. Jetmon has no clean
+// metrics shutdown today — on process exit any unflushed buffer is lost,
+// which matches the prior behavior.
+func (c *Client) runSender() {
+	buf := make([]byte, 0, statsdSafePacketSize+128)
+	for {
+		// Block waiting for the first metric in a new flush window.
+		line, ok := <-c.pending
+		if !ok {
+			if len(buf) > 0 {
+				c.writeUDP(buf)
+			}
+			return
+		}
+		buf = packMetricLine(buf, line, c.writeUDP)
+
+		// Greedy drain: pack everything currently in the channel, then
+		// flush whatever we've accumulated. The default branch is hit the
+		// moment the channel empties, so a single late metric is sent in
+		// the same packet as anything that arrived microseconds earlier
+		// but cannot be delayed by anything that arrives later.
+		draining := true
+		for draining {
+			select {
+			case line, ok := <-c.pending:
+				if !ok {
+					if len(buf) > 0 {
+						c.writeUDP(buf)
+					}
+					return
+				}
+				buf = packMetricLine(buf, line, c.writeUDP)
+			default:
+				if len(buf) > 0 {
+					c.writeUDP(buf)
+					buf = buf[:0]
+				}
+				draining = false
+			}
+		}
+	}
+}
+
+// packMetricLine appends line to buf, flushing buf via flushFn first if
+// adding line would exceed statsdSafePacketSize. line already includes its
+// own trailing newline (see buildMetricLine / buildTimingLine) so multi-
+// line packets are unambiguous and the dispatch fallback path's raw write
+// produces the same wire format as the packed sender path.
+func packMetricLine(buf, line []byte, flushFn func([]byte)) []byte {
+	if len(buf)+len(line) > statsdSafePacketSize && len(buf) > 0 {
+		flushFn(buf)
+		buf = buf[:0]
+	}
+	buf = append(buf, line...)
+	return buf
+}
+
+func (c *Client) writeUDP(p []byte) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	_, _ = fmt.Fprintln(c.conn, msg)
+	_, _ = c.conn.Write(p)
+	c.mu.Unlock()
+}
+
+// buildMetricLine assembles "<prefix>.<stat>:<value>|<type>\n" without
+// fmt.Sprintf so the per-metric hot path does not allocate a format
+// scratch buffer or trigger reflection. The trailing newline makes each
+// line a standalone valid StatsD packet, so the dispatch fallback can
+// write it directly without extra framing.
+func buildMetricLine(prefix, stat string, value int64, typ byte) []byte {
+	b := make([]byte, 0, len(prefix)+1+len(stat)+1+22+1)
+	b = append(b, prefix...)
+	b = append(b, '.')
+	b = append(b, stat...)
+	b = append(b, ':')
+	b = strconv.AppendInt(b, value, 10)
+	b = append(b, '|', typ, '\n')
+	return b
+}
+
+// buildTimingLine is the |ms variant of buildMetricLine.
+func buildTimingLine(prefix, stat string, ms int64) []byte {
+	b := make([]byte, 0, len(prefix)+1+len(stat)+1+24+1)
+	b = append(b, prefix...)
+	b = append(b, '.')
+	b = append(b, stat...)
+	b = append(b, ':')
+	b = strconv.AppendInt(b, ms, 10)
+	b = append(b, '|', 'm', 's', '\n')
+	return b
 }
 
 // EmitMemStats emits low-overhead local process resource gauges. The method
