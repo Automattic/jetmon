@@ -370,6 +370,13 @@ production telemetry branches:
   memory, file-descriptor pressure, goroutine/thread pressure, and read/write
   MySQL pool waits without adding per-check writes or high-cardinality metric
   names.
+- [ ] Add low-cardinality Jetmon-native bandwidth StatsD counters so capacity
+  and real-site tests can compare request bytes, response header bytes, response
+  body bytes read, and total application-level transfer by check method and
+  detection profile. Keep this separate from host/container network accounting:
+  Jetmon should report what the checker intentionally sent and consumed, while
+  uptime-bench or server monitoring remains responsible for exact wire-level
+  interface bytes.
 - [x] Batch passive per-check DB writes for
   `jetmon_site_runtime.last_checked_at` freshness updates and
   `jetmon_check_history` timing samples so healthy high-volume sweeps are not
