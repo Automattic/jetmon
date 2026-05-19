@@ -87,11 +87,6 @@ Use these as a lab pool, not as fixed assignments. A good first topology is:
 
 - Use internal-only HTTP/DNS fixtures for most tests so the lab measures Jetmon
   behavior rather than internet variability.
-- Because production Verifliers reject private/internal probe targets by
-  default, lab Verifliers that intentionally probe internal fixtures must set
-  both `VERIFLIER_ALLOW_UNSAFE_TARGETS=true` and
-  `VERIFLIER_UNSAFE_TARGETS_CONFIRM=internal-lab-only`. Do not set these in
-  production.
 - Seed enough sites to exercise bucket distribution, read/write split, rollout
   commands, WPCOM notification paths, and Veriflier quorum behavior.
 - Include canary sites with known up, down, timeout, redirect, TLS, body, and

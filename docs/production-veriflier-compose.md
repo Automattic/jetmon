@@ -26,11 +26,6 @@ published on the host. Graphite HTTP is published on
 `GRAPHITE_BIND_ADDR:GRAPHITE_HOST_PORT`; set `GRAPHITE_BIND_ADDR` to a
 private/VPN/firewalled address that central Grafana can reach.
 
-Production Verifliers reject private/internal probe targets. The
-`VERIFLIER_ALLOW_UNSAFE_TARGETS` lab override exists only for internal rollout
-fixtures and requires `VERIFLIER_UNSAFE_TARGETS_CONFIRM=internal-lab-only`; do
-not set either variable in production.
-
 When StatsD is configured, Veriflier emits a small process-resource gauge set
 every 10 seconds so capacity tests and dashboards can spot memory,
 file-descriptor, goroutine, or OS-thread pressure without adding per-target

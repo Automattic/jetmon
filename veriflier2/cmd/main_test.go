@@ -52,49 +52,6 @@ func TestParseBool(t *testing.T) {
 	}
 }
 
-func TestConfigureOutboundTargetSafetyDefaultsSafe(t *testing.T) {
-	old := enforceOutboundTargetSafety
-	enforceOutboundTargetSafety = false
-	t.Cleanup(func() { enforceOutboundTargetSafety = old })
-
-	if err := configureOutboundTargetSafetyFromEnv(); err != nil {
-		t.Fatalf("configureOutboundTargetSafetyFromEnv: %v", err)
-	}
-	if !enforceOutboundTargetSafety {
-		t.Fatal("enforceOutboundTargetSafety = false, want true by default")
-	}
-}
-
-func TestConfigureOutboundTargetSafetyRequiresConfirmation(t *testing.T) {
-	old := enforceOutboundTargetSafety
-	enforceOutboundTargetSafety = true
-	t.Cleanup(func() { enforceOutboundTargetSafety = old })
-	t.Setenv("VERIFLIER_ALLOW_UNSAFE_TARGETS", "true")
-
-	err := configureOutboundTargetSafetyFromEnv()
-	if err == nil {
-		t.Fatal("configureOutboundTargetSafetyFromEnv accepted unsafe targets without confirmation")
-	}
-	if !enforceOutboundTargetSafety {
-		t.Fatal("enforceOutboundTargetSafety = false after failed unsafe-target config")
-	}
-}
-
-func TestConfigureOutboundTargetSafetyAllowsConfirmedLab(t *testing.T) {
-	old := enforceOutboundTargetSafety
-	enforceOutboundTargetSafety = true
-	t.Cleanup(func() { enforceOutboundTargetSafety = old })
-	t.Setenv("VERIFLIER_ALLOW_UNSAFE_TARGETS", "true")
-	t.Setenv(unsafeTargetsConfirmEnv, unsafeTargetsConfirmInternalLab)
-
-	if err := configureOutboundTargetSafetyFromEnv(); err != nil {
-		t.Fatalf("configureOutboundTargetSafetyFromEnv: %v", err)
-	}
-	if enforceOutboundTargetSafety {
-		t.Fatal("enforceOutboundTargetSafety = true, want false for confirmed lab override")
-	}
-}
-
 func TestStringPtr(t *testing.T) {
 	if got := stringPtr(""); got != nil {
 		t.Fatalf("stringPtr(empty) = %v, want nil", got)
