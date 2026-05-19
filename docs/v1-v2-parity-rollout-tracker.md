@@ -13,10 +13,11 @@ secret-free and should be updated as each decision is resolved.
 5. Legacy Monitor health/status endpoint replacement
 6. DB server-map parser behavior and documentation
 7. Deprecated v1 config key handling
+8. Full codebase simplification and legacy-surface review
 
 ## 1. WPCOM Notification Endpoint/Auth Parity
 
-Status: resolved; v1 runtime log-file compatibility is intentionally retired
+Status: pending WPCOM contract confirmation
 
 Key difference:
 
@@ -178,7 +179,7 @@ Implementation notes:
 
 ## 4. Log File And Status-Change Log Compatibility
 
-Status: decision needed
+Status: resolved; v1 runtime log-file compatibility is intentionally retired
 
 Key difference:
 
@@ -226,7 +227,7 @@ Recommended solution:
 
 ## 5. Legacy Monitor Health/Status Endpoint Replacement
 
-Status: rollout validation item recommended
+Status: rollout validation item recommended; code evidence reviewed
 
 Key difference:
 
@@ -239,6 +240,24 @@ Why this is an issue:
 
 - The Veriflier reply endpoint is intentionally obsolete, but external health
   checks may still call `/get/status`.
+
+Evidence:
+
+- The v2 internal REST API route table currently registers only `/api/v1/...`
+  endpoints. No `/api/v2/...` endpoints exist yet, and there is no v2 Monitor
+  `/get/status` route.
+- The operator dashboard has non-versioned dashboard-only routes:
+  `/api/state`, `/api/health`, `/api/host`, and `/api/fleet`.
+- `veriflier2` exposes `/v2/check` and `/v2/status` by default. It can expose
+  legacy-compatible `/check` and `/status` only when
+  `VERIFLIER_ENABLE_LEGACY_HTTP=true`; it does not expose `/get/status`.
+- In the v1 branch, `/get/status` is implemented in `lib/server.js` on the
+  legacy Monitor HTTPS listener and returns plain `OK`. The v1 Veriflier also
+  recognizes `GET /get/status` and replies with service OK.
+- Repository evidence for `/get/status` consumers is limited to v1 lab/operator
+  helper docs and the v1 Monitor/Veriflier internal protocol code. No in-repo
+  production monitoring consumer was found, so the remaining risk is external
+  Systems or monitoring configuration outside this repository.
 
 V1 way:
 
@@ -347,3 +366,34 @@ Recommended solution:
 - Accept copied v1 configs but warn clearly for deprecated no-op keys during
   `validate-config` and startup. This keeps rollout forgiving without hiding
   semantic changes.
+
+## 8. Full Codebase Simplification And Legacy-Surface Review
+
+Status: requested; run after the parity/rollout decisions above
+
+Goal:
+
+- Review the full codebase for features, compatibility surfaces, deployment
+  paths, docs, and helper tools that may no longer be necessary after the
+  production rollout plan settles.
+
+Review areas:
+
+- v1 legacy features that no longer have a confirmed consumer and may increase
+  risk, maintenance cost, or runtime overhead.
+- v2 features added during early design or testing that are no longer needed,
+  including deployment paths such as systemd integration if TeamCity/Docker
+  becomes the only production Monitor path.
+- Compatibility code that can be removed after migration windows close.
+- Docs that duplicate, contradict, or over-explain superseded workflows.
+- Test/lab tooling that is useful for rollout but should be archived, renamed,
+  or isolated after production cutover.
+- Runtime and configuration knobs whose existence may confuse operators or
+  imply unsupported behavior.
+
+Recommended solution:
+
+- Do this as a separate cleanup branch after the rollout-blocking parity items
+  are resolved. Treat each removal as evidence-driven: keep anything with a
+  known production consumer, deprecate uncertain surfaces first, and remove
+  clearly unused code/docs in small commits with focused tests.
