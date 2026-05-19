@@ -49,7 +49,9 @@ The lab script:
 11. Stages all sites to GET/full.
 12. Releases the bucket range back to standby.
 
-Outputs are written under `logs/rollout-docker-lab/`.
+Outputs are written under `logs/rollout-docker-lab/`. The site fixture JSON is
+staged under `stats/rollout-docker-lab/` so the Monitor container can read it
+through the existing `/jetmon/stats` mount without adding a runtime log mount.
 
 ## Environment Overrides
 

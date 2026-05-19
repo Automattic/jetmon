@@ -41,6 +41,7 @@ const (
 	processHealthWriteTimeout = 2 * time.Second
 	httpGetTimeout            = 10 * time.Second
 	httpGetMaxBodyBytes       = 1 << 20
+	defaultStatsDAddr         = ""
 )
 
 // Injected at build time via -ldflags.
@@ -119,14 +120,12 @@ func runServe() {
 	if err := checker.ConfigureResolverServers(cfg.CheckDNSResolvers); err != nil {
 		log.Fatalf("configure check DNS resolvers: %v", err)
 	}
-	log.Printf("config: legacy_status_projection=%s", enabledLabel(cfg.LegacyStatusProjectionEnable))
-	log.Printf("config: bucket_ownership=%s", bucketOwnershipLabel(cfg))
-	log.Printf("config: rollout_mode=%s", cfg.RolloutMode)
-	log.Printf("config: scheduler=%s", schedulerConfigLabel(cfg))
-	log.Printf("config: default_check_policy=method:%s profile:%s", cfg.DefaultCheckMethod, cfg.DefaultDetectionProfile)
-	log.Printf("config: check_dns_resolvers=%s", checkDNSResolversLabel(checker.ConfiguredResolverServers()))
-	log.Printf("config: wpcom_notify=%s", enabledLabel(cfg.WPCOMNotifyEnable))
-	log.Printf("config: email_transport=%s", emailTransportLabel(cfg))
+	log.Printf("jetmon2: starting rollout_mode=%s scheduler=%s bucket_ownership=%s wpcom_notify=%s wpcom_mode=%s", cfg.RolloutMode, schedulerConfigLabel(cfg), bucketOwnershipLabel(cfg), enabledLabel(cfg.WPCOMNotifyEnable), cfg.WPCOMNotifyMode)
+	logConfigWarnings(cfg)
+	config.Debugf("config: legacy_status_projection=%s", enabledLabel(cfg.LegacyStatusProjectionEnable))
+	config.Debugf("config: default_check_policy=method:%s profile:%s", cfg.DefaultCheckMethod, cfg.DefaultDetectionProfile)
+	config.Debugf("config: check_dns_resolvers=%s", checkDNSResolversLabel(checker.ConfiguredResolverServers()))
+	config.Debugf("config: email_transport=%s", emailTransportLabel(cfg))
 	if !emailTransportDelivers(cfg) {
 		log.Printf("WARN: email_transport=%s — alert-contact emails will be logged but not delivered", emailTransportLabel(cfg))
 	}
@@ -140,6 +139,9 @@ func runServe() {
 	if err := db.ConnectWithRetry(10); err != nil {
 		log.Fatalf("db connect: %v", err)
 	}
+	dbReloadCtx, stopDBReload := context.WithCancel(context.Background())
+	defer stopDBReload()
+	db.StartConfigReloader(dbReloadCtx, time.Duration(cfg.DBConfigUpdatesMin)*time.Minute)
 
 	pidPath := envOrDefault("JETMON_PID_FILE", "/run/jetmon2/jetmon2.pid")
 	if err := writePIDFile(pidPath); err != nil {
@@ -150,15 +152,22 @@ func runServe() {
 
 	audit.Init(db.DB())
 
-	if err := metrics.Init("statsd:8125", db.Hostname()); err != nil {
+	hostname := db.Hostname()
+	if addr, enabled, err := metrics.InitFromEnv(cfg.StatsDMetricHost(hostname), defaultStatsDAddr); err != nil {
 		log.Printf("warning: statsd init failed: %v", err)
+	} else if enabled {
+		config.Debugf("metrics: sending StatsD to %s", addr)
+		if strings.TrimSpace(cfg.StatsDHostPath) == "" {
+			log.Printf("WARN: STATSD_HOST_PATH is unset; StatsD metrics will use host identity %q", hostname)
+		}
+	} else {
+		config.Debugf("metrics: StatsD disabled")
 	}
 
-	hostname := db.Hostname()
 	processStartedAt := time.Now().UTC()
 	processID := fleethealth.ProcessID(hostname, fleethealth.ProcessMonitor)
 
-	wp := wpcom.New(cfg.AuthToken, hostname)
+	wp := wpcomClientForConfig(cfg, hostname)
 
 	orch := orchestrator.New(cfg, wp)
 	if err := orch.ClaimBuckets(); err != nil {
@@ -203,7 +212,7 @@ func runServe() {
 		if level == "WARN" {
 			log.Printf("WARN: %s", msg)
 		} else {
-			log.Printf("config: %s", msg)
+			config.Debugf("config: %s", msg)
 		}
 	}
 	deliveryWorkersEnabled := deliveryWorkersShouldStart(cfg, hostname)
@@ -335,14 +344,24 @@ func runServe() {
 				if err := config.Reload(); err != nil {
 					log.Printf("config reload failed: %v", err)
 				} else {
+					reloadCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+					if changed, err := db.ReloadConfig(reloadCtx); err != nil {
+						log.Printf("db config reload failed: %v", err)
+					} else if changed {
+						log.Printf("db config reloaded: %s", db.Summary())
+					}
+					cancel()
+					wp.Configure(wpcomClientConfig(config.Get(), hostname))
 					if dash != nil {
 						dash.SetFleetSource(newFleetDashboardStore(config.Get()))
 					}
+					logConfigWarnings(config.Get())
 					log.Println("config reloaded; CHECK_DNS_RESOLVERS changes require restart")
 				}
 			case syscall.SIGINT, syscall.SIGTERM:
 				log.Println("received shutdown signal, draining")
 				shuttingDown.Store(true)
+				stopDBReload()
 				stopHostPublisherOnce.Do(func() { close(stopHostPublisher) })
 				publishHostSnapshot(fleethealth.StateStopping, false)
 				if apiSrv != nil {
@@ -395,6 +414,8 @@ func cmdValidateConfig() {
 		os.Exit(1)
 	}
 	fmt.Println("PASS config parse")
+	cfg := config.Get()
+	printConfigWarnings(os.Stdout, cfg)
 
 	config.LoadDB()
 	if err := db.ConnectWithRetry(3); err != nil {
@@ -403,13 +424,19 @@ func cmdValidateConfig() {
 	}
 	fmt.Println("PASS db connect")
 
-	cfg := config.Get()
 	fmt.Printf("INFO legacy_status_projection=%s\n", enabledLabel(cfg.LegacyStatusProjectionEnable))
 	fmt.Printf("INFO bucket_ownership=%s\n", bucketOwnershipLabel(cfg))
 	fmt.Printf("INFO rollout_mode=%s\n", cfg.RolloutMode)
 	fmt.Printf("INFO scheduler=%s\n", schedulerConfigLabel(cfg))
+	fmt.Printf("INFO statsd_host_path=%s\n", cfg.StatsDMetricHost(db.Hostname()))
+	if metrics.AddrFromEnv(defaultStatsDAddr) != "" && strings.TrimSpace(cfg.StatsDHostPath) == "" {
+		fmt.Printf("WARN STATSD_HOST_PATH is unset; StatsD metrics will fall back to host identity %q\n", db.Hostname())
+	}
 	fmt.Printf("INFO default_check_policy=method:%s profile:%s\n", cfg.DefaultCheckMethod, cfg.DefaultDetectionProfile)
-	fmt.Printf("INFO wpcom_notify=%s\n", enabledLabel(cfg.WPCOMNotifyEnable))
+	fmt.Printf("INFO wpcom_notify=%s mode=%s\n", enabledLabel(cfg.WPCOMNotifyEnable), cfg.WPCOMNotifyMode)
+	for _, line := range wpcomNotifyAdviceLines(cfg) {
+		fmt.Println(line)
+	}
 	for _, line := range rolloutAdviceLines(cfg) {
 		fmt.Println(line)
 	}
@@ -665,6 +692,69 @@ func enabledLabel(b bool) string {
 	return "disabled"
 }
 
+func configWarningLine(w config.ConfigWarning) string {
+	return fmt.Sprintf("WARN config_key=%q message=%q", w.Key, w.Message)
+}
+
+func printConfigWarnings(w io.Writer, cfg *config.Config) {
+	if cfg == nil {
+		return
+	}
+	for _, warning := range cfg.Warnings {
+		fmt.Fprintln(w, configWarningLine(warning))
+	}
+}
+
+func logConfigWarnings(cfg *config.Config) {
+	if cfg == nil {
+		return
+	}
+	for _, warning := range cfg.Warnings {
+		log.Print(configWarningLine(warning))
+	}
+}
+
+func wpcomClientForConfig(cfg *config.Config, hostname string) *wpcom.Client {
+	return wpcom.NewWithConfig(wpcomClientConfig(cfg, hostname))
+}
+
+func wpcomClientConfig(cfg *config.Config, hostname string) wpcom.ClientConfig {
+	if cfg == nil {
+		return wpcom.ClientConfig{Hostname: hostname}
+	}
+	return wpcom.ClientConfig{
+		AuthToken:         cfg.AuthToken,
+		Hostname:          hostname,
+		Mode:              cfg.WPCOMNotifyMode,
+		ModernEndpoint:    cfg.WPCOMNotifyModernEndpoint,
+		LegacyEndpoint:    cfg.WPCOMNotifyLegacyEndpoint,
+		LegacyCertPath:    cfg.WPCOMNotifyLegacyCertPath,
+		LegacyKeyPath:     cfg.WPCOMNotifyLegacyKeyPath,
+		LegacyInsecureTLS: cfg.WPCOMNotifyLegacyInsecure,
+	}
+}
+
+func wpcomNotifyAdviceLines(cfg *config.Config) []string {
+	if cfg == nil || !cfg.WPCOMNotifyEnable {
+		return nil
+	}
+	switch cfg.WPCOMNotifyMode {
+	case config.WPCOMNotifyModeModern:
+		return []string{"WARN wpcom_notify_mode=modern; use only after WPCOM endpoint/auth contract signoff"}
+	case config.WPCOMNotifyModeLegacy:
+		var lines []string
+		if _, err := os.Stat(cfg.WPCOMNotifyLegacyCertPath); err != nil {
+			lines = append(lines, fmt.Sprintf("WARN wpcom legacy client cert not readable at %s: %v", cfg.WPCOMNotifyLegacyCertPath, err))
+		}
+		if _, err := os.Stat(cfg.WPCOMNotifyLegacyKeyPath); err != nil {
+			lines = append(lines, fmt.Sprintf("WARN wpcom legacy client key not readable at %s: %v", cfg.WPCOMNotifyLegacyKeyPath, err))
+		}
+		return lines
+	default:
+		return nil
+	}
+}
+
 func checkDNSResolversLabel(servers []string) string {
 	if len(servers) == 0 {
 		return "system"
@@ -789,9 +879,9 @@ const dashboardHealthTimeout = 2 * time.Second
 func dashboardHealthEntries(ctx context.Context, cfg *config.Config, sqlDB *sql.DB, wp *wpcom.Client, statsdReady bool, checkedAt time.Time) []dashboard.HealthEntry {
 	entries := []dashboard.HealthEntry{
 		mysqlHealthEntry(ctx, sqlDB, checkedAt),
+		dbConfigHealthEntry(checkedAt),
 		wpcomHealthEntry(wp, checkedAt),
 		statsdHealthEntry(statsdReady, checkedAt),
-		diskHealthEntry("logs", checkedAt),
 		diskHealthEntry("stats", checkedAt),
 	}
 	entries = append(entries, veriflierHealthEntries(ctx, cfg, checkedAt)...)
@@ -862,6 +952,7 @@ func dashboardHealthToFleet(entries []dashboard.HealthEntry) []fleethealth.Depen
 			LatencyMS: entry.Latency,
 			LastError: entry.LastError,
 			CheckedAt: entry.CheckedAt,
+			Details:   cloneStringMap(entry.Details),
 		})
 	}
 	return out
@@ -888,6 +979,39 @@ func mysqlHealthEntry(ctx context.Context, sqlDB *sql.DB, checkedAt time.Time) d
 	entry.Status = "green"
 	entry.Latency = time.Since(start).Milliseconds()
 	return entry
+}
+
+func dbConfigHealthEntry(checkedAt time.Time) dashboard.HealthEntry {
+	status := db.ConfigStatusSnapshot()
+	entry := dashboard.HealthEntry{
+		Name:      "db-config",
+		Status:    "green",
+		CheckedAt: checkedAt,
+		Details:   status.Details(),
+	}
+	switch {
+	case status.Mode == "uninitialized":
+		entry.Status = "red"
+		entry.LastError = "database manager is not initialized"
+	case status.LastReloadError != "":
+		entry.Status = "amber"
+		entry.LastError = status.LastReloadError
+	case status.Mode == "server_map" && status.ReloadEnabled && status.NextCheckAt == nil:
+		entry.Status = "amber"
+		entry.LastError = "server-map reload is enabled but next check is not scheduled"
+	}
+	return entry
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 func veriflierHealthEntries(ctx context.Context, cfg *config.Config, checkedAt time.Time) []dashboard.HealthEntry {

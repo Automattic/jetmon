@@ -123,8 +123,9 @@ because it is intentionally **not** drop-in with the Jetmon 1 wire format
 
 **Verifier hardening:**
 - Body size cap and empty-token guard on the JSON-over-HTTP transport
-- Verifier config validation: required `host` and `grpc_port` per entry,
-  PID file location now respects `JETMON_PID_FILE` env var
+- Verifier config validation: required `host` and `port` per entry, with
+  deprecated `grpc_port` accepted as a warning compatibility alias. PID file
+  location now respects `JETMON_PID_FILE` env var
 
 **Worker fixes:**
 - Soft-lock fix for both webhooks and alerting deliver loops: `ClaimReady`

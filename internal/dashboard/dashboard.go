@@ -52,11 +52,12 @@ type State struct {
 
 // HealthEntry represents one external dependency's status.
 type HealthEntry struct {
-	Name      string    `json:"name"`
-	Status    string    `json:"status"` // "green", "amber", "red"
-	Latency   int64     `json:"latency_ms,omitempty"`
-	LastError string    `json:"last_error,omitempty"`
-	CheckedAt time.Time `json:"checked_at"`
+	Name      string            `json:"name"`
+	Status    string            `json:"status"` // "green", "amber", "red"
+	Latency   int64             `json:"latency_ms,omitempty"`
+	LastError string            `json:"last_error,omitempty"`
+	CheckedAt time.Time         `json:"checked_at"`
+	Details   map[string]string `json:"details,omitempty"`
 }
 
 // HostSnapshot is the combined per-host dashboard model. Fleet views can reuse
@@ -123,7 +124,7 @@ func (s *Server) Update(st State) {
 // UpdateHealth replaces the health entries served by /api/health.
 func (s *Server) UpdateHealth(entries []HealthEntry) {
 	s.mu.Lock()
-	s.health = entries
+	s.health = cloneHealthEntries(entries)
 	s.mu.Unlock()
 }
 
@@ -172,7 +173,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.RLock()
-	h := append([]HealthEntry(nil), s.health...)
+	h := cloneHealthEntries(s.health)
 	s.mu.RUnlock()
 	setDashboardJSONHeaders(w)
 	_ = json.NewEncoder(w).Encode(h)
@@ -184,7 +185,7 @@ func (s *Server) handleHost(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.RLock()
 	st := s.state
-	h := append([]HealthEntry(nil), s.health...)
+	h := cloneHealthEntries(s.health)
 	s.mu.RUnlock()
 	setDashboardJSONHeaders(w)
 	_ = json.NewEncoder(w).Encode(HostSnapshot{
@@ -192,6 +193,23 @@ func (s *Server) handleHost(w http.ResponseWriter, r *http.Request) {
 		Health:  h,
 		Summary: SummarizeHost(st, h),
 	})
+}
+
+func cloneHealthEntries(entries []HealthEntry) []HealthEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]HealthEntry, len(entries))
+	for i, entry := range entries {
+		out[i] = entry
+		if len(entry.Details) > 0 {
+			out[i].Details = make(map[string]string, len(entry.Details))
+			for k, v := range entry.Details {
+				out[i].Details[k] = v
+			}
+		}
+	}
+	return out
 }
 
 func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
@@ -657,6 +675,15 @@ function issueText(entry) {
   return entry.name + ' ' + entry.status + ': ' + detail;
 }
 
+function formatHealthDetails(entry) {
+  const details = entry.details || {};
+  const keys = ['mode', 'source', 'reload_enabled', 'next_check_at', 'last_change_seen_at', 'last_reloaded_at', 'last_checked_at', 'active_fingerprint'];
+  return keys
+    .filter(function(key) { return details[key]; })
+    .map(function(key) { return key + '=' + details[key]; })
+    .join(' ');
+}
+
 const src = new EventSource('/events');
 src.onmessage = function(e) {
   renderState(JSON.parse(e.data));
@@ -676,7 +703,8 @@ async function refreshHost() {
       item.className = 'health-item ' + (entry.status || 'amber');
       const latency = entry.latency_ms ? ' ' + entry.latency_ms + 'ms' : '';
       const detail = entry.last_error ? ' - ' + entry.last_error : '';
-      item.textContent = entry.name + ': ' + entry.status + latency + detail;
+      const more = formatHealthDetails(entry);
+      item.textContent = entry.name + ': ' + entry.status + latency + detail + (more ? ' (' + more + ')' : '');
       box.appendChild(item);
     });
     renderSummary(snapshot.summary);

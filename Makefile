@@ -101,7 +101,7 @@ rollout-vm-lab-sync:
 rollout-vm-lab-sync-artifacts: build rollout-vm-lab-sync
 	$(ROLLOUT_VM_LAB_SSH) $(ROLLOUT_VM_LAB_HOST) 'mkdir -p ~/jetmon-rollout-tools/bin ~/jetmon-rollout-tools/systemd ~/jetmon-rollout-tools/config'
 	rsync -e "$(ROLLOUT_VM_LAB_SSH)" -a bin/jetmon2 $(ROLLOUT_VM_LAB_HOST):~/jetmon-rollout-tools/bin/
-	rsync -e "$(ROLLOUT_VM_LAB_SSH)" -a systemd/jetmon2.service systemd/jetmon2-logrotate $(ROLLOUT_VM_LAB_HOST):~/jetmon-rollout-tools/systemd/
+	rsync -e "$(ROLLOUT_VM_LAB_SSH)" -a systemd/jetmon2.service $(ROLLOUT_VM_LAB_HOST):~/jetmon-rollout-tools/systemd/
 	rsync -e "$(ROLLOUT_VM_LAB_SSH)" -a config/config-sample.json config/db-config-sample.conf $(ROLLOUT_VM_LAB_HOST):~/jetmon-rollout-tools/config/
 
 rollout-vm-lab-stage-v2: rollout-vm-lab-sync-artifacts

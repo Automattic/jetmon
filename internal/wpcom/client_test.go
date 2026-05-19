@@ -1,12 +1,21 @@
 package wpcom
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -14,11 +23,12 @@ import (
 func newTestClient(t *testing.T, handler http.HandlerFunc) (*Client, func()) {
 	t.Helper()
 	srv := httptest.NewServer(handler)
-	c := &Client{
-		authToken:  "test-token",
-		notifyURL:  srv.URL,
-		httpClient: &http.Client{Timeout: 5 * time.Second},
-	}
+	c := NewWithConfig(ClientConfig{
+		AuthToken:      "test-token",
+		Mode:           NotifyModeModern,
+		ModernEndpoint: srv.URL,
+		HTTPClient:     &http.Client{Timeout: 5 * time.Second},
+	})
 	return c, srv.Close
 }
 
@@ -46,7 +56,7 @@ func TestNotifySuccess(t *testing.T) {
 	}
 }
 
-func TestNotifySendsLegacyPayloadShape(t *testing.T) {
+func TestNotifySendsModernPayloadShape(t *testing.T) {
 	var got map[string]json.RawMessage
 	c, close := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -111,6 +121,112 @@ func TestNotifySendsLegacyPayloadShape(t *testing.T) {
 	}
 	if !reflect.DeepEqual(decoded, notification) {
 		t.Fatalf("payload = %+v, want %+v", decoded, notification)
+	}
+}
+
+func TestNotifyLegacyModeSendsV1CompatibleGETWithClientCert(t *testing.T) {
+	certPath, keyPath := writeClientCertificate(t)
+	var got map[string]json.RawMessage
+	var sawClientCert bool
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("method = %s, want GET", r.Method)
+		}
+		if auth := r.Header.Get("Authorization"); auth != "" {
+			t.Errorf("Authorization header = %q, want empty in legacy mode", auth)
+		}
+		if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
+			sawClientCert = true
+		}
+		data := r.URL.Query().Get("data")
+		if data == "" {
+			t.Fatal("missing data query parameter")
+		}
+		if err := json.Unmarshal([]byte(data), &got); err != nil {
+			t.Fatalf("decode legacy data: %v", err)
+		}
+		_, _ = w.Write([]byte(`{"success":true}`))
+	}))
+	srv.TLS = &tls.Config{ClientAuth: tls.RequireAnyClientCert}
+	srv.StartTLS()
+	defer srv.Close()
+
+	c := NewWithConfig(ClientConfig{
+		AuthToken:         "legacy-token",
+		Mode:              NotifyModeLegacy,
+		LegacyEndpoint:    srv.URL,
+		LegacyCertPath:    certPath,
+		LegacyKeyPath:     keyPath,
+		LegacyInsecureTLS: true,
+	})
+
+	notification := Notification{
+		BlogID:           12345,
+		MonitorURL:       "https://example.com/",
+		StatusID:         2,
+		LastCheck:        "2026-05-03T03:00:00Z",
+		LastStatusChange: "2026-05-03T03:01:00Z",
+		StatusType:       "server",
+		Checks: []CheckEntry{
+			{Type: 1, Host: "monitor-a", Status: 0, RTT: 123, Code: 500},
+		},
+	}
+	if err := c.Notify(notification); err != nil {
+		t.Fatalf("Notify() error = %v", err)
+	}
+	if !sawClientCert {
+		t.Fatal("server did not receive a client certificate")
+	}
+
+	wantKeys := []string{
+		"blog_id",
+		"checks",
+		"last_check",
+		"last_status_change",
+		"monitor_url",
+		"status_id",
+		"token",
+	}
+	var gotKeys []string
+	for key := range got {
+		gotKeys = append(gotKeys, key)
+	}
+	slices.Sort(gotKeys)
+	if !reflect.DeepEqual(gotKeys, wantKeys) {
+		t.Fatalf("payload keys = %v, want %v", gotKeys, wantKeys)
+	}
+
+	var decoded legacyNotification
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("remarshal payload: %v", err)
+	}
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("decode payload into legacyNotification: %v", err)
+	}
+	if decoded.Token != "legacy-token" {
+		t.Fatalf("legacy token = %q, want legacy-token", decoded.Token)
+	}
+	if decoded.StatusID != notification.StatusID {
+		t.Fatalf("decoded status_id = %d, want %d", decoded.StatusID, notification.StatusID)
+	}
+}
+
+func TestNotifyLegacyModeReportsMissingClientCert(t *testing.T) {
+	c := NewWithConfig(ClientConfig{
+		AuthToken:      "legacy-token",
+		Mode:           NotifyModeLegacy,
+		LegacyEndpoint: "https://127.0.0.1/jetmon/",
+		LegacyCertPath: "/does/not/exist.crt",
+		LegacyKeyPath:  "/does/not/exist.key",
+	})
+
+	err := c.Notify(testNotification(1))
+	if err == nil {
+		t.Fatal("Notify() expected cert load error")
+	}
+	if !strings.Contains(err.Error(), "load legacy wpcom client certificate") {
+		t.Fatalf("Notify() error = %v, want legacy certificate load error", err)
 	}
 }
 
@@ -261,11 +377,18 @@ func TestNew(t *testing.T) {
 	if c == nil {
 		t.Fatal("New() = nil")
 	}
-	if c.authToken != "my-token" {
-		t.Fatalf("authToken = %q, want my-token", c.authToken)
+	cfg := c.configSnapshot()
+	if cfg.authToken != "my-token" {
+		t.Fatalf("authToken = %q, want my-token", cfg.authToken)
 	}
-	if c.hostname != "my-host" {
-		t.Fatalf("hostname = %q, want my-host", c.hostname)
+	if cfg.hostname != "my-host" {
+		t.Fatalf("hostname = %q, want my-host", cfg.hostname)
+	}
+	if cfg.mode != NotifyModeLegacy {
+		t.Fatalf("mode = %q, want legacy default", cfg.mode)
+	}
+	if !cfg.legacyInsecureTLS {
+		t.Fatal("legacyInsecureTLS = false, want true for New default")
 	}
 }
 
@@ -281,11 +404,12 @@ func TestSendFlushContinuesAfterError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := &Client{
-		authToken:  "test-token",
-		notifyURL:  srv.URL,
-		httpClient: &http.Client{Timeout: 5 * time.Second},
-	}
+	c := NewWithConfig(ClientConfig{
+		AuthToken:      "test-token",
+		Mode:           NotifyModeModern,
+		ModernEndpoint: srv.URL,
+		HTTPClient:     &http.Client{Timeout: 5 * time.Second},
+	})
 
 	c.sendFlush([]queuedNotification{
 		{n: testNotification(1)},
@@ -308,11 +432,12 @@ func TestNotifySendNetworkError(t *testing.T) {
 	url := srv.URL
 	srv.Close() // close before sending — forces a connection error
 
-	c := &Client{
-		authToken:  "token",
-		notifyURL:  url,
-		httpClient: &http.Client{Timeout: time.Second},
-	}
+	c := NewWithConfig(ClientConfig{
+		AuthToken:      "token",
+		Mode:           NotifyModeModern,
+		ModernEndpoint: url,
+		HTTPClient:     &http.Client{Timeout: time.Second},
+	})
 
 	err := c.Notify(testNotification(1))
 	if err == nil {
@@ -321,6 +446,42 @@ func TestNotifySendNetworkError(t *testing.T) {
 	if c.failures != 1 {
 		t.Fatalf("failures = %d after network error, want 1", c.failures)
 	}
+}
+
+func writeClientCertificate(t *testing.T) (string, string) {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate client key: %v", err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject: pkix.Name{
+			CommonName: "jetmon-test-client",
+		},
+		NotBefore: time.Now().Add(-time.Hour),
+		NotAfter:  time.Now().Add(time.Hour),
+		KeyUsage:  x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{
+			x509.ExtKeyUsageClientAuth,
+		},
+	}
+	certDER, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create client cert: %v", err)
+	}
+	dir := t.TempDir()
+	certPath := dir + "/client.crt"
+	keyPath := dir + "/client.key"
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	if err := os.WriteFile(certPath, certPEM, 0600); err != nil {
+		t.Fatalf("write client cert: %v", err)
+	}
+	if err := os.WriteFile(keyPath, keyPEM, 0600); err != nil {
+		t.Fatalf("write client key: %v", err)
+	}
+	return certPath, keyPath
 }
 
 func TestEnqueueDropsOldestWhenFull(t *testing.T) {

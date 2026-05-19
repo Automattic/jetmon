@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Automattic/jetmon/internal/checker"
+	"github.com/Automattic/jetmon/internal/config"
 	"github.com/Automattic/jetmon/internal/metrics"
 	"github.com/Automattic/jetmon/internal/veriflier"
 )
@@ -27,6 +28,8 @@ type veriflierConfig struct {
 	AuthToken  string `json:"auth_token"`
 	Port       string `json:"port"`
 	GRPCPort   string `json:"grpc_port"` // Deprecated alias for Port.
+	Hostname   string `json:"hostname"`
+	StatsDPath string `json:"statsd_host_path"`
 	VantageID  string `json:"vantage_id"`
 	Region     string `json:"region"`
 	Provider   string `json:"provider"`
@@ -40,8 +43,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
-
-	hostname, _ := os.Hostname()
 
 	// Override auth token and port from environment if set (Docker entrypoint).
 	if v := os.Getenv("VERIFLIER_AUTH_TOKEN"); v != "" {
@@ -61,6 +62,20 @@ func main() {
 	if v := os.Getenv("VERIFLIER_PROVIDER"); v != "" {
 		cfg.Provider = v
 	}
+	if strings.TrimSpace(cfg.Hostname) == "" {
+		if v := os.Getenv("VERIFLIER_HOSTNAME"); v != "" {
+			cfg.Hostname = v
+		} else if v := os.Getenv("JETMON_HOSTNAME"); v != "" {
+			cfg.Hostname = v
+		}
+	}
+	if strings.TrimSpace(cfg.StatsDPath) == "" {
+		cfg.StatsDPath = os.Getenv("STATSD_HOST_PATH")
+	}
+	cfg.StatsDPath = strings.TrimSpace(cfg.StatsDPath)
+	if err := validateStatsDHostPath(cfg.StatsDPath); err != nil {
+		log.Fatalf("STATSD_HOST_PATH: %v", err)
+	}
 	if v := os.Getenv("VERIFLIER_ENABLE_LEGACY_HTTP"); v != "" {
 		enabled, err := parseBool(v)
 		if err != nil {
@@ -79,17 +94,19 @@ func main() {
 	if cfg.AuthToken == "" {
 		log.Fatalf("VERIFLIER_AUTH_TOKEN is not set; refusing to start with no authentication")
 	}
+	hostname := configuredHostname(cfg.Hostname)
 	addr := fmt.Sprintf(":%s", cfg.TransportPort())
 	agentID := veriflierAgentID(hostname, cfg.TransportPort())
 
 	// Optional StatsD metrics. STATSD_ADDR is unset in standalone deploys,
 	// "statsd:8125" in the docker compose stack. metrics.Init failure logs and
 	// continues — the verifier should still run with metrics disabled.
-	if statsdAddr := os.Getenv("STATSD_ADDR"); statsdAddr != "" {
-		if err := metrics.Init(statsdAddr, hostname); err != nil {
-			log.Printf("metrics: init failed (%v) — running without metrics", err)
-		} else {
-			log.Printf("metrics: sending to %s", statsdAddr)
+	if statsdAddr, enabled, err := metrics.InitFromEnv(veriflierStatsDMetricHost(cfg, hostname), ""); err != nil {
+		log.Printf("metrics: init failed (%v) — running without metrics", err)
+	} else if enabled {
+		config.Debugf("metrics: sending to %s", statsdAddr)
+		if strings.TrimSpace(cfg.StatsDPath) == "" {
+			log.Printf("WARN: STATSD_HOST_PATH is unset; StatsD metrics will use Veriflier hostname %q", hostname)
 		}
 	}
 
@@ -195,8 +212,10 @@ func loadConfig(path string) (*veriflierConfig, error) {
 	if err != nil {
 		// Fall back to environment-only config.
 		return &veriflierConfig{
-			AuthToken: os.Getenv("VERIFLIER_AUTH_TOKEN"),
-			Port:      envOrDefault("VERIFLIER_PORT", envOrDefault("VERIFLIER_GRPC_PORT", "7803")),
+			AuthToken:  os.Getenv("VERIFLIER_AUTH_TOKEN"),
+			Port:       envOrDefault("VERIFLIER_PORT", envOrDefault("VERIFLIER_GRPC_PORT", "7803")),
+			Hostname:   firstNonEmpty(os.Getenv("VERIFLIER_HOSTNAME"), os.Getenv("JETMON_HOSTNAME")),
+			StatsDPath: os.Getenv("STATSD_HOST_PATH"),
 		}, nil
 	}
 	defer f.Close()
@@ -213,6 +232,61 @@ func (c veriflierConfig) TransportPort() string {
 		return c.Port
 	}
 	return c.GRPCPort
+}
+
+func configuredHostname(configured string) string {
+	if h := strings.TrimSpace(configured); h != "" {
+		return h
+	}
+	h, err := os.Hostname()
+	if err != nil || strings.TrimSpace(h) == "" {
+		return "unknown"
+	}
+	return h
+}
+
+func veriflierStatsDMetricHost(cfg *veriflierConfig, hostname string) string {
+	if cfg != nil {
+		if path := strings.TrimSpace(cfg.StatsDPath); path != "" {
+			return path
+		}
+	}
+	return strings.TrimSpace(hostname)
+}
+
+func validateStatsDHostPath(path string) error {
+	if path == "" {
+		return nil
+	}
+	if strings.HasPrefix(path, ".") || strings.HasSuffix(path, ".") {
+		return fmt.Errorf("must not start or end with a dot")
+	}
+	if strings.Contains(path, "..") {
+		return fmt.Errorf("must not contain empty path segments")
+	}
+	for _, r := range path {
+		switch {
+		case r >= 'a' && r <= 'z',
+			r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9',
+			r == '.',
+			r == '_',
+			r == '-':
+			continue
+		default:
+			return fmt.Errorf("may contain only letters, numbers, dots, underscores, and hyphens")
+		}
+	}
+	return nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func outcomeFromCheckerResult(res checker.Result) string {

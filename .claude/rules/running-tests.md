@@ -1,6 +1,6 @@
 # Running Tests
 
-Jetmon 2 has a Go test suite (`go test ./...`) and a Docker development environment for integration testing.
+Jetmon 2 has a Go test suite and a Docker development environment.
 
 ## Automated Tests
 
@@ -10,143 +10,73 @@ make test-race     # go test -race ./...
 make lint          # go vet ./...
 ```
 
-## Prerequisites
-
-1. Install [Docker](https://docs.docker.com/get-docker/) and [docker-compose](https://docs.docker.com/compose/install/)
-2. Clone the repository
-3. Set up environment variables:
-   ```bash
-   cd docker
-   cp .env-sample .env
-   ```
-
 ## Docker Environment
 
-### Start/Stop Services
 ```bash
 cd docker
-docker compose up -d                  # Start all services
-docker compose down                   # Stop all services
-docker compose down -v                # Stop and remove volumes (fresh start)
+docker compose up -d
+docker compose down
+docker compose down -v
 ```
 
-Services started: `mysqldb` (MySQL 8.0), `jetmon` (single binary), `veriflier`, `statsd` (Graphite)
+The local Compose stack includes MariaDB 11.4, `jetmon`, `veriflier`,
+`api-fixture`, Mailpit, and StatsD/Graphite.
 
-### View Logs
-```bash
-docker compose logs -f jetmon         # Follow Jetmon logs
-docker compose logs -f veriflier      # Follow Veriflier logs
-```
+## Useful Checks
 
-### Monitor Activity
 ```bash
+docker compose ps
+docker compose exec jetmon ./jetmon2 validate-config
+docker compose exec jetmon ./jetmon2 status
+docker compose exec jetmon curl -fsS http://veriflier:7803/v2/status
 docker compose exec jetmon cat stats/sitespersec
 docker compose exec jetmon cat stats/sitesqueue
-docker compose exec jetmon ps aux     # Single process — no worker tree
+docker compose exec jetmon cat stats/totals
 ```
 
-## Test Database Setup
+The operator dashboard is exposed on http://localhost:8080 by default. The
+internal API is exposed on http://localhost:8090 by default.
 
-The Docker entrypoint automatically runs `./jetmon2 migrate` on startup. For manual testing, connect to MySQL:
+## Local Test Sites
 
-```bash
-docker compose exec mysqldb mysql -u root -p123456 jetmon_db
-```
+Prefer the Docker-local `api-fixture` service for deterministic internal-only
+checks:
 
-### Insert Test Sites
 ```sql
 INSERT INTO jetpack_monitor_sites (blog_id, bucket_no, monitor_url, monitor_active, site_status)
 VALUES
-    (1, 0, 'https://wordpress.com', 1, 1),
-    (2, 0, 'https://jetpack.com', 1, 1),
-    (3, 1, 'https://httpstat.us/500', 1, 1),   -- Returns 500 error
-    (4, 1, 'https://httpstat.us/200', 1, 1),   -- Returns 200 OK
-    (5, 0, 'https://httpstat.us/503', 1, 1),   -- Service unavailable
-    (6, 0, 'https://httpstat.us/200?sleep=15000', 1, 1),  -- Slow response (timeout test)
-    (7, 0, 'https://httpstat.us/301', 1, 1);   -- Redirect test
+    (1, 0, 'http://api-fixture:8091/ok', 1, 1),
+    (2, 0, 'http://api-fixture:8091/status/500', 1, 1),
+    (3, 0, 'http://api-fixture:8091/slow?delay=5s', 1, 1),
+    (4, 0, 'http://api-fixture:8091/redirect', 1, 1);
 ```
 
-### Enable Database Updates
-Edit `config/config.json`:
-```json
-{
-    "DB_UPDATES_ENABLE": true
-}
-```
+Only use public sites when the test explicitly requires external network
+behavior.
 
-**WARNING**: Only enable `DB_UPDATES_ENABLE` in local test environments. Never in production.
-
-## Testing Scenarios
-
-### Configuration Reload
-```bash
-docker compose exec jetmon ./jetmon2 reload   # Sends SIGHUP via PID file
-# Or manually:
-docker compose exec jetmon kill -HUP <pid>
-```
-
-### Graceful Shutdown / Drain
-```bash
-docker compose exec jetmon ./jetmon2 drain    # Sends SIGINT via PID file
-# Or: docker compose stop jetmon
-```
-
-### Validate Config
-```bash
-docker compose exec jetmon ./jetmon2 validate-config
-```
-
-### Veriflier Connectivity
-```bash
-docker compose exec jetmon curl http://veriflier:7803/status
-# Should return: {"hostname":"...","version":"...","status":"ok"}
-```
-
-### Operator Dashboard
-- Open http://localhost:8080 in a browser after starting Docker services.
-
-### Audit Log
-```bash
-docker compose exec jetmon ./jetmon2 audit --blog-id 1 --since 1h
-```
-
-### Memory Monitoring
-```bash
-docker compose exec jetmon bash -c 'while true; do ps aux --sort=-%mem | head -5; sleep 5; done'
-```
-
-### StatsD Metrics
-- Dashboard: http://localhost:8088
-- Path: `Metrics > stats > com > jetpack > jetmon > docker > jetmon`
-- Test: `docker compose exec jetmon bash -c 'echo "test.metric:1|c" | nc -u -w1 statsd 8125'`
-
-## Debugging
-
-Enable debug mode in `config/config.json`:
-```json
-{
-    "DEBUG": true
-}
-```
-
-Attach to container: `docker compose exec jetmon bash`
-
-Query database: `docker compose exec mysqldb mysql -u root -p123456 jetmon_db -e "SELECT COUNT(*) FROM jetpack_monitor_sites WHERE monitor_active = 1;"`
-
-## Common Issues
-
-| Problem | Check |
-|---------|-------|
-| Jetmon not starting | `docker compose ps mysqldb`, verify `config/db-config.conf` |
-| No sites being checked | Verify `BUCKET_TOTAL/TARGET` and that `monitor_active = 1` in DB |
-| Veriflier connection fails | `docker compose ps veriflier`, check auth tokens match |
-| StatsD not receiving | `docker compose exec jetmon ping statsd`, check for UDP errors |
-| Migration fails | Check MySQL is up: `docker compose ps mysqldb` |
-
-## Cleanup
+## Runtime Scenarios
 
 ```bash
-docker compose down -v                # Remove volumes
-rm -f config/config.json config/db-config.conf
-rm -rf logs/*.log stats/*
+docker compose exec jetmon ./jetmon2 reload
+docker compose exec jetmon ./jetmon2 drain
+docker compose logs -f jetmon
+docker compose logs -f veriflier
+docker compose exec mysqldb mariadb -u jetmon -pjetmon_dev_password jetmon_db
 ```
+
+Set `DB_UPDATES_ENABLE=true` only in local or explicitly approved test
+environments.
+
+## Profiling
+
+The debug listener binds to localhost in the running process and defaults to
+port 6060 when enabled. In Docker Compose, query it from inside the `jetmon`
+container unless a local override explicitly publishes the debug port.
+
+```bash
+docker compose exec jetmon curl http://127.0.0.1:6060/debug/pprof/goroutine?debug=1
+docker compose exec jetmon curl http://127.0.0.1:6060/debug/pprof/heap > heap.prof
+go tool pprof heap.prof
+```
+
+Expose the debug port only in controlled development or lab environments.

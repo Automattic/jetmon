@@ -77,15 +77,33 @@ clear stop/go threshold.
   schema is additive and should not be rolled back during a service rollback.
 - [ ] Fresh v2 Veriflier fleet deployed, v2-only endpoints validated, quorum
   floor understood, and discovery/static-vantage posture approved.
+- [ ] Monitor API and Veriflier transport API design reviewed before rollout.
+  Confirm whether the current `/api/v1/...` Monitor API and `/v2/...`
+  Veriflier transport distinction is acceptable for launch, or whether a
+  follow-up alignment plan is needed after the tested rollout contract is
+  stable.
 - [ ] v2 Monitors deployed in standby/API-controlled mode and verified to avoid
   bucket claims, scheduled checks, delivery workers, WPCOM notifications, and
   site-state writes until activation.
 - [ ] Operator API config, API key scopes, `--allow-remote` usage, transcript
   location, and API-guided rollback path rehearsed.
+- [ ] API authorization design reviewed before broader API rollout. Confirm
+  whether coarse `read` / `write` / `admin` scopes are sufficient for launch,
+  and whether a follow-up model is required for customer-scoped access by
+  `blog_id`, tag-scoped access such as VIP or Agency, and per-key permission
+  limits that prevent one consumer from managing unrelated sites.
 - [ ] Projection parity checked on production-like data with an approved drift
   threshold.
 - [ ] WPCOM notification parity checked for down, confirmed-down, false-alarm,
-  recovery, inactive, URL-mismatch, and blacklisted-site cases.
+  recovery, inactive, URL-mismatch, and blacklisted-site cases while production
+  config uses `WPCOM_NOTIFY_MODE=legacy`; `modern` mode remains blocked from
+  production until WPCOM signs off on the new endpoint/auth contract.
+- [ ] WPCOM legacy notification setup thoroughly tested and validated before
+  production activation: mounted client certificate/key readable only by the
+  Monitor, legacy `/jetmon/?data=...` request shape verified, WPCOM response
+  parsing and retry/circuit behavior exercised, and no secret material emitted
+  in TeamCity logs, container logs, dashboard/API output, or rollout
+  transcripts.
 - [ ] Support/WAF guidance approved for v2 `GET`, `HEAD` compatibility mode,
   `jetmon/2.0`, blocked requests, false positives, and `Unknown`.
 - [ ] Synthetic canary tests defined and run before launch. At minimum, cover a
@@ -103,6 +121,13 @@ clear stop/go threshold.
   range, not just migration smoke. Cover bucket claiming, runtime freshness
   writes, SSL expiry batches, `ON DUPLICATE KEY UPDATE ... VALUES(...)`, and
   webhook / alert delivery claims.
+- [ ] DB server-map reload validation completed with a production-shaped
+  `db-servers.php`: confirm read/write endpoint selection, explicit
+  `DB_SERVER_MAP_DATACENTER`, fallback to write when no read rows exist, bad
+  map rejection while keeping old pools, and credential/endpoint hot reload on
+  `DB_CONFIG_UPDATES_MIN` or SIGHUP. Include a Systems/Jetmon review that the
+  config-sync sidecar path, env var names, file permissions, reload cadence,
+  and dashboard/API status output are the desired production setup.
 - [ ] Probe-safety follow-up work is tracked before rollout: scheduled
   `jetmon_site_safety_flags` reporting, authoritative DNS rebinding tests,
   deeper TLS pathology tests, and optional streaming keyword short-circuiting.
@@ -204,6 +229,9 @@ Search evidence reviewed:
 
 - [x] Owner: `Jetmon` - Verify the legacy WPCOM notification payload shape is
   unchanged.
+- [x] Owner: `Jetmon` - Default production WPCOM notifications to
+  `WPCOM_NOTIFY_MODE=legacy` and preserve `modern` mode only for WPCOM
+  contract testing.
 - [ ] Owner: `Jetmon`, `WPCOM` - Test WPCOM notification handling for site down,
   confirmed down, recovery, inactive site, URL mismatch, and blacklisted site
   behavior.
@@ -226,6 +254,7 @@ Jetmon-owned parity coverage:
 
 | Case | Owner | Status | Evidence |
 | --- | --- | --- | --- |
+| Legacy endpoint/auth mode is the default | Jetmon | covered | `internal/config` and `internal/wpcom` unit tests |
 | Legacy JSON field names and auth/header shape | Jetmon | covered | `internal/wpcom` unit test |
 | Confirmed-down payload with local and Veriflier checks | Jetmon | covered | `internal/orchestrator` unit test |
 | Recovery notification uses legacy running status | Jetmon | covered | `internal/orchestrator` unit test |
@@ -309,7 +338,9 @@ Local dry-run evidence:
 - [ ] Owner: `Systems` - Confirm the host and fleet dashboard signals are
   sufficient for the rollout room and existing production monitoring posture.
 - [ ] Owner: `Jetmon`, `Systems` - Confirm StatsD metrics and log paths remain
-  compatible with existing monitoring.
+  compatible with existing monitoring. For Monitor containers, verify
+  `STATSD_ADDR=host.docker.internal:8125`, Docker host-gateway mapping, and
+  `STATSD_HOST_PATH=<datacenter>.<node>` preserve the v1 Graphite series path.
 - [x] Owner: `Jetmon` - Confirm `jetmon_process_health` heartbeats are exposed
   through the fleet dashboard with stale thresholds.
 - [ ] Owner: `Systems` - Confirm `jetmon_process_health` heartbeat/staleness
@@ -422,6 +453,13 @@ Evidence:
   writes, SSL expiry updates, `ON DUPLICATE KEY UPDATE ... VALUES(...)`, and
   webhook / alert delivery row claims in the MariaDB runtime exercise. Local
   delivery row-claim lock behavior is covered by `make delivery-claim-smoke`.
+- [ ] Owner: `Jetmon`, `Systems` - Validate production DB server-map behavior:
+  v1-style `misc` parsing, read/write split, datacenter read preference, bad
+  map rejection, and hot reload after `db-servers.php` changes. Treat this as
+  a config-design review as well as a test gate: confirm the sidecar-generated
+  file location, read-only Monitor mount, `DB_SERVER_MAP_*` values, reload
+  cadence, and `/api/v1/monitor/db-config` / dashboard status are acceptable
+  before rollout.
 - [ ] Owner: `Jetmon` - Add or open follow-up tracking for scheduled
   `jetmon_site_safety_flags` reporting so unsafe legacy row counts and runtime
   probe-safety blocks are visible before and after API rejection rolls out.

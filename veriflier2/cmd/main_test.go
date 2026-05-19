@@ -62,7 +62,7 @@ func TestStringPtr(t *testing.T) {
 
 func TestLoadConfigFromFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "veriflier.json")
-	if err := os.WriteFile(path, []byte(`{"auth_token":"secret","port":"7804","vantage_id":"us-east","region":"iad","provider":"test","enable_legacy_http":true}`), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(`{"auth_token":"secret","port":"7804","hostname":"do-nyc3-1","statsd_host_path":"nyc3.veriflier-1","vantage_id":"us-east","region":"iad","provider":"test","enable_legacy_http":true}`), 0644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -72,6 +72,12 @@ func TestLoadConfigFromFile(t *testing.T) {
 	}
 	if cfg.AuthToken != "secret" || cfg.TransportPort() != "7804" {
 		t.Fatalf("config = %+v", cfg)
+	}
+	if cfg.Hostname != "do-nyc3-1" {
+		t.Fatalf("Hostname = %q, want do-nyc3-1", cfg.Hostname)
+	}
+	if cfg.StatsDPath != "nyc3.veriflier-1" {
+		t.Fatalf("StatsDPath = %q, want nyc3.veriflier-1", cfg.StatsDPath)
 	}
 	if cfg.VantageID != "us-east" || cfg.Region != "iad" || cfg.Provider != "test" {
 		t.Fatalf("vantage config = %+v", cfg)
@@ -99,6 +105,8 @@ func TestLoadConfigSupportsLegacyGRPCPort(t *testing.T) {
 func TestLoadConfigFallsBackToEnvironment(t *testing.T) {
 	t.Setenv("VERIFLIER_AUTH_TOKEN", "env-secret")
 	t.Setenv("VERIFLIER_PORT", "7900")
+	t.Setenv("VERIFLIER_HOSTNAME", "do-nyc3-1")
+	t.Setenv("STATSD_HOST_PATH", "nyc3.veriflier-1")
 
 	cfg, err := loadConfig(filepath.Join(t.TempDir(), "missing.json"))
 	if err != nil {
@@ -106,6 +114,58 @@ func TestLoadConfigFallsBackToEnvironment(t *testing.T) {
 	}
 	if cfg.AuthToken != "env-secret" || cfg.TransportPort() != "7900" {
 		t.Fatalf("config = %+v", cfg)
+	}
+	if cfg.Hostname != "do-nyc3-1" {
+		t.Fatalf("Hostname = %q, want do-nyc3-1", cfg.Hostname)
+	}
+	if cfg.StatsDPath != "nyc3.veriflier-1" {
+		t.Fatalf("StatsDPath = %q, want nyc3.veriflier-1", cfg.StatsDPath)
+	}
+}
+
+func TestLoadConfigHostnameEnvironmentPrecedence(t *testing.T) {
+	t.Setenv("VERIFLIER_HOSTNAME", "")
+	t.Setenv("JETMON_HOSTNAME", "generic-host")
+
+	cfg, err := loadConfig(filepath.Join(t.TempDir(), "missing.json"))
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.Hostname != "generic-host" {
+		t.Fatalf("Hostname = %q, want generic-host", cfg.Hostname)
+	}
+}
+
+func TestConfiguredHostnameTrimsConfiguredValue(t *testing.T) {
+	if got := configuredHostname(" do-nyc3-1 "); got != "do-nyc3-1" {
+		t.Fatalf("configuredHostname = %q, want do-nyc3-1", got)
+	}
+}
+
+func TestVeriflierStatsDMetricHostFallsBackToHostname(t *testing.T) {
+	cfg := &veriflierConfig{}
+	if got := veriflierStatsDMetricHost(cfg, "do-nyc3-1"); got != "do-nyc3-1" {
+		t.Fatalf("veriflierStatsDMetricHost(fallback) = %q, want do-nyc3-1", got)
+	}
+}
+
+func TestVeriflierStatsDMetricHostPrefersExplicitPath(t *testing.T) {
+	cfg := &veriflierConfig{StatsDPath: " nyc3.veriflier-1 "}
+	if got := veriflierStatsDMetricHost(cfg, "do-nyc3-1"); got != "nyc3.veriflier-1" {
+		t.Fatalf("veriflierStatsDMetricHost(explicit) = %q, want nyc3.veriflier-1", got)
+	}
+}
+
+func TestValidateStatsDHostPath(t *testing.T) {
+	for _, path := range []string{"", "nyc3.veriflier-1", "dfw1.jetmon_prod_1"} {
+		if err := validateStatsDHostPath(path); err != nil {
+			t.Fatalf("validateStatsDHostPath(%q) error = %v", path, err)
+		}
+	}
+	for _, path := range []string{".nyc3", "nyc3.", "nyc3..veriflier-1", "nyc3/veriflier-1"} {
+		if err := validateStatsDHostPath(path); err == nil {
+			t.Fatalf("validateStatsDHostPath(%q) = nil, want error", path)
+		}
 	}
 }
 

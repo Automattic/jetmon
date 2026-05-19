@@ -47,7 +47,6 @@ services:
     user: "${UID:-1000}:${GID:-1000}"
     volumes:
       - ../config:/jetmon/config
-      - ../logs:/jetmon/logs
       - ../stats:/jetmon/stats
     environment:
       DB_HOST: mysqldb
@@ -58,6 +57,8 @@ services:
       VERIFLIER_AUTH_TOKEN: ${VERIFLIER_AUTH_TOKEN:-veriflier_1_auth_token}
       VERIFLIER_PORT: "7803"
       WPCOM_AUTH_TOKEN: ${WPCOM_AUTH_TOKEN:-change_me}
+      WPCOM_NOTIFY_ENABLE: ${WPCOM_NOTIFY_ENABLE:-false}
+      WPCOM_NOTIFY_MODE: ${WPCOM_NOTIFY_MODE:-legacy}
       EMAIL_TRANSPORT: ${EMAIL_TRANSPORT:-smtp}
       EMAIL_FROM: ${EMAIL_FROM:-jetmon@noreply.invalid}
       SMTP_HOST: ${SMTP_HOST:-mailpit}
@@ -65,6 +66,9 @@ services:
       SMTP_USERNAME: ${SMTP_USERNAME:-}
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       SMTP_USE_TLS: ${SMTP_USE_TLS:-false}
+      STATSD_ADDR: ${STATSD_ADDR-statsd:8125}
+      JETMON_HOSTNAME: ${JETMON_HOSTNAME:-}
+      STATSD_HOST_PATH: ${STATSD_HOST_PATH:-}
       JETMON_PID_FILE: /jetmon/stats/jetmon2.pid
     ports:
       - "${BIND_ADDR:-127.0.0.1}:${DASHBOARD_HOST_PORT:-8080}:8080"
@@ -73,6 +77,8 @@ services:
       mysql-user:
         condition: service_completed_successfully
       mailpit:
+        condition: service_healthy
+      statsd:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8090/api/v1/health"]
@@ -98,7 +104,12 @@ services:
       VERIFLIER_REGION: ${VERIFLIER_REGION:-local}
       VERIFLIER_PROVIDER: ${VERIFLIER_PROVIDER:-docker}
       VERIFLIER_ENABLE_LEGACY_HTTP: ${VERIFLIER_ENABLE_LEGACY_HTTP:-false}
-      STATSD_ADDR: statsd:8125
+      STATSD_ADDR: ${STATSD_ADDR-statsd:8125}
+      JETMON_HOSTNAME: ${JETMON_HOSTNAME:-}
+      STATSD_HOST_PATH: ${STATSD_HOST_PATH:-}
+    depends_on:
+      statsd:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7803/v2/status"]
       interval: 10s
@@ -148,6 +159,7 @@ services:
       - "${BIND_ADDR:-127.0.0.1}:${STATSD_HOST_PORT:-8125}:8125/udp"
     volumes:
       - statsd-graphite-storage:/opt/graphite/storage
+      - ./graphite-storage-schemas.conf:/opt/graphite/conf/storage-schemas.conf:ro
       - statsd-logs:/var/log
     healthcheck:
       test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1/', timeout=2).close()\""]

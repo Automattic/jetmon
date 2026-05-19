@@ -89,7 +89,7 @@ files. It:
   active sites in buckets `0-99`
 - installs and starts `jetmon-v1-sim.service` on the v1 VM
 - stages `jetmon2`, `/opt/jetmon2/config/config.json`,
-  `/opt/jetmon2/config/jetmon2.env`, `systemd/jetmon2.service`, logrotate, and
+  `/opt/jetmon2/config/jetmon2.env`, `systemd/jetmon2.service`, and
   `rollout-buckets.csv` on the v2 VM
 - installs the lab SSH key on the v2 VM so fresh-server stop/start commands can
   reach the old v1 VM over SSH
@@ -260,7 +260,6 @@ scripts/rollout-vm-lab.sh destroy-topology
 | `JETMON_ROLLOUT_ACTIVITY_WAIT_TIMEOUT` | `240` seconds |
 | `JETMON_ROLLOUT_JETMON2_BINARY` | `<repo>/bin/jetmon2` |
 | `JETMON_ROLLOUT_JETMON2_SERVICE` | `<repo>/systemd/jetmon2.service` |
-| `JETMON_ROLLOUT_JETMON2_LOGROTATE` | `<repo>/systemd/jetmon2-logrotate` |
 | `ROLLOUT_VM_LAB_SNAPSHOT` | `pre-guided-flow` for Makefile snapshot smoke |
 
 ## Planned Flow Coverage

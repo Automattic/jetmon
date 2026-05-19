@@ -225,9 +225,11 @@ The migration is complete only when:
 - no v1 monitor process is checking production buckets
 - `./jetmon2 rollout dynamic-check` passes after pinned mode is removed
 - legacy projection drift is zero while `LEGACY_STATUS_PROJECTION_ENABLE` is on
-- WPCOM notifications retain the v1 payload shape
+- WPCOM notifications retain the v1 endpoint/auth/payload shape with
+  `WPCOM_NOTIFY_MODE=legacy`; `modern` mode is reserved for WPCOM
+  endpoint/auth contract testing until WPCOM explicitly signs off
 - check throughput, round timing, WPCOM delivery, Veriflier health, StatsD, and
-  log/stats writes are stable for the agreed observation window
+  stats writes are stable for the agreed observation window
 - old v1 software is retained until rollback signoff, then removed deliberately
 
 ## Rollout Invariants
@@ -260,7 +262,7 @@ Record, for every v1 host:
 - v1 binary or checkout path
 - v1 config path
 - `BUCKET_NO_MIN` and `BUCKET_NO_MAX`
-- log and stats paths
+- v1 log paths and v2 stats paths
 - WPCOM credentials source
 - Veriflier list
 - expected sites-per-round or sites-per-second baseline
@@ -453,7 +455,6 @@ Stage these artifacts for each target host:
   (`/opt/jetmon2/jetmon2` for the sample unit)
 - `bin/veriflier2` when that host also owns a Veriflier deployment
 - `systemd/jetmon2.service`
-- `systemd/jetmon2-logrotate`
 - `config/config.json`
 - `/opt/jetmon2/config/jetmon2.env` from `config/db-config-sample.conf`
 
@@ -465,6 +466,11 @@ overwrite the v1 install until rollback signoff.
 New `veriflier2` binaries serve the versioned v2 JSON contract by default:
 
 - v2: `POST /v2/check`, `GET /v2/status`
+
+This is the private Monitor-to-Veriflier transport version, not the Monitor
+REST API version. The Monitor operator/product API remains under `/api/v1/...`;
+the Veriflier transport uses `/v2/...` because it replaces the original v1
+Veriflier protocol.
 
 They can optionally serve a legacy-compatible HTTP contract for lab or
 emergency rollback testing by setting `VERIFLIER_ENABLE_LEGACY_HTTP=true`:
@@ -853,7 +859,7 @@ fallback/reference path.
    ```
 
 6. Confirm network access from the new server to MySQL, Verifliers, WPCOM,
-   StatsD, and log/stats directories.
+   StatsD, and the stats directory.
 7. Stop v1 on the old server.
 8. Confirm the old v1 process is no longer running.
 9. Start v2 on the new server:
@@ -896,7 +902,8 @@ For every replaced range, verify:
 - local checks use `HEAD` plus `legacy` detection during the first replacement
   phase
 - Veriflier confirmation works
-- WPCOM notifications retain the v1 payload shape
+- WPCOM notifications use `WPCOM_NOTIFY_MODE=legacy` and retain the v1
+  endpoint/auth/payload shape
 - `jetmon_events` receives event rows
 - `jetmon_event_transitions` receives transition rows for each mutation
 - `jetpack_monitor_sites.site_status` and `last_status_change` update while
@@ -963,7 +970,7 @@ If `DASHBOARD_PORT` is enabled, confirm:
 
 - the host dashboard at `/` shows bucket ownership mode as pinned
 - the host dashboard dependency health is green for MySQL, configured
-  Verifliers, WPCOM, StatsD, and log/stats directory writes
+  Verifliers, WPCOM, StatsD, and stats directory writes
 - the host dashboard shows the WPCOM circuit breaker closed
 - retry queue depth is not growing unexpectedly
 - Go runtime system memory stays below the configured guardrail and RSS stays
@@ -976,12 +983,31 @@ Useful direct checks:
 
 ```bash
 ./jetmon2 status
-tail -f logs/jetmon.log
-tail -f logs/status-change.log
 cat stats/sitespersec
 cat stats/sitesqueue
 cat stats/totals
 ```
+
+Runtime logs are available through the service manager or container runtime,
+for example `journalctl -u jetmon2 -f` on a systemd host or
+`docker compose logs -f jetmon` in Compose. Site-state history should be read
+from `jetmon_events`, `jetmon_event_transitions`, the audit log, the API, or
+the dashboard rather than v1 log files.
+
+For TeamCity/docker-deploy Monitor deployments, prefer the API equivalent over
+host filesystem reads unless Systems explicitly approves a bind mount for
+`stats/`:
+
+```bash
+./jetmon2 api request --pretty GET /api/v1/monitor/stats
+./jetmon2 api request GET '/api/v1/monitor/stats?file=sitespersec'
+./jetmon2 api request GET '/api/v1/monitor/stats?file=sitesqueue'
+./jetmon2 api request GET '/api/v1/monitor/stats?file=totals'
+```
+
+The `?file=` form returns exact v1-style file text as `text/plain`, allowing
+existing parsers to migrate from `cat stats/totals` to HTTP without changing
+their line parser.
 
 ## Phase 3: Revert Safely
 
@@ -1126,7 +1152,7 @@ Only remove v1 after rollout signoff.
 4. Remove old Node.js application checkouts, `node_modules`, compiled native
    addons, Qt Veriflier artifacts, and v1-only logrotate files.
 5. Remove v1-only deployment hooks from host automation.
-6. Keep shared log and stats paths only if v2 still writes to them.
+6. Keep shared stats paths only if v2 still writes to them.
 7. Keep v2 additive database schema. Do not remove v2-owned tables while legacy
    consumers still need rollback coverage.
 8. Keep `LEGACY_STATUS_PROJECTION_ENABLE=true` until legacy readers have moved

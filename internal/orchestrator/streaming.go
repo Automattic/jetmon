@@ -330,6 +330,7 @@ type streamingStats struct {
 	backpressureWaits  int
 	staleResults       int
 	checkFailures      int
+	checkOffline       int
 	checkSuccesses     int
 	historyRows        int
 	historyErrors      int
@@ -361,13 +362,16 @@ type streamingStats struct {
 	checkCohorts       map[checkCohortKey]int
 }
 
-func (s *streamingStats) addResult(res checker.Result, lag time.Duration) {
+func (s *streamingStats) addResult(res checker.Result, lag time.Duration, siteStatus int) {
 	s.completed++
 	s.checkCohorts = incrementCheckCohort(s.checkCohorts, res)
 	if res.Success {
 		s.checkSuccesses++
 	} else {
 		s.checkFailures++
+		if siteStatus == statusConfirmedDown {
+			s.checkOffline++
+		}
 	}
 	if res.RTT > 0 {
 		s.latencyTotal += res.RTT
@@ -641,7 +645,7 @@ func (o *Orchestrator) runStreamingEngine() {
 	o.configureStreamingPool(cfg, planner, streamingBootstrapLatency)
 	sideEffectShards := streamingSideEffectShardCount(planner.activeCount())
 	sideEffects := o.newStreamingSideEffectProcessor(sideEffectShards, streamingQueueCap(streamingWorkerTarget(cfg, planner, streamingBootstrapLatency), planner.activeCount()))
-	log.Printf("orchestrator: streaming scheduler loaded targets=%d required_rate=%.2f/s workers=%d queue_cap=%d side_effect_shards=%d",
+	config.Debugf("orchestrator: streaming scheduler loaded targets=%d required_rate=%.2f/s workers=%d queue_cap=%d side_effect_shards=%d",
 		planner.activeCount(),
 		planner.requiredChecksPerSecond(),
 		o.pool.WorkerCount(),
@@ -698,7 +702,7 @@ func (o *Orchestrator) runStreamingEngine() {
 			return
 		}
 		if reload.bucketMin != o.bucketMin || reload.bucketMax != o.bucketMax {
-			log.Printf("orchestrator: streaming target reload discarded stale bucket snapshot loaded=%d-%d current=%d-%d",
+			config.Debugf("orchestrator: streaming target reload discarded stale bucket snapshot loaded=%d-%d current=%d-%d",
 				reload.bucketMin, reload.bucketMax, o.bucketMin, o.bucketMax)
 			lastReload = time.Time{}
 			return
@@ -723,7 +727,7 @@ func (o *Orchestrator) runStreamingEngine() {
 			pendingSideEffects = make(map[int64]int)
 			sideEffectStatus = make(map[int64]int)
 		}
-		log.Printf("orchestrator: streaming target reload active=%d added=%d updated=%d removed=%d required_rate=%.2f/s",
+		config.Debugf("orchestrator: streaming target reload active=%d added=%d updated=%d removed=%d required_rate=%.2f/s",
 			planner.activeCount(), added, updated, removed, planner.requiredChecksPerSecond())
 	}
 
@@ -735,7 +739,7 @@ func (o *Orchestrator) runStreamingEngine() {
 		lastReload = now
 		reloadCfg := cfg
 		bucketMin, bucketMax := o.bucketMin, o.bucketMax
-		log.Printf("orchestrator: streaming target reload started reason=%s buckets=%d-%d", reason, bucketMin, bucketMax)
+		config.Debugf("orchestrator: streaming target reload started reason=%s buckets=%d-%d", reason, bucketMin, bucketMax)
 		go func() {
 			sites, err := o.loadStreamingSitesForRange(o.ctx, reloadCfg, bucketMin, bucketMax)
 			result := streamingReloadResult{
@@ -802,7 +806,7 @@ func (o *Orchestrator) runStreamingEngine() {
 		if lag < 0 {
 			lag = 0
 		}
-		stats.addResult(res, lag)
+		stats.addResult(res, lag, target.site.SiteStatus)
 		failurePressureActive := now.Before(pressureUntil)
 		if streamingFailurePressure(stats) {
 			pressureUntil = now.Add(streamingFailurePressureHold)
@@ -938,7 +942,7 @@ func (o *Orchestrator) runStreamingEngine() {
 			if count, err := dbCountActiveSites(o.ctx, o.bucketMin, o.bucketMax); err != nil {
 				log.Printf("orchestrator: streaming active target count check failed: %v", err)
 			} else if count != planner.activeCount() {
-				log.Printf("orchestrator: streaming active target count changed db=%d memory=%d; reloading targets", count, planner.activeCount())
+				config.Debugf("orchestrator: streaming active target count changed db=%d memory=%d; reloading targets", count, planner.activeCount())
 				lastReload = time.Time{}
 				reloadReason = "active_count_changed"
 			}
@@ -952,7 +956,7 @@ func (o *Orchestrator) runStreamingEngine() {
 			}
 			if reloadReason == "periodic" && streamingShouldDeferPeriodicReload(planner, len(pending), o.pool.ResultDepth(), sideEffects.queueDepth(), o.pool.WorkerCount(), stats) {
 				lastReload = streamingDeferredReloadLastReload(now, reloadInterval)
-				log.Printf("orchestrator: streaming target reload deferred reason=periodic active=%d pending=%d result_depth=%d side_effect_depth=%d max_lag=%s",
+				config.Debugf("orchestrator: streaming target reload deferred reason=periodic active=%d pending=%d result_depth=%d side_effect_depth=%d max_lag=%s",
 					planner.activeCount(), len(pending), o.pool.ResultDepth(), sideEffects.queueDepth(), stats.maxLag.Round(time.Millisecond))
 			} else {
 				startReload(reloadReason, now)
@@ -1466,10 +1470,20 @@ func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streami
 		m.Timing("scheduler.streaming.history.time", stats.historyDuration)
 		m.Timing("scheduler.streaming.ssl.time", stats.sslDuration)
 		m.Timing("scheduler.streaming.events.time", stats.eventDuration)
-		metrics.WriteStatsFiles(sps, queueDepth, o.totalChecked)
 	}
+	metrics.WriteStatsFiles(metrics.StatsFilesSnapshot{
+		SitesPerSec: sps,
+		QueueSize:   queueDepth,
+		Working:     activeChecks,
+		Waiting:     nonNegative(workers - activeChecks),
+		Halting:     0,
+		Error:       nonNegative(stats.checkFailures - stats.checkOffline),
+		Offline:     stats.checkOffline,
+		Success:     stats.checkSuccesses,
+		Total:       stats.completed,
+	})
 
-	log.Printf("orchestrator: streaming summary active=%d required_rate=%.2f/s selected=%d dispatched=%d completed=%d side_effects=%d pending=%d active_checks=%d queue_depth=%d result_depth=%d side_effect_depth=%d workers=%d worker_target=%d sps=%d elapsed=%s max_lag=%s avg_latency=%s scale_latency=%s successes=%d failures=%d failure_pressure=%t pressure_suppressed=%d error_timeout=%d error_connect=%d error_ssl=%d error_redirect=%d error_keyword=%d error_body_read=%d error_tls_expired=%d error_tls_deprecated=%d error_other=%d history_rows=%d ssl_rows=%d stale_results=%d backpressure_waits=%d side_effect_waits=%d result_pauses=%d side_effect_pauses=%d dispatch_limited=%d",
+	config.Debugf("orchestrator: streaming summary active=%d required_rate=%.2f/s selected=%d dispatched=%d completed=%d side_effects=%d pending=%d active_checks=%d queue_depth=%d result_depth=%d side_effect_depth=%d workers=%d worker_target=%d sps=%d elapsed=%s max_lag=%s avg_latency=%s scale_latency=%s successes=%d failures=%d failure_pressure=%t pressure_suppressed=%d error_timeout=%d error_connect=%d error_ssl=%d error_redirect=%d error_keyword=%d error_body_read=%d error_tls_expired=%d error_tls_deprecated=%d error_other=%d history_rows=%d ssl_rows=%d stale_results=%d backpressure_waits=%d side_effect_waits=%d result_pauses=%d side_effect_pauses=%d dispatch_limited=%d",
 		planner.activeCount(),
 		planner.requiredChecksPerSecond(),
 		stats.selected,
@@ -1518,7 +1532,7 @@ func (o *Orchestrator) applyStreamingWorkerTarget(cfg *config.Config, planner *s
 	workerTarget := streamingDampedWorkerTarget(o.pool.WorkerCount(), desiredTarget, failurePressure)
 	if planner.activeCount() > 0 {
 		if added := o.pool.SetSizeBounds(workerTarget, workerTarget); added > 0 {
-			log.Printf("orchestrator: streaming prewarmed check pool by %d workers (target=%d desired=%d active_targets=%d failure_pressure=%t hot_path_pressure=%t)",
+			config.Debugf("orchestrator: streaming prewarmed check pool by %d workers (target=%d desired=%d active_targets=%d failure_pressure=%t hot_path_pressure=%t)",
 				added, workerTarget, desiredTarget, planner.activeCount(), failurePressure, hotPathPressure)
 		}
 	} else {

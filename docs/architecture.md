@@ -397,6 +397,12 @@ Veriflier Transport
     ◄── {"status":"OK","version":"1.2.3"}
 ```
 
+The Veriflier `/v2/...` paths are the private Monitor-to-Veriflier transport
+contract, not the Monitor REST API. The Monitor's operator/product API remains
+under `/api/v1/...`; the Veriflier path uses `v2` to distinguish it from the
+original v1 Veriflier transport and optional `/check`/`/status` compatibility
+surface.
+
 Veriflier discovery is staged through `VERIFLIER_DISCOVERY_MODE`:
 `static` uses the configured `VERIFIERS` list, `shadow` reads the DB registry
 and reports drift without changing traffic, and `active` uses enabled usable

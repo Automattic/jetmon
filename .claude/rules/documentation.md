@@ -1,83 +1,24 @@
 # Documentation Guide
 
-Documentation conventions for the Jetmon codebase.
+Documentation conventions for Jetmon 2. `AGENTS.md` and the files under
+`docs/` are the authoritative project references; this file is only a compact
+Claude helper.
 
-## JavaScript Comments
+## Go Comments
 
-### JSDoc for Functions
-```javascript
-/**
- * Brief description of what the function does.
- *
- * @param type name Description of the parameter.
- * @param int|null size Optional parameter with multiple types.
- * @returns {type} Description of return value.
- */
-function functionName( param, size = null ) {
-    // implementation
-}
-```
-
-### Variable Documentation
-```javascript
-/**
- * How many checks are currently being processed by the worker.
- * @type {number}
- */
-var activeChecks = 0;
-```
-
-### Section and Inline Comments
-```javascript
-/**
- * Worker asked for work - section comment for logical blocks
- */
-
-var tmpWorkers = freeWorkers;  // inline: take pointer
-freeWorkers = [];              // and reset
-
-// TODO: Deprecated. Leave temporarily to track changes.
-
-// Note: calling 'logger' during shutdown causes immediate exit (use console.log)
-```
-
-## C++ Comments
-
-### Inline Comments
-```cpp
-// if we have been redirected, get the details and make a recursive call
-if ( ( 300 < m_response_code ) && ( 400 > m_response_code ) ) {
-
-// keep a copy for relative location redirects
-string hostname_backup = m_host_name;
-```
-
-### Preprocessor Comments
-Always comment `#endif` with the macro name:
-```cpp
-#endif  //__HTTP_H__
-#endif // DEBUG_MODE
-
-#if USE_GETADDRINFO
-    // implementation
-#else // USE_GETADDRINFO
-    // fallback
-#endif // USE_GETADDRINFO
-```
-
-### Header File Options
-```cpp
-// Enables the printing of debug messages to stderr
-#define DEBUG_MODE          0
-
-// getaddrinfo is slower than gethostbyname - only enable with CPU headroom
-#define USE_GETADDRINFO     1
-```
+- Package comments should describe the package's role when the package has
+  exported APIs or non-obvious responsibilities.
+- Exported symbols should have comments when they are part of an internal
+  package contract used across packages.
+- Inline comments should explain why a choice exists, especially around rollout
+  compatibility, transactions, concurrency, and security checks.
+- Avoid comments that restate obvious assignments or control flow.
 
 ## Configuration Documentation
 
-Use plain text format in `config/config.readme`:
-```
+Use the plain text format in `config/config.readme`:
+
+```text
 SETTING_NAME
 Description of what the setting does. Include default values and valid ranges.
 
@@ -86,18 +27,34 @@ WARNING: Do not enable in production.
 Explanation of when this should or should not be enabled.
 ```
 
+Document all new config keys in:
+
+- `config/config.readme`
+- relevant rollout or operations docs
+- sample Docker/environment files when the key affects local or production
+  compose usage
+
+## Operational Docs
+
+Update docs when a change affects:
+
+- production rollout or rollback
+- Docker Compose or TeamCity deployment
+- database migrations or compatibility
+- WPCOM, StatsD, Veriflier, webhook, or alert delivery behavior
+- API endpoints or auth scopes
+- security posture or safety gates
+
+Keep operational docs secret-free. Use placeholders and describe where secrets
+are supplied instead of including real values.
+
 ## README Structure
 
-For main README, use this structure with `====` underlines (not `#` headers):
-1. Title
-2. Overview
-3. Architecture (diagram)
-4. Installation (numbered with `)`)
-5. Configuration
-6. Running
-7. Database (schema if applicable)
+For the main README, keep the current project style and link to detailed docs
+instead of duplicating large operational procedures.
 
-For component READMEs (e.g., a future `veriflier2/README.md`), use minimal format:
+For component docs, prefer:
+
 ```markdown
 component name
 ==============
@@ -108,29 +65,16 @@ Brief description.
 
 Building
 --------
-1) Step one
-2) Step two
+1. Step one
+2. Step two
 ```
 
 ## Key Principles
 
-- **Comments explain "why" not "what"** - Avoid restating what code does
-- **No formal API docs** - All documentation is manually maintained
-- **No JSDoc for C++** - Use inline comments only
-- **Config docs are plain text** - Not Markdown
-- **SQL in README** - Indent with tabs for proper rendering
-- **Image hosting** - Upload to GitHub issue first to get permanent URL
-
-## When to Update README
-
-Update when:
-- Adding configuration options affecting usage
-- Changing installation/running process
-- Modifying database schema
-- Adding architectural components
-
-Do NOT include:
-- Internal implementation details
-- Debugging information
-- Temporary workarounds
-- Developer-specific notes (use code comments)
+- Prefer one authoritative doc over duplicated copies.
+- Update the prelaunch checklist when a change creates a production validation
+  gate.
+- Keep historical v1 behavior clearly labeled as historical or compatibility
+  context.
+- Do not document debug-only, local-only, or temporary workarounds as if they
+  are production procedure.

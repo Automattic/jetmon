@@ -47,7 +47,7 @@ func GetSitesForBucket(ctx context.Context, bucketMin, bucketMax, batchSize int,
 	query += `
 		LIMIT ?`
 
-	rows, err := db.QueryContext(ctx, query, bucketMin, bucketMax, batchSize)
+	rows, err := ReadDB().QueryContext(ctx, query, bucketMin, bucketMax, batchSize)
 	if err != nil {
 		return nil, fmt.Errorf("query sites: %w", err)
 	}
@@ -64,7 +64,7 @@ func ListActiveSitesForBucketRange(ctx context.Context, bucketMin, bucketMax int
 	if limit <= 0 {
 		limit = 5000
 	}
-	rows, err := db.QueryContext(ctx, `
+	rows, err := ReadDB().QueryContext(ctx, `
 		SELECT
 			s.jetpack_monitor_site_id, s.blog_id, s.bucket_no, s.monitor_url,
 			s.monitor_active, s.site_status, s.last_status_change, s.check_interval, r.last_checked_at, r.next_check_at,
@@ -128,7 +128,7 @@ func scanSiteRows(rows *sql.Rows) ([]Site, error) {
 // the inclusive bucket range.
 func CountActiveSitesForBucketRange(ctx context.Context, bucketMin, bucketMax int) (int, error) {
 	var count int
-	err := db.QueryRowContext(ctx, `
+	err := ReadDB().QueryRowContext(ctx, `
 		SELECT COUNT(*)
 		  FROM jetpack_monitor_sites
 		 WHERE monitor_active = 1
@@ -146,7 +146,7 @@ func CountActiveSitesForBucketRange(ctx context.Context, bucketMin, bucketMax in
 // is at or after the provided cutoff.
 func CountRecentlyCheckedActiveSitesForBucketRange(ctx context.Context, bucketMin, bucketMax int, cutoff time.Time) (int, error) {
 	var count int
-	err := db.QueryRowContext(ctx, `
+	err := ReadDB().QueryRowContext(ctx, `
 		SELECT COUNT(*)
 		  FROM jetpack_monitor_sites s
 		  JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id
@@ -180,7 +180,7 @@ func CountDueSitesForBucketRange(ctx context.Context, bucketMin, bucketMax int, 
 	}
 
 	var count int
-	err := db.QueryRowContext(ctx, query, bucketMin, bucketMax).Scan(&count)
+	err := ReadDB().QueryRowContext(ctx, query, bucketMin, bucketMax).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("count due sites: %w", err)
 	}
@@ -223,7 +223,7 @@ func GetSiteStatus(ctx context.Context, blogID int64) (int, error) {
 func GetSiteStatusForMonitorSite(ctx context.Context, monitorSiteID, blogID int64) (int, error) {
 	var status int
 	if monitorSiteID > 0 {
-		err := db.QueryRowContext(ctx,
+		err := WriteDB().QueryRowContext(ctx,
 			`SELECT site_status FROM jetpack_monitor_sites WHERE jetpack_monitor_site_id = ?`,
 			monitorSiteID,
 		).Scan(&status)
@@ -232,7 +232,7 @@ func GetSiteStatusForMonitorSite(ctx context.Context, monitorSiteID, blogID int6
 		}
 		return status, nil
 	}
-	err := db.QueryRowContext(ctx,
+	err := WriteDB().QueryRowContext(ctx,
 		`SELECT site_status FROM jetpack_monitor_sites WHERE blog_id = ?`,
 		blogID,
 	).Scan(&status)
@@ -270,7 +270,7 @@ func UpdateSiteStatusTxForMonitorSite(ctx context.Context, tx *sql.Tx, monitorSi
 // HTTP event, if any.
 func CountLegacyProjectionDrift(ctx context.Context, bucketMin, bucketMax int) (int, error) {
 	var count int
-	err := db.QueryRowContext(ctx, `
+	err := ReadDB().QueryRowContext(ctx, `
 		SELECT COUNT(*)
 		  FROM (
 			SELECT s.jetpack_monitor_site_id,
@@ -330,7 +330,7 @@ func ListLegacyProjectionDrift(ctx context.Context, bucketMin, bucketMax, limit 
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := db.QueryContext(ctx, `
+	rows, err := ReadDB().QueryContext(ctx, `
 		SELECT drift.blog_id,
 		       drift.bucket_no,
 		       drift.site_status,
@@ -415,7 +415,7 @@ func SummarizeLegacyProjectionDrift(ctx context.Context, bucketMin, bucketMax, l
 	if limit <= 0 {
 		limit = 20
 	}
-	rows, err := db.QueryContext(ctx, `
+	rows, err := ReadDB().QueryContext(ctx, `
 		SELECT drift.bucket_no,
 		       drift.site_status,
 		       drift.expected_status,
@@ -828,7 +828,7 @@ func ReleaseHostAndRebalance(ctx context.Context, hostID string, bucketTotal, bu
 // row.
 func HostRowExists(ctx context.Context, hostID string) (bool, error) {
 	var exists int
-	err := db.QueryRowContext(ctx,
+	err := WriteDB().QueryRowContext(ctx,
 		`SELECT 1 FROM jetmon_hosts WHERE host_id = ? LIMIT 1`,
 		hostID,
 	).Scan(&exists)
@@ -844,7 +844,7 @@ func HostRowExists(ctx context.Context, hostID string) (bool, error) {
 // ListHostRowsOverlappingBucketRange returns jetmon_hosts ownership rows whose
 // bucket ranges overlap the inclusive requested range.
 func ListHostRowsOverlappingBucketRange(ctx context.Context, bucketMin, bucketMax int) ([]HostRow, error) {
-	rows, err := db.QueryContext(ctx,
+	rows, err := WriteDB().QueryContext(ctx,
 		`SELECT host_id, bucket_min, bucket_max, last_heartbeat, status
 		   FROM jetmon_hosts
 		  WHERE bucket_min <= ?
@@ -870,7 +870,7 @@ func ListHostRowsOverlappingBucketRange(ctx context.Context, bucketMin, bucketMa
 
 // GetAllHosts returns all rows from jetmon_hosts for operator visibility.
 func GetAllHosts() ([]HostRow, error) {
-	rows, err := db.Query(
+	rows, err := WriteDB().Query(
 		`SELECT host_id, bucket_min, bucket_max, last_heartbeat, status FROM jetmon_hosts ORDER BY bucket_min`,
 	)
 	if err != nil {

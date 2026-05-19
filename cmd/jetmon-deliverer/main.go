@@ -22,7 +22,10 @@ import (
 	"github.com/Automattic/jetmon/internal/processmetrics"
 )
 
-const processHealthWriteTimeout = 2 * time.Second
+const (
+	processHealthWriteTimeout = 2 * time.Second
+	defaultStatsDAddr         = ""
+)
 
 // Injected at build time via -ldflags.
 var (
@@ -132,7 +135,7 @@ func run() {
 		log.Fatalf("load config: %v", err)
 	}
 	cfg := config.Get()
-	log.Printf("config: email_transport=%s", emailTransportLabel(cfg))
+	config.Debugf("config: email_transport=%s", emailTransportLabel(cfg))
 	if !emailTransportDelivers(cfg) {
 		log.Printf("WARN: email_transport=%s; alert-contact emails will be logged but not delivered", emailTransportLabel(cfg))
 	}
@@ -141,13 +144,23 @@ func run() {
 	if err := db.ConnectWithRetry(10); err != nil {
 		log.Fatalf("db connect: %v", err)
 	}
+	dbReloadCtx, stopDBReload := context.WithCancel(context.Background())
+	defer stopDBReload()
+	db.StartConfigReloader(dbReloadCtx, time.Duration(cfg.DBConfigUpdatesMin)*time.Minute)
 	audit.Init(db.DB())
 
-	if err := metrics.Init("statsd:8125", db.Hostname()); err != nil {
+	hostname := db.Hostname()
+	if addr, enabled, err := metrics.InitFromEnv(cfg.StatsDMetricHost(hostname), defaultStatsDAddr); err != nil {
 		log.Printf("warning: statsd init failed: %v", err)
+	} else if enabled {
+		config.Debugf("metrics: sending StatsD to %s", addr)
+		if strings.TrimSpace(cfg.StatsDHostPath) == "" {
+			log.Printf("WARN: STATSD_HOST_PATH is unset; StatsD metrics will use host identity %q", hostname)
+		}
+	} else {
+		config.Debugf("metrics: StatsD disabled")
 	}
 
-	hostname := db.Hostname()
 	processStartedAt := time.Now().UTC()
 	processID := fleethealth.ProcessID(hostname, fleethealth.ProcessDeliverer)
 	workersEnabled := deliveryWorkersShouldStart(cfg, hostname)
@@ -163,7 +176,7 @@ func run() {
 		if level == "WARN" {
 			log.Printf("WARN: %s", msg)
 		} else {
-			log.Printf("config: %s", msg)
+			config.Debugf("config: %s", msg)
 		}
 	}
 	initialState := fleethealth.StateRunning
@@ -294,6 +307,7 @@ func delivererProcessHealthSnapshot(hostname string, startedAt time.Time, state 
 func delivererDependencyHealth(ctx context.Context, sqlDB *sql.DB, statsdReady bool, checkedAt time.Time) []fleethealth.DependencyHealth {
 	return []fleethealth.DependencyHealth{
 		delivererMySQLHealth(ctx, sqlDB, checkedAt),
+		delivererDBConfigHealth(checkedAt),
 		delivererStatsDHealth(statsdReady, checkedAt),
 	}
 }
@@ -316,6 +330,28 @@ func delivererMySQLHealth(ctx context.Context, sqlDB *sql.DB, checkedAt time.Tim
 	}
 	entry.Status = "green"
 	entry.LatencyMS = time.Since(start).Milliseconds()
+	return entry
+}
+
+func delivererDBConfigHealth(checkedAt time.Time) fleethealth.DependencyHealth {
+	status := db.ConfigStatusSnapshot()
+	entry := fleethealth.DependencyHealth{
+		Name:      "db-config",
+		Status:    fleethealth.HealthGreen,
+		CheckedAt: checkedAt,
+		Details:   status.Details(),
+	}
+	switch {
+	case status.Mode == "uninitialized":
+		entry.Status = fleethealth.HealthRed
+		entry.LastError = "database manager is not initialized"
+	case status.LastReloadError != "":
+		entry.Status = fleethealth.HealthAmber
+		entry.LastError = status.LastReloadError
+	case status.Mode == "server_map" && status.ReloadEnabled && status.NextCheckAt == nil:
+		entry.Status = fleethealth.HealthAmber
+		entry.LastError = "server-map reload is enabled but next check is not scheduled"
+	}
 	return entry
 }
 

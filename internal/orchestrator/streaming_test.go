@@ -507,14 +507,14 @@ func TestStreamingFailurePressureRequiresVolumeAndRatio(t *testing.T) {
 
 func TestStreamingStatsCountsErrorCodes(t *testing.T) {
 	var stats streamingStats
-	stats.addResult(checker.Result{ErrorCode: checker.ErrorTimeout}, 0)
-	stats.addResult(checker.Result{ErrorCode: checker.ErrorConnect}, 0)
-	stats.addResult(checker.Result{ErrorCode: checker.ErrorSSL}, 0)
-	stats.addResult(checker.Result{ErrorCode: checker.ErrorRedirect}, 0)
-	stats.addResult(checker.Result{ErrorCode: checker.ErrorKeyword}, 0)
-	stats.addResult(checker.Result{ErrorCode: checker.ErrorBodyRead}, 0)
-	stats.addResult(checker.Result{ErrorCode: checker.ErrorTLSExpired}, 0)
-	stats.addResult(checker.Result{ErrorCode: checker.ErrorTLSDeprecated}, 0)
+	stats.addResult(checker.Result{ErrorCode: checker.ErrorTimeout}, 0, statusRunning)
+	stats.addResult(checker.Result{ErrorCode: checker.ErrorConnect}, 0, statusRunning)
+	stats.addResult(checker.Result{ErrorCode: checker.ErrorSSL}, 0, statusRunning)
+	stats.addResult(checker.Result{ErrorCode: checker.ErrorRedirect}, 0, statusRunning)
+	stats.addResult(checker.Result{ErrorCode: checker.ErrorKeyword}, 0, statusRunning)
+	stats.addResult(checker.Result{ErrorCode: checker.ErrorBodyRead}, 0, statusRunning)
+	stats.addResult(checker.Result{ErrorCode: checker.ErrorTLSExpired}, 0, statusRunning)
+	stats.addResult(checker.Result{ErrorCode: checker.ErrorTLSDeprecated}, 0, statusRunning)
 
 	if stats.errorTimeouts != 1 || stats.errorConnects != 1 || stats.errorSSL != 1 || stats.errorRedirects != 1 ||
 		stats.errorKeywords != 1 || stats.errorBodyReads != 1 || stats.errorTLSExpired != 1 || stats.errorTLSDeprecated != 1 || stats.errorOther != 0 {
@@ -534,10 +534,10 @@ func TestStreamingStatsCountsErrorCodes(t *testing.T) {
 
 func TestStreamingStatsCountsCheckCohorts(t *testing.T) {
 	var stats streamingStats
-	stats.addResult(checker.Result{Method: http.MethodHead, DetectionProfile: "legacy", Success: true}, 0)
-	stats.addResult(checker.Result{Method: http.MethodGet, DetectionProfile: "simple_http", Success: false}, 0)
-	stats.addResult(checker.Result{Method: http.MethodGet, DetectionProfile: "full", Success: true}, 0)
-	stats.addResult(checker.Result{Method: http.MethodGet, DetectionProfile: "full", Success: false}, 0)
+	stats.addResult(checker.Result{Method: http.MethodHead, DetectionProfile: "legacy", Success: true}, 0, statusRunning)
+	stats.addResult(checker.Result{Method: http.MethodGet, DetectionProfile: "simple_http", Success: false}, 0, statusRunning)
+	stats.addResult(checker.Result{Method: http.MethodGet, DetectionProfile: "full", Success: true}, 0, statusRunning)
+	stats.addResult(checker.Result{Method: http.MethodGet, DetectionProfile: "full", Success: false}, 0, statusRunning)
 
 	assertCheckCohortCount(t, stats.checkCohorts, http.MethodHead, "legacy", 1)
 	assertCheckCohortCount(t, stats.checkCohorts, http.MethodGet, "simple_http", 1)

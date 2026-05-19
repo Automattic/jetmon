@@ -78,6 +78,32 @@ func TestValidate(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "statsd host path accepts v1-compatible path",
+			mutate: func(c *Config) {
+				c.StatsDHostPath = "dfw1.jetmon-prod-1"
+			},
+		},
+		{
+			name: "statsd host path trims whitespace",
+			mutate: func(c *Config) {
+				c.StatsDHostPath = " dfw1.jetmon-prod-1 "
+			},
+		},
+		{
+			name: "statsd host path rejects spaces",
+			mutate: func(c *Config) {
+				c.StatsDHostPath = "dfw1 jetmon-prod-1"
+			},
+			wantErr: true,
+		},
+		{
+			name: "statsd host path rejects empty segments",
+			mutate: func(c *Config) {
+				c.StatsDHostPath = "dfw1..jetmon-prod-1"
+			},
+			wantErr: true,
+		},
+		{
 			name: "check dns resolver accepts ip with port",
 			mutate: func(c *Config) {
 				c.CheckDNSResolvers = []string{"10.0.0.176:5353", "[2001:db8::1]:53"}
@@ -367,6 +393,8 @@ func TestLoadAndGet(t *testing.T) {
 	p := writeConfigFile(t, `{
 		"AUTH_TOKEN": "loaded-token",
 		"NUM_WORKERS": 7,
+		"HOSTNAME": "dfw1.jetmon-prod-1",
+		"STATSD_HOST_PATH": "dfw1.jetmon-prod-1",
 		"BUCKET_TOTAL": 100,
 		"BUCKET_TARGET": 50,
 		"NET_COMMS_TIMEOUT": 10,
@@ -387,6 +415,15 @@ func TestLoadAndGet(t *testing.T) {
 	}
 	if cfg.NumWorkers != 7 {
 		t.Fatalf("NumWorkers = %d, want 7", cfg.NumWorkers)
+	}
+	if cfg.Hostname != "dfw1.jetmon-prod-1" {
+		t.Fatalf("Hostname = %q, want dfw1.jetmon-prod-1", cfg.Hostname)
+	}
+	if cfg.StatsDHostPath != "dfw1.jetmon-prod-1" {
+		t.Fatalf("StatsDHostPath = %q, want dfw1.jetmon-prod-1", cfg.StatsDHostPath)
+	}
+	if got := cfg.StatsDMetricHost("container-id"); got != "dfw1.jetmon-prod-1" {
+		t.Fatalf("StatsDMetricHost(explicit) = %q, want dfw1.jetmon-prod-1", got)
 	}
 	if cfg.LogFormat != "json" {
 		t.Fatalf("LogFormat = %q, want json", cfg.LogFormat)
@@ -414,6 +451,16 @@ func TestLoadAndGet(t *testing.T) {
 	}
 	if !cfg.WPCOMNotifyEnable {
 		t.Fatal("WPCOMNotifyEnable default should be true")
+	}
+	if cfg.WPCOMNotifyMode != WPCOMNotifyModeLegacy {
+		t.Fatalf("WPCOMNotifyMode = %q, want legacy", cfg.WPCOMNotifyMode)
+	}
+}
+
+func TestStatsDMetricHostFallsBackToResolvedHostname(t *testing.T) {
+	cfg := &Config{}
+	if got := cfg.StatsDMetricHost("jetmon-prod-1.dfw1.example.com"); got != "jetmon-prod-1.dfw1.example.com" {
+		t.Fatalf("StatsDMetricHost(fallback) = %q", got)
 	}
 }
 
@@ -478,6 +525,91 @@ func TestLegacyStatusProjectionConfig(t *testing.T) {
 	}
 }
 
+func TestLoadWarnsForDeprecatedNoopAndUnknownKeys(t *testing.T) {
+	saveConfigState(t)
+
+	p := writeConfigFile(t, `{
+		"AUTH_TOKEN": "token",
+		"NUM_WORKERS": 7,
+		"NUM_TO_PROCESS": 40,
+		"WORKER_MAX_CHECKS": 10000,
+		"TIMEOUT_FOR_REQUESTS_SEC": 60,
+		"BUCKET_TOTAL": 100,
+		"BUCKET_TARGET": 50,
+		"BUCKET_NO_MIN": 0,
+		"BUCKET_NO_MAX": 49,
+		"BATCH_SIZE": 32,
+		"VERIFLIER_BATCH_SIZE": 200,
+		"SQL_UPDATE_BATCH": 1,
+		"TIME_BETWEEN_CHECKS_SEC": 30,
+		"TIME_BETWEEN_NOTICES_MIN": 59,
+		"NET_COMMS_TIMEOUT": 10,
+		"LOG_FORMAT": "text",
+		"UNEXPECTED_V1_KEY": true,
+		"VERIFIERS": [
+			{
+				"name": "legacy verifier",
+				"host": "veriflier",
+				"grpc_port": "7803",
+				"auth_token": "token"
+			}
+		]
+	}`)
+
+	if err := Load(p); err != nil {
+		t.Fatalf("Load() should warn but not fail: %v", err)
+	}
+	warnings := warningsByKey(Get().Warnings)
+	for _, key := range []string{
+		"NUM_TO_PROCESS",
+		"WORKER_MAX_CHECKS",
+		"TIMEOUT_FOR_REQUESTS_SEC",
+		"BUCKET_NO_MIN",
+		"BUCKET_NO_MAX",
+		"BATCH_SIZE",
+		"VERIFLIER_BATCH_SIZE",
+		"SQL_UPDATE_BATCH",
+		"TIME_BETWEEN_CHECKS_SEC",
+		"TIME_BETWEEN_NOTICES_MIN",
+		"UNEXPECTED_V1_KEY",
+		"VERIFIERS[0].grpc_port",
+	} {
+		if warnings[key] == "" {
+			t.Fatalf("missing warning for %s; got %#v", key, warnings)
+		}
+	}
+}
+
+func TestLoadWarnsWhenStatsDHostPathLooksLikeRawHostname(t *testing.T) {
+	saveConfigState(t)
+
+	p := writeConfigFile(t, `{
+		"AUTH_TOKEN": "token",
+		"NUM_WORKERS": 7,
+		"STATSD_HOST_PATH": "jetmon-prod-1.dfw1.example.com",
+		"BUCKET_TOTAL": 100,
+		"BUCKET_TARGET": 50,
+		"NET_COMMS_TIMEOUT": 10,
+		"LOG_FORMAT": "text"
+	}`)
+
+	if err := Load(p); err != nil {
+		t.Fatalf("Load() should warn but not fail: %v", err)
+	}
+	warnings := warningsByKey(Get().Warnings)
+	if warnings["STATSD_HOST_PATH"] == "" {
+		t.Fatalf("missing STATSD_HOST_PATH warning; got %#v", warnings)
+	}
+}
+
+func warningsByKey(warnings []ConfigWarning) map[string]string {
+	out := make(map[string]string, len(warnings))
+	for _, warning := range warnings {
+		out[warning.Key] = warning.Message
+	}
+	return out
+}
+
 func TestWPCOMNotifyConfig(t *testing.T) {
 	saveConfigState(t)
 	p := writeConfigFile(t, `{
@@ -495,6 +627,62 @@ func TestWPCOMNotifyConfig(t *testing.T) {
 	}
 	if WPCOMNotifyEnabled() {
 		t.Fatal("WPCOMNotifyEnabled() = true, want false")
+	}
+}
+
+func TestWPCOMNotifyModeConfig(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "default is legacy", body: "", want: WPCOMNotifyModeLegacy},
+		{name: "legacy accepted", body: `"WPCOM_NOTIFY_MODE": "legacy"`, want: WPCOMNotifyModeLegacy},
+		{name: "modern accepted", body: `"WPCOM_NOTIFY_MODE": "modern"`, want: WPCOMNotifyModeModern},
+		{name: "modern normalized", body: `"WPCOM_NOTIFY_MODE": " Modern "`, want: WPCOMNotifyModeModern},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			saveConfigState(t)
+			extra := tt.body
+			if extra != "" {
+				extra = "," + extra
+			}
+			p := writeConfigFile(t, `{
+				"AUTH_TOKEN": "token",
+				"NUM_WORKERS": 7,
+				"BUCKET_TOTAL": 100,
+				"BUCKET_TARGET": 50,
+				"NET_COMMS_TIMEOUT": 10,
+				"LOG_FORMAT": "text"
+				`+extra+`
+			}`)
+
+			if err := Load(p); err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if got := Get().WPCOMNotifyMode; got != tt.want {
+				t.Fatalf("WPCOMNotifyMode = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWPCOMNotifyModeRejectsInvalidValue(t *testing.T) {
+	saveConfigState(t)
+	p := writeConfigFile(t, `{
+		"AUTH_TOKEN": "token",
+		"NUM_WORKERS": 7,
+		"BUCKET_TOTAL": 100,
+		"BUCKET_TARGET": 50,
+		"NET_COMMS_TIMEOUT": 10,
+		"LOG_FORMAT": "text",
+		"WPCOM_NOTIFY_MODE": "both"
+	}`)
+
+	if err := Load(p); err == nil {
+		t.Fatal("Load() expected WPCOM_NOTIFY_MODE validation error")
 	}
 }
 
@@ -642,6 +830,10 @@ func TestLoadDBAndGetDB(t *testing.T) {
 	t.Setenv("DB_USER", "testuser")
 	t.Setenv("DB_PASSWORD", "testpass")
 	t.Setenv("DB_NAME", "testdb")
+	t.Setenv("DB_SERVER_MAP_PATH", "/jetmon/config-source/db-servers.php")
+	t.Setenv("DB_SERVER_MAP_DATASET", "misc")
+	t.Setenv("DB_SERVER_MAP_DATACENTER", "dfw")
+	t.Setenv("DB_SERVER_MAP_ADDRESS", "internal")
 
 	cfg := LoadDB()
 	if cfg == nil {
@@ -652,6 +844,15 @@ func TestLoadDBAndGetDB(t *testing.T) {
 	}
 	if cfg.Port != "3307" {
 		t.Fatalf("Port = %q, want 3307", cfg.Port)
+	}
+	if cfg.ServerMapPath != "/jetmon/config-source/db-servers.php" {
+		t.Fatalf("ServerMapPath = %q", cfg.ServerMapPath)
+	}
+	if cfg.ServerMapDatacenter != "dfw" {
+		t.Fatalf("ServerMapDatacenter = %q, want dfw", cfg.ServerMapDatacenter)
+	}
+	if cfg.ServerMapAddress != "internal" {
+		t.Fatalf("ServerMapAddress = %q, want internal", cfg.ServerMapAddress)
 	}
 
 	got := GetDB()

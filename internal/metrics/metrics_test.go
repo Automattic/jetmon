@@ -3,6 +3,7 @@ package metrics
 import (
 	"bufio"
 	"net"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -35,10 +36,178 @@ func TestGlobalNilBeforeInit(t *testing.T) {
 	}
 }
 
+func TestAddrFromEnvDefaultWhenUnset(t *testing.T) {
+	orig, hadOrig := os.LookupEnv(EnvStatsDAddr)
+	t.Cleanup(func() {
+		if hadOrig {
+			_ = os.Setenv(EnvStatsDAddr, orig)
+		} else {
+			_ = os.Unsetenv(EnvStatsDAddr)
+		}
+	})
+	_ = os.Unsetenv(EnvStatsDAddr)
+
+	if got := AddrFromEnv("statsd:8125"); got != "statsd:8125" {
+		t.Fatalf("AddrFromEnv(default) = %q, want statsd:8125", got)
+	}
+}
+
+func TestAddrFromEnvOverride(t *testing.T) {
+	t.Setenv(EnvStatsDAddr, " 127.0.0.1:8125 ")
+
+	if got := AddrFromEnv("statsd:8125"); got != "127.0.0.1:8125" {
+		t.Fatalf("AddrFromEnv(override) = %q, want 127.0.0.1:8125", got)
+	}
+}
+
+func TestAddrFromEnvEmptyDisables(t *testing.T) {
+	t.Setenv(EnvStatsDAddr, " ")
+
+	if got := AddrFromEnv("statsd:8125"); got != "" {
+		t.Fatalf("AddrFromEnv(empty) = %q, want empty", got)
+	}
+}
+
+func TestMetricHostPathDefaultSanitizesRuntimeHostname(t *testing.T) {
+	if got := MetricHostPath("my-host.example"); got != "my-host.example" {
+		t.Fatalf("MetricHostPath(default) = %q, want my-host.example", got)
+	}
+}
+
+func TestMetricHostPathPreservesGraphitePath(t *testing.T) {
+	if got := MetricHostPath(" dfw1.jetmon-prod-1 "); got != "dfw1.jetmon-prod-1" {
+		t.Fatalf("MetricHostPath(path) = %q, want dfw1.jetmon-prod-1", got)
+	}
+}
+
+func TestMetricHostPathSanitizesUnsafeCharacters(t *testing.T) {
+	if got := MetricHostPath(".dfw1.jetmon prod:1|blue."); got != "dfw1.jetmon_prod_1_blue" {
+		t.Fatalf("MetricHostPath(sanitize) = %q, want dfw1.jetmon_prod_1_blue", got)
+	}
+}
+
+func TestInitFromEnvDisabled(t *testing.T) {
+	orig := global
+	global = nil
+	t.Cleanup(func() { global = orig })
+	t.Setenv(EnvStatsDAddr, "")
+
+	addr, enabled, err := InitFromEnv("host", "statsd:8125")
+	if err != nil {
+		t.Fatalf("InitFromEnv disabled error = %v, want nil", err)
+	}
+	if enabled || addr != "" {
+		t.Fatalf("InitFromEnv disabled = addr %q enabled %v, want empty false", addr, enabled)
+	}
+	if Global() != nil {
+		t.Fatal("Global() = non-nil after disabled InitFromEnv, want nil")
+	}
+}
+
 func TestWriteStatsFilesDoesNotPanic(t *testing.T) {
 	// stats/ directory may not exist in test context; errors are silently
 	// ignored by design — just verify this does not panic.
-	WriteStatsFiles(10, 5, 1000)
+	WriteStatsFiles(StatsFilesSnapshot{SitesPerSec: 10, QueueSize: 5, Total: 1000})
+}
+
+func TestWriteStatsFilesUsesLegacyTextFormat(t *testing.T) {
+	dir := t.TempDir()
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(orig); err != nil {
+			t.Fatalf("restore cwd: %v", err)
+		}
+	})
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+	if err := os.Mkdir("stats", 0755); err != nil {
+		t.Fatalf("Mkdir stats: %v", err)
+	}
+
+	WriteStatsFiles(StatsFilesSnapshot{
+		SitesPerSec: 12,
+		QueueSize:   34,
+		Working:     5,
+		Waiting:     55,
+		Halting:     0,
+		Error:       3,
+		Offline:     2,
+		Success:     95,
+		Total:       100,
+	})
+
+	assertFileContent(t, "stats/sitespersec", "sites per second: 12\n")
+	assertFileContent(t, "stats/sitesqueue", "sites in queue: 34\n")
+	assertFileContent(t, "stats/totals", ""+
+		"working : 5\n"+
+		"waiting : 55\n"+
+		"halting : 0\n"+
+		"error   : 3\n"+
+		"offline : 2\n"+
+		"success : 95\n"+
+		"total   : 100\n")
+}
+
+func TestLastStatsFilesSnapshotTracksLatestWrite(t *testing.T) {
+	want := StatsFilesSnapshot{
+		SitesPerSec: 21,
+		QueueSize:   43,
+		Working:     6,
+		Waiting:     7,
+		Halting:     0,
+		Error:       1,
+		Offline:     2,
+		Success:     97,
+		Total:       100,
+	}
+
+	WriteStatsFiles(want)
+
+	got, updatedAt, ok := LastStatsFilesSnapshot()
+	if !ok {
+		t.Fatal("LastStatsFilesSnapshot ok = false, want true")
+	}
+	if updatedAt.IsZero() {
+		t.Fatal("LastStatsFilesSnapshot updatedAt is zero")
+	}
+	if got != want {
+		t.Fatalf("LastStatsFilesSnapshot = %+v, want %+v", got, want)
+	}
+}
+
+func TestRenderLegacyStatsFiles(t *testing.T) {
+	files := RenderLegacyStatsFiles(StatsFilesSnapshot{
+		SitesPerSec: 12,
+		QueueSize:   34,
+		Working:     5,
+		Waiting:     55,
+		Halting:     0,
+		Error:       3,
+		Offline:     2,
+		Success:     95,
+		Total:       100,
+	})
+
+	if files.SitesPerSec != "sites per second: 12\n" {
+		t.Fatalf("SitesPerSec = %q", files.SitesPerSec)
+	}
+	if files.SitesQueue != "sites in queue: 34\n" {
+		t.Fatalf("SitesQueue = %q", files.SitesQueue)
+	}
+	if files.Totals != ""+
+		"working : 5\n"+
+		"waiting : 55\n"+
+		"halting : 0\n"+
+		"error   : 3\n"+
+		"offline : 2\n"+
+		"success : 95\n"+
+		"total   : 100\n" {
+		t.Fatalf("Totals = %q", files.Totals)
+	}
 }
 
 func TestClientSendsStatsDMessages(t *testing.T) {
@@ -115,6 +284,17 @@ func TestClientSendsStatsDMessages(t *testing.T) {
 	}
 }
 
+func assertFileContent(t *testing.T, path, want string) {
+	t.Helper()
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", path, err)
+	}
+	if string(got) != want {
+		t.Fatalf("%s = %q, want %q", path, got, want)
+	}
+}
+
 func TestInitSetsGlobalClient(t *testing.T) {
 	pc, err := net.ListenPacket("udp4", "127.0.0.1:0")
 	if err != nil {
@@ -136,7 +316,7 @@ func TestInitSetsGlobalClient(t *testing.T) {
 	if Global() == nil {
 		t.Fatal("Global() = nil after Init")
 	}
-	if Global().prefix != "com.jetpack.jetmon.my_host_example" {
+	if Global().prefix != "com.jetpack.jetmon.my-host.example" {
 		t.Fatalf("prefix = %q", Global().prefix)
 	}
 }

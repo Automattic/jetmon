@@ -1,0 +1,9 @@
+[Unit]
+Description=Sync Jetmon database server map
+Documentation=https://github.com/Automattic/jetmon
+
+[Service]
+Type=oneshot
+Environment=JETMON_CONFIG_SYNC_ENV=/etc/jetmon/config-sync.env
+ExecStart=/bin/bash /opt/jetmon2/scripts/jetmon-config-update.sh
+UMask=0077

@@ -173,7 +173,7 @@ func ListVeriflierDiscoverySnapshot(ctx context.Context, staleAfter time.Duratio
 
 func ListRecentVeriflierAgents(ctx context.Context, staleAfter time.Duration) ([]VeriflierAgent, error) {
 	seconds := staleAfterSeconds(staleAfter)
-	rows, err := db.QueryContext(ctx, `
+	rows, err := ReadDB().QueryContext(ctx, `
 		SELECT agent_id, vantage_id, hostname, endpoint_host, endpoint_port,
 		       version, protocols, max_concurrency, queue_capacity, queue_depth,
 		       active, in_flight, status, last_seen
@@ -211,7 +211,7 @@ func listVeriflierVantages(ctx context.Context, enabledOnly bool) ([]VeriflierVa
 	}
 	query += ` ORDER BY vantage_id`
 
-	rows, err := db.QueryContext(ctx, query)
+	rows, err := ReadDB().QueryContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("list veriflier vantages: %w", err)
 	}

@@ -593,9 +593,6 @@ func testVerifierConfig(t *testing.T, name string, server *httptest.Server) conf
 
 func TestDashboardHealthEntriesReportsCoreDependencies(t *testing.T) {
 	root := t.TempDir()
-	if err := os.Mkdir(filepath.Join(root, "logs"), 0755); err != nil {
-		t.Fatalf("mkdir logs: %v", err)
-	}
 	if err := os.Mkdir(filepath.Join(root, "stats"), 0755); err != nil {
 		t.Fatalf("mkdir stats: %v", err)
 	}
@@ -631,9 +628,9 @@ func TestDashboardHealthEntriesReportsCoreDependencies(t *testing.T) {
 
 	want := map[string]string{
 		"mysql":      "green",
+		"db-config":  "red",
 		"wpcom":      "red",
 		"statsd":     "amber",
-		"disk:logs":  "green",
 		"disk:stats": "green",
 		"verifliers": "amber",
 	}

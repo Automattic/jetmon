@@ -14,6 +14,8 @@ BUCKET_MAX="${JETMON_ROLLOUT_DOCKER_BUCKET_MAX:-0}"
 RUN_ID="${JETMON_ROLLOUT_DOCKER_RUN_ID:-rollout-docker-lab-$(date -u +%Y%m%d%H%M%S)}"
 CHANGE_REF="${JETMON_ROLLOUT_DOCKER_CHANGE_REF:-overnight-rollout-docker-lab}"
 WORK_DIR="$REPO_ROOT/logs/rollout-docker-lab"
+SITE_FIXTURE_FILE="$REPO_ROOT/stats/rollout-docker-lab/sites.json"
+SITE_FIXTURE_CONTAINER_FILE="/jetmon/stats/rollout-docker-lab/sites.json"
 CONFIG_FILE="$REPO_ROOT/config/config.json"
 COMPOSE=(docker compose -p "$PROJECT" -f "$REPO_ROOT/docker/docker-compose.yml" -f "$REPO_ROOT/docker/docker-compose.rollout-lab.yml")
 
@@ -91,7 +93,7 @@ cleanup() {
 }
 
 prepare_config() {
-	mkdir -p "$WORK_DIR" "$REPO_ROOT/logs" "$REPO_ROOT/stats"
+	mkdir -p "$WORK_DIR" "$REPO_ROOT/logs" "$(dirname "$SITE_FIXTURE_FILE")"
 	jq \
 		--arg auth "rollout-lab-wpcom-disabled" \
 		--arg fixture_host "veriflier" \
@@ -123,7 +125,7 @@ prepare_config() {
 }
 
 prepare_fixture_sites() {
-	cat >"$WORK_DIR/sites.json" <<JSON
+	cat >"$SITE_FIXTURE_FILE" <<JSON
 [
   {
     "monitor_url": "http://$FIXTURE_IP:8091/health",
@@ -166,7 +168,7 @@ prepare_fixture_sites() {
   }
 ]
 JSON
-	pass "fixture_sites_written=$WORK_DIR/sites.json count=$SITE_COUNT fixture=$FIXTURE_IP"
+	pass "fixture_sites_written=$SITE_FIXTURE_FILE count=$SITE_COUNT fixture=$FIXTURE_IP"
 }
 
 ensure_public_network() {
@@ -198,7 +200,7 @@ create_api_token() {
 seed_sites() {
 	api sites bulk-add \
 		--source file \
-		--file /jetmon/logs/rollout-docker-lab/sites.json \
+		--file "$SITE_FIXTURE_CONTAINER_FILE" \
 		--count "$SITE_COUNT" \
 		--batch rollout-docker-lab \
 		--idempotency-key-prefix rollout-docker-lab-site \

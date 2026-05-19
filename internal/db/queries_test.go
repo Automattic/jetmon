@@ -100,9 +100,15 @@ func withMockDB(t *testing.T) (sqlmock.Sqlmock, func()) {
 		t.Fatalf("sqlmock.New: %v", err)
 	}
 	orig := db
+	origRead := readDB
+	origManager := manager
 	db = mockDB
+	readDB = mockDB
+	manager = nil
 	cleanup := func() {
 		db = orig
+		readDB = origRead
+		manager = origManager
 		_ = mockDB.Close()
 	}
 	return mock, cleanup

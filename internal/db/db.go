@@ -1,19 +1,22 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log"
 	"os"
-	"runtime"
+	"strings"
 	"time"
-
-	"github.com/go-sql-driver/mysql"
 
 	"github.com/Automattic/jetmon/internal/config"
 )
 
-var db *sql.DB
+var (
+	db      *sql.DB
+	readDB  *sql.DB
+	manager *Manager
+)
 
 // Site combines the v1-shaped jetpack_monitor_sites row with Jetmon-owned
 // sidecar config/runtime tables.
@@ -51,31 +54,23 @@ func Connect() error {
 		cfg = config.LoadDB()
 	}
 
-	// Use mysql.Config.FormatDSN so the password is never interpolated into
-	// a format string (prevents accidental exposure in error chains or logs).
-	mc := mysql.NewConfig()
-	mc.User = cfg.User
-	mc.Passwd = cfg.Password
-	mc.Net = "tcp"
-	mc.Addr = cfg.Host + ":" + cfg.Port
-	mc.DBName = cfg.Name
-	mc.ParseTime = true
-	mc.Timeout = 10 * time.Second
-	mc.ReadTimeout = 30 * time.Second
-	mc.WriteTimeout = 30 * time.Second
-
-	var err error
-	db, err = sql.Open("mysql", mc.FormatDSN())
+	next, err := NewManager(cfg, config.Get())
 	if err != nil {
-		return fmt.Errorf("open db: %w", err)
+		return fmt.Errorf("open db manager: %w", err)
 	}
-
-	maxOpenConns := maxOpenConnectionsForConfig(config.Get(), runtime.GOMAXPROCS(0))
-	db.SetMaxOpenConns(maxOpenConns)
-	db.SetMaxIdleConns(maxOpenConns / 2)
-	db.SetConnMaxLifetime(5 * time.Minute)
-
-	return db.Ping()
+	if err := next.Ping(context.Background()); err != nil {
+		_ = next.Close()
+		return err
+	}
+	old := manager
+	manager = next
+	db = next.WriteDB()
+	readDB = next.ReadDB()
+	if old != nil {
+		_ = old.Close()
+	}
+	log.Printf("db connected: %s", next.Summary())
+	return nil
 }
 
 func maxOpenConnectionsForConfig(cfg *config.Config, gomaxprocs int) int {
@@ -121,13 +116,38 @@ func DB() *sql.DB {
 	return db
 }
 
+// ReadDB returns the read pool. If no read-only database is configured, it
+// points at the same endpoint configuration as the write pool.
+func ReadDB() *sql.DB {
+	if readDB != nil {
+		return readDB
+	}
+	return db
+}
+
+// WriteDB returns the write pool.
+func WriteDB() *sql.DB {
+	return db
+}
+
 // Ping checks database connectivity.
 func Ping() error {
+	if manager != nil {
+		return manager.Ping(context.Background())
+	}
 	return db.Ping()
 }
 
 // Hostname returns the system hostname used as the host_id in jetmon_hosts.
 func Hostname() string {
+	if cfg := config.Get(); cfg != nil {
+		if h := strings.TrimSpace(cfg.Hostname); h != "" {
+			return h
+		}
+	}
+	if h := strings.TrimSpace(os.Getenv("JETMON_HOSTNAME")); h != "" {
+		return h
+	}
 	h, err := os.Hostname()
 	if err != nil {
 		return "unknown"

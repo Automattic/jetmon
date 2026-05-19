@@ -7,6 +7,8 @@ x-jetmon-scale-env: &jetmon_scale_env
   VERIFLIER_AUTH_TOKEN: ${VERIFLIER_AUTH_TOKEN:-veriflier_1_auth_token}
   VERIFLIER_PORT: "7803"
   WPCOM_AUTH_TOKEN: ${WPCOM_AUTH_TOKEN:-change_me}
+  WPCOM_NOTIFY_ENABLE: ${WPCOM_NOTIFY_ENABLE:-false}
+  WPCOM_NOTIFY_MODE: ${WPCOM_NOTIFY_MODE:-legacy}
   EMAIL_TRANSPORT: ${EMAIL_TRANSPORT:-stub}
   EMAIL_FROM: ${EMAIL_FROM:-jetmon@noreply.invalid}
   SMTP_HOST: ${SMTP_HOST:-mailpit}
@@ -14,6 +16,9 @@ x-jetmon-scale-env: &jetmon_scale_env
   SMTP_USERNAME: ${SMTP_USERNAME:-}
   SMTP_PASSWORD: ${SMTP_PASSWORD:-}
   SMTP_USE_TLS: ${SMTP_USE_TLS:-false}
+  STATSD_ADDR: statsd:8125
+  JETMON_HOSTNAME: ${JETMON_HOSTNAME:-}
+  STATSD_HOST_PATH: ${STATSD_HOST_PATH:-}
 
 x-jetmon-scale-service: &jetmon_scale_service
   build:
@@ -24,7 +29,6 @@ x-jetmon-scale-service: &jetmon_scale_service
   user: "${UID:-1000}:${GID:-1000}"
   volumes:
     - ../config:/jetmon/config
-    - ../logs:/jetmon/logs
     - ../stats:/jetmon/stats
   depends_on:
     mysql-user:
@@ -54,6 +58,8 @@ x-veriflier-scale-service: &veriflier_scale_service
     VERIFLIER_PROVIDER: ${VERIFLIER_PROVIDER:-docker}
     VERIFLIER_ENABLE_LEGACY_HTTP: ${VERIFLIER_ENABLE_LEGACY_HTTP:-false}
     STATSD_ADDR: statsd:8125
+    JETMON_HOSTNAME: ${JETMON_HOSTNAME:-}
+    STATSD_HOST_PATH: ${STATSD_HOST_PATH:-}
   healthcheck:
     test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7803/v2/status"]
     interval: 10s
@@ -115,6 +121,8 @@ services:
       VERIFLIER_PROVIDER: docker
       VERIFLIER_ENABLE_LEGACY_HTTP: ${VERIFLIER_ENABLE_LEGACY_HTTP:-false}
       STATSD_ADDR: statsd:8125
+      JETMON_HOSTNAME: ${JETMON_HOSTNAME:-}
+      STATSD_HOST_PATH: ${STATSD_HOST_PATH:-}
 
   veriflier3:
     <<: *veriflier_scale_service
@@ -127,6 +135,8 @@ services:
       VERIFLIER_PROVIDER: docker
       VERIFLIER_ENABLE_LEGACY_HTTP: ${VERIFLIER_ENABLE_LEGACY_HTTP:-false}
       STATSD_ADDR: statsd:8125
+      JETMON_HOSTNAME: ${JETMON_HOSTNAME:-}
+      STATSD_HOST_PATH: ${STATSD_HOST_PATH:-}
 
   api-fixture:
     networks:

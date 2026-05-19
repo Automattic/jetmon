@@ -77,7 +77,7 @@ func BuildLegacySiteTableAudit(ctx context.Context, bucketMin, bucketMax int) (L
 		BucketMin: bucketMin,
 		BucketMax: bucketMax,
 	}
-	err := db.QueryRowContext(ctx, `
+	err := ReadDB().QueryRowContext(ctx, `
 		SELECT
 			COUNT(*),
 			COALESCE(SUM(monitor_active = 1), 0),
@@ -103,7 +103,7 @@ func BuildLegacySiteTableAudit(ctx context.Context, bucketMin, bucketMax int) (L
 	}
 
 	var minBucket, maxBucket sql.NullInt64
-	err = db.QueryRowContext(ctx, `
+	err = ReadDB().QueryRowContext(ctx, `
 		SELECT MIN(bucket_no), MAX(bucket_no), COUNT(DISTINCT bucket_no),
 		       COALESCE(COUNT(DISTINCT CASE WHEN monitor_active = 1 THEN bucket_no END), 0)
 		  FROM jetpack_monitor_sites
@@ -159,7 +159,7 @@ func queryLegacyValueCounts(ctx context.Context, bucketMin, bucketMax int, colum
 	default:
 		return nil, fmt.Errorf("unsupported legacy value-count column %q", column)
 	}
-	rows, err := db.QueryContext(ctx, fmt.Sprintf(`
+	rows, err := ReadDB().QueryContext(ctx, fmt.Sprintf(`
 		SELECT %s AS value,
 		       COUNT(*) AS total_rows,
 		       COALESCE(SUM(monitor_active = 1), 0) AS active_rows
@@ -187,7 +187,7 @@ func queryLegacyValueCounts(ctx context.Context, bucketMin, bucketMax int, colum
 
 func queryActiveBucketLoad(ctx context.Context, bucketMin, bucketMax int) (BucketLoadSummary, error) {
 	var out BucketLoadSummary
-	err := db.QueryRowContext(ctx, `
+	err := ReadDB().QueryRowContext(ctx, `
 		SELECT COUNT(*), COALESCE(MIN(rows_per_bucket), 0), COALESCE(MAX(rows_per_bucket), 0), COALESCE(AVG(rows_per_bucket), 0)
 		  FROM (
 			SELECT bucket_no, COUNT(*) AS rows_per_bucket
@@ -222,7 +222,7 @@ func queryDuplicateBlogSummary(ctx context.Context, bucketMin, bucketMax int, ac
 			HAVING COUNT(*) > 1
 		  ) duplicate_blogs`, filter)
 	var out DuplicateBlogSummary
-	err := db.QueryRowContext(ctx, query, bucketMin, bucketMax).
+	err := ReadDB().QueryRowContext(ctx, query, bucketMin, bucketMax).
 		Scan(&out.Groups, &out.Rows, &out.MaxRowsPerBlog, &out.StatusConflicts)
 	if err != nil {
 		return out, fmt.Errorf("query duplicate blog summary: %w", err)
@@ -237,7 +237,7 @@ func ListLegacyNonRunningSites(ctx context.Context, bucketMin, bucketMax int, af
 	if limit <= 0 {
 		limit = 1000
 	}
-	rows, err := db.QueryContext(ctx, `
+	rows, err := ReadDB().QueryContext(ctx, `
 		SELECT jetpack_monitor_site_id, blog_id, bucket_no, site_status, last_status_change
 		  FROM jetpack_monitor_sites
 		 WHERE monitor_active = 1

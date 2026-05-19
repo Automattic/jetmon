@@ -34,6 +34,48 @@ docker compose down
 docker compose down --remove-orphans
 ```
 
+## Local Database Selection
+
+Local testing does not use the production SVN `db-servers.php` sync path. The
+Monitor reads its database connection from `DB_HOST`, `DB_PORT`, `DB_USER`,
+`DB_PASSWORD`, and `DB_NAME`.
+
+In the default Docker Compose stack, those values point at the local
+`mysqldb` service:
+
+```yaml
+DB_HOST: mysqldb
+DB_PORT: "3306"
+```
+
+Use `docker/.env` to change the local database image, database name, user, and
+password. If you need the Monitor container to connect to a specific external
+database instead of the Compose `mysqldb` service, add a local Compose override
+that changes the `jetmon.environment` `DB_*` values, or run the pre-built image
+directly with explicit `DB_*` environment variables as shown in
+[docker-images.md](docker-images.md). The SVN config-sync sidecar is only for
+production rollout planning and is not required for local smoke tests.
+
+Production-style DB server-map testing is available by setting
+`DB_SERVER_MAP_PATH` to a synced or synthetic `db-servers.php`. In that mode,
+Jetmon reads the `misc` dataset, uses the write-master row for writes, uses
+read-enabled rows for reads, and hot-reloads changed connection details on the
+`DB_CONFIG_UPDATES_MIN` cadence. Keep this unset for normal local development.
+When testing this mode, use `GET /api/v1/monitor/db-config` or the host
+dashboard `db-config` dependency to confirm the next reload check, last changed
+map observed, and last successful hot reload.
+
+## Local StatsD
+
+The default Docker Compose stack runs a local `statsd` service backed by the
+`graphiteapp/graphite-statsd` image. Monitor and Veriflier containers send UDP
+metrics to `STATSD_ADDR=statsd:8125` by default in Compose. Set `STATSD_ADDR`
+in `docker/.env` if you want both services to send to a different StatsD
+endpoint, or set it to an empty value to disable StatsD for a smoke test. Leave
+`JETMON_HOSTNAME` and `STATSD_HOST_PATH` unset locally unless you need process
+identity or metrics to land under a specific Graphite path while testing
+dashboard changes.
+
 Mailpit captures local alert-contact email. Open it at
 `http://localhost:8025` by default, or at the `BIND_ADDR` /
 `MAILPIT_HOST_PORT` values from `docker/.env`.
@@ -41,6 +83,18 @@ Mailpit captures local alert-contact email. Open it at
 The local API port also binds to loopback by default. Set
 `API_BIND_ADDR=0.0.0.0` only when the Docker host is on a trusted network and
 remote API access is intentional.
+
+## Local WPCOM Notifications
+
+The default Docker Compose stack sets `WPCOM_NOTIFY_ENABLE=false` so local
+checks cannot contact WPCOM. It still renders `WPCOM_NOTIFY_MODE=legacy` by
+default so local config shape matches the production rollout posture.
+
+Production Monitor rollout should use `WPCOM_NOTIFY_MODE=legacy`, which is the
+config default outside the local Docker override. That mode preserves the v1
+client-certificate `/jetmon/?data=...` notification contract. Set
+`WPCOM_NOTIFY_MODE=modern` explicitly only for WPCOM endpoint/auth contract
+testing until WPCOM signs off.
 
 ## Build And Test
 
@@ -109,9 +163,17 @@ export JETMON_API_TOKEN=jm_replace_with_the_printed_token
 
 ./bin/jetmon2 api health --pretty
 ./bin/jetmon2 api me --pretty
+./bin/jetmon2 api request --pretty GET /api/v1/monitor/stats
+./bin/jetmon2 api request GET '/api/v1/monitor/stats?file=totals'
 ./bin/jetmon2 api commands --output table
 ./bin/jetmon2 api sites list --output table
 ```
+
+`/api/v1/monitor/stats` is the API migration path for consumers that used to
+read `stats/sitespersec`, `stats/sitesqueue`, or `stats/totals` directly from a
+host filesystem. The JSON response contains parsed counters plus the exact
+legacy file bodies, and the `?file=` form returns one legacy body as
+`text/plain`. It requires a normal read-scope API key.
 
 Run the standard smoke sequence:
 

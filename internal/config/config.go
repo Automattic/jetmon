@@ -6,6 +6,8 @@ import (
 	"log"
 	"net"
 	"os"
+	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -34,6 +36,16 @@ const (
 	RolloutModeAPIControlled = "api-controlled"
 )
 
+const (
+	WPCOMNotifyModeLegacy = "legacy"
+	WPCOMNotifyModeModern = "modern"
+
+	defaultWPCOMNotifyModernEndpoint = "https://public-api.wordpress.com/wpcom/v2/jetpack-monitor/status-change"
+	defaultWPCOMNotifyLegacyEndpoint = "https://jetpack.wordpress.com/jetmon/"
+	defaultWPCOMNotifyLegacyCertPath = "certs/jetmon.crt"
+	defaultWPCOMNotifyLegacyKeyPath  = "certs/jetmon.key"
+)
+
 // TransportPort returns the canonical JSON-over-HTTP Veriflier port,
 // accepting grpc_port as a deprecated config alias.
 func (v VerifierConfig) TransportPort() string {
@@ -46,6 +58,15 @@ func (v VerifierConfig) TransportPort() string {
 // Config holds all runtime configuration for Jetmon 2.
 type Config struct {
 	Debug bool `json:"DEBUG"`
+
+	// Hostname is the stable Jetmon identity used for host ownership, process
+	// health, and outbound notification identity.
+	// Leave empty to use the runtime OS hostname.
+	Hostname string `json:"HOSTNAME"`
+
+	// StatsDHostPath is the explicit host segment used in the StatsD metric
+	// prefix. Leave empty to use Hostname/runtime hostname as the fallback.
+	StatsDHostPath string `json:"STATSD_HOST_PATH"`
 
 	NumWorkers     int `json:"NUM_WORKERS"`
 	NumToProcess   int `json:"NUM_TO_PROCESS"`
@@ -102,6 +123,12 @@ type Config struct {
 	StatsdSendMemUsage        bool     `json:"STATSD_SEND_MEM_USAGE"`
 	TimeBetweenNoticesMin     int      `json:"TIME_BETWEEN_NOTICES_MIN"`
 	WPCOMNotifyEnable         bool     `json:"WPCOM_NOTIFY_ENABLE"`
+	WPCOMNotifyMode           string   `json:"WPCOM_NOTIFY_MODE"`
+	WPCOMNotifyModernEndpoint string   `json:"WPCOM_NOTIFY_MODERN_ENDPOINT"`
+	WPCOMNotifyLegacyEndpoint string   `json:"WPCOM_NOTIFY_LEGACY_ENDPOINT"`
+	WPCOMNotifyLegacyCertPath string   `json:"WPCOM_NOTIFY_LEGACY_CERT_PATH"`
+	WPCOMNotifyLegacyKeyPath  string   `json:"WPCOM_NOTIFY_LEGACY_KEY_PATH"`
+	WPCOMNotifyLegacyInsecure bool     `json:"WPCOM_NOTIFY_LEGACY_INSECURE_SKIP_VERIFY"`
 	MinTimeBetweenRoundsSec   int      `json:"MIN_TIME_BETWEEN_ROUNDS_SEC"`
 	NetCommsTimeout           int      `json:"NET_COMMS_TIMEOUT"`
 	CheckDNSResolvers         []string `json:"CHECK_DNS_RESOLVERS"`
@@ -149,15 +176,28 @@ type Config struct {
 	SMTPUseTLS          bool   `json:"SMTP_USE_TLS"`
 
 	Verifiers []VerifierConfig `json:"VERIFIERS"`
+
+	Warnings []ConfigWarning `json:"-"`
+}
+
+// ConfigWarning reports a compatibility or ignored-key issue discovered while
+// loading a config file. Warnings never block parsing.
+type ConfigWarning struct {
+	Key     string
+	Message string
 }
 
 // DBConfig holds MySQL connection parameters loaded from environment variables.
 type DBConfig struct {
-	Host     string
-	Port     string
-	User     string
-	Password string
-	Name     string
+	Host                string
+	Port                string
+	User                string
+	Password            string
+	Name                string
+	ServerMapPath       string
+	ServerMapDataset    string
+	ServerMapDatacenter string
+	ServerMapAddress    string
 }
 
 var (
@@ -188,6 +228,7 @@ func reload() error {
 	if err := json.Unmarshal(raw, cfg); err != nil {
 		return fmt.Errorf("parse config: %w", err)
 	}
+	cfg.Warnings = collectConfigWarnings(raw)
 	applyDeprecatedAliases(raw, cfg)
 
 	if err := validate(cfg); err != nil {
@@ -211,11 +252,15 @@ func Get() *Config {
 // systemd EnvironmentFile, or the operator shell running CLI preflight commands.
 func LoadDB() *DBConfig {
 	db := &DBConfig{
-		Host:     envOrDefault("DB_HOST", "localhost"),
-		Port:     envOrDefault("DB_PORT", "3306"),
-		User:     envOrDefault("DB_USER", "root"),
-		Password: envOrDefault("DB_PASSWORD", ""),
-		Name:     envOrDefault("DB_NAME", "jetmon_db"),
+		Host:                envOrDefault("DB_HOST", "localhost"),
+		Port:                envOrDefault("DB_PORT", "3306"),
+		User:                envOrDefault("DB_USER", "root"),
+		Password:            envOrDefault("DB_PASSWORD", ""),
+		Name:                envOrDefault("DB_NAME", "jetmon_db"),
+		ServerMapPath:       strings.TrimSpace(os.Getenv("DB_SERVER_MAP_PATH")),
+		ServerMapDataset:    envOrDefault("DB_SERVER_MAP_DATASET", "misc"),
+		ServerMapDatacenter: strings.TrimSpace(os.Getenv("DB_SERVER_MAP_DATACENTER")),
+		ServerMapAddress:    envOrDefault("DB_SERVER_MAP_ADDRESS", "internet"),
 	}
 	mu.Lock()
 	dbConf = db
@@ -252,6 +297,12 @@ func defaults() *Config {
 		StatsUpdateIntervalMS:                10000,
 		TimeBetweenNoticesMin:                59,
 		WPCOMNotifyEnable:                    true,
+		WPCOMNotifyMode:                      WPCOMNotifyModeLegacy,
+		WPCOMNotifyModernEndpoint:            defaultWPCOMNotifyModernEndpoint,
+		WPCOMNotifyLegacyEndpoint:            defaultWPCOMNotifyLegacyEndpoint,
+		WPCOMNotifyLegacyCertPath:            defaultWPCOMNotifyLegacyCertPath,
+		WPCOMNotifyLegacyKeyPath:             defaultWPCOMNotifyLegacyKeyPath,
+		WPCOMNotifyLegacyInsecure:            true,
 		MinTimeBetweenRoundsSec:              300,
 		NetCommsTimeout:                      10,
 		BodyReadMaxBytes:                     1048576,
@@ -284,6 +335,152 @@ func applyDeprecatedAliases(raw []byte, cfg *Config) {
 	if _, hasOld := keys["DB_UPDATES_ENABLE"]; hasOld {
 		cfg.LegacyStatusProjectionEnable = cfg.DBUpdatesEnable
 	}
+}
+
+type deprecatedConfigKeyWarning struct {
+	key     string
+	message string
+}
+
+var deprecatedConfigKeyWarnings = []deprecatedConfigKeyWarning{
+	{
+		key:     "WORKER_MAX_CHECKS",
+		message: "ignored by Jetmon v2; Node worker recycle-by-check-count does not apply to Go goroutine workers",
+	},
+	{
+		key:     "TIMEOUT_FOR_REQUESTS_SEC",
+		message: "ignored by Jetmon v2; Veriflier retry queue expiration is handled by the v2 retry and escalation flow",
+	},
+	{
+		key:     "DB_UPDATES_ENABLE",
+		message: "deprecated alias; use LEGACY_STATUS_PROJECTION_ENABLE",
+	},
+	{
+		key:     "BUCKET_NO_MIN",
+		message: "deprecated migration alias; use PINNED_BUCKET_MIN during v1-to-v2 pinned rollout",
+	},
+	{
+		key:     "BUCKET_NO_MAX",
+		message: "deprecated migration alias; use PINNED_BUCKET_MAX during v1-to-v2 pinned rollout",
+	},
+	{
+		key:     "NUM_TO_PROCESS",
+		message: "parsed for copied v1 config compatibility but does not cap v2 scheduler throughput; tune NUM_WORKERS, DATASET_SIZE, and scheduler mode instead",
+	},
+	{
+		key:     "BATCH_SIZE",
+		message: "parsed for copied v1 config compatibility but is not used by the v2 scheduler; use DATASET_SIZE for database fetch paging",
+	},
+	{
+		key:     "VERIFLIER_BATCH_SIZE",
+		message: "parsed for copied v1 config compatibility but has no production tuning effect on the current v2 Veriflier transport",
+	},
+	{
+		key:     "SQL_UPDATE_BATCH",
+		message: "parsed for copied v1 config compatibility but does not control v2 database write batching",
+	},
+	{
+		key:     "TIME_BETWEEN_CHECKS_SEC",
+		message: "parsed for copied v1 config compatibility but does not control v2 retry cadence; v2 uses per-site check intervals, runtime due state, and bounded retry scheduling",
+	},
+	{
+		key:     "TIME_BETWEEN_NOTICES_MIN",
+		message: "parsed for copied v1 config compatibility but does not gate v2 WPCOM status-change notifications; v2 notification timing follows incident state and Veriflier confirmation",
+	},
+}
+
+func collectConfigWarnings(raw []byte) []ConfigWarning {
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &keys); err != nil {
+		return nil
+	}
+
+	warnings := make([]ConfigWarning, 0)
+	deprecated := make(map[string]struct{}, len(deprecatedConfigKeyWarnings))
+	for _, item := range deprecatedConfigKeyWarnings {
+		deprecated[item.key] = struct{}{}
+		if _, ok := keys[item.key]; ok {
+			warnings = append(warnings, ConfigWarning{Key: item.key, Message: item.message})
+		}
+	}
+
+	known := knownConfigJSONKeys()
+	var unknown []string
+	for key := range keys {
+		if _, ok := known[key]; ok {
+			continue
+		}
+		if _, ok := deprecated[key]; ok {
+			continue
+		}
+		unknown = append(unknown, key)
+	}
+	sort.Strings(unknown)
+	for _, key := range unknown {
+		warnings = append(warnings, ConfigWarning{
+			Key:     key,
+			Message: "not recognized by Jetmon v2 and will be ignored; check for typos or remove it",
+		})
+	}
+
+	warnings = append(warnings, collectStatsDHostPathWarnings(keys["STATSD_HOST_PATH"])...)
+	warnings = append(warnings, collectVerifierConfigWarnings(keys["VERIFIERS"])...)
+	return warnings
+}
+
+func collectStatsDHostPathWarnings(raw json.RawMessage) []ConfigWarning {
+	if len(raw) == 0 {
+		return nil
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	if strings.Count(value, ".") >= 2 {
+		return []ConfigWarning{{
+			Key:     "STATSD_HOST_PATH",
+			Message: "looks like a raw hostname; Monitor production should use the v1-compatible metric host path <datacenter>.<node>, for example dfw1.jetmon-prod-1",
+		}}
+	}
+	return nil
+}
+
+func knownConfigJSONKeys() map[string]struct{} {
+	known := make(map[string]struct{})
+	t := reflect.TypeOf(Config{})
+	for i := 0; i < t.NumField(); i++ {
+		tag := t.Field(i).Tag.Get("json")
+		name := strings.Split(tag, ",")[0]
+		if name == "" || name == "-" {
+			continue
+		}
+		known[name] = struct{}{}
+	}
+	return known
+}
+
+func collectVerifierConfigWarnings(raw json.RawMessage) []ConfigWarning {
+	if len(raw) == 0 {
+		return nil
+	}
+	var verifiers []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &verifiers); err != nil {
+		return nil
+	}
+	warnings := make([]ConfigWarning, 0)
+	for i, verifier := range verifiers {
+		if _, ok := verifier["grpc_port"]; ok {
+			warnings = append(warnings, ConfigWarning{
+				Key:     fmt.Sprintf("VERIFIERS[%d].grpc_port", i),
+				Message: "deprecated Veriflier port alias; use port",
+			})
+		}
+	}
+	return warnings
 }
 
 // LegacyStatusProjectionEnabled reports whether v2 should maintain the legacy
@@ -327,6 +524,11 @@ func (cfg *Config) PinnedBucketRange() (int, int, bool) {
 func validate(cfg *Config) error {
 	if cfg.AuthToken == "" {
 		return fmt.Errorf("AUTH_TOKEN is required")
+	}
+	cfg.Hostname = strings.TrimSpace(cfg.Hostname)
+	cfg.StatsDHostPath = strings.TrimSpace(cfg.StatsDHostPath)
+	if err := validateStatsDHostPath(cfg.StatsDHostPath); err != nil {
+		return err
 	}
 	if cfg.NumWorkers < 0 {
 		return fmt.Errorf("NUM_WORKERS must be >= 0")
@@ -394,6 +596,25 @@ func validate(cfg *Config) error {
 	cfg.DefaultDetectionProfile = profile
 	if cfg.MinTimeBetweenRoundsSec < 0 {
 		return fmt.Errorf("MIN_TIME_BETWEEN_ROUNDS_SEC must be >= 0")
+	}
+	applyWPCOMNotifyDefaults(cfg)
+	switch cfg.WPCOMNotifyMode {
+	case WPCOMNotifyModeLegacy:
+		if strings.TrimSpace(cfg.WPCOMNotifyLegacyEndpoint) == "" {
+			return fmt.Errorf("WPCOM_NOTIFY_LEGACY_ENDPOINT is required when WPCOM_NOTIFY_MODE is 'legacy'")
+		}
+		if strings.TrimSpace(cfg.WPCOMNotifyLegacyCertPath) == "" {
+			return fmt.Errorf("WPCOM_NOTIFY_LEGACY_CERT_PATH is required when WPCOM_NOTIFY_MODE is 'legacy'")
+		}
+		if strings.TrimSpace(cfg.WPCOMNotifyLegacyKeyPath) == "" {
+			return fmt.Errorf("WPCOM_NOTIFY_LEGACY_KEY_PATH is required when WPCOM_NOTIFY_MODE is 'legacy'")
+		}
+	case WPCOMNotifyModeModern:
+		if strings.TrimSpace(cfg.WPCOMNotifyModernEndpoint) == "" {
+			return fmt.Errorf("WPCOM_NOTIFY_MODERN_ENDPOINT is required when WPCOM_NOTIFY_MODE is 'modern'")
+		}
+	default:
+		return fmt.Errorf("WPCOM_NOTIFY_MODE must be one of: legacy, modern")
 	}
 	switch cfg.SchedulerEngine {
 	case "", "legacy":
@@ -467,6 +688,45 @@ func validate(cfg *Config) error {
 	return nil
 }
 
+// StatsDMetricHost returns the host path segment used in StatsD metric names.
+// An explicit STATSD_HOST_PATH wins so production can preserve v1 Graphite
+// paths without relying on hostname parsing. Empty falls back to the resolved
+// process identity for local/dev compatibility.
+func (cfg *Config) StatsDMetricHost(resolvedHostname string) string {
+	if cfg != nil {
+		if path := strings.TrimSpace(cfg.StatsDHostPath); path != "" {
+			return path
+		}
+	}
+	return strings.TrimSpace(resolvedHostname)
+}
+
+func validateStatsDHostPath(path string) error {
+	if path == "" {
+		return nil
+	}
+	if strings.HasPrefix(path, ".") || strings.HasSuffix(path, ".") {
+		return fmt.Errorf("STATSD_HOST_PATH must not start or end with a dot")
+	}
+	if strings.Contains(path, "..") {
+		return fmt.Errorf("STATSD_HOST_PATH must not contain empty path segments")
+	}
+	for _, r := range path {
+		switch {
+		case r >= 'a' && r <= 'z',
+			r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9',
+			r == '.',
+			r == '_',
+			r == '-':
+			continue
+		default:
+			return fmt.Errorf("STATSD_HOST_PATH may contain only letters, numbers, dots, underscores, and hyphens")
+		}
+	}
+	return nil
+}
+
 func validateCheckDNSResolvers(servers []string) error {
 	for i, raw := range servers {
 		if _, err := normalizeCheckDNSResolver(raw); err != nil {
@@ -517,6 +777,30 @@ func normalizeRolloutMode(mode string) string {
 		return RolloutModeActive
 	}
 	return mode
+}
+
+func normalizeWPCOMNotifyMode(mode string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" {
+		return WPCOMNotifyModeLegacy
+	}
+	return mode
+}
+
+func applyWPCOMNotifyDefaults(cfg *Config) {
+	cfg.WPCOMNotifyMode = normalizeWPCOMNotifyMode(cfg.WPCOMNotifyMode)
+	if strings.TrimSpace(cfg.WPCOMNotifyModernEndpoint) == "" {
+		cfg.WPCOMNotifyModernEndpoint = defaultWPCOMNotifyModernEndpoint
+	}
+	if strings.TrimSpace(cfg.WPCOMNotifyLegacyEndpoint) == "" {
+		cfg.WPCOMNotifyLegacyEndpoint = defaultWPCOMNotifyLegacyEndpoint
+	}
+	if strings.TrimSpace(cfg.WPCOMNotifyLegacyCertPath) == "" {
+		cfg.WPCOMNotifyLegacyCertPath = defaultWPCOMNotifyLegacyCertPath
+	}
+	if strings.TrimSpace(cfg.WPCOMNotifyLegacyKeyPath) == "" {
+		cfg.WPCOMNotifyLegacyKeyPath = defaultWPCOMNotifyLegacyKeyPath
+	}
 }
 
 func (cfg *Config) VeriflierDiscoveryModeOrDefault() string {

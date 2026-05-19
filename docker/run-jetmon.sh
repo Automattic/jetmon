@@ -11,9 +11,13 @@ render_config() {
 	local target=$1
 	sed \
 		-e "s|<AUTH_TOKEN>|$(sed_escape "${WPCOM_AUTH_TOKEN:-change_me}")|g" \
+		-e "s|\"HOSTNAME\"          : \"\"|\"HOSTNAME\"          : \"$(sed_escape "${JETMON_HOSTNAME:-}")\"|g" \
+		-e "s|\"STATSD_HOST_PATH\"  : \"\"|\"STATSD_HOST_PATH\"  : \"$(sed_escape "${STATSD_HOST_PATH:-}")\"|g" \
 		-e "s|<VERIFLIER_PORT>|$(sed_escape "${VERIFLIER_PORT}")|g" \
 		-e "s|<VERIFLIER_AUTH_TOKEN>|$(sed_escape "${VERIFLIER_AUTH_TOKEN:-veriflier_1_auth_token}")|g" \
 		-e 's|"API_PORT"       : 0|"API_PORT"       : 8090|g' \
+		-e "s|\"WPCOM_NOTIFY_ENABLE\"          : true|\"WPCOM_NOTIFY_ENABLE\"          : ${WPCOM_NOTIFY_ENABLE:-false}|g" \
+		-e "s|\"WPCOM_NOTIFY_MODE\"            : \"legacy\"|\"WPCOM_NOTIFY_MODE\"            : \"$(sed_escape "${WPCOM_NOTIFY_MODE:-legacy}")\"|g" \
 		-e "s|\"EMAIL_TRANSPORT\"       : \"stub\"|\"EMAIL_TRANSPORT\"       : \"$(sed_escape "${EMAIL_TRANSPORT:-smtp}")\"|g" \
 		-e "s|\"EMAIL_FROM\"            : \"jetmon@noreply.invalid\"|\"EMAIL_FROM\"            : \"$(sed_escape "${EMAIL_FROM:-jetmon@noreply.invalid}")\"|g" \
 		-e "s|\"SMTP_HOST\"             : \"\"|\"SMTP_HOST\"             : \"$(sed_escape "${SMTP_HOST:-mailpit}")\"|g" \
@@ -34,13 +38,13 @@ config_target() {
 }
 
 # /jetmon is owned by the jetmon user from the Dockerfile, but the container
-# runs as ${UID:-1000}:${GID:-1000} via docker-compose — write to stats/ instead, which
-# the Dockerfile chmods 0777 specifically so reload/drain commands work.
+# runs as ${UID:-1000}:${GID:-1000} via docker-compose — write to stats/ instead,
+# which the Dockerfile chmods 0777 specifically so reload/drain commands work.
 export JETMON_PID_FILE="${JETMON_PID_FILE:-/jetmon/stats/jetmon2.pid}"
 export VERIFLIER_PORT="${VERIFLIER_PORT:-${VERIFLIER_GRPC_PORT:-7803}}"
 
-mkdir -p logs stats
-for path in logs/jetmon.log logs/status-change.log stats/sitespersec stats/sitesqueue stats/totals; do
+mkdir -p stats
+for path in stats/sitespersec stats/sitesqueue stats/totals; do
 	if ! touch "$path" 2>/dev/null; then
 		echo "warning: could not write $path; check docker/.env UID/GID and host directory permissions" >&2
 	fi

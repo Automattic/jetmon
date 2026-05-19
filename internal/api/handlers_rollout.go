@@ -322,7 +322,7 @@ func (s *Server) handleRolloutPreflight(w http.ResponseWriter, r *http.Request) 
 			blockers = append(blockers, "API_PORT is disabled")
 		}
 		if cfg.WPCOMNotifyEnable {
-			warnings = append(warnings, "WPCOM_NOTIFY_ENABLE is true; confirm this is intended for the rollout stage")
+			warnings = append(warnings, fmt.Sprintf("WPCOM_NOTIFY_ENABLE is true with WPCOM_NOTIFY_MODE=%s; confirm this is intended for the rollout stage", cfg.WPCOMNotifyMode))
 		}
 		if cfg.RolloutMode == config.RolloutModeActive && cfg.DeliveryOwnerHost == "" && cfg.APIPort > 0 {
 			warnings = append(warnings, "DELIVERY_OWNER_HOST is unset; embedded delivery workers may be eligible")

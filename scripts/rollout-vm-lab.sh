@@ -22,7 +22,6 @@ WAIT_TIMEOUT="${JETMON_ROLLOUT_WAIT_TIMEOUT:-600}"
 ACTIVITY_WAIT_TIMEOUT="${JETMON_ROLLOUT_ACTIVITY_WAIT_TIMEOUT:-240}"
 JETMON2_BINARY="${JETMON_ROLLOUT_JETMON2_BINARY:-$REPO_ROOT/bin/jetmon2}"
 JETMON2_SERVICE="${JETMON_ROLLOUT_JETMON2_SERVICE:-$REPO_ROOT/systemd/jetmon2.service}"
-JETMON2_LOGROTATE="${JETMON_ROLLOUT_JETMON2_LOGROTATE:-$REPO_ROOT/systemd/jetmon2-logrotate}"
 LAB_BUCKET_MIN="${JETMON_ROLLOUT_BUCKET_MIN:-0}"
 LAB_BUCKET_MAX="${JETMON_ROLLOUT_BUCKET_MAX:-99}"
 LAB_BUCKET_TOTAL="${JETMON_ROLLOUT_BUCKET_TOTAL:-1000}"
@@ -639,7 +638,6 @@ install_v2() {
 	db_vm="$(vm_name db)"
 	[[ -x "$JETMON2_BINARY" ]] || fail "missing executable jetmon2 binary: $JETMON2_BINARY"
 	[[ -f "$JETMON2_SERVICE" ]] || fail "missing systemd unit: $JETMON2_SERVICE"
-	[[ -f "$JETMON2_LOGROTATE" ]] || fail "missing logrotate file: $JETMON2_LOGROTATE"
 	start_topology
 	wait_ssh "$v2_vm"
 	wait_ssh "$v1_vm"
@@ -650,7 +648,6 @@ install_v2() {
 	ssh_vm "$v2_vm" 'mkdir -p /tmp/jetmon-v2-upload'
 	scp_to_vm "$JETMON2_BINARY" "$v2_vm" /tmp/jetmon-v2-upload/jetmon2
 	scp_to_vm "$JETMON2_SERVICE" "$v2_vm" /tmp/jetmon-v2-upload/jetmon2.service
-	scp_to_vm "$JETMON2_LOGROTATE" "$v2_vm" /tmp/jetmon-v2-upload/jetmon2-logrotate
 	scp_to_vm "$LAB_DIR/work/config.json" "$v2_vm" /tmp/jetmon-v2-upload/config.json
 	scp_to_vm "$LAB_DIR/work/jetmon2.env" "$v2_vm" /tmp/jetmon-v2-upload/jetmon2.env
 	scp_to_vm "$LAB_DIR/work/rollout-buckets.csv" "$v2_vm" /tmp/jetmon-v2-upload/rollout-buckets.csv
@@ -665,7 +662,6 @@ sudo install -o jetmon -g jetmon -m 0644 /tmp/jetmon-v2-upload/config.json /opt/
 sudo install -o root -g jetmon -m 0640 /tmp/jetmon-v2-upload/jetmon2.env /opt/jetmon2/config/jetmon2.env
 sudo install -o jetmon -g jetmon -m 0644 /tmp/jetmon-v2-upload/rollout-buckets.csv /opt/jetmon2/rollout-buckets.csv
 sudo install -o root -g root -m 0644 /tmp/jetmon-v2-upload/jetmon2.service /etc/systemd/system/jetmon2.service
-sudo install -o root -g root -m 0644 /tmp/jetmon-v2-upload/jetmon2-logrotate /etc/logrotate.d/jetmon2
 sudo install -d -o jetmon -g jetmon -m 0700 /home/jetmon/.ssh
 sudo install -o jetmon -g jetmon -m 0600 /tmp/jetmon-v2-upload/jetmon-rollout-lab_ed25519 /home/jetmon/.ssh/jetmon-rollout-lab_ed25519
 sudo install -o jetmon -g jetmon -m 0644 /tmp/jetmon-v2-upload/jetmon-rollout-lab_ed25519.pub /home/jetmon/.ssh/jetmon-rollout-lab_ed25519.pub

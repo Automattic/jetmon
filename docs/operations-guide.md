@@ -42,6 +42,9 @@ Key settings:
 | `API_PORT` | 0 | Internal REST API port, 0 disables it |
 | `DELIVERY_OWNER_HOST` | empty | Optional host allowed to run embedded delivery workers |
 | `DEBUG_PORT` | 6060 | localhost-only pprof port, 0 disables it |
+| `WPCOM_NOTIFY_ENABLE` | true | Allow legacy WPCOM status-change notification calls; set false for internal-only tests |
+| `WPCOM_NOTIFY_MODE` | `legacy` | `legacy` uses the v1-compatible `/jetmon/?data=...` client-certificate path; `modern` is retained for WPCOM contract testing only |
+| `WPCOM_NOTIFY_LEGACY_CERT_PATH` / `WPCOM_NOTIFY_LEGACY_KEY_PATH` | `certs/jetmon.crt` / `certs/jetmon.key` | Client certificate/key used when notifications are enabled in legacy mode |
 | `EMAIL_TRANSPORT` | `stub` | `stub`, `smtp`, or `wpcom` |
 | `SCHEDULER_ENGINE` | `legacy` | `legacy` round/page scheduler or `streaming` v2-native scheduler |
 | `STREAMING_LEGACY_PROJECTION_INTERVAL_MIN` | 15 | Coarse sidecar freshness rollback projection interval for streaming mode |
@@ -109,6 +112,38 @@ Scheduler behavior:
 See [../config/config.readme](../config/config.readme) for the full option
 reference.
 
+Copied v1 config files are accepted, but startup and `jetmon2 validate-config`
+warn for deprecated aliases, ignored v1-only keys, and compatibility keys whose
+meaning changed in v2. Treat these warnings as cleanup work before production
+activation. The most important ignored v1-only keys are
+`WORKER_MAX_CHECKS` and `TIMEOUT_FOR_REQUESTS_SEC`; common compatibility keys
+such as `NUM_TO_PROCESS`, `BATCH_SIZE`, `VERIFLIER_BATCH_SIZE`,
+`SQL_UPDATE_BATCH`, `TIME_BETWEEN_CHECKS_SEC`, and
+`TIME_BETWEEN_NOTICES_MIN` also warn because they no longer tune the v2
+scheduler or notification flow. `DB_UPDATES_ENABLE`, `BUCKET_NO_MIN/MAX`, and
+`VERIFIERS[].grpc_port` remain aliases but should be replaced with their v2
+names.
+
+Production database server-map refresh is handled by a config-sync sidecar for
+the first TeamCity/docker-deploy rollout, with host-side systemd sync kept as a
+fallback. Use [production-teamcity-rollout.md](production-teamcity-rollout.md)
+for the deployment plan, secret boundary, and DB server-map hot-reload details.
+When `DB_SERVER_MAP_PATH` is set, v2 reads `db-servers.php` directly, separates
+read/write endpoints from the `misc` dataset, and reloads changed connection
+details on the `DB_CONFIG_UPDATES_MIN` cadence after ping validation. Check
+`GET /api/v1/monitor/db-config` or the dashboard `db-config` dependency to
+confirm the next scheduled check, last changed map observed, and last successful
+hot reload.
+
+Initial production rollout should keep `WPCOM_NOTIFY_MODE=legacy`. That mode
+matches v1's client-certificate HTTPS `GET` to the legacy `/jetmon/` endpoint
+and keeps the auth token inside the JSON payload. `WPCOM_NOTIFY_MODE=modern`
+uses the bearer-token JSON `POST` endpoint and should be limited to local,
+staging, or WPCOM contract tests until WPCOM explicitly approves it for
+production. `jetmon2 validate-config` reports the selected mode; when
+notifications are enabled it warns if modern mode is selected or if the legacy
+certificate/key files are not readable.
+
 Checker policy note: HTTP `>= 400` responses are classified immediately by status
 code and do not depend on body drain completion. Strict EOF/truncation validation
 applies only to eligible successful finite responses and is skipped for `101`,
@@ -142,11 +177,19 @@ operators can query one table for cleanup and recurring unsafe-target findings.
    if your deployment system uses a different path.
 2. Install `systemd/jetmon2.service` to `/etc/systemd/system/` and run
    `systemctl daemon-reload`.
-3. Install `systemd/jetmon2-logrotate` to `/etc/logrotate.d/jetmon2`.
-4. Create `/opt/jetmon2/logs` and `/opt/jetmon2/stats`, owned by the `jetmon`
+3. Create `/opt/jetmon2/config` and `/opt/jetmon2/stats`, owned by the `jetmon`
    service user.
-5. Create `/opt/jetmon2/config/jetmon2.env` with database credentials and auth
-   tokens. See `config/db-config-sample.conf`.
+4. Create `/opt/jetmon2/config/jetmon2.env` with database credentials and auth
+   tokens. See `config/db-config-sample.conf`. For production server-map use,
+   set `DB_SERVER_MAP_PATH` and `DB_SERVER_MAP_DATACENTER` instead of baking
+   DB passwords into the env file. For container rollout, keep real env/config
+   files host-local and out of the image.
+5. For TeamCity/docker-deploy rollout, provide `config-sync.env` from
+   `config/jetmon-config-sync-sample.env` to the config-sync sidecar and share
+   only the generated config-source path with the Monitor. If docker-deploy
+   cannot support that sidecar shape, install
+   `systemd/jetmon-config-sync.service` and
+   `systemd/jetmon-config-sync.timer` as the host-side fallback.
 6. Copy or generate `config/config.json`.
 7. Set `BUCKET_TARGET` to the desired maximum bucket count for the host.
 8. Run `./jetmon2 migrate`.
@@ -154,6 +197,10 @@ operators can query one table for cleanup and recurring unsafe-target findings.
    binary exists at the path used by `ExecStart`.
 10. Start the service with
     `systemctl enable --now jetmon2 && systemctl is-active --quiet jetmon2`.
+
+Runtime logs are collected from stdout/stderr by systemd or the container
+runtime. V2 does not write v1 `jetmon.log` or `status-change.log` files by
+default.
 
 Manual commands such as `migrate`, `validate-config`, and `rollout` need the
 same `DB_*` environment that systemd reads from
@@ -307,6 +354,22 @@ Status and reload commands:
 ./jetmon2 drain
 ```
 
+Monitor stats compatibility checks:
+
+```bash
+./jetmon2 api request --pretty GET /api/v1/monitor/stats
+./jetmon2 api request GET '/api/v1/monitor/stats?file=totals'
+./jetmon2 api request --pretty GET /api/v1/monitor/db-config
+```
+
+`/api/v1/monitor/stats` is the preferred production-compatible replacement for
+external readers of `stats/sitespersec`, `stats/sitesqueue`, and `stats/totals`.
+It renders from the Monitor's in-memory snapshot rather than reading the files
+back from disk, so TeamCity/docker-deploy consumers do not need a host bind
+mount just to inspect the legacy stats surface. Keep direct file reads only for
+local debugging, host-side fallback installs, or an explicitly approved Systems
+mount.
+
 The operator dashboard is available on `DASHBOARD_BIND_ADDR:DASHBOARD_PORT`
 when enabled. It defaults to `127.0.0.1`, because the host and fleet dashboards
 are unauthenticated and expose internal dependency details, rollout commands,
@@ -317,7 +380,7 @@ The host dashboard shows a red/amber/green host summary with named issues, worke
 count, active checks, queue depth, retry queue depth, throughput, round time,
 owned buckets, rollout guard state, RSS memory, Go runtime system memory, WPCOM
 circuit-breaker state, dependency health for MySQL, Verifliers, WPCOM, StatsD,
-local log/stats writes, and the rollout commands an operator is most likely to
+local stats writes, and the rollout commands an operator is most likely to
 need from that host.
 
 When `VERIFLIER_DISCOVERY_MODE` is `shadow` or `active`, host health also shows
@@ -555,8 +618,28 @@ buckets reclaimed by peers on their next round.
 StatsD metrics retain the v1 prefix:
 
 ```text
-com.jetpack.jetmon.<hostname>
+com.jetpack.jetmon.<statsd_host_path>
 ```
+
+In production containers, set `HOSTNAME` in config to a stable process identity
+and set `STATSD_HOST_PATH` to the v1-compatible metric path. The Docker
+entrypoint accepts `JETMON_HOSTNAME` and `STATSD_HOST_PATH` as env inputs when
+rendering config. v1 derived the StatsD path by taking the first two labels of
+the production hostname and reversing them: `<node>.<datacenter>.<domain>`
+became `<datacenter>.<node>`. For example:
+
+```text
+JETMON_HOSTNAME=jetmon-prod-1.dfw1.example.com
+STATSD_HOST_PATH=dfw1.jetmon-prod-1
+```
+
+That produces `com.jetpack.jetmon.dfw1.jetmon-prod-1.<metric>`, matching the v1
+dashboard path shape, while leaving process identity as the real host name.
+If `STATSD_HOST_PATH` is empty, metrics fall back to `HOSTNAME` and then the
+runtime hostname, which is acceptable for local development but should not be
+used for production Monitor rollout unless dashboard series migration is
+intentional. Keep both values stable and low-cardinality: do not include
+container IDs, release SHAs, process IDs, ports, or random suffixes.
 
 Important metric groups include:
 
@@ -590,8 +673,26 @@ Important metric groups include:
 - Legacy projection drift
 - RSS and Go Sys memory usage
 
-StatsD is the primary metrics transport. Expose Graphite/StatsD data through the
-existing metrics pipeline when external systems need it.
+StatsD is the primary metrics transport. Monitor and deliverer read
+`STATSD_ADDR`; Jetmon binaries do not assume a production StatsD endpoint when
+it is unset. Local Docker Compose and Veriflier production Compose set
+`STATSD_ADDR=statsd:8125` explicitly for their bundled StatsD container.
+Production Monitor containers should point `STATSD_ADDR` at the existing
+host-local StatsD proxy through Docker bridge networking:
+`--add-host=host.docker.internal:host-gateway` plus
+`STATSD_ADDR=host.docker.internal:8125`. They should not use host networking
+and should not start a StatsD/Graphite container in the Monitor stack.
+Production Veriflier VPS Compose stacks include StatsD/Graphite locally so
+central Grafana can query the Veriflier host's Graphite endpoint. Expose
+Graphite/StatsD data through the approved metrics pipeline when external
+systems need it.
+
+StatsD uses UDP, so Monitor dashboard `statsd` health can confirm only that the
+client was configured and created. Treat it as a local configuration signal,
+not proof that the production StatsD/Graphite pipeline ingested the metric. The
+Veriflier Compose stack owns its StatsD/Graphite containers and includes an
+optional metrics smoke test that sends one test metric and queries Graphite for
+it.
 
 For repeatable capacity and scalability tests, use
 [`jetmon-v2-scalability-test-plan.md`](jetmon-v2-scalability-test-plan.md).
@@ -704,5 +805,5 @@ as a capacity or routing problem for that endpoint. It is not a site-down vote.
 cd docker
 docker compose down -v
 rm -f ../config/config.json
-rm -rf ../logs/*.log ../stats/*
+rm -rf ../stats/*
 ```

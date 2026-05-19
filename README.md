@@ -43,7 +43,8 @@ Jetmon 2 keeps the compatibility surfaces that matter during rollout:
 
 - MySQL changes are additive.
 - WPCOM notification payloads stay compatible.
-- StatsD metric naming remains `com.jetpack.jetmon.<hostname>`.
+- StatsD metric naming remains `com.jetpack.jetmon.<statsd-host-path>`, with
+  production rollout setting the path to the v1-compatible host segment.
 - Legacy log and stats file paths remain available.
 - `jetpack_monitor_sites.site_status` can be projected from v2 events during
   the [v1-to-v2 migration](docs/v1-to-v2-migration.md).

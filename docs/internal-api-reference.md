@@ -254,6 +254,11 @@ https://api.jetmon.example.com/api/v1
 
 Hosted in the `jetmon2` binary on a dedicated port (`API_PORT`), separate from the operator dashboard (`DASHBOARD_PORT`) and the Veriflier transport port (`VERIFLIER_PORT`).
 
+This version applies to the Monitor's internal REST API only. The Veriflier
+`/v2/check` and `/v2/status` paths are a separate Monitor-to-Veriflier transport
+contract, named `v2` because they replace the original v1 Veriflier protocol.
+They are intentionally not under `/api/v1`.
+
 ### Content negotiation
 
 `Content-Type: application/json` for both request and response. UTF-8. No XML, no form-encoded, no JSON-API envelope (Better Stack uses JSON:API; we don't because it adds an `attributes` indirection that obscures field names without buying us anything Jetmon-specific).
@@ -1155,7 +1160,13 @@ Same schedule as webhooks: 1m, 5m, 30m, 1h, 6h, then abandon. Different transpor
 
 #### Relationship to legacy WPCOM notifications
 
-The existing WPCOM notification flow (orchestrator-side, hard-coded recipients) **continues to operate independently** in v1. Alert contacts are a parallel programmable path; they don't replace WPCOM notifications, they coexist.
+The existing WPCOM notification flow (orchestrator-side, hard-coded recipients)
+**continues to operate independently**. During the v2 drop-in rollout,
+`WPCOM_NOTIFY_MODE=legacy` preserves the v1-compatible client-certificate
+`/jetmon/` notification path; `modern` mode is reserved for WPCOM contract
+testing until that endpoint/auth model is approved. Alert contacts are a
+parallel programmable path; they don't replace WPCOM notifications, they
+coexist.
 
 This means:
 - An incident may notify the same human twice if they're configured in both paths. Document this on the operator side and avoid duplicate configuration.
@@ -1224,6 +1235,81 @@ This is the only API surface for keys. **Creation, listing, and revocation are C
 
 Unauthenticated. Returns `{ "status": "ok" }` if the API can talk to the database. For load balancers and external uptime monitors (yes, including external monitors monitoring the monitor).
 
+#### `GET /api/v1/monitor/stats`
+
+Requires `read` scope. Returns the latest in-memory Monitor stats snapshot used
+to write the legacy `stats/sitespersec`, `stats/sitesqueue`, and `stats/totals`
+files. The handler does not read those files from disk; it renders from the same
+snapshot so Docker deployments do not need host bind mounts for read-only stats
+consumers.
+
+```json
+{
+  "available": true,
+  "updated_at": "2026-05-18T18:12:03Z",
+  "sites_per_sec": 12,
+  "queue_size": 34,
+  "working": 5,
+  "waiting": 55,
+  "halting": 0,
+  "error": 3,
+  "offline": 2,
+  "success": 95,
+  "total": 100,
+  "legacy": {
+    "sitespersec": "sites per second: 12\n",
+    "sitesqueue": "sites in queue: 34\n",
+    "totals": "working : 5\nwaiting : 55\nhalting : 0\nerror   : 3\noffline : 2\nsuccess : 95\ntotal   : 100\n"
+  }
+}
+```
+
+To migrate a consumer that currently reads one legacy stats file, pass `file` to
+receive the exact file body as `text/plain`:
+
+```bash
+curl -H "Authorization: Bearer $JETMON_API_TOKEN" \
+  "$JETMON_API_URL/api/v1/monitor/stats?file=totals"
+```
+
+`file` must be one of `sitespersec`, `sitesqueue`, or `totals`.
+
+The endpoint returns `503 stats_unavailable` if the Monitor API starts before
+the first scheduler stats snapshot has been published. Treat that as a warm-up
+state; use `/api/v1/health` for process/liveness checks that must be green
+before the first monitoring round completes.
+
+#### `GET /api/v1/monitor/db-config`
+
+Requires `read` scope. Returns the active database config source and sanitized
+server-map reload status. It does not expose DSNs or passwords. Use this during
+production rollout to confirm when the next `db-servers.php` check is scheduled,
+when a changed credential/endpoint map was last observed, and when a changed map
+was last hot-reloaded into the running read/write pools.
+
+```json
+{
+  "mode": "server_map",
+  "source": "server-map:/jetmon/config-source/db-servers.php dataset=misc dc=dfw address=internet",
+  "reload_enabled": true,
+  "reload_interval_seconds": 600,
+  "loaded_at": "2026-05-18T18:00:00Z",
+  "last_checked_at": "2026-05-18T18:20:03Z",
+  "next_check_at": "2026-05-18T18:30:03Z",
+  "last_change_seen_at": "2026-05-18T18:10:03Z",
+  "last_reloaded_at": "2026-05-18T18:10:03Z",
+  "active_fingerprint": "7b08c2a5981d",
+  "read_endpoints": ["misc-ro-a:3306/misc"],
+  "write_endpoints": ["misc-rw-a:3306/misc"]
+}
+```
+
+When `DB_SERVER_MAP_PATH` is unset, `mode` is `env`, `reload_enabled` is
+`false`, and read/write endpoint labels describe the explicit `DB_*`
+environment configuration. If parsing or ping validation fails during a reload,
+`last_reload_error` and `last_reload_error_at` are set while the previously
+working pools stay active.
+
 #### `GET /api/v1/openapi.json`
 
 Returns the route-driven OpenAPI 3.1 contract for the internal API. Requires `read` scope like other internal introspection routes. The spec is generated from the same route table used to build the running server mux, so new routes must be added to that table before they can be served or documented.
@@ -1235,7 +1321,10 @@ The current contract publishes paths, methods, auth scope, idempotency headers, 
 ## What we deliberately did not include
 
 - **No Statuspage-style public status pages.** That's a separate product; Jetmon focuses on monitoring. If you want a public status page, the API gives you what you need to build one.
-- **No "monitor groups" / "tags" in v1.** Most consumers organize by `owner_blog_id`; tagging is a complexity multiplier we'd rather defer until requested.
+- **No customer-facing "monitor groups" / "tags" in the current API.** Most
+  existing consumers organize by `owner_blog_id`. Tag-scoped API authorization
+  for roles such as VIP or Agency is now tracked as a pre-rollout design review
+  item before any broader direct API exposure.
 - **No GraphQL.** REST + cursor pagination + filters covers everything the v1 use cases need. If a future consumer needs nested-fetch optimization (sites + active events + recent transitions in one round-trip), we'd add a single `/api/v1/sites/{id}/full` endpoint before reaching for GraphQL.
 - **No per-region SLA breakdown.** All sites are checked from the orchestrator's bucket assignment, not a multi-region fleet (yet — see `taxonomy.md` v2/v3 vantage-point work). When that ships, the SLA endpoint gains a `?vantage_point=us-west-1` filter.
 - **No streaming.** Webhooks cover event-driven needs; long-poll/SSE/WebSocket support is overkill for the current consumer set. Could be added on `/api/v1/sites/{id}/events/stream` if a consumer asks.
