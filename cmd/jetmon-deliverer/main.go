@@ -135,7 +135,7 @@ func run() {
 		log.Fatalf("load config: %v", err)
 	}
 	cfg := config.Get()
-	log.Printf("config: email_transport=%s", emailTransportLabel(cfg))
+	config.Debugf("config: email_transport=%s", emailTransportLabel(cfg))
 	if !emailTransportDelivers(cfg) {
 		log.Printf("WARN: email_transport=%s; alert-contact emails will be logged but not delivered", emailTransportLabel(cfg))
 	}
@@ -149,9 +149,9 @@ func run() {
 	if addr, enabled, err := metrics.InitFromEnv(db.Hostname(), defaultStatsDAddr); err != nil {
 		log.Printf("warning: statsd init failed: %v", err)
 	} else if enabled {
-		log.Printf("metrics: sending StatsD to %s", addr)
+		config.Debugf("metrics: sending StatsD to %s", addr)
 	} else {
-		log.Printf("metrics: StatsD disabled")
+		config.Debugf("metrics: StatsD disabled")
 	}
 
 	hostname := db.Hostname()
@@ -170,7 +170,7 @@ func run() {
 		if level == "WARN" {
 			log.Printf("WARN: %s", msg)
 		} else {
-			log.Printf("config: %s", msg)
+			config.Debugf("config: %s", msg)
 		}
 	}
 	initialState := fleethealth.StateRunning

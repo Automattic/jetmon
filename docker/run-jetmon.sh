@@ -34,13 +34,13 @@ config_target() {
 }
 
 # /jetmon is owned by the jetmon user from the Dockerfile, but the container
-# runs as ${UID:-1000}:${GID:-1000} via docker-compose — write to stats/ instead, which
-# the Dockerfile chmods 0777 specifically so reload/drain commands work.
+# runs as ${UID:-1000}:${GID:-1000} via docker-compose — write to stats/ instead,
+# which the Dockerfile chmods 0777 specifically so reload/drain commands work.
 export JETMON_PID_FILE="${JETMON_PID_FILE:-/jetmon/stats/jetmon2.pid}"
 export VERIFLIER_PORT="${VERIFLIER_PORT:-${VERIFLIER_GRPC_PORT:-7803}}"
 
-mkdir -p logs stats
-for path in logs/jetmon.log logs/status-change.log stats/sitespersec stats/sitesqueue stats/totals; do
+mkdir -p stats
+for path in stats/sitespersec stats/sitesqueue stats/totals; do
 	if ! touch "$path" 2>/dev/null; then
 		echo "warning: could not write $path; check docker/.env UID/GID and host directory permissions" >&2
 	fi

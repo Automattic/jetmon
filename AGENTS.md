@@ -4,7 +4,7 @@ You are an expert Go developer with extensive knowledge about WordPress, enterpr
 
 ## Project Overview
 
-Jetmon is a parallel HTTP uptime monitoring service that checks Jetpack websites at scale. Jetmon 2 is a complete rewrite of the original Node.js + C++ native addon service into a single Go binary. It retains full drop-in compatibility with all external interfaces — MySQL schema, WPCOM API payload, StatsD metric names, and log file format — while dramatically increasing concurrency, reducing memory usage, and eliminating the native addon compilation dependency.
+Jetmon is a parallel HTTP uptime monitoring service that checks Jetpack websites at scale. Jetmon 2 is a complete rewrite of the original Node.js + C++ native addon service into a single Go binary. It retains compatibility with the production-facing external interfaces needed for rollout — MySQL schema, WPCOM API payload, StatsD metric names, config keys, and v1-style stats outputs — while runtime logs go to stdout/stderr instead of v1-owned log files.
 
 The Veriflier is rewritten in Go as well, replacing the Qt C++ dependency. JSON-over-HTTP on the configured Veriflier port is the v2 production Monitor-to-Veriflier transport; the proto contract is retained only as a schema reference for a possible future transport.
 
@@ -46,7 +46,7 @@ See `docs/project.md` for the full project description, feature list, and perfor
              │                          │
           MySQL                    WPCOM API
           StatsD                   (legacy notification path,
-          Log files                 still active alongside
+          stdout/stderr logs        still active alongside
                                     alert contacts)
 ```
 
@@ -174,7 +174,7 @@ These interfaces must remain identical to the original Jetmon. Do not change the
 | MySQL schema | Read same columns; additive migrations only |
 | WPCOM notification payload | Same JSON structure and field names |
 | StatsD metric names | Same dotted paths; new metrics may be added |
-| Log file paths and format | `logs/jetmon.log`, `logs/status-change.log` |
+| Runtime logs | stdout/stderr via the service manager or container runtime; v1 `logs/jetmon.log` and `logs/status-change.log` are intentionally not written by v2 unless a future consumer need is confirmed |
 | `stats/` file outputs | `sitespersec`, `sitesqueue`, `totals` — same format |
 | `config/config.json` keys | All existing keys honoured |
 | SIGHUP config reload | Same behaviour |

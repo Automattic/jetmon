@@ -47,7 +47,6 @@ services:
     user: "${UID:-1000}:${GID:-1000}"
     volumes:
       - ../config:/jetmon/config
-      - ../logs:/jetmon/logs
       - ../stats:/jetmon/stats
     environment:
       DB_HOST: mysqldb

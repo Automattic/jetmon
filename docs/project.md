@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-Jetmon 2 is a complete rewrite of the Jetmon uptime monitoring service, replacing the Node.js + C++ native addon architecture with a single Go binary. The rewrite retains full compatibility with existing external interfaces — MySQL schema, WPCOM API notification format, StatsD metric names, and log file structure — making it a genuine drop-in replacement on production infrastructure. Internally, the process-per-worker model is replaced by a goroutine pool, eliminating the overhead of forked processes and native addon compilation while dramatically increasing the number of concurrent checks per host. The rewrite is accompanied by a comprehensive tooling suite designed to make the system easier to test, deploy, operate, and interrogate.
+Jetmon 2 is a complete rewrite of the Jetmon uptime monitoring service, replacing the Node.js + C++ native addon architecture with a single Go binary. The rewrite retains compatibility with the production-facing external interfaces that matter for rollout — MySQL schema, WPCOM API notification format, StatsD metric names, config keys, and v1-style stats outputs — while intentionally moving runtime logs to stdout/stderr instead of recreating v1-owned log files. Internally, the process-per-worker model is replaced by a goroutine pool, eliminating the overhead of forked processes and native addon compilation while dramatically increasing the number of concurrent checks per host. The rewrite is accompanied by a comprehensive tooling suite designed to make the system easier to test, deploy, operate, and interrogate.
 
 ---
 
@@ -39,8 +39,7 @@ The Veriflier is rewritten in Go as well, replacing the Qt C++ dependency with a
              │                          │
           MySQL                    WPCOM API
           StatsD                   (unchanged)
-          Log files
-          (all unchanged)
+          stdout/stderr logs       (service/container runtime)
 ```
 
 The monitor process replaces the master/worker/SSL-cluster process tree. Concurrency is managed through Go channels and a bounded goroutine worker pool. The orchestrator goroutine owns DB access and WPCOM notifications. The check pool goroutines own HTTP connections. The Veriflier client/server code handles remote confirmation batches over JSON-over-HTTP and is isolated behind `internal/veriflier/`. The preferred rollout deploys a fresh `veriflier2` fleet first and points v2 Monitors only at that fleet; `veriflier2` exposes the versioned v2 contract by default and can expose a legacy-compatible HTTP contract only when `VERIFLIER_ENABLE_LEGACY_HTTP=true`, while the original v1 Veriflier's TLS/custom transport is not a v2 Monitor fallback target. Veriflier endpoints advertise a quorum-counted `vantage.id` separately from the serving `agent.id`, so multiple horizontally scaled replicas behind one endpoint add capacity without adding extra votes. Monitor-side Veriflier discovery can run in `static`, `shadow`, or `active` mode against a trusted DB registry; monitors collect agent liveness and capacity from `/v2/status`, but only pre-approved enabled vantages count for quorum. Outbound webhook and alert-contact delivery can run embedded in one API-enabled `jetmon2` process today, or through the standalone `jetmon-deliverer` entry point as that responsibility moves toward its own deployable process.
@@ -102,7 +101,7 @@ These interfaces must remain byte-for-byte identical to the current implementati
 | MySQL schema | Read same columns; additive migrations (new columns, new tables) are permitted |
 | WPCOM notification payload | Same JSON structure and field names |
 | StatsD metric names | Same dotted paths; new metrics may be added |
-| Log file paths and format | `logs/jetmon.log`, `logs/status-change.log`; same line format |
+| Runtime logs | stdout/stderr via the service manager or container runtime; v1 `logs/jetmon.log` and `logs/status-change.log` are intentionally not written by v2 unless a future consumer need is confirmed |
 | `stats/` file outputs | `sitespersec`, `sitesqueue`, `totals` — same format |
 | `config/config.json` keys | All existing keys honoured; new keys additive |
 | SIGHUP config reload | Same signal handling behaviour |
@@ -189,7 +188,7 @@ WPCOM disabled, Mailpit-only email, and a public-looking Docker-internal
 fixture address.
 
 **Structured Logging**
-All log output is available in two formats: the existing plain-text line format (for drop-in compatibility with current log consumers) and an optional structured JSON format enabled via `config.json`. The JSON format emits the same fields — level, timestamp, message, blog_id, http_code, error_code, RTT — as a machine-readable object, making log ingestion into Elasticsearch, Loki, or any log aggregation platform straightforward without a custom parser. Both formats write to the same log file paths.
+Runtime logs go to stdout/stderr for collection by systemd, Docker, or the deployment platform. Routine scheduler summaries and state-change chatter are suppressed unless `DEBUG` is enabled; normal production output is limited to startup/shutdown, warnings, and operational failures. V2 does not write the v1 `logs/jetmon.log` or `logs/status-change.log` files by default. Use `jetmon_events`, `jetmon_event_transitions`, `jetmon_audit_log`, the API, dashboard, StatsD, and the v1-style stats API for operational history.
 
 **Alert Flow Replay**
 Given a site `blog_id` and a time range, the replay tool reconstructs the full detection and notification sequence from the audit log: when each check ran, what it found, which local retries fired, which Verifliers were queried and what they returned, and what was sent to the WPCOM API. Outputs a human-readable timeline. Intended for Happiness Engineers debugging "why didn't I get an alert?" or "why did I get an alert when the site was fine?"
@@ -256,7 +255,7 @@ A lightweight web UI served by the binary itself (no separate process) on a conf
 - RSS memory and Go runtime system memory usage
 - WPCOM circuit-breaker state and queued notification depth
 - Live dependency health for MySQL, configured Verifliers, Veriflier discovery,
-  WPCOM, StatsD, and log/stats directory writes
+  WPCOM, StatsD, and stats directory writes
 - Combined `/api/host` snapshot with local state, dependency health, and a
   red/amber/green host summary for operator tooling
 
@@ -271,7 +270,7 @@ The operator dashboard health grid publishes:
   and recent agent telemetry count when discovery mode is `shadow` or `active`
 - WPCOM API: circuit-breaker state and queued notification depth
 - StatsD: local client initialization state
-- Disk: writable `logs/` and `stats/` directories
+- Disk: writable `stats/` directory for v1-compatible counters and the PID file
 
 Future refinements can add primary/replica breakdowns, last successful
 orchestrator batch, WPCOM request error-rate windows, and disk free-space

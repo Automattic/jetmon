@@ -91,7 +91,6 @@ docker run --rm \
   -e WPCOM_AUTH_TOKEN=change_me \
   -e EMAIL_TRANSPORT=stub \
   -e STATSD_ADDR= \
-  -v "$(pwd)/jetmon-logs:/jetmon/logs" \
   -v "$(pwd)/jetmon-stats:/jetmon/stats" \
   ghcr.io/automattic/jetmon:latest
 ```
@@ -130,7 +129,6 @@ Optional volume mounts:
 |---|---|
 | `/jetmon/config` | Mount when you want to manage `config.json` outside the container instead of relying on env-driven rendering. |
 | `/jetmon/config-source` | Production-only mount for generated private files such as `db-servers.php`; mount read-only in the Monitor. In the recommended TeamCity rollout, the config-sync sidecar writes this path. |
-| `/jetmon/logs` | Persist `jetmon.log` and `status-change.log`. |
 | `/jetmon/stats` | Persist counters and the `jetmon2.pid` file used by `reload` / `drain`. Production TeamCity consumers should prefer `GET /api/v1/monitor/stats` or StatsD over host filesystem reads unless Systems explicitly approves a bind mount. |
 
 For production TeamCity rollout and database server-map sync, see
@@ -189,7 +187,6 @@ services:
       - "8080:8080"
       - "8090:8090"
     volumes:
-      - ./jetmon-logs:/jetmon/logs
       - ./jetmon-stats:/jetmon/stats
 ```
 
@@ -201,6 +198,10 @@ StatsD/Graphite container to the Monitor stack. For the full local stack
 including the database, Mailpit, and StatsD, keep using the build-from-source
 compose file under `docker/`. For the VPS Veriflier production shape, see
 [production-veriflier-compose.md](production-veriflier-compose.md).
+
+Runtime logs are written only to stdout/stderr for Docker or the deployment
+platform to collect. The image does not create or maintain v1
+`jetmon.log`/`status-change.log` files.
 
 ## Validate Config Inside The Container
 

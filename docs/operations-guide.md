@@ -148,25 +148,28 @@ operators can query one table for cleanup and recurring unsafe-target findings.
    if your deployment system uses a different path.
 2. Install `systemd/jetmon2.service` to `/etc/systemd/system/` and run
    `systemctl daemon-reload`.
-3. Install `systemd/jetmon2-logrotate` to `/etc/logrotate.d/jetmon2`.
-4. Create `/opt/jetmon2/logs` and `/opt/jetmon2/stats`, owned by the `jetmon`
+3. Create `/opt/jetmon2/config` and `/opt/jetmon2/stats`, owned by the `jetmon`
    service user.
-5. Create `/opt/jetmon2/config/jetmon2.env` with database credentials and auth
+4. Create `/opt/jetmon2/config/jetmon2.env` with database credentials and auth
    tokens. See `config/db-config-sample.conf`. For container rollout, keep the
    real env/config files host-local and out of the image.
-6. For TeamCity/docker-deploy rollout, provide `config-sync.env` from
+5. For TeamCity/docker-deploy rollout, provide `config-sync.env` from
    `config/jetmon-config-sync-sample.env` to the config-sync sidecar and share
    only the generated config-source path with the Monitor. If docker-deploy
    cannot support that sidecar shape, install
    `systemd/jetmon-config-sync.service` and
    `systemd/jetmon-config-sync.timer` as the host-side fallback.
-7. Copy or generate `config/config.json`.
-8. Set `BUCKET_TARGET` to the desired maximum bucket count for the host.
-9. Run `./jetmon2 migrate`.
-10. Run `systemd-analyze verify /etc/systemd/system/jetmon2.service` after the
+6. Copy or generate `config/config.json`.
+7. Set `BUCKET_TARGET` to the desired maximum bucket count for the host.
+8. Run `./jetmon2 migrate`.
+9. Run `systemd-analyze verify /etc/systemd/system/jetmon2.service` after the
    binary exists at the path used by `ExecStart`.
-11. Start the service with
+10. Start the service with
     `systemctl enable --now jetmon2 && systemctl is-active --quiet jetmon2`.
+
+Runtime logs are collected from stdout/stderr by systemd or the container
+runtime. V2 does not write v1 `jetmon.log` or `status-change.log` files by
+default.
 
 Manual commands such as `migrate`, `validate-config`, and `rollout` need the
 same `DB_*` environment that systemd reads from
@@ -345,7 +348,7 @@ The host dashboard shows a red/amber/green host summary with named issues, worke
 count, active checks, queue depth, retry queue depth, throughput, round time,
 owned buckets, rollout guard state, RSS memory, Go runtime system memory, WPCOM
 circuit-breaker state, dependency health for MySQL, Verifliers, WPCOM, StatsD,
-local log/stats writes, and the rollout commands an operator is most likely to
+local stats writes, and the rollout commands an operator is most likely to
 need from that host.
 
 When `VERIFLIER_DISCOVERY_MODE` is `shadow` or `active`, host health also shows
@@ -748,5 +751,5 @@ as a capacity or routing problem for that endpoint. It is not a site-down vote.
 cd docker
 docker compose down -v
 rm -f ../config/config.json
-rm -rf ../logs/*.log ../stats/*
+rm -rf ../stats/*
 ```

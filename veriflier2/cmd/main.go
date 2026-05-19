@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Automattic/jetmon/internal/checker"
+	"github.com/Automattic/jetmon/internal/config"
 	"github.com/Automattic/jetmon/internal/metrics"
 	"github.com/Automattic/jetmon/internal/veriflier"
 )
@@ -88,7 +89,7 @@ func main() {
 	if statsdAddr, enabled, err := metrics.InitFromEnv(hostname, ""); err != nil {
 		log.Printf("metrics: init failed (%v) — running without metrics", err)
 	} else if enabled {
-		log.Printf("metrics: sending to %s", statsdAddr)
+		config.Debugf("metrics: sending to %s", statsdAddr)
 	}
 
 	srv := veriflier.NewServerWithOptions(addr, cfg.AuthToken, hostname, version, veriflier.ServerOptions{

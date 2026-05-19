@@ -24,7 +24,6 @@ x-jetmon-scale-service: &jetmon_scale_service
   user: "${UID:-1000}:${GID:-1000}"
   volumes:
     - ../config:/jetmon/config
-    - ../logs:/jetmon/logs
     - ../stats:/jetmon/stats
   depends_on:
     mysql-user:

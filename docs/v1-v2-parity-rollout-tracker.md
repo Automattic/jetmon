@@ -16,7 +16,7 @@ secret-free and should be updated as each decision is resolved.
 
 ## 1. WPCOM Notification Endpoint/Auth Parity
 
-Status: decision needed
+Status: resolved; v1 runtime log-file compatibility is intentionally retired
 
 Key difference:
 
@@ -184,42 +184,45 @@ Key difference:
 
 - v1 writes rotating `logs/jetmon.log` and `logs/status-change.log`; status
   changes include `site_down:`, `status_change:`, and `still_down:` records.
-- v2 mostly logs to stdout/stderr; Docker creates the files but does not route
-  runtime logs into them.
+- v2 logs to stdout/stderr and no longer creates v1 runtime log files.
 
 Why this is an issue:
 
-- The project docs claim same log paths and line format. Production may also
-  have log shippers or support workflows that read these files directly.
+- The old project docs claimed same log paths and line format. If production has
+  hidden file-based consumers, those consumers must migrate to container/service
+  logs, the API, StatsD, or database-backed event/audit history before rollout.
 
 V1 way:
 
 - Pros: known paths and status-change line prefixes; file-based tooling keeps
   working.
-- Cons: application-owned file rotation is less container-native.
-- Risks: duplicated log paths and container logs can diverge if both are used.
+- Cons: application-owned file rotation is less container-native and can create
+  ever-growing files without a separate retention policy.
+- Risks: duplicated log paths and container logs can diverge if both are used;
+  bind mounts would be needed for external access in Docker deployments.
 
 Current v2 way:
 
 - Pros: container-native; easier for TeamCity/docker-deploy and centralized log
-  collection.
+  collection; avoids extra bind mounts and runtime-owned log retention.
 - Cons: not drop-in compatible with file readers.
-- Risks: legacy runbooks tell operators to inspect files that stay empty.
+- Risks: any undiscovered legacy file reader must be updated before rollout.
 
 Resolution options:
 
-- Implement v1-compatible file logging and status-change logging in v2.
-- Keep stdout as primary, but add a narrow status-change file writer for the
-  legacy `status-change.log` contract.
-- Update docs to explicitly retire file compatibility and require container log
-  ingestion.
+- Reintroduce v1-compatible file logging and status-change logging in v2 only
+  if a confirmed production consumer requires it.
+- Keep stdout/stderr as the only runtime log stream and expose status/history
+  through `jetmon_events`, `jetmon_event_transitions`, `jetmon_audit_log`, the
+  API, dashboard, StatsD, and the v1-style stats API.
 
 Recommended solution:
 
-- Confirm with Systems whether any production log consumers read these files. If
-  yes, implement the narrow status-change writer and either tee main logs or
-  document stdout as the source of truth. If no, update docs to remove the
-  drop-in file-format claim.
+- Runtime log files are not part of v2. The implementation now removes Docker
+  log mounts, logrotate packaging, and docs that promised v1 log-file
+  compatibility. Routine scheduler summaries and state-change chatter are
+  debug-only so production stdout/stderr stays focused on startup/shutdown,
+  warnings, and operational failures.
 
 ## 5. Legacy Monitor Health/Status Endpoint Replacement
 

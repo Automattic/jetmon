@@ -534,7 +534,7 @@ func (o *Orchestrator) runRound() roundSummary {
 		summary.pagesFetched++
 		summary.selected += len(page)
 		summary.add(selectedSiteSummary(page))
-		log.Printf("orchestrator: checking %d sites (scheduler page %d)", len(page), summary.pagesFetched)
+		config.Debugf("orchestrator: checking %d sites (scheduler page %d)", len(page), summary.pagesFetched)
 
 		pageSummary := o.checkSitesPage(cfg, page, summary.pagesFetched)
 		summary.add(pageSummary)
@@ -670,7 +670,7 @@ func emitPageMetrics(summary roundSummary) {
 }
 
 func logPageSummary(pageNumber, sites int, summary roundSummary) {
-	log.Printf(
+	config.Debugf(
 		"orchestrator: page summary page=%d sites=%d dispatched=%d completed=%d outstanding=%d dispatch=%s wait=%s process=%s mark_checked=%s history=%s ssl=%s events=%s checks_success=%d checks_failure=%d checks_http_failure=%d checks_timeout=%d checks_connect_error=%d checks_ssl_error=%d checks_redirect=%d checks_keyword=%d checks_tls_deprecated=%d mark_checked_rows=%d history_rows=%d ssl_rows=%d mark_checked_errors=%d history_errors=%d ssl_errors=%d",
 		pageNumber,
 		sites,
@@ -819,12 +819,12 @@ func recordPageResult(siteMap map[int64]db.Site, results map[int64]checker.Resul
 	targetID := checkResultTargetID(res)
 	if _, ok := siteMap[targetID]; !ok {
 		summary.staleResults++
-		log.Printf("orchestrator: ignored stale check result target_id=%d blog_id=%d", targetID, res.BlogID)
+		config.Debugf("orchestrator: ignored stale check result target_id=%d blog_id=%d", targetID, res.BlogID)
 		return
 	}
 	if _, ok := results[targetID]; ok {
 		summary.duplicateResults++
-		log.Printf("orchestrator: ignored duplicate check result target_id=%d blog_id=%d", targetID, res.BlogID)
+		config.Debugf("orchestrator: ignored duplicate check result target_id=%d blog_id=%d", targetID, res.BlogID)
 		return
 	}
 	results[targetID] = res
@@ -981,7 +981,7 @@ func logRoundSummary(summary roundSummary, roundDuration time.Duration, sps int)
 		summary.dueCountErrors == 0 {
 		return
 	}
-	log.Printf(
+	config.Debugf(
 		"orchestrator: round summary pages=%d due_count_sampled=%t due_start=%d selected=%d dispatched=%d completed=%d outstanding=%d due_remaining=%d backpressure_waits=%d stale_results=%d duplicate_results=%d never_checked=%d oldest_selected_age_sec=%d dispatch=%s wait=%s process=%s mark_checked=%s history=%s ssl=%s events=%s checks_success=%d checks_failure=%d checks_http_failure=%d checks_timeout=%d checks_connect_error=%d checks_ssl_error=%d checks_redirect=%d checks_keyword=%d checks_tls_deprecated=%d mark_checked_rows=%d history_rows=%d ssl_rows=%d mark_checked_errors=%d history_errors=%d ssl_errors=%d duration=%s sps=%d",
 		summary.pagesFetched,
 		summary.dueCountsSampled,
@@ -1527,7 +1527,7 @@ func (o *Orchestrator) handleRecovery(site db.Site, res checker.Result) {
 
 	if site.SiteStatus != statusRunning || knownEventID > 0 {
 		changeTime := nowFunc().UTC()
-		log.Printf("orchestrator: blog_id=%d recovered", site.BlogID)
+		config.Debugf("orchestrator: blog_id=%d recovered", site.BlogID)
 		if entry != nil && site.SiteStatus == statusDown {
 			emitCounter("detection.probe_cleared.count", 1)
 			emitCounter("detection.probe_cleared."+failureClass(entry.lastResult)+".count", 1)
@@ -2078,7 +2078,7 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 	} else {
 		// Verifliers did not confirm — false positive. Close the Seems Down
 		// event with reason=false_alarm and reset site_status in the same tx.
-		log.Printf("orchestrator: blog_id=%d verifliers did not confirm down (%d/%d)", site.BlogID, confirmations, quorum)
+		config.Debugf("orchestrator: blog_id=%d verifliers did not confirm down (%d/%d)", site.BlogID, confirmations, quorum)
 		falseAlarmAt := nowFunc().UTC()
 		emitCounter("detection.verifier.false_alarm.count", 1)
 		emitCounter("detection.verifier.false_alarm."+failureClass(entry.lastResult)+".count", 1)
@@ -2214,7 +2214,7 @@ func (o *Orchestrator) confirmDown(site db.Site, entry *retryEntry, vResults []v
 		return
 	}
 	if entry == nil {
-		log.Printf("orchestrator: confirmed down blog_id=%d without retry entry", site.BlogID)
+		config.Debugf("orchestrator: confirmed down blog_id=%d without retry entry", site.BlogID)
 		return
 	}
 
@@ -2224,7 +2224,7 @@ func (o *Orchestrator) confirmDown(site db.Site, entry *retryEntry, vResults []v
 	emitCounter("detection.down.confirmed."+failureClass(entry.lastResult)+".count", 1)
 	emitTimingSince("detection.seems_down_to_down.time", entry.firstFailAt, changeTime)
 
-	log.Printf("orchestrator: blog_id=%d confirmed down", site.BlogID)
+	config.Debugf("orchestrator: blog_id=%d confirmed down", site.BlogID)
 
 	meta := confirmedDownMetadata(site, entry, vResults, entry.eventID == 0, decisions...)
 
@@ -2524,7 +2524,7 @@ func (o *Orchestrator) checkSSLAlerts(site db.Site, expiry time.Time) {
 		log.Printf("orchestrator: tls_expiry event blog_id=%d days=%d: %v", site.BlogID, daysUntil, err)
 		return
 	}
-	log.Printf("orchestrator: blog_id=%d SSL cert expires in %d days (severity %d)", site.BlogID, daysUntil, severity)
+	config.Debugf("orchestrator: blog_id=%d SSL cert expires in %d days (severity %d)", site.BlogID, daysUntil, severity)
 }
 
 // openOrUpdateSSLExpiry opens a tls_expiry event for the site if none exists,

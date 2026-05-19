@@ -678,7 +678,7 @@ Recently completed candidate branches:
   The operator dashboard now shows bucket ownership mode, legacy projection
   mode, delivery-worker ownership, rollout preflight/activity/rollback/drift
   commands, and live dependency health for MySQL, Verifliers, WPCOM, StatsD,
-  and log/stats disk writes. Keep this visible and verified during rollout
+  and stats disk writes. Keep this visible and verified during rollout
   rehearsal because it helps separate customer-site downtime from monitor-side
   impairment during cutover.
 - **Use delivery ownership as a rollout guard.**
@@ -1174,9 +1174,10 @@ where to look, and what each item unlocked.
   and dependency health.
   It gives operators a first-party view into the monitor without querying the
   database directly.
-- **Systemd and logrotate packaging.** The v2 branch added production service
-  and logrotate templates for the Go monitor.
-  These files provide the baseline deployment shape for rolling host updates.
+- **Systemd packaging.** The v2 branch added a production service template for
+  the Go monitor. Runtime logs are collected from stdout/stderr by systemd or
+  the container runtime; v1 monitor log files and v2 logrotate packaging are not
+  part of the rollout unless a confirmed consumer requires them later.
 - **Initial Docker Go development environment.** Docker builds now compile the
   Go monitor and Veriflier, run migrations, and use the new config-rendering
   entrypoints.

@@ -120,14 +120,11 @@ func runServe() {
 	if err := checker.ConfigureResolverServers(cfg.CheckDNSResolvers); err != nil {
 		log.Fatalf("configure check DNS resolvers: %v", err)
 	}
-	log.Printf("config: legacy_status_projection=%s", enabledLabel(cfg.LegacyStatusProjectionEnable))
-	log.Printf("config: bucket_ownership=%s", bucketOwnershipLabel(cfg))
-	log.Printf("config: rollout_mode=%s", cfg.RolloutMode)
-	log.Printf("config: scheduler=%s", schedulerConfigLabel(cfg))
-	log.Printf("config: default_check_policy=method:%s profile:%s", cfg.DefaultCheckMethod, cfg.DefaultDetectionProfile)
-	log.Printf("config: check_dns_resolvers=%s", checkDNSResolversLabel(checker.ConfiguredResolverServers()))
-	log.Printf("config: wpcom_notify=%s", enabledLabel(cfg.WPCOMNotifyEnable))
-	log.Printf("config: email_transport=%s", emailTransportLabel(cfg))
+	log.Printf("jetmon2: starting rollout_mode=%s scheduler=%s bucket_ownership=%s wpcom_notify=%s", cfg.RolloutMode, schedulerConfigLabel(cfg), bucketOwnershipLabel(cfg), enabledLabel(cfg.WPCOMNotifyEnable))
+	config.Debugf("config: legacy_status_projection=%s", enabledLabel(cfg.LegacyStatusProjectionEnable))
+	config.Debugf("config: default_check_policy=method:%s profile:%s", cfg.DefaultCheckMethod, cfg.DefaultDetectionProfile)
+	config.Debugf("config: check_dns_resolvers=%s", checkDNSResolversLabel(checker.ConfiguredResolverServers()))
+	config.Debugf("config: email_transport=%s", emailTransportLabel(cfg))
 	if !emailTransportDelivers(cfg) {
 		log.Printf("WARN: email_transport=%s — alert-contact emails will be logged but not delivered", emailTransportLabel(cfg))
 	}
@@ -154,9 +151,9 @@ func runServe() {
 	if addr, enabled, err := metrics.InitFromEnv(db.Hostname(), defaultStatsDAddr); err != nil {
 		log.Printf("warning: statsd init failed: %v", err)
 	} else if enabled {
-		log.Printf("metrics: sending StatsD to %s", addr)
+		config.Debugf("metrics: sending StatsD to %s", addr)
 	} else {
-		log.Printf("metrics: StatsD disabled")
+		config.Debugf("metrics: StatsD disabled")
 	}
 
 	hostname := db.Hostname()
@@ -208,7 +205,7 @@ func runServe() {
 		if level == "WARN" {
 			log.Printf("WARN: %s", msg)
 		} else {
-			log.Printf("config: %s", msg)
+			config.Debugf("config: %s", msg)
 		}
 	}
 	deliveryWorkersEnabled := deliveryWorkersShouldStart(cfg, hostname)
@@ -796,7 +793,6 @@ func dashboardHealthEntries(ctx context.Context, cfg *config.Config, sqlDB *sql.
 		mysqlHealthEntry(ctx, sqlDB, checkedAt),
 		wpcomHealthEntry(wp, checkedAt),
 		statsdHealthEntry(statsdReady, checkedAt),
-		diskHealthEntry("logs", checkedAt),
 		diskHealthEntry("stats", checkedAt),
 	}
 	entries = append(entries, veriflierHealthEntries(ctx, cfg, checkedAt)...)
