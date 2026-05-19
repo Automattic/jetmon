@@ -338,7 +338,9 @@ Local dry-run evidence:
 - [ ] Owner: `Systems` - Confirm the host and fleet dashboard signals are
   sufficient for the rollout room and existing production monitoring posture.
 - [ ] Owner: `Jetmon`, `Systems` - Confirm StatsD metrics and log paths remain
-  compatible with existing monitoring.
+  compatible with existing monitoring. For Monitor containers, verify
+  `STATSD_ADDR=host.docker.internal:8125`, Docker host-gateway mapping, and
+  `STATSD_HOST_PATH=<datacenter>.<node>` preserve the v1 Graphite series path.
 - [x] Owner: `Jetmon` - Confirm `jetmon_process_health` heartbeats are exposed
   through the fleet dashboard with stale thresholds.
 - [ ] Owner: `Systems` - Confirm `jetmon_process_health` heartbeat/staleness
