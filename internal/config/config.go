@@ -119,7 +119,9 @@ type Config struct {
 
 	AlertCooldownMinutes int `json:"ALERT_COOLDOWN_MINUTES"`
 
-	StatsUpdateIntervalMS     int      `json:"STATS_UPDATE_INTERVAL_MS"`
+	StatsUpdateIntervalMS int `json:"STATS_UPDATE_INTERVAL_MS"`
+	// StatsdSendMemUsage is a deprecated v1 compatibility key. Jetmon v2 emits
+	// process resource gauges whenever StatsD is configured.
 	StatsdSendMemUsage        bool     `json:"STATSD_SEND_MEM_USAGE"`
 	TimeBetweenNoticesMin     int      `json:"TIME_BETWEEN_NOTICES_MIN"`
 	WPCOMNotifyEnable         bool     `json:"WPCOM_NOTIFY_ENABLE"`
@@ -386,6 +388,10 @@ var deprecatedConfigKeyWarnings = []deprecatedConfigKeyWarning{
 	{
 		key:     "TIME_BETWEEN_NOTICES_MIN",
 		message: "parsed for copied v1 config compatibility but does not gate v2 WPCOM status-change notifications; v2 notification timing follows incident state and Veriflier confirmation",
+	},
+	{
+		key:     "STATSD_SEND_MEM_USAGE",
+		message: "deprecated v1 compatibility key; Jetmon v2 emits process resource gauges whenever StatsD is configured",
 	},
 }
 

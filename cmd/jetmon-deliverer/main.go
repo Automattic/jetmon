@@ -166,6 +166,7 @@ func run() {
 	workersEnabled := deliveryWorkersShouldStart(cfg, hostname)
 	publishProcessHealth := func(state string) {
 		snapshot := delivererProcessHealthSnapshot(hostname, processStartedAt, state, cfg, workersEnabled, delivererDependencyHealth(context.Background(), db.DB(), metrics.Global() != nil, time.Now().UTC()))
+		emitDelivererResourceStats()
 		ctx, cancel := context.WithTimeout(context.Background(), processHealthWriteTimeout)
 		if err := fleethealth.Upsert(ctx, db.DB(), snapshot); err != nil {
 			log.Printf("process health: %v", err)
@@ -242,6 +243,22 @@ func deliveryOwnerStatus(cfg *config.Config, hostname string) (string, string) {
 		return "INFO", fmt.Sprintf("delivery_owner_host=%q matched; delivery workers enabled on this host", owner)
 	}
 	return "INFO", fmt.Sprintf("delivery_owner_host=%q; standalone deliverer idle on host %q", owner, hostname)
+}
+
+func emitDelivererResourceStats() {
+	m := metrics.Global()
+	if m == nil {
+		return
+	}
+	m.EmitMemStats()
+	writeDB := db.WriteDB()
+	if writeDB != nil {
+		m.EmitDBStats("db.write_pool", writeDB.Stats())
+	}
+	readDB := db.ReadDB()
+	if readDB != nil && readDB != writeDB {
+		m.EmitDBStats("db.read_pool", readDB.Stats())
+	}
 }
 
 func validateDelivererConfigRequirements(cfg *config.Config, hostname string, opts delivererValidationOptions) []string {

@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"bufio"
+	"database/sql"
 	"net"
 	"os"
 	"strings"
@@ -212,20 +213,14 @@ func TestRenderLegacyStatsFiles(t *testing.T) {
 
 func TestClientSendsStatsDMessages(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
-	defer serverConn.Close()
 
-	c := &Client{
-		prefix: "com.jetpack.jetmon.host_name",
-		conn:   clientConn,
-	}
-
-	lines := make(chan string, 6)
+	lines := make(chan string, 32)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		defer close(lines)
 		r := bufio.NewReader(serverConn)
-		for i := 0; i < 6; i++ {
+		for {
 			line, err := r.ReadString('\n')
 			if err != nil {
 				return
@@ -234,31 +229,50 @@ func TestClientSendsStatsDMessages(t *testing.T) {
 		}
 	}()
 
+	c := &Client{
+		prefix: "com.jetpack.jetmon.host_name",
+		conn:   clientConn,
+	}
 	c.Increment("checks.total", 2)
 	c.Gauge("queue.depth", 7)
 	c.Timing("request.rtt", 1500*time.Millisecond)
 	c.EmitMemStats()
+	_ = clientConn.Close()
 
-	got := make([]string, 0, 6)
-	for len(got) < 6 {
+	got := make([]string, 0, 16)
+	for {
 		select {
-		case line := <-lines:
+		case line, ok := <-lines:
+			if !ok {
+				goto doneReading
+			}
 			got = append(got, line)
 		case <-time.After(time.Second):
 			t.Fatalf("timed out waiting for metric lines; got %v", got)
 		}
 	}
+doneReading:
 	_ = serverConn.Close()
 	<-done
 
 	wantPrefix := "com.jetpack.jetmon.host_name."
 	expected := map[string]bool{
-		wantPrefix + "checks.total:2|c":       false,
-		wantPrefix + "queue.depth:7|g":        false,
-		wantPrefix + "request.rtt:1500|ms":    false,
-		wantPrefix + "process.rss_mb:":        false,
-		wantPrefix + "process.go_sys_mem_mb:": false,
-		wantPrefix + "process.heap_alloc_mb:": false,
+		wantPrefix + "checks.total:2|c":                  false,
+		wantPrefix + "queue.depth:7|g":                   false,
+		wantPrefix + "request.rtt:1500|ms":               false,
+		wantPrefix + "process.rss_mb:":                   false,
+		wantPrefix + "process.go_sys_mem_mb:":            false,
+		wantPrefix + "process.heap_alloc_mb:":            false,
+		wantPrefix + "process.open_fds:":                 false,
+		wantPrefix + "process.max_fds:":                  false,
+		wantPrefix + "process.fd_utilization_pct:":       false,
+		wantPrefix + "runtime.goroutines.count:":         false,
+		wantPrefix + "runtime.goroutines.runnable:":      false,
+		wantPrefix + "runtime.goroutines.running:":       false,
+		wantPrefix + "runtime.goroutines.waiting:":       false,
+		wantPrefix + "runtime.goroutines.not_in_go:":     false,
+		wantPrefix + "runtime.goroutines.created_total:": false,
+		wantPrefix + "runtime.threads.count:":            false,
 	}
 	for _, line := range got {
 		if _, ok := expected[line]; ok {
@@ -280,6 +294,74 @@ func TestClientSendsStatsDMessages(t *testing.T) {
 	for line, seen := range expected {
 		if !seen {
 			t.Fatalf("missing metric line %q in %v", line, got)
+		}
+	}
+}
+
+func TestClientEmitsDBStats(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+
+	lines := make(chan string, 16)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer close(lines)
+		r := bufio.NewReader(serverConn)
+		for {
+			line, err := r.ReadString('\n')
+			if err != nil {
+				return
+			}
+			lines <- strings.TrimSpace(line)
+		}
+	}()
+
+	c := &Client{
+		prefix: "com.jetpack.jetmon.host_name",
+		conn:   clientConn,
+	}
+	c.EmitDBStats("db.write_pool", sql.DBStats{
+		MaxOpenConnections: 64,
+		OpenConnections:    12,
+		InUse:              7,
+		Idle:               5,
+		WaitCount:          9,
+		WaitDuration:       1500 * time.Millisecond,
+		MaxIdleClosed:      3,
+		MaxIdleTimeClosed:  2,
+		MaxLifetimeClosed:  1,
+	})
+	_ = clientConn.Close()
+
+	got := make(map[string]bool)
+	for {
+		select {
+		case line, ok := <-lines:
+			if !ok {
+				goto doneReading
+			}
+			got[line] = true
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for DB metric lines; got %v", got)
+		}
+	}
+doneReading:
+	_ = serverConn.Close()
+	<-done
+
+	for _, want := range []string{
+		"com.jetpack.jetmon.host_name.db.write_pool.max_open_connections:64|g",
+		"com.jetpack.jetmon.host_name.db.write_pool.open_connections:12|g",
+		"com.jetpack.jetmon.host_name.db.write_pool.in_use:7|g",
+		"com.jetpack.jetmon.host_name.db.write_pool.idle:5|g",
+		"com.jetpack.jetmon.host_name.db.write_pool.wait_count_total:9|g",
+		"com.jetpack.jetmon.host_name.db.write_pool.wait_duration_ms_total:1500|g",
+		"com.jetpack.jetmon.host_name.db.write_pool.max_idle_closed_total:3|g",
+		"com.jetpack.jetmon.host_name.db.write_pool.max_idle_time_closed_total:2|g",
+		"com.jetpack.jetmon.host_name.db.write_pool.max_lifetime_closed_total:1|g",
+	} {
+		if !got[want] {
+			t.Fatalf("missing DB metric line %q in %v", want, got)
 		}
 	}
 }

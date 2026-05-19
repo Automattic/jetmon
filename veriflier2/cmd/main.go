@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -109,6 +110,8 @@ func main() {
 			log.Printf("WARN: STATSD_HOST_PATH is unset; StatsD metrics will use Veriflier hostname %q", hostname)
 		}
 	}
+	stopResourceStats := startVeriflierResourceStats(metrics.Global(), 10*time.Second)
+	defer stopResourceStats()
 
 	srv := veriflier.NewServerWithOptions(addr, cfg.AuthToken, hostname, version, veriflier.ServerOptions{
 		CheckFunc: performCheckContext,
@@ -140,6 +143,34 @@ func main() {
 		log.Fatalf("listen: %v", err)
 	}
 	log.Println("veriflier2: shutdown complete")
+}
+
+type resourceStatsEmitter interface {
+	EmitMemStats()
+}
+
+func startVeriflierResourceStats(m resourceStatsEmitter, interval time.Duration) func() {
+	if m == nil || interval <= 0 {
+		return func() {}
+	}
+	stop := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		m.EmitMemStats()
+		for {
+			select {
+			case <-ticker.C:
+				m.EmitMemStats()
+			case <-stop:
+				return
+			}
+		}
+	}()
+	var once sync.Once
+	return func() {
+		once.Do(func() { close(stop) })
+	}
 }
 
 func veriflierAgentID(hostname, port string) string {

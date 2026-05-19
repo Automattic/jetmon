@@ -671,7 +671,13 @@ Important metric groups include:
   recovery, or false alarm
 - Detection outcome counters by local failure class
 - Legacy projection drift
-- RSS and Go Sys memory usage
+- Low-overhead process resource gauges: RSS memory, Go runtime memory, heap
+  allocation, open file descriptors, file descriptor utilization percentage,
+  and goroutine/thread scheduler counts. Monitors, standalone deliverers, and
+  Verifliers emit these whenever `STATSD_ADDR` is configured. Monitors and
+  deliverers also emit read/write `sql.DB` pool pressure. Current pool state is
+  reported as gauges; cumulative `sql.DBStats` counters use `_total` suffixes
+  so dashboards can derive rates cleanly.
 
 StatsD is the primary metrics transport. Monitor and deliverer read
 `STATSD_ADDR`; Jetmon binaries do not assume a production StatsD endpoint when

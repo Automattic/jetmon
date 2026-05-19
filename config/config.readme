@@ -269,7 +269,13 @@ entrypoint. Use this for production metric path compatibility instead of
 encoding the StatsD path into HOSTNAME.
 
 STATSD_SEND_MEM_USAGE
-Set to true to emit Go runtime memory stats to StatsD each interval. Default: false.
+Deprecated v1 compatibility key. Jetmon v2 accepts this key in copied configs,
+but the value no longer controls metric output. When StatsD is configured,
+Monitors emit low-overhead process resource gauges at round completion,
+standalone Deliverers emit them on their health heartbeat, and Verifliers emit
+them every 10 seconds. This includes RSS memory, Go runtime memory, heap
+allocation, open file descriptors, runtime goroutine/thread counts, and
+Monitor/Deliverer database pool pressure.
 
 TIME_BETWEEN_NOTICES_MIN
 Legacy compatibility setting retained so copied v1-style configs parse. Jetmon

@@ -6,7 +6,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Automattic/jetmon/internal/checker"
 	"github.com/Automattic/jetmon/internal/veriflier"
@@ -167,6 +169,33 @@ func TestValidateStatsDHostPath(t *testing.T) {
 			t.Fatalf("validateStatsDHostPath(%q) = nil, want error", path)
 		}
 	}
+}
+
+func TestStartVeriflierResourceStats(t *testing.T) {
+	emitter := &recordingResourceStatsEmitter{}
+	stop := startVeriflierResourceStats(emitter, 10*time.Millisecond)
+	defer stop()
+
+	timeout := time.After(time.Second)
+	for {
+		if emitter.calls.Load() > 0 {
+			return
+		}
+		select {
+		case <-timeout:
+			t.Fatal("timed out waiting for Veriflier resource metric")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+}
+
+type recordingResourceStatsEmitter struct {
+	calls atomic.Int64
+}
+
+func (r *recordingResourceStatsEmitter) EmitMemStats() {
+	r.calls.Add(1)
 }
 
 func TestLoadConfigFallsBackToLegacyPortEnvironment(t *testing.T) {

@@ -26,6 +26,8 @@ type State struct {
 	WPCOMQueueDepth               int       `json:"wpcom_queue_depth"`
 	GoSysMemMB                    int       `json:"go_sys_mem_mb"`
 	RSSMemMB                      int       `json:"rss_mem_mb"`
+	OpenFDs                       int       `json:"open_fds"`
+	MaxFDs                        int       `json:"max_fds"`
 	RuntimeGoroutines             int       `json:"runtime_goroutines"`
 	RuntimeGoroutinesRunnable     int       `json:"runtime_goroutines_runnable"`
 	RuntimeGoroutinesRunning      int       `json:"runtime_goroutines_running"`
@@ -106,6 +108,8 @@ func (s *Server) Update(st State) {
 	mem := processmetrics.CurrentMemory()
 	st.GoSysMemMB = mem.GoSysMemMB
 	st.RSSMemMB = mem.RSSMemMB
+	st.OpenFDs = mem.OpenFDs
+	st.MaxFDs = mem.MaxFDs
 	st.RuntimeGoroutines = mem.RuntimeGoroutines
 	st.RuntimeGoroutinesRunnable = mem.RuntimeGoroutinesRunnable
 	st.RuntimeGoroutinesRunning = mem.RuntimeGoroutinesRunning
@@ -528,6 +532,7 @@ const dashboardHTML = `<!DOCTYPE html>
     <div class="card"><div class="label">Buckets</div><div class="value" id="buckets">-</div></div>
     <div class="card"><div class="label">RSS Memory</div><div class="value" id="rss-mem">-</div></div>
     <div class="card"><div class="label">Go Sys Memory</div><div class="value" id="go-sys">-</div></div>
+    <div class="card"><div class="label">File Descriptors</div><div class="value" id="file-descriptors">-</div></div>
   </div>
 
   <h2>Runtime</h2>
@@ -583,6 +588,7 @@ function renderState(d) {
   setText('buckets', d.bucket_min + '-' + d.bucket_max);
   setText('rss-mem', formatMem(d.rss_mem_mb));
   setText('go-sys', formatMem(d.go_sys_mem_mb));
+  setText('file-descriptors', formatFDs(d.open_fds, d.max_fds));
   setText('runtime-goroutines', d.runtime_goroutines);
   setText('runtime-runnable', d.runtime_goroutines_runnable);
   setText('runtime-threads', d.runtime_threads);
@@ -606,6 +612,12 @@ function renderState(d) {
 
 function formatMem(value) {
   return value > 0 ? value + 'MB' : 'n/a';
+}
+
+function formatFDs(openFDs, maxFDs) {
+  if (!openFDs) openFDs = 0;
+  if (!maxFDs) return String(openFDs);
+  return openFDs + ' / ' + maxFDs;
 }
 
 function renderSummary(summary) {

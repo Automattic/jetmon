@@ -3,6 +3,7 @@ package orchestrator
 import (
 	stdctx "context"
 	"crypto/tls"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -124,6 +125,7 @@ type metricsClient interface {
 	Gauge(stat string, value int)
 	Timing(stat string, d time.Duration)
 	EmitMemStats()
+	EmitDBStats(prefix string, stats sql.DBStats)
 }
 
 type roundSummary struct {
@@ -954,9 +956,8 @@ func (o *Orchestrator) finishRound(cfg *config.Config, summary roundSummary) {
 		m.Increment("scheduler.round.check.tls_deprecated.count", summary.checkTLSDeprecated)
 		emitCheckCohortCounters(m, "scheduler.round", summary.checkCohorts)
 
-		if cfg.StatsdSendMemUsage {
-			m.EmitMemStats()
-		}
+		m.EmitMemStats()
+		emitDBPoolStats(m)
 	}
 	metrics.WriteStatsFiles(metrics.StatsFilesSnapshot{
 		SitesPerSec: sps,
@@ -970,6 +971,20 @@ func (o *Orchestrator) finishRound(cfg *config.Config, summary roundSummary) {
 		Total:       summary.completed,
 	})
 	logRoundSummary(summary, roundDuration, sps)
+}
+
+func emitDBPoolStats(m metricsClient) {
+	if m == nil {
+		return
+	}
+	writeDB := db.WriteDB()
+	if writeDB != nil {
+		m.EmitDBStats("db.write_pool", writeDB.Stats())
+	}
+	readDB := db.ReadDB()
+	if readDB != nil && readDB != writeDB {
+		m.EmitDBStats("db.read_pool", readDB.Stats())
+	}
 }
 
 func logRoundSummary(summary roundSummary, roundDuration time.Duration, sps int) {

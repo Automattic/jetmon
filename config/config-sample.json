@@ -28,7 +28,6 @@
 	"ALERT_COOLDOWN_MINUTES" : 30,
 
 	"STATS_UPDATE_INTERVAL_MS"     : 10000,
-	"STATSD_SEND_MEM_USAGE"        : false,
 	"TIME_BETWEEN_NOTICES_MIN"     : 59,
 	"WPCOM_NOTIFY_ENABLE"          : true,
 	"WPCOM_NOTIFY_MODE"            : "legacy",
