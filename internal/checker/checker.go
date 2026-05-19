@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/Automattic/jetmon/internal/checkmode"
@@ -550,12 +551,45 @@ func transportForRequestURL(rawURL string) http.RoundTripper {
 	return defaultTransport
 }
 
+// targetSafetyDialControl is the net.Dialer.ControlContext gate that
+// re-validates the resolved IP one last time, after DNS resolution and
+// before the kernel issues the connect syscall. This closes the TOCTOU
+// window between the in-Go hostname-based validation and the actual dial:
+// even if a path bypassed the higher-level wrapper (nil custom resolver,
+// future code change), a target-safety-enabled request cannot connect to
+// an RFC1918 / loopback / link-local / etc address.
+func targetSafetyDialControl(ctx context.Context, _, address string, _ syscall.RawConn) error {
+	if !targetSafetyEnabled(ctx) {
+		return nil
+	}
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("%w: dial address %q is not host:port", errProbeSafetyBlock, address)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		// At ControlContext time the address has already been resolved to an
+		// IP literal; a non-IP host here would indicate a Go stdlib change we
+		// want to fail closed on.
+		return fmt.Errorf("%w: dial address %q is not an IP literal", errProbeSafetyBlock, host)
+	}
+	if netguard.UnsafeIP(ip) {
+		return fmt.Errorf("%w: dial address %s is not public", errProbeSafetyBlock, ip)
+	}
+	return nil
+}
+
 func newCheckDialContext(resolver *net.Resolver) func(context.Context, string, string) (net.Conn, error) {
 	dialer := &net.Dialer{
-		Timeout:   30 * time.Second,
-		KeepAlive: 30 * time.Second,
+		Timeout:        30 * time.Second,
+		KeepAlive:      30 * time.Second,
+		ControlContext: targetSafetyDialControl,
 	}
 	if resolver == nil {
+		// No custom resolver: rely on Go's default. ControlContext above will
+		// still gate every connect against netguard.UnsafeIP, so a DNS answer
+		// that arrives later (or differs from any earlier in-Go check) cannot
+		// drive the kernel to dial an unsafe address.
 		return dialer.DialContext
 	}
 	return func(ctx context.Context, network, address string) (net.Conn, error) {

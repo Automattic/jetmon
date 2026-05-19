@@ -1322,6 +1322,60 @@ func TestValidateResolvedTargetRejectsDNSRebindAfterCacheExpiry(t *testing.T) {
 	}
 }
 
+func TestTargetSafetyDialControlBlocksPrivateIP(t *testing.T) {
+	ctx := withTargetSafety(context.Background())
+	cases := []string{
+		"127.0.0.1:80",
+		"10.0.0.1:443",
+		"172.16.5.5:80",
+		"192.168.1.1:80",
+		"169.254.169.254:80", // AWS/GCP metadata
+		"[::1]:80",
+		"100.64.1.1:80", // CGNAT
+	}
+	for _, addr := range cases {
+		err := targetSafetyDialControl(ctx, "tcp", addr, nil)
+		if !errors.Is(err, errProbeSafetyBlock) {
+			t.Errorf("targetSafetyDialControl(%q) err = %v, want errProbeSafetyBlock", addr, err)
+		}
+	}
+}
+
+func TestTargetSafetyDialControlAllowsPublicIP(t *testing.T) {
+	ctx := withTargetSafety(context.Background())
+	cases := []string{
+		"8.8.8.8:53",
+		"93.184.216.34:443",
+		"[2606:4700:4700::1111]:443",
+	}
+	for _, addr := range cases {
+		if err := targetSafetyDialControl(ctx, "tcp", addr, nil); err != nil {
+			t.Errorf("targetSafetyDialControl(%q) err = %v, want nil", addr, err)
+		}
+	}
+}
+
+func TestTargetSafetyDialControlPassesThroughWhenDisabled(t *testing.T) {
+	// Without target safety, the gate must let RFC1918 through so internal
+	// targets (Veriflier, test fixtures, dashboard probes) remain reachable.
+	if err := targetSafetyDialControl(context.Background(), "tcp", "10.0.0.1:80", nil); err != nil {
+		t.Errorf("disabled-target-safety control returned err = %v, want nil", err)
+	}
+}
+
+func TestTargetSafetyDialControlRejectsMalformedAddress(t *testing.T) {
+	ctx := withTargetSafety(context.Background())
+	if err := targetSafetyDialControl(ctx, "tcp", "not-an-address", nil); !errors.Is(err, errProbeSafetyBlock) {
+		t.Errorf("malformed address err = %v, want errProbeSafetyBlock", err)
+	}
+	// Non-IP host (hostname remaining after Go's dialer) — should be refused
+	// at the gate so we fail closed rather than connecting to an unverified
+	// address.
+	if err := targetSafetyDialControl(ctx, "tcp", "example.com:80", nil); !errors.Is(err, errProbeSafetyBlock) {
+		t.Errorf("non-IP host err = %v, want errProbeSafetyBlock", err)
+	}
+}
+
 func TestPreferredLookupFamily(t *testing.T) {
 	if got := preferredLookupFamily("tcp"); got != "ip4" {
 		t.Fatalf("preferredLookupFamily(tcp) = %q, want ip4", got)
