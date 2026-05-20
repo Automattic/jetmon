@@ -100,16 +100,18 @@ production telemetry branches:
   against Jetmon commit `63a544f` passed `HEAD` + `legacy`, `GET` +
   `simple_http`, and `GET` + `full` down/recovery paths with verifier vote
   metadata and WPCOM notifications classified as `disabled_by_test_plan`.
-- [ ] Merge the Veriflier StatsD-disabled startup fix. The 2026-05-20
+- [x] Merge the Veriflier StatsD-disabled startup fix. The 2026-05-20
   lifecycle smoke found that current `v2` Verifliers crash-loop when
   `STATSD_ADDR` is unset because the resource metrics goroutine calls a nil
-  StatsD client. Branch `fix/veriflier-resource-metrics-disabled-panic`
-  guards the resource emitter on successful StatsD initialization.
-- [ ] Track uptime-bench reporting follow-up for notification-disabled
+  StatsD client. PR #137 guards the resource emitter on successful StatsD
+  initialization.
+- [x] Track uptime-bench reporting follow-up for notification-disabled
   environments. Reports should classify `WPCOM_NOTIFY_ENABLE=false` test runs
   as `disabled_by_test_plan` so expected zero WPCOM attempts do not look like
   rollout warnings, while notification-enabled parity tests still fail when
-  expected attempts are missing.
+  expected attempts are missing. Evidence: the 2026-05-20 quick smoke and
+  9-cycle soak reports both classified WPCOM notifications as
+  `disabled_by_test_plan` with zero observed attempts as expected.
 - [ ] Clean lab-only stale config keys from the Jetmon v2 test config once no
   uptime-bench run is active. `validate-config` still warns about old
   `DNS_MONITOR_*` keys on the service-host-2 test deployment; the warnings are
