@@ -45,7 +45,7 @@ Multiple jetmon2 instances coordinate through MySQL bucket leases:
 
 Shadow-v2-state migration model:
 
-- `jetmon_events` and `jetmon_event_transitions` are the authoritative incident
+- `jetpack_monitor_events` and `jetpack_monitor_event_transitions` are the authoritative incident
   state for Jetmon v2.
 - `jetpack_monitor_sites` remains the legacy site/config table during migration.
 - While `LEGACY_STATUS_PROJECTION_ENABLE` is true, every v2 incident mutation
@@ -95,7 +95,7 @@ This is the end-to-end path from database query to WPCOM notification.
 │ PHASE 1 — Fetch                                                      │
 │                                                                      │
 │  orchestrator.runRound()                                             │
-│    dbHeartbeat()          ── UPDATE jetmon_hosts SET last_heartbeat  │
+│    dbHeartbeat()          ── UPDATE jetpack_monitor_hosts SET last_heartbeat  │
 │    ClaimBuckets()         ── rebalance bucket ranges (each round)    │
 │    dbGetSitesForBucket()  ── SELECT due sites in DATASET_SIZE pages  │
 │                              ORDER BY sidecar next/last checked time  │
@@ -220,7 +220,7 @@ orchestrator.Run()
           │     ├─ collect results (deadline-bounded)
           │     │
           │     ├─ processResults()
-          │     │     ├─ dbMarkSitesChecked()       // jetmon_site_runtime freshness
+          │     │     ├─ dbMarkSitesChecked()       // jetpack_monitor_site_runtime freshness
           │     │     ├─ dbRecordCheckHistories()   // method + RTT + DNS/TCP/TLS/TTFB
           │     │     ├─ dbUpdateSSLExpiries() + checkSSLAlerts()
           │     │     └─ handleRecovery(), handleFailure(),
@@ -406,9 +406,9 @@ surface.
 Veriflier discovery is staged through `VERIFLIER_DISCOVERY_MODE`:
 `static` uses the configured `VERIFIERS` list, `shadow` reads the DB registry
 and reports drift without changing traffic, and `active` uses enabled usable
-rows from `jetmon_veriflier_vantages` with fallback to static config if the
+rows from `jetpack_monitor_veriflier_vantages` with fallback to static config if the
 registry is unavailable or empty. Monitors poll Veriflier `/v2/status` and write
-`jetmon_veriflier_agents` capacity/liveness telemetry; Veriflier hosts do not
+`jetpack_monitor_veriflier_agents` capacity/liveness telemetry; Veriflier hosts do not
 need DB access. Agent telemetry never creates trusted quorum votes by itself;
 operators must pre-approve each enabled vantage.
 
@@ -485,7 +485,7 @@ MySQL transaction. Expired hosts (heartbeat missed by `BucketHeartbeatGraceSec`)
 are removed and their ranges redistributed.
 
 ```
-  jetmon_hosts (3 active hosts, BucketTotal=1000, BucketTarget=500):
+  jetpack_monitor_hosts (3 active hosts, BucketTotal=1000, BucketTarget=500):
 
   Hosts sorted by host_id: [host-a, host-b, host-c]
   assignBucketRanges() water-fill:
@@ -534,7 +534,7 @@ Database Tables
     site_status           Legacy v1 projection; derived from v2 events
     last_status_change    Legacy v1 projection; derived from v2 transitions
 
-  jetmon_site_check_config V2-only per-site probe config
+  jetpack_monitor_site_check_config V2-only per-site probe config
     request_method        HEAD / GET rollout policy override
     detection_profile     legacy / simple_http / full detection profile
     check_keyword         Optional body text to require
@@ -546,25 +546,25 @@ Database Tables
     redirect_policy       follow / alert / fail
     alert_cooldown_minutes Per-site override for notification cooldown
 
-  jetmon_site_runtime     V2-only runtime/freshness projection
+  jetpack_monitor_site_runtime     V2-only runtime/freshness projection
     last_checked_at       Last completed local check timestamp
     next_check_at         Materialized variable-interval due time
     ssl_expiry_date       Updated after HTTPS checks
     last_alert_sent_at    Tracks cooldown window
 
-  jetmon_site_safety_flags Non-downtime remediation state
+  jetpack_monitor_site_safety_flags Non-downtime remediation state
     monitor_site_id/blog_id Source monitor row and site identifiers
     flag_type/status       unsafe_monitor_url / probe_safety_block lifecycle
     reason/monitor_url     Bounded explanation and target URL snapshot
     first_seen/last_seen   Finding timestamps for operator cleanup
 
-  jetmon_hosts            Active monitor instances and bucket leases
+  jetpack_monitor_hosts            Active monitor instances and bucket leases
     host_id               System hostname (PRIMARY KEY)
     bucket_min/max        Owned bucket range
     last_heartbeat        Updated every round; expiry triggers rebalance
     status                active / draining
 
-  jetmon_process_health   Durable process heartbeat snapshots for dashboards
+  jetpack_monitor_process_health   Durable process heartbeat snapshots for dashboards
     process_id            Stable key such as <host>:monitor or <host>:deliverer
     host_id/process_type  Fleet grouping dimensions
     state/updated_at      Lifecycle state and freshness marker
@@ -573,7 +573,7 @@ Database Tables
     rss_mem_mb            Operating-system resident set size in MB
     dependency_health     JSON dependency health summary
 
-  jetmon_events           Authoritative v2 incident current state
+  jetpack_monitor_events           Authoritative v2 incident current state
     id                    Incident identifier
     blog_id               Site identifier
     check_type            Probe family (http, tls_expiry, ...)
@@ -581,46 +581,46 @@ Database Tables
     started_at/ended_at   Incident window
     resolution_reason     Required close reason
 
-  jetmon_event_transitions Append-only mutation history for jetmon_events
+  jetpack_monitor_event_transitions Append-only mutation history for jetpack_monitor_events
     event_id              Incident row being mutated
     severity/state before/after
     reason/source         Why and who caused the mutation
     changed_at            Transition time
 
-  jetmon_audit_log        Operational trail for compliance/debugging
+  jetpack_monitor_audit_log        Operational trail for compliance/debugging
     event_type            check | wpcom_sent | wpcom_retry |
                           retry_dispatched | veriflier_sent |
                           veriflier_result | maintenance_active |
                           alert_suppressed | api_access | config_reload
     blog_id, source, http_code, error_code, rtt_ms
 
-  jetmon_check_history    Per-check method and timing samples
+  jetpack_monitor_check_history    Per-check method and timing samples
     request_method, rtt_ms, dns_ms, tcp_ms, tls_ms, ttfb_ms
 
-  jetmon_false_positives  Checks local failed but verifliers passed
+  jetpack_monitor_false_positives  Checks local failed but verifliers passed
     blog_id, http_code, error_code, rtt_ms
 
-  jetmon_veriflier_vantages Trusted Veriflier quorum identities
+  jetpack_monitor_veriflier_vantages Trusted Veriflier quorum identities
     vantage_id, region/provider, endpoint_host/port, auth_token, enabled
 
-  jetmon_veriflier_agents Concrete Veriflier process telemetry
+  jetpack_monitor_veriflier_agents Concrete Veriflier process telemetry
     agent_id, vantage_id, version, protocols, capacity, last_seen
 
-  jetmon_api_keys         Internal API Bearer-token registry
+  jetpack_monitor_api_keys         Internal API Bearer-token registry
     key_hash, consumer_name, scope, rate_limit_per_minute
 
-  jetmon_webhooks         Registered webhook receivers and filters
-  jetmon_webhook_deliveries
+  jetpack_monitor_webhooks         Registered webhook receivers and filters
+  jetpack_monitor_webhook_deliveries
                            Per-transition webhook delivery attempts
-  jetmon_webhook_dispatch_progress
+  jetpack_monitor_webhook_dispatch_progress
                            Webhook worker transition high-water marks
 
-  jetmon_alert_contacts   Managed notification destinations
-  jetmon_alert_deliveries Per-transition alert delivery attempts
-  jetmon_alert_dispatch_progress
+  jetpack_monitor_alert_contacts   Managed notification destinations
+  jetpack_monitor_alert_deliveries Per-transition alert delivery attempts
+  jetpack_monitor_alert_dispatch_progress
                            Alert worker transition high-water marks
 
-  jetmon_schema_migrations  Idempotent migration tracking
+  jetpack_monitor_schema_migrations  Idempotent migration tracking
 ```
 
 

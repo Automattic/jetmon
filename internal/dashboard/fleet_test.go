@@ -110,7 +110,7 @@ func TestSummarizeFleetBucketCoverage(t *testing.T) {
 
 	coverage = summarizeFleetBucketCoverage(nil, 10, 30*time.Second, now, nil, []FleetProcess{
 		{ProcessType: fleethealth.ProcessMonitor, BucketOwnership: "pinned range=0-4"},
-		{ProcessType: fleethealth.ProcessMonitor, BucketOwnership: "dynamic jetmon_hosts"},
+		{ProcessType: fleethealth.ProcessMonitor, BucketOwnership: "dynamic jetpack_monitor_hosts"},
 	})
 	if coverage.Status != "amber" || coverage.Mode != "mixed" {
 		t.Fatalf("coverage = %+v, want mixed amber", coverage)
@@ -120,7 +120,7 @@ func TestSummarizeFleetBucketCoverage(t *testing.T) {
 		{HostID: "host-a", BucketMin: 0, BucketMax: 9, LastHeartbeat: now, Status: "active"},
 	}, 10, 30*time.Second, now, nil, []FleetProcess{
 		{ProcessType: fleethealth.ProcessMonitor, BucketOwnership: "pinned range=0-4", Stale: true},
-		{ProcessType: fleethealth.ProcessMonitor, BucketOwnership: "dynamic jetmon_hosts"},
+		{ProcessType: fleethealth.ProcessMonitor, BucketOwnership: "dynamic jetpack_monitor_hosts"},
 	})
 	if coverage.Status != "green" || coverage.Mode != "dynamic" {
 		t.Fatalf("coverage = %+v, want stale pinned snapshots ignored for ownership mode", coverage)
@@ -195,11 +195,11 @@ func TestQueryFleetDeliveryTableAggregatesInSingleQuery(t *testing.T) {
 		AddRow("delivered", int64(7), int64(0)).
 		AddRow("abandoned", int64(1), int64(0)).
 		AddRow("failed", int64(3), int64(0))
-	mock.ExpectQuery(`(?s)SELECT 'pending'.*FROM jetmon_webhook_deliveries.*UNION ALL.*SELECT 'failed'.*FROM jetmon_webhook_deliveries`).
+	mock.ExpectQuery(`(?s)SELECT 'pending'.*FROM jetpack_monitor_webhook_deliveries.*UNION ALL.*SELECT 'failed'.*FROM jetpack_monitor_webhook_deliveries`).
 		WithArgs(now, now, now, now, cutoff, cutoff, cutoff, cutoff, cutoff).
 		WillReturnRows(rows)
 
-	summary, err := queryFleetDeliveryTable(context.Background(), sqlDB, "webhook", "jetmon_webhook_deliveries", now, cutoff)
+	summary, err := queryFleetDeliveryTable(context.Background(), sqlDB, "webhook", "jetpack_monitor_webhook_deliveries", now, cutoff)
 	if err != nil {
 		t.Fatalf("queryFleetDeliveryTable: %v", err)
 	}

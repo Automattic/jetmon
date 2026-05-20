@@ -31,7 +31,7 @@ func httpClientOrDefault(c *http.Client) *http.Client {
 }
 
 // truncateResponseBody caps a transport response at the
-// jetmon_alert_deliveries.last_response column width. Keeps the
+// jetpack_monitor_alert_deliveries.last_response column width. Keeps the
 // most recent bytes since failure messages tend to be at the start
 // but trailing context (e.g. "rate-limit reset at ...") is also
 // useful.

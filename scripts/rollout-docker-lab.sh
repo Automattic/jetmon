@@ -244,7 +244,7 @@ wait_for_checked_sites() {
 		checked="$(sql --batch --skip-column-names -e "
 			SELECT COUNT(*)
 			  FROM jetpack_monitor_sites s
-			  JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id
+			  JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id
 			 WHERE s.monitor_active = 1
 			   AND s.bucket_no BETWEEN $BUCKET_MIN AND $BUCKET_MAX
 			   AND r.last_checked_at >= UTC_TIMESTAMP() - INTERVAL 2 MINUTE")"
@@ -262,7 +262,7 @@ policy_count() {
 	sql --batch --skip-column-names -e "
 		SELECT COUNT(*)
 		  FROM jetpack_monitor_sites s
-		  JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id
+		  JOIN jetpack_monitor_site_check_config c ON c.blog_id = s.blog_id
 		 WHERE s.monitor_active = 1
 		   AND s.bucket_no BETWEEN $BUCKET_MIN AND $BUCKET_MAX
 		   AND c.request_method = '$1'

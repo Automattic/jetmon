@@ -362,7 +362,7 @@ func (s *Server) handleUpdateSite(w http.ResponseWriter, r *http.Request) {
 //
 // Soft delete: monitor_active=0 + close any open events with reason
 // manual_override. Returns 204 No Content. The row is preserved so audit
-// trails (jetmon_audit_log, jetmon_check_history) keep their foreign-key
+// trails (jetpack_monitor_audit_log, jetpack_monitor_check_history) keep their foreign-key
 // targets and historical state remains queryable.
 func (s *Server) handleDeleteSite(w http.ResponseWriter, r *http.Request) {
 	siteID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -479,7 +479,7 @@ func (s *Server) toggleSiteActive(w http.ResponseWriter, r *http.Request, active
 // "the site is going away cleanly" flow.
 func (s *Server) closeAllActiveEvents(ctx context.Context, siteID int64, reason, note string) error {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id FROM jetmon_events WHERE blog_id = ? AND ended_at IS NULL`, siteID)
+		`SELECT id FROM jetpack_monitor_events WHERE blog_id = ? AND ended_at IS NULL`, siteID)
 	if err != nil {
 		return err
 	}
@@ -528,7 +528,7 @@ func (s *Server) closeEvent(ctx context.Context, eventID, blogID int64, reason s
 		endedAt  sql.NullTime
 	)
 	err = tx.QueryRowContext(ctx,
-		`SELECT severity, state, ended_at FROM jetmon_events WHERE id = ? FOR UPDATE`, eventID,
+		`SELECT severity, state, ended_at FROM jetpack_monitor_events WHERE id = ? FOR UPDATE`, eventID,
 	).Scan(&severity, &state, &endedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -542,14 +542,14 @@ func (s *Server) closeEvent(ctx context.Context, eventID, blogID int64, reason s
 	}
 
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE jetmon_events
+		UPDATE jetpack_monitor_events
 		   SET ended_at = CURRENT_TIMESTAMP(3),
 		       resolution_reason = ?
 		 WHERE id = ?`, reason, eventID); err != nil {
 		return fmt.Errorf("update event: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO jetmon_event_transitions
+		INSERT INTO jetpack_monitor_event_transitions
 			(event_id, blog_id, severity_before, severity_after,
 			 state_before, state_after, reason, source, metadata)
 		VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)`,
@@ -561,7 +561,7 @@ func (s *Server) closeEvent(ctx context.Context, eventID, blogID int64, reason s
 	if config.LegacyStatusProjectionEnabled() {
 		var activeCount int
 		if err := tx.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM jetmon_events WHERE blog_id = ? AND ended_at IS NULL`, blogID,
+			`SELECT COUNT(*) FROM jetpack_monitor_events WHERE blog_id = ? AND ended_at IS NULL`, blogID,
 		).Scan(&activeCount); err != nil {
 			return fmt.Errorf("count active events: %w", err)
 		}
@@ -582,8 +582,8 @@ func (s *Server) readSite(ctx context.Context, blogID int64) (siteResponse, erro
 	row := s.db.QueryRowContext(ctx, `
 		SELECT `+siteSelectColumns("s.", "c.", "r.", false)+`
 		  FROM jetpack_monitor_sites s
-		  LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id
-		  LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id
+		  LEFT JOIN jetpack_monitor_site_check_config c ON c.blog_id = s.blog_id
+		  LEFT JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id
 		 WHERE s.blog_id = ?`, blogID)
 	return scanSiteRow(row, false)
 }
@@ -802,7 +802,7 @@ func (s *Server) upsertSiteCheckConfig(ctx context.Context, tx *sql.Tx, blogID i
 		args = append(args, field.value)
 	}
 	query := fmt.Sprintf(`
-		INSERT INTO jetmon_site_check_config (%s)
+		INSERT INTO jetpack_monitor_site_check_config (%s)
 		VALUES (%s)
 		ON DUPLICATE KEY UPDATE %s`,
 		strings.Join(cols, ", "),

@@ -12,9 +12,9 @@ signing secrets and alert-contact destination credentials.
 Two columns contain raw outbound credentials because dispatch needs the
 original value at send time:
 
-- `jetmon_webhooks.secret`: HMAC signing secret used to sign webhook delivery
+- `jetpack_monitor_webhooks.secret`: HMAC signing secret used to sign webhook delivery
   bodies.
-- `jetmon_alert_contacts.destination`: transport-specific JSON containing an
+- `jetpack_monitor_alert_contacts.destination`: transport-specific JSON containing an
   email address, PagerDuty integration key, Slack/Teams webhook URL, or SMTP
   password.
 
@@ -72,14 +72,14 @@ Recommended config shape:
 
 Add encrypted columns alongside the existing plaintext columns:
 
-- `jetmon_webhooks.secret_ciphertext`
-- `jetmon_webhooks.secret_nonce`
-- `jetmon_webhooks.secret_key_id`
-- `jetmon_webhooks.secret_alg`
-- `jetmon_alert_contacts.destination_ciphertext`
-- `jetmon_alert_contacts.destination_nonce`
-- `jetmon_alert_contacts.destination_key_id`
-- `jetmon_alert_contacts.destination_alg`
+- `jetpack_monitor_webhooks.secret_ciphertext`
+- `jetpack_monitor_webhooks.secret_nonce`
+- `jetpack_monitor_webhooks.secret_key_id`
+- `jetpack_monitor_webhooks.secret_alg`
+- `jetpack_monitor_alert_contacts.destination_ciphertext`
+- `jetpack_monitor_alert_contacts.destination_nonce`
+- `jetpack_monitor_alert_contacts.destination_key_id`
+- `jetpack_monitor_alert_contacts.destination_alg`
 
 Keep `secret_preview` and `destination_preview` unchanged. Previews are not
 credentials and stay useful for operator display.

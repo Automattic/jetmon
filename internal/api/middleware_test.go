@@ -14,12 +14,12 @@ import (
 )
 
 // keyLookupSQL matches the query used by apikeys.Lookup to resolve a token.
-const keyLookupSQL = ` SELECT id, consumer_name, scope, rate_limit_per_minute, expires_at, revoked_at, last_used_at, created_at, created_by FROM jetmon_api_keys WHERE key_hash = ?`
+const keyLookupSQL = ` SELECT id, consumer_name, scope, rate_limit_per_minute, expires_at, revoked_at, last_used_at, created_at, created_by FROM jetpack_monitor_api_keys WHERE key_hash = ?`
 
-const keyTouchSQL = `UPDATE jetmon_api_keys SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?`
+const keyTouchSQL = `UPDATE jetpack_monitor_api_keys SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?`
 
 const auditInsertSQL = `
-		INSERT INTO jetmon_audit_log
+		INSERT INTO jetpack_monitor_audit_log
 			(blog_id, event_id, event_type, source, detail, metadata)
 		VALUES (?, ?, ?, ?, ?, ?)`
 

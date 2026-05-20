@@ -36,7 +36,7 @@ func TestCreateContactPersistsDefaultsAndFetchesRecord(t *testing.T) {
 
 	now := time.Now().UTC()
 	destination := json.RawMessage(`{"address":"ops@example.com"}`)
-	mock.ExpectExec("INSERT INTO jetmon_alert_contacts").
+	mock.ExpectExec("INSERT INTO jetpack_monitor_alert_contacts").
 		WithArgs(
 			"Ops email", 1, nil, string(TransportEmail), []byte(destination), ".com",
 			sqlmock.AnyArg(), uint8(eventstore.SeverityDown), 60, "ops",
@@ -221,7 +221,7 @@ func TestTenantScopedContactQueriesFilterByOwner(t *testing.T) {
 	mock.ExpectQuery("WHERE id = \\? AND owner_tenant_id = \\?").
 		WithArgs(int64(12), "tenant-a").
 		WillReturnRows(contactRow(12, "Tenant email", 1, TransportEmail, now))
-	mock.ExpectExec("UPDATE jetmon_alert_contacts SET active = \\? WHERE id = \\? AND owner_tenant_id = \\?").
+	mock.ExpectExec("UPDATE jetpack_monitor_alert_contacts SET active = \\? WHERE id = \\? AND owner_tenant_id = \\?").
 		WithArgs(0, int64(12), "tenant-a").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("WHERE id = \\? AND owner_tenant_id = \\?").
@@ -230,10 +230,10 @@ func TestTenantScopedContactQueriesFilterByOwner(t *testing.T) {
 			int64(12), "Tenant email", uint8(0), "tenant-a", string(TransportEmail), "mple",
 			`{"site_ids":[42]}`, uint8(eventstore.SeverityDown), 60, "ops", now, now,
 		))
-	mock.ExpectQuery("SELECT destination FROM jetmon_alert_contacts WHERE id = \\? AND owner_tenant_id = \\?").
+	mock.ExpectQuery("SELECT destination FROM jetpack_monitor_alert_contacts WHERE id = \\? AND owner_tenant_id = \\?").
 		WithArgs(int64(12), "tenant-a").
 		WillReturnRows(sqlmock.NewRows([]string{"destination"}).AddRow([]byte(`{"address":"ops@example.com"}`)))
-	mock.ExpectExec("DELETE FROM jetmon_alert_contacts WHERE id = \\? AND owner_tenant_id = \\?").
+	mock.ExpectExec("DELETE FROM jetpack_monitor_alert_contacts WHERE id = \\? AND owner_tenant_id = \\?").
 		WithArgs(int64(12), "tenant-a").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -287,7 +287,7 @@ func TestUpdateContactAppliesPatchAndFetchesRecord(t *testing.T) {
 	mock.ExpectQuery("SELECT id, label, active, owner_tenant_id, transport").
 		WithArgs(int64(5)).
 		WillReturnRows(contactRow(5, "Ops email", 1, TransportEmail, now))
-	mock.ExpectExec("UPDATE jetmon_alert_contacts SET").
+	mock.ExpectExec("UPDATE jetpack_monitor_alert_contacts SET").
 		WithArgs(label, 0, []byte(destination), ".com", sqlmock.AnyArg(), minSeverity, maxPerHour, int64(5)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("SELECT id, label, active, owner_tenant_id, transport").
@@ -323,7 +323,7 @@ func TestDeleteContactReportsMissingRows(t *testing.T) {
 	}
 	defer db.Close()
 
-	mock.ExpectExec("DELETE FROM jetmon_alert_contacts").
+	mock.ExpectExec("DELETE FROM jetpack_monitor_alert_contacts").
 		WithArgs(int64(10)).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 
@@ -342,7 +342,7 @@ func TestLoadDestination(t *testing.T) {
 	}
 	defer db.Close()
 
-	mock.ExpectQuery("SELECT destination FROM jetmon_alert_contacts").
+	mock.ExpectQuery("SELECT destination FROM jetpack_monitor_alert_contacts").
 		WithArgs(int64(4)).
 		WillReturnRows(sqlmock.NewRows([]string{"destination"}).AddRow([]byte(`{"address":"ops@example.com"}`)))
 
@@ -379,10 +379,10 @@ func TestEnqueueAlertDeliveryReturnsInsertedIDAndDuplicateZero(t *testing.T) {
 	defer db.Close()
 
 	payload := json.RawMessage(`{"type":"alert.opened"}`)
-	mock.ExpectExec("INSERT IGNORE INTO jetmon_alert_deliveries").
+	mock.ExpectExec("INSERT IGNORE INTO jetpack_monitor_alert_deliveries").
 		WithArgs(int64(1), int64(2), int64(3), "alert.opened", uint8(4), []byte(payload)).
 		WillReturnResult(sqlmock.NewResult(9, 1))
-	mock.ExpectExec("INSERT IGNORE INTO jetmon_alert_deliveries").
+	mock.ExpectExec("INSERT IGNORE INTO jetpack_monitor_alert_deliveries").
 		WithArgs(int64(1), int64(2), int64(3), "alert.opened", uint8(4), []byte(payload)).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 
@@ -413,16 +413,16 @@ func TestAlertDeliveryStateUpdates(t *testing.T) {
 	defer db.Close()
 
 	next := time.Now().UTC().Add(time.Minute)
-	mock.ExpectExec("UPDATE jetmon_alert_deliveries").
+	mock.ExpectExec("UPDATE jetpack_monitor_alert_deliveries").
 		WithArgs(204, "ok", int64(1)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("UPDATE jetmon_alert_deliveries").
+	mock.ExpectExec("UPDATE jetpack_monitor_alert_deliveries").
 		WithArgs("quiet", int64(2)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("UPDATE jetmon_alert_deliveries").
+	mock.ExpectExec("UPDATE jetpack_monitor_alert_deliveries").
 		WithArgs(503, "retry", next, int64(3)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("UPDATE jetmon_alert_deliveries").
+	mock.ExpectExec("UPDATE jetpack_monitor_alert_deliveries").
 		WithArgs(410, "gone", int64(4)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -457,7 +457,7 @@ func TestGetListAndRetryAlertDeliveries(t *testing.T) {
 	mock.ExpectQuery("SELECT id, alert_contact_id, transition_id").
 		WithArgs(int64(20), string(StatusAbandoned), int64(50), 10).
 		WillReturnRows(alertDeliveryRow(2, StatusAbandoned, now))
-	mock.ExpectExec("UPDATE jetmon_alert_deliveries").
+	mock.ExpectExec("UPDATE jetpack_monitor_alert_deliveries").
 		WithArgs(int64(2)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 

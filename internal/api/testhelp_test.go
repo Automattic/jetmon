@@ -145,6 +145,6 @@ var columnsTransition = []string{
 	"state_before", "state_after", "reason", "source", "metadata", "changed_at",
 }
 
-const siteTenantCheckSQL = `SELECT 1 FROM jetmon_site_tenants WHERE tenant_id = ? AND blog_id = ? LIMIT 1`
+const siteTenantCheckSQL = `SELECT 1 FROM jetpack_monitor_site_tenants WHERE tenant_id = ? AND blog_id = ? LIMIT 1`
 
-const insertSiteTenantTestSQL = ` INSERT INTO jetmon_site_tenants (tenant_id, blog_id, source) VALUES (?, ?, 'gateway') ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP`
+const insertSiteTenantTestSQL = ` INSERT INTO jetpack_monitor_site_tenants (tenant_id, blog_id, source) VALUES (?, ?, 'gateway') ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP`

@@ -11,7 +11,7 @@ rejects those headers from any other consumer. When accepted, the context is
 recorded in API audit metadata and used to owner-scope webhook and alert-contact
 CRUD, delivery history, manual delivery retry, and alert-contact send-test
 routes. Site, event, SLA/stat, and trigger-now routes are scoped through the
-`jetmon_site_tenants` mapping table. Normal internal callers that omit these
+`jetpack_monitor_site_tenants` mapping table. Normal internal callers that omit these
 headers keep the unscoped operator behavior described below.
 
 This shapes several design choices: authentication is per-consumer rather than per-customer, scopes are coarse rather than granular, error messages are verbose rather than guarded, and key management is an ops-only concern rather than a self-service feature. The trust boundary is "is this a known internal system?", not "is this user allowed to see this site?".
@@ -42,10 +42,10 @@ The goal is to expose Jetmon's distinctive data model — the five-layer test ta
 Authorization: Bearer jm_a1b2c3d4e5f6...
 ```
 
-Tokens are 32-byte high-entropy random strings, sha256-hashed at rest (sha256 not bcrypt — bcrypt is for human-chosen passwords; high-entropy tokens just need a fast cryptographic hash). Stored in `jetmon_api_keys`:
+Tokens are 32-byte high-entropy random strings, sha256-hashed at rest (sha256 not bcrypt — bcrypt is for human-chosen passwords; high-entropy tokens just need a fast cryptographic hash). Stored in `jetpack_monitor_api_keys`:
 
 ```
-jetmon_api_keys:
+jetpack_monitor_api_keys:
   id              BIGINT PK
   key_hash        CHAR(64)         -- sha256 hex
   consumer_name   VARCHAR(128)     -- e.g. "gateway", "alerts-worker", "dashboard"
@@ -66,7 +66,7 @@ jetmon_api_keys:
 
 We deliberately did not split into `sites:read` / `events:read` / `webhooks:read` etc. Internal consumers tend to need the whole read surface — the gateway needs to read everything to mediate it; an alerts worker reads sites, events, *and* webhooks. Granular scopes would create more configuration burden than they solve.
 
-**Per-consumer audit logging.** Every authenticated request is logged to `jetmon_audit_log` with the consumer name, endpoint, status code, and latency. This is the load-bearing accountability mechanism — if "alerts-worker is hammering the trigger-now endpoint," that's visible in the audit log without parsing access logs. The audit log already exists for operational events (`events.md`); API access becomes another `event_type` value (`api_access`).
+**Per-consumer audit logging.** Every authenticated request is logged to `jetpack_monitor_audit_log` with the consumer name, endpoint, status code, and latency. This is the load-bearing accountability mechanism — if "alerts-worker is hammering the trigger-now endpoint," that's visible in the audit log without parsing access logs. The audit log already exists for operational events (`events.md`); API access becomes another `event_type` value (`api_access`).
 
 **Key management is ops-only.** No `/api/v1/keys` endpoints. Keys are created and revoked via the `./jetmon2` CLI:
 
@@ -77,7 +77,7 @@ We deliberately did not split into `sites:read` / `events:read` / `webhooks:read
 ./jetmon2 keys rotate <key_id>     # creates a new key for the same consumer; revokes old after grace
 ```
 
-The CLI talks to the database directly (via `jetmon_api_keys`), prints the new token once, and never exposes hashes. There's no self-service surface because there are no end customers — keys are infrastructure config, not user-managed credentials.
+The CLI talks to the database directly (via `jetpack_monitor_api_keys`), prints the new token once, and never exposes hashes. There's no self-service surface because there are no end customers — keys are infrastructure config, not user-managed credentials.
 
 `revoked_at` and `expires_at` are both half-open cutoffs: a key is valid for times strictly before the cutoff and rejected at or after it. During key rotation, the CLI may set `revoked_at` in the future so the old key remains valid for the grace window while consumers deploy the replacement. Immediate revocation sets `revoked_at` to the current time.
 
@@ -193,7 +193,7 @@ sampled probes, so `sample_size` defaults to `100` and is capped at `1000` per
 request. These probes are intentionally non-authoritative: they do not write
 incident state, runtime freshness, check history, WPCOM notifications, or the
 legacy projection. Comparison deltas are persisted separately in
-`jetmon_rollout_comparison_results` for rollout analysis. If the selected
+`jetpack_monitor_rollout_comparison_results` for rollout analysis. If the selected
 bucket range has no active sites, the API returns a warning instead of treating
 an empty sample as proof that the range is healthy.
 
@@ -205,8 +205,8 @@ expected states, and rollback thresholds need owner approval before they become
 hard-coded rollout gates.
 
 `/api/v1/rollout/stage-policy` writes cohort changes to
-`jetmon_site_check_config` and records previous values in
-`jetmon_rollout_policy_stage_rows`. Use `mode=rollback-last-stage` to restore
+`jetpack_monitor_site_check_config` and records previous values in
+`jetpack_monitor_rollout_policy_stage_rows`. Use `mode=rollback-last-stage` to restore
 the most recent staged batch in the range, or `mode=rollback-all` to unwind all
 unrolled-back stage rows for the run/range. NULL previous values are restored
 as NULL so sites return to inheriting the fleet default. Staging requires an
@@ -354,7 +354,7 @@ HTTP status codes used:
 
 403 vs 404 are honest here: a `read`-scope token hitting a `write`-only endpoint gets a real 403, not a 404. Internal consumers benefit from accurate semantics over the "hide existence" pattern public APIs use to avoid information leakage — and the gateway in front of Jetmon handles any customer-facing 403↔404 collapsing it wants.
 
-Error messages are verbose by design — for an internal API, "table 'jetmon_events' is locked, retry in 30s" beats "internal server error" by a wide margin during incident response. The gateway can sanitize before forwarding to customers.
+Error messages are verbose by design — for an internal API, "table 'jetpack_monitor_events' is locked, retry in 30s" beats "internal server error" by a wide margin during incident response. The gateway can sanitize before forwarding to customers.
 
 ### Rate limiting
 
@@ -437,7 +437,7 @@ List sites visible to this token.
 **Scopes:** `read`
 
 Normal internal callers see the full site table. Gateway-routed requests only
-see rows mapped to `X-Jetmon-Tenant-ID` in `jetmon_site_tenants`.
+see rows mapped to `X-Jetmon-Tenant-ID` in `jetpack_monitor_site_tenants`.
 
 **Query parameters:**
 
@@ -488,8 +488,8 @@ see rows mapped to `X-Jetmon-Tenant-ID` in `jetmon_site_tenants`.
 `id` and `blog_id` are the same value for now; `id` is the public field name (`blog_id` is the historical column name). Consumers should rely on `id`.
 
 The response intentionally merges v1-shaped `jetpack_monitor_sites` fields with
-v2-owned sidecar state from `jetmon_site_check_config` and
-`jetmon_site_runtime`; callers should use the API contract instead of assuming
+v2-owned sidecar state from `jetpack_monitor_site_check_config` and
+`jetpack_monitor_site_runtime`; callers should use the API contract instead of assuming
 all fields live in the legacy site table.
 
 `cli_batch` is an opt-in local-tooling projection. It is present only when
@@ -497,7 +497,7 @@ all fields live in the legacy site table.
 `X-Jetmon-CLI-Batch`; the API does not expose the rest of `custom_headers`.
 
 `current_state`, `current_severity`, and `active_event_id` are derived from
-open rows in `jetmon_events`. During the
+open rows in `jetpack_monitor_events`. During the
 [v1-to-v2 migration](v1-to-v2-migration.md), the legacy `site_status`
 column is only a fallback for sites with no active v2 event while
 `LEGACY_STATUS_PROJECTION_ENABLE` is true; once the projection is disabled, a
@@ -537,7 +537,7 @@ Accepts `include_cli_metadata=true` with the same `cli_batch` behavior as
 `active_events` is the simplest answer to "tell me everything wrong with this site right now." Ordered by severity descending.
 
 Gateway-routed single-site, event/history, SLA/stat, and trigger-now routes all
-derive visibility through `jetmon_site_tenants`. A site or event outside the
+derive visibility through `jetpack_monitor_site_tenants`. A site or event outside the
 tenant mapping is returned as not found.
 
 #### `POST /api/v1/sites`
@@ -822,7 +822,7 @@ Uptime and downtime stats over a rolling window.
 
 #### `GET /api/v1/sites/{id}/response-time`
 
-Response time percentiles over a window, sourced from `jetmon_check_history`.
+Response time percentiles over a window, sourced from `jetpack_monitor_check_history`.
 
 **Response:**
 
@@ -841,9 +841,9 @@ Response time percentiles over a window, sourced from `jetmon_check_history`.
 }
 ```
 
-Percentiles are computed from raw `jetmon_check_history` samples in the window. The handler caps the in-memory sample set at 100,000 rows; `truncated: true` means the response used the most recent capped subset.
+Percentiles are computed from raw `jetpack_monitor_check_history` samples in the window. The handler caps the in-memory sample set at 100,000 rows; `truncated: true` means the response used the most recent capped subset.
 
-`check_history_mode` is the effective recording mode for this site (per-site override in `jetmon_site_check_config.check_history_mode`, else `CHECK_HISTORY_MODE_DEFAULT`). `percentiles_meaningful` is `false` when the mode is `status_change` (incident-edge probes only) or `disabled` (no rows) — in those modes the percentile fields reflect too few samples to represent the site's true latency distribution, and a dashboard should hide or annotate them. Use `/check-history` for raw rows under any mode.
+`check_history_mode` is the effective recording mode for this site (per-site override in `jetpack_monitor_site_check_config.check_history_mode`, else `CHECK_HISTORY_MODE_DEFAULT`). `percentiles_meaningful` is `false` when the mode is `status_change` (incident-edge probes only) or `disabled` (no rows) — in those modes the percentile fields reflect too few samples to represent the site's true latency distribution, and a dashboard should hide or annotate them. Use `/check-history` for raw rows under any mode.
 
 #### `GET /api/v1/sites/{id}/timing-breakdown`
 
@@ -975,13 +975,13 @@ The signature is HMAC-SHA256 of `{timestamp}.{body}` with the webhook's `secret`
 - `event.cause_linked` / `event.cause_unlinked`
 - `event.closed` — event resolved (any reason)
 
-`event.*` types fire once per transition row written to `jetmon_event_transitions` — i.e., once per actual mutation. The 1:1 invariant the eventstore maintains is what makes detection reliable.
+`event.*` types fire once per transition row written to `jetpack_monitor_event_transitions` — i.e., once per actual mutation. The 1:1 invariant the eventstore maintains is what makes detection reliable.
 
 **Deferred:** `site.state_changed` (rollup from events to the site-row projection) is **not** in v1. Rolling up cleanly without races requires changes to the orchestrator, and event-level webhooks already give consumers everything they need. Tracked in roadmap.md.
 
 #### Detection mechanism
 
-Webhook delivery uses **pull-based detection**: a worker polls `jetmon_event_transitions WHERE id > last_seen` on a 1s interval and creates one delivery row per matching transition. This is the long-term answer for Jetmon's architecture — the orchestrator's flap suppression already adds 10s+ between detection and confirmed events, so 1s poll latency is invisible in the practical budget.
+Webhook delivery uses **pull-based detection**: a worker polls `jetpack_monitor_event_transitions WHERE id > last_seen` on a 1s interval and creates one delivery row per matching transition. This is the long-term answer for Jetmon's architecture — the orchestrator's flap suppression already adds 10s+ between detection and confirmed events, so 1s poll latency is invisible in the practical budget.
 
 Current v2 deployment constraint: in the single-binary shape, `API_PORT` makes webhook and alert-contact workers eligible to run. Delivery rows are claimed transactionally, so multiple active delivery workers do not claim the same pending row. `DELIVERY_OWNER_HOST` can still restrict actual delivery to one named host when operators want a single-owner rollout while moving from embedded `jetmon2` delivery to standalone `jetmon-deliverer`.
 
@@ -989,7 +989,7 @@ Push-based or hybrid detection is not on the roadmap. If a future consumer deman
 
 #### Retry policy
 
-Each `jetmon_webhook_deliveries` row is one webhook firing. Each delivery has up to 6 attempts on this exponential schedule:
+Each `jetpack_monitor_webhook_deliveries` row is one webhook firing. Each delivery has up to 6 attempts on this exponential schedule:
 
 | Attempt | Delay from previous |
 |---------|---------------------|
@@ -1084,13 +1084,13 @@ Implementation: at dispatch time, the worker checks a `map[webhook_id]int` count
 #### Schema
 
 ```
-jetmon_webhooks:
+jetpack_monitor_webhooks:
   id, url, active, owner_tenant_id VARCHAR(128) NULL,
   events JSON, site_filter JSON, state_filter JSON,
   secret VARCHAR(80), secret_preview VARCHAR(8),
   created_by VARCHAR(128), created_at, updated_at
 
-jetmon_webhook_deliveries:
+jetpack_monitor_webhook_deliveries:
   id, webhook_id, transition_id, event_id, event_type,
   payload JSON,                       -- frozen at fire time, never updated
   status ENUM('pending','delivered','failed','abandoned'),
@@ -1145,7 +1145,7 @@ Managed notification channels for human destinations: email, PagerDuty, Slack, M
 - **Alert contact** — you want a person notified through a managed channel (their email, your team's PagerDuty service, your team's Slack channel). You don't want to operate a receiver, you want Jetmon to handle rendering and retries.
 - **Webhook** — you want a *system* notified, you control the receiver, and you want the raw signed event payload to render or route however you want. Use this for custom Slack bots that aren't a vanilla incoming-webhook URL, internal SIEM ingestion, custom alerting middleware, or anything that wants the structured event rather than a pre-formatted message.
 
-The two surfaces share the same event source (`jetmon_event_transitions`); a customer can use both simultaneously without dedup concerns at the source.
+The two surfaces share the same event source (`jetpack_monitor_event_transitions`); a customer can use both simultaneously without dedup concerns at the source.
 
 #### Alert contact management endpoints
 
@@ -1224,7 +1224,7 @@ This is a per-contact field, not global — different contacts have different to
 POST /api/v1/alert-contacts/{id}/test
 ```
 
-Sends a synthetic notification through the contact's transport — same rendering, same dispatch path, but with payload `{"test": true, "message": "Jetmon test notification", ...}`. Used by operators to verify a newly-created contact actually reaches its destination. Test sends are exempt from `max_per_hour`, are logged in `jetmon_audit_log` under `event_type=alert_test`, and bypass the severity gate (always delivered).
+Sends a synthetic notification through the contact's transport — same rendering, same dispatch path, but with payload `{"test": true, "message": "Jetmon test notification", ...}`. Used by operators to verify a newly-created contact actually reaches its destination. Test sends are exempt from `max_per_hour`, are logged in `jetpack_monitor_audit_log` under `event_type=alert_test`, and bypass the severity gate (always delivered).
 
 Honors `Idempotency-Key` like the other write POSTs — a retried request with the same key returns the original response without re-firing the test, so a network blip during the operator's "click to test" doesn't double-page the destination.
 
@@ -1250,7 +1250,7 @@ Site assignment is via `site_filter.site_ids` on the contact row itself, not a s
 
 #### Detection mechanism
 
-Same as webhooks — pull-only, polling `jetmon_event_transitions` on a high-water mark. Different worker (`internal/alerting/`) with the same dispatch shape: claim → match contacts → enqueue per-contact deliveries in `jetmon_alert_deliveries` → dispatch with retry. Worker placement is intentionally parallel to webhooks rather than unified; see ROADMAP for the rationale and the future revisit point.
+Same as webhooks — pull-only, polling `jetpack_monitor_event_transitions` on a high-water mark. Different worker (`internal/alerting/`) with the same dispatch shape: claim → match contacts → enqueue per-contact deliveries in `jetpack_monitor_alert_deliveries` → dispatch with retry. Worker placement is intentionally parallel to webhooks rather than unified; see ROADMAP for the rationale and the future revisit point.
 
 #### Retry policy
 
@@ -1276,7 +1276,7 @@ The boundary is: WPCOM = built-in path for existing internal Jetpack notificatio
 #### Schema
 
 ```sql
-jetmon_alert_contacts (
+jetpack_monitor_alert_contacts (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   label VARCHAR(80) NOT NULL,
   active TINYINT(1) NOT NULL DEFAULT 1,
@@ -1292,16 +1292,16 @@ jetmon_alert_contacts (
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 )
 
-jetmon_alert_deliveries (
-  -- mirrors jetmon_webhook_deliveries; dedup on (alert_contact_id, transition_id)
+jetpack_monitor_alert_deliveries (
+  -- mirrors jetpack_monitor_webhook_deliveries; dedup on (alert_contact_id, transition_id)
 )
 
-jetmon_alert_dispatch_progress (
-  -- mirrors jetmon_webhook_dispatch_progress; high-water mark for the worker
+jetpack_monitor_alert_dispatch_progress (
+  -- mirrors jetpack_monitor_webhook_dispatch_progress; high-water mark for the worker
 )
 ```
 
-`destination` stores the credential in plaintext. Same rationale as `jetmon_webhooks.secret`: outbound dispatch needs the raw value (PagerDuty integration key, Slack webhook URL, SMTP password) at every send — a hash is useless because we'd have to recover the original to call the transport. The threat model is the database itself; encryption-at-rest on the storage layer is the correct mitigation, not application-level hashing.
+`destination` stores the credential in plaintext. Same rationale as `jetpack_monitor_webhooks.secret`: outbound dispatch needs the raw value (PagerDuty integration key, Slack webhook URL, SMTP password) at every send — a hash is useless because we'd have to recover the original to call the transport. The threat model is the database itself; encryption-at-rest on the storage layer is the correct mitigation, not application-level hashing.
 
 #### Alert contact ownership
 
@@ -1335,7 +1335,7 @@ Unauthenticated. Returns `{ "status": "ok" }` if the API can talk to the databas
 
 #### `GET /api/v1/monitor/drain-status`
 
-Requires `read` scope. Returns the in-flight work counters the local orchestrator publishes to `jetmon_process_health`. Used to confirm a clean shutdown is safe.
+Requires `read` scope. Returns the in-flight work counters the local orchestrator publishes to `jetpack_monitor_process_health`. Used to confirm a clean shutdown is safe.
 
 ```json
 {
@@ -1385,18 +1385,18 @@ A vantage is `healthy` when it is enabled, usable (has host+port+token), and has
 
 #### `GET /api/v1/audit-log`
 
-Requires `read` scope. Paginated query over `jetmon_audit_log`. Filters: `blog_id`, `event_id`, `event_type` / `event_type__in=A,B,C`, `source`, `since` / `until` (RFC3339). Newest-first by id. Opaque `cursor` pagination, `limit` default 50 max 200.
+Requires `read` scope. Paginated query over `jetpack_monitor_audit_log`. Filters: `blog_id`, `event_id`, `event_type` / `event_type__in=A,B,C`, `source`, `since` / `until` (RFC3339). Newest-first by id. Opaque `cursor` pagination, `limit` default 50 max 200.
 
 ```bash
 curl -H "Authorization: Bearer $JETMON_API_TOKEN" \
   "$JETMON_API_URL/api/v1/audit-log?event_type__in=wpcom_sent,wpcom_failure&since=2026-05-19T00:00:00Z&limit=100"
 ```
 
-Each row carries `id`, `blog_id` (nullable for system events like `config_change`), `event_id` (nullable when not linked), `event_type`, `source`, `detail`, optional `metadata` JSON, and `created_at`. Replaces the previous "log into MySQL and `SELECT * FROM jetmon_audit_log`" workflow.
+Each row carries `id`, `blog_id` (nullable for system events like `config_change`), `event_id` (nullable when not linked), `event_type`, `source`, `detail`, optional `metadata` JSON, and `created_at`. Replaces the previous "log into MySQL and `SELECT * FROM jetpack_monitor_audit_log`" workflow.
 
 #### `GET /api/v1/ready`
 
-Unauthenticated. Returns 200 with `{ "status": "ready", ... }` only when this Monitor host has finished starting up: the API can talk to the database, the local orchestrator has published a `jetmon_process_health` snapshot, and that snapshot is fresh (< 60 s), `state = running`, and `health_status = green`. Otherwise returns 503 with one of:
+Unauthenticated. Returns 200 with `{ "status": "ready", ... }` only when this Monitor host has finished starting up: the API can talk to the database, the local orchestrator has published a `jetpack_monitor_process_health` snapshot, and that snapshot is fresh (< 60 s), `state = running`, and `health_status = green`. Otherwise returns 503 with one of:
 
 - `"status": "starting"` — orchestrator has not yet published a snapshot
 - `"status": "stale"` — snapshot is older than 60 seconds (orchestrator likely stopped publishing)
@@ -1511,9 +1511,9 @@ The current contract publishes paths, methods, auth scope, idempotency headers, 
 ## Implementation Phase Map
 
 Phase 1 (read-only foundation, implemented):
-- `jetmon_api_keys` migration + sha256 hashing helpers
+- `jetpack_monitor_api_keys` migration + sha256 hashing helpers
 - `./jetmon2 keys create/list/revoke/rotate` CLI
-- Auth middleware (Bearer token validation, scope enforcement, audit logging via `jetmon_audit_log`)
+- Auth middleware (Bearer token validation, scope enforcement, audit logging via `jetpack_monitor_audit_log`)
 - Health check + `GET /api/v1/me`
 - Family 1 read endpoints (sites list, single site)
 - Family 2 (events list, single event with transitions, transitions list)

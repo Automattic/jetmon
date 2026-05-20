@@ -86,7 +86,7 @@ func UpsertVeriflierAgent(ctx context.Context, hb VeriflierAgentHeartbeat) error
 	}
 
 	_, err = db.ExecContext(ctx, `
-		INSERT INTO jetmon_veriflier_agents (
+		INSERT INTO jetpack_monitor_veriflier_agents (
 			agent_id, vantage_id, hostname, endpoint_host, endpoint_port,
 			version, protocols, max_concurrency, queue_capacity, queue_depth,
 			active, in_flight, status, last_seen
@@ -132,7 +132,7 @@ func MarkVeriflierAgentStopped(ctx context.Context, agentID string) error {
 		return fmt.Errorf("agent_id is required")
 	}
 	_, err := db.ExecContext(ctx,
-		`UPDATE jetmon_veriflier_agents
+		`UPDATE jetpack_monitor_veriflier_agents
 		    SET status = 'stopped',
 		        last_seen = UTC_TIMESTAMP(),
 		        updated_at = UTC_TIMESTAMP()
@@ -177,7 +177,7 @@ func ListRecentVeriflierAgents(ctx context.Context, staleAfter time.Duration) ([
 		SELECT agent_id, vantage_id, hostname, endpoint_host, endpoint_port,
 		       version, protocols, max_concurrency, queue_capacity, queue_depth,
 		       active, in_flight, status, last_seen
-		  FROM jetmon_veriflier_agents
+		  FROM jetpack_monitor_veriflier_agents
 		 WHERE last_seen >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL ? SECOND)
 		 ORDER BY vantage_id, last_seen DESC, agent_id`,
 		seconds,
@@ -205,7 +205,7 @@ func listVeriflierVantages(ctx context.Context, enabledOnly bool) ([]VeriflierVa
 	query := `
 		SELECT vantage_id, region, provider, endpoint_host, endpoint_port,
 		       auth_token, enabled
-		  FROM jetmon_veriflier_vantages`
+		  FROM jetpack_monitor_veriflier_vantages`
 	if enabledOnly {
 		query += ` WHERE enabled = 1`
 	}

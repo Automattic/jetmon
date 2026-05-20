@@ -128,17 +128,17 @@ func (s *Server) handleListSites(w http.ResponseWriter, r *http.Request) {
 		sb.WriteString(`
 		SELECT ` + siteSelectColumns("s.", "c.", "r.", includeCLIMetadata) + `
 		  FROM jetpack_monitor_sites s
-		  LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id
-		  LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id
-		  JOIN jetmon_site_tenants st ON st.blog_id = s.blog_id AND st.tenant_id = ?
+		  LEFT JOIN jetpack_monitor_site_check_config c ON c.blog_id = s.blog_id
+		  LEFT JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id
+		  JOIN jetpack_monitor_site_tenants st ON st.blog_id = s.blog_id AND st.tenant_id = ?
 		 WHERE s.blog_id > ?`)
 	} else {
 		args = append(args, cursor)
 		sb.WriteString(`
 		SELECT ` + siteSelectColumns("s.", "c.", "r.", includeCLIMetadata) + `
 		  FROM jetpack_monitor_sites s
-		  LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id
-		  LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id
+		  LEFT JOIN jetpack_monitor_site_check_config c ON c.blog_id = s.blog_id
+		  LEFT JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id
 		 WHERE s.blog_id > ?`)
 	}
 
@@ -255,8 +255,8 @@ func (s *Server) handleGetSite(w http.ResponseWriter, r *http.Request) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT `+siteSelectColumns("s.", "c.", "r.", includeCLIMetadata)+`
 		  FROM jetpack_monitor_sites s
-		  LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id
-		  LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id
+		  LEFT JOIN jetpack_monitor_site_check_config c ON c.blog_id = s.blog_id
+		  LEFT JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id
 		 WHERE s.blog_id = ?`, id)
 
 	site, err := scanSiteRow(row, includeCLIMetadata)
@@ -355,7 +355,7 @@ func siteListResponseData(sites []siteResponse, includeCLIMetadata bool) any {
 func (s *Server) queryActiveEvents(ctx context.Context, blogID int64) ([]activeEventSummary, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, check_type, severity, state, started_at
-		  FROM jetmon_events
+		  FROM jetpack_monitor_events
 		 WHERE blog_id = ? AND ended_at IS NULL
 		 ORDER BY severity DESC, started_at ASC`, blogID)
 	if err != nil {
@@ -404,7 +404,7 @@ func (s *Server) applyActiveEventRollups(ctx context.Context, sites []siteRespon
 
 	q := fmt.Sprintf(`
 		SELECT id, blog_id, severity, state, started_at
-		  FROM jetmon_events
+		  FROM jetpack_monitor_events
 		 WHERE ended_at IS NULL
 		   AND blog_id IN (%s)`, strings.Join(placeholders, ","))
 

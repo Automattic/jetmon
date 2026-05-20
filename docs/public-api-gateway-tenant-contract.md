@@ -58,9 +58,9 @@ Jetmon ever serves customers without a gateway in front.
 
 | Route family | Gateway checks | Jetmon checks before public exposure |
 |---|---|---|
-| Sites list/detail | Caller can access each `blog_id`; plan allows monitoring data. | Implemented through `jetmon_site_tenants` when gateway context is present. |
-| Event/history/SLA reads | Caller can access the parent site; requested time range and filters are allowed. | Implemented through the parent site's `jetmon_site_tenants` mapping. |
-| Site/check writes | Caller can manage the parent site; plan permits monitor mutation and trigger-now. | Implemented through the parent site's `jetmon_site_tenants` mapping; orchestrator/eventstore invariants remain unchanged. |
+| Sites list/detail | Caller can access each `blog_id`; plan allows monitoring data. | Implemented through `jetpack_monitor_site_tenants` when gateway context is present. |
+| Event/history/SLA reads | Caller can access the parent site; requested time range and filters are allowed. | Implemented through the parent site's `jetpack_monitor_site_tenants` mapping. |
+| Site/check writes | Caller can manage the parent site; plan permits monitor mutation and trigger-now. | Implemented through the parent site's `jetpack_monitor_site_tenants` mapping; orchestrator/eventstore invariants remain unchanged. |
 | Webhook CRUD/deliveries | Caller can manage tenant-owned webhooks; endpoint URL policy is satisfied. | Implemented with `owner_tenant_id`; delivery visibility and manual retry are derived through the owned webhook. |
 | Alert contact CRUD/deliveries | Caller can manage tenant-owned alert contacts; transport is allowed by plan. | Implemented with `owner_tenant_id`; delivery visibility, manual retry, and send-test are derived through the owned contact. |
 | Manual retries/tests | Caller owns the parent webhook/contact and route-specific abuse limits allow the operation. | Implemented by verifying parent ownership before enqueueing, retrying, or dispatching. |
@@ -74,16 +74,16 @@ the same tenant id stable.
 
 For customer-owned resources created in Jetmon, prefer explicit ownership:
 
-- `jetmon_site_tenants(tenant_id, blog_id)` for monitored-site visibility
-- `jetmon_webhooks.owner_tenant_id`
-- `jetmon_alert_contacts.owner_tenant_id`
+- `jetpack_monitor_site_tenants(tenant_id, blog_id)` for monitored-site visibility
+- `jetpack_monitor_webhooks.owner_tenant_id`
+- `jetpack_monitor_alert_contacts.owner_tenant_id`
 - delivery visibility derived from the owned webhook/contact
 - idempotency cache scoped by `(tenant_id, api_key_id, idempotency_key)` if the
   cache is made durable or shared across public tenants
 
 For monitored sites, do not assume ownership is always one-to-one with
 `blog_id`. Jetmon now enforces site visibility for gateway-routed requests with
-the `jetmon_site_tenants(tenant_id, blog_id)` mapping table, which preserves
+the `jetpack_monitor_site_tenants(tenant_id, blog_id)` mapping table, which preserves
 room for shared ownership or gateway-derived delegation.
 
 Do not use `created_by` as ownership. It records the internal API key consumer
@@ -117,8 +117,8 @@ errors.
    through the owned webhook/contact, and alert-contact send-test verifies the
    contact owner before loading the destination credential.
 4. Gateway-routed site, event/history, SLA/stat, and trigger-now routes now use
-   `jetmon_site_tenants` for defense-in-depth ownership checks.
-5. Backfill/reconcile `jetmon_site_tenants` from the gateway's source of truth
+   `jetpack_monitor_site_tenants` for defense-in-depth ownership checks.
+5. Backfill/reconcile `jetpack_monitor_site_tenants` from the gateway's source of truth
    before any customer traffic depends on direct Jetmon enforcement. The initial
    operator path is `jetmon2 site-tenants import --file <csv>`, where the CSV is
    `tenant_id,blog_id`; pruning stale mappings still depends on an agreed

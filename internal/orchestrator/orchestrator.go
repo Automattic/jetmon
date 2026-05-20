@@ -339,7 +339,7 @@ func (o *Orchestrator) ev() *eventstore.Store {
 	return o.events
 }
 
-// ClaimBuckets registers this host in jetmon_hosts and sets the bucket range.
+// ClaimBuckets registers this host in jetpack_monitor_hosts and sets the bucket range.
 func (o *Orchestrator) ClaimBuckets() error {
 	cfg := config.Get()
 	if cfg.RolloutMode == config.RolloutModeStandby || cfg.RolloutMode == config.RolloutModeAPIControlled {
@@ -464,7 +464,7 @@ func (o *Orchestrator) shutdown() {
 		o.pool.Drain()
 	}
 	if !o.usesDynamicBuckets(cfg) {
-		log.Printf("orchestrator: rollout_mode=%s or pinned bucket mode active; no jetmon_hosts row to release", cfg.RolloutMode)
+		log.Printf("orchestrator: rollout_mode=%s or pinned bucket mode active; no jetpack_monitor_hosts row to release", cfg.RolloutMode)
 	} else if err := dbReleaseHost(stdctx.Background(), o.hostname, cfg.BucketTotal, cfg.BucketTarget); err != nil {
 		log.Printf("orchestrator: release host: %v", err)
 	}
@@ -1089,8 +1089,8 @@ func (o *Orchestrator) processResults(results map[int64]checker.Result, sites ma
 
 	eventStart := time.Now()
 	for _, record := range records {
-		// Per-check data is recorded in jetmon_check_history (above); duplicating
-		// it in jetmon_audit_log was retired with the operational/site-state split.
+		// Per-check data is recorded in jetpack_monitor_check_history (above); duplicating
+		// it in jetpack_monitor_audit_log was retired with the operational/site-state split.
 		if record.res.IsProbeSafetyBlock() {
 			o.handleProbeSafetyBlock(record.site, record.res)
 		} else if !record.res.IsFailure() {
@@ -1340,7 +1340,7 @@ func (o *Orchestrator) recordStreamingHistoryRows(rows []db.CheckHistoryRow) res
 }
 
 // shouldRecordCheckHistory decides whether a check result is persisted to
-// jetmon_check_history, honoring the per-site override (if set and valid) over
+// jetpack_monitor_check_history, honoring the per-site override (if set and valid) over
 // the configured default. counter disperses 1-in-N sampling.
 func shouldRecordCheckHistory(cfg *config.Config, site db.Site, res checker.Result, counter uint64) bool {
 	mode := cfg.CheckHistoryModeDefault
@@ -2027,7 +2027,7 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 		// Verifier reply is operational telemetry — recorded under
 		// EventVeriflierSent with the response in metadata. The site-state
 		// outcome (confirm or false alarm) is captured separately, ultimately
-		// as a transition row in jetmon_event_transitions.
+		// as a transition row in jetpack_monitor_event_transitions.
 		metaMap := map[string]any{
 			"http_code":      vr.res.HTTPCode,
 			"error_code":     vr.res.ErrorCode,
@@ -3156,7 +3156,7 @@ func (o *Orchestrator) closeRecoveredEventOnce(site db.Site, knownEventID int64,
 	case knownEventID > 0 && tx.Tx() != nil:
 		eventID = knownEventID
 		if err := tx.Tx().QueryRowContext(o.ctx,
-			`SELECT state FROM jetmon_events WHERE id = ?`, eventID,
+			`SELECT state FROM jetpack_monitor_events WHERE id = ?`, eventID,
 		).Scan(&state); err != nil {
 			return fmt.Errorf("read event state: %w", err)
 		}
@@ -3241,7 +3241,7 @@ func (o *Orchestrator) closeMaintenanceEvent(site db.Site, knownEventID int64, c
 
 // summarizeVerifierResults extracts a small JSON-friendly summary of verifier
 // replies for storage in transition metadata. We don't store the full result
-// list — the per-RPC details are already in jetmon_audit_log under
+// list — the per-RPC details are already in jetpack_monitor_audit_log under
 // EventVeriflierSent.
 func summarizeVerifierResults(vResults []veriflier.CheckResult) []map[string]any {
 	out := make([]map[string]any, 0, len(vResults))

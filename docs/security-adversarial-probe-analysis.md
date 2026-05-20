@@ -22,7 +22,7 @@ Fixes landed in this branch:
 - Cap authenticated API JSON request bodies at 1 MiB, including idempotency-key hashing and replay caching.
 - Apply public-target validation and guarded HTTP clients to outbound webhook and Slack / Teams alert delivery URLs.
 - Add `jetmon2 site-safety unsafe-urls`, a dry-run-first cleanup tool that scans active legacy rows with the same URL guard and can deactivate unsafe rows when run with `--execute`.
-- Add `jetmon_site_safety_flags`, a durable non-downtime remediation table for unsafe legacy URLs and runtime probe-safety blocks.
+- Add `jetpack_monitor_site_safety_flags`, a durable non-downtime remediation table for unsafe legacy URLs and runtime probe-safety blocks.
 - Block already-stored unsafe or malformed direct targets in the checker hot path with a non-downtime `ErrorProbeSafety` result. The orchestrator audits these as `probe_safety_blocked`, records an open safety flag, and does not open or close downtime incidents.
 - Classify unsafe redirect targets as `ErrorProbeSafety` rather than generic redirect failures, so redirect SSRF blocks are not counted as customer-site downtime.
 - Add regression coverage for gzip expansion, slow/infinite body streaming, oversized response headers, unsafe redirects, unsafe Veriflier URLs, and custom header injection/framing attempts.
@@ -202,7 +202,7 @@ Tests added:
 
 ### Legacy Cleanup Path
 
-`jetmon2 site-safety unsafe-urls` scans active `jetpack_monitor_sites` rows and classifies `monitor_url` with the same admission-time shape/literal guard, `netguard.ParsePublicHTTPURL`. By default it is a dry run and prints counts plus bounded examples. Passing `--execute` records a `jetmon_site_safety_flags` row for each unsafe active row, then deactivates that monitor row by setting `monitor_active = 0`; it does not delete rows. The flag preserves `blog_id`, `monitor_site_id`, `flag_type`, reason, URL, first/last seen timestamps, and deactivation time. Runtime DNS safety checks still remain necessary for hostnames whose resolution changes later.
+`jetmon2 site-safety unsafe-urls` scans active `jetpack_monitor_sites` rows and classifies `monitor_url` with the same admission-time shape/literal guard, `netguard.ParsePublicHTTPURL`. By default it is a dry run and prints counts plus bounded examples. Passing `--execute` records a `jetpack_monitor_site_safety_flags` row for each unsafe active row, then deactivates that monitor row by setting `monitor_active = 0`; it does not delete rows. The flag preserves `blog_id`, `monitor_site_id`, `flag_type`, reason, URL, first/last seen timestamps, and deactivation time. Runtime DNS safety checks still remain necessary for hostnames whose resolution changes later.
 
 Tests added:
 
@@ -303,7 +303,7 @@ go mod verify
 
 Docker image builds were also refreshed for `Dockerfile_jetmon`, `Dockerfile_veriflier`, and `Dockerfile_api_fixture` using the updated `golang:1.26.3` builder image.
 
-MariaDB migration smoke tests were run against isolated local Docker containers for `mariadb:11.4.8` and `mariadb:11.4.10`. In both cases app-user setup succeeded, `./bin/jetmon2 migrate` applied all migrations, an immediate second migrate was idempotent, `jetmon_schema_migrations` reported `COUNT(*)=50` and `MAX(id)=50`, and the process-health runtime scheduler columns existed.
+MariaDB migration smoke tests were run against isolated local Docker containers for `mariadb:11.4.8` and `mariadb:11.4.10`. In both cases app-user setup succeeded, `./bin/jetmon2 migrate` applied all migrations, an immediate second migrate was idempotent, `jetpack_monitor_schema_migrations` reported `COUNT(*)=50` and `MAX(id)=50`, and the process-health runtime scheduler columns existed.
 
 Delivery claim smoke tests now run through `make delivery-claim-smoke`. The target creates an isolated MariaDB 11.4 database, applies migrations, compiles the webhook and alerting package test binaries, locks one pending delivery row, and verifies that each real `ClaimReady` path skips the locked row while claiming other due rows.
 
@@ -345,7 +345,7 @@ Current branch behavior is intentionally conservative:
 - Unsafe direct targets and unsafe redirects return `ErrorProbeSafety`.
 - The checker marks them non-failures for downtime purposes.
 - The orchestrator writes `probe_safety_blocked` audit rows and metrics.
-- The orchestrator upserts an open `jetmon_site_safety_flags` row for runtime probe-safety blocks when the source monitor row is known.
+- The orchestrator upserts an open `jetpack_monitor_site_safety_flags` row for runtime probe-safety blocks when the source monitor row is known.
 - `site-safety unsafe-urls --execute` records `unsafe_monitor_url` flags with `status='deactivated'` before setting `monitor_active = 0`.
 - No customer downtime event is opened, promoted, or closed.
 
@@ -355,7 +355,7 @@ Deferred product options:
 
 1. Add a first-class non-downtime event state, for example `Probe Blocked` or `Probe Safety Blocked`, with severity 2 and `check_type=probe_safety`. Do this if dashboards or API consumers need probe-safety findings in the normal event feed. It must be excluded from SLA downtime and WPCOM down/recovery notifications.
 2. Treat public-host hostile responses as degraded states only after repeat evidence. Oversized headers, body-read budget exhaustion, and TLS pathology can be real site problems or adversarial behavior. If represented as events, they should use thresholds and cooldowns to avoid opening transient one-probe noise.
-3. Add scheduled reporting over `jetmon_site_safety_flags` and dry-run scans so operators can watch unsafe legacy row counts before and after API rejection rolls out.
+3. Add scheduled reporting over `jetpack_monitor_site_safety_flags` and dry-run scans so operators can watch unsafe legacy row counts before and after API rejection rolls out.
 
 API behavior should remain strict regardless of which product option is chosen: new or updated monitor URLs should be rejected at write time when they are shape-unsafe, and runtime target-safety should remain in place for already-stored rows and DNS changes.
 
@@ -368,7 +368,7 @@ If more checker result fields become shared protocol semantics, move the stable 
 ## Remaining High-Value Scenarios
 
 1. Run an end-to-end MariaDB 11.4 runtime exercise before production rollout, covering bucket claiming, runtime freshness writes, SSL expiry batches, `ON DUPLICATE KEY UPDATE ... VALUES(...)`, and webhook / alert delivery claims.
-2. Add scheduled reporting over `jetmon_site_safety_flags` and dry-run scans so the unsafe legacy row count can be watched before and after API rejection rolls out.
+2. Add scheduled reporting over `jetpack_monitor_site_safety_flags` and dry-run scans so the unsafe legacy row count can be watched before and after API rejection rolls out.
 3. Exercise DNS rebinding with an authoritative test DNS responder: public address on first lookup, private address on a redirect hop or later check.
 4. Exercise TLS pathology with uptime-bench responders: TLS 1.0/1.1, no common cipher, handshake close/alert, large certificate chains, expired/self-signed/hostname mismatch certificates.
 5. Consider streaming keyword matching that can stop as soon as a required-only keyword is found instead of reading until EOF/limit/budget.

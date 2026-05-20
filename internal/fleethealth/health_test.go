@@ -30,7 +30,7 @@ func TestUpsertSnapshot(t *testing.T) {
 	bucketMin, bucketMax := 0, 99
 	apiPort, dashboardPort := 8090, 8080
 
-	mock.ExpectExec("INSERT INTO jetmon_process_health").
+	mock.ExpectExec("INSERT INTO jetpack_monitor_process_health").
 		WithArgs(
 			"host-a:monitor",
 			"host-a",
@@ -164,7 +164,7 @@ func TestMarkStopped(t *testing.T) {
 	defer sqlDB.Close()
 
 	when := time.Date(2026, 4, 30, 10, 2, 0, 0, time.UTC)
-	mock.ExpectExec("UPDATE jetmon_process_health").
+	mock.ExpectExec("UPDATE jetpack_monitor_process_health").
 		WithArgs(StateStopped, HealthAmber, when, "host-a:deliverer").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 

@@ -35,7 +35,7 @@ func TestCreateWebhookPersistsDefaultsAndFetchesRecord(t *testing.T) {
 	defer db.Close()
 
 	now := time.Now().UTC()
-	mock.ExpectExec("INSERT INTO jetmon_webhooks").
+	mock.ExpectExec("INSERT INTO jetpack_monitor_webhooks").
 		WithArgs(
 			"https://consumer.example/hook",
 			1,
@@ -184,7 +184,7 @@ func TestTenantScopedWebhookQueriesFilterByOwner(t *testing.T) {
 	mock.ExpectQuery("WHERE owner_tenant_id = \\? ORDER BY id ASC").
 		WithArgs("tenant-a").
 		WillReturnRows(webhookRow(13, "https://tenant.example/other", 1, now))
-	mock.ExpectExec("UPDATE jetmon_webhooks SET").
+	mock.ExpectExec("UPDATE jetpack_monitor_webhooks SET").
 		WithArgs(0, int64(12), "tenant-a").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("WHERE id = \\? AND owner_tenant_id = \\?").
@@ -193,7 +193,7 @@ func TestTenantScopedWebhookQueriesFilterByOwner(t *testing.T) {
 			int64(12), "https://tenant.example/hook", uint8(0), "tenant-a",
 			`["event.opened"]`, `{}`, `{}`, "_XYZ", "ops", now, now,
 		))
-	mock.ExpectExec("DELETE FROM jetmon_webhooks WHERE id = \\? AND owner_tenant_id = \\?").
+	mock.ExpectExec("DELETE FROM jetpack_monitor_webhooks WHERE id = \\? AND owner_tenant_id = \\?").
 		WithArgs(int64(12), "tenant-a").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -240,7 +240,7 @@ func TestUpdateWebhookAppliesPatchAndFetchesRecord(t *testing.T) {
 	stateFilter := StateFilter{States: []string{"Up"}}
 	now := time.Now().UTC()
 
-	mock.ExpectExec("UPDATE jetmon_webhooks SET").
+	mock.ExpectExec("UPDATE jetpack_monitor_webhooks SET").
 		WithArgs(url, 0, sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), int64(5)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("SELECT id, url, active, owner_tenant_id, events").
@@ -291,7 +291,7 @@ func TestDeleteWebhookReportsMissingRows(t *testing.T) {
 	}
 	defer db.Close()
 
-	mock.ExpectExec("DELETE FROM jetmon_webhooks").
+	mock.ExpectExec("DELETE FROM jetpack_monitor_webhooks").
 		WithArgs(int64(10)).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 
@@ -311,7 +311,7 @@ func TestRotateSecretUpdatesStoredSecret(t *testing.T) {
 	defer db.Close()
 
 	now := time.Now().UTC()
-	mock.ExpectExec("UPDATE jetmon_webhooks SET secret").
+	mock.ExpectExec("UPDATE jetpack_monitor_webhooks SET secret").
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), int64(8)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("SELECT id, url, active, owner_tenant_id, events").
@@ -337,7 +337,7 @@ func TestLoadSecret(t *testing.T) {
 	}
 	defer db.Close()
 
-	mock.ExpectQuery("SELECT secret FROM jetmon_webhooks").
+	mock.ExpectQuery("SELECT secret FROM jetpack_monitor_webhooks").
 		WithArgs(int64(4)).
 		WillReturnRows(sqlmock.NewRows([]string{"secret"}).AddRow("whsec_secret"))
 
@@ -374,10 +374,10 @@ func TestEnqueueWebhookDeliveryReturnsInsertedIDAndDuplicateZero(t *testing.T) {
 	defer db.Close()
 
 	payload := json.RawMessage(`{"type":"event.opened"}`)
-	mock.ExpectExec("INSERT IGNORE INTO jetmon_webhook_deliveries").
+	mock.ExpectExec("INSERT IGNORE INTO jetpack_monitor_webhook_deliveries").
 		WithArgs(int64(1), int64(2), int64(3), EventOpened, []byte(payload)).
 		WillReturnResult(sqlmock.NewResult(9, 1))
-	mock.ExpectExec("INSERT IGNORE INTO jetmon_webhook_deliveries").
+	mock.ExpectExec("INSERT IGNORE INTO jetpack_monitor_webhook_deliveries").
 		WithArgs(int64(1), int64(2), int64(3), EventOpened, []byte(payload)).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 
@@ -406,13 +406,13 @@ func TestWebhookDeliveryStateUpdates(t *testing.T) {
 	defer db.Close()
 
 	next := time.Now().UTC().Add(time.Minute)
-	mock.ExpectExec("UPDATE jetmon_webhook_deliveries").
+	mock.ExpectExec("UPDATE jetpack_monitor_webhook_deliveries").
 		WithArgs(204, "ok", int64(1)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("UPDATE jetmon_webhook_deliveries").
+	mock.ExpectExec("UPDATE jetpack_monitor_webhook_deliveries").
 		WithArgs(503, "retry", next, int64(2)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("UPDATE jetmon_webhook_deliveries").
+	mock.ExpectExec("UPDATE jetpack_monitor_webhook_deliveries").
 		WithArgs(410, "gone", int64(3)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -444,7 +444,7 @@ func TestGetListAndRetryWebhookDeliveries(t *testing.T) {
 	mock.ExpectQuery("SELECT id, webhook_id, transition_id").
 		WithArgs(int64(20), string(StatusAbandoned), int64(50), 10).
 		WillReturnRows(webhookDeliveryRow(2, StatusAbandoned, now))
-	mock.ExpectExec("UPDATE jetmon_webhook_deliveries").
+	mock.ExpectExec("UPDATE jetpack_monitor_webhook_deliveries").
 		WithArgs(int64(2)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 

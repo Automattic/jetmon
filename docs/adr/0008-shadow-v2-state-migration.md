@@ -9,7 +9,7 @@ state-model decision behind that runbook.
 ## Context
 
 Jetmon 2 replaces mutable v1 status handling with event-sourced incident
-state (`jetmon_events` + `jetmon_event_transitions`). Production consumers,
+state (`jetpack_monitor_events` + `jetpack_monitor_event_transitions`). Production consumers,
 however, still read the legacy `jetpack_monitor_sites.site_status` and
 `last_status_change` fields. A hard cutover would require every consumer
 to migrate at the same time as the monitor binary, which is operationally
@@ -24,7 +24,7 @@ the migration; incident state is.
 
 Jetmon 2 will use a **shadow-v2-state** migration model:
 
-- `jetmon_events` and `jetmon_event_transitions` are the authoritative
+- `jetpack_monitor_events` and `jetpack_monitor_event_transitions` are the authoritative
   incident state.
 - `jetpack_monitor_sites` remains the legacy site/config table during
   migration.

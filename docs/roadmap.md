@@ -68,8 +68,8 @@ production telemetry branches:
   behavior, duplicate-vantage misconfiguration, mixed-vantage responses, and
   long outage promotion/recovery.
 - [x] Add Veriflier auto-discovery in a shadow-first rollout:
-  - trusted DB-backed `jetmon_veriflier_vantages` registry for quorum identities
-  - monitor-collected `jetmon_veriflier_agents` rows for process capacity and
+  - trusted DB-backed `jetpack_monitor_veriflier_vantages` registry for quorum identities
+  - monitor-collected `jetpack_monitor_veriflier_agents` rows for process capacity and
     liveness without giving Veriflier hosts DB access
   - monitor discovery mode `static|shadow|active`, defaulting to static
   - no self-created quorum votes; new vantages must be pre-approved by
@@ -116,14 +116,14 @@ production telemetry branches:
   v1 with v2 using `HEAD` + `legacy`, then migrate controlled cohorts to
   `GET` + `simple_http`, then enable `GET` + `full` detections after stability
   is proven.
-- [x] Store per-site rollout check policy in `jetmon_site_check_config` instead
+- [x] Store per-site rollout check policy in `jetpack_monitor_site_check_config` instead
   of adding more fields to `jetpack_monitor_sites`, reducing hot-schema-change
   pressure on the legacy compatibility table.
 - [x] Move remaining v2-only site options and runtime freshness fields out of
   `jetpack_monitor_sites` into v2-owned side tables before production. The
   legacy table remains v1-shaped for rollout compatibility, while
-  `jetmon_site_check_config` owns advanced per-site check policy/config and
-  `jetmon_site_runtime` owns freshness, due-time, alert, and SSL bookkeeping.
+  `jetpack_monitor_site_check_config` owns advanced per-site check policy/config and
+  `jetpack_monitor_site_runtime` owns freshness, due-time, alert, and SSL bookkeeping.
 - [x] Bring the service handoff recommendations and rollout prelaunch checklist
   into the repo as `docs/jetmon-v2-prelaunch-readiness.md`, linked from the
   docs index and migration runbook.
@@ -329,7 +329,7 @@ production telemetry branches:
   asks uptime-bench to add `/proc/<pid>/io`, `pidstat`, `iostat`, mount, and
   mismatch reporting.
 - [ ] Move streaming scheduler persistence from broad legacy-table reloads to
-  `jetmon_check_targets` plus change detection. The table exists now, but the
+  `jetpack_monitor_check_targets` plus change detection. The table exists now, but the
   first prototype still reloads active identity/cadence from
   `jetpack_monitor_sites` plus v2 sidecar config so correctness can be
   validated before optimizing config-sync reads.
@@ -378,8 +378,8 @@ production telemetry branches:
   uptime-bench or server monitoring remains responsible for exact wire-level
   interface bytes.
 - [x] Batch passive per-check DB writes for
-  `jetmon_site_runtime.last_checked_at` freshness updates and
-  `jetmon_check_history` timing samples so healthy high-volume sweeps are not
+  `jetpack_monitor_site_runtime.last_checked_at` freshness updates and
+  `jetpack_monitor_check_history` timing samples so healthy high-volume sweeps are not
   dominated by one UPDATE plus one INSERT per site.
 - [x] Avoid rewriting unchanged `ssl_expiry_date` values on every HTTPS check
   while still evaluating TLS-expiry alert state for each observed certificate.
@@ -406,7 +406,7 @@ production telemetry branches:
 - [ ] If MySQL CPU remains the limiting factor after batched writes, evaluate
   an asynchronous bounded check-history writer or lower-resolution history
   retention for healthy probes while keeping runtime freshness synchronous.
-- [x] Add maintained `jetmon_site_runtime.next_check_at` values and scheduler
+- [x] Add maintained `jetpack_monitor_site_runtime.next_check_at` values and scheduler
   indexes so variable-interval due selection uses a simple indexed range
   predicate instead of computing `DATE_ADD(last_checked_at, INTERVAL
   GREATEST(check_interval, 1) MINUTE)` during every scheduler fetch. The
@@ -601,14 +601,14 @@ production telemetry branches:
   rollback simulations.
 - [x] Automate v2 service start failure after v1 stops, unwritable rollout log
   directory refusal, bad DB connection refusal, and real
-  `jetmon_site_runtime.last_checked_at` activity from the `jetmon2` service.
+  `jetpack_monitor_site_runtime.last_checked_at` activity from the `jetmon2` service.
 - [x] Add snapshot-backed replay for every named VM lab smoke flow.
 
 ### Dashboard and Fleet Health TODO
 
 - [x] Split dashboard work into two PRs: first improve host dashboards and add
   fleet-dashboard plumbing, then build the global fleet dashboard on top.
-- [x] Add a durable `jetmon_process_health` table for long-running process
+- [x] Add a durable `jetpack_monitor_process_health` table for long-running process
   heartbeats and compact local health snapshots.
 - [x] Publish monitor-host health from `jetmon2`, including bucket ownership,
   worker queues, WPCOM circuit state, delivery-owner state, dependency health,
@@ -625,14 +625,14 @@ production telemetry branches:
 - [x] Add a compact host-summary issue list so amber/red dashboard states name
   the highest-priority blockers instead of only showing aggregate counts.
 - [x] Split process lifecycle state from health rollup state in
-  `jetmon_process_health` so a running process can still report degraded or red
+  `jetpack_monitor_process_health` so a running process can still report degraded or red
   dependencies without overloading a single field.
 - [x] Wire real per-host sites-per-second and last-round duration values into
   the dashboard instead of showing placeholder zero values.
 - [x] Label the dashboard memory value as Go runtime system memory so operators
   do not mistake `runtime.MemStats.Sys` for operating-system RSS.
-- [x] Build the global fleet dashboard from `jetmon_process_health`,
-  `jetmon_hosts`, delivery queues, projection drift, and Veriflier health.
+- [x] Build the global fleet dashboard from `jetpack_monitor_process_health`,
+  `jetpack_monitor_hosts`, delivery queues, projection drift, and Veriflier health.
 - [x] Add dedicated fleet Veriflier discovery views for trusted vantages,
   monitor-collected agent telemetry, capacity, discovery mode posture, and
   duplicate endpoint warnings without exposing auth tokens.
@@ -947,7 +947,7 @@ tests that fail when handler behavior drifts from the published schema.
 
 ### Public API work still to do
 
-- Backfill and reconcile `jetmon_site_tenants` from the gateway/customer source
+- Backfill and reconcile `jetpack_monitor_site_tenants` from the gateway/customer source
   of truth before customer traffic depends on Jetmon-side site enforcement.
   Initial CSV import support exists via `jetmon2 site-tenants import`; remaining
   work is agreeing on the gateway export contract and pruning/reconciliation
@@ -974,7 +974,7 @@ These were considered during Phase 3 design and intentionally left out of v1 wit
 
 ### `site.state_changed` webhook events
 
-Phase 3 v1 ships only `event.*` webhooks (one per `jetmon_event_transitions` row). A `site.state_changed` rollup webhook — fires when the site's derived rollup state changes — was punted because:
+Phase 3 v1 ships only `event.*` webhooks (one per `jetpack_monitor_event_transitions` row). A `site.state_changed` rollup webhook — fires when the site's derived rollup state changes — was punted because:
 
 - Detecting site-level transitions cleanly without races requires changes to the orchestrator (it currently writes `site_status` but doesn't compute deltas)
 - Event-level webhooks already give consumers everything they need to compute site-level rollup themselves
@@ -989,7 +989,7 @@ Phase 3 v1 ships immediate-revocation only: rotating a webhook secret invalidate
 A future Phase 3.x extension is **grace-period rotation**: server signs with both old and new secrets for a configurable window (24h default), consumer verifies whichever they support, then the old secret expires. This matches Stripe's webhook signing roll model and lets consumers deploy at their own pace.
 
 **Why this is a clean future addition:**
-- Schema extension only: add `previous_secret_hash` and `previous_secret_expires_at` columns to `jetmon_webhooks`
+- Schema extension only: add `previous_secret_hash` and `previous_secret_expires_at` columns to `jetpack_monitor_webhooks`
 - Header format already supports multiple `v1=` values (Stripe-compatible)
 - New endpoint shape: `POST /webhooks/{id}/rotate-secret?grace=24h`
 - No migration of existing webhooks needed; immediate-revocation is the default if `?grace` is absent
@@ -1053,7 +1053,7 @@ Phase 3.x ships alert contacts alongside the existing WPCOM notification flow ra
 **Why deferred:** drop-in compatibility with the existing v1 deployment shape is more important than architectural unification. Migrating WPCOM-flow consumers to alert contacts requires:
 - Inventorying all current WPCOM notification recipients and their subscription patterns
 - Building a `wpcom` transport (or reusing an existing one) that delivers through the same channel
-- Migrating the per-recipient subscription data into `jetmon_alert_contacts`
+- Migrating the per-recipient subscription data into `jetpack_monitor_alert_contacts`
 - Verifying nothing regresses for the existing recipients during cutover
 
 This is a coordinated migration, not a code change — and it's safer to do once alert contacts has proven out in production with real customers.
@@ -1077,7 +1077,7 @@ This is fine for now but won't scale operationally. Different concerns have very
 
 | Concern | Scaling axis | Deployment shape |
 |---------|--------------|------------------|
-| Orchestrator | bucket count, check rate | stateful (claims buckets in `jetmon_hosts`); horizontal via bucket coordination |
+| Orchestrator | bucket count, check rate | stateful (claims buckets in `jetpack_monitor_hosts`); horizontal via bucket coordination |
 | API server | request rate | stateless; horizontal behind a load balancer |
 | Outbound delivery | event volume + slow third parties | stateless; horizontal via row-claim on per-transport delivery tables |
 | Operator dashboard | one-off operator sessions | one per ops region |
@@ -1092,7 +1092,7 @@ Putting everything in one binary means scaling the most expensive concern scales
 - `jetmon-dashboard` — operator UI / SSE state stream
 - `jetmon-verifier` — standalone HTTP check executor (today: `veriflier2`; rename TBD)
 
-**Why `jetmon-deliverer` is one binary, not three.** Webhooks, alert contacts, and WPCOM notifications all share the same plumbing: poll `jetmon_event_transitions` (or a similar source), build a frozen-at-fire-time payload, dispatch with a per-destination in-flight cap, retry on failure with exponential backoff, mark abandoned after N attempts. Only the transport differs (HTTPS POST + HMAC for webhooks, transport-specific protocols for PagerDuty/Slack/email/SMS, internal RPC for WPCOM). Splitting them into separate binaries would triple the operational surface (three deploy units, three retry queues, three sets of metrics) for what is fundamentally one job — outbound dispatch — with pluggable transports. Keeping them in one process also means a single circuit-breaker registry across destinations, which is the natural place to enforce shared-resource caps (e.g. "don't open 5,000 outbound connections during a regional outage").
+**Why `jetmon-deliverer` is one binary, not three.** Webhooks, alert contacts, and WPCOM notifications all share the same plumbing: poll `jetpack_monitor_event_transitions` (or a similar source), build a frozen-at-fire-time payload, dispatch with a per-destination in-flight cap, retry on failure with exponential backoff, mark abandoned after N attempts. Only the transport differs (HTTPS POST + HMAC for webhooks, transport-specific protocols for PagerDuty/Slack/email/SMS, internal RPC for WPCOM). Splitting them into separate binaries would triple the operational surface (three deploy units, three retry queues, three sets of metrics) for what is fundamentally one job — outbound dispatch — with pluggable transports. Keeping them in one process also means a single circuit-breaker registry across destinations, which is the natural place to enforce shared-resource caps (e.g. "don't open 5,000 outbound connections during a regional outage").
 
 What this means concretely:
 - The Phase 3 webhook worker (`internal/webhooks/worker.go`) is the seed. Its `dispatchTick` / `deliverTick` shape generalizes — the matching, claiming, retry, and abandon logic is transport-agnostic.
@@ -1176,7 +1176,7 @@ where to look, and what each item unlocked.
   in local/dev databases.
   This makes fresh Docker environments and production schema upgrades use the
   same migration path.
-- **MySQL bucket coordination.** v2 introduced `jetmon_hosts` ownership and
+- **MySQL bucket coordination.** v2 introduced `jetpack_monitor_hosts` ownership and
   heartbeat logic so hosts can claim, release, and reclaim bucket ranges
   dynamically.
   Static v1 bucket ranges are still supported later through pinned rollout
@@ -1208,8 +1208,8 @@ where to look, and what each item unlocked.
 ### Core State and Detection
 
 - **Event-sourced incident state.** Jetmon now writes authoritative incident
-  state to `jetmon_events` and append-only lifecycle history to
-  `jetmon_event_transitions`.
+  state to `jetpack_monitor_events` and append-only lifecycle history to
+  `jetpack_monitor_event_transitions`.
   Useful for: reconstructing incidents, API reads, webhook/alert delivery, and
   legacy projection drift checks.
 - **Shadow-state migration support.** The legacy `site_status` projection is
@@ -1272,7 +1272,7 @@ where to look, and what each item unlocked.
   Non-gateway consumers cannot spoof public-context headers.
 - **Tenant ownership enforcement.** Gateway-routed site, event, stats,
   trigger-now, webhook, alert-contact, delivery, and manual retry paths are
-  scoped through `jetmon_site_tenants` or resource `owner_tenant_id`.
+  scoped through `jetpack_monitor_site_tenants` or resource `owner_tenant_id`.
   This gives defense-in-depth behind the gateway while preserving unscoped
   internal-operator behavior.
 - **Site tenant import tooling.** `jetmon2 site-tenants import` can load
@@ -1354,7 +1354,7 @@ where to look, and what each item unlocked.
   staged systemd validation. Rehearsal plans can now include exact v1 stop/start
   commands and explicit rollback hold points.
 - **Dynamic ownership preflight.** `./jetmon2 rollout dynamic-check` verifies
-  that pinned ranges are removed, `jetmon_hosts` rows cover the full bucket
+  that pinned ranges are removed, `jetpack_monitor_hosts` rows cover the full bucket
   range without gaps/overlaps, heartbeats are fresh, and projection drift is
   zero.
   This supports the second step after every host has moved safely to v2.

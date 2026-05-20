@@ -19,7 +19,7 @@ type migration struct {
 }
 
 var migrations = []migration{
-	{1, `CREATE TABLE IF NOT EXISTS jetmon_schema_migrations (
+	{1, `CREATE TABLE IF NOT EXISTS jetpack_monitor_schema_migrations (
 		id           INT UNSIGNED NOT NULL PRIMARY KEY,
 		applied_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
@@ -38,10 +38,10 @@ var migrations = []migration{
 
 	// Migration 3 previously added v2-only config columns to
 	// jetpack_monitor_sites. That hot table is now kept v1-shaped for rollout;
-	// v2-only config lives in jetmon_site_check_config.
+	// v2-only config lives in jetpack_monitor_site_check_config.
 	{3, `SELECT 1`},
 
-	{4, `CREATE TABLE IF NOT EXISTS jetmon_hosts (
+	{4, `CREATE TABLE IF NOT EXISTS jetpack_monitor_hosts (
 		host_id        VARCHAR(255) NOT NULL PRIMARY KEY,
 		bucket_min     SMALLINT UNSIGNED NOT NULL,
 		bucket_max     SMALLINT UNSIGNED NOT NULL,
@@ -49,7 +49,7 @@ var migrations = []migration{
 		status         ENUM('active','draining') NOT NULL DEFAULT 'active'
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
 
-	{5, `CREATE TABLE IF NOT EXISTS jetmon_audit_log (
+	{5, `CREATE TABLE IF NOT EXISTS jetpack_monitor_audit_log (
 		id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
 		blog_id      BIGINT UNSIGNED NOT NULL,
 		event_type   VARCHAR(64) NOT NULL,
@@ -64,7 +64,7 @@ var migrations = []migration{
 		INDEX idx_blog_id_created (blog_id, created_at)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
 
-	{6, `CREATE TABLE IF NOT EXISTS jetmon_check_history (
+	{6, `CREATE TABLE IF NOT EXISTS jetpack_monitor_check_history (
 		id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
 		blog_id    BIGINT UNSIGNED NOT NULL,
 		http_code  SMALLINT NULL,
@@ -78,7 +78,7 @@ var migrations = []migration{
 		INDEX idx_blog_id_checked (blog_id, checked_at)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
 
-	{7, `CREATE TABLE IF NOT EXISTS jetmon_false_positives (
+	{7, `CREATE TABLE IF NOT EXISTS jetpack_monitor_false_positives (
 		id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
 		blog_id    BIGINT UNSIGNED NOT NULL,
 		http_code  SMALLINT NULL,
@@ -89,13 +89,13 @@ var migrations = []migration{
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
 
 	// Migration 8 previously added v2 runtime/freshness fields to
-	// jetpack_monitor_sites. Runtime state now lives in jetmon_site_runtime.
+	// jetpack_monitor_sites. Runtime state now lives in jetpack_monitor_site_runtime.
 	{8, `SELECT 1`},
 
-	// Migration 9 retires jetmon_audit_log's site-state columns. Per-probe data lives in
-	// jetmon_check_history; status transitions move to jetmon_event_transitions (migration 11).
+	// Migration 9 retires jetpack_monitor_audit_log's site-state columns. Per-probe data lives in
+	// jetpack_monitor_check_history; status transitions move to jetpack_monitor_event_transitions (migration 11).
 	// What remains is purely operational: WPCOM, retries, verifier RPC, suppression, config.
-	{9, `ALTER TABLE jetmon_audit_log
+	{9, `ALTER TABLE jetpack_monitor_audit_log
 		DROP COLUMN http_code,
 		DROP COLUMN error_code,
 		DROP COLUMN rtt_ms,
@@ -111,7 +111,7 @@ var migrations = []migration{
 	// Migration 10 creates the events table — current authoritative state of every incident.
 	// dedup_key is a generated column that is NULL while ended_at IS NULL, full identity tuple while open.
 	// The UNIQUE KEY enforces "one open event per tuple" without requiring partial indexes (which MySQL lacks).
-	{10, `CREATE TABLE IF NOT EXISTS jetmon_events (
+	{10, `CREATE TABLE IF NOT EXISTS jetpack_monitor_events (
 		id                  BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
 		blog_id             BIGINT UNSIGNED NOT NULL,
 		endpoint_id         BIGINT UNSIGNED NULL,
@@ -137,11 +137,11 @@ var migrations = []migration{
 		INDEX idx_cause_event_id (cause_event_id)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
 
-	// Migration 11 creates the append-only history of every mutation to jetmon_events.
-	// One row per change; never updated, never deleted. Together with jetmon_events,
+	// Migration 11 creates the append-only history of every mutation to jetpack_monitor_events.
+	// One row per change; never updated, never deleted. Together with jetpack_monitor_events,
 	// this is the full event-sourced record. blog_id is denormalized to keep SLA queries
 	// off the events table.
-	{11, `CREATE TABLE IF NOT EXISTS jetmon_event_transitions (
+	{11, `CREATE TABLE IF NOT EXISTS jetpack_monitor_event_transitions (
 		id                BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
 		event_id          BIGINT UNSIGNED NOT NULL,
 		blog_id           BIGINT UNSIGNED NOT NULL,
@@ -163,7 +163,7 @@ var migrations = []migration{
 	// limit, scope, expiry, and revocation are all stored here. consumer_name is
 	// the audit-log key — every authenticated API request logs against it so we
 	// can track and revoke specific internal systems. See docs/internal-api-reference.md "Authentication".
-	{12, `CREATE TABLE IF NOT EXISTS jetmon_api_keys (
+	{12, `CREATE TABLE IF NOT EXISTS jetpack_monitor_api_keys (
 		id                    BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
 		key_hash              CHAR(64) NOT NULL,
 		consumer_name         VARCHAR(128) NOT NULL,
@@ -179,24 +179,24 @@ var migrations = []migration{
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
 
 	// Migration 13 creates the webhook registry. secret_hash is sha256 of the
-	// raw secret (which is shown once at creation, mirrors jetmon_api_keys).
+	// raw secret (which is shown once at creation, mirrors jetpack_monitor_api_keys).
 	// events / site_filter / state_filter are JSON to allow flexible filter
 	// shapes without per-filter columns; semantics: empty = match all, AND
 	// across dimensions, whitelist within each. See docs/internal-api-reference.md "Family 4".
 	// secret stores the raw HMAC signing key in plaintext. Unlike
-	// jetmon_api_keys (sha256-hashed at rest, used for inbound auth where
+	// jetpack_monitor_api_keys (sha256-hashed at rest, used for inbound auth where
 	// hash is sufficient), webhook secrets are used to SIGN outbound
 	// deliveries — HMAC needs the actual key material in memory, not its
 	// hash. We never verify inbound signatures with this secret, so
 	// hash-at-rest would buy us no verification benefit while making
 	// signing impossible.
 	//
-	// Threat model: anyone with read access to jetmon_webhooks can mint
+	// Threat model: anyone with read access to jetpack_monitor_webhooks can mint
 	// valid deliveries. For the internal API behind a gateway, that's
 	// equivalent to the existing access-to-events threat. Encryption at
 	// rest with a master key (KMS-style) is in docs/roadmap.md as a future
 	// hardening step.
-	{13, `CREATE TABLE IF NOT EXISTS jetmon_webhooks (
+	{13, `CREATE TABLE IF NOT EXISTS jetpack_monitor_webhooks (
 		id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
 		url             VARCHAR(2083) NOT NULL,
 		active          TINYINT UNSIGNED NOT NULL DEFAULT 1,
@@ -213,7 +213,7 @@ var migrations = []migration{
 
 	// Migration 14 creates the per-fire delivery records. One row per
 	// (webhook, transition) match — transition_id is the fan-in point: a
-	// single jetmon_event_transitions row can produce many deliveries (one
+	// single jetpack_monitor_event_transitions row can produce many deliveries (one
 	// per matching webhook), but a webhook gets at most one delivery per
 	// transition (enforced by uk_webhook_transition).
 	//
@@ -224,7 +224,7 @@ var migrations = []migration{
 	// status lifecycle: pending → (delivered | abandoned). "failed" is reserved
 	// for permanent client/server errors that we wouldn't retry (currently
 	// unused; pending captures the in-retry case).
-	{14, `CREATE TABLE IF NOT EXISTS jetmon_webhook_deliveries (
+	{14, `CREATE TABLE IF NOT EXISTS jetpack_monitor_webhook_deliveries (
 		id               BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
 		webhook_id       BIGINT UNSIGNED NOT NULL,
 		transition_id    BIGINT UNSIGNED NOT NULL,
@@ -249,7 +249,7 @@ var migrations = []migration{
 	// jetmon2 instance keeps last_transition_id high-water mark so the
 	// dispatcher polls only new transitions. The UNIQUE KEY on instance_id
 	// makes upsert (INSERT … ON DUPLICATE KEY UPDATE) trivial.
-	{15, `CREATE TABLE IF NOT EXISTS jetmon_webhook_dispatch_progress (
+	{15, `CREATE TABLE IF NOT EXISTS jetpack_monitor_webhook_dispatch_progress (
 		instance_id          VARCHAR(255) NOT NULL PRIMARY KEY,
 		last_transition_id   BIGINT UNSIGNED NOT NULL DEFAULT 0,
 		updated_at           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
@@ -265,7 +265,7 @@ var migrations = []migration{
 	//   slack     → {"webhook_url":"https://hooks.slack.com/..."}
 	//   teams     → {"webhook_url":"https://outlook.office.com/webhook/..."}
 	// destination stores the credential in plaintext for the same reason
-	// jetmon_webhooks.secret does (see migration 13): outbound dispatch
+	// jetpack_monitor_webhooks.secret does (see migration 13): outbound dispatch
 	// needs the raw value at every send. A hash is useless because we'd
 	// have to recover the original to call the transport. Threat model and
 	// future encryption-at-rest plan are identical.
@@ -279,7 +279,7 @@ var migrations = []migration{
 	// unlimited). Per-contact because different destinations have
 	// different tolerance — a Slack channel can take far more than a
 	// PagerDuty oncall can.
-	{16, `CREATE TABLE IF NOT EXISTS jetmon_alert_contacts (
+	{16, `CREATE TABLE IF NOT EXISTS jetpack_monitor_alert_contacts (
 		id                   BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
 		label                VARCHAR(128) NOT NULL,
 		active               TINYINT UNSIGNED NOT NULL DEFAULT 1,
@@ -297,7 +297,7 @@ var migrations = []migration{
 
 	// Migration 17 creates the per-fire alert delivery records. One row per
 	// (alert_contact, transition) match — same fan-in shape as
-	// jetmon_webhook_deliveries: one transition produces many deliveries
+	// jetpack_monitor_webhook_deliveries: one transition produces many deliveries
 	// (one per matching contact), one contact gets at most one delivery
 	// per transition (enforced by uk_alert_transition).
 	//
@@ -305,8 +305,8 @@ var migrations = []migration{
 	// when the alert fired, not as it is now.
 	//
 	// status lifecycle and 'failed' semantics are identical to
-	// jetmon_webhook_deliveries.
-	{17, `CREATE TABLE IF NOT EXISTS jetmon_alert_deliveries (
+	// jetpack_monitor_webhook_deliveries.
+	{17, `CREATE TABLE IF NOT EXISTS jetpack_monitor_alert_deliveries (
 		id                BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
 		alert_contact_id  BIGINT UNSIGNED NOT NULL,
 		transition_id     BIGINT UNSIGNED NOT NULL,
@@ -329,9 +329,9 @@ var migrations = []migration{
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
 
 	// Migration 18 records the alert dispatcher's progress. Mirrors
-	// jetmon_webhook_dispatch_progress — one row per jetmon2 instance with
-	// the high-water mark for jetmon_event_transitions.id.
-	{18, `CREATE TABLE IF NOT EXISTS jetmon_alert_dispatch_progress (
+	// jetpack_monitor_webhook_dispatch_progress — one row per jetmon2 instance with
+	// the high-water mark for jetpack_monitor_event_transitions.id.
+	{18, `CREATE TABLE IF NOT EXISTS jetpack_monitor_alert_dispatch_progress (
 		instance_id          VARCHAR(255) NOT NULL PRIMARY KEY,
 		last_transition_id   BIGINT UNSIGNED NOT NULL DEFAULT 0,
 		updated_at           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
@@ -342,14 +342,14 @@ var migrations = []migration{
 	// ADR-0002. Gateway-routed API paths set owner_tenant_id and use
 	// tenant-scoped repository helpers so customer-owned webhooks are filtered
 	// in Jetmon as defense in depth.
-	{19, `ALTER TABLE jetmon_webhooks
+	{19, `ALTER TABLE jetpack_monitor_webhooks
 		ADD COLUMN owner_tenant_id VARCHAR(128) NULL AFTER active,
 		ADD INDEX idx_owner_tenant_id (owner_tenant_id)`},
 
 	// Migration 20 mirrors webhook ownership on alert contacts. Deliveries
 	// derive visibility through their parent contact; this column owns the
 	// customer-managed registration itself.
-	{20, `ALTER TABLE jetmon_alert_contacts
+	{20, `ALTER TABLE jetpack_monitor_alert_contacts
 		ADD COLUMN owner_tenant_id VARCHAR(128) NULL AFTER active,
 		ADD INDEX idx_owner_tenant_id (owner_tenant_id)`},
 
@@ -359,7 +359,7 @@ var migrations = []migration{
 	// changing the drop-in v1-compatible site row. A site can appear under
 	// multiple tenants if the gateway's product model allows shared ownership
 	// or delegation.
-	{21, `CREATE TABLE IF NOT EXISTS jetmon_site_tenants (
+	{21, `CREATE TABLE IF NOT EXISTS jetpack_monitor_site_tenants (
 		tenant_id  VARCHAR(128) NOT NULL,
 		blog_id    BIGINT UNSIGNED NOT NULL,
 		source     VARCHAR(64) NOT NULL DEFAULT 'gateway',
@@ -373,14 +373,14 @@ var migrations = []migration{
 	// idx_status_next_attempt already covers ready/future pending rows; these
 	// indexes keep recent terminal outcome counts and queue-age checks from
 	// scanning historical delivery rows as the audit trail grows.
-	{22, `ALTER TABLE jetmon_webhook_deliveries
+	{22, `ALTER TABLE jetpack_monitor_webhook_deliveries
 		ADD INDEX idx_status_delivered_at (status, delivered_at),
 		ADD INDEX idx_status_last_attempt_at (status, last_attempt_at),
 		ADD INDEX idx_status_created_at (status, created_at)`},
 
 	// Migration 23 mirrors delivery-check support indexes for alert-contact
 	// deliveries.
-	{23, `ALTER TABLE jetmon_alert_deliveries
+	{23, `ALTER TABLE jetpack_monitor_alert_deliveries
 		ADD INDEX idx_status_delivered_at (status, delivered_at),
 		ADD INDEX idx_status_last_attempt_at (status, last_attempt_at),
 		ADD INDEX idx_status_created_at (status, created_at)`},
@@ -390,7 +390,7 @@ var migrations = []migration{
 	// process owns one process_id and periodically upserts a compact snapshot of
 	// its local state. Fleet views should treat stale updated_at values as
 	// unknown/unhealthy rather than assuming the last state is still current.
-	{24, `CREATE TABLE IF NOT EXISTS jetmon_process_health (
+	{24, `CREATE TABLE IF NOT EXISTS jetpack_monitor_process_health (
 		process_id               VARCHAR(255) NOT NULL PRIMARY KEY,
 		host_id                  VARCHAR(255) NOT NULL,
 		process_type             VARCHAR(64) NOT NULL,
@@ -425,7 +425,7 @@ var migrations = []migration{
 	// Migration 25 splits process lifecycle from health rollup and renames
 	// the memory column to the metric it actually stores. The value comes from
 	// runtime.MemStats.Sys, not operating-system RSS.
-	{25, `ALTER TABLE jetmon_process_health
+	{25, `ALTER TABLE jetpack_monitor_process_health
 		ADD COLUMN health_status VARCHAR(16) NOT NULL DEFAULT 'green' AFTER state,
 		CHANGE COLUMN mem_rss_mb go_sys_mem_mb INT UNSIGNED NOT NULL DEFAULT 0,
 		ADD INDEX idx_health_status_updated (health_status, updated_at)`},
@@ -433,7 +433,7 @@ var migrations = []migration{
 	// Migration 26 adds true operating-system RSS beside Go runtime system
 	// memory so dashboards can show both the host-observed resident set and the
 	// runtime allocator footprint.
-	{26, `ALTER TABLE jetmon_process_health
+	{26, `ALTER TABLE jetpack_monitor_process_health
 		ADD COLUMN rss_mem_mb INT UNSIGNED NOT NULL DEFAULT 0 AFTER go_sys_mem_mb`},
 
 	// Migration 27 previously added a scheduler index on jetpack_monitor_sites.
@@ -441,7 +441,7 @@ var migrations = []migration{
 	{27, `SELECT 1`},
 
 	// Migration 28 previously added next_check_at to jetpack_monitor_sites.
-	// Due-time projection now lives in jetmon_site_runtime.
+	// Due-time projection now lives in jetpack_monitor_site_runtime.
 	{28, `SELECT 1`},
 
 	// Migration 29 previously backfilled jetpack_monitor_sites.next_check_at.
@@ -450,7 +450,7 @@ var migrations = []migration{
 	{29, `SELECT 1`},
 
 	// Migration 30 previously added a next_check_at scheduler index to the
-	// legacy table. Runtime due queries now use jetmon_site_runtime.
+	// legacy table. Runtime due queries now use jetpack_monitor_site_runtime.
 	{30, `SELECT 1`},
 
 	// Migration 31 adds an explicit forbidden-content check alongside the
@@ -458,14 +458,14 @@ var migrations = []migration{
 	// check_keyword means "must be present"; forbidden_keyword means "must be
 	// absent".
 	// Migration 31 previously added forbidden_keyword to jetpack_monitor_sites.
-	// V2 body-check config now lives in jetmon_site_check_config.
+	// V2 body-check config now lives in jetpack_monitor_site_check_config.
 	{31, `SELECT 1`},
 
 	// Migration 32 records the actual HTTP method used for each timing sample.
 	// This keeps the high-volume check history compact while giving operators
 	// durable evidence that v2 probes are exercising the GET path rather than
 	// the HEAD-only behavior that caused v1 false positives and false negatives.
-	{32, `ALTER TABLE jetmon_check_history
+	{32, `ALTER TABLE jetpack_monitor_check_history
 		ADD COLUMN request_method VARCHAR(16) NOT NULL DEFAULT 'GET' AFTER blog_id`},
 
 	// Migration 33 adds an array form for explicit forbidden body-content
@@ -473,7 +473,7 @@ var migrations = []migration{
 	// rules; forbidden_keywords lets operators provision multiple known-bad
 	// strings without overloading one column.
 	// Migration 33 previously added forbidden_keywords to jetpack_monitor_sites.
-	// V2 body-check config now lives in jetmon_site_check_config.
+	// V2 body-check config now lives in jetpack_monitor_site_check_config.
 	{33, `SELECT 1`},
 
 	// Migration 34 creates the v2-native scheduling target table. The legacy
@@ -481,7 +481,7 @@ var migrations = []migration{
 	// but this table gives the streaming scheduler a compact place to persist
 	// derived scheduling state without turning the legacy table into the hot
 	// write path again.
-	{34, `CREATE TABLE IF NOT EXISTS jetmon_check_targets (
+	{34, `CREATE TABLE IF NOT EXISTS jetpack_monitor_check_targets (
 		target_id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
 		blog_id             BIGINT UNSIGNED NOT NULL,
 		source_site_id      BIGINT UNSIGNED NOT NULL,
@@ -516,7 +516,7 @@ var migrations = []migration{
 	// jetpack_monitor_sites table. NULL means "inherit the process default",
 	// letting operators migrate in phases without another hot ALTER on the
 	// largest v1 compatibility table.
-	{36, `CREATE TABLE IF NOT EXISTS jetmon_site_check_config (
+	{36, `CREATE TABLE IF NOT EXISTS jetpack_monitor_site_check_config (
 		blog_id            BIGINT UNSIGNED NOT NULL PRIMARY KEY,
 		request_method     ENUM('HEAD','GET') NULL,
 		detection_profile  ENUM('legacy','simple_http','full') NULL,
@@ -530,7 +530,7 @@ var migrations = []migration{
 	// table. These values are useful for API display, rollback freshness checks,
 	// and the legacy round scheduler, but they do not need to change the v1
 	// table shape.
-	{37, `CREATE TABLE IF NOT EXISTS jetmon_site_runtime (
+	{37, `CREATE TABLE IF NOT EXISTS jetpack_monitor_site_runtime (
 		blog_id            BIGINT UNSIGNED NOT NULL PRIMARY KEY,
 		last_checked_at    DATETIME NULL,
 		next_check_at      DATETIME NULL,
@@ -545,7 +545,7 @@ var migrations = []migration{
 	// v2-only per-site setting that previously lived on jetpack_monitor_sites.
 	// Keeping this as a separate migration lets databases that already applied
 	// migration 36 receive the expanded sidecar shape.
-	{38, `ALTER TABLE jetmon_site_check_config
+	{38, `ALTER TABLE jetpack_monitor_site_check_config
 		ADD COLUMN check_keyword          VARCHAR(500) NULL AFTER detection_profile,
 		ADD COLUMN forbidden_keyword      VARCHAR(500) NULL AFTER check_keyword,
 		ADD COLUMN forbidden_keywords     JSON NULL AFTER forbidden_keyword,
@@ -560,7 +560,7 @@ var migrations = []migration{
 	// where one blog_id has multiple active monitor URLs. The legacy table's
 	// primary row id is the durable endpoint identity, so target sync must be
 	// unique on source_site_id rather than collapsing all endpoints for a blog.
-	{39, `ALTER TABLE jetmon_check_targets
+	{39, `ALTER TABLE jetpack_monitor_check_targets
 		DROP INDEX uk_blog_id,
 		ADD UNIQUE KEY uk_source_site_id (source_site_id)`},
 
@@ -568,7 +568,7 @@ var migrations = []migration{
 	// monitor-side discovery. Vantages are quorum-counted identities, not
 	// individual processes. enabled defaults to 0 so agent telemetry can never
 	// create its own trusted vote.
-	{40, `CREATE TABLE IF NOT EXISTS jetmon_veriflier_vantages (
+	{40, `CREATE TABLE IF NOT EXISTS jetpack_monitor_veriflier_vantages (
 		vantage_id    VARCHAR(128) NOT NULL PRIMARY KEY,
 		region        VARCHAR(128) NOT NULL DEFAULT '',
 		provider      VARCHAR(128) NOT NULL DEFAULT '',
@@ -585,8 +585,8 @@ var migrations = []migration{
 	// Migration 41 records concrete Veriflier agent telemetry collected by
 	// monitors from /v2/status. These rows are operational telemetry and
 	// capacity hints; only pre-approved enabled rows in
-	// jetmon_veriflier_vantages are eligible for quorum or traffic.
-	{41, `CREATE TABLE IF NOT EXISTS jetmon_veriflier_agents (
+	// jetpack_monitor_veriflier_vantages are eligible for quorum or traffic.
+	{41, `CREATE TABLE IF NOT EXISTS jetpack_monitor_veriflier_agents (
 		agent_id        VARCHAR(128) NOT NULL PRIMARY KEY,
 		vantage_id      VARCHAR(128) NOT NULL,
 		hostname        VARCHAR(255) NOT NULL DEFAULT '',
@@ -610,7 +610,7 @@ var migrations = []migration{
 	// Migration 42 creates durable rollout sessions for the API-driven
 	// container rollout. A session is the audit/root object for one operator
 	// handoff range and lets the CLI resume without relying only on local state.
-	{42, `CREATE TABLE IF NOT EXISTS jetmon_rollout_sessions (
+	{42, `CREATE TABLE IF NOT EXISTS jetpack_monitor_rollout_sessions (
 		run_id       VARCHAR(64) NOT NULL PRIMARY KEY,
 		bucket_min   SMALLINT UNSIGNED NOT NULL,
 		bucket_max   SMALLINT UNSIGNED NOT NULL,
@@ -627,8 +627,8 @@ var migrations = []migration{
 
 	// Migration 43 records range-level activation/release history. It is
 	// intentionally append-friendly: released rows stay behind as rollout
-	// evidence, while live overlap prevention happens in jetmon_rollout_bucket_locks.
-	{43, `CREATE TABLE IF NOT EXISTS jetmon_rollout_range_locks (
+	// evidence, while live overlap prevention happens in jetpack_monitor_rollout_bucket_locks.
+	{43, `CREATE TABLE IF NOT EXISTS jetpack_monitor_rollout_range_locks (
 		id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
 		run_id        VARCHAR(64) NOT NULL,
 		bucket_min    SMALLINT UNSIGNED NOT NULL,
@@ -647,7 +647,7 @@ var migrations = []migration{
 	// Migration 44 stores one row per active rollout bucket. The primary key is
 	// the range-lock guardrail: overlapping activations conflict even if two
 	// operators race after both dry-runs looked clean.
-	{44, `CREATE TABLE IF NOT EXISTS jetmon_rollout_bucket_locks (
+	{44, `CREATE TABLE IF NOT EXISTS jetpack_monitor_rollout_bucket_locks (
 		bucket_no    SMALLINT UNSIGNED NOT NULL PRIMARY KEY,
 		run_id       VARCHAR(64) NOT NULL,
 		range_lock_id BIGINT UNSIGNED NOT NULL,
@@ -662,7 +662,7 @@ var migrations = []migration{
 	// Migration 45 records rollout API jobs. Most current operations complete
 	// synchronously, but the job shape lets the API grow into async smoke,
 	// seed, comparison, and policy migration work without changing clients.
-	{45, `CREATE TABLE IF NOT EXISTS jetmon_rollout_jobs (
+	{45, `CREATE TABLE IF NOT EXISTS jetpack_monitor_rollout_jobs (
 		job_id      VARCHAR(64) NOT NULL PRIMARY KEY,
 		run_id      VARCHAR(64) NOT NULL DEFAULT '',
 		operation   VARCHAR(64) NOT NULL,
@@ -681,7 +681,7 @@ var migrations = []migration{
 	// Migration 46 stores short-lived dry-run confirmation tokens. Tokens are
 	// sha256-hashed at rest and bound to operation, bucket range, run id,
 	// operator, and request hash so execute calls cannot reuse stale plans.
-	{46, `CREATE TABLE IF NOT EXISTS jetmon_rollout_confirmation_tokens (
+	{46, `CREATE TABLE IF NOT EXISTS jetpack_monitor_rollout_confirmation_tokens (
 		token_hash    CHAR(64) NOT NULL PRIMARY KEY,
 		run_id        VARCHAR(64) NOT NULL DEFAULT '',
 		operation     VARCHAR(64) NOT NULL,
@@ -700,7 +700,7 @@ var migrations = []migration{
 	// collected during rollout. These rows let operators compare HEAD legacy
 	// behavior with GET simple/full behavior without changing the authoritative
 	// site state or firing customer alerts.
-	{47, `CREATE TABLE IF NOT EXISTS jetmon_rollout_comparison_results (
+	{47, `CREATE TABLE IF NOT EXISTS jetpack_monitor_rollout_comparison_results (
 		id                 BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
 		job_id             VARCHAR(64) NOT NULL,
 		run_id             VARCHAR(64) NOT NULL DEFAULT '',
@@ -731,8 +731,8 @@ var migrations = []migration{
 	// Migration 48 records staged rollout policy mutations so a batch can be
 	// rolled back without relying on local CLI transcripts. The previous values
 	// are nullable because NULL means "inherit the fleet default" in
-	// jetmon_site_check_config.
-	{48, `CREATE TABLE IF NOT EXISTS jetmon_rollout_policy_stage_rows (
+	// jetpack_monitor_site_check_config.
+	{48, `CREATE TABLE IF NOT EXISTS jetpack_monitor_rollout_policy_stage_rows (
 		id                         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
 		job_id                     VARCHAR(64) NOT NULL,
 		run_id                     VARCHAR(64) NOT NULL DEFAULT '',
@@ -754,7 +754,7 @@ var migrations = []migration{
 	// customer incident events. This gives operators a durable remediation
 	// trail for unsafe legacy monitor URLs without mutating v1 site-table
 	// semantics beyond an explicit deactivation when requested.
-	{49, `CREATE TABLE IF NOT EXISTS jetmon_site_safety_flags (
+	{49, `CREATE TABLE IF NOT EXISTS jetpack_monitor_site_safety_flags (
 		id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
 		blog_id         BIGINT UNSIGNED NOT NULL,
 		monitor_site_id BIGINT UNSIGNED NOT NULL,
@@ -776,7 +776,7 @@ var migrations = []migration{
 	// Migration 50 persists Go 1.26 scheduler metrics in process heartbeat
 	// rows so fleet views can spot goroutine or OS-thread growth without
 	// requiring pprof access during an incident.
-	{50, `ALTER TABLE jetmon_process_health
+	{50, `ALTER TABLE jetpack_monitor_process_health
 		ADD COLUMN runtime_goroutines INT UNSIGNED NOT NULL DEFAULT 0 AFTER rss_mem_mb,
 		ADD COLUMN runtime_goroutines_runnable INT UNSIGNED NOT NULL DEFAULT 0 AFTER runtime_goroutines,
 		ADD COLUMN runtime_goroutines_running INT UNSIGNED NOT NULL DEFAULT 0 AFTER runtime_goroutines_runnable,
@@ -786,13 +786,13 @@ var migrations = []migration{
 		ADD COLUMN runtime_threads INT UNSIGNED NOT NULL DEFAULT 0 AFTER runtime_goroutines_created`},
 
 	// Migration 51 adds a composite index that covers eventstore.FindActive,
-	// which filters jetmon_events by (blog_id, check_type, ended_at IS NULL).
+	// which filters jetpack_monitor_events by (blog_id, check_type, ended_at IS NULL).
 	// The existing idx_blog_id_active is only (blog_id, ended_at), so a
 	// blog with many open events across check types had to filter by
 	// check_type after the index seek. The new index lets the engine reach
 	// the matching row in one descent on the recovery path used after a
 	// process restart or projection rebuild.
-	{51, `ALTER TABLE jetmon_events
+	{51, `ALTER TABLE jetpack_monitor_events
 		ADD INDEX idx_blog_id_check_type_active (blog_id, check_type, ended_at)`},
 
 	// Migration 52 adds per-site overrides for check-history recording. Both
@@ -802,7 +802,7 @@ var migrations = []migration{
 	// test site) without affecting the fleet default. check_history_mode is a
 	// free-form VARCHAR rather than an ENUM so adding modes later does not
 	// require an ALTER; unknown values fall back to the default at read time.
-	{52, `ALTER TABLE jetmon_site_check_config
+	{52, `ALTER TABLE jetpack_monitor_site_check_config
 		ADD COLUMN check_history_mode VARCHAR(32) NULL AFTER alert_cooldown_minutes,
 		ADD COLUMN check_history_sample_rate INT UNSIGNED NULL AFTER check_history_mode`},
 }
@@ -878,13 +878,13 @@ func releaseMigrationLock(ctx context.Context, conn *sql.Conn) error {
 
 func isApplied(ctx context.Context, conn *sql.Conn, id int) (bool, error) {
 	var count int
-	err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM jetmon_schema_migrations WHERE id = ?`, id).Scan(&count)
+	err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM jetpack_monitor_schema_migrations WHERE id = ?`, id).Scan(&count)
 	return count > 0, err
 }
 
 func markApplied(ctx context.Context, conn *sql.Conn, id int) error {
 	_, err := conn.ExecContext(ctx,
-		`INSERT IGNORE INTO jetmon_schema_migrations (id) VALUES (?)`, id,
+		`INSERT IGNORE INTO jetpack_monitor_schema_migrations (id) VALUES (?)`, id,
 	)
 	return err
 }

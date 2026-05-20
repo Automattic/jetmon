@@ -26,8 +26,8 @@ See `docs/project.md` for the full project description, feature list, and perfor
 │  └─────────────────────┬──────────────────────────┘                  │
 │                        │                                             │
 │   ┌────────────────────┴────────────────────┐                        │
-│   │   eventstore (jetmon_events +           │                        │
-│   │    jetmon_event_transitions writes)     │                        │
+│   │   eventstore (jetpack_monitor_events +           │                        │
+│   │    jetpack_monitor_event_transitions writes)     │                        │
 │   └────────────────────┬────────────────────┘                        │
 │                        │                                             │
 │   ┌────────────┐  ┌────┴────────────┐  ┌──────────────────────┐      │
@@ -54,11 +54,11 @@ See `docs/project.md` for the full project description, feature list, and perfor
 
 **Check Pool** (`internal/checker/`): A bounded goroutine pool that performs HTTP checks using Go's `net/http` and `net/http/httptrace`. Records DNS, TCP connect, TLS handshake, and TTFB timings for every check. Pool size auto-scales against queue depth within configured min/max bounds.
 
-**Eventstore** (`internal/eventstore/`): The single writer for `jetmon_events` and `jetmon_event_transitions`. Every status / severity / state change is written transactionally so the event row's projection and the transition log can never disagree. Both downstream workers (webhooks, alerting) consume `jetmon_event_transitions` via a high-water mark.
+**Eventstore** (`internal/eventstore/`): The single writer for `jetpack_monitor_events` and `jetpack_monitor_event_transitions`. Every status / severity / state change is written transactionally so the event row's projection and the transition log can never disagree. Both downstream workers (webhooks, alerting) consume `jetpack_monitor_event_transitions` via a high-water mark.
 
 **REST API** (`internal/api/`): The internal API surface (`/api/v1/...`) used by the gateway, alerting workers, dashboards, and CI tooling. Per-consumer Bearer-token auth (`internal/apikeys/`), per-key rate limiting, Stripe-style idempotency keys on POSTs. Sites CRUD, events list / single / transitions, SLA stats, webhooks CRUD, alert-contacts CRUD, manual delivery retry.
 
-**Webhook delivery worker** (`internal/webhooks/`): Polls `jetmon_event_transitions`, matches each new transition against active webhooks (event-type + site + state filters), and POSTs HMAC-signed payloads to consumer URLs. Retry ladder 1m / 5m / 30m / 1h / 6h then abandon. Per-webhook in-flight cap and shared dispatch pool.
+**Webhook delivery worker** (`internal/webhooks/`): Polls `jetpack_monitor_event_transitions`, matches each new transition against active webhooks (event-type + site + state filters), and POSTs HMAC-signed payloads to consumer URLs. Retry ladder 1m / 5m / 30m / 1h / 6h then abandon. Per-webhook in-flight cap and shared dispatch pool.
 
 **Alerting delivery worker** (`internal/alerting/`): Same shape as the webhook worker but for managed channels — email (via `wpcom`/`smtp`/`stub` senders), PagerDuty Events API v2, Slack incoming webhooks, Microsoft Teams. Filter is simpler (`site_filter` + `min_severity`); per-contact `max_per_hour` rate cap absorbs pager storms. Send-test endpoint exercises the same dispatch path without requiring a real event.
 
@@ -78,12 +78,12 @@ See `docs/project.md` for the full project description, feature list, and perfor
 | `internal/orchestrator/` | Round scheduling, DB fetch, work dispatch, WPCOM notifications |
 | `internal/checker/` | Goroutine pool, HTTP checks, httptrace timing |
 | `internal/veriflier/` | JSON-over-HTTP client/server for Veriflier communication |
-| `internal/db/` | MySQL access, `jetmon_hosts` heartbeat, connection pooling |
+| `internal/db/` | MySQL access, `jetpack_monitor_hosts` heartbeat, connection pooling |
 | `internal/config/` | Config loading, SIGHUP hot-reload |
 | `internal/metrics/` | StatsD client, stats file writer |
 | `internal/wpcom/` | WPCOM API client, circuit breaker |
-| `internal/audit/` | Operational log writes to `jetmon_audit_log` (WPCOM, retries, verifier RPCs, config reloads) |
-| `internal/eventstore/` | Event-sourced site state — manages `jetmon_events` + `jetmon_event_transitions` writes in single transactions |
+| `internal/audit/` | Operational log writes to `jetpack_monitor_audit_log` (WPCOM, retries, verifier RPCs, config reloads) |
+| `internal/eventstore/` | Event-sourced site state — manages `jetpack_monitor_events` + `jetpack_monitor_event_transitions` writes in single transactions |
 | `internal/api/` | Internal REST API server (`/api/v1/...`) — auth, rate limiting, idempotency, sites/events/SLA/webhooks/alert-contacts handlers |
 | `internal/apikeys/` | API key registry, sha256-hashed at rest; `./jetmon2 keys` CLI |
 | `internal/webhooks/` | Webhook registry + delivery worker — outbound HMAC-signed POSTs of event transitions, retry ladder 1m/5m/30m/1h/6h |
@@ -155,11 +155,11 @@ Copy `config/config-sample.json` to `config/config.json`. All keys from the orig
 - `BUCKET_TOTAL`: Total bucket range (e.g. 1000); replaces static `BUCKET_NO_MIN/MAX`
 - `BUCKET_TARGET`: Maximum buckets this host should own
 - `BUCKET_HEARTBEAT_GRACE_SEC`: Seconds before an unresponsive host's buckets are reclaimed (suggested: 2× round time)
-- `PINNED_BUCKET_MIN/MAX`: Migration-only static bucket range for replacing one v1 host with one v2 host; disables `jetmon_hosts` dynamic ownership while set. Legacy `BUCKET_NO_MIN/MAX` are accepted as aliases for this mode.
+- `PINNED_BUCKET_MIN/MAX`: Migration-only static bucket range for replacing one v1 host with one v2 host; disables `jetpack_monitor_hosts` dynamic ownership while set. Legacy `BUCKET_NO_MIN/MAX` are accepted as aliases for this mode.
 - `ALERT_COOLDOWN_MINUTES`: Default cooldown between repeated alerts for the same site
 - `LEGACY_STATUS_PROJECTION_ENABLE`: Keep v1 `site_status` / `last_status_change` projection updated during shadow-v2-state migration
 - `LOG_FORMAT`: `text` (default, drop-in compatible) or `json` (structured logging)
-- `USE_VARIABLE_CHECK_INTERVALS`: Respect per-site `check_interval`; the scheduler uses a short idle poll and maintained `jetmon_site_runtime.next_check_at` timestamps control which sites are ready in legacy round-scheduler mode
+- `USE_VARIABLE_CHECK_INTERVALS`: Respect per-site `check_interval`; the scheduler uses a short idle poll and maintained `jetpack_monitor_site_runtime.next_check_at` timestamps control which sites are ready in legacy round-scheduler mode
 - `DASHBOARD_PORT`: Internal port for the operator dashboard (0 to disable)
 - `DEBUG_PORT`: localhost-only pprof port, default 6060 (0 to disable; never exposed remotely)
 
@@ -189,16 +189,16 @@ These interfaces must remain identical to the original Jetmon. Do not change the
 ## Monitoring Behaviour
 
 **Check Process:**
-- Default timeout: `NET_COMMS_TIMEOUT` seconds (configurable per site via `jetmon_site_check_config.timeout_seconds`)
+- Default timeout: `NET_COMMS_TIMEOUT` seconds (configurable per site via `jetpack_monitor_site_check_config.timeout_seconds`)
 - HTTP response code < 400 is success
 - Redirect policy configurable per site: `follow` (default), `alert` (warn on chain change), `fail`
 - Max redirects when following: 10
 - Keyword check: if `check_keyword` is set, GET the body and confirm the string is present
 - User-Agent: `jetmon/2.0 (Jetpack Site Uptime Monitor by WordPress.com)`
-- Per-site custom headers merged from `jetmon_site_check_config.custom_headers`
+- Per-site custom headers merged from `jetpack_monitor_site_check_config.custom_headers`
 
 **Timing Breakdown (via `net/http/httptrace`):**
-Every check records composite RTT plus DNS lookup, TCP connect, TLS handshake, and first response byte (TTFB) timings. These samples are stored in `jetmon_check_history` for trending and API statistics. Scheduler-level StatsD metrics expose phase timing and write volume so capacity tests can separate check execution, freshness writes, check-history inserts, SSL expiry updates, and event handling.
+Every check records composite RTT plus DNS lookup, TCP connect, TLS handshake, and first response byte (TTFB) timings. These samples are stored in `jetpack_monitor_check_history` for trending and API statistics. Scheduler-level StatsD metrics expose phase timing and write volume so capacity tests can separate check execution, freshness writes, check-history inserts, SSL expiry updates, and event handling.
 
 **SSL Monitoring:**
 Every HTTPS check inspects `tls.ConnectionState` for:
@@ -217,10 +217,10 @@ Every HTTPS check inspects `tls.ConnectionState` for:
    - From `Seems Down` → close with `resolution_reason = probe_cleared`.
    - From `Down` → close with `resolution_reason = verifier_cleared` and send recovery notification.
 
-Shadow-v2-state migration keeps incidents authoritative in `jetmon_events` + `jetmon_event_transitions` while `jetpack_monitor_sites` remains the v1-owned site identity/cadence/projection table. V2-only check config lives in `jetmon_site_check_config`. When `LEGACY_STATUS_PROJECTION_ENABLE` is true, the `jetpack_monitor_sites.site_status` / `last_status_change` projection is updated in the same transaction as every event mutation (no drift). v1 mapping: open Seems Down → `site_status = SITE_DOWN (0)`; promoted to Down → `site_status = SITE_CONFIRMED_DOWN (2)`; closed → `site_status = SITE_RUNNING (1)`. After legacy readers move to the v2 API/event tables, this projection can be disabled.
+Shadow-v2-state migration keeps incidents authoritative in `jetpack_monitor_events` + `jetpack_monitor_event_transitions` while `jetpack_monitor_sites` remains the v1-owned site identity/cadence/projection table. V2-only check config lives in `jetpack_monitor_site_check_config`. When `LEGACY_STATUS_PROJECTION_ENABLE` is true, the `jetpack_monitor_sites.site_status` / `last_status_change` projection is updated in the same transaction as every event mutation (no drift). v1 mapping: open Seems Down → `site_status = SITE_DOWN (0)`; promoted to Down → `site_status = SITE_CONFIRMED_DOWN (2)`; closed → `site_status = SITE_RUNNING (1)`. After legacy readers move to the v2 API/event tables, this projection can be disabled.
 
 **Alert Deduplication:**
-After an alert fires, subsequent alerts for the same site are suppressed for the global `ALERT_COOLDOWN_MINUTES` value or `jetmon_site_check_config.alert_cooldown_minutes`. Suppression is recorded in the audit log.
+After an alert fires, subsequent alerts for the same site are suppressed for the global `ALERT_COOLDOWN_MINUTES` value or `jetpack_monitor_site_check_config.alert_cooldown_minutes`. Suppression is recorded in the audit log.
 
 **Status Change Types (unchanged):**
 - `server`: 5xx response
@@ -236,8 +236,8 @@ After an alert fires, subsequent alerts for the same site are suppressed for the
 Sites are stored in the v1-shaped `jetpack_monitor_sites` table with
 bucket-based sharding. The `bucket_no` field enables horizontal scaling. Jetmon
 v2 keeps v2-only site config and runtime state out of that legacy table: rich
-probe config lives in `jetmon_site_check_config`, and freshness / SSL
-observation state lives in `jetmon_site_runtime`. During rollout, v2 writes
+probe config lives in `jetpack_monitor_site_check_config`, and freshness / SSL
+observation state lives in `jetpack_monitor_site_runtime`. During rollout, v2 writes
 only the v1 compatibility projection fields `site_status` and
 `last_status_change` back to `jetpack_monitor_sites`.
 
@@ -245,19 +245,19 @@ New tables introduced by Jetmon 2:
 
 | Table | Purpose |
 |-------|---------|
-| `jetmon_hosts` | MySQL-coordinated bucket ownership and heartbeat |
-| `jetmon_events` | Current state of every incident — one row per `(blog_id, endpoint_id, check_type, discriminator)` while open; mutable until `ended_at` is set, then frozen |
-| `jetmon_event_transitions` | Append-only history of every mutation to `jetmon_events` (open, severity change, state change, cause link, close) |
-| `jetmon_audit_log` | Operational trail — WPCOM notifications, retry dispatch, verifier RPCs, alert/maintenance suppression, config reloads. Site-state changes do **not** flow through here |
-| `jetmon_check_history` | RTT and timing samples for trending |
-| `jetmon_site_check_config` | V2-only per-site check policy/config: HEAD/GET mode, detection profile, keywords, maintenance windows, headers, timeout, redirect policy, cooldown |
-| `jetmon_site_runtime` | V2-only runtime freshness and observation projection: last checked, next check, last alert, SSL expiry |
-| `jetmon_site_safety_flags` | Non-downtime remediation state for unsafe legacy monitor URLs and runtime probe-safety blocks |
-| `jetmon_false_positives` | Veriflier non-confirmation events |
+| `jetpack_monitor_hosts` | MySQL-coordinated bucket ownership and heartbeat |
+| `jetpack_monitor_events` | Current state of every incident — one row per `(blog_id, endpoint_id, check_type, discriminator)` while open; mutable until `ended_at` is set, then frozen |
+| `jetpack_monitor_event_transitions` | Append-only history of every mutation to `jetpack_monitor_events` (open, severity change, state change, cause link, close) |
+| `jetpack_monitor_audit_log` | Operational trail — WPCOM notifications, retry dispatch, verifier RPCs, alert/maintenance suppression, config reloads. Site-state changes do **not** flow through here |
+| `jetpack_monitor_check_history` | RTT and timing samples for trending |
+| `jetpack_monitor_site_check_config` | V2-only per-site check policy/config: HEAD/GET mode, detection profile, keywords, maintenance windows, headers, timeout, redirect policy, cooldown |
+| `jetpack_monitor_site_runtime` | V2-only runtime freshness and observation projection: last checked, next check, last alert, SSL expiry |
+| `jetpack_monitor_site_safety_flags` | Non-downtime remediation state for unsafe legacy monitor URLs and runtime probe-safety blocks |
+| `jetpack_monitor_false_positives` | Veriflier non-confirmation events |
 
 ## Multi-Host Bucket Coordination
 
-Jetmon 2 normally replaces static `BUCKET_NO_MIN/MAX` config with runtime bucket ownership via the `jetmon_hosts` table. On startup, each instance claims unclaimed or expired bucket ranges using `SELECT ... FOR UPDATE` transactions. A heartbeat query runs each round; hosts with stale heartbeats (older than `BUCKET_HEARTBEAT_GRACE_SEC`) have their buckets absorbed by surviving peers. On SIGINT, the instance releases its buckets immediately. During the initial v1-to-v2 migration only, `PINNED_BUCKET_MIN/MAX` (or legacy `BUCKET_NO_MIN/MAX`) can pin one v2 host to its v1 predecessor's exact bucket range and disables `jetmon_hosts` ownership for that host.
+Jetmon 2 normally replaces static `BUCKET_NO_MIN/MAX` config with runtime bucket ownership via the `jetpack_monitor_hosts` table. On startup, each instance claims unclaimed or expired bucket ranges using `SELECT ... FOR UPDATE` transactions. A heartbeat query runs each round; hosts with stale heartbeats (older than `BUCKET_HEARTBEAT_GRACE_SEC`) have their buckets absorbed by surviving peers. On SIGINT, the instance releases its buckets immediately. During the initial v1-to-v2 migration only, `PINNED_BUCKET_MIN/MAX` (or legacy `BUCKET_NO_MIN/MAX`) can pin one v2 host to its v1 predecessor's exact bucket range and disables `jetpack_monitor_hosts` ownership for that host.
 
 This enables zero-config horizontal scaling (spin up a host, it claims buckets) and self-healing coverage (a failed host's buckets are absorbed within one grace period) without a cluster orchestrator.
 
@@ -285,9 +285,9 @@ Rolling updates require no simultaneous restart of all hosts and leave no sites 
 
 These decisions govern how Jetmon models site state. They must be maintained consistently across all changes. Full design rationale is in [`docs/taxonomy.md`](docs/taxonomy.md) (Parts 2–3) and [`docs/events.md`](docs/events.md).
 
-**Events are the source of truth.** Site status is event-sourced across two tables: `jetmon_events` (one row per incident, holding the current severity/state/metadata) and `jetmon_event_transitions` (append-only history of every mutation). The site row stores a denormalized projection for read performance. Update events, transitions, and the projection in the same transaction — they must not drift. If the projection is ever suspect, rebuild it from the events tables.
+**Events are the source of truth.** Site status is event-sourced across two tables: `jetpack_monitor_events` (one row per incident, holding the current severity/state/metadata) and `jetpack_monitor_event_transitions` (append-only history of every mutation). The site row stores a denormalized projection for read performance. Update events, transitions, and the projection in the same transaction — they must not drift. If the projection is ever suspect, rebuild it from the events tables.
 
-**Every event mutation writes a transition row in the same transaction.** Open, severity bump, state change, cause-link change, close — no carve-outs. The `eventstore` package is the only writer for `jetmon_events` and `jetmon_event_transitions`; external callers must go through it. This keeps the invariant testable with one integration test surface.
+**Every event mutation writes a transition row in the same transaction.** Open, severity bump, state change, cause-link change, close — no carve-outs. The `eventstore` package is the only writer for `jetpack_monitor_events` and `jetpack_monitor_event_transitions`; external callers must go through it. This keeps the invariant testable with one integration test surface.
 
 **Severity and state are separate fields.** Severity is numeric — use it for ordering, thresholds, and rollup. State is a human-readable label — use it for display and lifecycle transitions. A live event's severity can be updated in place without changing its state (a worsening degradation is not a new kind of problem).
 
@@ -312,7 +312,7 @@ Up → Seems Down → Down → Resolved
 
 **Retry Queue Persistence:** The local retry queue must persist between rounds. Do not flush it at round start — a site must accumulate `NUM_OF_CHECKS` failures before Veriflier escalation, and flushing resets that counter, preventing downtime confirmation.
 
-**Bucket Claiming Races:** When dynamic ownership is active, the `SELECT ... FOR UPDATE` transaction on `jetmon_hosts` is the only safe way to claim buckets. Do not claim buckets outside a transaction — two hosts starting simultaneously will both see the same unclaimed range and must not both write it. Pinned v1-to-v2 migration hosts intentionally do not claim buckets in `jetmon_hosts`.
+**Bucket Claiming Races:** When dynamic ownership is active, the `SELECT ... FOR UPDATE` transaction on `jetpack_monitor_hosts` is the only safe way to claim buckets. Do not claim buckets outside a transaction — two hosts starting simultaneously will both see the same unclaimed range and must not both write it. Pinned v1-to-v2 migration hosts intentionally do not claim buckets in `jetpack_monitor_hosts`.
 
 **Circuit Breaker Floor:** The WPCOM API circuit breaker queue is bounded. If the queue fills, the oldest pending notifications are dropped with an error log. Monitor the circuit breaker state in the operator dashboard during any WPCOM API incident.
 

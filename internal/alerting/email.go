@@ -32,7 +32,7 @@ type EmailMessage struct {
 // StubSender (unit tests).
 //
 // Send returns an error if the email could not be delivered. The
-// returned error string is recorded in jetmon_alert_deliveries for
+// returned error string is recorded in jetpack_monitor_alert_deliveries for
 // debugging — keep it short and useful, not a stack trace.
 type Sender interface {
 	Send(ctx context.Context, msg EmailMessage) error

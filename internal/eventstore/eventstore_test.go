@@ -170,10 +170,10 @@ func TestStoreOpenInsertedEventWritesTransition(t *testing.T) {
 	defer db.Close()
 
 	mock.ExpectBegin()
-	mock.ExpectExec("INSERT INTO jetmon_events").
+	mock.ExpectExec("INSERT INTO jetpack_monitor_events").
 		WithArgs(int64(42), nil, "http", nil, SeveritySeemsDown, StateSeemsDown, nil).
 		WillReturnResult(sqlmock.NewResult(99, 1))
-	mock.ExpectExec("INSERT INTO jetmon_event_transitions").
+	mock.ExpectExec("INSERT INTO jetpack_monitor_event_transitions").
 		WithArgs(int64(99), int64(42), nil, SeveritySeemsDown, nil, StateSeemsDown, ReasonOpened, "local", nil).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
@@ -202,10 +202,10 @@ func TestStoreOpenExistingEventReadsCurrentState(t *testing.T) {
 	defer db.Close()
 
 	mock.ExpectBegin()
-	mock.ExpectExec("INSERT INTO jetmon_events").
+	mock.ExpectExec("INSERT INTO jetpack_monitor_events").
 		WithArgs(int64(42), nil, "http", nil, SeveritySeemsDown, StateSeemsDown, nil).
 		WillReturnResult(sqlmock.NewResult(99, 2))
-	mock.ExpectQuery("SELECT severity, state FROM jetmon_events").
+	mock.ExpectQuery("SELECT severity, state FROM jetpack_monitor_events").
 		WithArgs(int64(99)).
 		WillReturnRows(sqlmock.NewRows([]string{"severity", "state"}).AddRow(SeverityDown, StateDown))
 	mock.ExpectCommit()
@@ -262,10 +262,10 @@ func TestStorePromoteWritesEventAndTransition(t *testing.T) {
 	mock.ExpectQuery("SELECT blog_id, severity, state, ended_at, cause_event_id").
 		WithArgs(int64(99)).
 		WillReturnRows(eventSnapshotRow(42, SeveritySeemsDown, StateSeemsDown, nil))
-	mock.ExpectExec("UPDATE jetmon_events SET severity").
+	mock.ExpectExec("UPDATE jetpack_monitor_events SET severity").
 		WithArgs(SeverityDown, StateDown, int64(99)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("INSERT INTO jetmon_event_transitions").
+	mock.ExpectExec("INSERT INTO jetpack_monitor_event_transitions").
 		WithArgs(int64(99), int64(42), SeveritySeemsDown, SeverityDown, StateSeemsDown, StateDown, ReasonVerifierConfirmed, "tester", nil).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
@@ -293,10 +293,10 @@ func TestStoreLinkCauseWritesMetadataTransition(t *testing.T) {
 	mock.ExpectQuery("SELECT blog_id, severity, state, ended_at, cause_event_id").
 		WithArgs(int64(99)).
 		WillReturnRows(eventSnapshotRow(42, SeverityDown, StateDown, nil))
-	mock.ExpectExec("UPDATE jetmon_events SET cause_event_id").
+	mock.ExpectExec("UPDATE jetpack_monitor_events SET cause_event_id").
 		WithArgs(int64(123), int64(99)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("INSERT INTO jetmon_event_transitions").
+	mock.ExpectExec("INSERT INTO jetpack_monitor_event_transitions").
 		WithArgs(int64(99), int64(42), SeverityDown, SeverityDown, StateDown, StateDown, ReasonCauseLinked, "tester", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
@@ -324,10 +324,10 @@ func TestStoreCloseWritesResolvedTransition(t *testing.T) {
 	mock.ExpectQuery("SELECT blog_id, severity, state, ended_at, cause_event_id").
 		WithArgs(int64(99)).
 		WillReturnRows(eventSnapshotRow(42, SeverityDown, StateDown, nil))
-	mock.ExpectExec("UPDATE jetmon_events").
+	mock.ExpectExec("UPDATE jetpack_monitor_events").
 		WithArgs(ReasonVerifierCleared, int64(99)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("INSERT INTO jetmon_event_transitions").
+	mock.ExpectExec("INSERT INTO jetpack_monitor_event_transitions").
 		WithArgs(int64(99), int64(42), SeverityDown, nil, StateDown, StateResolved, ReasonVerifierCleared, "tester", nil).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
@@ -348,7 +348,7 @@ func TestTxFindActiveByBlog(t *testing.T) {
 	defer db.Close()
 
 	mock.ExpectBegin()
-	mock.ExpectQuery("SELECT id, severity, state FROM jetmon_events").
+	mock.ExpectQuery("SELECT id, severity, state FROM jetpack_monitor_events").
 		WithArgs(int64(42), "http").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "severity", "state"}).AddRow(int64(99), SeverityDown, StateDown))
 	mock.ExpectRollback()

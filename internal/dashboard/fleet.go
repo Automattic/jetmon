@@ -204,7 +204,7 @@ type FleetProcess struct {
 	DependencyHealth          []fleethealth.DependencyHealth `json:"dependency_health,omitempty"`
 }
 
-// FleetBucketCoverage summarizes jetmon_hosts dynamic bucket ownership.
+// FleetBucketCoverage summarizes jetpack_monitor_hosts dynamic bucket ownership.
 type FleetBucketCoverage struct {
 	Status      string            `json:"status"`
 	Mode        string            `json:"mode"`
@@ -214,7 +214,7 @@ type FleetBucketCoverage struct {
 	Hosts       []FleetBucketHost `json:"hosts,omitempty"`
 }
 
-// FleetBucketHost is one jetmon_hosts row with freshness metadata.
+// FleetBucketHost is one jetpack_monitor_hosts row with freshness metadata.
 type FleetBucketHost struct {
 	HostID              string    `json:"host_id"`
 	BucketMin           int       `json:"bucket_min"`
@@ -442,10 +442,10 @@ func fleetProcessTypeRank(processType string) int {
 func queryFleetBucketHosts(ctx context.Context, db *sql.DB) ([]FleetBucketHost, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT host_id, bucket_min, bucket_max, last_heartbeat, status
-		  FROM jetmon_hosts
+		  FROM jetpack_monitor_hosts
 		 ORDER BY bucket_min, host_id`)
 	if err != nil {
-		return nil, fmt.Errorf("query jetmon_hosts: %w", err)
+		return nil, fmt.Errorf("query jetpack_monitor_hosts: %w", err)
 	}
 	defer rows.Close()
 
@@ -453,13 +453,13 @@ func queryFleetBucketHosts(ctx context.Context, db *sql.DB) ([]FleetBucketHost, 
 	for rows.Next() {
 		var host FleetBucketHost
 		if err := rows.Scan(&host.HostID, &host.BucketMin, &host.BucketMax, &host.LastHeartbeat, &host.Status); err != nil {
-			return nil, fmt.Errorf("scan jetmon_hosts: %w", err)
+			return nil, fmt.Errorf("scan jetpack_monitor_hosts: %w", err)
 		}
 		host.LastHeartbeat = host.LastHeartbeat.UTC()
 		hosts = append(hosts, host)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate jetmon_hosts: %w", err)
+		return nil, fmt.Errorf("iterate jetpack_monitor_hosts: %w", err)
 	}
 	return hosts, nil
 }
@@ -498,7 +498,7 @@ func summarizeFleetBucketCoverage(hosts []FleetBucketHost, bucketTotal int, hear
 	}
 	if mode == "pinned" {
 		coverage.Status = "amber"
-		coverage.Error = "monitor process snapshots report pinned bucket ranges; dynamic jetmon_hosts coverage is not active"
+		coverage.Error = "monitor process snapshots report pinned bucket ranges; dynamic jetpack_monitor_hosts coverage is not active"
 		return coverage
 	}
 	if mode == "mixed" {
@@ -508,7 +508,7 @@ func summarizeFleetBucketCoverage(hosts []FleetBucketHost, bucketTotal int, hear
 	}
 	if len(hosts) == 0 {
 		coverage.Status = "amber"
-		coverage.Error = "jetmon_hosts has no dynamic ownership rows"
+		coverage.Error = "jetpack_monitor_hosts has no dynamic ownership rows"
 		return coverage
 	}
 	if err := validateFleetBucketCoverage(coverage.Hosts, bucketTotal); err != nil {
@@ -599,8 +599,8 @@ func queryFleetDelivery(ctx context.Context, db *sql.DB, now time.Time, recentWi
 		kind string
 		name string
 	}{
-		{kind: "webhook", name: "jetmon_webhook_deliveries"},
-		{kind: "alert", name: "jetmon_alert_deliveries"},
+		{kind: "webhook", name: "jetpack_monitor_webhook_deliveries"},
+		{kind: "alert", name: "jetpack_monitor_alert_deliveries"},
 	}
 	for _, table := range tables {
 		tableSummary, err := queryFleetDeliveryTable(ctx, db, table.kind, table.name, now, cutoff)
@@ -632,7 +632,7 @@ func queryFleetDelivery(ctx context.Context, db *sql.DB, now time.Time, recentWi
 
 func queryFleetDeliveryTable(ctx context.Context, db *sql.DB, kind, table string, now, cutoff time.Time) (FleetDeliveryTable, error) {
 	switch table {
-	case "jetmon_webhook_deliveries", "jetmon_alert_deliveries":
+	case "jetpack_monitor_webhook_deliveries", "jetpack_monitor_alert_deliveries":
 	default:
 		return FleetDeliveryTable{}, fmt.Errorf("unsupported delivery table %q", table)
 	}
@@ -798,7 +798,7 @@ func queryFleetProjectionDrift(ctx context.Context, db *sql.DB, bucketTotal int)
 	err := db.QueryRowContext(ctx, `
 		SELECT COUNT(*)
 		  FROM jetpack_monitor_sites s
-		  LEFT JOIN jetmon_events e
+		  LEFT JOIN jetpack_monitor_events e
 		    ON e.blog_id = s.blog_id
 		   AND e.check_type = 'http'
 		   AND e.ended_at IS NULL
@@ -852,10 +852,10 @@ func queryFleetVeriflierVantages(ctx context.Context, db *sql.DB) ([]FleetVerifl
 		SELECT vantage_id, region, provider, endpoint_host, endpoint_port,
 		       IF(auth_token <> '', 1, 0) AS auth_token_present,
 		       enabled, updated_at
-		  FROM jetmon_veriflier_vantages
+		  FROM jetpack_monitor_veriflier_vantages
 		 ORDER BY enabled DESC, vantage_id`)
 	if err != nil {
-		return nil, fmt.Errorf("query jetmon_veriflier_vantages: %w", err)
+		return nil, fmt.Errorf("query jetpack_monitor_veriflier_vantages: %w", err)
 	}
 	defer rows.Close()
 
@@ -874,7 +874,7 @@ func queryFleetVeriflierVantages(ctx context.Context, db *sql.DB) ([]FleetVerifl
 			&enabled,
 			&updatedAt,
 		); err != nil {
-			return nil, fmt.Errorf("scan jetmon_veriflier_vantages: %w", err)
+			return nil, fmt.Errorf("scan jetpack_monitor_veriflier_vantages: %w", err)
 		}
 		v.AuthTokenPresent = authTokenPresent != 0
 		v.Enabled = enabled != 0
@@ -885,7 +885,7 @@ func queryFleetVeriflierVantages(ctx context.Context, db *sql.DB) ([]FleetVerifl
 		vantages = append(vantages, v)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate jetmon_veriflier_vantages: %w", err)
+		return nil, fmt.Errorf("iterate jetpack_monitor_veriflier_vantages: %w", err)
 	}
 	return vantages, nil
 }
@@ -895,10 +895,10 @@ func queryFleetVeriflierAgents(ctx context.Context, db *sql.DB, now time.Time, s
 		SELECT agent_id, vantage_id, hostname, endpoint_host, endpoint_port,
 		       version, protocols, max_concurrency, queue_capacity, queue_depth,
 		       active, in_flight, status, last_seen
-		  FROM jetmon_veriflier_agents
+		  FROM jetpack_monitor_veriflier_agents
 		 ORDER BY last_seen DESC, vantage_id, agent_id`)
 	if err != nil {
-		return nil, fmt.Errorf("query jetmon_veriflier_agents: %w", err)
+		return nil, fmt.Errorf("query jetpack_monitor_veriflier_agents: %w", err)
 	}
 	defer rows.Close()
 
@@ -922,11 +922,11 @@ func queryFleetVeriflierAgents(ctx context.Context, db *sql.DB, now time.Time, s
 			&agent.Status,
 			&agent.LastSeen,
 		); err != nil {
-			return nil, fmt.Errorf("scan jetmon_veriflier_agents: %w", err)
+			return nil, fmt.Errorf("scan jetpack_monitor_veriflier_agents: %w", err)
 		}
 		if protocols.Valid && strings.TrimSpace(protocols.String) != "" {
 			if err := json.Unmarshal([]byte(protocols.String), &agent.Protocols); err != nil {
-				return nil, fmt.Errorf("decode jetmon_veriflier_agents.protocols: %w", err)
+				return nil, fmt.Errorf("decode jetpack_monitor_veriflier_agents.protocols: %w", err)
 			}
 		}
 		agent.LastSeen = agent.LastSeen.UTC()
@@ -939,7 +939,7 @@ func queryFleetVeriflierAgents(ctx context.Context, db *sql.DB, now time.Time, s
 		agents = append(agents, agent)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate jetmon_veriflier_agents: %w", err)
+		return nil, fmt.Errorf("iterate jetpack_monitor_veriflier_agents: %w", err)
 	}
 	return agents, nil
 }
@@ -1274,7 +1274,7 @@ func suggestFleetNextAction(snapshot FleetSnapshot, summary FleetSummary) string
 	case summary.StaleProcesses > 0:
 		return "Investigate stale process heartbeats before advancing rollout or relying on fleet status."
 	case snapshot.BucketCoverage.Status == "red":
-		return "Fix jetmon_hosts bucket coverage before relying on dynamic ownership."
+		return "Fix jetpack_monitor_hosts bucket coverage before relying on dynamic ownership."
 	case snapshot.ProjectionDrift.Status == "red":
 		return "Run rollout projection-drift --limit=100 and fix legacy projection drift before continuing."
 	case snapshot.Delivery.Status == "red":
@@ -1292,7 +1292,7 @@ func suggestFleetNextAction(snapshot FleetSnapshot, summary FleetSummary) string
 	case snapshot.BucketCoverage.Status == "amber":
 		return "Confirm whether the fleet is still in pinned rollout before expecting dynamic bucket coverage."
 	case summary.MonitorProcesses == 0:
-		return "Confirm monitor processes are publishing jetmon_process_health snapshots."
+		return "Confirm monitor processes are publishing jetpack_monitor_process_health snapshots."
 	case summary.AmberProcesses > 0:
 		return "Open amber host dashboards and clear dependency warnings before the next rollout step."
 	default:

@@ -267,7 +267,7 @@ func (s *Server) handleCreateRolloutSession(w http.ResponseWriter, r *http.Reque
 		metadata = nil
 	}
 	if _, err := s.db.ExecContext(r.Context(), `
-		INSERT INTO jetmon_rollout_sessions
+		INSERT INTO jetpack_monitor_rollout_sessions
 			(run_id, bucket_min, bucket_max, owner_host, change_ref, operator, metadata)
 		VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		runID, body.BucketMin, body.BucketMax, owner, strings.TrimSpace(body.ChangeRef), operator, nullableRawJSON(metadata),
@@ -827,7 +827,7 @@ func (s *Server) rolloutStagePolicyPlan(ctx context.Context, body rolloutRangeRe
 
 func (s *Server) updateRolloutJobBlocked(ctx context.Context, jobID, summary, code, message string) error {
 	_, err := s.db.ExecContext(ctx, `
-		UPDATE jetmon_rollout_jobs
+		UPDATE jetpack_monitor_rollout_jobs
 		   SET status = 'blocked',
 		       progress = 0,
 		       summary = ?,
@@ -845,7 +845,7 @@ func (s *Server) updateRolloutJobResult(ctx context.Context, jobID string, resul
 		return err
 	}
 	_, err = s.db.ExecContext(ctx, `
-		UPDATE jetmon_rollout_jobs
+		UPDATE jetpack_monitor_rollout_jobs
 		   SET result = ?,
 		       updated_at = CURRENT_TIMESTAMP
 		 WHERE job_id = ?`,
@@ -977,7 +977,7 @@ func (s *Server) createRolloutConfirmation(ctx context.Context, operation string
 	}
 	expiresAt := time.Now().UTC().Add(rolloutConfirmationTTL)
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO jetmon_rollout_confirmation_tokens
+		INSERT INTO jetpack_monitor_rollout_confirmation_tokens
 			(token_hash, run_id, operation, request_hash, bucket_min, bucket_max, operator, expires_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		sha256Hex(token), body.RunID, operation, rolloutRequestHash(operation, body), body.BucketMin, body.BucketMax, operator, expiresAt,
@@ -995,7 +995,7 @@ func (s *Server) consumeRolloutConfirmation(w http.ResponseWriter, r *http.Reque
 		return false
 	}
 	res, err := s.db.ExecContext(r.Context(), `
-		UPDATE jetmon_rollout_confirmation_tokens
+		UPDATE jetpack_monitor_rollout_confirmation_tokens
 		   SET used_at = CURRENT_TIMESTAMP
 		 WHERE token_hash = ?
 		   AND run_id = ?
@@ -1048,7 +1048,7 @@ func (s *Server) rolloutSeedCounts(ctx context.Context, min, max int) (map[strin
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*)
 		  FROM jetpack_monitor_sites s
-		  LEFT JOIN jetmon_check_targets t ON t.source_site_id = s.jetpack_monitor_site_id
+		  LEFT JOIN jetpack_monitor_check_targets t ON t.source_site_id = s.jetpack_monitor_site_id
 		 WHERE s.monitor_active = 1
 		   AND s.bucket_no BETWEEN ? AND ?
 		   AND t.source_site_id IS NULL`,
@@ -1060,7 +1060,7 @@ func (s *Server) rolloutSeedCounts(ctx context.Context, min, max int) (map[strin
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*)
 		  FROM jetpack_monitor_sites s
-		  LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id
+		  LEFT JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id
 		 WHERE s.monitor_active = 1
 		   AND s.bucket_no BETWEEN ? AND ?
 		   AND r.blog_id IS NULL`,
@@ -1094,7 +1094,7 @@ func (s *Server) executeRolloutSeed(ctx context.Context, min, max int) (int, err
 	}
 	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO jetmon_check_targets
+		INSERT INTO jetpack_monitor_check_targets
 			(blog_id, source_site_id, bucket_no, monitor_url, monitor_active, check_interval_sec, phase_slot_sec, config_hash)
 		SELECT s.blog_id,
 		       s.jetpack_monitor_site_id,
@@ -1121,7 +1121,7 @@ func (s *Server) executeRolloutSeed(ctx context.Context, min, max int) (int, err
 		return 0, err
 	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT IGNORE INTO jetmon_site_runtime (blog_id)
+		INSERT IGNORE INTO jetpack_monitor_site_runtime (blog_id)
 		SELECT DISTINCT blog_id
 		  FROM jetpack_monitor_sites
 		 WHERE monitor_active = 1
@@ -1222,8 +1222,8 @@ func (s *Server) rolloutSampleSites(ctx context.Context, min, max, limit int) ([
 			c.custom_headers, c.timeout_seconds, c.redirect_policy, c.alert_cooldown_minutes, r.last_alert_sent_at,
 			c.request_method, c.detection_profile
 		FROM jetpack_monitor_sites s
-		LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id
-		LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id
+		LEFT JOIN jetpack_monitor_site_check_config c ON c.blog_id = s.blog_id
+		LEFT JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id
 		WHERE s.monitor_active = 1
 		  AND s.bucket_no BETWEEN ? AND ?
 		ORDER BY s.jetpack_monitor_site_id ASC
@@ -1471,7 +1471,7 @@ func (s *Server) insertRolloutComparisonResults(ctx context.Context, jobID, runI
 	}
 	defer func() { _ = tx.Rollback() }()
 	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO jetmon_rollout_comparison_results
+		INSERT INTO jetpack_monitor_rollout_comparison_results
 			(job_id, run_id, blog_id, source_site_id, bucket_no, monitor_url,
 			 from_method, from_profile, to_method, to_profile,
 			 from_success, to_success, from_http_code, to_http_code,
@@ -1571,7 +1571,7 @@ func (s *Server) rolloutVerifierConfigsForPreflight(ctx context.Context, cfg *co
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT vantage_id, endpoint_host, endpoint_port, auth_token
-		  FROM jetmon_veriflier_vantages
+		  FROM jetpack_monitor_veriflier_vantages
 		 WHERE enabled = 1
 		 ORDER BY vantage_id`)
 	if err != nil {
@@ -1624,7 +1624,7 @@ type rolloutVerifierEndpointHint struct {
 func (s *Server) rolloutVeriflierAgentEndpointHints(ctx context.Context) (map[string]rolloutVerifierEndpointHint, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT vantage_id, endpoint_host, endpoint_port
-		  FROM jetmon_veriflier_agents
+		  FROM jetpack_monitor_veriflier_agents
 		 WHERE status = 'active'
 		   AND last_seen >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 90 SECOND)
 		 ORDER BY vantage_id, last_seen DESC, agent_id`)
@@ -1672,7 +1672,7 @@ func (s *Server) countPolicyStageEligible(ctx context.Context, min, max int, met
 	err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(DISTINCT s.blog_id)
 		  FROM jetpack_monitor_sites s
-		  LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id
+		  LEFT JOIN jetpack_monitor_site_check_config c ON c.blog_id = s.blog_id
 		 WHERE s.monitor_active = 1
 		   AND s.bucket_no BETWEEN ? AND ?
 		   AND (
@@ -1704,7 +1704,7 @@ func (s *Server) selectPolicyStageCandidates(ctx context.Context, body rolloutRa
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT s.blog_id, MIN(s.bucket_no), c.request_method, c.detection_profile
 		  FROM jetpack_monitor_sites s
-		  LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id
+		  LEFT JOIN jetpack_monitor_site_check_config c ON c.blog_id = s.blog_id
 		 WHERE s.monitor_active = 1
 		   AND s.bucket_no BETWEEN ? AND ?
 		   AND (
@@ -1779,7 +1779,7 @@ func (s *Server) executeRolloutStagePolicy(ctx context.Context, body rolloutRang
 			return nil, err
 		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO jetmon_rollout_policy_stage_rows
+			INSERT INTO jetpack_monitor_rollout_policy_stage_rows
 				(job_id, run_id, blog_id, bucket_no, previous_request_method, previous_detection_profile, new_request_method, new_detection_profile)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 			jobID, body.RunID, candidate.BlogID, candidate.BucketNo, nullableString(candidate.PrevMethod), nullableString(candidate.PrevProfile), method, profile,
@@ -1818,7 +1818,7 @@ func (s *Server) countRolloutStageRollbackRows(ctx context.Context, body rollout
 		var count int
 		err = s.db.QueryRowContext(ctx, `
 			SELECT COUNT(*)
-			  FROM jetmon_rollout_policy_stage_rows
+			  FROM jetpack_monitor_rollout_policy_stage_rows
 			 WHERE job_id = ?
 			   AND rolled_back_at IS NULL
 			   AND bucket_no BETWEEN ? AND ?`,
@@ -1829,7 +1829,7 @@ func (s *Server) countRolloutStageRollbackRows(ctx context.Context, body rollout
 	var count int
 	err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*)
-		  FROM jetmon_rollout_policy_stage_rows
+		  FROM jetpack_monitor_rollout_policy_stage_rows
 		 WHERE rolled_back_at IS NULL
 		   AND bucket_no BETWEEN ? AND ?
 		   AND (? = '' OR run_id = ?)`,
@@ -1853,7 +1853,7 @@ func (s *Server) rollbackRolloutStagePolicy(ctx context.Context, body rolloutRan
 			return nil, err
 		}
 		if _, err := tx.ExecContext(ctx, `
-			UPDATE jetmon_rollout_policy_stage_rows
+			UPDATE jetpack_monitor_rollout_policy_stage_rows
 			   SET rolled_back_at = CURRENT_TIMESTAMP(3)
 			 WHERE id = ?`,
 			row.ID,
@@ -1874,7 +1874,7 @@ func (s *Server) rollbackRolloutStagePolicy(ctx context.Context, body rolloutRan
 func (s *Server) rolloutRollbackRows(ctx context.Context, body rolloutRangeRequest, mode string) ([]rolloutPolicyRollbackRow, error) {
 	query := `
 		SELECT id, blog_id, previous_request_method, previous_detection_profile
-		  FROM jetmon_rollout_policy_stage_rows
+		  FROM jetpack_monitor_rollout_policy_stage_rows
 		 WHERE rolled_back_at IS NULL
 		   AND bucket_no BETWEEN ? AND ?
 		   AND (? = '' OR run_id = ?)`
@@ -1911,7 +1911,7 @@ func (s *Server) latestRolloutStageJob(ctx context.Context, body rolloutRangeReq
 	var jobID string
 	err := s.db.QueryRowContext(ctx, `
 		SELECT job_id
-		  FROM jetmon_rollout_policy_stage_rows
+		  FROM jetpack_monitor_rollout_policy_stage_rows
 		 WHERE rolled_back_at IS NULL
 		   AND bucket_no BETWEEN ? AND ?
 		   AND (? = '' OR run_id = ?)
@@ -1925,7 +1925,7 @@ func (s *Server) latestRolloutStageJob(ctx context.Context, body rolloutRangeReq
 
 func upsertRolloutPolicyTx(ctx context.Context, tx *sql.Tx, blogID int64, method, profile any) error {
 	_, err := tx.ExecContext(ctx, `
-		INSERT INTO jetmon_site_check_config (blog_id, request_method, detection_profile)
+		INSERT INTO jetpack_monitor_site_check_config (blog_id, request_method, detection_profile)
 		VALUES (?, ?, ?)
 		ON DUPLICATE KEY UPDATE
 			request_method = VALUES(request_method),
@@ -1949,7 +1949,7 @@ func (s *Server) activateRolloutBuckets(ctx context.Context, body rolloutRangeRe
 	}
 	defer func() { _ = tx.Rollback() }()
 	res, err := tx.ExecContext(ctx, `
-		INSERT INTO jetmon_rollout_range_locks
+		INSERT INTO jetpack_monitor_rollout_range_locks
 			(run_id, bucket_min, bucket_max, owner_host, change_ref)
 		VALUES (?, ?, ?, ?, ?)`,
 		body.RunID, body.BucketMin, body.BucketMax, body.OwnerHost, body.ChangeRef,
@@ -1963,7 +1963,7 @@ func (s *Server) activateRolloutBuckets(ctx context.Context, body rolloutRangeRe
 	}
 	for bucket := body.BucketMin; bucket <= body.BucketMax; bucket++ {
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO jetmon_rollout_bucket_locks
+			INSERT INTO jetpack_monitor_rollout_bucket_locks
 				(bucket_no, run_id, range_lock_id, owner_host)
 			VALUES (?, ?, ?, ?)`,
 			bucket, body.RunID, lockID, body.OwnerHost,
@@ -1981,7 +1981,7 @@ func (s *Server) releaseRolloutBuckets(ctx context.Context, body rolloutRangeReq
 	}
 	defer func() { _ = tx.Rollback() }()
 	res, err := tx.ExecContext(ctx, `
-		DELETE FROM jetmon_rollout_bucket_locks
+		DELETE FROM jetpack_monitor_rollout_bucket_locks
 		 WHERE bucket_no BETWEEN ? AND ?
 		   AND (? = '' OR run_id = ?)`,
 		body.BucketMin, body.BucketMax, body.RunID, body.RunID,
@@ -1991,7 +1991,7 @@ func (s *Server) releaseRolloutBuckets(ctx context.Context, body rolloutRangeReq
 	}
 	released, _ := res.RowsAffected()
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE jetmon_rollout_range_locks
+		UPDATE jetpack_monitor_rollout_range_locks
 		   SET status = 'released', released_at = CURRENT_TIMESTAMP
 		 WHERE status = 'active'
 		   AND bucket_min <= ?
@@ -2008,7 +2008,7 @@ func (s *Server) countRolloutBucketOverlaps(ctx context.Context, min, max int) (
 	var count int
 	err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*)
-		  FROM jetmon_rollout_bucket_locks
+		  FROM jetpack_monitor_rollout_bucket_locks
 		 WHERE bucket_no BETWEEN ? AND ?`,
 		min, max,
 	).Scan(&count)
@@ -2019,7 +2019,7 @@ func (s *Server) countRolloutOwnerBucketsOutsideRange(ctx context.Context, owner
 	var count int
 	err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*)
-		  FROM jetmon_rollout_bucket_locks
+		  FROM jetpack_monitor_rollout_bucket_locks
 		 WHERE owner_host = ?
 		   AND (bucket_no < ? OR bucket_no > ?)`,
 		owner, min, max,
@@ -2044,7 +2044,7 @@ func (s *Server) countRecentlyCheckedSites(ctx context.Context, min, max int, cu
 	err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*)
 		  FROM jetpack_monitor_sites s
-		  JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id
+		  JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id
 		 WHERE s.monitor_active = 1
 		   AND s.bucket_no BETWEEN ? AND ?
 		   AND r.last_checked_at >= ?`,
@@ -2067,7 +2067,7 @@ func (s *Server) countProjectionDrift(ctx context.Context, min, max int) (int, e
 			         ELSE 1
 			       END AS expected_status
 			  FROM jetpack_monitor_sites s
-			  LEFT JOIN jetmon_events e
+			  LEFT JOIN jetpack_monitor_events e
 			    ON e.blog_id = s.blog_id
 			   AND (e.endpoint_id = s.jetpack_monitor_site_id OR e.endpoint_id IS NULL)
 			   AND e.check_type = 'http'
@@ -2084,7 +2084,7 @@ func (s *Server) countProjectionDrift(ctx context.Context, min, max int) (int, e
 
 func (s *Server) maxSchemaMigration(ctx context.Context) (int, error) {
 	var id sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `SELECT MAX(id) FROM jetmon_schema_migrations`).Scan(&id)
+	err := s.db.QueryRowContext(ctx, `SELECT MAX(id) FROM jetpack_monitor_schema_migrations`).Scan(&id)
 	if err != nil {
 		return 0, err
 	}
@@ -2096,14 +2096,14 @@ func (s *Server) maxSchemaMigration(ctx context.Context) (int, error) {
 
 func (s *Server) countOpenRolloutSessions(ctx context.Context) (int, error) {
 	var count int
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM jetmon_rollout_sessions WHERE status = 'open'`).Scan(&count)
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM jetpack_monitor_rollout_sessions WHERE status = 'open'`).Scan(&count)
 	return count, err
 }
 
 func (s *Server) listRolloutActiveRanges(ctx context.Context) ([]rolloutActiveRangeJSON, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT run_id, bucket_min, bucket_max, owner_host, change_ref, activated_at
-		  FROM jetmon_rollout_range_locks
+		  FROM jetpack_monitor_rollout_range_locks
 		 WHERE status = 'active'
 		 ORDER BY bucket_min, bucket_max`)
 	if err != nil {
@@ -2125,7 +2125,7 @@ func (s *Server) listRolloutActiveRanges(ctx context.Context) ([]rolloutActiveRa
 
 func (s *Server) insertRolloutJob(ctx context.Context, job rolloutJobResponse) error {
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO jetmon_rollout_jobs
+		INSERT INTO jetpack_monitor_rollout_jobs
 			(job_id, run_id, operation, status, progress, summary, result, error_code, error_message)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		job.JobID, job.RunID, job.Operation, job.Status, job.Progress, job.Summary, nullableRawJSON(job.Result), job.ErrorCode, job.ErrorMessage,
@@ -2139,7 +2139,7 @@ func (s *Server) readRolloutJob(ctx context.Context, jobID string) (rolloutJobRe
 	var created, updated time.Time
 	err := s.db.QueryRowContext(ctx, `
 		SELECT job_id, run_id, operation, status, progress, summary, result, error_code, error_message, created_at, updated_at
-		  FROM jetmon_rollout_jobs
+		  FROM jetpack_monitor_rollout_jobs
 		 WHERE job_id = ?`,
 		jobID,
 	).Scan(&job.JobID, &job.RunID, &job.Operation, &job.Status, &job.Progress, &job.Summary, &result, &job.ErrorCode, &job.ErrorMessage, &created, &updated)

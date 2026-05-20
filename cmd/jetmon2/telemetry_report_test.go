@@ -423,12 +423,12 @@ func expectTelemetryReportQueries(t *testing.T, mock sqlmock.Sqlmock, start, end
 		{eventstore.ReasonProbeCleared, 1, 600, 600},
 		{eventstore.ReasonVerifierCleared, 1, 3000, 3000},
 	} {
-		mock.ExpectQuery(`(?s)SELECT COUNT\(\*\).*FROM jetmon_event_transitions outcome.*opened.reason = \?.*outcome.changed_at >= \?.*outcome.changed_at < \?`).
+		mock.ExpectQuery(`(?s)SELECT COUNT\(\*\).*FROM jetpack_monitor_event_transitions outcome.*opened.reason = \?.*outcome.changed_at >= \?.*outcome.changed_at < \?`).
 			WithArgs(eventstore.ReasonOpened, tc.reason, start, end).
 			WillReturnRows(sqlmock.NewRows([]string{"count", "avg", "max"}).AddRow(tc.count, tc.avg, tc.max))
 	}
 
-	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\).*FROM jetmon_audit_log.*detail = 'veriflier reply'.*created_at >= \?.*created_at < \?`).
+	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\).*FROM jetpack_monitor_audit_log.*detail = 'veriflier reply'.*created_at >= \?.*created_at < \?`).
 		WithArgs(audit.EventVeriflierSent, start, end).
 		WillReturnRows(sqlmock.NewRows([]string{"count", "confirm", "disagree", "missing"}).
 			AddRow(int64(6), int64(4), int64(2), int64(0)))
@@ -437,7 +437,7 @@ func expectTelemetryReportQueries(t *testing.T, mock sqlmock.Sqlmock, start, end
 		WillReturnRows(sqlmock.NewRows([]string{"source", "count", "confirm", "disagree", "missing"}).
 			AddRow("verifier-a", int64(4), int64(3), int64(1), int64(0)).
 			AddRow("verifier-b", int64(2), int64(1), int64(1), int64(0)))
-	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\).*verifier_duplicate_votes.*FROM jetmon_event_transitions.*reason IN.*changed_at >= \?.*changed_at < \?`).
+	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\).*verifier_duplicate_votes.*FROM jetpack_monitor_event_transitions.*reason IN.*changed_at >= \?.*changed_at < \?`).
 		WithArgs(eventstore.ReasonVerifierConfirmed, eventstore.ReasonFalseAlarm, start, end).
 		WillReturnRows(sqlmock.NewRows([]string{"count", "duplicates", "duplicate_rows", "under_min", "max_quorum", "max_healthy"}).
 			AddRow(int64(3), int64(0), int64(0), int64(0), int64(2), int64(3)))

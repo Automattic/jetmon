@@ -15,7 +15,7 @@ Retry queue flush (must not happen at round start):
 !`grep -rn "RetryQueue\|retryQueue" internal/orchestrator/ | grep -i "flush\|clear\|reset\|= \[\]" || echo "OK"`
 
 Bucket claim outside transaction (must use SELECT FOR UPDATE):
-!`grep -rn "UPDATE jetmon_hosts\|INSERT.*jetmon_hosts" internal/ | grep -v "_test.go" || echo "OK"`
+!`grep -rn "UPDATE jetpack_monitor_hosts\|INSERT.*jetpack_monitor_hosts" internal/ | grep -v "_test.go" || echo "OK"`
 
 Non-context DB calls:
 !`grep -rn "\.Query\b\|\.QueryRow\b\|\.Exec\b" internal/ | grep -v "Context\|_test.go" || echo "OK"`

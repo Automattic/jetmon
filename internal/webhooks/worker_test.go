@@ -226,10 +226,10 @@ func TestHandleResultSchedulesRetryAndForcedAbandon(t *testing.T) {
 	}
 	defer db.Close()
 
-	mock.ExpectExec("UPDATE jetmon_webhook_deliveries").
+	mock.ExpectExec("UPDATE jetpack_monitor_webhook_deliveries").
 		WithArgs(503, "retry", sqlmock.AnyArg(), int64(1)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("UPDATE jetmon_webhook_deliveries").
+	mock.ExpectExec("UPDATE jetpack_monitor_webhook_deliveries").
 		WithArgs(0, "gone", int64(2)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -273,13 +273,13 @@ func TestProgressLoadSave(t *testing.T) {
 	defer db.Close()
 
 	w := &Worker{cfg: WorkerConfig{DB: db, InstanceID: "host-a"}}
-	mock.ExpectQuery("SELECT last_transition_id FROM jetmon_webhook_dispatch_progress").
+	mock.ExpectQuery("SELECT last_transition_id FROM jetpack_monitor_webhook_dispatch_progress").
 		WithArgs("host-a").
 		WillReturnError(sql.ErrNoRows)
-	mock.ExpectExec("INSERT INTO jetmon_webhook_dispatch_progress").
+	mock.ExpectExec("INSERT INTO jetpack_monitor_webhook_dispatch_progress").
 		WithArgs("host-a", int64(55)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectQuery("SELECT last_transition_id FROM jetmon_webhook_dispatch_progress").
+	mock.ExpectQuery("SELECT last_transition_id FROM jetpack_monitor_webhook_dispatch_progress").
 		WithArgs("host-a").
 		WillReturnRows(sqlmock.NewRows([]string{"last_transition_id"}).AddRow(int64(55)))
 

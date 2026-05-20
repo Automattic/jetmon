@@ -4,13 +4,13 @@
 
 ## Context
 
-Both `jetmon_webhooks.secret` (HMAC signing key) and
-`jetmon_alert_contacts.destination` (transport-specific credential
+Both `jetpack_monitor_webhooks.secret` (HMAC signing key) and
+`jetpack_monitor_alert_contacts.destination` (transport-specific credential
 JSON: PagerDuty integration key, Slack/Teams webhook URL, SMTP
 password) need to be available at dispatch time so the worker can
 authenticate or sign the outbound request.
 
-`jetmon_api_keys.token_hash` stores SHA-256 hashes — keys are
+`jetpack_monitor_api_keys.token_hash` stores SHA-256 hashes — keys are
 verified by hashing the inbound bearer token and comparing in
 constant time. This pattern works because API keys are validated on
 the **inbound** path, where having only the hash is sufficient.
@@ -33,10 +33,10 @@ would prevent the call.
 We will store outbound-dispatch credentials in **plaintext** in the
 relevant tables:
 
-- `jetmon_webhooks.secret VARCHAR(80)` — the raw HMAC signing key,
+- `jetpack_monitor_webhooks.secret VARCHAR(80)` — the raw HMAC signing key,
   with the `whsec_` prefix preserved (Stripe-style leak-detection
   hint).
-- `jetmon_alert_contacts.destination JSON` — the transport-specific
+- `jetpack_monitor_alert_contacts.destination JSON` — the transport-specific
   credential as supplied by the operator.
 
 Each table also stores a small "preview" column (`secret_preview`
@@ -65,7 +65,7 @@ so future readers can audit it without rediscovering it.
   new value once, the next dispatch picks it up.
 
 **Costs:**
-- A read of `jetmon_webhooks` or `jetmon_alert_contacts` at the SQL
+- A read of `jetpack_monitor_webhooks` or `jetpack_monitor_alert_contacts` at the SQL
   level (DBA query, MySQL replica, backup file) leaks all signing
   keys and destination credentials in plaintext. For an internal
   service behind a gateway with an internal-only set of consumers
@@ -100,8 +100,8 @@ so future readers can audit it without rediscovering it.
 
 - ADR-0002 (Internal-only API) — defines the threat model that
   makes plaintext storage acceptable today.
-- Migration 13 (`jetmon_webhooks`) — documents the rationale inline.
-- Migration 16 (`jetmon_alert_contacts`) — same rationale.
+- Migration 13 (`jetpack_monitor_webhooks`) — documents the rationale inline.
+- Migration 16 (`jetpack_monitor_alert_contacts`) — same rationale.
 - `internal/webhooks/webhooks.go` — `LoadSecret` is intentionally a
   separate function (not a field on `Webhook`) to prevent leakage
   through serialization.

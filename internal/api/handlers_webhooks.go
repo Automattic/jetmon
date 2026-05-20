@@ -228,7 +228,7 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 // stop a soft-deleted webhook from receiving new deliveries, but a real
 // DELETE keeps the registry clean and matches consumer expectations
 // ("I revoked my webhook subscription"). Existing rows in
-// jetmon_webhook_deliveries are preserved for audit and manual retry.
+// jetpack_monitor_webhook_deliveries are preserved for audit and manual retry.
 func (s *Server) handleDeleteWebhook(w http.ResponseWriter, r *http.Request) {
 	id, err := parseIDPath(r, "id")
 	if err != nil {

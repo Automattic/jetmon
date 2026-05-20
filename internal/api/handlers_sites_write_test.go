@@ -222,7 +222,7 @@ func TestUpdateSiteHappyPath(t *testing.T) {
 	mock.ExpectExec(`UPDATE jetpack_monitor_sites SET monitor_url = ? WHERE blog_id = ?`).
 		WithArgs("https://new.example.com", int64(42)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec(`INSERT INTO jetmon_site_check_config (blog_id, redirect_policy) VALUES (?, ?) ON DUPLICATE KEY UPDATE redirect_policy = VALUES(redirect_policy)`).
+	mock.ExpectExec(`INSERT INTO jetpack_monitor_site_check_config (blog_id, redirect_policy) VALUES (?, ?) ON DUPLICATE KEY UPDATE redirect_policy = VALUES(redirect_policy)`).
 		WithArgs(int64(42), "alert").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
@@ -310,7 +310,7 @@ func TestDeleteSiteSoftDeletes(t *testing.T) {
 	mock.ExpectQuery(siteExistsCheckSQL).WithArgs(int64(42)).
 		WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
 	// closeAllActiveEvents queries for active events; return none.
-	mock.ExpectQuery(`SELECT id FROM jetmon_events WHERE blog_id = ? AND ended_at IS NULL`).
+	mock.ExpectQuery(`SELECT id FROM jetpack_monitor_events WHERE blog_id = ? AND ended_at IS NULL`).
 		WithArgs(int64(42)).WillReturnRows(sqlmock.NewRows([]string{"id"}))
 	// soft-delete UPDATE
 	mock.ExpectExec(`UPDATE jetpack_monitor_sites SET monitor_active = 0 WHERE blog_id = ?`).
@@ -333,19 +333,19 @@ func TestPauseSiteClosesActiveEvents(t *testing.T) {
 	mock.ExpectQuery(siteExistsCheckSQL).WithArgs(int64(42)).
 		WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
 	// One active event to close.
-	mock.ExpectQuery(`SELECT id FROM jetmon_events WHERE blog_id = ? AND ended_at IS NULL`).
+	mock.ExpectQuery(`SELECT id FROM jetpack_monitor_events WHERE blog_id = ? AND ended_at IS NULL`).
 		WithArgs(int64(42)).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(7)))
 
 	// closeEvent runs in a tx: BeginTx → SELECT FOR UPDATE → UPDATE event → INSERT transition → Commit
 	mock.ExpectBegin()
-	mock.ExpectQuery(`SELECT severity, state, ended_at FROM jetmon_events WHERE id = ? FOR UPDATE`).
+	mock.ExpectQuery(`SELECT severity, state, ended_at FROM jetpack_monitor_events WHERE id = ? FOR UPDATE`).
 		WithArgs(int64(7)).
 		WillReturnRows(sqlmock.NewRows([]string{"severity", "state", "ended_at"}).
 			AddRow(uint8(4), "Down", nil))
-	mock.ExpectExec(` UPDATE jetmon_events SET ended_at = CURRENT_TIMESTAMP(3), resolution_reason = ? WHERE id = ?`).
+	mock.ExpectExec(` UPDATE jetpack_monitor_events SET ended_at = CURRENT_TIMESTAMP(3), resolution_reason = ? WHERE id = ?`).
 		WithArgs("manual_override", int64(7)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec(` INSERT INTO jetmon_event_transitions (event_id, blog_id, severity_before, severity_after, state_before, state_after, reason, source, metadata) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)`).
+	mock.ExpectExec(` INSERT INTO jetpack_monitor_event_transitions (event_id, blog_id, severity_before, severity_after, state_before, state_after, reason, source, metadata) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)`).
 		WithArgs(int64(7), int64(42), uint8(4), "Down", "Resolved", "manual_override", "api", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(countActiveEventsSQL).WithArgs(int64(42)).

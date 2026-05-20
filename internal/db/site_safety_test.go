@@ -13,7 +13,7 @@ func TestUpsertSiteSafetyFlag(t *testing.T) {
 	mock, cleanup := withMockDB(t)
 	defer cleanup()
 
-	mock.ExpectExec("INSERT INTO jetmon_site_safety_flags").
+	mock.ExpectExec("INSERT INTO jetpack_monitor_site_safety_flags").
 		WithArgs(int64(42), int64(123), SiteSafetyFlagUnsafeMonitorURL, "blocked", "http://127.0.0.1", SiteSafetyStatusDeactivated, nil).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -38,7 +38,7 @@ func TestUpsertSiteSafetyFlagTruncatesLongValues(t *testing.T) {
 
 	var gotReason string
 	var gotURL string
-	mock.ExpectExec("INSERT INTO jetmon_site_safety_flags").
+	mock.ExpectExec("INSERT INTO jetpack_monitor_site_safety_flags").
 		WithArgs(int64(42), int64(123), SiteSafetyFlagProbeSafetyBlock, sqlmock.AnyArg(), sqlmock.AnyArg(), SiteSafetyStatusOpen, nil).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 

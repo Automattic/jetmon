@@ -157,8 +157,8 @@ seed_sites() {
 
 	{
 		printf 'START TRANSACTION;\n'
-		printf 'DELETE FROM jetmon_site_runtime WHERE blog_id >= 920000000 AND blog_id < %d;\n' "$((920000000 + SITE_COUNT))"
-		printf 'DELETE FROM jetmon_site_check_config WHERE blog_id >= 920000000 AND blog_id < %d;\n' "$((920000000 + SITE_COUNT))"
+		printf 'DELETE FROM jetpack_monitor_site_runtime WHERE blog_id >= 920000000 AND blog_id < %d;\n' "$((920000000 + SITE_COUNT))"
+		printf 'DELETE FROM jetpack_monitor_site_check_config WHERE blog_id >= 920000000 AND blog_id < %d;\n' "$((920000000 + SITE_COUNT))"
 		printf 'DELETE FROM jetpack_monitor_sites WHERE blog_id >= 920000000 AND blog_id < %d;\n' "$((920000000 + SITE_COUNT))"
 		while ((created < SITE_COUNT)); do
 			blog_id=$((920000000 + created))
@@ -186,7 +186,7 @@ seed_sites() {
 					;;
 			esac
 			printf "INSERT INTO jetpack_monitor_sites (blog_id, bucket_no, monitor_url, monitor_active, site_status, check_interval) VALUES (%d, %d, '%s', 1, 1, 1);\n" "$blog_id" "$bucket" "$url"
-			printf "INSERT INTO jetmon_site_check_config (blog_id, request_method, detection_profile, check_keyword, timeout_seconds, redirect_policy, alert_cooldown_minutes) VALUES (%d, 'GET', '%s', %s, 3, 'follow', 60);\n" "$blog_id" "$profile" "$keyword"
+			printf "INSERT INTO jetpack_monitor_site_check_config (blog_id, request_method, detection_profile, check_keyword, timeout_seconds, redirect_policy, alert_cooldown_minutes) VALUES (%d, 'GET', '%s', %s, 3, 'follow', 60);\n" "$blog_id" "$profile" "$keyword"
 			created=$((created + 1))
 		done
 		printf 'COMMIT;\n'
@@ -210,7 +210,7 @@ wait_for_host_count() {
 	local deadline=$((SECONDS + 180))
 	local count=0
 	while ((SECONDS < deadline)); do
-		count="$(scalar_sql "SELECT COUNT(*) FROM jetmon_hosts WHERE status = 'active'")"
+		count="$(scalar_sql "SELECT COUNT(*) FROM jetpack_monitor_hosts WHERE status = 'active'")"
 		if [[ "$count" == "$expected" ]]; then
 			pass "$label active_monitor_hosts=$count"
 			return
@@ -240,7 +240,7 @@ checked_since() {
 	scalar_sql "
 		SELECT COUNT(DISTINCT s.jetpack_monitor_site_id)
 		  FROM jetpack_monitor_sites s
-		  JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id
+		  JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id
 		 WHERE s.monitor_active = 1
 		   AND r.last_checked_at >= TIMESTAMP('$since')"
 }
@@ -292,9 +292,9 @@ assert_no_outbound_side_effects() {
 	local webhooks
 	local mailpit_messages
 
-	wpcom_audit="$(scalar_sql "SELECT COUNT(*) FROM jetmon_audit_log WHERE event_type IN ('wpcom_sent','wpcom_retry','wpcom_failure')")"
-	alert_contacts="$(scalar_sql "SELECT COUNT(*) FROM jetmon_alert_contacts")"
-	webhooks="$(scalar_sql "SELECT COUNT(*) FROM jetmon_webhooks")"
+	wpcom_audit="$(scalar_sql "SELECT COUNT(*) FROM jetpack_monitor_audit_log WHERE event_type IN ('wpcom_sent','wpcom_retry','wpcom_failure')")"
+	alert_contacts="$(scalar_sql "SELECT COUNT(*) FROM jetpack_monitor_alert_contacts")"
+	webhooks="$(scalar_sql "SELECT COUNT(*) FROM jetpack_monitor_webhooks")"
 	mailpit_messages="$(mailpit_message_count)"
 
 	[[ "$wpcom_audit" == "0" ]] || fail "$label wpcom_audit_rows=$wpcom_audit want=0"
@@ -318,14 +318,14 @@ sample_soak() {
 	max_age="$(scalar_sql "
 		SELECT COALESCE(MAX(TIMESTAMPDIFF(SECOND, r.last_checked_at, UTC_TIMESTAMP())), 999999)
 		  FROM jetpack_monitor_sites s
-		  JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id
+		  JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id
 		 WHERE s.monitor_active = 1")"
-	history_rows="$(scalar_sql "SELECT COUNT(*) FROM jetmon_check_history WHERE checked_at >= TIMESTAMP('$since')")"
-	open_events="$(scalar_sql "SELECT COUNT(*) FROM jetmon_events WHERE ended_at IS NULL")"
-	active_hosts="$(scalar_sql "SELECT COUNT(*) FROM jetmon_hosts WHERE status = 'active'")"
+	history_rows="$(scalar_sql "SELECT COUNT(*) FROM jetpack_monitor_check_history WHERE checked_at >= TIMESTAMP('$since')")"
+	open_events="$(scalar_sql "SELECT COUNT(*) FROM jetpack_monitor_events WHERE ended_at IS NULL")"
+	active_hosts="$(scalar_sql "SELECT COUNT(*) FROM jetpack_monitor_hosts WHERE status = 'active'")"
 	stale_processes="$(scalar_sql "
 		SELECT COUNT(*)
-		  FROM jetmon_process_health
+		  FROM jetpack_monitor_process_health
 		 WHERE process_type = 'monitor'
 		   AND state = 'running'
 		   AND updated_at < UTC_TIMESTAMP() - INTERVAL 20 SECOND")"

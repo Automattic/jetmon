@@ -12,7 +12,7 @@ import (
 )
 
 // eventResponse is the JSON shape for an event in list and detail responses.
-// Field ordering loosely matches the schema (jetmon_events): identity first,
+// Field ordering loosely matches the schema (jetpack_monitor_events): identity first,
 // then severity/state, then timing, then closure data, then metadata.
 type eventResponse struct {
 	ID               int64           `json:"id"`
@@ -31,7 +31,7 @@ type eventResponse struct {
 	TransitionCount  int             `json:"transition_count"`
 }
 
-// transitionResponse is one row from jetmon_event_transitions.
+// transitionResponse is one row from jetpack_monitor_event_transitions.
 type transitionResponse struct {
 	ID             int64           `json:"id"`
 	EventID        int64           `json:"event_id"`
@@ -123,7 +123,7 @@ func (s *Server) listEvents(w http.ResponseWriter, r *http.Request, siteID int64
 		SELECT id, blog_id, endpoint_id, check_type, discriminator,
 		       severity, state, started_at, ended_at, resolution_reason,
 		       cause_event_id, metadata
-		  FROM jetmon_events
+		  FROM jetpack_monitor_events
 		 WHERE blog_id = ?`)
 
 	if cursor > 0 {
@@ -259,7 +259,7 @@ func (s *Server) respondEvent(w http.ResponseWriter, r *http.Request, eventID in
 		SELECT id, blog_id, endpoint_id, check_type, discriminator,
 		       severity, state, started_at, ended_at, resolution_reason,
 		       cause_event_id, metadata
-		  FROM jetmon_events
+		  FROM jetpack_monitor_events
 		 WHERE id = ?`, eventID)
 
 	ev, err := scanEventRow(row)
@@ -323,7 +323,7 @@ func (s *Server) handleListTransitions(w http.ResponseWriter, r *http.Request) {
 	// Verify the event exists and belongs to the site before we paginate.
 	var blogID int64
 	if err := s.db.QueryRowContext(r.Context(),
-		`SELECT blog_id FROM jetmon_events WHERE id = ?`, eventID).Scan(&blogID); err != nil {
+		`SELECT blog_id FROM jetpack_monitor_events WHERE id = ?`, eventID).Scan(&blogID); err != nil {
 		if err == sql.ErrNoRows {
 			writeError(w, r, http.StatusNotFound, "event_not_found",
 				fmt.Sprintf("Event %d does not exist", eventID))
@@ -365,7 +365,7 @@ func (s *Server) handleListTransitions(w http.ResponseWriter, r *http.Request) {
 	query := `
 		SELECT id, event_id, severity_before, severity_after,
 		       state_before, state_after, reason, source, metadata, changed_at
-		  FROM jetmon_event_transitions
+		  FROM jetpack_monitor_event_transitions
 		 WHERE event_id = ?`
 	if cursor > 0 {
 		query += " AND id > ?"
@@ -411,7 +411,7 @@ func (s *Server) queryTransitions(ctx context.Context, eventID int64) ([]transit
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, event_id, severity_before, severity_after,
 		       state_before, state_after, reason, source, metadata, changed_at
-		  FROM jetmon_event_transitions
+		  FROM jetpack_monitor_event_transitions
 		 WHERE event_id = ?
 		 ORDER BY id ASC`, eventID)
 	if err != nil {
@@ -438,7 +438,7 @@ func (s *Server) queryTransitionCounts(ctx context.Context, eventIDs []any) (map
 	}
 	placeholders := strings.Repeat("?,", len(eventIDs)-1) + "?"
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT event_id, COUNT(*) FROM jetmon_event_transitions
+		`SELECT event_id, COUNT(*) FROM jetpack_monitor_event_transitions
 		  WHERE event_id IN (`+placeholders+`)
 		  GROUP BY event_id`, eventIDs...)
 	if err != nil {

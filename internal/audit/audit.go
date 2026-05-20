@@ -1,11 +1,11 @@
-// Package audit writes the operational trail to jetmon_audit_log: WPCOM
+// Package audit writes the operational trail to jetpack_monitor_audit_log: WPCOM
 // notification sends and retries, verifier RPC dispatch, retry-queue dispatch,
 // alert and maintenance suppression decisions, and config reloads. These are
 // things the monitor *did*, not things that happened to a site.
 //
 // Site-state changes (incidents opening, severity escalating, state changing,
 // events closing) flow through the eventstore package and the
-// jetmon_events / jetmon_event_transitions tables. They do not go through this
+// jetpack_monitor_events / jetpack_monitor_event_transitions tables. They do not go through this
 // package. See docs/events.md for the split.
 package audit
 
@@ -18,9 +18,9 @@ import (
 	"sync/atomic"
 )
 
-// Event types written to jetmon_audit_log. All values are operational — none
+// Event types written to jetpack_monitor_audit_log. All values are operational — none
 // of them describe site state directly. Site-state transitions live in
-// jetmon_event_transitions.
+// jetpack_monitor_event_transitions.
 const (
 	EventWPCOMSent         = "wpcom_sent"
 	EventWPCOMRetry        = "wpcom_retry"
@@ -124,7 +124,7 @@ type Entry struct {
 	HTTPMethod string
 }
 
-// Log writes an entry to jetmon_audit_log. ctx propagates cancellation and
+// Log writes an entry to jetpack_monitor_audit_log. ctx propagates cancellation and
 // deadlines into the underlying INSERT. Callers control the context lifetime:
 // the orchestrator passes its long-lived shutdown context; the API middleware
 // uses a short bounded timeout derived from context.Background so audits fire
@@ -146,7 +146,7 @@ func Log(ctx context.Context, e Entry) error {
 		source = "local"
 	}
 	_, err := db.ExecContext(ctx, `
-		INSERT INTO jetmon_audit_log
+		INSERT INTO jetpack_monitor_audit_log
 			(blog_id, event_id, event_type, source, detail, metadata)
 		VALUES (?, ?, ?, ?, ?, ?)`,
 		nullableInt64(e.BlogID),
@@ -166,7 +166,7 @@ func Log(ctx context.Context, e Entry) error {
 // The caller must close the returned *sql.Rows.
 func Query(db *sql.DB, blogID int64, since, until string) (*sql.Rows, error) {
 	q := `SELECT id, blog_id, event_id, event_type, source, detail, metadata, created_at
-	      FROM jetmon_audit_log
+	      FROM jetpack_monitor_audit_log
 	      WHERE blog_id = ?`
 	args := []any{blogID}
 

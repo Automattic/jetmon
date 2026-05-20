@@ -236,7 +236,7 @@ Resolution options:
 - Reintroduce v1-compatible file logging and status-change logging in v2 only
   if a confirmed production consumer requires it.
 - Keep stdout/stderr as the only runtime log stream and expose status/history
-  through `jetmon_events`, `jetmon_event_transitions`, `jetmon_audit_log`, the
+  through `jetpack_monitor_events`, `jetpack_monitor_event_transitions`, `jetpack_monitor_audit_log`, the
   API, dashboard, StatsD, and the v1-style stats API.
 
 Recommended solution:

@@ -74,10 +74,10 @@ func TestRunSiteSafetyUnsafeURLsExecuteDeactivates(t *testing.T) {
 			AddRow(int64(2), int64(102), "http://127.0.0.1").
 			AddRow(int64(3), int64(103), "http://2130706433"))
 	mock.ExpectBegin()
-	mock.ExpectExec("INSERT INTO jetmon_site_safety_flags").
+	mock.ExpectExec("INSERT INTO jetpack_monitor_site_safety_flags").
 		WithArgs(int64(102), int64(2), db.SiteSafetyFlagUnsafeMonitorURL, sqlmock.AnyArg(), "http://127.0.0.1", db.SiteSafetyStatusDeactivated, sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectExec("INSERT INTO jetmon_site_safety_flags").
+	mock.ExpectExec("INSERT INTO jetpack_monitor_site_safety_flags").
 		WithArgs(int64(103), int64(3), db.SiteSafetyFlagUnsafeMonitorURL, sqlmock.AnyArg(), "http://2130706433", db.SiteSafetyStatusDeactivated, sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(2, 1))
 	mock.ExpectExec("UPDATE jetpack_monitor_sites").
@@ -121,14 +121,14 @@ func TestDeactivateUnsafeMonitorURLsChunksLargeBatches(t *testing.T) {
 	}
 	mock.ExpectBegin()
 	for i := 0; i < 1000; i++ {
-		mock.ExpectExec("INSERT INTO jetmon_site_safety_flags").
+		mock.ExpectExec("INSERT INTO jetpack_monitor_site_safety_flags").
 			WillReturnResult(sqlmock.NewResult(int64(i+1), 1))
 	}
 	mock.ExpectExec("UPDATE jetpack_monitor_sites").
 		WillReturnResult(sqlmock.NewResult(0, 1000))
 	mock.ExpectCommit()
 	mock.ExpectBegin()
-	mock.ExpectExec("INSERT INTO jetmon_site_safety_flags").
+	mock.ExpectExec("INSERT INTO jetpack_monitor_site_safety_flags").
 		WillReturnResult(sqlmock.NewResult(1001, 1))
 	mock.ExpectExec("UPDATE jetpack_monitor_sites").
 		WillReturnResult(sqlmock.NewResult(0, 1))

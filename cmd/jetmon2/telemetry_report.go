@@ -342,7 +342,7 @@ func resolveTelemetryWindow(now time.Time, since, until string) (telemetryWindow
 func queryTelemetryReasonCounts(ctx context.Context, conn *sql.DB, window telemetryWindow) (map[string]int64, error) {
 	rows, err := conn.QueryContext(ctx, `
 		SELECT reason, COUNT(*)
-		  FROM jetmon_event_transitions
+		  FROM jetpack_monitor_event_transitions
 		 WHERE changed_at >= ?
 		   AND changed_at < ?
 		 GROUP BY reason`,
@@ -387,8 +387,8 @@ func queryTelemetryTimings(ctx context.Context, conn *sql.DB, window telemetryWi
 			SELECT COUNT(*),
 			       COALESCE(CAST(ROUND(AVG(TIMESTAMPDIFF(MICROSECOND, opened.changed_at, outcome.changed_at) / 1000)) AS SIGNED), 0),
 			       COALESCE(MAX(TIMESTAMPDIFF(MICROSECOND, opened.changed_at, outcome.changed_at) DIV 1000), 0)
-			  FROM jetmon_event_transitions outcome
-			  JOIN jetmon_event_transitions opened
+			  FROM jetpack_monitor_event_transitions outcome
+			  JOIN jetpack_monitor_event_transitions opened
 			    ON opened.event_id = outcome.event_id
 			   AND opened.reason = ?
 			 WHERE outcome.reason = ?
@@ -411,7 +411,7 @@ func queryTelemetryVerifier(ctx context.Context, conn *sql.DB, window telemetryW
 		       COALESCE(SUM(CASE WHEN LOWER(JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.success'))) = 'false' THEN 1 ELSE 0 END), 0),
 		       COALESCE(SUM(CASE WHEN LOWER(JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.success'))) = 'true' THEN 1 ELSE 0 END), 0),
 		       COALESCE(SUM(CASE WHEN JSON_EXTRACT(metadata, '$.success') IS NULL THEN 1 ELSE 0 END), 0)
-		  FROM jetmon_audit_log
+		  FROM jetpack_monitor_audit_log
 		 WHERE event_type = ?
 		   AND detail = 'veriflier reply'
 		   AND created_at >= ?
@@ -431,7 +431,7 @@ func queryTelemetryVerifier(ctx context.Context, conn *sql.DB, window telemetryW
 		       COALESCE(SUM(CASE WHEN LOWER(JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.success'))) = 'false' THEN 1 ELSE 0 END), 0),
 		       COALESCE(SUM(CASE WHEN LOWER(JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.success'))) = 'true' THEN 1 ELSE 0 END), 0),
 		       COALESCE(SUM(CASE WHEN JSON_EXTRACT(metadata, '$.success') IS NULL THEN 1 ELSE 0 END), 0)
-		  FROM jetmon_audit_log
+		  FROM jetpack_monitor_audit_log
 		 WHERE event_type = ?
 		   AND detail = 'veriflier reply'
 		   AND created_at >= ?
@@ -464,7 +464,7 @@ func queryTelemetryVerifier(ctx context.Context, conn *sql.DB, window telemetryW
 		       COALESCE(SUM(CASE WHEN COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.verifier_healthy')) AS SIGNED), 0) < COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.verifier_min_healthy')) AS SIGNED), 0) THEN 1 ELSE 0 END), 0),
 		       COALESCE(MAX(COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.verifier_quorum')) AS SIGNED), 0)), 0),
 		       COALESCE(MAX(COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.verifier_healthy')) AS SIGNED), 0)), 0)
-		  FROM jetmon_event_transitions
+		  FROM jetpack_monitor_event_transitions
 		 WHERE reason IN (?, ?)
 		   AND changed_at >= ?
 		   AND changed_at < ?
@@ -502,8 +502,8 @@ func queryTelemetryFalseAlarmClasses(ctx context.Context, conn *sql.DB, window t
 		         ELSE 'unknown'
 		       END AS class,
 		       COUNT(*) AS count
-		  FROM jetmon_event_transitions outcome
-		  JOIN jetmon_event_transitions opened
+		  FROM jetpack_monitor_event_transitions outcome
+		  JOIN jetpack_monitor_event_transitions opened
 		    ON opened.event_id = outcome.event_id
 		   AND opened.reason = ?
 		 WHERE outcome.reason IN (?, ?)
@@ -555,7 +555,7 @@ func queryTelemetryWPCOM(ctx context.Context, conn *sql.DB, window telemetryWind
 		SELECT COUNT(*),
 		       COALESCE(SUM(CASE WHEN detail LIKE 'status=2 %' THEN 1 ELSE 0 END), 0),
 		       COALESCE(SUM(CASE WHEN detail LIKE 'status=1 %' THEN 1 ELSE 0 END), 0)
-		  FROM jetmon_audit_log
+		  FROM jetpack_monitor_audit_log
 		 WHERE event_type = ?
 		   AND created_at >= ?
 		   AND created_at < ?`,
@@ -567,7 +567,7 @@ func queryTelemetryWPCOM(ctx context.Context, conn *sql.DB, window telemetryWind
 
 	err = conn.QueryRowContext(ctx, `
 		SELECT COUNT(*)
-		  FROM jetmon_audit_log
+		  FROM jetpack_monitor_audit_log
 		 WHERE event_type = ?
 		   AND created_at >= ?
 		   AND created_at < ?`,
@@ -579,7 +579,7 @@ func queryTelemetryWPCOM(ctx context.Context, conn *sql.DB, window telemetryWind
 
 	rows, err := conn.QueryContext(ctx, `
 		SELECT event_type, COALESCE(detail, ''), COUNT(*)
-		  FROM jetmon_audit_log
+		  FROM jetpack_monitor_audit_log
 		 WHERE event_type IN (?, ?)
 		   AND created_at >= ?
 		   AND created_at < ?
@@ -653,7 +653,7 @@ func queryTelemetryWindowEdge(ctx context.Context, conn *sql.DB, window telemetr
 	err := conn.QueryRowContext(ctx, `
 		SELECT COALESCE(SUM(CASE WHEN reason IN (?, ?, ?) THEN 1 ELSE 0 END), 0),
 		       COALESCE(SUM(CASE WHEN reason IN (?, ?) THEN 1 ELSE 0 END), 0)
-		  FROM jetmon_event_transitions
+		  FROM jetpack_monitor_event_transitions
 		 WHERE changed_at >= ?
 		   AND changed_at < ?`,
 		eventstore.ReasonVerifierConfirmed,
@@ -684,7 +684,7 @@ func queryTelemetryExplanationGaps(ctx context.Context, conn *sql.DB, window tel
 			detail:   "opened transitions should explain the local failure with http_code or error_code plus rtt_ms",
 			query: `
 				SELECT COUNT(*)
-				  FROM jetmon_event_transitions
+				  FROM jetpack_monitor_event_transitions
 				 WHERE reason = ?
 				   AND changed_at >= ?
 				   AND changed_at < ?
@@ -699,7 +699,7 @@ func queryTelemetryExplanationGaps(ctx context.Context, conn *sql.DB, window tel
 			detail:   "verifier-confirmed transitions should include verifier_results for operator explanations",
 			query: `
 				SELECT COUNT(*)
-				  FROM jetmon_event_transitions
+				  FROM jetpack_monitor_event_transitions
 				 WHERE reason = ?
 				   AND changed_at >= ?
 				   AND changed_at < ?
@@ -712,7 +712,7 @@ func queryTelemetryExplanationGaps(ctx context.Context, conn *sql.DB, window tel
 			detail:   "false-alarm transitions should include verifier healthy/confirmed counts",
 			query: `
 				SELECT COUNT(*)
-				  FROM jetmon_event_transitions
+				  FROM jetpack_monitor_event_transitions
 				 WHERE reason = ?
 				   AND changed_at >= ?
 				   AND changed_at < ?
@@ -727,7 +727,7 @@ func queryTelemetryExplanationGaps(ctx context.Context, conn *sql.DB, window tel
 			detail:   "verifier reply audit rows should include metadata.success so agreement can be measured",
 			query: `
 				SELECT COUNT(*)
-				  FROM jetmon_audit_log
+				  FROM jetpack_monitor_audit_log
 				 WHERE event_type = ?
 				   AND detail = 'veriflier reply'
 				   AND created_at >= ?

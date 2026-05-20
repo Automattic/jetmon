@@ -36,7 +36,7 @@ type DependencyHealth struct {
 	Details   map[string]string `json:"details,omitempty"`
 }
 
-// Snapshot is the local process state written to jetmon_process_health.
+// Snapshot is the local process state written to jetpack_monitor_process_health.
 type Snapshot struct {
 	ProcessID                 string
 	HostID                    string
@@ -153,7 +153,7 @@ func MarkStopped(ctx context.Context, db *sql.DB, processID string, when time.Ti
 		when = time.Now().UTC()
 	}
 	_, err := db.ExecContext(ctx,
-		`UPDATE jetmon_process_health
+		`UPDATE jetpack_monitor_process_health
 		   SET state = ?, health_status = ?, updated_at = ?
 		 WHERE process_id = ?`,
 		StateStopped,
@@ -207,7 +207,7 @@ func ListSnapshots(ctx context.Context, db *sql.DB) ([]Snapshot, error) {
 		       runtime_goroutines_created,
 		       runtime_threads,
 		       dependency_health
-		  FROM jetmon_process_health
+		  FROM jetpack_monitor_process_health
 		 ORDER BY process_type, host_id, process_id`)
 	if err != nil {
 		return nil, fmt.Errorf("query process health: %w", err)
@@ -314,7 +314,7 @@ func LookupReadiness(ctx context.Context, db *sql.DB, hostID, processType string
 	var snap ReadinessSnapshot
 	err := db.QueryRowContext(ctx, `
 		SELECT state, health_status, updated_at
-		  FROM jetmon_process_health
+		  FROM jetpack_monitor_process_health
 		 WHERE process_id = ?`,
 		ProcessID(hostID, processType),
 	).Scan(&snap.State, &snap.HealthStatus, &snap.UpdatedAt)
@@ -354,7 +354,7 @@ func LookupDrainStatus(ctx context.Context, db *sql.DB, hostID, processType stri
 	var snap DrainSnapshot
 	err := db.QueryRowContext(ctx, `
 		SELECT state, active_checks, queue_depth, retry_queue_size, wpcom_queue_depth, updated_at
-		  FROM jetmon_process_health
+		  FROM jetpack_monitor_process_health
 		 WHERE process_id = ?`,
 		ProcessID(hostID, processType),
 	).Scan(&snap.State, &snap.ActiveChecks, &snap.QueueDepth, &snap.RetryQueueSize, &snap.WPCOMQueueDepth, &snap.UpdatedAt)
@@ -460,7 +460,7 @@ func boolInt(value bool) int {
 }
 
 const upsertSnapshotSQL = `
-INSERT INTO jetmon_process_health (
+INSERT INTO jetpack_monitor_process_health (
 	process_id,
 	host_id,
 	process_type,

@@ -74,7 +74,7 @@ func TestLogHonorsCanceledContext(t *testing.T) {
 	t.Cleanup(func() { db = orig })
 	db = conn
 
-	mock.ExpectExec(`INSERT INTO jetmon_audit_log`).WillReturnError(context.Canceled)
+	mock.ExpectExec(`INSERT INTO jetpack_monitor_audit_log`).WillReturnError(context.Canceled)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

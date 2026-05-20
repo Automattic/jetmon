@@ -1,10 +1,10 @@
-// Package apikeys manages API tokens stored in jetmon_api_keys.
+// Package apikeys manages API tokens stored in jetpack_monitor_api_keys.
 //
 // Tokens are 32 bytes of crypto/rand entropy, base32-encoded with a "jm_"
 // prefix (e.g. "jm_NBSWY3DPEHPK3PXP..."). Storage is sha256-hashed; the raw
 // token is only ever returned at creation time via the CLI.
 //
-// This package is the only writer for jetmon_api_keys. The HTTP API exposes
+// This package is the only writer for jetpack_monitor_api_keys. The HTTP API exposes
 // no key management endpoints — see docs/internal-api-reference.md "Authentication".
 package apikeys
 
@@ -62,7 +62,7 @@ var (
 	ErrKeyExpired   = errors.New("apikeys: key expired")
 )
 
-// Key is the in-memory representation of a jetmon_api_keys row. The raw
+// Key is the in-memory representation of a jetpack_monitor_api_keys row. The raw
 // token is never stored here — it's hashed on the way in and discarded.
 type Key struct {
 	ID                 int64
@@ -137,7 +137,7 @@ func Create(ctx context.Context, db *sql.DB, in CreateInput) (raw string, k *Key
 	}
 
 	res, err := db.ExecContext(ctx, `
-		INSERT INTO jetmon_api_keys
+		INSERT INTO jetpack_monitor_api_keys
 			(key_hash, consumer_name, scope, rate_limit_per_minute, expires_at, created_by)
 		VALUES (?, ?, ?, ?, ?, ?)`,
 		hashed, in.ConsumerName, string(in.Scope), rateLimit, expiresAt, createdBy,
@@ -189,7 +189,7 @@ func Lookup(ctx context.Context, db *sql.DB, raw string) (*Key, error) {
 	// write failure doesn't fail the auth check — last_used_at is observability,
 	// not security.
 	_, _ = db.ExecContext(ctx,
-		`UPDATE jetmon_api_keys SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?`, k.ID)
+		`UPDATE jetpack_monitor_api_keys SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?`, k.ID)
 	return k, nil
 }
 
@@ -198,7 +198,7 @@ func List(ctx context.Context, db *sql.DB) ([]Key, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, consumer_name, scope, rate_limit_per_minute,
 		       expires_at, revoked_at, last_used_at, created_at, created_by
-		  FROM jetmon_api_keys
+		  FROM jetpack_monitor_api_keys
 		 ORDER BY id ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("apikeys: list: %w", err)
@@ -219,7 +219,7 @@ func List(ctx context.Context, db *sql.DB) ([]Key, error) {
 // Revoke sets revoked_at on the given key. Idempotent — re-revoking is a no-op.
 func Revoke(ctx context.Context, db *sql.DB, id int64) error {
 	res, err := db.ExecContext(ctx,
-		`UPDATE jetmon_api_keys SET revoked_at = CURRENT_TIMESTAMP WHERE id = ? AND revoked_at IS NULL`, id)
+		`UPDATE jetpack_monitor_api_keys SET revoked_at = CURRENT_TIMESTAMP WHERE id = ? AND revoked_at IS NULL`, id)
 	if err != nil {
 		return fmt.Errorf("apikeys: revoke: %w", err)
 	}
@@ -286,7 +286,7 @@ func Rotate(ctx context.Context, db *sql.DB, oldID int64, gracePeriod time.Durat
 		// revoked_at against the current time, so a future revoked_at is
 		// effectively "scheduled."
 		_, err := db.ExecContext(ctx,
-			`UPDATE jetmon_api_keys
+			`UPDATE jetpack_monitor_api_keys
 			    SET revoked_at = DATE_ADD(CURRENT_TIMESTAMP, INTERVAL ? SECOND)
 			  WHERE id = ?`,
 			int(gracePeriod.Seconds()), oldID)
@@ -312,7 +312,7 @@ func getByID(ctx context.Context, db *sql.DB, id int64) (*Key, error) {
 	row := db.QueryRowContext(ctx, `
 		SELECT id, consumer_name, scope, rate_limit_per_minute,
 		       expires_at, revoked_at, last_used_at, created_at, created_by
-		  FROM jetmon_api_keys
+		  FROM jetpack_monitor_api_keys
 		 WHERE id = ?`, id)
 	return scanKey(row)
 }
@@ -321,7 +321,7 @@ func getByHash(ctx context.Context, db *sql.DB, hash string) (*Key, error) {
 	row := db.QueryRowContext(ctx, `
 		SELECT id, consumer_name, scope, rate_limit_per_minute,
 		       expires_at, revoked_at, last_used_at, created_at, created_by
-		  FROM jetmon_api_keys
+		  FROM jetpack_monitor_api_keys
 		 WHERE key_hash = ?`, hash)
 	return scanKey(row)
 }

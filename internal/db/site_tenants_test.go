@@ -12,7 +12,7 @@ func TestUpsertSiteTenantMappings(t *testing.T) {
 	defer cleanup()
 
 	mock.ExpectBegin()
-	prep := mock.ExpectPrepare("INSERT INTO jetmon_site_tenants")
+	prep := mock.ExpectPrepare("INSERT INTO jetpack_monitor_site_tenants")
 	prep.ExpectExec().
 		WithArgs("tenant-a", int64(42), "gateway").
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -41,7 +41,7 @@ func TestUpsertSiteTenantMappingsValidatesInput(t *testing.T) {
 	defer cleanup()
 
 	mock.ExpectBegin()
-	mock.ExpectPrepare("INSERT INTO jetmon_site_tenants")
+	mock.ExpectPrepare("INSERT INTO jetpack_monitor_site_tenants")
 	mock.ExpectRollback()
 
 	_, err := UpsertSiteTenantMappings(context.Background(), DB(), []SiteTenantMapping{

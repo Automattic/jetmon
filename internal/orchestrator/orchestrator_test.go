@@ -1813,10 +1813,10 @@ func TestHandleFailureOpensConfirmedDownAfterVerifierConfirmsDeferredDNSFailure(
 	defer sqlDB.Close()
 
 	mock.ExpectBegin()
-	mock.ExpectExec("INSERT INTO jetmon_events").
+	mock.ExpectExec("INSERT INTO jetpack_monitor_events").
 		WithArgs(int64(1), nil, checkTypeHTTP, nil, eventstore.SeverityDown, eventstore.StateDown, sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(501, 1))
-	mock.ExpectExec("INSERT INTO jetmon_event_transitions").
+	mock.ExpectExec("INSERT INTO jetpack_monitor_event_transitions").
 		WithArgs(int64(501), int64(1), nil, eventstore.SeverityDown, nil, eventstore.StateDown, eventstore.ReasonOpened, "local-host", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
@@ -2110,7 +2110,7 @@ func TestProcessResultsProbeSafetyBlockAuditsWithoutStateChange(t *testing.T) {
 		return nil
 	}
 
-	mock.ExpectExec(`INSERT INTO jetmon_audit_log`).
+	mock.ExpectExec(`INSERT INTO jetpack_monitor_audit_log`).
 		WithArgs(int64(42), nil, audit.EventProbeSafetyBlock, "local", "probe safety blocked outbound check", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -2478,10 +2478,10 @@ func TestCheckTLSDeprecatedOpensWarningEvent(t *testing.T) {
 	defer sqlDB.Close()
 
 	mock.ExpectBegin()
-	mock.ExpectExec("INSERT INTO jetmon_events").
+	mock.ExpectExec("INSERT INTO jetpack_monitor_events").
 		WithArgs(int64(72), nil, checkTypeTLSDeprecated, nil, eventstore.SeverityWarning, eventstore.StateWarning, sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(101, 1))
-	mock.ExpectExec("INSERT INTO jetmon_event_transitions").
+	mock.ExpectExec("INSERT INTO jetpack_monitor_event_transitions").
 		WithArgs(int64(101), int64(72), nil, eventstore.SeverityWarning, nil, eventstore.StateWarning, eventstore.ReasonOpened, "local-host", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
@@ -2509,7 +2509,7 @@ func TestCheckTLSDeprecatedClosesWarningOnModernTLS(t *testing.T) {
 	defer sqlDB.Close()
 
 	mock.ExpectBegin()
-	mock.ExpectQuery("SELECT id, severity, state FROM jetmon_events").
+	mock.ExpectQuery("SELECT id, severity, state FROM jetpack_monitor_events").
 		WithArgs(int64(73), checkTypeTLSDeprecated).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "severity", "state"}).
 			AddRow(int64(202), eventstore.SeverityWarning, eventstore.StateWarning))
@@ -2517,10 +2517,10 @@ func TestCheckTLSDeprecatedClosesWarningOnModernTLS(t *testing.T) {
 		WithArgs(int64(202)).
 		WillReturnRows(sqlmock.NewRows([]string{"blog_id", "severity", "state", "ended_at", "cause_event_id"}).
 			AddRow(int64(73), eventstore.SeverityWarning, eventstore.StateWarning, nil, nil))
-	mock.ExpectExec("UPDATE jetmon_events").
+	mock.ExpectExec("UPDATE jetpack_monitor_events").
 		WithArgs(eventstore.ReasonProbeCleared, int64(202)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("INSERT INTO jetmon_event_transitions").
+	mock.ExpectExec("INSERT INTO jetpack_monitor_event_transitions").
 		WithArgs(int64(202), int64(73), eventstore.SeverityWarning, nil, eventstore.StateWarning, eventstore.StateResolved, eventstore.ReasonProbeCleared, "local-host", nil).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
@@ -2574,7 +2574,7 @@ func TestCloseSSLExpiryUsesProbeCleared(t *testing.T) {
 	defer sqlDB.Close()
 
 	mock.ExpectBegin()
-	mock.ExpectQuery("SELECT id, severity, state FROM jetmon_events").
+	mock.ExpectQuery("SELECT id, severity, state FROM jetpack_monitor_events").
 		WithArgs(int64(74), checkTypeTLSExpiry).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "severity", "state"}).
 			AddRow(int64(303), eventstore.SeverityWarning, eventstore.StateWarning))
@@ -2582,10 +2582,10 @@ func TestCloseSSLExpiryUsesProbeCleared(t *testing.T) {
 		WithArgs(int64(303)).
 		WillReturnRows(sqlmock.NewRows([]string{"blog_id", "severity", "state", "ended_at", "cause_event_id"}).
 			AddRow(int64(74), eventstore.SeverityWarning, eventstore.StateWarning, nil, nil))
-	mock.ExpectExec("UPDATE jetmon_events").
+	mock.ExpectExec("UPDATE jetpack_monitor_events").
 		WithArgs(eventstore.ReasonProbeCleared, int64(303)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("INSERT INTO jetmon_event_transitions").
+	mock.ExpectExec("INSERT INTO jetpack_monitor_event_transitions").
 		WithArgs(int64(303), int64(74), eventstore.SeverityWarning, nil, eventstore.StateWarning, eventstore.StateResolved, eventstore.ReasonProbeCleared, "local-host", nil).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
@@ -2728,7 +2728,7 @@ func TestClaimBucketsUsesPinnedRangeWithoutHostTable(t *testing.T) {
 		t.Fatalf("ClaimBuckets: %v", err)
 	}
 	if dynamicClaimCalled {
-		t.Fatal("ClaimBuckets called dynamic jetmon_hosts claim in pinned mode")
+		t.Fatal("ClaimBuckets called dynamic jetpack_monitor_hosts claim in pinned mode")
 	}
 	if o.bucketMin != 12 || o.bucketMax != 34 {
 		t.Fatalf("bucket range = %d-%d, want 12-34", o.bucketMin, o.bucketMax)
@@ -2759,7 +2759,7 @@ func TestRunRoundSkipsHeartbeatWhenPinned(t *testing.T) {
 	o.runRound()
 
 	if heartbeatCalled {
-		t.Fatal("runRound updated jetmon_hosts heartbeat in pinned mode")
+		t.Fatal("runRound updated jetpack_monitor_hosts heartbeat in pinned mode")
 	}
 }
 
@@ -2790,10 +2790,10 @@ func TestRunRoundUsesAPIControlledRangeWithoutDynamicClaim(t *testing.T) {
 	o.runRound()
 
 	if heartbeatCalled {
-		t.Fatal("runRound updated jetmon_hosts heartbeat in api-controlled mode")
+		t.Fatal("runRound updated jetpack_monitor_hosts heartbeat in api-controlled mode")
 	}
 	if dynamicClaimCalled {
-		t.Fatal("runRound called dynamic jetmon_hosts claim in api-controlled mode")
+		t.Fatal("runRound called dynamic jetpack_monitor_hosts claim in api-controlled mode")
 	}
 	if o.bucketMin != 7 || o.bucketMax != 9 {
 		t.Fatalf("bucket range = %d-%d, want preserved 7-9", o.bucketMin, o.bucketMax)
@@ -3443,7 +3443,7 @@ func TestHandleRecoveryCooldownSuppressionIsAudited(t *testing.T) {
 	}
 
 	recent := time.Now().UTC().Add(-5 * time.Minute)
-	mock.ExpectExec(`INSERT INTO jetmon_audit_log`).
+	mock.ExpectExec(`INSERT INTO jetpack_monitor_audit_log`).
 		WithArgs(int64(1), nil, audit.EventAlertSuppressed, "local", "recovery cooldown active", nil).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 

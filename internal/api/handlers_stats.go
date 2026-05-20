@@ -14,7 +14,7 @@ import (
 	"github.com/Automattic/jetmon/internal/config"
 )
 
-// maxSamples bounds the number of jetmon_check_history rows we'll pull into
+// maxSamples bounds the number of jetpack_monitor_check_history rows we'll pull into
 // memory for percentile computation. 100k covers a 30d window at 26s/check
 // per site — beyond that we'd want pre-aggregation, not naive sort.
 const maxSamples = 100_000
@@ -139,7 +139,7 @@ func parseWindowDuration(s string) (time.Duration, error) {
 	}
 }
 
-// checkHistoryRowResponse is one raw jetmon_check_history row in API form.
+// checkHistoryRowResponse is one raw jetpack_monitor_check_history row in API form.
 type checkHistoryRowResponse struct {
 	ID            int64  `json:"id"`
 	RequestMethod string `json:"request_method"`
@@ -155,7 +155,7 @@ type checkHistoryRowResponse struct {
 
 const checkHistoryListSQLPrefix = `
 		SELECT id, request_method, http_code, error_code, rtt_ms, dns_ms, tcp_ms, tls_ms, ttfb_ms, checked_at
-		  FROM jetmon_check_history
+		  FROM jetpack_monitor_check_history
 		 WHERE blog_id = ?`
 
 // handleSiteCheckHistory returns raw per-check timing rows for a site,
@@ -351,7 +351,7 @@ type uptimeStats struct {
 func (s *Server) computeUptime(ctx context.Context, siteID int64, from, to time.Time) (uptimeStats, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT severity, state, started_at, ended_at
-		  FROM jetmon_events
+		  FROM jetpack_monitor_events
 		 WHERE blog_id = ?
 		   AND started_at < ?
 		   AND (ended_at IS NULL OR ended_at > ?)`,
@@ -425,7 +425,7 @@ func (s *Server) computeUptime(ctx context.Context, siteID int64, from, to time.
 }
 
 // handleSiteResponseTime returns p50/p95/p99/max/mean of total RTT over a
-// window, sourced from jetmon_check_history.
+// window, sourced from jetpack_monitor_check_history.
 func (s *Server) handleSiteResponseTime(w http.ResponseWriter, r *http.Request) {
 	siteID, from, to, ok := s.parseStatsRequest(w, r)
 	if !ok {
@@ -466,7 +466,7 @@ func (s *Server) handleSiteResponseTime(w http.ResponseWriter, r *http.Request) 
 }
 
 // resolveCheckHistoryMode returns the effective check-history mode for a site:
-// the per-site override from jetmon_site_check_config if set and valid,
+// the per-site override from jetpack_monitor_site_check_config if set and valid,
 // otherwise the configured CHECK_HISTORY_MODE_DEFAULT.
 func (s *Server) resolveCheckHistoryMode(ctx context.Context, siteID int64) string {
 	mode := config.CheckHistoryModeStatusChange
@@ -485,10 +485,10 @@ func (s *Server) resolveCheckHistoryMode(ctx context.Context, siteID int64) stri
 	return mode
 }
 
-const checkHistoryModeOverrideSQL = `SELECT check_history_mode FROM jetmon_site_check_config WHERE blog_id = ?`
+const checkHistoryModeOverrideSQL = `SELECT check_history_mode FROM jetpack_monitor_site_check_config WHERE blog_id = ?`
 
 // checkHistoryPercentilesMeaningful reports whether percentile statistics over
-// jetmon_check_history are representative under the given mode. Only the
+// jetpack_monitor_check_history are representative under the given mode. Only the
 // continuous-ish modes (all, sample) collect enough steady-state samples;
 // status_change records incident edges only and disabled records nothing.
 func checkHistoryPercentilesMeaningful(mode string) bool {
@@ -605,7 +605,7 @@ func (s *Server) siteExists(ctx context.Context, siteID int64) (bool, error) {
 // data than we can sort still returns the most recent sample.
 func (s *Server) queryRTTSamples(ctx context.Context, siteID int64, from, to time.Time) ([]int64, bool, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT rtt_ms FROM jetmon_check_history
+		SELECT rtt_ms FROM jetpack_monitor_check_history
 		 WHERE blog_id = ?
 		   AND checked_at >= ?
 		   AND checked_at < ?
@@ -637,14 +637,14 @@ func (s *Server) queryRTTSamples(ctx context.Context, siteID int64, from, to tim
 	return out, truncated, nil
 }
 
-// timingRow is one jetmon_check_history row's per-component timings.
+// timingRow is one jetpack_monitor_check_history row's per-component timings.
 type timingRow struct {
 	dns, tcp, tls, ttfb int64
 }
 
 func (s *Server) queryTimingSamples(ctx context.Context, siteID int64, from, to time.Time) ([]timingRow, bool, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT dns_ms, tcp_ms, tls_ms, ttfb_ms FROM jetmon_check_history
+		SELECT dns_ms, tcp_ms, tls_ms, ttfb_ms FROM jetpack_monitor_check_history
 		 WHERE blog_id = ?
 		   AND checked_at >= ?
 		   AND checked_at < ?

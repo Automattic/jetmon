@@ -47,7 +47,7 @@ type Site struct {
 	DetectionProfile     string
 
 	// CheckHistoryMode / CheckHistorySampleRate are per-site overrides for
-	// jetmon_check_history recording. nil means "use the configured default".
+	// jetpack_monitor_check_history recording. nil means "use the configured default".
 	CheckHistoryMode       *string
 	CheckHistorySampleRate *int
 }
@@ -143,7 +143,7 @@ func Ping() error {
 	return db.Ping()
 }
 
-// Hostname returns the system hostname used as the host_id in jetmon_hosts.
+// Hostname returns the system hostname used as the host_id in jetpack_monitor_hosts.
 func Hostname() string {
 	if cfg := config.Get(); cfg != nil {
 		if h := strings.TrimSpace(cfg.Hostname); h != "" {

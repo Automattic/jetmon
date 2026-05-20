@@ -36,7 +36,7 @@ func Create(ctx context.Context, db *sql.DB, in CreateInput) (*AlertContact, err
 	siteFilterJSON, _ := json.Marshal(in.SiteFilter)
 
 	res, err := db.ExecContext(ctx, `
-		INSERT INTO jetmon_alert_contacts
+		INSERT INTO jetpack_monitor_alert_contacts
 			(label, active, owner_tenant_id, transport, destination, destination_preview,
 			 site_filter, min_severity, max_per_hour, created_by)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -219,7 +219,7 @@ func update(ctx context.Context, db *sql.DB, id int64, ownerTenantID string, in 
 	}
 
 	args = append(args, id)
-	q := "UPDATE jetmon_alert_contacts SET " + strings.Join(clauses, ", ") + " WHERE id = ?"
+	q := "UPDATE jetpack_monitor_alert_contacts SET " + strings.Join(clauses, ", ") + " WHERE id = ?"
 	if ownerTenantID != "" {
 		q += " AND owner_tenant_id = ?"
 		args = append(args, ownerTenantID)
@@ -231,7 +231,7 @@ func update(ctx context.Context, db *sql.DB, id int64, ownerTenantID string, in 
 }
 
 // Delete removes an alert contact. Existing rows in
-// jetmon_alert_deliveries are intentionally NOT cascaded — they
+// jetpack_monitor_alert_deliveries are intentionally NOT cascaded — they
 // remain for audit and manual retry, mirroring webhooks.Delete.
 func Delete(ctx context.Context, db *sql.DB, id int64) error {
 	return deleteContact(ctx, db, id, "")
@@ -246,7 +246,7 @@ func DeleteForTenant(ctx context.Context, db *sql.DB, id int64, ownerTenantID st
 }
 
 func deleteContact(ctx context.Context, db *sql.DB, id int64, ownerTenantID string) error {
-	q := "DELETE FROM jetmon_alert_contacts WHERE id = ?"
+	q := "DELETE FROM jetpack_monitor_alert_contacts WHERE id = ?"
 	args := []any{id}
 	if ownerTenantID != "" {
 		q += " AND owner_tenant_id = ?"
@@ -282,7 +282,7 @@ func LoadDestinationForTenant(ctx context.Context, db *sql.DB, id int64, ownerTe
 
 func loadDestination(ctx context.Context, db *sql.DB, id int64, ownerTenantID string) (json.RawMessage, error) {
 	var raw []byte
-	q := `SELECT destination FROM jetmon_alert_contacts WHERE id = ?`
+	q := `SELECT destination FROM jetpack_monitor_alert_contacts WHERE id = ?`
 	args := []any{id}
 	if ownerTenantID != "" {
 		q += " AND owner_tenant_id = ?"
@@ -427,7 +427,7 @@ const selectContactSQL = `
 	SELECT id, label, active, owner_tenant_id, transport, destination_preview,
 	       site_filter, min_severity, max_per_hour,
 	       created_by, created_at, updated_at
-	  FROM jetmon_alert_contacts`
+	  FROM jetpack_monitor_alert_contacts`
 
 type rowScanner interface {
 	Scan(...any) error

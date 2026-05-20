@@ -33,7 +33,7 @@ or down" into an auditable health platform.
 |---|---|---|
 | Runtime | Node master, Node workers, C++ native addon, Qt Veriflier | Go monitor, Go Veriflier, optional Go deliverer |
 | Probe method | `HEAD` requests that could disagree with real page loads | `GET` requests for local checks and Veriflier checks |
-| State | Mutable `site_status` projection | `jetmon_events` plus append-only `jetmon_event_transitions` |
+| State | Mutable `site_status` projection | `jetpack_monitor_events` plus append-only `jetpack_monitor_event_transitions` |
 | Detection | Binary status changes | `Seems Down`, `Down`, recovery, false-alarm, and severity transitions |
 | Evidence | Basic logs | Audit log, check history, timing breakdown, verifier outcomes, API request logs |
 | Integrations | WPCOM notification path | WPCOM, REST API, HMAC webhooks, email, PagerDuty, Slack, Teams |

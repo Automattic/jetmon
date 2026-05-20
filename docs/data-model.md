@@ -33,45 +33,50 @@ writes only the v1 compatibility projection fields `site_status` and
 
 ## New Tables
 
+All v2-owned tables use the `jetpack_monitor_` prefix, matching the legacy
+`jetpack_monitor_sites` table and the WPCOM `jetpack_` dataset/pool-routing
+convention. Do not introduce `jetmon_`-prefixed tables. See
+[ADR-0011](adr/0011-table-naming-jetpack-monitor-prefix.md).
+
 | Table | Purpose |
 |---|---|
-| `jetmon_schema_migrations` | Applied migration tracking |
-| `jetmon_hosts` | MySQL-coordinated bucket ownership and heartbeat |
-| `jetmon_events` | Authoritative current state of every incident |
-| `jetmon_event_transitions` | Append-only mutation history for events |
-| `jetmon_audit_log` | Operational trail for checks, retries, WPCOM calls, suppression, API access, and reloads |
-| `jetmon_check_history` | Request method plus RTT and timing samples for trending |
-| `jetmon_false_positives` | Veriflier non-confirmation records |
-| `jetmon_veriflier_vantages` | Trusted quorum-counted Veriflier vantage registry |
-| `jetmon_veriflier_agents` | Concrete Veriflier process telemetry and capacity hints |
-| `jetmon_api_keys` | Internal REST API Bearer-token registry |
-| `jetmon_webhooks` | Webhook registrations and HMAC signing secrets |
-| `jetmon_webhook_deliveries` | Outbound webhook delivery attempts and retry state |
-| `jetmon_webhook_dispatch_progress` | Webhook worker high-water marks over transitions |
-| `jetmon_alert_contacts` | Managed destinations such as email, PagerDuty, Slack, and Teams |
-| `jetmon_alert_deliveries` | Outbound alert-contact attempts and retry state |
-| `jetmon_alert_dispatch_progress` | Alert worker high-water marks over transitions |
-| `jetmon_site_tenants` | Tenant-to-site mapping for gateway-scoped API access |
-| `jetmon_process_health` | Durable per-process heartbeat snapshots for host and fleet dashboards |
-| `jetmon_check_targets` | V2-native scheduling target state for the streaming monitor engine |
-| `jetmon_site_check_config` | Per-site v2 check config: rollout method/profile, body rules, maintenance windows, custom headers, timeout, redirect policy, and cooldown overrides |
-| `jetmon_site_runtime` | V2 runtime freshness and derived observation state such as last checked time, next due time, last alert time, and SSL expiry |
-| `jetmon_site_safety_flags` | Non-downtime remediation state for unsafe legacy monitor URLs and runtime probe-safety blocks |
-| `jetmon_rollout_sessions` | API-driven container rollout sessions bound to bucket ranges and operator/change metadata |
-| `jetmon_rollout_range_locks` | Durable activation/release history for API-controlled bucket ranges |
-| `jetmon_rollout_bucket_locks` | One active lock row per bucket, used to prevent overlapping v2 range activation |
-| `jetmon_rollout_jobs` | Synchronous rollout operation audit records and result payloads |
-| `jetmon_rollout_confirmation_tokens` | Short-lived hashed dry-run confirmation tokens for mutating rollout operations |
-| `jetmon_rollout_comparison_results` | Non-authoritative sampled HEAD/GET comparison deltas collected during policy migration |
-| `jetmon_rollout_policy_stage_rows` | Per-cohort policy mutation history used by rollback-last-stage and rollback-all |
+| `jetpack_monitor_schema_migrations` | Applied migration tracking |
+| `jetpack_monitor_hosts` | MySQL-coordinated bucket ownership and heartbeat |
+| `jetpack_monitor_events` | Authoritative current state of every incident |
+| `jetpack_monitor_event_transitions` | Append-only mutation history for events |
+| `jetpack_monitor_audit_log` | Operational trail for checks, retries, WPCOM calls, suppression, API access, and reloads |
+| `jetpack_monitor_check_history` | Request method plus RTT and timing samples for trending |
+| `jetpack_monitor_false_positives` | Veriflier non-confirmation records |
+| `jetpack_monitor_veriflier_vantages` | Trusted quorum-counted Veriflier vantage registry |
+| `jetpack_monitor_veriflier_agents` | Concrete Veriflier process telemetry and capacity hints |
+| `jetpack_monitor_api_keys` | Internal REST API Bearer-token registry |
+| `jetpack_monitor_webhooks` | Webhook registrations and HMAC signing secrets |
+| `jetpack_monitor_webhook_deliveries` | Outbound webhook delivery attempts and retry state |
+| `jetpack_monitor_webhook_dispatch_progress` | Webhook worker high-water marks over transitions |
+| `jetpack_monitor_alert_contacts` | Managed destinations such as email, PagerDuty, Slack, and Teams |
+| `jetpack_monitor_alert_deliveries` | Outbound alert-contact attempts and retry state |
+| `jetpack_monitor_alert_dispatch_progress` | Alert worker high-water marks over transitions |
+| `jetpack_monitor_site_tenants` | Tenant-to-site mapping for gateway-scoped API access |
+| `jetpack_monitor_process_health` | Durable per-process heartbeat snapshots for host and fleet dashboards |
+| `jetpack_monitor_check_targets` | V2-native scheduling target state for the streaming monitor engine |
+| `jetpack_monitor_site_check_config` | Per-site v2 check config: rollout method/profile, body rules, maintenance windows, custom headers, timeout, redirect policy, and cooldown overrides |
+| `jetpack_monitor_site_runtime` | V2 runtime freshness and derived observation state such as last checked time, next due time, last alert time, and SSL expiry |
+| `jetpack_monitor_site_safety_flags` | Non-downtime remediation state for unsafe legacy monitor URLs and runtime probe-safety blocks |
+| `jetpack_monitor_rollout_sessions` | API-driven container rollout sessions bound to bucket ranges and operator/change metadata |
+| `jetpack_monitor_rollout_range_locks` | Durable activation/release history for API-controlled bucket ranges |
+| `jetpack_monitor_rollout_bucket_locks` | One active lock row per bucket, used to prevent overlapping v2 range activation |
+| `jetpack_monitor_rollout_jobs` | Synchronous rollout operation audit records and result payloads |
+| `jetpack_monitor_rollout_confirmation_tokens` | Short-lived hashed dry-run confirmation tokens for mutating rollout operations |
+| `jetpack_monitor_rollout_comparison_results` | Non-authoritative sampled HEAD/GET comparison deltas collected during policy migration |
+| `jetpack_monitor_rollout_policy_stage_rows` | Per-cohort policy mutation history used by rollback-last-stage and rollback-all |
 
 ## Site Check Policy
 
-`jetmon_site_check_config` keeps staged rollout policy and rich v2 probe config
+`jetpack_monitor_site_check_config` keeps staged rollout policy and rich v2 probe config
 out of `jetpack_monitor_sites`:
 
 ```sql
-CREATE TABLE `jetmon_site_check_config` (
+CREATE TABLE `jetpack_monitor_site_check_config` (
   `blog_id` bigint(20) unsigned NOT NULL PRIMARY KEY,
   `request_method` enum('HEAD','GET') NULL,
   `detection_profile` enum('legacy','simple_http','full') NULL,
@@ -102,7 +107,7 @@ The API can expose a derived `cli_batch` field for local API CLI test data when
 
 ## Site Safety Flags
 
-`jetmon_site_safety_flags` tracks unsafe targets separately from customer
+`jetpack_monitor_site_safety_flags` tracks unsafe targets separately from customer
 downtime events. Runtime probe-safety blocks are inserted as open flags with
 `flag_type='probe_safety_block'`; `jetmon2 site-safety unsafe-urls --execute`
 inserts `flag_type='unsafe_monitor_url'` rows with `status='deactivated'`
@@ -116,11 +121,11 @@ WPCOM down/recovery notifications, webhooks, and alert-contact delivery.
 
 ## Site Runtime
 
-`jetmon_site_runtime` keeps v2 freshness and derived observations out of the
+`jetpack_monitor_site_runtime` keeps v2 freshness and derived observations out of the
 legacy table:
 
 ```sql
-CREATE TABLE `jetmon_site_runtime` (
+CREATE TABLE `jetpack_monitor_site_runtime` (
   `blog_id` bigint(20) unsigned NOT NULL PRIMARY KEY,
   `last_checked_at` datetime NULL,
   `next_check_at` datetime NULL,
@@ -135,16 +140,16 @@ CREATE TABLE `jetmon_site_runtime` (
 `last_checked_at` and `next_check_at` support API display, rollout freshness
 checks, rollback visibility, and the legacy round scheduler without requiring
 v2 to rewrite the v1 compatibility table after every probe. The streaming
-scheduler keeps its hot due-time state in memory and in `jetmon_check_targets`;
-`jetmon_site_runtime` is a compatibility/readability projection, not the
+scheduler keeps its hot due-time state in memory and in `jetpack_monitor_check_targets`;
+`jetpack_monitor_site_runtime` is a compatibility/readability projection, not the
 high-frequency source of truth for streaming mode.
 
 ## Streaming Check Targets
 
-`jetmon_check_targets` is additive scheduling infrastructure for
+`jetpack_monitor_check_targets` is additive scheduling infrastructure for
 `SCHEDULER_ENGINE=streaming`. During migration, `jetpack_monitor_sites` remains
 the source of truth for v1-owned site identity and current legacy status, while
-`jetmon_site_check_config` carries v2-only probe config. The target table stores
+`jetpack_monitor_site_check_config` carries v2-only probe config. The target table stores
 derived scheduling details such as source site row, bucket, interval, stable
 phase slot, config hash, and coarse last outcome fields so later iterations can
 sync scheduling state without repeatedly scanning the legacy table or writing
@@ -159,7 +164,7 @@ Production data can contain more than one active monitor URL for the same
 `blog_id`. Monitor execution therefore treats
 `jetpack_monitor_sites.jetpack_monitor_site_id` as the endpoint identity for
 HTTP checks while retaining `blog_id` as the WPCOM/site identity. HTTP events
-write that row id to `jetmon_events.endpoint_id`, scheduler/retry in-memory
+write that row id to `jetpack_monitor_events.endpoint_id`, scheduler/retry in-memory
 state keys by the row id when available, and the v1 compatibility projection is
 updated by `jetpack_monitor_site_id` so two active URLs for one site do not
 overwrite each other's rollout state. The v2-native target table is unique on
@@ -167,7 +172,7 @@ overwrite each other's rollout state. The v2-native target table is unique on
 
 ## Process Health
 
-`jetmon_process_health` is the durable source for fleet-level operator views.
+`jetpack_monitor_process_health` is the durable source for fleet-level operator views.
 Each long-running process owns one stable `process_id` such as
 `<host>:monitor` or `<host>:deliverer` and periodically upserts a compact
 snapshot:
@@ -187,19 +192,19 @@ Fleet dashboards must treat stale `updated_at` values as unknown or unhealthy.
 The row says what the process last reported; it is not proof that the process is
 still alive after the heartbeat age exceeds the dashboard threshold.
 
-The fleet dashboard combines this table with `jetmon_hosts`, outbound delivery
+The fleet dashboard combines this table with `jetpack_monitor_hosts`, outbound delivery
 queues, and projection-drift counts. Dependency health stored in the process
 snapshot is also used to roll up shared dependencies such as Verifliers, MySQL,
 WPCOM, and StatsD across hosts.
 
 ## Veriflier Discovery
 
-`jetmon_veriflier_vantages` stores the trusted identities that monitors may use
+`jetpack_monitor_veriflier_vantages` stores the trusted identities that monitors may use
 for downtime quorum. `enabled` defaults to false, so a newly running Veriflier
 cannot mint its own vote. Usable active-discovery rows need `vantage_id`,
 `endpoint_host`, `endpoint_port`, and `auth_token`.
 
-`jetmon_veriflier_agents` stores concrete process telemetry collected by
+`jetpack_monitor_veriflier_agents` stores concrete process telemetry collected by
 monitors from authenticated Veriflier `/v2/status` responses. Agents report
 `agent_id`, `vantage_id`, version, supported protocols, endpoint host/port,
 capacity, and `last_seen`. These rows are operational telemetry and endpoint
@@ -208,7 +213,7 @@ pre-approved and enabled.
 
 ## Check History
 
-`jetmon_check_history` records one compact timing sample per local check. The
+`jetpack_monitor_check_history` records one compact timing sample per local check. The
 `request_method` column records the actual HTTP method used by the probe. This
 is primarily operational evidence for v2 rollout and uptime-bench review: v2
 should show `HEAD` during the initial legacy-compatible replacement phase,
@@ -220,9 +225,9 @@ such as URL and error reason.
 
 Incident state is authoritative in:
 
-- `jetmon_events`: one mutable row per live incident identity, frozen after
+- `jetpack_monitor_events`: one mutable row per live incident identity, frozen after
   close.
-- `jetmon_event_transitions`: one append-only row for every mutation.
+- `jetpack_monitor_event_transitions`: one append-only row for every mutation.
 
 Every open, severity change, state change, cause-link change, and close writes a
 transition row in the same transaction as the event update. The `eventstore`
@@ -303,7 +308,7 @@ Failure classifications:
 
 ## Tenant Mapping
 
-`jetmon_site_tenants` maps gateway tenant IDs to `blog_id` values. The import
+`jetpack_monitor_site_tenants` maps gateway tenant IDs to `blog_id` values. The import
 tool upserts known mappings and intentionally does not delete missing mappings:
 
 ```bash

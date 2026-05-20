@@ -20,7 +20,7 @@ Jetmon 2 is a **well-architected production-ready Go service** with disciplined 
 
 The **biggest organizational risk** (per the management lens) is unrelated to code: six WPCOM/Product sign-off items in `docs/jetmon-v2-prelaunch-readiness.md:47-61` are stalled and the legacy-consumer inventory is incomplete. Rollout could stall in the production window waiting for verbal approval.
 
-The **biggest operational risk** is data growth: `jetmon_audit_log` and `jetmon_check_history` are append-only with no documented retention/partitioning, and the orchestrator's retry queue is in-memory only (lost on kill -9).
+The **biggest operational risk** is data growth: `jetpack_monitor_audit_log` and `jetpack_monitor_check_history` are append-only with no documented retention/partitioning, and the orchestrator's retry queue is in-memory only (lost on kill -9).
 
 The **biggest user-facing risk** is documentation framing: the REST API doc is labelled "internal only" but is the document third-party integrators will read. A novice-facing quick start with a Hello-Webhook example is missing.
 
@@ -65,32 +65,32 @@ The **biggest user-facing risk** is documentation framing: the REST API doc is l
 ## Lens 2 — MySQL / MariaDB expert
 
 ### Critical / high
-- **UTC consistency drift** — `jetmon_check_targets` uses `TIMESTAMP(3)` but `jetmon_site_runtime` uses bare `DATETIME` (`internal/db/migrations.go:487-489` vs `528-534`). `TIMESTAMP` stores UTC; `DATETIME` stores server-local. Scheduling and alert-cooldown comparisons can drift across hosts with different TZ. **Standardize on `TIMESTAMP(3)` for every temporal column.**
-- **Plaintext webhook secrets** in `jetmon_webhooks.secret VARCHAR(80)` (`migrations.go:199`, comment at 179-185 acknowledges). Database dump = downstream compromise of every consumer.
-- **Plaintext alert-contact credentials** in `jetmon_alert_contacts.destination` JSON (`migrations.go:280`).
-- **Sub-second precision mismatch** — `jetmon_webhook_dispatch_progress.updated_at` is plain `TIMESTAMP` but transitions are `TIMESTAMP(3)` (`migrations.go:245-248`). Possible watermark sort races.
+- **UTC consistency drift** — `jetpack_monitor_check_targets` uses `TIMESTAMP(3)` but `jetpack_monitor_site_runtime` uses bare `DATETIME` (`internal/db/migrations.go:487-489` vs `528-534`). `TIMESTAMP` stores UTC; `DATETIME` stores server-local. Scheduling and alert-cooldown comparisons can drift across hosts with different TZ. **Standardize on `TIMESTAMP(3)` for every temporal column.**
+- **Plaintext webhook secrets** in `jetpack_monitor_webhooks.secret VARCHAR(80)` (`migrations.go:199`, comment at 179-185 acknowledges). Database dump = downstream compromise of every consumer.
+- **Plaintext alert-contact credentials** in `jetpack_monitor_alert_contacts.destination` JSON (`migrations.go:280`).
+- **Sub-second precision mismatch** — `jetpack_monitor_webhook_dispatch_progress.updated_at` is plain `TIMESTAMP` but transitions are `TIMESTAMP(3)` (`migrations.go:245-248`). Possible watermark sort races.
 
 ### Index coverage gaps
 - `eventstore.FindActive` filters on `(blog_id, check_type, ended_at)` but the index is only `(blog_id, ended_at)` (`migrations.go:128`). Add `idx_blog_id_check_type_active`.
-- `GetSitesForBucket` LEFT JOINs `jetmon_site_runtime` and `jetmon_site_check_config` on `blog_id` without a covering composite — add `(blog_id, next_check_at)` to runtime.
+- `GetSitesForBucket` LEFT JOINs `jetpack_monitor_site_runtime` and `jetpack_monitor_site_check_config` on `blog_id` without a covering composite — add `(blog_id, next_check_at)` to runtime.
 - Projection-drift query (`internal/db/queries.go:268-299`) full-scans via `OR endpoint_id IS NULL`. Slow at scale.
 
 ### Schema design
 - **No FK constraints** anywhere — `event_transitions → events`, deliveries → webhooks/alert_contacts, etc. Soft-delete audit model is the rationale, but it relies on Go-code discipline to avoid orphans.
 - Default `utf8mb4` but no explicit `COLLATE` on PKs / dedup keys; external tools using a different collation could create accidental case-insensitive collisions.
 - No SQL injection risk observed — every query is parameterized.
-- `jetmon_audit_log` is unbounded append; no partitioning / retention scheme (called out as future work but the operational risk is now).
+- `jetpack_monitor_audit_log` is unbounded append; no partitioning / retention scheme (called out as future work but the operational risk is now).
 
 ### Transactions / concurrency
 - Default REPEATABLE READ is appropriate.
 - Eventstore "single-writer" pattern is **enforced in code only**, not schema. Acceptable but fragile.
 - Delivery claim uses `FOR UPDATE SKIP LOCKED` with a 60s `next_attempt_at` lease — race-safe (`internal/webhooks/webhooks.go:127`).
-- `jetmon_hosts` bucket coordination uses `SELECT ... FOR UPDATE` (`db/queries.go:233, 254`) — no schema-level dedup of bucket ranges; relies on transaction isolation.
+- `jetpack_monitor_hosts` bucket coordination uses `SELECT ... FOR UPDATE` (`db/queries.go:233, 254`) — no schema-level dedup of bucket ranges; relies on transaction isolation.
 
 ### Write amplification
 - Each event mutation = event row + transition row + (optional) v1 projection row = up to 3 writes (orchestrator.go:30-38, 220). Removable after v1 readers migrate.
-- `UpdateSSLExpiry` unconditionally UPDATEs `jetmon_site_runtime` every HTTPS check (~166 writes/sec at 50k HTTPS sites). Add skip-if-unchanged.
-- `jetmon_check_history` grows at ~333 rows/sec at 100k sites × 5-min cadence — no retention.
+- `UpdateSSLExpiry` unconditionally UPDATEs `jetpack_monitor_site_runtime` every HTTPS check (~166 writes/sec at 50k HTTPS sites). Add skip-if-unchanged.
+- `jetpack_monitor_check_history` grows at ~333 rows/sec at 100k sites × 5-min cadence — no retention.
 
 ### Migrations
 - 50 idempotent migrations, all wrapped in `IF NOT EXISTS`. No destructive operations. Safe.
@@ -135,7 +135,7 @@ The **biggest user-facing risk** is documentation framing: the REST API doc is l
 ## Lens 4 — Security expert (highest-stakes lens)
 
 ### Critical
-- **Webhook secrets stored plaintext** (`internal/webhooks/webhooks.go:30-34`, `jetmon_webhooks.secret`). DB breach forges every HMAC.
+- **Webhook secrets stored plaintext** (`internal/webhooks/webhooks.go:30-34`, `jetpack_monitor_webhooks.secret`). DB breach forges every HMAC.
 - **Alert-contact credentials stored plaintext** (`internal/alerting/alerting.go:28-33`). PagerDuty/Slack/Teams/SMTP creds exfiltratable via DB dump.
 
 ### High
@@ -238,7 +238,7 @@ The **biggest user-facing risk** is documentation framing: the REST API doc is l
 - **`WPCOM_NOTIFY_LEGACY_INSECURE_SKIP_VERIFY` defaults to `true`** (`config/config.readme:191`). v1 parity, but no startup warning.
 - **`CHECK_DNS_RESOLVERS` is the only knob that requires a restart** on reload — surprising relative to the other hot-reloadable fields.
 - **No Prometheus endpoint**. Modern SRE stacks expect `/metrics`; this requires statsd_exporter or a custom bridge.
-- **No documented retention policy** for `jetmon_audit_log` and `jetmon_check_history`. Unbounded growth.
+- **No documented retention policy** for `jetpack_monitor_audit_log` and `jetpack_monitor_check_history`. Unbounded growth.
 - **No logrotate snippet** for non-systemd / bare-metal deployers.
 - **No correlation IDs** for log lines; cannot pivot from customer report to log lines.
 
@@ -294,9 +294,9 @@ The **biggest user-facing risk** is documentation framing: the REST API doc is l
 - **No force-promote (Seems Down → Down)** — if Veriflier consensus is genuinely broken, operator must close, manually notify WPCOM, reopen. Not atomic.
 - **No replay/retrigger** — no `POST /api/v1/sites/{id}/trigger-check` to force out-of-cadence probe after a fix.
 - **Veriflier quorum diagnostics missing** — no `/api/v1/verifliers/quorum-report` showing active vantages, last-seen, current votes on pending events.
-- **Audit log not API-queryable** — `jetmon_audit_log` rows must be queried in MySQL directly.
+- **Audit log not API-queryable** — `jetpack_monitor_audit_log` rows must be queried in MySQL directly.
 - **Schema-version endpoint absent** — no `/api/v1/monitor/schema-version` to confirm a migration applied during rollout.
-- **Static Veriflier trust** — `jetmon_veriflier_vantages` rows are manually inserted; no self-registration, no automatic fallback below floor.
+- **Static Veriflier trust** — `jetpack_monitor_veriflier_vantages` rows are manually inserted; no self-registration, no automatic fallback below floor.
 - **Drain timeout not configurable** — no `DRAIN_TIMEOUT_SEC`.
 - **WPCOM circuit breaker state not exposed** — no endpoint for queue depth, drop count, breaker state.
 - **Feature flags are per-site config, not gradual ramp percentages.**
@@ -399,7 +399,7 @@ Patterns that emerged across multiple lenses:
 |------|--------------------|--------|
 | **Plaintext secrets at rest** (webhook, alert-contact) | Security, MySQL, Management | Most consequential single finding. Roadmapped but uncapped blast radius until done. |
 | **In-memory state that won't survive the multi-binary split** (idempotency, rate-limit, retry queue) | Security, Sysadmin, Expert UX | Builds in a hidden timer that goes off at the architectural transition. |
-| **Append-only tables without retention policy** (`jetmon_audit_log`, `jetmon_check_history`) | MySQL, Sysadmin, Expert UX | Unbounded growth → degraded INSERTs at production scale. |
+| **Append-only tables without retention policy** (`jetpack_monitor_audit_log`, `jetpack_monitor_check_history`) | MySQL, Sysadmin, Expert UX | Unbounded growth → degraded INSERTs at production scale. |
 | **CI is image-only — no lint/test/race/scan gates** | QA, DevOps, Management | Bad PRs can merge; supply-chain regressions invisible. |
 | **No Prometheus / OpenTelemetry surface** | Sysadmin, Performance, Network, DevOps | Modern SRE stacks have to bridge or scrape something custom. |
 | **No correlation/trace IDs** | Sysadmin, Performance, Network, Expert UX | Operators can't pivot from customer report → log → event → delivery. |
@@ -417,8 +417,8 @@ In rough decreasing impact, mixing severity and feasibility:
 1. **Encrypt webhook + alert-contact secrets at rest** (envelope encryption with a master key in env/secret store; one DB-side change + one rotation pass). Critical.
 2. **Re-validate destination IPs at the dialer** (`net.Dialer.Control`) to close the DNS-rebinding TOCTOU. High.
 3. **Add a real CI gate** (`go vet`, `go test`, `go test -race`, `golangci-lint`, dependency scan) on every PR, not only Docker builds. High.
-4. **Retention/partition strategy** for `jetmon_audit_log` and `jetmon_check_history` — published policy + a `cleanup` subcommand. Medium-high.
-5. **Standardize on `TIMESTAMP(3)` UTC** across `jetmon_site_runtime` and any other lingering `DATETIME` columns. Medium-high.
+4. **Retention/partition strategy** for `jetpack_monitor_audit_log` and `jetpack_monitor_check_history` — published policy + a `cleanup` subcommand. Medium-high.
+5. **Standardize on `TIMESTAMP(3)` UTC** across `jetpack_monitor_site_runtime` and any other lingering `DATETIME` columns. Medium-high.
 6. **Add `/api/v1/ready`** distinct from `/health` (covers migration done + bucket ownership + Veriflier discovery). Medium.
 7. **Plan now for Redis-backed idempotency + rate-limit + retry queue** before the multi-binary split. Medium.
 8. **Replace `panic` in `internal/netguard/netguard.go:43`** with error return; verify all `mustParse*` paths. Easy/medium.

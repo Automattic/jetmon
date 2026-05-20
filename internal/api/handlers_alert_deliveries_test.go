@@ -10,9 +10,9 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
-const selectAlertDeliveriesSQL = ` SELECT id, alert_contact_id, transition_id, event_id, event_type, severity, payload, status, attempt, next_attempt_at, last_status_code, last_response, last_attempt_at, delivered_at, created_at FROM jetmon_alert_deliveries WHERE alert_contact_id = ? ORDER BY id DESC LIMIT ?`
+const selectAlertDeliveriesSQL = ` SELECT id, alert_contact_id, transition_id, event_id, event_type, severity, payload, status, attempt, next_attempt_at, last_status_code, last_response, last_attempt_at, delivered_at, created_at FROM jetpack_monitor_alert_deliveries WHERE alert_contact_id = ? ORDER BY id DESC LIMIT ?`
 
-const selectAlertDeliveryOneSQL = ` SELECT id, alert_contact_id, transition_id, event_id, event_type, severity, payload, status, attempt, next_attempt_at, last_status_code, last_response, last_attempt_at, delivered_at, created_at FROM jetmon_alert_deliveries WHERE id = ?`
+const selectAlertDeliveryOneSQL = ` SELECT id, alert_contact_id, transition_id, event_id, event_type, severity, payload, status, attempt, next_attempt_at, last_status_code, last_response, last_attempt_at, delivered_at, created_at FROM jetpack_monitor_alert_deliveries WHERE id = ?`
 
 var columnsAlertDelivery = []string{
 	"id", "alert_contact_id", "transition_id", "event_id", "event_type", "severity",
@@ -104,7 +104,7 @@ func TestRetryAlertDeliveryHappyPath(t *testing.T) {
 	mock.ExpectQuery(selectAlertDeliveryOneSQL).WithArgs(int64(101)).
 		WillReturnRows(makeAlertDeliveryRow(101, 11, "abandoned"))
 	// 2) RetryDelivery UPDATE.
-	mock.ExpectExec(`UPDATE jetmon_alert_deliveries SET status = 'pending', attempt = 0, next_attempt_at = CURRENT_TIMESTAMP, last_status_code = NULL, last_response = NULL, last_attempt_at = NULL WHERE id = ? AND status = 'abandoned'`).
+	mock.ExpectExec(`UPDATE jetpack_monitor_alert_deliveries SET status = 'pending', attempt = 0, next_attempt_at = CURRENT_TIMESTAMP, last_status_code = NULL, last_response = NULL, last_attempt_at = NULL WHERE id = ? AND status = 'abandoned'`).
 		WithArgs(int64(101)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	// 3) Read-back GetDelivery.
@@ -135,7 +135,7 @@ func TestRetryAlertDeliveryWithGatewayTenantVerifiesContactOwnership(t *testing.
 		WillReturnRows(makeAlertContactRow(11, "oncall", "slack", 1, 4))
 	mock.ExpectQuery(selectAlertDeliveryOneSQL).WithArgs(int64(101)).
 		WillReturnRows(makeAlertDeliveryRow(101, 11, "abandoned"))
-	mock.ExpectExec(`UPDATE jetmon_alert_deliveries SET status = 'pending', attempt = 0, next_attempt_at = CURRENT_TIMESTAMP, last_status_code = NULL, last_response = NULL, last_attempt_at = NULL WHERE id = ? AND status = 'abandoned'`).
+	mock.ExpectExec(`UPDATE jetpack_monitor_alert_deliveries SET status = 'pending', attempt = 0, next_attempt_at = CURRENT_TIMESTAMP, last_status_code = NULL, last_response = NULL, last_attempt_at = NULL WHERE id = ? AND status = 'abandoned'`).
 		WithArgs(int64(101)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(selectAlertDeliveryOneSQL).WithArgs(int64(101)).
@@ -179,7 +179,7 @@ func TestRetryAlertDeliveryNotAbandoned(t *testing.T) {
 	mock.ExpectQuery(selectAlertDeliveryOneSQL).WithArgs(int64(101)).
 		WillReturnRows(makeAlertDeliveryRow(101, 11, "delivered"))
 	// RetryDelivery UPDATE returns 0 affected.
-	mock.ExpectExec(`UPDATE jetmon_alert_deliveries SET status = 'pending', attempt = 0, next_attempt_at = CURRENT_TIMESTAMP, last_status_code = NULL, last_response = NULL, last_attempt_at = NULL WHERE id = ? AND status = 'abandoned'`).
+	mock.ExpectExec(`UPDATE jetpack_monitor_alert_deliveries SET status = 'pending', attempt = 0, next_attempt_at = CURRENT_TIMESTAMP, last_status_code = NULL, last_response = NULL, last_attempt_at = NULL WHERE id = ? AND status = 'abandoned'`).
 		WithArgs(int64(101)).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	// RetryDelivery's error path re-reads to get the current state for the message.

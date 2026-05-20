@@ -1026,7 +1026,7 @@ func Check(ctx context.Context, req Request) Result {
 	// HandshakeStart hook fires without its matching Done — in that case
 	// the *End is the zero time.Time and *End.Sub(*Start) returns a huge
 	// negative duration (roughly -unix-nanos), which then overflows the
-	// jetmon_check_history INT columns and surfaces as
+	// jetpack_monitor_check_history INT columns and surfaces as
 	// "Out of range value for column 'dns_ms'". A failed phase is
 	// reported as zero rather than a misleading negative.
 	if !dnsStart.IsZero() && !dnsEnd.IsZero() {

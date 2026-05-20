@@ -54,7 +54,7 @@ func nextRetryDelay(currentAttempt int) (delay time.Duration, abandoned bool) {
 // dispatch progress.
 type WorkerConfig struct {
 	DB            *sql.DB
-	InstanceID    string        // key into jetmon_webhook_dispatch_progress
+	InstanceID    string        // key into jetpack_monitor_webhook_dispatch_progress
 	PollInterval  time.Duration // default 1s
 	MaxConcurrent int           // shared deliverer pool size; default 50
 	PerWebhookCap int           // per-webhook in-flight cap; default 3
@@ -86,7 +86,7 @@ func (c *WorkerConfig) applyDefaults() {
 
 // Worker drives webhook delivery. Two background goroutines:
 //
-//   - dispatcher: every PollInterval, polls jetmon_event_transitions for
+//   - dispatcher: every PollInterval, polls jetpack_monitor_event_transitions for
 //     new rows since last_seen, matches each against active webhooks,
 //     and enqueues a delivery per match.
 //   - deliverer: every PollInterval, claims pending deliveries whose
@@ -173,7 +173,7 @@ func (w *Worker) dispatchLoop() {
 	}
 }
 
-// dispatchTick polls jetmon_event_transitions for new rows and creates
+// dispatchTick polls jetpack_monitor_event_transitions for new rows and creates
 // deliveries for each match against an active webhook.
 func (w *Worker) dispatchTick() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -194,7 +194,7 @@ func (w *Worker) dispatchTick() error {
 	}
 	rows, err := w.cfg.DB.QueryContext(ctx, `
 		SELECT id, event_id, blog_id, state_after, reason, changed_at
-		  FROM jetmon_event_transitions
+		  FROM jetpack_monitor_event_transitions
 		 WHERE id > ?
 		 ORDER BY id ASC
 		 LIMIT ?`, lastID, w.cfg.BatchSize)
@@ -282,12 +282,12 @@ func (w *Worker) buildPayload(eventType string, transitionID, eventID, blogID in
 }
 
 // loadProgress reads the last_transition_id high-water mark for this
-// instance from jetmon_webhook_dispatch_progress. Returns 0 if no row
+// instance from jetpack_monitor_webhook_dispatch_progress. Returns 0 if no row
 // exists yet (first tick).
 func (w *Worker) loadProgress(ctx context.Context) (int64, error) {
 	var lastID int64
 	err := w.cfg.DB.QueryRowContext(ctx,
-		`SELECT last_transition_id FROM jetmon_webhook_dispatch_progress WHERE instance_id = ?`,
+		`SELECT last_transition_id FROM jetpack_monitor_webhook_dispatch_progress WHERE instance_id = ?`,
 		w.cfg.InstanceID,
 	).Scan(&lastID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -304,7 +304,7 @@ func (w *Worker) loadProgress(ctx context.Context) (int64, error) {
 // instance_id, so they don't trample each other's progress.
 func (w *Worker) saveProgress(ctx context.Context, lastID int64) error {
 	_, err := w.cfg.DB.ExecContext(ctx, `
-		INSERT INTO jetmon_webhook_dispatch_progress (instance_id, last_transition_id)
+		INSERT INTO jetpack_monitor_webhook_dispatch_progress (instance_id, last_transition_id)
 		VALUES (?, ?)
 		ON DUPLICATE KEY UPDATE last_transition_id = VALUES(last_transition_id)`,
 		w.cfg.InstanceID, lastID)

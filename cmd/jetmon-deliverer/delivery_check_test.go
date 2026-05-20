@@ -104,7 +104,7 @@ func TestBuildDeliveryCheckReportSummarizesAndAppliesThresholds(t *testing.T) {
 
 	now := time.Date(2026, 4, 29, 18, 30, 0, 0, time.UTC)
 	cutoff := now.Add(-15 * time.Minute)
-	expectDeliverySummaryQueries(t, mock, "jetmon_webhook_deliveries", now, cutoff, deliveryTableSummary{
+	expectDeliverySummaryQueries(t, mock, "jetpack_monitor_webhook_deliveries", now, cutoff, deliveryTableSummary{
 		Pending:             2,
 		DueNow:              1,
 		FutureRetry:         1,
@@ -114,7 +114,7 @@ func TestBuildDeliveryCheckReportSummarizesAndAppliesThresholds(t *testing.T) {
 		OldestPendingAgeSec: 120,
 		OldestDueAgeSec:     60,
 	})
-	expectDeliverySummaryQueries(t, mock, "jetmon_alert_deliveries", now, cutoff, deliveryTableSummary{
+	expectDeliverySummaryQueries(t, mock, "jetpack_monitor_alert_deliveries", now, cutoff, deliveryTableSummary{
 		Pending:             4,
 		DueNow:              2,
 		FutureRetry:         2,
@@ -182,8 +182,8 @@ func TestBuildDeliveryCheckReportRequiresRecentDelivery(t *testing.T) {
 
 	now := time.Date(2026, 4, 29, 18, 30, 0, 0, time.UTC)
 	cutoff := now.Add(-15 * time.Minute)
-	expectDeliverySummaryQueries(t, mock, "jetmon_webhook_deliveries", now, cutoff, deliveryTableSummary{})
-	expectDeliverySummaryQueries(t, mock, "jetmon_alert_deliveries", now, cutoff, deliveryTableSummary{})
+	expectDeliverySummaryQueries(t, mock, "jetpack_monitor_webhook_deliveries", now, cutoff, deliveryTableSummary{})
+	expectDeliverySummaryQueries(t, mock, "jetpack_monitor_alert_deliveries", now, cutoff, deliveryTableSummary{})
 
 	report, err := buildDeliveryCheckReport(context.Background(), sqlDB, &config.Config{}, "deliverer-1", deliveryCheckOptions{
 		Since:                 "15m",
@@ -216,8 +216,8 @@ func TestBuildDeliveryCheckReportRequiresRecentDeliveryByKind(t *testing.T) {
 
 	now := time.Date(2026, 4, 29, 18, 30, 0, 0, time.UTC)
 	cutoff := now.Add(-15 * time.Minute)
-	expectDeliverySummaryQueries(t, mock, "jetmon_webhook_deliveries", now, cutoff, deliveryTableSummary{DeliveredSince: 1})
-	expectDeliverySummaryQueries(t, mock, "jetmon_alert_deliveries", now, cutoff, deliveryTableSummary{})
+	expectDeliverySummaryQueries(t, mock, "jetpack_monitor_webhook_deliveries", now, cutoff, deliveryTableSummary{DeliveredSince: 1})
+	expectDeliverySummaryQueries(t, mock, "jetpack_monitor_alert_deliveries", now, cutoff, deliveryTableSummary{})
 
 	report, err := buildDeliveryCheckReport(context.Background(), sqlDB, &config.Config{}, "deliverer-1", deliveryCheckOptions{
 		Since:                        "15m",
@@ -250,14 +250,14 @@ func TestQueryRecentTerminalDeliveryCountUsesAttemptAndCreatedFallback(t *testin
 	defer sqlDB.Close()
 
 	cutoff := time.Date(2026, 4, 29, 18, 15, 0, 0, time.UTC)
-	mock.ExpectQuery(`(?s)FROM jetmon_webhook_deliveries.*status = \?.*last_attempt_at >= \?`).
+	mock.ExpectQuery(`(?s)FROM jetpack_monitor_webhook_deliveries.*status = \?.*last_attempt_at >= \?`).
 		WithArgs("abandoned", cutoff).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
-	mock.ExpectQuery(`(?s)FROM jetmon_webhook_deliveries.*status = \?.*last_attempt_at IS NULL.*created_at >= \?`).
+	mock.ExpectQuery(`(?s)FROM jetpack_monitor_webhook_deliveries.*status = \?.*last_attempt_at IS NULL.*created_at >= \?`).
 		WithArgs("abandoned", cutoff).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 
-	got, err := queryRecentTerminalDeliveryCount(context.Background(), sqlDB, "jetmon_webhook_deliveries", "abandoned", cutoff)
+	got, err := queryRecentTerminalDeliveryCount(context.Background(), sqlDB, "jetpack_monitor_webhook_deliveries", "abandoned", cutoff)
 	if err != nil {
 		t.Fatalf("queryRecentTerminalDeliveryCount: %v", err)
 	}
@@ -267,7 +267,7 @@ func TestQueryRecentTerminalDeliveryCountUsesAttemptAndCreatedFallback(t *testin
 	if _, err := queryRecentTerminalDeliveryCount(context.Background(), sqlDB, "bad_table", "abandoned", cutoff); err == nil {
 		t.Fatal("queryRecentTerminalDeliveryCount accepted bad table")
 	}
-	if _, err := queryRecentTerminalDeliveryCount(context.Background(), sqlDB, "jetmon_webhook_deliveries", "delivered", cutoff); err == nil {
+	if _, err := queryRecentTerminalDeliveryCount(context.Background(), sqlDB, "jetpack_monitor_webhook_deliveries", "delivered", cutoff); err == nil {
 		t.Fatal("queryRecentTerminalDeliveryCount accepted bad status")
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {

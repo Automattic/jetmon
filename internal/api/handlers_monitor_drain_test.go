@@ -11,7 +11,7 @@ import (
 
 const drainLookupSQL = `
 		SELECT state, active_checks, queue_depth, retry_queue_size, wpcom_queue_depth, updated_at
-		  FROM jetmon_process_health
+		  FROM jetpack_monitor_process_health
 		 WHERE process_id = ?`
 
 var drainColumns = []string{"state", "active_checks", "queue_depth", "retry_queue_size", "wpcom_queue_depth", "updated_at"}

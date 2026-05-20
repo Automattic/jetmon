@@ -10,9 +10,9 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
-const selectWebhookDeliveriesSQL = ` SELECT id, webhook_id, transition_id, event_id, event_type, payload, status, attempt, next_attempt_at, last_status_code, last_response, last_attempt_at, delivered_at, created_at FROM jetmon_webhook_deliveries WHERE webhook_id = ? ORDER BY id DESC LIMIT ?`
+const selectWebhookDeliveriesSQL = ` SELECT id, webhook_id, transition_id, event_id, event_type, payload, status, attempt, next_attempt_at, last_status_code, last_response, last_attempt_at, delivered_at, created_at FROM jetpack_monitor_webhook_deliveries WHERE webhook_id = ? ORDER BY id DESC LIMIT ?`
 
-const selectWebhookDeliveryOneSQL = ` SELECT id, webhook_id, transition_id, event_id, event_type, payload, status, attempt, next_attempt_at, last_status_code, last_response, last_attempt_at, delivered_at, created_at FROM jetmon_webhook_deliveries WHERE id = ?`
+const selectWebhookDeliveryOneSQL = ` SELECT id, webhook_id, transition_id, event_id, event_type, payload, status, attempt, next_attempt_at, last_status_code, last_response, last_attempt_at, delivered_at, created_at FROM jetpack_monitor_webhook_deliveries WHERE id = ?`
 
 var columnsWebhookDelivery = []string{
 	"id", "webhook_id", "transition_id", "event_id", "event_type",
@@ -101,7 +101,7 @@ func TestRetryDeliveryHappyPath(t *testing.T) {
 
 	mock.ExpectQuery(selectWebhookDeliveryOneSQL).WithArgs(int64(101)).
 		WillReturnRows(makeWebhookDeliveryRow(101, 11, "abandoned"))
-	mock.ExpectExec(`UPDATE jetmon_webhook_deliveries SET status = 'pending', attempt = 0, next_attempt_at = CURRENT_TIMESTAMP, last_status_code = NULL, last_response = NULL, last_attempt_at = NULL WHERE id = ? AND status = 'abandoned'`).
+	mock.ExpectExec(`UPDATE jetpack_monitor_webhook_deliveries SET status = 'pending', attempt = 0, next_attempt_at = CURRENT_TIMESTAMP, last_status_code = NULL, last_response = NULL, last_attempt_at = NULL WHERE id = ? AND status = 'abandoned'`).
 		WithArgs(int64(101)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(selectWebhookDeliveryOneSQL).WithArgs(int64(101)).
@@ -131,7 +131,7 @@ func TestRetryDeliveryWithGatewayTenantVerifiesWebhookOwnership(t *testing.T) {
 		WillReturnRows(makeWebhookRow(11, "https://x.example.com", 1))
 	mock.ExpectQuery(selectWebhookDeliveryOneSQL).WithArgs(int64(101)).
 		WillReturnRows(makeWebhookDeliveryRow(101, 11, "abandoned"))
-	mock.ExpectExec(`UPDATE jetmon_webhook_deliveries SET status = 'pending', attempt = 0, next_attempt_at = CURRENT_TIMESTAMP, last_status_code = NULL, last_response = NULL, last_attempt_at = NULL WHERE id = ? AND status = 'abandoned'`).
+	mock.ExpectExec(`UPDATE jetpack_monitor_webhook_deliveries SET status = 'pending', attempt = 0, next_attempt_at = CURRENT_TIMESTAMP, last_status_code = NULL, last_response = NULL, last_attempt_at = NULL WHERE id = ? AND status = 'abandoned'`).
 		WithArgs(int64(101)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(selectWebhookDeliveryOneSQL).WithArgs(int64(101)).
@@ -172,7 +172,7 @@ func TestRetryDeliveryNotAbandoned(t *testing.T) {
 
 	mock.ExpectQuery(selectWebhookDeliveryOneSQL).WithArgs(int64(101)).
 		WillReturnRows(makeWebhookDeliveryRow(101, 11, "delivered"))
-	mock.ExpectExec(`UPDATE jetmon_webhook_deliveries SET status = 'pending', attempt = 0, next_attempt_at = CURRENT_TIMESTAMP, last_status_code = NULL, last_response = NULL, last_attempt_at = NULL WHERE id = ? AND status = 'abandoned'`).
+	mock.ExpectExec(`UPDATE jetpack_monitor_webhook_deliveries SET status = 'pending', attempt = 0, next_attempt_at = CURRENT_TIMESTAMP, last_status_code = NULL, last_response = NULL, last_attempt_at = NULL WHERE id = ? AND status = 'abandoned'`).
 		WithArgs(int64(101)).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(selectWebhookDeliveryOneSQL).WithArgs(int64(101)).

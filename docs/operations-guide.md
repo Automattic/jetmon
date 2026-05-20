@@ -64,9 +64,9 @@ Scheduler behavior:
   being dropped.
 - With `USE_VARIABLE_CHECK_INTERVALS=true`, Jetmon polls for newly due work on a
   short idle interval and uses each site's maintained
-  `jetmon_site_runtime.next_check_at` timestamp to decide what to check.
+  `jetpack_monitor_site_runtime.next_check_at` timestamp to decide what to check.
   `next_check_at` is recalculated after every check: successful checks use
-  `jetmon_site_runtime.last_checked_at + check_interval`, while failed checks
+  `jetpack_monitor_site_runtime.last_checked_at + check_interval`, while failed checks
   are scheduled for a bounded one-minute follow-up when the normal interval is
   longer. `MIN_TIME_BETWEEN_ROUNDS_SEC` is only the fixed-cadence pass interval
   when variable intervals are disabled. Use this mode for production-like
@@ -164,11 +164,11 @@ dry-run: it prints bounded examples plus `scanned_active`, `unsafe`, `flagged`,
 and `deactivated` counts without changing rows.
 
 Run with `--execute` only after reviewing the dry-run output. Execution records
-one `jetmon_site_safety_flags` row for each unsafe active monitor URL, then sets
+one `jetpack_monitor_site_safety_flags` row for each unsafe active monitor URL, then sets
 that legacy row's `monitor_active` value to false. It does not delete site
 rows, does not create downtime events, and does not send WPCOM down/recovery,
 webhook, or alert-contact notifications. Runtime probe-safety blocks also write
-open `jetmon_site_safety_flags` rows when the monitor row is known, so
+open `jetpack_monitor_site_safety_flags` rows when the monitor row is known, so
 operators can query one table for cleanup and recurring unsafe-target findings.
 
 ## Production Host Setup
@@ -369,7 +369,7 @@ and rollback path.
 
 ## Data Retention
 
-`jetmon_check_history` and `jetmon_audit_log` are append-only. Their growth rate
+`jetpack_monitor_check_history` and `jetpack_monitor_audit_log` are append-only. Their growth rate
 is governed by `CHECK_HISTORY_MODE_DEFAULT` and `AUDIT_LOG_MODE_DEFAULT`;
 retention bounds their total size over time. Retention is **disabled by
 default** — set the windows explicitly to enable it.
@@ -452,10 +452,10 @@ need from that host.
 
 When `VERIFLIER_DISCOVERY_MODE` is `shadow` or `active`, host health also shows
 Veriflier discovery status from the DB registry. Shadow mode is the rollout
-gate: compare enabled `jetmon_veriflier_vantages` rows against the static
+gate: compare enabled `jetpack_monitor_veriflier_vantages` rows against the static
 `VERIFIERS` list until there is no drift. Active mode uses enabled usable
 registry rows and falls back to static config if discovery is unavailable or
-empty. Monitor-collected rows in `jetmon_veriflier_agents` expose liveness and
+empty. Monitor-collected rows in `jetpack_monitor_veriflier_agents` expose liveness and
 capacity without giving Veriflier hosts DB credentials; they do not create
 trusted quorum votes.
 
@@ -497,7 +497,7 @@ least one expected check/report interval before changing to `active`.
 - `static_vantage_missing`: set a stable `VERIFLIER_VANTAGE_ID`; do not advance
   while a v2 Veriflier lacks a quorum identity.
 - `static_missing_enabled_registry`: create or enable the matching
-  `jetmon_veriflier_vantages` row after confirming the static endpoint is a
+  `jetpack_monitor_veriflier_vantages` row after confirming the static endpoint is a
   trusted quorum vantage.
 - `enabled_registry_missing_static`: confirm the registry row is intentional.
   If it is staged early, leave discovery in `shadow`; if it is stale, disable
@@ -542,7 +542,7 @@ the registry/static/agent mismatch, and rerun the report from the monitor
 runtime host.
 
 The fleet dashboard is available at `/fleet` on the same listener. It summarizes
-all rows in `jetmon_process_health` alongside `jetmon_hosts` dynamic bucket
+all rows in `jetpack_monitor_process_health` alongside `jetpack_monitor_hosts` dynamic bucket
 coverage, delivery backlog, delivery-owner posture, dependency rollups,
 Veriflier dependency health reported by monitor hosts, Veriflier discovery
 registry state, and global legacy projection drift. It also shows per-table
@@ -588,7 +588,7 @@ The fleet dashboard is read-only and unauthenticated. It does not discover or
 scrape other hosts over HTTP; every `jetmon2` monitor dashboard reads the same
 shared MySQL state and can serve the fleet view if `DASHBOARD_PORT` is enabled.
 Standalone `jetmon-deliverer` processes do not serve a dashboard, but they do
-publish their own rows to `jetmon_process_health`.
+publish their own rows to `jetpack_monitor_process_health`.
 
 The dashboard accepts only `GET` and `HEAD` requests for static and JSON views,
 and `/api/fleet` returns the same complete snapshot the HTML page renders for
@@ -612,7 +612,7 @@ Read the top summary first:
 
 During the v1-to-v2 rollout, pinned monitor hosts should make bucket coverage
 show `mode=pinned` and amber. After the final dynamic-ownership cutover,
-`mode=dynamic` should be green with fresh `jetmon_hosts` coverage and no gaps or
+`mode=dynamic` should be green with fresh `jetpack_monitor_hosts` coverage and no gaps or
 overlaps. A `mode=mixed` result means some monitor hosts still report pinned
 ownership while others report dynamic ownership; treat that as a rollout state
 to resolve intentionally.
@@ -633,7 +633,7 @@ GET /api/fleet   # combined fleet rollup, process health, buckets, delivery, dri
 ```
 
 Long-running `jetmon2` and `jetmon-deliverer` processes also publish compact
-heartbeat snapshots to `jetmon_process_health`. That table is the durable data
+heartbeat snapshots to `jetpack_monitor_process_health`. That table is the durable data
 source for the fleet dashboard. Treat stale `updated_at` values as
 unknown/unhealthy; the row is the last reported process state, not proof that a
 host is still alive. The dashboard listener remains unauthenticated for both
@@ -644,7 +644,7 @@ Bucket coverage can be inspected directly:
 
 ```sql
 SELECT host_id, bucket_min, bucket_max, last_heartbeat, status
-FROM jetmon_hosts
+FROM jetpack_monitor_hosts
 ORDER BY bucket_min;
 ```
 
@@ -652,7 +652,7 @@ Process health can be inspected directly:
 
 ```sql
 SELECT process_id, host_id, process_type, state, updated_at
-FROM jetmon_process_health
+FROM jetpack_monitor_process_health
 ORDER BY process_type, host_id;
 ```
 
@@ -661,7 +661,7 @@ For health rollups, memory, and runtime scheduler pressure:
 ```sql
 SELECT process_id, state, health_status, rss_mem_mb, go_sys_mem_mb,
        runtime_goroutines, runtime_threads, updated_at
-FROM jetmon_process_health
+FROM jetpack_monitor_process_health
 ORDER BY health_status DESC, updated_at;
 ```
 
@@ -669,11 +669,11 @@ Delivery queues can be inspected directly:
 
 ```sql
 SELECT status, COUNT(*), MIN(COALESCE(next_attempt_at, created_at))
-FROM jetmon_webhook_deliveries
+FROM jetpack_monitor_webhook_deliveries
 GROUP BY status;
 
 SELECT status, COUNT(*), MIN(COALESCE(next_attempt_at, created_at))
-FROM jetmon_alert_deliveries
+FROM jetpack_monitor_alert_deliveries
 GROUP BY status;
 ```
 

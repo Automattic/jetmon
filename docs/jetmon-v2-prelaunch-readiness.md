@@ -129,7 +129,7 @@ clear stop/go threshold.
   config-sync sidecar path, env var names, file permissions, reload cadence,
   and dashboard/API status output are the desired production setup.
 - [ ] Probe-safety follow-up work is tracked before rollout: scheduled
-  `jetmon_site_safety_flags` reporting, authoritative DNS rebinding tests,
+  `jetpack_monitor_site_safety_flags` reporting, authoritative DNS rebinding tests,
   deeper TLS pathology tests, and optional streaming keyword short-circuiting.
 
 The API rollout smoke gate is necessary but not sufficient for launch. Until
@@ -341,9 +341,9 @@ Local dry-run evidence:
   compatible with existing monitoring. For Monitor containers, verify
   `STATSD_ADDR=host.docker.internal:8125`, Docker host-gateway mapping, and
   `STATSD_HOST_PATH=<datacenter>.<node>` preserve the v1 Graphite series path.
-- [x] Owner: `Jetmon` - Confirm `jetmon_process_health` heartbeats are exposed
+- [x] Owner: `Jetmon` - Confirm `jetpack_monitor_process_health` heartbeats are exposed
   through the fleet dashboard with stale thresholds.
-- [ ] Owner: `Systems` - Confirm `jetmon_process_health` heartbeat/staleness
+- [ ] Owner: `Systems` - Confirm `jetpack_monitor_process_health` heartbeat/staleness
   thresholds are understood by operators before rollout.
 - [x] Owner: `Jetmon` - Add read-only Veriflier discovery shadow comparison via
   `jetmon2 verifliers discovery-report`.
@@ -461,7 +461,7 @@ Evidence:
   cadence, and `/api/v1/monitor/db-config` / dashboard status are acceptable
   before rollout.
 - [ ] Owner: `Jetmon` - Add or open follow-up tracking for scheduled
-  `jetmon_site_safety_flags` reporting so unsafe legacy row counts and runtime
+  `jetpack_monitor_site_safety_flags` reporting so unsafe legacy row counts and runtime
   probe-safety blocks are visible before and after API rejection rolls out.
 - [ ] Owner: `Jetmon` - Add or open follow-up tracking for authoritative DNS
   rebinding coverage: public address on first lookup, then private/reserved
