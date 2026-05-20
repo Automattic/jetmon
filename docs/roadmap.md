@@ -771,12 +771,47 @@ Recently completed candidate branches:
   schema refs plus a generated Go client smoke source. If production consumers
   standardize on a specific generator, add that exact tool to CI so tool-specific
   schema drift breaks before release.
-- **Plan encryption-at-rest for outbound credentials before public/customer
-  secret management.** Plaintext webhook secrets and alert-contact
-  destination credentials are acceptable for the current internal threat
-  model, but KMS-style encryption should be planned before exposing
-  customer-managed secrets more broadly. See
-  [`outbound-credential-encryption-plan.md`](outbound-credential-encryption-plan.md).
+- **Encrypt outbound credentials at rest (application-level envelope
+  encryption).** `jetpack_monitor_webhooks.secret` (HMAC signing key) and
+  `jetpack_monitor_alert_contacts.destination` (PagerDuty/Slack/Teams/SMTP creds) are
+  stored plaintext today (ADR-0003). The live-DB threat is bounded by the
+  internal-only gateway, but **backups, replicas, and SQL dumps have a wider
+  access profile than live event reads**, so a DB-only compromise leaks every
+  signing key (forge any webhook delivery) and every alert credential. This is
+  defense-in-depth worth doing before — not only at — the customer-facing
+  trigger. Net-new v2 surface; v1 has no credential storage, so there is no
+  migration interop.
+
+  Decided approach (analysis 2026-05; see
+  [`outbound-credential-encryption-plan.md`](outbound-credential-encryption-plan.md)
+  for the full phase plan):
+  - **Mechanism:** AES-256-GCM per credential with a versioned data key held
+    in memory; ciphertext/nonce/key_id/alg columns alongside the existing
+    plaintext + preview columns. No KMS round-trip on the dispatch hot path
+    (decrypt is local, ~µs; key unwrapped once at startup). Storage-layer
+    encryption (TDE/encrypted volumes) is a useful complement but not a
+    substitute — it does not protect against a live `SELECT`/replica read.
+  - **Key source:** env var (`CREDENTIAL_ENCRYPTION_KEY` base64-32B +
+    `CREDENTIAL_ENCRYPTION_KEY_ID`) behind a `KeySource` interface, so a
+    KMS-backed provider can be added later without touching crypto or dispatch
+    code. File-based source is a one-method alternative.
+  - **First PR scope:** phases 1–4 (crypto helpers + nullable encrypted columns
+    + dual-write on create/rotate + encrypted-preferred reads with plaintext
+    fallback + a `jetmon2 encrypt-credentials` backfill command), defaulting to
+    `CREDENTIAL_ENCRYPTION_MODE=plaintext` so merging is a no-op until an
+    operator opts in. `encrypted_required` and dropping the plaintext columns
+    are later operator-driven phases (5–6).
+  - **Operational profile when enabled:** one new production secret distributed
+    to every host that runs delivery workers (`jetmon2` with `API_PORT` and
+    every `jetmon-deliverer`); a key-rotation runbook (add key_id → dual-write →
+    rewrap rows → retire old key); a backup/restore coupling (backups hold
+    ciphertext, not the key — losing the key loses recoverability of existing
+    credentials); four new metrics (encrypt/decrypt failures, plaintext-fallback
+    count, unknown-key-id count); and a fail-fast startup check + break-glass
+    when the key source is unavailable in `dual_write`/`encrypted_required`. The
+    API contract and dispatch performance are unaffected.
+  - **Also:** amend ADR-0003 from "accepted plaintext" to "encryption available,
+    opt-in" when the first PR lands, so the ADR and plan doc do not drift.
 
 ### P2 - v3 and product-driven extensions
 
