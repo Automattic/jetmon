@@ -47,6 +47,7 @@ Preferred interactive wrapper:
 ./jetmon2 api rollout guided \
   --bucket-min=<min> \
   --bucket-max=<max> \
+  --canary-file=rollout-canaries.json \
   --change-ref=<ticket-or-change-id> \
   --allow-remote
 ```
@@ -110,13 +111,14 @@ the operator types the requested confirmation:
    ./jetmon2 api rollout bucket-coverage --bucket-min=<min> --bucket-max=<max> --allow-remote
    ./jetmon2 api rollout activity-check --bucket-min=<min> --bucket-max=<max> --since=15m --allow-remote
    ./jetmon2 api rollout projection-drift --bucket-min=<min> --bucket-max=<max> --allow-remote
+   ./jetmon2 api rollout smoke --bucket-min=<min> --bucket-max=<max> --mode=head-legacy --sample-size=100 --read-only --canary-file=rollout-canaries.json --allow-remote
    ```
 
-   Also run the approved synthetic canary sequence and attach the evidence to
-   the rollout record. Until canary execution is built into the API rollout
-   gate, this remains a separate required check covering known-up, controlled
-   down, controlled recovery, WPCOM notification parity, Veriflier-confirmed
-   down, and WAF/blocked-style behavior.
+   The canary file should contain approved controlled sites or uptime-bench
+   fixtures covering direct Monitor probe expectations such as known-up,
+   controlled down, and WAF/blocked-style behavior. Attach the API result to
+   the rollout record, along with separate lifecycle evidence for recovery,
+   WPCOM notification parity, and Veriflier-confirmed down flows.
 
 8. Roll back by releasing the v2 range before Systems restarts v1:
 

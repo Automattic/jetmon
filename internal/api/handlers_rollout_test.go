@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/Automattic/jetmon/internal/checker"
 	"github.com/Automattic/jetmon/internal/checkmode"
 )
 
@@ -29,6 +30,9 @@ func TestRolloutCapabilities(t *testing.T) {
 	}
 	if !containsString(resp.Features, "confirmation_tokens") {
 		t.Fatalf("features = %#v, want confirmation_tokens", resp.Features)
+	}
+	if !containsString(resp.Features, "synthetic_canary_checks") {
+		t.Fatalf("features = %#v, want synthetic_canary_checks", resp.Features)
 	}
 	if !containsString(resp.Requirements, "ROLLOUT_MODE=api-controlled for API activation") {
 		t.Fatalf("requirements = %#v, want api-controlled requirement", resp.Requirements)
@@ -108,5 +112,55 @@ func TestRolloutOperatorBindsToAPIKeyID(t *testing.T) {
 	req := requestWithKey(http.MethodPost, "/api/v1/rollout/seed", key)
 	if got := rolloutOperator(req); got != "test-consumer#1" {
 		t.Fatalf("rolloutOperator = %q, want test-consumer#1", got)
+	}
+}
+
+func TestRolloutCanaryMode(t *testing.T) {
+	fallback := rolloutModeSpec{Label: "head-legacy", Method: checkmode.MethodHEAD, Profile: checkmode.ProfileLegacy}
+	got, err := rolloutCanaryMode(rolloutCanarySpec{Method: "GET", Profile: "full"}, fallback)
+	if err != nil {
+		t.Fatalf("rolloutCanaryMode() error = %v", err)
+	}
+	if got.Method != checkmode.MethodGET || got.Profile != checkmode.ProfileFull {
+		t.Fatalf("mode = %#v, want GET/full", got)
+	}
+	got, err = rolloutCanaryMode(rolloutCanarySpec{Mode: "get-simple"}, fallback)
+	if err != nil {
+		t.Fatalf("rolloutCanaryMode(mode) error = %v", err)
+	}
+	if got.Method != checkmode.MethodGET || got.Profile != checkmode.ProfileSimpleHTTP {
+		t.Fatalf("mode = %#v, want GET/simple_http", got)
+	}
+	if _, err := rolloutCanaryMode(rolloutCanarySpec{Mode: "get-full", Method: "GET"}, fallback); err == nil {
+		t.Fatal("rolloutCanaryMode accepted mode with method override")
+	}
+}
+
+func TestRolloutEvaluateCanary(t *testing.T) {
+	success := false
+	httpCode := 503
+	errorCode := 2
+	res := checker.Result{
+		URL:              "https://canary.example.test/down",
+		Method:           checkmode.MethodGET,
+		DetectionProfile: checkmode.ProfileSimpleHTTP,
+		Success:          false,
+		HTTPCode:         503,
+		ErrorCode:        2,
+	}
+	result := rolloutEvaluateCanary(rolloutCanarySpec{
+		Name:            "controlled-down",
+		ExpectSuccess:   &success,
+		ExpectHTTPCode:  &httpCode,
+		ExpectErrorCode: &errorCode,
+	}, rolloutModeSpec{Label: "get-simple", Method: checkmode.MethodGET, Profile: checkmode.ProfileSimpleHTTP}, res, 1)
+	if !result.Passed {
+		t.Fatalf("canary result failed unexpectedly: %#v", result)
+	}
+
+	expectedOK := true
+	result = rolloutEvaluateCanary(rolloutCanarySpec{ExpectSuccess: &expectedOK}, rolloutModeSpec{Label: "get-simple", Method: checkmode.MethodGET, Profile: checkmode.ProfileSimpleHTTP}, res, 2)
+	if result.Passed || len(result.Mismatches) == 0 {
+		t.Fatalf("canary result = %#v, want mismatch", result)
 	}
 }

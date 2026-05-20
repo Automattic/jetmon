@@ -12,9 +12,9 @@ attempting the rollout to track launch posture, parity gates, support/WAF
 readiness, rehearsal evidence, observability thresholds, consumer inventory, and
 failure-mode drills. That tracker is also the launch-critical checklist for
 work that must be buttoned up before the first production activation, including
-synthetic canary tests. The API smoke gate samples real sites, but it is not a
-replacement for controlled canary evidence until canary execution is built into
-the rollout API.
+synthetic canary tests. The API smoke gate samples real sites; the optional
+`--canary-file` gate runs approved controlled canaries through the same
+read-only rollout API flow.
 
 Use this document for:
 
@@ -89,11 +89,14 @@ The API-driven rollout flow is:
 4. Run API preflight from the operator CLI. This validates Monitor config,
    database access, schema version, API-controlled rollout mode, delivery
    guards, configured Veriflier `/v2/status` contract, stable `vantage.id`
-   coverage, and bucket-control state.
+   coverage, bucket-control state, and any synthetic canaries supplied with
+   `--canary-file`.
 5. Run the read-only smoke gate against sampled sites. This executes sampled
    `HEAD` + `legacy` probes from the standby Monitor and blocks on failures,
    but must not write incident state, runtime freshness, check history, WPCOM
-   notifications, or legacy projection updates.
+   notifications, or legacy projection updates. If `--canary-file` is supplied,
+   the same gate also runs those synthetic canaries and blocks on expectation
+   mismatches.
 6. Seed/adopt v2 side state with a hybrid strategy: pre-seed scheduling/runtime
    rows and adopt existing v1 non-running projections into v2 event state before
    cutover, while allowing lazy creation for rows that are added or changed
@@ -105,12 +108,11 @@ The API-driven rollout flow is:
    heartbeat or ownership record.
 9. Run post-handoff gates for bucket coverage, recent check activity,
    projection drift, Veriflier health, canary down/recovery behavior, and
-   delivery/WPCOM guard state.
-   The canary gate must use approved controlled sites or uptime-bench fixtures
-   that prove known-up, controlled down, controlled recovery, WPCOM parity,
-   Veriflier-confirmed down, and WAF/blocked-style behavior. Record the
-   evidence outside the API smoke result until synthetic canaries are first
-   class API rollout gates.
+   delivery/WPCOM guard state. The API canary file should use approved
+   controlled sites or uptime-bench fixtures that prove direct Monitor probe
+   expectations such as known-up, controlled down, and WAF/blocked-style
+   behavior. Keep separate launch evidence for full recovery, WPCOM parity,
+   and Veriflier-confirmed down flows.
 10. If rollback is needed, explicitly release the activated bucket range through
    the API so v2 returns to standby for that range, then have the sysadmin team
    restart the matching v1 Monitor range.
@@ -129,6 +131,7 @@ The preferred operator command is the guided API wrapper:
 ./jetmon2 api rollout guided \
   --bucket-min=0 \
   --bucket-max=99 \
+  --canary-file=rollout-canaries.json \
   --change-ref=SYSREQ-12345 \
   --allow-remote
 ```
@@ -144,8 +147,8 @@ Non-dry-run sessions write a transcript and local resume state under
 The guided command wraps these control-plane API primitives:
 
 ```bash
-./jetmon2 api rollout preflight --bucket-min=0 --bucket-max=99 --allow-remote
-./jetmon2 api rollout smoke --bucket-min=0 --bucket-max=99 --mode=head-legacy --sample-size=100 --read-only --allow-remote
+./jetmon2 api rollout preflight --bucket-min=0 --bucket-max=99 --canary-file=rollout-canaries.json --allow-remote
+./jetmon2 api rollout smoke --bucket-min=0 --bucket-max=99 --mode=head-legacy --sample-size=100 --read-only --canary-file=rollout-canaries.json --allow-remote
 ./jetmon2 api rollout seed --bucket-min=0 --bucket-max=99 --dry-run --allow-remote
 ./jetmon2 api rollout seed --bucket-min=0 --bucket-max=99 --execute --confirm=<token> --allow-remote
 ./jetmon2 api rollout final-reconcile --bucket-min=0 --bucket-max=99 --dry-run --allow-remote

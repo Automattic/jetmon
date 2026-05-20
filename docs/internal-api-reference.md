@@ -152,6 +152,7 @@ confirmations and dry-run plans:
 
 ```bash
 ./bin/jetmon2 api rollout guided --bucket-min=0 --bucket-max=99 --allow-remote
+./bin/jetmon2 api rollout guided --bucket-min=0 --bucket-max=99 --canary-file=rollout-canaries.json --allow-remote
 ./bin/jetmon2 api rollout guided --bucket-min=0 --bucket-max=99 --dry-run
 ./bin/jetmon2 api rollout guided --bucket-min=0 --bucket-max=99 --rollback --allow-remote
 ```
@@ -197,12 +198,51 @@ legacy projection. Comparison deltas are persisted separately in
 bucket range has no active sites, the API returns a warning instead of treating
 an empty sample as proof that the range is healthy.
 
-Smoke probes are not a substitute for the launch canary plan. Before production
-activation, run the approved synthetic canary sequence from the prelaunch
-readiness tracker and attach its evidence to the rollout record. API-native
-canary execution is tracked as a follow-up because the production canary URLs,
-expected states, and rollback thresholds need owner approval before they become
-hard-coded rollout gates.
+`/api/v1/rollout/preflight` and `/api/v1/rollout/smoke` can also run synthetic
+canaries supplied by the operator. Use this for approved controlled sites or
+uptime-bench fixtures that prove direct Monitor probe expectations such as
+known-up, controlled-down, and WAF-style responses before activation. Canary
+probes are read-only and use the same target-safety guardrails as rollout smoke
+probes. They do not send WPCOM notifications or exercise the full incident
+lifecycle; keep separate launch evidence for recovery and notification parity
+where required. The API never hard-codes production canary URLs; the operator
+passes them at runtime:
+
+```json
+{
+  "canaries": [
+    {
+      "name": "known-up",
+      "url": "https://canary.example.com/",
+      "mode": "head-legacy",
+      "expect_success": true,
+      "expect_http_code": 200
+    },
+    {
+      "name": "controlled-down",
+      "url": "https://canary.example.com/down",
+      "method": "GET",
+      "profile": "simple_http",
+      "expect_success": false,
+      "expect_http_code": 503
+    }
+  ]
+}
+```
+
+Pass that file to the guided flow or individual gates:
+
+```bash
+./bin/jetmon2 api rollout guided --bucket-min=0 --bucket-max=99 --canary-file=rollout-canaries.json --allow-remote
+./bin/jetmon2 api rollout preflight --bucket-min=0 --bucket-max=99 --canary-file=rollout-canaries.json --allow-remote
+./bin/jetmon2 api rollout smoke --bucket-min=0 --bucket-max=99 --mode=head-legacy --sample-size=100 --read-only --canary-file=rollout-canaries.json --allow-remote
+```
+
+Each canary may use `mode` (`head-legacy`, `get-simple`, or `get-full`) or the
+equivalent `method` plus `profile` fields. Optional fields include
+`expect_error_code`, `keyword`, `forbidden_keyword`, `forbidden_keywords`,
+`headers`, `timeout_seconds`, and `redirect_policy` (`follow`, `alert`, or
+`fail`; full profile only). If `expect_success` is omitted, success is expected.
 
 `/api/v1/rollout/stage-policy` writes cohort changes to
 `jetpack_monitor_site_check_config` and records previous values in

@@ -40,6 +40,7 @@ const (
 	rolloutDefaultProbeSample     = 100
 	rolloutMaxSynchronousSample   = 1000
 	rolloutDefaultProbeConcurrent = 16
+	rolloutMaxSyntheticCanaries   = 50
 
 	requiredRolloutSchemaMigration = 50
 )
@@ -72,23 +73,24 @@ type rolloutSessionResponse struct {
 }
 
 type rolloutRangeRequest struct {
-	RunID       string `json:"run_id,omitempty"`
-	BucketMin   int    `json:"bucket_min"`
-	BucketMax   int    `json:"bucket_max"`
-	OwnerHost   string `json:"owner_host,omitempty"`
-	ChangeRef   string `json:"change_ref,omitempty"`
-	DryRun      bool   `json:"dry_run,omitempty"`
-	Execute     bool   `json:"execute,omitempty"`
-	Confirm     string `json:"confirm,omitempty"`
-	Mode        string `json:"mode,omitempty"`
-	SampleSize  int    `json:"sample_size,omitempty"`
-	ReadOnly    bool   `json:"read_only,omitempty"`
-	From        string `json:"from,omitempty"`
-	To          string `json:"to,omitempty"`
-	Method      string `json:"method,omitempty"`
-	Profile     string `json:"profile,omitempty"`
-	Size        any    `json:"size,omitempty"`
-	Description string `json:"description,omitempty"`
+	RunID       string              `json:"run_id,omitempty"`
+	BucketMin   int                 `json:"bucket_min"`
+	BucketMax   int                 `json:"bucket_max"`
+	OwnerHost   string              `json:"owner_host,omitempty"`
+	ChangeRef   string              `json:"change_ref,omitempty"`
+	DryRun      bool                `json:"dry_run,omitempty"`
+	Execute     bool                `json:"execute,omitempty"`
+	Confirm     string              `json:"confirm,omitempty"`
+	Mode        string              `json:"mode,omitempty"`
+	SampleSize  int                 `json:"sample_size,omitempty"`
+	ReadOnly    bool                `json:"read_only,omitempty"`
+	From        string              `json:"from,omitempty"`
+	To          string              `json:"to,omitempty"`
+	Method      string              `json:"method,omitempty"`
+	Profile     string              `json:"profile,omitempty"`
+	Size        any                 `json:"size,omitempty"`
+	Description string              `json:"description,omitempty"`
+	Canaries    []rolloutCanarySpec `json:"canaries,omitempty"`
 }
 
 type rolloutJobResponse struct {
@@ -176,6 +178,48 @@ type rolloutProbeSummary struct {
 	FailureSample []rolloutProbeFailure `json:"failure_sample,omitempty"`
 }
 
+type rolloutCanarySpec struct {
+	Name              string            `json:"name,omitempty"`
+	URL               string            `json:"url"`
+	Mode              string            `json:"mode,omitempty"`
+	Method            string            `json:"method,omitempty"`
+	Profile           string            `json:"profile,omitempty"`
+	ExpectSuccess     *bool             `json:"expect_success,omitempty"`
+	ExpectHTTPCode    *int              `json:"expect_http_code,omitempty"`
+	ExpectErrorCode   *int              `json:"expect_error_code,omitempty"`
+	Keyword           *string           `json:"keyword,omitempty"`
+	ForbiddenKeyword  *string           `json:"forbidden_keyword,omitempty"`
+	ForbiddenKeywords []string          `json:"forbidden_keywords,omitempty"`
+	Headers           map[string]string `json:"headers,omitempty"`
+	TimeoutSeconds    int               `json:"timeout_seconds,omitempty"`
+	RedirectPolicy    string            `json:"redirect_policy,omitempty"`
+}
+
+type rolloutCanaryResult struct {
+	Name              string          `json:"name"`
+	URL               string          `json:"url"`
+	Mode              rolloutModeSpec `json:"mode"`
+	Success           bool            `json:"success"`
+	ExpectedSuccess   bool            `json:"expected_success"`
+	HTTPCode          int             `json:"http_code"`
+	ExpectedHTTPCode  *int            `json:"expected_http_code,omitempty"`
+	ErrorCode         int             `json:"error_code"`
+	ExpectedErrorCode *int            `json:"expected_error_code,omitempty"`
+	ErrorDetail       string          `json:"error_detail,omitempty"`
+	RTTMs             int64           `json:"rtt_ms"`
+	Passed            bool            `json:"passed"`
+	Mismatches        []string        `json:"mismatches,omitempty"`
+}
+
+type rolloutCanarySummary struct {
+	Configured int                   `json:"configured"`
+	Checked    int                   `json:"checked"`
+	Passed     int                   `json:"passed"`
+	Failed     int                   `json:"failed"`
+	ReadOnly   bool                  `json:"read_only"`
+	Results    []rolloutCanaryResult `json:"results,omitempty"`
+}
+
 type rolloutComparisonResult struct {
 	BlogID        int64  `json:"blog_id"`
 	SourceSiteID  int64  `json:"source_site_id"`
@@ -229,6 +273,7 @@ func (s *Server) handleRolloutCapabilities(w http.ResponseWriter, r *http.Reques
 			"api_controlled_monitor_mode",
 			"preflight",
 			"read_only_smoke_checks",
+			"synthetic_canary_checks",
 			"seed_adopt",
 			"final_reconcile",
 			"activate_release",
@@ -312,6 +357,7 @@ func (s *Server) handleRolloutPreflight(w http.ResponseWriter, r *http.Request) 
 	var blockers []string
 	var warnings []string
 	var veriflierResults []rolloutVeriflierPreflightResult
+	var canaries rolloutCanarySummary
 	if cfg == nil {
 		blockers = append(blockers, "runtime config is not loaded")
 	} else {
@@ -332,6 +378,17 @@ func (s *Server) handleRolloutPreflight(w http.ResponseWriter, r *http.Request) 
 		warnings = append(warnings, verifierWarnings...)
 		blockers = append(blockers, verifierBlockers...)
 	}
+	if len(body.Canaries) > 0 {
+		var err error
+		canaries, err = s.rolloutRunCanaries(r.Context(), body.Canaries, rolloutModeSpec{Label: "head-legacy", Method: checkmode.MethodHEAD, Profile: checkmode.ProfileLegacy})
+		if err != nil {
+			writeError(w, r, http.StatusUnprocessableEntity, "invalid_canaries", err.Error())
+			return
+		}
+		if canaries.Failed > 0 {
+			blockers = append(blockers, "one or more synthetic canaries failed")
+		}
+	}
 	if err := s.db.PingContext(r.Context()); err != nil {
 		blockers = append(blockers, "database ping failed: "+err.Error())
 	}
@@ -347,11 +404,15 @@ func (s *Server) handleRolloutPreflight(w http.ResponseWriter, r *http.Request) 
 		summary = "preflight blocked"
 		status = "blocked"
 	}
-	resp := s.rolloutOperation(r, rolloutOpName("preflight"), body, status, summary, map[string]any{
+	result := map[string]any{
 		"schema_migration": maxMigration,
 		"rollout_mode":     rolloutModeString(cfg),
 		"verifliers":       veriflierResults,
-	}, warnings, blockers)
+	}
+	if len(body.Canaries) > 0 {
+		result["canaries"] = canaries
+	}
+	resp := s.rolloutOperation(r, rolloutOpName("preflight"), body, status, summary, result, warnings, blockers)
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -386,16 +447,38 @@ func (s *Server) handleRolloutSmoke(w http.ResponseWriter, r *http.Request) {
 	}
 	result := s.rolloutRunChecks(r.Context(), sites, mode, true)
 	result.ActiveSites = active
+	var canaries rolloutCanarySummary
+	if len(body.Canaries) > 0 {
+		canaries, err = s.rolloutRunCanaries(r.Context(), body.Canaries, mode)
+		if err != nil {
+			writeError(w, r, http.StatusUnprocessableEntity, "invalid_canaries", err.Error())
+			return
+		}
+	}
 	var warnings []string
 	if active == 0 {
 		warnings = append(warnings, "requested bucket range has no active sites")
 	}
+	var responseResult any = result
+	if len(body.Canaries) > 0 {
+		responseResult = map[string]any{
+			"sampled_sites": result,
+			"canaries":      canaries,
+		}
+	}
+	var blockers []string
 	if result.Failures > 0 {
-		resp := s.rolloutOperation(r, "smoke", body, "blocked", "read-only smoke checks found failures", result, warnings, []string{"one or more sampled checks failed"})
+		blockers = append(blockers, "one or more sampled checks failed")
+	}
+	if canaries.Failed > 0 {
+		blockers = append(blockers, "one or more synthetic canaries failed")
+	}
+	if len(blockers) > 0 {
+		resp := s.rolloutOperation(r, "smoke", body, "blocked", "read-only smoke or canary checks found failures", responseResult, warnings, blockers)
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
-	resp := s.rolloutOperation(r, "smoke", body, "ok", "read-only smoke checks completed", result, warnings, nil)
+	resp := s.rolloutOperation(r, "smoke", body, "ok", "read-only smoke checks completed", responseResult, warnings, nil)
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -1387,6 +1470,231 @@ func rolloutCheckRequest(cfg *config.Config, site jetdb.Site, mode rolloutModeSp
 		}
 	}
 	return req
+}
+
+func (s *Server) rolloutRunCanaries(ctx context.Context, specs []rolloutCanarySpec, fallback rolloutModeSpec) (rolloutCanarySummary, error) {
+	out := rolloutCanarySummary{
+		Configured: len(specs),
+		ReadOnly:   true,
+	}
+	if len(specs) == 0 {
+		return out, nil
+	}
+	if len(specs) > rolloutMaxSyntheticCanaries {
+		return out, fmt.Errorf("canaries length %d exceeds limit %d", len(specs), rolloutMaxSyntheticCanaries)
+	}
+
+	cfg := config.Get()
+	type canaryJob struct {
+		spec rolloutCanarySpec
+		mode rolloutModeSpec
+		req  checker.Request
+	}
+	jobs := make([]canaryJob, 0, len(specs))
+	for i, spec := range specs {
+		mode, err := rolloutCanaryMode(spec, fallback)
+		if err != nil {
+			return out, fmt.Errorf("canary %d mode: %w", i+1, err)
+		}
+		req, err := rolloutCanaryCheckRequest(cfg, spec, mode)
+		if err != nil {
+			return out, fmt.Errorf("canary %d: %w", i+1, err)
+		}
+		jobs = append(jobs, canaryJob{spec: spec, mode: mode, req: req})
+	}
+
+	results := make([]rolloutCanaryResult, len(jobs))
+	workers := rolloutDefaultProbeConcurrent
+	if workers > len(jobs) {
+		workers = len(jobs)
+	}
+	work := make(chan int)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for idx := range work {
+				job := jobs[idx]
+				res := checker.Check(ctx, job.req)
+				results[idx] = rolloutEvaluateCanary(job.spec, job.mode, res, idx+1)
+			}
+		}()
+	}
+	for i := range jobs {
+		work <- i
+	}
+	close(work)
+	wg.Wait()
+
+	for _, result := range results {
+		out.Checked++
+		if result.Passed {
+			out.Passed++
+		} else {
+			out.Failed++
+		}
+		out.Results = append(out.Results, result)
+	}
+	return out, nil
+}
+
+func rolloutCanaryMode(spec rolloutCanarySpec, fallback rolloutModeSpec) (rolloutModeSpec, error) {
+	if strings.TrimSpace(spec.Mode) != "" {
+		if strings.TrimSpace(spec.Method) != "" || strings.TrimSpace(spec.Profile) != "" {
+			return rolloutModeSpec{}, fmt.Errorf("mode cannot be combined with method or profile")
+		}
+		return rolloutModeFromString(spec.Mode, fallback)
+	}
+	if strings.TrimSpace(spec.Method) == "" && strings.TrimSpace(spec.Profile) == "" {
+		return normalizeRolloutModeSpec(fallback)
+	}
+	method, err := checkmode.NormalizeMethod(spec.Method, fallback.Method)
+	if err != nil {
+		return rolloutModeSpec{}, err
+	}
+	profile, err := checkmode.NormalizeProfile(spec.Profile, fallback.Profile)
+	if err != nil {
+		return rolloutModeSpec{}, err
+	}
+	profile = checkmode.EffectiveProfile(method, profile)
+	return normalizeRolloutModeSpec(rolloutModeSpec{
+		Method:  method,
+		Profile: profile,
+	})
+}
+
+func rolloutCanaryCheckRequest(cfg *config.Config, spec rolloutCanarySpec, mode rolloutModeSpec) (checker.Request, error) {
+	target := strings.TrimSpace(spec.URL)
+	if target == "" {
+		return checker.Request{}, fmt.Errorf("url is required")
+	}
+	timeout := 10
+	if cfg != nil && cfg.NetCommsTimeout > 0 {
+		timeout = cfg.NetCommsTimeout
+	}
+	if spec.TimeoutSeconds < 0 {
+		return checker.Request{}, fmt.Errorf("timeout_seconds must be non-negative")
+	}
+	if spec.TimeoutSeconds > 0 {
+		timeout = spec.TimeoutSeconds
+	}
+	req := checker.Request{
+		URL:                 target,
+		Method:              mode.Method,
+		DetectionProfile:    mode.Profile,
+		TimeoutSeconds:      timeout,
+		CustomHeaders:       rolloutCanaryHeaders(spec.Headers),
+		RedirectPolicy:      checker.RedirectFollow,
+		BodyReadMaxBytes:    1048576,
+		BodyReadMaxMS:       250,
+		KeywordReadMaxBytes: 1048576,
+		EnforceTargetSafety: true,
+	}
+	if cfg != nil {
+		req.BodyReadMaxBytes = cfg.BodyReadMaxBytes
+		req.BodyReadMaxMS = cfg.BodyReadMaxMS
+		req.KeywordReadMaxBytes = cfg.KeywordReadMaxBytes
+		req.KeywordReadMaxMS = cfg.KeywordReadMaxMS
+	}
+	if mode.Profile == checkmode.ProfileFull {
+		req.Keyword = trimmedStringPtr(spec.Keyword)
+		req.ForbiddenKeyword = trimmedStringPtr(spec.ForbiddenKeyword)
+		req.ForbiddenKeywords = trimmedStrings(spec.ForbiddenKeywords)
+		if policy := strings.ToLower(strings.TrimSpace(spec.RedirectPolicy)); policy != "" {
+			switch checker.RedirectPolicy(policy) {
+			case checker.RedirectFollow, checker.RedirectAlert, checker.RedirectFail:
+				req.RedirectPolicy = checker.RedirectPolicy(policy)
+			default:
+				return checker.Request{}, fmt.Errorf("redirect_policy must be follow, alert, or fail")
+			}
+		}
+	}
+	return req, nil
+}
+
+func rolloutCanaryHeaders(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		out[key] = strings.TrimSpace(value)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func trimmedStringPtr(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	trimmed := strings.TrimSpace(*value)
+	if trimmed == "" {
+		return nil
+	}
+	return &trimmed
+}
+
+func trimmedStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
+func rolloutEvaluateCanary(spec rolloutCanarySpec, mode rolloutModeSpec, res checker.Result, index int) rolloutCanaryResult {
+	expectedSuccess := true
+	if spec.ExpectSuccess != nil {
+		expectedSuccess = *spec.ExpectSuccess
+	}
+	name := strings.TrimSpace(spec.Name)
+	if name == "" {
+		name = fmt.Sprintf("canary_%d", index)
+	}
+	resultURL := res.URL
+	if strings.TrimSpace(resultURL) == "" {
+		resultURL = strings.TrimSpace(spec.URL)
+	}
+	out := rolloutCanaryResult{
+		Name:              name,
+		URL:               resultURL,
+		Mode:              mode,
+		Success:           res.Success,
+		ExpectedSuccess:   expectedSuccess,
+		HTTPCode:          res.HTTPCode,
+		ExpectedHTTPCode:  spec.ExpectHTTPCode,
+		ErrorCode:         res.ErrorCode,
+		ExpectedErrorCode: spec.ExpectErrorCode,
+		ErrorDetail:       res.ErrorDetail,
+		RTTMs:             res.RTT.Milliseconds(),
+		Passed:            true,
+	}
+	if res.Success != expectedSuccess {
+		out.Passed = false
+		out.Mismatches = append(out.Mismatches, fmt.Sprintf("success=%t expected %t", res.Success, expectedSuccess))
+	}
+	if spec.ExpectHTTPCode != nil && res.HTTPCode != *spec.ExpectHTTPCode {
+		out.Passed = false
+		out.Mismatches = append(out.Mismatches, fmt.Sprintf("http_code=%d expected %d", res.HTTPCode, *spec.ExpectHTTPCode))
+	}
+	if spec.ExpectErrorCode != nil && res.ErrorCode != *spec.ExpectErrorCode {
+		out.Passed = false
+		out.Mismatches = append(out.Mismatches, fmt.Sprintf("error_code=%d expected %d", res.ErrorCode, *spec.ExpectErrorCode))
+	}
+	return out
 }
 
 func (s *Server) rolloutCompareChecks(ctx context.Context, sites []jetdb.Site, from, to rolloutModeSpec) []rolloutComparisonResult {

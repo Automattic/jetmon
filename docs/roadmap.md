@@ -547,13 +547,12 @@ production telemetry branches:
   durable job records into full execution workers: comparison should run sampled
   non-authoritative probes and persist deltas, while policy staging should
   update cohorts with pause, rollback-last-stage, and rollback-all support.
-- [ ] Add synthetic canary execution to the API rollout smoke/preflight gates.
-  The current API surface executes sampled site smoke probes and validates the
-  v2 Veriflier contract/quorum shape, but canary-specific probe execution
-  should be added once production canary URLs, expected states, and stop/go
-  thresholds are finalized. This is a tooling follow-up; it does not remove the
-  launch requirement to run and record synthetic canary evidence before first
-  production activation.
+- [x] Add synthetic canary execution to the API rollout smoke/preflight gates.
+  Operators now pass an approved canary JSON file to `jetmon2 api rollout
+  guided`, `preflight`, or `smoke`. The API runs those checks read-only with
+  target-safety enabled and blocks on direct probe expectation mismatches.
+  Production canary URLs remain operator-supplied rather than hard-coded into
+  service config.
 - [ ] Build and run the production rollout lab described in
   `docs/production-rollout-lab.md` with uptime-bench coordination. The lab
   should rehearse the production-shaped DB primary/read-replica split,

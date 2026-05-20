@@ -132,10 +132,11 @@ clear stop/go threshold.
   `jetpack_monitor_site_safety_flags` reporting, authoritative DNS rebinding tests,
   deeper TLS pathology tests, and optional streaming keyword short-circuiting.
 
-The API rollout smoke gate is necessary but not sufficient for launch. Until
-synthetic canary execution is built into the API rollout gates, run the approved
-canary plan through uptime-bench, a manual controlled test harness, or another
-production-approved test path and attach the evidence to the rollout record.
+The API rollout smoke gate samples real sites and can also run approved
+synthetic canaries supplied with `--canary-file`. Use controlled sites or
+uptime-bench fixtures for direct Monitor probe canaries and attach the API
+result to the rollout record. Keep separate evidence for recovery, WPCOM
+notification parity, and Veriflier-confirmed down flows.
 
 ## Hard Gates
 
@@ -301,8 +302,8 @@ Evidence:
   intentional for rollout.
 - [ ] Owner: `Jetmon`, `Systems` - Run the approved synthetic canary sequence
   before first production activation and capture the evidence in the rollout
-  record. This is required even while canary execution is still outside the API
-  rollout smoke gate.
+  record by passing the approved direct-probe canary file to the API
+  preflight/smoke gates and attaching the separate lifecycle canary evidence.
 
 Evidence:
 

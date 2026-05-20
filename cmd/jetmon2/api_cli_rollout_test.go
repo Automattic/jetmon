@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -298,6 +300,74 @@ func TestRunAPIRolloutGuidedRequiresDryRunConfirmationToken(t *testing.T) {
 	}
 	if seedExecuteCalled {
 		t.Fatal("seed execute was called without a dry-run confirmation token")
+	}
+}
+
+func TestRunAPIRolloutGuidedIncludesCanaryFile(t *testing.T) {
+	canaryFile := filepath.Join(t.TempDir(), "canaries.json")
+	if err := os.WriteFile(canaryFile, []byte(`[{"name":"known-up","url":"https://example.com","mode":"head-legacy","expect_success":true}]`), 0600); err != nil {
+		t.Fatalf("write canary file: %v", err)
+	}
+	var stdout bytes.Buffer
+	err := runAPIRolloutGuided(context.Background(), nil, apiCLIOptions{
+		baseURL: "https://jetmon-api.example.test",
+		timeout: time.Second,
+		out:     &stdout,
+		errOut:  ioDiscard{},
+		in:      strings.NewReader(""),
+	}, apiRolloutGuidedOptions{
+		bucketMin:         0,
+		bucketMax:         9,
+		sampleSize:        25,
+		compareSampleSize: 50,
+		since:             "30m",
+		dryRun:            true,
+		canaryFile:        canaryFile,
+	})
+	if err != nil {
+		t.Fatalf("runAPIRolloutGuided() error = %v", err)
+	}
+	got := stdout.String()
+	if !strings.Contains(got, "canaries: 1") {
+		t.Fatalf("dry-run output missing canary count:\n%s", got)
+	}
+	if strings.Count(got, `"canaries"`) != 2 {
+		t.Fatalf("dry-run output should include canaries in preflight and smoke bodies:\n%s", got)
+	}
+}
+
+func TestLoadAPIRolloutCanaries(t *testing.T) {
+	dir := t.TempDir()
+	arrayFile := filepath.Join(dir, "array.json")
+	if err := os.WriteFile(arrayFile, []byte(`[{"name":"known-up","url":"https://example.com"}]`), 0600); err != nil {
+		t.Fatalf("write array canary file: %v", err)
+	}
+	got, err := loadAPIRolloutCanaries(arrayFile)
+	if err != nil {
+		t.Fatalf("load array canaries: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len(array canaries) = %d, want 1", len(got))
+	}
+
+	wrappedFile := filepath.Join(dir, "wrapped.json")
+	if err := os.WriteFile(wrappedFile, []byte(`{"canaries":[{"name":"down","url":"https://example.com/down","expect_success":false}]}`), 0600); err != nil {
+		t.Fatalf("write wrapped canary file: %v", err)
+	}
+	got, err = loadAPIRolloutCanaries(wrappedFile)
+	if err != nil {
+		t.Fatalf("load wrapped canaries: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len(wrapped canaries) = %d, want 1", len(got))
+	}
+
+	badFile := filepath.Join(dir, "bad.json")
+	if err := os.WriteFile(badFile, []byte(`["not-an-object"]`), 0600); err != nil {
+		t.Fatalf("write bad canary file: %v", err)
+	}
+	if _, err := loadAPIRolloutCanaries(badFile); err == nil {
+		t.Fatal("loadAPIRolloutCanaries accepted non-object entry")
 	}
 }
 
