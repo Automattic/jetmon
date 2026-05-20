@@ -36,6 +36,8 @@ type apiRolloutGuidedOptions struct {
 	skipSeed               bool
 	includeComparison      bool
 	includePolicyMigration bool
+	canaryFile             string
+	canaries               []any
 }
 
 type apiRolloutStep struct {
@@ -121,6 +123,7 @@ func cmdAPIRolloutGuided(args []string) error {
 	fs.BoolVar(&guided.skipSeed, "skip-seed", false, "skip v2 side-state seed/adopt steps")
 	fs.BoolVar(&guided.includeComparison, "include-comparison", false, "run non-authoritative HEAD/GET comparison after activation gates")
 	fs.BoolVar(&guided.includePolicyMigration, "include-policy-migration", false, "include staged policy migration dry-run steps after comparison")
+	fs.StringVar(&guided.canaryFile, "canary-file", "", "JSON file containing rollout synthetic canaries for preflight and smoke")
 	if err := parseAPIFlags(fs, args); err != nil {
 		return err
 	}
@@ -160,6 +163,7 @@ type apiRolloutPrimitiveOptions struct {
 	method     string
 	profile    string
 	size       string
+	canaryFile string
 }
 
 func cmdAPIRolloutPost(command string, args []string) error {
@@ -182,6 +186,7 @@ func cmdAPIRolloutPost(command string, args []string) error {
 	fs.StringVar(&prim.method, "method", "", "target HTTP method for staged policy")
 	fs.StringVar(&prim.profile, "profile", "", "target detection profile for staged policy")
 	fs.StringVar(&prim.size, "size", "", "cohort size for staged policy")
+	fs.StringVar(&prim.canaryFile, "canary-file", "", "JSON file containing rollout synthetic canaries for preflight or smoke")
 	if err := parseAPIFlags(fs, args); err != nil {
 		return err
 	}
@@ -218,6 +223,16 @@ func cmdAPIRolloutPost(command string, args []string) error {
 	}
 	if prim.size != "" {
 		body["size"] = prim.size
+	}
+	if strings.TrimSpace(prim.canaryFile) != "" {
+		if command != "preflight" && command != "smoke" {
+			return errors.New("--canary-file is only supported with preflight and smoke")
+		}
+		canaries, err := loadAPIRolloutCanaries(prim.canaryFile)
+		if err != nil {
+			return err
+		}
+		body["canaries"] = canaries
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {
@@ -303,6 +318,13 @@ func runAPIRolloutGuided(ctx context.Context, client *http.Client, opts apiCLIOp
 	if guided.compareSampleSize <= 0 {
 		return errors.New("compare-sample-size must be positive")
 	}
+	if strings.TrimSpace(guided.canaryFile) != "" {
+		canaries, err := loadAPIRolloutCanaries(guided.canaryFile)
+		if err != nil {
+			return err
+		}
+		guided.canaries = canaries
+	}
 	if strings.TrimSpace(guided.since) == "" {
 		return errors.New("since must be non-empty")
 	}
@@ -359,6 +381,10 @@ func runAPIRolloutGuided(ctx context.Context, client *http.Client, opts apiCLIOp
 	}
 	if guided.changeRef != "" {
 		fmt.Fprintf(opts.out, "change_ref: %s\n", guided.changeRef)
+	}
+	if strings.TrimSpace(guided.canaryFile) != "" {
+		fmt.Fprintf(opts.out, "canary_file: %s\n", guided.canaryFile)
+		fmt.Fprintf(opts.out, "canaries: %d\n", len(guided.canaries))
 	}
 	fmt.Fprintln(opts.out)
 
@@ -533,7 +559,7 @@ func buildAPIRolloutGuidedSteps(g apiRolloutGuidedOptions) []apiRolloutStep {
 			Details: "Validate Monitor config, DB connectivity, schema version, API-controlled rollout mode, delivery guards, v2 Veriflier contract/quorum identity, and bucket-control state.",
 			Method:  http.MethodPost,
 			Target:  "/api/v1/rollout/preflight",
-			Body: apiRolloutRangeBody(g, map[string]any{
+			Body: apiRolloutRangeBodyWithCanaries(g, map[string]any{
 				"mode": "api-controlled",
 			}),
 			Prompt:  "Run rollout preflight.",
@@ -545,7 +571,7 @@ func buildAPIRolloutGuidedSteps(g apiRolloutGuidedOptions) []apiRolloutStep {
 			Details: "Execute sampled HEAD/legacy read-only smoke probes without writing incident state, runtime freshness, check history, WPCOM notifications, or legacy projection rows.",
 			Method:  http.MethodPost,
 			Target:  "/api/v1/rollout/smoke",
-			Body: apiRolloutRangeBody(g, map[string]any{
+			Body: apiRolloutRangeBodyWithCanaries(g, map[string]any{
 				"mode":        apiRolloutModeHeadLegacy,
 				"sample_size": g.sampleSize,
 				"read_only":   true,
@@ -823,6 +849,14 @@ func apiRolloutRangeBody(g apiRolloutGuidedOptions, extra map[string]any) map[st
 	return body
 }
 
+func apiRolloutRangeBodyWithCanaries(g apiRolloutGuidedOptions, extra map[string]any) map[string]any {
+	body := apiRolloutRangeBody(g, extra)
+	if len(g.canaries) > 0 {
+		body["canaries"] = g.canaries
+	}
+	return body
+}
+
 func apiRolloutSessionBody(g apiRolloutGuidedOptions) map[string]any {
 	body := map[string]any{
 		"bucket_min": g.bucketMin,
@@ -839,6 +873,40 @@ func apiRolloutRangeQuery(path string, g apiRolloutGuidedOptions) string {
 	values.Set("bucket_min", strconv.Itoa(g.bucketMin))
 	values.Set("bucket_max", strconv.Itoa(g.bucketMax))
 	return path + "?" + values.Encode()
+}
+
+func loadAPIRolloutCanaries(path string) ([]any, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, nil
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read rollout canary file: %w", err)
+	}
+	var canaries []any
+	if err := json.Unmarshal(raw, &canaries); err == nil {
+		return validateAPIRolloutCanaries(canaries)
+	}
+	var wrapped struct {
+		Canaries []any `json:"canaries"`
+	}
+	if err := json.Unmarshal(raw, &wrapped); err != nil {
+		return nil, fmt.Errorf("decode rollout canary file: %w", err)
+	}
+	return validateAPIRolloutCanaries(wrapped.Canaries)
+}
+
+func validateAPIRolloutCanaries(canaries []any) ([]any, error) {
+	if len(canaries) == 0 {
+		return nil, errors.New("rollout canary file must contain at least one canary")
+	}
+	for i, canary := range canaries {
+		if _, ok := canary.(map[string]any); !ok {
+			return nil, fmt.Errorf("rollout canary %d must be a JSON object", i+1)
+		}
+	}
+	return canaries, nil
 }
 
 func apiRolloutPromptText(step apiRolloutStep) string {
