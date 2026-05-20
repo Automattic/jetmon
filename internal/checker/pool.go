@@ -131,8 +131,18 @@ func (p *Pool) WorkerCount() int {
 }
 
 // Drain stops accepting new work and waits for in-flight checks to complete.
+//
+// The closed flag is flipped under p.mu so it serializes with scale(), which
+// checks closed and spawns workers (wg.Add) while holding p.mu. Without this,
+// scale() could call wg.Add concurrently with the wg.Wait below — a data race
+// and a WaitGroup misuse. Taking p.mu guarantees every wg.Add either completed
+// before closed was set (scale ran first) or never happens (scale sees closed
+// and returns), so no Add overlaps Wait.
 func (p *Pool) Drain() {
-	if !p.closed.CompareAndSwap(false, true) {
+	p.mu.Lock()
+	swapped := p.closed.CompareAndSwap(false, true)
+	p.mu.Unlock()
+	if !swapped {
 		return
 	}
 	p.workMu.Lock()
