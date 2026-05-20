@@ -1243,6 +1243,54 @@ func TestAvailableVeriflierClientsForgetsStaleCooldownHistory(t *testing.T) {
 	}
 }
 
+// TestVeriflierCooldownConcurrentAccessRace drives every veriflierCooldowns
+// access path (mark-failure, mark-healthy, availability filtering) plus the
+// disjoint veriflierMu snapshot path from many goroutines at once. It exists to
+// catch lock-discipline regressions on the cooldown map under `go test -race`:
+// the map must stay exclusively guarded by veriflierCooldownMu, and the
+// client-list snapshot by veriflierMu, with neither held across the other. A
+// clean run is only meaningful because this actually exercises concurrency —
+// the other cooldown tests are sequential.
+func TestVeriflierCooldownConcurrentAccessRace(t *testing.T) {
+	o := &Orchestrator{}
+	addrs := []string{"v0", "v1", "v2", "v3"}
+	clients := make([]*veriflier.VeriflierClient, len(addrs))
+	for i, a := range addrs {
+		clients[i] = veriflier.NewVeriflierClient(a, "")
+	}
+	// Set the client list once before fan-out so veriflierSnapshot's RLock has
+	// real data to copy concurrently with cooldown-map mutation.
+	o.veriflierClients = clients
+
+	base := time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC)
+	const (
+		workers = 8
+		iters   = 500
+	)
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for w := 0; w < workers; w++ {
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; i < iters; i++ {
+				addr := addrs[(w+i)%len(addrs)]
+				now := base.Add(time.Duration(i) * time.Second)
+				switch i % 4 {
+				case 0:
+					o.markVeriflierOperationalFailure(addr, now)
+				case 1:
+					o.markVeriflierHealthy(addr)
+				case 2:
+					o.availableVeriflierClients(o.veriflierSnapshot(), now)
+				default:
+					o.availableVeriflierClients(clients, now)
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+}
+
 func TestVerifierOperationalBackoffBoundsToSiteIntervalAndCap(t *testing.T) {
 	setTestConfig(t)
 
