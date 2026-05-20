@@ -91,6 +91,8 @@ func main() {
 		cmdVerifliers(os.Args[2:])
 	case "rollout":
 		cmdRollout(os.Args[2:])
+	case "cleanup":
+		cmdCleanup(os.Args[2:])
 	default:
 		runServe()
 	}
@@ -151,6 +153,7 @@ func runServe() {
 	}
 
 	audit.Init(db.DB())
+	audit.SetMode(cfg.AuditLogModeDefault)
 
 	hostname := db.Hostname()
 	if addr, enabled, err := metrics.InitFromEnv(cfg.StatsDMetricHost(hostname), defaultStatsDAddr); err != nil {
@@ -332,6 +335,13 @@ func runServe() {
 		}
 	}()
 
+	// Background retention pruning (no-op unless a RETENTION_*_DAYS window is
+	// set). Cancelled when runServe returns on shutdown; an in-flight prune is
+	// safely restartable on the next run.
+	retentionCtx, stopRetention := context.WithCancel(context.Background())
+	defer stopRetention()
+	startRetentionBackground(retentionCtx, cfg)
+
 	// Signal handling.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
@@ -352,6 +362,7 @@ func runServe() {
 					}
 					cancel()
 					wp.Configure(wpcomClientConfig(config.Get(), hostname))
+					audit.SetMode(config.Get().AuditLogModeDefault)
 					if dash != nil {
 						dash.SetFleetSource(newFleetDashboardStore(config.Get()))
 					}

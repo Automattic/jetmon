@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/Automattic/jetmon/internal/checkmode"
@@ -49,6 +50,10 @@ const (
 	checkDNSCacheTTLJitter           = 3 * time.Minute
 	checkDNSCacheMaxEntries          = 2000000
 	checkDNSCachePurgeInterval       = 10000
+	// checkDNSCacheNegativeTTL bounds how long NXDOMAIN answers are cached.
+	// Kept short so a freshly-registered domain becomes resolvable quickly,
+	// long enough to absorb a burst of checks for a clearly-missing host.
+	checkDNSCacheNegativeTTL = 5 * time.Second
 )
 
 var errBodyReadBudgetExceeded = errors.New("response body read budget exceeded")
@@ -76,16 +81,18 @@ var defaultDNSLookupLimiter = newCheckDNSLookupLimiter()
 var configuredResolverMu sync.RWMutex
 var configuredResolverServers []string
 
-type checkContextKey int
-
-const checkContextKeyTargetSafety checkContextKey = iota
+// targetSafetyKey is the context key marking a check as requiring SSRF
+// safety re-validation at dial time. The empty-struct type follows the
+// stdlib convention: the key's uniqueness comes from the type itself, so no
+// other package can collide with it even by accident.
+type targetSafetyKey struct{}
 
 func withTargetSafety(ctx context.Context) context.Context {
-	return context.WithValue(ctx, checkContextKeyTargetSafety, true)
+	return context.WithValue(ctx, targetSafetyKey{}, true)
 }
 
 func targetSafetyEnabled(ctx context.Context) bool {
-	enabled, _ := ctx.Value(checkContextKeyTargetSafety).(bool)
+	enabled, _ := ctx.Value(targetSafetyKey{}).(bool)
 	return enabled
 }
 
@@ -173,7 +180,12 @@ type checkDNSCache struct {
 
 type checkDNSCacheEntry struct {
 	addrs   []net.IPAddr
+	err     error
 	expires time.Time
+	// negative marks the entry as a cached NXDOMAIN-like lookup failure. The
+	// addrs slice is nil for negative entries; err carries the original
+	// resolver error so callers see the same diagnostic as an uncached miss.
+	negative bool
 }
 
 func newCheckDNSCache(ttl time.Duration, maxEntries int) *checkDNSCache {
@@ -202,7 +214,12 @@ func (c *checkDNSCache) lookup(ctx context.Context, resolver *net.Resolver, host
 		// Returning the stored slice avoids an allocation on every repeated
 		// check for long-lived monitored sites.
 		addrs := entry.addrs
+		negative := entry.negative
+		cachedErr := entry.err
 		c.mu.RUnlock()
+		if negative {
+			return nil, cachedErr
+		}
 		return addrs, nil
 	}
 	c.mu.RUnlock()
@@ -221,17 +238,39 @@ func (c *checkDNSCache) lookup(ctx context.Context, resolver *net.Resolver, host
 		// Returning the stored slice avoids an allocation on every repeated
 		// check for long-lived monitored sites.
 		addrs := entry.addrs
+		negative := entry.negative
+		cachedErr := entry.err
 		c.mu.RUnlock()
+		if negative {
+			return nil, cachedErr
+		}
 		return addrs, nil
 	}
 	c.mu.RUnlock()
 
 	addrs, err := lookupResolverIPAddrs(ctx, resolver, host, network)
-	if err != nil || len(addrs) == 0 {
+	if err != nil {
+		if isDNSNotFoundErr(err) {
+			c.storeNegative(key, err, now.Add(checkDNSCacheNegativeTTL))
+		}
+		return addrs, err
+	}
+	if len(addrs) == 0 {
 		return addrs, err
 	}
 	c.store(key, addrs, c.expiresAt(key, now))
 	return addrs, nil
+}
+
+// isDNSNotFoundErr returns true when err is an NXDOMAIN-like response. Only
+// such errors are negative-cached; transient failures (timeouts, SERVFAIL) are
+// left to retry so a flaky resolver does not poison the cache.
+func isDNSNotFoundErr(err error) bool {
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return dnsErr.IsNotFound
+	}
+	return false
 }
 
 func (c *checkDNSCache) expiresAt(key string, now time.Time) time.Time {
@@ -272,6 +311,24 @@ func (c *checkDNSCache) store(key string, addrs []net.IPAddr, expires time.Time)
 		}
 	}
 	c.entries[key] = checkDNSCacheEntry{addrs: cloneIPAddrs(addrs), expires: expires}
+	c.writes++
+	if c.writes%checkDNSCachePurgeInterval == 0 {
+		c.purgeExpiredLocked(time.Now())
+	}
+}
+
+// storeNegative records an NXDOMAIN-like miss so a burst of checks for a
+// clearly-missing host short-circuits without re-hitting the resolver.
+func (c *checkDNSCache) storeNegative(key string, lookupErr error, expires time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.maxEntries > 0 && len(c.entries) >= c.maxEntries {
+		c.purgeExpiredLocked(time.Now())
+		if len(c.entries) >= c.maxEntries {
+			return
+		}
+	}
+	c.entries[key] = checkDNSCacheEntry{err: lookupErr, expires: expires, negative: true}
 	c.writes++
 	if c.writes%checkDNSCachePurgeInterval == 0 {
 		c.purgeExpiredLocked(time.Now())
@@ -494,12 +551,45 @@ func transportForRequestURL(rawURL string) http.RoundTripper {
 	return defaultTransport
 }
 
+// targetSafetyDialControl is the net.Dialer.ControlContext gate that
+// re-validates the resolved IP one last time, after DNS resolution and
+// before the kernel issues the connect syscall. This closes the TOCTOU
+// window between the in-Go hostname-based validation and the actual dial:
+// even if a path bypassed the higher-level wrapper (nil custom resolver,
+// future code change), a target-safety-enabled request cannot connect to
+// an RFC1918 / loopback / link-local / etc address.
+func targetSafetyDialControl(ctx context.Context, _, address string, _ syscall.RawConn) error {
+	if !targetSafetyEnabled(ctx) {
+		return nil
+	}
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("%w: dial address %q is not host:port", errProbeSafetyBlock, address)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		// At ControlContext time the address has already been resolved to an
+		// IP literal; a non-IP host here would indicate a Go stdlib change we
+		// want to fail closed on.
+		return fmt.Errorf("%w: dial address %q is not an IP literal", errProbeSafetyBlock, host)
+	}
+	if netguard.UnsafeIP(ip) {
+		return fmt.Errorf("%w: dial address %s is not public", errProbeSafetyBlock, ip)
+	}
+	return nil
+}
+
 func newCheckDialContext(resolver *net.Resolver) func(context.Context, string, string) (net.Conn, error) {
 	dialer := &net.Dialer{
-		Timeout:   30 * time.Second,
-		KeepAlive: 30 * time.Second,
+		Timeout:        30 * time.Second,
+		KeepAlive:      30 * time.Second,
+		ControlContext: targetSafetyDialControl,
 	}
 	if resolver == nil {
+		// No custom resolver: rely on Go's default. ControlContext above will
+		// still gate every connect against netguard.UnsafeIP, so a DNS answer
+		// that arrives later (or differs from any earlier in-Go check) cannot
+		// drive the kernel to dial an unsafe address.
 		return dialer.DialContext
 	}
 	return func(ctx context.Context, network, address string) (net.Conn, error) {

@@ -8,7 +8,10 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
+
+	"github.com/Automattic/jetmon/internal/config"
 )
 
 // maxSamples bounds the number of jetmon_check_history rows we'll pull into
@@ -44,6 +47,12 @@ type responseTimeResponse struct {
 	// Truncated indicates the underlying sample set hit the maxSamples cap;
 	// percentiles are computed from the most recent maxSamples rows.
 	Truncated bool `json:"truncated"`
+	// CheckHistoryMode is the effective check-history recording mode for this
+	// site. PercentilesMeaningful is false when the mode only records
+	// incident-edge probes (status_change) or nothing (disabled), in which
+	// case the percentile fields reflect too few samples to be representative.
+	CheckHistoryMode      string `json:"check_history_mode"`
+	PercentilesMeaningful bool   `json:"percentiles_meaningful"`
 }
 
 // timingBreakdownResponse is the shape returned by GET .../timing-breakdown.
@@ -51,13 +60,15 @@ type responseTimeResponse struct {
 // response time. Per-component percentiles let consumers pinpoint *where*
 // latency is spent.
 type timingBreakdownResponse struct {
-	Window    windowResponse   `json:"window"`
-	Samples   int              `json:"samples"`
-	Truncated bool             `json:"truncated"`
-	DNS       latencyComponent `json:"dns"`
-	TCP       latencyComponent `json:"tcp"`
-	TLS       latencyComponent `json:"tls"`
-	TTFB      latencyComponent `json:"ttfb"`
+	Window                windowResponse   `json:"window"`
+	Samples               int              `json:"samples"`
+	Truncated             bool             `json:"truncated"`
+	CheckHistoryMode      string           `json:"check_history_mode"`
+	PercentilesMeaningful bool             `json:"percentiles_meaningful"`
+	DNS                   latencyComponent `json:"dns"`
+	TCP                   latencyComponent `json:"tcp"`
+	TLS                   latencyComponent `json:"tls"`
+	TTFB                  latencyComponent `json:"ttfb"`
 }
 
 type latencyComponent struct {
@@ -126,6 +137,139 @@ func parseWindowDuration(s string) (time.Duration, error) {
 	default:
 		return 0, fmt.Errorf("window must be one of: 1h, 24h, 7d, 30d, 90d")
 	}
+}
+
+// checkHistoryRowResponse is one raw jetmon_check_history row in API form.
+type checkHistoryRowResponse struct {
+	ID            int64  `json:"id"`
+	RequestMethod string `json:"request_method"`
+	HTTPCode      *int   `json:"http_code"`
+	ErrorCode     *int   `json:"error_code"`
+	RTTMs         *int64 `json:"rtt_ms"`
+	DNSMs         *int64 `json:"dns_ms"`
+	TCPMs         *int64 `json:"tcp_ms"`
+	TLSMs         *int64 `json:"tls_ms"`
+	TTFBMs        *int64 `json:"ttfb_ms"`
+	CheckedAt     string `json:"checked_at"`
+}
+
+const checkHistoryListSQLPrefix = `
+		SELECT id, request_method, http_code, error_code, rtt_ms, dns_ms, tcp_ms, tls_ms, ttfb_ms, checked_at
+		  FROM jetmon_check_history
+		 WHERE blog_id = ?`
+
+// handleSiteCheckHistory returns raw per-check timing rows for a site,
+// newest-first, with cursor pagination. Unlike the percentile endpoints this
+// works at any CHECK_HISTORY_MODE — at status_change it returns the
+// incident-edge probes, at all/sample it returns the fuller stream. The
+// response carries the effective mode so consumers know what coverage to
+// expect.
+func (s *Server) handleSiteCheckHistory(w http.ResponseWriter, r *http.Request) {
+	siteID, from, to, ok := s.parseStatsRequest(w, r)
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	limit, err := parseLimit(q.Get("limit"), 50, 200)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_limit", err.Error())
+		return
+	}
+	cursor, err := decodeIDCursor(q.Get("cursor"))
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_cursor", err.Error())
+		return
+	}
+
+	args := []any{siteID, from, to}
+	query := checkHistoryListSQLPrefix + ` AND checked_at >= ? AND checked_at < ?`
+	if cursor > 0 {
+		query += ` AND id < ?`
+		args = append(args, cursor)
+	}
+	query += ` ORDER BY id DESC LIMIT ?`
+	args = append(args, limit+1)
+
+	rows, err := s.db.QueryContext(r.Context(), query, args...)
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, "db_error",
+			"check history query failed: "+err.Error())
+		return
+	}
+	defer rows.Close()
+
+	results := make([]checkHistoryRowResponse, 0, limit)
+	for rows.Next() {
+		row, err := scanCheckHistoryRow(rows)
+		if err != nil {
+			writeError(w, r, http.StatusInternalServerError, "db_error",
+				"check history row scan failed: "+err.Error())
+			return
+		}
+		results = append(results, row)
+	}
+	if err := rows.Err(); err != nil {
+		writeError(w, r, http.StatusInternalServerError, "db_error",
+			"check history iteration failed: "+err.Error())
+		return
+	}
+
+	var nextCursor *string
+	if len(results) > limit {
+		results = results[:limit]
+		c := encodeIDCursor(results[len(results)-1].ID)
+		nextCursor = &c
+	}
+
+	writeJSON(w, http.StatusOK, ListEnvelope{
+		Data: results,
+		Page: Page{Next: nextCursor, Limit: limit},
+	})
+}
+
+func scanCheckHistoryRow(rows *sql.Rows) (checkHistoryRowResponse, error) {
+	var (
+		row       checkHistoryRowResponse
+		method    sql.NullString
+		httpCode  sql.NullInt64
+		errorCode sql.NullInt64
+		rtt       sql.NullInt64
+		dns       sql.NullInt64
+		tcp       sql.NullInt64
+		tls       sql.NullInt64
+		ttfb      sql.NullInt64
+		checkedAt time.Time
+	)
+	if err := rows.Scan(&row.ID, &method, &httpCode, &errorCode, &rtt, &dns, &tcp, &tls, &ttfb, &checkedAt); err != nil {
+		return checkHistoryRowResponse{}, fmt.Errorf("scan check history row: %w", err)
+	}
+	if method.Valid {
+		row.RequestMethod = method.String
+	}
+	row.HTTPCode = nullInt64AsIntPtr(httpCode)
+	row.ErrorCode = nullInt64AsIntPtr(errorCode)
+	row.RTTMs = nullInt64AsPtr(rtt)
+	row.DNSMs = nullInt64AsPtr(dns)
+	row.TCPMs = nullInt64AsPtr(tcp)
+	row.TLSMs = nullInt64AsPtr(tls)
+	row.TTFBMs = nullInt64AsPtr(ttfb)
+	row.CheckedAt = checkedAt.UTC().Format(time.RFC3339)
+	return row, nil
+}
+
+func nullInt64AsIntPtr(v sql.NullInt64) *int {
+	if !v.Valid {
+		return nil
+	}
+	i := int(v.Int64)
+	return &i
+}
+
+func nullInt64AsPtr(v sql.NullInt64) *int64 {
+	if !v.Valid {
+		return nil
+	}
+	return &v.Int64
 }
 
 // handleSiteUptime computes uptime statistics over a window from the events
@@ -295,13 +439,16 @@ func (s *Server) handleSiteResponseTime(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	mode := s.resolveCheckHistoryMode(r.Context(), siteID)
 	resp := responseTimeResponse{
 		Window: windowResponse{
 			From: from.Format(time.RFC3339),
 			To:   to.Format(time.RFC3339),
 		},
-		Samples:   len(samples),
-		Truncated: truncated,
+		Samples:               len(samples),
+		Truncated:             truncated,
+		CheckHistoryMode:      mode,
+		PercentilesMeaningful: checkHistoryPercentilesMeaningful(mode),
 	}
 	if len(samples) > 0 {
 		sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
@@ -316,6 +463,41 @@ func (s *Server) handleSiteResponseTime(w http.ResponseWriter, r *http.Request) 
 		resp.MeanMs = sum / int64(len(samples))
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// resolveCheckHistoryMode returns the effective check-history mode for a site:
+// the per-site override from jetmon_site_check_config if set and valid,
+// otherwise the configured CHECK_HISTORY_MODE_DEFAULT.
+func (s *Server) resolveCheckHistoryMode(ctx context.Context, siteID int64) string {
+	mode := config.CheckHistoryModeStatusChange
+	if cfg := config.Get(); cfg != nil && cfg.CheckHistoryModeDefault != "" {
+		mode = cfg.CheckHistoryModeDefault
+	}
+	var override sql.NullString
+	err := s.db.QueryRowContext(ctx,
+		checkHistoryModeOverrideSQL, siteID,
+	).Scan(&override)
+	if err == nil && override.Valid {
+		if m := strings.TrimSpace(strings.ToLower(override.String)); config.ValidCheckHistoryMode(m) {
+			mode = m
+		}
+	}
+	return mode
+}
+
+const checkHistoryModeOverrideSQL = `SELECT check_history_mode FROM jetmon_site_check_config WHERE blog_id = ?`
+
+// checkHistoryPercentilesMeaningful reports whether percentile statistics over
+// jetmon_check_history are representative under the given mode. Only the
+// continuous-ish modes (all, sample) collect enough steady-state samples;
+// status_change records incident edges only and disabled records nothing.
+func checkHistoryPercentilesMeaningful(mode string) bool {
+	switch mode {
+	case config.CheckHistoryModeAll, config.CheckHistoryModeSample:
+		return true
+	default:
+		return false
+	}
 }
 
 // handleSiteTimingBreakdown returns the same percentile shape as
@@ -333,13 +515,16 @@ func (s *Server) handleSiteTimingBreakdown(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	mode := s.resolveCheckHistoryMode(r.Context(), siteID)
 	resp := timingBreakdownResponse{
 		Window: windowResponse{
 			From: from.Format(time.RFC3339),
 			To:   to.Format(time.RFC3339),
 		},
-		Samples:   len(rows),
-		Truncated: truncated,
+		Samples:               len(rows),
+		Truncated:             truncated,
+		CheckHistoryMode:      mode,
+		PercentilesMeaningful: checkHistoryPercentilesMeaningful(mode),
 	}
 	if len(rows) > 0 {
 		dns := make([]int64, 0, len(rows))

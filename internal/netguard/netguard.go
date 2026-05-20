@@ -3,12 +3,13 @@ package netguard
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"net/url"
 	"strings"
 )
 
-var unsafeCIDRs = mustParseCIDRs([]string{
+var unsafeCIDRs = parseStaticCIDRs([]string{
 	"100.64.0.0/10",   // carrier-grade NAT
 	"192.0.0.0/24",    // IETF protocol assignments
 	"192.0.2.0/24",    // TEST-NET-1 documentation network
@@ -35,12 +36,17 @@ var unsafeHostSuffixes = []string{
 	".corp",
 }
 
-func mustParseCIDRs(rawCIDRs []string) []*net.IPNet {
+// parseStaticCIDRs parses the package-level static CIDR list. The input is a
+// constant developer-controlled list, so any failure here is a code bug; we
+// log.Fatalf instead of panicking so the operator sees a clean message and
+// the failing CIDR. The TestUnsafeCIDRListParses test guards against this
+// reaching production.
+func parseStaticCIDRs(rawCIDRs []string) []*net.IPNet {
 	out := make([]*net.IPNet, 0, len(rawCIDRs))
 	for _, raw := range rawCIDRs {
 		_, network, err := net.ParseCIDR(raw)
 		if err != nil {
-			panic(err)
+			log.Fatalf("netguard: invalid static CIDR %q: %v", raw, err)
 		}
 		out = append(out, network)
 	}

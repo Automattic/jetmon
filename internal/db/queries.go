@@ -22,7 +22,7 @@ func GetSitesForBucket(ctx context.Context, bucketMin, bucketMax, batchSize int,
 			s.monitor_active, s.site_status, s.last_status_change, s.check_interval, r.last_checked_at, r.next_check_at,
 			r.ssl_expiry_date, c.check_keyword, c.forbidden_keyword, c.forbidden_keywords, c.maintenance_start, c.maintenance_end,
 			c.custom_headers, c.timeout_seconds, c.redirect_policy, c.alert_cooldown_minutes, r.last_alert_sent_at,
-			c.request_method, c.detection_profile
+			c.request_method, c.detection_profile, c.check_history_mode, c.check_history_sample_rate
 		FROM jetpack_monitor_sites s
 		LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id
 		LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id
@@ -70,7 +70,7 @@ func ListActiveSitesForBucketRange(ctx context.Context, bucketMin, bucketMax int
 			s.monitor_active, s.site_status, s.last_status_change, s.check_interval, r.last_checked_at, r.next_check_at,
 			r.ssl_expiry_date, c.check_keyword, c.forbidden_keyword, c.forbidden_keywords, c.maintenance_start, c.maintenance_end,
 			c.custom_headers, c.timeout_seconds, c.redirect_policy, c.alert_cooldown_minutes, r.last_alert_sent_at,
-			c.request_method, c.detection_profile
+			c.request_method, c.detection_profile, c.check_history_mode, c.check_history_sample_rate
 		FROM jetpack_monitor_sites s
 		LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id
 		LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id
@@ -95,12 +95,14 @@ func scanSiteRows(rows *sql.Rows) ([]Site, error) {
 		var redirectPolicy sql.NullString
 		var requestMethod sql.NullString
 		var detectionProfile sql.NullString
+		var checkHistoryMode sql.NullString
+		var checkHistorySampleRate sql.NullInt64
 		err := rows.Scan(
 			&s.ID, &s.BlogID, &s.BucketNo, &s.MonitorURL,
 			&s.MonitorActive, &s.SiteStatus, &s.LastStatusChange, &s.CheckInterval, &s.LastCheckedAt, &s.NextCheckAt,
 			&s.SSLExpiryDate, &s.CheckKeyword, &s.ForbiddenKeyword, &s.ForbiddenKeywords, &s.MaintenanceStart, &s.MaintenanceEnd,
 			&s.CustomHeaders, &s.TimeoutSeconds, &redirectPolicy, &s.AlertCooldownMinutes, &s.LastAlertSentAt,
-			&requestMethod, &detectionProfile,
+			&requestMethod, &detectionProfile, &checkHistoryMode, &checkHistorySampleRate,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan site: %w", err)
@@ -115,6 +117,14 @@ func scanSiteRows(rows *sql.Rows) ([]Site, error) {
 		}
 		if detectionProfile.Valid {
 			s.DetectionProfile = detectionProfile.String
+		}
+		if checkHistoryMode.Valid {
+			mode := checkHistoryMode.String
+			s.CheckHistoryMode = &mode
+		}
+		if checkHistorySampleRate.Valid {
+			rate := int(checkHistorySampleRate.Int64)
+			s.CheckHistorySampleRate = &rate
 		}
 		sites = append(sites, s)
 	}

@@ -8,10 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	mathrand "math/rand/v2"
 	runtimemetrics "runtime/metrics"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
@@ -274,6 +276,10 @@ type Orchestrator struct {
 	bucketMin           int
 	bucketMax           int
 
+	// checkHistoryCounter disperses 1-in-N sampling for CHECK_HISTORY_MODE=sample.
+	// Shared across both schedulers; only meaningful in sample mode.
+	checkHistoryCounter atomic.Uint64
+
 	totalChecked int
 	roundStart   time.Time
 	statsMu      sync.RWMutex
@@ -316,13 +322,19 @@ func New(cfg *config.Config, wp *wpcom.Client) *Orchestrator {
 	return o
 }
 
+// nopEventStore is the shared no-op store used when an Orchestrator is
+// constructed without an events field (tests). All Store methods short-circuit
+// when the backing db is nil, so sharing one instance across orchestrators is
+// safe and avoids an allocation on every ev() call on the hot path.
+var nopEventStore = eventstore.New(nil)
+
 // ev returns a non-nil event store. Tests that construct &Orchestrator{}
-// directly without setting events get a no-op store backed by a nil DB so
-// event-mutation paths run without panicking. Production always wires up a
-// real Store in New().
+// directly without setting events get the shared no-op store backed by a nil
+// DB so event-mutation paths run without panicking. Production always wires
+// up a real Store in New().
 func (o *Orchestrator) ev() *eventstore.Store {
 	if o.events == nil {
-		return eventstore.New(nil)
+		return nopEventStore
 	}
 	return o.events
 }
@@ -1254,9 +1266,16 @@ func (o *Orchestrator) markResultsChecked(records []siteCheckResult, summary *re
 }
 
 func (o *Orchestrator) recordResultHistories(records []siteCheckResult, summary *resultProcessSummary) {
+	cfg := config.Get()
 	histories := make([]db.CheckHistoryRow, 0, len(records))
 	for _, record := range records {
+		if !shouldRecordCheckHistory(cfg, record.site, record.res, o.checkHistoryCounter.Add(1)) {
+			continue
+		}
 		histories = append(histories, checkHistoryRowForResult(record.blogID, record.res))
+	}
+	if len(histories) == 0 {
+		return
 	}
 
 	start := time.Now()
@@ -1318,6 +1337,51 @@ func (o *Orchestrator) recordStreamingHistoryRows(rows []db.CheckHistoryRow) res
 	summary.historyDuration += time.Since(start)
 	summary.historyRows += len(rows)
 	return summary
+}
+
+// shouldRecordCheckHistory decides whether a check result is persisted to
+// jetmon_check_history, honoring the per-site override (if set and valid) over
+// the configured default. counter disperses 1-in-N sampling.
+func shouldRecordCheckHistory(cfg *config.Config, site db.Site, res checker.Result, counter uint64) bool {
+	mode := cfg.CheckHistoryModeDefault
+	sampleRate := cfg.CheckHistorySampleRateDefault
+	if site.CheckHistoryMode != nil {
+		if m := strings.TrimSpace(strings.ToLower(*site.CheckHistoryMode)); config.ValidCheckHistoryMode(m) {
+			mode = m
+		}
+	}
+	if site.CheckHistorySampleRate != nil && *site.CheckHistorySampleRate > 0 {
+		sampleRate = *site.CheckHistorySampleRate
+	}
+
+	switch mode {
+	case config.CheckHistoryModeDisabled:
+		return false
+	case config.CheckHistoryModeAll:
+		return true
+	case config.CheckHistoryModeSample:
+		// Always keep failures and transitions; sample the healthy steady-state.
+		if res.IsFailure() || resultDisagreesWithStatus(site, res) {
+			return true
+		}
+		if sampleRate <= 1 {
+			return true
+		}
+		return counter%uint64(sampleRate) == 0
+	case config.CheckHistoryModeStatusChange:
+		return resultDisagreesWithStatus(site, res)
+	default:
+		// Unknown mode (e.g. a stale per-site override after a downgrade) →
+		// fall back to the status_change footprint rather than guessing.
+		return resultDisagreesWithStatus(site, res)
+	}
+}
+
+// resultDisagreesWithStatus reports whether the check outcome differs from the
+// site's stored status — i.e. an Up→Down or Down→Up transition edge.
+func resultDisagreesWithStatus(site db.Site, res checker.Result) bool {
+	wasUp := site.SiteStatus == statusRunning
+	return wasUp != res.Success
 }
 
 func checkHistoryRowForResult(blogID int64, res checker.Result) db.CheckHistoryRow {
@@ -2558,7 +2622,7 @@ func (o *Orchestrator) openOrUpdateSSLExpiryOnce(blogID int64, severity uint8, s
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback() }()
+	defer rollbackEventTx(tx, "open_update_ssl_expiry")
 
 	out, err := tx.Open(o.ctx, eventstore.OpenInput{
 		Identity: eventstore.Identity{BlogID: blogID, CheckType: checkTypeTLSExpiry},
@@ -2598,7 +2662,7 @@ func (o *Orchestrator) closeSSLExpiryIfOpenOnce(blogID int64) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback() }()
+	defer rollbackEventTx(tx, "close_ssl_expiry")
 
 	if tx.Tx() == nil {
 		return tx.Commit()
@@ -2641,7 +2705,7 @@ func (o *Orchestrator) openTLSDeprecated(blogID int64, meta json.RawMessage) err
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback() }()
+	defer rollbackEventTx(tx, "open_tls_deprecated")
 
 	if _, err := tx.Open(o.ctx, eventstore.OpenInput{
 		Identity: eventstore.Identity{BlogID: blogID, CheckType: checkTypeTLSDeprecated},
@@ -2660,7 +2724,7 @@ func (o *Orchestrator) closeTLSDeprecatedIfOpen(blogID int64) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback() }()
+	defer rollbackEventTx(tx, "close_tls_deprecated")
 
 	if tx.Tx() == nil {
 		return tx.Commit()
@@ -2833,6 +2897,21 @@ func metricSegment(s string) string {
 	return out
 }
 
+// rollbackEventTx is the defer-able replacement for `_ = tx.Rollback()`. The
+// underlying eventstore.Tx.Rollback already returns nil for sql.ErrTxDone
+// (the expected post-commit case), so any non-nil error here is genuinely
+// worth knowing about: a rollback that failed for a connection-level or
+// driver reason. Tagging by operation makes the log line greppable to the
+// mutation site that owned the transaction.
+func rollbackEventTx(tx *eventstore.Tx, operation string) {
+	if tx == nil {
+		return
+	}
+	if err := tx.Rollback(); err != nil {
+		log.Printf("orchestrator: %s: rollback failed: %v", operation, err)
+	}
+}
+
 func (o *Orchestrator) withEventMutationRetry(blogID int64, operation string, fn func() error) error {
 	ctx := o.ctx
 	if ctx == nil {
@@ -2852,6 +2931,11 @@ func (o *Orchestrator) withEventMutationRetry(blogID int64, operation string, fn
 		emitCounter("eventstore.mutation.retry.count", 1)
 		emitCounter("eventstore.mutation."+metricSegment(operation)+".retry.count", 1)
 		wait := time.Duration(attempt) * eventMutationRetryBaseDelay
+		// Add up to 20% jitter so concurrent retries against the same MySQL
+		// conflict don't land in lockstep and re-trigger the same deadlock.
+		if jitterMax := int64(wait / 5); jitterMax > 0 {
+			wait += time.Duration(mathrand.Int64N(jitterMax))
+		}
 		log.Printf("orchestrator: retrying event mutation blog_id=%d operation=%s attempt=%d/%d wait=%s err=%v",
 			blogID, operation, attempt+1, eventMutationMaxAttempts, wait, err)
 		timer := time.NewTimer(wait)
@@ -2902,7 +2986,7 @@ func (o *Orchestrator) openSeemsDownOnce(site db.Site, res checker.Result, first
 	if err != nil {
 		return 0, false, err
 	}
-	defer func() { _ = tx.Rollback() }()
+	defer rollbackEventTx(tx, "open_seems_down")
 
 	meta, _ := json.Marshal(checkResultMetadata(site, res, firstFailAt))
 
@@ -2954,7 +3038,7 @@ func (o *Orchestrator) openConfirmedDownOnce(site db.Site, changeTime time.Time,
 	if err != nil {
 		return 0, false, err
 	}
-	defer func() { _ = tx.Rollback() }()
+	defer rollbackEventTx(tx, "open_confirmed_down")
 
 	out, err := tx.Open(o.ctx, eventstore.OpenInput{
 		Identity: httpEventIdentity(site),
@@ -3002,7 +3086,7 @@ func (o *Orchestrator) promoteToDownOnce(site db.Site, eventID int64, changeTime
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback() }()
+	defer rollbackEventTx(tx, "promote_to_down")
 
 	if _, err := tx.Promote(o.ctx, eventID,
 		eventstore.SeverityDown, eventstore.StateDown,
@@ -3031,7 +3115,7 @@ func (o *Orchestrator) closeEventOnce(site db.Site, eventID int64, reason string
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback() }()
+	defer rollbackEventTx(tx, "close_event")
 
 	if err := tx.Close(o.ctx, eventID, reason, o.hostname, meta); err != nil {
 		return fmt.Errorf("close event: %w", err)
@@ -3062,7 +3146,7 @@ func (o *Orchestrator) closeRecoveredEventOnce(site db.Site, knownEventID int64,
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback() }()
+	defer rollbackEventTx(tx, "close_recovered_event")
 
 	// Determine event id and current state. If knownEventID is set, read state
 	// directly; otherwise look up the active event for this blog.
@@ -3120,7 +3204,7 @@ func (o *Orchestrator) closeMaintenanceEvent(site db.Site, knownEventID int64, c
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback() }()
+	defer rollbackEventTx(tx, "close_maintenance_event")
 
 	var eventID int64
 	switch {

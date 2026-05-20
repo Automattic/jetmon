@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -253,6 +254,76 @@ func TestDrainCalledTwice(t *testing.T) {
 	p := NewPool(1, 1, 1)
 	p.Drain()
 	p.Drain() // second Drain must be a no-op, not block or panic
+}
+
+func TestSubmitSignalsScaleAheadOfTicker(t *testing.T) {
+	// Stub the per-check function so workers block on a release channel
+	// rather than doing HTTP I/O. Each worker that pulls a request gets
+	// pinned as "busy" until release closes.
+	origCheck := poolCheckFunc
+	release := make(chan struct{})
+	poolCheckFunc = func(_ context.Context, req Request) Result {
+		<-release
+		return Result{BlogID: req.BlogID}
+	}
+
+	// Start with 1 worker, room for up to 5. Submit twice maxSize so the
+	// queue stays deeper than the worker count even after every worker has
+	// pulled one request — that ensures every submit-after-the-first triggers
+	// the signal path until the pool is at maxSize.
+	const maxSize = 5
+	p := NewPoolWithQueueCap(1, 1, maxSize, 32)
+	// release MUST close before Drain so workers can finish; t.Cleanup is
+	// LIFO so we register Drain first.
+	t.Cleanup(func() {
+		poolCheckFunc = origCheck
+	})
+	t.Cleanup(p.Drain)
+	t.Cleanup(func() { close(release) })
+
+	for i := range maxSize * 2 {
+		if !p.Submit(Request{BlogID: int64(i + 1), URL: "http://stub"}) {
+			t.Fatalf("Submit %d returned false on non-full queue", i)
+		}
+	}
+
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		if p.WorkerCount() >= maxSize {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("WorkerCount() = %d after backlog submit + 1s, want %d (autoscale signal should have fired)",
+		p.WorkerCount(), maxSize)
+}
+
+func TestSubmitDoesNotSignalWhenAtMaxSize(t *testing.T) {
+	// When the pool is already at maxSize, Submit should not push to the
+	// signal channel — there's nothing autoscale could do.
+	origCheck := poolCheckFunc
+	release := make(chan struct{})
+	poolCheckFunc = func(_ context.Context, req Request) Result {
+		<-release
+		return Result{BlogID: req.BlogID}
+	}
+
+	p := NewPoolWithQueueCap(2, 1, 2, 10)
+	t.Cleanup(func() {
+		poolCheckFunc = origCheck
+	})
+	t.Cleanup(p.Drain)
+	t.Cleanup(func() { close(release) })
+
+	// Submit enough to fill the queue. WorkerCount stays at maxSize.
+	for i := range 5 {
+		_ = p.Submit(Request{BlogID: int64(i + 1), URL: "http://stub"})
+	}
+	// Give autoscale a brief moment in case any spurious signal fires.
+	time.Sleep(50 * time.Millisecond)
+	if got := p.WorkerCount(); got != 2 {
+		t.Fatalf("WorkerCount() = %d, want 2 (capped at maxSize)", got)
+	}
 }
 
 func TestSubmitDropsWhenQueueFull(t *testing.T) {
@@ -1248,6 +1319,42 @@ func TestCheckDNSCacheReturnsCachedAddresses(t *testing.T) {
 	}
 }
 
+func TestCheckDNSCacheReturnsCachedNegativeEntry(t *testing.T) {
+	cache := newCheckDNSCache(time.Minute, 10)
+	wantErr := &net.DNSError{Err: "no such host", Name: "missing.test", IsNotFound: true}
+	cache.entries["missing.test|ip4"] = checkDNSCacheEntry{
+		err:      wantErr,
+		expires:  time.Now().Add(time.Minute),
+		negative: true,
+	}
+
+	addrs, err := cache.lookup(context.Background(), &net.Resolver{}, "missing.test", "tcp")
+	if err == nil {
+		t.Fatal("lookup() error = nil, want cached negative error")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("lookup() err = %v, want cached %v", err, wantErr)
+	}
+	if len(addrs) != 0 {
+		t.Fatalf("lookup() addrs = %#v, want empty", addrs)
+	}
+}
+
+func TestIsDNSNotFoundErrDistinguishesNXDOMAIN(t *testing.T) {
+	if !isDNSNotFoundErr(&net.DNSError{Err: "no such host", IsNotFound: true}) {
+		t.Fatal("isDNSNotFoundErr did not recognize an NXDOMAIN-like DNSError")
+	}
+	if isDNSNotFoundErr(&net.DNSError{Err: "i/o timeout", IsTimeout: true}) {
+		t.Fatal("isDNSNotFoundErr negative-cached a timeout (should not)")
+	}
+	if isDNSNotFoundErr(&net.DNSError{Err: "server misbehaving", IsTemporary: true}) {
+		t.Fatal("isDNSNotFoundErr negative-cached a temporary failure (should not)")
+	}
+	if isDNSNotFoundErr(fmt.Errorf("plain error")) {
+		t.Fatal("isDNSNotFoundErr returned true for a non-DNSError")
+	}
+}
+
 func TestValidateResolvedTargetRejectsMixedPublicPrivateDNSAnswers(t *testing.T) {
 	dnsAddr := startTestDNSServer(t, [][]net.IP{{
 		net.ParseIP("93.184.216.34"),
@@ -1282,6 +1389,60 @@ func TestValidateResolvedTargetRejectsDNSRebindAfterCacheExpiry(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "non-public address") {
 		t.Fatalf("err = %v, want non-public address diagnostic", err)
+	}
+}
+
+func TestTargetSafetyDialControlBlocksPrivateIP(t *testing.T) {
+	ctx := withTargetSafety(context.Background())
+	cases := []string{
+		"127.0.0.1:80",
+		"10.0.0.1:443",
+		"172.16.5.5:80",
+		"192.168.1.1:80",
+		"169.254.169.254:80", // AWS/GCP metadata
+		"[::1]:80",
+		"100.64.1.1:80", // CGNAT
+	}
+	for _, addr := range cases {
+		err := targetSafetyDialControl(ctx, "tcp", addr, nil)
+		if !errors.Is(err, errProbeSafetyBlock) {
+			t.Errorf("targetSafetyDialControl(%q) err = %v, want errProbeSafetyBlock", addr, err)
+		}
+	}
+}
+
+func TestTargetSafetyDialControlAllowsPublicIP(t *testing.T) {
+	ctx := withTargetSafety(context.Background())
+	cases := []string{
+		"8.8.8.8:53",
+		"93.184.216.34:443",
+		"[2606:4700:4700::1111]:443",
+	}
+	for _, addr := range cases {
+		if err := targetSafetyDialControl(ctx, "tcp", addr, nil); err != nil {
+			t.Errorf("targetSafetyDialControl(%q) err = %v, want nil", addr, err)
+		}
+	}
+}
+
+func TestTargetSafetyDialControlPassesThroughWhenDisabled(t *testing.T) {
+	// Without target safety, the gate must let RFC1918 through so internal
+	// targets (Veriflier, test fixtures, dashboard probes) remain reachable.
+	if err := targetSafetyDialControl(context.Background(), "tcp", "10.0.0.1:80", nil); err != nil {
+		t.Errorf("disabled-target-safety control returned err = %v, want nil", err)
+	}
+}
+
+func TestTargetSafetyDialControlRejectsMalformedAddress(t *testing.T) {
+	ctx := withTargetSafety(context.Background())
+	if err := targetSafetyDialControl(ctx, "tcp", "not-an-address", nil); !errors.Is(err, errProbeSafetyBlock) {
+		t.Errorf("malformed address err = %v, want errProbeSafetyBlock", err)
+	}
+	// Non-IP host (hostname remaining after Go's dialer) — should be refused
+	// at the gate so we fail closed rather than connecting to an unverified
+	// address.
+	if err := targetSafetyDialControl(ctx, "tcp", "example.com:80", nil); !errors.Is(err, errProbeSafetyBlock) {
+		t.Errorf("non-IP host err = %v, want errProbeSafetyBlock", err)
 	}
 }
 

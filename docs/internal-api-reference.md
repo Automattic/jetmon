@@ -835,11 +835,15 @@ Response time percentiles over a window, sourced from `jetmon_check_history`.
   "p99_ms": 891,
   "max_ms": 4200,
   "mean_ms": 215,
-  "truncated": false
+  "truncated": false,
+  "check_history_mode": "all",
+  "percentiles_meaningful": true
 }
 ```
 
 Percentiles are computed from raw `jetmon_check_history` samples in the window. The handler caps the in-memory sample set at 100,000 rows; `truncated: true` means the response used the most recent capped subset.
+
+`check_history_mode` is the effective recording mode for this site (per-site override in `jetmon_site_check_config.check_history_mode`, else `CHECK_HISTORY_MODE_DEFAULT`). `percentiles_meaningful` is `false` when the mode is `status_change` (incident-edge probes only) or `disabled` (no rows) — in those modes the percentile fields reflect too few samples to represent the site's true latency distribution, and a dashboard should hide or annotate them. Use `/check-history` for raw rows under any mode.
 
 #### `GET /api/v1/sites/{id}/timing-breakdown`
 
@@ -852,12 +856,47 @@ DNS / TCP / TLS / TTFB breakdown — one of Jetmon's distinctive features (most 
   "window": { "from": "2026-04-24T00:00:00Z", "to": "2026-04-25T00:00:00Z" },
   "samples": 17280,
   "truncated": false,
+  "check_history_mode": "all",
+  "percentiles_meaningful": true,
   "dns": { "p50_ms": 8, "p95_ms": 45, "p99_ms": 80, "max_ms": 120 },
   "tcp": { "p50_ms": 22, "p95_ms": 78, "p99_ms": 140, "max_ms": 220 },
   "tls": { "p50_ms": 35, "p95_ms": 110, "p99_ms": 180, "max_ms": 260 },
   "ttfb": { "p50_ms": 142, "p95_ms": 391, "p99_ms": 760, "max_ms": 1200 }
 }
 ```
+
+`check_history_mode` / `percentiles_meaningful` carry the same meaning as in `/response-time`.
+
+#### `GET /api/v1/sites/{id}/check-history`
+
+Raw per-check timing rows for a site, newest-first, with cursor pagination. Unlike the percentile endpoints, this works under any `CHECK_HISTORY_MODE`: at `status_change` it returns the incident-edge probes that were recorded; at `sample`/`all` it returns the fuller stream. Query params: `window` (or `from`+`to`), `limit` (default 50, max 200), `cursor`.
+
+```bash
+curl -H "Authorization: Bearer $JETMON_API_TOKEN" \
+  "$JETMON_API_URL/api/v1/sites/42/check-history?window=24h&limit=100"
+```
+
+```json
+{
+  "data": [
+    {
+      "id": 90183,
+      "request_method": "GET",
+      "http_code": 200,
+      "error_code": 0,
+      "rtt_ms": 187,
+      "dns_ms": 8,
+      "tcp_ms": 22,
+      "tls_ms": 35,
+      "ttfb_ms": 142,
+      "checked_at": "2026-04-24T18:03:11Z"
+    }
+  ],
+  "page": { "next": "…", "limit": 100 }
+}
+```
+
+Component timings (`dns_ms`/`tcp_ms`/`tls_ms`/`ttfb_ms`) are `null` for checks that failed before that phase completed. This is the right endpoint for "what did the check look like at the moment the site went down" forensics.
 
 ### Family 4: Alert contacts and webhooks
 
@@ -967,7 +1006,66 @@ A delivery succeeds when any attempt returns 2xx. After 6 failed attempts, the r
 
 #### Signing and secret rotation
 
-Signature: HMAC-SHA256 of `{timestamp}.{body}` with the webhook's secret, sent as `X-Jetmon-Signature: t=<unix_ts>,v1=<hex>`. The timestamp prevents replay; consumers should reject deliveries older than 5 minutes.
+Signature: HMAC-SHA256 of `{timestamp}.{body}` with the webhook's secret, sent as `X-Jetmon-Signature: t=<unix_ts>,v1=<hex>`. The timestamp prevents replay; consumers must reject deliveries older than 5 minutes (`webhooks.VerifyMaxAge`) or more than 1 minute in the future (`webhooks.VerifyMaxClockSkew`).
+
+**Verifying a delivery (reference implementations).** All three examples enforce the same two checks: constant-time signature equality and the timestamp window. Pick the language for your consumer; the algorithm is identical.
+
+Go (drop-in via `internal/webhooks`):
+
+```go
+import "github.com/Automattic/jetmon/internal/webhooks"
+
+if err := webhooks.Verify(
+    r.Header.Get("X-Jetmon-Signature"),
+    body,
+    secret,
+    0,            // 0 = use webhooks.VerifyMaxAge (5 min)
+    time.Now(),
+); err != nil {
+    http.Error(w, "invalid signature", http.StatusUnauthorized)
+    return
+}
+```
+
+PHP:
+
+```php
+function verify_jetmon_signature(string $header, string $body, string $secret): bool {
+    if (!preg_match('/^t=(\d+),v1=([a-f0-9]+)$/', $header, $m)) {
+        return false;
+    }
+    [$_, $ts, $sig] = $m;
+    $age = time() - (int) $ts;
+    if ($age > 300 || $age < -60) { // 5 min stale, 1 min skew
+        return false;
+    }
+    $expected = hash_hmac('sha256', $ts . '.' . $body, $secret);
+    return hash_equals($expected, $sig);
+}
+```
+
+Python:
+
+```python
+import hashlib, hmac, time, re
+
+_SIG_RE = re.compile(r"^t=(\d+),v1=([a-f0-9]+)$")
+
+def verify_jetmon_signature(header: str, body: bytes, secret: str) -> bool:
+    m = _SIG_RE.match(header)
+    if not m:
+        return False
+    ts, sig = int(m.group(1)), m.group(2)
+    age = time.time() - ts
+    if age > 300 or age < -60:  # 5 min stale, 1 min skew
+        return False
+    expected = hmac.new(
+        secret.encode(), f"{ts}.".encode() + body, hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(expected, sig)
+```
+
+All three reject on: malformed header, missing `t=` or `v1=`, signed timestamp older than 5 min or further than 1 min ahead, mismatched HMAC. Don't skip either gate: signature-only allows replay; timestamp-only allows forgery.
 
 Format chosen for: wide library support across consumer languages, explicit version (`v1=`) to allow future algorithm rotation without breaking consumers, replay protection via timestamp baked into the signature input, and the ability to coexist with multiple `v1=` values during a grace-period rotation (deferred). Alternatives considered and not chosen: GitHub-style (no replay protection), Slack-style (functionally equivalent, two-header form), JWT-based (wrong abstraction for "POST JSON + signature header"), HTTP Message Signatures / RFC 9421 (over-engineered for our scope), asymmetric / Ed25519 (compelling for public APIs without a gateway in front; not warranted while a gateway re-signs for end customers).
 
@@ -1234,6 +1332,87 @@ This is the only API surface for keys. **Creation, listing, and revocation are C
 #### `GET /api/v1/health`
 
 Unauthenticated. Returns `{ "status": "ok" }` if the API can talk to the database. For load balancers and external uptime monitors (yes, including external monitors monitoring the monitor).
+
+#### `GET /api/v1/monitor/drain-status`
+
+Requires `read` scope. Returns the in-flight work counters the local orchestrator publishes to `jetmon_process_health`. Used to confirm a clean shutdown is safe.
+
+```json
+{
+  "state": "stopping",
+  "active_checks": 0,
+  "queue_depth": 0,
+  "retry_queue_size": 0,
+  "wpcom_queue_depth": 0,
+  "heartbeat_age": "3s",
+  "done": true
+}
+```
+
+`done` is true when every counter is zero. A running host with non-zero counters is steady-state (response includes a `reason` explaining); a stopping host with non-zero counters is `"reason": "drain in progress"`.
+
+#### `GET /api/v1/verifliers/quorum-report`
+
+Requires `read` scope. Reports per-vantage health for quorum diagnostics. Auth tokens are never included in the response (only `auth_token_present` boolean).
+
+```json
+{
+  "generated_at": "2026-05-19T12:34:56Z",
+  "stale_after_seconds": 90,
+  "total_vantages": 3,
+  "enabled_count": 2,
+  "usable_count": 2,
+  "healthy_count": 2,
+  "vantages": [
+    {
+      "vantage_id": "v-us-east",
+      "region": "us-east",
+      "endpoint_host": "10.0.0.10",
+      "endpoint_port": "7803",
+      "auth_token_present": true,
+      "enabled": true,
+      "usable": true,
+      "healthy": true,
+      "active_agents": 2,
+      "last_seen": "2026-05-19T12:34:41Z",
+      "last_seen_age_sec": 15
+    }
+  ]
+}
+```
+
+A vantage is `healthy` when it is enabled, usable (has host+port+token), and has at least one agent that heartbeat within the last 90 seconds. Use `healthy_count` against the configured detection quorum to decide whether a vote is meaningful.
+
+#### `GET /api/v1/audit-log`
+
+Requires `read` scope. Paginated query over `jetmon_audit_log`. Filters: `blog_id`, `event_id`, `event_type` / `event_type__in=A,B,C`, `source`, `since` / `until` (RFC3339). Newest-first by id. Opaque `cursor` pagination, `limit` default 50 max 200.
+
+```bash
+curl -H "Authorization: Bearer $JETMON_API_TOKEN" \
+  "$JETMON_API_URL/api/v1/audit-log?event_type__in=wpcom_sent,wpcom_failure&since=2026-05-19T00:00:00Z&limit=100"
+```
+
+Each row carries `id`, `blog_id` (nullable for system events like `config_change`), `event_id` (nullable when not linked), `event_type`, `source`, `detail`, optional `metadata` JSON, and `created_at`. Replaces the previous "log into MySQL and `SELECT * FROM jetmon_audit_log`" workflow.
+
+#### `GET /api/v1/ready`
+
+Unauthenticated. Returns 200 with `{ "status": "ready", ... }` only when this Monitor host has finished starting up: the API can talk to the database, the local orchestrator has published a `jetmon_process_health` snapshot, and that snapshot is fresh (< 60 s), `state = running`, and `health_status = green`. Otherwise returns 503 with one of:
+
+- `"status": "starting"` — orchestrator has not yet published a snapshot
+- `"status": "stale"` — snapshot is older than 60 seconds (orchestrator likely stopped publishing)
+- `"status": "not_running"` — process is draining or stopped
+- `"status": "unhealthy"` — orchestrator reports `health_status != green` (Veriflier discovery missing, MySQL degraded, etc.)
+
+Distinct from `/health` so a load balancer can keep the process registered as live (`/health`) while not sending traffic to a host that has just restarted and is still claiming buckets or has hit a dependency failure. Both endpoints are unauthenticated and intended for infrastructure probes.
+
+```json
+{
+  "status": "ready",
+  "state": "running",
+  "health_status": "green",
+  "heartbeat_age": "5s"
+}
+```
 
 #### `GET /api/v1/monitor/stats`
 

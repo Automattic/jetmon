@@ -207,6 +207,29 @@ same `DB_*` environment that systemd reads from
 `/opt/jetmon2/config/jetmon2.env`; systemd's `EnvironmentFile` is not loaded for
 commands run directly from a shell.
 
+### Kernel tuning for high-fanout outbound
+
+Monitor hosts that drive >50K concurrent outbound checks can exhaust the
+default ephemeral-port range or accumulate `TIME_WAIT` sockets faster than
+the kernel reclaims them. The defaults are fine for sub-fleet rollouts and
+single-host testing; tune the values below once a host's
+`ss -s` shows `tw` counts approaching the ephemeral range.
+
+| `sysctl` key | Default (typical) | Suggested | Why |
+|---|---|---|---|
+| `net.ipv4.ip_local_port_range` | `32768 60999` | `10000 65535` | Widens the outbound source-port pool from ~28K to ~55K so connection bursts don't fail with `EADDRNOTAVAIL`. |
+| `net.ipv4.tcp_tw_reuse` | `2` | `1` | Allows the kernel to reuse `TIME_WAIT` sockets for new outbound connections when safe (clock-skew-protected, since Linux 4.12). |
+| `net.core.somaxconn` | `4096` | `8192` | Raises the accept-queue ceiling for the API server's listening socket. Only relevant when the API is fronted by an LB with sudden reconnect storms. |
+| `fs.file-max` and `LimitNOFILE` | host-default / 65536 | confirm `>= 131072` | Each outbound check consumes one FD until idle reap; the systemd unit ships `LimitNOFILE=65536` which is the floor, not the ceiling. |
+
+Apply via `/etc/sysctl.d/99-jetmon.conf`. Validate after reboot or
+`sysctl --system` with `sysctl net.ipv4.ip_local_port_range` etc.
+
+Container deployments inherit the host's sysctls unless run with
+`--sysctl` overrides or in a network namespace that re-defaults them. The
+docker-compose stack runs Jetmon on the host's namespace by default, so
+host-level tuning is sufficient.
+
 ## v1 To v2 Migration
 
 Use [v1-to-v2-migration.md](v1-to-v2-migration.md) for the full production
@@ -343,6 +366,50 @@ to prove a successful send independently.
 
 See [jetmon-deliverer-rollout.md](jetmon-deliverer-rollout.md) for the rollout
 and rollback path.
+
+## Data Retention
+
+`jetmon_check_history` and `jetmon_audit_log` are append-only. Their growth rate
+is governed by `CHECK_HISTORY_MODE_DEFAULT` and `AUDIT_LOG_MODE_DEFAULT`;
+retention bounds their total size over time. Retention is **disabled by
+default** — set the windows explicitly to enable it.
+
+```text
+RETENTION_CHECK_HISTORY_DAYS   0   # 0 = keep forever; e.g. 365 to prune past a year
+RETENTION_AUDIT_LOG_DAYS       0   # 0 = keep forever
+RETENTION_BACKGROUND_ENABLED   true
+RETENTION_RUN_HOUR_UTC         4
+```
+
+When at least one window is set and `RETENTION_BACKGROUND_ENABLED` is true, an
+in-process job runs once a day at `RETENTION_RUN_HOUR_UTC`. Pruning deletes in
+paced PK-ordered chunks (5000 rows per delete, 50ms between chunks) so it never
+monopolizes the connection pool, and takes a MySQL advisory lock per table so
+only one host in a fleet prunes a given table at a time. Each completed prune
+writes a `retention_cleanup` audit row (visible under
+`AUDIT_LOG_MODE_DEFAULT=operational` or higher).
+
+Operators can run retention on demand with the `cleanup` subcommand, which
+shares the same algorithm and locking:
+
+```bash
+# Apply the configured retention now.
+jetmon2 cleanup
+
+# Preview without deleting.
+jetmon2 cleanup --dry-run
+
+# Override windows for a one-off deeper prune (e.g. initial backlog cleanup).
+jetmon2 cleanup --check-history-days=30 --audit-log-days=90
+
+# Restrict to a single table.
+jetmon2 cleanup --table=check_history
+```
+
+The CLI command needs the same `DB_*` environment as other manual commands
+(see Production Host Setup). On a fleet with a large existing backlog, run
+`jetmon2 cleanup` once during an off-peak window before relying on the daily
+background pass.
 
 ## Runtime Checks
 
@@ -750,7 +817,22 @@ curl http://localhost:6060/debug/pprof/heap > heap.prof
 go tool pprof heap.prof
 ```
 
-The debug listener binds to localhost only. Set `DEBUG_PORT` to 0 to disable it.
+The pprof debug listener is **off by default** in production builds: it only
+starts when `DEBUG_PORT > 0` (see `config.readme` for the default of `6060`
+in the sample config and `0` in production envs that do not set it). The
+listener always binds `127.0.0.1` regardless of value, so a stray
+`0.0.0.0`-style override is not possible from this knob alone. Set
+`DEBUG_PORT=0` to confirm the port is closed:
+
+```bash
+ss -ltn 'sport = :6060' | tail -n +2 | wc -l   # 0 = disabled
+```
+
+The `net/http/pprof` package registers its handlers on
+`http.DefaultServeMux` at import time, so they exist in the binary even when
+disabled — but with no listener, no external traffic can reach them. Treat
+`DEBUG_PORT > 0` as a deliberate opt-in for an investigation window, not a
+steady-state setting.
 
 If `WORKER_MAX_MEM_MB` is greater than 0 and Go runtime memory exceeds that
 threshold, the goroutine pool shrinks by 10 percent via graceful drain. The

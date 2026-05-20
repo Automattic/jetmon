@@ -16,6 +16,8 @@ const rttSamplesSQL = ` SELECT rtt_ms FROM jetmon_check_history WHERE blog_id = 
 
 const timingSamplesSQL = ` SELECT dns_ms, tcp_ms, tls_ms, ttfb_ms FROM jetmon_check_history WHERE blog_id = ? AND checked_at >= ? AND checked_at < ? ORDER BY checked_at DESC LIMIT ?`
 
+const checkHistoryListSQL = ` SELECT id, request_method, http_code, error_code, rtt_ms, dns_ms, tcp_ms, tls_ms, ttfb_ms, checked_at FROM jetmon_check_history WHERE blog_id = ? AND checked_at >= ? AND checked_at < ? ORDER BY id DESC LIMIT ?`
+
 func TestParseWindowDuration(t *testing.T) {
 	cases := map[string]time.Duration{
 		"1h":  time.Hour,
@@ -327,5 +329,91 @@ func TestStatsRejectsBadWindow(t *testing.T) {
 	body := readErrorBody(t, rec.Body)
 	if body.Code != "invalid_window" {
 		t.Errorf("error code = %q, want invalid_window", body.Code)
+	}
+}
+
+func TestSiteCheckHistoryReturnsRows(t *testing.T) {
+	s, mock, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	mock.ExpectQuery(siteExistsSQL).WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
+
+	now := time.Now().UTC()
+	cols := []string{"id", "request_method", "http_code", "error_code", "rtt_ms", "dns_ms", "tcp_ms", "tls_ms", "ttfb_ms", "checked_at"}
+	mock.ExpectQuery(checkHistoryListSQL).
+		WillReturnRows(sqlmock.NewRows(cols).
+			AddRow(int64(101), "GET", 200, 0, int64(150), int64(10), int64(20), int64(30), int64(90), now).
+			AddRow(int64(100), "GET", 500, 2, int64(5000), nil, nil, nil, nil, now.Add(-time.Minute)))
+
+	req := requestWithKey("GET", "/api/v1/sites/42/check-history", key)
+	req.SetPathValue("id", "42")
+	rec := invokeAuthed(s, req, s.handleSiteCheckHistory)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Data []checkHistoryRowResponse `json:"data"`
+		Page Page                      `json:"page"`
+	}
+	readJSON(t, rec.Body, &body)
+	if len(body.Data) != 2 {
+		t.Fatalf("data length = %d, want 2", len(body.Data))
+	}
+	if body.Data[0].ID != 101 || body.Data[0].RTTMs == nil || *body.Data[0].RTTMs != 150 {
+		t.Errorf("first row unexpected: %+v", body.Data[0])
+	}
+	// Failed row has nil component timings.
+	if body.Data[1].DNSMs != nil {
+		t.Errorf("failed row DNSMs = %v, want nil", *body.Data[1].DNSMs)
+	}
+	if body.Page.Next != nil {
+		t.Errorf("Next cursor should be nil when results < limit+1")
+	}
+}
+
+func TestResponseTimeReportsModeAndMeaningfulFlag(t *testing.T) {
+	s, mock, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	mock.ExpectQuery(siteExistsSQL).WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
+	mock.ExpectQuery(rttSamplesSQL).
+		WillReturnRows(sqlmock.NewRows([]string{"rtt_ms"}).AddRow(int64(123)))
+	// resolveCheckHistoryMode issues the override query; return an explicit
+	// per-site 'all' so the meaningful flag is deterministic.
+	mock.ExpectQuery(checkHistoryModeOverrideSQL).WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"check_history_mode"}).AddRow("all"))
+
+	req := requestWithKey("GET", "/api/v1/sites/42/response-time", key)
+	req.SetPathValue("id", "42")
+	rec := invokeAuthed(s, req, s.handleSiteResponseTime)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp responseTimeResponse
+	readJSON(t, rec.Body, &resp)
+	if resp.CheckHistoryMode != "all" {
+		t.Errorf("check_history_mode = %q, want all", resp.CheckHistoryMode)
+	}
+	if !resp.PercentilesMeaningful {
+		t.Errorf("percentiles_meaningful = false, want true for mode=all")
+	}
+}
+
+func TestCheckHistoryPercentilesMeaningful(t *testing.T) {
+	cases := map[string]bool{
+		"all":           true,
+		"sample":        true,
+		"status_change": false,
+		"disabled":      false,
+		"":              false,
+	}
+	for mode, want := range cases {
+		if got := checkHistoryPercentilesMeaningful(mode); got != want {
+			t.Errorf("checkHistoryPercentilesMeaningful(%q) = %v, want %v", mode, got, want)
+		}
 	}
 }

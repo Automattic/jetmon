@@ -4,6 +4,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"strconv"
 	"strings"
 	"testing"
@@ -82,6 +83,98 @@ func TestSignDiffersOnSecret(t *testing.T) {
 	body := []byte(`{}`)
 	if Sign(ts, body, "whsec_a") == Sign(ts, body, "whsec_b") {
 		t.Error("signature should differ between secrets")
+	}
+}
+
+func TestVerifyAcceptsFreshSignature(t *testing.T) {
+	now := time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC)
+	body := []byte(`{"event":"event.opened"}`)
+	secret := "whsec_TESTSECRET"
+	header := Sign(now.Add(-30*time.Second), body, secret)
+
+	if err := Verify(header, body, secret, 0, now); err != nil {
+		t.Fatalf("Verify returned %v, want nil", err)
+	}
+}
+
+func TestVerifyRejectsStaleTimestamp(t *testing.T) {
+	now := time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC)
+	body := []byte(`{}`)
+	secret := "whsec_TESTSECRET"
+	// 6 minutes old, default max-age is 5.
+	header := Sign(now.Add(-6*time.Minute), body, secret)
+
+	err := Verify(header, body, secret, 0, now)
+	if !errors.Is(err, ErrSignatureStale) {
+		t.Fatalf("Verify err = %v, want ErrSignatureStale", err)
+	}
+}
+
+func TestVerifyRejectsFutureTimestamp(t *testing.T) {
+	now := time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC)
+	body := []byte(`{}`)
+	secret := "whsec_TESTSECRET"
+	// 2 minutes ahead, max clock skew is 1.
+	header := Sign(now.Add(2*time.Minute), body, secret)
+
+	err := Verify(header, body, secret, 0, now)
+	if !errors.Is(err, ErrSignatureStale) {
+		t.Fatalf("Verify err = %v, want ErrSignatureStale", err)
+	}
+}
+
+func TestVerifyRejectsTamperedBody(t *testing.T) {
+	now := time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC)
+	body := []byte(`{"event":"event.opened"}`)
+	secret := "whsec_TESTSECRET"
+	header := Sign(now, body, secret)
+
+	err := Verify(header, []byte(`{"event":"tampered"}`), secret, 0, now)
+	if !errors.Is(err, ErrSignatureMismatch) {
+		t.Fatalf("Verify err = %v, want ErrSignatureMismatch", err)
+	}
+}
+
+func TestVerifyRejectsWrongSecret(t *testing.T) {
+	now := time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC)
+	body := []byte(`{}`)
+	header := Sign(now, body, "whsec_correct")
+
+	err := Verify(header, body, "whsec_wrong", 0, now)
+	if !errors.Is(err, ErrSignatureMismatch) {
+		t.Fatalf("Verify err = %v, want ErrSignatureMismatch", err)
+	}
+}
+
+func TestVerifyRejectsMalformedHeader(t *testing.T) {
+	now := time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC)
+	cases := []string{
+		"",
+		"v1=abcdef",
+		"t=abc,v1=def",
+		"t=1234",
+	}
+	for _, header := range cases {
+		err := Verify(header, []byte(`{}`), "whsec_x", 0, now)
+		if !errors.Is(err, ErrSignatureMalformed) {
+			t.Errorf("Verify(%q) err = %v, want ErrSignatureMalformed", header, err)
+		}
+	}
+}
+
+func TestVerifyCustomMaxAge(t *testing.T) {
+	now := time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC)
+	body := []byte(`{}`)
+	secret := "whsec_x"
+	header := Sign(now.Add(-30*time.Second), body, secret)
+
+	// 10-second window rejects 30s-old signature.
+	if err := Verify(header, body, secret, 10*time.Second, now); !errors.Is(err, ErrSignatureStale) {
+		t.Errorf("Verify with 10s window err = %v, want ErrSignatureStale", err)
+	}
+	// 60-second window accepts it.
+	if err := Verify(header, body, secret, 60*time.Second, now); err != nil {
+		t.Errorf("Verify with 60s window err = %v, want nil", err)
 	}
 }
 

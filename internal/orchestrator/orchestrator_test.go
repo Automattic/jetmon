@@ -1435,6 +1435,10 @@ func setTestConfig(t *testing.T) *config.Config {
 	cfg.NumOfChecks = 3
 	cfg.PeerOfflineLimit = 2
 	cfg.LegacyStatusProjectionEnable = false
+	// Existing orchestrator tests assert that every processed result writes a
+	// check-history row; keep them on mode=all. The shouldRecordCheckHistory
+	// filter has its own dedicated tests for the other modes.
+	cfg.CheckHistoryModeDefault = config.CheckHistoryModeAll
 	return cfg
 }
 

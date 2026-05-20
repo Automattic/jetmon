@@ -338,6 +338,73 @@ still uses the v2 Veriflier transport (POST /v2/check) when remote confirmation
 is needed. It does not require enabling the Veriflier's legacy-compatible
 /check endpoint.
 
+CHECK_HISTORY_MODE_DEFAULT
+Controls when per-check timing samples (RTT plus the DNS/TCP/TLS/TTFB
+breakdown) are written to jetmon_check_history for a site that has no per-site
+override in jetmon_site_check_config.check_history_mode. Allowed values:
+- disabled: never write. /response-time and /timing-breakdown return rows that
+  do exist but report percentiles_meaningful=false; /check-history is empty.
+- status_change: write only the check whose result disagrees with the stored
+  status — the first failing check that starts an incident and the first
+  successful check that ends it. Smallest footprint that preserves incident
+  forensics. Default.
+- sample: write 1 in CHECK_HISTORY_SAMPLE_RATE_DEFAULT healthy checks, plus
+  every failed check and every status-change check. Preserves percentile
+  dashboards with bounded storage.
+- all: write every check. Largest storage cost (~1.6 TB/year/host at 100k
+  sites, 5-min cadence); only needed when every probe's raw per-component
+  timing must be retained.
+The streaming and legacy schedulers both honor this setting. Default
+status_change is chosen so a fresh v1->v2 migration does not impose v1-absent
+write volume; raise it per-site or fleet-wide when the latency dashboards are
+wanted.
+
+CHECK_HISTORY_SAMPLE_RATE_DEFAULT
+Used only when the effective check-history mode is "sample". Write 1 in N
+healthy checks (failures and transitions are always written regardless of N).
+Must be >= 0; 0 is treated as the default. Default: 10.
+
+AUDIT_LOG_MODE_DEFAULT
+Controls which operational events are written to jetmon_audit_log. Allowed
+values:
+- disabled: never write. The jetmon2 telemetry report and /api/v1/audit-log
+  return nothing.
+- writes: only events that mutate data — api_access for POST/PATCH/DELETE/PUT,
+  wpcom_sent, wpcom_retry, retry_dispatched, config_change,
+  probe_safety_blocked. The telemetry report's verifier and suppression
+  sections will be empty under this mode.
+- operational: writes plus the events the telemetry report aggregates
+  (veriflier_sent, wpcom_failure, maintenance_active, alert_suppressed). Still
+  gates off the api_access GET/HEAD/OPTIONS firehose. Default.
+- all: adds api_access logging for GET/HEAD/OPTIONS. Highest write volume;
+  only needed for full request-level forensics.
+Each audit.Log() call is a separate INSERT, so under "all" a busy operator/
+dashboard polling the API can generate a large unbatched transaction stream;
+"operational" keeps that off by default while preserving the telemetry report.
+
+RETENTION_CHECK_HISTORY_DAYS
+Prune jetmon_check_history rows older than this many days. 0 disables pruning
+(rows accumulate indefinitely). The CHECK_HISTORY_MODE_DEFAULT knob bounds how
+fast this table grows; retention bounds how large it gets over time. Default 0
+(disabled) — retention is a conscious opt-in, not a surprise that starts
+deleting rows after an upgrade.
+
+RETENTION_AUDIT_LOG_DAYS
+Prune jetmon_audit_log rows older than this many days. 0 disables pruning.
+Default 0 (disabled).
+
+RETENTION_BACKGROUND_ENABLED
+When true (default), an in-process background job runs a retention pass once a
+day at RETENTION_RUN_HOUR_UTC. When false, retention is applied only when an
+operator runs `jetmon2 cleanup`. Has no effect unless at least one
+RETENTION_*_DAYS window is set.
+
+RETENTION_RUN_HOUR_UTC
+Hour of day (0-23 UTC) for the daily background retention pass. Default 4
+(off-peak for most fleets). Pruning deletes in paced PK-ordered chunks and
+coordinates across a multi-host fleet with a MySQL advisory lock, so only one
+host prunes a given table at a time.
+
 USE_VARIABLE_CHECK_INTERVALS
 Set to true to respect the check_interval column per site instead of running
 all sites every fixed-cadence pass. Recommended for production freshness

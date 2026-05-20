@@ -14,6 +14,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
+	"sync/atomic"
 )
 
 // Event types written to jetmon_audit_log. All values are operational — none
@@ -30,13 +32,77 @@ const (
 	EventConfigChange      = "config_change"
 	EventAPIAccess         = "api_access"
 	EventProbeSafetyBlock  = "probe_safety_blocked"
+	EventRetentionCleanup  = "retention_cleanup"
+)
+
+// Recording modes. String values match config.AuditLogMode* — duplicated here
+// (rather than importing config) to keep this low-level package decoupled.
+const (
+	ModeDisabled    = "disabled"
+	ModeWrites      = "writes"
+	ModeOperational = "operational"
+	ModeAll         = "all"
 )
 
 var db *sql.DB
 
+// mode holds the active recording mode (a string). Loaded per Log() call;
+// stored on startup and config reload via SetMode. Empty => operational.
+var mode atomic.Value
+
 // Init sets the database connection used by the audit log.
 func Init(conn *sql.DB) {
 	db = conn
+}
+
+// SetMode configures which event types are recorded. Called at startup and on
+// config reload. Unknown or empty values fall back to operational.
+func SetMode(m string) {
+	m = strings.TrimSpace(strings.ToLower(m))
+	switch m {
+	case ModeDisabled, ModeWrites, ModeOperational, ModeAll:
+	default:
+		m = ModeOperational
+	}
+	mode.Store(m)
+}
+
+func currentMode() string {
+	if v, ok := mode.Load().(string); ok && v != "" {
+		return v
+	}
+	return ModeOperational
+}
+
+// shouldLog decides whether an entry is written under the configured mode.
+// httpMethod is consulted only for EventAPIAccess; pass "" for other events.
+func shouldLog(m, eventType, httpMethod string) bool {
+	switch m {
+	case ModeDisabled:
+		return false
+	case ModeAll:
+		return true
+	}
+	if eventType == EventAPIAccess {
+		switch strings.ToUpper(strings.TrimSpace(httpMethod)) {
+		case "GET", "HEAD", "OPTIONS":
+			return m == ModeAll // already returned above; only 'all' logs reads
+		default:
+			return true // POST/PATCH/DELETE/PUT are writes — logged under writes+
+		}
+	}
+	if m == ModeWrites {
+		switch eventType {
+		case EventWPCOMSent, EventWPCOMRetry, EventConfigChange,
+			EventRetryDispatched, EventProbeSafetyBlock, EventRetentionCleanup:
+			// retention_cleanup deletes rows, so it counts as a data mutation.
+			return true
+		default:
+			return false
+		}
+	}
+	// operational: everything except api_access GET/HEAD/OPTIONS (handled above).
+	return true
 }
 
 // Entry carries the fields written for one audit row. blog_id and event_id are
@@ -51,6 +117,11 @@ type Entry struct {
 	Source    string          // "local", "veriflier:us-west", "operator:user@host", …
 	Detail    string          // human-readable one-liner; truncated at 1024 chars
 	Metadata  json.RawMessage // optional structured context (e.g. retry attempt, region)
+	// HTTPMethod is set only for EventAPIAccess entries so the mode filter can
+	// distinguish read requests (GET/HEAD/OPTIONS) from writes. Empty for all
+	// other event types. Not persisted to the DB (the method is already part
+	// of the api_access Detail string).
+	HTTPMethod string
 }
 
 // Log writes an entry to jetmon_audit_log. ctx propagates cancellation and
@@ -64,6 +135,11 @@ func Log(ctx context.Context, e Entry) error {
 	}
 	if e.EventType == "" {
 		return fmt.Errorf("audit: EventType is required")
+	}
+	if !shouldLog(currentMode(), e.EventType, e.HTTPMethod) {
+		// The configured mode suppresses this event type. The caller's intent
+		// ("record if enabled") is satisfied — not an error.
+		return nil
 	}
 	source := e.Source
 	if source == "" {

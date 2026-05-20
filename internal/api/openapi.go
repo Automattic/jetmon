@@ -195,6 +195,17 @@ func openAPISchemas() map[string]any {
 				"status": map[string]any{"type": "string"},
 			},
 		},
+		"ReadyResponse": map[string]any{
+			"type":     "object",
+			"required": []string{"status"},
+			"properties": map[string]any{
+				"status":        map[string]any{"type": "string"},
+				"state":         map[string]any{"type": "string"},
+				"health_status": map[string]any{"type": "string"},
+				"heartbeat_age": map[string]any{"type": "string"},
+				"reason":        map[string]any{"type": "string"},
+			},
+		},
 		"OpenAPIDocument": map[string]any{
 			"type":                 "object",
 			"additionalProperties": true,
@@ -213,6 +224,8 @@ func openAPISchemas() map[string]any {
 		"WebhookDeliveryListEnvelope": "WebhookDelivery",
 		"AlertContactListEnvelope":    "AlertContact",
 		"AlertDeliveryListEnvelope":   "AlertDelivery",
+		"AuditLogListEnvelope":        "AuditLogRow",
+		"CheckHistoryListEnvelope":    "CheckHistoryRow",
 	} {
 		schemas[name] = listEnvelopeSchema(item)
 	}
@@ -231,6 +244,9 @@ func openAPIComponentTypes() map[string]reflect.Type {
 		"RolloutStatusResponse":       reflect.TypeOf(rolloutStatusResponse{}),
 		"RolloutGateResponse":         reflect.TypeOf(rolloutGateResponse{}),
 		"MonitorStatsResponse":        reflect.TypeOf(monitorStatsResponse{}),
+		"DrainStatusResponse":         reflect.TypeOf(drainStatusResponse{}),
+		"QuorumReportResponse":        reflect.TypeOf(quorumReportResponse{}),
+		"AuditLogRow":                 reflect.TypeOf(auditLogRow{}),
 		"DBConfigStatusResponse":      reflect.TypeOf(dbConfigStatusResponse{}),
 		"Site":                        reflect.TypeOf(siteResponse{}),
 		"ActiveEventSummary":          reflect.TypeOf(activeEventSummary{}),
@@ -246,6 +262,7 @@ func openAPIComponentTypes() map[string]reflect.Type {
 		"UptimeResponse":              reflect.TypeOf(uptimeResponse{}),
 		"ResponseTimeResponse":        reflect.TypeOf(responseTimeResponse{}),
 		"TimingBreakdownResponse":     reflect.TypeOf(timingBreakdownResponse{}),
+		"CheckHistoryRow":             reflect.TypeOf(checkHistoryRowResponse{}),
 		"Window":                      reflect.TypeOf(windowResponse{}),
 		"LatencyComponent":            reflect.TypeOf(latencyComponent{}),
 		"Webhook":                     reflect.TypeOf(webhookResponse{}),

@@ -190,6 +190,7 @@ func TestRequireScopeAuditsRejectedRequestWithRequestID(t *testing.T) {
 			s, mock, _, cleanup := newTestServer(t)
 			defer cleanup()
 			audit.Init(s.db)
+			audit.SetMode(audit.ModeAll)
 			t.Cleanup(func() { audit.Init(nil) })
 
 			tt.setupMock(mock)
@@ -335,6 +336,7 @@ func TestRequireScopeAllowsValidToken(t *testing.T) {
 	s, mock, _, cleanup := newTestServer(t)
 	defer cleanup()
 	audit.Init(s.db)
+	audit.SetMode(audit.ModeAll)
 	t.Cleanup(func() { audit.Init(nil) })
 
 	mock.ExpectQuery(keyLookupSQL).WillReturnRows(makeKeyRow(1, "read", 60, nil, nil))
@@ -388,6 +390,7 @@ func TestRequireScopeRejectsGatewayContextFromNonGatewayConsumer(t *testing.T) {
 	s, mock, _, cleanup := newTestServer(t)
 	defer cleanup()
 	audit.Init(s.db)
+	audit.SetMode(audit.ModeAll)
 	t.Cleanup(func() { audit.Init(nil) })
 
 	mock.ExpectQuery(keyLookupSQL).WillReturnRows(makeKeyRow(1, "write", 60, nil, nil))
@@ -436,6 +439,7 @@ func TestRequireScopeAttachesGatewayContext(t *testing.T) {
 	s, mock, _, cleanup := newTestServer(t)
 	defer cleanup()
 	audit.Init(s.db)
+	audit.SetMode(audit.ModeAll)
 	t.Cleanup(func() { audit.Init(nil) })
 
 	mock.ExpectQuery(keyLookupSQL).WillReturnRows(makeConsumerKeyRow(1, gatewayConsumerName, "write", 60, nil, nil))
@@ -495,6 +499,7 @@ func TestRequireScopeRateLimit429(t *testing.T) {
 	s, mock, _, cleanup := newTestServer(t)
 	defer cleanup()
 	audit.Init(s.db)
+	audit.SetMode(audit.ModeAll)
 	t.Cleanup(func() { audit.Init(nil) })
 
 	// Limit = 1/min — second request should 429. We have to set up two
