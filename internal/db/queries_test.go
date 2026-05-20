@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql/driver"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -765,6 +766,9 @@ func TestMigrateAppliesOnlyPendingMigrations(t *testing.T) {
 	}
 	defer func() { migrations = origMigrations }()
 
+	mock.ExpectQuery("SELECT GET_LOCK").
+		WithArgs(migrationLockName, migrationLockTimeoutSeconds).
+		WillReturnRows(sqlmock.NewRows([]string{"got"}).AddRow(1))
 	mock.ExpectExec("CREATE TABLE jetmon_schema_migrations").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT IGNORE INTO jetmon_schema_migrations").
@@ -781,9 +785,64 @@ func TestMigrateAppliesOnlyPendingMigrations(t *testing.T) {
 	mock.ExpectExec("INSERT IGNORE INTO jetmon_schema_migrations").
 		WithArgs(3).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT RELEASE_LOCK").
+		WithArgs(migrationLockName).
+		WillReturnRows(sqlmock.NewRows([]string{"released"}).AddRow(1))
 
 	if err := Migrate(); err != nil {
 		t.Fatalf("Migrate: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestMigrateFailsWhenMigrationLockUnavailable(t *testing.T) {
+	mock, cleanup := withMockDB(t)
+	defer cleanup()
+
+	mock.ExpectQuery("SELECT GET_LOCK").
+		WithArgs(migrationLockName, migrationLockTimeoutSeconds).
+		WillReturnRows(sqlmock.NewRows([]string{"got"}).AddRow(0))
+
+	if err := Migrate(); err == nil || !strings.Contains(err.Error(), "migration lock") {
+		t.Fatalf("Migrate error = %v, want migration lock error", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestMigrateReleasesMigrationLockAfterError(t *testing.T) {
+	mock, cleanup := withMockDB(t)
+	defer cleanup()
+
+	origMigrations := migrations
+	migrations = []migration{
+		{id: 1, sql: "CREATE TABLE jetmon_schema_migrations"},
+		{id: 2, sql: "ALTER TABLE pending_change"},
+	}
+	defer func() { migrations = origMigrations }()
+
+	mock.ExpectQuery("SELECT GET_LOCK").
+		WithArgs(migrationLockName, migrationLockTimeoutSeconds).
+		WillReturnRows(sqlmock.NewRows([]string{"got"}).AddRow(1))
+	mock.ExpectExec("CREATE TABLE jetmon_schema_migrations").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT IGNORE INTO jetmon_schema_migrations").
+		WithArgs(1).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT COUNT").
+		WithArgs(2).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectExec("ALTER TABLE pending_change").
+		WillReturnError(errors.New("boom"))
+	mock.ExpectQuery("SELECT RELEASE_LOCK").
+		WithArgs(migrationLockName).
+		WillReturnRows(sqlmock.NewRows([]string{"released"}).AddRow(1))
+
+	if err := Migrate(); err == nil || !strings.Contains(err.Error(), "migration 2") {
+		t.Fatalf("Migrate error = %v, want migration 2 error", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)

@@ -1,8 +1,15 @@
 package db
 
 import (
+	"context"
+	"database/sql"
 	"fmt"
 	"log"
+)
+
+const (
+	migrationLockName           = "jetmon2_schema_migrations"
+	migrationLockTimeoutSeconds = 300
 )
 
 // migration holds a single idempotent schema change.
@@ -781,16 +788,32 @@ var migrations = []migration{
 
 // Migrate applies all pending migrations idempotently.
 func Migrate() error {
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("migration connection: %w", err)
+	}
+	defer conn.Close()
+
+	if err := acquireMigrationLock(ctx, conn); err != nil {
+		return err
+	}
+	defer func() {
+		if err := releaseMigrationLock(ctx, conn); err != nil {
+			log.Printf("release migration lock: %v", err)
+		}
+	}()
+
 	// Ensure the migrations table exists first (migration 1 is special).
-	if _, err := db.Exec(migrations[0].sql); err != nil {
+	if _, err := conn.ExecContext(ctx, migrations[0].sql); err != nil {
 		return fmt.Errorf("create migrations table: %w", err)
 	}
-	if err := markApplied(migrations[0].id); err != nil {
+	if err := markApplied(ctx, conn, migrations[0].id); err != nil {
 		return err
 	}
 
 	for _, m := range migrations[1:] {
-		applied, err := isApplied(m.id)
+		applied, err := isApplied(ctx, conn, m.id)
 		if err != nil {
 			return err
 		}
@@ -798,24 +821,48 @@ func Migrate() error {
 			continue
 		}
 		log.Printf("applying migration %d", m.id)
-		if _, err := db.Exec(m.sql); err != nil {
+		if _, err := conn.ExecContext(ctx, m.sql); err != nil {
 			return fmt.Errorf("migration %d: %w", m.id, err)
 		}
-		if err := markApplied(m.id); err != nil {
+		if err := markApplied(ctx, conn, m.id); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func isApplied(id int) (bool, error) {
+func acquireMigrationLock(ctx context.Context, conn *sql.Conn) error {
+	var got sql.NullInt64
+	err := conn.QueryRowContext(ctx, `SELECT GET_LOCK(?, ?)`, migrationLockName, migrationLockTimeoutSeconds).Scan(&got)
+	if err != nil {
+		return fmt.Errorf("acquire migration lock: %w", err)
+	}
+	if !got.Valid || got.Int64 != 1 {
+		return fmt.Errorf("migration lock %q unavailable after %d seconds", migrationLockName, migrationLockTimeoutSeconds)
+	}
+	return nil
+}
+
+func releaseMigrationLock(ctx context.Context, conn *sql.Conn) error {
+	var released sql.NullInt64
+	err := conn.QueryRowContext(ctx, `SELECT RELEASE_LOCK(?)`, migrationLockName).Scan(&released)
+	if err != nil {
+		return err
+	}
+	if !released.Valid || released.Int64 != 1 {
+		return fmt.Errorf("migration lock %q was not held by this connection", migrationLockName)
+	}
+	return nil
+}
+
+func isApplied(ctx context.Context, conn *sql.Conn, id int) (bool, error) {
 	var count int
-	err := db.QueryRow(`SELECT COUNT(*) FROM jetmon_schema_migrations WHERE id = ?`, id).Scan(&count)
+	err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM jetmon_schema_migrations WHERE id = ?`, id).Scan(&count)
 	return count > 0, err
 }
 
-func markApplied(id int) error {
-	_, err := db.Exec(
+func markApplied(ctx context.Context, conn *sql.Conn, id int) error {
+	_, err := conn.ExecContext(ctx,
 		`INSERT IGNORE INTO jetmon_schema_migrations (id) VALUES (?)`, id,
 	)
 	return err

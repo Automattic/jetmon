@@ -503,6 +503,15 @@ production telemetry branches:
   thresholds are finalized. This is a tooling follow-up; it does not remove the
   launch requirement to run and record synthetic canary evidence before first
   production activation.
+- [ ] Build and run the production rollout lab described in
+  `docs/production-rollout-lab.md` with uptime-bench coordination. The lab
+  should rehearse the production-shaped DB primary/read-replica split,
+  SVN-synced `db-servers.php`, Docker bridge access to host-local Monitor
+  StatsD, separate Veriflier Compose stacks, WPCOM simulator behavior,
+  API-driven standby/activation/rollback, server-map hot reload and credential
+  rotation, replica failure/lag, notification ownership, Graphite evidence, and
+  stop conditions that prove no real WPCOM or unintended external target traffic
+  escaped the lab.
 - [x] Add `jetmon2 rollout rehearsal-plan` so operators can generate the exact
   same-server or fresh-server command sequence from a bucket CSV, host, bucket
   range, and rollout mode.
