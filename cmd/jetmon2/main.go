@@ -131,6 +131,9 @@ func runServe() {
 	if !emailTransportDelivers(cfg) {
 		log.Printf("WARN: email_transport=%s — alert-contact emails will be logged but not delivered", emailTransportLabel(cfg))
 	}
+	if msg := wpcomLegacyInsecureTLSWarning(cfg); msg != "" {
+		log.Print(msg)
+	}
 	if cfg.DashboardPort > 0 {
 		if msg := dashboardBindWarning(cfg.DashboardBindAddr); msg != "" {
 			log.Printf("WARN: %s", msg)
@@ -774,10 +777,28 @@ func wpcomNotifyAdviceLines(cfg *config.Config) []string {
 		if _, err := os.Stat(cfg.WPCOMNotifyLegacyKeyPath); err != nil {
 			lines = append(lines, fmt.Sprintf("WARN wpcom legacy client key not readable at %s: %v", cfg.WPCOMNotifyLegacyKeyPath, err))
 		}
+		if msg := wpcomLegacyInsecureTLSWarning(cfg); msg != "" {
+			lines = append(lines, msg)
+		}
 		return lines
 	default:
 		return nil
 	}
+}
+
+// wpcomLegacyInsecureTLSWarning returns a WARN line when WPCOM notifications run
+// in legacy mode with server TLS verification disabled (the default, kept for v1
+// parity). It returns "" when notifications are disabled, the mode is not
+// legacy, or verification is enabled. Startup logging and validate-config share
+// it so the operator sees the same message in both places.
+func wpcomLegacyInsecureTLSWarning(cfg *config.Config) string {
+	if cfg == nil || !cfg.WPCOMNotifyEnable {
+		return ""
+	}
+	if cfg.WPCOMNotifyMode != config.WPCOMNotifyModeLegacy || !cfg.WPCOMNotifyLegacyInsecure {
+		return ""
+	}
+	return "WARN WPCOM_NOTIFY_LEGACY_INSECURE_SKIP_VERIFY=true; legacy WPCOM notifications skip server TLS certificate verification and are exposed to man-in-the-middle. Set it false once the WPCOM legacy endpoint is confirmed to work with normal verification."
 }
 
 func checkDNSResolversLabel(servers []string) string {
