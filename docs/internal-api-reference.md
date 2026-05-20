@@ -233,6 +233,9 @@ passes them at runtime:
 Pass that file to the guided flow or individual gates:
 
 ```bash
+cp docs/rollout-canaries.example.json rollout-canaries.json
+# Edit rollout-canaries.json so every URL points at an approved controlled
+# canary or uptime-bench fixture before using it against a Monitor API.
 ./bin/jetmon2 api rollout guided --bucket-min=0 --bucket-max=99 --canary-file=rollout-canaries.json --allow-remote
 ./bin/jetmon2 api rollout preflight --bucket-min=0 --bucket-max=99 --canary-file=rollout-canaries.json --allow-remote
 ./bin/jetmon2 api rollout smoke --bucket-min=0 --bucket-max=99 --mode=head-legacy --sample-size=100 --read-only --canary-file=rollout-canaries.json --allow-remote

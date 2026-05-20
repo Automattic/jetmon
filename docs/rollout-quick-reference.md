@@ -44,6 +44,8 @@ still require `--allow-remote`.
 Preferred interactive wrapper:
 
 ```bash
+cp docs/rollout-canaries.example.json rollout-canaries.json
+# Edit rollout-canaries.json to use approved controlled canaries or uptime-bench fixtures.
 ./jetmon2 api rollout guided \
   --bucket-min=<min> \
   --bucket-max=<max> \

@@ -17,6 +17,8 @@ CHANGE_REF="${JETMON_ROLLOUT_DOCKER_CHANGE_REF:-overnight-rollout-docker-lab}"
 WORK_DIR="$REPO_ROOT/logs/rollout-docker-lab"
 SITE_FIXTURE_FILE="$REPO_ROOT/stats/rollout-docker-lab/sites.json"
 SITE_FIXTURE_CONTAINER_FILE="/jetmon/stats/rollout-docker-lab/sites.json"
+CANARY_FIXTURE_FILE="$REPO_ROOT/stats/rollout-docker-lab/canaries.json"
+CANARY_FIXTURE_CONTAINER_FILE="/jetmon/stats/rollout-docker-lab/canaries.json"
 CONFIG_FILE="$REPO_ROOT/config/config.json"
 COMPOSE=(docker compose -p "$PROJECT" -f "$REPO_ROOT/docker/docker-compose.yml" -f "$REPO_ROOT/docker/docker-compose.rollout-lab.yml")
 
@@ -186,7 +188,37 @@ prepare_fixture_sites() {
   }
 ]
 JSON
+	cat >"$CANARY_FIXTURE_FILE" <<JSON
+{
+  "canaries": [
+    {
+      "name": "fixture-known-up-head",
+      "url": "http://$FIXTURE_IP:8091/health",
+      "mode": "head-legacy",
+      "expect_success": true,
+      "expect_http_code": 200
+    },
+    {
+      "name": "fixture-controlled-down-get",
+      "url": "http://$FIXTURE_IP:8091/status/503",
+      "method": "GET",
+      "profile": "simple_http",
+      "expect_success": false,
+      "expect_http_code": 503
+    },
+    {
+      "name": "fixture-keyword-full",
+      "url": "http://$FIXTURE_IP:8091/keyword",
+      "mode": "get-full",
+      "keyword": "keyword present",
+      "expect_success": true,
+      "expect_http_code": 200
+    }
+  ]
+}
+JSON
 	pass "fixture_sites_written=$SITE_FIXTURE_FILE count=$SITE_COUNT fixture=$FIXTURE_IP"
+	pass "fixture_canaries_written=$CANARY_FIXTURE_FILE count=3"
 }
 
 ensure_public_network() {
@@ -325,8 +357,8 @@ run_lab() {
 
 	seed_sites
 	api rollout capabilities --output json | tee "$WORK_DIR/capabilities.json" >/dev/null
-	api rollout preflight --bucket-min "$BUCKET_MIN" --bucket-max "$BUCKET_MAX" --run-id "$RUN_ID" --change-ref "$CHANGE_REF" --output json | tee "$WORK_DIR/preflight.json" >/dev/null
-	api rollout smoke --bucket-min "$BUCKET_MIN" --bucket-max "$BUCKET_MAX" --run-id "$RUN_ID" --mode head-legacy --sample-size "$SITE_COUNT" --read-only --output json | tee "$WORK_DIR/smoke-head-legacy.json" >/dev/null
+	api rollout preflight --bucket-min "$BUCKET_MIN" --bucket-max "$BUCKET_MAX" --run-id "$RUN_ID" --change-ref "$CHANGE_REF" --canary-file "$CANARY_FIXTURE_CONTAINER_FILE" --output json | tee "$WORK_DIR/preflight.json" >/dev/null
+	api rollout smoke --bucket-min "$BUCKET_MIN" --bucket-max "$BUCKET_MAX" --run-id "$RUN_ID" --mode head-legacy --sample-size "$SITE_COUNT" --read-only --canary-file "$CANARY_FIXTURE_CONTAINER_FILE" --output json | tee "$WORK_DIR/smoke-head-legacy.json" >/dev/null
 	plan_execute seed rollout seed --bucket-min "$BUCKET_MIN" --bucket-max "$BUCKET_MAX" --run-id "$RUN_ID" --change-ref "$CHANGE_REF"
 	plan_execute final-reconcile rollout final-reconcile --bucket-min "$BUCKET_MIN" --bucket-max "$BUCKET_MAX" --run-id "$RUN_ID" --change-ref "$CHANGE_REF"
 	plan_execute activate-buckets rollout activate-buckets --bucket-min "$BUCKET_MIN" --bucket-max "$BUCKET_MAX" --run-id "$RUN_ID" --change-ref "$CHANGE_REF"
