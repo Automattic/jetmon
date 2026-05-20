@@ -216,15 +216,17 @@ Veriflier.
 VERIFLIER_DISCOVERY_MODE
 Controls whether monitors read Veriflier endpoints from the DB registry:
   static - use the VERIFIERS array only (default)
-  shadow - read jetmon_veriflier_vantages / jetmon_veriflier_agents and report
+  shadow - read jetpack_monitor_veriflier_vantages /
+           jetpack_monitor_veriflier_agents and report
            drift in validate-config and dashboard health, but keep using
            VERIFIERS for traffic
   active - use enabled, usable DB registry vantages for traffic; fall back to
            VERIFIERS if discovery fails or returns no usable vantages
 
 The registry is intentionally trust-gated. Agent telemetry rows in
-jetmon_veriflier_agents do not create quorum votes. A vantage must have a
-pre-approved enabled row in jetmon_veriflier_vantages before monitors count it.
+jetpack_monitor_veriflier_agents do not create quorum votes. A vantage must
+have a pre-approved enabled row in jetpack_monitor_veriflier_vantages before
+monitors count it.
 Default: static.
 
 NUM_OF_CHECKS
@@ -579,8 +581,8 @@ whole batches with HTTP 503 so the monitor treats that endpoint as unhealthy/no
 vote rather than as a site-down confirmation.
 
 Monitors collect agent telemetry by polling authenticated Veriflier
-GET /v2/status endpoints and writing jetmon_veriflier_agents rows from the
+GET /v2/status endpoints and writing jetpack_monitor_veriflier_agents rows from the
 monitor side. Veriflier hosts do not need database credentials. Those rows
 include agent ID, vantage ID, version, protocols, endpoint host/port, and
 current capacity. They are telemetry only until an operator creates and enables
-the matching trusted row in jetmon_veriflier_vantages.
+the matching trusted row in jetpack_monitor_veriflier_vantages.

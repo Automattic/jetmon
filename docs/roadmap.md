@@ -99,8 +99,17 @@ production telemetry branches:
   discovery drift scenarios: duplicate static vantages, incomplete or missing
   trusted registry rows, endpoint/auth-presence mismatches, untrusted agents,
   duplicate active agent endpoints, active-mode fallback, and recovery to green.
-- [ ] Run Veriflier auto-discovery in production-like shadow mode and compare
+- [x] Run Veriflier auto-discovery in production-like shadow mode and compare
   static configured vantages to the DB registry before enabling active mode.
+  Evidence from 2026-05-20 lab validation on `jetmon-service-host-2`: seeded
+  three enabled trusted registry rows for `vm-host-1`, `vm-host-2`, and
+  `vm-host-3`; switched the Monitor config to `VERIFLIER_DISCOVERY_MODE=shadow`;
+  `validate-config` reported `enabled_vantages=3`, `usable_vantages=3`, and
+  `recent_agents=3`; `jetmon2 verifliers discovery-report` reported green with
+  `static_vantages_match_registry`. A temporary endpoint-port mismatch turned
+  the report amber with `static_registry_endpoint_mismatch` and
+  `agent_registry_endpoint_mismatch`, then returned green after restoring the
+  row.
 - [x] Add an uptime-bench scenario long enough to exercise full
   `Seems Down -> Down -> verifier_cleared` behavior with v2 vote evidence.
   Evidence: the 2026-05-20 quick lifecycle smoke and 9-cycle focused soak
