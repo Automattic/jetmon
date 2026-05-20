@@ -3,6 +3,7 @@ package db
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -365,6 +366,67 @@ func endpointFromParts(role, host, port, database, user, password string) (endpo
 	}
 	ep.signature = endpointSignature(ep)
 	return ep, nil
+}
+
+// TimeZoneStatus captures the MySQL server's time-zone configuration as seen
+// over a connection. Session is what Jetmon v2's pinned connections use;
+// Global/System describe what an unpinned connection (e.g. a v1 process still
+// writing jetpack_monitor_sites.last_status_change via NOW()) would use.
+type TimeZoneStatus struct {
+	Session string
+	Global  string
+	System  string
+}
+
+// QueryTimeZoneStatus reads the session, global, and system time-zone settings.
+func QueryTimeZoneStatus(ctx context.Context) (TimeZoneStatus, error) {
+	var s TimeZoneStatus
+	err := ReadDB().QueryRowContext(ctx,
+		"SELECT @@session.time_zone, @@global.time_zone, @@system_time_zone",
+	).Scan(&s.Session, &s.Global, &s.System)
+	if err != nil {
+		return TimeZoneStatus{}, fmt.Errorf("query time zone status: %w", err)
+	}
+	return s, nil
+}
+
+// EffectiveDefaultZone returns the zone an unpinned connection would use:
+// @@global.time_zone, resolving the SYSTEM alias to @@system_time_zone.
+func (s TimeZoneStatus) EffectiveDefaultZone() string {
+	if strings.EqualFold(strings.TrimSpace(s.Global), "SYSTEM") {
+		return s.System
+	}
+	return s.Global
+}
+
+// IsUTCZone reports whether a MySQL time-zone string denotes UTC.
+func IsUTCZone(zone string) bool {
+	switch strings.ToUpper(strings.TrimSpace(zone)) {
+	case "UTC", "GMT", "+00:00", "ETC/UTC", "ETC/GMT", "GMT0", "UNIVERSAL", "ZULU":
+		return true
+	default:
+		return false
+	}
+}
+
+// TimeZoneWarning returns a non-empty operator warning when the server's
+// default (unpinned) zone is not UTC. Jetmon v2 pins its own session to UTC,
+// so v2's own writes are always correct; the risk is a v1 process (or any
+// other unpinned client) writing the shared jetpack_monitor_sites DATETIME
+// column in a different zone during the v1->v2 migration window. Empty string
+// means no warning.
+func (s TimeZoneStatus) TimeZoneWarning() string {
+	def := s.EffectiveDefaultZone()
+	if IsUTCZone(def) {
+		return ""
+	}
+	return fmt.Sprintf(
+		"MySQL server default time zone is %q (global=%q, system=%q), not UTC. "+
+			"Jetmon v2 pins its own session to UTC, but unpinned clients (e.g. a v1 "+
+			"process writing jetpack_monitor_sites.last_status_change via NOW()) will "+
+			"store wall-clock in this zone during migration, disagreeing with v2's UTC "+
+			"writes. Set the server time zone to UTC for consistent shared timestamps.",
+		def, strings.TrimSpace(s.Global), strings.TrimSpace(s.System))
 }
 
 func splitDBHostPort(addr string) (string, string, error) {

@@ -141,6 +141,11 @@ func runServe() {
 	if err := db.ConnectWithRetry(10); err != nil {
 		log.Fatalf("db connect: %v", err)
 	}
+	if tz, err := db.QueryTimeZoneStatus(context.Background()); err != nil {
+		log.Printf("WARN: could not read MySQL time zone: %v", err)
+	} else if msg := tz.TimeZoneWarning(); msg != "" {
+		log.Printf("WARN: %s", msg)
+	}
 	dbReloadCtx, stopDBReload := context.WithCancel(context.Background())
 	defer stopDBReload()
 	db.StartConfigReloader(dbReloadCtx, time.Duration(cfg.DBConfigUpdatesMin)*time.Minute)
@@ -434,6 +439,15 @@ func cmdValidateConfig() {
 		os.Exit(1)
 	}
 	fmt.Println("PASS db connect")
+
+	if tz, err := db.QueryTimeZoneStatus(context.Background()); err != nil {
+		fmt.Printf("WARN could not read MySQL time zone: %v\n", err)
+	} else {
+		fmt.Printf("INFO mysql_time_zone session=%s default=%s\n", tz.Session, tz.EffectiveDefaultZone())
+		if msg := tz.TimeZoneWarning(); msg != "" {
+			fmt.Printf("WARN %s\n", msg)
+		}
+	}
 
 	fmt.Printf("INFO legacy_status_projection=%s\n", enabledLabel(cfg.LegacyStatusProjectionEnable))
 	fmt.Printf("INFO bucket_ownership=%s\n", bucketOwnershipLabel(cfg))
