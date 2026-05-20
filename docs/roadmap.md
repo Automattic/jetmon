@@ -19,6 +19,9 @@ production telemetry branches:
 - `veriflier-production-soak`: run production-like Veriflier load, overload,
   duplicate-vantage, and long-outage promotion/recovery rehearsals against the
   Go Veriflier v2 contract before first production cutover.
+- `veriflier-followup-hardening`: merge the StatsD-disabled Veriflier startup
+  fix, track uptime-bench lifecycle/reporting coverage, clean lab-only config
+  cruft, and decide when to run multi-vantage Veriflier soak coverage.
 
 ### Veriflier Rebuild and Contract TODO
 
@@ -64,9 +67,11 @@ production telemetry branches:
 - [x] Add repo-local Veriflier soak coverage for high concurrency, overload
   recovery, auth failure, deadline timeout recovery, and mixed success/down
   outcomes through the v2 contract. Run with `make test-veriflier-soak`.
-- [ ] Run production-like Veriflier soak coverage for deployed-like network
-  behavior, duplicate-vantage misconfiguration, mixed-vantage responses, and
-  long outage promotion/recovery.
+- [ ] Run production-like multi-vantage Veriflier soak coverage for
+  deployed-like network behavior, duplicate-vantage misconfiguration,
+  mixed-vantage responses, quorum-floor behavior, and long outage
+  promotion/recovery. Single-vantage lifecycle soak evidence is useful, but it
+  does not prove the production quorum shape.
 - [x] Add Veriflier auto-discovery in a shadow-first rollout:
   - trusted DB-backed `jetpack_monitor_veriflier_vantages` registry for quorum identities
   - monitor-collected `jetpack_monitor_veriflier_agents` rows for process capacity and
@@ -89,8 +94,26 @@ production telemetry branches:
   duplicate active agent endpoints, active-mode fallback, and recovery to green.
 - [ ] Run Veriflier auto-discovery in production-like shadow mode and compare
   static configured vantages to the DB registry before enabling active mode.
-- [ ] Add an uptime-bench scenario long enough to exercise full
+- [x] Add an uptime-bench scenario long enough to exercise full
   `Seems Down -> Down -> verifier_cleared` behavior with v2 vote evidence.
+  Evidence: the 2026-05-20 quick lifecycle smoke and 9-cycle focused soak
+  against Jetmon commit `63a544f` passed `HEAD` + `legacy`, `GET` +
+  `simple_http`, and `GET` + `full` down/recovery paths with verifier vote
+  metadata and WPCOM notifications classified as `disabled_by_test_plan`.
+- [ ] Merge the Veriflier StatsD-disabled startup fix. The 2026-05-20
+  lifecycle smoke found that current `v2` Verifliers crash-loop when
+  `STATSD_ADDR` is unset because the resource metrics goroutine calls a nil
+  StatsD client. Branch `fix/veriflier-resource-metrics-disabled-panic`
+  guards the resource emitter on successful StatsD initialization.
+- [ ] Track uptime-bench reporting follow-up for notification-disabled
+  environments. Reports should classify `WPCOM_NOTIFY_ENABLE=false` test runs
+  as `disabled_by_test_plan` so expected zero WPCOM attempts do not look like
+  rollout warnings, while notification-enabled parity tests still fail when
+  expected attempts are missing.
+- [ ] Clean lab-only stale config keys from the Jetmon v2 test config once no
+  uptime-bench run is active. `validate-config` still warns about old
+  `DNS_MONITOR_*` keys on the service-host-2 test deployment; the warnings are
+  harmless but make real rollout warnings easier to miss.
 - [x] Decide when legacy-compatible `veriflier2` fallback can be removed: keep
   the server-side legacy-compatible endpoint code behind
   `VERIFLIER_ENABLE_LEGACY_HTTP` as an explicit lab/emergency guard, but leave
