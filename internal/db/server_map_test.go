@@ -97,3 +97,30 @@ $db_servers = array(
 		t.Fatalf("read host = %q, want %q", got, want)
 	}
 }
+
+func TestEndpointFromPartsPinsUTCTimeZone(t *testing.T) {
+	ep, err := endpointFromParts("write", "db.example", "3306", "jetmon", "user", "pass")
+	if err != nil {
+		t.Fatalf("endpointFromParts: %v", err)
+	}
+	if ep.mysql == nil {
+		t.Fatal("endpoint mysql config is nil")
+	}
+	if !ep.mysql.ParseTime {
+		t.Error("ParseTime = false, want true")
+	}
+	if ep.mysql.Loc == nil || ep.mysql.Loc.String() != "UTC" {
+		t.Errorf("Loc = %v, want UTC", ep.mysql.Loc)
+	}
+	if got := ep.mysql.Params["time_zone"]; got != "'+00:00'" {
+		t.Errorf("time_zone param = %q, want '+00:00'", got)
+	}
+	// The session time zone must survive into the actual DSN the driver dials.
+	dsn := ep.mysql.FormatDSN()
+	if !strings.Contains(dsn, "time_zone=%27%2B00%3A00%27") {
+		t.Errorf("FormatDSN did not encode the UTC time_zone param: %s", dsn)
+	}
+	if !strings.Contains(dsn, "parseTime=true") {
+		t.Errorf("FormatDSN missing parseTime: %s", dsn)
+	}
+}
