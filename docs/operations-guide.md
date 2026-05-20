@@ -367,6 +367,50 @@ to prove a successful send independently.
 See [jetmon-deliverer-rollout.md](jetmon-deliverer-rollout.md) for the rollout
 and rollback path.
 
+## Data Retention
+
+`jetmon_check_history` and `jetmon_audit_log` are append-only. Their growth rate
+is governed by `CHECK_HISTORY_MODE_DEFAULT` and `AUDIT_LOG_MODE_DEFAULT`;
+retention bounds their total size over time. Retention is **disabled by
+default** — set the windows explicitly to enable it.
+
+```text
+RETENTION_CHECK_HISTORY_DAYS   0   # 0 = keep forever; e.g. 365 to prune past a year
+RETENTION_AUDIT_LOG_DAYS       0   # 0 = keep forever
+RETENTION_BACKGROUND_ENABLED   true
+RETENTION_RUN_HOUR_UTC         4
+```
+
+When at least one window is set and `RETENTION_BACKGROUND_ENABLED` is true, an
+in-process job runs once a day at `RETENTION_RUN_HOUR_UTC`. Pruning deletes in
+paced PK-ordered chunks (5000 rows per delete, 50ms between chunks) so it never
+monopolizes the connection pool, and takes a MySQL advisory lock per table so
+only one host in a fleet prunes a given table at a time. Each completed prune
+writes a `retention_cleanup` audit row (visible under
+`AUDIT_LOG_MODE_DEFAULT=operational` or higher).
+
+Operators can run retention on demand with the `cleanup` subcommand, which
+shares the same algorithm and locking:
+
+```bash
+# Apply the configured retention now.
+jetmon2 cleanup
+
+# Preview without deleting.
+jetmon2 cleanup --dry-run
+
+# Override windows for a one-off deeper prune (e.g. initial backlog cleanup).
+jetmon2 cleanup --check-history-days=30 --audit-log-days=90
+
+# Restrict to a single table.
+jetmon2 cleanup --table=check_history
+```
+
+The CLI command needs the same `DB_*` environment as other manual commands
+(see Production Host Setup). On a fleet with a large existing backlog, run
+`jetmon2 cleanup` once during an off-peak window before relying on the daily
+background pass.
+
 ## Runtime Checks
 
 Status and reload commands:

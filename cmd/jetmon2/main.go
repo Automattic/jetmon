@@ -91,6 +91,8 @@ func main() {
 		cmdVerifliers(os.Args[2:])
 	case "rollout":
 		cmdRollout(os.Args[2:])
+	case "cleanup":
+		cmdCleanup(os.Args[2:])
 	default:
 		runServe()
 	}
@@ -332,6 +334,13 @@ func runServe() {
 			}
 		}
 	}()
+
+	// Background retention pruning (no-op unless a RETENTION_*_DAYS window is
+	// set). Cancelled when runServe returns on shutdown; an in-flight prune is
+	// safely restartable on the next run.
+	retentionCtx, stopRetention := context.WithCancel(context.Background())
+	defer stopRetention()
+	startRetentionBackground(retentionCtx, cfg)
 
 	// Signal handling.
 	sigCh := make(chan os.Signal, 1)

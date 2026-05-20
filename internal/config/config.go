@@ -192,6 +192,15 @@ type Config struct {
 	// gating off the api_access GET firehose.
 	AuditLogModeDefault string `json:"AUDIT_LOG_MODE_DEFAULT"`
 
+	// Retention controls pruning of the append-only operational tables. A day
+	// count of 0 disables pruning for that table (rows accumulate). Defaults
+	// are 0 so retention is a conscious opt-in, not a surprise that starts
+	// deleting rows after an upgrade.
+	RetentionCheckHistoryDays int  `json:"RETENTION_CHECK_HISTORY_DAYS"`
+	RetentionAuditLogDays     int  `json:"RETENTION_AUDIT_LOG_DAYS"`
+	RetentionBackgroundEnable bool `json:"RETENTION_BACKGROUND_ENABLED"`
+	RetentionRunHourUTC       int  `json:"RETENTION_RUN_HOUR_UTC"`
+
 	Verifiers []VerifierConfig `json:"VERIFIERS"`
 
 	Warnings []ConfigWarning `json:"-"`
@@ -381,6 +390,10 @@ func defaults() *Config {
 		CheckHistoryModeDefault:              CheckHistoryModeStatusChange,
 		CheckHistorySampleRateDefault:        10,
 		AuditLogModeDefault:                  AuditLogModeOperational,
+		RetentionCheckHistoryDays:            0,
+		RetentionAuditLogDays:                0,
+		RetentionBackgroundEnable:            true,
+		RetentionRunHourUTC:                  4,
 	}
 }
 
@@ -756,6 +769,15 @@ func validate(cfg *Config) error {
 	}
 	if !ValidAuditLogMode(cfg.AuditLogModeDefault) {
 		return fmt.Errorf("AUDIT_LOG_MODE_DEFAULT must be one of: disabled, writes, operational, all")
+	}
+	if cfg.RetentionCheckHistoryDays < 0 {
+		return fmt.Errorf("RETENTION_CHECK_HISTORY_DAYS must be >= 0")
+	}
+	if cfg.RetentionAuditLogDays < 0 {
+		return fmt.Errorf("RETENTION_AUDIT_LOG_DAYS must be >= 0")
+	}
+	if cfg.RetentionRunHourUTC < 0 || cfg.RetentionRunHourUTC > 23 {
+		return fmt.Errorf("RETENTION_RUN_HOUR_UTC must be between 0 and 23")
 	}
 	for i, v := range cfg.Verifiers {
 		// host and port are required. Empty values silently parse to ""

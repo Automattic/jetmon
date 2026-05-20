@@ -382,6 +382,29 @@ Each audit.Log() call is a separate INSERT, so under "all" a busy operator/
 dashboard polling the API can generate a large unbatched transaction stream;
 "operational" keeps that off by default while preserving the telemetry report.
 
+RETENTION_CHECK_HISTORY_DAYS
+Prune jetmon_check_history rows older than this many days. 0 disables pruning
+(rows accumulate indefinitely). The CHECK_HISTORY_MODE_DEFAULT knob bounds how
+fast this table grows; retention bounds how large it gets over time. Default 0
+(disabled) — retention is a conscious opt-in, not a surprise that starts
+deleting rows after an upgrade.
+
+RETENTION_AUDIT_LOG_DAYS
+Prune jetmon_audit_log rows older than this many days. 0 disables pruning.
+Default 0 (disabled).
+
+RETENTION_BACKGROUND_ENABLED
+When true (default), an in-process background job runs a retention pass once a
+day at RETENTION_RUN_HOUR_UTC. When false, retention is applied only when an
+operator runs `jetmon2 cleanup`. Has no effect unless at least one
+RETENTION_*_DAYS window is set.
+
+RETENTION_RUN_HOUR_UTC
+Hour of day (0-23 UTC) for the daily background retention pass. Default 4
+(off-peak for most fleets). Pruning deletes in paced PK-ordered chunks and
+coordinates across a multi-host fleet with a MySQL advisory lock, so only one
+host prunes a given table at a time.
+
 USE_VARIABLE_CHECK_INTERVALS
 Set to true to respect the check_interval column per site instead of running
 all sites every fixed-cadence pass. Recommended for production freshness

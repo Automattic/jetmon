@@ -32,6 +32,7 @@ const (
 	EventConfigChange      = "config_change"
 	EventAPIAccess         = "api_access"
 	EventProbeSafetyBlock  = "probe_safety_blocked"
+	EventRetentionCleanup  = "retention_cleanup"
 )
 
 // Recording modes. String values match config.AuditLogMode* — duplicated here
@@ -93,7 +94,8 @@ func shouldLog(m, eventType, httpMethod string) bool {
 	if m == ModeWrites {
 		switch eventType {
 		case EventWPCOMSent, EventWPCOMRetry, EventConfigChange,
-			EventRetryDispatched, EventProbeSafetyBlock:
+			EventRetryDispatched, EventProbeSafetyBlock, EventRetentionCleanup:
+			// retention_cleanup deletes rows, so it counts as a data mutation.
 			return true
 		default:
 			return false
