@@ -89,7 +89,7 @@ The **biggest user-facing risk** is documentation framing: the REST API doc is l
 
 ### Write amplification
 - Each event mutation = event row + transition row + (optional) v1 projection row = up to 3 writes (orchestrator.go:30-38, 220). Removable after v1 readers migrate.
-- `UpdateSSLExpiry` unconditionally UPDATEs `jetpack_monitor_site_runtime` every HTTPS check (~166 writes/sec at 50k HTTPS sites). Add skip-if-unchanged.
+- ~~`UpdateSSLExpiry` unconditionally UPDATEs `jetpack_monitor_site_runtime` every HTTPS check (~166 writes/sec at 50k HTTPS sites). Add skip-if-unchanged.~~ **Resolved (verified 2026-05-20):** both schedulers already gate the write behind `shouldUpdateSSLExpiry` (`orchestrator.go:1585`), which writes only when the stored expiry is `nil` or its UTC date changes. The streaming path persists the last-known value in an in-memory per-target cache seeded from the DB-loaded `site.SSLExpiryDate` (`streaming.go:526-533`); the legacy path reloads `ssl_expiry_date` each round (`queries.go:103`). Steady-state writes are renewal-driven (~0.01/sec at 50k HTTPS sites, ≈1 write/site per cert cycle), not per-check. Covered by `TestShouldUpdateSSLExpiryComparesStoredDate`. The "~166 writes/sec" figure described a pre-guard version of this code.
 - `jetpack_monitor_check_history` grows at ~333 rows/sec at 100k sites × 5-min cadence — no retention.
 
 ### Migrations
