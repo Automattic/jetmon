@@ -71,7 +71,14 @@ production telemetry branches:
   deployed-like network behavior, duplicate-vantage misconfiguration,
   mixed-vantage responses, quorum-floor behavior, and long outage
   promotion/recovery. Single-vantage lifecycle soak evidence is useful, but it
-  does not prove the production quorum shape.
+  does not prove the production quorum shape. Initial 2026-05-20 smoke setup
+  added three v2 Veriflier vantages on `jetmon-vm-host-1`, `jetmon-vm-host-2`,
+  and `jetmon-vm-host-3` and confirmed Monitor quorum metadata counted all
+  three unique vantages. Do not mark this complete yet: only `vm-host-2`
+  observed the intended synthetic HTTP 503, while the other two vantages timed
+  out against the public-shaped internal test target. The next pass needs
+  uptime-bench target DNS/routing adjusted so every vantage reaches the same
+  controlled target before running the longer soak and misconfiguration cases.
 - [x] Add Veriflier auto-discovery in a shadow-first rollout:
   - trusted DB-backed `jetpack_monitor_veriflier_vantages` registry for quorum identities
   - monitor-collected `jetpack_monitor_veriflier_agents` rows for process capacity and
