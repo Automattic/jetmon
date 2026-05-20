@@ -1262,6 +1262,34 @@ The migrations are individually clean (each is "add a column, filter on it, depr
 
 The Q9 (webhook ownership) section in internal-api-reference.md captures the most concrete piece of this; the rest is captured here for visibility when the conversation comes up.
 
+### Per-check telemetry store (real-time check history)
+
+Every check produces a `jetpack_monitor_check_history` row — timing, status, HTTP code, per-component latencies. At fleet scale that is the firehose: on the order of ~330 rows/sec at 100k sites and ~3,300/sec at 1M on a 5-minute cadence. Today those rows land in the shared MariaDB that other services also use, so v2 ships with `CHECK_HISTORY_MODE` defaulting to `status_change` (near-zero rows) to be a good steward of that shared resource. That keeps the shared DB clean but gates away a capability the rest of the uptime-monitoring market treats as table stakes: **per-check response-time history and graphs per site.**
+
+**What it is.** A future architecture moves the per-check firehose off the shared OLTP database into a separate, Jetmon-owned telemetry store, and treats it as what it actually is — best-effort time-series telemetry, not transactional data. Customer-facing incidents already live durably in `jetpack_monitor_events` / `jetpack_monitor_event_transitions`; per-check history is supporting telemetry, which relaxes the durability bar dramatically (no synchronous replication, no zero-loss failover; lossy-on-overflow is acceptable).
+
+**Why it matters.**
+- **Feature parity.** Per-check response-time graphs, uptime %, and check-result history are standard in Pingdom/UptimeRobot/StatusCake-class products. Storing the raw stream (recent, high-resolution) plus downsampled rollups (long tail) is what powers those views.
+- **Shared-DB stewardship.** The firehose stops touching the multi-service database entirely.
+- **Real-time anomaly detection.** With the raw stream available per Monitor, variance/shift detection can run locally and emit a low-volume signal (or open an event) when a site's timing or status pattern changes — surfacing "this site is degrading" before it is a hard down. Because only the signal goes central, the "float up potential problems" capability is cheap. (Caveat: a Monitor only sees the slice of a site it currently checks, so per-site/global anomalies still need central aggregation; local detection is strongest for per-vantage/per-Monitor signals.)
+
+**Shape.**
+
+| Layer | Choice | Note |
+|---|---|---|
+| Monitor-side | bounded async buffer, drop-oldest on overflow | fully decoupled from the check path — a telemetry-store outage never slows or blocks a check |
+| Store | separate Jetmon-owned instance | MariaDB is comfortable to ~1M sites with batching + time-partitioning; ClickHouse/columnar above that, built for this ingest rate and time-range querying |
+| Retention | hot raw (short) + rolled-up summaries (long) | partition raw by day so expiry is a `DROP PARTITION`, not a `DELETE` storm |
+| Availability | one primary + async read-replica | replica for read/query isolation and DR/failover, not write-durability; manual/lightweight failover is fine because Monitors buffer through it |
+
+Host loss costs only the dead Monitor's in-flight buffer (seconds of one host's checks), because writes are centralized — the key advantage over a per-Monitor durable store, where a site's history fragments across hosts (bucket reassignment alone scatters it) and is stranded on loss.
+
+**Why the migration is clean later — and why launching now does not block it.** The write path is already a single funneled seam: both schedulers build typed `db.CheckHistoryRow` values (`checkHistoryRowForResult`) and flush them through one batch function (`dbRecordCheckHistories`); the only reader is the internal `/api/v1/.../check-history` surface, concentrated in `internal/api/handlers_stats.go`. The schema is net-new v2 (no v1 or external contract), and recording is already gated behind `CHECK_HISTORY_MODE`. So the future move is "redirect one write seam + repoint one reader + add additive infra," not a refactor — and it never touches the rollout-critical event/projection path. **Launching with `CHECK_HISTORY_MODE=status_change` is the enabler:** the shared DB stays clean and there is essentially no historical data to backfill, so the feature simply starts collecting in the new store when it goes live.
+
+**Trigger that justifies the build.** When per-check metrics become a product requirement (feature parity / customer-facing response-time history), or when an operator wants `CHECK_HISTORY_MODE=all` fleet-wide. Not needed for the initial backend-replacement rollout.
+
+**When to revisit.** After the v2 rollout is stable. Start with "E-lite" — a separate Jetmon-owned MariaDB instance and a second connection, plus the Monitor-side buffer so the check path never depends on it — then add rollups, partitioning, the replica, and (at multi-million-site scale) a columnar engine incrementally, as the feature is actually used.
+
 ---
 
 ## Completed
