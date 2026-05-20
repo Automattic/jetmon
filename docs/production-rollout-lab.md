@@ -38,6 +38,17 @@ Use these as a lab pool, not as fixed assignments. A good first topology is:
 - One uptime-bench controller/admin host that runs `jetmon2 api ...` commands
   against the Monitor API.
 
+Before starting a local Compose rehearsal, run:
+
+```bash
+make rollout-docker-lab-doctor
+```
+
+This checks local prerequisites and verifies that containers can resolve the
+external package hosts used by the Docker image build. If this fails, fix the
+Docker daemon resolver or networking first; otherwise the lab can fail during
+`go mod download` or `apt-get` before any rollout behavior is tested.
+
 ## Required Topology
 
 ### Database Tier

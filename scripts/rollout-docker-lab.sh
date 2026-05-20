@@ -8,6 +8,7 @@ PROJECT="${JETMON_ROLLOUT_DOCKER_PROJECT:-jetmon-rollout-lab}"
 PUBLIC_NETWORK="${JETMON_ROLLOUT_DOCKER_NETWORK:-jetmon-rollout-lab-public}"
 PUBLIC_SUBNET="${JETMON_ROLLOUT_DOCKER_SUBNET:-93.184.216.0/24}"
 FIXTURE_IP="${JETMON_ROLLOUT_DOCKER_FIXTURE_IP:-93.184.216.20}"
+DOCKER_DNS_TEST_IMAGE="${JETMON_ROLLOUT_DOCKER_DNS_TEST_IMAGE:-golang:1.26.3}"
 SITE_COUNT="${JETMON_ROLLOUT_DOCKER_SITE_COUNT:-40}"
 BUCKET_MIN="${JETMON_ROLLOUT_DOCKER_BUCKET_MIN:-0}"
 BUCKET_MAX="${JETMON_ROLLOUT_DOCKER_BUCKET_MAX:-0}"
@@ -36,7 +37,7 @@ export ROLLOUT_LAB_FIXTURE_IP="$FIXTURE_IP"
 
 usage() {
 	cat <<'USAGE'
-usage: scripts/rollout-docker-lab.sh <run|cleanup>
+usage: scripts/rollout-docker-lab.sh <run|doctor|cleanup>
 
 Runs a local-only Docker rollout rehearsal:
   1. starts Jetmon in ROLLOUT_MODE=api-controlled with WPCOM disabled
@@ -48,6 +49,9 @@ Runs a local-only Docker rollout rehearsal:
 
 The fixture lives on a Docker network using a public-looking RFC-valid address
 so target-safety checks stay enabled while traffic never leaves the Docker host.
+
+doctor checks local prerequisites, including Docker daemon DNS, before a full
+Compose build is started.
 USAGE
 }
 
@@ -70,6 +74,20 @@ need_cmd() {
 
 compose() {
 	"${COMPOSE[@]}" "$@"
+}
+
+docker_dns_preflight() {
+	local output
+	if output="$(docker run --rm "$DOCKER_DNS_TEST_IMAGE" sh -ec '
+		for host in proxy.golang.org deb.debian.org; do
+			getent hosts "$host" >/dev/null
+		done
+	' 2>&1)"; then
+		pass "docker_dns_preflight_ok image=$DOCKER_DNS_TEST_IMAGE hosts=proxy.golang.org,deb.debian.org"
+		return
+	fi
+	printf '%s\n' "$output" >&2
+	fail "Docker daemon DNS preflight failed; fix Docker resolver/networking before running rollout-docker-lab"
 }
 
 api() {
@@ -295,6 +313,7 @@ run_lab() {
 	prepare_config
 	prepare_fixture_sites
 	ensure_public_network
+	docker_dns_preflight
 
 	log "starting compose project=$PROJECT"
 	compose up -d --build
@@ -324,9 +343,21 @@ run_lab() {
 	pass "rollout_docker_lab_complete project=$PROJECT run_id=$RUN_ID logs=$WORK_DIR"
 }
 
+doctor() {
+	need_cmd docker
+	need_cmd jq
+	cd "$REPO_ROOT"
+	ensure_public_network
+	docker_dns_preflight
+	pass "rollout_docker_lab_doctor_ok project=$PROJECT network=$PUBLIC_NETWORK"
+}
+
 case "${1:-run}" in
 	run)
 		run_lab
+		;;
+	doctor)
+		doctor
 		;;
 	cleanup)
 		cleanup

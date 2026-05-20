@@ -9,8 +9,14 @@ policy migration.
 Run it from a host that can spend local Docker resources:
 
 ```bash
+make rollout-docker-lab-doctor
 make rollout-docker-lab
 ```
+
+The doctor checks local prerequisites and Docker daemon DNS before the full
+Compose build starts. If it cannot resolve the package hosts used by the image
+build, fix Docker networking first so a failed rehearsal is not mistaken for a
+rollout logic failure.
 
 Clean up the isolated project and volumes:
 
