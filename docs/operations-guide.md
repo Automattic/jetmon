@@ -368,6 +368,47 @@ to prove a successful send independently.
 See [jetmon-deliverer-rollout.md](jetmon-deliverer-rollout.md) for the rollout
 and rollback path.
 
+## Internal API Consumer Affinity
+
+Every monitor host with `API_PORT` enabled serves the full internal REST API
+against the shared database, so the API is effectively running on multiple
+hosts at once. The event, transition, bucket-ownership, and delivery-claim
+paths all coordinate through the database and are safe across hosts. Two
+request-scoped safeguards are **not** shared across hosts, because they are
+held in memory per process:
+
+- **Idempotency** (`Idempotency-Key` replay cache) — dedupes a retried mutating
+  request so it executes at most once.
+- **Per-API-key rate limiting** — token buckets enforcing each key's
+  `rate_limit_per_minute`.
+
+Operating rule: **each API consumer must talk to exactly one monitor host.**
+Maintainers should target a single host; an internal service should be
+configured with one host's address; and a gateway placed in front should route
+a given consumer (or API key) to a stable host rather than fan out across the
+fleet. Under that rule both safeguards behave correctly.
+
+If requests for one consumer are instead spread across hosts, a retried
+mutation can land on a host that has no record of the original and execute
+twice — creating a duplicate webhook or alert contact (these tables have no
+unique business key), or re-rotating a webhook secret so the value already
+returned to the caller is stale. The per-key rate limit also loosens, because
+each host enforces the limit independently (effective limit ≈ limit × number of
+hosts receiving the traffic). When a gateway fronts the API, treat the gateway
+as the authoritative cross-host rate limiter; the in-process limiter is a
+per-host backstop.
+
+Restart caveat: because both safeguards live in memory, they reset when a host
+restarts (including during [v2 Rolling Updates](#v2-rolling-updates)). A
+stable-key retry that arrives after the pinned host has restarted can re-execute.
+The highest-stakes stable-key path — API-driven rollout — is additionally
+guarded by confirmation tokens and resume-from-interrupt, so it tolerates this.
+
+Before introducing horizontal fan-out (load balancing the API) or a programmatic
+consumer that auto-retries mutating calls with stable idempotency keys, move the
+idempotency store to durable, database-backed storage so dedup survives both
+fan-out and restarts.
+
 ## Data Retention
 
 `jetpack_monitor_check_history` and `jetpack_monitor_audit_log` are append-only. Their growth rate
