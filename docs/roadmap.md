@@ -219,9 +219,10 @@ production telemetry branches:
 - [ ] Run and record the approved synthetic canary checks before first
   production activation. Cover known-up, controlled down, controlled recovery,
   WPCOM notification parity, Veriflier-confirmed down, WAF/blocked-style
-  behavior, and one customer-safe false-alarm/non-confirmation case. Until
-  API-native canary execution exists, this evidence comes from uptime-bench,
-  manual controlled fixtures, or another approved test path.
+  behavior, and one customer-safe false-alarm/non-confirmation case. Use the
+  API rollout preflight/smoke `--canary-file` gate for direct Monitor probe
+  expectations, and keep separate evidence for recovery, WPCOM parity, and
+  Veriflier-confirmed down lifecycle behavior.
 
 ### Production Telemetry Reports TODO
 

@@ -40,6 +40,18 @@ replacement is stable.
 - `Support`: support documentation, support tooling, and frontline readiness
 - `Product`: customer-facing semantics, packaging, and launch language
 
+## How To Use This Tracker
+
+Use the launch-critical checklist as the stop/go view for the first production
+activation. The detailed sections below are evidence buckets, not separate
+parallel checklists. For each open launch-critical item, record three things
+before the rollout window starts: owner, evidence location, and the threshold
+that turns the item into a stop.
+
+Keep approval work separate from engineering evidence. A passing lab does not
+approve customer-facing semantics, and an owner approval does not replace a
+rollout transcript.
+
 ## Launch Posture Gate
 
 Hard gate.
@@ -137,6 +149,46 @@ synthetic canaries supplied with `--canary-file`. Use controlled sites or
 uptime-bench fixtures for direct Monitor probe canaries and attach the API
 result to the rollout record. Keep separate evidence for recovery, WPCOM
 notification parity, and Veriflier-confirmed down flows.
+
+### Remaining External Decisions
+
+These are the items most likely to block a rollout window even if the code and
+lab evidence are green.
+
+| Decision | Required Owner | Needed Output |
+| --- | --- | --- |
+| Launch posture wording | WPCOM, Product, Support | Written approval that v2 starts as a backend replacement, not a new customer-facing Monitor launch. |
+| Legacy consumer inventory | WPCOM, Jetpack, Support | Confirmed list of readers that still depend on legacy projection or notification behavior. |
+| WPCOM-owned notification parity | WPCOM, Jetmon | Pass/fail evidence for inactive, URL mismatch, blacklist, hook-consumer, and home-URL-only cases. |
+| Canary cohort and expansion thresholds | WPCOM, Product, Support, Systems, Jetmon | Starting cohort, hold duration, expansion sizes, rollback triggers, and owner for go/no-go calls. |
+| Systems stop/go thresholds | Systems, Jetmon | Numeric thresholds for freshness, drift, WPCOM failures, DB errors, Veriflier health, API errors, and backlog. |
+| Probe-safety follow-ups | Jetmon, Systems | Links to accepted tracking items or explicit rollout-owner waiver for non-blocking safety work. |
+
+### Launch Evidence Packet
+
+Before the first production activation, collect these artifacts in the rollout
+record. Prefer links to command output or reports over prose summaries.
+
+- Approved launch posture statement and support-facing wording.
+- Schema migration transcript and MariaDB runtime exercise evidence.
+- Fresh v2 Veriflier fleet validation: `/v2/status`, stable `vantage.id`
+  values, quorum floor, auth posture, and capacity evidence.
+- API rollout dry-run or guided transcript with config, auth scope,
+  `--allow-remote`, transcript path, and rollback path.
+- Projection parity output and telemetry parity report against production-like
+  data.
+- WPCOM legacy notification parity evidence for both Jetmon-owned and
+  WPCOM-owned cases.
+- Synthetic canary evidence covering direct Monitor probe expectations and the
+  separate lifecycle cases: recovery, WPCOM parity, and Veriflier-confirmed
+  down.
+- Failure-mode drill notes with expected behavior, observed behavior, and any
+  explicit waivers.
+- Production rollout lab or equivalent rehearsal report covering DB server-map
+  reload, StatsD/Graphite wiring, WPCOM simulator behavior, standby activation,
+  rollback, and proof that no real WPCOM traffic escaped the lab.
+- Probe-safety follow-up links for scheduled safety reporting, DNS rebinding,
+  TLS pathology, and keyword streaming optimization.
 
 ## Hard Gates
 
@@ -644,11 +696,17 @@ Fill this out before the rollout attempt.
 | Rollback command source | TBD |
 | Customer/support comms status | TBD |
 
-## Recommended First Sprint
+## Immediate Prelaunch Closure Path
 
-1. Get owner confirmation for the first-pass legacy consumer inventory.
-2. Run projection drift and telemetry parity reports.
-3. Test WPCOM notification parity.
-4. Update support/allowlist guidance for v2 `GET` and `jetmon/2.0`.
-5. Run rollout and rollback rehearsals.
-6. Define canary cohort and stop/go thresholds.
+1. Close the external decisions table: posture wording, consumer inventory,
+   WPCOM-owned parity cases, canary expansion thresholds, Systems thresholds,
+   and probe-safety tracking.
+2. Run projection drift and telemetry parity reports against production-like
+   data that includes active sites and WPCOM notification evidence.
+3. Run the approved synthetic canary sequence through the API gates and attach
+   separate lifecycle evidence for recovery, WPCOM parity, and
+   Veriflier-confirmed down.
+4. Complete the production rollout lab or explicitly waive any lab-only gaps
+   with a named owner and replacement evidence.
+5. Fill out the launch-day readiness card and use it as the rollout-room stop/go
+   source.
