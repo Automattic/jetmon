@@ -190,6 +190,12 @@ func TestStartVeriflierResourceStats(t *testing.T) {
 	}
 }
 
+func TestStartVeriflierResourceStatsSkipsTypedNilEmitter(t *testing.T) {
+	var emitter *recordingResourceStatsEmitter
+	stop := startVeriflierResourceStats(emitter, time.Millisecond)
+	stop()
+}
+
 type recordingResourceStatsEmitter struct {
 	calls atomic.Int64
 }
