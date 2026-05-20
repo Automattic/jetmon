@@ -177,9 +177,64 @@ type Config struct {
 	SMTPPassword        string `json:"SMTP_PASSWORD"`
 	SMTPUseTLS          bool   `json:"SMTP_USE_TLS"`
 
+	// CheckHistoryModeDefault controls when per-check timing samples are
+	// written to jetmon_check_history when a site has no per-site override.
+	// One of: "disabled", "status_change", "sample", "all". Default
+	// "status_change" keeps incident-edge probes only — the smallest footprint
+	// that preserves diagnostic value. CheckHistorySampleRateDefault is used
+	// only when the effective mode is "sample".
+	CheckHistoryModeDefault       string `json:"CHECK_HISTORY_MODE_DEFAULT"`
+	CheckHistorySampleRateDefault int    `json:"CHECK_HISTORY_SAMPLE_RATE_DEFAULT"`
+
+	// AuditLogModeDefault controls which operational events are written to
+	// jetmon_audit_log. One of: "disabled", "writes", "operational", "all".
+	// Default "operational" keeps the jetmon2 telemetry report working while
+	// gating off the api_access GET firehose.
+	AuditLogModeDefault string `json:"AUDIT_LOG_MODE_DEFAULT"`
+
 	Verifiers []VerifierConfig `json:"VERIFIERS"`
 
 	Warnings []ConfigWarning `json:"-"`
+}
+
+// Check-history recording modes. Free-form strings (not an enum) so adding a
+// mode does not require a schema or config-shape change; unknown values fall
+// back to the default at read time.
+const (
+	CheckHistoryModeDisabled     = "disabled"
+	CheckHistoryModeStatusChange = "status_change"
+	CheckHistoryModeSample       = "sample"
+	CheckHistoryModeAll          = "all"
+)
+
+// Audit-log recording modes.
+const (
+	AuditLogModeDisabled    = "disabled"
+	AuditLogModeWrites      = "writes"
+	AuditLogModeOperational = "operational"
+	AuditLogModeAll         = "all"
+)
+
+// ValidCheckHistoryMode reports whether mode is a recognized check-history mode.
+func ValidCheckHistoryMode(mode string) bool {
+	switch mode {
+	case CheckHistoryModeDisabled, CheckHistoryModeStatusChange,
+		CheckHistoryModeSample, CheckHistoryModeAll:
+		return true
+	default:
+		return false
+	}
+}
+
+// ValidAuditLogMode reports whether mode is a recognized audit-log mode.
+func ValidAuditLogMode(mode string) bool {
+	switch mode {
+	case AuditLogModeDisabled, AuditLogModeWrites,
+		AuditLogModeOperational, AuditLogModeAll:
+		return true
+	default:
+		return false
+	}
 }
 
 // ConfigWarning reports a compatibility or ignored-key issue discovered while
@@ -323,6 +378,9 @@ func defaults() *Config {
 		DebugPort:                            6060,
 		EmailTransport:                       "stub",
 		EmailFrom:                            "jetmon@noreply.invalid",
+		CheckHistoryModeDefault:              CheckHistoryModeStatusChange,
+		CheckHistorySampleRateDefault:        10,
+		AuditLogModeDefault:                  AuditLogModeOperational,
 	}
 }
 
@@ -678,6 +736,26 @@ func validate(cfg *Config) error {
 		}
 	default:
 		return fmt.Errorf("EMAIL_TRANSPORT must be one of: stub, smtp, wpcom")
+	}
+	cfg.CheckHistoryModeDefault = strings.TrimSpace(strings.ToLower(cfg.CheckHistoryModeDefault))
+	if cfg.CheckHistoryModeDefault == "" {
+		cfg.CheckHistoryModeDefault = CheckHistoryModeStatusChange
+	}
+	if !ValidCheckHistoryMode(cfg.CheckHistoryModeDefault) {
+		return fmt.Errorf("CHECK_HISTORY_MODE_DEFAULT must be one of: disabled, status_change, sample, all")
+	}
+	if cfg.CheckHistorySampleRateDefault < 0 {
+		return fmt.Errorf("CHECK_HISTORY_SAMPLE_RATE_DEFAULT must be >= 0")
+	}
+	if cfg.CheckHistorySampleRateDefault == 0 {
+		cfg.CheckHistorySampleRateDefault = 10
+	}
+	cfg.AuditLogModeDefault = strings.TrimSpace(strings.ToLower(cfg.AuditLogModeDefault))
+	if cfg.AuditLogModeDefault == "" {
+		cfg.AuditLogModeDefault = AuditLogModeOperational
+	}
+	if !ValidAuditLogMode(cfg.AuditLogModeDefault) {
+		return fmt.Errorf("AUDIT_LOG_MODE_DEFAULT must be one of: disabled, writes, operational, all")
 	}
 	for i, v := range cfg.Verifiers {
 		// host and port are required. Empty values silently parse to ""

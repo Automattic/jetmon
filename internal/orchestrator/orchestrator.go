@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
@@ -274,6 +275,10 @@ type Orchestrator struct {
 	hostname            string
 	bucketMin           int
 	bucketMax           int
+
+	// checkHistoryCounter disperses 1-in-N sampling for CHECK_HISTORY_MODE=sample.
+	// Shared across both schedulers; only meaningful in sample mode.
+	checkHistoryCounter atomic.Uint64
 
 	totalChecked int
 	roundStart   time.Time
@@ -1261,9 +1266,16 @@ func (o *Orchestrator) markResultsChecked(records []siteCheckResult, summary *re
 }
 
 func (o *Orchestrator) recordResultHistories(records []siteCheckResult, summary *resultProcessSummary) {
+	cfg := config.Get()
 	histories := make([]db.CheckHistoryRow, 0, len(records))
 	for _, record := range records {
+		if !shouldRecordCheckHistory(cfg, record.site, record.res, o.checkHistoryCounter.Add(1)) {
+			continue
+		}
 		histories = append(histories, checkHistoryRowForResult(record.blogID, record.res))
+	}
+	if len(histories) == 0 {
+		return
 	}
 
 	start := time.Now()
@@ -1325,6 +1337,51 @@ func (o *Orchestrator) recordStreamingHistoryRows(rows []db.CheckHistoryRow) res
 	summary.historyDuration += time.Since(start)
 	summary.historyRows += len(rows)
 	return summary
+}
+
+// shouldRecordCheckHistory decides whether a check result is persisted to
+// jetmon_check_history, honoring the per-site override (if set and valid) over
+// the configured default. counter disperses 1-in-N sampling.
+func shouldRecordCheckHistory(cfg *config.Config, site db.Site, res checker.Result, counter uint64) bool {
+	mode := cfg.CheckHistoryModeDefault
+	sampleRate := cfg.CheckHistorySampleRateDefault
+	if site.CheckHistoryMode != nil {
+		if m := strings.TrimSpace(strings.ToLower(*site.CheckHistoryMode)); config.ValidCheckHistoryMode(m) {
+			mode = m
+		}
+	}
+	if site.CheckHistorySampleRate != nil && *site.CheckHistorySampleRate > 0 {
+		sampleRate = *site.CheckHistorySampleRate
+	}
+
+	switch mode {
+	case config.CheckHistoryModeDisabled:
+		return false
+	case config.CheckHistoryModeAll:
+		return true
+	case config.CheckHistoryModeSample:
+		// Always keep failures and transitions; sample the healthy steady-state.
+		if res.IsFailure() || resultDisagreesWithStatus(site, res) {
+			return true
+		}
+		if sampleRate <= 1 {
+			return true
+		}
+		return counter%uint64(sampleRate) == 0
+	case config.CheckHistoryModeStatusChange:
+		return resultDisagreesWithStatus(site, res)
+	default:
+		// Unknown mode (e.g. a stale per-site override after a downgrade) →
+		// fall back to the status_change footprint rather than guessing.
+		return resultDisagreesWithStatus(site, res)
+	}
+}
+
+// resultDisagreesWithStatus reports whether the check outcome differs from the
+// site's stored status — i.e. an Up→Down or Down→Up transition edge.
+func resultDisagreesWithStatus(site db.Site, res checker.Result) bool {
+	wasUp := site.SiteStatus == statusRunning
+	return wasUp != res.Success
 }
 
 func checkHistoryRowForResult(blogID int64, res checker.Result) db.CheckHistoryRow {

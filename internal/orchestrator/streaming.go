@@ -534,7 +534,12 @@ func (p *streamingSideEffectProcessor) runShard(o *Orchestrator, jobs <-chan str
 			} else {
 				delete(sslExpiryByTarget, targetID)
 			}
-			if job.res.IsFailure() {
+			// site.SiteStatus here is the pre-check status (processStreamingSideEffects
+			// takes site by value), so resultDisagreesWithStatus inside the filter
+			// correctly sees transition edges. Previously this path recorded every
+			// failure unconditionally; it now honors CHECK_HISTORY_MODE so the
+			// streaming and legacy schedulers agree on what gets persisted.
+			if shouldRecordCheckHistory(config.Get(), site, job.res, o.checkHistoryCounter.Add(1)) {
 				historyRows = append(historyRows, checkHistoryRowForResult(site.BlogID, job.res))
 				if len(historyRows) >= streamingHistoryBatchSize && !flushHistory() {
 					return

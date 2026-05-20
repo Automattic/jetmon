@@ -835,11 +835,15 @@ Response time percentiles over a window, sourced from `jetmon_check_history`.
   "p99_ms": 891,
   "max_ms": 4200,
   "mean_ms": 215,
-  "truncated": false
+  "truncated": false,
+  "check_history_mode": "all",
+  "percentiles_meaningful": true
 }
 ```
 
 Percentiles are computed from raw `jetmon_check_history` samples in the window. The handler caps the in-memory sample set at 100,000 rows; `truncated: true` means the response used the most recent capped subset.
+
+`check_history_mode` is the effective recording mode for this site (per-site override in `jetmon_site_check_config.check_history_mode`, else `CHECK_HISTORY_MODE_DEFAULT`). `percentiles_meaningful` is `false` when the mode is `status_change` (incident-edge probes only) or `disabled` (no rows) — in those modes the percentile fields reflect too few samples to represent the site's true latency distribution, and a dashboard should hide or annotate them. Use `/check-history` for raw rows under any mode.
 
 #### `GET /api/v1/sites/{id}/timing-breakdown`
 
@@ -852,12 +856,47 @@ DNS / TCP / TLS / TTFB breakdown — one of Jetmon's distinctive features (most 
   "window": { "from": "2026-04-24T00:00:00Z", "to": "2026-04-25T00:00:00Z" },
   "samples": 17280,
   "truncated": false,
+  "check_history_mode": "all",
+  "percentiles_meaningful": true,
   "dns": { "p50_ms": 8, "p95_ms": 45, "p99_ms": 80, "max_ms": 120 },
   "tcp": { "p50_ms": 22, "p95_ms": 78, "p99_ms": 140, "max_ms": 220 },
   "tls": { "p50_ms": 35, "p95_ms": 110, "p99_ms": 180, "max_ms": 260 },
   "ttfb": { "p50_ms": 142, "p95_ms": 391, "p99_ms": 760, "max_ms": 1200 }
 }
 ```
+
+`check_history_mode` / `percentiles_meaningful` carry the same meaning as in `/response-time`.
+
+#### `GET /api/v1/sites/{id}/check-history`
+
+Raw per-check timing rows for a site, newest-first, with cursor pagination. Unlike the percentile endpoints, this works under any `CHECK_HISTORY_MODE`: at `status_change` it returns the incident-edge probes that were recorded; at `sample`/`all` it returns the fuller stream. Query params: `window` (or `from`+`to`), `limit` (default 50, max 200), `cursor`.
+
+```bash
+curl -H "Authorization: Bearer $JETMON_API_TOKEN" \
+  "$JETMON_API_URL/api/v1/sites/42/check-history?window=24h&limit=100"
+```
+
+```json
+{
+  "data": [
+    {
+      "id": 90183,
+      "request_method": "GET",
+      "http_code": 200,
+      "error_code": 0,
+      "rtt_ms": 187,
+      "dns_ms": 8,
+      "tcp_ms": 22,
+      "tls_ms": 35,
+      "ttfb_ms": 142,
+      "checked_at": "2026-04-24T18:03:11Z"
+    }
+  ],
+  "page": { "next": "…", "limit": 100 }
+}
+```
+
+Component timings (`dns_ms`/`tcp_ms`/`tls_ms`/`ttfb_ms`) are `null` for checks that failed before that phase completed. This is the right endpoint for "what did the check look like at the moment the site went down" forensics.
 
 ### Family 4: Alert contacts and webhooks
 

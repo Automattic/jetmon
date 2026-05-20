@@ -542,6 +542,17 @@ func apiRoutes() []routeDef {
 		},
 		{
 			Method:         http.MethodGet,
+			Path:           "/api/v1/sites/{id}/check-history",
+			OperationID:    "getSiteCheckHistory",
+			Summary:        "List raw per-check timing rows for a site",
+			Tags:           []string{"Statistics"},
+			Scope:          scopeRead,
+			SuccessStatus:  http.StatusOK,
+			ResponseSchema: "CheckHistoryListEnvelope",
+			Handler:        (*Server).handleSiteCheckHistory,
+		},
+		{
+			Method:         http.MethodGet,
 			Path:           "/api/v1/webhooks",
 			OperationID:    "listWebhooks",
 			Summary:        "List webhooks",

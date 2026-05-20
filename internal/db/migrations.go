@@ -794,6 +794,17 @@ var migrations = []migration{
 	// process restart or projection rebuild.
 	{51, `ALTER TABLE jetmon_events
 		ADD INDEX idx_blog_id_check_type_active (blog_id, check_type, ended_at)`},
+
+	// Migration 52 adds per-site overrides for check-history recording. Both
+	// columns are NULL by default, meaning "use CHECK_HISTORY_MODE_DEFAULT /
+	// CHECK_HISTORY_SAMPLE_RATE_DEFAULT". A site can opt into a different mode
+	// (e.g. 'all' for a site under investigation, 'disabled' for a low-value
+	// test site) without affecting the fleet default. check_history_mode is a
+	// free-form VARCHAR rather than an ENUM so adding modes later does not
+	// require an ALTER; unknown values fall back to the default at read time.
+	{52, `ALTER TABLE jetmon_site_check_config
+		ADD COLUMN check_history_mode VARCHAR(32) NULL AFTER alert_cooldown_minutes,
+		ADD COLUMN check_history_sample_rate INT UNSIGNED NULL AFTER check_history_mode`},
 }
 
 // Migrate applies all pending migrations idempotently.

@@ -151,6 +151,7 @@ func runServe() {
 	}
 
 	audit.Init(db.DB())
+	audit.SetMode(cfg.AuditLogModeDefault)
 
 	hostname := db.Hostname()
 	if addr, enabled, err := metrics.InitFromEnv(cfg.StatsDMetricHost(hostname), defaultStatsDAddr); err != nil {
@@ -352,6 +353,7 @@ func runServe() {
 					}
 					cancel()
 					wp.Configure(wpcomClientConfig(config.Get(), hostname))
+					audit.SetMode(config.Get().AuditLogModeDefault)
 					if dash != nil {
 						dash.SetFleetSource(newFleetDashboardStore(config.Get()))
 					}

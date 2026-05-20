@@ -144,11 +144,13 @@ func TestGetSitesForBucketScansRowsAndDefaultRedirectPolicy(t *testing.T) {
 		"monitor_active", "site_status", "last_status_change", "check_interval", "last_checked_at", "next_check_at",
 		"ssl_expiry_date", "check_keyword", "forbidden_keyword", "forbidden_keywords", "maintenance_start", "maintenance_end",
 		"custom_headers", "timeout_seconds", "redirect_policy", "alert_cooldown_minutes", "last_alert_sent_at", "request_method", "detection_profile",
+		"check_history_mode", "check_history_sample_rate",
 	}).AddRow(
 		int64(1), int64(42), 7, "https://site.example",
 		true, 1, now, 5, now, now.Add(5*time.Minute),
 		nil, nil, nil, nil, nil, nil,
 		nil, nil, nil, nil, nil, nil, nil,
+		nil, nil,
 	)
 	mock.ExpectQuery("SELECT").
 		WithArgs(0, 99, 50).
@@ -181,6 +183,7 @@ func TestGetSitesForBucketVariableIntervalsUsesNextCheckAt(t *testing.T) {
 		"monitor_active", "site_status", "last_status_change", "check_interval", "last_checked_at", "next_check_at",
 		"ssl_expiry_date", "check_keyword", "forbidden_keyword", "forbidden_keywords", "maintenance_start", "maintenance_end",
 		"custom_headers", "timeout_seconds", "redirect_policy", "alert_cooldown_minutes", "last_alert_sent_at", "request_method", "detection_profile",
+		"check_history_mode", "check_history_sample_rate",
 	})
 	mock.ExpectQuery("next_check_at").
 		WithArgs(0, 99, 50).

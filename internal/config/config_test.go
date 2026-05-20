@@ -361,6 +361,77 @@ func TestValidateDefaultsDashboardBindAddr(t *testing.T) {
 	}
 }
 
+func baseValidConfig() *Config {
+	return &Config{
+		AuthToken:           "token",
+		NumWorkers:          10,
+		DatasetSize:         100,
+		BucketTotal:         100,
+		BucketTarget:        50,
+		NetCommsTimeout:     10,
+		BodyReadMaxBytes:    1048576,
+		BodyReadMaxMS:       250,
+		KeywordReadMaxBytes: 1048576,
+		KeywordReadMaxMS:    0,
+		LogFormat:           "text",
+	}
+}
+
+func TestValidateAppliesCheckHistoryAndAuditDefaults(t *testing.T) {
+	cfg := baseValidConfig()
+	if err := validate(cfg); err != nil {
+		t.Fatalf("validate() error = %v", err)
+	}
+	if cfg.CheckHistoryModeDefault != CheckHistoryModeStatusChange {
+		t.Errorf("CheckHistoryModeDefault = %q, want status_change", cfg.CheckHistoryModeDefault)
+	}
+	if cfg.CheckHistorySampleRateDefault != 10 {
+		t.Errorf("CheckHistorySampleRateDefault = %d, want 10", cfg.CheckHistorySampleRateDefault)
+	}
+	if cfg.AuditLogModeDefault != AuditLogModeOperational {
+		t.Errorf("AuditLogModeDefault = %q, want operational", cfg.AuditLogModeDefault)
+	}
+}
+
+func TestValidateRejectsBadCheckHistoryMode(t *testing.T) {
+	cfg := baseValidConfig()
+	cfg.CheckHistoryModeDefault = "bogus"
+	if err := validate(cfg); err == nil {
+		t.Fatal("validate() accepted invalid CHECK_HISTORY_MODE_DEFAULT")
+	}
+}
+
+func TestValidateRejectsBadAuditLogMode(t *testing.T) {
+	cfg := baseValidConfig()
+	cfg.AuditLogModeDefault = "bogus"
+	if err := validate(cfg); err == nil {
+		t.Fatal("validate() accepted invalid AUDIT_LOG_MODE_DEFAULT")
+	}
+}
+
+func TestValidateRejectsNegativeSampleRate(t *testing.T) {
+	cfg := baseValidConfig()
+	cfg.CheckHistorySampleRateDefault = -1
+	if err := validate(cfg); err == nil {
+		t.Fatal("validate() accepted negative CHECK_HISTORY_SAMPLE_RATE_DEFAULT")
+	}
+}
+
+func TestValidateNormalizesModeCaseAndWhitespace(t *testing.T) {
+	cfg := baseValidConfig()
+	cfg.CheckHistoryModeDefault = "  SAMPLE  "
+	cfg.AuditLogModeDefault = "  ALL "
+	if err := validate(cfg); err != nil {
+		t.Fatalf("validate() error = %v", err)
+	}
+	if cfg.CheckHistoryModeDefault != CheckHistoryModeSample {
+		t.Errorf("CheckHistoryModeDefault = %q, want sample", cfg.CheckHistoryModeDefault)
+	}
+	if cfg.AuditLogModeDefault != AuditLogModeAll {
+		t.Errorf("AuditLogModeDefault = %q, want all", cfg.AuditLogModeDefault)
+	}
+}
+
 func saveConfigState(t *testing.T) {
 	t.Helper()
 	origPath := path

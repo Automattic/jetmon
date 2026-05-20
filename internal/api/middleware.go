@@ -312,10 +312,11 @@ func (s *Server) audit(reqID string, key *apikeys.Key, r *http.Request, status i
 	ctx, cancel := context.WithTimeout(context.Background(), auditWriteTimeout)
 	defer cancel()
 	if err := audit.Log(ctx, audit.Entry{
-		EventType: audit.EventAPIAccess,
-		Source:    consumerName,
-		Detail:    r.Method + " " + r.URL.Path,
-		Metadata:  meta,
+		EventType:  audit.EventAPIAccess,
+		Source:     consumerName,
+		Detail:     r.Method + " " + r.URL.Path,
+		Metadata:   meta,
+		HTTPMethod: r.Method,
 	}); err != nil {
 		log.Printf("api: audit log failed: %v", err)
 	}

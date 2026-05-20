@@ -45,6 +45,11 @@ type Site struct {
 	LastAlertSentAt      *time.Time
 	RequestMethod        string
 	DetectionProfile     string
+
+	// CheckHistoryMode / CheckHistorySampleRate are per-site overrides for
+	// jetmon_check_history recording. nil means "use the configured default".
+	CheckHistoryMode       *string
+	CheckHistorySampleRate *int
 }
 
 // Connect opens the MySQL connection pool using the loaded DBConfig.
