@@ -227,6 +227,7 @@ Recommended safe-test config:
 
 - `WPCOM_NOTIFY_ENABLE=false`
 - `WPCOM_NOTIFY_MODE=legacy`
+- `CHECK_TARGET_SAFETY_MODE=public_only`
 - `EMAIL_TRANSPORT=stub`
 - `API_PORT=0`
 - `DASHBOARD_PORT=0`

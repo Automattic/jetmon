@@ -382,6 +382,9 @@ func TestValidateAppliesCheckHistoryAndAuditDefaults(t *testing.T) {
 	if err := validate(cfg); err != nil {
 		t.Fatalf("validate() error = %v", err)
 	}
+	if cfg.CheckTargetSafetyMode != CheckTargetSafetyModePublicOnly {
+		t.Errorf("CheckTargetSafetyMode = %q, want public_only", cfg.CheckTargetSafetyMode)
+	}
 	if cfg.CheckHistoryModeDefault != CheckHistoryModeStatusChange {
 		t.Errorf("CheckHistoryModeDefault = %q, want status_change", cfg.CheckHistoryModeDefault)
 	}
@@ -398,6 +401,28 @@ func TestValidateRejectsBadCheckHistoryMode(t *testing.T) {
 	cfg.CheckHistoryModeDefault = "bogus"
 	if err := validate(cfg); err == nil {
 		t.Fatal("validate() accepted invalid CHECK_HISTORY_MODE_DEFAULT")
+	}
+}
+
+func TestValidateRejectsBadCheckTargetSafetyMode(t *testing.T) {
+	cfg := baseValidConfig()
+	cfg.CheckTargetSafetyMode = "unsafe"
+	if err := validate(cfg); err == nil {
+		t.Fatal("validate() accepted invalid CHECK_TARGET_SAFETY_MODE")
+	}
+}
+
+func TestValidateAllowPrivateTargetsRequiresNotificationsDisabled(t *testing.T) {
+	cfg := baseValidConfig()
+	cfg.WPCOMNotifyEnable = true
+	cfg.CheckTargetSafetyMode = CheckTargetSafetyModeAllowPrivateForTests
+	if err := validate(cfg); err == nil {
+		t.Fatal("validate() accepted private target bypass with WPCOM notifications enabled")
+	}
+
+	cfg.WPCOMNotifyEnable = false
+	if err := validate(cfg); err != nil {
+		t.Fatalf("validate() rejected test-only private target bypass with notifications disabled: %v", err)
 	}
 }
 

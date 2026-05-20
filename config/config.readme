@@ -55,7 +55,7 @@ runtime memory and pprof data before raising or re-enabling the cap. Default: 0.
 This is not the same as v1's per-worker-process memory recycle behavior.
 
 LEGACY_STATUS_PROJECTION_ENABLE
-Set to true while Jetmon v2 is running in shadow-v2-state migration mode. When enabled, v2 writes its authoritative incident state to jetmon_events / jetmon_event_transitions and also projects v1-compatible site_status + last_status_change values back into jetpack_monitor_sites for legacy consumers. Set to false only after downstream readers have moved to the v2 event/API surface. Default: true.
+Set to true while Jetmon v2 is running in shadow-v2-state migration mode. When enabled, v2 writes its authoritative incident state to jetpack_monitor_events / jetpack_monitor_event_transitions and also projects v1-compatible site_status + last_status_change values back into jetpack_monitor_sites for legacy consumers. Set to false only after downstream readers have moved to the v2 event/API surface. Default: true.
 
 DB_UPDATES_ENABLE
 Deprecated alias for LEGACY_STATUS_PROJECTION_ENABLE. If both keys are present, LEGACY_STATUS_PROJECTION_ENABLE wins.
@@ -137,7 +137,7 @@ BUCKET_HEARTBEAT_GRACE_SEC
 Seconds after a host's last heartbeat before its buckets are considered available for reclaiming by another host. Default: 600.
 
 PINNED_BUCKET_MIN / PINNED_BUCKET_MAX
-Migration-only static bucket range for replacing one v1 host with one v2 host during the initial v1-to-v2 rollout. When both are set, jetmon2 checks only that inclusive bucket range and does not claim, heartbeat, or release rows in jetmon_hosts. Disable after the whole fleet is on v2 so dynamic bucket ownership can take over. Must satisfy 0 <= min <= max < BUCKET_TOTAL. Default: unset.
+Migration-only static bucket range for replacing one v1 host with one v2 host during the initial v1-to-v2 rollout. When both are set, jetmon2 checks only that inclusive bucket range and does not claim, heartbeat, or release rows in jetpack_monitor_hosts. Disable after the whole fleet is on v2 so dynamic bucket ownership can take over. Must satisfy 0 <= min <= max < BUCKET_TOTAL. Default: unset.
 
 BUCKET_NO_MIN / BUCKET_NO_MAX
 Deprecated v1 names accepted as aliases for PINNED_BUCKET_MIN / PINNED_BUCKET_MAX. They must be set together and must match PINNED_BUCKET_* if both forms are present.
@@ -235,7 +235,7 @@ for a bounded one-minute follow-up when the normal interval is longer. Startup
 and validate-config warn when this key is present. Default: 30.
 
 ALERT_COOLDOWN_MINUTES
-Minimum minutes between repeated down-alerts for the same site. Prevents alert storms during flapping. Default: 30. Can be overridden per site through the API or jetmon_site_check_config.alert_cooldown_minutes.
+Minimum minutes between repeated down-alerts for the same site. Prevents alert storms during flapping. Default: 30. Can be overridden per site through the API or jetpack_monitor_site_check_config.alert_cooldown_minutes.
 
 STATS_UPDATE_INTERVAL_MS
 Milliseconds between StatsD metric flushes and stats file updates. Default: 10000.
@@ -290,13 +290,26 @@ true, the scheduler uses a short idle poll and the SQL due predicate decides
 which sites are ready to check. Default: 300.
 
 NET_COMMS_TIMEOUT
-Default HTTP request timeout in seconds. Can be overridden per site through the API or jetmon_site_check_config.timeout_seconds. Default: 10.
+Default HTTP request timeout in seconds. Can be overridden per site through the API or jetpack_monitor_site_check_config.timeout_seconds. Default: 10.
 
 CHECK_DNS_RESOLVERS
 Optional list of recursive resolver IPs for HTTP checks. Entries may include
 ports (for example "10.0.0.176:5353"); entries without a port use 53. Leave
 empty to use the host resolver configuration. Resolver changes require a
 service restart so in-flight checks keep a stable transport. Default: [].
+
+CHECK_TARGET_SAFETY_MODE
+Controls SSRF safety on monitor HTTP checks. The production value is
+public_only, which rejects localhost, private, reserved, and internal-only
+targets before dialing. The only alternate value is allow_private_for_tests,
+intended for isolated uptime-bench capacity labs that use private/internal
+targets to avoid Internet traffic. That mode is rejected unless
+WPCOM_NOTIFY_ENABLE=false. Do not use allow_private_for_tests with production
+site data, real customer URLs, real WPCOM notification endpoints, or any fleet
+that can send customer-visible alerts. Prefer public_only for every rollout,
+production rehearsal, and security validation unless the test explicitly needs
+synthetic private targets and the database contains only disposable lab rows.
+Default: public_only.
 
 BODY_READ_MAX_BYTES
 Maximum response-body bytes checker will read for success-path validation when Content-Length is unknown or larger than this budget. For known Content-Length <= this budget, checker requires full EOF and treats truncation as a hard failure. Default: 1048576.
@@ -311,16 +324,16 @@ Maximum response-body bytes checker will read when a keyword check is configured
 Set 0 to use the default budget.
 
 KEYWORD_READ_MAX_MS
-Keyword body-read budget in milliseconds. Set to 0 to inherit the request timeout envelope (NET_COMMS_TIMEOUT or a per-site jetmon_site_check_config.timeout_seconds override). If set > 0 and exhausted before the keyword is found, the check fails as timeout (ErrorTimeout), not keyword mismatch. Default: 0.
+Keyword body-read budget in milliseconds. Set to 0 to inherit the request timeout envelope (NET_COMMS_TIMEOUT or a per-site jetpack_monitor_site_check_config.timeout_seconds override). If set > 0 and exhausted before the keyword is found, the check fails as timeout (ErrorTimeout), not keyword mismatch. Default: 0.
 
 DEFAULT_CHECK_METHOD
-Default HTTP method for sites without a row in jetmon_site_check_config.
+Default HTTP method for sites without a row in jetpack_monitor_site_check_config.
 Allowed values: HEAD or GET. Use HEAD during the first v1-to-v2 replacement
 phase when v2 should behave like the legacy monitor; use GET after the fleet is
 ready to exercise visitor-path checks by default. Default: GET.
 
 DEFAULT_DETECTION_PROFILE
-Default detection profile for sites without a row in jetmon_site_check_config.
+Default detection profile for sites without a row in jetpack_monitor_site_check_config.
 Allowed values:
 - legacy: v1-compatible reachability semantics; no body checks, redirect
   advisory/fail policy, TLS advisory events, or body-read integrity failures.
@@ -340,8 +353,8 @@ is needed. It does not require enabling the Veriflier's legacy-compatible
 
 CHECK_HISTORY_MODE_DEFAULT
 Controls when per-check timing samples (RTT plus the DNS/TCP/TLS/TTFB
-breakdown) are written to jetmon_check_history for a site that has no per-site
-override in jetmon_site_check_config.check_history_mode. Allowed values:
+breakdown) are written to jetpack_monitor_check_history for a site that has no per-site
+override in jetpack_monitor_site_check_config.check_history_mode. Allowed values:
 - disabled: never write. /response-time and /timing-breakdown return rows that
   do exist but report percentiles_meaningful=false; /check-history is empty.
 - status_change: write only the check whose result disagrees with the stored
@@ -365,7 +378,7 @@ healthy checks (failures and transitions are always written regardless of N).
 Must be >= 0; 0 is treated as the default. Default: 10.
 
 AUDIT_LOG_MODE_DEFAULT
-Controls which operational events are written to jetmon_audit_log. Allowed
+Controls which operational events are written to jetpack_monitor_audit_log. Allowed
 values:
 - disabled: never write. The jetmon2 telemetry report and /api/v1/audit-log
   return nothing.
@@ -383,14 +396,14 @@ dashboard polling the API can generate a large unbatched transaction stream;
 "operational" keeps that off by default while preserving the telemetry report.
 
 RETENTION_CHECK_HISTORY_DAYS
-Prune jetmon_check_history rows older than this many days. 0 disables pruning
+Prune jetpack_monitor_check_history rows older than this many days. 0 disables pruning
 (rows accumulate indefinitely). The CHECK_HISTORY_MODE_DEFAULT knob bounds how
 fast this table grows; retention bounds how large it gets over time. Default 0
 (disabled) — retention is a conscious opt-in, not a surprise that starts
 deleting rows after an upgrade.
 
 RETENTION_AUDIT_LOG_DAYS
-Prune jetmon_audit_log rows older than this many days. 0 disables pruning.
+Prune jetpack_monitor_audit_log rows older than this many days. 0 disables pruning.
 Default 0 (disabled).
 
 RETENTION_BACKGROUND_ENABLED
@@ -410,7 +423,7 @@ Set to true to respect the check_interval column per site instead of running
 all sites every fixed-cadence pass. Recommended for production freshness
 testing because newly due sites are discovered without waiting for
 MIN_TIME_BETWEEN_ROUNDS_SEC. In legacy round-scheduler mode, Jetmon maintains
-jetmon_site_runtime.next_check_at after each completed check so due-site
+jetpack_monitor_site_runtime.next_check_at after each completed check so due-site
 selection can use an indexed sidecar timestamp range instead of recomputing
 each row's interval on every poll. Successful checks use the site's normal
 check_interval; failed checks get a bounded one-minute follow-up when the
@@ -428,7 +441,7 @@ Default: legacy.
 
 ROLLOUT_MODE
 Monitor authority mode. "active" is normal production behavior: the Monitor
-claims buckets through jetmon_hosts or uses PINNED_BUCKET_MIN/MAX when set, then
+claims buckets through jetpack_monitor_hosts or uses PINNED_BUCKET_MIN/MAX when set, then
 runs scheduled checks. "standby" is read-only rollout mode: the Monitor may
 serve health/API checks, but it does not claim buckets, run scheduled checks, or
 mutate site state. "api-controlled" is the container rollout mode: the Monitor
@@ -441,7 +454,7 @@ Default: active.
 
 STREAMING_LEGACY_PROJECTION_INTERVAL_MIN
 Coarse freshness projection interval used only when SCHEDULER_ENGINE is
-"streaming". Streaming mode does not update jetmon_site_runtime.last_checked_at
+"streaming". Streaming mode does not update jetpack_monitor_site_runtime.last_checked_at
 after every successful probe; instead it batches the latest observation for each
 site at this cadence so a rollback to the legacy scheduler loses at most this
 many minutes of freshness data in normal operation. The accepted rollout window

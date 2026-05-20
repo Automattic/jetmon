@@ -45,6 +45,7 @@ Key settings:
 | `WPCOM_NOTIFY_ENABLE` | true | Allow legacy WPCOM status-change notification calls; set false for internal-only tests |
 | `WPCOM_NOTIFY_MODE` | `legacy` | `legacy` uses the v1-compatible `/jetmon/?data=...` client-certificate path; `modern` is retained for WPCOM contract testing only |
 | `WPCOM_NOTIFY_LEGACY_CERT_PATH` / `WPCOM_NOTIFY_LEGACY_KEY_PATH` | `certs/jetmon.crt` / `certs/jetmon.key` | Client certificate/key used when notifications are enabled in legacy mode |
+| `CHECK_TARGET_SAFETY_MODE` | `public_only` | Monitor target SSRF policy. Keep `public_only` for production, rollout rehearsals, and real site data. `allow_private_for_tests` is accepted only when `WPCOM_NOTIFY_ENABLE=false` and is reserved for isolated uptime-bench capacity labs with disposable synthetic rows. |
 | `EMAIL_TRANSPORT` | `stub` | `stub`, `smtp`, or `wpcom` |
 | `SCHEDULER_ENGINE` | `legacy` | `legacy` round/page scheduler or `streaming` v2-native scheduler |
 | `STREAMING_LEGACY_PROJECTION_INTERVAL_MIN` | 15 | Coarse sidecar freshness rollback projection interval for streaming mode |

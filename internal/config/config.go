@@ -134,6 +134,7 @@ type Config struct {
 	MinTimeBetweenRoundsSec   int      `json:"MIN_TIME_BETWEEN_ROUNDS_SEC"`
 	NetCommsTimeout           int      `json:"NET_COMMS_TIMEOUT"`
 	CheckDNSResolvers         []string `json:"CHECK_DNS_RESOLVERS"`
+	CheckTargetSafetyMode     string   `json:"CHECK_TARGET_SAFETY_MODE"`
 	BodyReadMaxBytes          int64    `json:"BODY_READ_MAX_BYTES"`
 	BodyReadMaxMS             int      `json:"BODY_READ_MAX_MS"`
 	KeywordReadMaxBytes       int64    `json:"KEYWORD_READ_MAX_BYTES"`
@@ -216,6 +217,11 @@ const (
 	CheckHistoryModeAll          = "all"
 )
 
+const (
+	CheckTargetSafetyModePublicOnly           = "public_only"
+	CheckTargetSafetyModeAllowPrivateForTests = "allow_private_for_tests"
+)
+
 // Audit-log recording modes.
 const (
 	AuditLogModeDisabled    = "disabled"
@@ -229,6 +235,15 @@ func ValidCheckHistoryMode(mode string) bool {
 	switch mode {
 	case CheckHistoryModeDisabled, CheckHistoryModeStatusChange,
 		CheckHistoryModeSample, CheckHistoryModeAll:
+		return true
+	default:
+		return false
+	}
+}
+
+func ValidCheckTargetSafetyMode(mode string) bool {
+	switch mode {
+	case CheckTargetSafetyModePublicOnly, CheckTargetSafetyModeAllowPrivateForTests:
 		return true
 	default:
 		return false
@@ -371,6 +386,7 @@ func defaults() *Config {
 		WPCOMNotifyLegacyInsecure:            true,
 		MinTimeBetweenRoundsSec:              300,
 		NetCommsTimeout:                      10,
+		CheckTargetSafetyMode:                CheckTargetSafetyModePublicOnly,
 		BodyReadMaxBytes:                     1048576,
 		BodyReadMaxMS:                        250,
 		KeywordReadMaxBytes:                  1048576,
@@ -720,6 +736,16 @@ func validate(cfg *Config) error {
 	}
 	if cfg.StreamingTargetReloadSec < 0 {
 		return fmt.Errorf("STREAMING_TARGET_RELOAD_SEC must be > 0")
+	}
+	cfg.CheckTargetSafetyMode = strings.TrimSpace(strings.ToLower(cfg.CheckTargetSafetyMode))
+	if cfg.CheckTargetSafetyMode == "" {
+		cfg.CheckTargetSafetyMode = CheckTargetSafetyModePublicOnly
+	}
+	if !ValidCheckTargetSafetyMode(cfg.CheckTargetSafetyMode) {
+		return fmt.Errorf("CHECK_TARGET_SAFETY_MODE must be one of: public_only, allow_private_for_tests")
+	}
+	if cfg.CheckTargetSafetyMode == CheckTargetSafetyModeAllowPrivateForTests && cfg.WPCOMNotifyEnable {
+		return fmt.Errorf("CHECK_TARGET_SAFETY_MODE=allow_private_for_tests requires WPCOM_NOTIFY_ENABLE=false")
 	}
 	cfg.VeriflierDiscoveryMode = normalizeVeriflierDiscoveryMode(cfg.VeriflierDiscoveryMode)
 	switch cfg.VeriflierDiscoveryMode {
