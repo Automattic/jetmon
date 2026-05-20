@@ -775,7 +775,7 @@ func checkRequestForSite(cfg *config.Config, site db.Site) checker.Request {
 		KeywordReadMaxMS:    cfg.KeywordReadMaxMS,
 		CustomHeaders:       checker.ParseCustomHeaders(site.CustomHeaders),
 		RedirectPolicy:      checker.RedirectFollow,
-		EnforceTargetSafety: true,
+		EnforceTargetSafety: cfg.CheckTargetSafetyMode != config.CheckTargetSafetyModeAllowPrivateForTests,
 	}
 	if profile == checkmode.ProfileFull {
 		req.Keyword = site.CheckKeyword

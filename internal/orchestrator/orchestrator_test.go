@@ -136,6 +136,25 @@ func TestCheckRequestForSiteAppliesRolloutCheckPolicy(t *testing.T) {
 	}
 }
 
+func TestCheckRequestForSiteCanDisableTargetSafetyForTests(t *testing.T) {
+	cfg := &config.Config{
+		NetCommsTimeout:         10,
+		DefaultCheckMethod:      "GET",
+		DefaultDetectionProfile: "full",
+		CheckTargetSafetyMode:   config.CheckTargetSafetyModePublicOnly,
+	}
+	req := checkRequestForSite(cfg, db.Site{BlogID: 42, MonitorURL: "http://example.com"})
+	if !req.EnforceTargetSafety {
+		t.Fatal("public_only mode disabled target safety")
+	}
+
+	cfg.CheckTargetSafetyMode = config.CheckTargetSafetyModeAllowPrivateForTests
+	req = checkRequestForSite(cfg, db.Site{BlogID: 42, MonitorURL: "http://site-0000001.capacity.internal"})
+	if req.EnforceTargetSafety {
+		t.Fatal("allow_private_for_tests mode kept target safety enabled")
+	}
+}
+
 func TestInMaintenance(t *testing.T) {
 	origNow := nowFunc
 	defer func() { nowFunc = origNow }()
