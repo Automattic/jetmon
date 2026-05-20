@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"reflect"
 	"strings"
 	"sync"
 	"syscall"
@@ -102,6 +103,7 @@ func main() {
 	// Optional StatsD metrics. STATSD_ADDR is unset in standalone deploys,
 	// "statsd:8125" in the docker compose stack. metrics.Init failure logs and
 	// continues — the verifier should still run with metrics disabled.
+	var resourceStats resourceStatsEmitter
 	if statsdAddr, enabled, err := metrics.InitFromEnv(veriflierStatsDMetricHost(cfg, hostname), ""); err != nil {
 		log.Printf("metrics: init failed (%v) — running without metrics", err)
 	} else if enabled {
@@ -109,8 +111,9 @@ func main() {
 		if strings.TrimSpace(cfg.StatsDPath) == "" {
 			log.Printf("WARN: STATSD_HOST_PATH is unset; StatsD metrics will use Veriflier hostname %q", hostname)
 		}
+		resourceStats = metrics.Global()
 	}
-	stopResourceStats := startVeriflierResourceStats(metrics.Global(), 10*time.Second)
+	stopResourceStats := startVeriflierResourceStats(resourceStats, 10*time.Second)
 	defer stopResourceStats()
 
 	srv := veriflier.NewServerWithOptions(addr, cfg.AuthToken, hostname, version, veriflier.ServerOptions{
@@ -150,7 +153,7 @@ type resourceStatsEmitter interface {
 }
 
 func startVeriflierResourceStats(m resourceStatsEmitter, interval time.Duration) func() {
-	if m == nil || interval <= 0 {
+	if isNilResourceStatsEmitter(m) || interval <= 0 {
 		return func() {}
 	}
 	stop := make(chan struct{})
@@ -170,6 +173,19 @@ func startVeriflierResourceStats(m resourceStatsEmitter, interval time.Duration)
 	var once sync.Once
 	return func() {
 		once.Do(func() { close(stop) })
+	}
+}
+
+func isNilResourceStatsEmitter(m resourceStatsEmitter) bool {
+	if m == nil {
+		return true
+	}
+	v := reflect.ValueOf(m)
+	switch v.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return v.IsNil()
+	default:
+		return false
 	}
 }
 
