@@ -5,6 +5,19 @@ Jetmon 2 keeps the legacy site table v1-shaped during the
 for v2-only configuration, runtime freshness, and event-sourced incident state.
 New schema changes are additive and applied by `./jetmon2 migrate`.
 
+## Time Zones
+
+All temporal columns store UTC. Jetmon writes UTC `time.Time` values and the
+MySQL driver is configured with `parseTime=true`, `loc=UTC`, and a pinned
+session `time_zone='+00:00'` (`internal/db/server_map.go`). Pinning the session
+zone is what guarantees consistency: it makes `DATETIME`, `TIMESTAMP`, and
+server-evaluated `CURRENT_TIMESTAMP` defaults all interpret and return UTC
+regardless of the database host's OS time zone, so the same row reads back
+identically on every Monitor host. `DATETIME` columns (e.g. site-runtime
+freshness, maintenance windows) are intentionally kept rather than converted to
+`TIMESTAMP`, both because the session pin already makes them UTC-consistent and
+because `TIMESTAMP` carries a 2038 epoch ceiling that `DATETIME` does not.
+
 ## Legacy Site Table
 
 The primary site table remains `jetpack_monitor_sites`.

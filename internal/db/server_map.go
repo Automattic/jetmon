@@ -341,6 +341,15 @@ func endpointFromParts(role, host, port, database, user, password string) (endpo
 	mc.Addr = net.JoinHostPort(host, port)
 	mc.DBName = database
 	mc.ParseTime = true
+	// Parse DB time values as UTC (driver default, set explicitly for intent)
+	// and pin the MySQL session time zone to UTC. Jetmon always writes UTC
+	// time.Time values; without a pinned session zone, TIMESTAMP columns and
+	// CURRENT_TIMESTAMP defaults are interpreted in the server's OS time zone,
+	// so the same row reads back differently across hosts in different zones.
+	// Pinning '+00:00' makes DATETIME, TIMESTAMP, and server-evaluated
+	// defaults all behave identically and correctly regardless of host TZ.
+	mc.Loc = time.UTC
+	mc.Params = map[string]string{"time_zone": "'+00:00'"}
 	mc.Timeout = 10 * time.Second
 	mc.ReadTimeout = 30 * time.Second
 	mc.WriteTimeout = 30 * time.Second
