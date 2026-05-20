@@ -206,6 +206,61 @@ func TestEmailTransportLabelAndDelivery(t *testing.T) {
 	}
 }
 
+func TestWPCOMLegacyInsecureTLSWarning(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  config.Config
+		warn bool
+	}{
+		{
+			name: "legacy enabled insecure warns",
+			cfg:  config.Config{WPCOMNotifyEnable: true, WPCOMNotifyMode: config.WPCOMNotifyModeLegacy, WPCOMNotifyLegacyInsecure: true},
+			warn: true,
+		},
+		{
+			name: "legacy enabled verifying is silent",
+			cfg:  config.Config{WPCOMNotifyEnable: true, WPCOMNotifyMode: config.WPCOMNotifyModeLegacy, WPCOMNotifyLegacyInsecure: false},
+			warn: false,
+		},
+		{
+			name: "modern mode is silent even when insecure flag set",
+			cfg:  config.Config{WPCOMNotifyEnable: true, WPCOMNotifyMode: config.WPCOMNotifyModeModern, WPCOMNotifyLegacyInsecure: true},
+			warn: false,
+		},
+		{
+			name: "notifications disabled is silent",
+			cfg:  config.Config{WPCOMNotifyEnable: false, WPCOMNotifyMode: config.WPCOMNotifyModeLegacy, WPCOMNotifyLegacyInsecure: true},
+			warn: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := wpcomLegacyInsecureTLSWarning(&tt.cfg)
+			if tt.warn && got == "" {
+				t.Fatal("wpcomLegacyInsecureTLSWarning() = \"\", want a warning")
+			}
+			if !tt.warn && got != "" {
+				t.Fatalf("wpcomLegacyInsecureTLSWarning() = %q, want \"\"", got)
+			}
+			// When it warns, validate-config advice must surface the same line.
+			if tt.warn {
+				advice := wpcomNotifyAdviceLines(&tt.cfg)
+				found := false
+				for _, line := range advice {
+					if line == got {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Fatalf("wpcomNotifyAdviceLines() = %v, missing insecure-TLS warning", advice)
+				}
+			}
+		})
+	}
+}
+
 func TestDeliveryWorkersShouldStart(t *testing.T) {
 	tests := []struct {
 		name      string

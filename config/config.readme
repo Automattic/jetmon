@@ -185,10 +185,14 @@ are production secrets; mount or inject them outside the repo and image. The
 default paths match the v1 repo layout: certs/jetmon.crt and certs/jetmon.key.
 
 WPCOM_NOTIFY_LEGACY_INSECURE_SKIP_VERIFY
+WARNING: When true (the default) legacy WPCOM notifications skip server TLS
+certificate verification and are exposed to man-in-the-middle.
 Whether legacy WPCOM mode skips remote TLS certificate verification. Default:
 true to preserve v1's rejectUnauthorized=false behavior for initial
 compatibility. Set false only after confirming the WPCOM legacy endpoint works
-with normal TLS verification from the production container network.
+with normal TLS verification from the production container network. While it is
+true and WPCOM notifications are enabled in legacy mode, jetmon2 logs a WARN at
+startup and in validate-config output.
 
 VERIFLIER_BATCH_SIZE
 Legacy compatibility setting retained so copied v1-style configs parse. The

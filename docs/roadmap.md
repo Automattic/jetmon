@@ -812,6 +812,17 @@ Recently completed candidate branches:
     API contract and dispatch performance are unaffected.
   - **Also:** amend ADR-0003 from "accepted plaintext" to "encryption available,
     opt-in" when the first PR lands, so the ADR and plan doc do not drift.
+- **Flip `WPCOM_NOTIFY_LEGACY_INSECURE_SKIP_VERIFY` to default `false`
+  (secure-by-default) once the production WPCOM legacy endpoint is confirmed to
+  pass normal TLS verification.** Today it defaults `true` for v1 parity
+  (`rejectUnauthorized=false`), so legacy WPCOM notifications skip server cert
+  verification and are MITM-exposed; jetmon2 now logs a WARN at startup and in
+  `validate-config` while that holds (`wpcomLegacyInsecureTLSWarning`). The flag
+  must stay for explicit opt-in, but the default should invert after an operator
+  verifies the endpoint works with verification from the production container
+  network — the staged path already described in `config/config.readme`. Until
+  then this stays a documented, warned default rather than a hard gate, since
+  the channel is mTLS-authenticated and only active in legacy notify mode.
 
 ### P2 - v3 and product-driven extensions
 
