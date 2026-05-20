@@ -27,7 +27,7 @@ BUILD_FLAGS := -ldflags "-X main.version=$(shell git describe --tags --always --
                          -X main.buildDate=$(shell date -u +%Y-%m-%dT%H:%M:%SZ) \
                          -X main.goVersion=$(shell $(GO) version | awk '{print $$3}')"
 
-.PHONY: all build build-deliverer build-veriflier generate test test-race test-veriflier-soak lint vet migration-smoke delivery-claim-smoke rollout-docs-verify rollout-rehearsal-verify rollout-docker-lab rollout-docker-lab-clean scale-resilience-lab scale-resilience-lab-clean v2-soak-lab v2-soak-lab-clean rollout-vm-lab-sync rollout-vm-lab-sync-artifacts rollout-vm-lab-stage-v2 rollout-vm-lab-doctor rollout-vm-lab-prepare rollout-vm-lab-smoke rollout-vm-lab-execute-smoke rollout-vm-lab-failure-smoke rollout-vm-lab-resume-smoke rollout-vm-lab-post-start-rollback-smoke rollout-vm-lab-bad-ssh-smoke rollout-vm-lab-v2-start-failure-smoke rollout-vm-lab-runtime-guard-smoke rollout-vm-lab-real-activity-smoke rollout-vm-lab-snapshot-execute-smoke rollout-vm-lab-snapshot-all-smoke api-cli-smoke api-cli-validate api-cli-public-fixture-validate api-cli-public-fixture-validate-clean api-cli-token-create api-cli-token-list api-cli-token-revoke clean
+.PHONY: all build build-deliverer build-veriflier generate test test-race test-veriflier-soak lint vet migration-smoke delivery-claim-smoke rollout-docs-verify rollout-rehearsal-verify rollout-docker-lab rollout-docker-lab-doctor rollout-docker-lab-clean scale-resilience-lab scale-resilience-lab-clean v2-soak-lab v2-soak-lab-clean rollout-vm-lab-sync rollout-vm-lab-sync-artifacts rollout-vm-lab-stage-v2 rollout-vm-lab-doctor rollout-vm-lab-prepare rollout-vm-lab-smoke rollout-vm-lab-execute-smoke rollout-vm-lab-failure-smoke rollout-vm-lab-resume-smoke rollout-vm-lab-post-start-rollback-smoke rollout-vm-lab-bad-ssh-smoke rollout-vm-lab-v2-start-failure-smoke rollout-vm-lab-runtime-guard-smoke rollout-vm-lab-real-activity-smoke rollout-vm-lab-snapshot-execute-smoke rollout-vm-lab-snapshot-all-smoke api-cli-smoke api-cli-validate api-cli-public-fixture-validate api-cli-public-fixture-validate-clean api-cli-token-create api-cli-token-list api-cli-token-revoke clean
 
 all: build build-deliverer build-veriflier
 
@@ -77,6 +77,9 @@ rollout-rehearsal-verify: build
 
 rollout-docker-lab:
 	scripts/rollout-docker-lab.sh run
+
+rollout-docker-lab-doctor:
+	scripts/rollout-docker-lab.sh doctor
 
 rollout-docker-lab-clean:
 	scripts/rollout-docker-lab.sh cleanup
