@@ -190,7 +190,13 @@ production telemetry branches:
 - [ ] Get Systems/Jetmon approval for exact rollout stop/go thresholds after
   production-like rehearsal data is available.
 - [ ] Record projection drift and telemetry parity evidence on
-  production-like data before first canary.
+  production-like data before first canary. Partial lab evidence from
+  2026-05-20 on `jetmon-service-host-2`: `rollout projection-drift` reported
+  `legacy_projection_drift=0`, and `rollout state-report --since=1h` reported
+  complete bucket coverage for range `0-999`. Do not mark this complete yet:
+  the lab had `active_sites=0`, and WPCOM notifications were intentionally
+  disabled, so `telemetry report --since=24h` correctly showed WPCOM attempt
+  deltas rather than clean notification parity.
 - [x] Add Jetmon-owned WPCOM notification parity tests for legacy payload shape,
   confirmed-down payloads, recovery notifications, Seems Down no-notify
   behavior, false-alarm no-notify behavior, and suppression no-duplicate
