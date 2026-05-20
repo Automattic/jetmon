@@ -112,10 +112,14 @@ production telemetry branches:
   expected attempts are missing. Evidence: the 2026-05-20 quick smoke and
   9-cycle soak reports both classified WPCOM notifications as
   `disabled_by_test_plan` with zero observed attempts as expected.
-- [ ] Clean lab-only stale config keys from the Jetmon v2 test config once no
+- [x] Clean lab-only stale config keys from the Jetmon v2 test config once no
   uptime-bench run is active. `validate-config` still warns about old
   `DNS_MONITOR_*` keys on the service-host-2 test deployment; the warnings are
-  harmless but make real rollout warnings easier to miss.
+  harmless but make real rollout warnings easier to miss. Completed on
+  2026-05-20: removed the stale keys from
+  `/opt/jetmon2/config/config.json` on `jetmon-service-host-2`, kept a
+  timestamped backup beside the config, and confirmed `validate-config` passes
+  with the deployed environment and no `DNS_MONITOR_*` warnings.
 - [x] Decide when legacy-compatible `veriflier2` fallback can be removed: keep
   the server-side legacy-compatible endpoint code behind
   `VERIFLIER_ENABLE_LEGACY_HTTP` as an explicit lab/emergency guard, but leave
