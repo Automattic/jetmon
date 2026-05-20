@@ -9,15 +9,15 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
-const eventLookupMinSQL = `SELECT blog_id, ended_at FROM jetmon_events WHERE id = ?`
+const eventLookupMinSQL = `SELECT blog_id, ended_at FROM jetpack_monitor_events WHERE id = ?`
 
-const closeEventTxSelectSQL = `SELECT severity, state, ended_at FROM jetmon_events WHERE id = ? FOR UPDATE`
+const closeEventTxSelectSQL = `SELECT severity, state, ended_at FROM jetpack_monitor_events WHERE id = ? FOR UPDATE`
 
-const closeEventUpdateSQL = ` UPDATE jetmon_events SET ended_at = CURRENT_TIMESTAMP(3), resolution_reason = ? WHERE id = ?`
+const closeEventUpdateSQL = ` UPDATE jetpack_monitor_events SET ended_at = CURRENT_TIMESTAMP(3), resolution_reason = ? WHERE id = ?`
 
-const closeEventInsertTransitionSQL = ` INSERT INTO jetmon_event_transitions (event_id, blog_id, severity_before, severity_after, state_before, state_after, reason, source, metadata) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)`
+const closeEventInsertTransitionSQL = ` INSERT INTO jetpack_monitor_event_transitions (event_id, blog_id, severity_before, severity_after, state_before, state_after, reason, source, metadata) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)`
 
-const countActiveEventsSQL = `SELECT COUNT(*) FROM jetmon_events WHERE blog_id = ? AND ended_at IS NULL`
+const countActiveEventsSQL = `SELECT COUNT(*) FROM jetpack_monitor_events WHERE blog_id = ? AND ended_at IS NULL`
 
 const projectRunningSQL = `UPDATE jetpack_monitor_sites SET site_status = 1, last_status_change = ? WHERE blog_id = ?`
 
@@ -54,7 +54,7 @@ func TestCloseEventHappyPath(t *testing.T) {
 
 	// Read-back: full event + transitions.
 	startedAt := time.Date(2026, 4, 25, 3, 0, 0, 0, time.UTC)
-	mock.ExpectQuery(` SELECT id, blog_id, endpoint_id, check_type, discriminator, severity, state, started_at, ended_at, resolution_reason, cause_event_id, metadata FROM jetmon_events WHERE id = ?`).
+	mock.ExpectQuery(` SELECT id, blog_id, endpoint_id, check_type, discriminator, severity, state, started_at, ended_at, resolution_reason, cause_event_id, metadata FROM jetpack_monitor_events WHERE id = ?`).
 		WithArgs(int64(7)).
 		WillReturnRows(makeEventRow(7, 42, 4, "Down", startedAt, &startedAt))
 	mock.ExpectQuery(transitionsAllSQL).WithArgs(int64(7)).
@@ -153,7 +153,7 @@ func TestCloseEventAlreadyClosedIsIdempotent(t *testing.T) {
 
 	// Read-back happens directly without re-closing.
 	startedAt := closedAt.Add(-1 * time.Hour)
-	mock.ExpectQuery(` SELECT id, blog_id, endpoint_id, check_type, discriminator, severity, state, started_at, ended_at, resolution_reason, cause_event_id, metadata FROM jetmon_events WHERE id = ?`).
+	mock.ExpectQuery(` SELECT id, blog_id, endpoint_id, check_type, discriminator, severity, state, started_at, ended_at, resolution_reason, cause_event_id, metadata FROM jetpack_monitor_events WHERE id = ?`).
 		WithArgs(int64(7)).
 		WillReturnRows(makeEventRow(7, 42, 4, "Down", startedAt, &closedAt))
 	mock.ExpectQuery(transitionsAllSQL).WithArgs(int64(7)).
@@ -181,7 +181,7 @@ func TestCloseEventDefaultReason(t *testing.T) {
 			AddRow(int64(42), nil))
 	expectCloseEventTx(mock, 7, 42, 4, "Down", "manual_override")
 	startedAt := time.Date(2026, 4, 25, 3, 0, 0, 0, time.UTC)
-	mock.ExpectQuery(` SELECT id, blog_id, endpoint_id, check_type, discriminator, severity, state, started_at, ended_at, resolution_reason, cause_event_id, metadata FROM jetmon_events WHERE id = ?`).
+	mock.ExpectQuery(` SELECT id, blog_id, endpoint_id, check_type, discriminator, severity, state, started_at, ended_at, resolution_reason, cause_event_id, metadata FROM jetpack_monitor_events WHERE id = ?`).
 		WithArgs(int64(7)).
 		WillReturnRows(makeEventRow(7, 42, 4, "Down", startedAt, &startedAt))
 	mock.ExpectQuery(transitionsAllSQL).WithArgs(int64(7)).

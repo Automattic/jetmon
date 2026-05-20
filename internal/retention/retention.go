@@ -1,5 +1,5 @@
 // Package retention prunes the append-only operational tables
-// (jetmon_check_history, jetmon_audit_log) down to a configured age. It is the
+// (jetpack_monitor_check_history, jetpack_monitor_audit_log) down to a configured age. It is the
 // storage backstop behind the CHECK_HISTORY_MODE / AUDIT_LOG_MODE write knobs:
 // the modes bound how fast the tables grow, retention bounds how large they
 // get over time.
@@ -64,13 +64,13 @@ type tableSpec struct {
 
 var specs = []tableSpec{
 	{
-		name:    "jetmon_check_history",
+		name:    "jetpack_monitor_check_history",
 		timeCol: "checked_at",
 		lockKey: "jetmon_retention_check_history",
 		days:    func(o Options) int { return o.CheckHistoryDays },
 	},
 	{
-		name:    "jetmon_audit_log",
+		name:    "jetpack_monitor_audit_log",
 		timeCol: "created_at",
 		lockKey: "jetmon_retention_audit_log",
 		days:    func(o Options) int { return o.AuditLogDays },

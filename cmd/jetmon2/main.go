@@ -200,7 +200,7 @@ func runServe() {
 	}
 
 	// Internal API server. Disabled when API_PORT is 0. Bears auth via
-	// jetmon_api_keys; key management is CLI-only (`./jetmon2 keys`).
+	// jetpack_monitor_api_keys; key management is CLI-only (`./jetmon2 keys`).
 	var apiSrv *api.Server
 	if cfg.APIPort > 0 {
 		apiSrv = api.New(fmt.Sprintf(":%d", cfg.APIPort), db.DB(), hostname)
@@ -777,7 +777,7 @@ func bucketOwnershipLabel(cfg *config.Config) string {
 	if min, max, ok := cfg.PinnedBucketRange(); ok {
 		return fmt.Sprintf("pinned range=%d-%d", min, max)
 	}
-	return "dynamic jetmon_hosts"
+	return "dynamic jetpack_monitor_hosts"
 }
 
 func rolloutAdviceLines(cfg *config.Config) []string {

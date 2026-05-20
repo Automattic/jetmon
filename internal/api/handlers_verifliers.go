@@ -46,12 +46,12 @@ const quorumStaleAfterSeconds = 90
 const quorumVantagesSQL = `
 		SELECT vantage_id, region, provider, endpoint_host, endpoint_port,
 		       auth_token, enabled
-		  FROM jetmon_veriflier_vantages
+		  FROM jetpack_monitor_veriflier_vantages
 		 ORDER BY vantage_id`
 
 const quorumActiveAgentsSQL = `
 		SELECT vantage_id, COUNT(*) AS active_agents, MAX(last_seen) AS last_seen
-		  FROM jetmon_veriflier_agents
+		  FROM jetpack_monitor_veriflier_agents
 		 WHERE last_seen >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL ? SECOND)
 		   AND status = 'active'
 		 GROUP BY vantage_id`

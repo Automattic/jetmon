@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// Delivery is the in-memory shape of a jetmon_alert_deliveries row.
+// Delivery is the in-memory shape of a jetpack_monitor_alert_deliveries row.
 type Delivery struct {
 	ID             int64
 	AlertContactID int64
@@ -45,7 +45,7 @@ type EnqueueInput struct {
 // or 0 if the row was a duplicate.
 func Enqueue(ctx context.Context, db *sql.DB, in EnqueueInput) (int64, error) {
 	res, err := db.ExecContext(ctx, `
-		INSERT IGNORE INTO jetmon_alert_deliveries
+		INSERT IGNORE INTO jetpack_monitor_alert_deliveries
 			(alert_contact_id, transition_id, event_id, event_type, severity,
 			 payload, status, attempt, next_attempt_at)
 		VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, CURRENT_TIMESTAMP)`,
@@ -104,7 +104,7 @@ func ClaimReady(ctx context.Context, db *sql.DB, limit int) ([]Delivery, error) 
 		SELECT id, alert_contact_id, transition_id, event_id, event_type, severity, payload,
 		       status, attempt, next_attempt_at, last_status_code, last_response,
 		       last_attempt_at, delivered_at, created_at
-		  FROM jetmon_alert_deliveries
+		  FROM jetpack_monitor_alert_deliveries
 		 WHERE status = 'pending'
 		   AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP)
 		 ORDER BY next_attempt_at ASC
@@ -133,7 +133,7 @@ func ClaimReady(ctx context.Context, db *sql.DB, limit int) ([]Delivery, error) 
 	lockUntil := time.Now().Add(claimLockDuration).UTC()
 	for i := range claimed {
 		res, err := tx.ExecContext(ctx, `
-			UPDATE jetmon_alert_deliveries
+			UPDATE jetpack_monitor_alert_deliveries
 			   SET next_attempt_at = ?
 			 WHERE id = ?
 			   AND status = 'pending'`,
@@ -159,7 +159,7 @@ func ClaimReady(ctx context.Context, db *sql.DB, limit int) ([]Delivery, error) 
 // MarkDelivered records a successful delivery.
 func MarkDelivered(ctx context.Context, db *sql.DB, id int64, statusCode int, responseBody string) error {
 	_, err := db.ExecContext(ctx, `
-		UPDATE jetmon_alert_deliveries
+		UPDATE jetpack_monitor_alert_deliveries
 		   SET status = 'delivered',
 		       last_status_code = ?,
 		       last_response = ?,
@@ -182,7 +182,7 @@ func MarkDelivered(ctx context.Context, db *sql.DB, id int64, statusCode int, re
 // operators can see why.
 func MarkSuppressed(ctx context.Context, db *sql.DB, id int64, reason string) error {
 	_, err := db.ExecContext(ctx, `
-		UPDATE jetmon_alert_deliveries
+		UPDATE jetpack_monitor_alert_deliveries
 		   SET status = 'abandoned',
 		       last_status_code = 429,
 		       last_response = ?,
@@ -201,7 +201,7 @@ func MarkSuppressed(ctx context.Context, db *sql.DB, id int64, reason string) er
 func ScheduleRetry(ctx context.Context, db *sql.DB, id int64, statusCode int, responseBody string, nextAttempt time.Time, abandon bool) error {
 	if abandon {
 		_, err := db.ExecContext(ctx, `
-			UPDATE jetmon_alert_deliveries
+			UPDATE jetpack_monitor_alert_deliveries
 			   SET status = 'abandoned',
 			       last_status_code = ?,
 			       last_response = ?,
@@ -216,7 +216,7 @@ func ScheduleRetry(ctx context.Context, db *sql.DB, id int64, statusCode int, re
 		return nil
 	}
 	_, err := db.ExecContext(ctx, `
-		UPDATE jetmon_alert_deliveries
+		UPDATE jetpack_monitor_alert_deliveries
 		   SET last_status_code = ?,
 		       last_response = ?,
 		       last_attempt_at = CURRENT_TIMESTAMP,
@@ -236,7 +236,7 @@ func GetDelivery(ctx context.Context, db *sql.DB, id int64) (*Delivery, error) {
 		SELECT id, alert_contact_id, transition_id, event_id, event_type, severity, payload,
 		       status, attempt, next_attempt_at, last_status_code, last_response,
 		       last_attempt_at, delivered_at, created_at
-		  FROM jetmon_alert_deliveries
+		  FROM jetpack_monitor_alert_deliveries
 		 WHERE id = ?`, id)
 	d, err := scanDeliveryRow(row)
 	if err != nil {
@@ -256,7 +256,7 @@ func ListDeliveries(ctx context.Context, db *sql.DB, contactID int64, status Sta
 		SELECT id, alert_contact_id, transition_id, event_id, event_type, severity, payload,
 		       status, attempt, next_attempt_at, last_status_code, last_response,
 		       last_attempt_at, delivered_at, created_at
-		  FROM jetmon_alert_deliveries
+		  FROM jetpack_monitor_alert_deliveries
 		 WHERE alert_contact_id = ?`
 	if status != "" {
 		q += " AND status = ?"
@@ -290,7 +290,7 @@ func ListDeliveries(ctx context.Context, db *sql.DB, contactID int64, status Sta
 // abandoned deliveries can be retried.
 func RetryDelivery(ctx context.Context, db *sql.DB, id int64) error {
 	res, err := db.ExecContext(ctx, `
-		UPDATE jetmon_alert_deliveries
+		UPDATE jetpack_monitor_alert_deliveries
 		   SET status = 'pending',
 		       attempt = 0,
 		       next_attempt_at = CURRENT_TIMESTAMP,

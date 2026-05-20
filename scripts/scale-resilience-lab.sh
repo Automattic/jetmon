@@ -232,8 +232,8 @@ seed_sites() {
 
 	{
 		printf 'START TRANSACTION;\n'
-		printf 'DELETE FROM jetmon_site_runtime WHERE blog_id >= 910000000 AND blog_id < %d;\n' "$(( 910000000 + SITE_COUNT ))"
-		printf 'DELETE FROM jetmon_site_check_config WHERE blog_id >= 910000000 AND blog_id < %d;\n' "$(( 910000000 + SITE_COUNT ))"
+		printf 'DELETE FROM jetpack_monitor_site_runtime WHERE blog_id >= 910000000 AND blog_id < %d;\n' "$(( 910000000 + SITE_COUNT ))"
+		printf 'DELETE FROM jetpack_monitor_site_check_config WHERE blog_id >= 910000000 AND blog_id < %d;\n' "$(( 910000000 + SITE_COUNT ))"
 		printf 'DELETE FROM jetpack_monitor_sites WHERE blog_id >= 910000000 AND blog_id < %d;\n' "$(( 910000000 + SITE_COUNT ))"
 		while (( created < SITE_COUNT )); do
 			blog_id=$(( 910000000 + created ))
@@ -261,7 +261,7 @@ seed_sites() {
 					;;
 			esac
 			printf "INSERT INTO jetpack_monitor_sites (blog_id, bucket_no, monitor_url, monitor_active, site_status, check_interval) VALUES (%d, %d, '%s', 1, 1, 1);\n" "$blog_id" "$bucket" "$url"
-			printf "INSERT INTO jetmon_site_check_config (blog_id, request_method, detection_profile, check_keyword, timeout_seconds, redirect_policy, alert_cooldown_minutes) VALUES (%d, 'GET', '%s', %s, 3, 'follow', 0);\n" "$blog_id" "$profile" "$keyword"
+			printf "INSERT INTO jetpack_monitor_site_check_config (blog_id, request_method, detection_profile, check_keyword, timeout_seconds, redirect_policy, alert_cooldown_minutes) VALUES (%d, 'GET', '%s', %s, 3, 'follow', 0);\n" "$blog_id" "$profile" "$keyword"
 			created=$(( created + 1 ))
 		done
 		printf 'COMMIT;\n'
@@ -298,10 +298,10 @@ wait_for_host_count() {
 	local deadline=$((SECONDS + 120))
 	local count=0
 	while (( SECONDS < deadline )); do
-		count="$(scalar_sql "SELECT COUNT(*) FROM jetmon_hosts WHERE status = 'active'")"
+		count="$(scalar_sql "SELECT COUNT(*) FROM jetpack_monitor_hosts WHERE status = 'active'")"
 		if [[ "$count" == "$expected" ]]; then
 			pass "$label active_monitor_hosts=$count"
-			sql -e "SELECT host_id, bucket_min, bucket_max, status, last_heartbeat FROM jetmon_hosts ORDER BY bucket_min, host_id"
+			sql -e "SELECT host_id, bucket_min, bucket_max, status, last_heartbeat FROM jetpack_monitor_hosts ORDER BY bucket_min, host_id"
 			return
 		fi
 		sleep 3
@@ -338,7 +338,7 @@ wait_for_checked_since() {
 		checked="$(scalar_sql "
 			SELECT COUNT(DISTINCT s.jetpack_monitor_site_id)
 			  FROM jetpack_monitor_sites s
-			  JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id
+			  JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id
 			 WHERE s.monitor_active = 1
 			   AND r.last_checked_at >= TIMESTAMP('$since')")"
 		if [[ "$checked" == "$SITE_COUNT" ]]; then
@@ -355,7 +355,7 @@ wait_for_worker_scale() {
 	local deadline=$((SECONDS + 90))
 	local workers=0
 	while (( SECONDS < deadline )); do
-		workers="$(scalar_sql "SELECT COALESCE(MAX(worker_count), 0) FROM jetmon_process_health WHERE process_type = 'monitor' AND state = 'running'")"
+		workers="$(scalar_sql "SELECT COALESCE(MAX(worker_count), 0) FROM jetpack_monitor_process_health WHERE process_type = 'monitor' AND state = 'running'")"
 		if (( workers >= min_workers )); then
 			pass "vertical_autoscale_observed max_worker_count=$workers"
 			return
@@ -366,7 +366,7 @@ wait_for_worker_scale() {
 }
 
 fresh_veriflier_agents() {
-	scalar_sql "SELECT COUNT(*) FROM jetmon_veriflier_agents WHERE last_seen >= UTC_TIMESTAMP() - INTERVAL 15 SECOND"
+	scalar_sql "SELECT COUNT(*) FROM jetpack_monitor_veriflier_agents WHERE last_seen >= UTC_TIMESTAMP() - INTERVAL 15 SECOND"
 }
 
 wait_for_fresh_veriflier_agents() {
@@ -480,7 +480,7 @@ recover_monitor() {
 inject_db_runtime_lock() {
 	local label="db-runtime-lock"
 	log "injecting temporary database table lock duration_sec=$DB_RUNTIME_LOCK_SEC"
-	(root_sql -e "LOCK TABLES jetmon_site_runtime WRITE; DO SLEEP($DB_RUNTIME_LOCK_SEC); UNLOCK TABLES;" "${MYSQL_DATABASE:-jetmon_db}" >/dev/null) &
+	(root_sql -e "LOCK TABLES jetpack_monitor_site_runtime WRITE; DO SLEEP($DB_RUNTIME_LOCK_SEC); UNLOCK TABLES;" "${MYSQL_DATABASE:-jetmon_db}" >/dev/null) &
 	local lock_pid=$!
 	sleep 2
 	capture_fleet_snapshot "$label-during" "any" "any" "any" "any"

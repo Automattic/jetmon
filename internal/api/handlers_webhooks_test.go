@@ -10,15 +10,15 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
-const insertWebhookSQL = ` INSERT INTO jetmon_webhooks (url, active, owner_tenant_id, events, site_filter, state_filter, secret, secret_preview, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+const insertWebhookSQL = ` INSERT INTO jetpack_monitor_webhooks (url, active, owner_tenant_id, events, site_filter, state_filter, secret, secret_preview, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
-const selectWebhookOneSQL = ` SELECT id, url, active, owner_tenant_id, events, site_filter, state_filter, secret_preview, created_by, created_at, updated_at FROM jetmon_webhooks WHERE id = ?`
+const selectWebhookOneSQL = ` SELECT id, url, active, owner_tenant_id, events, site_filter, state_filter, secret_preview, created_by, created_at, updated_at FROM jetpack_monitor_webhooks WHERE id = ?`
 
 const selectWebhookOneForTenantSQL = selectWebhookOneSQL + ` AND owner_tenant_id = ?`
 
-const selectWebhookListSQL = ` SELECT id, url, active, owner_tenant_id, events, site_filter, state_filter, secret_preview, created_by, created_at, updated_at FROM jetmon_webhooks ORDER BY id ASC`
+const selectWebhookListSQL = ` SELECT id, url, active, owner_tenant_id, events, site_filter, state_filter, secret_preview, created_by, created_at, updated_at FROM jetpack_monitor_webhooks ORDER BY id ASC`
 
-const selectWebhookListForTenantSQL = ` SELECT id, url, active, owner_tenant_id, events, site_filter, state_filter, secret_preview, created_by, created_at, updated_at FROM jetmon_webhooks WHERE owner_tenant_id = ? ORDER BY id ASC`
+const selectWebhookListForTenantSQL = ` SELECT id, url, active, owner_tenant_id, events, site_filter, state_filter, secret_preview, created_by, created_at, updated_at FROM jetpack_monitor_webhooks WHERE owner_tenant_id = ? ORDER BY id ASC`
 
 // columnsWebhook is the column set returned by webhook SELECT queries.
 var columnsWebhook = []string{
@@ -240,7 +240,7 @@ func TestUpdateWebhookHappyPath(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
 
-	mock.ExpectExec(`UPDATE jetmon_webhooks SET active = ? WHERE id = ?`).
+	mock.ExpectExec(`UPDATE jetpack_monitor_webhooks SET active = ? WHERE id = ?`).
 		WithArgs(0, int64(42)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(selectWebhookOneSQL).WithArgs(int64(42)).
@@ -261,7 +261,7 @@ func TestUpdateWebhookWithGatewayTenantScopesWrite(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
 
-	mock.ExpectExec(`UPDATE jetmon_webhooks SET active = ? WHERE id = ? AND owner_tenant_id = ?`).
+	mock.ExpectExec(`UPDATE jetpack_monitor_webhooks SET active = ? WHERE id = ? AND owner_tenant_id = ?`).
 		WithArgs(0, int64(42), "tenant-a").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(selectWebhookOneForTenantSQL).WithArgs(int64(42), "tenant-a").
@@ -282,7 +282,7 @@ func TestDeleteWebhookHappyPath(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
 
-	mock.ExpectExec(`DELETE FROM jetmon_webhooks WHERE id = ?`).
+	mock.ExpectExec(`DELETE FROM jetpack_monitor_webhooks WHERE id = ?`).
 		WithArgs(int64(42)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -300,7 +300,7 @@ func TestDeleteWebhookWithGatewayTenantScopesWrite(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
 
-	mock.ExpectExec(`DELETE FROM jetmon_webhooks WHERE id = ? AND owner_tenant_id = ?`).
+	mock.ExpectExec(`DELETE FROM jetpack_monitor_webhooks WHERE id = ? AND owner_tenant_id = ?`).
 		WithArgs(int64(42), "tenant-a").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -318,7 +318,7 @@ func TestDeleteWebhookNotFound(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
 
-	mock.ExpectExec(`DELETE FROM jetmon_webhooks WHERE id = ?`).
+	mock.ExpectExec(`DELETE FROM jetpack_monitor_webhooks WHERE id = ?`).
 		WithArgs(int64(999)).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 
@@ -336,7 +336,7 @@ func TestRotateWebhookSecretHappyPath(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
 
-	mock.ExpectExec(`UPDATE jetmon_webhooks SET secret = ?, secret_preview = ? WHERE id = ?`).
+	mock.ExpectExec(`UPDATE jetpack_monitor_webhooks SET secret = ?, secret_preview = ? WHERE id = ?`).
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), int64(42)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(selectWebhookOneSQL).WithArgs(int64(42)).
@@ -361,7 +361,7 @@ func TestRotateWebhookSecretWithGatewayTenantScopesWrite(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
 
-	mock.ExpectExec(`UPDATE jetmon_webhooks SET secret = ?, secret_preview = ? WHERE id = ? AND owner_tenant_id = ?`).
+	mock.ExpectExec(`UPDATE jetpack_monitor_webhooks SET secret = ?, secret_preview = ? WHERE id = ? AND owner_tenant_id = ?`).
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), int64(42), "tenant-a").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(selectWebhookOneForTenantSQL).WithArgs(int64(42), "tenant-a").
@@ -381,7 +381,7 @@ func TestRotateWebhookSecretNotFound(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
 
-	mock.ExpectExec(`UPDATE jetmon_webhooks SET secret = ?, secret_preview = ? WHERE id = ?`).
+	mock.ExpectExec(`UPDATE jetpack_monitor_webhooks SET secret = ?, secret_preview = ? WHERE id = ?`).
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), int64(999)).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 

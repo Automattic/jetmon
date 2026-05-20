@@ -134,7 +134,7 @@ until the site is upgraded.
 ```sql
 SELECT s.blog_id, s.monitor_url, r.ssl_expiry_date
 FROM jetpack_monitor_sites s
-LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id
+LEFT JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id
 WHERE s.blog_id = 12345;
 ```
 
@@ -145,7 +145,7 @@ expiry thresholds, currently 30, 14, and 7 days before expiry.
 
 ```sql
 SELECT *
-FROM jetmon_false_positives
+FROM jetpack_monitor_false_positives
 WHERE blog_id = 12345
 ORDER BY created_at DESC
 LIMIT 20;
@@ -173,7 +173,7 @@ what follow-up is needed before calling the site down.
 Use maintenance windows for planned work:
 
 ```sql
-INSERT INTO jetmon_site_check_config (blog_id, maintenance_start, maintenance_end)
+INSERT INTO jetpack_monitor_site_check_config (blog_id, maintenance_start, maintenance_end)
 VALUES (12345, '2026-04-20 02:00:00', '2026-04-20 04:00:00')
 ON DUPLICATE KEY UPDATE
     maintenance_start = VALUES(maintenance_start),
@@ -190,7 +190,7 @@ silently suppress alerts indefinitely.
 Clear a window after maintenance:
 
 ```sql
-INSERT INTO jetmon_site_check_config (blog_id, maintenance_start, maintenance_end)
+INSERT INTO jetpack_monitor_site_check_config (blog_id, maintenance_start, maintenance_end)
 VALUES (12345, NULL, NULL)
 ON DUPLICATE KEY UPDATE
     maintenance_start = NULL,
@@ -202,7 +202,7 @@ ON DUPLICATE KEY UPDATE
 Use per-site cooldowns to reduce repeated alerts from a flapping site:
 
 ```sql
-INSERT INTO jetmon_site_check_config (blog_id, alert_cooldown_minutes)
+INSERT INTO jetpack_monitor_site_check_config (blog_id, alert_cooldown_minutes)
 VALUES (12345, 60)
 ON DUPLICATE KEY UPDATE alert_cooldown_minutes = VALUES(alert_cooldown_minutes);
 ```

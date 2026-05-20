@@ -249,7 +249,7 @@ VALUES
 ## Import Tenant Mapping
 
 Gateway-routed site reads and writes are scoped through
-`jetmon_site_tenants`. Import the gateway or customer source of truth before
+`jetpack_monitor_site_tenants`. Import the gateway or customer source of truth before
 customer traffic depends on Jetmon-side tenant enforcement:
 
 ```bash

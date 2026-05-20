@@ -114,7 +114,7 @@ These interfaces must remain byte-for-byte identical to the current implementati
 These features address the most significant gaps against competing solutions and are scoped to be implementable without new server infrastructure.
 
 **SSL Certificate Expiry Monitoring**
-During each HTTPS check, inspect the peer certificate chain via Go's `tls.ConnectionState`. Extract `NotAfter` from the leaf certificate and store it in `jetmon_site_runtime.ssl_expiry_date`. Emit alerts at configurable thresholds (30, 14, and 7 days before expiry) through the same WPCOM notification path as downtime alerts. Zero additional network requests — the data is present in every existing HTTPS connection.
+During each HTTPS check, inspect the peer certificate chain via Go's `tls.ConnectionState`. Extract `NotAfter` from the leaf certificate and store it in `jetpack_monitor_site_runtime.ssl_expiry_date`. Emit alerts at configurable thresholds (30, 14, and 7 days before expiry) through the same WPCOM notification path as downtime alerts. Zero additional network requests — the data is present in every existing HTTPS connection.
 
 **Staged HEAD/GET Site Checks**
 Jetmon 1's HEAD-only verification was a major source of customer-visible false positives and false negatives because many production stacks block, special-case, or incorrectly implement HEAD. Jetmon 2 supports both HEAD and GET checks so rollout can first preserve v1 semantics, then move selected cohorts to GET requests, and finally enable the full v2 detection profile once stability is proven. GET checks base uptime decisions on the same class of request a browser and customer-facing uptime product normally make. This staged check policy is independent of the Veriflier HTTP transport: `HEAD` + `legacy` site probes still travel over the v2 `/v2/check` Veriflier contract.
@@ -123,10 +123,10 @@ Jetmon 1's HEAD-only verification was a major source of customer-visible false p
 For sites with a `check_keyword` value set in the database, full-profile GET checks search the response body for the configured string. A missing keyword on an otherwise-200 response counts as a failure and enters the same retry and confirmation pipeline as an HTTP error. Sites can also set `forbidden_keyword` for one known-bad string or `forbidden_keywords` for a JSON array of known-bad strings that must not appear, such as injected scripts, SEO spam links, parked-domain pages, compromised-content markers, or upstream error templates. These explicit rules require GET and are gated off for HEAD and simple rollout profiles.
 
 **Maintenance Windows**
-Store `maintenance_start` and `maintenance_end` in `jetmon_site_check_config`. During a maintenance window, checks continue and RTT data is collected, but failing checks are swallowed before they open or promote downtime incidents. If a local retry is already in progress when the window starts, the open HTTP event is closed with `maintenance_swallowed` and the legacy projection returns to running. The check result is logged internally so the audit trail is complete, but no alert fires. Configurable via the WPCOM API or direct DB write.
+Store `maintenance_start` and `maintenance_end` in `jetpack_monitor_site_check_config`. During a maintenance window, checks continue and RTT data is collected, but failing checks are swallowed before they open or promote downtime incidents. If a local retry is already in progress when the window starts, the open HTTP event is closed with `maintenance_swallowed` and the legacy projection returns to running. The check result is logged internally so the audit trail is complete, but no alert fires. Configurable via the WPCOM API or direct DB write.
 
 **Granular Timing Breakdown**
-Go's `net/http/httptrace` provides discrete callbacks for DNS start/done, TCP connect start/done, TLS handshake start/done, request written, and first response byte. Each check records composite RTT plus DNS, TCP, TLS, and TTFB timings. The raw samples are stored in `jetmon_check_history` for response-time trending and API statistics; scheduler-level StatsD metrics report round/page phase timing and write volume.
+Go's `net/http/httptrace` provides discrete callbacks for DNS start/done, TCP connect start/done, TLS handshake start/done, request written, and first response byte. Each check records composite RTT plus DNS, TCP, TLS, and TTFB timings. The raw samples are stored in `jetpack_monitor_check_history` for response-time trending and API statistics; scheduler-level StatsD metrics report round/page phase timing and write volume.
 
 When the HTTP probe fails during resolver lookup, Jetmon records structured DNS
 diagnostics in event metadata when Go exposes them: NXDOMAIN, SERVFAIL, timeout,
@@ -136,10 +136,10 @@ without pretending that cached recursive resolvers can see every short
 authoritative DNS outage.
 
 **Per-Site Request Headers**
-Store `custom_headers` JSON in `jetmon_site_check_config`. The check engine merges these into the outgoing request, allowing sites that require an `Authorization` header or a specific `Host` value to be checked correctly.
+Store `custom_headers` JSON in `jetpack_monitor_site_check_config`. The check engine merges these into the outgoing request, allowing sites that require an `Authorization` header or a specific `Host` value to be checked correctly.
 
 **Configurable Timeout Per Site**
-Store `timeout_seconds` in `jetmon_site_check_config`, defaulting to the global `NET_COMMS_TIMEOUT`. Premium sites can have shorter timeouts for faster failure detection; sites on slow infrastructure can have longer ones to reduce false positives.
+Store `timeout_seconds` in `jetpack_monitor_site_check_config`, defaulting to the global `NET_COMMS_TIMEOUT`. Premium sites can have shorter timeouts for faster failure detection; sites on slow infrastructure can have longer ones to reduce false positives.
 
 **Sub-Minute Check Intervals (Premium)**
 The goroutine scheduler handles arbitrary intervals natively. A dedicated premium worker pool with its own configuration runs at high frequency without affecting the general pool. Routing is via the existing bucket range mechanism — premium buckets are assigned to the premium pool configuration.
@@ -148,18 +148,18 @@ The goroutine scheduler handles arbitrary intervals natively. A dedicated premiu
 Expose `NUM_OF_CHECKS` as a per-site override in the database. Sites with a history of transient failures can be tuned to require more local confirmations before escalating to Verifliers, without changing the global default. Failed probes already get a bounded one-minute follow-up when the normal check interval is longer, so retry cadence should stay scheduler-owned unless production evidence shows a need for explicit per-site retry timing.
 
 **Response Time History**
-Each check result — including the HTTP request method and granular DNS/TCP/TLS/TTFB breakdown — is written to a `jetmon_check_history` table with a timestamp. This enables response time trending over configurable windows (1h, 24h, 30d) queryable via the operator dashboard and the audit CLI. The request method gives operators durable evidence that v2 probes are exercising the GET path instead of v1's HEAD-only behavior. The data is already being collected as part of the granular timing breakdown; this feature is purely a storage and query layer on top of it. Provides the response time graphs that customers expect from competing services.
+Each check result — including the HTTP request method and granular DNS/TCP/TLS/TTFB breakdown — is written to a `jetpack_monitor_check_history` table with a timestamp. This enables response time trending over configurable windows (1h, 24h, 30d) queryable via the operator dashboard and the audit CLI. The request method gives operators durable evidence that v2 probes are exercising the GET path instead of v1's HEAD-only behavior. The data is already being collected as part of the granular timing breakdown; this feature is purely a storage and query layer on top of it. Provides the response time graphs that customers expect from competing services.
 
 **Alert Deduplication and Cooldown**
-Store `alert_cooldown_minutes` in `jetmon_site_check_config`, defaulting to a global `ALERT_COOLDOWN_MINUTES` config value. After an alert fires for a site, subsequent alerts for the same site are suppressed until the cooldown expires, even if the site flaps up and down repeatedly. The suppression is recorded in the audit log. Prevents alert fatigue on flapping sites without requiring manual maintenance window configuration.
+Store `alert_cooldown_minutes` in `jetpack_monitor_site_check_config`, defaulting to a global `ALERT_COOLDOWN_MINUTES` config value. After an alert fires for a site, subsequent alerts for the same site are suppressed until the cooldown expires, even if the site flaps up and down repeatedly. The suppression is recorded in the audit log. Prevents alert fatigue on flapping sites without requiring manual maintenance window configuration.
 
-Store `next_check_at` in `jetmon_site_runtime` for variable-interval scheduling in legacy round-scheduler mode. Jetmon maintains it after checks, using `last_checked_at + max(check_interval, 1) minutes` for successful probes and a bounded one-minute follow-up for failed probes when the normal interval is longer. This allows due-site selection to use an indexed sidecar range predicate instead of recalculating the interval expression for every active row while keeping open incidents from waiting a full normal interval before the next local observation.
+Store `next_check_at` in `jetpack_monitor_site_runtime` for variable-interval scheduling in legacy round-scheduler mode. Jetmon maintains it after checks, using `last_checked_at + max(check_interval, 1) minutes` for successful probes and a bounded one-minute follow-up for failed probes when the normal interval is longer. This allows due-site selection to use an indexed sidecar range predicate instead of recalculating the interval expression for every active row while keeping open incidents from waiting a full normal interval before the next local observation.
 
 **TLS Version and Cipher Reporting**
 Alongside SSL certificate expiry monitoring, inspect `tls.ConnectionState` for the negotiated TLS version and cipher suite. Sites still serving TLS 1.0 or TLS 1.1 open a `tls_deprecated` warning event, but this advisory does not enter the downtime retry pipeline or project the legacy site status down. Jetmon permits the deprecated handshake long enough to classify the site accurately and records the TLS version and cipher in event metadata. Zero additional network requests — this data is present in every existing HTTPS connection alongside the certificate chain.
 
 **Redirect Policy Configuration**
-Store `redirect_policy` in `jetmon_site_check_config` with three options: `follow` (current behaviour — follow redirects and treat the final response code as the result), `alert` (follow the redirect but record a warning in the audit log when the redirect target or chain changes from a stored baseline), and `fail` (treat any redirect as a failure). Detecting unexpected redirect changes is valuable for catching misconfigured CDN rules, accidental HTTP-to-HTTPS regressions, and domain hijacking scenarios.
+Store `redirect_policy` in `jetpack_monitor_site_check_config` with three options: `follow` (current behaviour — follow redirects and treat the final response code as the result), `alert` (follow the redirect but record a warning in the audit log when the redirect target or chain changes from a stored baseline), and `fail` (treat any redirect as a failure). Detecting unexpected redirect changes is valuable for catching misconfigured CDN rules, accidental HTTP-to-HTTPS regressions, and domain hijacking scenarios.
 
 ---
 
@@ -188,7 +188,7 @@ WPCOM disabled, Mailpit-only email, and a public-looking Docker-internal
 fixture address.
 
 **Structured Logging**
-Runtime logs go to stdout/stderr for collection by systemd, Docker, or the deployment platform. Routine scheduler summaries and state-change chatter are suppressed unless `DEBUG` is enabled; normal production output is limited to startup/shutdown, warnings, and operational failures. V2 does not write the v1 `logs/jetmon.log` or `logs/status-change.log` files by default. Use `jetmon_events`, `jetmon_event_transitions`, `jetmon_audit_log`, the API, dashboard, StatsD, and the v1-style stats API for operational history.
+Runtime logs go to stdout/stderr for collection by systemd, Docker, or the deployment platform. Routine scheduler summaries and state-change chatter are suppressed unless `DEBUG` is enabled; normal production output is limited to startup/shutdown, warnings, and operational failures. V2 does not write the v1 `logs/jetmon.log` or `logs/status-change.log` files by default. Use `jetpack_monitor_events`, `jetpack_monitor_event_transitions`, `jetpack_monitor_audit_log`, the API, dashboard, StatsD, and the v1-style stats API for operational history.
 
 **Alert Flow Replay**
 Given a site `blog_id` and a time range, the replay tool reconstructs the full detection and notification sequence from the audit log: when each check ran, what it found, which local retries fired, which Verifliers were queried and what they returned, and what was sent to the WPCOM API. Outputs a human-readable timeline. Intended for Happiness Engineers debugging "why didn't I get an alert?" or "why did I get an alert when the site was fine?"
@@ -236,8 +236,8 @@ Intended to run as a pre-deployment check in CI and as an operator tool when dia
 **Veriflier Discovery Report**
 `jetmon2 verifliers discovery-report` is a read-only rollout gate for
 auto-discovery. It compares configured static Verifliers, enabled trusted
-`jetmon_veriflier_vantages` rows, and recent monitor-collected
-`jetmon_veriflier_agents` telemetry, then emits text or JSON with
+`jetpack_monitor_veriflier_vantages` rows, and recent monitor-collected
+`jetpack_monitor_veriflier_agents` telemetry, then emits text or JSON with
 green/amber/red status and a suggested next action. It reports only token
 presence, never token values.
 
@@ -278,8 +278,8 @@ thresholds once production operating data shows which signals are worth paging
 on.
 
 Long-running `jetmon2` and `jetmon-deliverer` processes also publish compact
-heartbeat snapshots into `jetmon_process_health`. The `/fleet` dashboard uses
-those snapshots alongside `jetmon_hosts`, outbound delivery queues, projection
+heartbeat snapshots into `jetpack_monitor_process_health`. The `/fleet` dashboard uses
+those snapshots alongside `jetpack_monitor_hosts`, outbound delivery queues, projection
 drift, dependency rollups, and Veriflier discovery tables to summarize monitor
 hosts, standalone deliverers, stale process heartbeats, lifecycle state,
 red/amber/green health rollups, delivery-owner posture, trusted Veriflier
@@ -288,10 +288,10 @@ runtime system memory, and local dependency health without polling every host
 dashboard directly.
 
 **False Positive Tracker**
-Every time the system escalates a site to Veriflier confirmation and the Verifliers do NOT confirm it as down (i.e., the queue entry times out or all Verifliers report the site as up), the event is recorded in a `jetmon_false_positives` table with timestamp, site, HTTP code, error code, and RTT from the local check. A view in the operator dashboard surfaces sites with high false positive rates, helping operators tune per-site `NUM_OF_CHECKS` settings and review whether the site's content/timeout rules are too sensitive.
+Every time the system escalates a site to Veriflier confirmation and the Verifliers do NOT confirm it as down (i.e., the queue entry times out or all Verifliers report the site as up), the event is recorded in a `jetpack_monitor_false_positives` table with timestamp, site, HTTP code, error code, and RTT from the local check. A view in the operator dashboard surfaces sites with high false positive rates, helping operators tune per-site `NUM_OF_CHECKS` settings and review whether the site's content/timeout rules are too sensitive.
 
 **Internal Audit Log**
-Operational activity for every site is written to a `jetmon_audit_log` table:
+Operational activity for every site is written to a `jetpack_monitor_audit_log` table:
 
 - Check performed: timestamp, source (local/veriflier name), result (HTTP code, error code, RTT)
 - WPCOM notification sent: timestamp, payload hash, response code
@@ -302,7 +302,7 @@ Operational activity for every site is written to a `jetmon_audit_log` table:
 - Maintenance window active: timestamp, window end
 - Config change: timestamp, which keys changed
 
-Authoritative incident state transitions live in `jetmon_event_transitions`, written by the `eventstore` package in the same transaction as the matching `jetmon_events` mutation. The audit log is intentionally operational context, not the source of truth for site state.
+Authoritative incident state transitions live in `jetpack_monitor_event_transitions`, written by the `eventstore` package in the same transaction as the matching `jetpack_monitor_events` mutation. The audit log is intentionally operational context, not the source of truth for site state.
 
 Queryable by `blog_id` and time range via a CLI tool (`jetmon2 audit --blog-id 12345 --since 2h`) and via the operator dashboard. Designed specifically for Happiness Engineers investigating customer-reported alert issues.
 
@@ -318,7 +318,7 @@ Queryable by `blog_id` and time range via a CLI tool (`jetmon2 audit --blog-id 1
 - `jetmon2 rollout cutover-check` — bundles the read-only post-start pinned preflight, activity, dashboard status, and projection-drift checks
 - `jetmon2 rollout activity-check` — verifies recent check activity for a bucket range after cutover
 - `jetmon2 rollout rollback-check` — verifies a pinned v2 range is safe to hand back to v1
-- `jetmon2 rollout dynamic-check` — validates full `jetmon_hosts` coverage after the fleet transitions from pinned to dynamic ownership
+- `jetmon2 rollout dynamic-check` — validates full `jetpack_monitor_hosts` coverage after the fleet transitions from pinned to dynamic ownership
 - `jetmon2 rollout projection-drift` — summarizes and lists active sites whose legacy `site_status` projection disagrees with the authoritative event state
 - `jetmon2 rollout state-report` — summarizes ownership mode, bucket coverage, recent activity, projection drift, delivery-owner state, and the suggested next action
 - `jetmon2 drain --worker N` — gracefully removes one worker pool slot, waiting for in-flight checks to complete before reducing concurrency
@@ -358,11 +358,11 @@ unit is `Type=simple`; Jetmon does not currently implement `sd_notify` watchdog
 heartbeats.
 
 **MySQL-Coordinated Bucket Ownership**
-A `jetmon_hosts` table replaces the static `BUCKET_NO_MIN`/`BUCKET_NO_MAX` config values with runtime-negotiated bucket ownership. Hosts claim, hold, and release bucket ranges autonomously using MySQL transactions as the coordination mechanism — no cluster orchestrator required. For the initial v1-to-v2 production migration, `PINNED_BUCKET_MIN`/`PINNED_BUCKET_MAX` (with `BUCKET_NO_MIN`/`BUCKET_NO_MAX` accepted as aliases) temporarily pins a v2 host to the exact static range of the v1 host it replaces; remove those keys after the fleet is on v2 to enable dynamic ownership.
+A `jetpack_monitor_hosts` table replaces the static `BUCKET_NO_MIN`/`BUCKET_NO_MAX` config values with runtime-negotiated bucket ownership. Hosts claim, hold, and release bucket ranges autonomously using MySQL transactions as the coordination mechanism — no cluster orchestrator required. For the initial v1-to-v2 production migration, `PINNED_BUCKET_MIN`/`PINNED_BUCKET_MAX` (with `BUCKET_NO_MIN`/`BUCKET_NO_MAX` accepted as aliases) temporarily pins a v2 host to the exact static range of the v1 host it replaces; remove those keys after the fleet is on v2 to enable dynamic ownership.
 
 Table structure:
 ```sql
-CREATE TABLE jetmon_hosts (
+CREATE TABLE jetpack_monitor_hosts (
     host_id        VARCHAR(255) NOT NULL PRIMARY KEY,
     bucket_min     SMALLINT UNSIGNED NOT NULL,
     bucket_max     SMALLINT UNSIGNED NOT NULL,
@@ -373,7 +373,7 @@ CREATE TABLE jetmon_hosts (
 
 In dynamic ownership mode, on startup the instance upserts its own row, then scans for rows whose `last_heartbeat` is older than the grace period (suggested: 2× normal round time). Expired rows are presumed dead. The instance claims their uncovered bucket ranges by deleting the dead rows and inserting its own covering range inside a `SELECT ... FOR UPDATE` transaction, preventing two hosts from racing to claim the same range simultaneously. The instance derives its active range from what it successfully claimed — `BUCKET_NO_MIN`/`BUCKET_NO_MAX` are only needed as aliases for the temporary pinned migration mode.
 
-In dynamic ownership mode, each round the orchestrator issues a single `UPDATE jetmon_hosts SET last_heartbeat = NOW() WHERE host_id = ?`. If a host stalls, is OOM-killed, or loses network, its heartbeat stops updating. Surviving hosts detect the stale row at the start of their next round and absorb its buckets up to their configured `BUCKET_TARGET` maximum. In pinned migration mode, the host skips `jetmon_hosts` entirely and checks only its configured static range.
+In dynamic ownership mode, each round the orchestrator issues a single `UPDATE jetpack_monitor_hosts SET last_heartbeat = NOW() WHERE host_id = ?`. If a host stalls, is OOM-killed, or loses network, its heartbeat stops updating. Surviving hosts detect the stale row at the start of their next round and absorb its buckets up to their configured `BUCKET_TARGET` maximum. In pinned migration mode, the host skips `jetpack_monitor_hosts` entirely and checks only its configured static range.
 
 On SIGINT, the instance sets `status = 'draining'`, completes in-flight checks, then deletes its own row. Surviving hosts can reclaim those buckets at the start of their next round without waiting for heartbeat expiry. A hard-killed host leaves its row in place; the grace period determines how long before its buckets are reclaimed.
 

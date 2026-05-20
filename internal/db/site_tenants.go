@@ -38,7 +38,7 @@ func UpsertSiteTenantMappings(ctx context.Context, conn *sql.DB, mappings []Site
 	defer tx.Rollback()
 
 	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO jetmon_site_tenants (tenant_id, blog_id, source)
+		INSERT INTO jetpack_monitor_site_tenants (tenant_id, blog_id, source)
 		VALUES (?, ?, ?)
 		ON DUPLICATE KEY UPDATE
 			source = VALUES(source),

@@ -1,5 +1,5 @@
 // Package webhooks manages outbound webhook subscriptions and HMAC-signed
-// deliveries. Sole writer for jetmon_webhooks and jetmon_webhook_deliveries.
+// deliveries. Sole writer for jetpack_monitor_webhooks and jetpack_monitor_webhook_deliveries.
 //
 // A webhook is a registration that says "POST to this URL when matching
 // events fire." A delivery is one webhook firing — created when an event
@@ -27,7 +27,7 @@ import (
 	"github.com/Automattic/jetmon/internal/netguard"
 )
 
-// Storage note: the raw secret is stored in plaintext in jetmon_webhooks.
+// Storage note: the raw secret is stored in plaintext in jetpack_monitor_webhooks.
 // Webhooks are outbound-only — the server signs every delivery, so the HMAC
 // key has to be available in plaintext at signing time. Hashing the secret
 // at rest (the API-key pattern) would make signing impossible. Encryption
@@ -80,7 +80,7 @@ var (
 	ErrInvalidEvent    = errors.New("webhooks: unknown event type")
 )
 
-// Webhook is the in-memory shape of a jetmon_webhooks row. The raw secret
+// Webhook is the in-memory shape of a jetpack_monitor_webhooks row. The raw secret
 // is never stored here — it's hashed at create/rotate time and discarded.
 type Webhook struct {
 	ID            int64
@@ -180,7 +180,7 @@ func Create(ctx context.Context, db *sql.DB, in CreateInput) (rawSecret string, 
 	stateFilterJSON, _ := json.Marshal(in.StateFilter)
 
 	res, err := db.ExecContext(ctx, `
-		INSERT INTO jetmon_webhooks
+		INSERT INTO jetpack_monitor_webhooks
 			(url, active, owner_tenant_id, events, site_filter, state_filter,
 			 secret, secret_preview, created_by)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -352,7 +352,7 @@ func update(ctx context.Context, db *sql.DB, id int64, ownerTenantID string, in 
 	}
 
 	args = append(args, id)
-	q := "UPDATE jetmon_webhooks SET "
+	q := "UPDATE jetpack_monitor_webhooks SET "
 	for i, c := range clauses {
 		if i > 0 {
 			q += ", "
@@ -370,8 +370,8 @@ func update(ctx context.Context, db *sql.DB, id int64, ownerTenantID string, in 
 	return get(ctx, db, id, ownerTenantID)
 }
 
-// Delete removes a webhook from jetmon_webhooks. Existing rows in
-// jetmon_webhook_deliveries are intentionally NOT cascaded — they remain
+// Delete removes a webhook from jetpack_monitor_webhooks. Existing rows in
+// jetpack_monitor_webhook_deliveries are intentionally NOT cascaded — they remain
 // for audit and manual retry. The dispatcher won't create new deliveries
 // for a deleted webhook because ListActive filters it out.
 func Delete(ctx context.Context, db *sql.DB, id int64) error {
@@ -387,7 +387,7 @@ func DeleteForTenant(ctx context.Context, db *sql.DB, id int64, ownerTenantID st
 }
 
 func deleteWebhook(ctx context.Context, db *sql.DB, id int64, ownerTenantID string) error {
-	q := "DELETE FROM jetmon_webhooks WHERE id = ?"
+	q := "DELETE FROM jetpack_monitor_webhooks WHERE id = ?"
 	args := []any{id}
 	if ownerTenantID != "" {
 		q += " AND owner_tenant_id = ?"
@@ -428,7 +428,7 @@ func rotateSecret(ctx context.Context, db *sql.DB, id int64, ownerTenantID strin
 		return "", nil, err
 	}
 	preview := previewOf(rawSecret)
-	q := `UPDATE jetmon_webhooks SET secret = ?, secret_preview = ? WHERE id = ?`
+	q := `UPDATE jetpack_monitor_webhooks SET secret = ?, secret_preview = ? WHERE id = ?`
 	args := []any{rawSecret, preview, id}
 	if ownerTenantID != "" {
 		q += " AND owner_tenant_id = ?"
@@ -457,7 +457,7 @@ func rotateSecret(ctx context.Context, db *sql.DB, id int64, ownerTenantID strin
 func LoadSecret(ctx context.Context, db *sql.DB, id int64) (string, error) {
 	var s string
 	err := db.QueryRowContext(ctx,
-		`SELECT secret FROM jetmon_webhooks WHERE id = ?`, id,
+		`SELECT secret FROM jetpack_monitor_webhooks WHERE id = ?`, id,
 	).Scan(&s)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -586,7 +586,7 @@ func splitComma(s string) []string {
 	return out
 }
 
-// EventTypeForReason maps a jetmon_event_transitions.reason value to the
+// EventTypeForReason maps a jetpack_monitor_event_transitions.reason value to the
 // webhook event type that should fire. Returns "" if the reason should
 // produce no webhook (used for cause-link reasons that are stored as
 // transitions but not surfaced as separate webhook events in v1).
@@ -640,7 +640,7 @@ func previewOf(s string) string {
 const selectWebhookSQL = `
 	SELECT id, url, active, owner_tenant_id, events, site_filter, state_filter,
 	       secret_preview, created_by, created_at, updated_at
-	  FROM jetmon_webhooks`
+	  FROM jetpack_monitor_webhooks`
 
 type rowScanner interface {
 	Scan(...any) error

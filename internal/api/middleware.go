@@ -89,7 +89,7 @@ func requestIDFromRequest(r *http.Request) string {
 //  2. parses the Bearer token,
 //  3. resolves it to a Key via apikeys.Lookup,
 //  4. enforces the required scope,
-//  5. logs the access to jetmon_audit_log on the way out,
+//  5. logs the access to jetpack_monitor_audit_log on the way out,
 //  6. invokes the wrapped handler.
 //
 // Internal API quirks: 401 vs 403 is honest (no 404-disguised-as-403), and
@@ -265,7 +265,7 @@ func mapAuthError(err error) (status int, code, msg string) {
 	}
 }
 
-// audit writes the request to jetmon_audit_log. Done synchronously today;
+// audit writes the request to jetpack_monitor_audit_log. Done synchronously today;
 // could be moved to a buffered channel if write latency becomes a concern.
 // Errors are logged but never returned to the consumer — audit is observability,
 // not gate.

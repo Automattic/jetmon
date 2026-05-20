@@ -90,7 +90,7 @@ type Config struct {
 
 	// PinnedBucketMin/Max let a v2 host temporarily use the exact static bucket
 	// range of the v1 host it replaces during host-by-host migration. While set,
-	// the orchestrator does not participate in jetmon_hosts dynamic ownership.
+	// the orchestrator does not participate in jetpack_monitor_hosts dynamic ownership.
 	PinnedBucketMin *int `json:"PINNED_BUCKET_MIN"`
 	PinnedBucketMax *int `json:"PINNED_BUCKET_MAX"`
 
@@ -146,7 +146,7 @@ type Config struct {
 
 	// StreamingLegacyProjectionIntervalMin controls the coarse compatibility
 	// freshness write interval used by the streaming scheduler. It intentionally
-	// does not affect check cadence; it only bounds jetmon_site_runtime
+	// does not affect check cadence; it only bounds jetpack_monitor_site_runtime
 	// freshness staleness for rollback to the legacy scheduler.
 	StreamingLegacyProjectionIntervalMin int `json:"STREAMING_LEGACY_PROJECTION_INTERVAL_MIN"`
 	StreamingTargetReloadSec             int `json:"STREAMING_TARGET_RELOAD_SEC"`
@@ -178,7 +178,7 @@ type Config struct {
 	SMTPUseTLS          bool   `json:"SMTP_USE_TLS"`
 
 	// CheckHistoryModeDefault controls when per-check timing samples are
-	// written to jetmon_check_history when a site has no per-site override.
+	// written to jetpack_monitor_check_history when a site has no per-site override.
 	// One of: "disabled", "status_change", "sample", "all". Default
 	// "status_change" keeps incident-edge probes only — the smallest footprint
 	// that preserves diagnostic value. CheckHistorySampleRateDefault is used
@@ -187,7 +187,7 @@ type Config struct {
 	CheckHistorySampleRateDefault int    `json:"CHECK_HISTORY_SAMPLE_RATE_DEFAULT"`
 
 	// AuditLogModeDefault controls which operational events are written to
-	// jetmon_audit_log. One of: "disabled", "writes", "operational", "all".
+	// jetpack_monitor_audit_log. One of: "disabled", "writes", "operational", "all".
 	// Default "operational" keeps the jetmon2 telemetry report working while
 	// gating off the api_access GET firehose.
 	AuditLogModeDefault string `json:"AUDIT_LOG_MODE_DEFAULT"`

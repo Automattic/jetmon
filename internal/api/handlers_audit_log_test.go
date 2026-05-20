@@ -15,7 +15,7 @@ var auditLogColumns = []string{
 
 const auditBaseSQL = `
 		SELECT id, blog_id, event_id, event_type, source, detail, metadata, created_at
-		  FROM jetmon_audit_log
+		  FROM jetpack_monitor_audit_log
 		 WHERE 1=1 ORDER BY id DESC LIMIT ?`
 
 func TestAuditLogReturnsRowsWithMixedNulls(t *testing.T) {
@@ -67,7 +67,7 @@ func TestAuditLogFilters(t *testing.T) {
 
 	expected := `
 		SELECT id, blog_id, event_id, event_type, source, detail, metadata, created_at
-		  FROM jetmon_audit_log
+		  FROM jetpack_monitor_audit_log
 		 WHERE 1=1 AND blog_id = ? AND event_type IN (?,?) AND source = ? AND created_at >= ? AND created_at < ? ORDER BY id DESC LIMIT ?`
 	since := "2026-05-19T00:00:00Z"
 	until := "2026-05-20T00:00:00Z"

@@ -204,7 +204,7 @@ three-step check-policy migration:
 
 Set `DEFAULT_CHECK_METHOD=HEAD` and `DEFAULT_DETECTION_PROFILE=legacy` during
 the initial replacement phase. Per-site overrides live in
-`jetmon_site_check_config`; use that table or the API/CLI fields
+`jetpack_monitor_site_check_config`; use that table or the API/CLI fields
 `request_method` and `detection_profile` to move batches through the phases.
 After migration, switch the process defaults to `GET` and `full`; keep
 per-site `HEAD` overrides only for sites that truly require legacy semantics.
@@ -544,10 +544,10 @@ fails for missing or duplicate v2 vantage IDs.
 Veriflier auto-discovery is also staged. Leave
 `VERIFLIER_DISCOVERY_MODE=static` for the first monitor cutover unless the
 registry has already been rehearsed. To rehearse discovery, create one
-pre-approved `jetmon_veriflier_vantages` row per trusted quorum vantage, enable
+pre-approved `jetpack_monitor_veriflier_vantages` row per trusted quorum vantage, enable
 it only when the endpoint and token are correct, and run monitors in
 `VERIFLIER_DISCOVERY_MODE=shadow`. Shadow mode queries
-`jetmon_veriflier_vantages` and recent `jetmon_veriflier_agents` telemetry rows,
+`jetpack_monitor_veriflier_vantages` and recent `jetpack_monitor_veriflier_agents` telemetry rows,
 then reports missing/extra registry vantages without changing traffic. Switch
 to `active` only after `validate-config` reports usable registry vantages and
 no shadow drift. Active mode falls back to static `VERIFIERS` if discovery is
@@ -568,10 +568,10 @@ active mode without any usable enabled registry vantages. The report does not
 print auth token values.
 
 Agent telemetry is not trust. Monitors poll authenticated Veriflier
-`/v2/status` endpoints and write `jetmon_veriflier_agents` rows showing process
+`/v2/status` endpoints and write `jetpack_monitor_veriflier_agents` rows showing process
 liveness/capacity, so Veriflier hosts do not need database credentials. Those
 rows do not create quorum votes unless an operator has created and enabled the
-matching `jetmon_veriflier_vantages` row.
+matching `jetpack_monitor_veriflier_vantages` row.
 
 Keep `veriflier2`'s legacy-compatible `/check` fallback available as an
 explicit opt-in compatibility guard, but keep it disabled on normal production
@@ -635,8 +635,8 @@ deployment mode is explicit.
 While pinned:
 
 - the host checks only the configured inclusive bucket range
-- the host does not claim or heartbeat `jetmon_hosts`
-- shutdown does not release a `jetmon_hosts` row
+- the host does not claim or heartbeat `jetpack_monitor_hosts`
+- shutdown does not release a `jetpack_monitor_hosts` row
 - `BUCKET_TOTAL`, `BUCKET_TARGET`, and `BUCKET_HEARTBEAT_GRACE_SEC` still
   validate, but dynamic ownership does not use them on that host
 
@@ -677,7 +677,7 @@ This gate fails if the copied static plan does not match the requested host
 range, the staged config cannot load, DB connectivity fails, pinned config is
 missing, the pinned config range does not match the requested range, legacy
 projection writes are disabled, the runtime v2 host still owns a dynamic
-`jetmon_hosts` row, any dynamic `jetmon_hosts` row overlaps the pinned range,
+`jetpack_monitor_hosts` row, any dynamic `jetpack_monitor_hosts` row overlaps the pinned range,
 projection drift exists, or the staged systemd unit fails validation.
 
 ### Rehearse API CLI Workflows Outside Production
@@ -805,7 +805,7 @@ are the fallback/reference path and match what the guided command walks through.
 
     `cutover-check` runs the pinned preflight, recent activity check,
     dashboard status check, and projection-drift report. Its activity section
-    proves the range has fresh `jetmon_site_runtime.last_checked_at` writes,
+    proves the range has fresh `jetpack_monitor_site_runtime.last_checked_at` writes,
     not which process wrote them. Keep v1 stopped and use logs or the dashboard
     to confirm v2 is checking only the pinned range.
 11. After one full expected round, run:
@@ -904,11 +904,11 @@ For every replaced range, verify:
 - Veriflier confirmation works
 - WPCOM notifications use `WPCOM_NOTIFY_MODE=legacy` and retain the v1
   endpoint/auth/payload shape
-- `jetmon_events` receives event rows
-- `jetmon_event_transitions` receives transition rows for each mutation
+- `jetpack_monitor_events` receives event rows
+- `jetpack_monitor_event_transitions` receives transition rows for each mutation
 - `jetpack_monitor_sites.site_status` and `last_status_change` update while
   legacy projection is enabled
-- no unexpected row is claimed in `jetmon_hosts` by a pinned host
+- no unexpected row is claimed in `jetpack_monitor_hosts` by a pinned host
 - no projection drift is reported:
 
   ```bash
@@ -920,7 +920,7 @@ For every replaced range, verify:
 
   If this fails, read the summary section first. It groups mismatches by bucket
   and likely cause, then lists sample rows. Do not restart v1 readers or apply
-  ad hoc `site_status` updates until the matching `jetmon_events` rows and
+  ad hoc `site_status` updates until the matching `jetpack_monitor_events` rows and
   transition history confirm which projection value is authoritative.
 
 - recent check activity exists for the pinned range:
@@ -933,7 +933,7 @@ For every replaced range, verify:
   ```
 
   After a full expected round, require every active site in the range to have a
-  fresh `jetmon_site_runtime.last_checked_at`:
+  fresh `jetpack_monitor_site_runtime.last_checked_at`:
 
   ```bash
   ./jetmon2 rollout activity-check \
@@ -991,7 +991,7 @@ cat stats/totals
 Runtime logs are available through the service manager or container runtime,
 for example `journalctl -u jetmon2 -f` on a systemd host or
 `docker compose logs -f jetmon` in Compose. Site-state history should be read
-from `jetmon_events`, `jetmon_event_transitions`, the audit log, the API, or
+from `jetpack_monitor_events`, `jetpack_monitor_event_transitions`, the audit log, the API, or
 the dashboard rather than v1 log files.
 
 For TeamCity/docker-deploy Monitor deployments, prefer the API equivalent over
@@ -1034,7 +1034,7 @@ start command. The manual steps below are the fallback/reference path.
      --bucket-max=<max>
    ```
 
-   Pinned v2 hosts intentionally do not heartbeat `jetmon_hosts`, so this check
+   Pinned v2 hosts intentionally do not heartbeat `jetpack_monitor_hosts`, so this check
    cannot prove the pinned v2 process is stopped. It verifies the rollback range
    has no dynamic ownership overlap and no legacy projection drift; the process
    stop still needs explicit confirmation.
@@ -1089,7 +1089,7 @@ After every monitor host is on v2 and stable in pinned mode:
 
 3. Observe the fleet for the agreed stabilization window.
 4. Plan a coordinated dynamic-ownership cutover. Pinned hosts do not write
-   `jetmon_hosts`, so do not leave a long-lived mix of pinned and dynamic v2
+   `jetpack_monitor_hosts`, so do not leave a long-lived mix of pinned and dynamic v2
    hosts.
 5. Remove `PINNED_BUCKET_MIN` / `PINNED_BUCKET_MAX` and any legacy
    `BUCKET_NO_MIN` / `BUCKET_NO_MAX` aliases from every v2 monitor config.
@@ -1104,7 +1104,7 @@ After every monitor host is on v2 and stable in pinned mode:
    ./jetmon2 telemetry report --since=15m
    ```
 
-8. Confirm `jetmon_hosts` coverage is active, fresh, gap-free, and
+8. Confirm `jetpack_monitor_hosts` coverage is active, fresh, gap-free, and
    overlap-free. If `DASHBOARD_PORT` is enabled, `/fleet` should show
    `mode=dynamic`, green bucket coverage, no stale processes, no projection
    drift, and no failed or abandoned delivery rows.
@@ -1120,7 +1120,7 @@ After v2 has replaced v1 and the fleet is stable, migrate probe semantics in
 separate batches:
 
 1. Select a small cohort and set `request_method='GET'`,
-   `detection_profile='simple_http'` in `jetmon_site_check_config` or through
+   `detection_profile='simple_http'` in `jetpack_monitor_site_check_config` or through
    the API/CLI. Watch for false-positive floods, verifier disagreement, WPCOM
    parity issues, and support reports.
 2. Expand the `GET` + `simple_http` cohort only after the previous cohort is
@@ -1138,7 +1138,7 @@ separate batches:
    }
    ```
 
-5. Leave rows in `jetmon_site_check_config` only for sites that need an
+5. Leave rows in `jetpack_monitor_site_check_config` only for sites that need an
    exception from the defaults, such as long-term `HEAD` compatibility.
 
 ## Phase 5: Tear Down v1

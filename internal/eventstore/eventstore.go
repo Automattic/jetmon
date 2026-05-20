@@ -1,15 +1,15 @@
-// Package eventstore is the sole writer for jetmon_events and jetmon_event_transitions.
+// Package eventstore is the sole writer for jetpack_monitor_events and jetpack_monitor_event_transitions.
 //
 // Site state in Jetmon is event-sourced across two tables:
 //
-//   - jetmon_events holds the current state of every incident — one row per
+//   - jetpack_monitor_events holds the current state of every incident — one row per
 //     (blog_id, endpoint_id, check_type, discriminator) tuple while open, mutable
 //     until ended_at is set, then frozen.
-//   - jetmon_event_transitions is the append-only history of every mutation made
-//     to a jetmon_events row. One row per change. Never updated, never deleted.
+//   - jetpack_monitor_event_transitions is the append-only history of every mutation made
+//     to a jetpack_monitor_events row. One row per change. Never updated, never deleted.
 //
-// The load-bearing invariant is: every mutation to jetmon_events writes exactly
-// one row into jetmon_event_transitions, in the same database transaction. This
+// The load-bearing invariant is: every mutation to jetpack_monitor_events writes exactly
+// one row into jetpack_monitor_event_transitions, in the same database transaction. This
 // package enforces that by being the only writer for both tables. External
 // callers go through Open, UpdateSeverity, UpdateState, LinkCause, and Close.
 //
@@ -36,7 +36,7 @@ import (
 	"time"
 )
 
-// State labels written to jetmon_events.state and jetmon_event_transitions.state_*.
+// State labels written to jetpack_monitor_events.state and jetpack_monitor_event_transitions.state_*.
 // The state column is VARCHAR(32) rather than ENUM so new states can be added in
 // code without a schema migration.
 const (
@@ -65,8 +65,8 @@ const (
 	SeverityDown      uint8 = 4
 )
 
-// Transition reasons written to jetmon_event_transitions.reason. The closed-event
-// reasons are also written to jetmon_events.resolution_reason on Close.
+// Transition reasons written to jetpack_monitor_event_transitions.reason. The closed-event
+// reasons are also written to jetpack_monitor_events.resolution_reason on Close.
 const (
 	ReasonOpened               = "opened"
 	ReasonSeverityEscalation   = "severity_escalation"
@@ -119,7 +119,7 @@ type OpenResult struct {
 	CurrentState    string // state on the event row after the call
 }
 
-// Store is the sole writer for jetmon_events and jetmon_event_transitions.
+// Store is the sole writer for jetpack_monitor_events and jetpack_monitor_event_transitions.
 type Store struct {
 	db *sql.DB
 }
@@ -203,7 +203,7 @@ func (t *Tx) Open(ctx context.Context, in OpenInput) (OpenResult, error) {
 	// existing row's id. RowsAffected is 1 on insert, 2 on update (per the
 	// MySQL driver convention). We only write an "opened" transition on insert.
 	insertSQL := `
-		INSERT INTO jetmon_events
+		INSERT INTO jetpack_monitor_events
 			(blog_id, endpoint_id, check_type, discriminator, severity, state, metadata)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id)`
@@ -218,7 +218,7 @@ func (t *Tx) Open(ctx context.Context, in OpenInput) (OpenResult, error) {
 	}
 	if in.StartedAt != nil {
 		insertSQL = `
-			INSERT INTO jetmon_events
+			INSERT INTO jetpack_monitor_events
 				(blog_id, endpoint_id, check_type, discriminator, severity, state, started_at, metadata)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 			ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id)`
@@ -271,7 +271,7 @@ func (t *Tx) Open(ctx context.Context, in OpenInput) (OpenResult, error) {
 		// Existing open event matched. Read its current severity/state so the
 		// caller can decide whether to follow up with UpdateSeverity/UpdateState.
 		if err := t.tx.QueryRowContext(ctx,
-			`SELECT severity, state FROM jetmon_events WHERE id = ?`, eventID,
+			`SELECT severity, state FROM jetpack_monitor_events WHERE id = ?`, eventID,
 		).Scan(&currentSeverity, &currentState); err != nil {
 			return OpenResult{}, fmt.Errorf("read existing event: %w", err)
 		}
@@ -352,7 +352,7 @@ func (t *Tx) LinkCause(ctx context.Context, eventID, causeEventID int64, source 
 	}
 
 	if _, err := t.tx.ExecContext(ctx,
-		`UPDATE jetmon_events SET cause_event_id = ? WHERE id = ?`,
+		`UPDATE jetpack_monitor_events SET cause_event_id = ? WHERE id = ?`,
 		nullableInt64(newCause), eventID,
 	); err != nil {
 		return false, fmt.Errorf("update cause: %w", err)
@@ -404,7 +404,7 @@ func (t *Tx) Close(ctx context.Context, eventID int64, resolutionReason, source 
 	}
 
 	if _, err := t.tx.ExecContext(ctx, `
-		UPDATE jetmon_events
+		UPDATE jetpack_monitor_events
 		   SET ended_at = CURRENT_TIMESTAMP(3),
 		       resolution_reason = ?
 		 WHERE id = ?`,
@@ -456,7 +456,7 @@ func (t *Tx) FindActive(ctx context.Context, identity Identity) (ActiveEvent, er
 	var ae ActiveEvent
 	if identity.EndpointID != nil {
 		err := t.tx.QueryRowContext(ctx, `
-			SELECT id, severity, state FROM jetmon_events
+			SELECT id, severity, state FROM jetpack_monitor_events
 			 WHERE blog_id = ?
 			   AND check_type = ?
 			   AND ended_at IS NULL
@@ -473,7 +473,7 @@ func (t *Tx) FindActive(ctx context.Context, identity Identity) (ActiveEvent, er
 		return ae, nil
 	}
 	err := t.tx.QueryRowContext(ctx, `
-		SELECT id, severity, state FROM jetmon_events
+		SELECT id, severity, state FROM jetpack_monitor_events
 		 WHERE blog_id = ? AND check_type = ? AND ended_at IS NULL
 		 ORDER BY started_at ASC
 		 LIMIT 1`, identity.BlogID, identity.CheckType,
@@ -613,15 +613,15 @@ func (t *Tx) mutate(ctx context.Context, eventID int64, m mutation) (bool, error
 	switch {
 	case severityChanged && stateChanged:
 		_, err = t.tx.ExecContext(ctx,
-			`UPDATE jetmon_events SET severity = ?, state = ? WHERE id = ?`,
+			`UPDATE jetpack_monitor_events SET severity = ?, state = ? WHERE id = ?`,
 			*m.severityAfter, *m.stateAfter, eventID)
 	case severityChanged:
 		_, err = t.tx.ExecContext(ctx,
-			`UPDATE jetmon_events SET severity = ? WHERE id = ?`,
+			`UPDATE jetpack_monitor_events SET severity = ? WHERE id = ?`,
 			*m.severityAfter, eventID)
 	case stateChanged:
 		_, err = t.tx.ExecContext(ctx,
-			`UPDATE jetmon_events SET state = ? WHERE id = ?`,
+			`UPDATE jetpack_monitor_events SET state = ? WHERE id = ?`,
 			*m.stateAfter, eventID)
 	}
 	if err != nil {
@@ -667,7 +667,7 @@ func readEventForUpdate(ctx context.Context, tx *sql.Tx, eventID int64) (eventSn
 	var snap eventSnapshot
 	err := tx.QueryRowContext(ctx, `
 		SELECT blog_id, severity, state, ended_at, cause_event_id
-		  FROM jetmon_events
+		  FROM jetpack_monitor_events
 		 WHERE id = ?
 		   FOR UPDATE`, eventID,
 	).Scan(&snap.blogID, &snap.severity, &snap.state, &snap.endedAt, &snap.causeEventID)
@@ -700,7 +700,7 @@ func writeTransition(ctx context.Context, tx *sql.Tx, t transitionInput) error {
 	}
 	if t.changedAt != nil {
 		_, err := tx.ExecContext(ctx, `
-			INSERT INTO jetmon_event_transitions
+			INSERT INTO jetpack_monitor_event_transitions
 				(event_id, blog_id, severity_before, severity_after,
 				 state_before, state_after, reason, source, metadata, changed_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -714,7 +714,7 @@ func writeTransition(ctx context.Context, tx *sql.Tx, t transitionInput) error {
 		return nil
 	}
 	_, err := tx.ExecContext(ctx, `
-		INSERT INTO jetmon_event_transitions
+		INSERT INTO jetpack_monitor_event_transitions
 			(event_id, blog_id, severity_before, severity_after,
 			 state_before, state_after, reason, source, metadata)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,

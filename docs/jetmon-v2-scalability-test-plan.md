@@ -8,12 +8,12 @@ efficiency changes after the successful 1,000-site capacity run.
 `feature/jetmon-v2-scalability-efficiency` adds these scaling changes on top of
 the completed 1,000-site capacity branch:
 
-- Maintained `jetmon_site_runtime.next_check_at` timestamps for indexed
+- Maintained `jetpack_monitor_site_runtime.next_check_at` timestamps for indexed
   variable-interval due selection without altering the legacy site table.
 - One-minute sampling for exact due-count and projection-drift reporting in
   variable-interval mode.
 - Shared bounded HTTP transport for local site checks.
-- Batched `jetmon_site_runtime.ssl_expiry_date` writes when observed
+- Batched `jetpack_monitor_site_runtime.ssl_expiry_date` writes when observed
   certificate dates change.
 
 Do not stack larger persistence changes, such as async check-history writes, on
@@ -41,7 +41,7 @@ these changes from the previous successful 1,000-site baseline.
 
 Capture `EXPLAIN` for both scheduler modes before the capacity run.
 
-Variable-interval selection should use `jetmon_site_runtime.idx_next_check` and
+Variable-interval selection should use `jetpack_monitor_site_runtime.idx_next_check` and
 should not show `Using filesort`:
 
 ```sql
@@ -50,7 +50,7 @@ SELECT s.jetpack_monitor_site_id, s.blog_id, s.bucket_no, s.monitor_url,
        s.monitor_active, s.site_status, s.last_status_change, s.check_interval,
        r.last_checked_at, r.next_check_at
   FROM jetpack_monitor_sites s
-  LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id
+  LEFT JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id
  WHERE s.monitor_active = 1
    AND s.bucket_no BETWEEN 0 AND 999
    AND (r.next_check_at IS NULL OR r.next_check_at <= NOW())
@@ -59,7 +59,7 @@ SELECT s.jetpack_monitor_site_id, s.blog_id, s.bucket_no, s.monitor_url,
 ```
 
 Fixed-cadence selection should continue to use
-`jetmon_site_runtime.idx_last_checked` and should not show `Using filesort`:
+`jetpack_monitor_site_runtime.idx_last_checked` and should not show `Using filesort`:
 
 ```sql
 EXPLAIN
@@ -67,7 +67,7 @@ SELECT s.jetpack_monitor_site_id, s.blog_id, s.bucket_no, s.monitor_url,
        s.monitor_active, s.site_status, s.last_status_change, s.check_interval,
        r.last_checked_at, r.next_check_at
   FROM jetpack_monitor_sites s
-  LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id
+  LEFT JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id
  WHERE s.monitor_active = 1
    AND s.bucket_no BETWEEN 0 AND 999
  ORDER BY r.last_checked_at ASC, s.blog_id ASC
@@ -226,5 +226,5 @@ For each step, preserve:
 - Prometheus/Graphite window export
 - service logs for the exact test window
 - `EXPLAIN` output
-- row counts for `jetmon_check_history`
+- row counts for `jetpack_monitor_check_history`
 - open-event count before and after test-site deactivation

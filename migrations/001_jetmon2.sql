@@ -2,7 +2,7 @@
 -- Applied automatically by `jetmon2 migrate` via internal/db/migrations.go.
 -- This file is provided for reference and manual application if needed.
 
-CREATE TABLE IF NOT EXISTS jetmon_schema_migrations (
+CREATE TABLE IF NOT EXISTS jetpack_monitor_schema_migrations (
     id           INT UNSIGNED NOT NULL PRIMARY KEY,
     applied_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS jetmon_schema_migrations (
 -- monitor_active, check_interval, site_status, and last_status_change.
 
 -- MySQL-coordinated bucket ownership.
-CREATE TABLE IF NOT EXISTS jetmon_hosts (
+CREATE TABLE IF NOT EXISTS jetpack_monitor_hosts (
     host_id        VARCHAR(255) NOT NULL PRIMARY KEY,
     bucket_min     SMALLINT UNSIGNED NOT NULL,
     bucket_max     SMALLINT UNSIGNED NOT NULL,
@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS jetmon_hosts (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Full event history per site.
-CREATE TABLE IF NOT EXISTS jetmon_audit_log (
+CREATE TABLE IF NOT EXISTS jetpack_monitor_audit_log (
     id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
     blog_id      BIGINT UNSIGNED NOT NULL,
     event_type   VARCHAR(64) NOT NULL,
@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS jetmon_audit_log (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- RTT and timing samples for trending.
-CREATE TABLE IF NOT EXISTS jetmon_check_history (
+CREATE TABLE IF NOT EXISTS jetpack_monitor_check_history (
     id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
     blog_id    BIGINT UNSIGNED NOT NULL,
     request_method VARCHAR(16) NOT NULL DEFAULT 'GET',
@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS jetmon_check_history (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Veriflier non-confirmation events (false positives).
-CREATE TABLE IF NOT EXISTS jetmon_false_positives (
+CREATE TABLE IF NOT EXISTS jetpack_monitor_false_positives (
     id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
     blog_id    BIGINT UNSIGNED NOT NULL,
     http_code  SMALLINT NULL,
@@ -68,7 +68,7 @@ CREATE TABLE IF NOT EXISTS jetmon_false_positives (
 -- table so rollout batches can switch HEAD/GET and detection profiles without
 -- another ALTER on jetpack_monitor_sites. NULL values inherit process defaults
 -- or built-in checker defaults.
-CREATE TABLE IF NOT EXISTS jetmon_site_check_config (
+CREATE TABLE IF NOT EXISTS jetpack_monitor_site_check_config (
     blog_id                BIGINT UNSIGNED NOT NULL PRIMARY KEY,
     request_method         ENUM('HEAD','GET') NULL,
     detection_profile      ENUM('legacy','simple_http','full') NULL,
@@ -90,7 +90,7 @@ CREATE TABLE IF NOT EXISTS jetmon_site_check_config (
 -- V2 runtime/projection state. These fields are useful for API display,
 -- rollback freshness checks, and the legacy round scheduler, but they are not
 -- part of the v1 compatibility table.
-CREATE TABLE IF NOT EXISTS jetmon_site_runtime (
+CREATE TABLE IF NOT EXISTS jetpack_monitor_site_runtime (
     blog_id            BIGINT UNSIGNED NOT NULL PRIMARY KEY,
     last_checked_at    DATETIME NULL,
     next_check_at      DATETIME NULL,
@@ -104,7 +104,7 @@ CREATE TABLE IF NOT EXISTS jetmon_site_runtime (
 -- Durable, non-downtime safety findings for unsafe legacy monitor URLs and
 -- runtime probe-safety blocks. These rows let operators remediate or ignore
 -- unsafe targets without representing them as customer-site downtime events.
-CREATE TABLE IF NOT EXISTS jetmon_site_safety_flags (
+CREATE TABLE IF NOT EXISTS jetpack_monitor_site_safety_flags (
     id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
     blog_id         BIGINT UNSIGNED NOT NULL,
     monitor_site_id BIGINT UNSIGNED NOT NULL,
@@ -124,7 +124,7 @@ CREATE TABLE IF NOT EXISTS jetmon_site_safety_flags (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Trusted Veriflier vantage registry for monitor-side discovery.
-CREATE TABLE IF NOT EXISTS jetmon_veriflier_vantages (
+CREATE TABLE IF NOT EXISTS jetpack_monitor_veriflier_vantages (
     vantage_id    VARCHAR(128) NOT NULL PRIMARY KEY,
     region        VARCHAR(128) NOT NULL DEFAULT '',
     provider      VARCHAR(128) NOT NULL DEFAULT '',
@@ -139,7 +139,7 @@ CREATE TABLE IF NOT EXISTS jetmon_veriflier_vantages (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Concrete Veriflier process telemetry and capacity hints.
-CREATE TABLE IF NOT EXISTS jetmon_veriflier_agents (
+CREATE TABLE IF NOT EXISTS jetpack_monitor_veriflier_agents (
     agent_id        VARCHAR(128) NOT NULL PRIMARY KEY,
     vantage_id      VARCHAR(128) NOT NULL,
     hostname        VARCHAR(255) NOT NULL DEFAULT '',

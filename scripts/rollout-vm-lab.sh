@@ -707,7 +707,7 @@ mark_lab_activity() {
 	local db_vm db_ip
 	db_vm="$(vm_name db)"
 	db_ip="$(vm_ip_required "$db_vm")"
-	mysql_lab "$db_ip" jetmon_db -e "INSERT INTO jetmon_site_runtime (blog_id, last_checked_at) SELECT blog_id, UTC_TIMESTAMP() FROM jetpack_monitor_sites WHERE bucket_no BETWEEN $LAB_BUCKET_MIN AND $LAB_BUCKET_MAX ON DUPLICATE KEY UPDATE last_checked_at = VALUES(last_checked_at)"
+	mysql_lab "$db_ip" jetmon_db -e "INSERT INTO jetpack_monitor_site_runtime (blog_id, last_checked_at) SELECT blog_id, UTC_TIMESTAMP() FROM jetpack_monitor_sites WHERE bucket_no BETWEEN $LAB_BUCKET_MIN AND $LAB_BUCKET_MAX ON DUPLICATE KEY UPDATE last_checked_at = VALUES(last_checked_at)"
 	pass "lab_activity_marked bucket_range=$LAB_BUCKET_MIN-$LAB_BUCKET_MAX"
 }
 
@@ -715,7 +715,7 @@ clear_lab_activity() {
 	local db_vm db_ip
 	db_vm="$(vm_name db)"
 	db_ip="$(vm_ip_required "$db_vm")"
-	mysql_lab "$db_ip" jetmon_db -e "INSERT INTO jetmon_site_runtime (blog_id, last_checked_at) SELECT blog_id, NULL FROM jetpack_monitor_sites WHERE bucket_no BETWEEN $LAB_BUCKET_MIN AND $LAB_BUCKET_MAX ON DUPLICATE KEY UPDATE last_checked_at = NULL"
+	mysql_lab "$db_ip" jetmon_db -e "INSERT INTO jetpack_monitor_site_runtime (blog_id, last_checked_at) SELECT blog_id, NULL FROM jetpack_monitor_sites WHERE bucket_no BETWEEN $LAB_BUCKET_MIN AND $LAB_BUCKET_MAX ON DUPLICATE KEY UPDATE last_checked_at = NULL"
 	pass "lab_activity_cleared bucket_range=$LAB_BUCKET_MIN-$LAB_BUCKET_MAX"
 }
 
@@ -726,7 +726,7 @@ lab_active_site_count() {
 
 lab_checked_site_count() {
 	local db_ip="$1"
-	mysql_lab "$db_ip" --batch --skip-column-names jetmon_db -e "SELECT COUNT(*) FROM jetpack_monitor_sites s JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id WHERE s.monitor_active = 1 AND s.bucket_no BETWEEN $LAB_BUCKET_MIN AND $LAB_BUCKET_MAX AND r.last_checked_at IS NOT NULL" | tr -d '[:space:]'
+	mysql_lab "$db_ip" --batch --skip-column-names jetmon_db -e "SELECT COUNT(*) FROM jetpack_monitor_sites s JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id WHERE s.monitor_active = 1 AND s.bucket_no BETWEEN $LAB_BUCKET_MIN AND $LAB_BUCKET_MAX AND r.last_checked_at IS NOT NULL" | tr -d '[:space:]'
 }
 
 wait_for_real_lab_activity() {
@@ -1288,12 +1288,12 @@ smoke_failure_gates() {
 	db_ip="$(vm_ip_required "$db_vm")"
 
 	out="$LAB_DIR/logs/overlap-preflight.out"
-	mysql_lab "$db_ip" jetmon_db -e "INSERT INTO jetmon_hosts (host_id, bucket_min, bucket_max, status) VALUES ('jetmon-rollout-overlap-test', $LAB_BUCKET_MIN, $LAB_BUCKET_MAX, 'active') ON DUPLICATE KEY UPDATE bucket_min = VALUES(bucket_min), bucket_max = VALUES(bucket_max), status = VALUES(status), last_heartbeat = UTC_TIMESTAMP()"
+	mysql_lab "$db_ip" jetmon_db -e "INSERT INTO jetpack_monitor_hosts (host_id, bucket_min, bucket_max, status) VALUES ('jetmon-rollout-overlap-test', $LAB_BUCKET_MIN, $LAB_BUCKET_MAX, 'active') ON DUPLICATE KEY UPDATE bucket_min = VALUES(bucket_min), bucket_max = VALUES(bucket_max), status = VALUES(status), last_heartbeat = UTC_TIMESTAMP()"
 	if ssh_vm "$v2_vm" "bash -lc 'cd /opt/jetmon2 && set -a && . config/jetmon2.env && set +a && JETMON_CONFIG=config/config.json ./jetmon2 rollout host-preflight --file rollout-buckets.csv --host $(vm_name v1) --runtime-host $(vm_name v2) --bucket-min $LAB_BUCKET_MIN --bucket-max $LAB_BUCKET_MAX --bucket-total $LAB_BUCKET_TOTAL'" >"$out" 2>&1; then
-		mysql_lab "$db_ip" jetmon_db -e "DELETE FROM jetmon_hosts WHERE host_id = 'jetmon-rollout-overlap-test'"
+		mysql_lab "$db_ip" jetmon_db -e "DELETE FROM jetpack_monitor_hosts WHERE host_id = 'jetmon-rollout-overlap-test'"
 		fail "overlap preflight unexpectedly passed"
 	fi
-	mysql_lab "$db_ip" jetmon_db -e "DELETE FROM jetmon_hosts WHERE host_id = 'jetmon-rollout-overlap-test'"
+	mysql_lab "$db_ip" jetmon_db -e "DELETE FROM jetpack_monitor_hosts WHERE host_id = 'jetmon-rollout-overlap-test'"
 	grep -q 'overlapping pinned range' "$out" || {
 		cat "$out"
 		fail "overlap preflight failed for an unexpected reason"

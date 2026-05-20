@@ -69,7 +69,7 @@ func (c *WorkerConfig) applyDefaults() {
 
 // Worker drives alert contact delivery. Two background goroutines:
 //
-//   - dispatcher: every PollInterval, polls jetmon_event_transitions for
+//   - dispatcher: every PollInterval, polls jetpack_monitor_event_transitions for
 //     new rows since last_seen, matches each against active contacts
 //     (site_filter + min_severity gate), and enqueues a delivery per
 //     match.
@@ -151,7 +151,7 @@ func (w *Worker) dispatchLoop() {
 	}
 }
 
-// dispatchTick polls jetmon_event_transitions for new rows and
+// dispatchTick polls jetpack_monitor_event_transitions for new rows and
 // enqueues per-contact deliveries for each match.
 func (w *Worker) dispatchTick() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -175,7 +175,7 @@ func (w *Worker) dispatchTick() error {
 
 	rows, err := w.cfg.DB.QueryContext(ctx, `
 		SELECT id, event_id, blog_id, severity_before, severity_after, state_after, reason, changed_at
-		  FROM jetmon_event_transitions
+		  FROM jetpack_monitor_event_transitions
 		 WHERE id > ?
 		 ORDER BY id ASC
 		 LIMIT ?`, lastID, w.cfg.BatchSize)
@@ -296,11 +296,11 @@ func buildPayload(eventType string, transitionID, eventID, blogID int64, reason,
 }
 
 // loadProgress / saveProgress mirror the webhooks worker on the
-// jetmon_alert_dispatch_progress table.
+// jetpack_monitor_alert_dispatch_progress table.
 func (w *Worker) loadProgress(ctx context.Context) (int64, error) {
 	var lastID int64
 	err := w.cfg.DB.QueryRowContext(ctx,
-		`SELECT last_transition_id FROM jetmon_alert_dispatch_progress WHERE instance_id = ?`,
+		`SELECT last_transition_id FROM jetpack_monitor_alert_dispatch_progress WHERE instance_id = ?`,
 		w.cfg.InstanceID,
 	).Scan(&lastID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -314,7 +314,7 @@ func (w *Worker) loadProgress(ctx context.Context) (int64, error) {
 
 func (w *Worker) saveProgress(ctx context.Context, lastID int64) error {
 	_, err := w.cfg.DB.ExecContext(ctx, `
-		INSERT INTO jetmon_alert_dispatch_progress (instance_id, last_transition_id)
+		INSERT INTO jetpack_monitor_alert_dispatch_progress (instance_id, last_transition_id)
 		VALUES (?, ?)
 		ON DUPLICATE KEY UPDATE last_transition_id = VALUES(last_transition_id)`,
 		w.cfg.InstanceID, lastID)

@@ -13,7 +13,7 @@ import (
 // doesn't exist.
 var ErrDeliveryNotFound = errors.New("webhooks: delivery not found")
 
-// Delivery is the in-memory shape of a jetmon_webhook_deliveries row.
+// Delivery is the in-memory shape of a jetpack_monitor_webhook_deliveries row.
 type Delivery struct {
 	ID             int64
 	WebhookID      int64
@@ -51,7 +51,7 @@ type EnqueueInput struct {
 // case some other dispatcher already enqueued this combination).
 func Enqueue(ctx context.Context, db *sql.DB, in EnqueueInput) (int64, error) {
 	res, err := db.ExecContext(ctx, `
-		INSERT IGNORE INTO jetmon_webhook_deliveries
+		INSERT IGNORE INTO jetpack_monitor_webhook_deliveries
 			(webhook_id, transition_id, event_id, event_type, payload,
 			 status, attempt, next_attempt_at)
 		VALUES (?, ?, ?, ?, ?, 'pending', 0, CURRENT_TIMESTAMP)`,
@@ -120,7 +120,7 @@ func ClaimReady(ctx context.Context, db *sql.DB, limit int) ([]Delivery, error) 
 		SELECT id, webhook_id, transition_id, event_id, event_type, payload,
 		       status, attempt, next_attempt_at, last_status_code, last_response,
 		       last_attempt_at, delivered_at, created_at
-		  FROM jetmon_webhook_deliveries
+		  FROM jetpack_monitor_webhook_deliveries
 		 WHERE status = 'pending'
 		   AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP)
 		 ORDER BY next_attempt_at ASC
@@ -149,7 +149,7 @@ func ClaimReady(ctx context.Context, db *sql.DB, limit int) ([]Delivery, error) 
 	lockUntil := time.Now().Add(claimLockDuration).UTC()
 	for i := range claimed {
 		res, err := tx.ExecContext(ctx, `
-			UPDATE jetmon_webhook_deliveries
+			UPDATE jetpack_monitor_webhook_deliveries
 			   SET next_attempt_at = ?
 			 WHERE id = ?
 			   AND status = 'pending'`,
@@ -177,7 +177,7 @@ func ClaimReady(ctx context.Context, db *sql.DB, limit int) ([]Delivery, error) 
 // delivered_at. Subsequent retries are not scheduled — the row is terminal.
 func MarkDelivered(ctx context.Context, db *sql.DB, id int64, statusCode int, responseBody string) error {
 	_, err := db.ExecContext(ctx, `
-		UPDATE jetmon_webhook_deliveries
+		UPDATE jetpack_monitor_webhook_deliveries
 		   SET status = 'delivered',
 		       last_status_code = ?,
 		       last_response = ?,
@@ -200,7 +200,7 @@ func MarkDelivered(ctx context.Context, db *sql.DB, id int64, statusCode int, re
 func ScheduleRetry(ctx context.Context, db *sql.DB, id int64, statusCode int, responseBody string, nextAttempt time.Time, abandon bool) error {
 	if abandon {
 		_, err := db.ExecContext(ctx, `
-			UPDATE jetmon_webhook_deliveries
+			UPDATE jetpack_monitor_webhook_deliveries
 			   SET status = 'abandoned',
 			       last_status_code = ?,
 			       last_response = ?,
@@ -215,7 +215,7 @@ func ScheduleRetry(ctx context.Context, db *sql.DB, id int64, statusCode int, re
 		return nil
 	}
 	_, err := db.ExecContext(ctx, `
-		UPDATE jetmon_webhook_deliveries
+		UPDATE jetpack_monitor_webhook_deliveries
 		   SET last_status_code = ?,
 		       last_response = ?,
 		       last_attempt_at = CURRENT_TIMESTAMP,
@@ -235,7 +235,7 @@ func GetDelivery(ctx context.Context, db *sql.DB, id int64) (*Delivery, error) {
 		SELECT id, webhook_id, transition_id, event_id, event_type, payload,
 		       status, attempt, next_attempt_at, last_status_code, last_response,
 		       last_attempt_at, delivered_at, created_at
-		  FROM jetmon_webhook_deliveries
+		  FROM jetpack_monitor_webhook_deliveries
 		 WHERE id = ?`, id)
 	d, err := scanDeliveryRow(row)
 	if err != nil {
@@ -255,7 +255,7 @@ func ListDeliveries(ctx context.Context, db *sql.DB, webhookID int64, status Sta
 		SELECT id, webhook_id, transition_id, event_id, event_type, payload,
 		       status, attempt, next_attempt_at, last_status_code, last_response,
 		       last_attempt_at, delivered_at, created_at
-		  FROM jetmon_webhook_deliveries
+		  FROM jetpack_monitor_webhook_deliveries
 		 WHERE webhook_id = ?`
 	if status != "" {
 		q += " AND status = ?"
@@ -297,7 +297,7 @@ func ListDeliveries(ctx context.Context, db *sql.DB, webhookID int64, status Sta
 // were already accepted by the consumer.
 func RetryDelivery(ctx context.Context, db *sql.DB, id int64) error {
 	res, err := db.ExecContext(ctx, `
-		UPDATE jetmon_webhook_deliveries
+		UPDATE jetpack_monitor_webhook_deliveries
 		   SET status = 'pending',
 		       attempt = 0,
 		       next_attempt_at = CURRENT_TIMESTAMP,

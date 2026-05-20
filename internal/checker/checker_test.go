@@ -1613,7 +1613,7 @@ func TestCheckConnectionRefused(t *testing.T) {
 	// (and never fires TLSHandshakeStart). The phase durations for any
 	// half-fired phase must be zero, not negative — a negative duration
 	// from `zero_time.Sub(real_time)` overflows the INT column in
-	// jetmon_check_history.
+	// jetpack_monitor_check_history.
 	if res.TCP < 0 {
 		t.Errorf("TCP duration is negative (%v); zero-time underflow", res.TCP)
 	}

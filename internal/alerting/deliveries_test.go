@@ -13,9 +13,9 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 )
 
-const selectClaimReadySQL = ` SELECT id, alert_contact_id, transition_id, event_id, event_type, severity, payload, status, attempt, next_attempt_at, last_status_code, last_response, last_attempt_at, delivered_at, created_at FROM jetmon_alert_deliveries WHERE status = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP) ORDER BY next_attempt_at ASC LIMIT ? FOR UPDATE SKIP LOCKED`
+const selectClaimReadySQL = ` SELECT id, alert_contact_id, transition_id, event_id, event_type, severity, payload, status, attempt, next_attempt_at, last_status_code, last_response, last_attempt_at, delivered_at, created_at FROM jetpack_monitor_alert_deliveries WHERE status = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP) ORDER BY next_attempt_at ASC LIMIT ? FOR UPDATE SKIP LOCKED`
 
-const leaseClaimedSQL = ` UPDATE jetmon_alert_deliveries SET next_attempt_at = ? WHERE id = ? AND status = 'pending'`
+const leaseClaimedSQL = ` UPDATE jetpack_monitor_alert_deliveries SET next_attempt_at = ? WHERE id = ? AND status = 'pending'`
 
 var columnsClaimedDelivery = []string{
 	"id", "alert_contact_id", "transition_id", "event_id", "event_type", "severity",
@@ -85,11 +85,11 @@ func TestClaimReadySkipsLockedRowsMariaDB(t *testing.T) {
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()
-		_, _ = db.ExecContext(cleanupCtx, `DELETE FROM jetmon_alert_deliveries WHERE alert_contact_id = ?`, alertContactID)
+		_, _ = db.ExecContext(cleanupCtx, `DELETE FROM jetpack_monitor_alert_deliveries WHERE alert_contact_id = ?`, alertContactID)
 	})
 	for i := int64(0); i < 3; i++ {
 		res, err := db.ExecContext(ctx, `
-			INSERT INTO jetmon_alert_deliveries
+			INSERT INTO jetpack_monitor_alert_deliveries
 				(alert_contact_id, transition_id, event_id, event_type, severity, payload, status, attempt, next_attempt_at)
 			VALUES (?, ?, ?, 'alert.opened', 4, ?, 'pending', 0, ?)`,
 			alertContactID,
@@ -116,7 +116,7 @@ func TestClaimReadySkipsLockedRowsMariaDB(t *testing.T) {
 	lockedID := ids[0]
 	if err := tx.QueryRowContext(ctx, `
 		SELECT id
-		  FROM jetmon_alert_deliveries
+		  FROM jetpack_monitor_alert_deliveries
 		 WHERE id = ?
 		 FOR UPDATE`, lockedID).Scan(&lockedID); err != nil {
 		t.Fatalf("lock oldest delivery: %v", err)
@@ -163,11 +163,11 @@ func TestClaimReadyConcurrentClaimersMariaDB(t *testing.T) {
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()
-		_, _ = db.ExecContext(cleanupCtx, `DELETE FROM jetmon_alert_deliveries WHERE alert_contact_id = ?`, alertContactID)
+		_, _ = db.ExecContext(cleanupCtx, `DELETE FROM jetpack_monitor_alert_deliveries WHERE alert_contact_id = ?`, alertContactID)
 	})
 	for i := int64(0); i < total; i++ {
 		_, err := db.ExecContext(ctx, `
-			INSERT INTO jetmon_alert_deliveries
+			INSERT INTO jetpack_monitor_alert_deliveries
 				(alert_contact_id, transition_id, event_id, event_type, severity, payload, status, attempt, next_attempt_at)
 			VALUES (?, ?, ?, 'alert.opened', 4, ?, 'pending', 0, ?)`,
 			alertContactID,

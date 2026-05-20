@@ -108,7 +108,7 @@ func TestLookupAllowsFutureRevokedAtDuringRotationGrace(t *testing.T) {
 	mock.ExpectQuery("SELECT id, consumer_name, scope, rate_limit_per_minute").
 		WithArgs(hash).
 		WillReturnRows(rows)
-	mock.ExpectExec("UPDATE jetmon_api_keys SET last_used_at").
+	mock.ExpectExec("UPDATE jetpack_monitor_api_keys SET last_used_at").
 		WithArgs(int64(42)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -174,7 +174,7 @@ func TestLookupAllowsFutureExpiresAt(t *testing.T) {
 	mock.ExpectQuery("SELECT id, consumer_name, scope, rate_limit_per_minute").
 		WithArgs(hash).
 		WillReturnRows(rows)
-	mock.ExpectExec("UPDATE jetmon_api_keys SET last_used_at").
+	mock.ExpectExec("UPDATE jetpack_monitor_api_keys SET last_used_at").
 		WithArgs(int64(44)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -238,7 +238,7 @@ func TestCreateUsesDefaultsAndFetchesPersistedKey(t *testing.T) {
 	defer db.Close()
 
 	now := time.Now().UTC()
-	mock.ExpectExec("INSERT INTO jetmon_api_keys").
+	mock.ExpectExec("INSERT INTO jetpack_monitor_api_keys").
 		WithArgs(sqlmock.AnyArg(), "gateway", string(ScopeWrite), 30, sqlmock.AnyArg(), "cli").
 		WillReturnResult(sqlmock.NewResult(7, 1))
 	mock.ExpectQuery("SELECT id, consumer_name, scope, rate_limit_per_minute").
@@ -321,7 +321,7 @@ func TestRevokeAlreadyRevokedIsSuccess(t *testing.T) {
 	defer db.Close()
 
 	now := time.Now().UTC()
-	mock.ExpectExec("UPDATE jetmon_api_keys SET revoked_at").
+	mock.ExpectExec("UPDATE jetpack_monitor_api_keys SET revoked_at").
 		WithArgs(int64(9)).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT id, consumer_name, scope, rate_limit_per_minute").
@@ -344,7 +344,7 @@ func TestRevokeMissingKeyReturnsNotFound(t *testing.T) {
 	}
 	defer db.Close()
 
-	mock.ExpectExec("UPDATE jetmon_api_keys SET revoked_at").
+	mock.ExpectExec("UPDATE jetpack_monitor_api_keys SET revoked_at").
 		WithArgs(int64(404)).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT id, consumer_name, scope, rate_limit_per_minute").
@@ -371,13 +371,13 @@ func TestRotateSchedulesOldKeyRevocation(t *testing.T) {
 	mock.ExpectQuery("SELECT id, consumer_name, scope, rate_limit_per_minute").
 		WithArgs(int64(3)).
 		WillReturnRows(keyRow(3, "gateway", ScopeAdmin, 60, now, "ops"))
-	mock.ExpectExec("INSERT INTO jetmon_api_keys").
+	mock.ExpectExec("INSERT INTO jetpack_monitor_api_keys").
 		WithArgs(sqlmock.AnyArg(), "gateway", string(ScopeAdmin), 60, sqlmock.AnyArg(), "operator").
 		WillReturnResult(sqlmock.NewResult(4, 1))
 	mock.ExpectQuery("SELECT id, consumer_name, scope, rate_limit_per_minute").
 		WithArgs(int64(4)).
 		WillReturnRows(keyRow(4, "gateway", ScopeAdmin, 60, now, "operator"))
-	mock.ExpectExec("UPDATE jetmon_api_keys").
+	mock.ExpectExec("UPDATE jetpack_monitor_api_keys").
 		WithArgs(300, int64(3)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 

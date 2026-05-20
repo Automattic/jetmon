@@ -15,7 +15,7 @@ import (
 // sqlmock.QueryMatcherEqual.
 const readinessLookupSQL = `
 		SELECT state, health_status, updated_at
-		  FROM jetmon_process_health
+		  FROM jetpack_monitor_process_health
 		 WHERE process_id = ?`
 
 func TestHealthOK(t *testing.T) {

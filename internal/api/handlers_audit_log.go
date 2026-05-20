@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// auditLogRow is one jetmon_audit_log row in API form. blog_id and event_id
+// auditLogRow is one jetpack_monitor_audit_log row in API form. blog_id and event_id
 // are NULL in the table for system-level events (e.g. config_change); we
 // surface them as nullable pointers so consumers can distinguish "not linked"
 // from "linked to row 0".
@@ -87,7 +87,7 @@ func (s *Server) handleListAuditLog(w http.ResponseWriter, r *http.Request) {
 	sb := strings.Builder{}
 	sb.WriteString(`
 		SELECT id, blog_id, event_id, event_type, source, detail, metadata, created_at
-		  FROM jetmon_audit_log
+		  FROM jetpack_monitor_audit_log
 		 WHERE 1=1`)
 
 	if cursor > 0 {

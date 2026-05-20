@@ -13,17 +13,17 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
-const insertAlertContactSQL = ` INSERT INTO jetmon_alert_contacts (label, active, owner_tenant_id, transport, destination, destination_preview, site_filter, min_severity, max_per_hour, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+const insertAlertContactSQL = ` INSERT INTO jetpack_monitor_alert_contacts (label, active, owner_tenant_id, transport, destination, destination_preview, site_filter, min_severity, max_per_hour, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
-const selectAlertContactOneSQL = ` SELECT id, label, active, owner_tenant_id, transport, destination_preview, site_filter, min_severity, max_per_hour, created_by, created_at, updated_at FROM jetmon_alert_contacts WHERE id = ?`
+const selectAlertContactOneSQL = ` SELECT id, label, active, owner_tenant_id, transport, destination_preview, site_filter, min_severity, max_per_hour, created_by, created_at, updated_at FROM jetpack_monitor_alert_contacts WHERE id = ?`
 
 const selectAlertContactOneForTenantSQL = selectAlertContactOneSQL + ` AND owner_tenant_id = ?`
 
-const selectAlertContactListSQL = ` SELECT id, label, active, owner_tenant_id, transport, destination_preview, site_filter, min_severity, max_per_hour, created_by, created_at, updated_at FROM jetmon_alert_contacts ORDER BY id ASC`
+const selectAlertContactListSQL = ` SELECT id, label, active, owner_tenant_id, transport, destination_preview, site_filter, min_severity, max_per_hour, created_by, created_at, updated_at FROM jetpack_monitor_alert_contacts ORDER BY id ASC`
 
-const selectAlertContactListForTenantSQL = ` SELECT id, label, active, owner_tenant_id, transport, destination_preview, site_filter, min_severity, max_per_hour, created_by, created_at, updated_at FROM jetmon_alert_contacts WHERE owner_tenant_id = ? ORDER BY id ASC`
+const selectAlertContactListForTenantSQL = ` SELECT id, label, active, owner_tenant_id, transport, destination_preview, site_filter, min_severity, max_per_hour, created_by, created_at, updated_at FROM jetpack_monitor_alert_contacts WHERE owner_tenant_id = ? ORDER BY id ASC`
 
-const loadAlertDestinationSQL = `SELECT destination FROM jetmon_alert_contacts WHERE id = ?`
+const loadAlertDestinationSQL = `SELECT destination FROM jetpack_monitor_alert_contacts WHERE id = ?`
 
 const loadAlertDestinationForTenantSQL = loadAlertDestinationSQL + ` AND owner_tenant_id = ?`
 
@@ -309,7 +309,7 @@ func TestUpdateAlertContactHappyPath(t *testing.T) {
 	// Update first reads the current row to know the transport.
 	mock.ExpectQuery(selectAlertContactOneSQL).WithArgs(int64(11)).
 		WillReturnRows(makeAlertContactRow(11, "oncall", "pagerduty", 1, 4))
-	mock.ExpectExec(`UPDATE jetmon_alert_contacts SET active = ? WHERE id = ?`).
+	mock.ExpectExec(`UPDATE jetpack_monitor_alert_contacts SET active = ? WHERE id = ?`).
 		WithArgs(0, int64(11)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(selectAlertContactOneSQL).WithArgs(int64(11)).
@@ -332,7 +332,7 @@ func TestUpdateAlertContactWithGatewayTenantScopesWrite(t *testing.T) {
 
 	mock.ExpectQuery(selectAlertContactOneForTenantSQL).WithArgs(int64(11), "tenant-a").
 		WillReturnRows(makeAlertContactRow(11, "oncall", "pagerduty", 1, 4))
-	mock.ExpectExec(`UPDATE jetmon_alert_contacts SET active = ? WHERE id = ? AND owner_tenant_id = ?`).
+	mock.ExpectExec(`UPDATE jetpack_monitor_alert_contacts SET active = ? WHERE id = ? AND owner_tenant_id = ?`).
 		WithArgs(0, int64(11), "tenant-a").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(selectAlertContactOneForTenantSQL).WithArgs(int64(11), "tenant-a").
@@ -416,7 +416,7 @@ func TestDeleteAlertContactHappyPath(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
 
-	mock.ExpectExec(`DELETE FROM jetmon_alert_contacts WHERE id = ?`).
+	mock.ExpectExec(`DELETE FROM jetpack_monitor_alert_contacts WHERE id = ?`).
 		WithArgs(int64(11)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -434,7 +434,7 @@ func TestDeleteAlertContactWithGatewayTenantScopesWrite(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
 
-	mock.ExpectExec(`DELETE FROM jetmon_alert_contacts WHERE id = ? AND owner_tenant_id = ?`).
+	mock.ExpectExec(`DELETE FROM jetpack_monitor_alert_contacts WHERE id = ? AND owner_tenant_id = ?`).
 		WithArgs(int64(11), "tenant-a").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -452,7 +452,7 @@ func TestDeleteAlertContactNotFound(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
 
-	mock.ExpectExec(`DELETE FROM jetmon_alert_contacts WHERE id = ?`).
+	mock.ExpectExec(`DELETE FROM jetpack_monitor_alert_contacts WHERE id = ?`).
 		WithArgs(int64(999)).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 

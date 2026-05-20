@@ -47,10 +47,10 @@ func TestRunDeletesInChunks(t *testing.T) {
 		WithArgs("jetmon_retention_check_history", lockAcquireTimeoutSec).
 		WillReturnRows(sqlmock.NewRows([]string{"l"}).AddRow(1))
 	// First chunk deletes a full chunk → loop continues.
-	mock.ExpectExec("DELETE FROM jetmon_check_history").
+	mock.ExpectExec("DELETE FROM jetpack_monitor_check_history").
 		WillReturnResult(sqlmock.NewResult(0, 3))
 	// Second chunk deletes fewer than chunk size → loop stops.
-	mock.ExpectExec("DELETE FROM jetmon_check_history").
+	mock.ExpectExec("DELETE FROM jetpack_monitor_check_history").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("SELECT RELEASE_LOCK").
 		WithArgs("jetmon_retention_check_history").
@@ -66,7 +66,7 @@ func TestRunDeletesInChunks(t *testing.T) {
 	}
 	var checkHistory TableResult
 	for _, tr := range result.Tables {
-		if tr.Table == "jetmon_check_history" {
+		if tr.Table == "jetpack_monitor_check_history" {
 			checkHistory = tr
 		}
 	}
@@ -99,7 +99,7 @@ func TestRunSkipsWhenLockHeldElsewhere(t *testing.T) {
 	}
 	var auditLog TableResult
 	for _, tr := range result.Tables {
-		if tr.Table == "jetmon_audit_log" {
+		if tr.Table == "jetpack_monitor_audit_log" {
 			auditLog = tr
 		}
 	}
@@ -121,7 +121,7 @@ func TestRunDryRunCountsWithoutDeleting(t *testing.T) {
 	mock.ExpectQuery("SELECT GET_LOCK").
 		WithArgs("jetmon_retention_check_history", lockAcquireTimeoutSec).
 		WillReturnRows(sqlmock.NewRows([]string{"l"}).AddRow(1))
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM jetmon_check_history WHERE checked_at < ?")).
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM jetpack_monitor_check_history WHERE checked_at < ?")).
 		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(int64(123)))
 	mock.ExpectQuery("SELECT RELEASE_LOCK").
 		WithArgs("jetmon_retention_check_history").
@@ -133,7 +133,7 @@ func TestRunDryRunCountsWithoutDeleting(t *testing.T) {
 	}
 	var checkHistory TableResult
 	for _, tr := range result.Tables {
-		if tr.Table == "jetmon_check_history" {
+		if tr.Table == "jetpack_monitor_check_history" {
 			checkHistory = tr
 		}
 	}
@@ -155,7 +155,7 @@ func TestRunReturnsErrorOnDeleteFailure(t *testing.T) {
 	mock.ExpectQuery("SELECT GET_LOCK").
 		WithArgs("jetmon_retention_check_history", lockAcquireTimeoutSec).
 		WillReturnRows(sqlmock.NewRows([]string{"l"}).AddRow(1))
-	mock.ExpectExec("DELETE FROM jetmon_check_history").
+	mock.ExpectExec("DELETE FROM jetpack_monitor_check_history").
 		WillReturnError(errors.New("deadlock"))
 	mock.ExpectQuery("SELECT RELEASE_LOCK").
 		WithArgs("jetmon_retention_check_history").

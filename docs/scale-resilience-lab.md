@@ -71,7 +71,7 @@ must report degraded red/amber summaries while still proving bucket coverage or
 Veriflier telemetry is in the expected state.
 
 The lab validates graceful shutdown rebalancing as well as startup claiming.
-When a Monitor exits cleanly, it releases its `jetmon_hosts` row and the
+When a Monitor exits cleanly, it releases its `jetpack_monitor_hosts` row and the
 remaining active host rows are redistributed in the same database transaction;
 hard failures are still recovered by the normal heartbeat/grace-period path.
 

@@ -251,7 +251,7 @@ func (s *Server) handleDeleteAlertContact(w http.ResponseWriter, r *http.Request
 // Sends a synthetic notification through the contact's transport — same
 // rendering, same dispatch path, but with a test-flagged Notification.
 // Bypasses the severity gate and the per-hour rate cap; logged in
-// jetmon_audit_log via the API auth middleware.
+// jetpack_monitor_audit_log via the API auth middleware.
 //
 // Returns the transport's status_code + truncated response body so
 // operators can verify connectivity. Transport-level errors are

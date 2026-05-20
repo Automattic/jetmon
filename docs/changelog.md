@@ -17,8 +17,8 @@ because it is intentionally **not** drop-in with the Jetmon 1 wire format
 (see PR #61 — DO NOT MERGE).
 
 **New — event sourcing:**
-- `jetmon_events` (current authoritative state per incident) and
-  `jetmon_event_transitions` (every status/severity change, append-only)
+- `jetpack_monitor_events` (current authoritative state per incident) and
+  `jetpack_monitor_event_transitions` (every status/severity change, append-only)
   tables; `internal/eventstore` writes both in a single transaction
 - Shadow-v2-state migration: while `LEGACY_STATUS_PROJECTION_ENABLE` is
   true, event mutations also maintain the v1 `site_status` /
@@ -34,7 +34,7 @@ because it is intentionally **not** drop-in with the Jetmon 1 wire format
 - Sites CRUD + pause/resume/trigger-now
 - Events list + single + transitions list + manual close
 - SLA endpoints: uptime, response-time, timing-breakdown
-- Audit logging via `jetmon_audit_log` with `event_type=api_access`
+- Audit logging via `jetpack_monitor_audit_log` with `event_type=api_access`
 - See internal-api-reference.md for full surface and design rationale
 
 **New — Veriflier v2 contract:**
@@ -59,8 +59,8 @@ because it is intentionally **not** drop-in with the Jetmon 1 wire format
   contract status, vantage/agent/capacity metadata, and duplicate or missing
   vantage IDs.
 - Added Veriflier auto-discovery plumbing: trusted
-  `jetmon_veriflier_vantages`, agent telemetry rows in
-  `jetmon_veriflier_agents`, `VERIFLIER_DISCOVERY_MODE=static|shadow|active`,
+  `jetpack_monitor_veriflier_vantages`, agent telemetry rows in
+  `jetpack_monitor_veriflier_agents`, `VERIFLIER_DISCOVERY_MODE=static|shadow|active`,
   shadow-mode drift reporting, and active-mode fallback to static config.
 - Added `jetmon2 verifliers discovery-report`, a read-only shadow-mode gate
   that compares configured static Verifliers, trusted registry rows, and recent
@@ -69,7 +69,7 @@ because it is intentionally **not** drop-in with the Jetmon 1 wire format
   operator checklist for dashboard/report green, amber, and red discovery
   warnings.
 - Monitors collect Veriflier liveness/capacity telemetry from authenticated
-  `/v2/status` responses and write `jetmon_veriflier_agents`, so Veriflier
+  `/v2/status` responses and write `jetpack_monitor_veriflier_agents`, so Veriflier
   hosts do not need database credentials. Agent telemetry is not trust;
   operators must pre-approve and enable vantages before monitors count them for
   quorum.
@@ -87,7 +87,7 @@ because it is intentionally **not** drop-in with the Jetmon 1 wire format
   clearer probe-agent name only for a future v3 architecture.
 
 **New — webhooks (Phase 3):**
-- `jetmon_webhooks` registry + `jetmon_webhook_deliveries` per-fire records
+- `jetpack_monitor_webhooks` registry + `jetpack_monitor_webhook_deliveries` per-fire records
 - Stripe-style HMAC-SHA256 signatures (`t=<unix>,v1=<hex>` over
   `{ts}.{body}`); plaintext secret storage with documented threat model
 - Filter dimensions: `events` + `site_filter` + `state_filter` (AND across,
@@ -144,13 +144,13 @@ because it is intentionally **not** drop-in with the Jetmon 1 wire format
 **Docs / tooling:**
 - Host dashboard now has a combined `/api/host` snapshot endpoint, stronger
   red/amber/green summary behavior, clearer rollout-command visibility, and a
-  durable `jetmon_process_health` heartbeat table that `jetmon2` and
+  durable `jetpack_monitor_process_health` heartbeat table that `jetmon2` and
   `jetmon-deliverer` publish to for fleet dashboards.
 - Host dashboard exposure now defaults to localhost, host summaries include
   named red/amber issues, process lifecycle is stored separately from health
   rollup, and the runtime memory value is clearly labeled as Go Sys memory.
 - Fleet dashboard now has `/fleet` and `/api/fleet` views backed by
-  `jetmon_process_health`, `jetmon_hosts`, delivery queues, projection drift,
+  `jetpack_monitor_process_health`, `jetpack_monitor_hosts`, delivery queues, projection drift,
   and dependency rollups so operators can see stale heartbeats, bucket coverage,
   delivery-owner posture, and suggested next actions in one place.
 - Fleet dashboard now has a dedicated Veriflier fleet section showing trusted

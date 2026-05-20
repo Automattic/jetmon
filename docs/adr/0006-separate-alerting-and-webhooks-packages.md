@@ -12,7 +12,7 @@ per-hour rate cap.
 
 The two are noticeably similar at the operational level. Both:
 
-- Poll `jetmon_event_transitions` on a high-water mark (per ADR-0005).
+- Poll `jetpack_monitor_event_transitions` on a high-water mark (per ADR-0005).
 - Match new transitions against an active registry.
 - Enqueue per-(subscriber, transition) deliveries with INSERT IGNORE
   on a UNIQUE KEY.

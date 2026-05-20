@@ -24,8 +24,8 @@ func GetSitesForBucket(ctx context.Context, bucketMin, bucketMax, batchSize int,
 			c.custom_headers, c.timeout_seconds, c.redirect_policy, c.alert_cooldown_minutes, r.last_alert_sent_at,
 			c.request_method, c.detection_profile, c.check_history_mode, c.check_history_sample_rate
 		FROM jetpack_monitor_sites s
-		LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id
-		LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id
+		LEFT JOIN jetpack_monitor_site_check_config c ON c.blog_id = s.blog_id
+		LEFT JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id
 		WHERE s.monitor_active = 1
 		  AND s.bucket_no BETWEEN ? AND ?`
 	if useVariableIntervals {
@@ -72,8 +72,8 @@ func ListActiveSitesForBucketRange(ctx context.Context, bucketMin, bucketMax int
 			c.custom_headers, c.timeout_seconds, c.redirect_policy, c.alert_cooldown_minutes, r.last_alert_sent_at,
 			c.request_method, c.detection_profile, c.check_history_mode, c.check_history_sample_rate
 		FROM jetpack_monitor_sites s
-		LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id
-		LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id
+		LEFT JOIN jetpack_monitor_site_check_config c ON c.blog_id = s.blog_id
+		LEFT JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id
 		WHERE s.monitor_active = 1
 		  AND s.bucket_no BETWEEN ? AND ?
 		  AND s.jetpack_monitor_site_id > ?
@@ -159,7 +159,7 @@ func CountRecentlyCheckedActiveSitesForBucketRange(ctx context.Context, bucketMi
 	err := ReadDB().QueryRowContext(ctx, `
 		SELECT COUNT(*)
 		  FROM jetpack_monitor_sites s
-		  JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id
+		  JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id
 		 WHERE s.monitor_active = 1
 		   AND s.bucket_no BETWEEN ? AND ?
 		   AND r.last_checked_at >= ?`,
@@ -178,7 +178,7 @@ func CountDueSitesForBucketRange(ctx context.Context, bucketMin, bucketMax int, 
 	query := `
 		SELECT COUNT(*)
 		  FROM jetpack_monitor_sites s
-		  LEFT JOIN jetmon_site_runtime r ON r.blog_id = s.blog_id
+		  LEFT JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id
 		 WHERE s.monitor_active = 1
 		   AND s.bucket_no BETWEEN ? AND ?`
 	if useVariableIntervals {
@@ -292,7 +292,7 @@ func CountLegacyProjectionDrift(ctx context.Context, bucketMin, bucketMax int) (
 			         ELSE 1
 			       END AS expected_status
 			  FROM jetpack_monitor_sites s
-			  LEFT JOIN jetmon_events e
+			  LEFT JOIN jetpack_monitor_events e
 			    ON e.blog_id = s.blog_id
 			   AND (e.endpoint_id = s.jetpack_monitor_site_id OR e.endpoint_id IS NULL)
 			   AND e.check_type = 'http'
@@ -370,7 +370,7 @@ func ListLegacyProjectionDrift(ctx context.Context, bucketMin, bucketMax, limit 
 			       ) AS event_id,
 			       COUNT(e.id) AS open_event_count
 			  FROM jetpack_monitor_sites s
-			  LEFT JOIN jetmon_events e
+			  LEFT JOIN jetpack_monitor_events e
 			    ON e.blog_id = s.blog_id
 			   AND (e.endpoint_id = s.jetpack_monitor_site_id OR e.endpoint_id IS NULL)
 			   AND e.check_type = 'http'
@@ -450,7 +450,7 @@ func SummarizeLegacyProjectionDrift(ctx context.Context, bucketMin, bucketMax, l
 			       END AS event_state,
 			       COUNT(e.id) AS open_event_count
 			  FROM jetpack_monitor_sites s
-			  LEFT JOIN jetmon_events e
+			  LEFT JOIN jetpack_monitor_events e
 			    ON e.blog_id = s.blog_id
 			   AND (e.endpoint_id = s.jetpack_monitor_site_id OR e.endpoint_id IS NULL)
 			   AND e.check_type = 'http'
@@ -497,7 +497,7 @@ func SummarizeLegacyProjectionDrift(ctx context.Context, bucketMin, bucketMax, l
 // MarkSiteChecked records when a site was last checked and when it is next due.
 func MarkSiteChecked(ctx context.Context, blogID int64, checkedAt, nextCheckAt time.Time) error {
 	_, err := db.ExecContext(ctx,
-		`INSERT INTO jetmon_site_runtime (blog_id, last_checked_at, next_check_at)
+		`INSERT INTO jetpack_monitor_site_runtime (blog_id, last_checked_at, next_check_at)
 		 VALUES (?, ?, ?)
 		 ON DUPLICATE KEY UPDATE
 			last_checked_at = VALUES(last_checked_at),
@@ -555,7 +555,7 @@ func markSitesCheckedChunkWithRetry(ctx context.Context, checks []SiteCheck) err
 
 func markSitesCheckedChunk(ctx context.Context, checks []SiteCheck) error {
 	var query strings.Builder
-	query.WriteString("INSERT INTO jetmon_site_runtime (blog_id, last_checked_at, next_check_at) VALUES ")
+	query.WriteString("INSERT INTO jetpack_monitor_site_runtime (blog_id, last_checked_at, next_check_at) VALUES ")
 	args := make([]any, 0, len(checks)*3)
 	for i, check := range checks {
 		if i > 0 {
@@ -579,7 +579,7 @@ func isRetryableWriteConflict(err error) bool {
 // UpdateLastAlertSent records when an alert was last sent for a site.
 func UpdateLastAlertSent(ctx context.Context, blogID int64, sentAt time.Time) error {
 	_, err := db.ExecContext(ctx,
-		`INSERT INTO jetmon_site_runtime (blog_id, last_alert_sent_at)
+		`INSERT INTO jetpack_monitor_site_runtime (blog_id, last_alert_sent_at)
 		 VALUES (?, ?)
 		 ON DUPLICATE KEY UPDATE last_alert_sent_at = VALUES(last_alert_sent_at)`,
 		blogID, sentAt.UTC(),
@@ -590,7 +590,7 @@ func UpdateLastAlertSent(ctx context.Context, blogID int64, sentAt time.Time) er
 // UpdateSSLExpiry records the SSL certificate expiry date for a site.
 func UpdateSSLExpiry(ctx context.Context, blogID int64, expiry time.Time) error {
 	_, err := db.ExecContext(ctx,
-		`INSERT INTO jetmon_site_runtime (blog_id, ssl_expiry_date)
+		`INSERT INTO jetpack_monitor_site_runtime (blog_id, ssl_expiry_date)
 		 VALUES (?, ?)
 		 ON DUPLICATE KEY UPDATE ssl_expiry_date = VALUES(ssl_expiry_date)`,
 		blogID, expiry,
@@ -627,7 +627,7 @@ func UpdateSSLExpiries(ctx context.Context, expiries []SiteSSLExpiry) error {
 
 func updateSSLExpiriesChunk(ctx context.Context, expiries []SiteSSLExpiry) error {
 	var query strings.Builder
-	query.WriteString("INSERT INTO jetmon_site_runtime (blog_id, ssl_expiry_date) VALUES ")
+	query.WriteString("INSERT INTO jetpack_monitor_site_runtime (blog_id, ssl_expiry_date) VALUES ")
 	args := make([]any, 0, len(expiries)*2)
 	for i, expiry := range expiries {
 		if i > 0 {
@@ -645,7 +645,7 @@ func updateSSLExpiriesChunk(ctx context.Context, expiries []SiteSSLExpiry) error
 // site's check interval changes.
 func RescheduleSiteRuntime(ctx context.Context, tx *sql.Tx, blogID int64, checkInterval int) error {
 	_, err := tx.ExecContext(ctx,
-		`INSERT INTO jetmon_site_runtime (blog_id, next_check_at)
+		`INSERT INTO jetpack_monitor_site_runtime (blog_id, next_check_at)
 		 VALUES (?, NULL)
 		 ON DUPLICATE KEY UPDATE
 			next_check_at = CASE
@@ -657,7 +657,7 @@ func RescheduleSiteRuntime(ctx context.Context, tx *sql.Tx, blogID int64, checkI
 	return err
 }
 
-// ClaimBuckets registers this host in jetmon_hosts, claiming uncovered bucket
+// ClaimBuckets registers this host in jetpack_monitor_hosts, claiming uncovered bucket
 // ranges from expired peers. Returns the claimed min/max bucket numbers.
 func ClaimBuckets(hostID string, bucketTotal, bucketTarget int, graceSec int) (int, int, error) {
 	tx, err := db.Begin()
@@ -668,14 +668,14 @@ func ClaimBuckets(hostID string, bucketTotal, bucketTarget int, graceSec int) (i
 
 	// Remove expired hosts.
 	_, err = tx.Exec(
-		`DELETE FROM jetmon_hosts WHERE last_heartbeat < DATE_SUB(NOW(), INTERVAL ? SECOND) AND host_id != ?`,
+		`DELETE FROM jetpack_monitor_hosts WHERE last_heartbeat < DATE_SUB(NOW(), INTERVAL ? SECOND) AND host_id != ?`,
 		graceSec, hostID,
 	)
 	if err != nil {
 		return 0, 0, fmt.Errorf("delete expired hosts: %w", err)
 	}
 
-	rows, err := tx.Query(`SELECT host_id, last_heartbeat FROM jetmon_hosts WHERE host_id != ? AND status = 'active' FOR UPDATE`, hostID)
+	rows, err := tx.Query(`SELECT host_id, last_heartbeat FROM jetpack_monitor_hosts WHERE host_id != ? AND status = 'active' FOR UPDATE`, hostID)
 	if err != nil {
 		return 0, 0, fmt.Errorf("query hosts: %w", err)
 	}
@@ -703,7 +703,7 @@ func ClaimBuckets(hostID string, bucketTotal, bucketTarget int, graceSec int) (i
 		rng := assignments[id]
 		if id == hostID {
 			_, err = tx.Exec(
-				`INSERT INTO jetmon_hosts (host_id, bucket_min, bucket_max, last_heartbeat, status)
+				`INSERT INTO jetpack_monitor_hosts (host_id, bucket_min, bucket_max, last_heartbeat, status)
 				 VALUES (?, ?, ?, NOW(), 'active')
 				 ON DUPLICATE KEY UPDATE bucket_min = VALUES(bucket_min), bucket_max = VALUES(bucket_max),
 				 last_heartbeat = NOW(), status = 'active'`,
@@ -715,7 +715,7 @@ func ClaimBuckets(hostID string, bucketTotal, bucketTarget int, graceSec int) (i
 			// Preserve peer heartbeats with the locked value so dead peers can
 			// age out instead of being refreshed by survivors.
 			_, err = tx.Exec(
-				`UPDATE jetmon_hosts SET bucket_min = ?, bucket_max = ?, last_heartbeat = ? WHERE host_id = ?`,
+				`UPDATE jetpack_monitor_hosts SET bucket_min = ?, bucket_max = ?, last_heartbeat = ? WHERE host_id = ?`,
 				rng[0], rng[1], lastHeartbeats[id], id,
 			)
 		}
@@ -757,7 +757,7 @@ func assignBucketRanges(hostIDs []string, bucketTotal, bucketTarget int) map[str
 // Heartbeat updates last_heartbeat for this host.
 func Heartbeat(ctx context.Context, hostID string) error {
 	_, err := db.ExecContext(ctx,
-		`UPDATE jetmon_hosts SET last_heartbeat = NOW(), status = 'active' WHERE host_id = ?`,
+		`UPDATE jetpack_monitor_hosts SET last_heartbeat = NOW(), status = 'active' WHERE host_id = ?`,
 		hostID,
 	)
 	return err
@@ -766,21 +766,21 @@ func Heartbeat(ctx context.Context, hostID string) error {
 // MarkHostDraining marks a host as draining before it releases its buckets.
 func MarkHostDraining(ctx context.Context, hostID string) error {
 	_, err := db.ExecContext(ctx,
-		`UPDATE jetmon_hosts SET status = 'draining', last_heartbeat = NOW() WHERE host_id = ?`,
+		`UPDATE jetpack_monitor_hosts SET status = 'draining', last_heartbeat = NOW() WHERE host_id = ?`,
 		hostID,
 	)
 	return err
 }
 
-// ReleaseHost removes this host's row from jetmon_hosts on graceful shutdown.
+// ReleaseHost removes this host's row from jetpack_monitor_hosts on graceful shutdown.
 func ReleaseHost(ctx context.Context, hostID string) error {
-	_, err := db.ExecContext(ctx, `DELETE FROM jetmon_hosts WHERE host_id = ?`, hostID)
+	_, err := db.ExecContext(ctx, `DELETE FROM jetpack_monitor_hosts WHERE host_id = ?`, hostID)
 	return err
 }
 
 // ReleaseHostAndRebalance removes this host's row and immediately redistributes
 // buckets across the remaining active hosts. This shortens the graceful rolling
-// restart window where jetmon_hosts can have a coverage gap until a surviving
+// restart window where jetpack_monitor_hosts can have a coverage gap until a surviving
 // monitor reaches its next round.
 func ReleaseHostAndRebalance(ctx context.Context, hostID string, bucketTotal, bucketTarget int) error {
 	if bucketTotal <= 0 || bucketTarget <= 0 {
@@ -793,11 +793,11 @@ func ReleaseHostAndRebalance(ctx context.Context, hostID string, bucketTotal, bu
 	}
 	defer tx.Rollback()
 
-	if _, err := tx.ExecContext(ctx, `DELETE FROM jetmon_hosts WHERE host_id = ?`, hostID); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM jetpack_monitor_hosts WHERE host_id = ?`, hostID); err != nil {
 		return fmt.Errorf("delete host: %w", err)
 	}
 
-	rows, err := tx.QueryContext(ctx, `SELECT host_id, last_heartbeat FROM jetmon_hosts WHERE status = 'active' ORDER BY host_id FOR UPDATE`)
+	rows, err := tx.QueryContext(ctx, `SELECT host_id, last_heartbeat FROM jetpack_monitor_hosts WHERE status = 'active' ORDER BY host_id FOR UPDATE`)
 	if err != nil {
 		return fmt.Errorf("query active hosts: %w", err)
 	}
@@ -824,7 +824,7 @@ func ReleaseHostAndRebalance(ctx context.Context, hostID string, bucketTotal, bu
 		// Preserve peer heartbeats explicitly; bucket redistribution must not
 		// make stale hosts appear alive.
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE jetmon_hosts SET bucket_min = ?, bucket_max = ?, last_heartbeat = ? WHERE host_id = ?`,
+			`UPDATE jetpack_monitor_hosts SET bucket_min = ?, bucket_max = ?, last_heartbeat = ? WHERE host_id = ?`,
 			rng[0], rng[1], lastHeartbeats[id], id,
 		); err != nil {
 			return fmt.Errorf("update host %s: %w", id, err)
@@ -834,12 +834,12 @@ func ReleaseHostAndRebalance(ctx context.Context, hostID string, bucketTotal, bu
 	return tx.Commit()
 }
 
-// HostRowExists reports whether a host currently has a jetmon_hosts ownership
+// HostRowExists reports whether a host currently has a jetpack_monitor_hosts ownership
 // row.
 func HostRowExists(ctx context.Context, hostID string) (bool, error) {
 	var exists int
 	err := WriteDB().QueryRowContext(ctx,
-		`SELECT 1 FROM jetmon_hosts WHERE host_id = ? LIMIT 1`,
+		`SELECT 1 FROM jetpack_monitor_hosts WHERE host_id = ? LIMIT 1`,
 		hostID,
 	).Scan(&exists)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -851,12 +851,12 @@ func HostRowExists(ctx context.Context, hostID string) (bool, error) {
 	return true, nil
 }
 
-// ListHostRowsOverlappingBucketRange returns jetmon_hosts ownership rows whose
+// ListHostRowsOverlappingBucketRange returns jetpack_monitor_hosts ownership rows whose
 // bucket ranges overlap the inclusive requested range.
 func ListHostRowsOverlappingBucketRange(ctx context.Context, bucketMin, bucketMax int) ([]HostRow, error) {
 	rows, err := WriteDB().QueryContext(ctx,
 		`SELECT host_id, bucket_min, bucket_max, last_heartbeat, status
-		   FROM jetmon_hosts
+		   FROM jetpack_monitor_hosts
 		  WHERE bucket_min <= ?
 		    AND bucket_max >= ?
 		  ORDER BY bucket_min, host_id`,
@@ -878,10 +878,10 @@ func ListHostRowsOverlappingBucketRange(ctx context.Context, bucketMin, bucketMa
 	return hosts, rows.Err()
 }
 
-// GetAllHosts returns all rows from jetmon_hosts for operator visibility.
+// GetAllHosts returns all rows from jetpack_monitor_hosts for operator visibility.
 func GetAllHosts() ([]HostRow, error) {
 	rows, err := WriteDB().Query(
-		`SELECT host_id, bucket_min, bucket_max, last_heartbeat, status FROM jetmon_hosts ORDER BY bucket_min`,
+		`SELECT host_id, bucket_min, bucket_max, last_heartbeat, status FROM jetpack_monitor_hosts ORDER BY bucket_min`,
 	)
 	if err != nil {
 		return nil, err
@@ -899,7 +899,7 @@ func GetAllHosts() ([]HostRow, error) {
 	return hosts, rows.Err()
 }
 
-// HostRow represents a row in jetmon_hosts.
+// HostRow represents a row in jetpack_monitor_hosts.
 type HostRow struct {
 	HostID        string
 	BucketMin     int
@@ -911,7 +911,7 @@ type HostRow struct {
 // RecordFalsePositive inserts a false positive event.
 func RecordFalsePositive(blogID int64, httpCode, errorCode int, rttMs int64) error {
 	_, err := db.Exec(
-		`INSERT INTO jetmon_false_positives (blog_id, http_code, error_code, rtt_ms, created_at)
+		`INSERT INTO jetpack_monitor_false_positives (blog_id, http_code, error_code, rtt_ms, created_at)
 		 VALUES (?, ?, ?, ?, NOW())`,
 		blogID, httpCode, errorCode, rttMs,
 	)
@@ -922,7 +922,7 @@ func RecordFalsePositive(blogID int64, httpCode, errorCode int, rttMs int64) err
 func RecordCheckHistory(blogID int64, requestMethod string, httpCode, errorCode int, rttMs, dnsMs, tcpMs, tlsMs, ttfbMs int64) error {
 	requestMethod = normalizeHistoryMethod(requestMethod)
 	_, err := db.Exec(
-		`INSERT INTO jetmon_check_history
+		`INSERT INTO jetpack_monitor_check_history
 		    (blog_id, request_method, http_code, error_code, rtt_ms, dns_ms, tcp_ms, tls_ms, ttfb_ms, checked_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
 		blogID, requestMethod, httpCode, errorCode, rttMs, dnsMs, tcpMs, tlsMs, ttfbMs,
@@ -941,7 +941,7 @@ func normalizeHistoryMethod(method string) string {
 	return method
 }
 
-// CheckHistoryRow is one check timing sample for jetmon_check_history.
+// CheckHistoryRow is one check timing sample for jetpack_monitor_check_history.
 type CheckHistoryRow struct {
 	BlogID        int64
 	RequestMethod string
@@ -977,7 +977,7 @@ func RecordCheckHistories(ctx context.Context, rows []CheckHistoryRow) error {
 
 func recordCheckHistoriesChunk(ctx context.Context, rows []CheckHistoryRow) error {
 	var query strings.Builder
-	query.WriteString(`INSERT INTO jetmon_check_history
+	query.WriteString(`INSERT INTO jetpack_monitor_check_history
 		(blog_id, request_method, http_code, error_code, rtt_ms, dns_ms, tcp_ms, tls_ms, ttfb_ms, checked_at)
 		VALUES `)
 	args := make([]any, 0, len(rows)*10)

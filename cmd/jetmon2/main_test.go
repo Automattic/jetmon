@@ -308,7 +308,7 @@ func TestEnabledLabel(t *testing.T) {
 }
 
 func TestBucketOwnershipLabel(t *testing.T) {
-	if got := bucketOwnershipLabel(&config.Config{}); got != "dynamic jetmon_hosts" {
+	if got := bucketOwnershipLabel(&config.Config{}); got != "dynamic jetpack_monitor_hosts" {
 		t.Fatalf("bucketOwnershipLabel(dynamic) = %q", got)
 	}
 	min, max := 12, 34

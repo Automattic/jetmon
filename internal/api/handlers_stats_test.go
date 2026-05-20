@@ -10,13 +10,13 @@ import (
 
 const siteExistsSQL = `SELECT 1 FROM jetpack_monitor_sites WHERE blog_id = ? LIMIT 1`
 
-const uptimeSQL = ` SELECT severity, state, started_at, ended_at FROM jetmon_events WHERE blog_id = ? AND started_at < ? AND (ended_at IS NULL OR ended_at > ?)`
+const uptimeSQL = ` SELECT severity, state, started_at, ended_at FROM jetpack_monitor_events WHERE blog_id = ? AND started_at < ? AND (ended_at IS NULL OR ended_at > ?)`
 
-const rttSamplesSQL = ` SELECT rtt_ms FROM jetmon_check_history WHERE blog_id = ? AND checked_at >= ? AND checked_at < ? AND rtt_ms IS NOT NULL ORDER BY checked_at DESC LIMIT ?`
+const rttSamplesSQL = ` SELECT rtt_ms FROM jetpack_monitor_check_history WHERE blog_id = ? AND checked_at >= ? AND checked_at < ? AND rtt_ms IS NOT NULL ORDER BY checked_at DESC LIMIT ?`
 
-const timingSamplesSQL = ` SELECT dns_ms, tcp_ms, tls_ms, ttfb_ms FROM jetmon_check_history WHERE blog_id = ? AND checked_at >= ? AND checked_at < ? ORDER BY checked_at DESC LIMIT ?`
+const timingSamplesSQL = ` SELECT dns_ms, tcp_ms, tls_ms, ttfb_ms FROM jetpack_monitor_check_history WHERE blog_id = ? AND checked_at >= ? AND checked_at < ? ORDER BY checked_at DESC LIMIT ?`
 
-const checkHistoryListSQL = ` SELECT id, request_method, http_code, error_code, rtt_ms, dns_ms, tcp_ms, tls_ms, ttfb_ms, checked_at FROM jetmon_check_history WHERE blog_id = ? AND checked_at >= ? AND checked_at < ? ORDER BY id DESC LIMIT ?`
+const checkHistoryListSQL = ` SELECT id, request_method, http_code, error_code, rtt_ms, dns_ms, tcp_ms, tls_ms, ttfb_ms, checked_at FROM jetpack_monitor_check_history WHERE blog_id = ? AND checked_at >= ? AND checked_at < ? ORDER BY id DESC LIMIT ?`
 
 func TestParseWindowDuration(t *testing.T) {
 	cases := map[string]time.Duration{

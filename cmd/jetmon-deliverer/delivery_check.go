@@ -172,8 +172,8 @@ func buildDeliveryCheckReport(ctx context.Context, conn *sql.DB, cfg *config.Con
 		kind string
 		name string
 	}{
-		{kind: "webhook", name: "jetmon_webhook_deliveries"},
-		{kind: "alert", name: "jetmon_alert_deliveries"},
+		{kind: "webhook", name: "jetpack_monitor_webhook_deliveries"},
+		{kind: "alert", name: "jetpack_monitor_alert_deliveries"},
 	}
 	for _, table := range tables {
 		summary, err := queryDeliveryTableSummary(ctx, conn, table.kind, table.name, now, cutoff)
@@ -219,7 +219,7 @@ func resolveDeliveryCheckCutoff(now time.Time, raw string) (time.Time, error) {
 
 func queryDeliveryTableSummary(ctx context.Context, conn *sql.DB, kind, table string, now, cutoff time.Time) (deliveryTableSummary, error) {
 	switch table {
-	case "jetmon_webhook_deliveries", "jetmon_alert_deliveries":
+	case "jetpack_monitor_webhook_deliveries", "jetpack_monitor_alert_deliveries":
 	default:
 		return deliveryTableSummary{}, fmt.Errorf("unsupported delivery table %q", table)
 	}
@@ -287,7 +287,7 @@ func queryDeliveryTableSummary(ctx context.Context, conn *sql.DB, kind, table st
 
 func queryRecentTerminalDeliveryCount(ctx context.Context, conn *sql.DB, table, status string, cutoff time.Time) (int64, error) {
 	switch table {
-	case "jetmon_webhook_deliveries", "jetmon_alert_deliveries":
+	case "jetpack_monitor_webhook_deliveries", "jetpack_monitor_alert_deliveries":
 	default:
 		return 0, fmt.Errorf("unsupported delivery table %q", table)
 	}

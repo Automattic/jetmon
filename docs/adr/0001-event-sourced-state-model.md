@@ -29,20 +29,20 @@ The v2 redesign needed a durable, queryable record of every state
 change to support the planned events / SLA / webhooks / alert-contacts
 surface. We considered three shapes during design:
 
-- **Option 1 — Reuse `jetmon_audit_log`.** Add `old_status` /
+- **Option 1 — Reuse `jetpack_monitor_audit_log`.** Add `old_status` /
   `new_status` columns and emit one audit row per status change. Single
   table, no schema growth. Rejected because audit log was operational
   ("who did what to the system") and conflating it with site state
   history made both queries slower and the schema confusing — the
   audit log is for actions, not state.
 
-- **Option 2 — Dedicated `jetmon_event_transitions` table.** One row
+- **Option 2 — Dedicated `jetpack_monitor_event_transitions` table.** One row
   per transition with `severity_before` / `severity_after` /
   `state_before` / `state_after` / `reason` / `source` / `metadata`.
-  Append-only. Pairs with a `jetmon_events` table holding the current
+  Append-only. Pairs with a `jetpack_monitor_events` table holding the current
   authoritative state of each open incident.
 
-- **Option 3 — Synthesize from `jetmon_check_history`.** Compute
+- **Option 3 — Synthesize from `jetpack_monitor_check_history`.** Compute
   state changes by walking the check history table. Rejected because
   not every check produces a transition, the verifier's outcome can
   override individual check results, and operator manual closes don't
@@ -51,8 +51,8 @@ surface. We considered three shapes during design:
 ## Decision
 
 We will store every site state change in a dedicated, append-only
-`jetmon_event_transitions` table, paired with a current-state
-projection in `jetmon_events`. `internal/eventstore` is the single
+`jetpack_monitor_event_transitions` table, paired with a current-state
+projection in `jetpack_monitor_events`. `internal/eventstore` is the single
 writer for both, writing each transition + projection update in one
 transaction so they cannot disagree.
 
@@ -67,7 +67,7 @@ Each transition row records:
 - `metadata` (JSON blob with check results, verifier outputs, etc.)
 - `changed_at` (timestamp with millisecond precision)
 
-`jetmon_events` rows have a generated `dedup_key` column that is
+`jetpack_monitor_events` rows have a generated `dedup_key` column that is
 non-NULL only while `ended_at IS NULL`, with a `UNIQUE KEY` enforcing
 "one open event per (blog_id, endpoint_id, check_type, discriminator)
 tuple" without requiring partial indexes (which MySQL lacks).
@@ -77,7 +77,7 @@ tuple" without requiring partial indexes (which MySQL lacks).
 **Wins:**
 - Every customer-facing question about site history has a single,
   authoritative source.
-- The webhook and alerting workers consume `jetmon_event_transitions`
+- The webhook and alerting workers consume `jetpack_monitor_event_transitions`
   via a high-water mark — no in-process pub/sub needed (see ADR-0005).
 - The transition table is naturally auditable: who/what/when for every
   change is on the row.
@@ -104,5 +104,5 @@ gets harder.
 ## Related
 
 - `internal/eventstore/` — the single writer
-- Migrations 10 (`jetmon_events`) and 11 (`jetmon_event_transitions`)
+- Migrations 10 (`jetpack_monitor_events`) and 11 (`jetpack_monitor_event_transitions`)
 - ADR-0005 (Pull-only delivery via event transitions)

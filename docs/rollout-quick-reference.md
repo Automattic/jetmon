@@ -305,8 +305,8 @@ to v1" and keep the transcript with the incident record.
 
    For auto-discovery, keep `VERIFLIER_DISCOVERY_MODE=shadow` until the
    registry matches the static `VERIFIERS` fleet. Seed
-   `jetmon_veriflier_vantages` with one enabled row per trusted quorum vantage;
-   do not rely on `jetmon_veriflier_agents` telemetry alone, because agent rows
+   `jetpack_monitor_veriflier_vantages` with one enabled row per trusted quorum vantage;
+   do not rely on `jetpack_monitor_veriflier_agents` telemetry alone, because agent rows
    never create trusted votes. Move to `active` only after
    `validate-config` and the read-only discovery report show usable registry
    vantages and no shadow drift:

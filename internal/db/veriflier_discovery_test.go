@@ -23,7 +23,7 @@ func TestUpsertVeriflierAgentWritesHeartbeat(t *testing.T) {
 	mock, cleanup := withMockDB(t)
 	defer cleanup()
 
-	mock.ExpectExec("INSERT INTO jetmon_veriflier_agents").
+	mock.ExpectExec("INSERT INTO jetpack_monitor_veriflier_agents").
 		WithArgs(
 			"agent-1", "us-east", "host-a", "veriflier-a", "7803",
 			"test-version", `["v2-json-http"]`, 32, 64, 3, 2, 1, "active",
@@ -56,7 +56,7 @@ func TestMarkVeriflierAgentStopped(t *testing.T) {
 	mock, cleanup := withMockDB(t)
 	defer cleanup()
 
-	mock.ExpectExec("UPDATE jetmon_veriflier_agents").
+	mock.ExpectExec("UPDATE jetpack_monitor_veriflier_agents").
 		WithArgs("agent-1").
 		WillReturnResult(driver.RowsAffected(1))
 

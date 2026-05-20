@@ -5,7 +5,7 @@
 // limiting). See docs/internal-api-reference.md for the full design rationale and endpoint reference.
 //
 // Authentication is per-consumer Bearer tokens managed via the apikeys
-// package. Every authenticated request is logged to jetmon_audit_log under
+// package. Every authenticated request is logged to jetpack_monitor_audit_log under
 // event_type=api_access for accountability.
 package api
 

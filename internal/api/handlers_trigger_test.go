@@ -9,7 +9,7 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
-const readSiteForCheckSQL = ` SELECT s.monitor_url, c.timeout_seconds, c.check_keyword, c.forbidden_keyword, c.forbidden_keywords, c.custom_headers, c.redirect_policy, c.request_method, c.detection_profile, s.site_status FROM jetpack_monitor_sites s LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id WHERE s.blog_id = ?`
+const readSiteForCheckSQL = ` SELECT s.monitor_url, c.timeout_seconds, c.check_keyword, c.forbidden_keyword, c.forbidden_keywords, c.custom_headers, c.redirect_policy, c.request_method, c.detection_profile, s.site_status FROM jetpack_monitor_sites s LEFT JOIN jetpack_monitor_site_check_config c ON c.blog_id = s.blog_id WHERE s.blog_id = ?`
 
 var columnsSiteForCheck = []string{"monitor_url", "timeout_seconds", "check_keyword", "forbidden_keyword", "forbidden_keywords", "custom_headers", "redirect_policy", "request_method", "detection_profile", "site_status"}
 
@@ -57,7 +57,7 @@ func TestTriggerNowSuccessNoActiveEvents(t *testing.T) {
 	mock.ExpectQuery(readSiteForCheckSQL).WithArgs(int64(42)).
 		WillReturnRows(sqlmock.NewRows(columnsSiteForCheck).
 			AddRow(target.URL, nil, nil, nil, nil, nil, "follow", nil, nil, 1))
-	mock.ExpectQuery(`SELECT id FROM jetmon_events WHERE blog_id = ? AND ended_at IS NULL`).
+	mock.ExpectQuery(`SELECT id FROM jetpack_monitor_events WHERE blog_id = ? AND ended_at IS NULL`).
 		WithArgs(int64(42)).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 
@@ -136,7 +136,7 @@ func TestTriggerNowWithGatewayTenantAllowsMappedSite(t *testing.T) {
 	mock.ExpectQuery(readSiteForCheckSQL).WithArgs(int64(42)).
 		WillReturnRows(sqlmock.NewRows(columnsSiteForCheck).
 			AddRow(target.URL, nil, nil, nil, nil, nil, "follow", nil, nil, 1))
-	mock.ExpectQuery(`SELECT id FROM jetmon_events WHERE blog_id = ? AND ended_at IS NULL`).
+	mock.ExpectQuery(`SELECT id FROM jetpack_monitor_events WHERE blog_id = ? AND ended_at IS NULL`).
 		WithArgs(int64(42)).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 
@@ -174,7 +174,7 @@ func TestTriggerNowSuccessClosesActiveEvent(t *testing.T) {
 	mock.ExpectQuery(readSiteForCheckSQL).WithArgs(int64(42)).
 		WillReturnRows(sqlmock.NewRows(columnsSiteForCheck).
 			AddRow(target.URL, nil, nil, nil, nil, nil, "follow", nil, nil, 2))
-	mock.ExpectQuery(`SELECT id FROM jetmon_events WHERE blog_id = ? AND ended_at IS NULL`).
+	mock.ExpectQuery(`SELECT id FROM jetpack_monitor_events WHERE blog_id = ? AND ended_at IS NULL`).
 		WithArgs(int64(42)).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(7)))
 

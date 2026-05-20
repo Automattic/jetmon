@@ -68,7 +68,7 @@ func (s *Server) handleCloseEvent(w http.ResponseWriter, r *http.Request) {
 		endedAt     sql.NullTime
 	)
 	err = s.db.QueryRowContext(ctx,
-		`SELECT blog_id, ended_at FROM jetmon_events WHERE id = ?`, eventID,
+		`SELECT blog_id, ended_at FROM jetpack_monitor_events WHERE id = ?`, eventID,
 	).Scan(&eventBlogID, &endedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -123,7 +123,7 @@ func (s *Server) readEventWithTransitions(ctx context.Context, eventID int64) (e
 		SELECT id, blog_id, endpoint_id, check_type, discriminator,
 		       severity, state, started_at, ended_at, resolution_reason,
 		       cause_event_id, metadata
-		  FROM jetmon_events
+		  FROM jetpack_monitor_events
 		 WHERE id = ?`, eventID)
 	ev, err := scanEventRow(row)
 	if err != nil {
@@ -295,7 +295,7 @@ func (s *Server) handleTriggerNow(w http.ResponseWriter, r *http.Request) {
 // Helper for trigger-now's clear-on-success path.
 func (s *Server) queryActiveEventIDs(ctx context.Context, blogID int64) ([]int64, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id FROM jetmon_events WHERE blog_id = ? AND ended_at IS NULL`, blogID)
+		`SELECT id FROM jetpack_monitor_events WHERE blog_id = ? AND ended_at IS NULL`, blogID)
 	if err != nil {
 		return nil, err
 	}
@@ -391,7 +391,7 @@ func (s *Server) readSiteForCheck(ctx context.Context, blogID int64) (siteForChe
 		SELECT s.monitor_url, c.timeout_seconds, c.check_keyword, c.forbidden_keyword, c.forbidden_keywords, c.custom_headers,
 		       c.redirect_policy, c.request_method, c.detection_profile, s.site_status
 		  FROM jetpack_monitor_sites s
-		  LEFT JOIN jetmon_site_check_config c ON c.blog_id = s.blog_id
+		  LEFT JOIN jetpack_monitor_site_check_config c ON c.blog_id = s.blog_id
 		 WHERE s.blog_id = ?`, blogID,
 	).Scan(&out.monitorURL, &timeoutSeconds, &out.checkKeyword, &out.forbiddenKeyword, &out.forbiddenKeywords, &customHeaders,
 		&redirectPolicy, &requestMethod, &detectionProfile, &out.siteStatus)

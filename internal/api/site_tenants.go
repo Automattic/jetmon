@@ -9,7 +9,7 @@ import (
 )
 
 const insertSiteTenantSQL = `
-		INSERT INTO jetmon_site_tenants (tenant_id, blog_id, source)
+		INSERT INTO jetpack_monitor_site_tenants (tenant_id, blog_id, source)
 		VALUES (?, ?, 'gateway')
 		ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP`
 
@@ -34,7 +34,7 @@ func (s *Server) siteVisibleToRequest(ctx context.Context, r *http.Request, blog
 	}
 	var dummy int64
 	err := s.db.QueryRowContext(ctx,
-		`SELECT 1 FROM jetmon_site_tenants WHERE tenant_id = ? AND blog_id = ? LIMIT 1`,
+		`SELECT 1 FROM jetpack_monitor_site_tenants WHERE tenant_id = ? AND blog_id = ? LIMIT 1`,
 		tenantID, blogID,
 	).Scan(&dummy)
 	if err != nil {

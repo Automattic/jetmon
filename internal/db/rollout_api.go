@@ -21,7 +21,7 @@ func GetActiveRolloutRange(ctx context.Context, hostID string) (RolloutActiveRan
 	var count int
 	err := db.QueryRowContext(ctx, `
 		SELECT MIN(bucket_no), MAX(bucket_no), COUNT(*)
-		  FROM jetmon_rollout_bucket_locks
+		  FROM jetpack_monitor_rollout_bucket_locks
 		 WHERE owner_host = ?`,
 		hostID,
 	).Scan(&min, &max, &count)

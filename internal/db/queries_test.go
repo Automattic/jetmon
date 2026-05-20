@@ -287,28 +287,28 @@ func TestSimpleMutationQueries(t *testing.T) {
 	mock.ExpectExec("UPDATE jetpack_monitor_sites SET site_status").
 		WithArgs(2, now, int64(42)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("INSERT INTO jetmon_site_runtime").
+	mock.ExpectExec("INSERT INTO jetpack_monitor_site_runtime").
 		WithArgs(int64(42), now, next).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("INSERT INTO jetmon_site_runtime").
+	mock.ExpectExec("INSERT INTO jetpack_monitor_site_runtime").
 		WithArgs(int64(42), now).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("INSERT INTO jetmon_site_runtime").
+	mock.ExpectExec("INSERT INTO jetpack_monitor_site_runtime").
 		WithArgs(int64(42), now).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("UPDATE jetmon_hosts SET last_heartbeat").
+	mock.ExpectExec("UPDATE jetpack_monitor_hosts SET last_heartbeat").
 		WithArgs("host-a").
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("UPDATE jetmon_hosts SET status = 'draining'").
+	mock.ExpectExec("UPDATE jetpack_monitor_hosts SET status = 'draining'").
 		WithArgs("host-a").
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("DELETE FROM jetmon_hosts").
+	mock.ExpectExec("DELETE FROM jetpack_monitor_hosts").
 		WithArgs("host-a").
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("INSERT INTO jetmon_false_positives").
+	mock.ExpectExec("INSERT INTO jetpack_monitor_false_positives").
 		WithArgs(int64(42), 500, 1, int64(123)).
 		WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectExec("INSERT INTO jetmon_check_history").
+	mock.ExpectExec("INSERT INTO jetpack_monitor_check_history").
 		WithArgs(int64(42), "GET", 200, 0, int64(100), int64(1), int64(2), int64(3), int64(4)).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -352,7 +352,7 @@ func TestMarkSitesCheckedBatchesUpdates(t *testing.T) {
 	second := first.Add(time.Minute)
 	firstNext := first.Add(5 * time.Minute)
 	secondNext := second.Add(5 * time.Minute)
-	mock.ExpectExec("INSERT INTO jetmon_site_runtime").
+	mock.ExpectExec("INSERT INTO jetpack_monitor_site_runtime").
 		WithArgs(int64(7), first, firstNext, int64(42), second, secondNext).
 		WillReturnResult(sqlmock.NewResult(0, 2))
 
@@ -402,10 +402,10 @@ func TestMarkSitesCheckedRetriesDeadlock(t *testing.T) {
 	checkedAt := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
 	nextAt := checkedAt.Add(5 * time.Minute)
 	args := []driver.Value{int64(42), checkedAt, nextAt}
-	mock.ExpectExec("INSERT INTO jetmon_site_runtime").
+	mock.ExpectExec("INSERT INTO jetpack_monitor_site_runtime").
 		WithArgs(args...).
 		WillReturnError(&mysql.MySQLError{Number: 1213, Message: "Deadlock found when trying to get lock"})
-	mock.ExpectExec("INSERT INTO jetmon_site_runtime").
+	mock.ExpectExec("INSERT INTO jetpack_monitor_site_runtime").
 		WithArgs(args...).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -423,7 +423,7 @@ func TestRecordCheckHistoriesBatchesInserts(t *testing.T) {
 
 	first := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
 	second := first.Add(time.Minute)
-	mock.ExpectExec("INSERT INTO jetmon_check_history").
+	mock.ExpectExec("INSERT INTO jetpack_monitor_check_history").
 		WithArgs(
 			int64(7), "GET", 201, 1, int64(10), int64(1), int64(2), int64(3), int64(4), first,
 			int64(42), "POST", 200, 0, int64(100), int64(5), int64(6), int64(7), int64(8), second,
@@ -448,7 +448,7 @@ func TestUpdateSSLExpiriesBatchesUpdates(t *testing.T) {
 
 	first := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	second := first.AddDate(0, 1, 0)
-	mock.ExpectExec("INSERT INTO jetmon_site_runtime").
+	mock.ExpectExec("INSERT INTO jetpack_monitor_site_runtime").
 		WithArgs(int64(7), first, int64(42), second).
 		WillReturnResult(sqlmock.NewResult(0, 2))
 
@@ -494,10 +494,10 @@ func TestHostRowExists(t *testing.T) {
 	mock, cleanup := withMockDB(t)
 	defer cleanup()
 
-	mock.ExpectQuery("SELECT 1 FROM jetmon_hosts").
+	mock.ExpectQuery("SELECT 1 FROM jetpack_monitor_hosts").
 		WithArgs("host-a").
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(1))
-	mock.ExpectQuery("SELECT 1 FROM jetmon_hosts").
+	mock.ExpectQuery("SELECT 1 FROM jetpack_monitor_hosts").
 		WithArgs("host-b").
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}))
 
@@ -671,16 +671,16 @@ func TestClaimBucketsRebalancesKnownHosts(t *testing.T) {
 
 	now := time.Now().UTC()
 	mock.ExpectBegin()
-	mock.ExpectExec("DELETE FROM jetmon_hosts").
+	mock.ExpectExec("DELETE FROM jetpack_monitor_hosts").
 		WithArgs(60, "host-b").
 		WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectQuery("SELECT host_id, last_heartbeat FROM jetmon_hosts").
+	mock.ExpectQuery("SELECT host_id, last_heartbeat FROM jetpack_monitor_hosts").
 		WithArgs("host-b").
 		WillReturnRows(sqlmock.NewRows([]string{"host_id", "last_heartbeat"}).AddRow("host-a", now))
 	mock.ExpectExec("last_heartbeat = \\?").
 		WithArgs(0, 4, now, "host-a").
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("INSERT INTO jetmon_hosts").
+	mock.ExpectExec("INSERT INTO jetpack_monitor_hosts").
 		WithArgs("host-b", 5, 9).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
@@ -703,16 +703,16 @@ func TestClaimBucketsDeletesExpiredHostWithoutRefreshingPeers(t *testing.T) {
 
 	now := time.Now().UTC()
 	mock.ExpectBegin()
-	mock.ExpectExec("DELETE FROM jetmon_hosts").
+	mock.ExpectExec("DELETE FROM jetpack_monitor_hosts").
 		WithArgs(8, "host-c").
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectQuery("SELECT host_id, last_heartbeat FROM jetmon_hosts").
+	mock.ExpectQuery("SELECT host_id, last_heartbeat FROM jetpack_monitor_hosts").
 		WithArgs("host-c").
 		WillReturnRows(sqlmock.NewRows([]string{"host_id", "last_heartbeat"}).AddRow("host-a", now))
 	mock.ExpectExec("last_heartbeat = \\?").
 		WithArgs(0, 4, now, "host-a").
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("INSERT INTO jetmon_hosts").
+	mock.ExpectExec("INSERT INTO jetpack_monitor_hosts").
 		WithArgs("host-c", 5, 9).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
@@ -736,10 +736,10 @@ func TestReleaseHostAndRebalanceUpdatesRemainingHosts(t *testing.T) {
 	nowA := time.Now().UTC()
 	nowC := nowA.Add(time.Second)
 	mock.ExpectBegin()
-	mock.ExpectExec("DELETE FROM jetmon_hosts").
+	mock.ExpectExec("DELETE FROM jetpack_monitor_hosts").
 		WithArgs("host-b").
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectQuery("SELECT host_id, last_heartbeat FROM jetmon_hosts").
+	mock.ExpectQuery("SELECT host_id, last_heartbeat FROM jetpack_monitor_hosts").
 		WillReturnRows(sqlmock.NewRows([]string{"host_id", "last_heartbeat"}).AddRow("host-a", nowA).AddRow("host-c", nowC))
 	mock.ExpectExec("last_heartbeat = \\?").
 		WithArgs(0, 4, nowA, "host-a").
@@ -763,7 +763,7 @@ func TestMigrateAppliesOnlyPendingMigrations(t *testing.T) {
 
 	origMigrations := migrations
 	migrations = []migration{
-		{id: 1, sql: "CREATE TABLE jetmon_schema_migrations"},
+		{id: 1, sql: "CREATE TABLE jetpack_monitor_schema_migrations"},
 		{id: 2, sql: "ALTER TABLE already_done"},
 		{id: 3, sql: "ALTER TABLE pending_change"},
 	}
@@ -772,9 +772,9 @@ func TestMigrateAppliesOnlyPendingMigrations(t *testing.T) {
 	mock.ExpectQuery("SELECT GET_LOCK").
 		WithArgs(migrationLockName, migrationLockTimeoutSeconds).
 		WillReturnRows(sqlmock.NewRows([]string{"got"}).AddRow(1))
-	mock.ExpectExec("CREATE TABLE jetmon_schema_migrations").
+	mock.ExpectExec("CREATE TABLE jetpack_monitor_schema_migrations").
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("INSERT IGNORE INTO jetmon_schema_migrations").
+	mock.ExpectExec("INSERT IGNORE INTO jetpack_monitor_schema_migrations").
 		WithArgs(1).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("SELECT COUNT").
@@ -785,7 +785,7 @@ func TestMigrateAppliesOnlyPendingMigrations(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 	mock.ExpectExec("ALTER TABLE pending_change").
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("INSERT IGNORE INTO jetmon_schema_migrations").
+	mock.ExpectExec("INSERT IGNORE INTO jetpack_monitor_schema_migrations").
 		WithArgs(3).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("SELECT RELEASE_LOCK").
@@ -822,7 +822,7 @@ func TestMigrateReleasesMigrationLockAfterError(t *testing.T) {
 
 	origMigrations := migrations
 	migrations = []migration{
-		{id: 1, sql: "CREATE TABLE jetmon_schema_migrations"},
+		{id: 1, sql: "CREATE TABLE jetpack_monitor_schema_migrations"},
 		{id: 2, sql: "ALTER TABLE pending_change"},
 	}
 	defer func() { migrations = origMigrations }()
@@ -830,9 +830,9 @@ func TestMigrateReleasesMigrationLockAfterError(t *testing.T) {
 	mock.ExpectQuery("SELECT GET_LOCK").
 		WithArgs(migrationLockName, migrationLockTimeoutSeconds).
 		WillReturnRows(sqlmock.NewRows([]string{"got"}).AddRow(1))
-	mock.ExpectExec("CREATE TABLE jetmon_schema_migrations").
+	mock.ExpectExec("CREATE TABLE jetpack_monitor_schema_migrations").
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("INSERT IGNORE INTO jetmon_schema_migrations").
+	mock.ExpectExec("INSERT IGNORE INTO jetpack_monitor_schema_migrations").
 		WithArgs(1).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("SELECT COUNT").

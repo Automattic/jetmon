@@ -26,8 +26,8 @@ import (
 )
 
 // Storage note: destination credentials are stored in plaintext in
-// jetmon_alert_contacts.destination. Same rationale as
-// jetmon_webhooks.secret — outbound dispatch needs the raw value at
+// jetpack_monitor_alert_contacts.destination. Same rationale as
+// jetpack_monitor_webhooks.secret — outbound dispatch needs the raw value at
 // every send. A hash is useless because we'd have to recover the
 // original to call the transport. Encryption at rest with a master
 // key is on docs/roadmap.md as a future hardening step.
@@ -79,7 +79,7 @@ var (
 	ErrInvalidSeverity  = errors.New("alerting: unknown severity")
 )
 
-// AlertContact is the in-memory shape of a jetmon_alert_contacts row.
+// AlertContact is the in-memory shape of a jetpack_monitor_alert_contacts row.
 // The raw destination credential is never stored here — it's loaded
 // separately by the worker via LoadDestination so it can't leak through
 // serialization of the AlertContact struct.
@@ -202,7 +202,7 @@ type Notification struct {
 // statusCode is the channel's idiomatic status (HTTP code for
 // HTTP-based transports, SMTP reply class for email — e.g. 250
 // becomes 250). responseBody is a truncated summary suitable for
-// storing in jetmon_alert_deliveries.last_response (max 2048 chars;
+// storing in jetpack_monitor_alert_deliveries.last_response (max 2048 chars;
 // the worker truncates if needed).
 //
 // Returning err != nil means the dispatch failed in a way the worker

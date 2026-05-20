@@ -2357,7 +2357,7 @@ func buildRolloutStateReport(ctx context.Context, cfg *config.Config, opts rollo
 		}
 		hosts, err := deps.GetAllHosts()
 		if err != nil {
-			return rolloutStateReport{}, fmt.Errorf("query jetmon_hosts: %w", err)
+			return rolloutStateReport{}, fmt.Errorf("query jetpack_monitor_hosts: %w", err)
 		}
 		report.BucketCoverage.HostCount = len(hosts)
 		report.BucketCoverage.Hosts = summarizeRolloutHosts(hosts, now)
@@ -2457,7 +2457,7 @@ func rolloutStateIssues(report rolloutStateReport) []string {
 
 func suggestRolloutNextAction(report rolloutStateReport) string {
 	if report.BucketCoverage.Status == "invalid" {
-		return "Fix jetmon_hosts bucket coverage before relying on dynamic ownership."
+		return "Fix jetpack_monitor_hosts bucket coverage before relying on dynamic ownership."
 	}
 	if report.ProjectionDrift.Count > 0 {
 		return "Run rollout projection-drift --limit=100 and fix legacy projection drift before continuing."
@@ -2830,24 +2830,24 @@ func runPinnedRolloutCheck(ctx context.Context, out io.Writer, cfg *config.Confi
 	}
 	hostRowExists, err := deps.HostRowExists(ctx, hostID)
 	if err != nil {
-		return fmt.Errorf("check jetmon_hosts row for %q: %w", hostID, err)
+		return fmt.Errorf("check jetpack_monitor_hosts row for %q: %w", hostID, err)
 	}
 	if hostRowExists {
-		return fmt.Errorf("host %q still has a jetmon_hosts row; pinned hosts must not participate in dynamic bucket ownership", hostID)
+		return fmt.Errorf("host %q still has a jetpack_monitor_hosts row; pinned hosts must not participate in dynamic bucket ownership", hostID)
 	}
-	fmt.Fprintf(out, "PASS jetmon_hosts row absent host=%q\n", hostID)
+	fmt.Fprintf(out, "PASS jetpack_monitor_hosts row absent host=%q\n", hostID)
 
 	if deps.ListOverlappingHostRows == nil {
 		return errors.New("overlapping host row lister is not configured")
 	}
 	overlappingRows, err := deps.ListOverlappingHostRows(ctx, minBucket, maxBucket)
 	if err != nil {
-		return fmt.Errorf("list jetmon_hosts rows overlapping pinned range %d-%d: %w", minBucket, maxBucket, err)
+		return fmt.Errorf("list jetpack_monitor_hosts rows overlapping pinned range %d-%d: %w", minBucket, maxBucket, err)
 	}
 	if len(overlappingRows) > 0 {
-		return fmt.Errorf("jetmon_hosts has %d row(s) overlapping pinned range %d-%d: %s", len(overlappingRows), minBucket, maxBucket, formatHostRows(overlappingRows))
+		return fmt.Errorf("jetpack_monitor_hosts has %d row(s) overlapping pinned range %d-%d: %s", len(overlappingRows), minBucket, maxBucket, formatHostRows(overlappingRows))
 	}
-	fmt.Fprintln(out, "PASS jetmon_hosts overlap=0")
+	fmt.Fprintln(out, "PASS jetpack_monitor_hosts overlap=0")
 
 	if deps.CountActiveSitesForBucketRange == nil {
 		return errors.New("active site counter is not configured")
@@ -2902,24 +2902,24 @@ func runRollbackCheck(ctx context.Context, out io.Writer, cfg *config.Config, ho
 	}
 	hostRowExists, err := deps.HostRowExists(ctx, hostID)
 	if err != nil {
-		return fmt.Errorf("check jetmon_hosts row for %q: %w", hostID, err)
+		return fmt.Errorf("check jetpack_monitor_hosts row for %q: %w", hostID, err)
 	}
 	if hostRowExists {
-		return fmt.Errorf("host %q still has a jetmon_hosts row; stop v2 or clear dynamic ownership before restarting v1", hostID)
+		return fmt.Errorf("host %q still has a jetpack_monitor_hosts row; stop v2 or clear dynamic ownership before restarting v1", hostID)
 	}
-	fmt.Fprintf(out, "PASS jetmon_hosts row absent host=%q\n", hostID)
+	fmt.Fprintf(out, "PASS jetpack_monitor_hosts row absent host=%q\n", hostID)
 
 	if deps.ListOverlappingHostRows == nil {
 		return errors.New("overlapping host row lister is not configured")
 	}
 	overlappingRows, err := deps.ListOverlappingHostRows(ctx, minBucket, maxBucket)
 	if err != nil {
-		return fmt.Errorf("list jetmon_hosts rows overlapping rollback range %d-%d: %w", minBucket, maxBucket, err)
+		return fmt.Errorf("list jetpack_monitor_hosts rows overlapping rollback range %d-%d: %w", minBucket, maxBucket, err)
 	}
 	if len(overlappingRows) > 0 {
-		return fmt.Errorf("jetmon_hosts has %d row(s) overlapping rollback range %d-%d: %s", len(overlappingRows), minBucket, maxBucket, formatHostRows(overlappingRows))
+		return fmt.Errorf("jetpack_monitor_hosts has %d row(s) overlapping rollback range %d-%d: %s", len(overlappingRows), minBucket, maxBucket, formatHostRows(overlappingRows))
 	}
-	fmt.Fprintln(out, "PASS jetmon_hosts overlap=0")
+	fmt.Fprintln(out, "PASS jetpack_monitor_hosts overlap=0")
 
 	if deps.CountActiveSitesForBucketRange == nil {
 		return errors.New("active site counter is not configured")
@@ -2967,7 +2967,7 @@ func runDynamicRolloutCheck(ctx context.Context, out io.Writer, cfg *config.Conf
 	}
 	hosts, err := deps.GetAllHosts()
 	if err != nil {
-		return fmt.Errorf("query jetmon_hosts: %w", err)
+		return fmt.Errorf("query jetpack_monitor_hosts: %w", err)
 	}
 	fmt.Fprintf(out, "INFO jetmon_hosts_rows=%d\n", len(hosts))
 
@@ -3102,7 +3102,7 @@ func validateDynamicBucketCoverage(hosts []db.HostRow, bucketTotal int, heartbea
 		return errors.New("BUCKET_HEARTBEAT_GRACE_SEC must be > 0")
 	}
 	if len(hosts) == 0 {
-		return errors.New("jetmon_hosts has no rows; dynamic ownership is not established")
+		return errors.New("jetpack_monitor_hosts has no rows; dynamic ownership is not established")
 	}
 
 	sortedHosts := append([]db.HostRow(nil), hosts...)

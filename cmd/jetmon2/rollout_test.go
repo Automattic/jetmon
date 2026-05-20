@@ -1596,8 +1596,8 @@ func TestRunPinnedRolloutCheckSuccess(t *testing.T) {
 		"PASS legacy_status_projection=enabled",
 		"PASS default_check_policy=method:HEAD profile:legacy",
 		"PASS api_port=disabled",
-		"PASS jetmon_hosts row absent host=\"host-a\"",
-		"PASS jetmon_hosts overlap=0",
+		"PASS jetpack_monitor_hosts row absent host=\"host-a\"",
+		"PASS jetpack_monitor_hosts overlap=0",
 		"INFO active_sites_in_pinned_range=37",
 		"PASS legacy_projection_drift=0",
 		"pinned rollout check passed",
@@ -1711,7 +1711,7 @@ func TestRunPinnedRolloutCheckFailures(t *testing.T) {
 					return true, nil
 				},
 			},
-			want: "still has a jetmon_hosts row",
+			want: "still has a jetpack_monitor_hosts row",
 		},
 		{
 			name: "host row query error",
@@ -1752,7 +1752,7 @@ func TestRunPinnedRolloutCheckFailures(t *testing.T) {
 					return nil, errors.New("db unavailable")
 				},
 			},
-			want: "list jetmon_hosts rows overlapping",
+			want: "list jetpack_monitor_hosts rows overlapping",
 		},
 		{
 			name: "projection drift",
@@ -2052,7 +2052,7 @@ func TestBuildRolloutStateReportDynamicIssues(t *testing.T) {
 	if report.BucketCoverage.Status != "invalid" {
 		t.Fatalf("coverage status = %q, want invalid", report.BucketCoverage.Status)
 	}
-	if !strings.Contains(report.SuggestedNextAction, "Fix jetmon_hosts bucket coverage") {
+	if !strings.Contains(report.SuggestedNextAction, "Fix jetpack_monitor_hosts bucket coverage") {
 		t.Fatalf("suggested action = %q", report.SuggestedNextAction)
 	}
 }
@@ -2285,8 +2285,8 @@ func TestRunRollbackCheckSuccess(t *testing.T) {
 	}
 	for _, want := range []string{
 		"PASS rollback_range=12-34",
-		"PASS jetmon_hosts row absent host=\"host-a\"",
-		"PASS jetmon_hosts overlap=0",
+		"PASS jetpack_monitor_hosts row absent host=\"host-a\"",
+		"PASS jetpack_monitor_hosts overlap=0",
 		"INFO active_sites_in_rollback_range=42",
 		"PASS legacy_projection_drift=0",
 		"rollback check passed",
@@ -2378,7 +2378,7 @@ func TestRunRollbackCheckFailures(t *testing.T) {
 					return true, nil
 				},
 			},
-			want: "still has a jetmon_hosts row",
+			want: "still has a jetpack_monitor_hosts row",
 		},
 		{
 			name:      "overlapping dynamic row",
@@ -2822,7 +2822,7 @@ func TestValidateDynamicBucketCoverageFailures(t *testing.T) {
 		{
 			name:  "no hosts",
 			hosts: nil,
-			want:  "jetmon_hosts has no rows",
+			want:  "jetpack_monitor_hosts has no rows",
 		},
 		{
 			name: "inactive host",

@@ -100,7 +100,7 @@ run_smoke() {
 		"-p${db_password}" \
 		--batch \
 		--skip-column-names \
-		-e 'SELECT COUNT(*), COALESCE(MAX(id), 0) FROM jetmon_schema_migrations;' \
+		-e 'SELECT COUNT(*), COALESCE(MAX(id), 0) FROM jetpack_monitor_schema_migrations;' \
 		"$db_name")"
 	read -r count max_id <<<"$actual"
 	if [[ "$count" != "$expected_count" || "$max_id" != "$expected_max" ]]; then
@@ -113,7 +113,7 @@ run_smoke() {
 		"-p${db_password}" \
 		--batch \
 		--skip-column-names \
-		-e "SHOW COLUMNS FROM jetmon_process_health WHERE Field IN ('runtime_goroutines','runtime_threads');" \
+		-e "SHOW COLUMNS FROM jetpack_monitor_process_health WHERE Field IN ('runtime_goroutines','runtime_threads');" \
 		"$db_name")"
 	grep -q '^runtime_goroutines[[:space:]]' <<<"$columns" || fail "$image missing runtime_goroutines column"
 	grep -q '^runtime_threads[[:space:]]' <<<"$columns" || fail "$image missing runtime_threads column"

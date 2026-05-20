@@ -12,7 +12,7 @@ transition out to matching subscribers. There were two viable shapes:
 - **In-process pub/sub.** The eventstore notifies subscribers
   in-process via a Go channel; each worker is a subscriber. The
   workers wake on every transition with no polling latency.
-- **Pull from `jetmon_event_transitions`.** Workers maintain a
+- **Pull from `jetpack_monitor_event_transitions`.** Workers maintain a
   high-water mark in their own progress table and poll the
   transitions table on a tick (default 1s). Transitions are
   durable; new transitions are picked up on the next poll.
@@ -42,10 +42,10 @@ We will use **pull-only delivery** for both the webhook worker
 (`internal/webhooks`) and the alerting worker (`internal/alerting`).
 Both workers:
 
-- Maintain a high-water mark of the last `jetmon_event_transitions.id`
+- Maintain a high-water mark of the last `jetpack_monitor_event_transitions.id`
   they processed, in their own per-instance progress table
-  (`jetmon_webhook_dispatch_progress`,
-  `jetmon_alert_dispatch_progress`).
+  (`jetpack_monitor_webhook_dispatch_progress`,
+  `jetpack_monitor_alert_dispatch_progress`).
 - Poll on a 1-second tick by default for new transition rows after
   the mark.
 - For each new transition, match against active subscribers and
@@ -106,7 +106,7 @@ The MySQL schema is the bus between writers (eventstore) and readers
 ## Related
 
 - ADR-0001 (Event-sourced state model) — defines the
-  `jetmon_event_transitions` table the workers consume.
+  `jetpack_monitor_event_transitions` table the workers consume.
 - ADR-0007 (Soft-lock claim) — the row-level locking that makes
   multi-instance pull safe.
 - `internal/webhooks/worker.go`, `internal/alerting/worker.go` — the

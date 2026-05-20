@@ -36,12 +36,12 @@ The security and rollout constraints are:
 Jetmon v2 will use an **operator-trusted registry plus monitor-collected
 telemetry** for Veriflier discovery.
 
-- `jetmon_veriflier_vantages` is the trusted registry. Operators create and
+- `jetpack_monitor_veriflier_vantages` is the trusted registry. Operators create and
   enable one row per quorum-counted Veriflier vantage.
 - Only enabled, usable registry rows are eligible for active discovery traffic
   and downtime quorum. A row is usable only when it has an endpoint host,
   endpoint port, and auth token.
-- `jetmon_veriflier_agents` is telemetry only. Monitor hosts poll authenticated
+- `jetpack_monitor_veriflier_agents` is telemetry only. Monitor hosts poll authenticated
   Veriflier `/v2/status` endpoints and write agent liveness, protocol, version,
   endpoint, queue, and capacity data.
 - Veriflier hosts do not write to MySQL and do not self-register trusted
@@ -76,7 +76,7 @@ telemetry** for Veriflier discovery.
 - Operators must seed and maintain the trusted registry. Agent telemetry alone
   is intentionally insufficient.
 - A new Veriflier agent may be fresh and healthy but ignored until its
-  `vantage_id` is approved in `jetmon_veriflier_vantages`.
+  `vantage_id` is approved in `jetpack_monitor_veriflier_vantages`.
 - Discovery depends on monitor hosts polling Verifliers. If monitors cannot
   reach `/v2/status`, agent telemetry becomes stale even if Verifliers are
   healthy.
@@ -106,8 +106,8 @@ telemetry** for Veriflier discovery.
   Veriflier contract and discovery.
 - [`../operations-guide.md`](../operations-guide.md) — dashboard and
   discovery-report operations.
-- [`../data-model.md`](../data-model.md) — `jetmon_veriflier_vantages` and
-  `jetmon_veriflier_agents`.
+- [`../data-model.md`](../data-model.md) — `jetpack_monitor_veriflier_vantages` and
+  `jetpack_monitor_veriflier_agents`.
 - [`../roadmap.md`](../roadmap.md) — deferred production-like discovery soak
   and future probe-agent work.
 - `internal/orchestrator` — monitor-side Veriflier discovery and telemetry

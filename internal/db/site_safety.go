@@ -61,7 +61,7 @@ func UpsertSiteSafetyFlag(ctx context.Context, execer SiteSafetyFlagExecer, flag
 	}
 
 	_, err := execer.ExecContext(ctx, `
-		INSERT INTO jetmon_site_safety_flags
+		INSERT INTO jetpack_monitor_site_safety_flags
 			(blog_id, monitor_site_id, flag_type, reason, monitor_url, status, first_seen_at, last_seen_at, deactivated_at)
 		VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3), ?)
 		ON DUPLICATE KEY UPDATE
