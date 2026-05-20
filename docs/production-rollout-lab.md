@@ -90,6 +90,12 @@ Use these as a lab pool, not as fixed assignments. A good first topology is:
 - Preserve Veriflier target-safety behavior during internal tests. If direct
   private fixture URLs are rejected, prefer a lab-only public-looking route to
   an internal fixture over disabling Jetmon's SSRF guard.
+- For high-cardinality capacity tests that cannot use a public-looking route,
+  Monitors may set `CHECK_TARGET_SAFETY_MODE=allow_private_for_tests`, but only
+  in an isolated uptime-bench lab with disposable synthetic site rows,
+  `WPCOM_NOTIFY_ENABLE=false`, stubbed delivery, and no customer-visible alert
+  path. Production rollout rehearsals against real site data must keep the
+  default `public_only` mode.
 - Seed enough sites to exercise bucket distribution, read/write split, rollout
   commands, WPCOM notification paths, and Veriflier quorum behavior.
 - Include canary sites with known up, down, timeout, redirect, TLS, body, and

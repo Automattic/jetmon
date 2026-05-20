@@ -304,7 +304,12 @@ public_only, which rejects localhost, private, reserved, and internal-only
 targets before dialing. The only alternate value is allow_private_for_tests,
 intended for isolated uptime-bench capacity labs that use private/internal
 targets to avoid Internet traffic. That mode is rejected unless
-WPCOM_NOTIFY_ENABLE=false. Default: public_only.
+WPCOM_NOTIFY_ENABLE=false. Do not use allow_private_for_tests with production
+site data, real customer URLs, real WPCOM notification endpoints, or any fleet
+that can send customer-visible alerts. Prefer public_only for every rollout,
+production rehearsal, and security validation unless the test explicitly needs
+synthetic private targets and the database contains only disposable lab rows.
+Default: public_only.
 
 BODY_READ_MAX_BYTES
 Maximum response-body bytes checker will read for success-path validation when Content-Length is unknown or larger than this budget. For known Content-Length <= this budget, checker requires full EOF and treats truncation as a hard failure. Default: 1048576.
