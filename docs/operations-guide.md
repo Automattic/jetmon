@@ -172,6 +172,14 @@ webhook, or alert-contact notifications. Runtime probe-safety blocks also write
 open `jetpack_monitor_site_safety_flags` rows when the monitor row is known, so
 operators can query one table for cleanup and recurring unsafe-target findings.
 
+Use `./jetmon2 site-safety report` as the read-only scheduled gate for that
+table. It prints open, stale-open, and per-type/status counts plus bounded
+examples. Add `--output=json` for automation, `--max-open=N` to fail when open
+flags exceed an approved threshold, and `--stale-after=24h` or another rollout
+threshold to surface flags that have not been remediated. Pair this with a
+scheduled dry-run `site-safety unsafe-urls` scan when operators need to watch
+unsafe legacy URL counts before or after API rejection changes.
+
 ## Production Host Setup
 
 1. Install `bin/jetmon2` as `/opt/jetmon2/jetmon2`, or update the service unit

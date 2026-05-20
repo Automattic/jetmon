@@ -131,6 +131,9 @@ timestamps, and remediation status. It intentionally does not replace the
 legacy site table or event tables: `monitor_active` still controls whether a
 site is checked, and probe-safety blocks remain excluded from SLA downtime,
 WPCOM down/recovery notifications, webhooks, and alert-contact delivery.
+Use `jetmon2 site-safety report` for read-only operator reporting over these
+flags, and `jetmon2 site-safety unsafe-urls` when scanning active legacy rows
+for shape-unsafe stored URLs.
 
 ## Site Runtime
 

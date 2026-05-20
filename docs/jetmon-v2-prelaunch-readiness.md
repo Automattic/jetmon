@@ -513,9 +513,12 @@ Evidence:
   file location, read-only Monitor mount, `DB_SERVER_MAP_*` values, reload
   cadence, and `/api/v1/monitor/db-config` / dashboard status are acceptable
   before rollout.
-- [ ] Owner: `Jetmon` - Add or open follow-up tracking for scheduled
+- [x] Owner: `Jetmon` - Add scheduled
   `jetpack_monitor_site_safety_flags` reporting so unsafe legacy row counts and runtime
   probe-safety blocks are visible before and after API rejection rolls out.
+  Use `jetmon2 site-safety report` for the durable flag table, and pair it
+  with scheduled dry-run `site-safety unsafe-urls` scans when active legacy URL
+  shape counts are needed.
 - [ ] Owner: `Jetmon` - Add or open follow-up tracking for authoritative DNS
   rebinding coverage: public address on first lookup, then private/reserved
   address on redirect or later check.
@@ -531,8 +534,8 @@ Evidence:
 
 - MariaDB runtime exercise transcript, including server versions and pass/fail
   output for each covered write path.
-- Links to follow-up issues or roadmap entries for safety-flag reporting, DNS
-  rebinding tests, TLS pathology tests, and keyword short-circuiting.
+- `site-safety report` output and links to follow-up issues or roadmap entries
+  for DNS rebinding tests, TLS pathology tests, and keyword short-circuiting.
 
 ## Early Canary Gates
 
