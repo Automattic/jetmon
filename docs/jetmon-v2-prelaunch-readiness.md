@@ -519,12 +519,14 @@ Evidence:
   Use `jetmon2 site-safety report` for the durable flag table, and pair it
   with scheduled dry-run `site-safety unsafe-urls` scans when active legacy URL
   shape counts are needed.
-- [ ] Owner: `Jetmon` - Add or open follow-up tracking for authoritative DNS
+- [x] Owner: `Jetmon` - Add follow-up tracking for authoritative DNS
   rebinding coverage: public address on first lookup, then private/reserved
-  address on redirect or later check.
-- [ ] Owner: `Jetmon` - Add or open follow-up tracking for deeper TLS pathology
+  address on redirect or later check. See
+  `uptime-bench-probe-safety-integration-handoff.md`.
+- [x] Owner: `Jetmon` - Add follow-up tracking for deeper TLS pathology
   coverage: TLS 1.0/1.1, no common cipher, handshake close/alert, large
   certificate chains, expired/self-signed certificates, and hostname mismatch.
+  See `uptime-bench-probe-safety-integration-handoff.md`.
 - [ ] Owner: `Jetmon` - Decide whether streaming keyword matching should
   short-circuit when a required-only keyword is found. This is an optimization
   follow-up, not a production rollout blocker unless body-read cost becomes a
@@ -534,8 +536,10 @@ Evidence:
 
 - MariaDB runtime exercise transcript, including server versions and pass/fail
   output for each covered write path.
-- `site-safety report` output and links to follow-up issues or roadmap entries
-  for DNS rebinding tests, TLS pathology tests, and keyword short-circuiting.
+- `site-safety report` output and links to follow-up issues, roadmap entries,
+  or handoff docs for safety-flag reporting, DNS rebinding tests, TLS
+  pathology tests, and keyword
+  short-circuiting.
 
 ## Early Canary Gates
 
