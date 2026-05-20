@@ -1189,6 +1189,66 @@ This is a coordinated migration, not a code change — and it's safer to do once
 
 ## Architectural roadmap
 
+The subsections below describe one target end-state and the independent peels
+that get there. Read "Target fleet topology" first for the vision; the rest are
+per-concern detail.
+
+### Target fleet topology
+
+The end-state this section builds toward: **Monitor hosts run one job —
+checking sites — and nothing else.** Every other concern (the API, outbound
+delivery, the per-check telemetry store, the operator dashboard) moves onto its
+own servers. They are co-located in the `jetmon2` binary today for operational
+simplicity; at fleet scale that co-location works against each one, because
+they have different scaling axes, failure modes, deploy cadences, and exposure
+profiles.
+
+The Monitor's irreducible stateful core is small: **bucket ownership
+(`jetpack_monitor_hosts`), the check loop, and the event/projection writes.**
+That core is what must stay on the Monitor and be coordinated carefully.
+Everything else is peelable.
+
+| Service | Runs on | State | Scales on | Status today |
+|---|---|---|---|---|
+| `jetmon-monitor` (orchestrator) | Monitor hosts | stateful — claims buckets in `jetpack_monitor_hosts` | bucket count, check rate | core of `jetmon2` |
+| `jetmon-api` | API hosts (behind the gateway/LB) | stateless once idempotency/rate-limit move to shared storage | API request rate | in-process in `jetmon2`; see "API as an independent service" |
+| `jetmon-deliverer` | delivery hosts | stateless — claims rows with `FOR UPDATE SKIP LOCKED` | outbound event volume | standalone binary already exists |
+| `jetmon-dashboard` | ops hosts | stateless | operator sessions | in-process in `jetmon2` |
+| `jetmon-verifier` (veriflier) | geo-distributed vantage hosts | stateless | regions / vantages | already a separate binary |
+| Per-check telemetry store | dedicated Jetmon-owned DB host(s) | best-effort time-series | check rate | see "Per-check telemetry store" |
+
+**The bus is the database, not RPC.** These services already communicate almost
+entirely through shared tables — the orchestrator writes events / transitions /
+projections, the deliverer claims delivery rows, the API serves CRUD tables, the
+dashboard reads fleet state. That is why the splits are mostly packaging
+exercises rather than re-architectures: the integration contract already lives
+in the schema. (The telemetry store adds a second, separate bus for the
+high-volume per-check stream so it never touches the shared OLTP database.)
+
+**The unifying pattern: peel stateless concerns off the stateful core.** Each
+subsection below is one peel. They share one technical prerequisite worth doing
+first — **move the API's in-memory idempotency and rate-limit state to shared
+(DB-backed) storage** — because that is what unblocks running more than one of
+any API-serving instance behind a load balancer. After that, order is driven by
+trigger, not calendar:
+
+1. **DB-backed idempotency / rate-limit** — the shared enabler.
+2. **`jetmon-deliverer`** — already extractable; trigger is a second outbound
+   transport (alert contacts) plus the WPCOM-notification migration.
+3. **`jetmon-api`** — clean to extract; trigger is public-API exposure or
+   wanting API deploy cadence independent of Monitor disruption.
+4. **Per-check telemetry store** — trigger is per-check-metrics feature parity.
+5. **`jetmon-dashboard`** — lowest priority; peel when operator-session load or
+   deploy coupling warrants.
+
+**Why it's worth it.** A Monitor host that does only checking has a minimal
+blast radius (no inbound API traffic, no outbound delivery connections competing
+with checks), a clean drain / bucket-handoff story (nothing else is running in
+the process), and a deploy cadence decoupled from API and delivery changes. Each
+peeled service then scales, fails, and deploys on its own axis. None of this is
+needed for the initial backend-replacement rollout — it is the post-rollout
+growth path.
+
 ### Multi-repo / multi-binary split
 
 Today everything lives in one repo and the `jetmon2` binary contains the orchestrator, the API server, the operator dashboard, and (after Phase 3) the webhook delivery worker. The `veriflier2` binary is already separate but in the same repo.
@@ -1238,6 +1298,53 @@ The MySQL schema is already the implicit bus between these — each service read
 **Naming opportunity:** "veriflier" is a long-standing typo of "verifier" that has stuck around through the rewrite. A split is a natural moment to rename. Candidates: `verifier`, `witness`, `probe-worker`, `vantage`. Worth deciding before the split happens, not during.
 
 **When to revisit:** when a single binary's resource needs (CPU, memory, restart blast radius) starts working against the operational sweet spot for one of the concerns. The deliverer split specifically becomes worthwhile when alert contacts ship — that's the second outbound transport, and a third (WPCOM notifications) follows for free since they already exist as code that wants to live next to the others.
+
+### API as an independent service
+
+The API is the cleanest concern to peel, because it is already built as a
+database service: `api.New(addr, db, hostname)` (`internal/api/api.go`) takes a
+DB handle and a hostname and holds **no reference to the orchestrator or check
+pool**. `internal/api` integrates with the Monitor only through shared tables
+and types, so a `cmd/jetmon-api/` with a thin main that opens the DB and serves
+`api.New(...)` is most of the binary.
+
+**Wins:** independent scaling (API request rate is unrelated to check load),
+failure isolation (an API overload or panic can't threaten bucket ownership or
+the check loop), independent deploy cadence (API changes ship without restarting
+Monitors and disrupting bucket handoff), and exposure-surface separation
+(inbound API traffic stays off the hosts holding WPCOM client certs and DB write
+credentials).
+
+**Split is not the same decision as fan-out.** The only stateful pieces of
+`internal/api` are the in-memory idempotency cache (`idempotency.go`) and
+rate-limiter (`ratelimit.go`):
+
+- A **single** dedicated API instance (or sticky-routed instances) works with
+  the in-memory caches unchanged — the same assumption as today's single-host
+  affinity contract (see `docs/operations-guide.md`, "Internal API Consumer
+  Affinity").
+- A **horizontally-scaled API fleet behind a round-robin load balancer** breaks
+  them: idempotency dedup fails across instances (duplicate webhook creation,
+  stranded secret rotation) and per-key rate limits multiply by instance count.
+  Moving idempotency to a `jetpack_monitor_idempotency` table — and treating the
+  gateway as the authoritative rate limiter — is the prerequisite for fan-out,
+  and the same work the affinity contract flags.
+
+**Data-plane vs per-host control.** Most of the surface is data-plane CRUD over
+the DB (sites, events, history, webhooks, alert contacts, stats, audit log) and
+moves cleanly. A subset reads as per-host control (`/ready`, drain, `db-config`,
+the live dashboard); because the server has no orchestrator handle, those
+already work via the DB or process signals rather than in-process calls. A
+separate API fleet can't address "drain host X" without per-host routing, so the
+likely shape is: extract the data-plane API as `jetmon-api`, and keep a thin
+local admin/introspection endpoint on each Monitor for genuine per-host control.
+Audit which endpoints are "this host" vs "the fleet" to draw that line.
+
+**Trigger / when to revisit.** Public-API exposure (request volume that should
+scale independently of checks), or wanting API deploy cadence decoupled from
+Monitor disruption. Not needed for the internal-only, gateway-fronted initial
+rollout. Sequence: DB-backed idempotency → extract `cmd/jetmon-api` →
+horizontally scale.
 
 ### Path to a public API
 
