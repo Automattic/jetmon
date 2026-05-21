@@ -139,7 +139,7 @@ prepare_config() {
 		| .USE_VARIABLE_CHECK_INTERVALS = true
 		| .BUCKET_TOTAL = 1000
 		| .BUCKET_TARGET = 1000
-		| .VERIFIERS = [{"name":"Docker Veriflier","host":$fixture_host,"port":"7803","auth_token":$verifier_token}]' \
+		| .VERIFLIERS = [{"name":"Docker Veriflier","host":$fixture_host,"port":"7803","auth_token":$verifier_token}]' \
 		"$REPO_ROOT/config/config-sample.json" >"$CONFIG_FILE"
 	pass "safe_config_written=$CONFIG_FILE wpcom_notify=false email_transport=stub rollout_mode=api-controlled"
 }

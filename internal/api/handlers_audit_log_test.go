@@ -26,7 +26,7 @@ func TestAuditLogReturnsRowsWithMixedNulls(t *testing.T) {
 	mock.ExpectQuery(auditBaseSQL).
 		WithArgs(51).
 		WillReturnRows(sqlmock.NewRows(auditLogColumns).
-			AddRow(102, nil, nil, "config_change", "local", "reload applied", `{"keys":["VERIFIERS"]}`, now).
+			AddRow(102, nil, nil, "config_change", "local", "reload applied", `{"keys":["VERIFLIERS"]}`, now).
 			AddRow(101, int64(42), int64(7), "wpcom_sent", "local", "200 OK", nil, now.Add(-time.Minute)))
 
 	req := httptest.NewRequest("GET", "/api/v1/audit-log", nil)

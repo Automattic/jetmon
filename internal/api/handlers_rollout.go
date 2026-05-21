@@ -1884,9 +1884,9 @@ func (s *Server) rolloutVerifierConfigsForPreflight(ctx context.Context, cfg *co
 		 ORDER BY vantage_id`)
 	if err != nil {
 		if len(cfg.Verifiers) > 0 {
-			return cfg.Verifiers, []string{"active Veriflier discovery registry lookup failed; checking static VERIFIERS fallback: " + err.Error()}, nil
+			return cfg.Verifiers, []string{"active Veriflier discovery registry lookup failed; checking static VERIFLIERS fallback: " + err.Error()}, nil
 		}
-		return nil, nil, []string{"active Veriflier discovery registry lookup failed and static VERIFIERS is empty: " + err.Error()}
+		return nil, nil, []string{"active Veriflier discovery registry lookup failed and static VERIFLIERS is empty: " + err.Error()}
 	}
 	defer rows.Close()
 	var out []config.VerifierConfig
@@ -1916,10 +1916,10 @@ func (s *Server) rolloutVerifierConfigsForPreflight(ctx context.Context, cfg *co
 	}
 	out = completeVerifierConfigs(out)
 	if len(out) == 0 && len(cfg.Verifiers) > 0 {
-		return cfg.Verifiers, []string{"active Veriflier discovery has no complete enabled vantages; checking static VERIFIERS fallback"}, nil
+		return cfg.Verifiers, []string{"active Veriflier discovery has no complete enabled vantages; checking static VERIFLIERS fallback"}, nil
 	}
 	if len(out) == 0 {
-		return nil, nil, []string{"active Veriflier discovery has no complete enabled vantages and static VERIFIERS is empty"}
+		return nil, nil, []string{"active Veriflier discovery has no complete enabled vantages and static VERIFLIERS is empty"}
 	}
 	return out, nil, nil
 }

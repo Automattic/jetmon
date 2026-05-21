@@ -413,7 +413,8 @@ Implementation notes:
 
 - Startup, SIGHUP reload, and `jetmon2 validate-config` report
   `WARN config_key=...` lines for deprecated aliases, ignored v1-only keys,
-  unknown top-level keys, and `VERIFIERS[].grpc_port`.
+  unknown top-level keys, the old `VERIFIERS` spelling, and `grpc_port`
+  Veriflier entry aliases.
 - Ignored v1-only keys include `WORKER_MAX_CHECKS` and
   `TIMEOUT_FOR_REQUESTS_SEC`.
 - Accepted compatibility keys that warn because their v1 tuning meaning no
@@ -421,7 +422,8 @@ Implementation notes:
   `VERIFLIER_BATCH_SIZE`, `SQL_UPDATE_BATCH`, `TIME_BETWEEN_CHECKS_SEC`, and
   `TIME_BETWEEN_NOTICES_MIN`.
 - Deprecated aliases with real behavior still load but warn:
-  `DB_UPDATES_ENABLE`, `BUCKET_NO_MIN/MAX`, and `VERIFIERS[].grpc_port`.
+  `DB_UPDATES_ENABLE`, `BUCKET_NO_MIN/MAX`, `VERIFIERS`, and `grpc_port`
+  Veriflier entry aliases.
 
 ## 8. Full Codebase Simplification And Legacy-Surface Review
 
@@ -466,7 +468,7 @@ Implementation notes:
   presenting systemd as the production Monitor deployment layer. It also
   removes the inaccurate `sd_notify` watchdog claim; the shipped unit is
   currently `Type=simple`.
-- `docs/changelog.md` now names `VERIFIERS[].port` as the current Veriflier
+- `docs/changelog.md` now names `VERIFLIERS[].port` as the current Veriflier
   config key and labels `grpc_port` as a warning compatibility alias.
 - No runtime code removal was made in this pass. Systemd units, lab tooling,
   optional `veriflier2` legacy-compatible HTTP endpoints, stats files, pinned

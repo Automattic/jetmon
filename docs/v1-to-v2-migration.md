@@ -569,7 +569,7 @@ it only when the endpoint and token are correct, and run monitors in
 `jetpack_monitor_veriflier_vantages` and recent `jetpack_monitor_veriflier_agents` telemetry rows,
 then reports missing/extra registry vantages without changing traffic. Switch
 to `active` only after `validate-config` reports usable registry vantages and
-no shadow drift. Active mode falls back to static `VERIFIERS` if discovery is
+no shadow drift. Active mode falls back to static `VERIFLIERS` if discovery is
 unavailable or empty during rollout.
 
 Use the read-only discovery comparison report as the explicit shadow-mode gate:

@@ -309,7 +309,7 @@ to v1" and keep the transcript with the incident record.
    `veriflier2`'s legacy-compatible `/check` endpoint.
 
    For auto-discovery, keep `VERIFLIER_DISCOVERY_MODE=shadow` until the
-   registry matches the static `VERIFIERS` fleet. Seed
+   registry matches the static `VERIFLIERS` fleet. Seed
    `jetpack_monitor_veriflier_vantages` with one enabled row per trusted quorum vantage;
    do not rely on `jetpack_monitor_veriflier_agents` telemetry alone, because agent rows
    never create trusted votes. Move to `active` only after

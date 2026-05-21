@@ -404,7 +404,7 @@ original v1 Veriflier transport and optional `/check`/`/status` compatibility
 surface.
 
 Veriflier discovery is staged through `VERIFLIER_DISCOVERY_MODE`:
-`static` uses the configured `VERIFIERS` list, `shadow` reads the DB registry
+`static` uses the configured `VERIFLIERS` list, `shadow` reads the DB registry
 and reports drift without changing traffic, and `active` uses enabled usable
 rows from `jetpack_monitor_veriflier_vantages` with fallback to static config if the
 registry is unavailable or empty. Monitors poll Veriflier `/v2/status` and write

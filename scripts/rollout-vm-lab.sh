@@ -599,7 +599,7 @@ write_v2_lab_files() {
 	"DEBUG_PORT": 0,
 	"EMAIL_TRANSPORT": "stub",
 	"EMAIL_FROM": "jetmon@noreply.invalid",
-	"VERIFIERS": []
+	"VERIFLIERS": []
 }
 JSON
 	cat >"$LAB_DIR/work/jetmon2.env" <<ENV

@@ -710,6 +710,41 @@ func TestLegacyStatusProjectionConfig(t *testing.T) {
 	}
 }
 
+func TestLegacyVerifiersAlias(t *testing.T) {
+	saveConfigState(t)
+
+	p := writeConfigFile(t, `{
+		"AUTH_TOKEN": "token",
+		"NUM_WORKERS": 7,
+		"BUCKET_TOTAL": 100,
+		"BUCKET_TARGET": 50,
+		"NET_COMMS_TIMEOUT": 10,
+		"LOG_FORMAT": "text",
+		"VERIFIERS": [
+			{
+				"name": "legacy spelling",
+				"host": "veriflier",
+				"port": "7803",
+				"auth_token": "token"
+			}
+		]
+	}`)
+
+	if err := Load(p); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	cfg := Get()
+	if len(cfg.Verifiers) != 1 {
+		t.Fatalf("Verifiers length = %d, want 1", len(cfg.Verifiers))
+	}
+	if cfg.Verifiers[0].Name != "legacy spelling" {
+		t.Fatalf("Verifiers[0].Name = %q", cfg.Verifiers[0].Name)
+	}
+	if warningsByKey(cfg.Warnings)["VERIFIERS"] == "" {
+		t.Fatalf("missing VERIFIERS alias warning: %#v", cfg.Warnings)
+	}
+}
+
 func TestLoadWarnsForDeprecatedNoopAndUnknownKeys(t *testing.T) {
 	saveConfigState(t)
 
@@ -758,6 +793,7 @@ func TestLoadWarnsForDeprecatedNoopAndUnknownKeys(t *testing.T) {
 		"TIME_BETWEEN_CHECKS_SEC",
 		"TIME_BETWEEN_NOTICES_MIN",
 		"STATSD_SEND_MEM_USAGE",
+		"VERIFIERS",
 		"UNEXPECTED_V1_KEY",
 		"VERIFIERS[0].grpc_port",
 	} {

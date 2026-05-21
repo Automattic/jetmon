@@ -127,9 +127,9 @@ activation. The most important ignored v1-only keys are
 such as `NUM_TO_PROCESS`, `BATCH_SIZE`, `VERIFLIER_BATCH_SIZE`,
 `SQL_UPDATE_BATCH`, `TIME_BETWEEN_CHECKS_SEC`, and
 `TIME_BETWEEN_NOTICES_MIN` also warn because they no longer tune the v2
-scheduler or notification flow. `DB_UPDATES_ENABLE`, `BUCKET_NO_MIN/MAX`, and
-`VERIFIERS[].grpc_port` remain aliases but should be replaced with their v2
-names.
+scheduler or notification flow. `DB_UPDATES_ENABLE`, `BUCKET_NO_MIN/MAX`,
+`VERIFIERS`, and `grpc_port` in Veriflier entries remain aliases but should be
+replaced with their v2 names.
 
 Production database server-map refresh is handled by a config-sync sidecar for
 the first TeamCity/docker-deploy rollout, with host-side systemd sync kept as a
@@ -520,7 +520,7 @@ need from that host.
 When `VERIFLIER_DISCOVERY_MODE` is `shadow` or `active`, host health also shows
 Veriflier discovery status from the DB registry. Shadow mode is the rollout
 gate: compare enabled `jetpack_monitor_veriflier_vantages` rows against the static
-`VERIFIERS` list until there is no drift. Active mode uses enabled usable
+`VERIFLIERS` list until there is no drift. Active mode uses enabled usable
 registry rows and falls back to static config if discovery is unavailable or
 empty. Monitor-collected rows in `jetpack_monitor_veriflier_agents` expose liveness and
 capacity without giving Veriflier hosts DB credentials; they do not create

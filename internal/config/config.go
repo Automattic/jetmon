@@ -131,7 +131,7 @@ type Config struct {
 	SchemaManagementMode string `json:"SCHEMA_MANAGEMENT_MODE"`
 
 	// VeriflierDiscoveryMode controls whether the monitor reads Veriflier
-	// endpoints from the trusted DB registry. "static" preserves the VERIFIERS
+	// endpoints from the trusted DB registry. "static" preserves the VERIFLIERS
 	// list behavior, "shadow" reports registry drift without changing traffic,
 	// and "active" uses the registry with static fallback if discovery fails.
 	VeriflierDiscoveryMode string `json:"VERIFLIER_DISCOVERY_MODE"`
@@ -224,7 +224,8 @@ type Config struct {
 	RetentionBackgroundEnable bool `json:"RETENTION_BACKGROUND_ENABLED"`
 	RetentionRunHourUTC       int  `json:"RETENTION_RUN_HOUR_UTC"`
 
-	Verifiers []VerifierConfig `json:"VERIFIERS"`
+	Verifiers       []VerifierConfig `json:"VERIFLIERS"`
+	VerifiersLegacy []VerifierConfig `json:"VERIFIERS"`
 
 	Warnings []ConfigWarning `json:"-"`
 }
@@ -503,6 +504,11 @@ func applyDeprecatedAliases(raw []byte, cfg *Config) {
 	if _, hasOld := keys["DB_UPDATES_ENABLE"]; hasOld {
 		cfg.LegacyStatusProjectionEnable = cfg.DBUpdatesEnable
 	}
+	if _, hasNew := keys["VERIFLIERS"]; !hasNew {
+		if _, hasOld := keys["VERIFIERS"]; hasOld {
+			cfg.Verifiers = cfg.VerifiersLegacy
+		}
+	}
 }
 
 type deprecatedConfigKeyWarning struct {
@@ -559,6 +565,10 @@ var deprecatedConfigKeyWarnings = []deprecatedConfigKeyWarning{
 		key:     "STATSD_SEND_MEM_USAGE",
 		message: "deprecated v1 compatibility key; Jetmon v2 emits process resource gauges whenever StatsD is configured",
 	},
+	{
+		key:     "VERIFIERS",
+		message: "deprecated config spelling; use VERIFLIERS",
+	},
 }
 
 func collectConfigWarnings(raw []byte) []ConfigWarning {
@@ -597,7 +607,8 @@ func collectConfigWarnings(raw []byte) []ConfigWarning {
 
 	warnings = append(warnings, collectStatsDHostPathWarnings(keys["STATSD_HOST_PATH"])...)
 	warnings = append(warnings, collectLogFormatWarnings(keys["LOG_FORMAT"])...)
-	warnings = append(warnings, collectVerifierConfigWarnings(keys["VERIFIERS"])...)
+	warnings = append(warnings, collectVerifierConfigWarnings("VERIFLIERS", keys["VERIFLIERS"])...)
+	warnings = append(warnings, collectVerifierConfigWarnings("VERIFIERS", keys["VERIFIERS"])...)
 	return warnings
 }
 
@@ -653,7 +664,7 @@ func knownConfigJSONKeys() map[string]struct{} {
 	return known
 }
 
-func collectVerifierConfigWarnings(raw json.RawMessage) []ConfigWarning {
+func collectVerifierConfigWarnings(key string, raw json.RawMessage) []ConfigWarning {
 	if len(raw) == 0 {
 		return nil
 	}
@@ -665,7 +676,7 @@ func collectVerifierConfigWarnings(raw json.RawMessage) []ConfigWarning {
 	for i, verifier := range verifiers {
 		if _, ok := verifier["grpc_port"]; ok {
 			warnings = append(warnings, ConfigWarning{
-				Key:     fmt.Sprintf("VERIFIERS[%d].grpc_port", i),
+				Key:     fmt.Sprintf("%s[%d].grpc_port", key, i),
 				Message: "deprecated Veriflier port alias; use port",
 			})
 		}
@@ -920,10 +931,10 @@ func validate(cfg *Config) error {
 		// most common cause of "verifier connection refused" in dev configs
 		// (typo: "ports" instead of "port").
 		if v.Host == "" {
-			return fmt.Errorf("VERIFIERS[%d] (%s): host is required", i, displayName(v, i))
+			return fmt.Errorf("VERIFLIERS[%d] (%s): host is required", i, displayName(v, i))
 		}
 		if v.TransportPort() == "" {
-			return fmt.Errorf("VERIFIERS[%d] (%s): port is required", i, displayName(v, i))
+			return fmt.Errorf("VERIFLIERS[%d] (%s): port is required", i, displayName(v, i))
 		}
 	}
 	return nil

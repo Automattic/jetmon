@@ -36,8 +36,9 @@ production telemetry branches:
   but runtime logs still use the standard text logger.
 - [ ] After production rollout, remove deprecated migration aliases from normal
   operator docs: `DB_UPDATES_ENABLE`, `BUCKET_NO_MIN` / `BUCKET_NO_MAX`, and
-  `VERIFIERS[].grpc_port`. Keep parser support only as long as copied v1
-  configs are expected during rollback windows.
+  the misspelled `VERIFIERS` / `grpc_port` Veriflier aliases. Keep parser
+  support only as long as copied v1 configs are expected during rollback
+  windows.
 
 ### Veriflier Rebuild and Contract TODO
 

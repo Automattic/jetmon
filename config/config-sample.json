@@ -74,7 +74,7 @@
 	"RETENTION_BACKGROUND_ENABLED" : true,
 	"RETENTION_RUN_HOUR_UTC"       : 4,
 
-	"VERIFIERS": [
+	"VERIFLIERS": [
 		{
 			"name"       : "Veriflier 1",
 			"host"       : "veriflier",

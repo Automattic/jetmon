@@ -119,7 +119,7 @@ prepare_config() {
 		| .BUCKET_HEARTBEAT_GRACE_SEC = 15
 		| .ALERT_COOLDOWN_MINUTES = 60
 		| .STATS_UPDATE_INTERVAL_MS = 1000
-		| .VERIFIERS = [
+		| .VERIFLIERS = [
 			{"name":"Soak Veriflier 1","host":"veriflier","port":"7803","auth_token":$token},
 			{"name":"Soak Veriflier 2","host":"veriflier2","port":"7803","auth_token":$token},
 			{"name":"Soak Veriflier 3","host":"veriflier3","port":"7803","auth_token":$token}
