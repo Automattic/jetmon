@@ -145,11 +145,9 @@ Copy `config/config-sample.json` to `config/config.json`. All keys from the orig
 **Existing keys (unchanged behaviour):**
 - `NUM_WORKERS`: Goroutine pool size (replaces worker process count)
 - `NUM_TO_PROCESS`: Legacy compatibility setting retained so copied v1-style configs parse; it does not cap Go scheduler throughput
-- `DATASET_SIZE`: Database fetch page size for scheduler work; the scheduler continues fetching pages until due work is drained
-- `MIN_TIME_BETWEEN_ROUNDS_SEC`: Fixed-cadence full-fleet pass interval when `USE_VARIABLE_CHECK_INTERVALS` is false
+- `DATASET_SIZE`: Database fetch page size for active-target reloads; the scheduler continues fetching pages until the in-memory target set is current
 - `NET_COMMS_TIMEOUT`: Default per-check HTTP timeout in seconds
 - `PEER_OFFLINE_LIMIT`: Veriflier agreements required to confirm downtime
-- `WORKER_MAX_MEM_MB`: Go runtime memory threshold that triggers worker-pool drain (replaces worker recycling)
 
 **New keys:**
 - `BUCKET_TOTAL`: Total bucket range (e.g. 1000); replaces static `BUCKET_NO_MIN/MAX`
@@ -159,7 +157,8 @@ Copy `config/config-sample.json` to `config/config.json`. All keys from the orig
 - `ALERT_COOLDOWN_MINUTES`: Default cooldown between repeated alerts for the same site
 - `LEGACY_STATUS_PROJECTION_ENABLE`: Keep v1 `site_status` / `last_status_change` projection updated during shadow-v2-state migration
 - `LOG_FORMAT`: `text` (default, drop-in compatible) or `json` (structured logging)
-- `USE_VARIABLE_CHECK_INTERVALS`: Respect per-site `check_interval`; the scheduler uses a short idle poll and maintained `jetpack_monitor_site_runtime.next_check_at` timestamps control which sites are ready in legacy round-scheduler mode
+- `STREAMING_LEGACY_PROJECTION_INTERVAL_MIN`: Coarse sidecar freshness projection interval for rollback and compatibility readers
+- `STREAMING_TARGET_RELOAD_SEC`: Active site config reload cadence for the streaming scheduler
 - `DASHBOARD_PORT`: Internal port for the operator dashboard (0 to disable)
 - `DEBUG_PORT`: localhost-only pprof port, default 6060 (0 to disable; never exposed remotely)
 
@@ -322,7 +321,7 @@ Up → Seems Down → Down → Resolved
 
 **Maintenance Windows:** Checks continue during a maintenance window and data is recorded in the audit log, but no alerts fire. Verify that `maintenance_end` is correctly set — an open-ended maintenance window silently suppresses all alerts for that site indefinitely.
 
-**Memory Pressure Drain:** If RSS exceeds the configured threshold, the goroutine pool shrinks by 10% via graceful drain. This reduces throughput temporarily. If memory pressure is sustained, investigate for goroutine leaks using the pprof endpoint at `http://localhost:<DEBUG_PORT>/debug/pprof/` (localhost only) before increasing `WORKER_MAX_MEM_MB`.
+**Memory Pressure Investigation:** The old scheduler memory-drain cap has been removed. If memory pressure is sustained, investigate for goroutine leaks using the pprof endpoint at `http://localhost:<DEBUG_PORT>/debug/pprof/` (localhost only), then adjust host/container resources or streaming behavior based on evidence.
 
 ## Agent Workflow Notes
 

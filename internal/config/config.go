@@ -84,10 +84,9 @@ type Config struct {
 	// prefix. Leave empty to use Hostname/runtime hostname as the fallback.
 	StatsDHostPath string `json:"STATSD_HOST_PATH"`
 
-	NumWorkers     int `json:"NUM_WORKERS"`
-	NumToProcess   int `json:"NUM_TO_PROCESS"`
-	DatasetSize    int `json:"DATASET_SIZE"`
-	WorkerMaxMemMB int `json:"WORKER_MAX_MEM_MB"`
+	NumWorkers   int `json:"NUM_WORKERS"`
+	NumToProcess int `json:"NUM_TO_PROCESS"`
+	DatasetSize  int `json:"DATASET_SIZE"`
 
 	// LegacyStatusProjectionEnable controls compatibility writes to the
 	// v1 status projection on jetpack_monitor_sites (site_status +
@@ -153,7 +152,6 @@ type Config struct {
 	WPCOMNotifyLegacyCertPath string   `json:"WPCOM_NOTIFY_LEGACY_CERT_PATH"`
 	WPCOMNotifyLegacyKeyPath  string   `json:"WPCOM_NOTIFY_LEGACY_KEY_PATH"`
 	WPCOMNotifyLegacyInsecure bool     `json:"WPCOM_NOTIFY_LEGACY_INSECURE_SKIP_VERIFY"`
-	MinTimeBetweenRoundsSec   int      `json:"MIN_TIME_BETWEEN_ROUNDS_SEC"`
 	NetCommsTimeout           int      `json:"NET_COMMS_TIMEOUT"`
 	CheckDNSResolvers         []string `json:"CHECK_DNS_RESOLVERS"`
 	CheckTargetSafetyMode     string   `json:"CHECK_TARGET_SAFETY_MODE"`
@@ -163,14 +161,15 @@ type Config struct {
 	KeywordReadMaxMS          int      `json:"KEYWORD_READ_MAX_MS"`
 	DefaultCheckMethod        string   `json:"DEFAULT_CHECK_METHOD"`
 	DefaultDetectionProfile   string   `json:"DEFAULT_DETECTION_PROFILE"`
-	UseVariableCheckIntervals bool     `json:"USE_VARIABLE_CHECK_INTERVALS"`
-	SchedulerEngine           string   `json:"SCHEDULER_ENGINE"`
-	RolloutMode               string   `json:"ROLLOUT_MODE"`
+	// SchedulerEngine is a deprecated v2 rollout key retained only so
+	// SCHEDULER_ENGINE=legacy can fail loudly instead of being silently ignored.
+	SchedulerEngine string `json:"SCHEDULER_ENGINE"`
+	RolloutMode     string `json:"ROLLOUT_MODE"`
 
 	// StreamingLegacyProjectionIntervalMin controls the coarse compatibility
 	// freshness write interval used by the streaming scheduler. It intentionally
 	// does not affect check cadence; it only bounds jetpack_monitor_site_runtime
-	// freshness staleness for rollback to the legacy scheduler.
+	// freshness staleness for compatibility readers and rollout rollback checks.
 	StreamingLegacyProjectionIntervalMin int `json:"STREAMING_LEGACY_PROJECTION_INTERVAL_MIN"`
 	StreamingTargetReloadSec             int `json:"STREAMING_TARGET_RELOAD_SEC"`
 
@@ -388,7 +387,6 @@ func defaults() *Config {
 		NumWorkers:                           60,
 		NumToProcess:                         40,
 		DatasetSize:                          100,
-		WorkerMaxMemMB:                       0,
 		LegacyStatusProjectionEnable:         true,
 		BucketTotal:                          1000,
 		BucketTarget:                         500,
@@ -412,7 +410,6 @@ func defaults() *Config {
 		WPCOMNotifyLegacyCertPath:            defaultWPCOMNotifyLegacyCertPath,
 		WPCOMNotifyLegacyKeyPath:             defaultWPCOMNotifyLegacyKeyPath,
 		WPCOMNotifyLegacyInsecure:            true,
-		MinTimeBetweenRoundsSec:              300,
 		NetCommsTimeout:                      10,
 		CheckTargetSafetyMode:                CheckTargetSafetyModePublicOnly,
 		BodyReadMaxBytes:                     1048576,
@@ -421,7 +418,7 @@ func defaults() *Config {
 		KeywordReadMaxMS:                     0,
 		DefaultCheckMethod:                   checkmode.MethodGET,
 		DefaultDetectionProfile:              checkmode.ProfileFull,
-		SchedulerEngine:                      "legacy",
+		SchedulerEngine:                      "streaming",
 		RolloutMode:                          RolloutModeActive,
 		StreamingLegacyProjectionIntervalMin: 15,
 		StreamingTargetReloadSec:             300,
@@ -539,7 +536,7 @@ var deprecatedConfigKeyWarnings = []deprecatedConfigKeyWarning{
 	},
 	{
 		key:     "NUM_TO_PROCESS",
-		message: "parsed for copied v1 config compatibility but does not cap v2 scheduler throughput; tune NUM_WORKERS, DATASET_SIZE, and scheduler mode instead",
+		message: "parsed for copied v1 config compatibility but does not cap v2 scheduler throughput; tune NUM_WORKERS and DATASET_SIZE instead",
 	},
 	{
 		key:     "BATCH_SIZE",
@@ -568,6 +565,22 @@ var deprecatedConfigKeyWarnings = []deprecatedConfigKeyWarning{
 	{
 		key:     "VERIFIERS",
 		message: "deprecated config spelling; use VERIFLIERS",
+	},
+	{
+		key:     "SCHEDULER_ENGINE",
+		message: "deprecated v2 rollout key; the streaming scheduler is now the only supported monitor scheduler",
+	},
+	{
+		key:     "USE_VARIABLE_CHECK_INTERVALS",
+		message: "deprecated v2 rollout key; the streaming scheduler always respects per-site check intervals and runtime due state",
+	},
+	{
+		key:     "WORKER_MAX_MEM_MB",
+		message: "deprecated v2 scheduler cap; streaming worker scaling no longer drains workers based on this artificial memory threshold",
+	},
+	{
+		key:     "MIN_TIME_BETWEEN_ROUNDS_SEC",
+		message: "deprecated legacy round-scheduler key; streaming check cadence comes from per-site check_interval and runtime due state",
 	},
 }
 
@@ -801,9 +814,6 @@ func validate(cfg *Config) error {
 		return fmt.Errorf("DEFAULT_DETECTION_PROFILE: %w", err)
 	}
 	cfg.DefaultDetectionProfile = profile
-	if cfg.MinTimeBetweenRoundsSec < 0 {
-		return fmt.Errorf("MIN_TIME_BETWEEN_ROUNDS_SEC must be >= 0")
-	}
 	cfg.SchemaManagementMode = normalizeSchemaManagementMode(cfg.SchemaManagementMode)
 	switch cfg.SchemaManagementMode {
 	case SchemaManagementModeMigrate, SchemaManagementModeValidate:
@@ -830,11 +840,12 @@ func validate(cfg *Config) error {
 		return fmt.Errorf("WPCOM_NOTIFY_MODE must be one of: legacy, modern")
 	}
 	switch cfg.SchedulerEngine {
-	case "", "legacy":
-		cfg.SchedulerEngine = "legacy"
-	case "streaming":
+	case "", "streaming":
+		cfg.SchedulerEngine = "streaming"
+	case "legacy":
+		return fmt.Errorf("SCHEDULER_ENGINE=legacy is no longer supported; remove SCHEDULER_ENGINE to use the streaming scheduler")
 	default:
-		return fmt.Errorf("SCHEDULER_ENGINE must be 'legacy' or 'streaming'")
+		return fmt.Errorf("SCHEDULER_ENGINE is deprecated and must be omitted or set to 'streaming'")
 	}
 	cfg.RolloutMode = normalizeRolloutMode(cfg.RolloutMode)
 	switch cfg.RolloutMode {

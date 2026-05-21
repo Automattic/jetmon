@@ -5,7 +5,6 @@
 	"STATSD_HOST_PATH"  : "",
 	"NUM_WORKERS"       : 60,
 	"DATASET_SIZE"      : 100,
-	"WORKER_MAX_MEM_MB" : 0,
 
 	"LEGACY_STATUS_PROJECTION_ENABLE" : true,
 
@@ -32,7 +31,6 @@
 	"WPCOM_NOTIFY_LEGACY_CERT_PATH": "certs/jetmon.crt",
 	"WPCOM_NOTIFY_LEGACY_KEY_PATH" : "certs/jetmon.key",
 	"WPCOM_NOTIFY_LEGACY_INSECURE_SKIP_VERIFY": true,
-	"MIN_TIME_BETWEEN_ROUNDS_SEC"  : 300,
 	"NET_COMMS_TIMEOUT"            : 10,
 	"CHECK_DNS_RESOLVERS"          : [],
 	"CHECK_TARGET_SAFETY_MODE"     : "public_only",
@@ -42,8 +40,6 @@
 	"KEYWORD_READ_MAX_MS"          : 0,
 	"DEFAULT_CHECK_METHOD"         : "GET",
 	"DEFAULT_DETECTION_PROFILE"    : "full",
-	"USE_VARIABLE_CHECK_INTERVALS" : true,
-	"SCHEDULER_ENGINE"            : "legacy",
 	"ROLLOUT_MODE"                : "active",
 	"STREAMING_LEGACY_PROJECTION_INTERVAL_MIN" : 15,
 	"STREAMING_TARGET_RELOAD_SEC" : 300,

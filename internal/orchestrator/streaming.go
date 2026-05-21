@@ -537,8 +537,8 @@ func (p *streamingSideEffectProcessor) runShard(o *Orchestrator, jobs <-chan str
 			// site.SiteStatus here is the pre-check status (processStreamingSideEffects
 			// takes site by value), so resultDisagreesWithStatus inside the filter
 			// correctly sees transition edges. Previously this path recorded every
-			// failure unconditionally; it now honors CHECK_HISTORY_MODE so the
-			// streaming and legacy schedulers agree on what gets persisted.
+			// failure unconditionally; it now honors CHECK_HISTORY_MODE so persisted
+			// samples stay tied to the configured observability footprint.
 			if shouldRecordCheckHistory(config.Get(), site, job.res, o.checkHistoryCounter.Add(1)) {
 				historyRows = append(historyRows, checkHistoryRowForResult(site.BlogID, job.res))
 				if len(historyRows) >= streamingHistoryBatchSize && !flushHistory() {
@@ -939,6 +939,9 @@ func (o *Orchestrator) runStreamingEngine() {
 			if bucketsChanged {
 				lastReload = time.Time{}
 				reloadReason = "bucket_change"
+			}
+			if o.shouldSampleProjectionDrift(cfg, now) {
+				o.checkLegacyProjectionDrift(cfg)
 			}
 			lastHeartbeat = now
 		}
@@ -1475,6 +1478,8 @@ func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streami
 		m.Timing("scheduler.streaming.history.time", stats.historyDuration)
 		m.Timing("scheduler.streaming.ssl.time", stats.sslDuration)
 		m.Timing("scheduler.streaming.events.time", stats.eventDuration)
+		m.EmitMemStats()
+		emitDBPoolStats(m)
 	}
 	metrics.WriteStatsFiles(metrics.StatsFilesSnapshot{
 		SitesPerSec: sps,

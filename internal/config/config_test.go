@@ -59,6 +59,19 @@ func TestValidate(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:   "scheduler engine empty defaults to streaming",
+			mutate: func(c *Config) { c.SchedulerEngine = "" },
+		},
+		{
+			name:   "scheduler engine streaming remains accepted for older v2 configs",
+			mutate: func(c *Config) { c.SchedulerEngine = "streaming" },
+		},
+		{
+			name:    "scheduler engine legacy is removed",
+			mutate:  func(c *Config) { c.SchedulerEngine = "legacy" },
+			wantErr: true,
+		},
+		{
 			name:    "bucket total zero",
 			mutate:  func(c *Config) { c.BucketTotal = 0 },
 			wantErr: true,
@@ -211,11 +224,6 @@ func TestValidate(t *testing.T) {
 		{
 			name:    "keyword read max ms negative",
 			mutate:  func(c *Config) { c.KeywordReadMaxMS = -1 },
-			wantErr: true,
-		},
-		{
-			name:    "min time between rounds negative",
-			mutate:  func(c *Config) { c.MinTimeBetweenRoundsSec = -1 },
 			wantErr: true,
 		},
 		{
@@ -761,6 +769,10 @@ func TestLoadWarnsForDeprecatedNoopAndUnknownKeys(t *testing.T) {
 		"BATCH_SIZE": 32,
 		"VERIFLIER_BATCH_SIZE": 200,
 		"SQL_UPDATE_BATCH": 1,
+		"WORKER_MAX_MEM_MB": 256,
+		"MIN_TIME_BETWEEN_ROUNDS_SEC": 300,
+		"USE_VARIABLE_CHECK_INTERVALS": true,
+		"SCHEDULER_ENGINE": "streaming",
 		"TIME_BETWEEN_CHECKS_SEC": 30,
 		"TIME_BETWEEN_NOTICES_MIN": 59,
 		"STATSD_SEND_MEM_USAGE": true,
@@ -790,6 +802,10 @@ func TestLoadWarnsForDeprecatedNoopAndUnknownKeys(t *testing.T) {
 		"BATCH_SIZE",
 		"VERIFLIER_BATCH_SIZE",
 		"SQL_UPDATE_BATCH",
+		"WORKER_MAX_MEM_MB",
+		"MIN_TIME_BETWEEN_ROUNDS_SEC",
+		"USE_VARIABLE_CHECK_INTERVALS",
+		"SCHEDULER_ENGINE",
 		"TIME_BETWEEN_CHECKS_SEC",
 		"TIME_BETWEEN_NOTICES_MIN",
 		"STATSD_SEND_MEM_USAGE",

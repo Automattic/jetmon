@@ -21,7 +21,9 @@ path even when every customer site is healthy.
 
 ## Decision
 
-Add a v2-native streaming scheduler behind `SCHEDULER_ENGINE=streaming`.
+Add a v2-native streaming scheduler. It was originally introduced behind
+`SCHEDULER_ENGINE=streaming`; the legacy round/page scheduler has since been
+removed, so streaming is now the only supported Monitor scheduler.
 
 The streaming engine:
 

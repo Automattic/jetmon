@@ -1252,26 +1252,12 @@ func emailTransportDelivers(cfg *config.Config) bool {
 }
 
 func schedulerConfigLabel(cfg *config.Config) string {
-	if cfg.SchedulerEngine == "streaming" {
-		return fmt.Sprintf(
-			"streaming reload=%s legacy_projection=%s worker_floor=%d fetch_page_size=%d",
-			time.Duration(cfg.StreamingTargetReloadSec)*time.Second,
-			time.Duration(cfg.StreamingLegacyProjectionIntervalMin)*time.Minute,
-			cfg.NumWorkers,
-			cfg.DatasetSize,
-		)
-	}
-	if cfg.UseVariableCheckIntervals {
-		return fmt.Sprintf(
-			"variable_intervals fetch_page_size=%d idle_poll=%s",
-			cfg.DatasetSize,
-			orchestrator.VariableIntervalPollInterval(),
-		)
-	}
 	return fmt.Sprintf(
-		"fixed_rounds fetch_page_size=%d min_round_interval=%s",
+		"streaming reload=%s legacy_projection=%s worker_floor=%d fetch_page_size=%d",
+		time.Duration(cfg.StreamingTargetReloadSec)*time.Second,
+		time.Duration(cfg.StreamingLegacyProjectionIntervalMin)*time.Minute,
+		cfg.NumWorkers,
 		cfg.DatasetSize,
-		time.Duration(cfg.MinTimeBetweenRoundsSec)*time.Second,
 	)
 }
 

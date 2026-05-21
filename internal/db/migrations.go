@@ -518,7 +518,7 @@ var migrations = []migration{
 	// Migration 35 supports streaming scheduler reloads. The scheduler pages
 	// active rows by blog_id inside its bucket range; this keeps periodic config
 	// refreshes from depending on the older last_checked_at/next_check_at
-	// indexes that are specific to the legacy round scheduler.
+	// indexes.
 	// Migration 35 previously added a streaming reload index to the legacy
 	// table. The streaming engine can use the existing v1 bucket/active shape
 	// during rollout without requiring another hot ALTER.
@@ -539,9 +539,8 @@ var migrations = []migration{
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
 
 	// Migration 37 stores v2 runtime/projection fields outside the legacy site
-	// table. These values are useful for API display, rollback freshness checks,
-	// and the legacy round scheduler, but they do not need to change the v1
-	// table shape.
+	// table. These values are useful for API display and rollback freshness
+	// checks, but they do not need to change the v1 table shape.
 	{37, `CREATE TABLE IF NOT EXISTS jetpack_monitor_site_runtime (
 		blog_id            BIGINT UNSIGNED NOT NULL PRIMARY KEY,
 		last_checked_at    DATETIME NULL,

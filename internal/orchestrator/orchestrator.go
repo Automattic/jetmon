@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"log"
 	mathrand "math/rand/v2"
-	runtimemetrics "runtime/metrics"
 	"sort"
 	"strings"
 	"sync"
@@ -56,9 +55,6 @@ const (
 const verifierRPCHeadroom = 5 * time.Second
 const verifierTelemetryStatusTimeout = 2 * time.Second
 
-const schedulerBackpressurePollInterval = 10 * time.Millisecond
-const schedulerVariableIntervalPollInterval = 5 * time.Second
-const schedulerBacklogPollInterval = 5 * time.Second
 const schedulerAPIControlledRangePollInterval = 5 * time.Second
 const schedulerBroadReportInterval = time.Minute
 const eventMutationMaxAttempts = 3
@@ -74,20 +70,12 @@ const verifierOperationalCooldownMax = 2 * time.Minute
 const verifierOperationalCooldownMemory = 10 * time.Minute
 const wpcomPermanentFailureLogInterval = 10 * time.Second
 
-// VariableIntervalPollInterval returns the idle scheduler poll interval used
-// when per-site check intervals are enabled. The SQL due predicate prevents
-// early checks; this only controls how quickly newly due work is discovered.
-func VariableIntervalPollInterval() time.Duration {
-	return schedulerVariableIntervalPollInterval
-}
-
 var (
 	nowFunc                 = time.Now
 	dbClaimBuckets          = db.ClaimBuckets
 	dbHeartbeat             = db.Heartbeat
 	dbReleaseHost           = db.ReleaseHostAndRebalance
 	dbMarkHostDraining      = db.MarkHostDraining
-	dbGetSitesForBucket     = db.GetSitesForBucket
 	dbListActiveSites       = db.ListActiveSitesForBucketRange
 	dbCountActiveSites      = db.CountActiveSitesForBucketRange
 	dbMarkSiteChecked       = db.MarkSiteChecked
@@ -100,7 +88,6 @@ var (
 	dbGetSiteStatus         = db.GetSiteStatusForMonitorSite
 	dbRecordFalsePositive   = db.RecordFalsePositive
 	dbUpdateLastAlertSent   = db.UpdateLastAlertSent
-	dbCountDueSites         = db.CountDueSitesForBucketRange
 	dbCountProjectionDrift  = db.CountLegacyProjectionDrift
 	dbListVeriflierVantages = db.ListEnabledVeriflierVantages
 	dbUpsertVeriflierAgent  = db.UpsertVeriflierAgent
@@ -118,8 +105,7 @@ var (
 		}
 		return nil
 	}
-	wpcomNotifyFunc     = func(c *wpcom.Client, n wpcom.Notification) error { return c.Notify(n) }
-	currentMemoryMBFunc = currentMemoryMB
+	wpcomNotifyFunc = func(c *wpcom.Client, n wpcom.Notification) error { return c.Notify(n) }
 )
 
 type metricsClient interface {
@@ -128,99 +114,6 @@ type metricsClient interface {
 	Timing(stat string, d time.Duration)
 	EmitMemStats()
 	EmitDBStats(prefix string, stats sql.DBStats)
-}
-
-type roundSummary struct {
-	pagesFetched      int
-	selected          int
-	dispatched        int
-	completed         int
-	outstanding       int
-	backpressureWaits int
-	staleResults      int
-	duplicateResults  int
-	neverChecked      int
-	oldestSelectedAge time.Duration
-	dueAtStart        int
-	dueRemaining      int
-	dueCountsSampled  bool
-	dueCountErrors    int
-	fetchErrors       int
-	interrupted       bool
-
-	dispatchDuration    time.Duration
-	waitDuration        time.Duration
-	processDuration     time.Duration
-	markCheckedDuration time.Duration
-	historyDuration     time.Duration
-	sslDuration         time.Duration
-	eventDuration       time.Duration
-
-	markCheckedRows   int
-	historyRows       int
-	sslRows           int
-	markCheckedErrors int
-	historyErrors     int
-	sslErrors         int
-
-	checkSuccesses     int
-	checkFailures      int
-	checkOffline       int
-	checkHTTPFailures  int
-	checkTimeouts      int
-	checkConnectErrors int
-	checkSSLErrors     int
-	checkRedirects     int
-	checkKeywords      int
-	checkTLSDeprecated int
-	checkCohorts       map[checkCohortKey]int
-}
-
-func (s *roundSummary) add(other roundSummary) {
-	s.pagesFetched += other.pagesFetched
-	s.selected += other.selected
-	s.dispatched += other.dispatched
-	s.completed += other.completed
-	s.outstanding += other.outstanding
-	s.backpressureWaits += other.backpressureWaits
-	s.staleResults += other.staleResults
-	s.duplicateResults += other.duplicateResults
-	s.neverChecked += other.neverChecked
-	s.dueCountErrors += other.dueCountErrors
-	s.fetchErrors += other.fetchErrors
-	if other.dueCountsSampled {
-		s.dueCountsSampled = true
-	}
-	s.dispatchDuration += other.dispatchDuration
-	s.waitDuration += other.waitDuration
-	s.processDuration += other.processDuration
-	s.markCheckedDuration += other.markCheckedDuration
-	s.historyDuration += other.historyDuration
-	s.sslDuration += other.sslDuration
-	s.eventDuration += other.eventDuration
-	s.markCheckedRows += other.markCheckedRows
-	s.historyRows += other.historyRows
-	s.sslRows += other.sslRows
-	s.markCheckedErrors += other.markCheckedErrors
-	s.historyErrors += other.historyErrors
-	s.sslErrors += other.sslErrors
-	s.checkSuccesses += other.checkSuccesses
-	s.checkFailures += other.checkFailures
-	s.checkOffline += other.checkOffline
-	s.checkHTTPFailures += other.checkHTTPFailures
-	s.checkTimeouts += other.checkTimeouts
-	s.checkConnectErrors += other.checkConnectErrors
-	s.checkSSLErrors += other.checkSSLErrors
-	s.checkRedirects += other.checkRedirects
-	s.checkKeywords += other.checkKeywords
-	s.checkTLSDeprecated += other.checkTLSDeprecated
-	mergeCheckCohorts(&s.checkCohorts, other.checkCohorts)
-	if other.oldestSelectedAge > s.oldestSelectedAge {
-		s.oldestSelectedAge = other.oldestSelectedAge
-	}
-	if other.interrupted {
-		s.interrupted = true
-	}
 }
 
 type resultProcessSummary struct {
@@ -277,16 +170,14 @@ type Orchestrator struct {
 	bucketMax           int
 
 	// checkHistoryCounter disperses 1-in-N sampling for CHECK_HISTORY_MODE=sample.
-	// Shared across both schedulers; only meaningful in sample mode.
+	// Shared by streaming scheduler workers; only meaningful in sample mode.
 	checkHistoryCounter atomic.Uint64
 
 	totalChecked int
-	roundStart   time.Time
 	statsMu      sync.RWMutex
 	lastRoundSPS int
 	lastRoundDur time.Duration
 
-	lastDueCountAt        time.Time
 	lastProjectionDriftAt time.Time
 
 	wpcomNotifyDisabledLogOnce sync.Once
@@ -399,28 +290,11 @@ func (o *Orchestrator) Run() {
 				continue
 			}
 		}
-		if cfg.SchedulerEngine == "streaming" {
-			o.runStreamingEngine()
-			if cfg.RolloutMode == config.RolloutModeAPIControlled {
-				continue
-			}
-			return
+		o.runStreamingEngine()
+		if cfg.RolloutMode == config.RolloutModeAPIControlled {
+			continue
 		}
-		o.pool.SetMaxSize(cfg.NumWorkers)
-		o.refreshVeriflierClients(cfg)
-		o.syncVeriflierAgentTelemetry(cfg)
-
-		o.roundStart = time.Now()
-		summary := o.runRound()
-
-		elapsed := time.Since(o.roundStart)
-		sleepFor := schedulerSleepDuration(cfg, summary, elapsed)
-		if sleepFor > 0 {
-			select {
-			case <-time.After(sleepFor):
-			case <-o.ctx.Done():
-			}
-		}
+		return
 	}
 }
 
@@ -475,288 +349,36 @@ func (o *Orchestrator) Stop() {
 	o.cancel()
 }
 
-func (o *Orchestrator) runRound() roundSummary {
-	cfg := config.Get()
-	summary := roundSummary{}
-	reportNow := nowFunc().UTC()
-	if o.roundStart.IsZero() {
-		o.roundStart = time.Now()
+func (o *Orchestrator) shouldSampleProjectionDrift(cfg *config.Config, now time.Time) bool {
+	if !cfg.LegacyStatusProjectionEnable {
+		return false
 	}
-
-	switch {
-	case cfg.RolloutMode == config.RolloutModeAPIControlled:
-		if o.bucketMax < o.bucketMin {
-			log.Println("orchestrator: api-controlled rollout round skipped; no active bucket lock")
-			o.finishRound(cfg, summary)
-			return summary
-		}
-	case o.usesPinnedBuckets(cfg):
-		if err := o.ClaimBuckets(); err != nil {
-			log.Printf("orchestrator: pinned bucket claim failed: %v", err)
-		}
-	default:
-		// Update heartbeat.
-		if err := dbHeartbeat(o.ctx, o.hostname); err != nil {
-			log.Printf("orchestrator: heartbeat failed: %v", err)
-		}
-		// Re-claim every round so bucket ranges rebalance automatically when
-		// hosts join or leave the cluster.
-		if err := o.ClaimBuckets(); err != nil {
-			log.Printf("orchestrator: bucket rebalance failed: %v", err)
-		}
+	if o.lastProjectionDriftAt.IsZero() || now.Before(o.lastProjectionDriftAt) || now.Sub(o.lastProjectionDriftAt) >= schedulerBroadReportInterval {
+		o.lastProjectionDriftAt = now
+		return true
 	}
-	dueCountsSampled := !cfg.UseVariableCheckIntervals || o.shouldSampleDueCounts(reportNow)
-	if o.shouldSampleProjectionDrift(cfg, reportNow) {
-		o.checkLegacyProjectionDrift(cfg)
-	}
-
-	if dueCountsSampled {
-		summary.dueCountsSampled = true
-		if due, err := dbCountDueSites(o.ctx, o.bucketMin, o.bucketMax, cfg.UseVariableCheckIntervals); err != nil {
-			summary.dueCountErrors++
-			log.Printf("orchestrator: count due sites failed: %v", err)
-		} else {
-			summary.dueAtStart = due
-		}
-	}
-
-	pageSize := cfg.DatasetSize
-	if pageSize < 1 {
-		pageSize = 1
-	}
-	seen := make(map[int64]struct{}, pageSize)
-	for {
-		select {
-		case <-o.ctx.Done():
-			summary.interrupted = true
-			o.finishRound(cfg, summary)
-			return summary
-		default:
-		}
-
-		sites, err := dbGetSitesForBucket(o.ctx, o.bucketMin, o.bucketMax, pageSize, cfg.UseVariableCheckIntervals)
-		if err != nil {
-			summary.fetchErrors++
-			log.Printf("orchestrator: fetch sites failed: %v", err)
-			break
-		}
-		page := filterUnseenSites(sites, seen)
-		if len(page) == 0 {
-			break
-		}
-
-		summary.pagesFetched++
-		summary.selected += len(page)
-		summary.add(selectedSiteSummary(page))
-		config.Debugf("orchestrator: checking %d sites (scheduler page %d)", len(page), summary.pagesFetched)
-
-		pageSummary := o.checkSitesPage(cfg, page, summary.pagesFetched)
-		summary.add(pageSummary)
-		if pageSummary.interrupted || pageSummary.outstanding > 0 {
-			break
-		}
-		if len(sites) < pageSize {
-			break
-		}
-	}
-
-	if cfg.UseVariableCheckIntervals && dueCountsSampled {
-		if due, err := dbCountDueSites(o.ctx, o.bucketMin, o.bucketMax, true); err != nil {
-			summary.dueCountErrors++
-			log.Printf("orchestrator: count remaining due sites failed: %v", err)
-		} else {
-			summary.dueRemaining = due
-		}
-	} else if !cfg.UseVariableCheckIntervals {
-		summary.dueRemaining = max(0, summary.dueAtStart-summary.completed)
-	}
-
-	o.finishRound(cfg, summary)
-	o.applyMemoryPressure(cfg)
-	return summary
+	return false
 }
 
-func (o *Orchestrator) checkSitesPage(cfg *config.Config, sites []db.Site, pageNumber int) roundSummary {
-	summary := roundSummary{}
-	siteMap := make(map[int64]db.Site, len(sites))
-	results := make(map[int64]checker.Result, len(sites))
-	for _, s := range sites {
-		siteMap[monitorTargetID(s)] = s
+func nonNegative(value int) int {
+	if value < 0 {
+		return 0
 	}
-
-	dispatchStart := time.Now()
-	for _, site := range sites {
-		req := checkRequestForSite(cfg, site)
-		for {
-			if o.pool.Submit(req) {
-				summary.dispatched++
-				break
-			}
-			summary.backpressureWaits++
-			if !o.waitForPageResult(siteMap, results, &summary, schedulerBackpressurePollInterval) {
-				summary.interrupted = true
-				summary.dispatchDuration += time.Since(dispatchStart)
-				return summary
-			}
-		}
-	}
-	summary.dispatchDuration += time.Since(dispatchStart)
-
-	deadline := time.NewTimer(collectionDeadlineForSites(cfg, sites))
-	defer deadline.Stop()
-	waitStart := time.Now()
-	for len(results) < summary.dispatched {
-		select {
-		case res := <-o.pool.Results():
-			recordPageResult(siteMap, results, res, &summary)
-		case <-deadline.C:
-			summary.outstanding = summary.dispatched - len(results)
-			log.Printf("orchestrator: round deadline reached, %d results outstanding", summary.outstanding)
-			goto process
-		case <-o.ctx.Done():
-			summary.interrupted = true
-			summary.waitDuration += time.Since(waitStart)
-			return summary
-		}
-	}
-
-process:
-	summary.waitDuration += time.Since(waitStart)
-	processStart := time.Now()
-	processSummary := o.processResults(results, siteMap)
-	summary.processDuration += time.Since(processStart)
-	summary.completed += processSummary.processed
-	summary.markCheckedRows += processSummary.markCheckedRows
-	summary.historyRows += processSummary.historyRows
-	summary.sslRows += processSummary.sslRows
-	summary.markCheckedErrors += processSummary.markCheckedErrors
-	summary.historyErrors += processSummary.historyErrors
-	summary.sslErrors += processSummary.sslErrors
-	summary.checkSuccesses += processSummary.checkSuccesses
-	summary.checkFailures += processSummary.checkFailures
-	summary.checkOffline += processSummary.checkOffline
-	summary.checkHTTPFailures += processSummary.checkHTTPFailures
-	summary.checkTimeouts += processSummary.checkTimeouts
-	summary.checkConnectErrors += processSummary.checkConnectErrors
-	summary.checkSSLErrors += processSummary.checkSSLErrors
-	summary.checkRedirects += processSummary.checkRedirects
-	summary.checkKeywords += processSummary.checkKeywords
-	summary.checkTLSDeprecated += processSummary.checkTLSDeprecated
-	mergeCheckCohorts(&summary.checkCohorts, processSummary.checkCohorts)
-	summary.markCheckedDuration += processSummary.markCheckedDuration
-	summary.historyDuration += processSummary.historyDuration
-	summary.sslDuration += processSummary.sslDuration
-	summary.eventDuration += processSummary.eventDuration
-	o.totalChecked += processSummary.processed
-	emitPageMetrics(summary)
-	logPageSummary(pageNumber, len(sites), summary)
-	return summary
+	return value
 }
 
-func emitPageMetrics(summary roundSummary) {
-	m := metricsClientFunc()
+func emitDBPoolStats(m metricsClient) {
 	if m == nil {
 		return
 	}
-	m.Timing("scheduler.page.dispatch.time", summary.dispatchDuration)
-	m.Timing("scheduler.page.wait.time", summary.waitDuration)
-	m.Timing("scheduler.page.process.time", summary.processDuration)
-	m.Timing("scheduler.page.mark_checked.time", summary.markCheckedDuration)
-	m.Timing("scheduler.page.history.time", summary.historyDuration)
-	m.Timing("scheduler.page.ssl.time", summary.sslDuration)
-	m.Timing("scheduler.page.events.time", summary.eventDuration)
-	m.Increment("scheduler.page.mark_checked.row.count", summary.markCheckedRows)
-	m.Increment("scheduler.page.history.row.count", summary.historyRows)
-	m.Increment("scheduler.page.ssl.row.count", summary.sslRows)
-	m.Increment("scheduler.page.mark_checked.error.count", summary.markCheckedErrors)
-	m.Increment("scheduler.page.history.error.count", summary.historyErrors)
-	m.Increment("scheduler.page.ssl.error.count", summary.sslErrors)
-	m.Increment("scheduler.page.check.success.count", summary.checkSuccesses)
-	m.Increment("scheduler.page.check.failure.count", summary.checkFailures)
-	m.Increment("scheduler.page.check.http_failure.count", summary.checkHTTPFailures)
-	m.Increment("scheduler.page.check.timeout.count", summary.checkTimeouts)
-	m.Increment("scheduler.page.check.connect_error.count", summary.checkConnectErrors)
-	m.Increment("scheduler.page.check.ssl_error.count", summary.checkSSLErrors)
-	m.Increment("scheduler.page.check.redirect.count", summary.checkRedirects)
-	m.Increment("scheduler.page.check.keyword.count", summary.checkKeywords)
-	m.Increment("scheduler.page.check.tls_deprecated.count", summary.checkTLSDeprecated)
-	emitCheckCohortCounters(m, "scheduler.page", summary.checkCohorts)
-}
-
-func logPageSummary(pageNumber, sites int, summary roundSummary) {
-	config.Debugf(
-		"orchestrator: page summary page=%d sites=%d dispatched=%d completed=%d outstanding=%d dispatch=%s wait=%s process=%s mark_checked=%s history=%s ssl=%s events=%s checks_success=%d checks_failure=%d checks_http_failure=%d checks_timeout=%d checks_connect_error=%d checks_ssl_error=%d checks_redirect=%d checks_keyword=%d checks_tls_deprecated=%d mark_checked_rows=%d history_rows=%d ssl_rows=%d mark_checked_errors=%d history_errors=%d ssl_errors=%d",
-		pageNumber,
-		sites,
-		summary.dispatched,
-		summary.completed,
-		summary.outstanding,
-		summary.dispatchDuration.Round(time.Millisecond),
-		summary.waitDuration.Round(time.Millisecond),
-		summary.processDuration.Round(time.Millisecond),
-		summary.markCheckedDuration.Round(time.Millisecond),
-		summary.historyDuration.Round(time.Millisecond),
-		summary.sslDuration.Round(time.Millisecond),
-		summary.eventDuration.Round(time.Millisecond),
-		summary.checkSuccesses,
-		summary.checkFailures,
-		summary.checkHTTPFailures,
-		summary.checkTimeouts,
-		summary.checkConnectErrors,
-		summary.checkSSLErrors,
-		summary.checkRedirects,
-		summary.checkKeywords,
-		summary.checkTLSDeprecated,
-		summary.markCheckedRows,
-		summary.historyRows,
-		summary.sslRows,
-		summary.markCheckedErrors,
-		summary.historyErrors,
-		summary.sslErrors,
-	)
-}
-
-func (o *Orchestrator) waitForPageResult(siteMap map[int64]db.Site, results map[int64]checker.Result, summary *roundSummary, maxWait time.Duration) bool {
-	timer := time.NewTimer(maxWait)
-	defer timer.Stop()
-	select {
-	case res := <-o.pool.Results():
-		recordPageResult(siteMap, results, res, summary)
-		return true
-	case <-timer.C:
-		return true
-	case <-o.ctx.Done():
-		return false
+	writeDB := db.WriteDB()
+	if writeDB != nil {
+		m.EmitDBStats("db.write_pool", writeDB.Stats())
 	}
-}
-
-func filterUnseenSites(sites []db.Site, seen map[int64]struct{}) []db.Site {
-	filtered := make([]db.Site, 0, len(sites))
-	for _, site := range sites {
-		targetID := monitorTargetID(site)
-		if _, ok := seen[targetID]; ok {
-			continue
-		}
-		seen[targetID] = struct{}{}
-		filtered = append(filtered, site)
+	readDB := db.ReadDB()
+	if readDB != nil && readDB != writeDB {
+		m.EmitDBStats("db.read_pool", readDB.Stats())
 	}
-	return filtered
-}
-
-func selectedSiteSummary(sites []db.Site) roundSummary {
-	summary := roundSummary{}
-	now := nowFunc().UTC()
-	for _, site := range sites {
-		if site.LastCheckedAt == nil {
-			summary.neverChecked++
-			continue
-		}
-		age := now.Sub(site.LastCheckedAt.UTC())
-		if age > summary.oldestSelectedAge {
-			summary.oldestSelectedAge = age
-		}
-	}
-	return summary
 }
 
 func checkRequestForSite(cfg *config.Config, site db.Site) checker.Request {
@@ -817,237 +439,6 @@ func fullDetectionsEnabled(cfg *config.Config, site db.Site) bool {
 	method := effectiveCheckMethod(cfg, site)
 	profile := effectiveDetectionProfile(cfg, site, method)
 	return checkmode.FullDetectionsEnabled(method, profile)
-}
-
-func collectionDeadlineForSites(cfg *config.Config, sites []db.Site) time.Duration {
-	timeout := cfg.NetCommsTimeout
-	for _, site := range sites {
-		if siteTimeout := timeoutForSite(cfg, site); siteTimeout > timeout {
-			timeout = siteTimeout
-		}
-	}
-	return time.Duration(timeout+5) * time.Second
-}
-
-func recordPageResult(siteMap map[int64]db.Site, results map[int64]checker.Result, res checker.Result, summary *roundSummary) {
-	targetID := checkResultTargetID(res)
-	if _, ok := siteMap[targetID]; !ok {
-		summary.staleResults++
-		config.Debugf("orchestrator: ignored stale check result target_id=%d blog_id=%d", targetID, res.BlogID)
-		return
-	}
-	if _, ok := results[targetID]; ok {
-		summary.duplicateResults++
-		config.Debugf("orchestrator: ignored duplicate check result target_id=%d blog_id=%d", targetID, res.BlogID)
-		return
-	}
-	results[targetID] = res
-}
-
-func (o *Orchestrator) shouldSampleDueCounts(now time.Time) bool {
-	if o.lastDueCountAt.IsZero() || now.Before(o.lastDueCountAt) || now.Sub(o.lastDueCountAt) >= schedulerBroadReportInterval {
-		o.lastDueCountAt = now
-		return true
-	}
-	return false
-}
-
-func (o *Orchestrator) shouldSampleProjectionDrift(cfg *config.Config, now time.Time) bool {
-	if !cfg.LegacyStatusProjectionEnable {
-		return false
-	}
-	if o.lastProjectionDriftAt.IsZero() || now.Before(o.lastProjectionDriftAt) || now.Sub(o.lastProjectionDriftAt) >= schedulerBroadReportInterval {
-		o.lastProjectionDriftAt = now
-		return true
-	}
-	return false
-}
-
-func boolInt(value bool) int {
-	if value {
-		return 1
-	}
-	return 0
-}
-
-func nonNegative(value int) int {
-	if value < 0 {
-		return 0
-	}
-	return value
-}
-
-func schedulerSleepDuration(cfg *config.Config, summary roundSummary, elapsed time.Duration) time.Duration {
-	if summary.interrupted {
-		return 0
-	}
-	if summary.dueRemaining > 0 || summary.outstanding > 0 || summary.fetchErrors > 0 {
-		return schedulerBacklogPollInterval
-	}
-	if cfg.UseVariableCheckIntervals {
-		return schedulerVariableIntervalPollInterval
-	}
-	minInterval := time.Duration(cfg.MinTimeBetweenRoundsSec) * time.Second
-	if elapsed >= minInterval {
-		return 0
-	}
-	return minInterval - elapsed
-}
-
-func (o *Orchestrator) finishRound(cfg *config.Config, summary roundSummary) {
-	// Emit metrics and update stats files.
-	roundDuration := time.Since(o.roundStart)
-	sps := 0
-	if roundDuration.Seconds() > 0 {
-		sps = int(float64(summary.completed) / roundDuration.Seconds())
-	}
-	o.statsMu.Lock()
-	o.lastRoundSPS = sps
-	o.lastRoundDur = roundDuration
-	o.statsMu.Unlock()
-
-	activeChecks := 0
-	queueDepth := 0
-	workerCount := 0
-	if o.pool != nil {
-		activeChecks = o.pool.ActiveCount()
-		queueDepth = o.pool.QueueDepth()
-		workerCount = o.pool.WorkerCount()
-	}
-	retryQueueSize := 0
-	if o.retries != nil {
-		retryQueueSize = o.retries.size()
-	}
-
-	m := metricsClientFunc()
-	if m != nil {
-		m.Timing("round.complete.time", roundDuration)
-		m.Gauge("worker.queue.active", activeChecks)
-		m.Gauge("worker.queue.queue_size", queueDepth)
-		m.Gauge("retry.queue.size", retryQueueSize)
-		m.Increment("round.sites.count", summary.completed)
-		m.Gauge("round.sps.count", sps)
-		m.Gauge("scheduler.round.pages.count", summary.pagesFetched)
-		m.Gauge("scheduler.round.selected.count", summary.selected)
-		m.Gauge("scheduler.round.dispatched.count", summary.dispatched)
-		m.Gauge("scheduler.round.completed.count", summary.completed)
-		m.Gauge("scheduler.round.outstanding.count", summary.outstanding)
-		m.Gauge("scheduler.round.due_count_sampled.count", boolInt(summary.dueCountsSampled))
-		if summary.dueCountsSampled {
-			m.Gauge("scheduler.round.due_start.count", summary.dueAtStart)
-			m.Gauge("scheduler.round.due_remaining.count", summary.dueRemaining)
-		}
-		m.Gauge("scheduler.round.selected_never_checked.count", summary.neverChecked)
-		m.Gauge("scheduler.round.selected_oldest_age_sec", int(summary.oldestSelectedAge.Seconds()))
-		m.Increment("scheduler.dispatch.backpressure_wait.count", summary.backpressureWaits)
-		m.Increment("scheduler.result.stale.count", summary.staleResults)
-		m.Increment("scheduler.result.duplicate.count", summary.duplicateResults)
-		m.Increment("scheduler.due_count.error.count", summary.dueCountErrors)
-		m.Increment("scheduler.fetch.error.count", summary.fetchErrors)
-		m.Timing("scheduler.round.dispatch.time", summary.dispatchDuration)
-		m.Timing("scheduler.round.wait.time", summary.waitDuration)
-		m.Timing("scheduler.round.process.time", summary.processDuration)
-		m.Timing("scheduler.round.mark_checked.time", summary.markCheckedDuration)
-		m.Timing("scheduler.round.history.time", summary.historyDuration)
-		m.Timing("scheduler.round.ssl.time", summary.sslDuration)
-		m.Timing("scheduler.round.events.time", summary.eventDuration)
-		m.Increment("scheduler.round.mark_checked.row.count", summary.markCheckedRows)
-		m.Increment("scheduler.round.history.row.count", summary.historyRows)
-		m.Increment("scheduler.round.ssl.row.count", summary.sslRows)
-		m.Increment("scheduler.round.mark_checked.error.count", summary.markCheckedErrors)
-		m.Increment("scheduler.round.history.error.count", summary.historyErrors)
-		m.Increment("scheduler.round.ssl.error.count", summary.sslErrors)
-		m.Increment("scheduler.round.check.success.count", summary.checkSuccesses)
-		m.Increment("scheduler.round.check.failure.count", summary.checkFailures)
-		m.Increment("scheduler.round.check.http_failure.count", summary.checkHTTPFailures)
-		m.Increment("scheduler.round.check.timeout.count", summary.checkTimeouts)
-		m.Increment("scheduler.round.check.connect_error.count", summary.checkConnectErrors)
-		m.Increment("scheduler.round.check.ssl_error.count", summary.checkSSLErrors)
-		m.Increment("scheduler.round.check.redirect.count", summary.checkRedirects)
-		m.Increment("scheduler.round.check.keyword.count", summary.checkKeywords)
-		m.Increment("scheduler.round.check.tls_deprecated.count", summary.checkTLSDeprecated)
-		emitCheckCohortCounters(m, "scheduler.round", summary.checkCohorts)
-
-		m.EmitMemStats()
-		emitDBPoolStats(m)
-	}
-	metrics.WriteStatsFiles(metrics.StatsFilesSnapshot{
-		SitesPerSec: sps,
-		QueueSize:   queueDepth,
-		Working:     activeChecks,
-		Waiting:     nonNegative(workerCount - activeChecks),
-		Halting:     0,
-		Error:       nonNegative(summary.checkFailures - summary.checkOffline),
-		Offline:     summary.checkOffline,
-		Success:     summary.checkSuccesses,
-		Total:       summary.completed,
-	})
-	logRoundSummary(summary, roundDuration, sps)
-}
-
-func emitDBPoolStats(m metricsClient) {
-	if m == nil {
-		return
-	}
-	writeDB := db.WriteDB()
-	if writeDB != nil {
-		m.EmitDBStats("db.write_pool", writeDB.Stats())
-	}
-	readDB := db.ReadDB()
-	if readDB != nil && readDB != writeDB {
-		m.EmitDBStats("db.read_pool", readDB.Stats())
-	}
-}
-
-func logRoundSummary(summary roundSummary, roundDuration time.Duration, sps int) {
-	if summary.selected == 0 &&
-		summary.dueRemaining == 0 &&
-		summary.outstanding == 0 &&
-		summary.backpressureWaits == 0 &&
-		summary.fetchErrors == 0 &&
-		summary.dueCountErrors == 0 {
-		return
-	}
-	config.Debugf(
-		"orchestrator: round summary pages=%d due_count_sampled=%t due_start=%d selected=%d dispatched=%d completed=%d outstanding=%d due_remaining=%d backpressure_waits=%d stale_results=%d duplicate_results=%d never_checked=%d oldest_selected_age_sec=%d dispatch=%s wait=%s process=%s mark_checked=%s history=%s ssl=%s events=%s checks_success=%d checks_failure=%d checks_http_failure=%d checks_timeout=%d checks_connect_error=%d checks_ssl_error=%d checks_redirect=%d checks_keyword=%d checks_tls_deprecated=%d mark_checked_rows=%d history_rows=%d ssl_rows=%d mark_checked_errors=%d history_errors=%d ssl_errors=%d duration=%s sps=%d",
-		summary.pagesFetched,
-		summary.dueCountsSampled,
-		summary.dueAtStart,
-		summary.selected,
-		summary.dispatched,
-		summary.completed,
-		summary.outstanding,
-		summary.dueRemaining,
-		summary.backpressureWaits,
-		summary.staleResults,
-		summary.duplicateResults,
-		summary.neverChecked,
-		int(summary.oldestSelectedAge.Seconds()),
-		summary.dispatchDuration.Round(time.Millisecond),
-		summary.waitDuration.Round(time.Millisecond),
-		summary.processDuration.Round(time.Millisecond),
-		summary.markCheckedDuration.Round(time.Millisecond),
-		summary.historyDuration.Round(time.Millisecond),
-		summary.sslDuration.Round(time.Millisecond),
-		summary.eventDuration.Round(time.Millisecond),
-		summary.checkSuccesses,
-		summary.checkFailures,
-		summary.checkHTTPFailures,
-		summary.checkTimeouts,
-		summary.checkConnectErrors,
-		summary.checkSSLErrors,
-		summary.checkRedirects,
-		summary.checkKeywords,
-		summary.checkTLSDeprecated,
-		summary.markCheckedRows,
-		summary.historyRows,
-		summary.sslRows,
-		summary.markCheckedErrors,
-		summary.historyErrors,
-		summary.sslErrors,
-		roundDuration.Round(time.Millisecond),
-		sps,
-	)
 }
 
 func (o *Orchestrator) processResults(results map[int64]checker.Result, sites map[int64]db.Site) resultProcessSummary {
@@ -3558,50 +2949,4 @@ func stringPtrValue(s *string) string {
 		return ""
 	}
 	return *s
-}
-
-func (o *Orchestrator) applyMemoryPressure(cfg *config.Config) {
-	if cfg.WorkerMaxMemMB <= 0 || o.pool == nil {
-		return
-	}
-
-	rssMB := currentMemoryMBFunc()
-	if rssMB <= 0 || rssMB <= cfg.WorkerMaxMemMB {
-		return
-	}
-
-	current := o.pool.WorkerCount()
-	toDrain := current / 10
-	if toDrain < 1 {
-		toDrain = 1
-	}
-	drained := o.pool.DrainWorkers(toDrain)
-	if drained == 0 {
-		return
-	}
-
-	// Lower the autoscaler ceiling for the rest of this round to avoid
-	// immediately respawning the workers we just drained.
-	o.pool.SetMaxSize(max(1, current-drained))
-	log.Printf(
-		"orchestrator: memory pressure %dMB > %dMB, draining %d workers",
-		rssMB,
-		cfg.WorkerMaxMemMB,
-		drained,
-	)
-}
-
-func currentMemoryMB() int {
-	samples := []runtimemetrics.Sample{
-		{Name: "/memory/classes/total:bytes"},
-		{Name: "/memory/classes/heap/released:bytes"},
-	}
-	runtimemetrics.Read(samples)
-
-	total := samples[0].Value.Uint64()
-	released := samples[1].Value.Uint64()
-	if total <= released {
-		return 0
-	}
-	return int((total - released) / 1024 / 1024)
 }

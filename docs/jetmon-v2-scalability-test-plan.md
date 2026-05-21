@@ -25,11 +25,8 @@ these changes from the previous successful 1,000-site baseline.
 1. Confirm migrations have run through the sidecar runtime/config migrations.
 2. Confirm the test service is running this branch's `jetmon2` binary.
 3. Confirm the Veriflier service is reachable from the monitor host.
-4. Confirm `WORKER_MAX_MEM_MB=0` for capacity tests unless intentionally
-   testing memory-pressure drain.
-5. Confirm `USE_VARIABLE_CHECK_INTERVALS=true`.
-6. Confirm API-enabled test hosts set `DELIVERY_OWNER_HOST` explicitly.
-7. Confirm the exact activated `monitor_url` pattern resolves and returns HTTP
+4. Confirm API-enabled test hosts set `DELIVERY_OWNER_HOST` explicitly.
+5. Confirm the exact activated `monitor_url` pattern resolves and returns HTTP
    200 from the Jetmon service host and the Veriflier host. Do not test a
    similar hostname by hand; query one activated row from
    `jetpack_monitor_sites`, then run `dig` and `curl` for that exact hostname.
@@ -78,77 +75,52 @@ SELECT s.jetpack_monitor_site_id, s.blog_id, s.bucket_no, s.monitor_url,
 
 Freshness and scheduler pressure:
 
-- `scheduler.round.pages.count`
-- `scheduler.round.selected.count`
-- `scheduler.round.dispatched.count`
-- `scheduler.round.completed.count`
-- `scheduler.round.outstanding.count`
-- `scheduler.round.due_count_sampled.count`
-- `scheduler.round.due_start.count`
-- `scheduler.round.due_remaining.count`
-- `scheduler.round.selected_never_checked.count`
-- `scheduler.round.selected_oldest_age_sec`
-- `scheduler.dispatch.backpressure_wait.count`
-- `scheduler.result.stale.count`
-- `scheduler.result.duplicate.count`
-- `scheduler.fetch.error.count`
-- `scheduler.due_count.error.count`
+- `scheduler.streaming.targets.count`
+- `scheduler.streaming.required_rate.count`
+- `scheduler.streaming.selected.count`
+- `scheduler.streaming.dispatched.count`
+- `scheduler.streaming.completed.count`
+- `scheduler.streaming.pending.count`
+- `scheduler.streaming.inflight.count`
+- `scheduler.streaming.queue_depth.count`
+- `scheduler.streaming.result_depth.count`
+- `scheduler.streaming.side_effect_queue_depth.count`
+- `scheduler.streaming.dispatch_budget_limited.count`
+- `scheduler.streaming.backpressure_wait.count`
+- `scheduler.streaming.side_effect_backpressure_wait.count`
+- `scheduler.streaming.result_backpressure_pause.count`
+- `scheduler.streaming.side_effect_backpressure_pause.count`
+- `scheduler.streaming.stale_result.count`
+- `scheduler.streaming.max_lag.time`
 
 Phase timing and write volume:
 
-- `scheduler.page.dispatch.time`
-- `scheduler.page.wait.time`
-- `scheduler.page.process.time`
-- `scheduler.page.mark_checked.time`
-- `scheduler.page.history.time`
-- `scheduler.page.ssl.time`
-- `scheduler.page.events.time`
-- `scheduler.page.mark_checked.row.count`
-- `scheduler.page.history.row.count`
-- `scheduler.page.ssl.row.count`
-- `scheduler.page.mark_checked.error.count`
-- `scheduler.page.history.error.count`
-- `scheduler.page.ssl.error.count`
-- `scheduler.page.check.success.count`
-- `scheduler.page.check.failure.count`
-- `scheduler.page.check.http_failure.count`
-- `scheduler.page.check.timeout.count`
-- `scheduler.page.check.connect_error.count`
-- `scheduler.page.check.ssl_error.count`
-- `scheduler.page.check.redirect.count`
-- `scheduler.page.check.keyword.count`
-- `scheduler.page.check.tls_deprecated.count`
-- `scheduler.round.dispatch.time`
-- `scheduler.round.wait.time`
-- `scheduler.round.process.time`
-- `scheduler.round.mark_checked.time`
-- `scheduler.round.history.time`
-- `scheduler.round.ssl.time`
-- `scheduler.round.events.time`
-- `scheduler.round.mark_checked.row.count`
-- `scheduler.round.history.row.count`
-- `scheduler.round.ssl.row.count`
-- `scheduler.round.mark_checked.error.count`
-- `scheduler.round.history.error.count`
-- `scheduler.round.ssl.error.count`
-- `scheduler.round.check.success.count`
-- `scheduler.round.check.failure.count`
-- `scheduler.round.check.http_failure.count`
-- `scheduler.round.check.timeout.count`
-- `scheduler.round.check.connect_error.count`
-- `scheduler.round.check.ssl_error.count`
-- `scheduler.round.check.redirect.count`
-- `scheduler.round.check.keyword.count`
-- `scheduler.round.check.tls_deprecated.count`
+- `scheduler.streaming.history.time`
+- `scheduler.streaming.ssl.time`
+- `scheduler.streaming.events.time`
+- `scheduler.streaming.history.row.count`
+- `scheduler.streaming.ssl.row.count`
+- `scheduler.streaming.history.error.count`
+- `scheduler.streaming.ssl.error.count`
+- `scheduler.streaming.check.success.count`
+- `scheduler.streaming.check.failure.count`
+- `scheduler.streaming.check.error.timeout.count`
+- `scheduler.streaming.check.error.connect.count`
+- `scheduler.streaming.check.error.ssl.count`
+- `scheduler.streaming.check.error.redirect.count`
+- `scheduler.streaming.check.error.keyword.count`
+- `scheduler.streaming.check.error.body_read.count`
+- `scheduler.streaming.check.error.tls_expired.count`
+- `scheduler.streaming.check.error.tls_deprecated.count`
 - `eventstore.mutation.retry.count`
 
 Host/process signals:
 
-- `round.complete.time`
-- `round.sites.count`
-- `round.sps.count`
-- `worker.queue.active`
-- `worker.queue.queue_size`
+- `scheduler.streaming.sps.count`
+- `scheduler.streaming.worker.count`
+- `scheduler.streaming.worker_target.count`
+- `scheduler.streaming.inflight.count`
+- `scheduler.streaming.queue_depth.count`
 - `retry.queue.size`
 - RSS memory
 - Go runtime system memory
@@ -163,18 +135,16 @@ Dependency signals:
 
 ## Expected Interpretation
 
-- `due_count_sampled.count=0` means exact due-count gauges were intentionally
-  skipped on that short variable-interval poll. It does not mean no sites were
-  due.
-- `due_remaining` should only be interpreted on polls where
-  `due_count_sampled.count=1`.
-- `ssl.row.count` should be high only during initial certificate backfills or
-  real renewal waves. Sustained high SSL rows means certificate dates are
-  changing or stored with incompatible precision.
-- Healthy capacity targets should have `check.success.count` close to
-  `completed.count`. A high `check.connect_error.count` means the monitor could
-  not connect to the activated URLs; first verify the exact DB URL pattern and
-  DNS delegation before treating it as a Jetmon throughput regression.
+- `scheduler.streaming.max_lag.time` shows freshness pressure. It should stay
+  comfortably below the check interval for the tested cohort.
+- `scheduler.streaming.ssl.row.count` should be high only during initial
+  certificate backfills or real renewal waves. Sustained high SSL rows means
+  certificate dates are changing or stored with incompatible precision.
+- Healthy capacity targets should have `scheduler.streaming.check.success.count`
+  close to `scheduler.streaming.completed.count`. A high
+  `scheduler.streaming.check.error.connect.count` means the monitor could not
+  connect to the activated URLs; first verify the exact DB URL pattern and DNS
+  delegation before treating it as a Jetmon throughput regression.
 - `eventstore.mutation.retry.count` should normally be zero. Any non-zero value
   means MySQL returned a deadlock or lock-wait timeout and Jetmon retried the
   event mutation; sustained retries point to event/projection write contention.
@@ -194,17 +164,19 @@ Use this section only when the candidate differs from baseline by changing
   by more than `0.05` percentage points.
 - Timeout pressure primary check requires candidate ratio less than or equal to
   baseline ratio * `1.15`, where ratio is
-  `scheduler.round.check.timeout.count / scheduler.round.check.failure.count`.
+  `scheduler.streaming.check.error.timeout.count /
+  scheduler.streaming.check.failure.count`.
   If either baseline or candidate failure count is too small for a stable ratio
   (for example `<100` failures in the window), use fallback absolute timeout
-  rate `scheduler.round.check.timeout.count /
-  scheduler.round.completed.count`, and require candidate not worse than
+  rate `scheduler.streaming.check.error.timeout.count /
+  scheduler.streaming.completed.count`, and require candidate not worse than
   baseline by more than `0.05` percentage points.
-- Throughput must hold with `round.sps.count` p50 at least `90%` of baseline
-  and p95 at least `85%` of baseline.
-- Backpressure/freshness must hold with `worker.queue.queue_size` p95 less than
-  or equal to `1.25x` baseline, and `due_remaining` must not stay elevated for
-  more than `3` consecutive sampled rounds.
+- Throughput must hold with `scheduler.streaming.sps.count` p50 at least `90%`
+  of baseline and p95 at least `85%` of baseline.
+- Backpressure/freshness must hold with `scheduler.streaming.queue_depth.count`
+  p95 less than or equal to `1.25x` baseline, and
+  `scheduler.streaming.max_lag.time` must remain comfortably below the tested
+  check interval.
 - Memory must hold with jetmon2 RSS p95 less than or equal to `1.20x`
   baseline, with no monotonic leak trend across the window.
 

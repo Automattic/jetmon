@@ -27,8 +27,8 @@ are read at process start unless the entry explicitly says otherwise.
 - Notes: `production` sets `SCHEMA_MANAGEMENT_MODE=validate` and
   `CHECK_TARGET_SAFETY_MODE=public_only` unless those keys are explicitly set.
   Keep profiles narrow; rollout-stage choices such as `ROLLOUT_MODE`,
-  `DEFAULT_CHECK_METHOD`, `DEFAULT_DETECTION_PROFILE`, `SCHEDULER_ENGINE`,
-  `API_PORT`, and `WPCOM_NOTIFY_ENABLE` should stay explicit.
+  `DEFAULT_CHECK_METHOD`, `DEFAULT_DETECTION_PROFILE`, `API_PORT`, and
+  `WPCOM_NOTIFY_ENABLE` should stay explicit.
 
 ### SCHEMA_MANAGEMENT_MODE
 
@@ -216,63 +216,28 @@ are read at process start unless the entry explicitly says otherwise.
 
 ## Scheduler And Capacity Controls
 
-### SCHEDULER_ENGINE
-
-- Default: `legacy`
-- Values: `legacy`, `streaming`
-- Example: `"SCHEDULER_ENGINE": "streaming"`
-- Purpose: selects the scheduling implementation.
-- Notes: `legacy` uses the v2 round/page scheduler for drop-in rollout safety.
-  `streaming` loads active site identity/cadence into memory, spreads checks by
-  stable phase, and avoids per-probe healthy freshness writes.
-
-### USE_VARIABLE_CHECK_INTERVALS
-
-- Default: `false` when omitted; `config/config-sample.json` sets `true`.
-- Values: `true`, `false`
-- Example: `"USE_VARIABLE_CHECK_INTERVALS": true`
-- Purpose: makes the legacy scheduler respect each site's `check_interval` and
-  maintained `jetpack_monitor_site_runtime.next_check_at`.
-- Notes: when true, `MIN_TIME_BETWEEN_ROUNDS_SEC` no longer sets check cadence.
-  Failed checks on longer intervals get a bounded one-minute follow-up.
-  Streaming mode uses its own time-wheel cadence and effectively assumes
-  per-site intervals.
+Jetmon v2 uses the streaming scheduler only. The old round/page scheduler was
+removed because it left too much throughput on the table and required tuning
+knobs that were easy to mis-set. The streaming scheduler keeps active site
+identity/cadence in memory, spreads checks by stable phase, scales workers from
+observed rate/latency, and avoids per-probe healthy freshness writes.
 
 ### NUM_WORKERS
 
 - Default: `60`
 - Example: `"NUM_WORKERS": 60`
 - Purpose: check-pool floor and guardrail.
-- Notes: still useful. In the legacy scheduler, the pool auto-scales between
-  1 and `NUM_WORKERS`. In streaming mode, this is a floor; the engine derives a
-  higher target from active site rate and observed latency.
+- Notes: still useful. This is the streaming worker floor; the engine derives a
+  higher target from active site rate, backlog, and observed latency.
 
 ### DATASET_SIZE
 
 - Default: `100`
 - Example: `"DATASET_SIZE": 1000`
-- Purpose: DB fetch page size for scheduler work.
-- Notes: still useful as a query/page-size guardrail. It is not a total round
-  cap; the scheduler keeps fetching pages until due work is drained. Set `0` to
-  use the default.
-
-### WORKER_MAX_MEM_MB
-
-- Default: `0`
-- Example: `"WORKER_MAX_MEM_MB": 0`
-- Purpose: optional memory-pressure drain threshold.
-- Notes: still useful as an emergency/local safety valve, but production should
-  normally leave it at `0` so host/container memory limits are the real ceiling.
-  A nonzero value can silently reduce throughput.
-
-### MIN_TIME_BETWEEN_ROUNDS_SEC
-
-- Default: `300`
-- Example: `"MIN_TIME_BETWEEN_ROUNDS_SEC": 300`
-- Purpose: fixed-cadence full-fleet pass delay.
-- Notes: useful only when `USE_VARIABLE_CHECK_INTERVALS=false` and the legacy
-  scheduler is active. It does not affect variable-interval or streaming
-  cadence.
+- Purpose: DB fetch page size for streaming active-target reloads.
+- Notes: still useful as a query/page-size guardrail. It is not a total
+  throughput cap; target reloads continue until the active in-memory target set
+  is current. Set `0` to use the default.
 
 ### STREAMING_LEGACY_PROJECTION_INTERVAL_MIN
 
@@ -734,7 +699,7 @@ not use them. `validate-config` warns when these keys are present.
 ### Legacy compatibility keys with no v2 tuning effect
 
 - `NUM_TO_PROCESS`: no scheduler throughput cap; use `NUM_WORKERS`,
-  `DATASET_SIZE`, and `SCHEDULER_ENGINE`.
+  `DATASET_SIZE`, and streaming metrics.
 - `BATCH_SIZE`: no scheduler effect; use `DATASET_SIZE`.
 - `VERIFLIER_BATCH_SIZE`: no tuning effect on the v2 Veriflier transport.
 - `SQL_UPDATE_BATCH`: does not control v2 DB write batching.
@@ -742,6 +707,14 @@ not use them. `validate-config` warns when these keys are present.
 - `TIME_BETWEEN_NOTICES_MIN`: does not gate v2 WPCOM notifications.
 - `STATSD_SEND_MEM_USAGE`: resource gauges are emitted whenever StatsD is
   configured.
+- `SCHEDULER_ENGINE`: deprecated v2 rollout key. Omit it; `streaming` is the
+  only supported scheduler. `legacy` is rejected.
+- `USE_VARIABLE_CHECK_INTERVALS`: deprecated v2 rollout key. Streaming always
+  respects per-site check intervals and runtime due state.
+- `WORKER_MAX_MEM_MB`: deprecated v2 scheduler cap. Streaming worker scaling
+  no longer drains workers based on this artificial memory threshold.
+- `MIN_TIME_BETWEEN_ROUNDS_SEC`: deprecated legacy round-scheduler key.
+  Streaming cadence comes from per-site `check_interval` and runtime due state.
 - `WORKER_MAX_CHECKS`: ignored; v2 has no Node worker recycle-by-check-count.
 - `TIMEOUT_FOR_REQUESTS_SEC`: ignored; v2 retry/escalation has separate logic.
 
@@ -749,8 +722,3 @@ not use them. `validate-config` warns when these keys are present.
 
 - `NUM_WORKERS`: goroutine pool floor/guardrail, not process count.
 - `DATASET_SIZE`: DB fetch page size, not total work per round.
-- `WORKER_MAX_MEM_MB`: process memory drain guardrail, not per-worker recycle.
-- `MIN_TIME_BETWEEN_ROUNDS_SEC`: fixed full-round delay only when
-  `USE_VARIABLE_CHECK_INTERVALS=false`.
-- `USE_VARIABLE_CHECK_INTERVALS`: uses v2 runtime due state and short idle
-  polls instead of v1 minute-loop semantics.
