@@ -1,6 +1,10 @@
 package db
 
 import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -122,6 +126,149 @@ $db_servers = array(
 	}
 	if got, want := sel.Read[0].Host, "misc-write"; got != want {
 		t.Fatalf("read host = %q, want %q", got, want)
+	}
+}
+
+func TestLoadEndpointSelectionReadsUpdatedServerMapPath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "db-servers.php")
+	writeMap := func(writeHost, readHost string) {
+		t.Helper()
+		raw := fmt.Sprintf(`<?php
+$db_servers = array(
+	'misc' => array(
+		array( 'dfw', 0, 1, '%[1]s:3306', '%[1]s.lan:3306', 'misc', 'misc_user', 'write_pass', null, null, 30 ),
+		array( 'dfw', 1, 0, '%[2]s:3306', '%[2]s.lan:3306', 'misc', 'misc_user', 'read_pass', null, null, 30 ),
+	),
+)
+`, writeHost, readHost)
+		if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+			t.Fatalf("write server map: %v", err)
+		}
+	}
+	cfg := &config.DBConfig{
+		ServerMapPath:       path,
+		ServerMapDataset:    "misc",
+		ServerMapDatacenter: "dfw",
+		ServerMapAddress:    "internet",
+	}
+
+	writeMap("write-a", "read-a")
+	first, err := loadEndpointSelection(cfg)
+	if err != nil {
+		t.Fatalf("loadEndpointSelection first map: %v", err)
+	}
+	if got, want := first.Source, "server-map:"+path+":misc"; got != want {
+		t.Fatalf("source = %q, want %q", got, want)
+	}
+	if got, want := first.Write[0].Host, "write-a"; got != want {
+		t.Fatalf("first write host = %q, want %q", got, want)
+	}
+	if got, want := first.Read[0].Host, "read-a"; got != want {
+		t.Fatalf("first read host = %q, want %q", got, want)
+	}
+
+	writeMap("write-b", "read-b")
+	second, err := loadEndpointSelection(cfg)
+	if err != nil {
+		t.Fatalf("loadEndpointSelection second map: %v", err)
+	}
+	if got, want := second.Write[0].Host, "write-b"; got != want {
+		t.Fatalf("second write host = %q, want %q", got, want)
+	}
+	if got, want := second.Read[0].Host, "read-b"; got != want {
+		t.Fatalf("second read host = %q, want %q", got, want)
+	}
+	if first.Signature == second.Signature {
+		t.Fatalf("signature did not change after server map update: %s", first.Signature)
+	}
+}
+
+func TestManagerReloadAppliesUpdatedServerMapPath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "db-servers.php")
+	writeMap := func(writeHost, readHost string) {
+		t.Helper()
+		raw := fmt.Sprintf(`<?php
+$db_servers = array(
+	'misc' => array(
+		array( 'dfw', 0, 1, '%[1]s:3306', '%[1]s.lan:3306', 'misc', 'misc_user', 'write_pass', null, null, 30 ),
+		array( 'dfw', 1, 0, '%[2]s:3306', '%[2]s.lan:3306', 'misc', 'misc_user', 'read_pass', null, null, 30 ),
+	),
+)
+`, writeHost, readHost)
+		if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+			t.Fatalf("write server map: %v", err)
+		}
+	}
+
+	writeMap("write-a", "read-a")
+	initial, err := loadEndpointSelection(&config.DBConfig{
+		ServerMapPath:       path,
+		ServerMapDataset:    "misc",
+		ServerMapDatacenter: "dfw",
+		ServerMapAddress:    "internet",
+	})
+	if err != nil {
+		t.Fatalf("load initial server map: %v", err)
+	}
+	readConnector, err := newRoleConnector("read", initial.Read)
+	if err != nil {
+		t.Fatalf("new read connector: %v", err)
+	}
+	writeConnector, err := newRoleConnector("write", initial.Write)
+	if err != nil {
+		t.Fatalf("new write connector: %v", err)
+	}
+	manager := &Manager{
+		readConnector:  readConnector,
+		writeConnector: writeConnector,
+		selection:      initial,
+	}
+	oldPing := pingSnapshotForReload
+	pingSnapshotForReload = func(context.Context, string, *connectorSnapshot) error { return nil }
+	defer func() { pingSnapshotForReload = oldPing }()
+
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	configRaw := fmt.Sprintf(`{
+		"AUTH_TOKEN": "token",
+		"DB_SERVER_MAP_PATH": %q,
+		"DB_SERVER_MAP_DATASET": "misc",
+		"DB_SERVER_MAP_DATACENTER": "dfw",
+		"DB_SERVER_MAP_ADDRESS": "internet",
+		"BUCKET_TOTAL": 100,
+		"BUCKET_TARGET": 50,
+		"NET_COMMS_TIMEOUT": 10,
+		"LOG_FORMAT": "text"
+	}`, path)
+	if err := os.WriteFile(configPath, []byte(configRaw), 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := config.Load(configPath); err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	writeMap("write-b", "read-b")
+	changed, err := manager.Reload(context.Background())
+	if err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if !changed {
+		t.Fatal("Reload changed = false, want true")
+	}
+	status := manager.ConfigStatus()
+	if got, want := status.WriteEndpoints[0], "write-b:3306/misc"; got != want {
+		t.Fatalf("write endpoint = %q, want %q", got, want)
+	}
+	if got, want := status.ReadEndpoints[0], "read-b:3306/misc"; got != want {
+		t.Fatalf("read endpoint = %q, want %q", got, want)
+	}
+	if status.LastChangeSeenAt == nil {
+		t.Fatal("LastChangeSeenAt is nil after changed reload")
+	}
+	if status.LastReloadedAt == nil {
+		t.Fatal("LastReloadedAt is nil after changed reload")
+	}
+	if status.LastReloadError != "" {
+		t.Fatalf("LastReloadError = %q, want empty", status.LastReloadError)
 	}
 }
 

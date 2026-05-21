@@ -22,6 +22,8 @@ import (
 
 const dbReloadPingTimeout = 10 * time.Second
 
+var pingSnapshotForReload = pingSnapshot
+
 type poolSettings struct {
 	maxOpen     int
 	maxIdle     int
@@ -382,11 +384,11 @@ func (m *Manager) Reload(ctx context.Context) (bool, error) {
 		m.markReloadError(now, err)
 		return false, err
 	}
-	if err := pingSnapshot(ctx, "write", writeSnap); err != nil {
+	if err := pingSnapshotForReload(ctx, "write", writeSnap); err != nil {
 		m.markReloadError(now, err)
 		return false, err
 	}
-	if err := pingSnapshot(ctx, "read", readSnap); err != nil {
+	if err := pingSnapshotForReload(ctx, "read", readSnap); err != nil {
 		m.markReloadError(now, err)
 		return false, err
 	}
