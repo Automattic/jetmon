@@ -1189,6 +1189,66 @@ This is a coordinated migration, not a code change — and it's safer to do once
 
 ## Architectural roadmap
 
+The subsections below describe one target end-state and the independent peels
+that get there. Read "Target fleet topology" first for the vision; the rest are
+per-concern detail.
+
+### Target fleet topology
+
+The end-state this section builds toward: **Monitor hosts run one job —
+checking sites — and nothing else.** Every other concern (the API, outbound
+delivery, the per-check telemetry store, the operator dashboard) moves onto its
+own servers. They are co-located in the `jetmon2` binary today for operational
+simplicity; at fleet scale that co-location works against each one, because
+they have different scaling axes, failure modes, deploy cadences, and exposure
+profiles.
+
+The Monitor's irreducible stateful core is small: **bucket ownership
+(`jetpack_monitor_hosts`), the check loop, and the event/projection writes.**
+That core is what must stay on the Monitor and be coordinated carefully.
+Everything else is peelable.
+
+| Service | Runs on | State | Scales on | Status today |
+|---|---|---|---|---|
+| `jetmon-monitor` (orchestrator) | Monitor hosts | stateful — claims buckets in `jetpack_monitor_hosts` | bucket count, check rate | core of `jetmon2` |
+| `jetmon-api` | API hosts (behind the gateway/LB) | stateless once idempotency/rate-limit move to shared storage | API request rate | in-process in `jetmon2`; see "API as an independent service" |
+| `jetmon-deliverer` | delivery hosts | stateless — claims rows with `FOR UPDATE SKIP LOCKED` | outbound event volume | standalone binary already exists |
+| `jetmon-dashboard` | ops hosts | stateless | operator sessions | in-process in `jetmon2` |
+| `jetmon-verifier` (veriflier) | geo-distributed vantage hosts | stateless | regions / vantages | already a separate binary |
+| Per-check telemetry store | dedicated Jetmon-owned DB host(s) | best-effort time-series | check rate | see "Per-check telemetry store" |
+
+**The bus is the database, not RPC.** These services already communicate almost
+entirely through shared tables — the orchestrator writes events / transitions /
+projections, the deliverer claims delivery rows, the API serves CRUD tables, the
+dashboard reads fleet state. That is why the splits are mostly packaging
+exercises rather than re-architectures: the integration contract already lives
+in the schema. (The telemetry store adds a second, separate bus for the
+high-volume per-check stream so it never touches the shared OLTP database.)
+
+**The unifying pattern: peel stateless concerns off the stateful core.** Each
+subsection below is one peel. They share one technical prerequisite worth doing
+first — **move the API's in-memory idempotency and rate-limit state to shared
+(DB-backed) storage** — because that is what unblocks running more than one of
+any API-serving instance behind a load balancer. After that, order is driven by
+trigger, not calendar:
+
+1. **DB-backed idempotency / rate-limit** — the shared enabler.
+2. **`jetmon-deliverer`** — already extractable; trigger is a second outbound
+   transport (alert contacts) plus the WPCOM-notification migration.
+3. **`jetmon-api`** — clean to extract; trigger is public-API exposure or
+   wanting API deploy cadence independent of Monitor disruption.
+4. **Per-check telemetry store** — trigger is per-check-metrics feature parity.
+5. **`jetmon-dashboard`** — lowest priority; peel when operator-session load or
+   deploy coupling warrants.
+
+**Why it's worth it.** A Monitor host that does only checking has a minimal
+blast radius (no inbound API traffic, no outbound delivery connections competing
+with checks), a clean drain / bucket-handoff story (nothing else is running in
+the process), and a deploy cadence decoupled from API and delivery changes. Each
+peeled service then scales, fails, and deploys on its own axis. None of this is
+needed for the initial backend-replacement rollout — it is the post-rollout
+growth path.
+
 ### Multi-repo / multi-binary split
 
 Today everything lives in one repo and the `jetmon2` binary contains the orchestrator, the API server, the operator dashboard, and (after Phase 3) the webhook delivery worker. The `veriflier2` binary is already separate but in the same repo.
@@ -1239,6 +1299,53 @@ The MySQL schema is already the implicit bus between these — each service read
 
 **When to revisit:** when a single binary's resource needs (CPU, memory, restart blast radius) starts working against the operational sweet spot for one of the concerns. The deliverer split specifically becomes worthwhile when alert contacts ship — that's the second outbound transport, and a third (WPCOM notifications) follows for free since they already exist as code that wants to live next to the others.
 
+### API as an independent service
+
+The API is the cleanest concern to peel, because it is already built as a
+database service: `api.New(addr, db, hostname)` (`internal/api/api.go`) takes a
+DB handle and a hostname and holds **no reference to the orchestrator or check
+pool**. `internal/api` integrates with the Monitor only through shared tables
+and types, so a `cmd/jetmon-api/` with a thin main that opens the DB and serves
+`api.New(...)` is most of the binary.
+
+**Wins:** independent scaling (API request rate is unrelated to check load),
+failure isolation (an API overload or panic can't threaten bucket ownership or
+the check loop), independent deploy cadence (API changes ship without restarting
+Monitors and disrupting bucket handoff), and exposure-surface separation
+(inbound API traffic stays off the hosts holding WPCOM client certs and DB write
+credentials).
+
+**Split is not the same decision as fan-out.** The only stateful pieces of
+`internal/api` are the in-memory idempotency cache (`idempotency.go`) and
+rate-limiter (`ratelimit.go`):
+
+- A **single** dedicated API instance (or sticky-routed instances) works with
+  the in-memory caches unchanged — the same assumption as today's single-host
+  affinity contract (see `docs/operations-guide.md`, "Internal API Consumer
+  Affinity").
+- A **horizontally-scaled API fleet behind a round-robin load balancer** breaks
+  them: idempotency dedup fails across instances (duplicate webhook creation,
+  stranded secret rotation) and per-key rate limits multiply by instance count.
+  Moving idempotency to a `jetpack_monitor_idempotency` table — and treating the
+  gateway as the authoritative rate limiter — is the prerequisite for fan-out,
+  and the same work the affinity contract flags.
+
+**Data-plane vs per-host control.** Most of the surface is data-plane CRUD over
+the DB (sites, events, history, webhooks, alert contacts, stats, audit log) and
+moves cleanly. A subset reads as per-host control (`/ready`, drain, `db-config`,
+the live dashboard); because the server has no orchestrator handle, those
+already work via the DB or process signals rather than in-process calls. A
+separate API fleet can't address "drain host X" without per-host routing, so the
+likely shape is: extract the data-plane API as `jetmon-api`, and keep a thin
+local admin/introspection endpoint on each Monitor for genuine per-host control.
+Audit which endpoints are "this host" vs "the fleet" to draw that line.
+
+**Trigger / when to revisit.** Public-API exposure (request volume that should
+scale independently of checks), or wanting API deploy cadence decoupled from
+Monitor disruption. Not needed for the internal-only, gateway-fronted initial
+rollout. Sequence: DB-backed idempotency → extract `cmd/jetmon-api` →
+horizontally scale.
+
 ### Path to a public API
 
 Today's API is internal-only — every caller is a known service (gateway, alerting workers, dashboard) and tenant isolation lives at the gateway. Several Phase 1–3 design decisions take advantage of that and would have to change if Jetmon ever exposes its API directly to end customers without a gateway in front.
@@ -1261,6 +1368,34 @@ The migrations are individually clean (each is "add a column, filter on it, depr
 **When to revisit:** if a stakeholder asks "can a customer integration call Jetmon directly?" — the answer should be "let's design that" rather than "yes, here's the URL."
 
 The Q9 (webhook ownership) section in internal-api-reference.md captures the most concrete piece of this; the rest is captured here for visibility when the conversation comes up.
+
+### Per-check telemetry store (real-time check history)
+
+Every check produces a `jetpack_monitor_check_history` row — timing, status, HTTP code, per-component latencies. At fleet scale that is the firehose: on the order of ~330 rows/sec at 100k sites and ~3,300/sec at 1M on a 5-minute cadence. Today those rows land in the shared MariaDB that other services also use, so v2 ships with `CHECK_HISTORY_MODE` defaulting to `status_change` (near-zero rows) to be a good steward of that shared resource. That keeps the shared DB clean but gates away a capability the rest of the uptime-monitoring market treats as table stakes: **per-check response-time history and graphs per site.**
+
+**What it is.** A future architecture moves the per-check firehose off the shared OLTP database into a separate, Jetmon-owned telemetry store, and treats it as what it actually is — best-effort time-series telemetry, not transactional data. Customer-facing incidents already live durably in `jetpack_monitor_events` / `jetpack_monitor_event_transitions`; per-check history is supporting telemetry, which relaxes the durability bar dramatically (no synchronous replication, no zero-loss failover; lossy-on-overflow is acceptable).
+
+**Why it matters.**
+- **Feature parity.** Per-check response-time graphs, uptime %, and check-result history are standard in Pingdom/UptimeRobot/StatusCake-class products. Storing the raw stream (recent, high-resolution) plus downsampled rollups (long tail) is what powers those views.
+- **Shared-DB stewardship.** The firehose stops touching the multi-service database entirely.
+- **Real-time anomaly detection.** With the raw stream available per Monitor, variance/shift detection can run locally and emit a low-volume signal (or open an event) when a site's timing or status pattern changes — surfacing "this site is degrading" before it is a hard down. Because only the signal goes central, the "float up potential problems" capability is cheap. (Caveat: a Monitor only sees the slice of a site it currently checks, so per-site/global anomalies still need central aggregation; local detection is strongest for per-vantage/per-Monitor signals.)
+
+**Shape.**
+
+| Layer | Choice | Note |
+|---|---|---|
+| Monitor-side | bounded async buffer, drop-oldest on overflow | fully decoupled from the check path — a telemetry-store outage never slows or blocks a check |
+| Store | separate Jetmon-owned instance | MariaDB is comfortable to ~1M sites with batching + time-partitioning; ClickHouse/columnar above that, built for this ingest rate and time-range querying |
+| Retention | hot raw (short) + rolled-up summaries (long) | partition raw by day so expiry is a `DROP PARTITION`, not a `DELETE` storm |
+| Availability | one primary + async read-replica | replica for read/query isolation and DR/failover, not write-durability; manual/lightweight failover is fine because Monitors buffer through it |
+
+Host loss costs only the dead Monitor's in-flight buffer (seconds of one host's checks), because writes are centralized — the key advantage over a per-Monitor durable store, where a site's history fragments across hosts (bucket reassignment alone scatters it) and is stranded on loss.
+
+**Why the migration is clean later — and why launching now does not block it.** The write path is already a single funneled seam: both schedulers build typed `db.CheckHistoryRow` values (`checkHistoryRowForResult`) and flush them through one batch function (`dbRecordCheckHistories`); the only reader is the internal `/api/v1/.../check-history` surface, concentrated in `internal/api/handlers_stats.go`. The schema is net-new v2 (no v1 or external contract), and recording is already gated behind `CHECK_HISTORY_MODE`. So the future move is "redirect one write seam + repoint one reader + add additive infra," not a refactor — and it never touches the rollout-critical event/projection path. **Launching with `CHECK_HISTORY_MODE=status_change` is the enabler:** the shared DB stays clean and there is essentially no historical data to backfill, so the feature simply starts collecting in the new store when it goes live.
+
+**Trigger that justifies the build.** When per-check metrics become a product requirement (feature parity / customer-facing response-time history), or when an operator wants `CHECK_HISTORY_MODE=all` fleet-wide. Not needed for the initial backend-replacement rollout.
+
+**When to revisit.** After the v2 rollout is stable. Start with "E-lite" — a separate Jetmon-owned MariaDB instance and a second connection, plus the Monitor-side buffer so the check path never depends on it — then add rollups, partitioning, the replica, and (at multi-million-site scale) a columnar engine incrementally, as the feature is actually used.
 
 ---
 
