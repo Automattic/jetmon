@@ -24,7 +24,6 @@ import (
 
 const (
 	processHealthWriteTimeout = 2 * time.Second
-	defaultStatsDAddr         = ""
 )
 
 // Injected at build time via -ldflags.
@@ -150,7 +149,7 @@ func run() {
 	audit.Init(db.DB())
 
 	hostname := db.Hostname()
-	if addr, enabled, err := metrics.InitFromEnv(cfg.StatsDMetricHost(hostname), defaultStatsDAddr); err != nil {
+	if addr, enabled, err := metrics.InitConfigured(cfg.StatsDAddr, cfg.StatsDMetricHost(hostname)); err != nil {
 		log.Printf("warning: statsd init failed: %v", err)
 	} else if enabled {
 		config.Debugf("metrics: sending StatsD to %s", addr)

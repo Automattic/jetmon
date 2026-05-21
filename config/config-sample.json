@@ -2,6 +2,7 @@
 	"DEBUG"             : false,
 	"CONFIG_PROFILE"    : "default",
 	"HOSTNAME"          : "",
+	"STATSD_ADDR"       : "",
 	"STATSD_HOST_PATH"  : "",
 	"NUM_WORKERS"       : 60,
 	"DATASET_SIZE"      : 100,

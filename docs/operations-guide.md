@@ -744,10 +744,11 @@ com.jetpack.jetmon.<statsd_host_path>
 
 In production containers, set `HOSTNAME` in config to a stable process identity
 and set `STATSD_HOST_PATH` to the v1-compatible metric path. The Docker
-entrypoint accepts `JETMON_HOSTNAME` and `STATSD_HOST_PATH` as env inputs when
-rendering config. v1 derived the StatsD path by taking the first two labels of
-the production hostname and reversing them: `<node>.<datacenter>.<domain>`
-became `<datacenter>.<node>`. For example:
+entrypoint accepts `JETMON_HOSTNAME`, `STATSD_ADDR`, and `STATSD_HOST_PATH` as
+template inputs when rendering config; the binary reads the rendered JSON. v1
+derived the StatsD path by taking the first two labels of the production
+hostname and reversing them: `<node>.<datacenter>.<domain>` became
+`<datacenter>.<node>`. For example:
 
 ```text
 JETMON_HOSTNAME=jetmon-prod-1.dfw1.example.com
@@ -795,20 +796,22 @@ Important metric groups include:
 - Low-overhead process resource gauges: RSS memory, Go runtime memory, heap
   allocation, open file descriptors, file descriptor utilization percentage,
   and goroutine/thread scheduler counts. Monitors, standalone deliverers, and
-  Verifliers emit these whenever `STATSD_ADDR` is configured. Monitors and
+  Verifliers emit these whenever `STATSD_ADDR` is set in config. Monitors and
   deliverers also emit read/write `sql.DB` pool pressure. Current pool state is
   reported as gauges; cumulative `sql.DBStats` counters use `_total` suffixes
   so dashboards can derive rates cleanly.
 
 StatsD is the primary metrics transport. Monitor and deliverer read
-`STATSD_ADDR`; Jetmon binaries do not assume a production StatsD endpoint when
-it is unset. Local Docker Compose and Veriflier production Compose set
-`STATSD_ADDR=statsd:8125` explicitly for their bundled StatsD container.
-Production Monitor containers should point `STATSD_ADDR` at the existing
-host-local StatsD proxy through Docker bridge networking:
+`STATSD_ADDR` from the JSON config; Jetmon binaries do not assume a production
+StatsD endpoint when it is empty. Local Docker Compose and Veriflier production
+Compose render `"STATSD_ADDR": "statsd:8125"` into config for their bundled
+StatsD container. Production Monitor containers should set the JSON
+`STATSD_ADDR` value to the existing host-local StatsD proxy through Docker
+bridge networking:
 `--add-host=host.docker.internal:host-gateway` plus
-`STATSD_ADDR=host.docker.internal:8125`. They should not use host networking
-and should not start a StatsD/Graphite container in the Monitor stack.
+`"STATSD_ADDR": "host.docker.internal:8125"`. They should not use host
+networking and should not start a StatsD/Graphite container in the Monitor
+stack.
 Production Veriflier VPS Compose stacks include StatsD/Graphite locally so
 central Grafana can query the Veriflier host's Graphite endpoint. Expose
 Graphite/StatsD data through the approved metrics pipeline when external

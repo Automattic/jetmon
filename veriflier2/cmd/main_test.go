@@ -64,7 +64,7 @@ func TestStringPtr(t *testing.T) {
 
 func TestLoadConfigFromFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "veriflier.json")
-	if err := os.WriteFile(path, []byte(`{"auth_token":"secret","port":"7804","hostname":"do-nyc3-1","statsd_host_path":"nyc3.veriflier-1","vantage_id":"us-east","region":"iad","provider":"test","enable_legacy_http":true}`), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(`{"auth_token":"secret","port":"7804","hostname":"do-nyc3-1","statsd_addr":"statsd:8125","statsd_host_path":"nyc3.veriflier-1","vantage_id":"us-east","region":"iad","provider":"test","enable_legacy_http":true}`), 0644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -77,6 +77,9 @@ func TestLoadConfigFromFile(t *testing.T) {
 	}
 	if cfg.Hostname != "do-nyc3-1" {
 		t.Fatalf("Hostname = %q, want do-nyc3-1", cfg.Hostname)
+	}
+	if cfg.StatsDAddr != "statsd:8125" {
+		t.Fatalf("StatsDAddr = %q, want statsd:8125", cfg.StatsDAddr)
 	}
 	if cfg.StatsDPath != "nyc3.veriflier-1" {
 		t.Fatalf("StatsDPath = %q, want nyc3.veriflier-1", cfg.StatsDPath)
@@ -108,7 +111,6 @@ func TestLoadConfigFallsBackToEnvironment(t *testing.T) {
 	t.Setenv("VERIFLIER_AUTH_TOKEN", "env-secret")
 	t.Setenv("VERIFLIER_PORT", "7900")
 	t.Setenv("VERIFLIER_HOSTNAME", "do-nyc3-1")
-	t.Setenv("STATSD_HOST_PATH", "nyc3.veriflier-1")
 
 	cfg, err := loadConfig(filepath.Join(t.TempDir(), "missing.json"))
 	if err != nil {
@@ -120,8 +122,8 @@ func TestLoadConfigFallsBackToEnvironment(t *testing.T) {
 	if cfg.Hostname != "do-nyc3-1" {
 		t.Fatalf("Hostname = %q, want do-nyc3-1", cfg.Hostname)
 	}
-	if cfg.StatsDPath != "nyc3.veriflier-1" {
-		t.Fatalf("StatsDPath = %q, want nyc3.veriflier-1", cfg.StatsDPath)
+	if cfg.StatsDAddr != "" || cfg.StatsDPath != "" {
+		t.Fatalf("StatsD config = addr %q path %q, want empty when config file is missing", cfg.StatsDAddr, cfg.StatsDPath)
 	}
 }
 
@@ -167,6 +169,19 @@ func TestValidateStatsDHostPath(t *testing.T) {
 	for _, path := range []string{".nyc3", "nyc3.", "nyc3..veriflier-1", "nyc3/veriflier-1"} {
 		if err := validateStatsDHostPath(path); err == nil {
 			t.Fatalf("validateStatsDHostPath(%q) = nil, want error", path)
+		}
+	}
+}
+
+func TestValidateStatsDAddr(t *testing.T) {
+	for _, addr := range []string{"", "statsd:8125", "127.0.0.1:8125", "[::1]:8125"} {
+		if err := validateStatsDAddr(addr); err != nil {
+			t.Fatalf("validateStatsDAddr(%q) error = %v", addr, err)
+		}
+	}
+	for _, addr := range []string{"statsd", ":8125", "statsd:0", "statsd:65536", "http://statsd:8125"} {
+		if err := validateStatsDAddr(addr); err == nil {
+			t.Fatalf("validateStatsDAddr(%q) = nil, want error", addr)
 		}
 	}
 }

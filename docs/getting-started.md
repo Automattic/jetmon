@@ -69,12 +69,12 @@ map observed, and last successful hot reload.
 
 The default Docker Compose stack runs a local `statsd` service backed by the
 `graphiteapp/graphite-statsd` image. Monitor and Veriflier containers send UDP
-metrics to `STATSD_ADDR=statsd:8125` by default in Compose. Set `STATSD_ADDR`
-in `docker/.env` if you want both services to send to a different StatsD
-endpoint, or set it to an empty value to disable StatsD for a smoke test. Leave
-`JETMON_HOSTNAME` and `STATSD_HOST_PATH` unset locally unless you need process
-identity or metrics to land under a specific Graphite path while testing
-dashboard changes.
+metrics to `"STATSD_ADDR": "statsd:8125"` in their generated JSON config by
+default in Compose. Set `STATSD_ADDR` in `docker/.env` if you want the
+entrypoints to render a different StatsD endpoint, or set it to an empty value
+to disable StatsD for a smoke test. Leave `JETMON_HOSTNAME` and
+`STATSD_HOST_PATH` unset locally unless you need process identity or metrics to
+land under a specific Graphite path while testing dashboard changes.
 
 Mailpit captures local alert-contact email. Open it at
 `http://localhost:8025` by default, or at the `BIND_ADDR` /

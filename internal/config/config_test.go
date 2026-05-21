@@ -584,6 +584,7 @@ func TestLoadAndGet(t *testing.T) {
 		"AUTH_TOKEN": "loaded-token",
 		"NUM_WORKERS": 7,
 		"HOSTNAME": "dfw1.jetmon-prod-1",
+		"STATSD_ADDR": "statsd:8125",
 		"STATSD_HOST_PATH": "dfw1.jetmon-prod-1",
 		"BUCKET_TOTAL": 100,
 		"BUCKET_TARGET": 50,
@@ -608,6 +609,9 @@ func TestLoadAndGet(t *testing.T) {
 	}
 	if cfg.Hostname != "dfw1.jetmon-prod-1" {
 		t.Fatalf("Hostname = %q, want dfw1.jetmon-prod-1", cfg.Hostname)
+	}
+	if cfg.StatsDAddr != "statsd:8125" {
+		t.Fatalf("StatsDAddr = %q, want statsd:8125", cfg.StatsDAddr)
 	}
 	if cfg.StatsDHostPath != "dfw1.jetmon-prod-1" {
 		t.Fatalf("StatsDHostPath = %q, want dfw1.jetmon-prod-1", cfg.StatsDHostPath)
@@ -644,6 +648,23 @@ func TestLoadAndGet(t *testing.T) {
 	}
 	if cfg.WPCOMNotifyMode != WPCOMNotifyModeLegacy {
 		t.Fatalf("WPCOMNotifyMode = %q, want legacy", cfg.WPCOMNotifyMode)
+	}
+}
+
+func TestLoadRejectsInvalidStatsDAddr(t *testing.T) {
+	saveConfigState(t)
+
+	p := writeConfigFile(t, `{
+		"AUTH_TOKEN": "token",
+		"STATSD_ADDR": "statsd",
+		"BUCKET_TOTAL": 100,
+		"BUCKET_TARGET": 50,
+		"NET_COMMS_TIMEOUT": 10,
+		"LOG_FORMAT": "text"
+	}`)
+
+	if err := Load(p); err == nil || !strings.Contains(err.Error(), "STATSD_ADDR") {
+		t.Fatalf("Load() error = %v, want STATSD_ADDR validation failure", err)
 	}
 }
 

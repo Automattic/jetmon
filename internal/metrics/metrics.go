@@ -73,23 +73,10 @@ var statsFilesState = struct {
 	available bool
 }{}
 
-const (
-	EnvStatsDAddr = "STATSD_ADDR"
-)
-
-// AddrFromEnv returns the configured StatsD address. An explicitly empty
-// STATSD_ADDR disables StatsD; an unset STATSD_ADDR uses defaultAddr.
-func AddrFromEnv(defaultAddr string) string {
-	if addr, ok := os.LookupEnv(EnvStatsDAddr); ok {
-		return strings.TrimSpace(addr)
-	}
-	return strings.TrimSpace(defaultAddr)
-}
-
-// InitFromEnv initializes the global StatsD client from STATSD_ADDR or a
-// caller-provided default. It returns enabled=false when StatsD is disabled.
-func InitFromEnv(hostPath, defaultAddr string) (addr string, enabled bool, err error) {
-	addr = AddrFromEnv(defaultAddr)
+// InitConfigured initializes the global StatsD client from the loaded Jetmon
+// config. It returns enabled=false when StatsD is disabled.
+func InitConfigured(addr, hostPath string) (configuredAddr string, enabled bool, err error) {
+	addr = strings.TrimSpace(addr)
 	if addr == "" {
 		return "", false, nil
 	}

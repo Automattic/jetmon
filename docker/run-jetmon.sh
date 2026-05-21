@@ -22,6 +22,7 @@ render_config() {
 		-e "s|<AUTH_TOKEN>|$(sed_escape "${WPCOM_AUTH_TOKEN:-change_me}")|g" \
 		-e "s|\"CONFIG_PROFILE\"    : \"default\"|\"CONFIG_PROFILE\"    : \"$(sed_escape "$config_profile")\"|g" \
 		-e "s|\"HOSTNAME\"          : \"\"|\"HOSTNAME\"          : \"$(sed_escape "${JETMON_HOSTNAME:-}")\"|g" \
+		-e "s|\"STATSD_ADDR\"       : \"\"|\"STATSD_ADDR\"       : \"$(sed_escape "${STATSD_ADDR:-}")\"|g" \
 		-e "s|\"STATSD_HOST_PATH\"  : \"\"|\"STATSD_HOST_PATH\"  : \"$(sed_escape "${STATSD_HOST_PATH:-}")\"|g" \
 		-e "s|\"SCHEMA_MANAGEMENT_MODE\": \"\"|\"SCHEMA_MANAGEMENT_MODE\": \"$(sed_escape "$schema_management_mode")\"|g" \
 		-e "s|<VERIFLIER_PORT>|$(sed_escape "${VERIFLIER_PORT}")|g" \

@@ -84,6 +84,10 @@ type Config struct {
 	// prefix. Leave empty to use Hostname/runtime hostname as the fallback.
 	StatsDHostPath string `json:"STATSD_HOST_PATH"`
 
+	// StatsDAddr is the UDP host:port for StatsD metrics. Empty disables
+	// StatsD. This is startup-only until metrics reconnect is wired into reload.
+	StatsDAddr string `json:"STATSD_ADDR"`
+
 	NumWorkers   int `json:"NUM_WORKERS"`
 	NumToProcess int `json:"NUM_TO_PROCESS"`
 	DatasetSize  int `json:"DATASET_SIZE"`
@@ -746,6 +750,10 @@ func validate(cfg *Config) error {
 		return fmt.Errorf("CONFIG_PROFILE must be one of: default, production")
 	}
 	cfg.Hostname = strings.TrimSpace(cfg.Hostname)
+	cfg.StatsDAddr = strings.TrimSpace(cfg.StatsDAddr)
+	if err := validateStatsDAddr(cfg.StatsDAddr); err != nil {
+		return err
+	}
 	cfg.StatsDHostPath = strings.TrimSpace(cfg.StatsDHostPath)
 	if err := validateStatsDHostPath(cfg.StatsDHostPath); err != nil {
 		return err
@@ -986,6 +994,24 @@ func validateStatsDHostPath(path string) error {
 		default:
 			return fmt.Errorf("STATSD_HOST_PATH may contain only letters, numbers, dots, underscores, and hyphens")
 		}
+	}
+	return nil
+}
+
+func validateStatsDAddr(addr string) error {
+	if addr == "" {
+		return nil
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("STATSD_ADDR must be host:port")
+	}
+	if strings.TrimSpace(strings.Trim(host, "[]")) == "" {
+		return fmt.Errorf("STATSD_ADDR host must not be empty")
+	}
+	portNum, err := strconv.Atoi(port)
+	if err != nil || portNum <= 0 || portNum > 65535 {
+		return fmt.Errorf("STATSD_ADDR port must be between 1 and 65535")
 	}
 	return nil
 }

@@ -41,7 +41,6 @@ const (
 	processHealthWriteTimeout = 2 * time.Second
 	httpGetTimeout            = 10 * time.Second
 	httpGetMaxBodyBytes       = 1 << 20
-	defaultStatsDAddr         = ""
 )
 
 // Injected at build time via -ldflags.
@@ -168,7 +167,7 @@ func runServe() {
 	audit.SetMode(cfg.AuditLogModeDefault)
 
 	hostname := db.Hostname()
-	if addr, enabled, err := metrics.InitFromEnv(cfg.StatsDMetricHost(hostname), defaultStatsDAddr); err != nil {
+	if addr, enabled, err := metrics.InitConfigured(cfg.StatsDAddr, cfg.StatsDMetricHost(hostname)); err != nil {
 		log.Printf("warning: statsd init failed: %v", err)
 	} else if enabled {
 		config.Debugf("metrics: sending StatsD to %s", addr)
@@ -462,8 +461,13 @@ func cmdValidateConfig() {
 	fmt.Printf("INFO schema_management=%s\n", cfg.SchemaManagementMode)
 	fmt.Printf("INFO rollout_mode=%s\n", cfg.RolloutMode)
 	fmt.Printf("INFO scheduler=%s\n", schedulerConfigLabel(cfg))
+	if strings.TrimSpace(cfg.StatsDAddr) == "" {
+		fmt.Println("INFO statsd_addr=disabled")
+	} else {
+		fmt.Printf("INFO statsd_addr=%s\n", cfg.StatsDAddr)
+	}
 	fmt.Printf("INFO statsd_host_path=%s\n", cfg.StatsDMetricHost(db.Hostname()))
-	if metrics.AddrFromEnv(defaultStatsDAddr) != "" && strings.TrimSpace(cfg.StatsDHostPath) == "" {
+	if strings.TrimSpace(cfg.StatsDAddr) != "" && strings.TrimSpace(cfg.StatsDHostPath) == "" {
 		fmt.Printf("WARN STATSD_HOST_PATH is unset; StatsD metrics will fall back to host identity %q\n", db.Hostname())
 	}
 	fmt.Printf("INFO default_check_policy=method:%s profile:%s\n", cfg.DefaultCheckMethod, cfg.DefaultDetectionProfile)

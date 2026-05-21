@@ -8,8 +8,6 @@ import (
 )
 
 func TestDoctorStatsDCheckDisabledCanWarnOrFail(t *testing.T) {
-	t.Setenv("STATSD_ADDR", "")
-
 	status, detail := doctorStatsDCheck(&config.Config{}, false)
 	if status != "WARN" || !strings.Contains(detail, "StatsD disabled") {
 		t.Fatalf("doctorStatsDCheck optional = (%q, %q), want WARN disabled", status, detail)

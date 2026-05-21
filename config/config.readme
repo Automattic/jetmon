@@ -1,9 +1,9 @@
 # Jetmon 2 Configuration Reference
 
 Jetmon reads runtime configuration from `config/config.json` by default. Set
-`JETMON_CONFIG=/path/to/config.json` to use a different file. Database,
-StatsD, and Docker rendering settings are environment variables and are called
-out as such below.
+`JETMON_CONFIG=/path/to/config.json` to use a different file. Database and
+Docker rendering settings are environment variables and are called out as such
+below.
 
 Each entry uses the same shape:
 
@@ -12,8 +12,8 @@ Each entry uses the same shape:
 - Example: a typical value or small JSON fragment.
 - Notes: operational details, reload behavior, or migration caveats.
 
-`SIGHUP` or `./jetmon2 reload` reloads JSON config. Environment-only settings
-are read at process start unless the entry explicitly says otherwise.
+`SIGHUP` or `./jetmon2 reload` reloads JSON config. Startup-only settings are
+called out in their notes.
 
 ## Profiles And Startup Safety
 
@@ -77,12 +77,11 @@ are read at process start unless the entry explicitly says otherwise.
 
 ### STATSD_ADDR
 
-- Scope: environment variable, not a JSON key.
-- Default: unset; StatsD disabled unless the deployment sets it.
+- Default: empty; StatsD disabled unless the deployment sets it.
 - Example:
 
-  ```sh
-  STATSD_ADDR=host.docker.internal:8125
+  ```json
+  "STATSD_ADDR": "host.docker.internal:8125"
   ```
 
 - Purpose: UDP host:port for StatsD metrics.
@@ -90,7 +89,8 @@ are read at process start unless the entry explicitly says otherwise.
   `127.0.0.1:8125`; that loopback is inside the container. For production
   Monitor Docker deployments, add Docker's host gateway mapping and use
   `host.docker.internal:8125`. Local and Veriflier Compose stacks normally use
-  `statsd:8125`.
+  `statsd:8125`. This value is read at process start; restart the process
+  after changing it.
 
 ### STATS_UPDATE_INTERVAL_MS
 

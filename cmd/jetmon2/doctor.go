@@ -14,7 +14,6 @@ import (
 
 	"github.com/Automattic/jetmon/internal/config"
 	"github.com/Automattic/jetmon/internal/db"
-	"github.com/Automattic/jetmon/internal/metrics"
 )
 
 type doctorResult struct {
@@ -138,7 +137,10 @@ func doctorDBConfigDetail(status db.ConfigStatus) string {
 }
 
 func doctorStatsDCheck(cfg *config.Config, require bool) (string, string) {
-	addr := metrics.AddrFromEnv(defaultStatsDAddr)
+	addr := ""
+	if cfg != nil {
+		addr = strings.TrimSpace(cfg.StatsDAddr)
+	}
 	if strings.TrimSpace(addr) == "" {
 		if require {
 			return "FAIL", "STATSD_ADDR is unset or empty"

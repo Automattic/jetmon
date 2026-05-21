@@ -55,8 +55,9 @@ docker run --rm \
 ```
 
 The entrypoint renders `config/veriflier.json` from `veriflier-sample.json` on
-first start using the env vars above. Health check: `curl http://localhost:7803/v2/status`
-should return `{"status":"OK",...}`.
+first start using the env vars above. Those env vars are Docker template inputs;
+the Veriflier binary reads the rendered JSON config. Health check:
+`curl http://localhost:7803/v2/status` should return `{"status":"OK",...}`.
 
 Required env vars:
 
@@ -65,7 +66,7 @@ Required env vars:
 | `VERIFLIER_AUTH_TOKEN` | Must match the value Jetmon uses to call this verifier. |
 | `VERIFLIER_PORT` | Defaults to `7803`. |
 | `VERIFLIER_ENABLE_LEGACY_HTTP` | Optional. Defaults to `false`; set to `true` only for lab/emergency compatibility with `veriflier2`'s legacy HTTP `/check` and `/status` endpoints. |
-| `STATSD_ADDR` | Optional UDP StatsD endpoint. Leave unset to run without Veriflier metrics, or set to `statsd:8125` / another approved endpoint. |
+| `STATSD_ADDR` | Optional template input for the rendered `statsd_addr` config value. Leave unset to run without Veriflier metrics, or set to `statsd:8125` / another approved endpoint. |
 | `JETMON_HOSTNAME` | Optional env input used by the Docker entrypoint when rendering the Veriflier `hostname` config. Use a low-cardinality value such as `<region>.<vantage>` for process identity; do not include container IDs, release SHAs, ports, or random suffixes. |
 | `STATSD_HOST_PATH` | Optional explicit Graphite host path. Leave empty to use the Veriflier hostname; set when metric grouping should differ from process identity. |
 
@@ -102,15 +103,17 @@ docker run --rm \
 
 The single-container Jetmon example uses Docker's host-gateway mapping to reach
 a host-local StatsD proxy without host networking. If no host-local StatsD
-proxy is available, set `STATSD_ADDR=` to disable StatsD for the smoke run. In
-Compose or production, point `STATSD_ADDR` at the Compose StatsD service, the
-production host-local StatsD proxy through `host.docker.internal`, or another
-approved UDP endpoint.
+proxy is available, set `STATSD_ADDR=` so the entrypoint renders an empty
+`"STATSD_ADDR"` config value for the smoke run. In Compose or production,
+render `STATSD_ADDR` as the Compose StatsD service, the production host-local
+StatsD proxy through `host.docker.internal`, or another approved UDP endpoint.
 
 The entrypoint runs `./jetmon2 migrate` before starting the monitor — migrations
 are embedded and additive. The first run renders `config/config.json` from
 `config-sample.json` using the env vars above; mount a real
-`/jetmon/config/config.json` to override the rendered defaults.
+`/jetmon/config/config.json` to override the rendered defaults. The Jetmon
+binary reads StatsD settings from that JSON config, not directly from the
+environment.
 
 Exposed ports:
 
@@ -134,7 +137,7 @@ Required env vars:
 | `WPCOM_NOTIFY_LEGACY_CERT_PATH`, `WPCOM_NOTIFY_LEGACY_KEY_PATH` | Required runtime secret paths when `WPCOM_NOTIFY_ENABLE=true` and `WPCOM_NOTIFY_MODE=legacy`. |
 | `CHECK_TARGET_SAFETY_MODE` | Defaults to `public_only`, which keeps Monitor SSRF protections enabled. The only alternate value, `allow_private_for_tests`, is for isolated uptime-bench capacity labs with disposable synthetic rows and is rejected unless `WPCOM_NOTIFY_ENABLE=false`. Never set it for production rollout, customer data, or real alert paths. |
 | `EMAIL_TRANSPORT` | `stub` for dev; `smtp` plus `SMTP_*` vars for real delivery. |
-| `STATSD_ADDR` | Optional override for the UDP StatsD endpoint. Local Compose and Veriflier production Compose set this to `statsd:8125`. For TeamCity Monitor production, set `STATSD_ADDR=host.docker.internal:8125` and add Docker's `host.docker.internal:host-gateway` mapping, or set it explicitly empty to disable StatsD. |
+| `STATSD_ADDR` | Optional template input for the rendered JSON `STATSD_ADDR` config value. Local Compose and Veriflier production Compose render this as `statsd:8125`. For TeamCity Monitor production, render `STATSD_ADDR` as `host.docker.internal:8125` and add Docker's `host.docker.internal:host-gateway` mapping, or render it explicitly empty to disable StatsD. |
 | `CONFIG_PROFILE` | Optional rendered config profile. Use `production` for production Monitor containers so startup defaults to schema validation instead of migration. Explicit config values still override profile defaults. |
 | `SCHEMA_MANAGEMENT_MODE` | `migrate` applies pending migrations before service start; `validate` refuses startup unless the expected schema is already present and never applies DDL. Use `validate` in production after Systems has applied schema changes. |
 | `HOSTNAME` / `JETMON_HOSTNAME` | Stable process identity. `HOSTNAME` is the rendered config key; `JETMON_HOSTNAME` is the Docker env input used by the entrypoint when rendering config. For Monitor production, use the real logical host name, for example `jetmon-prod-1.dfw1.example.com`; do not include container IDs, release SHAs, ports, or random suffixes. |
@@ -215,11 +218,11 @@ services:
 The database is intentionally not in this snippet; pre-built images are for
 talking to an existing database. The StatsD service is shown for ad-hoc Compose
 runs and Veriflier VPS deployments. TeamCity Monitor production should instead
-point `STATSD_ADDR` at the existing host-local StatsD proxy and should not add a
-StatsD/Graphite container to the Monitor stack. In bridge-networked production
-containers, add `host.docker.internal:host-gateway` and use
-`STATSD_ADDR=host.docker.internal:8125`. For the full local stack including the
-database, Mailpit, and StatsD, keep using the build-from-source compose file
+render `STATSD_ADDR` as the existing host-local StatsD proxy and should not add
+a StatsD/Graphite container to the Monitor stack. In bridge-networked
+production containers, add `host.docker.internal:host-gateway` and render
+`STATSD_ADDR` as `host.docker.internal:8125`. For the full local stack including
+the database, Mailpit, and StatsD, keep using the build-from-source compose file
 under `docker/`. For the VPS Veriflier production shape, see
 [production-veriflier-compose.md](production-veriflier-compose.md). The
 repo-provided Compose files mount a Graphite storage schema for Jetmon metrics
