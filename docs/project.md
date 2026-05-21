@@ -233,6 +233,12 @@ A standalone binary (`jetmon2 validate-config`) that:
 
 Intended to run as a pre-deployment check in CI and as an operator tool when diagnosing connectivity issues.
 
+`jetmon2 schema validate` is the read-only schema gate for production
+containers. It verifies that Systems-applied migrations match the binary without
+running DDL. `jetmon2 doctor --require-statsd` builds on validate-config with
+dependency smoke checks for DB connectivity, schema freshness, DB server-map
+mode, StatsD UDP emission, WPCOM config/credentials, and Veriflier readiness.
+
 **Veriflier Discovery Report**
 `jetmon2 verifliers discovery-report` is a read-only rollout gate for
 auto-discovery. It compares configured static Verifliers, enabled trusted

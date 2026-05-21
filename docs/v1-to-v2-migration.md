@@ -431,8 +431,22 @@ the range was returned to v1. Keep the transcript with the rollout record.
    ./jetmon2 migrate
    ```
 
-4. Confirm v1 continues to run normally after migrations are applied.
-5. Do not plan a schema rollback. If v2 must be reverted, v1 can keep running
+4. Confirm every production Monitor config uses `CONFIG_PROFILE=production` or
+   `SCHEMA_MANAGEMENT_MODE=validate` before service startup. This makes
+   container startup fail closed if Systems has not applied the expected schema
+   and prevents accidental production DDL.
+5. Validate the schema ledger from the same environment the Monitor will use:
+
+   ```bash
+   ./jetmon2 schema validate
+   ```
+
+   If Systems applies the SQL manually instead of running `jetmon2 migrate`,
+   the change package must also update `jetpack_monitor_schema_migrations`.
+   Production containers use that ledger as the fail-closed startup guard.
+
+6. Confirm v1 continues to run normally after migrations are applied.
+7. Do not plan a schema rollback. If v2 must be reverted, v1 can keep running
    with the additive v2 tables present.
 
 ### Build And Stage Artifacts
@@ -555,7 +569,7 @@ it only when the endpoint and token are correct, and run monitors in
 `jetpack_monitor_veriflier_vantages` and recent `jetpack_monitor_veriflier_agents` telemetry rows,
 then reports missing/extra registry vantages without changing traffic. Switch
 to `active` only after `validate-config` reports usable registry vantages and
-no shadow drift. Active mode falls back to static `VERIFIERS` if discovery is
+no shadow drift. Active mode falls back to static `VERIFLIERS` if discovery is
 unavailable or empty during rollout.
 
 Use the read-only discovery comparison report as the explicit shadow-mode gate:

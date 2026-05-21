@@ -141,7 +141,7 @@ prepare_config() {
 		| .BUCKET_TARGET = $bucket_total
 		| .BUCKET_HEARTBEAT_GRACE_SEC = 8
 		| .STATS_UPDATE_INTERVAL_MS = 1000
-		| .VERIFIERS = [
+		| .VERIFLIERS = [
 			{"name":"Scale Veriflier 1","host":"veriflier","port":"7803","auth_token":$token},
 			{"name":"Scale Veriflier 2","host":"veriflier2","port":"7803","auth_token":$token},
 			{"name":"Scale Veriflier 3","host":"veriflier3","port":"7803","auth_token":$token}

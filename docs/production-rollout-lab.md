@@ -79,7 +79,9 @@ Docker daemon resolver or networking first; otherwise the lab can fail during
 - Compose includes `--add-host=host.docker.internal:host-gateway`.
 - Monitor/Deliverer `STATSD_ADDR=host.docker.internal:8125`.
 - Production-style Monitor containers should run with
-  `JETMON_AUTO_MIGRATE=false` after schema has been applied explicitly.
+  `CONFIG_PROFILE=production` or `SCHEMA_MANAGEMENT_MODE=validate` after schema
+  has been applied explicitly. The lab should include `jetmon2 schema validate`
+  and `jetmon2 doctor --require-statsd` evidence before activation.
 - Host-local StatsD and Graphite are installed and running on the Monitor hosts.
 - Monitor-host StatsD should bind only to localhost or a private lab interface,
   not a public interface. The lab may expose Graphite on a private/admin bind

@@ -10,7 +10,7 @@ database credentials.
 ## Context
 
 Jetmon v2 needs a safer way to evolve the Veriflier fleet than a static
-`VERIFIERS` list on every monitor host. Operators need to add, remove, and
+`VERIFLIERS` list on every monitor host. Operators need to add, remove, and
 scale Veriflier capacity without copying large config lists everywhere, and the
 fleet dashboard needs enough telemetry to show whether Veriflier capacity is
 fresh, stale, overloaded, duplicated, or mismatched.

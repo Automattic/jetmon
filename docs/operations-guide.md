@@ -16,11 +16,11 @@ Key settings:
 
 | Key | Default | Description |
 |---|---:|---|
+| `CONFIG_PROFILE` | `default` | Named posture defaults. Use `production` for production Monitor containers so schema startup defaults to validation. |
+| `SCHEMA_MANAGEMENT_MODE` | `migrate` | `migrate` applies embedded migrations; `validate` refuses startup unless approved schema changes are already present. Production should use `validate`. |
 | `NUM_WORKERS` | 60 | Goroutine pool size/floor; 0 uses the default floor |
-| `NUM_TO_PROCESS` | 40 | Legacy compatibility setting; does not cap Go scheduler throughput |
 | `DATASET_SIZE` | 100 | Database fetch page size for scheduler work; not a total round cap; 0 uses the default |
 | `NUM_OF_CHECKS` | 3 | Local failures before Veriflier escalation |
-| `TIME_BETWEEN_CHECKS_SEC` | 30 | Legacy compatibility setting retained for copied v1-style configs |
 | `MIN_TIME_BETWEEN_ROUNDS_SEC` | 300 | Fixed-cadence full-fleet pass interval when variable intervals are disabled |
 | `NET_COMMS_TIMEOUT` | 10 | Default per-check HTTP timeout in seconds |
 | `CHECK_DNS_RESOLVERS` | `[]` | Optional HTTP-check recursive resolver IPs, with optional ports; restart required after changes |
@@ -36,7 +36,10 @@ Key settings:
 | `PINNED_BUCKET_MIN` / `PINNED_BUCKET_MAX` | unset | Static bucket range used by the [v1-to-v2 migration runbook](v1-to-v2-migration.md) |
 | `ALERT_COOLDOWN_MINUTES` | 30 | Default cooldown between repeated alerts per site |
 | `LEGACY_STATUS_PROJECTION_ENABLE` | true | Keep v1 status fields projected during the [v1-to-v2 migration](v1-to-v2-migration.md) |
-| `LOG_FORMAT` | `text` | `text` or `json` |
+| `DEFAULT_CHECK_METHOD` | `GET` | Fleet default for sites without v2 sidecar check config: `HEAD` or `GET` |
+| `DEFAULT_DETECTION_PROFILE` | `full` | Fleet default detection profile: `legacy`, `simple_http`, or `full` |
+| `USE_VARIABLE_CHECK_INTERVALS` | false in minimal configs; true in the sample | Respect per-site `check_interval` and v2 runtime due state instead of fixed full-fleet passes |
+| `LOG_FORMAT` | `text` | Current runtime log format. `json` is accepted for forward compatibility but structured runtime logging is not wired yet. |
 | `DASHBOARD_PORT` | 8080 | Internal operator dashboard port, 0 disables it |
 | `DASHBOARD_BIND_ADDR` | 127.0.0.1 | Dashboard listener address; keep localhost unless a trusted management network requires remote access |
 | `API_PORT` | 0 | Internal REST API port, 0 disables it |
@@ -50,6 +53,9 @@ Key settings:
 | `SCHEDULER_ENGINE` | `legacy` | `legacy` round/page scheduler or `streaming` v2-native scheduler |
 | `STREAMING_LEGACY_PROJECTION_INTERVAL_MIN` | 15 | Coarse sidecar freshness rollback projection interval for streaming mode |
 | `STREAMING_TARGET_RELOAD_SEC` | 300 | Active site config reload cadence for streaming mode |
+| `CHECK_HISTORY_MODE_DEFAULT` | `status_change` | Default timing-sample persistence mode for sites without a per-site override |
+| `AUDIT_LOG_MODE_DEFAULT` | `operational` | Default audit persistence mode; avoids API GET firehose by default |
+| `RETENTION_CHECK_HISTORY_DAYS` / `RETENTION_AUDIT_LOG_DAYS` | 0 | Optional pruning windows. 0 keeps rows indefinitely. |
 
 Scheduler behavior:
 
@@ -121,9 +127,9 @@ activation. The most important ignored v1-only keys are
 such as `NUM_TO_PROCESS`, `BATCH_SIZE`, `VERIFLIER_BATCH_SIZE`,
 `SQL_UPDATE_BATCH`, `TIME_BETWEEN_CHECKS_SEC`, and
 `TIME_BETWEEN_NOTICES_MIN` also warn because they no longer tune the v2
-scheduler or notification flow. `DB_UPDATES_ENABLE`, `BUCKET_NO_MIN/MAX`, and
-`VERIFIERS[].grpc_port` remain aliases but should be replaced with their v2
-names.
+scheduler or notification flow. `DB_UPDATES_ENABLE`, `BUCKET_NO_MIN/MAX`,
+`VERIFIERS`, and `grpc_port` in Veriflier entries remain aliases but should be
+replaced with their v2 names.
 
 Production database server-map refresh is handled by a config-sync sidecar for
 the first TeamCity/docker-deploy rollout, with host-side systemd sync kept as a
@@ -199,9 +205,14 @@ unsafe legacy URL counts before or after API rejection changes.
    cannot support that sidecar shape, install
    `systemd/jetmon-config-sync.service` and
    `systemd/jetmon-config-sync.timer` as the host-side fallback.
-6. Copy or generate `config/config.json`.
+6. Copy or generate `config/config.json`. Production Monitor containers should
+   set `CONFIG_PROFILE=production` or `SCHEMA_MANAGEMENT_MODE=validate` after
+   Systems has applied schema changes through the database-change process.
 7. Set `BUCKET_TARGET` to the desired maximum bucket count for the host.
-8. Run `./jetmon2 migrate`.
+8. Run `./jetmon2 migrate` only as the explicit schema-change step. For normal
+   production startup and redeploys, run `./jetmon2 schema validate` instead.
+   If SQL is applied through an external database-change process, ensure the
+   matching `jetpack_monitor_schema_migrations` rows are included.
 9. Run `systemd-analyze verify /etc/systemd/system/jetmon2.service` after the
    binary exists at the path used by `ExecStart`.
 10. Start the service with
@@ -211,10 +222,16 @@ Runtime logs are collected from stdout/stderr by systemd or the container
 runtime. V2 does not write v1 `jetmon.log` or `status-change.log` files by
 default.
 
-Manual commands such as `migrate`, `validate-config`, and `rollout` need the
-same `DB_*` environment that systemd reads from
+Manual commands such as `migrate`, `schema validate`, `validate-config`,
+`doctor`, and `rollout` need the same `DB_*` environment that systemd reads from
 `/opt/jetmon2/config/jetmon2.env`; systemd's `EnvironmentFile` is not loaded for
 commands run directly from a shell.
+
+Use `./jetmon2 doctor --require-statsd` before production activation to smoke
+test config parsing, DB connectivity, schema freshness, DB server-map or env
+mode, StatsD UDP emission, WPCOM notification config/credentials, and Veriflier
+readiness. The WPCOM check is credential/config validation only; it does not
+send a production notification.
 
 ### Kernel tuning for high-fanout outbound
 
@@ -503,7 +520,7 @@ need from that host.
 When `VERIFLIER_DISCOVERY_MODE` is `shadow` or `active`, host health also shows
 Veriflier discovery status from the DB registry. Shadow mode is the rollout
 gate: compare enabled `jetpack_monitor_veriflier_vantages` rows against the static
-`VERIFIERS` list until there is no drift. Active mode uses enabled usable
+`VERIFLIERS` list until there is no drift. Active mode uses enabled usable
 registry rows and falls back to static config if discovery is unavailable or
 empty. Monitor-collected rows in `jetpack_monitor_veriflier_agents` expose liveness and
 capacity without giving Veriflier hosts DB credentials; they do not create
@@ -849,7 +866,9 @@ The `window_edge_lookback` line calls out transition rows at the end of the
 window that can make WPCOM parity look temporarily incomplete; rerun with a
 later `--until` before treating those edge deltas as missing audit data.
 
-Use `LOG_FORMAT=json` for structured logs during investigations.
+Structured JSON runtime logging is tracked as future work. For now,
+`LOG_FORMAT=json` is accepted by config validation but standard runtime logs
+remain text.
 
 ## Debugging
 

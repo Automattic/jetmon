@@ -382,6 +382,12 @@ func TestValidateAppliesCheckHistoryAndAuditDefaults(t *testing.T) {
 	if err := validate(cfg); err != nil {
 		t.Fatalf("validate() error = %v", err)
 	}
+	if cfg.ConfigProfile != ConfigProfileDefault {
+		t.Errorf("ConfigProfile = %q, want default", cfg.ConfigProfile)
+	}
+	if cfg.SchemaManagementMode != SchemaManagementModeMigrate {
+		t.Errorf("SchemaManagementMode = %q, want migrate", cfg.SchemaManagementMode)
+	}
 	if cfg.CheckTargetSafetyMode != CheckTargetSafetyModePublicOnly {
 		t.Errorf("CheckTargetSafetyMode = %q, want public_only", cfg.CheckTargetSafetyMode)
 	}
@@ -401,6 +407,86 @@ func TestValidateRejectsBadCheckHistoryMode(t *testing.T) {
 	cfg.CheckHistoryModeDefault = "bogus"
 	if err := validate(cfg); err == nil {
 		t.Fatal("validate() accepted invalid CHECK_HISTORY_MODE_DEFAULT")
+	}
+}
+
+func TestValidateRejectsBadSchemaManagementMode(t *testing.T) {
+	cfg := baseValidConfig()
+	cfg.SchemaManagementMode = "auto"
+	if err := validate(cfg); err == nil {
+		t.Fatal("validate() accepted invalid SCHEMA_MANAGEMENT_MODE")
+	}
+}
+
+func TestLoadProductionProfileAppliesNarrowDefaults(t *testing.T) {
+	saveConfigState(t)
+
+	p := writeConfigFile(t, `{
+		"CONFIG_PROFILE": "production",
+		"AUTH_TOKEN": "token",
+		"NUM_WORKERS": 7,
+		"BUCKET_TOTAL": 100,
+		"BUCKET_TARGET": 50,
+		"NET_COMMS_TIMEOUT": 10,
+		"LOG_FORMAT": "text"
+	}`)
+
+	if err := Load(p); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	cfg := Get()
+	if cfg.ConfigProfile != ConfigProfileProduction {
+		t.Fatalf("ConfigProfile = %q, want production", cfg.ConfigProfile)
+	}
+	if cfg.SchemaManagementMode != SchemaManagementModeValidate {
+		t.Fatalf("SchemaManagementMode = %q, want validate", cfg.SchemaManagementMode)
+	}
+	if cfg.CheckTargetSafetyMode != CheckTargetSafetyModePublicOnly {
+		t.Fatalf("CheckTargetSafetyMode = %q, want public_only", cfg.CheckTargetSafetyMode)
+	}
+}
+
+func TestLoadProductionProfileAllowsExplicitSchemaOverride(t *testing.T) {
+	saveConfigState(t)
+
+	p := writeConfigFile(t, `{
+		"CONFIG_PROFILE": "production",
+		"SCHEMA_MANAGEMENT_MODE": "migrate",
+		"AUTH_TOKEN": "token",
+		"NUM_WORKERS": 7,
+		"BUCKET_TOTAL": 100,
+		"BUCKET_TARGET": 50,
+		"NET_COMMS_TIMEOUT": 10,
+		"LOG_FORMAT": "text"
+	}`)
+
+	if err := Load(p); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := Get().SchemaManagementMode; got != SchemaManagementModeMigrate {
+		t.Fatalf("SchemaManagementMode = %q, want migrate", got)
+	}
+}
+
+func TestLoadProductionProfileUsesSchemaDefaultWhenSampleValueEmpty(t *testing.T) {
+	saveConfigState(t)
+
+	p := writeConfigFile(t, `{
+		"CONFIG_PROFILE": "production",
+		"SCHEMA_MANAGEMENT_MODE": "",
+		"AUTH_TOKEN": "token",
+		"NUM_WORKERS": 7,
+		"BUCKET_TOTAL": 100,
+		"BUCKET_TARGET": 50,
+		"NET_COMMS_TIMEOUT": 10,
+		"LOG_FORMAT": "text"
+	}`)
+
+	if err := Load(p); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := Get().SchemaManagementMode; got != SchemaManagementModeValidate {
+		t.Fatalf("SchemaManagementMode = %q, want validate", got)
 	}
 }
 
@@ -570,6 +656,9 @@ func TestSampleConfigLoads(t *testing.T) {
 	if cfg == nil {
 		t.Fatal("Get() = nil after loading sample config")
 	}
+	if len(cfg.Warnings) != 0 {
+		t.Fatalf("config-sample.json should not emit compatibility warnings: %#v", cfg.Warnings)
+	}
 	if cfg.EmailTransport != "stub" {
 		t.Fatalf("EmailTransport = %q, want stub", cfg.EmailTransport)
 	}
@@ -621,6 +710,41 @@ func TestLegacyStatusProjectionConfig(t *testing.T) {
 	}
 }
 
+func TestLegacyVerifiersAlias(t *testing.T) {
+	saveConfigState(t)
+
+	p := writeConfigFile(t, `{
+		"AUTH_TOKEN": "token",
+		"NUM_WORKERS": 7,
+		"BUCKET_TOTAL": 100,
+		"BUCKET_TARGET": 50,
+		"NET_COMMS_TIMEOUT": 10,
+		"LOG_FORMAT": "text",
+		"VERIFIERS": [
+			{
+				"name": "legacy spelling",
+				"host": "veriflier",
+				"port": "7803",
+				"auth_token": "token"
+			}
+		]
+	}`)
+
+	if err := Load(p); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	cfg := Get()
+	if len(cfg.Verifiers) != 1 {
+		t.Fatalf("Verifiers length = %d, want 1", len(cfg.Verifiers))
+	}
+	if cfg.Verifiers[0].Name != "legacy spelling" {
+		t.Fatalf("Verifiers[0].Name = %q", cfg.Verifiers[0].Name)
+	}
+	if warningsByKey(cfg.Warnings)["VERIFIERS"] == "" {
+		t.Fatalf("missing VERIFIERS alias warning: %#v", cfg.Warnings)
+	}
+}
+
 func TestLoadWarnsForDeprecatedNoopAndUnknownKeys(t *testing.T) {
 	saveConfigState(t)
 
@@ -669,6 +793,7 @@ func TestLoadWarnsForDeprecatedNoopAndUnknownKeys(t *testing.T) {
 		"TIME_BETWEEN_CHECKS_SEC",
 		"TIME_BETWEEN_NOTICES_MIN",
 		"STATSD_SEND_MEM_USAGE",
+		"VERIFIERS",
 		"UNEXPECTED_V1_KEY",
 		"VERIFIERS[0].grpc_port",
 	} {
@@ -697,6 +822,27 @@ func TestLoadWarnsWhenStatsDHostPathLooksLikeRawHostname(t *testing.T) {
 	warnings := warningsByKey(Get().Warnings)
 	if warnings["STATSD_HOST_PATH"] == "" {
 		t.Fatalf("missing STATSD_HOST_PATH warning; got %#v", warnings)
+	}
+}
+
+func TestLoadWarnsWhenJSONLogFormatIsSelected(t *testing.T) {
+	saveConfigState(t)
+
+	p := writeConfigFile(t, `{
+		"AUTH_TOKEN": "token",
+		"NUM_WORKERS": 7,
+		"BUCKET_TOTAL": 100,
+		"BUCKET_TARGET": 50,
+		"NET_COMMS_TIMEOUT": 10,
+		"LOG_FORMAT": "json"
+	}`)
+
+	if err := Load(p); err != nil {
+		t.Fatalf("Load() should warn but not fail: %v", err)
+	}
+	warnings := warningsByKey(Get().Warnings)
+	if warnings["LOG_FORMAT"] == "" {
+		t.Fatalf("missing LOG_FORMAT warning; got %#v", warnings)
 	}
 }
 

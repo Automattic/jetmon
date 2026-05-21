@@ -37,6 +37,16 @@ const (
 )
 
 const (
+	ConfigProfileDefault    = "default"
+	ConfigProfileProduction = "production"
+)
+
+const (
+	SchemaManagementModeMigrate  = "migrate"
+	SchemaManagementModeValidate = "validate"
+)
+
+const (
 	WPCOMNotifyModeLegacy = "legacy"
 	WPCOMNotifyModeModern = "modern"
 
@@ -58,6 +68,12 @@ func (v VerifierConfig) TransportPort() string {
 // Config holds all runtime configuration for Jetmon 2.
 type Config struct {
 	Debug bool `json:"DEBUG"`
+
+	// ConfigProfile applies a small named set of posture defaults before
+	// explicit config values are decoded. Profiles are intentionally narrow:
+	// explicit keys always win, and profiles must not hide broad behavior
+	// changes from rollout operators.
+	ConfigProfile string `json:"CONFIG_PROFILE"`
 
 	// Hostname is the stable Jetmon identity used for host ownership, process
 	// health, and outbound notification identity.
@@ -108,8 +124,14 @@ type Config struct {
 	DBConfigUpdatesMin int `json:"DB_CONFIG_UPDATES_MIN"`
 	PeerOfflineLimit   int `json:"PEER_OFFLINE_LIMIT"`
 
+	// SchemaManagementMode controls what startup wrappers should do before the
+	// service starts. "migrate" preserves local/dev convenience by applying
+	// pending migrations. "validate" refuses to start unless the expected
+	// schema is already present and never writes schema changes.
+	SchemaManagementMode string `json:"SCHEMA_MANAGEMENT_MODE"`
+
 	// VeriflierDiscoveryMode controls whether the monitor reads Veriflier
-	// endpoints from the trusted DB registry. "static" preserves the VERIFIERS
+	// endpoints from the trusted DB registry. "static" preserves the VERIFLIERS
 	// list behavior, "shadow" reports registry drift without changing traffic,
 	// and "active" uses the registry with static fallback if discovery fails.
 	VeriflierDiscoveryMode string `json:"VERIFLIER_DISCOVERY_MODE"`
@@ -202,7 +224,8 @@ type Config struct {
 	RetentionBackgroundEnable bool `json:"RETENTION_BACKGROUND_ENABLED"`
 	RetentionRunHourUTC       int  `json:"RETENTION_RUN_HOUR_UTC"`
 
-	Verifiers []VerifierConfig `json:"VERIFIERS"`
+	Verifiers       []VerifierConfig `json:"VERIFLIERS"`
+	VerifiersLegacy []VerifierConfig `json:"VERIFIERS"`
 
 	Warnings []ConfigWarning `json:"-"`
 }
@@ -306,9 +329,13 @@ func reload() error {
 	}
 
 	cfg := defaults()
+	if err := applyConfigProfile(raw, cfg); err != nil {
+		return err
+	}
 	if err := json.Unmarshal(raw, cfg); err != nil {
 		return fmt.Errorf("parse config: %w", err)
 	}
+	applyProfileEmptyValues(raw, cfg)
 	cfg.Warnings = collectConfigWarnings(raw)
 	applyDeprecatedAliases(raw, cfg)
 
@@ -371,6 +398,7 @@ func defaults() *Config {
 		SQLUpdateBatch:                       1,
 		DBConfigUpdatesMin:                   10,
 		PeerOfflineLimit:                     3,
+		SchemaManagementMode:                 SchemaManagementModeMigrate,
 		VeriflierDiscoveryMode:               VeriflierDiscoveryModeStatic,
 		NumOfChecks:                          3,
 		TimeBetweenChecksSec:                 30,
@@ -413,6 +441,58 @@ func defaults() *Config {
 	}
 }
 
+func applyConfigProfile(raw []byte, cfg *Config) error {
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &keys); err != nil {
+		return fmt.Errorf("parse config: %w", err)
+	}
+	rawProfile := keys["CONFIG_PROFILE"]
+	if len(rawProfile) == 0 {
+		cfg.ConfigProfile = ConfigProfileDefault
+		return nil
+	}
+	var profile string
+	if err := json.Unmarshal(rawProfile, &profile); err != nil {
+		return fmt.Errorf("CONFIG_PROFILE must be a string")
+	}
+	profile = normalizeConfigProfile(profile)
+	switch profile {
+	case ConfigProfileDefault:
+		cfg.ConfigProfile = ConfigProfileDefault
+	case ConfigProfileProduction:
+		cfg.ConfigProfile = ConfigProfileProduction
+		cfg.SchemaManagementMode = SchemaManagementModeValidate
+		cfg.CheckTargetSafetyMode = CheckTargetSafetyModePublicOnly
+	default:
+		return fmt.Errorf("invalid config: CONFIG_PROFILE must be one of: default, production")
+	}
+	return nil
+}
+
+func applyProfileEmptyValues(raw []byte, cfg *Config) {
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &keys); err != nil {
+		return
+	}
+	rawMode := keys["SCHEMA_MANAGEMENT_MODE"]
+	if len(rawMode) == 0 {
+		return
+	}
+	var mode string
+	if err := json.Unmarshal(rawMode, &mode); err != nil {
+		return
+	}
+	if strings.TrimSpace(mode) != "" {
+		return
+	}
+	switch normalizeConfigProfile(cfg.ConfigProfile) {
+	case ConfigProfileProduction:
+		cfg.SchemaManagementMode = SchemaManagementModeValidate
+	default:
+		cfg.SchemaManagementMode = SchemaManagementModeMigrate
+	}
+}
+
 func applyDeprecatedAliases(raw []byte, cfg *Config) {
 	var keys map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &keys); err != nil {
@@ -423,6 +503,11 @@ func applyDeprecatedAliases(raw []byte, cfg *Config) {
 	}
 	if _, hasOld := keys["DB_UPDATES_ENABLE"]; hasOld {
 		cfg.LegacyStatusProjectionEnable = cfg.DBUpdatesEnable
+	}
+	if _, hasNew := keys["VERIFLIERS"]; !hasNew {
+		if _, hasOld := keys["VERIFIERS"]; hasOld {
+			cfg.Verifiers = cfg.VerifiersLegacy
+		}
 	}
 }
 
@@ -480,6 +565,10 @@ var deprecatedConfigKeyWarnings = []deprecatedConfigKeyWarning{
 		key:     "STATSD_SEND_MEM_USAGE",
 		message: "deprecated v1 compatibility key; Jetmon v2 emits process resource gauges whenever StatsD is configured",
 	},
+	{
+		key:     "VERIFIERS",
+		message: "deprecated config spelling; use VERIFLIERS",
+	},
 }
 
 func collectConfigWarnings(raw []byte) []ConfigWarning {
@@ -517,7 +606,9 @@ func collectConfigWarnings(raw []byte) []ConfigWarning {
 	}
 
 	warnings = append(warnings, collectStatsDHostPathWarnings(keys["STATSD_HOST_PATH"])...)
-	warnings = append(warnings, collectVerifierConfigWarnings(keys["VERIFIERS"])...)
+	warnings = append(warnings, collectLogFormatWarnings(keys["LOG_FORMAT"])...)
+	warnings = append(warnings, collectVerifierConfigWarnings("VERIFLIERS", keys["VERIFLIERS"])...)
+	warnings = append(warnings, collectVerifierConfigWarnings("VERIFIERS", keys["VERIFIERS"])...)
 	return warnings
 }
 
@@ -542,6 +633,23 @@ func collectStatsDHostPathWarnings(raw json.RawMessage) []ConfigWarning {
 	return nil
 }
 
+func collectLogFormatWarnings(raw json.RawMessage) []ConfigWarning {
+	if len(raw) == 0 {
+		return nil
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil
+	}
+	if strings.EqualFold(strings.TrimSpace(value), "json") {
+		return []ConfigWarning{{
+			Key:     "LOG_FORMAT",
+			Message: "json is accepted for forward compatibility, but runtime structured logging is not wired yet; logs remain text",
+		}}
+	}
+	return nil
+}
+
 func knownConfigJSONKeys() map[string]struct{} {
 	known := make(map[string]struct{})
 	t := reflect.TypeOf(Config{})
@@ -556,7 +664,7 @@ func knownConfigJSONKeys() map[string]struct{} {
 	return known
 }
 
-func collectVerifierConfigWarnings(raw json.RawMessage) []ConfigWarning {
+func collectVerifierConfigWarnings(key string, raw json.RawMessage) []ConfigWarning {
 	if len(raw) == 0 {
 		return nil
 	}
@@ -568,7 +676,7 @@ func collectVerifierConfigWarnings(raw json.RawMessage) []ConfigWarning {
 	for i, verifier := range verifiers {
 		if _, ok := verifier["grpc_port"]; ok {
 			warnings = append(warnings, ConfigWarning{
-				Key:     fmt.Sprintf("VERIFIERS[%d].grpc_port", i),
+				Key:     fmt.Sprintf("%s[%d].grpc_port", key, i),
 				Message: "deprecated Veriflier port alias; use port",
 			})
 		}
@@ -617,6 +725,12 @@ func (cfg *Config) PinnedBucketRange() (int, int, bool) {
 func validate(cfg *Config) error {
 	if cfg.AuthToken == "" {
 		return fmt.Errorf("AUTH_TOKEN is required")
+	}
+	cfg.ConfigProfile = normalizeConfigProfile(cfg.ConfigProfile)
+	switch cfg.ConfigProfile {
+	case ConfigProfileDefault, ConfigProfileProduction:
+	default:
+		return fmt.Errorf("CONFIG_PROFILE must be one of: default, production")
 	}
 	cfg.Hostname = strings.TrimSpace(cfg.Hostname)
 	cfg.StatsDHostPath = strings.TrimSpace(cfg.StatsDHostPath)
@@ -689,6 +803,12 @@ func validate(cfg *Config) error {
 	cfg.DefaultDetectionProfile = profile
 	if cfg.MinTimeBetweenRoundsSec < 0 {
 		return fmt.Errorf("MIN_TIME_BETWEEN_ROUNDS_SEC must be >= 0")
+	}
+	cfg.SchemaManagementMode = normalizeSchemaManagementMode(cfg.SchemaManagementMode)
+	switch cfg.SchemaManagementMode {
+	case SchemaManagementModeMigrate, SchemaManagementModeValidate:
+	default:
+		return fmt.Errorf("SCHEMA_MANAGEMENT_MODE must be one of: migrate, validate")
 	}
 	applyWPCOMNotifyDefaults(cfg)
 	switch cfg.WPCOMNotifyMode {
@@ -811,10 +931,10 @@ func validate(cfg *Config) error {
 		// most common cause of "verifier connection refused" in dev configs
 		// (typo: "ports" instead of "port").
 		if v.Host == "" {
-			return fmt.Errorf("VERIFIERS[%d] (%s): host is required", i, displayName(v, i))
+			return fmt.Errorf("VERIFLIERS[%d] (%s): host is required", i, displayName(v, i))
 		}
 		if v.TransportPort() == "" {
-			return fmt.Errorf("VERIFIERS[%d] (%s): port is required", i, displayName(v, i))
+			return fmt.Errorf("VERIFLIERS[%d] (%s): port is required", i, displayName(v, i))
 		}
 	}
 	return nil
@@ -907,6 +1027,22 @@ func normalizeRolloutMode(mode string) string {
 	mode = strings.ToLower(strings.TrimSpace(mode))
 	if mode == "" {
 		return RolloutModeActive
+	}
+	return mode
+}
+
+func normalizeConfigProfile(profile string) string {
+	profile = strings.ToLower(strings.TrimSpace(profile))
+	if profile == "" {
+		return ConfigProfileDefault
+	}
+	return profile
+}
+
+func normalizeSchemaManagementMode(mode string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" {
+		return SchemaManagementModeMigrate
 	}
 	return mode
 }
