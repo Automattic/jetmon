@@ -5,11 +5,13 @@ Jetmon reads runtime configuration from `config/config.json` by default. Set
 Monitor, Deliverer, and Veriflier processes read runtime settings from JSON
 config, not directly from environment variables, once their config files exist.
 
-Docker entrypoints may use environment variables as first-boot template inputs
-when they render `config/config.json` from `config/config-sample.json`. After a
-config file exists, edit or mount the JSON file instead of expecting Docker
-environment changes to alter runtime behavior. Database server-map settings and
-Docker rendering inputs are called out below.
+Docker entrypoints use environment variables as template inputs and render a
+generated JSON config before starting the process. The default Docker render
+mode is `always`, so changing Compose environment values and recreating the
+container updates the generated config. Set `JETMON_CONFIG_RENDER_MODE=never`
+for Monitor/Deliverer containers, or `VERIFLIER_CONFIG_RENDER_MODE=never` for
+Veriflier containers, when mounting a hand-managed JSON config that should not
+be generated from environment values.
 
 Each entry uses the same shape:
 
@@ -22,6 +24,21 @@ Each entry uses the same shape:
 called out in their notes.
 
 ## Profiles And Startup Safety
+
+### Docker Config Rendering
+
+- Default: `always`
+- Values: `always`, `missing`, `never`
+- Example: `JETMON_CONFIG_RENDER_MODE=never`
+- Purpose: controls how Docker entrypoints create the JSON config consumed by
+  the Go binaries.
+- Notes: `always` renders a generated config on every container start and is
+  the recommended Compose mode. `missing` renders only when the target JSON file
+  does not exist; use this only for legacy deployments that intentionally keep a
+  generated config across restarts. `never` disables rendering and leaves
+  `JETMON_CONFIG` / `VERIFLIER_CONFIG` or the binary's default config path as
+  the source of truth. Veriflier accepts `VERIFLIER_CONFIG_RENDER_MODE` and
+  falls back to `JETMON_CONFIG_RENDER_MODE` when unset.
 
 ### CONFIG_PROFILE
 
@@ -67,9 +84,9 @@ called out in their notes.
 - Example: `"HOSTNAME": "jetmon-prod-1.dfw1.example.com"`
 - Purpose: stable Jetmon process identity for host ownership, process health,
   delivery identity, and StatsD fallback naming.
-- Notes: Docker entrypoints render the `JETMON_HOSTNAME` environment variable
-  into this JSON key. Use a stable logical host name, not a container ID,
-  release SHA, process ID, port, or random suffix.
+- Notes: Docker entrypoints can render the `JETMON_HOSTNAME` environment
+  variable into this JSON key. Use a stable logical host name, not a container
+  ID, release SHA, process ID, port, or random suffix.
 
 ### STATSD_HOST_PATH
 
@@ -81,7 +98,7 @@ called out in their notes.
   `jetmon-prod-1.dfw1.example.com` should use `dfw1.jetmon-prod-1`.
   Allowed characters: letters, numbers, dots, underscores, and hyphens.
   Docker entrypoints can render this from the `STATSD_HOST_PATH` environment
-  variable when creating config for the first time.
+  variable when generating config.
 
 ### STATSD_ADDR
 
@@ -95,9 +112,9 @@ called out in their notes.
   Monitor Docker deployments, add Docker's host gateway mapping and use
   `host.docker.internal:8125`. Local and Veriflier Compose stacks normally use
   `statsd:8125`. Docker entrypoints can render this from the `STATSD_ADDR`
-  environment variable when creating config for the first time, but the Go
-  process reads only the JSON value. This value is read at process start;
-  restart the process after changing it.
+  environment variable when generating config, but the Go process reads only
+  the JSON value. This value is read at process start; restart the process
+  after changing it.
 
 ### STATS_UPDATE_INTERVAL_MS
 
@@ -128,9 +145,9 @@ called out in their notes.
   and writes can be split the same way as WPCOM infrastructure. Do not set
   these keys when `DB_SERVER_MAP_PATH` is set; Jetmon rejects mixed database
   modes so startup cannot silently choose the wrong source. Docker entrypoints
-  can render these from same-named environment variables when creating config
-  for the first time, but the Go process reads only the JSON values. This mode
-  is read at process start; restart after changing database credentials.
+  can render these from same-named environment variables when generating
+  config, but the Go process reads only the JSON values. This mode is read at
+  process start; restart after changing database credentials.
 
 ### DB_SERVER_MAP_PATH
 
@@ -141,10 +158,10 @@ called out in their notes.
   the write master, and builds read pools from eligible read hosts. This mode
   is mutually exclusive with explicit `DB_HOST` / `DB_PORT` / `DB_USER` /
   `DB_PASSWORD` / `DB_NAME` settings. Docker entrypoints can render this from
-  the same-named environment variable when creating config for the first time,
-  but the Go process reads only the JSON value. The server-map file contents
-  hot-reload on `DB_CONFIG_UPDATES_MIN`; changing the path or mode requires a
-  process restart.
+  the same-named environment variable when generating config, but the Go
+  process reads only the JSON value. The server-map file contents hot-reload on
+  `DB_CONFIG_UPDATES_MIN`; changing the path or mode requires a process
+  restart.
 
 ### DB_SERVER_MAP_DATASET
 
@@ -701,9 +718,10 @@ used when the JSON file is missing: `VERIFLIER_AUTH_TOKEN`, `VERIFLIER_PORT`,
 `VERIFLIER_GRPC_PORT`, `VERIFLIER_HOSTNAME`, `JETMON_HOSTNAME`, `STATSD_ADDR`,
 `STATSD_HOST_PATH`, `VERIFLIER_VANTAGE_ID`, `VERIFLIER_REGION`,
 `VERIFLIER_PROVIDER`, and `VERIFLIER_ENABLE_LEGACY_HTTP`. The Docker entrypoint
-can render those values into JSON when creating the config for the first time.
-Once the JSON config exists, the Veriflier reads runtime settings from that
-file and does not let environment variables override it.
+can render those values into generated JSON on each start in the default
+`always` render mode. Once the Veriflier process starts, it reads runtime
+settings from that JSON file and does not let environment variables override
+it.
 
 The old `VERIFLIER_GRPC_PORT` and `grpc_port` names remain accepted as
 deprecated port aliases.

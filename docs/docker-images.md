@@ -54,10 +54,11 @@ docker run --rm \
   ghcr.io/automattic/veriflier:latest
 ```
 
-The entrypoint renders `config/veriflier.json` from `veriflier-sample.json` on
-first start using the env vars above. Those env vars are Docker template inputs;
-the Veriflier binary reads the rendered JSON config. Health check:
-`curl http://localhost:7803/v2/status` should return `{"status":"OK",...}`.
+The entrypoint renders a generated Veriflier JSON config from
+`veriflier-sample.json` on every container start by default. Those env vars are
+Docker template inputs; the Veriflier binary reads the rendered JSON config.
+Health check: `curl http://localhost:7803/v2/status` should return
+`{"status":"OK",...}`.
 
 Required env vars:
 
@@ -69,6 +70,7 @@ Required env vars:
 | `STATSD_ADDR` | Optional template input for the rendered `statsd_addr` config value. Leave unset to run without Veriflier metrics, or set to `statsd:8125` / another approved endpoint. |
 | `JETMON_HOSTNAME` | Optional env input used by the Docker entrypoint when rendering the Veriflier `hostname` config. Use a low-cardinality value such as `<region>.<vantage>` for process identity; do not include container IDs, release SHAs, ports, or random suffixes. |
 | `STATSD_HOST_PATH` | Optional explicit Graphite host path. Leave empty to use the Veriflier hostname; set when metric grouping should differ from process identity. |
+| `VERIFLIER_CONFIG_RENDER_MODE` | Optional. `always` (default) renders JSON every start from env. `missing` renders only if the target file is absent. `never` disables rendering and uses `VERIFLIER_CONFIG` or `config/veriflier.json`. |
 
 ## Run Jetmon
 
@@ -108,12 +110,12 @@ proxy is available, set `STATSD_ADDR=` so the entrypoint renders an empty
 render `STATSD_ADDR` as the Compose StatsD service, the production host-local
 StatsD proxy through `host.docker.internal`, or another approved UDP endpoint.
 
-The entrypoint runs `./jetmon2 migrate` before starting the monitor — migrations
-are embedded and additive. The first run renders `config/config.json` from
-`config-sample.json` using the env vars above; mount a real
-`/jetmon/config/config.json` to override the rendered defaults. The Jetmon
-binary reads StatsD settings from that JSON config, not directly from the
-environment.
+The entrypoint renders a generated JSON config from `config-sample.json` using
+the env vars above, exports `JETMON_CONFIG` to that generated path, runs schema
+setup, and starts the Monitor. In Docker, env values are the Compose source of
+truth by default: changing them and recreating the container updates the
+generated JSON. The Jetmon binary reads StatsD, database, and runtime settings
+from that JSON config, not directly from the environment.
 
 Exposed ports:
 
@@ -142,12 +144,13 @@ Required env vars:
 | `SCHEMA_MANAGEMENT_MODE` | `migrate` applies pending migrations before service start; `validate` refuses startup unless the expected schema is already present and never applies DDL. Use `validate` in production after Systems has applied schema changes. |
 | `HOSTNAME` / `JETMON_HOSTNAME` | Stable process identity. `HOSTNAME` is the rendered config key; `JETMON_HOSTNAME` is the Docker env input used by the entrypoint when rendering config. For Monitor production, use the real logical host name, for example `jetmon-prod-1.dfw1.example.com`; do not include container IDs, release SHAs, ports, or random suffixes. |
 | `STATSD_HOST_PATH` | Explicit StatsD metric host path. For Monitor production, use the v1-compatible `<datacenter>.<node>` format derived by reversing the first two labels of the v1 hostname, for example `jetmon-prod-1.dfw1.example.com` -> `dfw1.jetmon-prod-1`. Leave empty only for local/dev fallback or an intentional dashboard series migration. |
+| `JETMON_CONFIG_RENDER_MODE` | Optional. `always` (default) renders JSON every start from env. `missing` renders only if the target file is absent. `never` disables rendering and uses `JETMON_CONFIG` or `config/config.json`. |
 
 Optional volume mounts:
 
 | Path | Reason |
 |---|---|
-| `/jetmon/config` | Mount when you want to manage `config.json` outside the container instead of relying on env-driven rendering. |
+| `/jetmon/config` | Mount only when you want to manage `config.json` outside the container. Set `JETMON_CONFIG_RENDER_MODE=never` and `JETMON_CONFIG=/jetmon/config/config.json` so the entrypoint does not overwrite the mounted file. |
 | `/jetmon/config-source` | Production-only mount for generated private files such as `db-servers.php`; mount read-only in the Monitor. In the recommended TeamCity rollout, the config-sync sidecar writes this path. |
 | `/jetmon/stats` | Persist counters and the `jetmon2.pid` file used by `reload` / `drain`. Production TeamCity consumers should prefer `GET /api/v1/monitor/stats` or StatsD over host filesystem reads unless Systems explicitly approves a bind mount. |
 
@@ -277,5 +280,5 @@ before the workflow runs.
 | `denied: requested access to the resource is denied` on pull | The package is still private — authenticate with `docker login ghcr.io` using a PAT with `read:packages`, or have a maintainer flip the package visibility. |
 | Container starts but Jetmon exits with a database error | The rendered JSON `DB_HOST` is reachable from inside the container — remember `localhost` inside the container is not the host. Use the host IP, a docker network, or `host.docker.internal`. |
 | `reload` / `drain` reports "no PID file" | Mount a writable volume at `/jetmon/stats`. The PID file lives at `/jetmon/stats/jetmon2.pid`. |
-| Config changes do not persist across container restarts | Either mount `/jetmon/config` and edit the file directly, or rely on Docker template inputs — the rendered `config.json` is rebuilt from env vars only when the config file is created. |
+| Compose env changes do not take effect | Confirm `JETMON_CONFIG_RENDER_MODE` / `VERIFLIER_CONFIG_RENDER_MODE` is `always` or unset, then recreate the container. `missing` intentionally ignores env changes while the target JSON exists, and `never` disables rendering. |
 | Jetmon cannot reach Veriflier | `VERIFLIER_AUTH_TOKEN` must match on both sides, and `VERIFLIER_PORT` (default `7803`) must be reachable from the Jetmon container. |

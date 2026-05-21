@@ -42,7 +42,8 @@ Monitor reads its database connection from the rendered JSON config keys
 
 In the default Docker Compose stack, those values point at the local
 `mysqldb` service. Compose passes environment values to the entrypoint, and the
-entrypoint renders them into `config/config.json` on first boot:
+entrypoint renders them into generated JSON config on every container start by
+default:
 
 ```yaml
 DB_HOST: mysqldb
@@ -53,9 +54,9 @@ Use `docker/.env` to change the local database image, database name, user, and
 password. If you need the Monitor container to connect to a specific external
 database instead of the Compose `mysqldb` service, add a local Compose override
 that changes the `jetmon.environment` `DB_*` template inputs before the config
-file is created, or mount an explicit `config/config.json`. The SVN config-sync
-sidecar is only for production rollout planning and is not required for local
-smoke tests.
+container is recreated. To use a hand-managed JSON file instead, mount it and
+set `JETMON_CONFIG_RENDER_MODE=never`. The SVN config-sync sidecar is only for
+production rollout planning and is not required for local smoke tests.
 
 Production-style DB server-map testing is available by setting
 `DB_SERVER_MAP_PATH` in JSON config to a synced or synthetic `db-servers.php`.

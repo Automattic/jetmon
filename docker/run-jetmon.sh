@@ -7,10 +7,29 @@ sed_escape() {
 	printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'
 }
 
+bool_json() {
+	local key=$1
+	local value=$2
+	case "${value,,}" in
+		1|t|true|y|yes|on|enabled)
+			printf 'true'
+			;;
+		0|f|false|n|no|off|disabled)
+			printf 'false'
+			;;
+		*)
+			echo "invalid ${key} value: ${value}" >&2
+			exit 1
+			;;
+	esac
+}
+
 render_config() {
 	local target=$1
 	local config_profile="${CONFIG_PROFILE:-default}"
 	local schema_management_mode="${SCHEMA_MANAGEMENT_MODE:-}"
+	local wpcom_notify_enable
+	local smtp_use_tls
 	if [ -z "$schema_management_mode" ]; then
 		if [ "$config_profile" = "production" ]; then
 			schema_management_mode="validate"
@@ -18,6 +37,8 @@ render_config() {
 			schema_management_mode="migrate"
 		fi
 	fi
+	wpcom_notify_enable="$(bool_json WPCOM_NOTIFY_ENABLE "${WPCOM_NOTIFY_ENABLE:-false}")"
+	smtp_use_tls="$(bool_json SMTP_USE_TLS "${SMTP_USE_TLS:-false}")"
 	sed \
 		-e "s|<AUTH_TOKEN>|$(sed_escape "${WPCOM_AUTH_TOKEN:-change_me}")|g" \
 		-e "s|\"CONFIG_PROFILE\"    : \"default\"|\"CONFIG_PROFILE\"    : \"$(sed_escape "$config_profile")\"|g" \
@@ -37,7 +58,7 @@ render_config() {
 		-e "s|<VERIFLIER_PORT>|$(sed_escape "${VERIFLIER_PORT}")|g" \
 		-e "s|<VERIFLIER_AUTH_TOKEN>|$(sed_escape "${VERIFLIER_AUTH_TOKEN:-veriflier_1_auth_token}")|g" \
 		-e 's|"API_PORT"       : 0|"API_PORT"       : 8090|g' \
-		-e "s|\"WPCOM_NOTIFY_ENABLE\"          : true|\"WPCOM_NOTIFY_ENABLE\"          : ${WPCOM_NOTIFY_ENABLE:-false}|g" \
+		-e "s|\"WPCOM_NOTIFY_ENABLE\"          : true|\"WPCOM_NOTIFY_ENABLE\"          : ${wpcom_notify_enable}|g" \
 		-e "s|\"WPCOM_NOTIFY_MODE\"            : \"legacy\"|\"WPCOM_NOTIFY_MODE\"            : \"$(sed_escape "${WPCOM_NOTIFY_MODE:-legacy}")\"|g" \
 		-e "s|\"EMAIL_TRANSPORT\"       : \"stub\"|\"EMAIL_TRANSPORT\"       : \"$(sed_escape "${EMAIL_TRANSPORT:-smtp}")\"|g" \
 		-e "s|\"EMAIL_FROM\"            : \"jetmon@noreply.invalid\"|\"EMAIL_FROM\"            : \"$(sed_escape "${EMAIL_FROM:-jetmon@noreply.invalid}")\"|g" \
@@ -45,17 +66,71 @@ render_config() {
 		-e "s|\"SMTP_PORT\"             : 0|\"SMTP_PORT\"             : ${SMTP_PORT:-1025}|g" \
 		-e "s|\"SMTP_USERNAME\"         : \"\"|\"SMTP_USERNAME\"         : \"$(sed_escape "${SMTP_USERNAME:-}")\"|g" \
 		-e "s|\"SMTP_PASSWORD\"         : \"\"|\"SMTP_PASSWORD\"         : \"$(sed_escape "${SMTP_PASSWORD:-}")\"|g" \
-		-e "s|\"SMTP_USE_TLS\"          : false|\"SMTP_USE_TLS\"          : ${SMTP_USE_TLS:-false}|g" \
+		-e "s|\"SMTP_USE_TLS\"          : false|\"SMTP_USE_TLS\"          : ${smtp_use_tls}|g" \
 		config/config-sample.json > "${target}"
 }
 
-config_target() {
-	if [ -w config/ ]; then
-		printf '%s\n' "config/config.json"
+config_render_target() {
+	printf '%s\n' "${JETMON_CONFIG:-/tmp/jetmon-rendered-config/config.json}"
+}
+
+render_mode() {
+	case "${JETMON_CONFIG_RENDER_MODE:-always}" in
+		always|missing|never)
+			printf '%s\n' "${JETMON_CONFIG_RENDER_MODE:-always}"
+			;;
+		*)
+			echo "invalid JETMON_CONFIG_RENDER_MODE: ${JETMON_CONFIG_RENDER_MODE}" >&2
+			echo "expected one of: always, missing, never" >&2
+			exit 1
+			;;
+	esac
+}
+
+db_source_summary() {
+	if [ -n "${DB_SERVER_MAP_PATH:-}" ]; then
+		printf 'server-map:%s dataset=%s dc=%s address=%s' \
+			"$DB_SERVER_MAP_PATH" "${DB_SERVER_MAP_DATASET:-misc}" \
+			"${DB_SERVER_MAP_DATACENTER:-unset}" "${DB_SERVER_MAP_ADDRESS:-internet}"
+	elif [ -n "${DB_HOST:-}" ]; then
+		printf 'explicit:%s:%s/%s user=%s' \
+			"$DB_HOST" "${DB_PORT:-3306}" "${DB_NAME:-jetmon_db}" "${DB_USER:-root}"
 	else
-		export JETMON_CONFIG=/tmp/config.json
-		printf '%s\n' "${JETMON_CONFIG}"
+		printf 'default:localhost:3306/jetmon_db'
 	fi
+}
+
+configure_runtime_config() {
+	local mode=$1
+	local target
+	case "$mode" in
+		always)
+			target="$(config_render_target)"
+			mkdir -p "$(dirname "$target")"
+			render_config "$target"
+			export JETMON_CONFIG="$target"
+			echo "config: rendered ${target} from Docker environment (render_mode=always)"
+			echo "config: profile=${CONFIG_PROFILE:-default} hostname=${JETMON_HOSTNAME:-runtime-hostname} statsd=${STATSD_ADDR:-disabled} db=$(db_source_summary)"
+			;;
+		missing)
+			target="$(config_render_target)"
+			export JETMON_CONFIG="$target"
+			if [ ! -f "$target" ]; then
+				mkdir -p "$(dirname "$target")"
+				render_config "$target"
+				echo "config: rendered ${target} from Docker environment (render_mode=missing)"
+			else
+				echo "config: using existing ${target} (render_mode=missing; environment changes are ignored until the file is removed)"
+			fi
+			;;
+		never)
+			if [ -n "${JETMON_CONFIG:-}" ]; then
+				echo "config: using ${JETMON_CONFIG} (render_mode=never)"
+			else
+				echo "config: rendering disabled; jetmon2 will use its default config/config.json path"
+			fi
+			;;
+	esac
 }
 
 # /jetmon is owned by the jetmon user from the Dockerfile, but the container
@@ -63,6 +138,7 @@ config_target() {
 # which the Dockerfile chmods 0777 specifically so reload/drain commands work.
 export JETMON_PID_FILE="${JETMON_PID_FILE:-/jetmon/stats/jetmon2.pid}"
 export VERIFLIER_PORT="${VERIFLIER_PORT:-${VERIFLIER_GRPC_PORT:-7803}}"
+config_mode="$(render_mode)"
 
 mkdir -p stats
 for path in stats/sitespersec stats/sitesqueue stats/totals; do
@@ -71,9 +147,7 @@ for path in stats/sitespersec stats/sitesqueue stats/totals; do
 	fi
 done
 
-if [ ! -f config/config.json ]; then
-	render_config "$(config_target)"
-fi
+configure_runtime_config "$config_mode"
 
 ./jetmon2 schema ensure
 

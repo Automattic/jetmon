@@ -16,16 +16,17 @@ The production Veriflier VPS stack has two containers:
 - `statsd`: `graphiteapp/graphite-statsd`, reachable only on the internal
   Docker network for StatsD UDP and exposed through Graphite HTTP for Grafana.
 
-The Compose entrypoint renders `"statsd_addr": "statsd:8125"` into the
-Veriflier JSON config so metrics go to the bundled StatsD container. Set
+The Compose entrypoint renders `"statsd_addr": "statsd:8125"` into generated
+Veriflier JSON config on every container start by default, so Compose
+environment changes take effect after the container is recreated. Set
 `JETMON_HOSTNAME` for stable process identity, and set `STATSD_HOST_PATH` when
 the Graphite path should differ from that identity. Use stable low-cardinality
 values such as `<region>.<vantage>` or another Grafana-approved Veriflier
 grouping; do not use container IDs, release SHAs, ports, or random suffixes. If
 `STATSD_HOST_PATH` is empty, metrics fall back to the Veriflier hostname. The
-Go Veriflier reads StatsD settings from its JSON config, not directly from the
-environment. The StatsD UDP port is not published on the host. Graphite HTTP is
-published on
+Go Veriflier reads StatsD settings from generated JSON config, not directly
+from the environment. The StatsD UDP port is not published on the host.
+Graphite HTTP is published on
 `GRAPHITE_BIND_ADDR:GRAPHITE_HOST_PORT`; set `GRAPHITE_BIND_ADDR` to a
 private/VPN/firewalled address that central Grafana can reach.
 

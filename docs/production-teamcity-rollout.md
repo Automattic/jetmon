@@ -293,9 +293,11 @@ Deliverer, and Veriflier all support `STATSD_ADDR` in their loaded config:
 Production roles should also set `HOSTNAME` in config to the stable process
 identity and `STATSD_HOST_PATH` to the v1-compatible metric identity. The
 Docker entrypoint accepts `JETMON_HOSTNAME`, `STATSD_ADDR`, and
-`STATSD_HOST_PATH` as template inputs when it renders `config/config.json` on
-first boot. After that, Jetmon reads the JSON config rather than reading those
-StatsD values directly from the environment.
+`STATSD_HOST_PATH` as template inputs when it renders generated JSON config.
+The default Docker render mode is `always`, so docker-deploy / Compose
+environment changes take effect after the container is recreated. Jetmon still
+reads the generated JSON rather than reading those values directly from the
+environment.
 
 The recommended Monitor `STATSD_HOST_PATH` format is `<datacenter>.<node>`,
 matching v1's hostname transform. v1 took the first two labels of the
@@ -319,9 +321,9 @@ Set `STATSD_HOST_PATH` to the transformed v1-compatible value, not the raw
 FQDN, unless dashboard series migration is intentional. Leaving it unset falls
 back to `HOSTNAME`, then the runtime hostname, which is acceptable for local
 Docker runs but may become a container ID or service name under docker-deploy.
-`JETMON_HOSTNAME` is a Docker render input. Once `config/config.json` exists,
-the running process uses the rendered `HOSTNAME` value from JSON and does not
-let the environment override it.
+`JETMON_HOSTNAME` is a Docker render input. At process start, the running
+binary uses the rendered `HOSTNAME` value from JSON and does not let the
+environment override it.
 
 Keep these values stable and low-cardinality. Do not include container IDs,
 release SHAs, process IDs, ports, or random suffixes. For Verifliers, use a
