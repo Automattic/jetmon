@@ -24,6 +24,7 @@ including the Veriflier discovery trust decision in
 | [`getting-started.md`](getting-started.md) | Local Docker setup, build/test commands, API CLI smoke runs, fixture failure simulation, and tenant import basics. |
 | [`operations-guide.md`](operations-guide.md) | Production configuration, host setup, rollout modes, delivery workers, metrics, dashboard checks, and debugging. |
 | [`rollout-quick-reference.md`](rollout-quick-reference.md) | One-page operator checklist for the v1-to-v2 rollout, linked back to the full migration runbook. |
+| [`rollout-canaries.example.json`](rollout-canaries.example.json) | Template for operator-supplied synthetic canaries used by API rollout preflight and smoke gates. |
 | [`rollout-vm-lab.md`](rollout-vm-lab.md) | KVM/libvirt lab harness for rehearsing rollout flows with DB, v1, and fresh v2 VMs plus snapshots. |
 | [`scale-resilience-lab.md`](scale-resilience-lab.md) | Internal-only Docker lab for dynamic bucket ownership, Monitor failure takeover, Veriflier telemetry, and DB disruption recovery. |
 | [`v2-soak-lab.md`](v2-soak-lab.md) | Internal-only Docker soak for sustained normal v2 operation with Monitors, Verifliers, fixture sites, and no outbound side effects. |

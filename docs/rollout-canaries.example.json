@@ -1,0 +1,34 @@
+{
+  "canaries": [
+    {
+      "name": "known-up-head-legacy",
+      "url": "https://replace-with-approved-canary.invalid/health",
+      "mode": "head-legacy",
+      "expect_success": true,
+      "expect_http_code": 200
+    },
+    {
+      "name": "controlled-down-get-simple",
+      "url": "https://replace-with-approved-canary.invalid/down",
+      "method": "GET",
+      "profile": "simple_http",
+      "expect_success": false,
+      "expect_http_code": 503
+    },
+    {
+      "name": "waf-blocked-get-simple",
+      "url": "https://replace-with-approved-canary.invalid/blocked",
+      "mode": "get-simple",
+      "expect_success": false,
+      "expect_http_code": 403
+    },
+    {
+      "name": "keyword-get-full",
+      "url": "https://replace-with-approved-canary.invalid/keyword",
+      "mode": "get-full",
+      "keyword": "expected controlled text",
+      "expect_success": true,
+      "expect_http_code": 200
+    }
+  ]
+}

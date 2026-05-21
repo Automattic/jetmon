@@ -45,7 +45,8 @@ The lab script:
 1. Starts the Docker environment with the rollout-lab override.
 2. Creates an admin API key inside the isolated database.
 3. Seeds fixture-backed sites in bucket `0` with HEAD/legacy policy.
-4. Runs rollout capabilities, preflight, and read-only HEAD/legacy smoke.
+4. Generates a fixture canary file and passes it through rollout preflight and
+   read-only HEAD/legacy smoke.
 5. Plans and executes seed, final reconcile, and bucket activation.
 6. Waits for the Monitor to check every seeded site.
 7. Verifies bucket coverage, activity, and projection drift gates.
@@ -58,6 +59,9 @@ The lab script:
 Outputs are written under `logs/rollout-docker-lab/`. The site fixture JSON is
 staged under `stats/rollout-docker-lab/` so the Monitor container can read it
 through the existing `/jetmon/stats` mount without adding a runtime log mount.
+The generated canary file is staged in the same directory and covers a known-up
+HEAD/legacy check, a controlled GET/simple_http 503, and a GET/full keyword
+check against the internal fixture.
 
 ## Environment Overrides
 

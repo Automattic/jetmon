@@ -128,6 +128,8 @@ The API-driven rollout flow is:
 The preferred operator command is the guided API wrapper:
 
 ```bash
+cp docs/rollout-canaries.example.json rollout-canaries.json
+# Edit rollout-canaries.json to use approved controlled canaries or uptime-bench fixtures.
 ./jetmon2 api rollout guided \
   --bucket-min=0 \
   --bucket-max=99 \
