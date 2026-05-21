@@ -1,5 +1,6 @@
 {
 	"DEBUG"             : false,
+	"CONFIG_PROFILE"    : "default",
 	"HOSTNAME"          : "",
 	"STATSD_HOST_PATH"  : "",
 	"NUM_WORKERS"       : 60,
@@ -20,6 +21,7 @@
 	"SQL_UPDATE_BATCH"      : 1,
 	"DB_CONFIG_UPDATES_MIN" : 10,
 	"PEER_OFFLINE_LIMIT"    : 3,
+	"SCHEMA_MANAGEMENT_MODE": "",
 	"VERIFLIER_DISCOVERY_MODE" : "static",
 
 	"NUM_OF_CHECKS"           : 3,

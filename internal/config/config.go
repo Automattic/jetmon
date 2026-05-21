@@ -37,6 +37,16 @@ const (
 )
 
 const (
+	ConfigProfileDefault    = "default"
+	ConfigProfileProduction = "production"
+)
+
+const (
+	SchemaManagementModeMigrate  = "migrate"
+	SchemaManagementModeValidate = "validate"
+)
+
+const (
 	WPCOMNotifyModeLegacy = "legacy"
 	WPCOMNotifyModeModern = "modern"
 
@@ -58,6 +68,12 @@ func (v VerifierConfig) TransportPort() string {
 // Config holds all runtime configuration for Jetmon 2.
 type Config struct {
 	Debug bool `json:"DEBUG"`
+
+	// ConfigProfile applies a small named set of posture defaults before
+	// explicit config values are decoded. Profiles are intentionally narrow:
+	// explicit keys always win, and profiles must not hide broad behavior
+	// changes from rollout operators.
+	ConfigProfile string `json:"CONFIG_PROFILE"`
 
 	// Hostname is the stable Jetmon identity used for host ownership, process
 	// health, and outbound notification identity.
@@ -107,6 +123,12 @@ type Config struct {
 	SQLUpdateBatch     int `json:"SQL_UPDATE_BATCH"`
 	DBConfigUpdatesMin int `json:"DB_CONFIG_UPDATES_MIN"`
 	PeerOfflineLimit   int `json:"PEER_OFFLINE_LIMIT"`
+
+	// SchemaManagementMode controls what startup wrappers should do before the
+	// service starts. "migrate" preserves local/dev convenience by applying
+	// pending migrations. "validate" refuses to start unless the expected
+	// schema is already present and never writes schema changes.
+	SchemaManagementMode string `json:"SCHEMA_MANAGEMENT_MODE"`
 
 	// VeriflierDiscoveryMode controls whether the monitor reads Veriflier
 	// endpoints from the trusted DB registry. "static" preserves the VERIFIERS
@@ -306,9 +328,13 @@ func reload() error {
 	}
 
 	cfg := defaults()
+	if err := applyConfigProfile(raw, cfg); err != nil {
+		return err
+	}
 	if err := json.Unmarshal(raw, cfg); err != nil {
 		return fmt.Errorf("parse config: %w", err)
 	}
+	applyProfileEmptyValues(raw, cfg)
 	cfg.Warnings = collectConfigWarnings(raw)
 	applyDeprecatedAliases(raw, cfg)
 
@@ -371,6 +397,7 @@ func defaults() *Config {
 		SQLUpdateBatch:                       1,
 		DBConfigUpdatesMin:                   10,
 		PeerOfflineLimit:                     3,
+		SchemaManagementMode:                 SchemaManagementModeMigrate,
 		VeriflierDiscoveryMode:               VeriflierDiscoveryModeStatic,
 		NumOfChecks:                          3,
 		TimeBetweenChecksSec:                 30,
@@ -410,6 +437,58 @@ func defaults() *Config {
 		RetentionAuditLogDays:                0,
 		RetentionBackgroundEnable:            true,
 		RetentionRunHourUTC:                  4,
+	}
+}
+
+func applyConfigProfile(raw []byte, cfg *Config) error {
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &keys); err != nil {
+		return fmt.Errorf("parse config: %w", err)
+	}
+	rawProfile := keys["CONFIG_PROFILE"]
+	if len(rawProfile) == 0 {
+		cfg.ConfigProfile = ConfigProfileDefault
+		return nil
+	}
+	var profile string
+	if err := json.Unmarshal(rawProfile, &profile); err != nil {
+		return fmt.Errorf("CONFIG_PROFILE must be a string")
+	}
+	profile = normalizeConfigProfile(profile)
+	switch profile {
+	case ConfigProfileDefault:
+		cfg.ConfigProfile = ConfigProfileDefault
+	case ConfigProfileProduction:
+		cfg.ConfigProfile = ConfigProfileProduction
+		cfg.SchemaManagementMode = SchemaManagementModeValidate
+		cfg.CheckTargetSafetyMode = CheckTargetSafetyModePublicOnly
+	default:
+		return fmt.Errorf("invalid config: CONFIG_PROFILE must be one of: default, production")
+	}
+	return nil
+}
+
+func applyProfileEmptyValues(raw []byte, cfg *Config) {
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &keys); err != nil {
+		return
+	}
+	rawMode := keys["SCHEMA_MANAGEMENT_MODE"]
+	if len(rawMode) == 0 {
+		return
+	}
+	var mode string
+	if err := json.Unmarshal(rawMode, &mode); err != nil {
+		return
+	}
+	if strings.TrimSpace(mode) != "" {
+		return
+	}
+	switch normalizeConfigProfile(cfg.ConfigProfile) {
+	case ConfigProfileProduction:
+		cfg.SchemaManagementMode = SchemaManagementModeValidate
+	default:
+		cfg.SchemaManagementMode = SchemaManagementModeMigrate
 	}
 }
 
@@ -618,6 +697,12 @@ func validate(cfg *Config) error {
 	if cfg.AuthToken == "" {
 		return fmt.Errorf("AUTH_TOKEN is required")
 	}
+	cfg.ConfigProfile = normalizeConfigProfile(cfg.ConfigProfile)
+	switch cfg.ConfigProfile {
+	case ConfigProfileDefault, ConfigProfileProduction:
+	default:
+		return fmt.Errorf("CONFIG_PROFILE must be one of: default, production")
+	}
 	cfg.Hostname = strings.TrimSpace(cfg.Hostname)
 	cfg.StatsDHostPath = strings.TrimSpace(cfg.StatsDHostPath)
 	if err := validateStatsDHostPath(cfg.StatsDHostPath); err != nil {
@@ -689,6 +774,12 @@ func validate(cfg *Config) error {
 	cfg.DefaultDetectionProfile = profile
 	if cfg.MinTimeBetweenRoundsSec < 0 {
 		return fmt.Errorf("MIN_TIME_BETWEEN_ROUNDS_SEC must be >= 0")
+	}
+	cfg.SchemaManagementMode = normalizeSchemaManagementMode(cfg.SchemaManagementMode)
+	switch cfg.SchemaManagementMode {
+	case SchemaManagementModeMigrate, SchemaManagementModeValidate:
+	default:
+		return fmt.Errorf("SCHEMA_MANAGEMENT_MODE must be one of: migrate, validate")
 	}
 	applyWPCOMNotifyDefaults(cfg)
 	switch cfg.WPCOMNotifyMode {
@@ -907,6 +998,22 @@ func normalizeRolloutMode(mode string) string {
 	mode = strings.ToLower(strings.TrimSpace(mode))
 	if mode == "" {
 		return RolloutModeActive
+	}
+	return mode
+}
+
+func normalizeConfigProfile(profile string) string {
+	profile = strings.ToLower(strings.TrimSpace(profile))
+	if profile == "" {
+		return ConfigProfileDefault
+	}
+	return profile
+}
+
+func normalizeSchemaManagementMode(mode string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" {
+		return SchemaManagementModeMigrate
 	}
 	return mode
 }

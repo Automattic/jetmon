@@ -1,6 +1,15 @@
 DEBUG
 Set to true to enable more verbose log messages. Default: false.
 
+CONFIG_PROFILE
+Optional named posture defaults. Use `default` for local/dev behavior. Use
+`production` for production Monitor containers; it sets
+SCHEMA_MANAGEMENT_MODE=validate and CHECK_TARGET_SAFETY_MODE=public_only before
+explicit config values are decoded. Explicit keys in config/config.json always
+win over profile defaults, so profiles are a small safety posture aid rather
+than hidden deployment logic. An empty SCHEMA_MANAGEMENT_MODE uses the selected
+profile's default. Default: default.
+
 HOSTNAME
 Stable Jetmon process identity. This value is used for dynamic host ownership,
 process health rows, outbound delivery identity, and the StatsD fallback host
@@ -70,6 +79,16 @@ sidecar should use the same approximate cadence, with its own jitter, to keep
 the file fresh. When DB_SERVER_MAP_PATH is unset, DB_HOST, DB_PORT, DB_USER,
 DB_PASSWORD, and DB_NAME are read at startup and this cadence has no effect on
 database connection details. Default: 10.
+
+SCHEMA_MANAGEMENT_MODE
+Controls what startup wrappers do before starting the Monitor service. `migrate`
+applies pending embedded migrations, then validates the schema. This preserves
+local/dev Docker convenience. `validate` never writes schema changes and fails
+startup unless the database already has every migration expected by the binary.
+Use `validate` in production after Systems has applied schema changes through
+the internal database-change process. Default: migrate. The `production`
+CONFIG_PROFILE changes the default to validate when this key is omitted or set
+to an empty string.
 
 DB_SERVER_MAP_PATH
 Optional path to a synced WPCOM db-servers.php file. When set, Jetmon v2 reads

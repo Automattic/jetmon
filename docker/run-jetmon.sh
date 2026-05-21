@@ -9,10 +9,21 @@ sed_escape() {
 
 render_config() {
 	local target=$1
+	local config_profile="${CONFIG_PROFILE:-default}"
+	local schema_management_mode="${SCHEMA_MANAGEMENT_MODE:-}"
+	if [ -z "$schema_management_mode" ]; then
+		if [ "$config_profile" = "production" ]; then
+			schema_management_mode="validate"
+		else
+			schema_management_mode="migrate"
+		fi
+	fi
 	sed \
 		-e "s|<AUTH_TOKEN>|$(sed_escape "${WPCOM_AUTH_TOKEN:-change_me}")|g" \
+		-e "s|\"CONFIG_PROFILE\"    : \"default\"|\"CONFIG_PROFILE\"    : \"$(sed_escape "$config_profile")\"|g" \
 		-e "s|\"HOSTNAME\"          : \"\"|\"HOSTNAME\"          : \"$(sed_escape "${JETMON_HOSTNAME:-}")\"|g" \
 		-e "s|\"STATSD_HOST_PATH\"  : \"\"|\"STATSD_HOST_PATH\"  : \"$(sed_escape "${STATSD_HOST_PATH:-}")\"|g" \
+		-e "s|\"SCHEMA_MANAGEMENT_MODE\": \"\"|\"SCHEMA_MANAGEMENT_MODE\": \"$(sed_escape "$schema_management_mode")\"|g" \
 		-e "s|<VERIFLIER_PORT>|$(sed_escape "${VERIFLIER_PORT}")|g" \
 		-e "s|<VERIFLIER_AUTH_TOKEN>|$(sed_escape "${VERIFLIER_AUTH_TOKEN:-veriflier_1_auth_token}")|g" \
 		-e 's|"API_PORT"       : 0|"API_PORT"       : 8090|g' \
@@ -54,10 +65,15 @@ if [ ! -f config/config.json ]; then
 	render_config "$(config_target)"
 fi
 
-if [ "${JETMON_AUTO_MIGRATE:-true}" = "true" ]; then
-	./jetmon2 migrate
+if [ -n "${JETMON_AUTO_MIGRATE+x}" ]; then
+	if [ "${JETMON_AUTO_MIGRATE}" = "true" ]; then
+		./jetmon2 migrate
+	else
+		echo "JETMON_AUTO_MIGRATE=false; validating schema without applying migrations"
+		./jetmon2 schema validate
+	fi
 else
-	echo "JETMON_AUTO_MIGRATE=false; skipping automatic schema migration"
+	./jetmon2 schema ensure
 fi
 
 exec ./jetmon2

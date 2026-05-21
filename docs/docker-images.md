@@ -135,7 +135,9 @@ Required env vars:
 | `CHECK_TARGET_SAFETY_MODE` | Defaults to `public_only`, which keeps Monitor SSRF protections enabled. The only alternate value, `allow_private_for_tests`, is for isolated uptime-bench capacity labs with disposable synthetic rows and is rejected unless `WPCOM_NOTIFY_ENABLE=false`. Never set it for production rollout, customer data, or real alert paths. |
 | `EMAIL_TRANSPORT` | `stub` for dev; `smtp` plus `SMTP_*` vars for real delivery. |
 | `STATSD_ADDR` | Optional override for the UDP StatsD endpoint. Local Compose and Veriflier production Compose set this to `statsd:8125`. For TeamCity Monitor production, set `STATSD_ADDR=host.docker.internal:8125` and add Docker's `host.docker.internal:host-gateway` mapping, or set it explicitly empty to disable StatsD. |
-| `JETMON_AUTO_MIGRATE` | Defaults to `true` for local/dev convenience. Set to `false` for production-style Monitor containers after schema has been applied explicitly with `jetmon2 migrate`. Migration attempts are guarded by a database advisory lock, but production rollout should still treat schema application as a deliberate pre-start step. |
+| `CONFIG_PROFILE` | Optional rendered config profile. Use `production` for production Monitor containers so startup defaults to schema validation instead of migration. Explicit config values still override profile defaults. |
+| `SCHEMA_MANAGEMENT_MODE` | `migrate` applies pending migrations before service start; `validate` refuses startup unless the expected schema is already present and never applies DDL. Use `validate` in production after Systems has applied schema changes. |
+| `JETMON_AUTO_MIGRATE` | Legacy entrypoint override. If set to `true`, runs `jetmon2 migrate`; if set to `false`, runs `jetmon2 schema validate`. Prefer `CONFIG_PROFILE=production` or `SCHEMA_MANAGEMENT_MODE=validate` for new production roles. |
 | `HOSTNAME` / `JETMON_HOSTNAME` | Stable process identity. `HOSTNAME` is the rendered config key; `JETMON_HOSTNAME` is the Docker env input used by the entrypoint when rendering config. For Monitor production, use the real logical host name, for example `jetmon-prod-1.dfw1.example.com`; do not include container IDs, release SHAs, ports, or random suffixes. |
 | `STATSD_HOST_PATH` | Explicit StatsD metric host path. For Monitor production, use the v1-compatible `<datacenter>.<node>` format derived by reversing the first two labels of the v1 hostname, for example `jetmon-prod-1.dfw1.example.com` -> `dfw1.jetmon-prod-1`. Leave empty only for local/dev fallback or an intentional dashboard series migration. |
 
@@ -240,7 +242,9 @@ docker run --rm \
 ```
 
 The entrypoint renders a config first, then `validate-config` checks shape,
-database connectivity, email transport mode, and Veriflier reachability.
+database connectivity, email transport mode, and Veriflier reachability. For a
+stronger dependency smoke test, run `./jetmon2 schema validate` and
+`./jetmon2 doctor --require-statsd` with the same environment.
 
 ## Reload And Drain
 

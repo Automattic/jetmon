@@ -263,12 +263,13 @@ to v1" and keep the transcript with the incident record.
    server taking over from an existing v1 server. Add `--systemd-unit=<path>`
    when the staged service unit is not `/etc/systemd/system/jetmon2.service`.
 
-4. Validate config, migrations, static plan match, pinned safety, and the
-   staged systemd service:
+4. Validate config, schema, dependencies, static plan match, pinned safety, and
+   the staged service:
 
    ```bash
    ./jetmon2 validate-config
-   ./jetmon2 migrate
+   ./jetmon2 schema validate
+   ./jetmon2 doctor --require-statsd
    ./jetmon2 rollout host-preflight \
      --file=<ranges.csv> \
      --host=<v1-hostname> \

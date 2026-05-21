@@ -193,8 +193,11 @@ Monitor and config-sync.
    mounts for the legacy `stats/` directory.
 8. Drain the existing Monitor.
 9. Pull and start/recreate the new Monitor service with the sidecar.
-10. Run `./jetmon2 migrate`, `./jetmon2 status`, and the rollout gates from the
-   existing migration runbooks.
+10. Run `./jetmon2 schema validate`, `./jetmon2 doctor --require-statsd`,
+    `./jetmon2 status`, and the rollout gates from the existing migration
+    runbooks. Run
+    `./jetmon2 migrate` only from the explicit schema-change step approved by
+    Systems.
 11. Move to the next host only after the current host is healthy.
 
 The rolling update path is still useful for image/config changes, but database
@@ -205,9 +208,13 @@ after the sidecar syncs the new file.
 
 We know enough to create a limited TeamCity/docker-deploy smoke rollout, but it
 must not run the normal Monitor entrypoint against production-like services.
-The default `docker/Dockerfile_jetmon` entrypoint runs `./jetmon2 migrate` and
-then starts `./jetmon2`; that path writes migrations, bucket ownership,
-process-health rows, runtime/check-history/event state, and can perform checks.
+The default `docker/Dockerfile_jetmon` entrypoint runs `./jetmon2 schema
+ensure` and then starts `./jetmon2`. In local/dev configs that defaults to
+applying migrations. In production configs, set `CONFIG_PROFILE=production` or
+`SCHEMA_MANAGEMENT_MODE=validate` so startup validates the already-approved
+schema without applying DDL. Starting the service can still write bucket
+ownership, process-health rows, runtime/check-history/event state, and can
+perform checks.
 
 For a safe first docker-deploy test, use a dedicated test role or test service
 name that overrides the entrypoint/command and only runs read-only checks:
@@ -215,13 +222,18 @@ name that overrides the entrypoint/command and only runs read-only checks:
 ```sh
 ./jetmon2 version
 ./jetmon2 validate-config
+./jetmon2 schema validate
+./jetmon2 doctor --require-statsd
 ```
 
 `validate-config` parses config, connects to MySQL, and probes configured
 Veriflier status endpoints. It does not run migrations, start the scheduler,
 claim buckets, write process health, enqueue deliveries, or send WPCOM
-notifications. Use a read-only database user for this test so accidental writes
-fail closed.
+notifications. `schema validate` confirms the database migration ledger matches
+the binary without applying DDL. `doctor` adds dependency smoke checks for the
+schema ledger, DB server-map or env mode, StatsD UDP emission, WPCOM config and
+credentials, and Veriflier readiness. Use a read-only database user for this
+test so accidental writes fail closed.
 
 Recommended safe-test config:
 
@@ -558,16 +570,22 @@ steps should mirror the Frontity build:
    `JETMON_HOSTNAME` to the stable process identity for that host, and set
    `STATSD_HOST_PATH` to the v1-compatible metric path.
 6. Apply Jetmon schema migrations once before starting the Monitor containers.
-   Production-style Monitor containers should set `JETMON_AUTO_MIGRATE=false`
-   so schema changes remain an explicit rollout step. The binary also serializes
-   accidental concurrent migration attempts with a database advisory lock.
+   Production-style Monitor containers should set `CONFIG_PROFILE=production`
+   or `SCHEMA_MANAGEMENT_MODE=validate` so schema changes remain an explicit
+   rollout step. The legacy `JETMON_AUTO_MIGRATE=false` environment switch is
+   still accepted by the entrypoint, but now runs `./jetmon2 schema validate`
+   rather than silently skipping schema checks. The binary also serializes
+   accidental concurrent migration attempts with a database advisory lock. If
+   Systems applies SQL manually, include the corresponding
+   `jetpack_monitor_schema_migrations` rows in the approved change package.
 7. Call docker-deploy, for example:
    `deploy-to-servers-by-role.sh docker-jetmon-monitor jetmon-monitor/<git-sha>`.
 8. Let the docker-deploy role roll hosts one at a time:
    - provide `config-sync.env` to the sidecar as a secret mount or equivalent
      secure injection readable by the sidecar's `jetmon` user;
-   - set `JETMON_AUTO_MIGRATE=false` for production Monitor containers after
-     the explicit schema migration step has completed;
+   - set `CONFIG_PROFILE=production` or `SCHEMA_MANAGEMENT_MODE=validate` for
+     production Monitor containers after the explicit schema migration step has
+     completed;
    - set `STATSD_ADDR` for the Monitor and any co-located Deliverer process to
      `host.docker.internal:8125`;
    - set `HOSTNAME` or `JETMON_HOSTNAME` for the Monitor and any co-located
@@ -580,7 +598,8 @@ steps should mirror the Frontity build:
      `DB_SERVER_MAP_ADDRESS=internet` unless Systems confirms internal DB
      hostnames are reachable from inside the container;
    - drain the existing Monitor before replacement;
-   - run `./jetmon2 migrate`, `./jetmon2 status`, and rollout validation gates;
+   - run `./jetmon2 schema validate`, `./jetmon2 doctor --require-statsd`,
+     `./jetmon2 status`, and rollout validation gates;
    - continue only if the host is healthy.
 
 Use TeamCity secure/hidden parameters for:

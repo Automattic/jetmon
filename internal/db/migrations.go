@@ -18,6 +18,18 @@ type migration struct {
 	sql string
 }
 
+// MigrationStatus summarizes which embedded migrations the connected database
+// reports as applied. It is intentionally read-only so production containers
+// can validate an externally applied schema without attempting any DDL.
+type MigrationStatus struct {
+	ExpectedCount int
+	ExpectedMaxID int
+	AppliedCount  int
+	CurrentMaxID  int
+	PendingIDs    []int
+	UnknownIDs    []int
+}
+
 var migrations = []migration{
 	{1, `CREATE TABLE IF NOT EXISTS jetpack_monitor_schema_migrations (
 		id           INT UNSIGNED NOT NULL PRIMARY KEY,
@@ -850,6 +862,82 @@ func Migrate() error {
 		}
 	}
 	return nil
+}
+
+// ExpectedSchemaMigration returns the highest embedded migration ID in this
+// binary. Migration IDs are append-only and ordered in the migrations slice.
+func ExpectedSchemaMigration() int {
+	if len(migrations) == 0 {
+		return 0
+	}
+	return migrations[len(migrations)-1].id
+}
+
+// SchemaMigrationStatus reads the migration ledger without attempting any DDL.
+func SchemaMigrationStatus(ctx context.Context) (MigrationStatus, error) {
+	status := MigrationStatus{
+		ExpectedCount: len(migrations),
+		ExpectedMaxID: ExpectedSchemaMigration(),
+	}
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return status, fmt.Errorf("schema validation connection: %w", err)
+	}
+	defer conn.Close()
+
+	rows, err := conn.QueryContext(ctx, `SELECT id FROM jetpack_monitor_schema_migrations ORDER BY id`)
+	if err != nil {
+		return status, fmt.Errorf("read schema migrations: %w", err)
+	}
+	defer rows.Close()
+
+	expected := make(map[int]struct{}, len(migrations))
+	for _, migration := range migrations {
+		expected[migration.id] = struct{}{}
+	}
+	applied := make(map[int]struct{}, len(migrations))
+	for rows.Next() {
+		var id int
+		if err := rows.Scan(&id); err != nil {
+			return status, fmt.Errorf("scan schema migration: %w", err)
+		}
+		status.AppliedCount++
+		if id > status.CurrentMaxID {
+			status.CurrentMaxID = id
+		}
+		if _, ok := expected[id]; ok {
+			applied[id] = struct{}{}
+			continue
+		}
+		status.UnknownIDs = append(status.UnknownIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		return status, fmt.Errorf("read schema migrations: %w", err)
+	}
+
+	for _, migration := range migrations {
+		if _, ok := applied[migration.id]; !ok {
+			status.PendingIDs = append(status.PendingIDs, migration.id)
+		}
+	}
+	return status, nil
+}
+
+// ValidateSchema fails unless the connected database has exactly the migration
+// ledger expected by this binary. It never creates the migration table or runs
+// pending DDL.
+func ValidateSchema(ctx context.Context) (MigrationStatus, error) {
+	status, err := SchemaMigrationStatus(ctx)
+	if err != nil {
+		return status, err
+	}
+	if len(status.PendingIDs) > 0 {
+		return status, fmt.Errorf("schema validation failed: current migration %d, expected %d, pending migrations %v", status.CurrentMaxID, status.ExpectedMaxID, status.PendingIDs)
+	}
+	if len(status.UnknownIDs) > 0 {
+		return status, fmt.Errorf("schema validation failed: database has migration ids not known to this binary: %v", status.UnknownIDs)
+	}
+	return status, nil
 }
 
 func acquireMigrationLock(ctx context.Context, conn *sql.Conn) error {

@@ -382,6 +382,12 @@ func TestValidateAppliesCheckHistoryAndAuditDefaults(t *testing.T) {
 	if err := validate(cfg); err != nil {
 		t.Fatalf("validate() error = %v", err)
 	}
+	if cfg.ConfigProfile != ConfigProfileDefault {
+		t.Errorf("ConfigProfile = %q, want default", cfg.ConfigProfile)
+	}
+	if cfg.SchemaManagementMode != SchemaManagementModeMigrate {
+		t.Errorf("SchemaManagementMode = %q, want migrate", cfg.SchemaManagementMode)
+	}
 	if cfg.CheckTargetSafetyMode != CheckTargetSafetyModePublicOnly {
 		t.Errorf("CheckTargetSafetyMode = %q, want public_only", cfg.CheckTargetSafetyMode)
 	}
@@ -401,6 +407,86 @@ func TestValidateRejectsBadCheckHistoryMode(t *testing.T) {
 	cfg.CheckHistoryModeDefault = "bogus"
 	if err := validate(cfg); err == nil {
 		t.Fatal("validate() accepted invalid CHECK_HISTORY_MODE_DEFAULT")
+	}
+}
+
+func TestValidateRejectsBadSchemaManagementMode(t *testing.T) {
+	cfg := baseValidConfig()
+	cfg.SchemaManagementMode = "auto"
+	if err := validate(cfg); err == nil {
+		t.Fatal("validate() accepted invalid SCHEMA_MANAGEMENT_MODE")
+	}
+}
+
+func TestLoadProductionProfileAppliesNarrowDefaults(t *testing.T) {
+	saveConfigState(t)
+
+	p := writeConfigFile(t, `{
+		"CONFIG_PROFILE": "production",
+		"AUTH_TOKEN": "token",
+		"NUM_WORKERS": 7,
+		"BUCKET_TOTAL": 100,
+		"BUCKET_TARGET": 50,
+		"NET_COMMS_TIMEOUT": 10,
+		"LOG_FORMAT": "text"
+	}`)
+
+	if err := Load(p); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	cfg := Get()
+	if cfg.ConfigProfile != ConfigProfileProduction {
+		t.Fatalf("ConfigProfile = %q, want production", cfg.ConfigProfile)
+	}
+	if cfg.SchemaManagementMode != SchemaManagementModeValidate {
+		t.Fatalf("SchemaManagementMode = %q, want validate", cfg.SchemaManagementMode)
+	}
+	if cfg.CheckTargetSafetyMode != CheckTargetSafetyModePublicOnly {
+		t.Fatalf("CheckTargetSafetyMode = %q, want public_only", cfg.CheckTargetSafetyMode)
+	}
+}
+
+func TestLoadProductionProfileAllowsExplicitSchemaOverride(t *testing.T) {
+	saveConfigState(t)
+
+	p := writeConfigFile(t, `{
+		"CONFIG_PROFILE": "production",
+		"SCHEMA_MANAGEMENT_MODE": "migrate",
+		"AUTH_TOKEN": "token",
+		"NUM_WORKERS": 7,
+		"BUCKET_TOTAL": 100,
+		"BUCKET_TARGET": 50,
+		"NET_COMMS_TIMEOUT": 10,
+		"LOG_FORMAT": "text"
+	}`)
+
+	if err := Load(p); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := Get().SchemaManagementMode; got != SchemaManagementModeMigrate {
+		t.Fatalf("SchemaManagementMode = %q, want migrate", got)
+	}
+}
+
+func TestLoadProductionProfileUsesSchemaDefaultWhenSampleValueEmpty(t *testing.T) {
+	saveConfigState(t)
+
+	p := writeConfigFile(t, `{
+		"CONFIG_PROFILE": "production",
+		"SCHEMA_MANAGEMENT_MODE": "",
+		"AUTH_TOKEN": "token",
+		"NUM_WORKERS": 7,
+		"BUCKET_TOTAL": 100,
+		"BUCKET_TARGET": 50,
+		"NET_COMMS_TIMEOUT": 10,
+		"LOG_FORMAT": "text"
+	}`)
+
+	if err := Load(p); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := Get().SchemaManagementMode; got != SchemaManagementModeValidate {
+		t.Fatalf("SchemaManagementMode = %q, want validate", got)
 	}
 }
 

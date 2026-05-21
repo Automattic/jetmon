@@ -199,9 +199,14 @@ unsafe legacy URL counts before or after API rejection changes.
    cannot support that sidecar shape, install
    `systemd/jetmon-config-sync.service` and
    `systemd/jetmon-config-sync.timer` as the host-side fallback.
-6. Copy or generate `config/config.json`.
+6. Copy or generate `config/config.json`. Production Monitor containers should
+   set `CONFIG_PROFILE=production` or `SCHEMA_MANAGEMENT_MODE=validate` after
+   Systems has applied schema changes through the database-change process.
 7. Set `BUCKET_TARGET` to the desired maximum bucket count for the host.
-8. Run `./jetmon2 migrate`.
+8. Run `./jetmon2 migrate` only as the explicit schema-change step. For normal
+   production startup and redeploys, run `./jetmon2 schema validate` instead.
+   If SQL is applied through an external database-change process, ensure the
+   matching `jetpack_monitor_schema_migrations` rows are included.
 9. Run `systemd-analyze verify /etc/systemd/system/jetmon2.service` after the
    binary exists at the path used by `ExecStart`.
 10. Start the service with
@@ -211,10 +216,16 @@ Runtime logs are collected from stdout/stderr by systemd or the container
 runtime. V2 does not write v1 `jetmon.log` or `status-change.log` files by
 default.
 
-Manual commands such as `migrate`, `validate-config`, and `rollout` need the
-same `DB_*` environment that systemd reads from
+Manual commands such as `migrate`, `schema validate`, `validate-config`,
+`doctor`, and `rollout` need the same `DB_*` environment that systemd reads from
 `/opt/jetmon2/config/jetmon2.env`; systemd's `EnvironmentFile` is not loaded for
 commands run directly from a shell.
+
+Use `./jetmon2 doctor --require-statsd` before production activation to smoke
+test config parsing, DB connectivity, schema freshness, DB server-map or env
+mode, StatsD UDP emission, WPCOM notification config/credentials, and Veriflier
+readiness. The WPCOM check is credential/config validation only; it does not
+send a production notification.
 
 ### Kernel tuning for high-fanout outbound
 

@@ -816,6 +816,63 @@ func TestMigrateFailsWhenMigrationLockUnavailable(t *testing.T) {
 	}
 }
 
+func TestValidateSchemaPassesWhenAllMigrationsApplied(t *testing.T) {
+	mock, cleanup := withMockDB(t)
+	defer cleanup()
+
+	origMigrations := migrations
+	migrations = []migration{
+		{id: 1, sql: "CREATE TABLE jetpack_monitor_schema_migrations"},
+		{id: 2, sql: "ALTER TABLE one"},
+		{id: 3, sql: "ALTER TABLE two"},
+	}
+	defer func() { migrations = origMigrations }()
+
+	mock.ExpectQuery("SELECT id FROM jetpack_monitor_schema_migrations ORDER BY id").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1).AddRow(2).AddRow(3))
+
+	status, err := ValidateSchema(context.Background())
+	if err != nil {
+		t.Fatalf("ValidateSchema error = %v", err)
+	}
+	if status.CurrentMaxID != 3 || status.ExpectedMaxID != 3 || status.AppliedCount != 3 {
+		t.Fatalf("status = %+v, want current=3 expected=3 applied=3", status)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestValidateSchemaReportsPendingAndUnknownMigrations(t *testing.T) {
+	mock, cleanup := withMockDB(t)
+	defer cleanup()
+
+	origMigrations := migrations
+	migrations = []migration{
+		{id: 1, sql: "CREATE TABLE jetpack_monitor_schema_migrations"},
+		{id: 2, sql: "ALTER TABLE one"},
+		{id: 3, sql: "ALTER TABLE two"},
+	}
+	defer func() { migrations = origMigrations }()
+
+	mock.ExpectQuery("SELECT id FROM jetpack_monitor_schema_migrations ORDER BY id").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1).AddRow(99))
+
+	status, err := ValidateSchema(context.Background())
+	if err == nil {
+		t.Fatal("ValidateSchema unexpectedly passed")
+	}
+	if !reflect.DeepEqual(status.PendingIDs, []int{2, 3}) {
+		t.Fatalf("PendingIDs = %v, want [2 3]", status.PendingIDs)
+	}
+	if !reflect.DeepEqual(status.UnknownIDs, []int{99}) {
+		t.Fatalf("UnknownIDs = %v, want [99]", status.UnknownIDs)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestMigrateReleasesMigrationLockAfterError(t *testing.T) {
 	mock, cleanup := withMockDB(t)
 	defer cleanup()

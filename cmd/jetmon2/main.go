@@ -65,6 +65,10 @@ func main() {
 	switch os.Args[1] {
 	case "migrate":
 		cmdMigrate()
+	case "schema":
+		cmdSchema(os.Args[2:])
+	case "doctor":
+		cmdDoctor(os.Args[2:])
 	case "validate-config":
 		cmdValidateConfig()
 	case "status":
@@ -122,7 +126,7 @@ func runServe() {
 	if err := checker.ConfigureResolverServers(cfg.CheckDNSResolvers); err != nil {
 		log.Fatalf("configure check DNS resolvers: %v", err)
 	}
-	log.Printf("jetmon2: starting rollout_mode=%s scheduler=%s bucket_ownership=%s wpcom_notify=%s wpcom_mode=%s", cfg.RolloutMode, schedulerConfigLabel(cfg), bucketOwnershipLabel(cfg), enabledLabel(cfg.WPCOMNotifyEnable), cfg.WPCOMNotifyMode)
+	log.Printf("jetmon2: starting profile=%s schema_management=%s rollout_mode=%s scheduler=%s bucket_ownership=%s wpcom_notify=%s wpcom_mode=%s", cfg.ConfigProfile, cfg.SchemaManagementMode, cfg.RolloutMode, schedulerConfigLabel(cfg), bucketOwnershipLabel(cfg), enabledLabel(cfg.WPCOMNotifyEnable), cfg.WPCOMNotifyMode)
 	logConfigWarnings(cfg)
 	config.Debugf("config: legacy_status_projection=%s", enabledLabel(cfg.LegacyStatusProjectionEnable))
 	config.Debugf("config: default_check_policy=method:%s profile:%s", cfg.DefaultCheckMethod, cfg.DefaultDetectionProfile)
@@ -454,6 +458,8 @@ func cmdValidateConfig() {
 
 	fmt.Printf("INFO legacy_status_projection=%s\n", enabledLabel(cfg.LegacyStatusProjectionEnable))
 	fmt.Printf("INFO bucket_ownership=%s\n", bucketOwnershipLabel(cfg))
+	fmt.Printf("INFO config_profile=%s\n", cfg.ConfigProfile)
+	fmt.Printf("INFO schema_management=%s\n", cfg.SchemaManagementMode)
 	fmt.Printf("INFO rollout_mode=%s\n", cfg.RolloutMode)
 	fmt.Printf("INFO scheduler=%s\n", schedulerConfigLabel(cfg))
 	fmt.Printf("INFO statsd_host_path=%s\n", cfg.StatsDMetricHost(db.Hostname()))
