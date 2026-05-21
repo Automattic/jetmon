@@ -656,6 +656,9 @@ func TestSampleConfigLoads(t *testing.T) {
 	if cfg == nil {
 		t.Fatal("Get() = nil after loading sample config")
 	}
+	if len(cfg.Warnings) != 0 {
+		t.Fatalf("config-sample.json should not emit compatibility warnings: %#v", cfg.Warnings)
+	}
 	if cfg.EmailTransport != "stub" {
 		t.Fatalf("EmailTransport = %q, want stub", cfg.EmailTransport)
 	}
@@ -783,6 +786,27 @@ func TestLoadWarnsWhenStatsDHostPathLooksLikeRawHostname(t *testing.T) {
 	warnings := warningsByKey(Get().Warnings)
 	if warnings["STATSD_HOST_PATH"] == "" {
 		t.Fatalf("missing STATSD_HOST_PATH warning; got %#v", warnings)
+	}
+}
+
+func TestLoadWarnsWhenJSONLogFormatIsSelected(t *testing.T) {
+	saveConfigState(t)
+
+	p := writeConfigFile(t, `{
+		"AUTH_TOKEN": "token",
+		"NUM_WORKERS": 7,
+		"BUCKET_TOTAL": 100,
+		"BUCKET_TARGET": 50,
+		"NET_COMMS_TIMEOUT": 10,
+		"LOG_FORMAT": "json"
+	}`)
+
+	if err := Load(p); err != nil {
+		t.Fatalf("Load() should warn but not fail: %v", err)
+	}
+	warnings := warningsByKey(Get().Warnings)
+	if warnings["LOG_FORMAT"] == "" {
+		t.Fatalf("missing LOG_FORMAT warning; got %#v", warnings)
 	}
 }
 

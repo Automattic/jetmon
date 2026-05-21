@@ -572,11 +572,9 @@ steps should mirror the Frontity build:
 6. Apply Jetmon schema migrations once before starting the Monitor containers.
    Production-style Monitor containers should set `CONFIG_PROFILE=production`
    or `SCHEMA_MANAGEMENT_MODE=validate` so schema changes remain an explicit
-   rollout step. The legacy `JETMON_AUTO_MIGRATE=false` environment switch is
-   still accepted by the entrypoint, but now runs `./jetmon2 schema validate`
-   rather than silently skipping schema checks. The binary also serializes
-   accidental concurrent migration attempts with a database advisory lock. If
-   Systems applies SQL manually, include the corresponding
+   rollout step. The binary also serializes accidental concurrent migration
+   attempts with a database advisory lock. If Systems applies SQL manually,
+   include the corresponding
    `jetpack_monitor_schema_migrations` rows in the approved change package.
 7. Call docker-deploy, for example:
    `deploy-to-servers-by-role.sh docker-jetmon-monitor jetmon-monitor/<git-sha>`.

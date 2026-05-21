@@ -4,7 +4,6 @@
 	"HOSTNAME"          : "",
 	"STATSD_HOST_PATH"  : "",
 	"NUM_WORKERS"       : 60,
-	"NUM_TO_PROCESS"    : 40,
 	"DATASET_SIZE"      : 100,
 	"WORKER_MAX_MEM_MB" : 0,
 
@@ -14,23 +13,18 @@
 	"BUCKET_TARGET"              : 500,
 	"BUCKET_HEARTBEAT_GRACE_SEC" : 600,
 
-	"BATCH_SIZE"     : 32,
 	"AUTH_TOKEN"     : "<AUTH_TOKEN>",
 
-	"VERIFLIER_BATCH_SIZE"  : 200,
-	"SQL_UPDATE_BATCH"      : 1,
 	"DB_CONFIG_UPDATES_MIN" : 10,
 	"PEER_OFFLINE_LIMIT"    : 3,
 	"SCHEMA_MANAGEMENT_MODE": "",
 	"VERIFLIER_DISCOVERY_MODE" : "static",
 
 	"NUM_OF_CHECKS"           : 3,
-	"TIME_BETWEEN_CHECKS_SEC" : 30,
 
 	"ALERT_COOLDOWN_MINUTES" : 30,
 
 	"STATS_UPDATE_INTERVAL_MS"     : 10000,
-	"TIME_BETWEEN_NOTICES_MIN"     : 59,
 	"WPCOM_NOTIFY_ENABLE"          : true,
 	"WPCOM_NOTIFY_MODE"            : "legacy",
 	"WPCOM_NOTIFY_MODERN_ENDPOINT" : "https://public-api.wordpress.com/wpcom/v2/jetpack-monitor/status-change",
@@ -70,6 +64,15 @@
 	"SMTP_USERNAME"         : "",
 	"SMTP_PASSWORD"         : "",
 	"SMTP_USE_TLS"          : false,
+
+	"CHECK_HISTORY_MODE_DEFAULT"       : "status_change",
+	"CHECK_HISTORY_SAMPLE_RATE_DEFAULT": 10,
+	"AUDIT_LOG_MODE_DEFAULT"           : "operational",
+
+	"RETENTION_CHECK_HISTORY_DAYS" : 0,
+	"RETENTION_AUDIT_LOG_DAYS"     : 0,
+	"RETENTION_BACKGROUND_ENABLED" : true,
+	"RETENTION_RUN_HOUR_UTC"       : 4,
 
 	"VERIFIERS": [
 		{

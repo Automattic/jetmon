@@ -16,11 +16,11 @@ Key settings:
 
 | Key | Default | Description |
 |---|---:|---|
+| `CONFIG_PROFILE` | `default` | Named posture defaults. Use `production` for production Monitor containers so schema startup defaults to validation. |
+| `SCHEMA_MANAGEMENT_MODE` | `migrate` | `migrate` applies embedded migrations; `validate` refuses startup unless approved schema changes are already present. Production should use `validate`. |
 | `NUM_WORKERS` | 60 | Goroutine pool size/floor; 0 uses the default floor |
-| `NUM_TO_PROCESS` | 40 | Legacy compatibility setting; does not cap Go scheduler throughput |
 | `DATASET_SIZE` | 100 | Database fetch page size for scheduler work; not a total round cap; 0 uses the default |
 | `NUM_OF_CHECKS` | 3 | Local failures before Veriflier escalation |
-| `TIME_BETWEEN_CHECKS_SEC` | 30 | Legacy compatibility setting retained for copied v1-style configs |
 | `MIN_TIME_BETWEEN_ROUNDS_SEC` | 300 | Fixed-cadence full-fleet pass interval when variable intervals are disabled |
 | `NET_COMMS_TIMEOUT` | 10 | Default per-check HTTP timeout in seconds |
 | `CHECK_DNS_RESOLVERS` | `[]` | Optional HTTP-check recursive resolver IPs, with optional ports; restart required after changes |
@@ -36,7 +36,10 @@ Key settings:
 | `PINNED_BUCKET_MIN` / `PINNED_BUCKET_MAX` | unset | Static bucket range used by the [v1-to-v2 migration runbook](v1-to-v2-migration.md) |
 | `ALERT_COOLDOWN_MINUTES` | 30 | Default cooldown between repeated alerts per site |
 | `LEGACY_STATUS_PROJECTION_ENABLE` | true | Keep v1 status fields projected during the [v1-to-v2 migration](v1-to-v2-migration.md) |
-| `LOG_FORMAT` | `text` | `text` or `json` |
+| `DEFAULT_CHECK_METHOD` | `GET` | Fleet default for sites without v2 sidecar check config: `HEAD` or `GET` |
+| `DEFAULT_DETECTION_PROFILE` | `full` | Fleet default detection profile: `legacy`, `simple_http`, or `full` |
+| `USE_VARIABLE_CHECK_INTERVALS` | false in minimal configs; true in the sample | Respect per-site `check_interval` and v2 runtime due state instead of fixed full-fleet passes |
+| `LOG_FORMAT` | `text` | Current runtime log format. `json` is accepted for forward compatibility but structured runtime logging is not wired yet. |
 | `DASHBOARD_PORT` | 8080 | Internal operator dashboard port, 0 disables it |
 | `DASHBOARD_BIND_ADDR` | 127.0.0.1 | Dashboard listener address; keep localhost unless a trusted management network requires remote access |
 | `API_PORT` | 0 | Internal REST API port, 0 disables it |
@@ -50,6 +53,9 @@ Key settings:
 | `SCHEDULER_ENGINE` | `legacy` | `legacy` round/page scheduler or `streaming` v2-native scheduler |
 | `STREAMING_LEGACY_PROJECTION_INTERVAL_MIN` | 15 | Coarse sidecar freshness rollback projection interval for streaming mode |
 | `STREAMING_TARGET_RELOAD_SEC` | 300 | Active site config reload cadence for streaming mode |
+| `CHECK_HISTORY_MODE_DEFAULT` | `status_change` | Default timing-sample persistence mode for sites without a per-site override |
+| `AUDIT_LOG_MODE_DEFAULT` | `operational` | Default audit persistence mode; avoids API GET firehose by default |
+| `RETENTION_CHECK_HISTORY_DAYS` / `RETENTION_AUDIT_LOG_DAYS` | 0 | Optional pruning windows. 0 keeps rows indefinitely. |
 
 Scheduler behavior:
 
@@ -860,7 +866,9 @@ The `window_edge_lookback` line calls out transition rows at the end of the
 window that can make WPCOM parity look temporarily incomplete; rerun with a
 later `--until` before treating those edge deltas as missing audit data.
 
-Use `LOG_FORMAT=json` for structured logs during investigations.
+Structured JSON runtime logging is tracked as future work. For now,
+`LOG_FORMAT=json` is accepted by config validation but standard runtime logs
+remain text.
 
 ## Debugging
 

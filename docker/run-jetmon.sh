@@ -65,15 +65,6 @@ if [ ! -f config/config.json ]; then
 	render_config "$(config_target)"
 fi
 
-if [ -n "${JETMON_AUTO_MIGRATE+x}" ]; then
-	if [ "${JETMON_AUTO_MIGRATE}" = "true" ]; then
-		./jetmon2 migrate
-	else
-		echo "JETMON_AUTO_MIGRATE=false; validating schema without applying migrations"
-		./jetmon2 schema validate
-	fi
-else
-	./jetmon2 schema ensure
-fi
+./jetmon2 schema ensure
 
 exec ./jetmon2

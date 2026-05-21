@@ -596,6 +596,7 @@ func collectConfigWarnings(raw []byte) []ConfigWarning {
 	}
 
 	warnings = append(warnings, collectStatsDHostPathWarnings(keys["STATSD_HOST_PATH"])...)
+	warnings = append(warnings, collectLogFormatWarnings(keys["LOG_FORMAT"])...)
 	warnings = append(warnings, collectVerifierConfigWarnings(keys["VERIFIERS"])...)
 	return warnings
 }
@@ -616,6 +617,23 @@ func collectStatsDHostPathWarnings(raw json.RawMessage) []ConfigWarning {
 		return []ConfigWarning{{
 			Key:     "STATSD_HOST_PATH",
 			Message: "looks like a raw hostname; Monitor production should use the v1-compatible metric host path <datacenter>.<node>, for example dfw1.jetmon-prod-1",
+		}}
+	}
+	return nil
+}
+
+func collectLogFormatWarnings(raw json.RawMessage) []ConfigWarning {
+	if len(raw) == 0 {
+		return nil
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil
+	}
+	if strings.EqualFold(strings.TrimSpace(value), "json") {
+		return []ConfigWarning{{
+			Key:     "LOG_FORMAT",
+			Message: "json is accepted for forward compatibility, but runtime structured logging is not wired yet; logs remain text",
 		}}
 	}
 	return nil

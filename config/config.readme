@@ -116,6 +116,8 @@ when the deployment network can reach the internal addresses. Default: internet.
 V1 COMPATIBILITY AND DEPRECATED KEYS
 Jetmon v2 intentionally accepts copied v1-style config files, but startup and
 validate-config warn for keys whose v1 meaning no longer applies.
+These keys are not included in config/config-sample.json; new v2 configs should
+start from the v2-native keys instead.
 
 Deprecated aliases with real v2 behavior:
   DB_UPDATES_ENABLE - alias for LEGACY_STATUS_PROJECTION_ENABLE
@@ -499,7 +501,9 @@ turning broad config scans into a steady-state throughput bottleneck; activation
 and deactivation count changes are still polled separately. Default: 300.
 
 LOG_FORMAT
-Log output format. Set to "json" for structured logging (e.g. for log aggregators), or "text" for human-readable output. Default: "text".
+Log output format. `text` is the current runtime format. `json` is accepted by
+config validation for forward compatibility, but the standard runtime logger is
+not wired to emit structured JSON yet. Default: "text".
 
 DASHBOARD_PORT
 Port for the operator dashboard. Set to 0 to disable. Default: 8080.
