@@ -88,12 +88,7 @@ called out in their notes.
 - Default: empty; StatsD disabled unless the deployment sets it.
 - Values: UDP `host:port`; IPv6 literals must use bracket notation such as
   `[::1]:8125`.
-- Example:
-
-  ```json
-  "STATSD_ADDR": "host.docker.internal:8125"
-  ```
-
+- Example: `"STATSD_ADDR": "host.docker.internal:8125"`
 - Purpose: UDP host:port for StatsD metrics.
 - Notes: bridge-networked Monitor containers should not use
   `127.0.0.1:8125`; that loopback is inside the container. For production
