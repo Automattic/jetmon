@@ -355,7 +355,7 @@ Deferred product options:
 
 1. Add a first-class non-downtime event state, for example `Probe Blocked` or `Probe Safety Blocked`, with severity 2 and `check_type=probe_safety`. Do this if dashboards or API consumers need probe-safety findings in the normal event feed. It must be excluded from SLA downtime and WPCOM down/recovery notifications.
 2. Treat public-host hostile responses as degraded states only after repeat evidence. Oversized headers, body-read budget exhaustion, and TLS pathology can be real site problems or adversarial behavior. If represented as events, they should use thresholds and cooldowns to avoid opening transient one-probe noise.
-3. Add scheduled reporting over `jetpack_monitor_site_safety_flags` and dry-run scans so operators can watch unsafe legacy row counts before and after API rejection rolls out.
+3. Schedule `site-safety report` and dry-run `site-safety unsafe-urls` scans so operators can watch durable safety flags and unsafe legacy row counts before and after API rejection rolls out.
 
 API behavior should remain strict regardless of which product option is chosen: new or updated monitor URLs should be rejected at write time when they are shape-unsafe, and runtime target-safety should remain in place for already-stored rows and DNS changes.
 
@@ -368,7 +368,7 @@ If more checker result fields become shared protocol semantics, move the stable 
 ## Remaining High-Value Scenarios
 
 1. Run an end-to-end MariaDB 11.4 runtime exercise before production rollout, covering bucket claiming, runtime freshness writes, SSL expiry batches, `ON DUPLICATE KEY UPDATE ... VALUES(...)`, and webhook / alert delivery claims.
-2. Add scheduled reporting over `jetpack_monitor_site_safety_flags` and dry-run scans so the unsafe legacy row count can be watched before and after API rejection rolls out.
+2. Schedule `jetmon2 site-safety report` over `jetpack_monitor_site_safety_flags` and dry-run `site-safety unsafe-urls` scans so the unsafe legacy row count can be watched before and after API rejection rolls out.
 3. Exercise DNS rebinding with an authoritative test DNS responder: public address on first lookup, private address on a redirect hop or later check.
 4. Exercise TLS pathology with uptime-bench responders: TLS 1.0/1.1, no common cipher, handshake close/alert, large certificate chains, expired/self-signed/hostname mismatch certificates.
 5. Consider streaming keyword matching that can stop as soon as a required-only keyword is found instead of reading until EOF/limit/budget.

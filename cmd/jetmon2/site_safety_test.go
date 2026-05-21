@@ -5,6 +5,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Automattic/jetmon/internal/db"
 	"github.com/DATA-DOG/go-sqlmock"
@@ -143,6 +144,90 @@ func TestDeactivateUnsafeMonitorURLsChunksLargeBatches(t *testing.T) {
 	}
 	if deactivated != 1001 {
 		t.Fatalf("deactivated = %d, want 1001", deactivated)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestRunSiteSafetyReportSummarizesFlags(t *testing.T) {
+	conn, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer conn.Close()
+
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	firstSeen := now.Add(-2 * time.Hour)
+	lastSeen := now.Add(-30 * time.Minute)
+
+	mock.ExpectQuery("SELECT flag_type, status, COUNT").
+		WillReturnRows(sqlmock.NewRows([]string{"flag_type", "status", "count", "first_seen_at", "last_seen_at"}).
+			AddRow(db.SiteSafetyFlagProbeSafetyBlock, db.SiteSafetyStatusOpen, int64(2), firstSeen, lastSeen).
+			AddRow(db.SiteSafetyFlagUnsafeMonitorURL, db.SiteSafetyStatusDeactivated, int64(1), firstSeen, lastSeen))
+	mock.ExpectQuery("SELECT COUNT").
+		WithArgs(db.SiteSafetyStatusOpen, now.Add(-time.Hour)).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(int64(0)))
+	mock.ExpectQuery("SELECT monitor_site_id, blog_id, flag_type").
+		WithArgs(db.SiteSafetyStatusOpen, 2).
+		WillReturnRows(sqlmock.NewRows([]string{"monitor_site_id", "blog_id", "flag_type", "status", "reason", "monitor_url", "first_seen_at", "last_seen_at"}).
+			AddRow(int64(12), int64(42), db.SiteSafetyFlagProbeSafetyBlock, db.SiteSafetyStatusOpen, "blocked", "http://127.0.0.1", firstSeen, lastSeen))
+
+	var out bytes.Buffer
+	report, err := runSiteSafetyReport(context.Background(), &out, conn, siteSafetyReportOptions{
+		Output:     "text",
+		Status:     db.SiteSafetyStatusOpen,
+		SampleSize: 2,
+		StaleAfter: time.Hour,
+		MaxOpen:    5,
+	}, now)
+	if err != nil {
+		t.Fatalf("runSiteSafetyReport: %v", err)
+	}
+	if !report.OK || report.Total != 3 || report.Open != 2 || report.StaleOpen != 0 {
+		t.Fatalf("report = %+v", report)
+	}
+	if !strings.Contains(out.String(), "PASS site_safety_flags_report=green total=3 open=2 stale_open=0") {
+		t.Fatalf("unexpected output: %s", out.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestRunSiteSafetyReportFailsOnThresholds(t *testing.T) {
+	conn, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer conn.Close()
+
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	oldSeen := now.Add(-48 * time.Hour)
+
+	mock.ExpectQuery("SELECT flag_type, status, COUNT").
+		WillReturnRows(sqlmock.NewRows([]string{"flag_type", "status", "count", "first_seen_at", "last_seen_at"}).
+			AddRow(db.SiteSafetyFlagProbeSafetyBlock, db.SiteSafetyStatusOpen, int64(3), oldSeen, oldSeen))
+	mock.ExpectQuery("SELECT COUNT").
+		WithArgs(db.SiteSafetyStatusOpen, now.Add(-24*time.Hour)).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(int64(3)))
+
+	var out bytes.Buffer
+	report, err := runSiteSafetyReport(context.Background(), &out, conn, siteSafetyReportOptions{
+		Output:     "text",
+		Status:     db.SiteSafetyStatusOpen,
+		SampleSize: 0,
+		StaleAfter: 24 * time.Hour,
+		MaxOpen:    1,
+	}, now)
+	if err != nil {
+		t.Fatalf("runSiteSafetyReport: %v", err)
+	}
+	if report.OK || report.Status != "red" || len(report.Issues) != 2 {
+		t.Fatalf("report = %+v, want red with two issues", report)
+	}
+	if !strings.Contains(out.String(), "FAIL site_safety_flags_report=red") {
+		t.Fatalf("unexpected output: %s", out.String())
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet expectations: %v", err)
