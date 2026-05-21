@@ -181,28 +181,28 @@ unsafe legacy URL counts before or after API rejection changes.
    `systemctl daemon-reload`.
 3. Create `/opt/jetmon2/config` and `/opt/jetmon2/stats`, owned by the `jetmon`
    service user.
-4. Create `/opt/jetmon2/config/jetmon2.env` with database credentials and auth
-   tokens. See `config/db-config-sample.conf`. For production server-map use,
-   set `DB_SERVER_MAP_PATH` and `DB_SERVER_MAP_DATACENTER` instead of baking
-   DB passwords into the env file. For container rollout, keep real env/config
-   files host-local and out of the image.
+4. Create `/opt/jetmon2/config/config.json` with database config and auth
+   tokens. For production server-map use, set `DB_SERVER_MAP_PATH` and
+   `DB_SERVER_MAP_DATACENTER` in JSON instead of baking DB passwords into an
+   explicit DSN config. Production Monitor containers should set
+   `CONFIG_PROFILE=production` or `SCHEMA_MANAGEMENT_MODE=validate` after
+   Systems has applied schema changes through the database-change process. For
+   container rollout, keep real rendered config files host-local and out of the
+   image.
 5. For TeamCity/docker-deploy rollout, provide `config-sync.env` from
    `config/jetmon-config-sync-sample.env` to the config-sync sidecar and share
    only the generated config-source path with the Monitor. If docker-deploy
    cannot support that sidecar shape, install
    `systemd/jetmon-config-sync.service` and
    `systemd/jetmon-config-sync.timer` as the host-side fallback.
-6. Copy or generate `config/config.json`. Production Monitor containers should
-   set `CONFIG_PROFILE=production` or `SCHEMA_MANAGEMENT_MODE=validate` after
-   Systems has applied schema changes through the database-change process.
-7. Set `BUCKET_TARGET` to the desired maximum bucket count for the host.
-8. Run `./jetmon2 migrate` only as the explicit schema-change step. For normal
+6. Set `BUCKET_TARGET` to the desired maximum bucket count for the host.
+7. Run `./jetmon2 migrate` only as the explicit schema-change step. For normal
    production startup and redeploys, run `./jetmon2 schema validate` instead.
    If SQL is applied through an external database-change process, ensure the
    matching `jetpack_monitor_schema_migrations` rows are included.
-9. Run `systemd-analyze verify /etc/systemd/system/jetmon2.service` after the
+8. Run `systemd-analyze verify /etc/systemd/system/jetmon2.service` after the
    binary exists at the path used by `ExecStart`.
-10. Start the service with
+9. Start the service with
     `systemctl enable --now jetmon2 && systemctl is-active --quiet jetmon2`.
 
 Runtime logs are collected from stdout/stderr by systemd or the container

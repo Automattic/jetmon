@@ -111,54 +111,60 @@ called out in their notes.
 
 ### DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME
 
-- Scope: environment variables.
 - Defaults: `localhost`, `3306`, `root`, empty password, `jetmon_db`.
 - Example:
 
-  ```sh
-  DB_HOST=mysql
-  DB_PORT=3306
-  DB_USER=jetmon
-  DB_PASSWORD=...
-  DB_NAME=jetmon_db
+  ```json
+  "DB_HOST": "mysql",
+  "DB_PORT": "3306",
+  "DB_USER": "jetmon",
+  "DB_PASSWORD": "secret",
+  "DB_NAME": "jetmon_db"
   ```
 
 - Purpose: direct MySQL connection settings used when `DB_SERVER_MAP_PATH` is
   unset.
 - Notes: production should normally prefer the server-map path below so reads
-  and writes can be split the same way as WPCOM infrastructure.
+  and writes can be split the same way as WPCOM infrastructure. Do not set
+  these keys when `DB_SERVER_MAP_PATH` is set; Jetmon rejects mixed database
+  modes so startup cannot silently choose the wrong source. Docker entrypoints
+  can render these from same-named environment variables when creating config
+  for the first time, but the Go process reads only the JSON values. This mode
+  is read at process start; restart after changing database credentials.
 
 ### DB_SERVER_MAP_PATH
 
-- Scope: environment variable.
 - Default: unset.
-- Example: `DB_SERVER_MAP_PATH=/run/jetmon/db-servers.php`
+- Example: `"DB_SERVER_MAP_PATH": "/run/jetmon/db-servers.php"`
 - Purpose: points Jetmon at a synced WPCOM `db-servers.php` file.
 - Notes: when set, Jetmon reads the selected dataset, builds a write pool from
-  the write master, and builds read pools from eligible read hosts.
+  the write master, and builds read pools from eligible read hosts. This mode
+  is mutually exclusive with explicit `DB_HOST` / `DB_PORT` / `DB_USER` /
+  `DB_PASSWORD` / `DB_NAME` settings. Docker entrypoints can render this from
+  the same-named environment variable when creating config for the first time,
+  but the Go process reads only the JSON value. The server-map file contents
+  hot-reload on `DB_CONFIG_UPDATES_MIN`; changing the path or mode requires a
+  process restart.
 
 ### DB_SERVER_MAP_DATASET
 
-- Scope: environment variable.
 - Default: `misc`
-- Example: `DB_SERVER_MAP_DATASET=misc`
+- Example: `"DB_SERVER_MAP_DATASET": "misc"`
 - Purpose: dataset name to read from `DB_SERVER_MAP_PATH`.
 
 ### DB_SERVER_MAP_DATACENTER
 
-- Scope: environment variable.
 - Default: unset.
-- Example: `DB_SERVER_MAP_DATACENTER=dfw`
+- Example: `"DB_SERVER_MAP_DATACENTER": "dfw"`
 - Purpose: prioritizes local read replicas from `db-servers.php`.
 - Notes: set explicitly in containers. Hostname-derived datacenter guessing is
   unreliable with container hostnames.
 
 ### DB_SERVER_MAP_ADDRESS
 
-- Scope: environment variable.
 - Default: `internet`
 - Values: `internet`, `internal`
-- Example: `DB_SERVER_MAP_ADDRESS=internet`
+- Example: `"DB_SERVER_MAP_ADDRESS": "internet"`
 - Purpose: chooses which host column from `db-servers.php` is used.
 - Notes: use `internal` only when the container network can reach internal DB
   hostnames.

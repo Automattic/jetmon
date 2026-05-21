@@ -68,6 +68,9 @@ func cmdSiteTenantsImport(args []string) {
 		return
 	}
 
+	if _, err := loadConfigForCommand(); err != nil {
+		log.Fatal(err)
+	}
 	config.LoadDB()
 	if err := db.ConnectWithRetry(3); err != nil {
 		log.Fatalf("db: %v", err)

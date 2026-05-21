@@ -114,6 +114,14 @@ func printVersion(w io.Writer) {
 	fmt.Fprintf(w, "jetmon2 %s (built %s with %s)\n", version, buildDate, goVersion)
 }
 
+func loadConfigForCommand() (*config.Config, error) {
+	configPath := envOrDefault("JETMON_CONFIG", "config/config.json")
+	if err := config.Load(configPath); err != nil {
+		return nil, fmt.Errorf("load config: %w", err)
+	}
+	return config.Get(), nil
+}
+
 // runServe is the main entry point for the monitoring service.
 func runServe() {
 	configPath := envOrDefault("JETMON_CONFIG", "config/config.json")
@@ -419,6 +427,9 @@ func runServe() {
 }
 
 func cmdMigrate() {
+	if _, err := loadConfigForCommand(); err != nil {
+		log.Fatal(err)
+	}
 	config.LoadDB()
 	if err := db.ConnectWithRetry(5); err != nil {
 		log.Fatalf("db connect: %v", err)
@@ -1322,6 +1333,9 @@ func cmdAudit() {
 		os.Exit(1)
 	}
 
+	if _, err := loadConfigForCommand(); err != nil {
+		log.Fatal(err)
+	}
 	config.LoadDB()
 	if err := db.ConnectWithRetry(3); err != nil {
 		log.Fatalf("db: %v", err)
@@ -1401,6 +1415,9 @@ func cmdKeys(args []string) {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "usage: jetmon2 keys <create|list|revoke|rotate> [args]")
 		os.Exit(1)
+	}
+	if _, err := loadConfigForCommand(); err != nil {
+		log.Fatal(err)
 	}
 	config.LoadDB()
 	if err := db.ConnectWithRetry(3); err != nil {

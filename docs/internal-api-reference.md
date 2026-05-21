@@ -1526,9 +1526,9 @@ was last hot-reloaded into the running read/write pools.
 }
 ```
 
-When `DB_SERVER_MAP_PATH` is unset, `mode` is `env`, `reload_enabled` is
+When `DB_SERVER_MAP_PATH` is unset, `mode` is `config`, `reload_enabled` is
 `false`, and read/write endpoint labels describe the explicit `DB_*`
-environment configuration. If parsing or ping validation fails during a reload,
+JSON configuration. If parsing or ping validation fails during a reload,
 `last_reload_error` and `last_reload_error_at` are set while the previously
 working pools stay active.
 

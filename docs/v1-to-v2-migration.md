@@ -475,7 +475,6 @@ Stage these artifacts for each target host:
 - `bin/veriflier2` when that host also owns a Veriflier deployment
 - `systemd/jetmon2.service`
 - `config/config.json`
-- `/opt/jetmon2/config/jetmon2.env` from `config/db-config-sample.conf`
 
 Keep v2 files in `/opt/jetmon2` or another v2-specific directory. Do not
 overwrite the v1 install until rollback signoff.

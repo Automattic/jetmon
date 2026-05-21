@@ -24,6 +24,15 @@ render_config() {
 		-e "s|\"HOSTNAME\"          : \"\"|\"HOSTNAME\"          : \"$(sed_escape "${JETMON_HOSTNAME:-}")\"|g" \
 		-e "s|\"STATSD_ADDR\"       : \"\"|\"STATSD_ADDR\"       : \"$(sed_escape "${STATSD_ADDR:-}")\"|g" \
 		-e "s|\"STATSD_HOST_PATH\"  : \"\"|\"STATSD_HOST_PATH\"  : \"$(sed_escape "${STATSD_HOST_PATH:-}")\"|g" \
+		-e "s|\"DB_HOST\"                  : \"\"|\"DB_HOST\"                  : \"$(sed_escape "${DB_HOST:-}")\"|g" \
+		-e "s|\"DB_PORT\"                  : \"\"|\"DB_PORT\"                  : \"$(sed_escape "${DB_PORT:-}")\"|g" \
+		-e "s|\"DB_USER\"                  : \"\"|\"DB_USER\"                  : \"$(sed_escape "${DB_USER:-}")\"|g" \
+		-e "s|\"DB_PASSWORD\"              : \"\"|\"DB_PASSWORD\"              : \"$(sed_escape "${DB_PASSWORD:-}")\"|g" \
+		-e "s|\"DB_NAME\"                  : \"\"|\"DB_NAME\"                  : \"$(sed_escape "${DB_NAME:-}")\"|g" \
+		-e "s|\"DB_SERVER_MAP_PATH\"       : \"\"|\"DB_SERVER_MAP_PATH\"       : \"$(sed_escape "${DB_SERVER_MAP_PATH:-}")\"|g" \
+		-e "s|\"DB_SERVER_MAP_DATASET\"    : \"\"|\"DB_SERVER_MAP_DATASET\"    : \"$(sed_escape "${DB_SERVER_MAP_DATASET:-}")\"|g" \
+		-e "s|\"DB_SERVER_MAP_DATACENTER\" : \"\"|\"DB_SERVER_MAP_DATACENTER\" : \"$(sed_escape "${DB_SERVER_MAP_DATACENTER:-}")\"|g" \
+		-e "s|\"DB_SERVER_MAP_ADDRESS\"    : \"\"|\"DB_SERVER_MAP_ADDRESS\"    : \"$(sed_escape "${DB_SERVER_MAP_ADDRESS:-}")\"|g" \
 		-e "s|\"SCHEMA_MANAGEMENT_MODE\": \"\"|\"SCHEMA_MANAGEMENT_MODE\": \"$(sed_escape "$schema_management_mode")\"|g" \
 		-e "s|<VERIFLIER_PORT>|$(sed_escape "${VERIFLIER_PORT}")|g" \
 		-e "s|<VERIFLIER_AUTH_TOKEN>|$(sed_escape "${VERIFLIER_AUTH_TOKEN:-veriflier_1_auth_token}")|g" \

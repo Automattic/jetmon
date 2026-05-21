@@ -84,12 +84,12 @@ func loadEndpointSelection(cfg *config.DBConfig) (endpointSelection, error) {
 		return loadServerMapSelection(opts)
 	}
 
-	ep, err := endpointFromParts("env", cfg.Host, cfg.Port, cfg.Name, cfg.User, cfg.Password)
+	ep, err := endpointFromParts("config", cfg.Host, cfg.Port, cfg.Name, cfg.User, cfg.Password)
 	if err != nil {
 		return endpointSelection{}, err
 	}
 	return finalizeEndpointSelection(endpointSelection{
-		Source: "env:DB_HOST",
+		Source: "config:DB_HOST",
 		Read:   []endpointConfig{ep},
 		Write:  []endpointConfig{ep},
 	}), nil

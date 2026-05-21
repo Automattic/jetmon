@@ -126,9 +126,9 @@ Required env vars:
 
 | Var | Notes |
 |---|---|
-| `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` | MySQL-compatible database connection for local/dev and explicit-DSN deployments. Used when `DB_SERVER_MAP_PATH` is unset. |
-| `DB_SERVER_MAP_PATH` | Optional production path to synced `db-servers.php`; when set, the Monitor reads the `misc` dataset and builds separate read/write DB pools. |
-| `DB_SERVER_MAP_DATACENTER` | Recommended with `DB_SERVER_MAP_PATH`; set to the host datacenter such as `dfw` or `dca` so local read replicas are preferred. |
+| `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` | Template inputs for rendered JSON database config in local/dev and explicit-DSN deployments. Used when `DB_SERVER_MAP_PATH` is unset. |
+| `DB_SERVER_MAP_PATH` | Optional template input for the rendered production path to synced `db-servers.php`; when set, the Monitor reads the `misc` dataset and builds separate read/write DB pools. Do not combine it with explicit `DB_HOST` / `DB_PORT` / `DB_USER` / `DB_PASSWORD` / `DB_NAME`. |
+| `DB_SERVER_MAP_DATACENTER` | Recommended with `DB_SERVER_MAP_PATH`; render this as the host datacenter such as `dfw` or `dca` so local read replicas are preferred. |
 | `DB_SERVER_MAP_ADDRESS` | `internet` (default, v1-compatible) or `internal`; use `internal` only when the container network can reach internal DB hostnames. |
 | `VERIFLIER_AUTH_TOKEN`, `VERIFLIER_PORT` | Shared with each Veriflier. |
 | `WPCOM_AUTH_TOKEN` | Set to `change_me` for non-WPCOM environments. |
@@ -275,7 +275,7 @@ before the workflow runs.
 | Symptom | Check |
 |---|---|
 | `denied: requested access to the resource is denied` on pull | The package is still private — authenticate with `docker login ghcr.io` using a PAT with `read:packages`, or have a maintainer flip the package visibility. |
-| Container starts but Jetmon exits with a database error | `DB_HOST` is reachable from inside the container — remember `localhost` inside the container is not the host. Use the host IP, a docker network, or `host.docker.internal`. |
+| Container starts but Jetmon exits with a database error | The rendered JSON `DB_HOST` is reachable from inside the container — remember `localhost` inside the container is not the host. Use the host IP, a docker network, or `host.docker.internal`. |
 | `reload` / `drain` reports "no PID file" | Mount a writable volume at `/jetmon/stats`. The PID file lives at `/jetmon/stats/jetmon2.pid`. |
-| Config changes do not persist across container restarts | Either mount `/jetmon/config` and edit the file directly, or rely on env vars — the rendered `config.json` is rebuilt from env vars on every fresh start. |
+| Config changes do not persist across container restarts | Either mount `/jetmon/config` and edit the file directly, or rely on Docker template inputs — the rendered `config.json` is rebuilt from env vars only when the config file is created. |
 | Jetmon cannot reach Veriflier | `VERIFLIER_AUTH_TOKEN` must match on both sides, and `VERIFLIER_PORT` (default `7803`) must be reachable from the Jetmon container. |

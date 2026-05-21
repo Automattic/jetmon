@@ -324,8 +324,8 @@ func selectionMode(source string) string {
 	switch {
 	case strings.HasPrefix(source, "server-map:"):
 		return "server_map"
-	case strings.HasPrefix(source, "env:"):
-		return "env"
+	case strings.HasPrefix(source, "config:"):
+		return "config"
 	case strings.TrimSpace(source) == "":
 		return "unknown"
 	default:

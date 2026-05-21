@@ -31,8 +31,9 @@ The same one-shot sync script can be used by the sidecar or by the host-side
 fallback service/timer.
 
 Local development and smoke testing continue to use explicit `DB_HOST`,
-`DB_PORT`, `DB_USER`, `DB_PASSWORD`, and `DB_NAME` values. The production
-config-sync sidecar is not part of the default local Docker Compose stack.
+`DB_PORT`, `DB_USER`, `DB_PASSWORD`, and `DB_NAME` values rendered into JSON
+config. The production config-sync sidecar is not part of the default local
+Docker Compose stack.
 
 ## TeamCity And Frontity Reference Findings
 
@@ -119,9 +120,13 @@ ignored; for Jetmon's `misc` dataset they are the connection credentials.
 Jetmon v2 supports two database configuration modes:
 
 1. Explicit local/test DSN: `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, and
-   `DB_NAME`.
+   `DB_NAME` in JSON config.
 2. Production server map: `DB_SERVER_MAP_PATH` points at the synced
    `db-servers.php` file and v2 reads the `misc` dataset directly.
+
+These modes are mutually exclusive. If `DB_SERVER_MAP_PATH` is set, Jetmon
+refuses config that also sets explicit `DB_HOST` / `DB_PORT` / `DB_USER` /
+`DB_PASSWORD` / `DB_NAME` values.
 
 When `DB_SERVER_MAP_PATH` is set, v2 builds separate read and write pools from
 the server map:
@@ -249,9 +254,10 @@ Recommended safe-test config:
   smoke test should validate metrics reachability
 - `DELIVERY_OWNER_HOST` set to a non-matching sentinel value such as
   `disabled-for-teamcity-smoke`
-- `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, and `DB_NAME` set explicitly
-  to the read-only test database credentials, or `DB_SERVER_MAP_PATH` pointed at
-  a redacted/internal-only test server map whose `misc` write target is safe
+- `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, and `DB_NAME` rendered into
+  config for the read-only test database credentials, or `DB_SERVER_MAP_PATH`
+  pointed at a redacted/internal-only test server map whose `misc` write target
+  is safe. Do not set both modes in one config.
 - Veriflier entries pointed at internal test Verifliers, or omitted if the goal
   is only image/deploy/DB-connect validation
 
@@ -595,8 +601,8 @@ steps should mirror the Frontity build:
    - set `STATSD_HOST_PATH` to the v1-compatible metric path for the host;
    - start the sidecar and wait for `db-servers.php` to appear;
    - start/recreate the Monitor with read-only access to the generated file and
-     `DB_SERVER_MAP_PATH` set to that path;
-   - set `DB_SERVER_MAP_DATACENTER` explicitly for the host and leave
+     `DB_SERVER_MAP_PATH` rendered in config as that path;
+   - render `DB_SERVER_MAP_DATACENTER` explicitly for the host and leave
      `DB_SERVER_MAP_ADDRESS=internet` unless Systems confirms internal DB
      hostnames are reachable from inside the container;
    - drain the existing Monitor before replacement;

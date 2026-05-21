@@ -88,6 +88,19 @@ type Config struct {
 	// StatsD. This is startup-only until metrics reconnect is wired into reload.
 	StatsDAddr string `json:"STATSD_ADDR"`
 
+	// Database connection config. DB_SERVER_MAP_PATH selects production
+	// server-map mode; otherwise the explicit DB_* values are used with
+	// local/dev defaults filled in by LoadDB.
+	DBHost                string `json:"DB_HOST"`
+	DBPort                string `json:"DB_PORT"`
+	DBUser                string `json:"DB_USER"`
+	DBPassword            string `json:"DB_PASSWORD"`
+	DBName                string `json:"DB_NAME"`
+	DBServerMapPath       string `json:"DB_SERVER_MAP_PATH"`
+	DBServerMapDataset    string `json:"DB_SERVER_MAP_DATASET"`
+	DBServerMapDatacenter string `json:"DB_SERVER_MAP_DATACENTER"`
+	DBServerMapAddress    string `json:"DB_SERVER_MAP_ADDRESS"`
+
 	NumWorkers   int `json:"NUM_WORKERS"`
 	NumToProcess int `json:"NUM_TO_PROCESS"`
 	DatasetSize  int `json:"DATASET_SIZE"`
@@ -294,7 +307,7 @@ type ConfigWarning struct {
 	Message string
 }
 
-// DBConfig holds MySQL connection parameters loaded from environment variables.
+// DBConfig holds MySQL connection parameters loaded from JSON config.
 type DBConfig struct {
 	Host                string
 	Port                string
@@ -359,23 +372,53 @@ func Get() *Config {
 	return current
 }
 
-// LoadDB reads the database config from environment variables set by Docker,
-// systemd EnvironmentFile, or the operator shell running CLI preflight commands.
+// LoadDB reads the database config from the loaded JSON config. Docker and
+// TeamCity environment values may render the JSON file before process start,
+// but the running process does not read DB credentials directly from env.
 func LoadDB() *DBConfig {
-	db := &DBConfig{
-		Host:                envOrDefault("DB_HOST", "localhost"),
-		Port:                envOrDefault("DB_PORT", "3306"),
-		User:                envOrDefault("DB_USER", "root"),
-		Password:            envOrDefault("DB_PASSWORD", ""),
-		Name:                envOrDefault("DB_NAME", "jetmon_db"),
-		ServerMapPath:       strings.TrimSpace(os.Getenv("DB_SERVER_MAP_PATH")),
-		ServerMapDataset:    envOrDefault("DB_SERVER_MAP_DATASET", "misc"),
-		ServerMapDatacenter: strings.TrimSpace(os.Getenv("DB_SERVER_MAP_DATACENTER")),
-		ServerMapAddress:    envOrDefault("DB_SERVER_MAP_ADDRESS", "internet"),
-	}
+	db := dbConfigFromConfig(Get())
 	mu.Lock()
 	dbConf = db
 	mu.Unlock()
+	return db
+}
+
+func dbConfigFromConfig(cfg *Config) *DBConfig {
+	if cfg == nil {
+		cfg = &Config{}
+	}
+	db := &DBConfig{
+		Host:                strings.TrimSpace(cfg.DBHost),
+		Port:                strings.TrimSpace(cfg.DBPort),
+		User:                strings.TrimSpace(cfg.DBUser),
+		Password:            cfg.DBPassword,
+		Name:                strings.TrimSpace(cfg.DBName),
+		ServerMapPath:       strings.TrimSpace(cfg.DBServerMapPath),
+		ServerMapDataset:    strings.TrimSpace(cfg.DBServerMapDataset),
+		ServerMapDatacenter: strings.TrimSpace(cfg.DBServerMapDatacenter),
+		ServerMapAddress:    strings.TrimSpace(cfg.DBServerMapAddress),
+	}
+	if db.ServerMapDataset == "" {
+		db.ServerMapDataset = "misc"
+	}
+	if db.ServerMapAddress == "" {
+		db.ServerMapAddress = "internet"
+	}
+	if db.ServerMapPath != "" {
+		return db
+	}
+	if db.Host == "" {
+		db.Host = "localhost"
+	}
+	if db.Port == "" {
+		db.Port = "3306"
+	}
+	if db.User == "" {
+		db.User = "root"
+	}
+	if db.Name == "" {
+		db.Name = "jetmon_db"
+	}
 	return db
 }
 
@@ -758,6 +801,10 @@ func validate(cfg *Config) error {
 	if err := validateStatsDHostPath(cfg.StatsDHostPath); err != nil {
 		return err
 	}
+	normalizeDBConfigFields(cfg)
+	if err := validateDBConfig(cfg); err != nil {
+		return err
+	}
 	if cfg.NumWorkers < 0 {
 		return fmt.Errorf("NUM_WORKERS must be >= 0")
 	}
@@ -1016,6 +1063,66 @@ func validateStatsDAddr(addr string) error {
 	return nil
 }
 
+func normalizeDBConfigFields(cfg *Config) {
+	cfg.DBHost = strings.TrimSpace(cfg.DBHost)
+	cfg.DBPort = strings.TrimSpace(cfg.DBPort)
+	cfg.DBUser = strings.TrimSpace(cfg.DBUser)
+	cfg.DBName = strings.TrimSpace(cfg.DBName)
+	cfg.DBServerMapPath = strings.TrimSpace(cfg.DBServerMapPath)
+	cfg.DBServerMapDataset = strings.TrimSpace(cfg.DBServerMapDataset)
+	cfg.DBServerMapDatacenter = strings.TrimSpace(cfg.DBServerMapDatacenter)
+	cfg.DBServerMapAddress = strings.TrimSpace(strings.ToLower(cfg.DBServerMapAddress))
+}
+
+func validateDBConfig(cfg *Config) error {
+	if cfg.DBServerMapPath != "" {
+		if explicit := explicitDBCredentialKeys(cfg); len(explicit) > 0 {
+			return fmt.Errorf("DB_SERVER_MAP_PATH cannot be used with explicit DB credentials: %s", strings.Join(explicit, ", "))
+		}
+	} else if cfg.DBServerMapDataset != "" || cfg.DBServerMapDatacenter != "" || cfg.DBServerMapAddress != "" {
+		return fmt.Errorf("DB_SERVER_MAP_DATASET, DB_SERVER_MAP_DATACENTER, and DB_SERVER_MAP_ADDRESS require DB_SERVER_MAP_PATH")
+	}
+	if cfg.DBPort != "" {
+		if err := validateTCPPort("DB_PORT", cfg.DBPort); err != nil {
+			return err
+		}
+	}
+	switch cfg.DBServerMapAddress {
+	case "", "internet", "internal":
+	default:
+		return fmt.Errorf("DB_SERVER_MAP_ADDRESS must be one of: internet, internal")
+	}
+	return nil
+}
+
+func explicitDBCredentialKeys(cfg *Config) []string {
+	var keys []string
+	if cfg.DBHost != "" {
+		keys = append(keys, "DB_HOST")
+	}
+	if cfg.DBPort != "" {
+		keys = append(keys, "DB_PORT")
+	}
+	if cfg.DBUser != "" {
+		keys = append(keys, "DB_USER")
+	}
+	if cfg.DBPassword != "" {
+		keys = append(keys, "DB_PASSWORD")
+	}
+	if cfg.DBName != "" {
+		keys = append(keys, "DB_NAME")
+	}
+	return keys
+}
+
+func validateTCPPort(key, port string) error {
+	portNum, err := strconv.Atoi(port)
+	if err != nil || portNum <= 0 || portNum > 65535 {
+		return fmt.Errorf("%s must be between 1 and 65535", key)
+	}
+	return nil
+}
+
 func validateCheckDNSResolvers(servers []string) error {
 	for i, raw := range servers {
 		if _, err := normalizeCheckDNSResolver(raw); err != nil {
@@ -1161,11 +1268,4 @@ func Debugf(format string, args ...any) {
 	if d {
 		log.Printf("[DEBUG] "+format, args...)
 	}
-}
-
-func envOrDefault(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
 }

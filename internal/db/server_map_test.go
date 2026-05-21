@@ -3,7 +3,34 @@ package db
 import (
 	"strings"
 	"testing"
+
+	"github.com/Automattic/jetmon/internal/config"
 )
+
+func TestLoadEndpointSelectionUsesExplicitConfigDSN(t *testing.T) {
+	sel, err := loadEndpointSelection(&config.DBConfig{
+		Host:     "db.local",
+		Port:     "3307",
+		Name:     "jetmon_db",
+		User:     "jetmon",
+		Password: "secret",
+	})
+	if err != nil {
+		t.Fatalf("loadEndpointSelection: %v", err)
+	}
+	if sel.Source != "config:DB_HOST" {
+		t.Fatalf("Source = %q, want config:DB_HOST", sel.Source)
+	}
+	if got := len(sel.Read); got != 1 {
+		t.Fatalf("read endpoints = %d, want 1", got)
+	}
+	if sel.Read[0].Host != "db.local" || sel.Read[0].Port != "3307" {
+		t.Fatalf("read endpoint = %s:%s, want db.local:3307", sel.Read[0].Host, sel.Read[0].Port)
+	}
+	if sel.Write[0].User != "jetmon" {
+		t.Fatalf("write user = %q, want jetmon", sel.Write[0].User)
+	}
+}
 
 func TestParseServerMapSelectionPrefersLocalReadAndWriteMaster(t *testing.T) {
 	raw := []byte(`<?php

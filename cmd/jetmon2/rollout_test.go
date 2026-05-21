@@ -368,7 +368,7 @@ jetmon-v1-b,5,9
 		`INFO plan_host="jetmon-v1-a" runtime_host="jetmon-v1-a" range=0-4`,
 		"# Run this runbook from the staged v2 runtime host, not from a separate orchestrator host.",
 		"# Commands run from that runtime host unless the printed command explicitly targets another host.",
-		"# Shell commands need the same DB_* environment used by the jetmon2 service.",
+		"# Shell commands read the same JSON DB config used by the jetmon2 service.",
 		"./jetmon2 rollout static-plan-check --file rollout-buckets.csv --host jetmon-v1-a --bucket-min 0 --bucket-max 4 --bucket-total 10",
 		"./jetmon2 validate-config",
 		"./jetmon2 rollout host-preflight --file rollout-buckets.csv --host jetmon-v1-a --runtime-host jetmon-v1-a --bucket-min 0 --bucket-max 4 --bucket-total 10 --service jetmon2",

@@ -586,6 +586,11 @@ func TestLoadAndGet(t *testing.T) {
 		"HOSTNAME": "dfw1.jetmon-prod-1",
 		"STATSD_ADDR": "statsd:8125",
 		"STATSD_HOST_PATH": "dfw1.jetmon-prod-1",
+		"DB_HOST": "db.local",
+		"DB_PORT": "3307",
+		"DB_USER": "jetmon",
+		"DB_PASSWORD": "secret",
+		"DB_NAME": "jetmon_test",
 		"BUCKET_TOTAL": 100,
 		"BUCKET_TARGET": 50,
 		"NET_COMMS_TIMEOUT": 10,
@@ -618,6 +623,21 @@ func TestLoadAndGet(t *testing.T) {
 	}
 	if got := cfg.StatsDMetricHost("container-id"); got != "dfw1.jetmon-prod-1" {
 		t.Fatalf("StatsDMetricHost(explicit) = %q, want dfw1.jetmon-prod-1", got)
+	}
+	if cfg.DBHost != "db.local" {
+		t.Fatalf("DBHost = %q, want db.local", cfg.DBHost)
+	}
+	if cfg.DBPort != "3307" {
+		t.Fatalf("DBPort = %q, want 3307", cfg.DBPort)
+	}
+	if cfg.DBUser != "jetmon" {
+		t.Fatalf("DBUser = %q, want jetmon", cfg.DBUser)
+	}
+	if cfg.DBPassword != "secret" {
+		t.Fatalf("DBPassword = %q, want secret", cfg.DBPassword)
+	}
+	if cfg.DBName != "jetmon_test" {
+		t.Fatalf("DBName = %q, want jetmon_test", cfg.DBName)
 	}
 	if cfg.LogFormat != "json" {
 		t.Fatalf("LogFormat = %q, want json", cfg.LogFormat)
@@ -665,6 +685,41 @@ func TestLoadRejectsInvalidStatsDAddr(t *testing.T) {
 
 	if err := Load(p); err == nil || !strings.Contains(err.Error(), "STATSD_ADDR") {
 		t.Fatalf("Load() error = %v, want STATSD_ADDR validation failure", err)
+	}
+}
+
+func TestLoadRejectsMixedDBConfigModes(t *testing.T) {
+	saveConfigState(t)
+
+	p := writeConfigFile(t, `{
+		"AUTH_TOKEN": "token",
+		"DB_HOST": "db.local",
+		"DB_SERVER_MAP_PATH": "/run/jetmon/db-servers.php",
+		"BUCKET_TOTAL": 100,
+		"BUCKET_TARGET": 50,
+		"NET_COMMS_TIMEOUT": 10,
+		"LOG_FORMAT": "text"
+	}`)
+
+	if err := Load(p); err == nil || !strings.Contains(err.Error(), "DB_SERVER_MAP_PATH cannot be used with explicit DB credentials") {
+		t.Fatalf("Load() error = %v, want mixed DB config validation failure", err)
+	}
+}
+
+func TestLoadRejectsServerMapOptionsWithoutServerMapPath(t *testing.T) {
+	saveConfigState(t)
+
+	p := writeConfigFile(t, `{
+		"AUTH_TOKEN": "token",
+		"DB_SERVER_MAP_DATACENTER": "dfw",
+		"BUCKET_TOTAL": 100,
+		"BUCKET_TARGET": 50,
+		"NET_COMMS_TIMEOUT": 10,
+		"LOG_FORMAT": "text"
+	}`)
+
+	if err := Load(p); err == nil || !strings.Contains(err.Error(), "require DB_SERVER_MAP_PATH") {
+		t.Fatalf("Load() error = %v, want DB_SERVER_MAP_PATH validation failure", err)
 	}
 }
 
@@ -1096,25 +1151,23 @@ func TestDebugfSilentWhenDisabled(t *testing.T) {
 	}
 }
 
-func TestLoadDBAndGetDB(t *testing.T) {
-	mu.Lock()
-	origDB := dbConf
-	mu.Unlock()
-	t.Cleanup(func() {
-		mu.Lock()
-		dbConf = origDB
-		mu.Unlock()
-	})
-
-	t.Setenv("DB_HOST", "testhost")
-	t.Setenv("DB_PORT", "3307")
-	t.Setenv("DB_USER", "testuser")
-	t.Setenv("DB_PASSWORD", "testpass")
-	t.Setenv("DB_NAME", "testdb")
-	t.Setenv("DB_SERVER_MAP_PATH", "/jetmon/config-source/db-servers.php")
-	t.Setenv("DB_SERVER_MAP_DATASET", "misc")
-	t.Setenv("DB_SERVER_MAP_DATACENTER", "dfw")
-	t.Setenv("DB_SERVER_MAP_ADDRESS", "internal")
+func TestLoadDBAndGetDBFromExplicitConfig(t *testing.T) {
+	saveConfigState(t)
+	p := writeConfigFile(t, `{
+		"AUTH_TOKEN": "token",
+		"DB_HOST": "testhost",
+		"DB_PORT": "3307",
+		"DB_USER": "testuser",
+		"DB_PASSWORD": "testpass",
+		"DB_NAME": "testdb",
+		"BUCKET_TOTAL": 100,
+		"BUCKET_TARGET": 50,
+		"NET_COMMS_TIMEOUT": 10,
+		"LOG_FORMAT": "text"
+	}`)
+	if err := Load(p); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
 
 	cfg := LoadDB()
 	if cfg == nil {
@@ -1126,14 +1179,14 @@ func TestLoadDBAndGetDB(t *testing.T) {
 	if cfg.Port != "3307" {
 		t.Fatalf("Port = %q, want 3307", cfg.Port)
 	}
-	if cfg.ServerMapPath != "/jetmon/config-source/db-servers.php" {
-		t.Fatalf("ServerMapPath = %q", cfg.ServerMapPath)
+	if cfg.ServerMapPath != "" {
+		t.Fatalf("ServerMapPath = %q, want empty", cfg.ServerMapPath)
 	}
-	if cfg.ServerMapDatacenter != "dfw" {
-		t.Fatalf("ServerMapDatacenter = %q, want dfw", cfg.ServerMapDatacenter)
+	if cfg.Password != "testpass" {
+		t.Fatalf("Password = %q, want testpass", cfg.Password)
 	}
-	if cfg.ServerMapAddress != "internal" {
-		t.Fatalf("ServerMapAddress = %q, want internal", cfg.ServerMapAddress)
+	if cfg.Name != "testdb" {
+		t.Fatalf("Name = %q, want testdb", cfg.Name)
 	}
 
 	got := GetDB()
@@ -1145,17 +1198,41 @@ func TestLoadDBAndGetDB(t *testing.T) {
 	}
 }
 
-func TestEnvOrDefaultConfig(t *testing.T) {
-	const key = "JETMON_CONFIG_TEST_VAR"
-	t.Setenv(key, "")
-
-	if got := envOrDefault(key, "default"); got != "default" {
-		t.Fatalf("envOrDefault() = %q, want default", got)
+func TestLoadDBAndGetDBFromServerMapConfig(t *testing.T) {
+	saveConfigState(t)
+	p := writeConfigFile(t, `{
+		"AUTH_TOKEN": "token",
+		"DB_SERVER_MAP_PATH": "/jetmon/config-source/db-servers.php",
+		"DB_SERVER_MAP_DATASET": "misc",
+		"DB_SERVER_MAP_DATACENTER": "dfw",
+		"DB_SERVER_MAP_ADDRESS": "internal",
+		"BUCKET_TOTAL": 100,
+		"BUCKET_TARGET": 50,
+		"NET_COMMS_TIMEOUT": 10,
+		"LOG_FORMAT": "text"
+	}`)
+	if err := Load(p); err != nil {
+		t.Fatalf("Load() error = %v", err)
 	}
 
-	t.Setenv(key, "override")
-	if got := envOrDefault(key, "default"); got != "override" {
-		t.Fatalf("envOrDefault() = %q, want override", got)
+	cfg := LoadDB()
+	if cfg == nil {
+		t.Fatal("LoadDB() = nil")
+	}
+	if cfg.ServerMapPath != "/jetmon/config-source/db-servers.php" {
+		t.Fatalf("ServerMapPath = %q", cfg.ServerMapPath)
+	}
+	if cfg.ServerMapDatacenter != "dfw" {
+		t.Fatalf("ServerMapDatacenter = %q, want dfw", cfg.ServerMapDatacenter)
+	}
+	if cfg.ServerMapAddress != "internal" {
+		t.Fatalf("ServerMapAddress = %q, want internal", cfg.ServerMapAddress)
+	}
+	if cfg.Host != "" {
+		t.Fatalf("Host = %q, want empty in server-map mode", cfg.Host)
+	}
+	if cfg.ServerMapDataset != "misc" {
+		t.Fatalf("ServerMapDataset = %q, want misc", cfg.ServerMapDataset)
 	}
 }
 
