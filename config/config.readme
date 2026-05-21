@@ -1,9 +1,15 @@
 # Jetmon 2 Configuration Reference
 
 Jetmon reads runtime configuration from `config/config.json` by default. Set
-`JETMON_CONFIG=/path/to/config.json` to use a different file. Database and
-Docker rendering settings are environment variables and are called out as such
-below.
+`JETMON_CONFIG=/path/to/config.json` to use a different file. The running
+Monitor and Deliverer processes read StatsD settings from JSON config, not
+directly from environment variables.
+
+Docker entrypoints may use environment variables as first-boot template inputs
+when they render `config/config.json` from `config/config-sample.json`. After a
+config file exists, edit or mount the JSON file instead of expecting Docker
+environment changes to alter runtime behavior. Database server-map settings and
+Docker rendering inputs are called out below.
 
 Each entry uses the same shape:
 
@@ -74,10 +80,14 @@ called out in their notes.
   paths. v1 effectively used `<datacenter>.<node>`, so
   `jetmon-prod-1.dfw1.example.com` should use `dfw1.jetmon-prod-1`.
   Allowed characters: letters, numbers, dots, underscores, and hyphens.
+  Docker entrypoints can render this from the `STATSD_HOST_PATH` environment
+  variable when creating config for the first time.
 
 ### STATSD_ADDR
 
 - Default: empty; StatsD disabled unless the deployment sets it.
+- Values: UDP `host:port`; IPv6 literals must use bracket notation such as
+  `[::1]:8125`.
 - Example:
 
   ```json
@@ -89,8 +99,10 @@ called out in their notes.
   `127.0.0.1:8125`; that loopback is inside the container. For production
   Monitor Docker deployments, add Docker's host gateway mapping and use
   `host.docker.internal:8125`. Local and Veriflier Compose stacks normally use
-  `statsd:8125`. This value is read at process start; restart the process
-  after changing it.
+  `statsd:8125`. Docker entrypoints can render this from the `STATSD_ADDR`
+  environment variable when creating config for the first time, but the Go
+  process reads only the JSON value. This value is read at process start;
+  restart the process after changing it.
 
 ### STATS_UPDATE_INTERVAL_MS
 
@@ -670,6 +682,12 @@ The standalone Veriflier has a separate small JSON file:
 
 - `auth_token`: shared secret required for POST `/check` and POST `/v2/check`.
 - `port`: HTTP listen port. Default: `7803`.
+- `hostname`: stable process identity; defaults to the runtime hostname when
+  omitted.
+- `statsd_addr`: UDP `host:port` for StatsD metrics. Default: empty, which
+  disables StatsD.
+- `statsd_host_path`: explicit host segment in StatsD metric names. Default:
+  empty, which falls back to `hostname` / runtime hostname.
 - `vantage_id`: quorum identity reported by `/v2/status` and `/v2/check`;
   defaults to hostname when omitted.
 - `region`: optional region metadata.
@@ -679,8 +697,15 @@ The standalone Veriflier has a separate small JSON file:
 
 Environment aliases are `VERIFLIER_AUTH_TOKEN`, `VERIFLIER_PORT`,
 `VERIFLIER_VANTAGE_ID`, `VERIFLIER_REGION`, `VERIFLIER_PROVIDER`, and
-`VERIFLIER_ENABLE_LEGACY_HTTP`. The old `VERIFLIER_GRPC_PORT` and `grpc_port`
-names remain accepted as deprecated port aliases.
+`VERIFLIER_ENABLE_LEGACY_HTTP` for the fallback environment-only config path.
+The Docker entrypoint can also render `hostname`, `statsd_addr`, and
+`statsd_host_path` from `VERIFLIER_HOSTNAME` / `JETMON_HOSTNAME`,
+`STATSD_ADDR`, and `STATSD_HOST_PATH` when creating the JSON config for the
+first time. Once the JSON config exists, the Veriflier reads StatsD settings
+from that file, not directly from the environment.
+
+The old `VERIFLIER_GRPC_PORT` and `grpc_port` names remain accepted as
+deprecated port aliases.
 
 ## Deprecated Aliases And Legacy Compatibility Keys
 
