@@ -319,8 +319,9 @@ Set `STATSD_HOST_PATH` to the transformed v1-compatible value, not the raw
 FQDN, unless dashboard series migration is intentional. Leaving it unset falls
 back to `HOSTNAME`, then the runtime hostname, which is acceptable for local
 Docker runs but may become a container ID or service name under docker-deploy.
-If both `HOSTNAME` and `JETMON_HOSTNAME` are present at runtime, `HOSTNAME`
-from config wins.
+`JETMON_HOSTNAME` is a Docker render input. Once `config/config.json` exists,
+the running process uses the rendered `HOSTNAME` value from JSON and does not
+let the environment override it.
 
 Keep these values stable and low-cardinality. Do not include container IDs,
 release SHAs, process IDs, ports, or random suffixes. For Verifliers, use a

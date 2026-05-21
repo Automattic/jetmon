@@ -146,9 +146,6 @@ func Hostname() string {
 			return h
 		}
 	}
-	if h := strings.TrimSpace(os.Getenv("JETMON_HOSTNAME")); h != "" {
-		return h
-	}
 	h, err := os.Hostname()
 	if err != nil {
 		return "unknown"

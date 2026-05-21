@@ -2,8 +2,8 @@
 
 Jetmon reads runtime configuration from `config/config.json` by default. Set
 `JETMON_CONFIG=/path/to/config.json` to use a different file. The running
-Monitor and Deliverer processes read StatsD settings from JSON config, not
-directly from environment variables.
+Monitor, Deliverer, and Veriflier processes read runtime settings from JSON
+config, not directly from environment variables, once their config files exist.
 
 Docker entrypoints may use environment variables as first-boot template inputs
 when they render `config/config.json` from `config/config-sample.json`. After a
@@ -696,14 +696,14 @@ The standalone Veriflier has a separate small JSON file:
 - `enable_legacy_http`: optional lab/emergency compatibility switch for
   legacy-compatible `/check` and `/status`; default false.
 
-Environment aliases are `VERIFLIER_AUTH_TOKEN`, `VERIFLIER_PORT`,
-`VERIFLIER_VANTAGE_ID`, `VERIFLIER_REGION`, `VERIFLIER_PROVIDER`, and
-`VERIFLIER_ENABLE_LEGACY_HTTP` for the fallback environment-only config path.
-The Docker entrypoint can also render `hostname`, `statsd_addr`, and
-`statsd_host_path` from `VERIFLIER_HOSTNAME` / `JETMON_HOSTNAME`,
-`STATSD_ADDR`, and `STATSD_HOST_PATH` when creating the JSON config for the
-first time. Once the JSON config exists, the Veriflier reads StatsD settings
-from that file, not directly from the environment.
+Environment aliases are accepted only for the fallback environment-only path
+used when the JSON file is missing: `VERIFLIER_AUTH_TOKEN`, `VERIFLIER_PORT`,
+`VERIFLIER_GRPC_PORT`, `VERIFLIER_HOSTNAME`, `JETMON_HOSTNAME`, `STATSD_ADDR`,
+`STATSD_HOST_PATH`, `VERIFLIER_VANTAGE_ID`, `VERIFLIER_REGION`,
+`VERIFLIER_PROVIDER`, and `VERIFLIER_ENABLE_LEGACY_HTTP`. The Docker entrypoint
+can render those values into JSON when creating the config for the first time.
+Once the JSON config exists, the Veriflier reads runtime settings from that
+file and does not let environment variables override it.
 
 The old `VERIFLIER_GRPC_PORT` and `grpc_port` names remain accepted as
 deprecated port aliases.
