@@ -1,19 +1,20 @@
 # Jetmon 2 Configuration Reference
 
-Jetmon reads runtime configuration from `config/config.json` by default. Set
-`JETMON_CONFIG=/path/to/config.json` to use a different file. The running
-Monitor, Deliverer, and Veriflier processes read runtime settings from JSON
-config, not directly from environment variables, once their config files exist.
+Jetmon runtime configuration is JSON-first.
 
-Docker entrypoints use environment variables as template inputs and render a
-generated JSON config before starting the process. The default Docker render
-mode is `always`, so changing Compose environment values and recreating the
-container updates the generated config. Set `JETMON_CONFIG_RENDER_MODE=never`
-for Monitor/Deliverer containers, or `VERIFLIER_CONFIG_RENDER_MODE=never` for
-Veriflier containers, when mounting a hand-managed JSON config that should not
-be generated from environment values.
+- Monitor and Deliverer read `config/config.json` by default. Set
+  `JETMON_CONFIG=/path/to/config.json` to use another file.
+- Veriflier reads `config/veriflier.json` by default. Set
+  `VERIFLIER_CONFIG=/path/to/veriflier.json` to use another file.
+- Docker entrypoints can render those JSON files from Compose environment
+  values before the Go process starts. After startup, the Go processes read the
+  generated JSON file, not direct environment overrides.
 
-Each entry uses the same shape:
+Most sections below document JSON keys. Wrapper-only Docker variables are
+called out separately so operators can tell which values belong in
+`config.json` and which values belong in Compose.
+
+Each JSON key entry uses the same shape:
 
 - Default: the value used when the key is omitted.
 - Values: accepted values when the key has a fixed set.
@@ -23,22 +24,46 @@ Each entry uses the same shape:
 `SIGHUP` or `./jetmon2 reload` reloads JSON config. Startup-only settings are
 called out in their notes.
 
-## Profiles And Startup Safety
+## Docker Render Inputs
 
-### Docker Config Rendering
+These are wrapper variables, not JSON keys. They are consumed by
+`docker/run-jetmon.sh` and `docker/run-veriflier.sh` before the Go binary
+starts.
+
+### JETMON_CONFIG_RENDER_MODE
 
 - Default: `always`
 - Values: `always`, `missing`, `never`
 - Example: `JETMON_CONFIG_RENDER_MODE=never`
-- Purpose: controls how Docker entrypoints create the JSON config consumed by
-  the Go binaries.
+- Purpose: controls how Monitor and Deliverer containers create the JSON config
+  consumed by the Go binaries.
 - Notes: `always` renders a generated config on every container start and is
   the recommended Compose mode. `missing` renders only when the target JSON file
-  does not exist; use this only for legacy deployments that intentionally keep a
+  does not exist; use it only for legacy deployments that intentionally preserve
   generated config across restarts. `never` disables rendering and leaves
-  `JETMON_CONFIG` / `VERIFLIER_CONFIG` or the binary's default config path as
-  the source of truth. Veriflier accepts `VERIFLIER_CONFIG_RENDER_MODE` and
-  falls back to `JETMON_CONFIG_RENDER_MODE` when unset.
+  `JETMON_CONFIG` or the binary default path as the source of truth.
+
+### VERIFLIER_CONFIG_RENDER_MODE
+
+- Default: falls back to `JETMON_CONFIG_RENDER_MODE`, then `always`.
+- Values: `always`, `missing`, `never`
+- Example: `VERIFLIER_CONFIG_RENDER_MODE=always`
+- Purpose: controls how Veriflier containers create their JSON config.
+- Notes: use `always` for normal Compose deployments so changing `.env` values
+  and recreating the container updates the generated Veriflier config. Use
+  `never` only when mounting a hand-managed JSON file.
+
+### JETMON_CONFIG, VERIFLIER_CONFIG
+
+- Defaults: `config/config.json` for Monitor/Deliverer,
+  `config/veriflier.json` for Veriflier.
+- Example: `JETMON_CONFIG=/run/jetmon/config.json`
+- Purpose: explicit JSON config path.
+- Notes: in Docker render modes `always` and `missing`, the entrypoint exports
+  this path to the generated file. In render mode `never`, the value points at
+  a hand-managed mounted file.
+
+## Profiles And Startup Safety
 
 ### CONFIG_PROFILE
 
@@ -726,7 +751,7 @@ it.
 The old `VERIFLIER_GRPC_PORT` and `grpc_port` names remain accepted as
 deprecated port aliases.
 
-## Deprecated Aliases And Legacy Compatibility Keys
+## Deprecated And Compatibility Keys
 
 These keys are intentionally at the bottom. They are accepted so copied v1
 configs parse during rollout and rollback windows, but new v2 configs should
@@ -734,35 +759,39 @@ not use them. `validate-config` warns when these keys are present.
 
 ### Deprecated aliases with real v2 behavior
 
-- `DB_UPDATES_ENABLE`: use `LEGACY_STATUS_PROJECTION_ENABLE`.
-- `BUCKET_NO_MIN`, `BUCKET_NO_MAX`: use `PINNED_BUCKET_MIN`,
-  `PINNED_BUCKET_MAX`.
-- `VERIFIERS`: use `VERIFLIERS`.
-- `grpc_port` in either Veriflier list spelling: use `port`.
+| Old key | Use instead | Notes |
+|---------|-------------|-------|
+| `DB_UPDATES_ENABLE` | `LEGACY_STATUS_PROJECTION_ENABLE` | Same compatibility projection switch. |
+| `BUCKET_NO_MIN`, `BUCKET_NO_MAX` | `PINNED_BUCKET_MIN`, `PINNED_BUCKET_MAX` | Same pinned migration range. |
+| `VERIFIERS` | `VERIFLIERS` | Misspelled v1-era spelling retained as an alias. |
+| `grpc_port` | `port` | Accepted in either Veriflier list spelling. |
 
-### Legacy compatibility keys with no v2 tuning effect
+### Compatibility keys with no v2 tuning effect
 
-- `NUM_TO_PROCESS`: no scheduler throughput cap; use `NUM_WORKERS`,
-  `DATASET_SIZE`, and streaming metrics.
-- `BATCH_SIZE`: no scheduler effect; use `DATASET_SIZE`.
-- `VERIFLIER_BATCH_SIZE`: no tuning effect on the v2 Veriflier transport.
-- `SQL_UPDATE_BATCH`: does not control v2 DB write batching.
-- `TIME_BETWEEN_CHECKS_SEC`: does not control v2 retry cadence.
-- `TIME_BETWEEN_NOTICES_MIN`: does not gate v2 WPCOM notifications.
-- `STATSD_SEND_MEM_USAGE`: resource gauges are emitted whenever StatsD is
-  configured.
-- `SCHEDULER_ENGINE`: deprecated v2 rollout key. Omit it; `streaming` is the
-  only supported scheduler. `legacy` is rejected.
-- `USE_VARIABLE_CHECK_INTERVALS`: deprecated v2 rollout key. Streaming always
-  respects per-site check intervals and runtime due state.
-- `WORKER_MAX_MEM_MB`: deprecated v2 scheduler cap. Streaming worker scaling
-  no longer drains workers based on this artificial memory threshold.
-- `MIN_TIME_BETWEEN_ROUNDS_SEC`: deprecated legacy round-scheduler key.
-  Streaming cadence comes from per-site `check_interval` and runtime due state.
-- `WORKER_MAX_CHECKS`: ignored; v2 has no Node worker recycle-by-check-count.
-- `TIMEOUT_FOR_REQUESTS_SEC`: ignored; v2 retry/escalation has separate logic.
+| Key | Current behavior |
+|-----|------------------|
+| `NUM_TO_PROCESS` | Parsed for copied v1 configs, but does not cap scheduler throughput. Use `NUM_WORKERS`, `DATASET_SIZE`, and streaming metrics. |
+| `BATCH_SIZE` | Parsed for copied v1 configs, but has no scheduler effect. Use `DATASET_SIZE`. |
+| `VERIFLIER_BATCH_SIZE` | Parsed for copied v1 configs, but has no production tuning effect on the v2 Veriflier transport. |
+| `SQL_UPDATE_BATCH` | Parsed for copied v1 configs, but does not control v2 DB write batching. |
+| `TIME_BETWEEN_CHECKS_SEC` | Parsed for copied v1 configs, but does not control v2 retry cadence. |
+| `TIME_BETWEEN_NOTICES_MIN` | Parsed for copied v1 configs, but does not gate v2 WPCOM notifications. |
+| `STATSD_SEND_MEM_USAGE` | Parsed for copied v1 configs; v2 emits resource gauges whenever StatsD is configured. |
+| `WORKER_MAX_CHECKS` | Ignored; v2 has no Node worker recycle-by-check-count. |
+| `TIMEOUT_FOR_REQUESTS_SEC` | Ignored; v2 retry/escalation has separate logic. |
+
+### Deprecated v2 rollout keys
+
+| Key | Current behavior |
+|-----|------------------|
+| `SCHEDULER_ENGINE` | Omit it. `streaming` is the only supported scheduler; `legacy` is rejected. |
+| `USE_VARIABLE_CHECK_INTERVALS` | Omit it. Streaming always respects per-site check intervals and runtime due state. |
+| `WORKER_MAX_MEM_MB` | Omit it. Streaming worker scaling no longer drains workers based on an artificial memory threshold. |
+| `MIN_TIME_BETWEEN_ROUNDS_SEC` | Omit it. Streaming cadence comes from per-site `check_interval` and runtime due state. |
 
 ### Active keys with changed meaning from v1
 
-- `NUM_WORKERS`: goroutine pool floor/guardrail, not process count.
-- `DATASET_SIZE`: DB fetch page size, not total work per round.
+| Key | v2 meaning |
+|-----|------------|
+| `NUM_WORKERS` | Check-pool floor/guardrail, not process count. |
+| `DATASET_SIZE` | DB fetch page size, not total work per round. |
