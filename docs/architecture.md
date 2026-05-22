@@ -1,659 +1,347 @@
-Jetmon 2 — Architecture Overview
-==================================
+# Jetmon 2 Architecture
 
-This document describes the internal architecture of Jetmon 2 and the complete
-call flow used to determine and report site status.
+This document describes how the current Jetmon 2 system fits together at
+runtime. It is intentionally higher level than the package internals and lower
+level than the product overview.
 
+Related references:
 
-System Overview
----------------
+- [project.md](project.md) - project goals and operator-facing value
+- [data-model.md](data-model.md) - table ownership and schema details
+- [events.md](events.md) - incident lifecycle and transition semantics
+- [internal-api-reference.md](internal-api-reference.md) - Monitor REST API
+- [operations-guide.md](operations-guide.md) - production operations
+- [adr/](adr/) - load-bearing design decisions
 
-Jetmon 2 runs as a Go monitor binary (`jetmon2`). Multiple monitor instances can
-run on different hosts, each owning a non-overlapping range of site buckets
-claimed from MySQL. Outbound webhooks and alert contacts can still run embedded
-inside one API-enabled `jetmon2` process, or through the standalone
-`jetmon-deliverer` binary as the first step toward the post-v2 process split.
+## Runtime Shape
 
-```
-                          ┌─────────────────────────────────────────┐
-                          │                 jetmon2                 │
-                          │                                         │
-  ┌──────────┐  sites     │  ┌─────────────┐    ┌─────────────────┐ │
-  │  MySQL   │──────────► │  │ Orchestrator│───►│  Checker Pool   │ │
-  │ (bucket) │◄────────── │  │  (1 gorout.)│◄───│  (N goroutines) │ │
-  └──────────┘  updates   │  └──────┬──────┘    └─────────────────┘ │
-                          │         │                               │
-  ┌──────────┐  confirm?  │         │ escalate                      │
-  │Veriflier │◄───────────│─────────┘                               │
-  │ (remote) │──────────► │                                         │
-  └──────────┘  result    │  ┌───────────┐  ┌──────────┐            │
-                          │  │   WPCOM   │  │Dashboard │            │
-  ┌──────────┐  notify    │  │  Client   │  │  (SSE)   │            │
-  │  WPCOM   │◄───────────│  │(circuit-  │  │          │            │
-  │   API    │            │  │ breaker)  │  │          │            │
-  └──────────┘            │  └───────────┘  └──────────┘            │
-                          └─────────────────────────────────────────┘
-```
+Jetmon 2 has three deployable binaries:
 
-Multiple jetmon2 instances coordinate through MySQL bucket leases:
+- `jetmon2`: Monitor, scheduler, local checker, event writer, WPCOM notifier,
+  dashboard, internal API, and optionally embedded delivery workers.
+- `jetmon-deliverer`: standalone webhook and alert-contact delivery worker.
+- `veriflier2`: remote checker used for independent downtime confirmation.
 
-```
-  Host A  ──────  buckets 0–499
-  Host B  ──────  buckets 500–999
-  Host C  ──────  (takes over Host B's range if B goes offline)
-```
+Typical production shape:
 
-Shadow-v2-state migration model:
-
-- `jetpack_monitor_events` and `jetpack_monitor_event_transitions` are the authoritative incident
-  state for Jetmon v2.
-- `jetpack_monitor_sites` remains the legacy site/config table during migration.
-- While `LEGACY_STATUS_PROJECTION_ENABLE` is true, every v2 incident mutation
-  also projects the v1-compatible `site_status` / `last_status_change` fields
-  back to `jetpack_monitor_sites` in the same transaction.
-- Once legacy readers have moved to the v2 API/event tables, disable
-  `LEGACY_STATUS_PROJECTION_ENABLE`; v2 incident state continues to be written
-  to the event tables.
-
-
-Package Map
------------
-
-```
-jetmon/
-├── cmd/jetmon2/          Entry point, CLI subcommands, signal handling
-├── cmd/jetmon-deliverer/ Standalone outbound delivery worker
-├── internal/
-│   ├── orchestrator/     Round loop, bucket coordination, retry queue,
-│   │                     failure escalation, status notifications
-│   ├── checker/
-│   │   ├── checker.go    HTTP check logic (httptrace, SSL, keyword, redirect)
-│   │   └── pool.go       Auto-scaling goroutine pool
-│   ├── db/               MySQL queries and schema migrations
-│   ├── config/           Config loading, validation, hot reload
-│   ├── veriflier/        Veriflier client (JSON-over-HTTP) and server
-│   ├── wpcom/            WPCOM notification client with circuit breaker
-│   ├── audit/            Structured audit log (read + write)
-│   ├── eventstore/       Authoritative incident event + transition writer
-│   ├── api/              Internal REST API, auth, rate limits, idempotency
-│   ├── deliverer/        Shared webhook + alert-contact worker wiring
-│   ├── webhooks/         Webhook registry + HMAC-signed delivery worker
-│   ├── alerting/         Managed alert-contact registry + delivery worker
-│   ├── metrics/          StatsD UDP client, stats file writer
-│   └── dashboard/        HTTP + SSE operator dashboard
-└── veriflier2/cmd/       Standalone veriflier binary
+```text
+                  MySQL
+                   ^
+                   |
+                   v
+          +------------------+
+          |     jetmon2      |
+          |------------------|
+          | scheduler        |
+          | checker pool     |---- HTTP/TLS/DNS probes ----> customer sites
+          | eventstore       |
+          | WPCOM client     |---- legacy notify ----------> WPCOM
+          | API/dashboard    |
+          +--------+---------+
+                   |
+                   | JSON over HTTP
+                   v
+             v2 Veriflier fleet
 ```
 
+Multiple Monitor instances coordinate through MySQL. During normal v2 operation
+they own non-overlapping bucket ranges through `jetpack_monitor_hosts`. During
+API-controlled rollout, ranges are activated deliberately so v2 does not check a
+range still owned by v1.
 
-Site Status Call Flow
-----------------------
+## Package Map
 
-This is the end-to-end path from database query to WPCOM notification.
-
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│ PHASE 1 — Plan                                                       │
-│                                                                      │
-│  orchestrator.runStreamingEngine()                                   │
-│    ClaimBuckets() / heartbeat  ── claim or refresh bucket ownership  │
-│    dbListActiveSites()         ── load active site identity/config    │
-│    streamingDueWheel           ── spread checks by stable phase       │
-└──────────────────────────────────────────────────────────────────────┘
-                  │  []db.Site
-                  ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│ PHASE 2 — Check (parallel)                                           │
-│                                                                      │
-│  for each site:                                                      │
-│    pool.Submit(checker.Request)                                      │
-│         │                                                            │
-│         ▼   (goroutine worker)                                       │
-│    checker.Check(ctx, req)                                           │
-│      • HTTP HEAD or GET with httptrace timing (DNS/TCP/TLS/TTFB)     │
-│      • Keyword match in full GET profile (reads up to 1 MB of body)  │
-│      • Redirect policy in full profile (follow / alert / fail)       │
-│      • SSL expiry extraction from peer certificate                   │
-│      • Error classification → ErrorCode (8 codes)                    │
-│      • Success = HTTPCode in [1, 399]                                │
-│         │                                                            │
-│         ▼                                                            │
-│    checker.Result  ──►  pool.results channel                         │
-└──────────────────────────────────────────────────────────────────────┘
-                  │  map[blogID]Result
-                  ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│ PHASE 3 — Collect (deadline: NetCommsTimeout + 5 s)                  │
-│                                                                      │
-│  Drain pool.Results() until all dispatched results arrive or         │
-│  deadline fires (partial results processed, remaining work stays      │
-│  visible through outstanding/due-remaining scheduler metrics)         │
-└──────────────────────────────────────────────────────────────────────┘
-                  │
-          ┌───────┴───────┐
-          │               │
-    !IsFailure()      IsFailure()
-          │               │
-          ▼               ▼
-┌─────────────┐   ┌─────────────────────────────────────────────────┐
-│  RECOVERY   │   │ PHASE 4 — Failure Escalation                    │
-│             │   │                                                 │
-│ retries     │   │ Stage 1 — Local retry                           │
-│  .clear()   │   │   retries.record(res) → failCount++             │
-│             │   │   if failCount < NumOfChecks (default 3):       │
-│ if site was │   │     auditLog("retry_dispatched")                │
-│ previously  │   │     ← return; retry next round                  │
-│ down:       │   │                                                 │
-│  dbUpdate   │   │ Stage 2 — Veriflier escalation                  │
-│  Status()   │   │   if failCount >= NumOfChecks:                  │
-│  Notify()   │   │     escalateToVerifliers()                      │
-│             │   │       ← see Veriflier Quorum section            │
-└─────────────┘   │                                                 │
-                  │ Stage 3 — Confirm down                          │
-                  │   confirmDown(site, entry, vResults)            │
-                  │     if LEGACY_STATUS_PROJECTION_ENABLE:         │
-                  │       project site_status(→ confirmed_down)     │
-                  │     if inMaintenance(): suppress + audit        │
-                  │     else if !isAlertSuppressed(): Notify()      │
-                  │     retries.clear(blogID)                       │
-                  └─────────────────────────────────────────────────┘
+```text
+cmd/jetmon2/              main Monitor binary and CLI commands
+cmd/jetmon-deliverer/     standalone delivery-worker binary
+internal/orchestrator/    scheduler, bucket coordination, retries, WPCOM flow
+internal/checker/         HTTP/TLS/DNS checks and checker pool
+internal/db/              MySQL access and migrations
+internal/config/          JSON config loading, validation, hot reload
+internal/eventstore/      authoritative event and transition writer
+internal/audit/           operational audit log access
+internal/wpcom/           legacy WPCOM notification client
+internal/veriflier/       Monitor-to-Veriflier client/server transport
+internal/api/             internal REST API, auth, rate limits, idempotency
+internal/dashboard/       host and fleet dashboards
+internal/deliverer/       shared delivery-worker wiring
+internal/webhooks/        webhook registry and HMAC delivery
+internal/alerting/        managed alert-contact delivery
+internal/metrics/         StatsD client and v1-style stats output
+veriflier2/               standalone Go Veriflier service
 ```
 
+## Data Ownership
 
-Failure Escalation Detail
---------------------------
+Jetmon 2 keeps the v1 site table compatible while moving v2 runtime state into
+v2-owned tables.
 
-```
-  Local check fails (N times)
-          │
-          │  failCount < NumOfChecks?
-          ├──────────────────────────► queue in retryQueue, retry next round
-          │
-          │  failCount >= NumOfChecks
-          ▼
-  escalateToVerifliers()
-          │
-          │  No verifliers configured?
-          ├──────────────────────────► confirmDown() immediately
-          │
-          │  Verifliers available
-          ▼
-  Dispatch in parallel to all verifliers
-          │
-          ├── veriflier-1:  same policy  ──►  {success: false, http: 500}
-          ├── veriflier-2:  same policy  ──►  {success: false, http: 500}
-          └── veriflier-N:  same policy  ──►  {success: true,  http: 200}
-                                                    ↑ false positive
+- `jetpack_monitor_sites` remains the v1-shaped site identity, bucket, cadence,
+  and legacy projection table.
+- `jetpack_monitor_site_check_config` owns v2 check method/profile and rich
+  per-site probe options.
+- `jetpack_monitor_site_runtime` owns v2 freshness and SSL observation
+  projection.
+- `jetpack_monitor_events` and `jetpack_monitor_event_transitions` are the
+  authoritative incident state.
+- `jetpack_monitor_audit_log` is operational evidence, not state truth.
+- `jetpack_monitor_check_history` stores method and timing samples.
+- `jetpack_monitor_hosts` owns dynamic bucket coverage.
+- `jetpack_monitor_process_health` feeds host/fleet dashboards.
+- `jetpack_monitor_veriflier_vantages` and
+  `jetpack_monitor_veriflier_agents` separate trusted quorum identity from
+  observed Veriflier process telemetry.
 
-  healthyUniqueVantages = count of unique healthy verifier vote identities
-  minHealthyFloor = 2 for multi-verifier fleets unless PeerOfflineLimit=1
-  Quorum = max(min(healthyUniqueVantages, PeerOfflineLimit), minHealthyFloor)
-  confirmations = count of unique verifier vantages reporting !success
+See [data-model.md](data-model.md) for the full table list and rollout notes.
 
-  confirmations >= quorum?
-      YES  ──►  confirmDown() → WPCOM notified
-      NO   ──►  recordFalsePositive() + retries.clear()
-```
+## Scheduler And Check Flow
 
+The Monitor uses the streaming scheduler. The old round/page scheduler is no
+longer a runtime option.
 
-Orchestrator Streaming Loop
----------------------------
-
-```
-orchestrator.Run()
-    │
-    └── active loop (until ctx.Done()):
-          │
-          ├─ config.Get()                      // fresh config snapshot each tick
-          ├─ refreshStreamingBuckets(cfg)       // heartbeat/rebalance on cadence
-          ├─ refreshVeriflierClients(cfg)       // rebuild list only on change
-          ├─ dbListActiveSites()                // reload active targets on cadence/change
-          ├─ streamingDueWheel.popReady()       // due targets only
-          ├─ pool.Submit(checker.Request)       // bounded queue with backpressure
-          ├─ processStreamingSideEffects()
-          │     ├─ dbMarkSitesChecked()         // batched compatibility freshness
-          │     ├─ dbRecordCheckHistories()     // method + RTT + DNS/TCP/TLS/TTFB
-          │     ├─ dbUpdateSSLExpiries() + checkSSLAlerts()
-          │     └─ handleRecovery(), handleFailure(),
-          │        or maintenance-swallow the failure
-          └─ reportStreamingStats()             // StatsD + stats files
+```text
+load active targets from MySQL
+spread targets across stable phases in the time wheel
+pop due targets
+submit bounded work to checker pool
+collect results
+write side effects in batches
+publish stats and dashboard state
 ```
 
+The scheduler keeps active targets in memory and uses stable phase spreading so
+large fleets do not stampede at interval boundaries. Healthy checks avoid hot
+per-check writes where possible; compatibility freshness projection is batched.
 
-Checker Pool — Auto-Scaling
-----------------------------
+Each checker request performs the configured site probe:
 
-The pool maintains a live set of worker goroutines bounded by `[minSize, maxSize]`.
+- `HEAD` or `GET`
+- `legacy`, `simple_http`, or `full` detection profile
+- DNS/TCP/TLS/TTFB/total timing through `net/http/httptrace`
+- redirect handling according to policy
+- bounded body reads when needed
+- keyword and forbidden-keyword checks in full GET profile
+- TLS certificate expiry and deprecated TLS observation
+- public-target safety checks before untrusted dials
 
-```
-  NewPool(initial=30, min=1, max=60)
-    │
-    ├─ work channel  (cap = max×2 = 120)
-    ├─ results channel (cap = max×2 = 120)
-    ├─ retire channel  (cap = max  =  60)
-    └─ autoScale() goroutine (every 5 s)
+HTTP responses below 400 are availability successes unless a full-profile rule
+turns the result into a failure. TLS deprecation is advisory and does not open
+customer downtime.
 
-  autoScale() logic:
-    ┌─────────────────────────────────────────────────────┐
-    │  current = WorkerCount()                            │
-    │  queue   = QueueDepth()                             │
-    │                                                     │
-    │  Scale UP:   queue > current && current < maxSize   │
-    │    spawn min(queue-current, maxSize-current) workers│
-    │                                                     │
-    │  Scale DOWN: current > maxSize                      │
-    │    retire (current - maxSize) workers immediately   │
-    │                                                     │
-    │  Scale DOWN: queue == 0 && current > minSize        │
-    │    retire 1 worker (gradual idle drain)             │
-    └─────────────────────────────────────────────────────┘
+## Incident Flow
 
-  Worker lifecycle:
-    spawnWorker() → goroutine:
-      loop:
-        select:
-          <-ctx.Done()  → exit (pool shutdown)
-          <-retire      → exit (graceful scale-down)
-          req := <-work → execute checker.Check(), push to results
+The event model is shared across local checks and Veriflier confirmation:
 
-  Graceful shutdown:
-    Drain() → CompareAndSwap(closed, false→true)
-            → close(work)
-            → wg.Wait()  ← blocks until last check completes
-            → cancel ctx
-```
+```text
+local success
+  -> close open Seems Down / Down events as recovered
 
+first local failure
+  -> open or update Seems Down
+  -> keep retry state
 
-WPCOM Circuit Breaker
-----------------------
+enough local failures
+  -> ask Verifliers
 
-```
-         ┌─────────────────────────────────────────────┐
-         │              Closed (normal)                │
-         │  • notifications sent immediately           │
-         │  • failure counter tracks HTTP errors       │
-         └──────────────────┬──────────────────────────┘
-                            │ failures >= 5
-                            ▼
-         ┌─────────────────────────────────────────────┐
-         │               Open (tripped)                │
-         │  • new notifications queued (max 1000)      │
-         │  • oldest dropped when queue full           │
-         │  • circuitOpenAt recorded                   │
-         └──────────────────┬──────────────────────────┘
-                            │ time.Since(circuitOpenAt) > 60 s
-                            ▼
-         ┌─────────────────────────────────────────────┐
-         │            Resetting (half-open)            │
-         │  • failures reset to 0                      │
-         │  • circuitOpen = false                      │
-         │  • queued notifications flushed             │
-         │  • next failure reopens circuit             │
-         └─────────────────────────────────────────────┘
+Verifliers confirm quorum
+  -> promote same event to Down
+  -> send legacy WPCOM notification when enabled
 
-  Notify() call path:
-    if circuit open AND timeout not elapsed → enqueue, return error
-    if circuit open AND timeout elapsed     → reset + flush queue + send
-    if circuit closed                       → send()
-      send() error → failures++
-                     failures >= 5 → open circuit
-      send() ok    → failures = 0
+Verifliers disagree or quorum is not met
+  -> close as false alarm
+
+later local success
+  -> close Down and send recovery notification when needed
 ```
 
+Event mutations go through `internal/eventstore`. The event row, transition row,
+and legacy projection update are written transactionally while
+`LEGACY_STATUS_PROJECTION_ENABLE` is enabled. This prevents the v2 incident
+state and v1 compatibility projection from drifting.
 
-Veriflier Transport
---------------------
+See [events.md](events.md) for lifecycle states, severity, resolution reasons,
+and transition invariants.
 
-```
-  Monitor (orchestrator)              Veriflier (remote)
-  ──────────────────────              ──────────────────
-  veriflier.VeriflierClient           veriflier.Server
+## Veriflier Transport
 
-  Preferred v2 contract:
+The production Monitor-to-Veriflier transport is JSON over HTTP:
 
-  CheckBatch(ctx, []CheckRequest)
-    POST /v2/check
-    Authorization: Bearer <token>
-    Content-Type: application/json
-    Body: {
-      "batch_id": "...",
-      "deadline_ms": 12000,
-      "requests": [{
-        "request_id": "...",
-        "blog_id": 123,
-        "url": "https://example.com",
-        "timeout_ms": 10000,
-        "method": "GET",
-        "detection_profile": "full",
-        "headers": {},
-        "body_rules": {"required": ["needle"], "forbidden": ["bad"]},
-        "redirect_policy": "follow"
-      }]
-    }
-                        ─────────────────────────────►
-                                                        bounded admission queue
-                                                        concurrent HEAD/GET probes
-                                                        typed outcomes
-                        ◄─────────────────────────────
-    Body: {
-      "batch_id": "...",
-      "vantage": {"id": "us-east-1", "region": "us-east", "provider": "..."},
-      "agent": {"id": "host-a", "host": "host-a", "version": "..."},
-      "results": [{
-        "request_id": "...",
-        "blog_id": 123,
-        "url": "https://example.com",
-        "vantage_id": "us-east-1",
-        "agent_id": "host-a",
-        "outcome": "down",
-        "success": false,
-        "http_code": 500,
-        "error_code": 0,
-        "rtt_ms": 214,
-        "timings_ms": {"dns": 4, "tcp": 18, "tls": 36, "ttfb": 190}
-      }]
-    }
-
-  Status(ctx)
-    GET /v2/status
-    ◄── {
-          "status": "OK",
-          "version": "1.2.3",
-          "protocols": ["v2-json-http"],
-          "vantage": {...},
-          "agent": {...},
-          "capacity": {"max_concurrency": 2048, "queue_depth": 0, ...}
-        }
-
-  Optional legacy-compatible HTTP contract
-  (only when VERIFLIER_ENABLE_LEGACY_HTTP=true):
-
-    POST /check
-    Authorization: Bearer <token>
-    Content-Type: application/json
-    Body: {"sites": [{blog_id, url, timeout, ...}, ...]}
-                        ─────────────────────────────►
-                                                        for each site:
-                                                          checkFn(req)
-                                                          res.Host = hostname
-                        ◄─────────────────────────────
-    Body: {"results": [{blog_id, host, success, http_code, ...}, ...]}
-
-  Ping(ctx)
-    GET /status
-    ◄── {"status":"OK","version":"1.2.3"}
+```text
+GET  /v2/status
+POST /v2/check
+Authorization: Bearer <token>
 ```
 
-The Veriflier `/v2/...` paths are the private Monitor-to-Veriflier transport
-contract, not the Monitor REST API. The Monitor's operator/product API remains
-under `/api/v1/...`; the Veriflier path uses `v2` to distinguish it from the
-original v1 Veriflier transport and optional `/check`/`/status` compatibility
-surface.
+`/v2/status` exposes service health, supported protocols, `vantage.id`,
+`agent.id`, and capacity. `/v2/check` accepts batches of site probe requests and
+returns typed per-request outcomes.
 
-Veriflier discovery is staged through `VERIFLIER_DISCOVERY_MODE`:
-`static` uses the configured `VERIFLIERS` list, `shadow` reads the DB registry
-and reports drift without changing traffic, and `active` uses enabled usable
-rows from `jetpack_monitor_veriflier_vantages` with fallback to static config if the
-registry is unavailable or empty. Monitors poll Veriflier `/v2/status` and write
-`jetpack_monitor_veriflier_agents` capacity/liveness telemetry; Veriflier hosts do not
-need DB access. Agent telemetry never creates trusted quorum votes by itself;
-operators must pre-approve each enabled vantage.
+Important identity rules:
 
-Verifier capacity is auto-sized from CPU and file-descriptor headroom. A typical
-8-core host reports `max_concurrency: 2048`; smaller hosts report less, and the
-queue absorbs short Monitor-side bursts before returning overload.
+- `vantage.id` is the quorum vote identity.
+- `agent.id` is the process identity for diagnostics.
+- Multiple replicas behind one regional endpoint should share a `vantage.id`.
+- Duplicate `vantage.id` replies are audited but count as one vote.
+- Multi-Veriflier layouts keep a two-healthy-vantage floor unless
+  `PEER_OFFLINE_LIMIT=1` is intentionally configured.
 
-Monitor-side single-site `Check` calls are coalesced into small, bounded
-`CheckBatch` RPCs before they cross the network. This keeps the simple
-per-site quorum code path while avoiding one HTTP request per failed site during
-large outage waves. Light checks (`HEAD` + `legacy`, `GET` + `simple_http`) use
-a larger coalescing cap than `GET` + `full` checks, but the cap remains modest
-so otherwise-fast checks are not held behind a rare slow request in the same
-RPC at rollout-scale rates. The light and full lanes also have independent
-in-flight gates so a slow body-reading batch does not block cheap reachability
-checks during a mixed rollout. Explicit `CheckBatch` callers still send their
-supplied batch as-is.
+Verifliers execute accepted batches through a bounded executor. If local
+capacity is exhausted, the Veriflier returns HTTP 503 for the batch. The Monitor
+treats that endpoint as unhealthy/no-vote, never as customer-site downtime.
 
-The v2 batch deadline is treated as a soft server-side deadline with client
-response headroom. If the deadline is reached after work has been accepted, the
-Veriflier returns completed probe results plus per-request timeout results for
-unfinished probes before the monitor-side HTTP context expires. This keeps one
-slow target from turning an otherwise successful batch into hundreds of
-monitor-side transport errors, and applies to both light and full detection
-lanes during sustained mixed rollouts.
+`veriflier2` can expose legacy-compatible `/check` and `/status` endpoints for
+lab or emergency compatibility testing, but normal v2 production traffic should
+use `/v2/check` and `/v2/status`. Original v1 Verifliers use the old TLS/custom
+transport and are not supported v2 Monitor fallback targets.
 
-The Veriflier does not emit one success log line per probe. Request IDs are
-echoed back in the response and joined to monitor-side audit rows there; keeping
-successful probe traffic out of stdout avoids log-volume bottlenecks and avoids
-writing customer URLs into high-rate container logs.
+`proto/veriflier.proto` remains a schema reference for a possible future
+transport. Generated gRPC stubs are not required to build or deploy v2.
 
-The transport is JSON-over-HTTP for v2 production. `proto/veriflier.proto`
-remains as a schema reference for a possible future transport, but generated
-gRPC stubs are not required to build or deploy v2.
+## Veriflier Discovery
 
-The monitor prefers `/v2/check` and falls back to `/check` only for
-`veriflier2`'s legacy-compatible HTTP endpoint when v2 is unavailable. The
-preferred rollout deploys a fresh v2 Veriflier fleet first and points v2
-Monitors only at that fleet; original v1 Verifliers use the old TLS/custom
-transport and are not v2 Monitor fallback targets.
+Monitor discovery mode controls where Veriflier endpoints come from:
 
-This transport fallback is distinct from site probe policy. `HEAD` + `legacy`
-checks are v1-compatible probe semantics carried in the versioned `/v2/check`
-payload, not a reason to enable the legacy-compatible `/check` transport.
+- `static`: use the configured `VERIFLIERS` list.
+- `shadow`: read the trusted DB registry and report drift without changing
+  traffic.
+- `active`: use enabled usable registry rows, with fallback to static config if
+  discovery is unavailable or empty.
 
-`vantage.id` is the quorum identity. Horizontal replicas behind the same
-regional or provider endpoint must report the same `vantage.id`; `agent.id`
-identifies only the process that handled the request and is diagnostic metadata,
-not an extra vote. This keeps vertical and horizontal Veriflier scaling from
-changing the meaning of `PEER_OFFLINE_LIMIT`.
+Monitors poll `/v2/status` and write liveness/capacity data to
+`jetpack_monitor_veriflier_agents`. Those telemetry rows do not create trusted
+quorum votes by themselves; operators must explicitly approve vantages in
+`jetpack_monitor_veriflier_vantages`.
 
-Duplicate `vantage.id` values across monitor-configured Veriflier entries are
-treated as one vote. The duplicate replies are still written to audit metadata
-for debugging, but they do not increase quorum. In multi-Veriflier fleets the
-effective quorum has a two-healthy-vantage floor unless operators intentionally
-configure `PEER_OFFLINE_LIMIT=1`; this prevents a degraded verifier set from
-collapsing to one confirming vote.
+## Bucket Ownership
 
-The v2 server executes accepted batches through a bounded concurrent executor.
-If the local queue is full, it rejects the whole batch with HTTP 503. The
-monitor treats that endpoint as unhealthy/no-vote rather than interpreting
-overload as customer-site downtime.
+Dynamic bucket ownership uses MySQL as the coordination point:
 
-`body_rules.required` is an array for future extensibility, but the current
-checker supports zero or one required keyword. `body_rules.forbidden` supports
-multiple forbidden keywords.
-
-
-Bucket Distribution — Multi-Host Scaling
------------------------------------------
-
-Each round, all active monitors re-negotiate bucket ownership via a locked
-MySQL transaction. Expired hosts (heartbeat missed by `BucketHeartbeatGraceSec`)
-are removed and their ranges redistributed.
-
-```
-  jetpack_monitor_hosts (3 active hosts, BucketTotal=1000, BucketTarget=500):
-
-  Hosts sorted by host_id: [host-a, host-b, host-c]
-  assignBucketRanges() water-fill:
-    host-a → buckets   0– 499  (capped at BucketTarget=500)
-    host-b → buckets 500– 749  (250 remaining, 2 hosts left)
-    host-c → buckets 750– 999
-
-  host-b goes offline (heartbeat expires):
-    host-a → buckets   0– 499
-    host-c → buckets 500– 999  ← automatically absorbs host-b's range
+```text
+jetpack_monitor_hosts
+  host_id
+  bucket_min
+  bucket_max
+  last_heartbeat
+  status
 ```
 
-`SELECT ... FOR UPDATE` prevents two hosts from claiming overlapping ranges.
+Hosts heartbeat their ownership rows. When a host stops cleanly, it releases its
+range. When a host disappears, peers treat stale heartbeat rows as expired and
+claim uncovered ranges inside locked transactions. `SELECT ... FOR UPDATE`
+prevents two hosts from claiming overlapping coverage.
 
+During rollout, API-controlled range activation protects against v1 and v2
+checking the same bucket range at the same time. After full v2 cutover, dynamic
+ownership handles normal coverage and failover.
 
-Signal Handling
-----------------
+## Delivery Architecture
 
-```
-  SIGHUP  ──►  config.Reload()
-                  └─ re-reads JSON file under RWMutex
-                  └─ next round: pool.SetMaxSize(), refreshVeriflierClients()
-                  └─ zero downtime, current round unaffected
+Webhook and alert-contact delivery are database-backed pull workers.
 
-  SIGINT  ──►  orchestrator.Stop()   (also sent by: jetmon2 drain)
-  SIGTERM      └─ cancel context
-               └─ current round completes
-               └─ dbMarkHostDraining()
-               └─ pool.Drain()       ← waits for in-flight checks
-               └─ dbReleaseHost()
-               └─ exit 0
-               └─ hard kill after 30 s if drain stalls
-```
-
-
-Database Tables
-----------------
-
-```
-  jetpack_monitor_sites   V1-shaped legacy site table plus compatibility projection
-    blog_id               WordPress site identifier
-    bucket_no             Determines which monitor instance owns this site
-    monitor_url           URL to check
-    monitor_active        Whether the site is active
-    check_interval        V1-owned per-site cadence
-    site_status           Legacy v1 projection; derived from v2 events
-    last_status_change    Legacy v1 projection; derived from v2 transitions
-
-  jetpack_monitor_site_check_config V2-only per-site probe config
-    request_method        HEAD / GET rollout policy override
-    detection_profile     legacy / simple_http / full detection profile
-    check_keyword         Optional body text to require
-    forbidden_keyword     Optional body text that must not appear
-    forbidden_keywords    JSON array of body text that must not appear
-    maintenance_start/end Suppress alerts during scheduled maintenance
-    custom_headers        JSON blob of extra HTTP headers
-    timeout_seconds       Per-site timeout override
-    redirect_policy       follow / alert / fail
-    alert_cooldown_minutes Per-site override for notification cooldown
-
-  jetpack_monitor_site_runtime     V2-only runtime/freshness projection
-    last_checked_at       Last completed local check timestamp
-    next_check_at         Materialized variable-interval due time
-    ssl_expiry_date       Updated after HTTPS checks
-    last_alert_sent_at    Tracks cooldown window
-
-  jetpack_monitor_site_safety_flags Non-downtime remediation state
-    monitor_site_id/blog_id Source monitor row and site identifiers
-    flag_type/status       unsafe_monitor_url / probe_safety_block lifecycle
-    reason/monitor_url     Bounded explanation and target URL snapshot
-    first_seen/last_seen   Finding timestamps for operator cleanup
-
-  jetpack_monitor_hosts            Active monitor instances and bucket leases
-    host_id               System hostname (PRIMARY KEY)
-    bucket_min/max        Owned bucket range
-    last_heartbeat        Updated every round; expiry triggers rebalance
-    status                active / draining
-
-  jetpack_monitor_process_health   Durable process heartbeat snapshots for dashboards
-    process_id            Stable key such as <host>:monitor or <host>:deliverer
-    host_id/process_type  Fleet grouping dimensions
-    state/updated_at      Lifecycle state and freshness marker
-    health_status         Green/amber/red process health rollup
-    go_sys_mem_mb         Go runtime system memory in MB
-    rss_mem_mb            Operating-system resident set size in MB
-    dependency_health     JSON dependency health summary
-
-  jetpack_monitor_events           Authoritative v2 incident current state
-    id                    Incident identifier
-    blog_id               Site identifier
-    check_type            Probe family (http, tls_expiry, ...)
-    severity/state        Current incident projection
-    started_at/ended_at   Incident window
-    resolution_reason     Required close reason
-
-  jetpack_monitor_event_transitions Append-only mutation history for jetpack_monitor_events
-    event_id              Incident row being mutated
-    severity/state before/after
-    reason/source         Why and who caused the mutation
-    changed_at            Transition time
-
-  jetpack_monitor_audit_log        Operational trail for compliance/debugging
-    event_type            check | wpcom_sent | wpcom_retry |
-                          retry_dispatched | veriflier_sent |
-                          veriflier_result | maintenance_active |
-                          alert_suppressed | api_access | config_reload
-    blog_id, source, http_code, error_code, rtt_ms
-
-  jetpack_monitor_check_history    Per-check method and timing samples
-    request_method, rtt_ms, dns_ms, tcp_ms, tls_ms, ttfb_ms
-
-  jetpack_monitor_false_positives  Checks local failed but verifliers passed
-    blog_id, http_code, error_code, rtt_ms
-
-  jetpack_monitor_veriflier_vantages Trusted Veriflier quorum identities
-    vantage_id, region/provider, endpoint_host/port, auth_token, enabled
-
-  jetpack_monitor_veriflier_agents Concrete Veriflier process telemetry
-    agent_id, vantage_id, version, protocols, capacity, last_seen
-
-  jetpack_monitor_api_keys         Internal API Bearer-token registry
-    key_hash, consumer_name, scope, rate_limit_per_minute
-
-  jetpack_monitor_webhooks         Registered webhook receivers and filters
-  jetpack_monitor_webhook_deliveries
-                           Per-transition webhook delivery attempts
-  jetpack_monitor_webhook_dispatch_progress
-                           Webhook worker transition high-water marks
-
-  jetpack_monitor_alert_contacts   Managed notification destinations
-  jetpack_monitor_alert_deliveries Per-transition alert delivery attempts
-  jetpack_monitor_alert_dispatch_progress
-                           Alert worker transition high-water marks
-
-  jetpack_monitor_schema_migrations  Idempotent migration tracking
+```text
+event transition written
+  -> delivery worker sees high-water mark
+  -> matching webhooks / alert contacts create delivery rows
+  -> workers claim due rows transactionally
+  -> outbound POST/email/API send
+  -> retry or mark delivered/abandoned
 ```
 
+Embedded delivery can run inside an API-enabled `jetmon2` process. Standalone
+delivery uses `jetmon-deliverer`. Delivery rows are claimed transactionally, so
+multiple workers do not process the same pending row.
 
-Key Concurrency Patterns
--------------------------
+`DELIVERY_OWNER_HOST` is a rollout guard when operators want only one host to
+run embedded delivery workers.
 
-```
-  Component            Primitive          Usage
-  ─────────────────    ───────────────    ────────────────────────────────
-  config.current       sync.RWMutex       RLock on every Get(); Lock on Reload()
-  orchestrator         stdctx.Context     Cancel propagates stop to all goroutines
-  veriflierClients     sync.RWMutex       RLock for snapshot; Lock on rebuild
-  retryQueue.entries   sync.Mutex         Lock on record/clear/get/size
-  wpcom state          sync.Mutex         Never held during HTTP send()
-  pool.size/active     sync/atomic.Int64  Hot-path counters, no lock needed
-  pool.closed          sync/atomic.Bool   CAS for idempotent Drain()
-  pool.workMu          sync.RWMutex       RLock on Submit; Lock on close(work)
-  pool.wg              sync.WaitGroup     Drain() blocks until wg reaches 0
-  pool.work            chan Request        cap = maxSize×2; scheduler waits when full
-  pool.retire          chan struct{}       Signals individual workers to exit
-  dashboard.sseClients sync.RWMutex       One channel per connected SSE client
-```
+## API And Dashboard
 
+The internal Monitor API lives under `/api/v1/...`. It is distinct from the
+Veriflier `/v2/...` transport. API features include:
 
-Error Codes (checker.ErrorCode)
---------------------------------
+- Bearer-token authentication
+- per-key rate limits
+- in-process idempotency replay cache
+- sites/events/SLA/read APIs
+- rollout APIs
+- webhook and alert-contact management
+- monitor stats and dependency health
 
-```
-  ErrorNone          0   Success, no error
-  ErrorTimeout       1   Context deadline exceeded
-  ErrorConnect       2   TCP connection refused or DNS failure
-  ErrorSSL           3   TLS handshake error (invalid cert, mismatch)
-  ErrorRedirect      4   Redirect when RedirectPolicy=fail
-  ErrorKeyword       5   Required keyword missing or forbidden keyword present
-  ErrorTLSExpired    6   Certificate has passed NotAfter date
-  ErrorTLSDeprecated 7   TLS 1.0 or 1.1 detected (advisory only, not a failure)
-  ErrorBodyRead      8   GET response body closed early or could not be read
-  ErrorProbeSafety   9   Probe skipped because the target is unsafe for an untrusted check
+Because idempotency and rate-limit state are in-memory per process, a single
+consumer should be pinned to one Monitor host. Do not fan out mutating API calls
+across multiple Monitor hosts unless idempotency is moved to a shared durable
+store.
+
+Dashboards are unauthenticated operator surfaces and should stay bound to
+loopback or a trusted management network:
+
+```text
+/          host dashboard
+/fleet     fleet dashboard
+/api/host  host JSON snapshot
+/api/fleet fleet JSON snapshot
 ```
 
-`IsFailure()` returns true for all codes except `ErrorNone`,
-`ErrorTLSDeprecated`, and `ErrorProbeSafety`. `ErrorProbeSafety` is audited
-as a probe-safety block and must not open or close customer-site downtime.
-`StatusType()` maps codes to the string values expected by the WPCOM API
-(e.g. "https", "intermittent", "redirect").
-Body integrity reads are capped to a bounded prefix so Jetmon can catch
-truncated successful GET responses without buffering unbounded response
-bodies. Keyword checks retain their larger bounded body window.
-Deprecated TLS opens a separate `tls_deprecated` warning event and does not
-project the legacy site status down.
+Fleet views read shared MySQL state; they do not scrape other hosts over HTTP.
+
+## Metrics And Observability
+
+StatsD keeps the v1 dotted prefix shape:
+
+```text
+com.jetpack.jetmon.<statsd_host_path>
+```
+
+Additive v2 metrics cover:
+
+- scheduler queue, lag, dispatch, result, and backpressure pressure
+- method/profile cohorts for staged rollout
+- check timing and phase timing
+- Veriflier latency, vote, and overload outcomes
+- WPCOM attempts, retries, circuit-open queues, and final failures
+- event lifecycle and false-alarm classes
+- process RSS, Go runtime memory, file descriptors, goroutines, and threads
+- SQL pool pressure for Monitor and deliverer processes
+
+Authoritative incident state belongs in event tables. Operational explanation
+belongs in audit, check history, telemetry reports, dashboards, and StatsD.
+
+## Config And Signal Handling
+
+Config is loaded from rendered JSON. SIGHUP and `jetmon2 reload` re-read config
+under a lock; new settings apply to subsequent scheduler ticks or rebuilt
+clients where supported.
+
+Shutdown is graceful:
+
+```text
+SIGINT/SIGTERM
+  -> cancel scheduler context
+  -> mark host draining where applicable
+  -> stop accepting new checker work
+  -> wait for in-flight checks
+  -> release bucket ownership
+  -> exit
+```
+
+Hard process loss is handled by process supervision plus stale-heartbeat bucket
+reclaim by surviving hosts.
+
+## Checker Error Codes
+
+| Code | Meaning |
+| --- | --- |
+| `ErrorNone` | Success |
+| `ErrorTimeout` | Context deadline exceeded |
+| `ErrorConnect` | TCP connection, DNS, or dial failure |
+| `ErrorSSL` | TLS handshake or certificate error |
+| `ErrorRedirect` | Redirect failure when policy is `fail` |
+| `ErrorKeyword` | Required keyword missing or forbidden keyword present |
+| `ErrorTLSExpired` | Certificate expired |
+| `ErrorTLSDeprecated` | TLS 1.0 or 1.1 observed; advisory only |
+| `ErrorBodyRead` | GET response body closed early or could not be read |
+| `ErrorProbeSafety` | Probe blocked by public-target safety guard |
+
+`ErrorTLSDeprecated` and `ErrorProbeSafety` do not open customer downtime.
+`ErrorProbeSafety` is an operator safety finding, not a signal that the customer
+site is down.
