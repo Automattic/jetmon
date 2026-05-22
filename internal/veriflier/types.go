@@ -87,6 +87,9 @@ type Capacity struct {
 type StatusV2Response struct {
 	Status    string   `json:"status"`
 	Version   string   `json:"version"`
+	Commit    string   `json:"commit"`
+	BuildDate string   `json:"build_date"`
+	GoVersion string   `json:"go_version"`
 	Protocols []string `json:"protocols"`
 	Vantage   Vantage  `json:"vantage"`
 	Agent     Agent    `json:"agent"`

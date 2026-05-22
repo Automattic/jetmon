@@ -24,6 +24,7 @@ GOCACHE     ?= /tmp/jetmon-go-cache
 GOMODCACHE  ?= /tmp/jetmon-gomod-cache
 GO_ENV      := GOCACHE=$(GOCACHE) GOMODCACHE=$(GOMODCACHE)
 BUILD_FLAGS := -ldflags "-X main.version=$(shell git describe --tags --always --dirty) \
+                         -X main.commit=$(shell git rev-parse HEAD) \
                          -X main.buildDate=$(shell date -u +%Y-%m-%dT%H:%M:%SZ) \
                          -X main.goVersion=$(shell $(GO) version | awk '{print $$3}')"
 

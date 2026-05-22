@@ -23,7 +23,13 @@ import (
 	"github.com/Automattic/jetmon/internal/veriflier"
 )
 
-var version = "dev"
+// Injected at build time via -ldflags.
+var (
+	version   = "dev"
+	commit    = "unknown"
+	buildDate = "unknown"
+	goVersion = "unknown"
+)
 var enforceOutboundTargetSafety = true
 
 const shutdownGracePeriod = 30 * time.Second
@@ -89,6 +95,9 @@ func main() {
 	defer stopResourceStats()
 
 	srv := veriflier.NewServerWithOptions(addr, cfg.AuthToken, hostname, version, veriflier.ServerOptions{
+		Commit:    commit,
+		BuildDate: buildDate,
+		GoVersion: goVersion,
 		CheckFunc: performCheckContext,
 		Vantage: veriflier.Vantage{
 			ID:       cfg.VantageID,
