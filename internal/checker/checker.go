@@ -200,7 +200,7 @@ func newCheckDNSCache(ttl time.Duration, maxEntries int) *checkDNSCache {
 
 func (c *checkDNSCache) lookup(ctx context.Context, resolver *net.Resolver, host, network string) ([]net.IPAddr, error) {
 	if resolver == nil {
-		return nil, fmt.Errorf("lookup %s: resolver unavailable", host)
+		resolver = net.DefaultResolver
 	}
 	if c == nil || c.ttl <= 0 {
 		return lookupResolverIPAddrs(ctx, resolver, host, network)
