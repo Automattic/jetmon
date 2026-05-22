@@ -1,62 +1,67 @@
 # Production TeamCity Rollout
 
 This document covers the production Monitor deployment path through TeamCity
-and docker-deploy. It is specifically about the Monitor container stack. For
-the full v1-to-v2 migration sequence, use
-[v1-to-v2-migration.md](v1-to-v2-migration.md). For Veriflier VPS deployment,
-use [production-veriflier-compose.md](production-veriflier-compose.md).
+and docker-deploy. It is about the Monitor container stack only.
 
-The production Monitor stack is intentionally secret-free at image-build time.
-SVN credentials, database credentials, WPCOM credentials, and generated config
-files must stay out of Git, image layers, TeamCity logs, and PR descriptions.
+Use these alongside it:
+
+- [v1-to-v2-migration.md](v1-to-v2-migration.md) for rollout sequencing.
+- [production-veriflier-compose.md](production-veriflier-compose.md) for
+  Veriflier VPS deployment.
+- [operations-guide.md](operations-guide.md) for steady-state operations.
+
+The production Monitor image must be secret-free. SVN credentials, DB
+credentials, WPCOM credentials, generated config files, and rendered private
+config must stay out of Git, image layers, TeamCity logs, and PR descriptions.
 
 ## Deployment Shape
 
 Each production Monitor host runs a docker-deploy-managed Compose service with:
 
-- `jetmon2` Monitor container.
-- `config-sync` sidecar container.
-- shared runtime path for generated private config such as `db-servers.php`.
-- rendered JSON config read by the Monitor binary.
-- access to the host-local StatsD proxy through Docker bridge networking.
+- `jetmon2` Monitor container,
+- `config-sync` sidecar container,
+- shared runtime path for generated private config such as `db-servers.php`,
+- rendered JSON config read by the Monitor binary,
+- access to host-local StatsD through Docker bridge networking.
 
-The Monitor stack should not include StatsD or Graphite containers. Production
-Monitor hosts already provide local StatsD at `127.0.0.1:8125` on the host.
-Bridge-networked containers should reach that service through Docker's
-host-gateway mapping, not host networking.
+The Monitor stack must not include StatsD or Graphite containers. Production
+Monitor hosts already provide StatsD at `127.0.0.1:8125` on the host. Bridge
+containers should reach it with Docker's host-gateway mapping:
 
 ```text
 --add-host=host.docker.internal:host-gateway
 "STATSD_ADDR": "host.docker.internal:8125"
 ```
 
+Do not use host networking for production Monitor containers.
+
 ## Required Inputs
 
 | Input | Source | Notes |
 | --- | --- | --- |
-| Monitor image tag | TeamCity build output | Use immutable Git SHA tags for rollout. |
-| Config-sync image tag | TeamCity build output | Built separately from the Monitor image. |
-| `config-sync.env` | Systems secret injection | SVN credentials and sync paths for the sidecar. Never commit it. |
-| `db-servers.php` | Generated runtime file | Synced from SVN by the sidecar, mounted read-only into the Monitor. |
-| Rendered `config.json` | docker-deploy role config / TeamCity secure parameters | The binary reads JSON config, not direct environment overrides. |
+| Monitor image tag | TeamCity | Prefer immutable Git SHA tags. |
+| Config-sync image tag | TeamCity | Built separately from the Monitor image. |
+| `config-sync.env` | Systems secret injection | SVN credentials and sync paths. Never commit it. |
+| `db-servers.php` | Runtime sidecar output | Synced from SVN and mounted read-only into the Monitor. |
+| `config.json` | docker-deploy role config / secure parameters | Operational config lives in JSON; env vars are render inputs only. |
 | `CONFIG_PROFILE` or `SCHEMA_MANAGEMENT_MODE` | rendered config | Production should validate schema, not apply DDL. |
-| `DB_SERVER_MAP_PATH` | rendered config | Points at the mounted generated `db-servers.php`. |
-| `DB_SERVER_MAP_DATACENTER` | rendered config | Set explicitly; do not depend on container hostname parsing. |
-| `STATSD_ADDR` | rendered config | `host.docker.internal:8125` for production Monitor containers. |
+| `DB_SERVER_MAP_PATH` | rendered config | Points at mounted `db-servers.php`. |
+| `DB_SERVER_MAP_DATACENTER` | rendered config | Explicit value; do not parse container hostname. |
+| `STATSD_ADDR` | rendered config | `host.docker.internal:8125`. |
 | `HOSTNAME` / `JETMON_HOSTNAME` | rendered config or render input | Stable process identity, not container ID. |
 | `STATSD_HOST_PATH` | rendered config | v1-compatible Graphite path, for example `dfw1.jetmon-prod-1`. |
-| WPCOM legacy cert/key | Systems secret mount | Required when `WPCOM_NOTIFY_ENABLE=true` and `WPCOM_NOTIFY_MODE=legacy`. |
+| WPCOM legacy cert/key | Systems secret mount | Required for `WPCOM_NOTIFY_MODE=legacy`. |
 
 Use [../config/jetmon-config-sync-sample.env](../config/jetmon-config-sync-sample.env)
-only as the template for the sidecar env file.
+only as a sidecar env template.
 
 ## Config-Sync Sidecar
 
-The config-sync sidecar is responsible for pulling the production DB server map
-from SVN and writing the generated `db-servers.php` to the shared runtime path.
-The Monitor receives that path read-only.
+The sidecar pulls the production DB server map from SVN and writes
+`db-servers.php` to a shared runtime path. The Monitor receives that path
+read-only through `DB_SERVER_MAP_PATH`.
 
-Expected behavior:
+Sidecar requirements:
 
 - run as the unprivileged `jetmon` user where possible,
 - keep SVN working copy and credentials outside the Monitor-readable path,
@@ -65,30 +70,24 @@ Expected behavior:
 - retry transient SVN failures without restarting the Monitor,
 - never print database passwords or SVN credentials.
 
-The sidecar loop calls
-[../scripts/jetmon-config-sync-loop.sh](../scripts/jetmon-config-sync-loop.sh),
-which wraps
-[../scripts/jetmon-config-update.sh](../scripts/jetmon-config-update.sh).
+The loop uses [../scripts/jetmon-config-sync-loop.sh](../scripts/jetmon-config-sync-loop.sh),
+which wraps [../scripts/jetmon-config-update.sh](../scripts/jetmon-config-update.sh).
 
-If docker-deploy cannot support the sidecar secret mount and shared runtime
-path, the host-side fallback is:
-
-- [../systemd/jetmon-config-sync.service](../systemd/jetmon-config-sync.service)
-- [../systemd/jetmon-config-sync.timer](../systemd/jetmon-config-sync.timer)
-
-Use that only as a fallback. The preferred production shape keeps sync inside
+If docker-deploy cannot support sidecar secrets and a shared runtime path, the
+host-side fallback is [../systemd/jetmon-config-sync.service](../systemd/jetmon-config-sync.service)
+plus [../systemd/jetmon-config-sync.timer](../systemd/jetmon-config-sync.timer).
+Use that only as a fallback; the preferred production shape keeps sync inside
 the docker-deploy service.
 
-## Database Server Map
+## Database Config
 
-Jetmon supports two database config modes:
+Jetmon supports two mutually exclusive database modes:
 
-1. Explicit DB credentials in JSON config for local/dev/test.
-2. `DB_SERVER_MAP_PATH` pointing to a synced `db-servers.php` for production.
+1. explicit `DB_*` JSON config for local/dev/test;
+2. `DB_SERVER_MAP_PATH` pointing to synced `db-servers.php` for production.
 
-These modes are mutually exclusive. If `DB_SERVER_MAP_PATH` is set, the Monitor
-must not also set explicit `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, or
-`DB_NAME`.
+Do not set `DB_SERVER_MAP_PATH` together with explicit `DB_HOST`, `DB_PORT`,
+`DB_USER`, `DB_PASSWORD`, or `DB_NAME`.
 
 With `DB_SERVER_MAP_PATH`, Jetmon reads the `misc` dataset:
 
@@ -96,16 +95,14 @@ With `DB_SERVER_MAP_PATH`, Jetmon reads the `misc` dataset:
 - reads prefer read-enabled non-`bak` rows in `DB_SERVER_MAP_DATACENTER`,
 - other non-`bak` read rows are retained as failover targets,
 - if no read rows exist, reads use the write endpoint,
-- `DB_SERVER_MAP_ADDRESS=internet` matches the conservative v1-compatible
-  posture unless Systems confirms internal DB hostnames are reachable from the
-  container network.
+- `DB_SERVER_MAP_ADDRESS=internet` is the conservative v1-compatible posture
+  unless Systems confirms internal DB hostnames work from the container network.
 
-The Monitor and deliverer re-parse the map on the configured refresh cadence.
-Changed maps are validated before publication. If parsing or validation fails,
-the process keeps the previous working pools and logs the failure without
-printing secrets.
+The Monitor and deliverer re-parse the map on the refresh cadence. Changed maps
+are validated before publication. If parsing or validation fails, the process
+keeps the previous working pools and logs the failure without secrets.
 
-Operators can inspect reload state without entering the container:
+Inspect reload state through the API:
 
 ```bash
 ./jetmon2 api request --pretty GET /api/v1/monitor/db-config
@@ -113,10 +110,10 @@ Operators can inspect reload state without entering the container:
 
 ## Schema Management
 
-Production schema changes must be applied through the approved database-change
-process before Monitor containers are activated.
+Production schema changes must go through the approved database-change process
+before Monitor containers are activated.
 
-Production Monitor config should use one of:
+Production config should use:
 
 ```json
 { "CONFIG_PROFILE": "production" }
@@ -128,18 +125,10 @@ or:
 { "SCHEMA_MANAGEMENT_MODE": "validate" }
 ```
 
-Normal production startup should run schema validation, not automatic
-migration:
-
-```bash
-./jetmon2 schema validate
-./jetmon2 validate-config
-```
-
-Run `./jetmon2 migrate` only as an explicit schema-change action in an
-environment where applying DDL is approved. If Systems applies SQL manually, the
-matching `jetpack_monitor_schema_migrations` rows must be included in the
-approved change package.
+Normal startup validates schema. It does not apply DDL. Run
+`./jetmon2 migrate` only as an explicit schema-change action in an approved
+environment. If Systems applies SQL manually, the matching
+`jetpack_monitor_schema_migrations` rows must be included in the change package.
 
 ## StatsD
 
@@ -155,8 +144,8 @@ and docker-deploy must include:
 --add-host=host.docker.internal:host-gateway
 ```
 
-Do not use host networking. Do not render `127.0.0.1:8125` inside a
-bridge-networked Monitor container; that points at the container itself.
+Do not render `127.0.0.1:8125` inside a bridge-networked Monitor container; it
+points at the container itself.
 
 Set `STATSD_HOST_PATH` explicitly to the v1-compatible metric identity:
 
@@ -165,21 +154,21 @@ HOSTNAME=jetmon-prod-1.dfw1.example.com
 STATSD_HOST_PATH=dfw1.jetmon-prod-1
 ```
 
-This emits:
+Metrics then use:
 
 ```text
 com.jetpack.jetmon.dfw1.jetmon-prod-1.<metric>
 ```
 
 Keep `HOSTNAME` and `STATSD_HOST_PATH` stable and low-cardinality. Do not use
-container IDs, release SHAs, process IDs, ports, or random suffixes.
+container IDs, release SHAs, ports, process IDs, or random suffixes.
 
-StatsD is UDP, so Jetmon can validate local client setup but cannot prove
-downstream Graphite ingestion without an external Systems-provided check.
+StatsD is UDP. Jetmon can validate local client setup but cannot prove
+downstream Graphite ingestion without an external Systems check.
 
 ## WPCOM Notifications
 
-Initial production rollout should use:
+Initial rollout should use:
 
 ```json
 {
@@ -188,45 +177,35 @@ Initial production rollout should use:
 }
 ```
 
-Legacy mode matches v1's client-certificate `/jetmon/` notification path.
-Mount the WPCOM legacy client certificate and key as runtime secrets and point
-`WPCOM_NOTIFY_LEGACY_CERT_PATH` and `WPCOM_NOTIFY_LEGACY_KEY_PATH` at the
-mounted files.
+Legacy mode matches v1's client-certificate `/jetmon/` path. Mount the legacy
+certificate and key as runtime secrets and set
+`WPCOM_NOTIFY_LEGACY_CERT_PATH` / `WPCOM_NOTIFY_LEGACY_KEY_PATH`.
 
 `WPCOM_NOTIFY_MODE=modern` is retained for WPCOM contract testing only until
-WPCOM explicitly approves it for production notification traffic.
+WPCOM approves it for production notification traffic.
 
 ## TeamCity Job
 
-The TeamCity job should follow the existing docker-deploy pattern:
+The TeamCity job should:
 
-1. Build the Monitor image from
-   [../docker/Dockerfile_jetmon](../docker/Dockerfile_jetmon).
-2. Push Monitor tags: `latest` and the immutable Git SHA.
-3. Build the config-sync image from
-   [../docker/Dockerfile_config_sync](../docker/Dockerfile_config_sync).
-4. Push config-sync tags: `latest` and the immutable Git SHA.
+1. Build the Monitor image from [../docker/Dockerfile_jetmon](../docker/Dockerfile_jetmon).
+2. Push Monitor tags: `latest` and immutable Git SHA.
+3. Build the config-sync image from [../docker/Dockerfile_config_sync](../docker/Dockerfile_config_sync).
+4. Push config-sync tags: `latest` and immutable Git SHA.
 5. Call docker-deploy for the Jetmon Monitor role, for example:
 
    ```text
    deploy-to-servers-by-role.sh docker-jetmon-monitor jetmon-monitor/<git-sha>
    ```
 
-The docker-deploy role owns:
-
-- target Monitor hosts,
-- image names and tag mapping,
-- secure injection of `config-sync.env`,
-- shared runtime path between sidecar and Monitor,
-- host-gateway mapping for StatsD,
-- rendered JSON config values,
-- WPCOM certificate/key mounts,
-- per-host rollout order and health/rollback behavior.
+The docker-deploy role owns target hosts, image/tag mapping, secure sidecar
+env injection, shared runtime path, host-gateway mapping, rendered config,
+WPCOM cert/key mounts, rollout order, health checks, and rollback behavior.
 
 ## Safe Deployment Smoke
 
-Before a real production activation, use a dedicated test role or command
-override that does not start the Monitor loop:
+Before activation, use a dedicated test role or command override that does not
+start the Monitor loop:
 
 ```bash
 ./jetmon2 version
@@ -235,16 +214,16 @@ override that does not start the Monitor loop:
 ./jetmon2 doctor --require-statsd
 ```
 
-This smoke should prove:
+Safe smoke should prove:
 
-- TeamCity can build and push the intended image tags.
-- docker-deploy can deploy the selected Git SHA.
-- the container receives non-image config and secrets without leaking them,
-- the container can reach DB, StatsD, WPCOM config files, and Verifliers,
-- schema state matches the binary,
-- the container can stay healthy without checking sites.
+- TeamCity built and pushed the intended image tags.
+- docker-deploy deployed the selected Git SHA.
+- config and secrets arrived outside image layers and logs.
+- DB, StatsD, WPCOM secret files, and Verifliers are reachable.
+- schema state matches the binary.
+- the container stays healthy without checking sites.
 
-Safe smoke config should set:
+Safe smoke config should disable customer-impacting paths:
 
 ```json
 {
@@ -258,15 +237,14 @@ Safe smoke config should set:
 }
 ```
 
-Use a read-only DB user for safe deployment smoke where possible. Do not run the
-bare `jetmon2` server process, rollout cutover commands, or mutating API
-operations until the target database is intentionally writable and the rollout
-window permits Monitor work.
+Use a read-only DB user where possible. Do not run the bare server process,
+rollout cutover commands, or mutating API operations until the database is
+intentionally writable and the rollout window permits Monitor work.
 
-## Production Activation Checks
+## Activation Gates
 
 After docker-deploy starts or recreates a Monitor during an approved rollout,
-run the normal gates from the operator environment:
+run from the operator environment:
 
 ```bash
 ./jetmon2 schema validate
@@ -277,41 +255,38 @@ run the normal gates from the operator environment:
 ./jetmon2 telemetry report --since=15m
 ```
 
-During the v1-to-v2 migration, also follow the range-specific gates in
+During v1-to-v2 migration, also follow the range-specific gates in
 [v1-to-v2-migration.md](v1-to-v2-migration.md) and
 [rollout-quick-reference.md](rollout-quick-reference.md). Do not activate a v2
-range until the corresponding v1 ownership has stopped.
+range until corresponding v1 ownership has stopped.
 
 ## Rollback
 
-Rollback depends on what changed:
-
-- **Image/config-only failure before range activation:** redeploy the previous
-  known-good Git SHA through docker-deploy.
-- **Bad config-sync sidecar:** keep the Monitor on the last validated DB pools,
-  fix sidecar config, and confirm `/api/v1/monitor/db-config`.
-- **Monitor started but not activated:** stop/redeploy the Monitor stack; no
+- **Image/config failure before activation:** redeploy the previous known-good
+  Git SHA through docker-deploy.
+- **Bad config-sync sidecar:** keep the Monitor on last validated DB pools, fix
+  sidecar config, and confirm `/api/v1/monitor/db-config`.
+- **Monitor started but not activated:** stop or redeploy the Monitor stack; no
   site checks should have occurred.
 - **Range already activated:** use the rollback path in
   [v1-to-v2-migration.md](v1-to-v2-migration.md) before returning ownership to
   v1.
 
 Do not roll back schema migrations as part of service rollback unless the
-database-change process explicitly approved a reverse migration. V2 additive
-tables can remain present while v1 resumes handling traffic.
+database-change process explicitly approved a reverse migration.
 
 ## Systems Confirmation Checklist
 
-Before production rollout, confirm:
+Confirm before production rollout:
 
 - docker-deploy role name and target host list,
-- image names and tag mapping for Monitor and config-sync,
+- Monitor and config-sync image names and tag mapping,
 - how `config-sync.env` is injected and protected,
 - whether the shared runtime path is a volume, tmpfs, or host mount,
-- the exact Monitor-readable `DB_SERVER_MAP_PATH`,
+- exact Monitor-readable `DB_SERVER_MAP_PATH`,
 - per-host `DB_SERVER_MAP_DATACENTER`,
 - host-gateway support for `host.docker.internal`,
 - WPCOM cert/key mount paths,
-- whether docker-deploy performs health checks and automatic rollback,
+- docker-deploy health-check and rollback behavior,
 - where external stats consumers should read v1-style stats from:
   `/api/v1/monitor/stats`, StatsD/Graphite, or an explicitly approved mount.
