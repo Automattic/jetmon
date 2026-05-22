@@ -1,47 +1,54 @@
-# Running Jetmon And Veriflier From GHCR
+# Docker Images
 
-The CI workflow `.github/workflows/docker-publish.yml` publishes the two runtime
-application images to GitHub Container Registry:
+Jetmon publishes runtime images to GitHub Container Registry:
 
-| Image | Source Dockerfile |
-|---|---|
+| Image | Dockerfile |
+| --- | --- |
 | `ghcr.io/automattic/jetmon` | `docker/Dockerfile_jetmon` |
 | `ghcr.io/automattic/veriflier` | `docker/Dockerfile_veriflier` |
 
-Production TeamCity rollout can additionally build the config-sync sidecar from
-`docker/Dockerfile_config_sync`; that image is not part of the public GHCR
-development workflow.
+Production TeamCity rollout may also build the config-sync sidecar from
+`docker/Dockerfile_config_sync`; that sidecar is covered in
+[production-teamcity-rollout.md](production-teamcity-rollout.md).
 
-This guide is for running those pre-built images. The build-from-source flow
-for local development stays in
-[getting-started.md](getting-started.md).
+Use this doc for running pre-built images. Use
+[getting-started.md](getting-started.md) for the build-from-source local Docker
+stack.
 
 ## Tags
 
-- `:latest` — head of the `v2` branch. Updated on every push to `v2`.
-- `:<short-sha>` — built from a pull request when the PR carries the
-  `Docker Build` label. Use these for testing an unmerged change end to end.
+- `latest`: current `v2` branch.
+- `<short-sha>`: PR build when the PR has the `Docker Build` label.
 
-There are no semver tags yet; pin to a specific short SHA when reproducibility
-matters.
+There are no semver tags yet. Pin to a SHA tag when reproducibility matters.
 
-## Authenticate (If Private)
+## Authentication
 
-GHCR packages start out private. Until the package is made public or linked to
-the repository in the GHCR UI, every host that needs to pull must authenticate:
+If GHCR packages are private, authenticate before pulling:
 
 ```bash
 echo "$GHCR_PAT" | docker login ghcr.io -u <github-user> --password-stdin
 ```
 
-`GHCR_PAT` is a GitHub personal access token with `read:packages`. After the
-package is made public, anonymous `docker pull` works and this step can be
-skipped.
+`GHCR_PAT` needs `read:packages`. If the package is public, anonymous pulls work.
+
+## Config Rendering
+
+The Docker entrypoints render JSON config from environment inputs on every
+container start by default. The binaries read the rendered JSON; they do not
+read these settings directly from the environment after startup.
+
+Render modes:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `JETMON_CONFIG_RENDER_MODE` | `always` | `always`, `missing`, or `never` for Monitor config rendering. |
+| `VERIFLIER_CONFIG_RENDER_MODE` | `always` | `always`, `missing`, or `never` for Veriflier config rendering. |
+
+Use `never` only when mounting a complete JSON config and setting `JETMON_CONFIG`
+or `VERIFLIER_CONFIG` to that path.
 
 ## Run Veriflier
-
-Veriflier is the simpler of the two — it has no database dependency and only
-needs an auth token shared with Jetmon:
 
 ```bash
 docker pull ghcr.io/automattic/veriflier:latest
@@ -54,29 +61,30 @@ docker run --rm \
   ghcr.io/automattic/veriflier:latest
 ```
 
-The entrypoint renders a generated Veriflier JSON config from
-`veriflier-sample.json` on every container start by default. Those env vars are
-Docker template inputs; the Veriflier binary reads the rendered JSON config.
-Health check: `curl http://localhost:7803/v2/status` should return
-`{"status":"OK",...}`.
+Smoke check:
 
-Required env vars:
+```bash
+curl http://localhost:7803/v2/status
+```
 
-| Var | Notes |
-|---|---|
-| `VERIFLIER_AUTH_TOKEN` | Must match the value Jetmon uses to call this verifier. |
+Common Veriflier render inputs:
+
+| Variable | Notes |
+| --- | --- |
+| `VERIFLIER_AUTH_TOKEN` | Shared secret used by Monitors. |
 | `VERIFLIER_PORT` | Defaults to `7803`. |
-| `VERIFLIER_ENABLE_LEGACY_HTTP` | Optional. Defaults to `false`; set to `true` only for lab/emergency compatibility with `veriflier2`'s legacy HTTP `/check` and `/status` endpoints. |
-| `STATSD_ADDR` | Optional template input for the rendered `statsd_addr` config value. Leave unset to run without Veriflier metrics, or set to `statsd:8125` / another approved endpoint. |
-| `JETMON_HOSTNAME` | Optional env input used by the Docker entrypoint when rendering the Veriflier `hostname` config. Use a low-cardinality value such as `<region>.<vantage>` for process identity; do not include container IDs, release SHAs, ports, or random suffixes. |
-| `STATSD_HOST_PATH` | Optional explicit Graphite host path. Leave empty to use the Veriflier hostname; set when metric grouping should differ from process identity. |
-| `VERIFLIER_CONFIG_RENDER_MODE` | Optional. `always` (default) renders JSON every start from env. `missing` renders only if the target file is absent. `never` disables rendering and uses `VERIFLIER_CONFIG` or `config/veriflier.json`. |
+| `VERIFLIER_ENABLE_LEGACY_HTTP` | Defaults to `false`; enable only for lab/emergency compatibility testing. |
+| `STATSD_ADDR` | Optional StatsD endpoint such as `statsd:8125`; leave empty to disable metrics. |
+| `JETMON_HOSTNAME` | Stable Veriflier process identity, such as `<region>.<vantage>`. |
+| `STATSD_HOST_PATH` | Optional explicit Graphite path. |
+
+Production Veriflier VPS Compose includes StatsD/Graphite. See
+[production-veriflier-compose.md](production-veriflier-compose.md).
 
 ## Run Jetmon
 
-Jetmon needs MySQL-compatible database connectivity and (in production) at
-least one reachable Veriflier. The simplest invocation against an
-already-running database and Veriflier:
+Jetmon needs database connectivity and, for normal monitoring, at least one
+reachable Veriflier.
 
 ```bash
 docker pull ghcr.io/automattic/jetmon:latest
@@ -95,190 +103,143 @@ docker run --rm \
   -e WPCOM_AUTH_TOKEN=change_me \
   -e WPCOM_NOTIFY_ENABLE=false \
   -e EMAIL_TRANSPORT=stub \
-  --add-host=host.docker.internal:host-gateway \
-  -e STATSD_ADDR=host.docker.internal:8125 \
-  -e JETMON_HOSTNAME=jetmon-prod-1.dfw1.example.com \
-  -e STATSD_HOST_PATH=dfw1.jetmon-prod-1 \
   -v "$(pwd)/jetmon-stats:/jetmon/stats" \
   ghcr.io/automattic/jetmon:latest
 ```
 
-The single-container Jetmon example uses Docker's host-gateway mapping to reach
-a host-local StatsD proxy without host networking. If no host-local StatsD
-proxy is available, set `STATSD_ADDR=` so the entrypoint renders an empty
-`"STATSD_ADDR"` config value for the smoke run. In Compose or production,
-render `STATSD_ADDR` as the Compose StatsD service, the production host-local
-StatsD proxy through `host.docker.internal`, or another approved UDP endpoint.
-
-The entrypoint renders a generated JSON config from `config-sample.json` using
-the env vars above, exports `JETMON_CONFIG` to that generated path, runs schema
-setup, and starts the Monitor. In Docker, env values are the Compose source of
-truth by default: changing them and recreating the container updates the
-generated JSON. The Jetmon binary reads StatsD, database, and runtime settings
-from that JSON config, not directly from the environment.
-
 Exposed ports:
 
 | Port | Purpose |
-|---|---|
+| --- | --- |
 | `8080` | Operator dashboard |
-| `8090` | Internal REST API and `/api/v1/health` |
+| `8090` | Internal REST API |
 
-Required env vars:
+## Monitor Config Inputs
 
-| Var | Notes |
-|---|---|
-| `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` | Template inputs for rendered JSON database config in local/dev and explicit-DSN deployments. Used when `DB_SERVER_MAP_PATH` is unset. |
-| `DB_SERVER_MAP_PATH` | Optional template input for the rendered production path to synced `db-servers.php`; when set, the Monitor reads the `misc` dataset and builds separate read/write DB pools. Do not combine it with explicit `DB_HOST` / `DB_PORT` / `DB_USER` / `DB_PASSWORD` / `DB_NAME`. |
-| `DB_SERVER_MAP_DATACENTER` | Recommended with `DB_SERVER_MAP_PATH`; render this as the host datacenter such as `dfw` or `dca` so local read replicas are preferred. |
-| `DB_SERVER_MAP_ADDRESS` | `internet` (default, v1-compatible) or `internal`; use `internal` only when the container network can reach internal DB hostnames. |
-| `VERIFLIER_AUTH_TOKEN`, `VERIFLIER_PORT` | Shared with each Veriflier. |
-| `WPCOM_AUTH_TOKEN` | Set to `change_me` for non-WPCOM environments. |
-| `WPCOM_NOTIFY_ENABLE` | Set to `false` for local, ad-hoc, and internal-only tests. Production Monitor rollout normally enables this after WPCOM parity gates pass. |
-| `WPCOM_NOTIFY_MODE` | Optional. Defaults to `legacy`, which uses the v1-compatible client-certificate `/jetmon/` path. Use `modern` only for WPCOM endpoint/auth contract testing. |
-| `WPCOM_NOTIFY_LEGACY_CERT_PATH`, `WPCOM_NOTIFY_LEGACY_KEY_PATH` | Required runtime secret paths when `WPCOM_NOTIFY_ENABLE=true` and `WPCOM_NOTIFY_MODE=legacy`. |
-| `CHECK_TARGET_SAFETY_MODE` | Defaults to `public_only`, which keeps Monitor SSRF protections enabled. The only alternate value, `allow_private_for_tests`, is for isolated uptime-bench capacity labs with disposable synthetic rows and is rejected unless `WPCOM_NOTIFY_ENABLE=false`. Never set it for production rollout, customer data, or real alert paths. |
-| `EMAIL_TRANSPORT` | `stub` for dev; `smtp` plus `SMTP_*` vars for real delivery. |
-| `STATSD_ADDR` | Optional template input for the rendered JSON `STATSD_ADDR` config value. Local Compose and Veriflier production Compose render this as `statsd:8125`. For TeamCity Monitor production, render `STATSD_ADDR` as `host.docker.internal:8125` and add Docker's `host.docker.internal:host-gateway` mapping, or render it explicitly empty to disable StatsD. |
-| `CONFIG_PROFILE` | Optional rendered config profile. Use `production` for production Monitor containers so startup defaults to schema validation instead of migration. Explicit config values still override profile defaults. |
-| `SCHEMA_MANAGEMENT_MODE` | `migrate` applies pending migrations before service start; `validate` refuses startup unless the expected schema is already present and never applies DDL. Use `validate` in production after Systems has applied schema changes. |
-| `HOSTNAME` / `JETMON_HOSTNAME` | Stable process identity. `HOSTNAME` is the rendered config key; `JETMON_HOSTNAME` is the Docker env input used by the entrypoint when rendering config. For Monitor production, use the real logical host name, for example `jetmon-prod-1.dfw1.example.com`; do not include container IDs, release SHAs, ports, or random suffixes. |
-| `STATSD_HOST_PATH` | Explicit StatsD metric host path. For Monitor production, use the v1-compatible `<datacenter>.<node>` format derived by reversing the first two labels of the v1 hostname, for example `jetmon-prod-1.dfw1.example.com` -> `dfw1.jetmon-prod-1`. Leave empty only for local/dev fallback or an intentional dashboard series migration. |
-| `JETMON_CONFIG_RENDER_MODE` | Optional. `always` (default) renders JSON every start from env. `missing` renders only if the target file is absent. `never` disables rendering and uses `JETMON_CONFIG` or `config/config.json`. |
+Database modes are mutually exclusive:
 
-Optional volume mounts:
+| Mode | Inputs |
+| --- | --- |
+| Explicit DSN | `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` |
+| Production server map | `DB_SERVER_MAP_PATH`, `DB_SERVER_MAP_DATACENTER`, optional `DB_SERVER_MAP_ADDRESS` |
 
-| Path | Reason |
-|---|---|
-| `/jetmon/config` | Mount only when you want to manage `config.json` outside the container. Set `JETMON_CONFIG_RENDER_MODE=never` and `JETMON_CONFIG=/jetmon/config/config.json` so the entrypoint does not overwrite the mounted file. |
-| `/jetmon/config-source` | Production-only mount for generated private files such as `db-servers.php`; mount read-only in the Monitor. In the recommended TeamCity rollout, the config-sync sidecar writes this path. |
-| `/jetmon/stats` | Persist counters and the `jetmon2.pid` file used by `reload` / `drain`. Production TeamCity consumers should prefer `GET /api/v1/monitor/stats` or StatsD over host filesystem reads unless Systems explicitly approves a bind mount. |
+Do not set `DB_SERVER_MAP_PATH` together with explicit `DB_*` credentials.
 
-For production TeamCity rollout and database server-map sync, see
-[production-teamcity-rollout.md](production-teamcity-rollout.md).
+Important Monitor render inputs:
 
-## Production Config-Sync Sidecar
+| Variable | Notes |
+| --- | --- |
+| `CONFIG_PROFILE` | Use `production` for production Monitor containers. |
+| `SCHEMA_MANAGEMENT_MODE` | Use `validate` in production after Systems applies schema changes. |
+| `VERIFLIER_AUTH_TOKEN`, `VERIFLIER_PORT` | Shared with configured Verifliers. |
+| `WPCOM_AUTH_TOKEN` | Use a placeholder outside WPCOM-connected environments. |
+| `WPCOM_NOTIFY_ENABLE` | Set `false` for local, ad-hoc, and internal-only tests. |
+| `WPCOM_NOTIFY_MODE` | Defaults to `legacy`; use `modern` only for WPCOM contract testing. |
+| `WPCOM_NOTIFY_LEGACY_CERT_PATH`, `WPCOM_NOTIFY_LEGACY_KEY_PATH` | Required secret paths when legacy WPCOM notifications are enabled. |
+| `CHECK_TARGET_SAFETY_MODE` | Keep `public_only` for production and real site data. |
+| `EMAIL_TRANSPORT` | Use `stub` for dev; use `smtp` or `wpcom` only when configured. |
+| `STATSD_ADDR` | StatsD endpoint; leave empty to disable. |
+| `JETMON_HOSTNAME` | Docker render input for stable process identity. |
+| `STATSD_HOST_PATH` | Explicit v1-compatible Graphite path. |
 
-The config-sync sidecar image is for production docker-deploy only. It contains
-`svn`, [../scripts/jetmon-config-update.sh](../scripts/jetmon-config-update.sh),
-and [../scripts/jetmon-config-sync-loop.sh](../scripts/jetmon-config-sync-loop.sh).
-It expects a secret `config-sync.env` file or equivalent environment injection
-at runtime, syncs `db-servers.php` from SVN, and writes only the generated file
-into the shared config-source path.
+For production Monitor containers, use the host-local StatsD proxy through
+Docker bridge networking:
 
-Do not bake `config-sync.env`, SVN credentials, or generated production
-`db-servers.php` content into this image.
-
-## Run Both Together
-
-For an ad-hoc deploy that needs Jetmon plus a co-located Veriflier, the
-following compose snippet uses the pulled images instead of the local builds in
-`docker/docker-compose.yml`:
-
-```yaml
-services:
-  veriflier:
-    image: ghcr.io/automattic/veriflier:latest
-    environment:
-      VERIFLIER_AUTH_TOKEN: replace_me
-      VERIFLIER_PORT: "7803"
-      STATSD_ADDR: statsd:8125
-      JETMON_HOSTNAME: local.veriflier
-      STATSD_HOST_PATH: local.veriflier
-    ports:
-      - "7803:7803"
-
-  statsd:
-    image: graphiteapp/graphite-statsd
-    ports:
-      - "127.0.0.1:8088:80"
-      - "127.0.0.1:8125:8125/udp"
-
-  jetmon:
-    image: ghcr.io/automattic/jetmon:latest
-    depends_on: [veriflier, statsd]
-    environment:
-      DB_HOST: mysql.internal
-      DB_PORT: "3306"
-      DB_USER: jetmon
-      DB_PASSWORD: replace_me
-      DB_NAME: jetmon_db
-      VERIFLIER_AUTH_TOKEN: replace_me
-      VERIFLIER_PORT: "7803"
-      WPCOM_AUTH_TOKEN: change_me
-      WPCOM_NOTIFY_ENABLE: "false"
-      EMAIL_TRANSPORT: stub
-      STATSD_ADDR: statsd:8125
-      JETMON_HOSTNAME: local.jetmon
-      STATSD_HOST_PATH: local.jetmon
-    ports:
-      - "8080:8080"
-      - "8090:8090"
-    volumes:
-      - ./jetmon-stats:/jetmon/stats
+```text
+--add-host=host.docker.internal:host-gateway
+STATSD_ADDR=host.docker.internal:8125
 ```
 
-The database is intentionally not in this snippet; pre-built images are for
-talking to an existing database. The StatsD service is shown for ad-hoc Compose
-runs and Veriflier VPS deployments. TeamCity Monitor production should instead
-render `STATSD_ADDR` as the existing host-local StatsD proxy and should not add
-a StatsD/Graphite container to the Monitor stack. In bridge-networked
-production containers, add `host.docker.internal:host-gateway` and render
-`STATSD_ADDR` as `host.docker.internal:8125`. For the full local stack including
-the database, Mailpit, and StatsD, keep using the build-from-source compose file
-under `docker/`. For the VPS Veriflier production shape, see
-[production-veriflier-compose.md](production-veriflier-compose.md). The
-repo-provided Compose files mount a Graphite storage schema for Jetmon metrics
-with `10s:6h, 1m:7d, 10m:5y` retention and include an optional
-`metrics-smoke` profile for Veriflier StatsD-to-Graphite ingestion checks.
+Do not use host networking. Do not use `127.0.0.1:8125` from a bridge-networked
+Monitor container; it points inside the container.
 
-Runtime logs are written only to stdout/stderr for Docker or the deployment
-platform to collect. The image does not create or maintain v1
-`jetmon.log`/`status-change.log` files.
+Example production metric identity:
 
-## Validate Config Inside The Container
+```text
+JETMON_HOSTNAME=jetmon-prod-1.dfw1.example.com
+STATSD_HOST_PATH=dfw1.jetmon-prod-1
+```
+
+This emits under:
+
+```text
+com.jetpack.jetmon.dfw1.jetmon-prod-1.<metric>
+```
+
+Keep metric identities stable and low-cardinality. Do not include container
+IDs, release SHAs, process IDs, ports, or random suffixes.
+
+## Volume Mounts
+
+| Path | Reason |
+| --- | --- |
+| `/jetmon/config` | Optional complete config mount. Use with render mode `never`. |
+| `/jetmon/config-source` | Production generated private files such as `db-servers.php`; mount read-only into the Monitor. |
+| `/jetmon/stats` | PID file for `reload` / `drain` and v1-style stats files. |
+
+Production stats consumers should prefer `/api/v1/monitor/stats` or StatsD over
+host filesystem reads unless Systems explicitly approves a mount.
+
+## Validate Inside A Container
 
 ```bash
 docker run --rm \
-  -e DB_HOST=mysql.internal -e DB_PORT=3306 -e DB_USER=jetmon \
-  -e DB_PASSWORD=replace_me -e DB_NAME=jetmon_db \
+  -e DB_HOST=mysql.internal \
+  -e DB_PORT=3306 \
+  -e DB_USER=jetmon \
+  -e DB_PASSWORD=replace_me \
+  -e DB_NAME=jetmon_db \
   -e VERIFLIER_AUTH_TOKEN=replace_me \
   ghcr.io/automattic/jetmon:latest ./jetmon2 validate-config
 ```
 
-The entrypoint renders a config first, then `validate-config` checks shape,
-database connectivity, email transport mode, and Veriflier reachability. For a
-stronger dependency smoke test, run `./jetmon2 schema validate` and
-`./jetmon2 doctor --require-statsd` with the same environment.
+Stronger smoke checks with the same rendered config:
+
+```bash
+./jetmon2 schema validate
+./jetmon2 doctor --require-statsd
+```
 
 ## Reload And Drain
 
-Both run via the PID file at `/jetmon/stats/jetmon2.pid`, so they only work
-when `/jetmon/stats` is a writable volume:
+`reload` and `drain` use `/jetmon/stats/jetmon2.pid`, so `/jetmon/stats` must be
+writable:
 
 ```bash
-docker exec jetmon ./jetmon2 reload   # SIGHUP — config reload
-docker exec jetmon ./jetmon2 drain    # SIGINT — graceful shutdown
+docker exec jetmon ./jetmon2 reload
+docker exec jetmon ./jetmon2 drain
 ```
 
-## Pin To A PR Build
-
-To test the image built from PR #123 against your environment:
+## Test A PR Image
 
 ```bash
 docker pull ghcr.io/automattic/jetmon:<short-sha>
+docker pull ghcr.io/automattic/veriflier:<short-sha>
 ```
 
-Find the short SHA in the PR's checks tab under the `Build and publish Docker
-images` workflow run summary. The PR must carry the `Docker Build` label
-before the workflow runs.
+Find the short SHA in the PR's `Build and publish Docker images` workflow run.
+The PR must have the `Docker Build` label before the workflow runs.
+
+## Local Compose
+
+For the complete local development stack, use the Compose files under
+`docker/`. They include local database, Mailpit, StatsD/Graphite, fixture
+services, Monitor, and Veriflier.
+
+Ad-hoc Compose runs using GHCR images can use the same environment inputs shown
+above, but the database is intentionally not embedded in this doc. Use an
+existing database or the repo's local development stack.
+
+Runtime logs go to stdout/stderr for Docker or the deployment platform to
+collect. V2 does not create v1 `jetmon.log` or `status-change.log` files.
 
 ## Troubleshooting
 
 | Symptom | Check |
-|---|---|
-| `denied: requested access to the resource is denied` on pull | The package is still private — authenticate with `docker login ghcr.io` using a PAT with `read:packages`, or have a maintainer flip the package visibility. |
-| Container starts but Jetmon exits with a database error | The rendered JSON `DB_HOST` is reachable from inside the container — remember `localhost` inside the container is not the host. Use the host IP, a docker network, or `host.docker.internal`. |
-| `reload` / `drain` reports "no PID file" | Mount a writable volume at `/jetmon/stats`. The PID file lives at `/jetmon/stats/jetmon2.pid`. |
-| Compose env changes do not take effect | Confirm `JETMON_CONFIG_RENDER_MODE` / `VERIFLIER_CONFIG_RENDER_MODE` is `always` or unset, then recreate the container. `missing` intentionally ignores env changes while the target JSON exists, and `never` disables rendering. |
-| Jetmon cannot reach Veriflier | `VERIFLIER_AUTH_TOKEN` must match on both sides, and `VERIFLIER_PORT` (default `7803`) must be reachable from the Jetmon container. |
+| --- | --- |
+| Pull is denied | Authenticate to GHCR with a PAT that has `read:packages`, or confirm package visibility. |
+| DB connection fails | `localhost` inside a container is the container. Use a Docker network, host IP, or `host.docker.internal`. |
+| Env changes do not apply | Confirm render mode is `always` or recreate/remove the existing rendered config when using `missing`. |
+| `reload` / `drain` has no PID file | Mount a writable `/jetmon/stats`. |
+| Monitor cannot reach Veriflier | Match `VERIFLIER_AUTH_TOKEN` and confirm port `7803` is reachable from the Monitor container. |
+| StatsD missing in production | Use `host.docker.internal:8125` plus `host.docker.internal:host-gateway`; do not use `127.0.0.1`. |

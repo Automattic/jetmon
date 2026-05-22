@@ -36,6 +36,7 @@ coverage.html
 
 # AI tool directories
 .codex
+.codex-*/
 
 # Local Claude settings (project settings.json is tracked)
 .claude/settings.local.json

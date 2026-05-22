@@ -1,16 +1,16 @@
 # Support Guide
 
 This guide is for people explaining Jetmon behavior to customers and internal
-teams. It focuses on the questions v1 made hard to answer:
+teams. It helps answer the questions v1 often made hard:
 
 - Why did Jetmon say the site was down?
 - Why was there no notification?
 - Why did the site recover before a customer noticed?
 - Was this a false positive, a real outage, or a monitor-side issue?
 
-## Start With The Audit Timeline
+## First Checks
 
-Use the audit CLI to reconstruct a site's recent monitoring history:
+Start with the site audit timeline:
 
 ```bash
 ./jetmon2 audit --blog-id 12345 --since 24h
@@ -25,111 +25,110 @@ For a specific incident window:
   --until 2026-04-01T11:00:00
 ```
 
-The timeline shows local checks, retry attempts, Veriflier requests and results,
-WPCOM notifications, status transitions, maintenance-window suppression, and
-other operational notes.
+The timeline shows local checks, retries, Veriflier requests, WPCOM
+notifications, status transitions, maintenance suppression, and other
+operator-visible notes.
 
-For a broader production-window view, use the telemetry report:
+For a broader production window:
 
 ```bash
 ./jetmon2 telemetry report --since=24h
 ```
 
-This summarizes detection timings, Veriflier agreement, false-alarm classes,
-WPCOM attempt parity, and explanation gaps across the selected window. WPCOM
-parity is split between confirmed-down and recovery attempts so a clean total
-does not hide a mismatch in one direction. Use it to decide whether an incident
-looks like an isolated site issue, a noisy class of local failures, a verifier
-disagreement pattern, or an instrumentation gap that needs engineering
-follow-up. The first lines show an overall
-`telemetry_status` of `pass`, `warn`, or `fail` before the detailed timing and
-parity sections. If the report highlights window-edge WPCOM transitions, rerun
-with a later `--until` before treating the parity delta as a missing
-notification.
+The telemetry report summarizes detection timing, Veriflier agreement,
+false-alarm classes, WPCOM attempt parity, and explanation gaps. If WPCOM
+parity differs near the edge of the selected window, rerun with a later
+`--until` before treating it as a missed notification.
 
-## Explain The Incident State
+## Incident States
 
-Jetmon 2 separates detection from confirmation:
+Jetmon 2 separates local detection from independent confirmation:
 
 | State | Meaning |
-|---|---|
-| `Seems Down` | Local checks failed and Jetmon is retrying or asking Verifliers |
-| `Down` | Verifliers confirmed the outage |
-| `Resolved` | The incident closed after recovery or manual action |
+| --- | --- |
+| `Seems Down` | Local checks failed and Jetmon is retrying or asking Verifliers. |
+| `Down` | Verifliers confirmed the outage. |
+| `Resolved` | The incident closed after recovery or manual action. |
+| `Unknown` | Jetmon could not produce trustworthy site evidence. |
 
-This matters for customer conversations. A site can be briefly unreachable from
-the monitor and then recover before Verifliers confirm it. That closes as a
-false alarm or probe-cleared event instead of sending a customer-facing outage
+A brief local failure can recover before Verifliers confirm it. That closes as
+`false_alarm` or `probe_cleared` instead of sending a confirmed-down
 notification.
 
-## Explain The GET Change
+`Unknown` is not customer-site downtime. Use it when monitor infrastructure,
+Veriflier quorum, database access, or telemetry gaps prevent a trustworthy
+verdict.
 
-Jetmon 1 used `HEAD` requests to decide whether a site was reachable. Some
-customer stacks block `HEAD`, route it differently, or return a status that does
-not match a real page load. Jetmon 2 supports a staged migration: initial
-rollout can keep `HEAD` + `legacy` behavior, then selected cohorts can move to
-`GET` + `simple_http`, and finally to `GET` + `full` detections. GET checks
-better match what visitors and customer-facing uptime tools see. That staged
-site policy does not mean the Veriflier is using legacy HTTP endpoints; v2
-Verifliers carry both `HEAD` and `GET` probes through `/v2/check`.
+## HEAD, GET, And Detection Profiles
 
-When an alert differs from old v1 behavior, check the site's effective
-`request_method` and `detection_profile` first. v2 may be surfacing a real
-GET-path issue or a full-profile detection that v1's HEAD-only probe did not
-exercise.
+Jetmon 1 used `HEAD` requests. Some customer stacks block `HEAD`, route it
+differently, or return a status that does not match a real page load.
 
-## Allowlist And WAF Guidance
+Jetmon 2 supports staged policy:
 
-Jetmon 2 identifies itself with the `jetmon/2.0` user agent. During rollout it
-may perform either `HEAD` or `GET` requests depending on site policy. For GET
-cohorts, customer firewalls, WAFs, bot controls, and security plugins should
-allow Jetmon checks to reach the same application path a normal visitor would
-reach. Do not ask a customer to broadly disable security rules; the safer path
-is to allow the published Jetmon source hosts or IP ranges and the
-`jetmon/2.0` user agent.
+1. `HEAD` + `legacy` for v1-compatible rollout.
+2. `GET` + `simple_http` for visitor-path migration.
+3. `GET` + `full` for the full v2 detection set.
 
-Blocked monitoring can show up in a few different ways:
+When behavior differs from v1, check the site's effective `request_method` and
+`detection_profile`. V2 may be surfacing a real GET-path issue or a full-profile
+detection that v1's HEAD-only probe never exercised.
+
+V2 Verifliers still use the v2 `/v2/check` transport; `HEAD` versus `GET` is
+the probe method inside that request, not a legacy Veriflier protocol.
+
+## WAF And Allowlist Guidance
+
+Jetmon 2 uses the `jetmon/2.0` user agent. During rollout it may use `HEAD` or
+`GET` depending on site policy. For GET cohorts, firewalls, WAFs, bot controls,
+and security plugins should allow Jetmon to reach the same application path a
+visitor would reach.
+
+Do not ask customers to broadly disable security rules. The safer request is to
+allow the published Jetmon source hosts or IP ranges and the `jetmon/2.0` user
+agent.
+
+Common blocked-monitoring signals:
 
 | Symptom | Likely explanation |
-|---|---|
-| `blocked` / HTTP 403 | The site or edge layer rejected the monitor request |
-| Captcha, bot challenge, or security page | The request reached a protection layer instead of the customer site |
-| `keyword_missing` | The monitor received a page, but not the expected customer content |
-| Redirect failure | The monitor was sent to a login, challenge, canonical URL, or unexpected host |
-| Local failure but Verifliers disagree | The block may be regional, source-specific, intermittent, or edge-specific |
+| --- | --- |
+| `blocked` / HTTP 403 | The site or edge layer rejected the monitor request. |
+| Captcha or bot challenge | The request hit protection instead of the site. |
+| `keyword_missing` | Jetmon received a page, but not expected customer content. |
+| Redirect failure | Jetmon was sent to a login, challenge, canonical URL, or unexpected host. |
+| Local failure, Verifliers disagree | The block may be regional, source-specific, intermittent, or edge-specific. |
 
-For customer explanations, separate "the site was down for visitors" from "the
-monitor could not verify the visitor path." A WAF block is real monitor
-evidence, but it is not automatically proof that all visitors saw downtime.
+Separate "the site was down for visitors" from "the monitor could not verify
+the visitor path." A WAF block is real monitor evidence, but it is not automatic
+proof that all visitors saw downtime.
 
-## Understand Alert Types
+## Failure Types
 
 | Type | Meaning |
-|---|---|
-| `server` | Site returned a 5xx response |
-| `blocked` | Site returned 403, often because monitoring is blocked |
-| `client` | Site returned a 4xx response other than 403 |
-| `https` | SSL/TLS problem |
-| `intermittent` | Request timed out |
-| `redirect` | Redirect policy failure |
-| `ssl_expiry` | Certificate expires within the configured threshold |
-| `tls_deprecated` | Site is serving TLS 1.0 or 1.1 |
-| `keyword_missing` | Response body did not contain the expected keyword |
-| `keyword_forbidden` | Response body contained text from `forbidden_keyword` or `forbidden_keywords` |
-| `success` | Site recovered |
+| --- | --- |
+| `server` | Site returned 5xx. |
+| `blocked` | Site returned 403. |
+| `client` | Site returned 4xx other than 403. |
+| `https` | SSL/TLS problem. |
+| `intermittent` | Request timed out. |
+| `redirect` | Redirect policy failure. |
+| `ssl_expiry` | Certificate crossed an expiry threshold. |
+| `tls_deprecated` | Site serves TLS 1.0 or 1.1. |
+| `keyword_missing` | Required keyword was absent. |
+| `keyword_forbidden` | Forbidden keyword was present. |
+| `success` | Site recovered. |
 
-For HTTP events caused by resolver failures, inspect event metadata for
-`dns_error_kind`, `dns_error_name`, and `dns_error_server`. These fields explain
-resolver-visible failures such as NXDOMAIN, SERVFAIL, and DNS timeouts. They do
-not prove that every recursive resolver on the internet saw the same DNS state;
-short authoritative outages can be hidden by recursive cache TTLs.
+For resolver failures, inspect event metadata for `dns_error_kind`,
+`dns_error_name`, and `dns_error_server`. These explain what Jetmon's resolver
+saw, not what every resolver on the internet saw.
 
-`tls_deprecated` is advisory-only: it does not mark the site down. Jetmon still
-has to negotiate the deprecated protocol to classify the site accurately, so
-avoid sensitive custom check headers on sites that only support TLS 1.0 or 1.1
-until the site is upgraded.
+`tls_deprecated` is advisory-only: it does not mark the site down. Avoid
+sensitive custom check headers on sites that only support TLS 1.0 or 1.1 until
+the site is upgraded.
 
-## Check SSL Certificate Status
+## Common Investigations
+
+SSL expiry:
 
 ```sql
 SELECT s.blog_id, s.monitor_url, r.ssl_expiry_date
@@ -138,10 +137,7 @@ LEFT JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id
 WHERE s.blog_id = 12345;
 ```
 
-`ssl_expiry_date` is updated on HTTPS checks. Alerts fire at the configured
-expiry thresholds, currently 30, 14, and 7 days before expiry.
-
-## Check For False Positives
+False positives:
 
 ```sql
 SELECT *
@@ -151,94 +147,40 @@ ORDER BY created_at DESC
 LIMIT 20;
 ```
 
-A false positive is recorded when Jetmon escalates a local failure to Veriflier
-confirmation and the Verifliers do not confirm the site as down. A high rate for
-one site usually means the site has transient network, redirect, firewall, or
-performance behavior worth tuning.
+A false positive means local checks failed, Verifliers were asked, and the
+Verifliers did not confirm the site as down. A high rate for one site usually
+points to transient network, redirect, firewall, or performance behavior worth
+tuning.
 
-## Monitor-Side Uncertainty
+## Maintenance And Sensitivity
 
-Treat `Unknown` or monitor-side uncertainty as an operational state, not as
-confirmed customer-site downtime. Use this framing when Jetmon cannot produce a
-trustworthy site verdict because of monitor infrastructure issues such as
-checker failure, verifier unavailability, database errors, missing telemetry, or
-an unhealthy quorum.
+Maintenance windows suppress downtime incidents while checks continue and
+results are recorded. Always set an explicit `maintenance_end`; an open-ended
+window can silently suppress alerts indefinitely.
 
-Customer-facing downtime should require site evidence. If the monitor itself is
-uncertain, explain what Jetmon could not verify, what evidence is missing, and
-what follow-up is needed before calling the site down.
-
-## Maintenance Windows
-
-Use maintenance windows for planned work:
-
-```sql
-INSERT INTO jetpack_monitor_site_check_config (blog_id, maintenance_start, maintenance_end)
-VALUES (12345, '2026-04-20 02:00:00', '2026-04-20 04:00:00')
-ON DUPLICATE KEY UPDATE
-    maintenance_start = VALUES(maintenance_start),
-    maintenance_end = VALUES(maintenance_end);
-```
-
-Checks continue and results are recorded during the window, but failing checks
-are swallowed before they open or promote downtime incidents. If an HTTP failure
-was already in local retry when the window started, Jetmon closes that event
-with `maintenance_swallowed` and keeps the legacy site-status projection
-running. Always set an explicit `maintenance_end`; an open-ended window can
-silently suppress alerts indefinitely.
-
-Clear a window after maintenance:
-
-```sql
-INSERT INTO jetpack_monitor_site_check_config (blog_id, maintenance_start, maintenance_end)
-VALUES (12345, NULL, NULL)
-ON DUPLICATE KEY UPDATE
-    maintenance_start = NULL,
-    maintenance_end = NULL;
-```
-
-## Alert Sensitivity
-
-Use per-site cooldowns to reduce repeated alerts from a flapping site:
-
-```sql
-INSERT INTO jetpack_monitor_site_check_config (blog_id, alert_cooldown_minutes)
-VALUES (12345, 60)
-ON DUPLICATE KEY UPDATE alert_cooldown_minutes = VALUES(alert_cooldown_minutes);
-```
-
+Per-site `alert_cooldown_minutes` reduces repeated alerts from a flapping site.
 Global promotion behavior is controlled by `NUM_OF_CHECKS`: that many
-consecutive local failures are required before Veriflier escalation. In
-variable-interval mode, failed probes are scheduled for a bounded one-minute
-follow-up when the site's normal check interval is longer, so transient
-incidents get rechecked sooner without per-site retry tuning.
-`TIME_BETWEEN_CHECKS_SEC` is retained for v1 config compatibility; do not
-promise per-site retry tuning unless the deployed schema includes it.
+consecutive local failures are required before Veriflier escalation.
 
-## WPCOM Notification Data
+In variable-interval mode, failed probes get a bounded one-minute follow-up
+when the site's normal interval is longer. `TIME_BETWEEN_CHECKS_SEC` is kept
+for v1 config compatibility; do not promise per-site retry tuning unless the
+deployed schema includes it.
 
-Every status-change notification sent to WPCOM includes:
+## WPCOM Notifications
 
-| Field | Description |
-|---|---|
-| `blog_id` | The site's WPCOM ID |
-| `monitor_url` | URL that was checked |
-| `status_id` | `0` down, `1` running, `2` confirmed down |
-| `last_check` | Datetime of the last check |
-| `last_status_change` | Datetime of the last status change |
-| `checks` | Local and Veriflier check results |
+WPCOM status-change notifications include:
 
-Each `checks` entry includes:
+- `blog_id`
+- `monitor_url`
+- `status_id`: `0` down, `1` running, `2` confirmed down
+- `last_check`
+- `last_status_change`
+- `checks`
 
-| Field | Description |
-|---|---|
-| `type` | `1` local Jetmon check, `2` Veriflier check |
-| `host` | Hostname of the checker |
-| `status` | `0` down, `1` running, `2` confirmed down |
-| `rtt` | Round-trip time in milliseconds |
-| `code` | HTTP response code |
+Each `checks` entry includes checker type, host, status, RTT, and HTTP code.
 
-## Useful Customer Framing
+## Customer Framing
 
 - "Jetmon saw local failures, retried, then asked Verifliers before notifying."
 - "The site recovered before quorum confirmation, so Jetmon recorded the event
@@ -249,6 +191,6 @@ Each `checks` entry includes:
 - "This site is in the GET cohort, so Jetmon tests the visitor path more
   closely than the v1 HEAD-only check did."
 - "Jetmon could not produce a trustworthy verdict because monitor-side
-  telemetry was incomplete; that is not the same thing as confirmed downtime."
+  telemetry was incomplete; that is not confirmed downtime."
 - "The audit trail shows exactly which checkers saw the failure and what status
   code or timeout they received."

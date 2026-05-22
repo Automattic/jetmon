@@ -1,45 +1,40 @@
 # Jetmon v2 Scalability Test Plan
 
-This is the repeatable checklist for validating scheduler and check-path
-efficiency changes after the successful 1,000-site capacity run.
+Use this checklist when validating scheduler, checker, Veriflier, database, or
+runtime-config changes that could affect throughput, freshness, CPU, memory, or
+I/O. The goal is not to chase a single benchmark score; it is to prove that the
+fleet can keep checks inside the configured interval without hiding failures or
+creating resource cliffs.
 
-## Current Branch Under Test
-
-`feature/jetmon-v2-scalability-efficiency` adds these scaling changes on top of
-the completed 1,000-site capacity branch:
-
-- Maintained `jetpack_monitor_site_runtime.next_check_at` timestamps for indexed
-  variable-interval due selection without altering the legacy site table.
-- One-minute sampling for exact due-count and projection-drift reporting in
-  variable-interval mode.
-- Shared bounded HTTP transport for local site checks.
-- Batched `jetpack_monitor_site_runtime.ssl_expiry_date` writes when observed
-  certificate dates change.
-
-Do not stack larger persistence changes, such as async check-history writes, on
-top of this branch before a real capacity run. The next test should isolate
-these changes from the previous successful 1,000-site baseline.
+Keep raw reports in the sibling `uptime-bench` repo. This document describes
+what Jetmon needs from those runs.
 
 ## Pre-Test Checks
 
-1. Confirm migrations have run through the sidecar runtime/config migrations.
-2. Confirm the test service is running this branch's `jetmon2` binary.
-3. Confirm the Veriflier service is reachable from the monitor host.
+Before a capacity run:
+
+1. Confirm the test fleet is running the intended Jetmon commit.
+2. Confirm migrations and schema validation pass for the test database.
+3. Confirm Monitor, Veriflier, StatsD/Graphite, and database hosts are mapped in
+   the report metadata.
 4. Confirm API-enabled test hosts set `DELIVERY_OWNER_HOST` explicitly.
-5. Confirm the exact activated `monitor_url` pattern resolves and returns HTTP
-   200 from the Jetmon service host and the Veriflier host. Do not test a
-   similar hostname by hand; query one activated row from
-   `jetpack_monitor_sites`, then run `dig` and `curl` for that exact hostname.
-   A mismatch between the capacity runner URL pattern and the target DNS
-   `generated_sites.host_pattern` will look like a Jetmon false-down storm and
-   will make event handling, not checking, dominate the run.
+5. Confirm the exact activated `monitor_url` pattern resolves and returns the
+   expected HTTP status from both Monitor and Veriflier hosts.
+6. Confirm WPCOM notifications and real alert delivery are disabled unless the
+   test is explicitly about those paths.
 
-## Query Plan Checks
+Do not hand-check a similar hostname. Query an activated row from
+`jetpack_monitor_sites`, then run DNS and HTTP checks for that exact hostname.
+If the capacity runner URL pattern and target DNS pattern disagree, Jetmon will
+look like it is failing sites when the target fleet is misconfigured.
 
-Capture `EXPLAIN` for both scheduler modes before the capacity run.
+## Database Plan Checks
 
-Variable-interval selection should use `jetpack_monitor_site_runtime.idx_next_check` and
-should not show `Using filesort`:
+Capture `EXPLAIN` before runs that change scheduling, cadence, or runtime-table
+queries. Due-target selection must use indexed runtime state and must not require
+a filesort across the full active site set.
+
+Due selection should use `jetpack_monitor_site_runtime.idx_next_check`:
 
 ```sql
 EXPLAIN
@@ -47,31 +42,18 @@ SELECT s.jetpack_monitor_site_id, s.blog_id, s.bucket_no, s.monitor_url,
        s.monitor_active, s.site_status, s.last_status_change, s.check_interval,
        r.last_checked_at, r.next_check_at
   FROM jetpack_monitor_sites s
-  LEFT JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id
+  LEFT JOIN jetpack_monitor_site_runtime r ON r.source_site_id = s.jetpack_monitor_site_id
  WHERE s.monitor_active = 1
    AND s.bucket_no BETWEEN 0 AND 999
    AND (r.next_check_at IS NULL OR r.next_check_at <= NOW())
- ORDER BY r.next_check_at ASC, s.blog_id ASC
+ ORDER BY r.next_check_at ASC, s.jetpack_monitor_site_id ASC
  LIMIT 100;
 ```
 
-Fixed-cadence selection should continue to use
-`jetpack_monitor_site_runtime.idx_last_checked` and should not show `Using filesort`:
+If a test intentionally changes the scheduler query, include the old and new
+plans in the report.
 
-```sql
-EXPLAIN
-SELECT s.jetpack_monitor_site_id, s.blog_id, s.bucket_no, s.monitor_url,
-       s.monitor_active, s.site_status, s.last_status_change, s.check_interval,
-       r.last_checked_at, r.next_check_at
-  FROM jetpack_monitor_sites s
-  LEFT JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id
- WHERE s.monitor_active = 1
-   AND s.bucket_no BETWEEN 0 AND 999
- ORDER BY r.last_checked_at ASC, s.blog_id ASC
- LIMIT 100;
-```
-
-## StatsD Signals To Capture
+## Signals To Capture
 
 Freshness and scheduler pressure:
 
@@ -87,13 +69,12 @@ Freshness and scheduler pressure:
 - `scheduler.streaming.side_effect_queue_depth.count`
 - `scheduler.streaming.dispatch_budget_limited.count`
 - `scheduler.streaming.backpressure_wait.count`
-- `scheduler.streaming.side_effect_backpressure_wait.count`
 - `scheduler.streaming.result_backpressure_pause.count`
 - `scheduler.streaming.side_effect_backpressure_pause.count`
 - `scheduler.streaming.stale_result.count`
 - `scheduler.streaming.max_lag.time`
 
-Phase timing and write volume:
+Check and side-effect timing:
 
 - `scheduler.streaming.history.time`
 - `scheduler.streaming.ssl.time`
@@ -104,99 +85,74 @@ Phase timing and write volume:
 - `scheduler.streaming.ssl.error.count`
 - `scheduler.streaming.check.success.count`
 - `scheduler.streaming.check.failure.count`
-- `scheduler.streaming.check.error.timeout.count`
-- `scheduler.streaming.check.error.connect.count`
-- `scheduler.streaming.check.error.ssl.count`
-- `scheduler.streaming.check.error.redirect.count`
-- `scheduler.streaming.check.error.keyword.count`
-- `scheduler.streaming.check.error.body_read.count`
-- `scheduler.streaming.check.error.tls_expired.count`
-- `scheduler.streaming.check.error.tls_deprecated.count`
+- `scheduler.streaming.check.error.*`
 - `eventstore.mutation.retry.count`
 
-Host/process signals:
+Host and dependency signals:
 
-- `scheduler.streaming.sps.count`
-- `scheduler.streaming.worker.count`
-- `scheduler.streaming.worker_target.count`
-- `scheduler.streaming.inflight.count`
-- `scheduler.streaming.queue_depth.count`
-- `retry.queue.size`
-- RSS memory
-- Go runtime system memory
-- process file descriptor count
+- Monitor CPU, RSS, Go memory, file descriptors, network I/O, and disk I/O
+- Veriflier CPU, RSS, file descriptors, queue pressure, and HTTP 503 count
+- MySQL CPU, I/O, network, slow queries, lock waits, and deadlocks
+- StatsD/Graphite CPU, disk I/O, and dropped/queued metric indicators
 
-Dependency signals:
+## Interpretation
 
-- MySQL CPU, I/O, network, and slow-query counters
-- StatsD/Graphite CPU
-- Veriflier CPU/RSS/FDs
-- monitor host CPU/RSS/FDs
+- `scheduler.streaming.max_lag.time` is the primary freshness signal. It should
+  remain comfortably below the cohort check interval.
+- `required_rate`, `selected`, `dispatched`, and `completed` show whether Jetmon
+  is using available capacity or falling behind before checks even run.
+- `queue_depth`, `result_depth`, side-effect depth, and backpressure counters
+  identify the bottleneck stage.
+- `check.success.count` should be close to `completed.count` for healthy target
+  fleets. A high connect or DNS error rate usually means the fixture or network
+  needs to be checked before blaming Jetmon throughput.
+- `eventstore.mutation.retry.count` should normally be zero. Sustained retries
+  point to event/projection write contention.
+- `ssl.row.count` should spike only during first observation, certificate
+  changes, or fixture churn.
+- If freshness is healthy but MySQL CPU or I/O is high, inspect history rows,
+  runtime writes, and table growth before changing concurrency.
 
-## Expected Interpretation
+## Capacity Ladder
 
-- `scheduler.streaming.max_lag.time` shows freshness pressure. It should stay
-  comfortably below the check interval for the tested cohort.
-- `scheduler.streaming.ssl.row.count` should be high only during initial
-  certificate backfills or real renewal waves. Sustained high SSL rows means
-  certificate dates are changing or stored with incompatible precision.
-- Healthy capacity targets should have `scheduler.streaming.check.success.count`
-  close to `scheduler.streaming.completed.count`. A high
-  `scheduler.streaming.check.error.connect.count` means the monitor could not
-  connect to the activated URLs; first verify the exact DB URL pattern and DNS
-  delegation before treating it as a Jetmon throughput regression.
-- `eventstore.mutation.retry.count` should normally be zero. Any non-zero value
-  means MySQL returned a deadlock or lock-wait timeout and Jetmon retried the
-  event mutation; sustained retries point to event/projection write contention.
-- Shared HTTP transport impact should show up in process FD count, monitor CPU,
-  DNS/TCP/TLS timing, and check latency rather than in scheduler row counts.
-- If MySQL CPU remains high while freshness is good, compare
-  `history.row.count`, `history.time`, and table growth before implementing
-  async or lower-resolution history storage.
+Use short bracketing runs to find the next ceiling, then longer soaks at the
+highest clean tier.
 
-## Body-Read Budget Change Verification Thresholds
+Suggested progression:
 
-Use this section only when the candidate differs from baseline by changing
-`BODY_READ_MAX_BYTES` from `262144` to `1048576`.
-
-- Body-read failure rate (`error_code=8` with HTTP `2xx`/`3xx`) must be less
-  than or equal to `max(0.30%, baseline * 0.75)` and must not exceed baseline
-  by more than `0.05` percentage points.
-- Timeout pressure primary check requires candidate ratio less than or equal to
-  baseline ratio * `1.15`, where ratio is
-  `scheduler.streaming.check.error.timeout.count /
-  scheduler.streaming.check.failure.count`.
-  If either baseline or candidate failure count is too small for a stable ratio
-  (for example `<100` failures in the window), use fallback absolute timeout
-  rate `scheduler.streaming.check.error.timeout.count /
-  scheduler.streaming.completed.count`, and require candidate not worse than
-  baseline by more than `0.05` percentage points.
-- Throughput must hold with `scheduler.streaming.sps.count` p50 at least `90%`
-  of baseline and p95 at least `85%` of baseline.
-- Backpressure/freshness must hold with `scheduler.streaming.queue_depth.count`
-  p95 less than or equal to `1.25x` baseline, and
-  `scheduler.streaming.max_lag.time` must remain comfortably below the tested
-  check interval.
-- Memory must hold with jetmon2 RSS p95 less than or equal to `1.20x`
-  baseline, with no monotonic leak trend across the window.
-
-Run baseline and candidate windows with the same duration, the same site mix,
-and only this config delta.
-
-## Next Capacity Ladder
-
-Run each step for the same duration and compare against the latest successful
-1,000-site baseline:
-
-1. 1,000 sites after this branch to isolate regressions.
-2. 5,000 sites to find the next visible bottleneck.
-3. 10,000 sites if freshness, FD count, and MySQL CPU remain healthy.
+1. Smoke: 5k or 10k active sites, long enough to verify all code paths.
+2. Baseline: last-known-good tier from the previous report.
+3. Bracket: increase by large steps until freshness or failure rate breaks.
+4. Soak: run the highest clean tier long enough to prove steady-state behavior.
+5. Regression: rerun the previous baseline after large scheduler or database
+   changes.
 
 For each step, preserve:
 
 - uptime-bench report directory
-- Prometheus/Graphite window export
+- Jetmon and uptime-bench commits
+- host topology and resource sizes
 - service logs for the exact test window
-- `EXPLAIN` output
+- StatsD/Graphite or Prometheus window exports
+- `EXPLAIN` output when query behavior is relevant
 - row counts for `jetpack_monitor_check_history`
 - open-event count before and after test-site deactivation
+
+## Focused Config Experiments
+
+When testing a single config delta, keep the site mix, duration, resource sizes,
+and branch constant. Only the target variable should change.
+
+For a body-read budget increase, compare candidate against baseline:
+
+- body-read failure rate should improve or remain within `0.05` percentage
+  points of baseline
+- timeout pressure should not rise by more than `15%` unless the absolute rate
+  remains negligible
+- `scheduler.streaming.sps.count` p50 should stay at least `90%` of baseline
+  and p95 at least `85%`
+- queue-depth p95 should stay within `1.25x` baseline
+- RSS p95 should stay within `1.20x` baseline with no monotonic leak trend
+
+Use the same pattern for future experiments: define the expected benefit, the
+allowed regression budget, and the metrics that would disprove the change.
