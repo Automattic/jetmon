@@ -90,9 +90,9 @@ tuple" without requiring partial indexes (which MySQL lacks).
   per real state change, not one per check — but non-zero.
 - Writes are now transactional across two tables. Mitigated by
   `internal/eventstore` owning the contract.
-- Migration path from Jetmon 1 is non-trivial. Acceptable because
-  v2 is a separate branch (PR #61) intentionally not drop-in
-  compatible.
+- Migration from Jetmon 1 is non-trivial. The rollout model keeps the legacy
+  `jetpack_monitor_sites` status projection available while v2 writes the
+  event tables as the authoritative state.
 
 ## Alternatives considered
 
