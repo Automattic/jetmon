@@ -1,10 +1,35 @@
 services:
-  veriflier:
-    image: ${VERIFLIER_IMAGE:-ghcr.io/automattic/veriflier:latest}
+  # Traefik fronts the public Veriflier port for zero-downtime blue-green
+  # deploys. The deploy automation rewrites the file under
+  # ${VERIFLIER_TRAEFIK_DYNAMIC_DIR} to swap which Veriflier color receives
+  # traffic; Traefik's file provider reloads the routing within ~1s with
+  # no dropped connections.
+  traefik:
+    image: ${TRAEFIK_IMAGE:-traefik:v3.4}
     init: true
     restart: unless-stopped
     ports:
       - "${VERIFLIER_BIND_ADDR:-0.0.0.0}:${VERIFLIER_HOST_PORT:-7803}:7803"
+    volumes:
+      - ${VERIFLIER_TRAEFIK_STATIC:-./traefik/traefik.yml}:/etc/traefik/traefik.yml:ro
+      - ${VERIFLIER_TRAEFIK_DYNAMIC_DIR:-./traefik/dynamic}:/etc/traefik/dynamic:ro
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+  # Veriflier blue/green colors. Only one is brought up in steady state;
+  # the other is started briefly during a deploy. The compose `profiles:`
+  # opt-in keeps `docker compose up` from starting both unless explicitly
+  # told to. The deploy role activates a single color via
+  # `docker compose --profile blue up -d veriflier-blue` (or green).
+  veriflier-blue:
+    image: ${VERIFLIER_IMAGE:-ghcr.io/automattic/veriflier:latest}
+    init: true
+    restart: unless-stopped
+    profiles: ["blue", "all"]
     environment:
       VERIFLIER_AUTH_TOKEN: ${VERIFLIER_AUTH_TOKEN:?set VERIFLIER_AUTH_TOKEN}
       VERIFLIER_PORT: "7803"
@@ -26,7 +51,35 @@ services:
       retries: 12
       start_period: 10s
     volumes:
-      - veriflier-config:/opt/veriflier/config
+      - veriflier-blue-config:/opt/veriflier/config
+
+  veriflier-green:
+    image: ${VERIFLIER_IMAGE:-ghcr.io/automattic/veriflier:latest}
+    init: true
+    restart: unless-stopped
+    profiles: ["green", "all"]
+    environment:
+      VERIFLIER_AUTH_TOKEN: ${VERIFLIER_AUTH_TOKEN:?set VERIFLIER_AUTH_TOKEN}
+      VERIFLIER_PORT: "7803"
+      VERIFLIER_VANTAGE_ID: ${VERIFLIER_VANTAGE_ID:?set VERIFLIER_VANTAGE_ID}
+      VERIFLIER_REGION: ${VERIFLIER_REGION:?set VERIFLIER_REGION}
+      VERIFLIER_PROVIDER: ${VERIFLIER_PROVIDER:-vps}
+      VERIFLIER_ENABLE_LEGACY_HTTP: ${VERIFLIER_ENABLE_LEGACY_HTTP:-false}
+      CHECK_TARGET_SAFETY_MODE: ${CHECK_TARGET_SAFETY_MODE:-public_only}
+      STATSD_ADDR: statsd:8125
+      JETMON_HOSTNAME: ${JETMON_HOSTNAME:-}
+      STATSD_HOST_PATH: ${STATSD_HOST_PATH:-}
+    depends_on:
+      statsd:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7803/v2/status"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    volumes:
+      - veriflier-green-config:/opt/veriflier/config
 
   statsd:
     image: ${STATSD_GRAPHITE_IMAGE:-graphiteapp/graphite-statsd}
@@ -62,6 +115,7 @@ services:
     restart: "no"
 
 volumes:
-  veriflier-config:
+  veriflier-blue-config:
+  veriflier-green-config:
   statsd-graphite-storage:
   statsd-logs:

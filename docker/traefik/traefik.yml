@@ -1,0 +1,44 @@
+## Traefik static config for production Veriflier hosts.
+##
+## Combined with docker-compose.veriflier-prod.yml, Traefik fronts the public
+## :7803 port and routes to one of veriflier-blue / veriflier-green based on
+## a dynamic config file under /etc/traefik/dynamic. The blue-green deploy
+## automation rewrites that file to swap active backends with zero downtime.
+##
+## This file does not change at runtime — only Traefik restarts reload it.
+
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+entryPoints:
+  veriflier-public:
+    address: ":7803"
+
+# Built-in /ping endpoint on the public entrypoint, used as the container
+# healthcheck. Not a security concern: it returns "OK\n" and exposes no
+# routing or service info.
+ping:
+  entryPoint: veriflier-public
+
+# Traefik's API endpoint, exposed only inside the container on :8080 so the
+# deploy automation can introspect router/service state via `docker exec`.
+# Not routed to the public entrypoint.
+api:
+  insecure: true
+  dashboard: false
+
+providers:
+  # File provider supplies both the service definitions (where to forward
+  # traffic) and the router-to-service mapping. The deploy automation
+  # overwrites veriflier.yml under this directory to swap the active color.
+  # Traefik reloads the dynamic config automatically when the file changes
+  # — no exec, no signal, no Traefik restart.
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+
+log:
+  level: INFO
+
+accessLog: {}

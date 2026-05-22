@@ -10,8 +10,12 @@ bin/
 
 # Secrets and local config
 .env
+.env.bak.*
 config/config.json
 config/db-config.conf
+
+# Operator-rendered Traefik dynamic config (the .sample is tracked)
+docker/traefik/dynamic/veriflier.yml
 
 # Generated TLS certificates
 certs/*.crt

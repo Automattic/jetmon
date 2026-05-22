@@ -1,0 +1,37 @@
+## Reference template for the Veriflier blue-green dynamic config.
+##
+## Both color services are declared with their fixed Docker network
+## hostnames; the router's `service:` field selects which one receives
+## traffic. The deploy automation in jetmon-secrets overwrites this file's
+## `service:` line to swap colors. Traefik's file provider watches the
+## directory and reloads the routing in <1s — no Traefik restart,
+## no `docker exec`, no dropped connections.
+##
+## Keep the router name `veriflier` and the service names stable so the
+## file-replace strategy works idempotently.
+
+http:
+  routers:
+    veriflier:
+      rule: "PathPrefix(`/`)"
+      entryPoints:
+        - veriflier-public
+      service: veriflier-blue        # rendered per-deploy: blue or green
+
+  services:
+    veriflier-blue:
+      loadBalancer:
+        servers:
+          - url: "http://veriflier-blue:7803"
+        healthCheck:
+          path: /v2/status
+          interval: 10s
+          timeout: 5s
+    veriflier-green:
+      loadBalancer:
+        servers:
+          - url: "http://veriflier-green:7803"
+        healthCheck:
+          path: /v2/status
+          interval: 10s
+          timeout: 5s
