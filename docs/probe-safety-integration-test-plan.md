@@ -1,7 +1,7 @@
-# Uptime-Bench Probe-Safety Integration Handoff
+# Probe-Safety Integration Test Plan
 
-This handoff defines the remaining v2-only probe-safety coverage that should be
-run in uptime-bench or another isolated lab. Do not contact real WPCOM
+This test plan defines the remaining v2-only probe-safety coverage that should
+be run in uptime-bench or another isolated lab. Do not contact real WPCOM
 endpoints, do not send alerts, and do not use customer sites for these tests.
 
 ## Goal
@@ -103,6 +103,6 @@ Stop and report immediately if any probe-safety or TLS-pathology fixture:
 
 Current v2 already has local unit coverage for direct unsafe target rejection,
 unsafe redirect rejection, mixed DNS answers, rebind-after-cache-expiry, and
-dial-time safety checks. This handoff is asking for the production-shaped
+dial-time safety checks. This plan asks for the production-shaped
 integration evidence around Monitor, Veriflier, database side effects, and
 operator reports.

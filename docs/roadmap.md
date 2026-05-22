@@ -241,7 +241,7 @@ production telemetry branches:
   expectations, and keep separate evidence for recovery, WPCOM parity, and
   Veriflier-confirmed down lifecycle behavior.
 - [ ] Run the probe-safety integration coverage in
-  `docs/uptime-bench-probe-safety-integration-handoff.md`: authoritative DNS
+  `docs/probe-safety-integration-test-plan.md`: authoritative DNS
   rebinding, unsafe redirect DNS, Veriflier probe-safety parity, TLS 1.0/1.1
   advisory behavior, handshake failures, certificate pathologies, and slow or
   large TLS cases with proof that no WPCOM, alert, webhook, or customer

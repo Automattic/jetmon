@@ -38,10 +38,11 @@ including the Veriflier discovery trust decision in
 | [`v1-to-v2-migration.md`](v1-to-v2-migration.md) | Full production migration runbook from v1 to v2, including preparation, same-server replacement, fresh-server takeover, monitoring, revert paths, dynamic ownership cutover, and v1 teardown. |
 | [`changelog.md`](changelog.md) | Release notes and implementation history. |
 
-## Planning Notes
+## Plans And Follow-Ups
 
-Planning notes capture future options and open design threads. They are not
-accepted architecture decisions.
+These docs cover future options, open design threads, and repeatable test
+plans. They are useful operating context, but they are not accepted
+architecture decisions.
 
 | Document | Purpose |
 |---|---|
@@ -50,13 +51,6 @@ accepted architecture decisions.
 | [`jetmon-deliverer-rollout.md`](jetmon-deliverer-rollout.md) | Operational rollout policy for moving outbound dispatch from embedded `jetmon2` workers to standalone `jetmon-deliverer`. |
 | [`outbound-credential-encryption-plan.md`](outbound-credential-encryption-plan.md) | Migration plan for encrypting webhook secrets and alert-contact destination credentials after the current plaintext v2 model. |
 | [`public-api-gateway-tenant-contract.md`](public-api-gateway-tenant-contract.md) | Gateway boundary contract, implemented Jetmon-side tenant ownership checks, and remaining public-exposure prerequisites. |
-| [`uptime-bench-probe-safety-integration-handoff.md`](uptime-bench-probe-safety-integration-handoff.md) | Uptime-bench handoff for DNS rebinding and TLS pathology integration coverage. |
-| [`v1-to-v2-pinned-rollout.md`](v1-to-v2-pinned-rollout.md) | Compatibility pointer to the consolidated v1-to-v2 migration runbook. |
+| [`probe-safety-integration-test-plan.md`](probe-safety-integration-test-plan.md) | Integration test plan for DNS rebinding and TLS pathology probe-safety coverage. |
+| [`jetmon-v2-scalability-test-plan.md`](jetmon-v2-scalability-test-plan.md) | Repeatable checklist for validating scheduler and check-path efficiency changes. Historical raw reports live in the sibling `uptime-bench` repo. |
 | [`v3-probe-agent-architecture-options.md`](v3-probe-agent-architecture-options.md) | Post-v2 architecture options for evolving from main servers plus Verifliers toward a probe-agent architecture. |
-
-## Benchmark Reports
-
-| Document | Purpose |
-|---|---|
-| [`jetmon-v2-capacity-1000-report.md`](jetmon-v2-capacity-1000-report.md) | Capacity-benchmark report comparing the latest successful 1,000-site Jetmon v2 run with the previous failed 1,000-site run. |
-| [`jetmon-v2-scalability-test-plan.md`](jetmon-v2-scalability-test-plan.md) | Repeatable checklist for validating scheduler and check-path efficiency changes at 1k, 5k, and 10k site counts. |

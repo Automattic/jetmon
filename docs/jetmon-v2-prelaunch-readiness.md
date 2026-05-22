@@ -524,11 +524,11 @@ Evidence:
 - [x] Owner: `Jetmon` - Add follow-up tracking for authoritative DNS
   rebinding coverage: public address on first lookup, then private/reserved
   address on redirect or later check. See
-  `uptime-bench-probe-safety-integration-handoff.md`.
+  `probe-safety-integration-test-plan.md`.
 - [x] Owner: `Jetmon` - Add follow-up tracking for deeper TLS pathology
   coverage: TLS 1.0/1.1, no common cipher, handshake close/alert, large
   certificate chains, expired/self-signed certificates, and hostname mismatch.
-  See `uptime-bench-probe-safety-integration-handoff.md`.
+  See `probe-safety-integration-test-plan.md`.
 - [ ] Owner: `Jetmon` - Decide whether streaming keyword matching should
   short-circuit when a required-only keyword is found. This is an optimization
   follow-up, not a production rollout blocker unless body-read cost becomes a
@@ -539,7 +539,7 @@ Evidence:
 - MariaDB runtime exercise transcript, including server versions and pass/fail
   output for each covered write path.
 - `site-safety report` output and links to follow-up issues, roadmap entries,
-  or handoff docs for safety-flag reporting, DNS rebinding tests, TLS
+  or test plans for safety-flag reporting, DNS rebinding tests, TLS
   pathology tests, and keyword
   short-circuiting.
 
