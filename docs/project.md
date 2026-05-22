@@ -1,436 +1,192 @@
-# Jetmon 2 — Project Description
-
-## Executive Summary
-
-Jetmon 2 is a complete rewrite of the Jetmon uptime monitoring service, replacing the Node.js + C++ native addon architecture with a single Go binary. The rewrite retains compatibility with the production-facing external interfaces that matter for rollout — MySQL schema, WPCOM API notification format, StatsD metric names, config keys, and v1-style stats outputs — while intentionally moving runtime logs to stdout/stderr instead of recreating v1-owned log files. Internally, the process-per-worker model is replaced by a goroutine pool, eliminating the overhead of forked processes and native addon compilation while dramatically increasing the number of concurrent checks per host. The rewrite is accompanied by a comprehensive tooling suite designed to make the system easier to test, deploy, operate, and interrogate.
-
----
-
-## Why Go
-
-The current architecture uses forked Node.js processes (8–16MB RSS each at startup, 53MB limit before recycling) as workers, plus a compiled C++ addon to escape Node's event loop for blocking network I/O. Go eliminates both constraints:
-
-- **Goroutines** start at ~4KB of stack and grow on demand, making 50,000 concurrent checks on a single host practical without the memory overhead of forked processes or libuv thread pools
-- **`net/http` and `crypto/tls`** are first-class stdlib packages — no native addon, no node-gyp, no compilation step during deployment
-- **`net/http/httptrace`** provides DNS, TCP, TLS, and TTFB timing hooks as separate measurements within each check, for free
-- **Single static binary** deployment with no runtime dependencies, no `node_modules`, and no addon rebuild on Node.js version upgrades
-- **Built-in profiling** via `pprof`, race detector via `go test -race`, and a mature testing ecosystem
-- **Graceful goroutine lifecycle management** replaces the fragile worker spawn/recycle/evaporate lifecycle
-
-The Veriflier is rewritten in Go as well, replacing the Qt C++ dependency with a lightweight Go HTTP service. The v2 production Monitor-to-Veriflier transport is JSON-over-HTTP on the configured Veriflier port. New Verifliers serve a versioned `/v2/check` + `/v2/status` contract with explicit batch/request IDs, typed outcomes, vantage identity, agent identity, deadline propagation, and capacity reporting. `veriflier2` can optionally expose legacy-compatible `/check` + `/status` only when `VERIFLIER_ENABLE_LEGACY_HTTP=true` for lab or emergency compatibility testing; production v2 endpoints should leave it disabled. The proto contract is kept in `proto/` as a schema reference for a possible future transport, not as the v2 deployment path.
-
----
-
-## Architecture Overview
-
-```
-┌──────────────────────────────────────────────────────┐
-│                       jetmon2                        │
-│                                                      │
-│  ┌─────────────┐  ┌─────────────┐  ┌──────────────┐  │
-│  │ Orchestrator│  │ Check Pool  │  │  Veriflier   │  │
-│  │  goroutine  │  │ (goroutines)│  │  transport   │  │
-│  └──────┬──────┘  └──────┬──────┘  └──────┬───────┘  │
-│         │                │                │          │
-│  ┌──────┴────────────────┴────────────────┴───────┐  │
-│  │                 Internal channels              │  │
-│  └────────────────────────────────────────────────┘  │
-└────────────┬──────────────────────────┬──────────────┘
-             │                          │
-          MySQL                    WPCOM API
-          StatsD                   (unchanged)
-          stdout/stderr logs       (service/container runtime)
-```
-
-The monitor process replaces the master/worker/SSL-cluster process tree. Concurrency is managed through Go channels and a bounded goroutine worker pool. The orchestrator goroutine owns DB access and WPCOM notifications. The check pool goroutines own HTTP connections. The Veriflier client/server code handles remote confirmation batches over JSON-over-HTTP and is isolated behind `internal/veriflier/`. The preferred rollout deploys a fresh `veriflier2` fleet first and points v2 Monitors only at that fleet; `veriflier2` exposes the versioned v2 contract by default and can expose a legacy-compatible HTTP contract only when `VERIFLIER_ENABLE_LEGACY_HTTP=true`, while the original v1 Veriflier's TLS/custom transport is not a v2 Monitor fallback target. Veriflier endpoints advertise a quorum-counted `vantage.id` separately from the serving `agent.id`, so multiple horizontally scaled replicas behind one endpoint add capacity without adding extra votes. Monitor-side Veriflier discovery can run in `static`, `shadow`, or `active` mode against a trusted DB registry; monitors collect agent liveness and capacity from `/v2/status`, but only pre-approved enabled vantages count for quorum. Outbound webhook and alert-contact delivery can run embedded in one API-enabled `jetmon2` process today, or through the standalone `jetmon-deliverer` entry point as that responsibility moves toward its own deployable process.
-
----
-
-## Benefits of the Rewrite
-
-### Memory
-
-The current architecture forks Node.js worker processes that start at 8–16MB RSS and are recycled once they reach 53MB. With a typical deployment of 8–16 workers, the process tree consumes 240–850MB of resident memory just for worker overhead, before any check data is counted. The master process, SSL server, and associated IPC buffers add further overhead.
-
-Jetmon 2 runs as a single process. Go goroutines start at 4KB of stack and grow on demand. A pool of 1,000 concurrent goroutines costs roughly 4MB of stack. Total process RSS for an equivalent workload is estimated at 50–150MB — a **75–90% reduction** in memory consumption per host.
-
-### Concurrent Checks
-
-Current concurrency is bounded by the number of worker processes. Each worker is a single-threaded Node.js process; even with the C++ addon offloading blocking I/O to a thread pool, practical concurrency per host is in the low hundreds. Scaling beyond that requires adding more hosts and manually partitioning bucket ranges.
-
-Go's goroutine scheduler makes 10,000+ concurrent in-flight checks on a single host practical with no additional configuration. At a conservative network timeout of 10 seconds and average site response time of 200ms, a pool of 1,000 goroutines sustains approximately 5,000 check completions per second. This represents an estimated **10–50× increase in concurrent checks per host**, meaning significantly fewer hosts are required to cover the same fleet.
-
-### Throughput
-
-The current architecture crosses a process boundary on every unit of work: the master dispatches via IPC, the worker receives, processes, and replies via IPC, and the master aggregates. Each crossing involves serialisation, a context switch, and V8 event loop scheduling on both ends.
-
-Jetmon 2 replaces all IPC with Go channel sends, which are in-process and order-of-magnitude cheaper. V8 GC pauses, which can delay check scheduling and RTT measurement in the current system, are eliminated. Estimated throughput improvement: **3–10× more sites checked per second per host** under equivalent conditions.
-
-### Check Scheduling Accuracy
-
-The current system uses `setTimeout` and `setInterval` for round scheduling. These are subject to V8 event loop delay — a busy event loop can delay a scheduled callback by tens to hundreds of milliseconds, introducing jitter into check timing and RTT measurements.
-
-Go's `time.Ticker` fires with OS-level timer precision. RTT measurements from `net/http/httptrace` are taken inside the HTTP stack with no event loop between the measurement point and the timer, making them more accurate and consistent.
-
-### Deployment Speed
-
-Current deployment requires `npm install`, a `node-gyp` rebuild of the native C++ addon (which must match the installed Node.js version), and a coordinated process restart. A failed addon compilation blocks deployment entirely.
-
-Jetmon 2 deploys as static Go binaries with no runtime language dependencies. The conservative v2 monitor deployment is: copy `jetmon2`, run migrations, and `systemctl restart jetmon2`. Total deployment time drops from several minutes to under 30 seconds. There is no compilation step on the target host and no dependency on a matching Node.js version.
-
-### Mean Time to Recovery
-
-A worker process crash in the current system requires the master to detect the exit, spawn a replacement, and wait for the new process to initialise — a sequence that takes several seconds and leaves that worker's in-flight checks unresolved.
-
-In Jetmon 2, a panicking goroutine is recovered by a deferred handler, the result is counted as an error, and a replacement goroutine is immediately spawned from the pool — recovery is in the low milliseconds. For a full process crash, systemd restarts the binary; with Go's fast startup, the process is accepting work again in under 2 seconds.
-
-### Operational Complexity
-
-The current system requires managing Node.js version compatibility, native addon compilation, npm dependency trees, and the fragile worker spawn/recycle lifecycle. The `node_modules` directory and compiled `.node` addon must be present and consistent on every host.
-
-Jetmon 2 eliminates all of this. There is one artifact to manage: the Go binary. It carries its own runtime, has no external dependencies, and produces a reproducible build from `go build`. The `node-gyp`, `npm`, and Node.js version management concerns disappear entirely.
-
----
-
-## Drop-in Compatibility Requirements
-
-These interfaces must remain byte-for-byte identical to the current implementation:
-
-| Interface | Constraint |
-|-----------|-----------|
-| MySQL schema | Read same columns; additive migrations (new columns, new tables) are permitted |
-| WPCOM notification payload | Same JSON structure and field names |
-| StatsD metric names | Same dotted paths; new metrics may be added |
-| Runtime logs | stdout/stderr via the service manager or container runtime; v1 `logs/jetmon.log` and `logs/status-change.log` are intentionally not written by v2 unless a future consumer need is confirmed |
-| `stats/` file outputs | `sitespersec`, `sitesqueue`, `totals` — same format |
-| `config/config.json` keys | All existing keys honoured; new keys additive |
-| SIGHUP config reload | Same signal handling behaviour |
-| SIGINT graceful shutdown | Same behaviour |
-
----
-
-## New Features — Competitive Parity
-
-These features address the most significant gaps against competing solutions and are scoped to be implementable without new server infrastructure.
-
-**SSL Certificate Expiry Monitoring**
-During each HTTPS check, inspect the peer certificate chain via Go's `tls.ConnectionState`. Extract `NotAfter` from the leaf certificate and store it in `jetpack_monitor_site_runtime.ssl_expiry_date`. Emit alerts at configurable thresholds (30, 14, and 7 days before expiry) through the same WPCOM notification path as downtime alerts. Zero additional network requests — the data is present in every existing HTTPS connection.
-
-**Staged HEAD/GET Site Checks**
-Jetmon 1's HEAD-only verification was a major source of customer-visible false positives and false negatives because many production stacks block, special-case, or incorrectly implement HEAD. Jetmon 2 supports both HEAD and GET checks so rollout can first preserve v1 semantics, then move selected cohorts to GET requests, and finally enable the full v2 detection profile once stability is proven. GET checks base uptime decisions on the same class of request a browser and customer-facing uptime product normally make. This staged check policy is independent of the Veriflier HTTP transport: `HEAD` + `legacy` site probes still travel over the v2 `/v2/check` Veriflier contract.
-
-**Keyword / Content Checking**
-For sites with a `check_keyword` value set in the database, full-profile GET checks search the response body for the configured string. A missing keyword on an otherwise-200 response counts as a failure and enters the same retry and confirmation pipeline as an HTTP error. Sites can also set `forbidden_keyword` for one known-bad string or `forbidden_keywords` for a JSON array of known-bad strings that must not appear, such as injected scripts, SEO spam links, parked-domain pages, compromised-content markers, or upstream error templates. These explicit rules require GET and are gated off for HEAD and simple rollout profiles.
-
-**Maintenance Windows**
-Store `maintenance_start` and `maintenance_end` in `jetpack_monitor_site_check_config`. During a maintenance window, checks continue and RTT data is collected, but failing checks are swallowed before they open or promote downtime incidents. If a local retry is already in progress when the window starts, the open HTTP event is closed with `maintenance_swallowed` and the legacy projection returns to running. The check result is logged internally so the audit trail is complete, but no alert fires. Configurable via the WPCOM API or direct DB write.
-
-**Granular Timing Breakdown**
-Go's `net/http/httptrace` provides discrete callbacks for DNS start/done, TCP connect start/done, TLS handshake start/done, request written, and first response byte. Each check records composite RTT plus DNS, TCP, TLS, and TTFB timings. The raw samples are stored in `jetpack_monitor_check_history` for response-time trending and API statistics; scheduler-level StatsD metrics report round/page phase timing and write volume.
-
-When the HTTP probe fails during resolver lookup, Jetmon records structured DNS
-diagnostics in event metadata when Go exposes them: NXDOMAIN, SERVFAIL, timeout,
-or a generic resolver error, plus the queried name and resolver server when
-available. This improves operator explanation for DNS-caused HTTP failures
-without pretending that cached recursive resolvers can see every short
-authoritative DNS outage.
-
-**Per-Site Request Headers**
-Store `custom_headers` JSON in `jetpack_monitor_site_check_config`. The check engine merges these into the outgoing request, allowing sites that require an `Authorization` header or a specific `Host` value to be checked correctly.
-
-**Configurable Timeout Per Site**
-Store `timeout_seconds` in `jetpack_monitor_site_check_config`, defaulting to the global `NET_COMMS_TIMEOUT`. Premium sites can have shorter timeouts for faster failure detection; sites on slow infrastructure can have longer ones to reduce false positives.
-
-**Sub-Minute Check Intervals (Premium)**
-The goroutine scheduler handles arbitrary intervals natively. A dedicated premium worker pool with its own configuration runs at high frequency without affecting the general pool. Routing is via the existing bucket range mechanism — premium buckets are assigned to the premium pool configuration.
-
-**False Positive Suppression Tuning**
-Expose `NUM_OF_CHECKS` as a per-site override in the database. Sites with a history of transient failures can be tuned to require more local confirmations before escalating to Verifliers, without changing the global default. Failed probes already get a bounded one-minute follow-up when the normal check interval is longer, so retry cadence should stay scheduler-owned unless production evidence shows a need for explicit per-site retry timing.
-
-**Response Time History**
-Each check result — including the HTTP request method and granular DNS/TCP/TLS/TTFB breakdown — is written to a `jetpack_monitor_check_history` table with a timestamp. This enables response time trending over configurable windows (1h, 24h, 30d) queryable via the operator dashboard and the audit CLI. The request method gives operators durable evidence that v2 probes are exercising the GET path instead of v1's HEAD-only behavior. The data is already being collected as part of the granular timing breakdown; this feature is purely a storage and query layer on top of it. Provides the response time graphs that customers expect from competing services.
-
-**Alert Deduplication and Cooldown**
-Store `alert_cooldown_minutes` in `jetpack_monitor_site_check_config`, defaulting to a global `ALERT_COOLDOWN_MINUTES` config value. After an alert fires for a site, subsequent alerts for the same site are suppressed until the cooldown expires, even if the site flaps up and down repeatedly. The suppression is recorded in the audit log. Prevents alert fatigue on flapping sites without requiring manual maintenance window configuration.
-
-Store `next_check_at` in `jetpack_monitor_site_runtime` for variable-interval scheduling in legacy round-scheduler mode. Jetmon maintains it after checks, using `last_checked_at + max(check_interval, 1) minutes` for successful probes and a bounded one-minute follow-up for failed probes when the normal interval is longer. This allows due-site selection to use an indexed sidecar range predicate instead of recalculating the interval expression for every active row while keeping open incidents from waiting a full normal interval before the next local observation.
-
-**TLS Version and Cipher Reporting**
-Alongside SSL certificate expiry monitoring, inspect `tls.ConnectionState` for the negotiated TLS version and cipher suite. Sites still serving TLS 1.0 or TLS 1.1 open a `tls_deprecated` warning event, but this advisory does not enter the downtime retry pipeline or project the legacy site status down. Jetmon permits the deprecated handshake long enough to classify the site accurately and records the TLS version and cipher in event metadata. Zero additional network requests — this data is present in every existing HTTPS connection alongside the certificate chain.
-
-**Redirect Policy Configuration**
-Store `redirect_policy` in `jetpack_monitor_site_check_config` with three options: `follow` (current behaviour — follow redirects and treat the final response code as the result), `alert` (follow the redirect but record a warning in the audit log when the redirect target or chain changes from a stored baseline), and `fail` (treat any redirect as a failure). Detecting unexpected redirect changes is valuable for catching misconfigured CDN rules, accidental HTTP-to-HTTPS regressions, and domain hijacking scenarios.
-
----
-
-## Tooling and Developer Experience
-
-**Docker Compose Environment**
-The existing Docker Compose setup is updated for the Go binary. A single `docker compose up` starts a local MySQL-compatible database, the Jetmon 2 binary, one or more Veriflier instances, Mailpit for local email capture, StatsD + Graphite, the operator dashboard, and the deterministic API fixture. No npm, no node-gyp, no manual build steps. `docker compose up --build` rebuilds the Go binaries in a reproducible multi-stage Docker build.
-
-**Docker-Local API Fixture**
-The Docker Compose environment includes an `api-fixture` service for deterministic local API CLI and event-flow rehearsals without depending on public endpoint timing. It exposes:
-
-- static response-code endpoints for success, client error, and server error cases
-- configurable slow responses for timeout paths
-- keyword-present and keyword-missing responses
-- redirect paths for redirect-policy checks
-- HTTPS with a self-signed certificate for TLS failure paths
-- webhook capture endpoints that record deliveries and verify
-  `X-Jetmon-Signature` when a shared secret is supplied
-
-`make api-cli-smoke` exercises the normal local API smoke path, and
-`make api-cli-validate` runs the broader guide validation with fixture-backed
-failure simulation and optional webhook signature verification. For the same
-validation with target safety enabled, use
-`make api-cli-public-fixture-validate`; it runs an isolated Docker stack with
-WPCOM disabled, Mailpit-only email, and a public-looking Docker-internal
-fixture address.
-
-**Structured Logging**
-Runtime logs go to stdout/stderr for collection by systemd, Docker, or the deployment platform. Routine scheduler summaries and state-change chatter are suppressed unless `DEBUG` is enabled; normal production output is limited to startup/shutdown, warnings, and operational failures. V2 does not write the v1 `logs/jetmon.log` or `logs/status-change.log` files by default. Use `jetpack_monitor_events`, `jetpack_monitor_event_transitions`, `jetpack_monitor_audit_log`, the API, dashboard, StatsD, and the v1-style stats API for operational history.
-
-**Alert Flow Replay**
-Given a site `blog_id` and a time range, the replay tool reconstructs the full detection and notification sequence from the audit log: when each check ran, what it found, which local retries fired, which Verifliers were queried and what they returned, and what was sent to the WPCOM API. Outputs a human-readable timeline. Intended for Happiness Engineers debugging "why didn't I get an alert?" or "why did I get an alert when the site was fine?"
-
-**Automated Test Suite**
-End-to-end integration tests that run against the Docker Compose environment:
-
-- Unit tests for the check logic (status classification, retry transitions, COMPARE mode comparison)
-- Integration tests that insert sites into the test database, configure deterministic local test endpoints to return specific states, and assert that the correct WPCOM notification is sent within a defined time window
-- Timeout and TLS failure scenarios
-- Maintenance window suppression
-- SSL expiry detection
-- Keyword check pass/fail
-- Worker pool scale-up and scale-down
-- Graceful shutdown mid-round
-- MySQL-coordinated bucket claiming: two hosts starting simultaneously claim non-overlapping ranges
-- MySQL-coordinated bucket failover: a host's heartbeat is artificially expired and surviving hosts absorb its buckets within one grace period
-- Alert cooldown suppression: a flapping site does not fire repeated alerts within the cooldown window
-- Redirect policy: `follow`, `alert`, and `fail` modes behave correctly against deterministic local test endpoints
-
-All tests run with `go test ./...` and are included in CI.
-
-**Config Validation Tool**
-A standalone binary (`jetmon2 validate-config`) that:
-
-- Parses `config.json` and checks all required keys are present
-- Validates value ranges and required per-mode settings
-- Attempts a test connection to MySQL
-- Reports legacy projection and email transport modes
-- Prints the matching rollout preflight and projection-drift investigation
-  commands for the configured bucket ownership mode
-- Warns when the email transport resolves to the log-only `stub` sender
-- Probes configured Verifliers as best-effort operator context, reports v2 vs.
-  legacy contract status, and prints v2 `vantage.id`, `agent.id`, and capacity
-  metadata when available
-- Fails on duplicate or missing v2 Veriflier vantage IDs so bad quorum identity
-  layouts are caught before rollout
-- Reports Veriflier discovery mode, trusted DB registry counts, incomplete
-  active-discovery rows, and shadow-mode drift between static config and the
-  registry
-- Outputs a pass/fail summary with specific error messages
-
-Intended to run as a pre-deployment check in CI and as an operator tool when diagnosing connectivity issues.
-
-`jetmon2 schema validate` is the read-only schema gate for production
-containers. It verifies that Systems-applied migrations match the binary without
-running DDL. `jetmon2 doctor --require-statsd` builds on validate-config with
-dependency smoke checks for DB connectivity, schema freshness, DB server-map
-mode, StatsD UDP emission, WPCOM config/credentials, and Veriflier readiness.
-
-**Veriflier Discovery Report**
-`jetmon2 verifliers discovery-report` is a read-only rollout gate for
-auto-discovery. It compares configured static Verifliers, enabled trusted
-`jetpack_monitor_veriflier_vantages` rows, and recent monitor-collected
-`jetpack_monitor_veriflier_agents` telemetry, then emits text or JSON with
-green/amber/red status and a suggested next action. It reports only token
-presence, never token values.
-
-**Operator Dashboard**
-A lightweight web UI served by the binary itself (no separate process) on a configurable internal port. Displays in real time:
-
-- Worker goroutine count and active checks
-- Check queue depth and drain rate
-- Sites per second
-- Round completion time
-- Local retry queue depth
-- Owned bucket range
-- Bucket ownership mode, legacy projection mode, delivery-worker ownership, and
-  rollout preflight / projection-drift commands
-- RSS memory and Go runtime system memory usage
-- WPCOM circuit-breaker state and queued notification depth
-- Live dependency health for MySQL, configured Verifliers, Veriflier discovery,
-  WPCOM, StatsD, and stats directory writes
-- Combined `/api/host` snapshot with local state, dependency health, and a
-  red/amber/green host summary for operator tooling
-
-Updates via server-sent events and lightweight JSON polling — no WebSocket library needed, no JavaScript framework. A plain HTML page with `<EventSource>` and `fetch` is sufficient and has no build toolchain dependency.
-
-**System Health Map**
-The operator dashboard health grid publishes:
-
-- MySQL: connection state and ping latency
-- Each configured Veriflier: reachability and status latency
-- Veriflier discovery: registry query status, enabled/usable vantage counts,
-  and recent agent telemetry count when discovery mode is `shadow` or `active`
-- WPCOM API: circuit-breaker state and queued notification depth
-- StatsD: local client initialization state
-- Disk: writable `stats/` directory for v1-compatible counters and the PID file
-
-Future refinements can add primary/replica breakdowns, last successful
-orchestrator batch, WPCOM request error-rate windows, and disk free-space
-thresholds once production operating data shows which signals are worth paging
-on.
-
-Long-running `jetmon2` and `jetmon-deliverer` processes also publish compact
-heartbeat snapshots into `jetpack_monitor_process_health`. The `/fleet` dashboard uses
-those snapshots alongside `jetpack_monitor_hosts`, outbound delivery queues, projection
-drift, dependency rollups, and Veriflier discovery tables to summarize monitor
-hosts, standalone deliverers, stale process heartbeats, lifecycle state,
-red/amber/green health rollups, delivery-owner posture, trusted Veriflier
-vantages, monitor-collected Veriflier agent telemetry, capacity, RSS memory, Go
-runtime system memory, and local dependency health without polling every host
-dashboard directly.
-
-**False Positive Tracker**
-Every time the system escalates a site to Veriflier confirmation and the Verifliers do NOT confirm it as down (i.e., the queue entry times out or all Verifliers report the site as up), the event is recorded in a `jetpack_monitor_false_positives` table with timestamp, site, HTTP code, error code, and RTT from the local check. A view in the operator dashboard surfaces sites with high false positive rates, helping operators tune per-site `NUM_OF_CHECKS` settings and review whether the site's content/timeout rules are too sensitive.
-
-**Internal Audit Log**
-Operational activity for every site is written to a `jetpack_monitor_audit_log` table:
-
-- Check performed: timestamp, source (local/veriflier name), result (HTTP code, error code, RTT)
-- WPCOM notification sent: timestamp, payload hash, response code
-- WPCOM notification retry: timestamp, reason
-- Local retry dispatched: timestamp, retry count
-- Veriflier request sent: timestamp, which verifliers
-- Veriflier result received: timestamp, veriflier name, result
-- Maintenance window active: timestamp, window end
-- Config change: timestamp, which keys changed
-
-Authoritative incident state transitions live in `jetpack_monitor_event_transitions`, written by the `eventstore` package in the same transaction as the matching `jetpack_monitor_events` mutation. The audit log is intentionally operational context, not the source of truth for site state.
-
-Queryable by `blog_id` and time range via a CLI tool (`jetmon2 audit --blog-id 12345 --since 2h`) and via the operator dashboard. Designed specifically for Happiness Engineers investigating customer-reported alert issues.
-
-**Deployment Tooling**
-- `jetmon2 version` — prints binary version, build date, Go version, and git commit hash
-- `jetmon2 migrate` — applies pending DB schema migrations idempotently
-- `jetmon2 status` — connects to a running instance's internal API and prints a one-line health summary (equivalent to reading `stats/totals` but richer)
-- `jetmon2 rollout guided` — interactive host rollout and rollback walkthrough with transcript logging, resume state, typed destructive confirmations, and fail-closed gates
-- `jetmon2 rollout rehearsal-plan` — prints the ordered same-server or fresh-server command sequence for a host replacement from the approved bucket CSV
-- `jetmon2 rollout host-preflight` — bundles the pre-stop host gate: static plan match, config parse, DB connectivity, pinned safety checks, and systemd validation
-- `jetmon2 rollout static-plan-check` — validates a CSV host-to-bucket plan before any v1 host is stopped
-- `jetmon2 rollout pinned-check` — validates a pinned v1-to-v2 cutover host before or during host replacement
-- `jetmon2 rollout cutover-check` — bundles the read-only post-start pinned preflight, activity, dashboard status, and projection-drift checks
-- `jetmon2 rollout activity-check` — verifies recent check activity for a bucket range after cutover
-- `jetmon2 rollout rollback-check` — verifies a pinned v2 range is safe to hand back to v1
-- `jetmon2 rollout dynamic-check` — validates full `jetpack_monitor_hosts` coverage after the fleet transitions from pinned to dynamic ownership
-- `jetmon2 rollout projection-drift` — summarizes and lists active sites whose legacy `site_status` projection disagrees with the authoritative event state
-- `jetmon2 rollout state-report` — summarizes ownership mode, bucket coverage, recent activity, projection drift, delivery-owner state, and the suggested next action
-- `jetmon2 drain --worker N` — gracefully removes one worker pool slot, waiting for in-flight checks to complete before reducing concurrency
-- `jetmon2 reload` — sends SIGHUP to the running process (convenience wrapper)
-
-Rollout gate commands accept `--output=json` for Systems automation. JSON output
-keeps the command's pass/fail state, generated timestamp, parsed output lines,
-and failure messages on stdout while preserving non-zero exit status on failed
-checks.
-
-The complete v1-to-v2 production process is documented in
-[`v1-to-v2-migration.md`](v1-to-v2-migration.md).
-
-**Zero-Downtime Rolling Updates**
-Because bucket ownership is coordinated via MySQL, a multi-host deployment can be updated one host at a time with no coverage gap. The procedure for each host: send SIGINT to release its buckets, wait for the drain to complete, deploy the new binary, start the new process. Surviving hosts absorb the draining host's buckets during the update window and release them back once the updated host rejoins and reclaims its range. No simultaneous restart of all hosts is required, and no sites are left unchecked during the update.
-
----
-
-## Auto-Scale and Auto-Heal
-
-Jetmon 2 achieves maximum uptime without requiring a Kubernetes cluster.
-Scaling and healing operate at three levels: within the process, at the
-service-manager/container level, and across hosts via MySQL-coordinated bucket
-ownership.
-
-**Goroutine Pool Auto-Scaling**
-The worker pool monitors queue depth against a configurable high-water mark. When queue depth exceeds the threshold for more than N seconds, new goroutine workers are added up to a configured maximum without any restart. When depth falls below a low-water mark for a sustained period, excess goroutines are drained gracefully. No process spawning, no IPC overhead — adding a worker is a channel send. This handles the vast majority of load variation entirely within a single process.
-
-**Process Supervision**
-Production Monitor rollout is expected to use TeamCity/docker-deploy. The
-sample systemd unit remains useful for VM labs, emergency fallback deployments,
-and host-side validation tooling. When systemd is used, `Restart=on-failure`
-with a short `RestartSec` restarts crash exits, `StartLimitIntervalSec` and
-`StartLimitBurst` limit restart loops, and resource limits such as `MemoryMax`
-and `LimitNOFILE` keep the process within bounded host resources. The current
-unit is `Type=simple`; Jetmon does not currently implement `sd_notify` watchdog
-heartbeats.
-
-**MySQL-Coordinated Bucket Ownership**
-A `jetpack_monitor_hosts` table replaces the static `BUCKET_NO_MIN`/`BUCKET_NO_MAX` config values with runtime-negotiated bucket ownership. Hosts claim, hold, and release bucket ranges autonomously using MySQL transactions as the coordination mechanism — no cluster orchestrator required. For the initial v1-to-v2 production migration, `PINNED_BUCKET_MIN`/`PINNED_BUCKET_MAX` (with `BUCKET_NO_MIN`/`BUCKET_NO_MAX` accepted as aliases) temporarily pins a v2 host to the exact static range of the v1 host it replaces; remove those keys after the fleet is on v2 to enable dynamic ownership.
-
-Table structure:
-```sql
-CREATE TABLE jetpack_monitor_hosts (
-    host_id        VARCHAR(255) NOT NULL PRIMARY KEY,
-    bucket_min     SMALLINT UNSIGNED NOT NULL,
-    bucket_max     SMALLINT UNSIGNED NOT NULL,
-    last_heartbeat TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    status         ENUM('active', 'draining') NOT NULL DEFAULT 'active'
-);
-```
-
-In dynamic ownership mode, on startup the instance upserts its own row, then scans for rows whose `last_heartbeat` is older than the grace period (suggested: 2× normal round time). Expired rows are presumed dead. The instance claims their uncovered bucket ranges by deleting the dead rows and inserting its own covering range inside a `SELECT ... FOR UPDATE` transaction, preventing two hosts from racing to claim the same range simultaneously. The instance derives its active range from what it successfully claimed — `BUCKET_NO_MIN`/`BUCKET_NO_MAX` are only needed as aliases for the temporary pinned migration mode.
-
-In dynamic ownership mode, each round the orchestrator issues a single `UPDATE jetpack_monitor_hosts SET last_heartbeat = NOW() WHERE host_id = ?`. If a host stalls, is OOM-killed, or loses network, its heartbeat stops updating. Surviving hosts detect the stale row at the start of their next round and absorb its buckets up to their configured `BUCKET_TARGET` maximum. In pinned migration mode, the host skips `jetpack_monitor_hosts` entirely and checks only its configured static range.
-
-On SIGINT, the instance sets `status = 'draining'`, completes in-flight checks, then deletes its own row. Surviving hosts can reclaim those buckets at the start of their next round without waiting for heartbeat expiry. A hard-killed host leaves its row in place; the grace period determines how long before its buckets are reclaimed.
-
-Bucket capacity is configured via `BUCKET_TOTAL` (total range, e.g. 1000) and `BUCKET_TARGET` per host (e.g. 500). Hosts with spare capacity absorb buckets from failed peers up to their own maximum. Live hosts are never rebalanced — only dead hosts' buckets are redistributed — which avoids race conditions and unnecessary churn.
-
-Benefits over the current static configuration:
-- **Zero-config horizontal scaling**: spin up a new host and it claims unclaimed buckets automatically; no operator coordination required
-- **Self-healing coverage**: a failed host's buckets are absorbed by surviving peers within one grace period, with no manual intervention and no gap in monitoring
-- **Clean decommissioning**: sending SIGINT releases buckets immediately rather than waiting for expiry, minimising the coverage gap during planned maintenance
-- **No external orchestrator**: MySQL is already a hard dependency; the coordination mechanism costs one extra table and one heartbeat query per round
-
-**Auto-Heal**
-- **DB connection loss**: The DB pool retries connections with exponential backoff. In-flight batch work is held in the queue; no work is lost.
-- **Veriflier unreachable**: A Veriflier that fails to respond is marked unhealthy and excluded from confirmation requests. Remaining healthy Verifliers continue; the `PEER_OFFLINE_LIMIT` threshold adjusts dynamically to the number of healthy Verifliers (with a floor to prevent false confirmations).
-- **Veriflier overloaded**: A saturated v2 Veriflier returns HTTP 503 for the whole batch. The monitor treats that endpoint as unhealthy/no-vote for the escalation; overload is never counted as a customer-site down result.
-- **WPCOM API failures**: Circuit breaker pattern. After N consecutive failures the circuit opens, pending notifications are queued in memory with timestamps, and the circuit is retried on a backoff schedule. Queue is bounded; oldest entries are dropped with an error log if it fills.
-- **Stuck check goroutine**: A watchdog goroutine tracks the last activity time of each check. A goroutine that exceeds `NET_COMMS_TIMEOUT * 2` without completing is cancelled via context cancellation, its result counted as a timeout, and a new goroutine is allocated to replace it.
-- **Memory pressure**: The binary exposes both RSS memory and Go runtime system memory through the dashboard state endpoints. If Go runtime system memory exceeds a configurable threshold, the pool size is reduced by 10% via graceful drain until pressure eases — the equivalent of the current worker recycling mechanism, but without process death. Use RSS to compare Jetmon with host-level tools and Go Sys with pprof when investigating sustained memory pressure.
-
----
-
-## Stretch Goals and Future Add-ons
-
-These are intentionally out of scope for the initial rewrite. They represent the path to making Jetmon 2 a fully competitive standalone monitoring platform rather than a reliable internal Jetpack service.
-
-**DNS Monitoring**
-Check that a domain resolves to expected IPs on a schedule, using Go's `net.LookupHost()`. Alert when the answer changes or when resolution fails. Particularly valuable for detecting DNS hijacking and nameserver misconfigurations before they cause HTTP failures. New monitor type stored as a separate DB table.
-
-**TCP Port Monitoring**
-Attempt a TCP connection to an arbitrary host:port on a schedule. No HTTP layer — a successful connection is "up". Useful for database ports, SMTP, and custom application services. A small extension of the existing connection logic.
-
-**Heartbeat / Cron Monitoring**
-New inbound endpoint on the Monitor's HTTP/API surface where monitored jobs ping on completion. If the expected ping doesn't arrive within the configured interval plus grace period, an alert fires. Deep integration with the Jetpack heartbeat for zero-configuration WP-Cron health detection.
-
-**Response Time Anomaly Detection**
-Using the granular timing breakdown (DNS/TCP/TLS/TTFB) collected in the rewrite, build a per-site baseline over a rolling window and alert when response time exceeds N standard deviations from baseline — even if the site is technically returning 200. Detects slow-but-not-down conditions that users notice but current monitoring misses.
-
-**Status Page Generator**
-Generate a static status page (or a hosted dynamic one) showing uptime history, current status, and incident timeline for a site or group of sites. Embeddable on the customer's WordPress site via a Jetpack block. The incident history data would be available from the audit log.
-
-**Incident History and SLA Reporting**
-Derive uptime percentage and incident history from the audit log. Expose via a read API that the Jetpack dashboard can query to show customers their site's uptime over the last 30/90 days. This is primarily a query layer over data the audit log already captures.
-
-**Per-Location Downtime Visibility**
-Surface which Veriflier locations saw the site as down vs. up during a downtime event. v2 now preserves per-vantage vote evidence in audit and event transition metadata; the remaining future work is deciding how much of that regional evidence should be exposed to operators or customers. Highly valuable for diagnosing CDN or regional routing issues.
-
-**Synthetic / Transaction Monitoring**
-Simulate a real user journey (login, add to cart, checkout) using a headless browser via Playwright or Chromedp. Completely different architecture from HTTP checks — requires browser infrastructure — but represents the most valuable monitoring capability for e-commerce and membership sites. Long-term roadmap item.
-
-**On-Call and Escalation Policy**
-Within-Jetpack on-call scheduling: route alerts to different contacts at different times of day, with escalation if the primary contact doesn't acknowledge within N minutes. Would require a new data model and notification pipeline but no new infrastructure.
-
-**Distributed Tracing**
-Instrument the full check pipeline with OpenTelemetry spans: DB fetch → work dispatch → HTTP check (with DNS/TCP/TLS sub-spans) → Veriflier request → WPCOM notification. Export to Jaeger or any OTLP-compatible backend. Makes debugging latency anomalies and check delays straightforward without relying on log correlation.
+# Jetmon 2 Project Overview
+
+Jetmon 2 is the Go rewrite of Jetmon, the uptime monitoring service for
+Jetpack-powered sites. It replaces the original Node.js plus C++ native-addon
+Monitor and Qt/C++ Veriflier with Go services that are easier to deploy, easier
+to reason about, and much more efficient at high check volume.
+
+The project goal is not only to preserve Jetmon v1 behavior. Jetmon 2 must be a
+drop-in replacement during rollout while also fixing v1's biggest operational
+and product limitations: HEAD-only checks, weak incident evidence, limited
+operator visibility, difficult Veriflier deployment, fragile worker behavior,
+and poor scalability.
+
+Detailed design lives in the focused docs:
+
+- [architecture.md](architecture.md) - current runtime architecture
+- [data-model.md](data-model.md) - tables and rollout-safe schema ownership
+- [events.md](events.md) - incident state model and transition rules
+- [operations-guide.md](operations-guide.md) - operator commands and runtime care
+- [v1-to-v2-migration.md](v1-to-v2-migration.md) - production migration runbook
+- [internal-api-reference.md](internal-api-reference.md) - API reference
+- [roadmap.md](roadmap.md) - active deferred work
+
+## What Changed From v1
+
+Jetmon v1 used forked Node.js workers and a native C++ addon for the Monitor,
+plus a Qt/C++ Veriflier service. That design worked, but it made capacity,
+deployment, and support harder than they needed to be.
+
+Jetmon 2 changes the foundation:
+
+- The Monitor is a single Go binary with goroutine-based concurrency.
+- The Veriflier is a standalone Go service using JSON over HTTP.
+- Runtime logs go to stdout/stderr for container or service-manager collection.
+- Site state is event-sourced in v2-owned tables while the v1 site table stays
+  compatible for rollout.
+- Checks can run as `HEAD` or `GET`, with staged detection profiles.
+- The API, dashboard, StatsD metrics, and audit/event tables expose what Jetmon
+  saw and why it acted.
+
+The most customer-visible correction is the move beyond HEAD-only monitoring.
+Jetmon v1 used HEAD requests, which caused false positives and false negatives
+for sites that block, special-case, or incorrectly implement HEAD. Jetmon 2 can
+roll out in v1-compatible `HEAD` + `legacy` mode, then move cohorts to
+`GET` + `simple_http`, then to `GET` + `full` once production evidence supports
+the transition.
+
+## Compatibility During Rollout
+
+Jetmon 2 keeps the production-facing contracts that matter for a safe rollout:
+
+| Interface | Compatibility rule |
+| --- | --- |
+| `jetpack_monitor_sites` | Remains the v1-shaped site identity, bucket, cadence, and compatibility projection table. |
+| WPCOM notifications | Initial rollout uses the v1-compatible legacy notification path and payload. |
+| StatsD naming | Existing dotted path format is preserved; v2 adds metrics rather than replacing v1 names. |
+| `stats/` output | v1-style `sitespersec`, `sitesqueue`, and `totals` remain available through the compatibility surface. |
+| Config keys | v1-style configs still parse where needed; removed or deprecated knobs are documented in [operations-guide.md](operations-guide.md). |
+
+Rollout-specific v2 state lives outside `jetpack_monitor_sites` in v2-owned
+tables such as `jetpack_monitor_site_check_config`,
+`jetpack_monitor_site_runtime`, `jetpack_monitor_events`, and
+`jetpack_monitor_event_transitions`. During the drop-in phase, v2 updates only
+the legacy compatibility projection fields needed by existing readers.
+
+Production schema changes are expected to be applied through the approved
+database-change process. Production Monitor containers should validate schema
+state at startup rather than applying automatic DDL.
+
+## Runtime Shape
+
+At a high level, a v2 Monitor process is responsible for:
+
+- loading the active target set from MySQL,
+- scheduling checks according to each site's configured interval,
+- performing local HTTP/TLS/DNS-observed checks,
+- escalating sustained local failures to Verifliers,
+- writing events, transitions, check history, runtime projection, and audit
+  evidence,
+- publishing host/dashboard/process health, and
+- sending legacy WPCOM notifications during the rollout phase.
+
+The current deployment keeps the API, dashboard, monitor loop, and delivery
+workers in one binary where configured. The standalone `jetmon-deliverer`
+exists for deployments that want webhook and alert-contact delivery separated
+from Monitor checks.
+
+The Veriflier fleet is deployed separately. V2 Monitors should point at v2
+Verifliers only. The v2 Veriflier contract is `/v2/check` and `/v2/status`;
+legacy-compatible Veriflier HTTP endpoints are lab/emergency compatibility
+tools, not the normal production transport.
+
+## Core Detection Capabilities
+
+Jetmon 2 currently detects and records:
+
+- HTTP availability failures by status code, timeout, connection failure, and
+  resolver failure.
+- Staged `HEAD` and `GET` probe behavior for rollout-safe migration.
+- Full-profile body checks for required and forbidden content.
+- Redirect policy failures or warnings.
+- TLS certificate expiry warnings.
+- Deprecated TLS protocol observations.
+- Per-check DNS, TCP connect, TLS handshake, first-byte, and total RTT timing.
+- Maintenance-window suppression without losing operational evidence.
+- Veriflier agreement, disagreement, overload, and no-vote outcomes.
+
+The event model separates lifecycle state from severity. A local failure opens a
+`Seems Down` event, Veriflier confirmation promotes that same event to `Down`,
+and recovery closes it with an explicit resolution reason. This keeps incident
+duration anchored to the first observed user-impacting failure rather than the
+later confirmation time.
+
+## Operator Visibility
+
+Jetmon 2 is built to answer support and rollout questions that v1 made hard:
+
+- What did the Monitor see locally?
+- Which Verifliers were asked?
+- Did Verifliers agree, disagree, overload, or fail to respond?
+- Was a site in a maintenance window?
+- Was a body rule, redirect rule, TLS issue, or HTTP status responsible?
+- Did WPCOM notification delivery happen?
+- Is a host stale, overloaded, missing buckets, or behind on check freshness?
+
+The main evidence surfaces are:
+
+- event and transition tables for authoritative incident state,
+- `jetpack_monitor_check_history` for timing and check-method history,
+- `jetpack_monitor_audit_log` for operational context,
+- StatsD for low-overhead runtime trends,
+- the host and fleet dashboards,
+- the internal API, and
+- rollout and telemetry CLI commands.
+
+## Deployment Model
+
+The current production plan deploys new v2 infrastructure beside the v1 fleet:
+
+1. Apply approved schema changes.
+2. Deploy and validate the v2 Veriflier fleet.
+3. Deploy v2 Monitor containers in standby/API-controlled mode.
+4. Run read-only smoke checks and dependency validation.
+5. Activate bucket ranges only after the matching v1 ownership has stopped.
+6. Observe each activated range before expanding.
+7. Keep the initial check policy at `HEAD` + `legacy`.
+8. Gradually migrate check policy to `GET` + `simple_http`, then `GET` +
+   `full`.
+9. Tear down v1 only after v2 coverage, alerts, dashboards, and rollback gates
+   are accepted.
+
+The detailed procedure is in [v1-to-v2-migration.md](v1-to-v2-migration.md).
+TeamCity, container image, and Veriflier VPS details live in
+[production-teamcity-rollout.md](production-teamcity-rollout.md),
+[docker-images.md](docker-images.md), and
+[production-veriflier-compose.md](production-veriflier-compose.md).
+
+## Why This Matters
+
+For sysadmins, Jetmon 2 reduces deployment risk: fewer runtime dependencies,
+clear schema validation, explicit rollout gates, API-driven activation, and
+better visibility into host and Veriflier health.
+
+For VIP and Agency site managers, Jetmon 2 directly addresses the HEAD-only
+problem that caused many v1 false positives and false negatives. It also adds
+the evidence needed to explain exactly what was observed.
+
+For Happiness Engineers, Jetmon 2 turns "Jetmon said it was down" into a
+traceable story: request method, response code, timing phases, body-rule result,
+Veriflier votes, notification attempts, and resolution reason.
+
+For leadership, Jetmon 2 creates a platform for a stronger uptime product:
+better reliability, richer incident history, internal APIs, webhooks, managed
+alert contacts, fleet dashboards, and future Jetpack/WPCOM integrations.
+
+For Jetpack engineers, Jetmon 2 provides the operational foundation needed to
+make uptime monitoring more accurate, explainable, and extensible.
+
+## What Is Intentionally Not Here
+
+This document is the project overview. It should not duplicate:
+
+- command-by-command rollout instructions,
+- full API schemas,
+- every config key,
+- migration SQL details,
+- current roadmap history,
+- lab-specific test plans, or
+- low-level architectural decision records.
+
+Use [docs/README.md](README.md) as the docs index when looking for those
+details.

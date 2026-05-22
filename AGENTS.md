@@ -8,7 +8,8 @@ Jetmon is a parallel HTTP uptime monitoring service that checks Jetpack websites
 
 The Veriflier is rewritten in Go as well, replacing the Qt C++ dependency. JSON-over-HTTP on the configured Veriflier port is the v2 production Monitor-to-Veriflier transport; the proto contract is retained only as a schema reference for a possible future transport.
 
-See `docs/project.md` for the full project description, feature list, and performance benefit estimates.
+See `docs/project.md` for the project overview and links to the focused
+architecture, data model, operations, API, and rollout docs.
 
 ## Architecture
 
@@ -93,7 +94,7 @@ See `docs/project.md` for the full project description, feature list, and perfor
 | `docs/internal-api-reference.md` | Internal REST API reference (auth, all endpoints, payload shapes) |
 | `docs/roadmap.md` | Deferred features and architectural roadmap (multi-binary split, public-API path) |
 | `docs/adr/` | Architecture Decision Records — load-bearing decisions ("why is X like this") with context, decision, and consequences |
-| `docs/project.md` | Full project description and feature specification |
+| `docs/project.md` | Project overview and links to focused reference docs |
 
 ## Build and Run
 

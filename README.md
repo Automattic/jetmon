@@ -101,7 +101,7 @@ See [docs/getting-started.md](docs/getting-started.md) for the full local loop.
 
 | Document | Start Here For |
 |---|---|
-| [docs/project.md](docs/project.md) | Full product and implementation specification |
+| [docs/project.md](docs/project.md) | Project overview and links to focused reference docs |
 | [docs/internal-api-reference.md](docs/internal-api-reference.md) | Internal REST API reference |
 | [docs/events.md](docs/events.md) | Event lifecycle and transition semantics |
 | [docs/taxonomy.md](docs/taxonomy.md) | Severity, state, cause, and rollup taxonomy |
