@@ -79,7 +79,7 @@ same_plan="$("$jetmon_binary" rollout rehearsal-plan \
 printf '%s\n' "$same_plan"
 require_contains "$same_plan" 'INFO mode=same-server' "same-server plan omitted mode"
 require_contains "$same_plan" 'INFO plan_host="jetmon-v1-a" runtime_host="jetmon-v1-a" range=0-4' "same-server plan omitted host/range context"
-require_contains "$same_plan" 'same DB_* environment used by the jetmon2 service' "same-server plan omitted service environment reminder"
+require_contains "$same_plan" 'same JSON DB config used by the jetmon2 service' "same-server plan omitted service config reminder"
 require_contains "$same_plan" './jetmon2 rollout host-preflight' "same-server plan omitted host-preflight"
 require_contains "$same_plan" 'systemctl stop jetmon' "same-server plan omitted v1 stop command"
 require_contains "$same_plan" 'systemctl start jetmon' "same-server plan omitted v1 start command"
