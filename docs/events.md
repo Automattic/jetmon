@@ -1,89 +1,88 @@
 # Jetmon Event Model
 
-This document describes the event-sourced architecture that underlies site state in Jetmon.
+This document defines the event-sourced model that underlies Jetmon site
+state. Table ownership is summarized in [data-model.md](data-model.md);
+detection vocabulary and scope live in [taxonomy.md](taxonomy.md).
 
-## Why event-sourced
+## Why Event-Sourced
 
-Early designs used a mutable `state` column on the site row as the primary record of truth. That approach loses history, makes retries ambiguous, and couples severity changes to state changes in ways that don't reflect reality (a worsening degradation isn't a new outage). Moving to an event log fixes this:
+Mutable site-row status loses history, makes retries ambiguous, and couples
+severity changes to state changes. The event log fixes that:
 
-- Full history is preserved across both event boundaries (open/close) and intra-event mutations (severity bumps, state transitions, cause links).
-- Severity can evolve within a single event without inventing artificial state transitions.
-- Retries and duplicate probe results become idempotent rather than destructive.
-- Derived/denormalized fields on the site row can be rebuilt from the log if they ever drift.
+- open/close history and intra-event mutations are preserved
+- severity can change without inventing a new incident
+- duplicate probe results become idempotent
+- the legacy site projection can be rebuilt if it ever drifts
 
-## The two-table split
+## Two Tables
 
-The model splits the event into two tables:
+`jetpack_monitor_events` is the authoritative current/final row for an
+incident. It is mutable while open and frozen after close.
 
-- **`jetpack_monitor_events`** — one row per incident, holding the *current* (or final) severity, state, and metadata. Mutable while the incident is open; frozen on close.
-- **`jetpack_monitor_event_transitions`** — append-only history of every mutation made to a `jetpack_monitor_events` row. One row per change, never updated, never deleted.
+`jetpack_monitor_event_transitions` is the append-only history of every event
+mutation. Every open, severity change, state change, cause-link change, and
+close writes exactly one transition in the same transaction as the event row
+update.
 
-The events row is the authoritative current-state projection. The transitions table is the full audit trail of how it got there. Together they give you:
+Operational evidence belongs in `jetpack_monitor_audit_log`, not in the event
+tables. Audit rows record what Jetmon did, such as WPCOM retries, Veriflier
+RPCs, config reloads, and alert suppression. Site state changes go through
+`internal/eventstore`.
 
-- Cheap "what's the current state of incident X" reads (single row in `jetpack_monitor_events`).
-- Complete "how did incident X evolve over time" reads (`SELECT * FROM jetpack_monitor_event_transitions WHERE event_id = ? ORDER BY changed_at`).
-- Independent retention policies — incidents can be pruned aggressively for the live table while transitions are kept long enough for SLA reports.
+## Event Row
 
-**Operational logging stays in `jetpack_monitor_audit_log`.** That table records what the *monitor* did (WPCOM retries, verifier RPCs, config reloads, alert suppressions). Site-state changes do not flow through it — those go to the events tables. See "Relationship to `jetpack_monitor_audit_log`" below.
+`jetpack_monitor_events` represents one condition affecting a site over a time
+range. There is at most one open row per
+`(blog_id, endpoint_id, check_type, discriminator)` tuple.
 
-## The event row
+| Field | Notes |
+| --- | --- |
+| `id` | Primary key. |
+| `blog_id` | Site identity. |
+| `endpoint_id` | Endpoint row id when applicable; null for site-level events. |
+| `check_type` | Probe type such as `http`, `dns`, `tls_expiry`, or `tls_deprecated`. |
+| `discriminator` | Optional tiebreaker for multiple concurrent failures of one check type. |
+| `severity` | Numeric ordering for thresholds and escalation. |
+| `state` | Human-readable lifecycle label. |
+| `started_at` | When the condition began; frozen across severity/state changes. |
+| `ended_at` | When the condition resolved; null while open. |
+| `resolution_reason` | Why the event ended; null while open. |
+| `cause_event_id` | Causal link to a root-cause event, separate from rollup. |
+| `metadata` | Check-type-specific payload. |
+| `dedup_key` | Generated open-event identity used by the unique index. |
 
-`jetpack_monitor_events` represents a condition affecting a site over a time range. There is at most one *open* row per `(blog_id, endpoint_id, check_type, discriminator)` tuple at any given time (see "Identity and idempotency").
+## Transition Row
 
-| Field                | Type             | Notes                                                                    |
-|----------------------|------------------|--------------------------------------------------------------------------|
-| `id`                 | BIGINT UNSIGNED  | Primary key.                                                             |
-| `blog_id`            | BIGINT UNSIGNED  | The site this event is about. (`site_id` in taxonomy.md terms.)          |
-| `endpoint_id`        | BIGINT UNSIGNED, null | The endpoint, when applicable. Null for site-level events.          |
-| `check_type`         | VARCHAR(64)      | Which probe observed this — `http`, `dns`, `tls_expiry`, `tls_deprecated`, etc. |
-| `discriminator`      | VARCHAR(128), null | Optional tiebreaker for tuples that can have multiple concurrent failures (e.g. multiple keyword checks on the same endpoint). |
-| `severity`           | TINYINT UNSIGNED | Ordered, suitable for thresholds and escalation.                         |
-| `state`              | VARCHAR(32)      | Human-readable lifecycle label.                                          |
-| `started_at`         | TIMESTAMP(3)     | When the condition began. Frozen across severity/state changes.          |
-| `ended_at`           | TIMESTAMP(3), null | When the condition resolved. Null while active.                        |
-| `resolution_reason`  | VARCHAR(64), null | Why the event ended. Null while active.                                 |
-| `cause_event_id`     | BIGINT UNSIGNED, null | Causal link to a root-cause event (separate from rollup).           |
-| `metadata`           | JSON, null       | Check-type-specific payload (HTTP method, code, RTT, days-to-expiry, etc.). |
-| `updated_at`         | TIMESTAMP(3)     | ON UPDATE CURRENT_TIMESTAMP — convenience for the dedup path.            |
-| `dedup_key`          | VARCHAR generated | Stored generated column carrying the identity tuple while the event is open, NULL once closed. Backed by a unique index — see "Identity and idempotency". |
+`jetpack_monitor_event_transitions` records how an event changed.
 
-## The transition row
+| Field | Notes |
+| --- | --- |
+| `id` | Primary key. |
+| `event_id` | Event being mutated. |
+| `blog_id` | Denormalized for SLA/report queries. |
+| `severity_before` / `severity_after` | Null on open/close as appropriate. |
+| `state_before` / `state_after` | Null on open/close as appropriate. |
+| `reason` | Why the transition happened. |
+| `source` | Actor, such as `local`, `veriflier:us-west`, or `operator:user@host`. |
+| `metadata` | Transition-specific context. |
+| `changed_at` | Millisecond-precision ordering. |
 
-`jetpack_monitor_event_transitions` is the append-only history. Every mutation to a `jetpack_monitor_events` row writes exactly one transition row, in the same database transaction.
+## Severity, State, And Identity
 
-| Field              | Type             | Notes                                                                          |
-|--------------------|------------------|--------------------------------------------------------------------------------|
-| `id`               | BIGINT UNSIGNED  | Primary key.                                                                   |
-| `event_id`         | BIGINT UNSIGNED  | The event this transition applies to.                                          |
-| `blog_id`          | BIGINT UNSIGNED  | Denormalized from `jetpack_monitor_events.blog_id` — avoids a join for SLA queries.     |
-| `severity_before`  | TINYINT UNSIGNED, null | Severity before the change. Null on `opened`.                            |
-| `severity_after`   | TINYINT UNSIGNED, null | Severity after the change. Null on `closed`.                             |
-| `state_before`     | VARCHAR(32), null | State before the change. Null on `opened`.                                    |
-| `state_after`      | VARCHAR(32), null | State after the change. Null on `closed` (or set to `Resolved`).              |
-| `reason`           | VARCHAR(64)      | Why the transition occurred. See "Transition reasons" below.                   |
-| `source`           | VARCHAR(255)     | Who caused it: `local`, `veriflier:us-west`, `operator:user@host`, `system:timeout`. |
-| `metadata`         | JSON, null       | Transition-specific context (HTTP code on escalation, cause id on link, etc.). |
-| `changed_at`       | TIMESTAMP(3)     | Millisecond precision; SLA report ordering needs sub-second tiebreakers.       |
+Severity is numeric. It orders events and drives thresholds. It can change on a
+live event without changing state.
 
-### Severity vs. state
+State is the lifecycle label: `Up -> Seems Down -> Down -> Resolved`.
 
-**Severity** is numeric. It orders events and drives thresholds. It can be updated on a live event without changing `state` — if a degradation worsens, bump severity, leave state alone.
+Event identity is `(blog_id, endpoint_id, check_type, discriminator)`. Repeated
+results for the same condition update the existing open row instead of opening
+duplicates.
 
-**State** is a human-readable label tied to the lifecycle. It changes at lifecycle boundaries: `Up → Seems Down → Down → Resolved`.
+MySQL has no partial unique indexes, so `dedup_key` is generated only while an
+event is open and becomes `NULL` after close. The unique index rejects two open
+events with the same tuple while allowing multiple closed historical rows.
 
-Keeping these separate avoids conflating "this got worse" with "this is a different kind of problem."
-
-### Identity and idempotency
-
-Event identity is the tuple `(blog_id, endpoint_id, check_type, discriminator)`. Repeated probe results for the same underlying condition must resolve to the same `jetpack_monitor_events` row — a retried result updates the existing row rather than creating a new one.
-
-MySQL has no partial unique indexes, so the schema enforces "at most one *open* event per tuple" with a generated column trick:
-
-- `dedup_key` is a `VARCHAR GENERATED ALWAYS AS (... ) STORED` column.
-- It evaluates to a `CONCAT_WS` of the tuple while `ended_at IS NULL`, and to `NULL` once the event is closed.
-- A `UNIQUE KEY` on `dedup_key` rejects two open rows with the same tuple. Multiple `NULL`s are allowed by MySQL's unique-index semantics, so closed events never conflict.
-
-The probe runner's insert path collapses to a single statement:
+The insert/update path is intentionally simple:
 
 ```sql
 INSERT INTO jetpack_monitor_events (blog_id, endpoint_id, check_type, discriminator, severity, state, ...)
@@ -94,17 +93,16 @@ ON DUPLICATE KEY UPDATE
     metadata = VALUES(metadata);
 ```
 
-No `SELECT … FOR UPDATE` dance, no optimistic-concurrency loop. The dedup logic is enforced by the schema and the `eventstore` package wraps it so external callers never touch the table directly.
+`eventstore` wraps this path so callers do not touch the event tables directly.
 
 ## Lifecycle
 
-```
+```text
           first failure                verifier confirms
-    Up ─────────────────▶ Seems Down ───────────────────▶ Down
-                              │                            │
-                              │  verifier disagrees        │  condition clears
-                              │  (false alarm)             │
-                              ▼                            ▼
+    Up ------------------> Seems Down -------------------> Down
+                              |                            |
+                              | verifier disagrees         | condition clears
+                              v                            v
                               Up                        Resolved
 ```
 
@@ -112,153 +110,121 @@ No `SELECT … FOR UPDATE` dance, no optimistic-concurrency loop. The dedup logi
 
 No active event. Probes are succeeding.
 
-### Seems Down (transient)
+### Seems Down
 
-A probe has failed but the verifier has not yet confirmed. This is a **real state**, not an implementation detail — dashboards show it, alert rules can key off it, and it has its own severity range.
+`Seems Down` is first-class. It opens on the first local failure, not when the
+local retry queue eventually escalates to Verifliers. This keeps `started_at`
+honest: incident duration starts when Jetmon first saw evidence of impact.
 
-**The event opens on the first local failure**, not when the local retry queue eventually escalates to verifiers. This is non-negotiable: `started_at` must equal "first time we saw something wrong" so incident duration is honest. Subsequent local-retry failures are no-ops on the events table — the schema's idempotent `dedup_key` collapses them into the same row, and the `eventstore` writer skips a transition row when severity and state are unchanged.
+The first failure writes the event row and an `opened` transition in one
+transaction. Later identical local-retry failures are no-ops on the event table
+unless severity, state, metadata, or lifecycle reason changes.
 
-The first failure writes both an event row (`state = Seems Down`, `severity = 3`, `started_at = now`) and an `opened` transition row in one transaction.
+HTTP failure metadata includes the legacy failure class, detector class, status
+code, method, RTT, URL, keyword rule, bounded error detail, redirect detail, TLS
+detail, DNS error detail, and bounded body-read diagnostics when available.
+Response bodies are not stored.
 
-HTTP failure metadata includes `http_code`, `error_code`, legacy
-`failure_class`, operator-facing `detector_class`, `legacy_status_type`,
-`method`, `rtt_ms`, `url`, and `keyword_rule` when a content rule failed.
-`keyword_rule` is `required` for a missing `check_keyword` and `forbidden` when
-`forbidden_keyword` appears in the response body. `failure_class` intentionally
-preserves the old WPCOM status-type vocabulary, while `detector_class` explains
-the actual detector path (`partial_response`, `content_failure`, `timeout`,
-`dns_nxdomain`, etc.). Jetmon also records bounded operator diagnostics such as
-`error_detail`, redirect policy/count/chain/final URL, TLS version, cipher
-suite, and DNS resolver failure details when those facts are available. DNS
-metadata uses `dns_error_kind` (`nxdomain`, `servfail`, `timeout`, or
-`resolver_error`), `dns_error_name`, and `dns_error_server` when Go's resolver
-exposes them. Body-read failures include a `body_read` object with mode, bytes
-read, expected bytes when known, limit bytes, and read error. Response bodies
-are not stored in event metadata.
+Each HTTP failure also stores an observation window: checked time, first failed
+time, previous observed time, previous known-good time, normal interval, and
+next interval. Recovery transitions similarly store first recovered and closed
+times. This lets operators explain what Jetmon observed without pretending the
+exact customer-impact start time is known.
 
-Each HTTP failure also stores `metadata.observation` with timing bounds:
-`checked_at`, `first_failed_at`, `previous_observed_at`,
-`previous_known_good_at`, `normal_check_interval_seconds`, and
-`next_check_interval_seconds`. The exact customer failure may have started any
-time after the previous known-good probe and no later than `first_failed_at`;
-recovery transitions similarly store `first_recovered_at` and `closed_at` in
-their transition metadata. This keeps incident durations honest while giving
-operators enough context to explain the observation window.
+Outcomes:
 
-Three outcomes from Seems Down:
-
-- **Local probe recovers** before reaching verifier escalation → event closes with `resolution_reason = probe_cleared`. No verifier was involved; this is the "transient blip the local retry caught" path. The count of these is itself a useful signal — a baseline rate of probe-cleared closes tells you how noisy your detection is.
-- **Verifier confirms** → state changes to `Down` in place, severity bumps to 4; one transition row records `state_before = Seems Down`, `state_after = Down`, `severity_before = 3`, `severity_after = 4`, `reason = verifier_confirmed`. `started_at` does not change.
-- **Verifier disagrees** → event closes with `resolution_reason = false_alarm`; one transition row records `state_after = Resolved`, `reason = false_alarm`.
+- local probe recovers before verifier confirmation: close with
+  `probe_cleared`
+- Veriflier confirms: update the same event to `Down`, bump severity, and write
+  `verifier_confirmed`
+- Veriflier disagrees: close with `false_alarm`
 
 ### Down
 
-Outage confirmed. Severity may continue to evolve in place as additional probes report. **Each severity bump writes a transition row** (`severity_before`, `severity_after`, `reason = severity_escalation` or `severity_deescalation`). The `jetpack_monitor_events` row stores only the latest severity; the history lives in `jetpack_monitor_event_transitions`.
-
-Recovery from Down — the next successful local probe — closes the event with `resolution_reason = verifier_cleared`. (V1 of the integration trusts the local probe on the recovery path; a future "verifier-on-recovery" check would distinguish probe-cleared from verifier-cleared on this path too.)
+The outage is confirmed. Severity can still evolve in place as additional
+evidence arrives; every severity change writes a transition. Recovery from
+`Down` closes the event with `verifier_cleared`.
 
 ### Resolved
 
-Condition has cleared. `ended_at` is set, `resolution_reason` is recorded, and a transition row with `reason = <resolution_reason>` is appended. The event row is now historical — it is not deleted or mutated further.
+The condition has cleared. `ended_at` and `resolution_reason` are set, a final
+transition is appended, and the event row is historical.
 
-## The site row projection
+## Legacy Projection
 
-During the [v1-to-v2 migration](v1-to-v2-migration.md),
-`jetpack_monitor_sites` remains the legacy site/config table and compatibility
-projection. The authoritative incident state is the v2 event model:
+During migration, `jetpack_monitor_sites.site_status` and
+`last_status_change` are compatibility projections. While
+`LEGACY_STATUS_PROJECTION_ENABLE` is true, event row, transition row, and
+legacy projection update in the same transaction.
 
-- `jetpack_monitor_events` stores the current incident row.
-- `jetpack_monitor_event_transitions` stores every mutation.
-- `jetpack_monitor_sites.site_status` and `last_status_change` are derived
-  compatibility fields for v1 readers.
+Once downstream readers move to the v2 API/event tables, disable the legacy
+projection and stop treating the legacy status fields as source of truth.
 
-While `LEGACY_STATUS_PROJECTION_ENABLE` is true, the legacy projection is updated
-in the same transaction as the event write. There is no eventual consistency in
-migration mode: event mutation, transition row, and v1 projection commit or roll
-back together.
+## Causal Links
 
-Once all downstream readers have moved to the v2 API/event tables,
-`LEGACY_STATUS_PROJECTION_ENABLE` can be set to false. At that point the legacy
-status fields stop being maintained and must not be treated as source of truth.
+Events can reference other events as causes. A DNS failure cascading into HTTP
+failures can create separate HTTP events whose `cause_event_id` points at the
+DNS event.
 
-The compatibility projection is rebuildable from `jetpack_monitor_events` (current state)
-plus `jetpack_monitor_event_transitions` (full history). If the projection is ever
-suspected to be wrong during migration, rebuild it; don't patch it by hand.
+Causal links are not rollup. Rollup answers "what should this site summary
+show?" Causality answers "what caused this event?" Keep those query shapes and
+retention needs separate.
 
-## Relationship to `jetpack_monitor_audit_log`
+## Shared Deduplication
 
-`jetpack_monitor_audit_log` is the **operational** log — it records what the monitor did, not what happened to a site:
+All probe types use the shared runner and eventstore path. New probes must not
+implement their own deduplication. The shared path owns:
 
-- WPCOM notification sends and retries
-- Verifier RPC dispatch
-- Retry-queue dispatch
-- Alert suppression and maintenance-window swallowing decisions
-- Config reloads
+- event identity
+- duplicate collapse
+- dispatch batching/rate limiting
+- event write ordering
 
-Site-state changes do **not** go through the audit log. Those flow through `jetpack_monitor_events` (current state) and `jetpack_monitor_event_transitions` (history). The audit log links to events through a nullable `event_id` so an operator can pivot from "this WPCOM retry" to "the incident it was for" with one query.
+## Transition Reasons
 
-The split exists because the two trails have different consumers and different retention needs:
+Every transition row records why the change happened. Current reasons:
 
-| Trail | Consumer | Retention shape |
-|-------|----------|-----------------|
-| `jetpack_monitor_events` + `jetpack_monitor_event_transitions` | Public API incident timelines, SLA reports | Long — 30/90 days at full fidelity, then rolled up |
-| `jetpack_monitor_audit_log` | Operators investigating "why did the alert fire" | Short — aggressive pruning is fine once the incident is closed |
-| `jetpack_monitor_check_history` | Response-time trending, baseline learning | Medium — granular timing is high volume |
+- `opened`: first transition for a new event
+- `severity_escalation`: severity increased without changing state
+- `severity_deescalation`: severity decreased without changing state
+- `verifier_confirmed`: `Seems Down -> Down`
+- `verifier_cleared`: confirmed outage recovered
+- `probe_cleared`: local probe recovered before confirmation, or an advisory
+  condition cleared
+- `false_alarm`: Verifliers disagreed with the local failure
+- `manual_override`: operator changed or closed the event
+- `maintenance_swallowed`: maintenance window suppressed the event
+- `superseded`: broader event replaced this one
+- `auto_timeout`: event aged out by retention/timeout policy
+- `cause_linked` / `cause_unlinked`: cause relationship changed
 
-## Causal links
+Closed reasons are also written to `jetpack_monitor_events.resolution_reason`
+so the current/final row answers why it closed without a join.
 
-Events can reference other events as causes. A DNS failure cascading into HTTP failures creates multiple events with causal links from the HTTP events back to the DNS event.
+Add new reasons as explicit code constants, not free text. The column is
+`VARCHAR(64)` rather than MySQL `ENUM` so new reasons do not require schema
+migrations.
 
-Causal links are stored as a separate structure (e.g., `event_causes`) with `(effect_event_id, cause_event_id)`. They are **not** the same as rollup.
+## Open Questions
 
-### Why not rollup?
+- Retention: how long should closed events stay at full fidelity before rollup?
+- Causal graph consumers: which queries should causal links support?
+- Cross-probe severity: should API rollup use max severity, a weighted score,
+  or another model when multiple probe types fire?
 
-Rollup aggregates events for display ("this site had 3 events in the last hour"). Causal linking explains relationships ("the HTTP outage was caused by the DNS outage"). They have different query patterns, different retention needs, and different consumers. Keep them separate.
+## Invariants
 
-## Deduplication
-
-All probe types share a single runner. The runner is responsible for:
-
-- Applying idempotent event identity so duplicate results collapse into one event.
-- Batching and rate-limiting probe dispatch.
-- Feeding results into the event writer with the correct ordering guarantees.
-
-New probe types plug into this runner. They do not implement their own dedup.
-
-## Transition reasons
-
-Every transition row records *why* the change happened. The seeded vocabulary, in approximate order of frequency:
-
-- `opened` — first transition for a new event.
-- `severity_escalation` — severity went up on the same state (e.g. degradation worsening).
-- `severity_deescalation` — severity went down on the same state.
-- `verifier_confirmed` — Seems Down → Down.
-- `verifier_cleared` — site returns to Up after a verifier-confirmed Down; closes the event.
-- `probe_cleared` — site returns to Up while still in Seems Down (verifier was never invoked or never confirmed), or an advisory condition such as `tls_expiry` / `tls_deprecated` clears on a later local probe; closes the event. Count of these per site over time is the false-positive rate of local detection or advisory churn.
-- `false_alarm` — verifier disagreed with the initial failure signal; closes the event.
-- `manual_override` — an operator changed state or closed the event.
-- `maintenance_swallowed` — event closed because a maintenance window started; failures detected inside the active window are recorded operationally but do not open a downtime event.
-- `superseded` — closed because a broader event subsumed it.
-- `auto_timeout` — event aged out per retention/timeout policy.
-- `cause_linked` / `cause_unlinked` — `cause_event_id` was set or cleared on an open event.
-
-The "closed" reasons (`verifier_cleared`, `probe_cleared`, `false_alarm`, `manual_override`, `maintenance_swallowed`, `superseded`, `auto_timeout`) are also written to `jetpack_monitor_events.resolution_reason` on close, so the live row carries the immediate "why is this closed" answer without needing a join.
-
-New reasons should be added as explicit enum values in code, not free-text. The column is `VARCHAR(64)` (not MySQL `ENUM`) so adding a value doesn't require a schema migration.
-
-## Open questions
-
-- **Retention**: how long do we keep closed events at full fidelity before rolling them up?
-- **Causal graph consumers**: who reads the causal links and what query shapes do they need? That dictates indexing.
-- **Cross-probe severity**: when multiple probe types fire on the same site, should the API rollup use max severity, a weighted sum, or something else?
-
-## Invariants worth testing
-
-1. Event write and legacy status projection update are atomic while `LEGACY_STATUS_PROJECTION_ENABLE` is true.
-2. **Every** mutation of a `jetpack_monitor_events` row writes exactly one row into `jetpack_monitor_event_transitions` in the same transaction. Open, severity change, state change, cause-link change, close — no carve-outs.
-3. Replaying the same probe result twice produces the same single event and a single `opened` transition row (idempotent insert path).
-4. `Seems Down → Up` (false alarm) correctly closes the event with `resolution_reason = false_alarm` and writes a transition row with `reason = false_alarm`.
-5. Severity updates on a live event do not create a new event row, but **do** create a transition row.
-6. Closed events are never mutated (except possibly by a backfill/migration, which should be audited).
-7. After closing an event for tuple T, a new failure for tuple T can immediately open a new event without conflicting on `dedup_key`.
-8. Replaying every transition row for an event in `changed_at` order reconstructs the event's current `severity` and `state`.
+1. Event write and legacy projection update are atomic while
+   `LEGACY_STATUS_PROJECTION_ENABLE` is true.
+2. Every event mutation writes exactly one transition in the same transaction.
+3. Replaying the same probe result twice produces one event and one `opened`
+   transition.
+4. `Seems Down -> Up` closes with `resolution_reason = false_alarm` when
+   Verifliers disagree.
+5. Severity updates on a live event do not create a new event row, but do
+   create a transition row.
+6. Closed events are never mutated except by audited backfill/migration.
+7. After closing tuple T, a new failure for tuple T can immediately open a new
+   event without conflicting on `dedup_key`.
+8. Replaying transitions in `changed_at` order reconstructs the event's current
+   severity and state.
