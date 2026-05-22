@@ -18,9 +18,11 @@ stack.
 ## Tags
 
 - `latest`: current `v2` branch.
-- `<short-sha>`: PR build when the PR has the `Docker Build` label.
+- `<YYYYMMDD>-<short-sha>`: immutable tag for every push to `v2`. Use this to
+  pin production deployments to a specific build.
+- `pr-<short-sha>`: PR build when the PR has the `Docker Build` label.
 
-There are no semver tags yet. Pin to a SHA tag when reproducibility matters.
+There are no semver tags yet. Pin to a date-SHA tag when reproducibility matters.
 
 ## Authentication
 
@@ -213,8 +215,8 @@ docker exec jetmon ./jetmon2 drain
 ## Test A PR Image
 
 ```bash
-docker pull ghcr.io/automattic/jetmon:<short-sha>
-docker pull ghcr.io/automattic/veriflier:<short-sha>
+docker pull ghcr.io/automattic/jetmon:pr-<short-sha>
+docker pull ghcr.io/automattic/veriflier:pr-<short-sha>
 ```
 
 Find the short SHA in the PR's `Build and publish Docker images` workflow run.

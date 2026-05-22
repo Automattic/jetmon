@@ -40,6 +40,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Compute build date
+        id: date
+        if: github.event_name == 'push' && github.ref == 'refs/heads/v2'
+        run: echo "ymd=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
+
       - name: Compute image metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -47,7 +52,8 @@ jobs:
           images: ghcr.io/automattic/${{ matrix.name }}
           tags: |
             type=raw,value=latest,enable=${{ github.event_name == 'push' && github.ref == 'refs/heads/v2' }}
-            type=sha,format=short,prefix=,enable=${{ github.event_name == 'pull_request' }}
+            type=sha,format=short,prefix=${{ steps.date.outputs.ymd }}-,enable=${{ github.event_name == 'push' && github.ref == 'refs/heads/v2' }}
+            type=sha,format=short,prefix=pr-,enable=${{ github.event_name == 'pull_request' }}
 
       - name: Build and push
         uses: docker/build-push-action@v5
@@ -74,6 +80,7 @@ jobs:
         with:
           script: |
             const sha = context.sha.substring(0, 7);
+            const tag = `pr-${sha}`;
             const marker = '<!-- docker-publish:pr-images -->';
             const body = [
               marker,
@@ -82,8 +89,8 @@ jobs:
               `Built from \`${sha}\`. Pull with:`,
               '',
               '```bash',
-              `docker pull ghcr.io/automattic/jetmon:${sha}`,
-              `docker pull ghcr.io/automattic/veriflier:${sha}`,
+              `docker pull ghcr.io/automattic/jetmon:${tag}`,
+              `docker pull ghcr.io/automattic/veriflier:${tag}`,
               '```',
               '',
               'Images are `linux/amd64` only. On Apple Silicon, add `--platform linux/amd64`. ' +
