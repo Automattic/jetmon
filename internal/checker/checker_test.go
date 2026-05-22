@@ -1234,6 +1234,49 @@ func TestHTTPIPPoolTransportPreservesHostHeader(t *testing.T) {
 	}
 }
 
+func TestHTTPIPPoolTransportWorksWithoutDirectResolver(t *testing.T) {
+	hostSeen := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hostSeen <- r.Host
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	addr := srv.Listener.Addr().(*net.TCPAddr)
+	rawURL := "http://site-no-direct-resolver.capacity.internal:" + strconv.Itoa(addr.Port) + "/"
+
+	oldCache := defaultDNSCache
+	oldHTTPIPTransport := defaultHTTPIPTransport
+	defaultDNSCache = newCheckDNSCache(time.Minute, 10)
+	defaultDNSCache.store(
+		normalizeDNSCacheKey("site-no-direct-resolver.capacity.internal", "ip4"),
+		[]net.IPAddr{{IP: net.ParseIP("127.0.0.1")}},
+		time.Now().Add(time.Minute),
+	)
+	defaultHTTPIPTransport = newHTTPIPPoolTransportWithFallbackAndResolver(defaultTransport, nil)
+	t.Cleanup(func() {
+		if defaultHTTPIPTransport != nil {
+			defaultHTTPIPTransport.CloseIdleConnections()
+		}
+		defaultDNSCache = oldCache
+		defaultHTTPIPTransport = oldHTTPIPTransport
+	})
+
+	res := Check(context.Background(), Request{BlogID: 42, URL: rawURL, TimeoutSeconds: 2})
+	if !res.Success {
+		t.Fatalf("Check() success = false without direct resolver, result=%+v", res)
+	}
+	select {
+	case got := <-hostSeen:
+		want := "site-no-direct-resolver.capacity.internal:" + strconv.Itoa(addr.Port)
+		if got != want {
+			t.Fatalf("Host header = %q, want %q", got, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("server did not receive request")
+	}
+}
+
 func TestHTTPIPPoolTransportFallsBackAcrossResolvedAddresses(t *testing.T) {
 	hostSeen := make(chan string, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
