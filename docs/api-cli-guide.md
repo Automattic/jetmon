@@ -1,40 +1,38 @@
-# API CLI Feature Guide
+# API CLI Guide
 
-`jetmon2 api` is the local operator and developer interface for Jetmon's
-internal `/api/v1` API. It wraps the common API paths with typed commands,
-repeatable request payloads, Docker-local defaults, and output modes that work
-for both humans and scripts.
+`jetmon2 api` is the operator and developer CLI for Jetmon's internal
+`/api/v1` API. It wraps common API paths with typed commands, repeatable
+payloads, safe local defaults, and output modes for humans or scripts.
 
-Use this guide for day-to-day examples. Use [`internal-api-reference.md`](internal-api-reference.md) as the
-endpoint contract reference when you need exact response shapes, request
-schemas, pagination semantics, or design rationale.
+Use this guide for practical workflows. Use
+[internal-api-reference.md](internal-api-reference.md) for exact endpoint
+contracts, payload shapes, pagination, and design rationale.
 
 ## Setup
 
-Build the local binary:
+Build the binary and start the local Docker stack:
 
 ```bash
 make build
-```
-
-Start Docker and create an API key inside the `jetmon` container:
-
-```bash
 cd docker
 docker compose up --build -d
 cd ..
+```
+
+Create a local API key:
+
+```bash
 make api-cli-token-create
 ```
 
-Point the CLI at the Docker-local API and token:
+Then either export connection details:
 
 ```bash
 export JETMON_API_URL=http://localhost:${API_HOST_PORT:-8090}
 export JETMON_API_TOKEN=jm_replace_with_the_printed_token
 ```
 
-For repeated operator use, put defaults in `~/.config/jetmon2.conf` or point
-`JETMON_API_CONFIG` at another file:
+Or store local defaults in `~/.config/jetmon2.conf`:
 
 ```bash
 ./bin/jetmon2 local-config init \
@@ -44,6 +42,8 @@ For repeated operator use, put defaults in `~/.config/jetmon2.conf` or point
 ./bin/jetmon2 local-config keys
 ```
 
+Example config:
+
 ```conf
 base_url = http://localhost:8090
 token_file = jetmon2-api-token
@@ -52,43 +52,81 @@ timeout = 10s
 output = json
 ```
 
-Supported keys are `base_url`, `token`, `token_file`, `auth_policy`,
-`allow_remote`, `timeout`, `output`, and `pretty`. `token_file` can be absolute
-or relative to the config file directory. If the config contains `token` or
-`token_file`, both the config and token file must be mode `0600`. Environment
-variables override the config file, and command flags override both.
+Supported local config keys:
 
-The token helpers use the Docker Compose stack from the repository root. Use
-`API_CLI_TOKEN_CONSUMER`, `API_CLI_TOKEN_SCOPE`, `API_CLI_TOKEN_TTL`, and
-`API_CLI_TOKEN_CREATED_BY` to vary token creation. Use
-`make api-cli-token-list` to find local key IDs and
-`API_CLI_TOKEN_ID=<id> make api-cli-token-revoke` when a rehearsal token should
-be revoked.
+- `base_url`
+- `token`
+- `token_file`
+- `auth_policy`
+- `allow_remote`
+- `timeout`
+- `output`
+- `pretty`
 
-Every command also accepts `--base-url`, `--token`, `--auth-policy`,
-`--allow-remote`, `--timeout`, `--header`, `--pretty`, `--output table`, `-v`,
-and `--verbose`. JSON is the default output for automation. Use `--pretty`
-when reading JSON directly and `--output table` for stable summary tables.
+`token_file` can be absolute or relative to the config file directory. If the
+config stores `token` or `token_file`, the config and token file must be mode
+`0600`.
 
-Automatic `--token` and `--idempotency-key` headers are sent only to the
-configured API origin by default, including when `api request` is given an
-absolute URL. Use `--auth-policy any-origin` only when intentionally targeting
-another trusted API host. Custom `--header` values are always treated as
-explicit operator input. Verbose mode redacts common sensitive headers before
-printing them.
+Environment variables override the config file. Command flags override both.
 
-Every POST, PUT, PATCH, and DELETE refuses to modify a non-local API unless
-`--allow-remote` is supplied. Local means `localhost`, a `*.localhost` name, or
-a loopback IP address; private LAN hosts still count as remote. On remote API
-targets, `smoke`, `sites bulk-add`, `sites cleanup`, and
-`sites simulate-failure` also require `--batch`, and remote cleanup/simulation
-keep the CLI batch marker check mandatory. Dry-run planning does not contact
-the API and is not blocked.
+Useful token targets:
 
-## Guided API rollout
+```bash
+make api-cli-token-list
+API_CLI_TOKEN_ID=<id> make api-cli-token-revoke
+```
 
-For the containerized v1-to-v2 rollout, use the guided API flow from a
-standalone operator `jetmon2` binary:
+Token creation can be varied with `API_CLI_TOKEN_CONSUMER`,
+`API_CLI_TOKEN_SCOPE`, `API_CLI_TOKEN_TTL`, and `API_CLI_TOKEN_CREATED_BY`.
+
+## Safety Model
+
+Every command accepts the common API flags:
+
+```text
+--base-url
+--token
+--auth-policy same-origin|any-origin
+--allow-remote
+--timeout
+--header
+--pretty
+--output json|table
+-v / --verbose
+```
+
+Important guardrails:
+
+- JSON is the default output. Use `--pretty` for direct reading and
+  `--output table` for stable summaries.
+- Automatic `Authorization` and `Idempotency-Key` headers are sent only to the
+  configured API origin by default, even when `api request` receives an
+  absolute URL.
+- Use `--auth-policy any-origin` only for a trusted one-off target. Avoid
+  exporting `JETMON_API_AUTH_POLICY=any-origin` unless you really want that
+  behavior to persist.
+- Custom `--header` values are explicit operator input and can bypass
+  same-origin automatic auth protections. Use them only with trusted URLs.
+- Verbose mode redacts common sensitive headers, but response bodies are
+  printed as returned by the server.
+- POST, PUT, PATCH, and DELETE refuse non-local API targets unless
+  `--allow-remote` is supplied. Local means `localhost`, `*.localhost`, or a
+  loopback IP address. Private LAN hosts still count as remote.
+- On remote API targets, `smoke`, `sites bulk-add`, `sites cleanup`, and
+  `sites simulate-failure` also require `--batch`.
+- Remote cleanup and simulation keep the CLI batch marker check mandatory.
+  `--allow-unmarked` is local-only.
+
+List the command catalog at any time:
+
+```bash
+JETMON_API_CONFIG=/dev/null ./bin/jetmon2 api commands --output table
+```
+
+## Guided Rollout
+
+For containerized v1-to-v2 rollout, run the guided API flow from a standalone
+operator `jetmon2` binary:
 
 ```bash
 ./bin/jetmon2 api rollout guided \
@@ -97,21 +135,31 @@ standalone operator `jetmon2` binary:
   --allow-remote
 ```
 
-The command checks API health and identity, creates a rollout session, runs
-API-controlled preflight, runs read-only `HEAD`/`legacy` smoke probes, seeds v2
-side state, pauses for Systems to stop v1, runs final reconcile, activates v2,
-and then runs post-handoff gates. Mutating steps require typed phrases,
-dry-run confirmation tokens, and idempotency keys. Use `--dry-run` to print the
-plan without contacting the API, `--run-id` to resume a known server-side
-session, `--change-ref` to record the ticket/change, and `--rollback` to
-release an activated v2 range before Systems restarts v1.
+The guided flow:
 
-Non-dry-run guided sessions write a local transcript and resume state under
-`logs/api-rollout` by default. Re-run with the same bucket range and `--resume`
-after an interrupted operator session; completed steps are skipped and the next
-pending confirmation is shown again.
+1. Checks API health and identity.
+2. Creates or resumes a rollout session.
+3. Runs API-controlled preflight.
+4. Runs read-only `HEAD`/`legacy` smoke probes.
+5. Seeds v2 side state.
+6. Pauses for Systems to stop v1.
+7. Runs final reconcile.
+8. Activates v2 for the bucket range.
+9. Runs post-handoff gates.
 
-Useful primitive rollout commands:
+Mutating steps require typed phrases, dry-run confirmation tokens, and
+idempotency keys. Non-dry-run sessions write a local transcript and resume
+state under `logs/api-rollout` by default.
+
+Useful flags:
+
+- `--dry-run`: print the plan without contacting the API.
+- `--run-id`: resume a known server-side session.
+- `--resume`: continue an interrupted local operator session.
+- `--change-ref`: record the ticket/change reference.
+- `--rollback`: release an activated v2 range before Systems restarts v1.
+
+Primitive rollout commands:
 
 ```bash
 ./bin/jetmon2 api rollout capabilities --allow-remote
@@ -130,55 +178,28 @@ Useful primitive rollout commands:
 ./bin/jetmon2 api rollout jobs get <job-id> --allow-remote
 ```
 
-Security notes:
-- Prefer `--auth-policy any-origin` as a one-command flag. Exporting
-  `JETMON_API_AUTH_POLICY=any-origin` is convenient but persistent; later
-  absolute-URL requests can attach the token to a different trusted host.
-- Manual sensitive headers such as `--header 'Authorization: ...'` are explicit
-  operator input and bypass same-origin automatic auth protections. Use them
-  only with trusted URLs.
-- API error bodies are printed as returned by the server for internal debugging.
-  Do not point this CLI at untrusted API servers.
+## Health, Identity, And Raw Requests
 
-List the command catalog and examples when you need to discover the expanded
-tree without returning to this guide:
-
-```bash
-./bin/jetmon2 api commands --output table
-```
-
-## Health and Identity
-
-Use `health` before authenticating anything. It checks the API and database
-health endpoint.
+Check unauthenticated health before debugging tokens:
 
 ```bash
 ./bin/jetmon2 api health --pretty
 ```
 
-Use `me` to confirm the token, consumer name, scope, and rate limit seen by the
-API server.
+Confirm token identity, consumer, scope, and rate limit:
 
 ```bash
 ./bin/jetmon2 api me --pretty
-```
-
-Verbose mode prints request and response headers to stderr, which is useful
-when debugging auth, rate limiting, or idempotency:
-
-```bash
 ./bin/jetmon2 api me --verbose --pretty
 ```
 
-## Request Escape Hatch
-
-Use `api request` when a route exists but a typed CLI wrapper does not yet.
+Use `api request` when a route exists but a typed CLI wrapper does not:
 
 ```bash
 ./bin/jetmon2 api request --output table GET '/api/v1/sites?limit=5'
 ```
 
-POST and PATCH requests can take literal JSON, a file, or stdin:
+POST/PATCH bodies can be literal JSON, a file, or stdin:
 
 ```bash
 ./bin/jetmon2 api request \
@@ -195,15 +216,12 @@ POST and PATCH requests can take literal JSON, a file, or stdin:
   PATCH /api/v1/sites/12345
 ```
 
-`api request` is intentionally an escape hatch, not a hardened data transfer
-tool. Request bodies and response bodies are read into memory; avoid very large
-files or endpoints that stream unbounded responses. Non-local writes still
-require `--allow-remote`.
+`api request` reads request and response bodies into memory. Avoid very large
+files or unbounded streaming endpoints.
 
 ## Site Management
 
-Sites are keyed by the existing `blog_id`. The typed site commands cover list,
-get, create, update, delete, pause, resume, and trigger-now.
+Sites are keyed by `blog_id`.
 
 ```bash
 ./bin/jetmon2 api sites list --limit 20 --output table
@@ -211,7 +229,7 @@ get, create, update, delete, pause, resume, and trigger-now.
 ./bin/jetmon2 api sites get --pretty 12345
 ```
 
-Create a monitored site with explicit per-site check behavior:
+Create or update a monitored site:
 
 ```bash
 ./bin/jetmon2 api sites create \
@@ -220,74 +238,45 @@ Create a monitored site with explicit per-site check behavior:
   --monitor-active=true \
   --request-method HEAD \
   --detection-profile legacy \
-  --redirect-policy follow \
-  --timeout-seconds 5 \
-  --check-interval 1 \
   --idempotency-key site-12345-create \
   --pretty
-```
-
-Update a site when testing staged rollout batches, redirects, keyword checks,
-custom headers, or maintenance windows:
-
-```bash
 ./bin/jetmon2 api sites update \
   --url https://example.com/health \
   --request-method GET \
   --detection-profile simple_http \
   --check-keyword Example \
   --forbidden-keyword 'database error' \
-  --forbidden-keyword-list 'metrics.evil-cdn.example/collect.js' \
-  --forbidden-keyword-list 'buy cheap viagra' \
   --custom-header 'X-Jetmon-Test: api-cli' \
-  --maintenance-start 2026-04-28T18:00:00Z \
-  --maintenance-end 2026-04-28T19:00:00Z \
   --pretty \
   12345
 ```
 
-Pause, resume, and run an immediate check:
+Common update flags include `--redirect-policy`, `--timeout-seconds`,
+`--check-interval`, `--forbidden-keyword-list`, `--maintenance-start`, and
+`--maintenance-end`.
+
+Pause, resume, trigger, and delete:
 
 ```bash
 ./bin/jetmon2 api sites pause --idempotency-key site-12345-pause --pretty 12345
 ./bin/jetmon2 api sites resume --idempotency-key site-12345-resume --pretty 12345
 ./bin/jetmon2 api sites trigger-now --idempotency-key site-12345-trigger --pretty 12345
-```
-
-Delete disposable sites:
-
-```bash
 ./bin/jetmon2 api sites delete 12345
 ```
 
-## Batch Test Sites
+## Batch Test Data
 
-`sites bulk-add` creates bounded, repeatable local test data. The default source
-is the checked-in fixture of public URLs with up, redirect, slow, error, TLS,
-header, and keyword-check examples.
-
-Preview the payloads:
+`sites bulk-add` creates deterministic test batches. The default fixture
+includes public up, redirect, slow, error, TLS, header, and keyword examples.
 
 ```bash
 ./bin/jetmon2 api sites bulk-add --count 5 --batch local-smoke --dry-run --pretty
-```
-
-Create the batch:
-
-```bash
-./bin/jetmon2 api sites bulk-add \
-  --count 5 \
-  --batch local-smoke \
-  --idempotency-key-prefix local-smoke \
-  --pretty
+./bin/jetmon2 api sites bulk-add --count 5 --batch local-smoke --idempotency-key-prefix local-smoke --pretty
 ```
 
 The batch label derives deterministic blog IDs and stores an
-`X-Jetmon-CLI-Batch` custom header marker so later smoke, simulation, and
-cleanup commands can target only CLI-created data.
-
-Against a non-local API, add `--allow-remote`; `--batch` remains required so
-the created rows carry the CLI marker.
+`X-Jetmon-CLI-Batch` marker. Smoke, simulation, and cleanup commands use that
+marker to avoid touching unrelated data.
 
 Use your own source list when needed:
 
@@ -295,34 +284,64 @@ Use your own source list when needed:
 ./bin/jetmon2 api sites bulk-add --source file --file sites.csv --count 10 --batch private-repro --pretty
 ```
 
-Accepted source formats are newline URLs, CSV with a `url` or `monitor_url`
-column, or JSON objects using fields such as `monitor_url`, `check_keyword`,
-`forbidden_keyword`, `forbidden_keywords`, `redirect_policy`,
-`request_method`, `detection_profile`, `timeout_seconds`, `custom_headers`,
-`alert_cooldown_minutes`, and `check_interval`. In CSV, `forbidden_keywords`
-is a comma-separated list inside one field; quote the field when a value
-contains commas.
+Accepted source formats are newline URLs, CSV with `url` or `monitor_url`, or
+JSON objects with fields such as `monitor_url`, `request_method`,
+`detection_profile`, `timeout_seconds`, `custom_headers`, keywords, cooldown,
+and `check_interval`.
 
-Clean up a batch after testing:
+Clean up a batch:
 
 ```bash
 ./bin/jetmon2 api sites cleanup --batch local-smoke --count 5 --output table
 ```
 
-By default, cleanup verifies each existing `--batch` target still exposes the
-matching derived `cli_batch` marker before deleting it. The CLI requests that
-marker through the API's opt-in `include_cli_metadata=true` projection. Use
-`--allow-unmarked` only when cleaning up older local data created before the
-marker check existed.
+Cleanup verifies each target still exposes the matching `cli_batch` marker
+before deleting it.
 
-Against a non-local API, cleanup requires `--allow-remote --batch` and rejects
-`--allow-unmarked`.
+## Failure Simulation
 
-## Events and Transitions
+`sites simulate-failure` mutates test sites into known failure modes, triggers
+checks, polls active events, fetches transitions, and returns non-zero when
+assertions fail.
 
-Events are the API source of truth for incident state. Use event commands to
-list active incidents for a site, inspect an event, fetch transition history,
-and manually close false alarms or operator-resolved incidents.
+Supported modes are `unreachable`, `http-500`, `http-403`, `redirect`,
+`keyword`, `timeout`, and `tls`.
+
+Example:
+
+```bash
+./bin/jetmon2 api sites simulate-failure \
+  --batch local-smoke \
+  --count 1 \
+  --create-missing \
+  --mode http-500 \
+  --wait 15s \
+  --pretty
+```
+
+Assertion example:
+
+```bash
+./bin/jetmon2 api sites simulate-failure \
+  --batch local-smoke \
+  --mode http-500 \
+  --wait 30s \
+  --expect-event-state 'Seems Down' \
+  --expect-event-severity 3 \
+  --require-transition \
+  --expect-transition-reason opened \
+  --pretty
+```
+
+When plain Docker Compose is running, the command can use the Docker-internal
+`api-fixture` service for deterministic failures. Target-safety-enabled Monitor
+checks block that default private Docker hostname. Use
+`make api-cli-public-fixture-validate` for the standard isolated fixture
+network when target safety should remain enabled.
+
+## Events
+
+Events are the API source of truth for incident state.
 
 ```bash
 ./bin/jetmon2 api events list --active=true --output table 12345
@@ -344,17 +363,16 @@ Close an event with an explicit reason and note:
 
 ## Webhooks
 
-Webhooks receive HMAC-signed POSTs for matching event transitions. The CLI can
-create, update, rotate secrets, inspect deliveries, and retry failed delivery
-rows.
+Webhooks receive HMAC-signed POSTs for matching event transitions.
 
-The Docker-local `api-fixture` service also exposes a receiver at
-`http://api-fixture:8091/webhook`. From the host, use
-`http://localhost:18091/webhook/requests` to inspect recorded deliveries or
-`DELETE` the same path to clear them. Add `?secret=<webhook-secret>` to the
-receiver URL when you want the fixture to verify `X-Jetmon-Signature`.
+The Docker-local fixture receiver is available at
+`http://api-fixture:8091/webhook` from inside Compose. From the host, inspect
+recorded deliveries at `http://localhost:18091/webhook/requests` or `DELETE`
+the same path to clear them. Add `?secret=<webhook-secret>` to the receiver URL
+when the fixture should verify `X-Jetmon-Signature`.
+
 Webhook secrets returned by create/rotate responses are shown once; treat the
-JSON output like a credential and avoid saving it in logs.
+JSON output like a credential.
 
 ```bash
 ./bin/jetmon2 api webhooks create \
@@ -367,27 +385,26 @@ JSON output like a credential and avoid saving it in logs.
   --pretty
 ```
 
+Useful follow-up commands:
+
 ```bash
 ./bin/jetmon2 api webhooks list --output table
-./bin/jetmon2 api webhooks get --pretty 77
 ./bin/jetmon2 api webhooks deliveries --status failed --output table 77
 ./bin/jetmon2 api webhooks retry --idempotency-key webhook-77-delivery-555-retry --pretty 77 555
 ./bin/jetmon2 api webhooks rotate-secret --idempotency-key webhook-77-rotate --pretty 77
 ```
 
-Update filters without rebuilding the whole object:
-
-```bash
-./bin/jetmon2 api webhooks update --clear-sites --state Down --pretty 77
-```
-
 ## Alert Contacts
 
 Alert contacts are managed delivery channels backed by the same transition
-source as webhooks. Supported transports are `email`, `pagerduty`, `slack`, and
-`teams`.
+source as webhooks. Supported transports:
 
-Create an email contact:
+- `email`
+- `pagerduty`
+- `slack`
+- `teams`
+
+Create a contact:
 
 ```bash
 ./bin/jetmon2 api alert-contacts create \
@@ -401,19 +418,7 @@ Create an email contact:
   --pretty
 ```
 
-Create a Slack contact:
-
-```bash
-./bin/jetmon2 api alert-contacts create \
-  --label 'Local Slack' \
-  --transport slack \
-  --webhook-url https://hooks.slack.com/services/example \
-  --site-id 12345 \
-  --min-severity Down \
-  --pretty
-```
-
-Exercise the send-test path and inspect delivery rows:
+Exercise send-test and inspect delivery rows:
 
 ```bash
 ./bin/jetmon2 api alert-contacts test --idempotency-key alert-12-test --pretty 12
@@ -421,50 +426,29 @@ Exercise the send-test path and inspect delivery rows:
 ./bin/jetmon2 api alert-contacts retry --idempotency-key alert-12-delivery-9001-retry --pretty 12 9001
 ```
 
-Use `--destination` for raw transport-specific JSON when a shortcut flag does
-not fit a test case:
-
-```bash
-./bin/jetmon2 api alert-contacts create \
-  --label 'Raw destination example' \
-  --transport teams \
-  --destination '{"webhook_url":"https://example.test/teams"}' \
-  --pretty
-```
-
 PagerDuty integration keys and Slack/Teams webhook URLs are credentials. The
 CLI does not print request bodies in verbose mode, but shell history and saved
-JSON output can still retain values supplied through `--integration-key`,
-`--webhook-url`, or `--destination`.
+JSON output can still retain values supplied with flags.
 
 ## Smoke Workflows
 
-`api smoke` runs a compact end-to-end sanity pass against Docker-local API
-components: health, auth identity, site creation, trigger-now, event listing,
-alert-contact creation, alert-contact send-test, and best-effort cleanup.
+Run the compact API smoke workflow:
 
 ```bash
 ./bin/jetmon2 api smoke --batch local-smoke --pretty
 ```
 
-Use the webhook exercise when you want the smoke workflow to prove the outbound
-webhook path too. It creates a temporary webhook, updates the receiver URL with
-the one-time generated secret, mutates the smoke site into a fixture-backed
-HTTP 500 failure, waits for an `event.opened` delivery, verifies the fixture's
-signature result, confirms a delivered webhook row, and cleans up:
+Run the webhook exercise too:
 
 ```bash
 ./bin/jetmon2 api smoke --batch local-webhook --exercise webhook --pretty
 ```
 
-The webhook exercise is Docker-local only. It refuses non-local API targets even
+The webhook exercise is Docker-local. It refuses non-local API targets even
 with `--allow-remote`, and the fixture polling URL must resolve to localhost or
-a loopback IP because the CLI clears and polls that endpoint directly. The
-registered receiver URL must also be localhost, loopback, or `api-fixture`
-unless you pass `--allow-external-webhook-url` for an intentionally external
-test receiver.
+a loopback IP because the CLI clears and polls that endpoint directly.
 
-The Makefile target builds the binary first and runs the standard smoke path:
+Makefile smoke target:
 
 ```bash
 JETMON_API_URL=http://localhost:${API_HOST_PORT:-8090} \
@@ -472,11 +456,7 @@ JETMON_API_TOKEN=jm_replace_with_the_printed_token \
 make api-cli-smoke
 ```
 
-Use `api-cli-validate` for a fuller live pass against the guide's Docker-local
-workflow. It builds the binary, checks health and identity, exercises the
-generic request escape hatch, dry-runs batch creation, runs `api smoke`, runs a
-webhook delivery/signature smoke pass, runs a deterministic failure simulation
-assertion, and cleans up the validation batches on exit:
+Fuller local validation:
 
 ```bash
 JETMON_API_URL=http://localhost:${API_HOST_PORT:-8090} \
@@ -484,14 +464,14 @@ JETMON_API_TOKEN=jm_replace_with_the_printed_token \
 make api-cli-validate
 ```
 
-The validation target uses `API_VALIDATE_BATCH`, `API_VALIDATE_MODE`,
-`API_VALIDATE_WAIT`, `API_VALIDATE_WEBHOOK_WAIT`, and `API_VALIDATE_COUNT` when
-you need to vary the default batch label or failure scenario. Set
-`API_VALIDATE_SKIP_WEBHOOK=1` or `API_VALIDATE_SKIP_FAILURE=1` to skip the
-longer webhook or failure-simulation checks.
+`api-cli-validate` checks health and identity, exercises the generic request
+path, dry-runs batch creation, runs smoke, tests webhook delivery/signature,
+runs deterministic failure simulation, and cleans up. Use
+`API_VALIDATE_BATCH`, `API_VALIDATE_MODE`, `API_VALIDATE_WAIT`,
+`API_VALIDATE_WEBHOOK_WAIT`, `API_VALIDATE_COUNT`,
+`API_VALIDATE_SKIP_WEBHOOK=1`, and `API_VALIDATE_SKIP_FAILURE=1` to vary it.
 
-For the full delivery/failure validation with target safety enabled, use the
-public-fixture harness instead:
+For delivery/failure validation with target safety enabled:
 
 ```bash
 make api-cli-public-fixture-validate
@@ -499,83 +479,15 @@ make api-cli-public-fixture-validate
 
 That target starts an isolated Docker stack with WPCOM disabled, sends email
 only to Mailpit, and puts the deterministic fixture on a public-looking
-Docker-internal address. The older plain `api-fixture` hostname resolves to a
-private container address and is expected to be blocked by Monitor target
-safety during trigger-now and failure-simulation checks.
-
-## Failure Simulation
-
-`sites simulate-failure` mutates one or more sites into a known failure mode,
-optionally creates missing test sites, triggers immediate checks, polls active
-events, fetches transitions, and returns non-zero when a site fails the workflow
-or an assertion does not match.
-
-Supported modes are `unreachable`, `http-500`, `http-403`, `redirect`,
-`keyword`, `timeout`, and `tls`.
-
-```bash
-./bin/jetmon2 api sites simulate-failure \
-  --batch local-smoke \
-  --count 1 \
-  --create-missing \
-  --mode http-500 \
-  --wait 15s \
-  --pretty
-```
-
-When `--batch` targets an existing site, simulation verifies the site's
-`cli_batch` marker before mutating it. The marker is fetched through the API's
-opt-in `include_cli_metadata=true` projection. `--create-missing` is still
-allowed for empty deterministic slots because the created site receives the
-marker. Use `--allow-unmarked` only for legacy local batches that predate the
-marker.
-
-Against a non-local API, simulation requires `--allow-remote --batch` and
-rejects `--allow-unmarked`.
-
-When plain Docker Compose is running, the command probes
-`http://localhost:18091/health` and can use the Docker-internal `api-fixture`
-service for deterministic HTTP status, redirect, keyword, timeout, and TLS
-cases. Target-safety-enabled Monitor checks block that default Docker hostname
-because it resolves to a private container address. Force public endpoint
-fallbacks with `--fixture-url=off`, pass a safe `--fixture-url`, or use
-`make api-cli-public-fixture-validate` for the standard isolated fixture network.
-
-Use assertions when a CI or rehearsal run should fail unless the expected API
-state appears before the wait window expires:
-
-```bash
-./bin/jetmon2 api sites simulate-failure \
-  --batch local-smoke \
-  --mode http-500 \
-  --wait 30s \
-  --expect-event-state 'Seems Down' \
-  --expect-event-severity 3 \
-  --require-transition \
-  --expect-transition-reason opened \
-  --pretty
-```
-
-Target explicit site IDs instead of a batch:
-
-```bash
-./bin/jetmon2 api sites simulate-failure \
-  --site-id 12345 \
-  --site-id 12346 \
-  --mode timeout \
-  --wait 20s \
-  --output table
-```
+Docker-internal address.
 
 ## Automation Notes
 
-- Prefer `--idempotency-key` or `--idempotency-key-prefix` for create, close,
+- Use `--idempotency-key` or `--idempotency-key-prefix` for create, close,
   retry, trigger, and test actions that scripts may repeat.
-- Use JSON output for scripts; use table output only for human-readable status.
-- Use `--batch` and `sites cleanup` for disposable data so local runs do not
-  touch unrelated sites.
-- Use `--verbose` when debugging auth, rate limits, idempotency behavior, or
-  unexpected server errors. Header values are redacted, but response bodies are
-  not.
+- Use JSON output for scripts. Use table output for human-readable status.
+- Use `--batch` and `sites cleanup` for disposable test data.
+- Use `--verbose` when debugging auth, rate limits, idempotency, or unexpected
+  server errors. Header values are redacted, but response bodies are not.
 - Treat tokens as local secrets. Do not commit exported tokens, shell history
   snippets, or generated local config containing credentials.
