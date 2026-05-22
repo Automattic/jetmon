@@ -1,201 +1,172 @@
 # Production Rollout Lab
 
-The production rollout lab is a pre-production rehearsal for the containerized
-Jetmon v2 rollout shape. It should validate the behavior operators will depend
-on before any production Monitor buckets are activated.
+The production rollout lab is the final pre-production rehearsal for the
+containerized Jetmon v2 rollout shape. It should prove the behavior operators
+will depend on before any production Monitor buckets are activated.
 
-This lab is coordinated by uptime-bench. Jetmon owns the expected topology,
-configuration behavior, API gates, and service assertions. Uptime-bench owns
-host orchestration, report capture, fixtures, and pass/fail reporting.
+Uptime-bench coordinates host orchestration, fixtures, report capture, and
+pass/fail reporting. Jetmon owns the expected topology, config behavior, API
+gates, and service assertions.
 
 ## Goals
 
-- Prove the production deployment shape without touching production hardware.
-- Exercise the same read/write database split and `db-servers.php` server-map
-  sync model used by production.
-- Verify Docker bridge access to host-local Monitor StatsD through
-  `host.docker.internal`.
-- Validate separate Veriflier Docker Compose deployments with bundled StatsD
-  and Graphite.
-- Simulate WPCOM success and failure behavior without contacting real WPCOM.
-- Prove API-driven rollout commands work from a remote admin machine without
-  shell access to container hosts.
-- Capture enough evidence to decide whether production rollout can proceed.
+- Rehearse the production deployment shape without touching production hosts.
+- Exercise read/write DB split and production-shaped `db-servers.php` sync.
+- Verify Monitor/Deliverer containers reach host-local StatsD through
+  `host.docker.internal:8125`.
+- Verify Veriflier Compose stacks include working StatsD and Graphite.
+- Simulate WPCOM behavior without contacting real WPCOM.
+- Prove API-driven rollout from a remote admin host with no shell access to the
+  container hosts.
+- Produce enough evidence for a production stop/go decision.
 
-## Available Hosts
+## Lab Pool
 
-Chris made these test hosts available for this lab:
+Available hosts:
 
 - `jetmon-service-host-1` through `jetmon-service-host-6`
 - `jetmon-vm-host-1` through `jetmon-vm-host-3`
 
-Use these as a lab pool, not as fixed assignments. A good first topology is:
+Treat these as a pool, not fixed assignments. A representative topology is:
 
-- DB write primary on one VM host.
-- Two DB read replicas on separate VM hosts.
-- Two or more Monitor/Deliverer Docker Compose hosts on service hosts.
-- Three or more Veriflier Docker Compose hosts on service or VM hosts.
-- One uptime-bench controller/admin host that runs `jetmon2 api ...` commands
-  against the Monitor API.
+- one writable MariaDB primary on a VM host
+- two read replicas on separate VM hosts
+- two or more Monitor/Deliverer Docker Compose hosts on service hosts
+- three or more Veriflier Docker Compose hosts on service or VM hosts
+- one uptime-bench controller/admin host running `jetmon2 api ...` against the
+  Monitor API
 
-Before starting a local Compose rehearsal, run:
+For local Compose rehearsal, start with:
 
 ```bash
 make rollout-docker-lab-doctor
 ```
 
-This checks local prerequisites and verifies that containers can resolve the
-external package hosts used by the Docker image build. If this fails, fix the
-Docker daemon resolver or networking first; otherwise the lab can fail during
-`go mod download` or `apt-get` before any rollout behavior is tested.
+If this fails, fix Docker DNS/networking first. Otherwise the lab may fail
+during image build before rollout behavior is tested.
 
-## Required Topology
+## Required Shape
 
-### Database Tier
+### Database And Server Map
 
-- One writable MariaDB primary.
-- Two read replicas.
-- Jetmon schema migrations applied once against the primary.
-- Concurrent migration attempts are either prevented by deployment order or
-  serialized by Jetmon's database migration lock.
-- Internal-only fixture sites seeded into `jetpack_monitor_sites`.
-- V2 side tables seeded or adopted through the rollout API, not by ad hoc SQL,
-  unless the test case is explicitly about migration repair.
-
-### Server Map Source
-
-- An SVN repository containing a production-shaped `db-servers.php`.
-- A config-sync process that checks out or updates the file into the Monitor
-  runtime path.
+- One primary, two read replicas.
+- Schema applied once against the primary.
+- Jetmon runs in production/validate mode after schema is applied.
+- Fixture sites are seeded into `jetpack_monitor_sites`.
+- V2 side tables are seeded or adopted through rollout APIs unless the test is
+  explicitly about repair.
+- A lab SVN repo publishes a production-shaped `db-servers.php`.
+- Config sync updates the Monitor runtime path from SVN.
 - `DB_SERVER_MAP_PATH`, `DB_SERVER_MAP_DATASET`,
-  `DB_SERVER_MAP_DATACENTER`, and `DB_SERVER_MAP_ADDRESS` configured as they
-  would be in production.
-- No secrets in reports. Redact credentials when recording server-map evidence.
+  `DB_SERVER_MAP_DATACENTER`, and `DB_SERVER_MAP_ADDRESS` match the intended
+  production shape.
+- Reports redact DB credentials and any secrets from server-map evidence.
 
-### Monitor And Deliverer Hosts
+### Monitor And Deliverer
 
-- Jetmon Monitor and optional standalone Deliverer run through Docker Compose.
-- Containers use bridge networking, not host networking.
+- Run through Docker Compose with bridge networking, never host networking.
 - Compose includes `--add-host=host.docker.internal:host-gateway`.
-- Monitor/Deliverer rendered config contains
-  `"STATSD_ADDR": "host.docker.internal:8125"`.
-- Production-style Monitor containers should run with
-  `CONFIG_PROFILE=production` or `SCHEMA_MANAGEMENT_MODE=validate` after schema
-  has been applied explicitly. The lab should include `jetmon2 schema validate`
-  and `jetmon2 doctor --require-statsd` evidence before activation.
-- Host-local StatsD and Graphite are installed and running on the Monitor hosts.
-- Monitor-host StatsD should bind only to localhost or a private lab interface,
-  not a public interface. The lab may expose Graphite on a private/admin bind
-  address for evidence capture.
+- Rendered config contains `"STATSD_ADDR": "host.docker.internal:8125"`.
+- Host-local StatsD and Graphite are running on Monitor hosts.
+- Monitor-host StatsD binds only to localhost or a private lab interface.
 - API is enabled only on the intended Monitor control surface.
+- Pre-activation evidence includes `jetmon2 schema validate` and
+  `jetmon2 doctor --require-statsd`.
 
-### Veriflier Hosts
+### Verifliers
 
-- Verifliers run on separate hosts through the production Veriflier Docker
-  Compose stack.
-- Veriflier Compose includes its own StatsD and Graphite services.
-- Graphite retention should match `10s:6h, 1m:7d, 10m:5y`.
-- Monitor uses only v2 Veriflier endpoints.
+- Run on separate hosts through the production Veriflier Compose stack.
+- Compose includes bundled StatsD and Graphite.
+- Graphite retention is `10s:6h, 1m:7d, 10m:5y`.
+- Monitors use only v2 Veriflier endpoints.
 
-### Target Sites
+### Targets
 
-- Use internal-only HTTP/DNS fixtures for most tests so the lab measures Jetmon
-  behavior rather than internet variability.
-- Preserve Veriflier target-safety behavior during internal tests. If direct
-  private fixture URLs are rejected, prefer a lab-only public-looking route to
-  an internal fixture over disabling Jetmon's SSRF guard.
-- For high-cardinality capacity tests that cannot use a public-looking route,
-  Monitors may set `CHECK_TARGET_SAFETY_MODE=allow_private_for_tests`, but only
-  in an isolated uptime-bench lab with disposable synthetic site rows,
-  `WPCOM_NOTIFY_ENABLE=false`, stubbed delivery, and no customer-visible alert
-  path. Production rollout rehearsals against real site data must keep the
-  default `public_only` mode.
-- Seed enough sites to exercise bucket distribution, read/write split, rollout
-  commands, WPCOM notification paths, and Veriflier quorum behavior.
-- Include canary sites with known up, down, timeout, redirect, TLS, body, and
-  recovery behavior.
+- Prefer internal-only HTTP/DNS fixtures so the lab measures Jetmon, not the
+  internet.
+- Keep default target safety (`public_only`) for production rollout rehearsals
+  and any real-site data.
+- If internal fixture URLs are rejected by safety checks, prefer a lab-only
+  public-looking route over disabling SSRF guardrails.
+- For isolated high-cardinality synthetic capacity tests only,
+  `CHECK_TARGET_SAFETY_MODE=allow_private_for_tests` is acceptable when
+  `WPCOM_NOTIFY_ENABLE=false`, delivery is stubbed, site rows are disposable,
+  and no customer-visible alert path exists.
+- Include known up, down, timeout, redirect, TLS, body-content, and recovery
+  canaries.
 
 ### WPCOM Simulator
 
-The lab should include a local WPCOM simulator. It must be impossible to confuse
-the simulator with real WPCOM endpoints.
+The lab must use a local WPCOM simulator that cannot be confused with real
+WPCOM. Exercise:
 
-Exercise at least:
+- success
+- auth/cert-style failure
+- permanent 4xx
+- transient 5xx
+- slow response
+- malformed response
+- failure followed by recovery
+- modern endpoint disabled, unless explicitly enabled for that test
 
-- Legacy WPCOM notification success.
-- Legacy WPCOM auth/cert-style failure.
-- Legacy WPCOM 4xx permanent failure.
-- Legacy WPCOM 5xx transient failure.
-- Slow WPCOM response.
-- Malformed WPCOM response.
-- Failure followed by recovery, proving circuit-breaker behavior.
-- Modern endpoint behavior if explicitly enabled, or a gate proving it remains
-  disabled.
+Every report must state that no real WPCOM host was contacted.
 
-The report must assert that no real WPCOM host was contacted.
+## Required Coverage
 
-## Required Test Coverage
-
-### Readiness And Standby
+Readiness and standby:
 
 - Monitors start in standby/API-controlled mode.
 - Standby does not claim buckets, run scheduled checks, write runtime/check
   history/event rows, send WPCOM notifications, or start delivery workers.
-- Preflight validates DB access, schema version, server-map state, StatsD,
-  Veriflier v2 contract/quorum identity, WPCOM config, and rollout blockers.
+- Preflight validates DB, schema, server-map state, StatsD, Veriflier v2
+  contract/quorum identity, WPCOM config, and rollout blockers.
 - API-guided rollout works from a separate admin/controller host.
 
-### Server Map And Replica Behavior
+Server map and replica behavior:
 
-- Initial server-map parse succeeds and selects the expected write primary and
-  read replicas.
-- Hot reload succeeds after `db-servers.php` changes in SVN.
-- Failed reload leaves the last known-good DB mapping active.
-- Malformed PHP, missing dataset, missing datacenter, and unreadable config are
-  reported clearly without crashing the Monitor.
-- Credential rotation is tested. If hot credential rotation is expected, prove
-  it. If restart is required, document the stop/start behavior and downtime
-  expectations.
-- Read replica outage, slow replica, and replica lag are tested.
-- Writes continue to go only to the primary.
+- Initial parse selects the expected primary and replicas.
+- Hot reload succeeds after SVN changes.
+- Failed reload leaves the last known-good mapping active.
+- Malformed PHP, missing dataset/datacenter, and unreadable config report clear
+  failures without crashing the Monitor.
+- Credential rotation behavior is proven or documented as restart-required.
+- Primary, replica outage, slow replica, and replica lag behavior are tested.
+- Writes go only to the primary.
 - Read failover does not corrupt scheduler, rollout, API, dashboard, or
   telemetry behavior.
 
-### StatsD And Graphite
+Metrics:
 
-- Monitor and Deliverer containers can emit StatsD to the host-local service
-  through `host.docker.internal:8125`.
-- Verifliers emit to their bundled StatsD/Graphite services.
-- Metric host paths match the expected production-compatible naming.
-- Runtime resource gauges are present for Monitor, Deliverer, and Veriflier.
-- DB pool metrics are present for Monitor and Deliverer.
-- Graphite retention and queryability are validated where the lab owns the
-  Graphite service.
+- Monitor and Deliverer emit to host-local StatsD.
+- Verifliers emit to their bundled StatsD/Graphite.
+- Metric host paths match the production-compatible naming plan.
+- Runtime resource gauges exist for Monitor, Deliverer, and Veriflier.
+- DB pool metrics exist for Monitor and Deliverer.
+- Graphite retention/queryability is validated where the lab owns Graphite.
 
-### Rollout Flow
+Rollout flow:
 
-- API seed/adopt dry-run and execute are idempotent.
+- Seed/adopt dry-run and execute are idempotent.
 - Bucket activation is explicit and range-scoped.
-- Bucket release/rollback restores a safe non-owned state.
-- V2 takes over only the intended bucket range.
+- Release/rollback restores a safe non-owned state.
+- V2 takes over only the requested range.
 - Post-activation checks prove fresh checks, no projection drift, green
   Veriflier quorum, expected process health, and expected metrics.
-- HEAD/legacy smoke runs before activation and does not mutate site state.
-- Non-authoritative HEAD/GET comparison records deltas without changing alerting
-  policy.
-- Staged policy transitions and rollback-last/rollback-all are rehearsed.
+- HEAD/legacy smoke before activation does not mutate site state.
+- HEAD/GET comparison records non-authoritative deltas without changing
+  alerting policy.
+- Staged policy transitions, rollback-last, and rollback-all are rehearsed.
 
-### Delivery And Notification Safety
+Delivery and notification safety:
 
-- WPCOM notifications are sent only to the simulator.
+- WPCOM notifications go only to the simulator.
 - Delivery ownership is single-owner where intended.
-- Duplicate WPCOM, webhook, or alert-contact sends are not observed.
-- WPCOM circuit breaker opens, queues, drops, and recovers as expected under
-  simulator-driven failures.
-- Maintenance suppression and alert cooldown behavior are preserved during
-  rollout-state transitions.
+- No duplicate WPCOM, webhook, or alert-contact sends are observed.
+- WPCOM circuit breaker opens, queues, drops, and recovers under simulator
+  failures.
+- Maintenance suppression and alert cooldown survive rollout transitions.
 
-### Failure And Recovery
+Failure and recovery:
 
 - Monitor container restart.
 - Monitor host reboot or simulated outage.
@@ -204,46 +175,46 @@ The report must assert that no real WPCOM host was contacted.
 - DB primary restart.
 - Read replica restart.
 - SVN/config-sync outage.
-- StatsD outage on a Monitor host.
+- Monitor-host StatsD outage.
 - Veriflier StatsD/Graphite outage.
 - WPCOM simulator outage.
 - DNS fixture outage or controlled resolver failure.
 
-Each failure should have a clear expected outcome: continue, degrade with
-warnings, block activation, or require rollback.
+Each failure must have an expected result: continue, degrade with warnings,
+block activation, or require rollback.
 
-### Rollback
+Rollback:
 
 - Release activated buckets through the API.
 - Confirm v2 stops scheduled checks for released ranges.
-- Confirm v1-compatible legacy table fields remain safe for rollback.
-- Confirm no duplicate down/recovery notifications are emitted during rollback.
-- Confirm re-running seed/adopt and activation after rollback is idempotent.
+- Confirm v1-compatible legacy fields remain safe for rollback.
+- Confirm rollback does not emit duplicate down/recovery notifications.
+- Confirm seed/adopt and activation can be rerun after rollback.
 
 ## Report Requirements
 
 Each uptime-bench report should include:
 
-- Jetmon commit, uptime-bench commit, host mapping, and high-level topology.
+- Jetmon commit, uptime-bench commit, host map, and topology summary.
 - Redacted server-map snapshot and reload history.
-- DB primary/replica health and observed routing behavior.
-- Monitor/Deliverer/Veriflier process health.
+- DB primary/replica health and observed read/write routing.
+- Monitor, Deliverer, and Veriflier process health.
 - StatsD and Graphite evidence.
-- WPCOM simulator request log summary.
+- WPCOM simulator request summary.
 - API rollout command transcript.
-- Pass/fail table for each required coverage area.
-- Explicit statement that no real WPCOM endpoint was contacted.
-- Explicit statement that target checks stayed internal-only unless a test
-  intentionally allowed external traffic.
+- Pass/fail table for every required coverage area.
+- Statement that no real WPCOM endpoint was contacted.
+- Statement that target checks stayed internal-only unless a test explicitly
+  allowed external traffic.
 
 ## Stop Conditions
 
-Stop and report instead of continuing when:
+Stop and report immediately if:
 
-- Any real WPCOM endpoint is contacted.
-- A rollout step mutates site state while in read-only standby or smoke mode.
-- Writes are observed against a read replica.
-- Bucket activation affects a range outside the requested scope.
-- Duplicate customer-facing notifications would have been sent.
-- Server-map reload failure drops the last known-good DB mapping.
-- The lab cannot prove where notifications or target checks were sent.
+- any real WPCOM endpoint is contacted
+- standby or smoke mode mutates site state
+- writes hit a read replica
+- activation affects buckets outside the requested range
+- duplicate customer-facing notifications would have been sent
+- server-map reload failure drops the last known-good mapping
+- the lab cannot prove where notifications or target checks were sent
