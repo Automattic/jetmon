@@ -42,7 +42,14 @@ render_config() {
 }
 
 config_render_target() {
-	printf '%s\n' "${VERIFLIER_CONFIG:-/tmp/veriflier-rendered-config/veriflier.json}"
+	# Default to the in-image (and named-volume backed in prod) location so
+	# operators inspecting the container see the same config the binary is
+	# using. With render_mode=always (the default), this file is overwritten
+	# on every container start from the current environment — no stale data
+	# can survive a token rotation, FQDN rename, or vantage_id change.
+	# Override via VERIFLIER_CONFIG to point elsewhere (e.g. tmpfs) when
+	# write-back to the config dir is undesirable.
+	printf '%s\n' "${VERIFLIER_CONFIG:-config/veriflier.json}"
 }
 
 render_mode() {
