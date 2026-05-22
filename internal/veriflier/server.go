@@ -32,6 +32,9 @@ type Server struct {
 	addr      string
 	hostname  string
 	version   string
+	commit    string
+	buildDate string
+	goVersion string
 	vantage   Vantage
 	agent     Agent
 	executor  *Executor
@@ -43,6 +46,9 @@ type ServerOptions struct {
 	CheckFunc      CheckFunc
 	Vantage        Vantage
 	AgentID        string
+	Commit         string
+	BuildDate      string
+	GoVersion      string
 	MaxConcurrency int
 	QueueCapacity  int
 	EnableLegacy   bool
@@ -103,12 +109,27 @@ func NewServerWithOptions(addr, authToken, hostname, version string, opts Server
 	if agentID == "" {
 		agentID = hostname
 	}
+	commit := opts.Commit
+	if commit == "" {
+		commit = "unknown"
+	}
+	buildDate := opts.BuildDate
+	if buildDate == "" {
+		buildDate = "unknown"
+	}
+	goVersion := opts.GoVersion
+	if goVersion == "" {
+		goVersion = "unknown"
+	}
 	executor := NewExecutor(opts.CheckFunc, opts.MaxConcurrency, opts.QueueCapacity)
 	return &Server{
 		addr:      addr,
 		authToken: authToken,
 		hostname:  hostname,
 		version:   version,
+		commit:    commit,
+		buildDate: buildDate,
+		goVersion: goVersion,
 		vantage:   vantage,
 		agent: Agent{
 			ID:       agentID,
@@ -346,6 +367,9 @@ func (s *Server) Status() StatusV2Response {
 	return StatusV2Response{
 		Status:    "OK",
 		Version:   s.version,
+		Commit:    s.commit,
+		BuildDate: s.buildDate,
+		GoVersion: s.goVersion,
 		Protocols: protocols,
 		Vantage:   s.vantage,
 		Agent:     s.agent,

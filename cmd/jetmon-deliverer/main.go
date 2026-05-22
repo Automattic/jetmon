@@ -29,6 +29,7 @@ const (
 // Injected at build time via -ldflags.
 var (
 	version   = "dev"
+	commit    = "unknown"
 	buildDate = "unknown"
 	goVersion = "unknown"
 )

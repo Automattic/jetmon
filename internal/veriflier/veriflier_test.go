@@ -34,6 +34,9 @@ func newV2TestServer(checkFn CheckFunc, opts ...ServerOptions) (*Server, *httpte
 		CheckFunc:      checkFn,
 		Vantage:        Vantage{ID: "test-vantage", Region: "test-region", Provider: "test-provider"},
 		AgentID:        "test-agent",
+		Commit:         "test-commit",
+		BuildDate:      "test-build-date",
+		GoVersion:      "test-go",
 		MaxConcurrency: 4,
 		QueueCapacity:  4,
 	}
@@ -47,6 +50,15 @@ func newV2TestServer(checkFn CheckFunc, opts ...ServerOptions) (*Server, *httpte
 		}
 		if override.AgentID != "" {
 			cfg.AgentID = override.AgentID
+		}
+		if override.Commit != "" {
+			cfg.Commit = override.Commit
+		}
+		if override.BuildDate != "" {
+			cfg.BuildDate = override.BuildDate
+		}
+		if override.GoVersion != "" {
+			cfg.GoVersion = override.GoVersion
 		}
 		if override.MaxConcurrency != 0 {
 			cfg.MaxConcurrency = override.MaxConcurrency
@@ -1225,6 +1237,18 @@ func TestServerHandleV2Status(t *testing.T) {
 	}
 	if status.Agent.ID != "test-agent" {
 		t.Fatalf("agent id = %q, want test-agent", status.Agent.ID)
+	}
+	if status.Version != "1.0" {
+		t.Fatalf("version = %q, want 1.0", status.Version)
+	}
+	if status.Commit != "test-commit" {
+		t.Fatalf("commit = %q, want test-commit", status.Commit)
+	}
+	if status.BuildDate != "test-build-date" {
+		t.Fatalf("build date = %q, want test-build-date", status.BuildDate)
+	}
+	if status.GoVersion != "test-go" {
+		t.Fatalf("go version = %q, want test-go", status.GoVersion)
 	}
 	if status.Capacity.MaxConcurrency != 4 {
 		t.Fatalf("max concurrency = %d, want 4", status.Capacity.MaxConcurrency)
