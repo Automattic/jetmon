@@ -9,13 +9,16 @@ live in [operations-guide.md](operations-guide.md).
 - Docker and Docker Compose
 - `make`
 
-The Docker environment provides a local database, StatsD/Graphite, Mailpit, the
-monitor, the Go Veriflier, and the API failure fixture. `docker/.env-sample`
-defaults to `JETMON_DB_IMAGE=mariadb:11.4`, matching the current production
-database family. If you change this value for compatibility testing, recreate
-the database volume before comparing behavior across engines. Existing local
-volumes created with the old `mysql:8.0` default should be recreated with
-`docker compose down -v` before first starting the MariaDB default.
+The Docker environment provides MariaDB, StatsD/Graphite, Mailpit, the Monitor,
+the Go Veriflier, and the API failure fixture. The default database image is
+`mariadb:11.4`, matching the current production database family. If an old local
+volume was created with the previous MySQL default, reset it before comparing
+behavior:
+
+```bash
+cd docker
+docker compose down -v
+```
 
 ## Start Docker
 
@@ -25,7 +28,7 @@ cp .env-sample .env
 docker compose up --build -d
 ```
 
-Useful follow-up commands:
+Useful commands:
 
 ```bash
 docker compose logs -f jetmon
@@ -33,72 +36,6 @@ docker compose exec jetmon bash
 docker compose down
 docker compose down --remove-orphans
 ```
-
-## Local Database Selection
-
-Local testing does not use the production SVN `db-servers.php` sync path. The
-Monitor reads its database connection from the rendered JSON config keys
-`DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, and `DB_NAME`.
-
-In the default Docker Compose stack, those values point at the local
-`mysqldb` service. Compose passes environment values to the entrypoint, and the
-entrypoint renders them into generated JSON config on every container start by
-default:
-
-```yaml
-DB_HOST: mysqldb
-DB_PORT: "3306"
-```
-
-Use `docker/.env` to change the local database image, database name, user, and
-password. If you need the Monitor container to connect to a specific external
-database instead of the Compose `mysqldb` service, add a local Compose override
-that changes the `jetmon.environment` `DB_*` template inputs before the config
-container is recreated. To use a hand-managed JSON file instead, mount it and
-set `JETMON_CONFIG_RENDER_MODE=never`. The SVN config-sync sidecar is only for
-production rollout planning and is not required for local smoke tests.
-
-Production-style DB server-map testing is available by setting
-`DB_SERVER_MAP_PATH` in JSON config to a synced or synthetic `db-servers.php`.
-In that mode, Jetmon reads the `misc` dataset, uses the write-master row for
-writes, uses read-enabled rows for reads, and hot-reloads changed connection
-details on the `DB_CONFIG_UPDATES_MIN` cadence. Keep this unset for normal
-local development, and do not set explicit `DB_HOST` / `DB_PORT` / `DB_USER` /
-`DB_PASSWORD` / `DB_NAME` values at the same time. When testing this mode, use
-`GET /api/v1/monitor/db-config` or the host dashboard `db-config` dependency to
-confirm the next reload check, last changed map observed, and last successful
-hot reload.
-
-## Local StatsD
-
-The default Docker Compose stack runs a local `statsd` service backed by the
-`graphiteapp/graphite-statsd` image. Monitor and Veriflier containers send UDP
-metrics to `"STATSD_ADDR": "statsd:8125"` in their generated JSON config by
-default in Compose. Set `STATSD_ADDR` in `docker/.env` if you want the
-entrypoints to render a different StatsD endpoint, or set it to an empty value
-to disable StatsD for a smoke test. Leave `JETMON_HOSTNAME` and
-`STATSD_HOST_PATH` unset locally unless you need process identity or metrics to
-land under a specific Graphite path while testing dashboard changes.
-
-Mailpit captures local alert-contact email. Open it at
-`http://localhost:8025` by default, or at the `BIND_ADDR` /
-`MAILPIT_HOST_PORT` values from `docker/.env`.
-
-The local API port also binds to loopback by default. Set
-`API_BIND_ADDR=0.0.0.0` only when the Docker host is on a trusted network and
-remote API access is intentional.
-
-## Local WPCOM Notifications
-
-The default Docker Compose stack sets `WPCOM_NOTIFY_ENABLE=false` so local
-checks cannot contact WPCOM. It still renders `WPCOM_NOTIFY_MODE=legacy` by
-default so local config shape matches the production rollout posture.
-
-Production Monitor rollout should use `WPCOM_NOTIFY_MODE=legacy`, which is the
-config default outside the local Docker override. That mode preserves the v1
-client-certificate `/jetmon/?data=...` notification contract. Set
-`WPCOM_NOTIFY_MODE=modern` explicitly only for WPCOM endpoint/auth contract
-testing until WPCOM signs off.
 
 ## Build And Test
 
@@ -111,7 +48,7 @@ make test-race
 make lint
 ```
 
-Build individual binaries when the full build is not needed:
+Build individual binaries when that is faster:
 
 ```bash
 make build
@@ -122,41 +59,26 @@ make build-veriflier
 If `go` is not on `PATH`, the Makefile falls back to `/usr/local/go/bin/go`
 when present. Override with `make GO=/path/to/go ...` for other layouts.
 
-## Validate Config
+## Validate The Local Stack
 
 ```bash
 ./bin/jetmon2 validate-config
-```
-
-Validation checks required keys, value ranges, database connectivity, legacy
-projection mode, email transport mode, and configured Verifliers. Veriflier
-reachability is reported as operational context rather than a hard validation
-failure.
-
-The local Veriflier serves the v2 status endpoint by default:
-
-```bash
 curl http://127.0.0.1:7803/v2/status
-```
-
-The v2 response includes supported protocols, local `vantage.id`, serving
-`agent.id`, and executor capacity.
-
-`veriflier2` can also expose legacy-compatible HTTP `/check` and `/status`
-endpoints for lab or emergency compatibility testing by setting
-`VERIFLIER_ENABLE_LEGACY_HTTP=true`, but production v2 Verifliers should remain
-v2-only unless there is an explicit rollout need.
-
-To inspect the local Veriflier discovery registry and monitor-collected agent
-telemetry without exposing auth token values:
-
-```bash
 ./bin/jetmon2 verifliers discovery-report --output=text
 ```
 
+Config validation checks required keys, ranges, DB connectivity, projection
+mode, email transport, and configured Verifliers. Veriflier reachability is
+reported as operational context rather than a hard validation failure.
+
+The Veriflier status response includes supported protocols, `vantage.id`,
+`agent.id`, and executor capacity. Production v2 Verifliers should remain
+v2-only; set `VERIFLIER_ENABLE_LEGACY_HTTP=true` only for lab or emergency
+compatibility testing.
+
 ## API CLI Smoke
 
-Build the binary, create a local API key, and point the CLI at the exposed API:
+Build the binary, create a local API key, and point the CLI at the local API:
 
 ```bash
 make build
@@ -168,16 +90,9 @@ export JETMON_API_TOKEN=jm_replace_with_the_printed_token
 ./bin/jetmon2 api health --pretty
 ./bin/jetmon2 api me --pretty
 ./bin/jetmon2 api request --pretty GET /api/v1/monitor/stats
-./bin/jetmon2 api request GET '/api/v1/monitor/stats?file=totals'
 ./bin/jetmon2 api commands --output table
 ./bin/jetmon2 api sites list --output table
 ```
-
-`/api/v1/monitor/stats` is the API migration path for consumers that used to
-read `stats/sitespersec`, `stats/sitesqueue`, or `stats/totals` directly from a
-host filesystem. The JSON response contains parsed counters plus the exact
-legacy file bodies, and the `?file=` form returns one legacy body as
-`text/plain`. It requires a normal read-scope API key.
 
 Run the standard smoke sequence:
 
@@ -185,10 +100,8 @@ Run the standard smoke sequence:
 make api-cli-smoke
 ```
 
-Run the fuller live validation pass against the guide examples, local failure
-fixture, and webhook delivery/signature flow. Use the public-fixture target when
-you want Monitor target safety to stay enabled during the deterministic failure
-checks:
+Run the fuller live validation pass against guide examples, the local failure
+fixture, and webhook delivery/signature flow:
 
 ```bash
 make api-cli-public-fixture-validate
@@ -197,26 +110,29 @@ make api-cli-public-fixture-validate
 Set `API_VALIDATE_SKIP_WEBHOOK=1` for a shorter pass that avoids the outbound
 webhook worker.
 
-Use these helper targets to manage local rehearsal tokens:
+Token helpers:
 
 ```bash
 make api-cli-token-list
 API_CLI_TOKEN_ID=<id> make api-cli-token-revoke
 ```
 
+`/api/v1/monitor/stats` replaces direct filesystem reads of
+`stats/sitespersec`, `stats/sitesqueue`, and `stats/totals`. JSON responses
+include parsed counters plus exact legacy file bodies; `?file=totals` returns a
+single legacy body as `text/plain`.
+
 ## Simulate A Failure
 
-The Docker Compose environment includes `api-fixture`, a deterministic local
-site fixture. Jetmon containers reach it at `http://api-fixture:8091` and
+The Docker stack includes `api-fixture`, a deterministic local site fixture.
+Containers reach it at `http://api-fixture:8091` and
 `https://api-fixture:8443`; the host can inspect it at
-`http://localhost:18091` and `https://localhost:18443` by default.
-Target-safety-enabled checks intentionally block that Docker hostname as a
-private target, so fixture-backed failure validation should use
-`make api-cli-public-fixture-validate` or pass a public-looking Docker-internal
-fixture URL explicitly.
+`http://localhost:18091` and `https://localhost:18443`.
 
-The fixture exposes endpoints for response codes, redirects, keyword mismatch,
-slow responses, TLS, and webhook capture.
+The fixture exposes response-code, redirect, keyword mismatch, slow-response,
+TLS, and webhook-capture paths. Target-safety-enabled checks intentionally block
+private Docker hostnames, so use `make api-cli-public-fixture-validate` or pass
+a public-looking Docker-internal fixture URL for deterministic failure checks.
 
 ```bash
 ./bin/jetmon2 api sites bulk-add --count 3 --batch local-smoke --dry-run --pretty
@@ -232,6 +148,45 @@ slow responses, TLS, and webhook capture.
 ```
 
 Set `--fixture-url=off` to force public endpoint fallback behavior.
+
+## Local Services
+
+Database:
+
+- normal local testing uses rendered JSON keys `DB_HOST`, `DB_PORT`,
+  `DB_USER`, `DB_PASSWORD`, and `DB_NAME`
+- the default Compose stack points those keys at `mysqldb`
+- change local DB image/name/user/password through `docker/.env`
+- use a Compose override for an external local DB
+- set `JETMON_CONFIG_RENDER_MODE=never` only when mounting a hand-managed JSON
+  config
+
+Production-style `db-servers.php` testing is available by setting
+`DB_SERVER_MAP_PATH` in JSON config. Keep it unset for normal local development
+and do not set explicit `DB_HOST` / `DB_PORT` / `DB_USER` / `DB_PASSWORD` /
+`DB_NAME` values at the same time. Use `GET /api/v1/monitor/db-config` or the
+dashboard `db-config` dependency to confirm hot-reload state.
+
+StatsD and email:
+
+- Compose runs `graphiteapp/graphite-statsd` as `statsd`
+- Monitor and Veriflier default to `"STATSD_ADDR": "statsd:8125"`
+- set `STATSD_ADDR` in `docker/.env` to override or empty it to disable StatsD
+- leave `JETMON_HOSTNAME` and `STATSD_HOST_PATH` unset locally unless testing a
+  specific Graphite path
+- Mailpit captures local alert-contact email at `http://localhost:8025` by
+  default
+
+API and WPCOM:
+
+- local API binds to loopback by default
+- set `API_BIND_ADDR=0.0.0.0` only on a trusted network when remote API access
+  is intentional
+- local Compose sets `WPCOM_NOTIFY_ENABLE=false`, so checks cannot contact WPCOM
+- local Compose still renders `WPCOM_NOTIFY_MODE=legacy` so config shape
+  matches rollout posture
+- set `WPCOM_NOTIFY_MODE=modern` only for explicit WPCOM endpoint/auth contract
+  testing
 
 ## Add Manual Test Sites
 
@@ -253,8 +208,8 @@ VALUES
 ## Import Tenant Mapping
 
 Gateway-routed site reads and writes are scoped through
-`jetpack_monitor_site_tenants`. Import the gateway or customer source of truth before
-customer traffic depends on Jetmon-side tenant enforcement:
+`jetpack_monitor_site_tenants`. Import the gateway or customer source of truth
+before customer traffic depends on Jetmon-side tenant enforcement:
 
 ```bash
 ./bin/jetmon2 site-tenants import --file site-tenants.csv --dry-run
