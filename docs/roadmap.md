@@ -136,6 +136,13 @@ Open work:
 - [ ] Validate geo-scoped benchmark assumptions before changing production
   behavior for `http-geo-503`. Confirm probe source ranges, intended Jetmon
   region semantics, and the support story for partial regional failures.
+- [ ] Replace global `NUM_OF_CHECKS` escalation gating with failure-class-aware
+  Veriflier escalation. Keep local retries for ambiguous transport, timeout,
+  and low-confidence DNS failures, but escalate high-confidence HTTP, TLS,
+  redirect-policy, keyword, and full-profile failures sooner. Preserve
+  failure-pressure guardrails so Verifliers are not overloaded during broad
+  Monitor-side impairment. Deprecate `NUM_OF_CHECKS` after production evidence
+  confirms the adaptive policy is safer than a single global retry count.
 
 ## Scheduler And Scalability
 
