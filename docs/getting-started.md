@@ -37,11 +37,13 @@ docker compose down --remove-orphans
 ## Local Database Selection
 
 Local testing does not use the production SVN `db-servers.php` sync path. The
-Monitor reads its database connection from `DB_HOST`, `DB_PORT`, `DB_USER`,
-`DB_PASSWORD`, and `DB_NAME`.
+Monitor reads its database connection from the rendered JSON config keys
+`DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, and `DB_NAME`.
 
 In the default Docker Compose stack, those values point at the local
-`mysqldb` service:
+`mysqldb` service. Compose passes environment values to the entrypoint, and the
+entrypoint renders them into generated JSON config on every container start by
+default:
 
 ```yaml
 DB_HOST: mysqldb
@@ -51,30 +53,32 @@ DB_PORT: "3306"
 Use `docker/.env` to change the local database image, database name, user, and
 password. If you need the Monitor container to connect to a specific external
 database instead of the Compose `mysqldb` service, add a local Compose override
-that changes the `jetmon.environment` `DB_*` values, or run the pre-built image
-directly with explicit `DB_*` environment variables as shown in
-[docker-images.md](docker-images.md). The SVN config-sync sidecar is only for
+that changes the `jetmon.environment` `DB_*` template inputs before the config
+container is recreated. To use a hand-managed JSON file instead, mount it and
+set `JETMON_CONFIG_RENDER_MODE=never`. The SVN config-sync sidecar is only for
 production rollout planning and is not required for local smoke tests.
 
 Production-style DB server-map testing is available by setting
-`DB_SERVER_MAP_PATH` to a synced or synthetic `db-servers.php`. In that mode,
-Jetmon reads the `misc` dataset, uses the write-master row for writes, uses
-read-enabled rows for reads, and hot-reloads changed connection details on the
-`DB_CONFIG_UPDATES_MIN` cadence. Keep this unset for normal local development.
-When testing this mode, use `GET /api/v1/monitor/db-config` or the host
-dashboard `db-config` dependency to confirm the next reload check, last changed
-map observed, and last successful hot reload.
+`DB_SERVER_MAP_PATH` in JSON config to a synced or synthetic `db-servers.php`.
+In that mode, Jetmon reads the `misc` dataset, uses the write-master row for
+writes, uses read-enabled rows for reads, and hot-reloads changed connection
+details on the `DB_CONFIG_UPDATES_MIN` cadence. Keep this unset for normal
+local development, and do not set explicit `DB_HOST` / `DB_PORT` / `DB_USER` /
+`DB_PASSWORD` / `DB_NAME` values at the same time. When testing this mode, use
+`GET /api/v1/monitor/db-config` or the host dashboard `db-config` dependency to
+confirm the next reload check, last changed map observed, and last successful
+hot reload.
 
 ## Local StatsD
 
 The default Docker Compose stack runs a local `statsd` service backed by the
 `graphiteapp/graphite-statsd` image. Monitor and Veriflier containers send UDP
-metrics to `STATSD_ADDR=statsd:8125` by default in Compose. Set `STATSD_ADDR`
-in `docker/.env` if you want both services to send to a different StatsD
-endpoint, or set it to an empty value to disable StatsD for a smoke test. Leave
-`JETMON_HOSTNAME` and `STATSD_HOST_PATH` unset locally unless you need process
-identity or metrics to land under a specific Graphite path while testing
-dashboard changes.
+metrics to `"STATSD_ADDR": "statsd:8125"` in their generated JSON config by
+default in Compose. Set `STATSD_ADDR` in `docker/.env` if you want the
+entrypoints to render a different StatsD endpoint, or set it to an empty value
+to disable StatsD for a smoke test. Leave `JETMON_HOSTNAME` and
+`STATSD_HOST_PATH` unset locally unless you need process identity or metrics to
+land under a specific Graphite path while testing dashboard changes.
 
 Mailpit captures local alert-contact email. Open it at
 `http://localhost:8025` by default, or at the `BIND_ADDR` /

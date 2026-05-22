@@ -98,10 +98,8 @@ prepare_config() {
 		| .PEER_OFFLINE_LIMIT = 1
 		| .NUM_WORKERS = 8
 		| .DATASET_SIZE = 50
-		| .MIN_TIME_BETWEEN_ROUNDS_SEC = 5
 		| .NET_COMMS_TIMEOUT = 3
 		| .BODY_READ_MAX_MS = 250
-		| .USE_VARIABLE_CHECK_INTERVALS = true
 		| .BUCKET_TOTAL = 12
 		| .BUCKET_TARGET = 12
 		| .VERIFLIERS = [{"name":"Docker Veriflier","host":"veriflier","port":"7803","auth_token":$verifier_token}]' \

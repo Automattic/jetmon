@@ -64,7 +64,7 @@ func TestStringPtr(t *testing.T) {
 
 func TestLoadConfigFromFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "veriflier.json")
-	if err := os.WriteFile(path, []byte(`{"auth_token":"secret","port":"7804","hostname":"do-nyc3-1","statsd_host_path":"nyc3.veriflier-1","vantage_id":"us-east","region":"iad","provider":"test","enable_legacy_http":true}`), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(`{"auth_token":"secret","port":"7804","hostname":"do-nyc3-1","statsd_addr":"statsd:8125","statsd_host_path":"nyc3.veriflier-1","vantage_id":"us-east","region":"iad","provider":"test","enable_legacy_http":true}`), 0644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -78,6 +78,9 @@ func TestLoadConfigFromFile(t *testing.T) {
 	if cfg.Hostname != "do-nyc3-1" {
 		t.Fatalf("Hostname = %q, want do-nyc3-1", cfg.Hostname)
 	}
+	if cfg.StatsDAddr != "statsd:8125" {
+		t.Fatalf("StatsDAddr = %q, want statsd:8125", cfg.StatsDAddr)
+	}
 	if cfg.StatsDPath != "nyc3.veriflier-1" {
 		t.Fatalf("StatsDPath = %q, want nyc3.veriflier-1", cfg.StatsDPath)
 	}
@@ -86,6 +89,40 @@ func TestLoadConfigFromFile(t *testing.T) {
 	}
 	if !cfg.LegacyHTTP {
 		t.Fatalf("LegacyHTTP = false, want true")
+	}
+}
+
+func TestLoadConfigFileIgnoresEnvironmentOverrides(t *testing.T) {
+	t.Setenv("VERIFLIER_AUTH_TOKEN", "env-secret")
+	t.Setenv("VERIFLIER_PORT", "7900")
+	t.Setenv("VERIFLIER_HOSTNAME", "env-host")
+	t.Setenv("STATSD_ADDR", "env-statsd:8125")
+	t.Setenv("STATSD_HOST_PATH", "env.path")
+	t.Setenv("VERIFLIER_VANTAGE_ID", "env-vantage")
+	t.Setenv("VERIFLIER_REGION", "env-region")
+	t.Setenv("VERIFLIER_PROVIDER", "env-provider")
+	t.Setenv("VERIFLIER_ENABLE_LEGACY_HTTP", "false")
+
+	path := filepath.Join(t.TempDir(), "veriflier.json")
+	if err := os.WriteFile(path, []byte(`{"auth_token":"file-secret","port":"7804","hostname":"file-host","statsd_addr":"file-statsd:8125","statsd_host_path":"file.path","vantage_id":"file-vantage","region":"file-region","provider":"file-provider","enable_legacy_http":true}`), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := loadConfig(path)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.AuthToken != "file-secret" || cfg.TransportPort() != "7804" || cfg.Hostname != "file-host" {
+		t.Fatalf("file identity config was overridden by environment: %+v", cfg)
+	}
+	if cfg.StatsDAddr != "file-statsd:8125" || cfg.StatsDPath != "file.path" {
+		t.Fatalf("file StatsD config was overridden by environment: %+v", cfg)
+	}
+	if cfg.VantageID != "file-vantage" || cfg.Region != "file-region" || cfg.Provider != "file-provider" {
+		t.Fatalf("file vantage config was overridden by environment: %+v", cfg)
+	}
+	if !cfg.LegacyHTTP {
+		t.Fatalf("file legacy HTTP config was overridden by environment: %+v", cfg)
 	}
 }
 
@@ -108,7 +145,12 @@ func TestLoadConfigFallsBackToEnvironment(t *testing.T) {
 	t.Setenv("VERIFLIER_AUTH_TOKEN", "env-secret")
 	t.Setenv("VERIFLIER_PORT", "7900")
 	t.Setenv("VERIFLIER_HOSTNAME", "do-nyc3-1")
+	t.Setenv("STATSD_ADDR", "statsd:8125")
 	t.Setenv("STATSD_HOST_PATH", "nyc3.veriflier-1")
+	t.Setenv("VERIFLIER_VANTAGE_ID", "us-east")
+	t.Setenv("VERIFLIER_REGION", "iad")
+	t.Setenv("VERIFLIER_PROVIDER", "test")
+	t.Setenv("VERIFLIER_ENABLE_LEGACY_HTTP", "true")
 
 	cfg, err := loadConfig(filepath.Join(t.TempDir(), "missing.json"))
 	if err != nil {
@@ -120,8 +162,22 @@ func TestLoadConfigFallsBackToEnvironment(t *testing.T) {
 	if cfg.Hostname != "do-nyc3-1" {
 		t.Fatalf("Hostname = %q, want do-nyc3-1", cfg.Hostname)
 	}
-	if cfg.StatsDPath != "nyc3.veriflier-1" {
-		t.Fatalf("StatsDPath = %q, want nyc3.veriflier-1", cfg.StatsDPath)
+	if cfg.StatsDAddr != "statsd:8125" || cfg.StatsDPath != "nyc3.veriflier-1" {
+		t.Fatalf("StatsD config = addr %q path %q, want environment fallback values", cfg.StatsDAddr, cfg.StatsDPath)
+	}
+	if cfg.VantageID != "us-east" || cfg.Region != "iad" || cfg.Provider != "test" {
+		t.Fatalf("vantage config = %+v", cfg)
+	}
+	if !cfg.LegacyHTTP {
+		t.Fatalf("LegacyHTTP = false, want true")
+	}
+}
+
+func TestLoadConfigRejectsInvalidEnvironmentOnlyLegacyHTTP(t *testing.T) {
+	t.Setenv("VERIFLIER_ENABLE_LEGACY_HTTP", "maybe")
+
+	if _, err := loadConfig(filepath.Join(t.TempDir(), "missing.json")); err == nil {
+		t.Fatal("loadConfig accepted invalid environment-only legacy HTTP value")
 	}
 }
 
@@ -167,6 +223,19 @@ func TestValidateStatsDHostPath(t *testing.T) {
 	for _, path := range []string{".nyc3", "nyc3.", "nyc3..veriflier-1", "nyc3/veriflier-1"} {
 		if err := validateStatsDHostPath(path); err == nil {
 			t.Fatalf("validateStatsDHostPath(%q) = nil, want error", path)
+		}
+	}
+}
+
+func TestValidateStatsDAddr(t *testing.T) {
+	for _, addr := range []string{"", "statsd:8125", "127.0.0.1:8125", "[::1]:8125"} {
+		if err := validateStatsDAddr(addr); err != nil {
+			t.Fatalf("validateStatsDAddr(%q) error = %v", addr, err)
+		}
+	}
+	for _, addr := range []string{"statsd", ":8125", "statsd:0", "statsd:65536", "http://statsd:8125"} {
+		if err := validateStatsDAddr(addr); err == nil {
+			t.Fatalf("validateStatsDAddr(%q) = nil, want error", addr)
 		}
 	}
 }

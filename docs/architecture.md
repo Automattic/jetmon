@@ -92,13 +92,12 @@ This is the end-to-end path from database query to WPCOM notification.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│ PHASE 1 — Fetch                                                      │
+│ PHASE 1 — Plan                                                       │
 │                                                                      │
-│  orchestrator.runRound()                                             │
-│    dbHeartbeat()          ── UPDATE jetpack_monitor_hosts SET last_heartbeat  │
-│    ClaimBuckets()         ── rebalance bucket ranges (each round)    │
-│    dbGetSitesForBucket()  ── SELECT due sites in DATASET_SIZE pages  │
-│                              ORDER BY sidecar next/last checked time  │
+│  orchestrator.runStreamingEngine()                                   │
+│    ClaimBuckets() / heartbeat  ── claim or refresh bucket ownership  │
+│    dbListActiveSites()         ── load active site identity/config    │
+│    streamingDueWheel           ── spread checks by stable phase       │
 └──────────────────────────────────────────────────────────────────────┘
                   │  []db.Site
                   ▼
@@ -196,40 +195,27 @@ Failure Escalation Detail
 ```
 
 
-Orchestrator Round Loop
-------------------------
+Orchestrator Streaming Loop
+---------------------------
 
 ```
 orchestrator.Run()
     │
-    └── loop (until ctx.Done()):
+    └── active loop (until ctx.Done()):
           │
-          ├─ config.Get()                    // fresh config snapshot each round
-          ├─ pool.SetMaxSize(cfg.NumWorkers)  // apply hot-reloaded worker limit
-          ├─ refreshVeriflierClients(cfg)     // rebuild list only on change
-          │
-          ├─ runRound()
-          │     │
-          │     ├─ dbHeartbeat()
-          │     ├─ ClaimBuckets()             // rebalance every round
-          │     ├─ dbGetSitesForBucket()      // fetch due work in DATASET_SIZE pages
-          │     │
-          │     ├─ for each scheduler page:
-          │     │     pool.Submit(checker.Request)  // waits/collects on backpressure
-          │     │
-          │     ├─ collect results (deadline-bounded)
-          │     │
-          │     ├─ processResults()
-          │     │     ├─ dbMarkSitesChecked()       // jetpack_monitor_site_runtime freshness
-          │     │     ├─ dbRecordCheckHistories()   // method + RTT + DNS/TCP/TLS/TTFB
-          │     │     ├─ dbUpdateSSLExpiries() + checkSSLAlerts()
-          │     │     └─ handleRecovery(), handleFailure(),
-          │     │        or maintenance-swallow the failure
-          │     │
-          │     ├─ emit StatsD metrics
-          │     └─ applyMemoryPressure()       // drain workers if Go runtime memory > limit
-          │
-          └─ sleep to enforce fixed cadence or short variable-interval poll
+          ├─ config.Get()                      // fresh config snapshot each tick
+          ├─ refreshStreamingBuckets(cfg)       // heartbeat/rebalance on cadence
+          ├─ refreshVeriflierClients(cfg)       // rebuild list only on change
+          ├─ dbListActiveSites()                // reload active targets on cadence/change
+          ├─ streamingDueWheel.popReady()       // due targets only
+          ├─ pool.Submit(checker.Request)       // bounded queue with backpressure
+          ├─ processStreamingSideEffects()
+          │     ├─ dbMarkSitesChecked()         // batched compatibility freshness
+          │     ├─ dbRecordCheckHistories()     // method + RTT + DNS/TCP/TLS/TTFB
+          │     ├─ dbUpdateSSLExpiries() + checkSSLAlerts()
+          │     └─ handleRecovery(), handleFailure(),
+          │        or maintenance-swallow the failure
+          └─ reportStreamingStats()             // StatsD + stats files
 ```
 
 

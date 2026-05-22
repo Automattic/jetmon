@@ -19,9 +19,8 @@ Key settings:
 | `CONFIG_PROFILE` | `default` | Named posture defaults. Use `production` for production Monitor containers so schema startup defaults to validation. |
 | `SCHEMA_MANAGEMENT_MODE` | `migrate` | `migrate` applies embedded migrations; `validate` refuses startup unless approved schema changes are already present. Production should use `validate`. |
 | `NUM_WORKERS` | 60 | Goroutine pool size/floor; 0 uses the default floor |
-| `DATASET_SIZE` | 100 | Database fetch page size for scheduler work; not a total round cap; 0 uses the default |
+| `DATASET_SIZE` | 100 | Database fetch page size for streaming active-target reloads; not a throughput cap; 0 uses the default |
 | `NUM_OF_CHECKS` | 3 | Local failures before Veriflier escalation |
-| `MIN_TIME_BETWEEN_ROUNDS_SEC` | 300 | Fixed-cadence full-fleet pass interval when variable intervals are disabled |
 | `NET_COMMS_TIMEOUT` | 10 | Default per-check HTTP timeout in seconds |
 | `CHECK_DNS_RESOLVERS` | `[]` | Optional HTTP-check recursive resolver IPs, with optional ports; restart required after changes |
 | `BODY_READ_MAX_BYTES` | 1048576 | Success-path body-read budget in bytes for unknown/large responses |
@@ -29,7 +28,6 @@ Key settings:
 | `KEYWORD_READ_MAX_BYTES` | 1048576 | Max bytes scanned when keyword checks are enabled; 0 uses the default |
 | `KEYWORD_READ_MAX_MS` | 0 | Keyword read budget in milliseconds, 0 inherits full request timeout envelope |
 | `PEER_OFFLINE_LIMIT` | 3 | Veriflier agreements required to confirm downtime |
-| `WORKER_MAX_MEM_MB` | 0 | Optional Go runtime memory threshold that triggers worker-pool drain; 0 disables the artificial cap |
 | `BUCKET_TOTAL` | 1000 | Total bucket range across all hosts |
 | `BUCKET_TARGET` | 500 | Maximum buckets this host should own; 0 means all buckets |
 | `BUCKET_HEARTBEAT_GRACE_SEC` | 600 | Seconds before a silent host's buckets are reclaimed |
@@ -38,7 +36,6 @@ Key settings:
 | `LEGACY_STATUS_PROJECTION_ENABLE` | true | Keep v1 status fields projected during the [v1-to-v2 migration](v1-to-v2-migration.md) |
 | `DEFAULT_CHECK_METHOD` | `GET` | Fleet default for sites without v2 sidecar check config: `HEAD` or `GET` |
 | `DEFAULT_DETECTION_PROFILE` | `full` | Fleet default detection profile: `legacy`, `simple_http`, or `full` |
-| `USE_VARIABLE_CHECK_INTERVALS` | false in minimal configs; true in the sample | Respect per-site `check_interval` and v2 runtime due state instead of fixed full-fleet passes |
 | `LOG_FORMAT` | `text` | Current runtime log format. `json` is accepted for forward compatibility but structured runtime logging is not wired yet. |
 | `DASHBOARD_PORT` | 8080 | Internal operator dashboard port, 0 disables it |
 | `DASHBOARD_BIND_ADDR` | 127.0.0.1 | Dashboard listener address; keep localhost unless a trusted management network requires remote access |
@@ -50,7 +47,6 @@ Key settings:
 | `WPCOM_NOTIFY_LEGACY_CERT_PATH` / `WPCOM_NOTIFY_LEGACY_KEY_PATH` | `certs/jetmon.crt` / `certs/jetmon.key` | Client certificate/key used when notifications are enabled in legacy mode |
 | `CHECK_TARGET_SAFETY_MODE` | `public_only` | Monitor target SSRF policy. Keep `public_only` for production, rollout rehearsals, and real site data. `allow_private_for_tests` is accepted only when `WPCOM_NOTIFY_ENABLE=false` and is reserved for isolated uptime-bench capacity labs with disposable synthetic rows. |
 | `EMAIL_TRANSPORT` | `stub` | `stub`, `smtp`, or `wpcom` |
-| `SCHEDULER_ENGINE` | `legacy` | `legacy` round/page scheduler or `streaming` v2-native scheduler |
 | `STREAMING_LEGACY_PROJECTION_INTERVAL_MIN` | 15 | Coarse sidecar freshness rollback projection interval for streaming mode |
 | `STREAMING_TARGET_RELOAD_SEC` | 300 | Active site config reload cadence for streaming mode |
 | `CHECK_HISTORY_MODE_DEFAULT` | `status_change` | Default timing-sample persistence mode for sites without a per-site override |
@@ -59,9 +55,13 @@ Key settings:
 
 Scheduler behavior:
 
-- `DATASET_SIZE` limits one database page. Jetmon continues fetching pages until
-  due work is drained, so a low value should not cause unchecked sites by itself.
-  `DATASET_SIZE=0` uses the default page size.
+Jetmon v2 uses the streaming scheduler only. The old round/page scheduler and
+its artificial tuning caps are no longer runtime options.
+
+- `DATASET_SIZE` limits one database page during active-target reloads. Jetmon
+  continues fetching pages until the in-memory target set is current, so a low
+  value should not cause unchecked sites by itself. `DATASET_SIZE=0` uses the
+  default page size.
 - `NUM_WORKERS=0` uses the default worker floor instead of failing validation.
   In streaming mode this is not a throughput cap; the engine derives a higher
   worker target from active site rate and observed latency.
@@ -69,40 +69,24 @@ Scheduler behavior:
   monitor host in test fleets and removes one more manual capacity-tuning knob.
 - A full worker queue applies backpressure; checks remain pending instead of
   being dropped.
-- With `USE_VARIABLE_CHECK_INTERVALS=true`, Jetmon polls for newly due work on a
-  short idle interval and uses each site's maintained
-  `jetpack_monitor_site_runtime.next_check_at` timestamp to decide what to check.
-  `next_check_at` is recalculated after every check: successful checks use
-  `jetpack_monitor_site_runtime.last_checked_at + check_interval`, while failed checks
-  are scheduled for a bounded one-minute follow-up when the normal interval is
-  longer. `MIN_TIME_BETWEEN_ROUNDS_SEC` is only the fixed-cadence pass interval
-  when variable intervals are disabled. Use this mode for production-like
-  freshness and capacity tests.
-- Watch the `scheduler.round.*` StatsD metrics during capacity tests. In
-  particular, `due_start`, `selected`, `completed`, `outstanding`, and
-  `due_remaining` show whether freshness pressure is clearing or building.
-  Exact `due_start` / `due_remaining` and legacy projection-drift checks are
-  sampled about once per minute in variable-interval mode so broad operator
-  reporting queries do not run on every short scheduler poll. Use
-  `scheduler.round.due_count_sampled.count` to distinguish sampled polls from
-  intentionally skipped reporting polls.
-- With `SCHEDULER_ENGINE=streaming`, Jetmon uses a v2-native time-wheel
-  scheduler instead of database due-row polling. Active sites are spread over
-  stable phases inside each site's interval, healthy probes avoid per-check
-  history/freshness writes, and the checker pool target is derived from active
-  site rate plus observed latency. Streaming mode keeps event, retry, verifier,
-  SSL/TLS, recovery, and WPCOM behavior on the existing v2 incident path. It
-  batches sidecar `last_checked_at`/`next_check_at` projection at
-  `STREAMING_LEGACY_PROJECTION_INTERVAL_MIN` so rollback to the legacy scheduler
-  has bounded freshness loss rather than exact per-check freshness. The
+- Jetmon uses a v2-native time-wheel scheduler instead of database due-row
+  polling. Active sites are spread over stable phases inside each site's
+  interval, healthy probes avoid per-check history/freshness writes, and the
+  checker pool target is derived from active site rate plus observed latency.
+  The scheduler keeps event, retry, verifier, SSL/TLS, recovery, and WPCOM
+  behavior on the existing v2 incident path. It batches sidecar
+  `last_checked_at`/`next_check_at` projection at
+  `STREAMING_LEGACY_PROJECTION_INTERVAL_MIN` so compatibility readers and
+  rollback checks have bounded freshness loss rather than exact per-check
+  freshness. The
   projection interval is constrained to the accepted 5-15 minute rollback window
   and applies uniformly across sites. It intentionally does not shrink to match
   5-minute site cadence, because that makes rollback freshness writes scale with
   active fleet size in the hot path. Pending projection writes are also flushed
   in rate-sized batches so a backlog cannot turn one flush into a large
-  lock-heavy update burst. Streaming mode intentionally uses larger in-memory
-  due/result/work buffers than the legacy scheduler; low RSS in capacity tests is
-  expected to be spent on those buffers before check dispatch is throttled.
+  lock-heavy update burst. Streaming intentionally uses larger in-memory
+  due/result/work buffers; low RSS in capacity tests is expected to be spent on
+  those buffers before check dispatch is throttled.
 - Treat the current single-host streaming capacity evidence as validated through
   2 million active internal-only targets on five-minute intervals, not as an
   unlimited ceiling. The 2026-05-12 2 million-target run had full target
@@ -127,7 +111,10 @@ activation. The most important ignored v1-only keys are
 such as `NUM_TO_PROCESS`, `BATCH_SIZE`, `VERIFLIER_BATCH_SIZE`,
 `SQL_UPDATE_BATCH`, `TIME_BETWEEN_CHECKS_SEC`, and
 `TIME_BETWEEN_NOTICES_MIN` also warn because they no longer tune the v2
-scheduler or notification flow. `DB_UPDATES_ENABLE`, `BUCKET_NO_MIN/MAX`,
+scheduler or notification flow. Removed scheduler keys such as
+`SCHEDULER_ENGINE`, `USE_VARIABLE_CHECK_INTERVALS`, `WORKER_MAX_MEM_MB`, and
+`MIN_TIME_BETWEEN_ROUNDS_SEC` also warn when copied forward;
+`SCHEDULER_ENGINE=legacy` is rejected. `DB_UPDATES_ENABLE`, `BUCKET_NO_MIN/MAX`,
 `VERIFIERS`, and `grpc_port` in Veriflier entries remain aliases but should be
 replaced with their v2 names.
 
@@ -194,28 +181,28 @@ unsafe legacy URL counts before or after API rejection changes.
    `systemctl daemon-reload`.
 3. Create `/opt/jetmon2/config` and `/opt/jetmon2/stats`, owned by the `jetmon`
    service user.
-4. Create `/opt/jetmon2/config/jetmon2.env` with database credentials and auth
-   tokens. See `config/db-config-sample.conf`. For production server-map use,
-   set `DB_SERVER_MAP_PATH` and `DB_SERVER_MAP_DATACENTER` instead of baking
-   DB passwords into the env file. For container rollout, keep real env/config
-   files host-local and out of the image.
+4. Create `/opt/jetmon2/config/config.json` with database config and auth
+   tokens. For production server-map use, set `DB_SERVER_MAP_PATH` and
+   `DB_SERVER_MAP_DATACENTER` in JSON instead of baking DB passwords into an
+   explicit DSN config. Production Monitor containers should set
+   `CONFIG_PROFILE=production` or `SCHEMA_MANAGEMENT_MODE=validate` after
+   Systems has applied schema changes through the database-change process. For
+   container rollout, keep real rendered config files host-local and out of the
+   image.
 5. For TeamCity/docker-deploy rollout, provide `config-sync.env` from
    `config/jetmon-config-sync-sample.env` to the config-sync sidecar and share
    only the generated config-source path with the Monitor. If docker-deploy
    cannot support that sidecar shape, install
    `systemd/jetmon-config-sync.service` and
    `systemd/jetmon-config-sync.timer` as the host-side fallback.
-6. Copy or generate `config/config.json`. Production Monitor containers should
-   set `CONFIG_PROFILE=production` or `SCHEMA_MANAGEMENT_MODE=validate` after
-   Systems has applied schema changes through the database-change process.
-7. Set `BUCKET_TARGET` to the desired maximum bucket count for the host.
-8. Run `./jetmon2 migrate` only as the explicit schema-change step. For normal
+6. Set `BUCKET_TARGET` to the desired maximum bucket count for the host.
+7. Run `./jetmon2 migrate` only as the explicit schema-change step. For normal
    production startup and redeploys, run `./jetmon2 schema validate` instead.
    If SQL is applied through an external database-change process, ensure the
    matching `jetpack_monitor_schema_migrations` rows are included.
-9. Run `systemd-analyze verify /etc/systemd/system/jetmon2.service` after the
+8. Run `systemd-analyze verify /etc/systemd/system/jetmon2.service` after the
    binary exists at the path used by `ExecStart`.
-10. Start the service with
+9. Start the service with
     `systemctl enable --now jetmon2 && systemctl is-active --quiet jetmon2`.
 
 Runtime logs are collected from stdout/stderr by systemd or the container
@@ -757,10 +744,11 @@ com.jetpack.jetmon.<statsd_host_path>
 
 In production containers, set `HOSTNAME` in config to a stable process identity
 and set `STATSD_HOST_PATH` to the v1-compatible metric path. The Docker
-entrypoint accepts `JETMON_HOSTNAME` and `STATSD_HOST_PATH` as env inputs when
-rendering config. v1 derived the StatsD path by taking the first two labels of
-the production hostname and reversing them: `<node>.<datacenter>.<domain>`
-became `<datacenter>.<node>`. For example:
+entrypoint accepts `JETMON_HOSTNAME`, `STATSD_ADDR`, and `STATSD_HOST_PATH` as
+template inputs when rendering config; the binary reads the rendered JSON. v1
+derived the StatsD path by taking the first two labels of the production
+hostname and reversing them: `<node>.<datacenter>.<domain>` became
+`<datacenter>.<node>`. For example:
 
 ```text
 JETMON_HOSTNAME=jetmon-prod-1.dfw1.example.com
@@ -808,20 +796,22 @@ Important metric groups include:
 - Low-overhead process resource gauges: RSS memory, Go runtime memory, heap
   allocation, open file descriptors, file descriptor utilization percentage,
   and goroutine/thread scheduler counts. Monitors, standalone deliverers, and
-  Verifliers emit these whenever `STATSD_ADDR` is configured. Monitors and
+  Verifliers emit these whenever `STATSD_ADDR` is set in config. Monitors and
   deliverers also emit read/write `sql.DB` pool pressure. Current pool state is
   reported as gauges; cumulative `sql.DBStats` counters use `_total` suffixes
   so dashboards can derive rates cleanly.
 
 StatsD is the primary metrics transport. Monitor and deliverer read
-`STATSD_ADDR`; Jetmon binaries do not assume a production StatsD endpoint when
-it is unset. Local Docker Compose and Veriflier production Compose set
-`STATSD_ADDR=statsd:8125` explicitly for their bundled StatsD container.
-Production Monitor containers should point `STATSD_ADDR` at the existing
-host-local StatsD proxy through Docker bridge networking:
+`STATSD_ADDR` from the JSON config; Jetmon binaries do not assume a production
+StatsD endpoint when it is empty. Local Docker Compose and Veriflier production
+Compose render `"STATSD_ADDR": "statsd:8125"` into config for their bundled
+StatsD container. Production Monitor containers should set the JSON
+`STATSD_ADDR` value to the existing host-local StatsD proxy through Docker
+bridge networking:
 `--add-host=host.docker.internal:host-gateway` plus
-`STATSD_ADDR=host.docker.internal:8125`. They should not use host networking
-and should not start a StatsD/Graphite container in the Monitor stack.
+`"STATSD_ADDR": "host.docker.internal:8125"`. They should not use host
+networking and should not start a StatsD/Graphite container in the Monitor
+stack.
 Production Veriflier VPS Compose stacks include StatsD/Graphite locally so
 central Grafana can query the Veriflier host's Graphite endpoint. Expose
 Graphite/StatsD data through the approved metrics pipeline when external
@@ -903,12 +893,10 @@ disabled — but with no listener, no external traffic can reach them. Treat
 `DEBUG_PORT > 0` as a deliberate opt-in for an investigation window, not a
 steady-state setting.
 
-If `WORKER_MAX_MEM_MB` is greater than 0 and Go runtime memory exceeds that
-threshold, the goroutine pool shrinks by 10 percent via graceful drain. The
-default is 0 so Jetmon does not silently trade away check throughput because of
-a legacy memory cap. Use the host/fleet dashboard RSS value to compare Jetmon's
-resident memory with operating-system tools, and use the Go Sys value with
-pprof when investigating sustained runtime memory pressure.
+Use the host/fleet dashboard RSS value to compare Jetmon's resident memory with
+operating-system tools, and use the Go Sys value with pprof when investigating
+sustained runtime memory pressure. `WORKER_MAX_MEM_MB` is deprecated and no
+longer drains workers; container/host limits should be the real ceiling.
 
 ## Veriflier Health
 

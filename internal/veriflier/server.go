@@ -483,8 +483,8 @@ func writeV2Error(w http.ResponseWriter, status int, outcome, message string) {
 }
 
 // incrementMetric and timingMetric are nil-safe wrappers around the global
-// StatsD client. The verifier binary may run without metrics configured (no
-// STATSD_ADDR env var), in which case these are no-ops.
+// StatsD client. The verifier binary may run without metrics configured, in
+// which case these are no-ops.
 func incrementMetric(name string, value int) {
 	if m := metrics.Global(); m != nil {
 		m.Increment(name, value)

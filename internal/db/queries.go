@@ -58,8 +58,8 @@ func GetSitesForBucket(ctx context.Context, bucketMin, bucketMax, batchSize int,
 
 // ListActiveSitesForBucketRange pages active site config for the streaming
 // scheduler. It intentionally ignores last_checked_at and next_check_at: those
-// are legacy scheduler projections, while streaming mode maintains due time in
-// memory and writes coarse rollback freshness separately.
+// are compatibility/readability projections, while streaming mode maintains due
+// time in memory and writes coarse rollback freshness separately.
 func ListActiveSitesForBucketRange(ctx context.Context, bucketMin, bucketMax int, afterMonitorSiteID int64, limit int) ([]Site, error) {
 	if limit <= 0 {
 		limit = 5000

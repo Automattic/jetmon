@@ -80,7 +80,7 @@ grep -q 'rollout cutover-check' <<<"$plan_output" || fail "rehearsal plan omitte
 grep -q 'rollout rollback-check' <<<"$plan_output" || fail "rehearsal plan omitted rollback-check"
 grep -q 'rollout dynamic-check' <<<"$plan_output" || fail "rehearsal plan omitted dynamic-check"
 grep -q -- '--bucket-total 10' <<<"$plan_output" || fail "rehearsal plan omitted bucket-total passthrough"
-grep -q 'same DB_\* environment' <<<"$plan_output" || fail "rehearsal plan omitted service environment reminder"
+grep -q 'same JSON DB config used by the jetmon2 service' <<<"$plan_output" || fail "rehearsal plan omitted service config reminder"
 grep -q 'Immediate smoke gate' <<<"$plan_output" || fail "rehearsal plan omitted immediate smoke gate note"
 grep -q 'systemctl stop jetmon' <<<"$plan_output" || fail "rehearsal plan omitted v1 stop command"
 grep -q 'systemctl start jetmon' <<<"$plan_output" || fail "rehearsal plan omitted v1 start command"

@@ -28,7 +28,8 @@ PrivateTmp=yes
 ProtectSystem=full
 ProtectHome=yes
 
-# Environment.
+# Environment for config path and other non-DB runtime paths. Database
+# connection settings live in config/deliverer.json.
 EnvironmentFile=-/opt/jetmon2/config/jetmon2.env
 Environment=JETMON_CONFIG=/opt/jetmon2/config/deliverer.json
 

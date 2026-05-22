@@ -78,16 +78,12 @@ func Connect() error {
 	return nil
 }
 
-func maxOpenConnectionsForConfig(cfg *config.Config, gomaxprocs int) int {
+func maxOpenConnectionsForConfig(_ *config.Config, gomaxprocs int) int {
 	if gomaxprocs < 1 {
 		gomaxprocs = 1
 	}
-	multiplier := 8
-	minConns := 16
-	if cfg != nil && cfg.SchedulerEngine == "streaming" {
-		multiplier = 16
-		minConns = 64
-	}
+	multiplier := 16
+	minConns := 64
 	maxOpenConns := gomaxprocs * multiplier
 	if maxOpenConns < minConns {
 		return minConns
@@ -149,9 +145,6 @@ func Hostname() string {
 		if h := strings.TrimSpace(cfg.Hostname); h != "" {
 			return h
 		}
-	}
-	if h := strings.TrimSpace(os.Getenv("JETMON_HOSTNAME")); h != "" {
-		return h
 	}
 	h, err := os.Hostname()
 	if err != nil {

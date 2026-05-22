@@ -338,12 +338,16 @@ production telemetry branches:
 
 ### Capacity Scheduler TODO
 
-- [x] Add the first v2-native streaming monitor-engine implementation behind
-  `SCHEDULER_ENGINE=streaming`. The engine spreads active sites over stable
+- [x] Add the first v2-native streaming monitor-engine implementation. The
+  engine spreads active sites over stable
   per-interval phases, keeps due scheduling in memory, treats `NUM_WORKERS` as
   an autoscaling floor rather than the throughput cap, stops writing healthy
   check-history rows, and batches coarse legacy freshness projection so rollback
   loses at most the accepted 5-15 minute freshness window.
+- [x] Remove the legacy round/page scheduler as a runtime option. Streaming is
+  now the only supported Monitor scheduler; copied legacy/v2 rollout scheduler
+  keys warn during config validation, and `SCHEDULER_ENGINE=legacy` is rejected
+  so operators cannot accidentally fall back to the slow path.
 - [x] Trade additional memory for lower streaming hot-path CPU and I/O pressure.
   The scheduler now uses a bucketed due-time wheel instead of heap operations,
   allows larger in-memory work/result buffers before pausing dispatch, drains
@@ -463,9 +467,8 @@ production telemetry branches:
 - [x] Remove the `COALESCE(last_checked_at, ...)` scheduler ordering expression
   so MySQL can use nullable runtime freshness ordering more directly while
   preserving NULL-first behavior.
-- [x] Update capacity-test config posture so `WORKER_MAX_MEM_MB=0` disables the
-  artificial memory-drain cap by default, `USE_VARIABLE_CHECK_INTERVALS=true`
-  is the sample freshness mode, and API-enabled test hosts use an explicit
+- [x] Update capacity-test config posture so artificial scheduler caps are
+  removed from samples and API-enabled test hosts use an explicit
   `DELIVERY_OWNER_HOST`.
 - [x] Run a 1,000-site capacity retest against the batched-write branch and
   compare freshness, scheduler page timings, MySQL CPU, monitor CPU, and

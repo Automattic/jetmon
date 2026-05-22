@@ -17,8 +17,8 @@ deployment role:
 |---|---|---|
 | `config-sync.env` | External to the image; mounted or injected into the config-sync sidecar | SVN credentials and sync paths for `scripts/jetmon-config-update.sh`. This is the only external config dependency for DB server-map refresh. |
 | `db-servers.php` | Generated inside the Docker service on a shared runtime path | Synced from SVN by the sidecar. The Monitor reads this file; it is not committed, baked into an image, or written to TeamCity logs. |
-| `config/config.json` or equivalent env | TeamCity secure parameters, docker-deploy role config, or another Systems-managed secret source | Non-image operational config for the Monitor. |
-| `STATSD_ADDR` | docker-deploy role config or TeamCity parameter | UDP StatsD endpoint for Monitor and Deliverer. Production Monitor hosts already run local StatsD proxies, so set this to the host-local proxy endpoint that is reachable from inside the bridge-networked container. |
+| `config/config.json` or rendered config inputs | TeamCity secure parameters, docker-deploy role config, or another Systems-managed secret source | Non-image operational config for the Monitor. Docker env values are template inputs only; the Jetmon binary reads the rendered JSON config. |
+| `STATSD_ADDR` | `config/config.json`, or docker-deploy / TeamCity input used to render that file | UDP StatsD endpoint for Monitor and Deliverer. Production Monitor hosts already run local StatsD proxies, so render this as the host-local proxy endpoint that is reachable from inside the bridge-networked container. |
 | `HOSTNAME` / `JETMON_HOSTNAME` | `config/config.json`, docker-deploy role config, or TeamCity parameter | Stable Jetmon process identity. Recommended format for Monitor production is the real logical host name, for example `jetmon-prod-1.dfw1.example.com`, so bucket ownership, process health, and delivery identity do not depend on a Docker container hostname. |
 | `STATSD_HOST_PATH` | `config/config.json`, docker-deploy role config, or TeamCity parameter | Explicit StatsD metric host path. Recommended Monitor production format is the v1-compatible `<datacenter>.<node>` path segment, for example `dfw1.jetmon-prod-1`, so Graphite/Grafana series names remain stable. |
 | `WPCOM_NOTIFY_MODE` | docker-deploy role config or TeamCity parameter | Use `legacy` for the first production rollout. `modern` is retained only for WPCOM endpoint/auth contract testing until WPCOM signs off. |
@@ -31,8 +31,9 @@ The same one-shot sync script can be used by the sidecar or by the host-side
 fallback service/timer.
 
 Local development and smoke testing continue to use explicit `DB_HOST`,
-`DB_PORT`, `DB_USER`, `DB_PASSWORD`, and `DB_NAME` values. The production
-config-sync sidecar is not part of the default local Docker Compose stack.
+`DB_PORT`, `DB_USER`, `DB_PASSWORD`, and `DB_NAME` values rendered into JSON
+config. The production config-sync sidecar is not part of the default local
+Docker Compose stack.
 
 ## TeamCity And Frontity Reference Findings
 
@@ -119,9 +120,13 @@ ignored; for Jetmon's `misc` dataset they are the connection credentials.
 Jetmon v2 supports two database configuration modes:
 
 1. Explicit local/test DSN: `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, and
-   `DB_NAME`.
+   `DB_NAME` in JSON config.
 2. Production server map: `DB_SERVER_MAP_PATH` points at the synced
    `db-servers.php` file and v2 reads the `misc` dataset directly.
+
+These modes are mutually exclusive. If `DB_SERVER_MAP_PATH` is set, Jetmon
+refuses config that also sets explicit `DB_HOST` / `DB_PORT` / `DB_USER` /
+`DB_PASSWORD` / `DB_NAME` values.
 
 When `DB_SERVER_MAP_PATH` is set, v2 builds separate read and write pools from
 the server map:
@@ -168,10 +173,10 @@ Monitor and config-sync.
    TeamCity pattern.
 3. Configure a docker-deploy role such as `docker-jetmon-monitor` with the
    approved registry image names and the secret source for `config-sync.env`.
-4. Configure `STATSD_ADDR` for the Monitor container to reach the host-local
-   StatsD proxy through bridge networking. Sysadmins do not want host
-   networking. Add Docker's host-gateway mapping and set
-   `STATSD_ADDR=host.docker.internal:8125`:
+4. Configure `STATSD_ADDR` in the Monitor's rendered JSON config so the
+   container can reach the host-local StatsD proxy through bridge networking.
+   Sysadmins do not want host networking. Add Docker's host-gateway mapping and
+   render `"STATSD_ADDR": "host.docker.internal:8125"`:
 
    ```text
    --add-host=host.docker.internal:host-gateway
@@ -244,14 +249,15 @@ Recommended safe-test config:
 - `API_PORT=0`
 - `DASHBOARD_PORT=0`
 - `DEBUG_PORT=0`
-- `STATSD_ADDR=` if the test role should not emit metrics, or
-  `host.docker.internal:8125` with Docker's host-gateway mapping when the smoke
-  test should validate metrics reachability
+- `"STATSD_ADDR": ""` if the test role should not emit metrics, or
+  `"host.docker.internal:8125"` with Docker's host-gateway mapping when the
+  smoke test should validate metrics reachability
 - `DELIVERY_OWNER_HOST` set to a non-matching sentinel value such as
   `disabled-for-teamcity-smoke`
-- `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, and `DB_NAME` set explicitly
-  to the read-only test database credentials, or `DB_SERVER_MAP_PATH` pointed at
-  a redacted/internal-only test server map whose `misc` write target is safe
+- `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, and `DB_NAME` rendered into
+  config for the read-only test database credentials, or `DB_SERVER_MAP_PATH`
+  pointed at a redacted/internal-only test server map whose `misc` write target
+  is safe. Do not set both modes in one config.
 - Veriflier entries pointed at internal test Verifliers, or omitted if the goal
   is only image/deploy/DB-connect validation
 
@@ -271,21 +277,27 @@ writable and the rollout is allowed to perform Monitor work.
 ## StatsD Deployment Model
 
 Jetmon v2 keeps the v1-compatible metric prefix and StatsD transport. Monitor,
-Deliverer, and Veriflier all support `STATSD_ADDR`:
+Deliverer, and Veriflier all support `STATSD_ADDR` in their loaded config:
 
-- Jetmon binaries do not assume a production StatsD endpoint when
-  `STATSD_ADDR` is unset.
-- Local Docker Compose and Veriflier production Compose set
-  `STATSD_ADDR=statsd:8125` explicitly for their bundled StatsD container.
-- Monitor production Compose should set `STATSD_ADDR=host.docker.internal:8125`
-  and include Docker's host-gateway mapping so the bridge-networked container
-  can reach the host-local StatsD proxy.
-- Setting `STATSD_ADDR` explicitly empty disables StatsD for safe smoke tests.
+- Jetmon binaries do not assume a production StatsD endpoint when the config
+  value is unset.
+- Local Docker Compose and Veriflier production Compose render
+  `"STATSD_ADDR": "statsd:8125"` for their bundled StatsD container.
+- Monitor production Compose should render
+  `"STATSD_ADDR": "host.docker.internal:8125"` and include Docker's
+  host-gateway mapping so the bridge-networked container can reach the
+  host-local StatsD proxy.
+- Setting the config value explicitly empty disables StatsD for safe smoke
+  tests.
 
 Production roles should also set `HOSTNAME` in config to the stable process
 identity and `STATSD_HOST_PATH` to the v1-compatible metric identity. The
-Docker entrypoint accepts `JETMON_HOSTNAME` as the env input when rendering
-`HOSTNAME`, and `STATSD_HOST_PATH` as the env input for the metric path.
+Docker entrypoint accepts `JETMON_HOSTNAME`, `STATSD_ADDR`, and
+`STATSD_HOST_PATH` as template inputs when it renders generated JSON config.
+The default Docker render mode is `always`, so docker-deploy / Compose
+environment changes take effect after the container is recreated. Jetmon still
+reads the generated JSON rather than reading those values directly from the
+environment.
 
 The recommended Monitor `STATSD_HOST_PATH` format is `<datacenter>.<node>`,
 matching v1's hostname transform. v1 took the first two labels of the
@@ -309,8 +321,9 @@ Set `STATSD_HOST_PATH` to the transformed v1-compatible value, not the raw
 FQDN, unless dashboard series migration is intentional. Leaving it unset falls
 back to `HOSTNAME`, then the runtime hostname, which is acceptable for local
 Docker runs but may become a container ID or service name under docker-deploy.
-If both `HOSTNAME` and `JETMON_HOSTNAME` are present at runtime, `HOSTNAME`
-from config wins.
+`JETMON_HOSTNAME` is a Docker render input. At process start, the running
+binary uses the rendered `HOSTNAME` value from JSON and does not let the
+environment override it.
 
 Keep these values stable and low-cardinality. Do not include container IDs,
 release SHAs, process IDs, ports, or random suffixes. For Verifliers, use a
@@ -322,12 +335,12 @@ Use bridge networking with Docker's host-gateway mapping:
 
 ```text
 --add-host=host.docker.internal:host-gateway
-STATSD_ADDR=host.docker.internal:8125
+"STATSD_ADDR": "host.docker.internal:8125"
 ```
 
-Do not use host networking. Do not set `STATSD_ADDR=127.0.0.1:8125` from a
-bridge-networked container; that address points inside the container, not at
-the host proxy.
+Do not use host networking. Do not render `"STATSD_ADDR": "127.0.0.1:8125"`
+for a bridge-networked container; that address points inside the container, not
+at the host proxy.
 
 Because StatsD is UDP, Monitor health can confirm only local client setup.
 Since Jetmon does not control production Monitor StatsD or Graphite, Graphite
@@ -564,11 +577,11 @@ steps should mirror the Frontity build:
    [../docker/Dockerfile_config_sync](../docker/Dockerfile_config_sync) and tag
    it as `latest` plus `<git-sha>`.
 4. Docker push both sidecar tags.
-5. Set `STATSD_ADDR` in the docker-deploy role to
-   `host.docker.internal:8125` and include
-   `--add-host=host.docker.internal:host-gateway`. Set `HOSTNAME` or
-   `JETMON_HOSTNAME` to the stable process identity for that host, and set
-   `STATSD_HOST_PATH` to the v1-compatible metric path.
+5. Render `"STATSD_ADDR": "host.docker.internal:8125"` for the Monitor config
+   and include `--add-host=host.docker.internal:host-gateway`. Set `HOSTNAME`
+   in config, or `JETMON_HOSTNAME` as the Docker template input, to the stable
+   process identity for that host. Set `STATSD_HOST_PATH` to the v1-compatible
+   metric path.
 6. Apply Jetmon schema migrations once before starting the Monitor containers.
    Production-style Monitor containers should set `CONFIG_PROFILE=production`
    or `SCHEMA_MANAGEMENT_MODE=validate` so schema changes remain an explicit
@@ -584,15 +597,15 @@ steps should mirror the Frontity build:
    - set `CONFIG_PROFILE=production` or `SCHEMA_MANAGEMENT_MODE=validate` for
      production Monitor containers after the explicit schema migration step has
      completed;
-   - set `STATSD_ADDR` for the Monitor and any co-located Deliverer process to
-     `host.docker.internal:8125`;
+   - render `STATSD_ADDR` for the Monitor and any co-located Deliverer process
+     as `host.docker.internal:8125`;
    - set `HOSTNAME` or `JETMON_HOSTNAME` for the Monitor and any co-located
      Deliverer process to the stable process identity for the host;
    - set `STATSD_HOST_PATH` to the v1-compatible metric path for the host;
    - start the sidecar and wait for `db-servers.php` to appear;
    - start/recreate the Monitor with read-only access to the generated file and
-     `DB_SERVER_MAP_PATH` set to that path;
-   - set `DB_SERVER_MAP_DATACENTER` explicitly for the host and leave
+     `DB_SERVER_MAP_PATH` rendered in config as that path;
+   - render `DB_SERVER_MAP_DATACENTER` explicitly for the host and leave
      `DB_SERVER_MAP_ADDRESS=internet` unless Systems confirms internal DB
      hostnames are reachable from inside the container;
    - drain the existing Monitor before replacement;

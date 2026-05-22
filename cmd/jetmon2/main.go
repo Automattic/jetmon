@@ -41,7 +41,6 @@ const (
 	processHealthWriteTimeout = 2 * time.Second
 	httpGetTimeout            = 10 * time.Second
 	httpGetMaxBodyBytes       = 1 << 20
-	defaultStatsDAddr         = ""
 )
 
 // Injected at build time via -ldflags.
@@ -115,6 +114,14 @@ func printVersion(w io.Writer) {
 	fmt.Fprintf(w, "jetmon2 %s (built %s with %s)\n", version, buildDate, goVersion)
 }
 
+func loadConfigForCommand() (*config.Config, error) {
+	configPath := envOrDefault("JETMON_CONFIG", "config/config.json")
+	if err := config.Load(configPath); err != nil {
+		return nil, fmt.Errorf("load config: %w", err)
+	}
+	return config.Get(), nil
+}
+
 // runServe is the main entry point for the monitoring service.
 func runServe() {
 	configPath := envOrDefault("JETMON_CONFIG", "config/config.json")
@@ -168,7 +175,7 @@ func runServe() {
 	audit.SetMode(cfg.AuditLogModeDefault)
 
 	hostname := db.Hostname()
-	if addr, enabled, err := metrics.InitFromEnv(cfg.StatsDMetricHost(hostname), defaultStatsDAddr); err != nil {
+	if addr, enabled, err := metrics.InitConfigured(cfg.StatsDAddr, cfg.StatsDMetricHost(hostname)); err != nil {
 		log.Printf("warning: statsd init failed: %v", err)
 	} else if enabled {
 		config.Debugf("metrics: sending StatsD to %s", addr)
@@ -420,6 +427,9 @@ func runServe() {
 }
 
 func cmdMigrate() {
+	if _, err := loadConfigForCommand(); err != nil {
+		log.Fatal(err)
+	}
 	config.LoadDB()
 	if err := db.ConnectWithRetry(5); err != nil {
 		log.Fatalf("db connect: %v", err)
@@ -462,8 +472,13 @@ func cmdValidateConfig() {
 	fmt.Printf("INFO schema_management=%s\n", cfg.SchemaManagementMode)
 	fmt.Printf("INFO rollout_mode=%s\n", cfg.RolloutMode)
 	fmt.Printf("INFO scheduler=%s\n", schedulerConfigLabel(cfg))
+	if strings.TrimSpace(cfg.StatsDAddr) == "" {
+		fmt.Println("INFO statsd_addr=disabled")
+	} else {
+		fmt.Printf("INFO statsd_addr=%s\n", cfg.StatsDAddr)
+	}
 	fmt.Printf("INFO statsd_host_path=%s\n", cfg.StatsDMetricHost(db.Hostname()))
-	if metrics.AddrFromEnv(defaultStatsDAddr) != "" && strings.TrimSpace(cfg.StatsDHostPath) == "" {
+	if strings.TrimSpace(cfg.StatsDAddr) != "" && strings.TrimSpace(cfg.StatsDHostPath) == "" {
 		fmt.Printf("WARN STATSD_HOST_PATH is unset; StatsD metrics will fall back to host identity %q\n", db.Hostname())
 	}
 	fmt.Printf("INFO default_check_policy=method:%s profile:%s\n", cfg.DefaultCheckMethod, cfg.DefaultDetectionProfile)
@@ -1252,26 +1267,12 @@ func emailTransportDelivers(cfg *config.Config) bool {
 }
 
 func schedulerConfigLabel(cfg *config.Config) string {
-	if cfg.SchedulerEngine == "streaming" {
-		return fmt.Sprintf(
-			"streaming reload=%s legacy_projection=%s worker_floor=%d fetch_page_size=%d",
-			time.Duration(cfg.StreamingTargetReloadSec)*time.Second,
-			time.Duration(cfg.StreamingLegacyProjectionIntervalMin)*time.Minute,
-			cfg.NumWorkers,
-			cfg.DatasetSize,
-		)
-	}
-	if cfg.UseVariableCheckIntervals {
-		return fmt.Sprintf(
-			"variable_intervals fetch_page_size=%d idle_poll=%s",
-			cfg.DatasetSize,
-			orchestrator.VariableIntervalPollInterval(),
-		)
-	}
 	return fmt.Sprintf(
-		"fixed_rounds fetch_page_size=%d min_round_interval=%s",
+		"streaming reload=%s legacy_projection=%s worker_floor=%d fetch_page_size=%d",
+		time.Duration(cfg.StreamingTargetReloadSec)*time.Second,
+		time.Duration(cfg.StreamingLegacyProjectionIntervalMin)*time.Minute,
+		cfg.NumWorkers,
 		cfg.DatasetSize,
-		time.Duration(cfg.MinTimeBetweenRoundsSec)*time.Second,
 	)
 }
 
@@ -1332,6 +1333,9 @@ func cmdAudit() {
 		os.Exit(1)
 	}
 
+	if _, err := loadConfigForCommand(); err != nil {
+		log.Fatal(err)
+	}
 	config.LoadDB()
 	if err := db.ConnectWithRetry(3); err != nil {
 		log.Fatalf("db: %v", err)
@@ -1411,6 +1415,9 @@ func cmdKeys(args []string) {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "usage: jetmon2 keys <create|list|revoke|rotate> [args]")
 		os.Exit(1)
+	}
+	if _, err := loadConfigForCommand(); err != nil {
+		log.Fatal(err)
 	}
 	config.LoadDB()
 	if err := db.ConnectWithRetry(3); err != nil {

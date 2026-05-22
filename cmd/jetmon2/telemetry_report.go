@@ -181,6 +181,10 @@ func cmdTelemetryReport(args []string) {
 		os.Exit(2)
 	}
 
+	if _, err := loadConfigForCommand(); err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL %v\n", err)
+		os.Exit(1)
+	}
 	config.LoadDB()
 	if err := db.ConnectWithRetry(3); err != nil {
 		fmt.Fprintf(os.Stderr, "FAIL db connect: %v\n", err)

@@ -132,7 +132,7 @@ Recommended solution:
 
 Implementation notes:
 
-- `STATSD_ADDR` selects the UDP endpoint.
+- `STATSD_ADDR` in the loaded config selects the UDP endpoint.
 - `STATSD_HOST_PATH` selects the Graphite path identity used in
   `com.jetpack.jetmon.<hostname>`.
 - `HOSTNAME` / `JETMON_HOSTNAME` selects process identity for bucket ownership,

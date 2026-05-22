@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -31,6 +33,7 @@ type veriflierConfig struct {
 	Port       string `json:"port"`
 	GRPCPort   string `json:"grpc_port"` // Deprecated alias for Port.
 	Hostname   string `json:"hostname"`
+	StatsDAddr string `json:"statsd_addr"`
 	StatsDPath string `json:"statsd_host_path"`
 	VantageID  string `json:"vantage_id"`
 	Region     string `json:"region"`
@@ -46,44 +49,13 @@ func main() {
 		log.Fatalf("load config: %v", err)
 	}
 
-	// Override auth token and port from environment if set (Docker entrypoint).
-	if v := os.Getenv("VERIFLIER_AUTH_TOKEN"); v != "" {
-		cfg.AuthToken = v
-	}
-	if v := envOrDefault("VERIFLIER_PORT", ""); v != "" {
-		cfg.Port = v
-	} else if v := os.Getenv("VERIFLIER_GRPC_PORT"); v != "" {
-		cfg.Port = v
-	}
-	if v := os.Getenv("VERIFLIER_VANTAGE_ID"); v != "" {
-		cfg.VantageID = v
-	}
-	if v := os.Getenv("VERIFLIER_REGION"); v != "" {
-		cfg.Region = v
-	}
-	if v := os.Getenv("VERIFLIER_PROVIDER"); v != "" {
-		cfg.Provider = v
-	}
-	if strings.TrimSpace(cfg.Hostname) == "" {
-		if v := os.Getenv("VERIFLIER_HOSTNAME"); v != "" {
-			cfg.Hostname = v
-		} else if v := os.Getenv("JETMON_HOSTNAME"); v != "" {
-			cfg.Hostname = v
-		}
-	}
-	if strings.TrimSpace(cfg.StatsDPath) == "" {
-		cfg.StatsDPath = os.Getenv("STATSD_HOST_PATH")
+	cfg.StatsDAddr = strings.TrimSpace(cfg.StatsDAddr)
+	if err := validateStatsDAddr(cfg.StatsDAddr); err != nil {
+		log.Fatalf("statsd_addr: %v", err)
 	}
 	cfg.StatsDPath = strings.TrimSpace(cfg.StatsDPath)
 	if err := validateStatsDHostPath(cfg.StatsDPath); err != nil {
-		log.Fatalf("STATSD_HOST_PATH: %v", err)
-	}
-	if v := os.Getenv("VERIFLIER_ENABLE_LEGACY_HTTP"); v != "" {
-		enabled, err := parseBool(v)
-		if err != nil {
-			log.Fatalf("VERIFLIER_ENABLE_LEGACY_HTTP: %v", err)
-		}
-		cfg.LegacyHTTP = enabled
+		log.Fatalf("statsd_host_path: %v", err)
 	}
 
 	if cfg.TransportPort() == "" {
@@ -100,16 +72,16 @@ func main() {
 	addr := fmt.Sprintf(":%s", cfg.TransportPort())
 	agentID := veriflierAgentID(hostname, cfg.TransportPort())
 
-	// Optional StatsD metrics. STATSD_ADDR is unset in standalone deploys,
+	// Optional StatsD metrics. statsd_addr is empty in standalone deploys,
 	// "statsd:8125" in the docker compose stack. metrics.Init failure logs and
 	// continues — the verifier should still run with metrics disabled.
 	var resourceStats resourceStatsEmitter
-	if statsdAddr, enabled, err := metrics.InitFromEnv(veriflierStatsDMetricHost(cfg, hostname), ""); err != nil {
+	if statsdAddr, enabled, err := metrics.InitConfigured(cfg.StatsDAddr, veriflierStatsDMetricHost(cfg, hostname)); err != nil {
 		log.Printf("metrics: init failed (%v) — running without metrics", err)
 	} else if enabled {
 		config.Debugf("metrics: sending to %s", statsdAddr)
 		if strings.TrimSpace(cfg.StatsDPath) == "" {
-			log.Printf("WARN: STATSD_HOST_PATH is unset; StatsD metrics will use Veriflier hostname %q", hostname)
+			log.Printf("WARN: statsd_host_path is unset; StatsD metrics will use Veriflier hostname %q", hostname)
 		}
 		resourceStats = metrics.Global()
 	}
@@ -257,13 +229,10 @@ func stringPtr(s string) *string {
 func loadConfig(path string) (*veriflierConfig, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		// Fall back to environment-only config.
-		return &veriflierConfig{
-			AuthToken:  os.Getenv("VERIFLIER_AUTH_TOKEN"),
-			Port:       envOrDefault("VERIFLIER_PORT", envOrDefault("VERIFLIER_GRPC_PORT", "7803")),
-			Hostname:   firstNonEmpty(os.Getenv("VERIFLIER_HOSTNAME"), os.Getenv("JETMON_HOSTNAME")),
-			StatsDPath: os.Getenv("STATSD_HOST_PATH"),
-		}, nil
+		if os.IsNotExist(err) {
+			return envOnlyConfig()
+		}
+		return nil, err
 	}
 	defer f.Close()
 
@@ -272,6 +241,27 @@ func loadConfig(path string) (*veriflierConfig, error) {
 		return nil, err
 	}
 	return &cfg, nil
+}
+
+func envOnlyConfig() (*veriflierConfig, error) {
+	cfg := &veriflierConfig{
+		AuthToken:  os.Getenv("VERIFLIER_AUTH_TOKEN"),
+		Port:       envOrDefault("VERIFLIER_PORT", envOrDefault("VERIFLIER_GRPC_PORT", "7803")),
+		Hostname:   firstNonEmpty(os.Getenv("VERIFLIER_HOSTNAME"), os.Getenv("JETMON_HOSTNAME")),
+		StatsDAddr: os.Getenv("STATSD_ADDR"),
+		StatsDPath: os.Getenv("STATSD_HOST_PATH"),
+		VantageID:  os.Getenv("VERIFLIER_VANTAGE_ID"),
+		Region:     os.Getenv("VERIFLIER_REGION"),
+		Provider:   os.Getenv("VERIFLIER_PROVIDER"),
+	}
+	if v := os.Getenv("VERIFLIER_ENABLE_LEGACY_HTTP"); v != "" {
+		enabled, err := parseBool(v)
+		if err != nil {
+			return nil, fmt.Errorf("VERIFLIER_ENABLE_LEGACY_HTTP: %w", err)
+		}
+		cfg.LegacyHTTP = enabled
+	}
+	return cfg, nil
 }
 
 func (c veriflierConfig) TransportPort() string {
@@ -323,6 +313,24 @@ func validateStatsDHostPath(path string) error {
 		default:
 			return fmt.Errorf("may contain only letters, numbers, dots, underscores, and hyphens")
 		}
+	}
+	return nil
+}
+
+func validateStatsDAddr(addr string) error {
+	if addr == "" {
+		return nil
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("must be host:port")
+	}
+	if strings.TrimSpace(strings.Trim(host, "[]")) == "" {
+		return fmt.Errorf("host must not be empty")
+	}
+	portNum, err := strconv.Atoi(port)
+	if err != nil || portNum <= 0 || portNum > 65535 {
+		return fmt.Errorf("port must be between 1 and 65535")
 	}
 	return nil
 }

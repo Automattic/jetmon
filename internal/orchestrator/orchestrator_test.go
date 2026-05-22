@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"reflect"
 	"sync"
 	"sync/atomic"
@@ -52,9 +51,8 @@ func TestDuplicateBlogMonitorRowsUseMonitorSiteIdentity(t *testing.T) {
 		{ID: 10, BlogID: 42, MonitorURL: "https://example.com/"},
 		{ID: 11, BlogID: 42, MonitorURL: "https://example.com/path"},
 	}
-	filtered := filterUnseenSites(sites, map[int64]struct{}{})
-	if len(filtered) != 2 {
-		t.Fatalf("filterUnseenSites returned %d sites, want 2", len(filtered))
+	if monitorTargetID(sites[0]) == monitorTargetID(sites[1]) {
+		t.Fatal("duplicate blog rows should have distinct monitor target identities")
 	}
 
 	req := checkRequestForSite(&config.Config{}, sites[0])
@@ -1401,7 +1399,6 @@ func stubOrchestratorDeps() func() {
 	origDBHeartbeat := dbHeartbeat
 	origDBReleaseHost := dbReleaseHost
 	origDBMarkHostDraining := dbMarkHostDraining
-	origDBGetSites := dbGetSitesForBucket
 	origDBUpdateStatus := dbUpdateSiteStatus
 	origDBGetSiteStatus := dbGetSiteStatus
 	origDBUpdateLastAlert := dbUpdateLastAlertSent
@@ -1412,7 +1409,6 @@ func stubOrchestratorDeps() func() {
 	origDBRecordCheckHistories := dbRecordCheckHistories
 	origDBUpdateSSLExpiry := dbUpdateSSLExpiry
 	origDBUpdateSSLExpiries := dbUpdateSSLExpiries
-	origDBCountDueSites := dbCountDueSites
 	origDBCountProjectionDrift := dbCountProjectionDrift
 	origDBListVeriflierVantages := dbListVeriflierVantages
 	origDBUpsertVeriflierAgent := dbUpsertVeriflierAgent
@@ -1428,7 +1424,6 @@ func stubOrchestratorDeps() func() {
 	dbHeartbeat = func(context.Context, string) error { return nil }
 	dbReleaseHost = func(context.Context, string, int, int) error { return nil }
 	dbMarkHostDraining = func(context.Context, string) error { return nil }
-	dbGetSitesForBucket = func(context.Context, int, int, int, bool) ([]db.Site, error) { return nil, nil }
 	dbUpdateSiteStatus = func(context.Context, int64, int, time.Time) error { return nil }
 	dbGetSiteStatus = func(context.Context, int64, int64) (int, error) { return statusRunning, nil }
 	dbUpdateLastAlertSent = func(context.Context, int64, time.Time) error { return nil }
@@ -1439,7 +1434,6 @@ func stubOrchestratorDeps() func() {
 	dbRecordCheckHistories = func(context.Context, []db.CheckHistoryRow) error { return nil }
 	dbUpdateSSLExpiry = func(context.Context, int64, time.Time) error { return nil }
 	dbUpdateSSLExpiries = func(context.Context, []db.SiteSSLExpiry) error { return nil }
-	dbCountDueSites = func(context.Context, int, int, bool) (int, error) { return 0, nil }
 	dbCountProjectionDrift = func(context.Context, int, int) (int, error) { return 0, nil }
 	dbListVeriflierVantages = func(context.Context, time.Duration) ([]db.VeriflierVantage, error) { return nil, nil }
 	dbUpsertVeriflierAgent = func(context.Context, db.VeriflierAgentHeartbeat) error { return nil }
@@ -1463,7 +1457,6 @@ func stubOrchestratorDeps() func() {
 		dbHeartbeat = origDBHeartbeat
 		dbReleaseHost = origDBReleaseHost
 		dbMarkHostDraining = origDBMarkHostDraining
-		dbGetSitesForBucket = origDBGetSites
 		dbUpdateSiteStatus = origDBUpdateStatus
 		dbGetSiteStatus = origDBGetSiteStatus
 		dbUpdateLastAlertSent = origDBUpdateLastAlert
@@ -1474,7 +1467,6 @@ func stubOrchestratorDeps() func() {
 		dbRecordCheckHistories = origDBRecordCheckHistories
 		dbUpdateSSLExpiry = origDBUpdateSSLExpiry
 		dbUpdateSSLExpiries = origDBUpdateSSLExpiries
-		dbCountDueSites = origDBCountDueSites
 		dbCountProjectionDrift = origDBCountProjectionDrift
 		dbListVeriflierVantages = origDBListVeriflierVantages
 		dbUpsertVeriflierAgent = origDBUpsertVeriflierAgent
@@ -2671,81 +2663,6 @@ func TestCloseSSLExpiryUsesProbeCleared(t *testing.T) {
 	}
 }
 
-func TestApplyMemoryPressureNoActionBelowLimit(t *testing.T) {
-	restore := stubOrchestratorDeps()
-	defer restore()
-	setTestConfig(t)
-
-	origFn := currentMemoryMBFunc
-	currentMemoryMBFunc = func() int { return 10 }
-	defer func() { currentMemoryMBFunc = origFn }()
-
-	p := checker.NewPool(5, 1, 5)
-	t.Cleanup(p.Drain)
-
-	o := &Orchestrator{pool: p, ctx: context.Background()}
-	cfg := config.Get()
-	cfg.WorkerMaxMemMB = 100
-
-	o.applyMemoryPressure(cfg)
-
-	if p.WorkerCount() != 5 {
-		t.Fatalf("WorkerCount = %d under limit, want 5", p.WorkerCount())
-	}
-}
-
-func TestApplyMemoryPressureNoActionWhenDisabled(t *testing.T) {
-	restore := stubOrchestratorDeps()
-	defer restore()
-	setTestConfig(t)
-
-	origFn := currentMemoryMBFunc
-	currentMemoryMBFunc = func() int { return 9999 }
-	defer func() { currentMemoryMBFunc = origFn }()
-
-	p := checker.NewPool(5, 1, 5)
-	t.Cleanup(p.Drain)
-
-	o := &Orchestrator{pool: p, ctx: context.Background()}
-	cfg := config.Get()
-	cfg.WorkerMaxMemMB = 0
-
-	o.applyMemoryPressure(cfg)
-
-	if p.WorkerCount() != 5 {
-		t.Fatalf("WorkerCount = %d when disabled, want 5", p.WorkerCount())
-	}
-}
-
-func TestApplyMemoryPressureDrainsWorkersOverLimit(t *testing.T) {
-	restore := stubOrchestratorDeps()
-	defer restore()
-	setTestConfig(t)
-
-	origFn := currentMemoryMBFunc
-	currentMemoryMBFunc = func() int { return 500 }
-	defer func() { currentMemoryMBFunc = origFn }()
-
-	p := checker.NewPool(10, 1, 10)
-	t.Cleanup(p.Drain)
-
-	o := &Orchestrator{pool: p, ctx: context.Background()}
-	cfg := config.Get()
-	cfg.WorkerMaxMemMB = 50
-
-	initial := p.WorkerCount()
-	o.applyMemoryPressure(cfg)
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if p.WorkerCount() < initial {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("WorkerCount = %d after memory pressure, want < %d", p.WorkerCount(), initial)
-}
-
 func TestOrchestratorAccessors(t *testing.T) {
 	p := checker.NewPool(3, 1, 3)
 	defer p.Drain()
@@ -2800,363 +2717,6 @@ func TestClaimBucketsUsesPinnedRangeWithoutHostTable(t *testing.T) {
 	if o.bucketMin != 12 || o.bucketMax != 34 {
 		t.Fatalf("bucket range = %d-%d, want 12-34", o.bucketMin, o.bucketMax)
 	}
-}
-
-func TestRunRoundSkipsHeartbeatWhenPinned(t *testing.T) {
-	restore := stubOrchestratorDeps()
-	defer restore()
-	cfg := setTestConfig(t)
-	min, max := 12, 34
-	cfg.PinnedBucketMin = &min
-	cfg.PinnedBucketMax = &max
-
-	var heartbeatCalled bool
-	dbHeartbeat = func(context.Context, string) error {
-		heartbeatCalled = true
-		return nil
-	}
-	dbGetSitesForBucket = func(_ context.Context, gotMin, gotMax, _ int, _ bool) ([]db.Site, error) {
-		if gotMin != 12 || gotMax != 34 {
-			t.Fatalf("fetch buckets = %d-%d, want 12-34", gotMin, gotMax)
-		}
-		return nil, nil
-	}
-
-	o := &Orchestrator{ctx: context.Background(), hostname: "host-a"}
-	o.runRound()
-
-	if heartbeatCalled {
-		t.Fatal("runRound updated jetpack_monitor_hosts heartbeat in pinned mode")
-	}
-}
-
-func TestRunRoundUsesAPIControlledRangeWithoutDynamicClaim(t *testing.T) {
-	restore := stubOrchestratorDeps()
-	defer restore()
-	cfg := setTestConfig(t)
-	cfg.RolloutMode = config.RolloutModeAPIControlled
-
-	var heartbeatCalled bool
-	var dynamicClaimCalled bool
-	dbHeartbeat = func(context.Context, string) error {
-		heartbeatCalled = true
-		return nil
-	}
-	dbClaimBuckets = func(string, int, int, int) (int, int, error) {
-		dynamicClaimCalled = true
-		return 0, 0, nil
-	}
-	dbGetSitesForBucket = func(_ context.Context, gotMin, gotMax, _ int, _ bool) ([]db.Site, error) {
-		if gotMin != 7 || gotMax != 9 {
-			t.Fatalf("fetch buckets = %d-%d, want 7-9", gotMin, gotMax)
-		}
-		return nil, nil
-	}
-
-	o := &Orchestrator{ctx: context.Background(), hostname: "host-a", bucketMin: 7, bucketMax: 9}
-	o.runRound()
-
-	if heartbeatCalled {
-		t.Fatal("runRound updated jetpack_monitor_hosts heartbeat in api-controlled mode")
-	}
-	if dynamicClaimCalled {
-		t.Fatal("runRound called dynamic jetpack_monitor_hosts claim in api-controlled mode")
-	}
-	if o.bucketMin != 7 || o.bucketMax != 9 {
-		t.Fatalf("bucket range = %d-%d, want preserved 7-9", o.bucketMin, o.bucketMax)
-	}
-}
-
-func TestRunRoundDrainsAllPagesUntilWorkWraps(t *testing.T) {
-	restore := stubOrchestratorDeps()
-	defer restore()
-	cfg := setTestConfig(t)
-	cfg.DatasetSize = 2
-	cfg.NetCommsTimeout = 1
-	cfg.MinTimeBetweenRoundsSec = 0
-	cfg.UseVariableCheckIntervals = false
-	cfg.WorkerMaxMemMB = 0
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	sites := []db.Site{
-		{BlogID: 1, MonitorURL: srv.URL},
-		{BlogID: 2, MonitorURL: srv.URL},
-		{BlogID: 3, MonitorURL: srv.URL},
-		{BlogID: 4, MonitorURL: srv.URL},
-		{BlogID: 5, MonitorURL: srv.URL},
-	}
-
-	checked := make(map[int64]bool)
-	var marked []int64
-	var queries int
-	dbGetSitesForBucket = func(_ context.Context, _, _ int, batchSize int, useVariableIntervals bool) ([]db.Site, error) {
-		if batchSize != 2 {
-			t.Fatalf("batch size = %d, want 2", batchSize)
-		}
-		if useVariableIntervals {
-			t.Fatal("useVariableIntervals = true, want false")
-		}
-		queries++
-		return nextSchedulerTestPage(sites, checked, batchSize, false), nil
-	}
-	dbMarkSitesChecked = func(_ context.Context, checks []db.SiteCheck) error {
-		for _, check := range checks {
-			checked[check.BlogID] = true
-			marked = append(marked, check.BlogID)
-		}
-		return nil
-	}
-	dbCountDueSites = func(_ context.Context, _, _ int, useVariableIntervals bool) (int, error) {
-		if useVariableIntervals {
-			t.Fatal("count due useVariableIntervals = true, want false")
-		}
-		return len(sites), nil
-	}
-
-	rec := newRecordingMetrics()
-	metricsClientFunc = func() metricsClient { return rec }
-
-	p := checker.NewPool(2, 1, 2)
-	defer p.Drain()
-	o := &Orchestrator{
-		pool:       p,
-		retries:    newRetryQueue(),
-		ctx:        context.Background(),
-		hostname:   "host-a",
-		roundStart: time.Now(),
-	}
-
-	summary := o.runRound()
-	if summary.selected != 5 || summary.dispatched != 5 || summary.completed != 5 {
-		t.Fatalf("summary selected/dispatched/completed = %d/%d/%d, want 5/5/5", summary.selected, summary.dispatched, summary.completed)
-	}
-	if summary.pagesFetched != 3 {
-		t.Fatalf("pages fetched = %d, want 3", summary.pagesFetched)
-	}
-	if len(marked) != 5 {
-		t.Fatalf("marked checked = %d, want 5", len(marked))
-	}
-	if queries < 4 {
-		t.Fatalf("queries = %d, want at least 4 including wrap-stop query", queries)
-	}
-	if got := rec.gauge("scheduler.round.selected.count"); got != 5 {
-		t.Fatalf("selected metric = %d, want 5", got)
-	}
-	if got := rec.gauge("scheduler.round.completed.count"); got != 5 {
-		t.Fatalf("completed metric = %d, want 5", got)
-	}
-	if got := rec.gauge("scheduler.round.due_remaining.count"); got != 0 {
-		t.Fatalf("due remaining metric = %d, want 0", got)
-	}
-}
-
-func TestRunRoundWaitsUnderPoolBackpressureInsteadOfDropping(t *testing.T) {
-	restore := stubOrchestratorDeps()
-	defer restore()
-	cfg := setTestConfig(t)
-	cfg.DatasetSize = 5
-	cfg.NetCommsTimeout = 1
-	cfg.MinTimeBetweenRoundsSec = 0
-	cfg.UseVariableCheckIntervals = true
-	cfg.WorkerMaxMemMB = 0
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		time.Sleep(25 * time.Millisecond)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	sites := []db.Site{
-		{BlogID: 1, MonitorURL: srv.URL},
-		{BlogID: 2, MonitorURL: srv.URL},
-		{BlogID: 3, MonitorURL: srv.URL},
-		{BlogID: 4, MonitorURL: srv.URL},
-		{BlogID: 5, MonitorURL: srv.URL},
-	}
-
-	checked := make(map[int64]bool)
-	dbGetSitesForBucket = func(_ context.Context, _, _ int, batchSize int, useVariableIntervals bool) ([]db.Site, error) {
-		if batchSize != 5 {
-			t.Fatalf("batch size = %d, want 5", batchSize)
-		}
-		if !useVariableIntervals {
-			t.Fatal("useVariableIntervals = false, want true")
-		}
-		return nextSchedulerTestPage(sites, checked, batchSize, true), nil
-	}
-	dbMarkSitesChecked = func(_ context.Context, checks []db.SiteCheck) error {
-		for _, check := range checks {
-			checked[check.BlogID] = true
-		}
-		return nil
-	}
-	dbCountDueSites = func(_ context.Context, _, _ int, useVariableIntervals bool) (int, error) {
-		if !useVariableIntervals {
-			t.Fatal("count due useVariableIntervals = false, want true")
-		}
-		count := 0
-		for _, site := range sites {
-			if !checked[site.BlogID] {
-				count++
-			}
-		}
-		return count, nil
-	}
-
-	rec := newRecordingMetrics()
-	metricsClientFunc = func() metricsClient { return rec }
-
-	p := checker.NewPool(1, 1, 1)
-	defer p.Drain()
-	o := &Orchestrator{
-		pool:       p,
-		retries:    newRetryQueue(),
-		ctx:        context.Background(),
-		hostname:   "host-a",
-		roundStart: time.Now(),
-	}
-
-	summary := o.runRound()
-	if summary.selected != 5 || summary.dispatched != 5 || summary.completed != 5 {
-		t.Fatalf("summary selected/dispatched/completed = %d/%d/%d, want 5/5/5", summary.selected, summary.dispatched, summary.completed)
-	}
-	if summary.backpressureWaits == 0 {
-		t.Fatal("backpressure waits = 0, want > 0")
-	}
-	if got := rec.counter("scheduler.dispatch.backpressure_wait.count"); got == 0 {
-		t.Fatal("backpressure metric = 0, want > 0")
-	}
-	if got := rec.gauge("scheduler.round.outstanding.count"); got != 0 {
-		t.Fatalf("outstanding metric = %d, want 0", got)
-	}
-	if got := rec.gauge("scheduler.round.due_remaining.count"); got != 0 {
-		t.Fatalf("due remaining metric = %d, want 0", got)
-	}
-}
-
-func TestRunRoundSamplesBroadReportsOnCadence(t *testing.T) {
-	restore := stubOrchestratorDeps()
-	defer restore()
-	cfg := setTestConfig(t)
-	cfg.DatasetSize = 10
-	cfg.UseVariableCheckIntervals = true
-	cfg.LegacyStatusProjectionEnable = true
-	cfg.WorkerMaxMemMB = 0
-
-	now := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
-	nowFunc = func() time.Time { return now }
-
-	var dueCalls int
-	var driftCalls int
-	dbGetSitesForBucket = func(context.Context, int, int, int, bool) ([]db.Site, error) {
-		return nil, nil
-	}
-	dbCountDueSites = func(context.Context, int, int, bool) (int, error) {
-		dueCalls++
-		return 0, nil
-	}
-	dbCountProjectionDrift = func(context.Context, int, int) (int, error) {
-		driftCalls++
-		return 0, nil
-	}
-
-	rec := newRecordingMetrics()
-	metricsClientFunc = func() metricsClient { return rec }
-
-	o := &Orchestrator{ctx: context.Background(), hostname: "host-a", roundStart: now}
-
-	first := o.runRound()
-	if !first.dueCountsSampled {
-		t.Fatal("first round dueCountsSampled = false, want true")
-	}
-	if dueCalls != 2 {
-		t.Fatalf("due count calls after first round = %d, want 2", dueCalls)
-	}
-	if driftCalls != 1 {
-		t.Fatalf("projection drift calls after first round = %d, want 1", driftCalls)
-	}
-	if got := rec.gauge("scheduler.round.due_count_sampled.count"); got != 1 {
-		t.Fatalf("due_count_sampled metric after first round = %d, want 1", got)
-	}
-
-	second := o.runRound()
-	if second.dueCountsSampled {
-		t.Fatal("second round dueCountsSampled = true before cadence elapsed, want false")
-	}
-	if dueCalls != 2 {
-		t.Fatalf("due count calls after second round = %d, want still 2", dueCalls)
-	}
-	if driftCalls != 1 {
-		t.Fatalf("projection drift calls after second round = %d, want still 1", driftCalls)
-	}
-	if got := rec.gauge("scheduler.round.due_count_sampled.count"); got != 0 {
-		t.Fatalf("due_count_sampled metric after skipped round = %d, want 0", got)
-	}
-
-	now = now.Add(schedulerBroadReportInterval)
-	third := o.runRound()
-	if !third.dueCountsSampled {
-		t.Fatal("third round dueCountsSampled = false after cadence elapsed, want true")
-	}
-	if dueCalls != 4 {
-		t.Fatalf("due count calls after third round = %d, want 4", dueCalls)
-	}
-	if driftCalls != 2 {
-		t.Fatalf("projection drift calls after third round = %d, want 2", driftCalls)
-	}
-}
-
-func TestSchedulerSleepDurationUsesShortPollForVariableIntervals(t *testing.T) {
-	cfg := &config.Config{
-		MinTimeBetweenRoundsSec:   300,
-		UseVariableCheckIntervals: true,
-	}
-	if got := schedulerSleepDuration(cfg, roundSummary{}, time.Second); got != schedulerVariableIntervalPollInterval {
-		t.Fatalf("schedulerSleepDuration(variable) = %v, want %v", got, schedulerVariableIntervalPollInterval)
-	}
-
-	cfg.UseVariableCheckIntervals = false
-	if got := schedulerSleepDuration(cfg, roundSummary{}, time.Second); got != 299*time.Second {
-		t.Fatalf("schedulerSleepDuration(fixed) = %v, want 299s", got)
-	}
-
-	if got := schedulerSleepDuration(cfg, roundSummary{dueRemaining: 1}, time.Second); got != schedulerBacklogPollInterval {
-		t.Fatalf("schedulerSleepDuration(backlog) = %v, want %v", got, schedulerBacklogPollInterval)
-	}
-
-	if got := schedulerSleepDuration(cfg, roundSummary{}, 301*time.Second); got != 0 {
-		t.Fatalf("schedulerSleepDuration(elapsed) = %v, want 0", got)
-	}
-}
-
-func nextSchedulerTestPage(sites []db.Site, checked map[int64]bool, batchSize int, dueOnly bool) []db.Site {
-	out := make([]db.Site, 0, batchSize)
-	for _, site := range sites {
-		if checked[site.BlogID] {
-			continue
-		}
-		out = append(out, site)
-		if len(out) == batchSize {
-			return out
-		}
-	}
-	if dueOnly {
-		return out
-	}
-	for _, site := range sites {
-		if !checked[site.BlogID] {
-			continue
-		}
-		out = append(out, site)
-		if len(out) == batchSize {
-			return out
-		}
-	}
-	return out
 }
 
 func TestRetryQueueAllBlogIDs(t *testing.T) {

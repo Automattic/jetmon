@@ -1,9 +1,17 @@
 # Jetmon 2 Configuration Reference
 
 Jetmon reads runtime configuration from `config/config.json` by default. Set
-`JETMON_CONFIG=/path/to/config.json` to use a different file. Database,
-StatsD, and Docker rendering settings are environment variables and are called
-out as such below.
+`JETMON_CONFIG=/path/to/config.json` to use a different file. The running
+Monitor, Deliverer, and Veriflier processes read runtime settings from JSON
+config, not directly from environment variables, once their config files exist.
+
+Docker entrypoints use environment variables as template inputs and render a
+generated JSON config before starting the process. The default Docker render
+mode is `always`, so changing Compose environment values and recreating the
+container updates the generated config. Set `JETMON_CONFIG_RENDER_MODE=never`
+for Monitor/Deliverer containers, or `VERIFLIER_CONFIG_RENDER_MODE=never` for
+Veriflier containers, when mounting a hand-managed JSON config that should not
+be generated from environment values.
 
 Each entry uses the same shape:
 
@@ -12,10 +20,25 @@ Each entry uses the same shape:
 - Example: a typical value or small JSON fragment.
 - Notes: operational details, reload behavior, or migration caveats.
 
-`SIGHUP` or `./jetmon2 reload` reloads JSON config. Environment-only settings
-are read at process start unless the entry explicitly says otherwise.
+`SIGHUP` or `./jetmon2 reload` reloads JSON config. Startup-only settings are
+called out in their notes.
 
 ## Profiles And Startup Safety
+
+### Docker Config Rendering
+
+- Default: `always`
+- Values: `always`, `missing`, `never`
+- Example: `JETMON_CONFIG_RENDER_MODE=never`
+- Purpose: controls how Docker entrypoints create the JSON config consumed by
+  the Go binaries.
+- Notes: `always` renders a generated config on every container start and is
+  the recommended Compose mode. `missing` renders only when the target JSON file
+  does not exist; use this only for legacy deployments that intentionally keep a
+  generated config across restarts. `never` disables rendering and leaves
+  `JETMON_CONFIG` / `VERIFLIER_CONFIG` or the binary's default config path as
+  the source of truth. Veriflier accepts `VERIFLIER_CONFIG_RENDER_MODE` and
+  falls back to `JETMON_CONFIG_RENDER_MODE` when unset.
 
 ### CONFIG_PROFILE
 
@@ -27,8 +50,8 @@ are read at process start unless the entry explicitly says otherwise.
 - Notes: `production` sets `SCHEMA_MANAGEMENT_MODE=validate` and
   `CHECK_TARGET_SAFETY_MODE=public_only` unless those keys are explicitly set.
   Keep profiles narrow; rollout-stage choices such as `ROLLOUT_MODE`,
-  `DEFAULT_CHECK_METHOD`, `DEFAULT_DETECTION_PROFILE`, `SCHEDULER_ENGINE`,
-  `API_PORT`, and `WPCOM_NOTIFY_ENABLE` should stay explicit.
+  `DEFAULT_CHECK_METHOD`, `DEFAULT_DETECTION_PROFILE`, `API_PORT`, and
+  `WPCOM_NOTIFY_ENABLE` should stay explicit.
 
 ### SCHEMA_MANAGEMENT_MODE
 
@@ -61,9 +84,9 @@ are read at process start unless the entry explicitly says otherwise.
 - Example: `"HOSTNAME": "jetmon-prod-1.dfw1.example.com"`
 - Purpose: stable Jetmon process identity for host ownership, process health,
   delivery identity, and StatsD fallback naming.
-- Notes: Docker entrypoints render the `JETMON_HOSTNAME` environment variable
-  into this JSON key. Use a stable logical host name, not a container ID,
-  release SHA, process ID, port, or random suffix.
+- Notes: Docker entrypoints can render the `JETMON_HOSTNAME` environment
+  variable into this JSON key. Use a stable logical host name, not a container
+  ID, release SHA, process ID, port, or random suffix.
 
 ### STATSD_HOST_PATH
 
@@ -74,23 +97,24 @@ are read at process start unless the entry explicitly says otherwise.
   paths. v1 effectively used `<datacenter>.<node>`, so
   `jetmon-prod-1.dfw1.example.com` should use `dfw1.jetmon-prod-1`.
   Allowed characters: letters, numbers, dots, underscores, and hyphens.
+  Docker entrypoints can render this from the `STATSD_HOST_PATH` environment
+  variable when generating config.
 
 ### STATSD_ADDR
 
-- Scope: environment variable, not a JSON key.
-- Default: unset; StatsD disabled unless the deployment sets it.
-- Example:
-
-  ```sh
-  STATSD_ADDR=host.docker.internal:8125
-  ```
-
+- Default: empty; StatsD disabled unless the deployment sets it.
+- Values: UDP `host:port`; IPv6 literals must use bracket notation such as
+  `[::1]:8125`.
+- Example: `"STATSD_ADDR": "host.docker.internal:8125"`
 - Purpose: UDP host:port for StatsD metrics.
 - Notes: bridge-networked Monitor containers should not use
   `127.0.0.1:8125`; that loopback is inside the container. For production
   Monitor Docker deployments, add Docker's host gateway mapping and use
   `host.docker.internal:8125`. Local and Veriflier Compose stacks normally use
-  `statsd:8125`.
+  `statsd:8125`. Docker entrypoints can render this from the `STATSD_ADDR`
+  environment variable when generating config, but the Go process reads only
+  the JSON value. This value is read at process start; restart the process
+  after changing it.
 
 ### STATS_UPDATE_INTERVAL_MS
 
@@ -104,54 +128,60 @@ are read at process start unless the entry explicitly says otherwise.
 
 ### DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME
 
-- Scope: environment variables.
 - Defaults: `localhost`, `3306`, `root`, empty password, `jetmon_db`.
 - Example:
 
-  ```sh
-  DB_HOST=mysql
-  DB_PORT=3306
-  DB_USER=jetmon
-  DB_PASSWORD=...
-  DB_NAME=jetmon_db
+  ```json
+  "DB_HOST": "mysql",
+  "DB_PORT": "3306",
+  "DB_USER": "jetmon",
+  "DB_PASSWORD": "secret",
+  "DB_NAME": "jetmon_db"
   ```
 
 - Purpose: direct MySQL connection settings used when `DB_SERVER_MAP_PATH` is
   unset.
 - Notes: production should normally prefer the server-map path below so reads
-  and writes can be split the same way as WPCOM infrastructure.
+  and writes can be split the same way as WPCOM infrastructure. Do not set
+  these keys when `DB_SERVER_MAP_PATH` is set; Jetmon rejects mixed database
+  modes so startup cannot silently choose the wrong source. Docker entrypoints
+  can render these from same-named environment variables when generating
+  config, but the Go process reads only the JSON values. This mode is read at
+  process start; restart after changing database credentials.
 
 ### DB_SERVER_MAP_PATH
 
-- Scope: environment variable.
 - Default: unset.
-- Example: `DB_SERVER_MAP_PATH=/run/jetmon/db-servers.php`
+- Example: `"DB_SERVER_MAP_PATH": "/run/jetmon/db-servers.php"`
 - Purpose: points Jetmon at a synced WPCOM `db-servers.php` file.
 - Notes: when set, Jetmon reads the selected dataset, builds a write pool from
-  the write master, and builds read pools from eligible read hosts.
+  the write master, and builds read pools from eligible read hosts. This mode
+  is mutually exclusive with explicit `DB_HOST` / `DB_PORT` / `DB_USER` /
+  `DB_PASSWORD` / `DB_NAME` settings. Docker entrypoints can render this from
+  the same-named environment variable when generating config, but the Go
+  process reads only the JSON value. The server-map file contents hot-reload on
+  `DB_CONFIG_UPDATES_MIN`; changing the path or mode requires a process
+  restart.
 
 ### DB_SERVER_MAP_DATASET
 
-- Scope: environment variable.
 - Default: `misc`
-- Example: `DB_SERVER_MAP_DATASET=misc`
+- Example: `"DB_SERVER_MAP_DATASET": "misc"`
 - Purpose: dataset name to read from `DB_SERVER_MAP_PATH`.
 
 ### DB_SERVER_MAP_DATACENTER
 
-- Scope: environment variable.
 - Default: unset.
-- Example: `DB_SERVER_MAP_DATACENTER=dfw`
+- Example: `"DB_SERVER_MAP_DATACENTER": "dfw"`
 - Purpose: prioritizes local read replicas from `db-servers.php`.
 - Notes: set explicitly in containers. Hostname-derived datacenter guessing is
   unreliable with container hostnames.
 
 ### DB_SERVER_MAP_ADDRESS
 
-- Scope: environment variable.
 - Default: `internet`
 - Values: `internet`, `internal`
-- Example: `DB_SERVER_MAP_ADDRESS=internet`
+- Example: `"DB_SERVER_MAP_ADDRESS": "internet"`
 - Purpose: chooses which host column from `db-servers.php` is used.
 - Notes: use `internal` only when the container network can reach internal DB
   hostnames.
@@ -216,63 +246,28 @@ are read at process start unless the entry explicitly says otherwise.
 
 ## Scheduler And Capacity Controls
 
-### SCHEDULER_ENGINE
-
-- Default: `legacy`
-- Values: `legacy`, `streaming`
-- Example: `"SCHEDULER_ENGINE": "streaming"`
-- Purpose: selects the scheduling implementation.
-- Notes: `legacy` uses the v2 round/page scheduler for drop-in rollout safety.
-  `streaming` loads active site identity/cadence into memory, spreads checks by
-  stable phase, and avoids per-probe healthy freshness writes.
-
-### USE_VARIABLE_CHECK_INTERVALS
-
-- Default: `false` when omitted; `config/config-sample.json` sets `true`.
-- Values: `true`, `false`
-- Example: `"USE_VARIABLE_CHECK_INTERVALS": true`
-- Purpose: makes the legacy scheduler respect each site's `check_interval` and
-  maintained `jetpack_monitor_site_runtime.next_check_at`.
-- Notes: when true, `MIN_TIME_BETWEEN_ROUNDS_SEC` no longer sets check cadence.
-  Failed checks on longer intervals get a bounded one-minute follow-up.
-  Streaming mode uses its own time-wheel cadence and effectively assumes
-  per-site intervals.
+Jetmon v2 uses the streaming scheduler only. The old round/page scheduler was
+removed because it left too much throughput on the table and required tuning
+knobs that were easy to mis-set. The streaming scheduler keeps active site
+identity/cadence in memory, spreads checks by stable phase, scales workers from
+observed rate/latency, and avoids per-probe healthy freshness writes.
 
 ### NUM_WORKERS
 
 - Default: `60`
 - Example: `"NUM_WORKERS": 60`
 - Purpose: check-pool floor and guardrail.
-- Notes: still useful. In the legacy scheduler, the pool auto-scales between
-  1 and `NUM_WORKERS`. In streaming mode, this is a floor; the engine derives a
-  higher target from active site rate and observed latency.
+- Notes: still useful. This is the streaming worker floor; the engine derives a
+  higher target from active site rate, backlog, and observed latency.
 
 ### DATASET_SIZE
 
 - Default: `100`
 - Example: `"DATASET_SIZE": 1000`
-- Purpose: DB fetch page size for scheduler work.
-- Notes: still useful as a query/page-size guardrail. It is not a total round
-  cap; the scheduler keeps fetching pages until due work is drained. Set `0` to
-  use the default.
-
-### WORKER_MAX_MEM_MB
-
-- Default: `0`
-- Example: `"WORKER_MAX_MEM_MB": 0`
-- Purpose: optional memory-pressure drain threshold.
-- Notes: still useful as an emergency/local safety valve, but production should
-  normally leave it at `0` so host/container memory limits are the real ceiling.
-  A nonzero value can silently reduce throughput.
-
-### MIN_TIME_BETWEEN_ROUNDS_SEC
-
-- Default: `300`
-- Example: `"MIN_TIME_BETWEEN_ROUNDS_SEC": 300`
-- Purpose: fixed-cadence full-fleet pass delay.
-- Notes: useful only when `USE_VARIABLE_CHECK_INTERVALS=false` and the legacy
-  scheduler is active. It does not affect variable-interval or streaming
-  cadence.
+- Purpose: DB fetch page size for streaming active-target reloads.
+- Notes: still useful as a query/page-size guardrail. It is not a total
+  throughput cap; target reloads continue until the active in-memory target set
+  is current. Set `0` to use the default.
 
 ### STREAMING_LEGACY_PROJECTION_INTERVAL_MIN
 
@@ -705,6 +700,12 @@ The standalone Veriflier has a separate small JSON file:
 
 - `auth_token`: shared secret required for POST `/check` and POST `/v2/check`.
 - `port`: HTTP listen port. Default: `7803`.
+- `hostname`: stable process identity; defaults to the runtime hostname when
+  omitted.
+- `statsd_addr`: UDP `host:port` for StatsD metrics. Default: empty, which
+  disables StatsD.
+- `statsd_host_path`: explicit host segment in StatsD metric names. Default:
+  empty, which falls back to `hostname` / runtime hostname.
 - `vantage_id`: quorum identity reported by `/v2/status` and `/v2/check`;
   defaults to hostname when omitted.
 - `region`: optional region metadata.
@@ -712,10 +713,18 @@ The standalone Veriflier has a separate small JSON file:
 - `enable_legacy_http`: optional lab/emergency compatibility switch for
   legacy-compatible `/check` and `/status`; default false.
 
-Environment aliases are `VERIFLIER_AUTH_TOKEN`, `VERIFLIER_PORT`,
-`VERIFLIER_VANTAGE_ID`, `VERIFLIER_REGION`, `VERIFLIER_PROVIDER`, and
-`VERIFLIER_ENABLE_LEGACY_HTTP`. The old `VERIFLIER_GRPC_PORT` and `grpc_port`
-names remain accepted as deprecated port aliases.
+Environment aliases are accepted only for the fallback environment-only path
+used when the JSON file is missing: `VERIFLIER_AUTH_TOKEN`, `VERIFLIER_PORT`,
+`VERIFLIER_GRPC_PORT`, `VERIFLIER_HOSTNAME`, `JETMON_HOSTNAME`, `STATSD_ADDR`,
+`STATSD_HOST_PATH`, `VERIFLIER_VANTAGE_ID`, `VERIFLIER_REGION`,
+`VERIFLIER_PROVIDER`, and `VERIFLIER_ENABLE_LEGACY_HTTP`. The Docker entrypoint
+can render those values into generated JSON on each start in the default
+`always` render mode. Once the Veriflier process starts, it reads runtime
+settings from that JSON file and does not let environment variables override
+it.
+
+The old `VERIFLIER_GRPC_PORT` and `grpc_port` names remain accepted as
+deprecated port aliases.
 
 ## Deprecated Aliases And Legacy Compatibility Keys
 
@@ -734,7 +743,7 @@ not use them. `validate-config` warns when these keys are present.
 ### Legacy compatibility keys with no v2 tuning effect
 
 - `NUM_TO_PROCESS`: no scheduler throughput cap; use `NUM_WORKERS`,
-  `DATASET_SIZE`, and `SCHEDULER_ENGINE`.
+  `DATASET_SIZE`, and streaming metrics.
 - `BATCH_SIZE`: no scheduler effect; use `DATASET_SIZE`.
 - `VERIFLIER_BATCH_SIZE`: no tuning effect on the v2 Veriflier transport.
 - `SQL_UPDATE_BATCH`: does not control v2 DB write batching.
@@ -742,6 +751,14 @@ not use them. `validate-config` warns when these keys are present.
 - `TIME_BETWEEN_NOTICES_MIN`: does not gate v2 WPCOM notifications.
 - `STATSD_SEND_MEM_USAGE`: resource gauges are emitted whenever StatsD is
   configured.
+- `SCHEDULER_ENGINE`: deprecated v2 rollout key. Omit it; `streaming` is the
+  only supported scheduler. `legacy` is rejected.
+- `USE_VARIABLE_CHECK_INTERVALS`: deprecated v2 rollout key. Streaming always
+  respects per-site check intervals and runtime due state.
+- `WORKER_MAX_MEM_MB`: deprecated v2 scheduler cap. Streaming worker scaling
+  no longer drains workers based on this artificial memory threshold.
+- `MIN_TIME_BETWEEN_ROUNDS_SEC`: deprecated legacy round-scheduler key.
+  Streaming cadence comes from per-site `check_interval` and runtime due state.
 - `WORKER_MAX_CHECKS`: ignored; v2 has no Node worker recycle-by-check-count.
 - `TIMEOUT_FOR_REQUESTS_SEC`: ignored; v2 retry/escalation has separate logic.
 
@@ -749,8 +766,3 @@ not use them. `validate-config` warns when these keys are present.
 
 - `NUM_WORKERS`: goroutine pool floor/guardrail, not process count.
 - `DATASET_SIZE`: DB fetch page size, not total work per round.
-- `WORKER_MAX_MEM_MB`: process memory drain guardrail, not per-worker recycle.
-- `MIN_TIME_BETWEEN_ROUNDS_SEC`: fixed full-round delay only when
-  `USE_VARIABLE_CHECK_INTERVALS=false`.
-- `USE_VARIABLE_CHECK_INTERVALS`: uses v2 runtime due state and short idle
-  polls instead of v1 minute-loop semantics.

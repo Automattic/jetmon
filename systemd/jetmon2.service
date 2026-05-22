@@ -32,7 +32,8 @@ ProtectHome=yes
 RuntimeDirectory=jetmon2
 RuntimeDirectoryMode=0750
 
-# Environment.
+# Environment for config path and other non-DB runtime paths. Database
+# connection settings live in config/config.json.
 EnvironmentFile=-/opt/jetmon2/config/jetmon2.env
 Environment=JETMON_CONFIG=/opt/jetmon2/config/config.json
 

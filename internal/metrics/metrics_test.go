@@ -202,38 +202,6 @@ func TestGlobalNilBeforeInit(t *testing.T) {
 	}
 }
 
-func TestAddrFromEnvDefaultWhenUnset(t *testing.T) {
-	orig, hadOrig := os.LookupEnv(EnvStatsDAddr)
-	t.Cleanup(func() {
-		if hadOrig {
-			_ = os.Setenv(EnvStatsDAddr, orig)
-		} else {
-			_ = os.Unsetenv(EnvStatsDAddr)
-		}
-	})
-	_ = os.Unsetenv(EnvStatsDAddr)
-
-	if got := AddrFromEnv("statsd:8125"); got != "statsd:8125" {
-		t.Fatalf("AddrFromEnv(default) = %q, want statsd:8125", got)
-	}
-}
-
-func TestAddrFromEnvOverride(t *testing.T) {
-	t.Setenv(EnvStatsDAddr, " 127.0.0.1:8125 ")
-
-	if got := AddrFromEnv("statsd:8125"); got != "127.0.0.1:8125" {
-		t.Fatalf("AddrFromEnv(override) = %q, want 127.0.0.1:8125", got)
-	}
-}
-
-func TestAddrFromEnvEmptyDisables(t *testing.T) {
-	t.Setenv(EnvStatsDAddr, " ")
-
-	if got := AddrFromEnv("statsd:8125"); got != "" {
-		t.Fatalf("AddrFromEnv(empty) = %q, want empty", got)
-	}
-}
-
 func TestMetricHostPathDefaultSanitizesRuntimeHostname(t *testing.T) {
 	if got := MetricHostPath("my-host.example"); got != "my-host.example" {
 		t.Fatalf("MetricHostPath(default) = %q, want my-host.example", got)
@@ -252,21 +220,20 @@ func TestMetricHostPathSanitizesUnsafeCharacters(t *testing.T) {
 	}
 }
 
-func TestInitFromEnvDisabled(t *testing.T) {
+func TestInitConfiguredDisabled(t *testing.T) {
 	orig := global
 	global = nil
 	t.Cleanup(func() { global = orig })
-	t.Setenv(EnvStatsDAddr, "")
 
-	addr, enabled, err := InitFromEnv("host", "statsd:8125")
+	addr, enabled, err := InitConfigured(" ", "host")
 	if err != nil {
-		t.Fatalf("InitFromEnv disabled error = %v, want nil", err)
+		t.Fatalf("InitConfigured disabled error = %v, want nil", err)
 	}
 	if enabled || addr != "" {
-		t.Fatalf("InitFromEnv disabled = addr %q enabled %v, want empty false", addr, enabled)
+		t.Fatalf("InitConfigured disabled = addr %q enabled %v, want empty false", addr, enabled)
 	}
 	if Global() != nil {
-		t.Fatal("Global() = non-nil after disabled InitFromEnv, want nil")
+		t.Fatal("Global() = non-nil after disabled InitConfigured, want nil")
 	}
 }
 

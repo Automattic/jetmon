@@ -82,6 +82,9 @@ func cmdSchemaEnsure() error {
 }
 
 func cmdSchemaValidate() error {
+	if _, err := loadConfigForCommand(); err != nil {
+		return err
+	}
 	config.LoadDB()
 	if err := db.ConnectWithRetry(3); err != nil {
 		return fmt.Errorf("db connect: %w", err)
@@ -96,6 +99,9 @@ func cmdSchemaValidate() error {
 }
 
 func cmdSchemaStatus() error {
+	if _, err := loadConfigForCommand(); err != nil {
+		return err
+	}
 	config.LoadDB()
 	if err := db.ConnectWithRetry(3); err != nil {
 		return fmt.Errorf("db connect: %w", err)

@@ -33,7 +33,8 @@ A production package for the deliverer should include:
 - `bin/jetmon-deliverer`
 - `systemd/jetmon-deliverer.service` or the equivalent deployment-system unit
 - the same `config/config.json` schema used by `jetmon2`
-- database config via the same `DB_*` environment variables used by `jetmon2`
+- database config via the same JSON `DB_*` or `DB_SERVER_MAP_*` keys used by
+  `jetmon2`
 - alert transport credentials required by the selected `EMAIL_TRANSPORT`
 - log routing equivalent to the existing `jetmon2` service
 

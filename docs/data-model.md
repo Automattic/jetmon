@@ -154,17 +154,17 @@ CREATE TABLE `jetpack_monitor_site_runtime` (
 ```
 
 `last_checked_at` and `next_check_at` support API display, rollout freshness
-checks, rollback visibility, and the legacy round scheduler without requiring
-v2 to rewrite the v1 compatibility table after every probe. The streaming
-scheduler keeps its hot due-time state in memory and in `jetpack_monitor_check_targets`;
+checks, and rollback visibility without requiring v2 to rewrite the v1
+compatibility table after every probe. The streaming scheduler keeps its hot
+due-time state in memory and in `jetpack_monitor_check_targets`;
 `jetpack_monitor_site_runtime` is a compatibility/readability projection, not the
 high-frequency source of truth for streaming mode.
 
 ## Streaming Check Targets
 
-`jetpack_monitor_check_targets` is additive scheduling infrastructure for
-`SCHEDULER_ENGINE=streaming`. During migration, `jetpack_monitor_sites` remains
-the source of truth for v1-owned site identity and current legacy status, while
+`jetpack_monitor_check_targets` is additive scheduling infrastructure for the
+streaming scheduler. During migration, `jetpack_monitor_sites` remains the
+source of truth for v1-owned site identity and current legacy status, while
 `jetpack_monitor_site_check_config` carries v2-only probe config. The target table stores
 derived scheduling details such as source site row, bucket, interval, stable
 phase slot, config hash, and coarse last outcome fields so later iterations can

@@ -110,10 +110,8 @@ prepare_config() {
 		| .PEER_OFFLINE_LIMIT = 1
 		| .NUM_WORKERS = 12
 		| .DATASET_SIZE = 75
-		| .MIN_TIME_BETWEEN_ROUNDS_SEC = 5
 		| .NET_COMMS_TIMEOUT = 3
 		| .BODY_READ_MAX_MS = 250
-		| .USE_VARIABLE_CHECK_INTERVALS = false
 		| .BUCKET_TOTAL = $bucket_total
 		| .BUCKET_TARGET = $bucket_total
 		| .BUCKET_HEARTBEAT_GRACE_SEC = 15

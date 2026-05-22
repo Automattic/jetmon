@@ -2085,7 +2085,7 @@ func runRolloutRehearsalPlan(out io.Writer, input io.Reader, opts rolloutRehears
 	fmt.Fprintf(out, "INFO plan_host=%q runtime_host=%q range=%d-%d\n", assertedRange.HostID, runtimeHost, assertedRange.BucketMin, assertedRange.BucketMax)
 	fmt.Fprintln(out, "# Run this runbook from the staged v2 runtime host, not from a separate orchestrator host.")
 	fmt.Fprintln(out, "# Commands run from that runtime host unless the printed command explicitly targets another host.")
-	fmt.Fprintln(out, "# Shell commands need the same DB_* environment used by the jetmon2 service.")
+	fmt.Fprintln(out, "# Shell commands read the same JSON DB config used by the jetmon2 service.")
 	if mode == "fresh-server" || hostID != runtimeHost {
 		fmt.Fprintf(out, "# Fresh-server mode requires %s to have SSH access to old v1 host %s for any v1 stop/start commands that use ssh.\n", runtimeHost, hostID)
 	}

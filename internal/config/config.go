@@ -84,10 +84,26 @@ type Config struct {
 	// prefix. Leave empty to use Hostname/runtime hostname as the fallback.
 	StatsDHostPath string `json:"STATSD_HOST_PATH"`
 
-	NumWorkers     int `json:"NUM_WORKERS"`
-	NumToProcess   int `json:"NUM_TO_PROCESS"`
-	DatasetSize    int `json:"DATASET_SIZE"`
-	WorkerMaxMemMB int `json:"WORKER_MAX_MEM_MB"`
+	// StatsDAddr is the UDP host:port for StatsD metrics. Empty disables
+	// StatsD. This is startup-only until metrics reconnect is wired into reload.
+	StatsDAddr string `json:"STATSD_ADDR"`
+
+	// Database connection config. DB_SERVER_MAP_PATH selects production
+	// server-map mode; otherwise the explicit DB_* values are used with
+	// local/dev defaults filled in by LoadDB.
+	DBHost                string `json:"DB_HOST"`
+	DBPort                string `json:"DB_PORT"`
+	DBUser                string `json:"DB_USER"`
+	DBPassword            string `json:"DB_PASSWORD"`
+	DBName                string `json:"DB_NAME"`
+	DBServerMapPath       string `json:"DB_SERVER_MAP_PATH"`
+	DBServerMapDataset    string `json:"DB_SERVER_MAP_DATASET"`
+	DBServerMapDatacenter string `json:"DB_SERVER_MAP_DATACENTER"`
+	DBServerMapAddress    string `json:"DB_SERVER_MAP_ADDRESS"`
+
+	NumWorkers   int `json:"NUM_WORKERS"`
+	NumToProcess int `json:"NUM_TO_PROCESS"`
+	DatasetSize  int `json:"DATASET_SIZE"`
 
 	// LegacyStatusProjectionEnable controls compatibility writes to the
 	// v1 status projection on jetpack_monitor_sites (site_status +
@@ -153,7 +169,6 @@ type Config struct {
 	WPCOMNotifyLegacyCertPath string   `json:"WPCOM_NOTIFY_LEGACY_CERT_PATH"`
 	WPCOMNotifyLegacyKeyPath  string   `json:"WPCOM_NOTIFY_LEGACY_KEY_PATH"`
 	WPCOMNotifyLegacyInsecure bool     `json:"WPCOM_NOTIFY_LEGACY_INSECURE_SKIP_VERIFY"`
-	MinTimeBetweenRoundsSec   int      `json:"MIN_TIME_BETWEEN_ROUNDS_SEC"`
 	NetCommsTimeout           int      `json:"NET_COMMS_TIMEOUT"`
 	CheckDNSResolvers         []string `json:"CHECK_DNS_RESOLVERS"`
 	CheckTargetSafetyMode     string   `json:"CHECK_TARGET_SAFETY_MODE"`
@@ -163,14 +178,15 @@ type Config struct {
 	KeywordReadMaxMS          int      `json:"KEYWORD_READ_MAX_MS"`
 	DefaultCheckMethod        string   `json:"DEFAULT_CHECK_METHOD"`
 	DefaultDetectionProfile   string   `json:"DEFAULT_DETECTION_PROFILE"`
-	UseVariableCheckIntervals bool     `json:"USE_VARIABLE_CHECK_INTERVALS"`
-	SchedulerEngine           string   `json:"SCHEDULER_ENGINE"`
-	RolloutMode               string   `json:"ROLLOUT_MODE"`
+	// SchedulerEngine is a deprecated v2 rollout key retained only so
+	// SCHEDULER_ENGINE=legacy can fail loudly instead of being silently ignored.
+	SchedulerEngine string `json:"SCHEDULER_ENGINE"`
+	RolloutMode     string `json:"ROLLOUT_MODE"`
 
 	// StreamingLegacyProjectionIntervalMin controls the coarse compatibility
 	// freshness write interval used by the streaming scheduler. It intentionally
 	// does not affect check cadence; it only bounds jetpack_monitor_site_runtime
-	// freshness staleness for rollback to the legacy scheduler.
+	// freshness staleness for compatibility readers and rollout rollback checks.
 	StreamingLegacyProjectionIntervalMin int `json:"STREAMING_LEGACY_PROJECTION_INTERVAL_MIN"`
 	StreamingTargetReloadSec             int `json:"STREAMING_TARGET_RELOAD_SEC"`
 
@@ -291,7 +307,7 @@ type ConfigWarning struct {
 	Message string
 }
 
-// DBConfig holds MySQL connection parameters loaded from environment variables.
+// DBConfig holds MySQL connection parameters loaded from JSON config.
 type DBConfig struct {
 	Host                string
 	Port                string
@@ -356,23 +372,53 @@ func Get() *Config {
 	return current
 }
 
-// LoadDB reads the database config from environment variables set by Docker,
-// systemd EnvironmentFile, or the operator shell running CLI preflight commands.
+// LoadDB reads the database config from the loaded JSON config. Docker and
+// TeamCity environment values may render the JSON file before process start,
+// but the running process does not read DB credentials directly from env.
 func LoadDB() *DBConfig {
-	db := &DBConfig{
-		Host:                envOrDefault("DB_HOST", "localhost"),
-		Port:                envOrDefault("DB_PORT", "3306"),
-		User:                envOrDefault("DB_USER", "root"),
-		Password:            envOrDefault("DB_PASSWORD", ""),
-		Name:                envOrDefault("DB_NAME", "jetmon_db"),
-		ServerMapPath:       strings.TrimSpace(os.Getenv("DB_SERVER_MAP_PATH")),
-		ServerMapDataset:    envOrDefault("DB_SERVER_MAP_DATASET", "misc"),
-		ServerMapDatacenter: strings.TrimSpace(os.Getenv("DB_SERVER_MAP_DATACENTER")),
-		ServerMapAddress:    envOrDefault("DB_SERVER_MAP_ADDRESS", "internet"),
-	}
+	db := dbConfigFromConfig(Get())
 	mu.Lock()
 	dbConf = db
 	mu.Unlock()
+	return db
+}
+
+func dbConfigFromConfig(cfg *Config) *DBConfig {
+	if cfg == nil {
+		cfg = &Config{}
+	}
+	db := &DBConfig{
+		Host:                strings.TrimSpace(cfg.DBHost),
+		Port:                strings.TrimSpace(cfg.DBPort),
+		User:                strings.TrimSpace(cfg.DBUser),
+		Password:            cfg.DBPassword,
+		Name:                strings.TrimSpace(cfg.DBName),
+		ServerMapPath:       strings.TrimSpace(cfg.DBServerMapPath),
+		ServerMapDataset:    strings.TrimSpace(cfg.DBServerMapDataset),
+		ServerMapDatacenter: strings.TrimSpace(cfg.DBServerMapDatacenter),
+		ServerMapAddress:    strings.TrimSpace(cfg.DBServerMapAddress),
+	}
+	if db.ServerMapDataset == "" {
+		db.ServerMapDataset = "misc"
+	}
+	if db.ServerMapAddress == "" {
+		db.ServerMapAddress = "internet"
+	}
+	if db.ServerMapPath != "" {
+		return db
+	}
+	if db.Host == "" {
+		db.Host = "localhost"
+	}
+	if db.Port == "" {
+		db.Port = "3306"
+	}
+	if db.User == "" {
+		db.User = "root"
+	}
+	if db.Name == "" {
+		db.Name = "jetmon_db"
+	}
 	return db
 }
 
@@ -388,7 +434,6 @@ func defaults() *Config {
 		NumWorkers:                           60,
 		NumToProcess:                         40,
 		DatasetSize:                          100,
-		WorkerMaxMemMB:                       0,
 		LegacyStatusProjectionEnable:         true,
 		BucketTotal:                          1000,
 		BucketTarget:                         500,
@@ -412,7 +457,6 @@ func defaults() *Config {
 		WPCOMNotifyLegacyCertPath:            defaultWPCOMNotifyLegacyCertPath,
 		WPCOMNotifyLegacyKeyPath:             defaultWPCOMNotifyLegacyKeyPath,
 		WPCOMNotifyLegacyInsecure:            true,
-		MinTimeBetweenRoundsSec:              300,
 		NetCommsTimeout:                      10,
 		CheckTargetSafetyMode:                CheckTargetSafetyModePublicOnly,
 		BodyReadMaxBytes:                     1048576,
@@ -421,7 +465,7 @@ func defaults() *Config {
 		KeywordReadMaxMS:                     0,
 		DefaultCheckMethod:                   checkmode.MethodGET,
 		DefaultDetectionProfile:              checkmode.ProfileFull,
-		SchedulerEngine:                      "legacy",
+		SchedulerEngine:                      "streaming",
 		RolloutMode:                          RolloutModeActive,
 		StreamingLegacyProjectionIntervalMin: 15,
 		StreamingTargetReloadSec:             300,
@@ -539,7 +583,7 @@ var deprecatedConfigKeyWarnings = []deprecatedConfigKeyWarning{
 	},
 	{
 		key:     "NUM_TO_PROCESS",
-		message: "parsed for copied v1 config compatibility but does not cap v2 scheduler throughput; tune NUM_WORKERS, DATASET_SIZE, and scheduler mode instead",
+		message: "parsed for copied v1 config compatibility but does not cap v2 scheduler throughput; tune NUM_WORKERS and DATASET_SIZE instead",
 	},
 	{
 		key:     "BATCH_SIZE",
@@ -568,6 +612,22 @@ var deprecatedConfigKeyWarnings = []deprecatedConfigKeyWarning{
 	{
 		key:     "VERIFIERS",
 		message: "deprecated config spelling; use VERIFLIERS",
+	},
+	{
+		key:     "SCHEDULER_ENGINE",
+		message: "deprecated v2 rollout key; the streaming scheduler is now the only supported monitor scheduler",
+	},
+	{
+		key:     "USE_VARIABLE_CHECK_INTERVALS",
+		message: "deprecated v2 rollout key; the streaming scheduler always respects per-site check intervals and runtime due state",
+	},
+	{
+		key:     "WORKER_MAX_MEM_MB",
+		message: "deprecated v2 scheduler cap; streaming worker scaling no longer drains workers based on this artificial memory threshold",
+	},
+	{
+		key:     "MIN_TIME_BETWEEN_ROUNDS_SEC",
+		message: "deprecated legacy round-scheduler key; streaming check cadence comes from per-site check_interval and runtime due state",
 	},
 }
 
@@ -733,8 +793,16 @@ func validate(cfg *Config) error {
 		return fmt.Errorf("CONFIG_PROFILE must be one of: default, production")
 	}
 	cfg.Hostname = strings.TrimSpace(cfg.Hostname)
+	cfg.StatsDAddr = strings.TrimSpace(cfg.StatsDAddr)
+	if err := validateStatsDAddr(cfg.StatsDAddr); err != nil {
+		return err
+	}
 	cfg.StatsDHostPath = strings.TrimSpace(cfg.StatsDHostPath)
 	if err := validateStatsDHostPath(cfg.StatsDHostPath); err != nil {
+		return err
+	}
+	normalizeDBConfigFields(cfg)
+	if err := validateDBConfig(cfg); err != nil {
 		return err
 	}
 	if cfg.NumWorkers < 0 {
@@ -801,9 +869,6 @@ func validate(cfg *Config) error {
 		return fmt.Errorf("DEFAULT_DETECTION_PROFILE: %w", err)
 	}
 	cfg.DefaultDetectionProfile = profile
-	if cfg.MinTimeBetweenRoundsSec < 0 {
-		return fmt.Errorf("MIN_TIME_BETWEEN_ROUNDS_SEC must be >= 0")
-	}
 	cfg.SchemaManagementMode = normalizeSchemaManagementMode(cfg.SchemaManagementMode)
 	switch cfg.SchemaManagementMode {
 	case SchemaManagementModeMigrate, SchemaManagementModeValidate:
@@ -830,11 +895,12 @@ func validate(cfg *Config) error {
 		return fmt.Errorf("WPCOM_NOTIFY_MODE must be one of: legacy, modern")
 	}
 	switch cfg.SchedulerEngine {
-	case "", "legacy":
-		cfg.SchedulerEngine = "legacy"
-	case "streaming":
+	case "", "streaming":
+		cfg.SchedulerEngine = "streaming"
+	case "legacy":
+		return fmt.Errorf("SCHEDULER_ENGINE=legacy is no longer supported; remove SCHEDULER_ENGINE to use the streaming scheduler")
 	default:
-		return fmt.Errorf("SCHEDULER_ENGINE must be 'legacy' or 'streaming'")
+		return fmt.Errorf("SCHEDULER_ENGINE is deprecated and must be omitted or set to 'streaming'")
 	}
 	cfg.RolloutMode = normalizeRolloutMode(cfg.RolloutMode)
 	switch cfg.RolloutMode {
@@ -975,6 +1041,84 @@ func validateStatsDHostPath(path string) error {
 		default:
 			return fmt.Errorf("STATSD_HOST_PATH may contain only letters, numbers, dots, underscores, and hyphens")
 		}
+	}
+	return nil
+}
+
+func validateStatsDAddr(addr string) error {
+	if addr == "" {
+		return nil
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("STATSD_ADDR must be host:port")
+	}
+	if strings.TrimSpace(strings.Trim(host, "[]")) == "" {
+		return fmt.Errorf("STATSD_ADDR host must not be empty")
+	}
+	portNum, err := strconv.Atoi(port)
+	if err != nil || portNum <= 0 || portNum > 65535 {
+		return fmt.Errorf("STATSD_ADDR port must be between 1 and 65535")
+	}
+	return nil
+}
+
+func normalizeDBConfigFields(cfg *Config) {
+	cfg.DBHost = strings.TrimSpace(cfg.DBHost)
+	cfg.DBPort = strings.TrimSpace(cfg.DBPort)
+	cfg.DBUser = strings.TrimSpace(cfg.DBUser)
+	cfg.DBName = strings.TrimSpace(cfg.DBName)
+	cfg.DBServerMapPath = strings.TrimSpace(cfg.DBServerMapPath)
+	cfg.DBServerMapDataset = strings.TrimSpace(cfg.DBServerMapDataset)
+	cfg.DBServerMapDatacenter = strings.TrimSpace(cfg.DBServerMapDatacenter)
+	cfg.DBServerMapAddress = strings.TrimSpace(strings.ToLower(cfg.DBServerMapAddress))
+}
+
+func validateDBConfig(cfg *Config) error {
+	if cfg.DBServerMapPath != "" {
+		if explicit := explicitDBCredentialKeys(cfg); len(explicit) > 0 {
+			return fmt.Errorf("DB_SERVER_MAP_PATH cannot be used with explicit DB credentials: %s", strings.Join(explicit, ", "))
+		}
+	} else if cfg.DBServerMapDataset != "" || cfg.DBServerMapDatacenter != "" || cfg.DBServerMapAddress != "" {
+		return fmt.Errorf("DB_SERVER_MAP_DATASET, DB_SERVER_MAP_DATACENTER, and DB_SERVER_MAP_ADDRESS require DB_SERVER_MAP_PATH")
+	}
+	if cfg.DBPort != "" {
+		if err := validateTCPPort("DB_PORT", cfg.DBPort); err != nil {
+			return err
+		}
+	}
+	switch cfg.DBServerMapAddress {
+	case "", "internet", "internal":
+	default:
+		return fmt.Errorf("DB_SERVER_MAP_ADDRESS must be one of: internet, internal")
+	}
+	return nil
+}
+
+func explicitDBCredentialKeys(cfg *Config) []string {
+	var keys []string
+	if cfg.DBHost != "" {
+		keys = append(keys, "DB_HOST")
+	}
+	if cfg.DBPort != "" {
+		keys = append(keys, "DB_PORT")
+	}
+	if cfg.DBUser != "" {
+		keys = append(keys, "DB_USER")
+	}
+	if cfg.DBPassword != "" {
+		keys = append(keys, "DB_PASSWORD")
+	}
+	if cfg.DBName != "" {
+		keys = append(keys, "DB_NAME")
+	}
+	return keys
+}
+
+func validateTCPPort(key, port string) error {
+	portNum, err := strconv.Atoi(port)
+	if err != nil || portNum <= 0 || portNum > 65535 {
+		return fmt.Errorf("%s must be between 1 and 65535", key)
 	}
 	return nil
 }
@@ -1124,11 +1268,4 @@ func Debugf(format string, args ...any) {
 	if d {
 		log.Printf("[DEBUG] "+format, args...)
 	}
-}
-
-func envOrDefault(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
 }

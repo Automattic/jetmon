@@ -77,7 +77,8 @@ Docker daemon resolver or networking first; otherwise the lab can fail during
 - Jetmon Monitor and optional standalone Deliverer run through Docker Compose.
 - Containers use bridge networking, not host networking.
 - Compose includes `--add-host=host.docker.internal:host-gateway`.
-- Monitor/Deliverer `STATSD_ADDR=host.docker.internal:8125`.
+- Monitor/Deliverer rendered config contains
+  `"STATSD_ADDR": "host.docker.internal:8125"`.
 - Production-style Monitor containers should run with
   `CONFIG_PROFILE=production` or `SCHEMA_MANAGEMENT_MODE=validate` after schema
   has been applied explicitly. The lab should include `jetmon2 schema validate`
