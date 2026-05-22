@@ -1,79 +1,67 @@
 # Jetmon Deliverer Rollout
 
-**Status:** Operational runbook for the existing v2 implementation.
+`jetmon-deliverer` is the standalone process for outbound webhook and
+alert-contact delivery. It uses the same delivery code as embedded `jetmon2`
+workers, but it does not run monitor checks, bucket ownership, the REST API, the
+dashboard, or a Veriflier server.
 
-`jetmon-deliverer` is the first standalone process boundary for outbound
-delivery. It runs the webhook and alert-contact workers without starting the
-monitor round loop, REST API, dashboard, Veriflier server, or bucket ownership.
+Delivery rows are claimed with short transactional leases, so multiple active
+delivery workers should not send the same row twice. `DELIVERY_OWNER_HOST`
+remains the rollout guard when operators want exactly one process class sending
+outbound traffic.
 
-The code path is shared with embedded `jetmon2` delivery through
-`internal/deliverer`. Delivery rows are claimed with short transactional
-`SELECT ... FOR UPDATE` leases, so multiple active delivery workers cannot
-claim the same pending delivery row. `DELIVERY_OWNER_HOST` remains useful as a
-rollout guard when operators want a deliberately single-owner cutover.
-
-## Process Responsibilities
+## Process Roles
 
 | Process | Owns | Does not own |
 |---|---|---|
-| `jetmon2` with `API_PORT = 0` | monitor rounds, bucket ownership, checks, WPCOM legacy notifications | REST API, webhook delivery, alert-contact delivery |
-| `jetmon2` with `API_PORT > 0` | REST API and, when allowed by `DELIVERY_OWNER_HOST`, embedded delivery | standalone process isolation for delivery |
-| `jetmon-deliverer` | webhook delivery and alert-contact delivery | REST API, monitor rounds, bucket ownership, dashboard |
+| `jetmon2` with `API_PORT = 0` | monitor checks, bucket ownership, WPCOM legacy notifications | REST API, webhook delivery, alert-contact delivery |
+| `jetmon2` with `API_PORT > 0` | REST API and optionally embedded delivery | standalone delivery isolation |
+| `jetmon-deliverer` | webhook delivery, alert-contact delivery | REST API, monitor checks, bucket ownership, dashboard |
 
-The production target for the split is:
+The intended split is:
 
-- monitor hosts run `jetmon2` with monitor responsibilities only;
-- API hosts run `jetmon2` for `/api/v1` traffic but do not own delivery;
-- deliverer hosts run `jetmon-deliverer` for outbound dispatch.
+- Monitor hosts run `jetmon2` for checks.
+- API hosts run `jetmon2` for `/api/v1` traffic and usually do not deliver.
+- Deliverer hosts run `jetmon-deliverer` for outbound dispatch.
 
-## Package Contents
+## Configuration
 
-A production package for the deliverer should include:
+`jetmon-deliverer` reads `JETMON_CONFIG` when set, otherwise
+`config/config.json`. Use a process-specific config for deliverer hosts when API
+hosts need a different `DELIVERY_OWNER_HOST` value.
+
+A deliverer package or container needs:
 
 - `bin/jetmon-deliverer`
-- `systemd/jetmon-deliverer.service` or the equivalent deployment-system unit
-- the same `config/config.json` schema used by `jetmon2`
-- database config via the same JSON `DB_*` or `DB_SERVER_MAP_*` keys used by
-  `jetmon2`
-- alert transport credentials required by the selected `EMAIL_TRANSPORT`
-- log routing equivalent to the existing `jetmon2` service
+- the same JSON config schema used by `jetmon2`
+- database config via `DB_SERVER_MAP_*` or explicit `DB_*` JSON keys
+- alert transport credentials for the selected `EMAIL_TRANSPORT`
+- normal stdout/stderr log collection
 
-The binary uses `JETMON_CONFIG` when set, otherwise it reads
-`config/config.json`. Use a separate config file per process class when API
-hosts and deliverer hosts need different `DELIVERY_OWNER_HOST` values.
+For single-owner rollout, set:
 
-The sample systemd unit expects:
+```json
+{
+  "API_PORT": 0,
+  "DELIVERY_OWNER_HOST": "deliverer-01",
+  "EMAIL_TRANSPORT": "wpcom"
+}
+```
 
-- `ExecStart=/opt/jetmon2/bin/jetmon-deliverer`
-- `ExecStartPre=/opt/jetmon2/bin/jetmon-deliverer validate-config
-  --require-owner-match --require-api-disabled`
-- `EnvironmentFile=-/opt/jetmon2/config/jetmon2.env`
-- `JETMON_CONFIG=/opt/jetmon2/config/deliverer.json`
+Use `EMAIL_TRANSPORT=stub` only for dry runs. Production alert-contact email
+needs `wpcom` or `smtp` plus the matching credentials.
 
-Keep `deliverer.json` process-specific. Sharing a config file with API-enabled
-`jetmon2` hosts is only safe when `DELIVERY_OWNER_HOST` is intentionally set for
-all process classes that read it.
+## Conservative Cutover
 
-The sample service is intentionally conservative: its `ExecStartPre` refuses to
-start unless `DELIVERY_OWNER_HOST` matches the deliverer host and `API_PORT` is
-disabled in the deliverer config. Remove or replace those preflight flags only
-for an explicitly approved active-active rollout.
+This is the preferred path from embedded delivery to standalone delivery.
 
-## Single-Owner Cutover
-
-This is the conservative migration path from embedded delivery to standalone
-delivery.
-
-1. Build and package `bin/jetmon-deliverer`.
-2. Install and enable `systemd/jetmon-deliverer.service` or the equivalent
-   deployment-system unit.
-3. Pick one deliverer host and set `DELIVERY_OWNER_HOST` to that host's
+1. Build and stage `bin/jetmon-deliverer`.
+2. Install the deployment unit or Docker Compose service.
+3. Pick one owner host and set `DELIVERY_OWNER_HOST` to that host's process
    hostname in the deliverer config.
-4. Keep embedded API hosts from delivering by giving their `jetmon2` process a
-   config where `DELIVERY_OWNER_HOST` does not match the API hostnames. The
-   most common pattern is a process-specific config file via `JETMON_CONFIG`.
-5. Run the owner-host preflight from the same shell environment the service will
-   use:
+4. Give API hosts a config where `DELIVERY_OWNER_HOST` does not match their
+   process hostnames, so API traffic continues without embedded delivery.
+5. Validate the deliverer config from the same environment the service will use:
 
    ```bash
    JETMON_CONFIG=/opt/jetmon2/config/deliverer.json \
@@ -82,120 +70,81 @@ delivery.
        --require-api-disabled
    ```
 
-   Add `--require-email-delivery` in any environment where email alert contacts
-   must send real mail instead of using the log-only stub.
+   Add `--require-email-delivery` when real email alert contacts must send.
 6. Start `jetmon-deliverer` on the owner host.
-7. Confirm logs show `delivery_owner_host="<host>" matched; delivery workers
-   enabled on this host`.
-8. Confirm API-host logs show delivery workers are skipped or idle.
-9. Watch delivery backlog and terminal outcomes with the read-only rollout
-   check:
+7. Confirm logs show delivery workers enabled on that host.
+8. Confirm API-host logs show embedded delivery skipped or idle.
+9. Watch delivery backlog:
 
    ```bash
    JETMON_CONFIG=/opt/jetmon2/config/deliverer.json \
      /opt/jetmon2/bin/jetmon-deliverer delivery-check --since=15m
    ```
 
-   For a strict cutover gate, add thresholds that fail if any delivery is due
-   now or newly abandoned:
+10. Use a strict gate once the queue should be drained:
 
-   ```bash
-   JETMON_CONFIG=/opt/jetmon2/config/deliverer.json \
-     /opt/jetmon2/bin/jetmon-deliverer delivery-check \
-       --since=15m \
-       --max-due=0 \
-       --max-abandoned=0 \
-       --max-failed=0
-   ```
-10. Stop embedded delivery after the standalone owner has been stable for at
-   least one normal alerting window.
+    ```bash
+    JETMON_CONFIG=/opt/jetmon2/config/deliverer.json \
+      /opt/jetmon2/bin/jetmon-deliverer delivery-check \
+        --since=15m \
+        --max-due=0 \
+        --max-abandoned=0 \
+        --max-failed=0
+    ```
 
-Rollback is simple: stop `jetmon-deliverer` and restore the previous embedded
-delivery config so one API-enabled `jetmon2` host matches
-`DELIVERY_OWNER_HOST` or uses the legacy empty-owner behavior.
-
-Before rollback, rehearse the embedded owner config with `./jetmon2
-validate-config` on the API host that will resume delivery, and make sure its
-`DELIVERY_OWNER_HOST` plan is intentional. After stopping the standalone
-deliverer, start the embedded owner and watch `delivery-check` until pending
-rows drain normally. The same check can validate rollback drain:
-
-```bash
-JETMON_CONFIG=/opt/jetmon2/config/api-owner.json \
-  /opt/jetmon2/bin/jetmon-deliverer delivery-check \
-    --since=15m \
-    --max-due=0 \
-    --max-abandoned=0 \
-    --max-failed=0
-```
+Rollback is to stop `jetmon-deliverer`, restore the previous embedded owner
+config, start the API host that should resume delivery, and watch
+`delivery-check` until pending rows drain normally.
 
 ## Active-Active Delivery
 
-Transactional row claims make active-active delivery safe at the delivery-row
-level. The remaining rollout question is process selection:
+Active-active delivery is safe at the row-claim level, but it should be enabled
+intentionally:
 
 - If `DELIVERY_OWNER_HOST` is set, only the exact matching hostname runs
   delivery workers.
-- If `DELIVERY_OWNER_HOST` is empty, every eligible `jetmon2` process with
-  `API_PORT > 0` and every `jetmon-deliverer` process runs delivery workers.
+- If `DELIVERY_OWNER_HOST` is empty, every eligible API process and every
+  `jetmon-deliverer` process can run delivery workers.
 
-Therefore, active-active standalone delivery should use process-specific
-configs:
+Do not clear `DELIVERY_OWNER_HOST` in a config shared by API hosts and
+deliverer hosts unless that mixed active-active state is the intended rollout.
+Prefer process-specific configs:
 
-- API hosts: set `DELIVERY_OWNER_HOST` to a non-matching guard value so they
-  serve API traffic without dispatching outbound delivery.
-- Deliverer hosts: leave `DELIVERY_OWNER_HOST` empty, or run one config per
-  deliverer host while keeping the guard disabled only for that process class.
-
-Do not clear `DELIVERY_OWNER_HOST` in a shared config that is also used by
-API-enabled `jetmon2` hosts unless the intended state is active-active delivery
-from both API hosts and standalone deliverer hosts.
+- API hosts: set `DELIVERY_OWNER_HOST` to a non-matching guard value.
+- Deliverer hosts: leave the guard empty only when standalone active-active is
+  approved, or use one owner value for conservative single-owner delivery.
 
 ## Rollout Checks
 
 Before enabling standalone delivery:
 
 - `bin/jetmon-deliverer version` reports the expected build.
-- `JETMON_CONFIG=/opt/jetmon2/config/deliverer.json bin/jetmon-deliverer
-  validate-config --require-owner-match --require-api-disabled` passes for the
-  deliverer-specific config while running with the same `DB_*` environment the
-  service will use.
-- `--require-email-delivery` is included when real alert-contact email delivery
-  is expected.
-- `JETMON_CONFIG=/opt/jetmon2/config/deliverer.json bin/jetmon-deliverer
-  delivery-check --since=15m --output=json` returns clean JSON for automation.
-- `systemd-analyze verify /etc/systemd/system/jetmon-deliverer.service` passes
-  on a staged host, or against an alternate deployment root, after
-  `/opt/jetmon2/bin/jetmon-deliverer` exists. The repository copy can report
-  missing `ExecStart` paths before packaging.
-- The process can connect to MySQL using the same schema as `jetmon2`.
-- `EMAIL_TRANSPORT` is set to `wpcom` or `smtp` in any environment where real
-  alert-contact emails should be delivered; `stub` is safe for dry runs.
-- `DELIVERY_OWNER_HOST` behavior is validated with one start on each process
-  class before production traffic.
+- `validate-config --require-owner-match --require-api-disabled` passes with
+  the service's real config and database credentials.
+- `--require-email-delivery` is used when email delivery must be live.
+- `delivery-check --since=15m --output=json` returns clean JSON for automation.
+- The deployment unit or Compose service uses the same config path that passed
+  validation.
+- MySQL connectivity and schema validation match the active `jetmon2` fleet.
+- Owner-host behavior has been verified on each process class before traffic.
 
 During rollout:
 
-- `delivery-check --since=15m` shows no sustained growth in pending rows.
-- `delivery-check --since=15m --max-due=0 --max-abandoned=0 --max-failed=0`
-  passes once the queue has drained and no new terminal failures are present.
-- Use `--require-recent-delivery` only when the rollout window is expected to
-  include at least one real webhook or alert-contact delivery. It is too strict
-  for quiet environments with no outbound dispatch.
-- Use `--require-recent-webhook-delivery` and
-  `--require-recent-alert-delivery` when each delivery family must prove a
-  successful send independently.
-- `OLDEST_PENDING_SEC` and `OLDEST_DUE_SEC` show queue age. A non-zero pending
-  count with a growing oldest age is a stronger signal than a one-time backlog
-  spike.
+- `delivery-check --since=15m` shows no sustained pending growth.
+- The strict gate passes once the queue has drained.
+- `OLDEST_PENDING_SEC` and `OLDEST_DUE_SEC` stay bounded. A growing oldest age is
+  a stronger signal than a one-time backlog spike.
 - Logs show only the intended process class running workers.
-- Webhook and alert-contact manual retry endpoints still work.
+- Use `--require-recent-delivery` only when the rollout window should include a
+  real delivery. Quiet environments can be healthy with no recent sends.
+- Use `--require-recent-webhook-delivery` and
+  `--require-recent-alert-delivery` when both delivery families must prove a
+  successful send independently.
 
-Example text output:
+Example output:
 
 ```text
 INFO deliverer_host="deliverer-01"
-INFO delivery_check_generated_at=2026-04-29T18:30:00Z
 INFO delivery_check_since=2026-04-29T18:15:00Z
 INFO delivery_owner_host="deliverer-01" matched; delivery workers enabled on this host
 KIND     PENDING  DUE_NOW  FUTURE_RETRY  DELIVERED_SINCE  ABANDONED_SINCE  FAILED_SINCE  OLDEST_PENDING_SEC  OLDEST_DUE_SEC
@@ -207,19 +156,19 @@ PASS delivery_check=ok
 
 After rollout:
 
-- Keep embedded delivery disabled on API hosts unless intentionally testing
-  active-active behavior.
-- Revisit `internal/webhooks` and `internal/alerting` duplication only after
-  standalone delivery has run long enough to expose real operational drift.
-- Plan WPCOM legacy notification migration into this process once alert-contact
+- Keep embedded delivery disabled on API hosts unless active-active delivery is
+  intentional.
+- Revisit `internal/webhooks` and `internal/alerting` duplication only after the
+  standalone process has enough production history to show real drift.
+- Plan WPCOM legacy notification migration into this process after alert-contact
   parity and recipient inventory are known.
 
 ## Failure Modes
 
 | Failure | Expected behavior | Operator action |
 |---|---|---|
-| Deliverer process exits | In-flight leases expire after the claim lock duration; rows become claimable again | Restart deliverer or roll back to embedded delivery |
+| Deliverer exits | Leases expire; rows become claimable again | Restart deliverer or roll back to embedded delivery |
 | Wrong owner hostname | Deliverer starts but idles | Fix `DELIVERY_OWNER_HOST` or process hostname/config |
-| Shared config accidentally clears owner guard | API hosts and deliverer hosts may all dispatch | Restore per-process configs; row claims prevent duplicate row claims but extra processes add load |
-| Email transport left as `stub` | Email alerts are logged but not sent | Set `EMAIL_TRANSPORT` and transport credentials, then restart |
-| Third-party outage | Rows retry on the documented ladder and eventually abandon | Fix destination or provider issue, then use manual retry endpoints |
+| Shared config clears owner guard | API and deliverer hosts may all dispatch | Restore per-process configs; row claims prevent duplicate row sends but load rises |
+| Email transport left as `stub` | Email alerts are logged but not sent | Set the real transport and credentials, then restart |
+| Third-party outage | Rows retry on the ladder and eventually abandon | Fix destination/provider issue, then use manual retry endpoints |
