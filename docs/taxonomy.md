@@ -1,6 +1,9 @@
-# Jetmon Test Taxonomy and Architecture Reference (v4)
+# Jetmon Detection Taxonomy
 
-A comprehensive reference covering what Jetmon monitors, how it organizes those checks, and the underlying state and event model. This consolidates the five-layer test taxonomy, the scope matrix, the site/endpoint hierarchy, the state vocabulary, and the event-sourced architecture into a single reference document.
+This reference covers what Jetmon monitors, how checks are grouped, and how
+findings are mapped into site/endpoint state. Detailed database schema lives in
+[data-model.md](data-model.md), and detailed event mechanics live in
+[events.md](events.md).
 
 **Scope of this document:** what Jetmon tests and how it models the results. Not covered: customer-facing UX, alert notification design, billing, or implementation details beyond architectural decisions. Those belong in separate documents.
 
@@ -330,152 +333,55 @@ Probe-based monitoring asks "is the site up from outside?" Reverse checks flip t
 
 ---
 
-## Part 2: The Data Model — Site, Endpoint, Check
+## Part 2: Site, Endpoint, And Check Model
 
-Jetmon uses a three-level hierarchy modeled on Atlassian Statuspage rather than the flat monitor model used by UptimeRobot and Pingdom. This hierarchy is the conceptual frame for everything else in this document.
+Jetmon uses a three-level hierarchy rather than a flat monitor model:
 
-### Entities
+- **Site:** the WordPress site a customer thinks they own.
+- **Endpoint:** a specific monitored URL or surface on that site.
+- **Check:** one probe or detector running against a site or endpoint.
 
-- **Site** — the top-level entity a customer mentally owns ("my WordPress site at example.com"). A site has one canonical domain and an associated Jetpack-connected WordPress installation.
-- **Endpoint** — a specific URL or surface being monitored on the site. Typical endpoints include the homepage, login page, REST API root, feed, sitemap, and any customer-specified URLs.
-- **Check** — an individual test running against a site or endpoint. Each check is one of the items from the five-layer taxonomy above.
+Some checks are site-level, such as domain expiration, DNS configuration,
+shared TLS certificate validity, and reverse checks. Others are endpoint-level,
+such as HTTP status, body patterns, TTFB, redirects, and headers. Keeping those
+separate prevents confusing states like "homepage down" being treated as the
+same fact as "whole site down."
 
-### Site-level vs. endpoint-level checks
-
-Some checks belong to the site as a whole; others belong to specific endpoints. This distinction is structural and affects the data model.
-
-**Site-level checks** apply regardless of which endpoint you probe:
-- Domain expiration
-- DNS configuration (A/AAAA records, CNAME chain)
-- TLS certificate validity (shared across endpoints on the same domain)
-- All Reverse Checks (wp-cron, PHP version, disk space, etc.)
-
-**Endpoint-level checks** are specific to a URL:
-- HTTP status code
-- Response body content patterns
-- TTFB and other per-request timing
-- Redirect behavior
-- Header anomalies
-
-Mixing these creates confusion ("my homepage is down but my site is up?"). The data model reflects this split explicitly: checks have a `target_type` of either `site` or `endpoint`, and site-level events cannot be attributed to a specific endpoint.
-
-### Rollup
-
-Site-level state rolls up from endpoint-level state, which rolls up from individual check results. Rollup rules are **explicit and configurable**, not hardcoded. Ship with sensible defaults (worst-child for critical endpoints, warning-promotion for non-critical ones) but let them be overridden per site. A site owner might reasonably say "the homepage being down means the site is down, but the feed being down is just Degraded."
-
-Specific rollup decisions to expose as config:
-- Which endpoints are "critical" (affect site state directly) vs. "non-critical" (promote to warning only)
-- Whether site-level check failures (cert, domain, DNS) always set site state or can be overridden per check type
-- How Reverse Check events roll up — typically these are their own category that surfaces independently of probe-based state
+Rollup is explicit: endpoint and check results roll up into site state by
+policy, not by hardcoded assumptions. Critical endpoints can affect site state
+directly, while non-critical endpoints can remain warnings or degradations.
+See [data-model.md](data-model.md) for the implemented schema and current
+rollout constraints.
 
 ---
 
-## Part 3: State Model and Event Architecture
+## Part 3: State And Event Model
 
-### State vocabulary
+Jetmon uses a multi-state vocabulary:
 
-Jetmon uses a multi-state vocabulary rather than binary up/down:
+- **Up:** all relevant checks passing.
+- **Warning:** attention needed, but not user-facing downtime.
+- **Degraded:** content is served, but some checks fail or exceed thresholds.
+- **Seems Down:** first failure detected, awaiting confirmation.
+- **Down:** confirmed failure on critical checks.
+- **Paused:** monitoring suspended.
+- **Maintenance:** maintenance window active.
+- **Unknown:** Jetmon cannot determine state without blaming the customer site.
 
-- **Up** — all checks passing
-- **Warning** — something needs attention but isn't user-facing yet (cert expiring in 14 days, WordPress version behind, wp-cron backing up)
-- **Degraded** — some checks failing or timing thresholds exceeded, but site is serving content (missing security headers, slow TTFB, one of several endpoints failing)
-- **Seems Down** — first failure detected, awaiting verifier confirmation (transient, auto-resolves to Down or Up within minutes)
-- **Down** — confirmed failures on critical checks
-- **Paused** — monitoring suspended by user
-- **Maintenance** — scheduled maintenance window active
-- **Unknown** — monitor couldn't determine state (monitor-side failure, agent not reporting, first check pending)
+`Unknown` is deliberately separate from `Down`: monitor-side failures, network
+loss from a probe region, or agent silence must not be reported as customer-site
+downtime.
 
-The Warning/Degraded split matters because they route differently in alerting: Degraded might page an on-call engineer; Warning is a daily-digest email. UptimeRobot's API omits this distinction and users frequently ask for it — worth building in from the start.
+Events are the source of truth. The current incident row lives in
+`jetpack_monitor_events`; every mutation is appended to
+`jetpack_monitor_event_transitions` in the same transaction. Severity is numeric
+and comparable. State is human-readable lifecycle. A `Seems Down` incident that
+is verifier-confirmed updates in place to `Down`, preserving the original
+`started_at`.
 
-The Unknown state is critical for honesty: **monitor-side failures should never be reported as customer-site downtime**. If the probe itself crashes, the region loses network, the rate limit hits, or the Jetpack agent stops reporting — these are Unknown, not Down. Conflating these erodes trust quickly.
-
-### Event-sourced model
-
-Jetmon uses an event-sourced architecture where **events are the source of truth** and state is derived.
-
-**Why events over a single state field:**
-
-1. **Multiple concurrent issues.** A site can have an expiring cert (Warning), a failing endpoint (Degraded), and wp-cron stopped (Warning) all at once. A state field collapses this to one value and loses the others. Events keep all three distinct, visible, and separately resolvable.
-
-2. **Incident timeline.** "Was the cert expiration warning active before or after the first 5xx spike?" is a standard postmortem question. Events with start/end timestamps answer it natively.
-
-3. **Root-cause attribution.** Failures at one layer often originate at another. Events can link causally: the Layer 3 "CDN 522" event references the Layer 1 "origin unreachable" event as its likely cause.
-
-### Schema shape
-
-```
-events (current state — one row per open incident, frozen on close):
-  id
-  site_id (blog_id)
-  endpoint_id (nullable — null for site-level events)
-  check_type
-  discriminator (nullable — tiebreaker for tuples that can have multiple concurrent failures)
-  severity (numeric, comparable)
-  state (human-readable category)
-  started_at (frozen across severity/state changes)
-  ended_at (nullable — null for active events)
-  cause_event_id (nullable — causal link, separate from hierarchical rollup)
-  resolution_reason (nullable — why the event closed)
-  metadata (JSON — check-specific data)
-  dedup_key (generated, NULL when closed; UNIQUE — enforces one-open-per-tuple)
-
-event_transitions (append-only history of every event mutation):
-  id
-  event_id
-  site_id (blog_id, denormalized for SLA queries)
-  severity_before, severity_after
-  state_before, state_after
-  reason (opened, severity_escalation, verifier_confirmed, false_alarm, …)
-  source (local, veriflier:<region>, operator:<user>, system:<reason>)
-  metadata (JSON — transition-specific context)
-  changed_at
-
-sites (includes derived state for fast reads):
-  id
-  ...
-  current_state
-  current_state_updated_at
-  active_event_count
-  worst_active_severity
-```
-
-**Why two tables, not one mutable events table:** keeping current state in `events` and history in `event_transitions` lets you serve "current state of site X" with a single-row read on `events`, and "how did incident Y evolve" with a narrow `WHERE event_id = ?` scan on `event_transitions`. Both queries are common, both want different shapes, and a single mutable-history table compromises one or the other.
-
-The invariant is that **every write to `events` is paired with one row inserted into `event_transitions` in the same transaction**. This is enforced in code by routing all event mutations through a single `eventstore` package. Replaying `event_transitions` in `changed_at` order reconstructs any event's current `severity` and `state`, so the live `events` row is fully rebuildable from the history table.
-
-**Key design decisions:**
-
-- **Events are the source of truth across two tables.** `events` holds current state (mutable while open, frozen on close); `event_transitions` is the append-only history of every change. The site row stores a denormalized projection for fast reads. All three update transactionally — the projection should never write without a corresponding event write, and an event write must always be accompanied by a transition row.
-
-- **Severity and state are separate fields.** Severity is the numeric, comparable value used for rollup (e.g., 1=Warning, 2=Degraded, 3=Seems Down, 4=Down). State is the human-readable category. Keeping them separate lets you add new states without breaking rollup logic.
-
-- **Open events are updated in place, not replaced.** A Seems Down event that gets verifier-confirmed to Down updates the same row with a severity change. The event's `started_at` remains the original detection timestamp. This keeps "how long has this been broken" honest — incident duration starts from first failure, not from verifier confirmation.
-
-- **Event identity is idempotent.** If the same check fails twice in a row, it's the same event, not two events. Key events by `(site_id, endpoint_id, check_type, [optional discriminator])` so repeated detection of the same failure updates the existing open event rather than creating a new one. Deduplication logic lives in the shared probe runner, not in individual checks.
-
-- **Resolution reason is recorded on close.** When an event closes, record why: the check started passing, the user acknowledged and dismissed it, a maintenance window swallowed it, it was superseded by a broader event. This affects uptime calculations and report accuracy.
-
-- **Causal links are separate from hierarchical rollup.** An endpoint-level event rolls up to site level (hierarchy). A Layer-3 CDN event caused by a Layer-1 DNS event is a different relationship (causation). Keep these as two separate fields. Conflating them creates weird bugs where dismissing a cause accidentally dismisses a rollup, or vice versa.
-
-### The Seems Down flow
-
-The Seems Down state is the key transient between first failure detection and verifier confirmation, and the event model accommodates it cleanly:
-
-1. First failure detected → open event at severity Seems Down, `started_at` = now
-2. Verifier runs (retry-on-failure, multi-location confirmation, etc.)
-3a. If verifier confirms failure → **update the same event** to severity Down, `started_at` unchanged
-3b. If verifier succeeds → **close the event** with `resolution_reason = "false_positive"`, `ended_at` = now
-
-This pattern makes "events that opened at Seems Down and closed without promotion" a direct measure of detection noise, useful for tuning false-positive rates.
-
-### Check-level events vs. site-level state events
-
-Two granularities of events, both stored:
-
-- **Check-level events** answer "what specific thing broke?" — these are the primary events described above, one per failing check.
-- **Site-level state events** answer "when did the customer experience degradation?" — these record transitions in the derived site state ("Site was Down from 14:02 to 14:17"). They're derived from check-level events but stored as their own first-class records for historical timeline views, uptime percentage calculations, and SLA reporting.
-
-The rule: never write derived state without writing (or closing) the corresponding events. If the invariant holds, the representations can't drift. If the derived state is ever suspect, it can be recomputed from events and compared.
+Full event semantics, schema fields, transition reasons, metadata, and
+invariants live in [events.md](events.md). Architectural rationale is captured
+in [ADR-0001](adr/0001-event-sourced-state-model.md).
 
 ---
 
@@ -569,25 +475,19 @@ The taxonomy above should compose cleanly with any of these rather than trying t
 
 ---
 
-## Appendix: Decisions to Remember
+## Appendix: Decisions To Remember
 
-A consolidated list of architectural decisions made across the conversation history of this project, for quick reference:
-
-1. **Five-layer taxonomy (plus Reverse) organized by where the failure originates**, not by severity or scope.
-2. **Layer boundaries are fuzzy by design**; events are tagged by where detected, not where originated, with causal links for root-cause attribution.
-3. **Site → Endpoint → Check hierarchy** (Statuspage model), not flat monitors (UptimeRobot model).
-4. **Site-level checks vs. endpoint-level checks are structurally distinct** in the data model.
-5. **Rollup rules are explicit and configurable per site**, not hardcoded.
-6. **Multi-state vocabulary:** Up, Warning, Degraded, Seems Down, Down, Paused, Maintenance, Unknown.
-7. **Unknown state exists specifically to prevent monitor-side failures from being reported as customer-site downtime.**
-8. **Event-sourced architecture** across two tables: `events` for current state, `event_transitions` for append-only history of every mutation. Derived site state is denormalized onto the site row for read performance. The `eventstore` package is the sole writer; every event mutation also writes a transition row in the same transaction.
-9. **Severity and state are separate fields**; severity is numeric and comparable, state is human-readable.
-10. **Seems Down promotes in place** to Down on verifier confirmation; `started_at` stays at first-failure time.
-11. **Event identity is idempotent** via `(site_id, endpoint_id, check_type, discriminator)`.
-12. **Deduplication lives in the shared probe runner**, not in individual checks.
-13. **Resolution reason is recorded on event close** for accurate uptime reporting.
-14. **Causal links and hierarchical rollup are separate fields**.
-15. **Both check-level events and site-level state events are stored**, at different granularities.
-16. **Vantage-point ID is in the schema from v1** even though v1 is single-region.
-17. **Timeouts are configurable per site**, not global.
-18. **Error types have stable enum values**, not just strings.
+- Organize checks by where Jetmon observes the failure, not where root cause is
+  eventually found.
+- Keep layer, scope, and severity separate. They answer different operational
+  questions.
+- Model sites, endpoints, and checks separately.
+- Keep `Unknown` separate from `Down`.
+- Treat events as source of truth and keep legacy site status as a projection
+  during rollout.
+- Keep severity numeric and state human-readable.
+- Promote `Seems Down` to `Down` in place after Veriflier confirmation.
+- Record resolution reason on close.
+- Keep causal links separate from hierarchical rollup.
+- Make timeouts and policy decisions per-site where practical.
+- Prefer stable enum values for error types over free-text strings.

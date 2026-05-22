@@ -283,7 +283,7 @@ Rolling updates require no simultaneous restart of all hosts and leave no sites 
 
 ## Architectural Decisions — Event and State Model
 
-These decisions govern how Jetmon models site state. They must be maintained consistently across all changes. Full design rationale is in [`docs/taxonomy.md`](docs/taxonomy.md) (Parts 2–3) and [`docs/events.md`](docs/events.md).
+These decisions govern how Jetmon models site state. They must be maintained consistently across all changes. Full design rationale is in [`docs/events.md`](docs/events.md), [`docs/data-model.md`](docs/data-model.md), and [`docs/adr/0001-event-sourced-state-model.md`](docs/adr/0001-event-sourced-state-model.md). The detection vocabulary and scope model live in [`docs/taxonomy.md`](docs/taxonomy.md).
 
 **Events are the source of truth.** Site status is event-sourced across two tables: `jetpack_monitor_events` (one row per incident, holding the current severity/state/metadata) and `jetpack_monitor_event_transitions` (append-only history of every mutation). The site row stores a denormalized projection for read performance. Update events, transitions, and the projection in the same transaction — they must not drift. If the projection is ever suspect, rebuild it from the events tables.
 
