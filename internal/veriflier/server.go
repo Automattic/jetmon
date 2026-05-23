@@ -288,30 +288,42 @@ func (s *Server) handleV2Check(w http.ResponseWriter, r *http.Request) {
 		defer cancel()
 	}
 
+	results := make([]CheckV2Result, len(req.Requests))
 	legacyReqs := make([]CheckRequest, 0, len(req.Requests))
-	for _, site := range req.Requests {
+	legacyResultIndexes := make([]int, 0, len(req.Requests))
+	for i, site := range req.Requests {
 		legacyReq, err := v2RequestToLegacy(site)
 		if err != nil {
+			var perRequestErr *perRequestValidationError
+			if errors.As(err, &perRequestErr) {
+				results[i] = s.v2RequestErrorResult(site)
+				continue
+			}
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		legacyReqs = append(legacyReqs, legacyReq)
+		legacyResultIndexes = append(legacyResultIndexes, i)
 	}
 
-	probeResults, err := s.executor.ExecuteBatch(ctx, legacyReqs)
-	if err != nil {
-		if errors.Is(err, ErrOverloaded) {
-			incrementMetric("verifier.checks.overloaded.count", 1)
-			writeV2Error(w, http.StatusServiceUnavailable, OutcomeAgentOverloaded, "veriflier overloaded")
+	if len(legacyReqs) > 0 {
+		probeResults, err := s.executor.ExecuteBatch(ctx, legacyReqs)
+		if err != nil {
+			if errors.Is(err, ErrOverloaded) {
+				incrementMetric("verifier.checks.overloaded.count", 1)
+				writeV2Error(w, http.StatusServiceUnavailable, OutcomeAgentOverloaded, "veriflier overloaded")
+				return
+			}
+			writeV2Error(w, http.StatusGatewayTimeout, OutcomeUnknown, err.Error())
 			return
 		}
-		writeV2Error(w, http.StatusGatewayTimeout, OutcomeUnknown, err.Error())
-		return
-	}
 
-	results := make([]CheckV2Result, 0, len(probeResults))
-	for _, probeResult := range probeResults {
-		results = append(results, s.v2Result(probeResult))
+		for i, probeResult := range probeResults {
+			if i >= len(legacyResultIndexes) {
+				break
+			}
+			results[legacyResultIndexes[i]] = s.v2Result(probeResult)
+		}
 	}
 
 	incrementMetric("verifier.checks.received.count", len(req.Requests))
@@ -406,9 +418,44 @@ func (s *Server) v2Result(res ProbeResult) CheckV2Result {
 	}
 }
 
+func (s *Server) v2RequestErrorResult(req CheckV2Request) CheckV2Result {
+	requestID := req.RequestID
+	if requestID == "" {
+		requestID = NewRequestID()
+	}
+	return CheckV2Result{
+		RequestID: requestID,
+		BlogID:    req.BlogID,
+		URL:       req.URL,
+		VantageID: s.vantage.ID,
+		AgentID:   s.agent.ID,
+		Outcome:   OutcomeUnknown,
+		Success:   false,
+		ErrorCode: checkerErrorProbeSafety,
+	}
+}
+
+type perRequestValidationError struct {
+	err error
+}
+
+func (e *perRequestValidationError) Error() string {
+	if e == nil || e.err == nil {
+		return ""
+	}
+	return e.err.Error()
+}
+
+func (e *perRequestValidationError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
 func v2RequestToLegacy(req CheckV2Request) (CheckRequest, error) {
 	if err := validateCheckURL(req.URL); err != nil {
-		return CheckRequest{}, err
+		return CheckRequest{}, &perRequestValidationError{err: err}
 	}
 	method, err := checkmode.NormalizeMethod(req.Method, checkmode.MethodGET)
 	if err != nil {
