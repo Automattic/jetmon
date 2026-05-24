@@ -334,7 +334,9 @@ observed rate/latency, and avoids per-probe healthy freshness writes.
 - Notes: `legacy` matches v1-style reachability. `simple_http` checks
   status/connect/timeout using the selected method. `full` enables v2 HTTP,
   body, redirect, TLS, keyword, forbidden-content, and conservative semantic
-  HTML detections such as WordPress error pages and near-empty HTML responses.
+  HTML detections such as WordPress fatal/database/configuration pages, default
+  virtual-host pages, host suspension pages, Jetpack probe echo pages, and
+  near-empty HTML responses.
   HEAD checks automatically cap the effective profile to `simple_http` because
   body checks cannot run against HEAD responses.
 

@@ -98,7 +98,8 @@ Jetmon 2 currently detects and records:
   resolver failure.
 - Staged `HEAD` and `GET` probe behavior for rollout-safe migration.
 - Full-profile body checks for required content, forbidden content, common
-  WordPress error pages, and near-empty HTML responses.
+  WordPress fatal/database/configuration pages, default virtual-host pages, host
+  suspension pages, Jetpack probe echo pages, and near-empty HTML responses.
 - Redirect policy failures or warnings.
 - TLS certificate expiry warnings.
 - Deprecated TLS protocol observations.

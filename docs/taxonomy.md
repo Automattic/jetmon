@@ -231,13 +231,15 @@ The response is valid HTTP — but is the payload actually correct? Layer 5 spli
 - **[v1]** "Error establishing a database connection" served as HTML with 200
 - **[v1]** PHP fatal errors or stack traces in response body
 - **[v1]** White-screen-of-death (empty or near-empty body, 200 OK)
+- **[v1]** WordPress setup/configuration page served to visitors
 - **[v2]** Python/Ruby/Node tracebacks leaked to response body
 
 ### Correctness: maintenance and transitional states
-- **[v2]** Maintenance mode page served with 200 (should be 503 with Retry-After)
+- **[v1]** Maintenance mode page served with 200 (should be 503 with Retry-After)
+- **[v1]** Holding page from registrar/host
+- **[v1]** Default server welcome page (nginx, Apache, IIS default)
+- **[v1]** Jetpack probe echo page served as the homepage
 - **[v2]** "Coming soon" or placeholder content served unexpectedly
-- **[v2]** Holding page from registrar/host
-- **[v2]** Default server welcome page (nginx, Apache, IIS default)
 
 ### Correctness: security-relevant content
 - **[v2]** Defacement (body diff against baseline exceeds threshold)

@@ -118,9 +118,11 @@ Open work:
 
 Open work:
 
-- [ ] Add a conservative body-size or near-empty-body detector as a scoped
-  follow-up before full content baselining. This should catch white-screen and
-  empty-body failures while keeping alerts explainable.
+- [x] Add conservative semantic body detectors for common WordPress and hosting
+  failure pages before full content baselining. The shipped detector set catches
+  WordPress database/fatal/configuration/maintenance pages, missing MySQL
+  extension pages, default virtual-host pages, account-suspended pages, Jetpack
+  probe echo pages, and near-empty HTML while keeping alerts explainable.
 - [ ] Design a content-integrity baseline mode separately from explicit required
   or forbidden patterns. Production users need a controlled way to detect large
   unexpected body changes without turning normal content churn into false

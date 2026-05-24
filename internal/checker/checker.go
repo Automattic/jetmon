@@ -85,6 +85,21 @@ var semanticFailurePatterns = []struct {
 		rule:   "semantic_wp_maintenance",
 		detail: "WordPress maintenance page returned with HTTP 200",
 	},
+	{
+		needle: "your php installation appears to be missing the mysql extension which is required by wordpress",
+		rule:   "semantic_wp_missing_mysql_extension",
+		detail: "WordPress missing MySQL extension page returned with HTTP 200",
+	},
+	{
+		needle: "hi jetpack! all systems go.",
+		rule:   "semantic_jetpack_probe_echo",
+		detail: "Jetpack probe response was served as the homepage with HTTP 200",
+	},
+	{
+		needle: "welcome to wordpress. before getting started",
+		rule:   "semantic_wp_setup_config",
+		detail: "WordPress setup/configuration page returned with HTTP 200",
+	},
 }
 
 // RedirectPolicy controls how redirect responses are handled.
@@ -1387,12 +1402,72 @@ func semanticBodyFailure(resp *http.Response, body []byte, bytesRead int64) (str
 			return pattern.rule, pattern.detail
 		}
 	}
+	if rule, detail := compoundSemanticBodyFailure(lowerBody); rule != "" {
+		return rule, detail
+	}
 
 	if looksLikeHTML(resp.Header.Get("Content-Type"), lowerBody) && bodyLooksNearEmptyHTML(bodyText, bytesRead) {
 		return "semantic_empty_html", "empty or near-empty HTML response body returned with HTTP 200"
 	}
 
 	return "", ""
+}
+
+func compoundSemanticBodyFailure(lowerBody string) (string, string) {
+	if looksLikeWordPressPHPError(lowerBody) {
+		return "semantic_wp_php_error", "WordPress PHP error output returned with HTTP 200"
+	}
+	if strings.Contains(lowerBody, "apache2 ubuntu default page") && strings.Contains(lowerBody, "it works") {
+		return "semantic_default_vhost_apache", "Apache default virtual-host page returned with HTTP 200"
+	}
+	if strings.Contains(lowerBody, "welcome to nginx!") && strings.Contains(lowerBody, "nginx web server is successfully installed") {
+		return "semantic_default_vhost_nginx", "nginx default virtual-host page returned with HTTP 200"
+	}
+	if looksLikeAccountSuspendedPage(lowerBody) {
+		return "semantic_host_account_suspended", "hosting account suspension page returned with HTTP 200"
+	}
+	return "", ""
+}
+
+func looksLikeWordPressPHPError(lowerBody string) bool {
+	if !strings.Contains(lowerBody, " on line ") {
+		return false
+	}
+	if !strings.Contains(lowerBody, "fatal error") &&
+		!(strings.Contains(lowerBody, "parse error:") && strings.Contains(lowerBody, "syntax error")) {
+		return false
+	}
+	return containsWordPressPathHint(lowerBody)
+}
+
+func containsWordPressPathHint(lowerBody string) bool {
+	for _, hint := range []string{
+		"/wp-content/",
+		"/wp-includes/",
+		"/wp-admin/",
+		"wp-config.php",
+		"wp-settings.php",
+		"wp-load.php",
+		"wp-blog-header.php",
+	} {
+		if strings.Contains(lowerBody, hint) {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeAccountSuspendedPage(lowerBody string) bool {
+	if strings.Contains(lowerBody, "cgi-sys/suspendedpage.cgi") {
+		return true
+	}
+	if !strings.Contains(lowerBody, "account has been suspended") {
+		return false
+	}
+	return strings.Contains(lowerBody, "contact your hosting provider") ||
+		strings.Contains(lowerBody, "contact your web host") ||
+		strings.Contains(lowerBody, "<title>account suspended</title>") ||
+		strings.Contains(lowerBody, "<title>this account has been suspended</title>")
 }
 
 func looksLikeHTML(contentType, lowerBody string) bool {

@@ -669,6 +669,104 @@ func TestCheckFullProfileDetectsWordPressDatabaseErrorBody(t *testing.T) {
 	}
 }
 
+func TestCheckFullProfileDetectsCommonWordPressAndHostingSemanticFailures(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		rule string
+	}{
+		{
+			name: "missing mysql extension",
+			body: "<html><body>Your PHP installation appears to be missing the MySQL extension which is required by WordPress.</body></html>",
+			rule: "semantic_wp_missing_mysql_extension",
+		},
+		{
+			name: "php fatal with wordpress path",
+			body: "<br /><b>Fatal error</b>: Uncaught Error: Call to undefined function broken_plugin() in /srv/www/example.com/wp-content/plugins/broken/plugin.php on line 42",
+			rule: "semantic_wp_php_error",
+		},
+		{
+			name: "php parse error with wordpress path",
+			body: "Parse error: syntax error, unexpected token \"}\" in /srv/www/example.com/wp-includes/functions.php on line 123",
+			rule: "semantic_wp_php_error",
+		},
+		{
+			name: "apache default vhost",
+			body: "<html><head><title>Apache2 Ubuntu Default Page: It works</title></head><body>It works!</body></html>",
+			rule: "semantic_default_vhost_apache",
+		},
+		{
+			name: "nginx default vhost",
+			body: "<html><head><title>Welcome to nginx!</title></head><body>If you see this page, the nginx web server is successfully installed and working.</body></html>",
+			rule: "semantic_default_vhost_nginx",
+		},
+		{
+			name: "hosting account suspended",
+			body: "<html><head><title>Account Suspended</title></head><body>This account has been suspended. Contact your hosting provider for more information.</body></html>",
+			rule: "semantic_host_account_suspended",
+		},
+		{
+			name: "jetpack probe echo",
+			body: "<html><body>Hi Jetpack! All Systems go.</body></html>",
+			rule: "semantic_jetpack_probe_echo",
+		},
+		{
+			name: "wordpress setup config",
+			body: "<html><body><h1>Welcome to WordPress. Before getting started, we need some information on the database.</h1></body></html>",
+			rule: "semantic_wp_setup_config",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+
+			res := Check(context.Background(), Request{
+				BlogID:           1,
+				URL:              srv.URL,
+				TimeoutSeconds:   5,
+				DetectionProfile: "full",
+			})
+			if res.Success {
+				t.Fatalf("Success = true for semantic failure body, want false; result=%+v", res)
+			}
+			if res.ErrorCode != ErrorKeyword {
+				t.Fatalf("ErrorCode = %d, want ErrorKeyword", res.ErrorCode)
+			}
+			if res.KeywordRule != tt.rule {
+				t.Fatalf("KeywordRule = %q, want %q", res.KeywordRule, tt.rule)
+			}
+		})
+	}
+}
+
+func TestCheckFullProfileDoesNotTreatGenericFatalErrorArticleAsSemanticFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("<html><body><article>How to troubleshoot a fatal error: look at your logs and fix the plugin.</article></body></html>"))
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{
+		BlogID:           1,
+		URL:              srv.URL,
+		TimeoutSeconds:   5,
+		DetectionProfile: "full",
+	})
+	if !res.Success {
+		t.Fatalf("Success = false for generic fatal error article, want true; result=%+v", res)
+	}
+	if res.ErrorCode != ErrorNone {
+		t.Fatalf("ErrorCode = %d, want ErrorNone", res.ErrorCode)
+	}
+}
+
 func TestCheckFullProfileDetectsNearEmptyHTMLBody(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
