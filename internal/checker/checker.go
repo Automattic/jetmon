@@ -121,6 +121,11 @@ var semanticFailurePatterns = []struct {
 		detail: "WordPress database repair page returned with HTTP 200",
 	},
 	{
+		needle: "database tables are missing",
+		rule:   "semantic_wp_db_missing_tables",
+		detail: "WordPress missing database tables page returned with HTTP 200",
+	},
+	{
 		needle: "database update required",
 		rule:   "semantic_wp_db_update_required",
 		detail: "WordPress database update page returned with HTTP 200",
@@ -1451,6 +1456,12 @@ func compoundSemanticBodyFailure(lowerBody string) (string, string) {
 	if strings.Contains(lowerBody, "hi jetpack!") && strings.Contains(lowerBody, "all systems go") {
 		return "semantic_jetpack_probe_echo", "Jetpack probe response was served as the homepage with HTTP 200"
 	}
+	if looksLikeWordPressDatabaseCrash(lowerBody) {
+		return "semantic_wp_db_table_crashed", "WordPress database table crash output returned with HTTP 200"
+	}
+	if looksLikeWordPressUnsupportedDatabase(lowerBody) {
+		return "semantic_wp_unsupported_database", "WordPress unsupported database version page returned with HTTP 200"
+	}
 	if strings.Contains(lowerBody, "apache2 ubuntu default page") && strings.Contains(lowerBody, "it works") {
 		return "semantic_default_vhost_apache", "Apache default virtual-host page returned with HTTP 200"
 	}
@@ -1478,6 +1489,24 @@ func looksLikeWordPressPHPError(lowerBody string) bool {
 		return false
 	}
 	return containsWordPressPathHint(lowerBody)
+}
+
+func looksLikeWordPressDatabaseCrash(lowerBody string) bool {
+	return strings.Contains(lowerBody, "wordpress database error") &&
+		strings.Contains(lowerBody, "marked as crashed") &&
+		(strings.Contains(lowerBody, "should be repaired") || strings.Contains(lowerBody, "repair failed"))
+}
+
+func looksLikeWordPressUnsupportedDatabase(lowerBody string) bool {
+	if !strings.Contains(lowerBody, "wordpress") || !strings.Contains(lowerBody, "requires") {
+		return false
+	}
+	if !strings.Contains(lowerBody, "mysql") && !strings.Contains(lowerBody, "mariadb") {
+		return false
+	}
+	return strings.Contains(lowerBody, "error:") ||
+		strings.Contains(lowerBody, "you are running") ||
+		strings.Contains(lowerBody, "your server is running")
 }
 
 func containsWordPressPathHint(lowerBody string) bool {

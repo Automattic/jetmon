@@ -731,6 +731,16 @@ func TestCheckFullProfileDetectsCommonWordPressAndHostingSemanticFailures(t *tes
 			rule: "semantic_wp_db_repair",
 		},
 		{
+			name: "database tables missing",
+			body: "<html><body><p><strong>Database tables are missing.</strong> This means that your host's database server is not running, WordPress was not installed properly, or someone deleted <code>wp_blogs</code>.</p></body></html>",
+			rule: "semantic_wp_db_missing_tables",
+		},
+		{
+			name: "database table marked crashed",
+			body: "WordPress database error Table './example/wp_options' is marked as crashed and should be repaired for query SELECT option_value FROM wp_options",
+			rule: "semantic_wp_db_table_crashed",
+		},
+		{
 			name: "database update required",
 			body: "<html><head><title>Database Update Required</title></head><body><h1>Database Update Required</h1><p>WordPress has been updated! Before we send you on your way, we have to update your database.</p></body></html>",
 			rule: "semantic_wp_db_update_required",
@@ -739,6 +749,11 @@ func TestCheckFullProfileDetectsCommonWordPressAndHostingSemanticFailures(t *tes
 			name: "unsupported php version",
 			body: "<html><body>Your server is running PHP version 7.0.33 but WordPress requires at least 7.2.24.</body></html>",
 			rule: "semantic_wp_unsupported_php",
+		},
+		{
+			name: "unsupported database version",
+			body: "<html><body><strong>Error:</strong> WordPress 6.7 requires MySQL 8.0 or higher. You are running 5.7.</body></html>",
+			rule: "semantic_wp_unsupported_database",
 		},
 		{
 			name: "apache default vhost",
