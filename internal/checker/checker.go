@@ -1462,6 +1462,9 @@ func compoundSemanticBodyFailure(lowerBody string) (string, string) {
 	if looksLikeWordPressUnsupportedDatabase(lowerBody) {
 		return "semantic_wp_unsupported_database", "WordPress unsupported database version page returned with HTTP 200"
 	}
+	if looksLikeWordPressRedisConnectionError(lowerBody) {
+		return "semantic_wp_redis_connection", "WordPress Redis object-cache connection error returned with HTTP 200"
+	}
 	if strings.Contains(lowerBody, "apache2 ubuntu default page") && strings.Contains(lowerBody, "it works") {
 		return "semantic_default_vhost_apache", "Apache default virtual-host page returned with HTTP 200"
 	}
@@ -1507,6 +1510,18 @@ func looksLikeWordPressUnsupportedDatabase(lowerBody string) bool {
 	return strings.Contains(lowerBody, "error:") ||
 		strings.Contains(lowerBody, "you are running") ||
 		strings.Contains(lowerBody, "your server is running")
+}
+
+func looksLikeWordPressRedisConnectionError(lowerBody string) bool {
+	if !strings.Contains(lowerBody, "error establishing a redis connection") &&
+		!strings.Contains(lowerBody, "error establishing connection. to disable redis") {
+		return false
+	}
+	return strings.Contains(lowerBody, "wordpress is unable to establish a connection to redis") ||
+		strings.Contains(lowerBody, "object-cache.php") ||
+		strings.Contains(lowerBody, "/wp-content/") ||
+		strings.Contains(lowerBody, "redis object cache") ||
+		strings.Contains(lowerBody, "wp_redis")
 }
 
 func containsWordPressPathHint(lowerBody string) bool {

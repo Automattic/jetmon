@@ -756,6 +756,11 @@ func TestCheckFullProfileDetectsCommonWordPressAndHostingSemanticFailures(t *tes
 			rule: "semantic_wp_unsupported_database",
 		},
 		{
+			name: "redis object cache connection error",
+			body: "<html><body><h1>Error establishing a Redis connection</h1><p>WordPress is unable to establish a connection to Redis.</p><p>To disable Redis, delete the <code>object-cache.php</code> file in the <code>/wp-content/</code> directory.</p></body></html>",
+			rule: "semantic_wp_redis_connection",
+		},
+		{
 			name: "apache default vhost",
 			body: "<html><head><title>Apache2 Ubuntu Default Page: It works</title></head><body>It works!</body></html>",
 			rule: "semantic_default_vhost_apache",
@@ -829,7 +834,7 @@ func TestCheckFullProfileDoesNotTreatGenericFatalErrorArticleAsSemanticFailure(t
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("<html><body><article>How to troubleshoot a fatal error: look at your logs and fix the plugin.</article></body></html>"))
+		_, _ = w.Write([]byte("<html><body><article>How to troubleshoot a fatal error: look at your logs and fix the plugin.</article><article>How to fix Error establishing a Redis connection after a migration.</article></body></html>"))
 	}))
 	defer srv.Close()
 
