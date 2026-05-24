@@ -92,9 +92,10 @@ A `HEAD` request automatically caps the effective profile to `simple_http`.
 Body-based keyword and forbidden-content checks require `GET`. In `GET` +
 `full`, Jetmon also applies conservative semantic body checks for successful
 HTML responses, including common WordPress database repair, fatal PHP,
-unsupported PHP, maintenance, setup/configuration, and critical-error pages,
-default virtual-host pages, host suspension pages, Jetpack probe echo pages, and
-near-empty HTML documents. Those checks are intentionally not active in
+unsupported PHP/database, Redis object-cache connection errors, maintenance,
+setup/configuration, and critical-error pages, default virtual-host pages, host
+suspension pages, Jetpack probe echo pages, and near-empty HTML documents. Those
+checks are intentionally not active in
 `HEAD`/legacy or `GET`/`simple_http` so rollout cohorts can separate method
 migration from the full v2 detection surface.
 
