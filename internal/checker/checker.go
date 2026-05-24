@@ -44,6 +44,7 @@ const (
 const (
 	maxBodyIntegrityBytes      int64 = 64 << 10
 	maxKeywordBodyBytes        int64 = 1 << 20
+	maxSemanticBodyPrefixBytes       = 4 << 10
 	maxResultURLDetailBytes          = 2048
 	maxResponseHeaderBytes     int64 = 64 << 10
 	checkDNSCacheTTL                 = 15 * time.Minute
@@ -58,6 +59,33 @@ const (
 
 var errBodyReadBudgetExceeded = errors.New("response body read budget exceeded")
 var errProbeSafetyBlock = errors.New("probe safety block")
+
+var semanticFailurePatterns = []struct {
+	needle string
+	rule   string
+	detail string
+}{
+	{
+		needle: "error establishing a database connection",
+		rule:   "semantic_wp_db_error",
+		detail: "WordPress database error page returned with HTTP 200",
+	},
+	{
+		needle: "there has been a critical error on this website",
+		rule:   "semantic_wp_critical_error",
+		detail: "WordPress critical error page returned with HTTP 200",
+	},
+	{
+		needle: "this site is experiencing technical difficulties",
+		rule:   "semantic_wp_technical_difficulties",
+		detail: "WordPress technical difficulties page returned with HTTP 200",
+	},
+	{
+		needle: "briefly unavailable for scheduled maintenance",
+		rule:   "semantic_wp_maintenance",
+		detail: "WordPress maintenance page returned with HTTP 200",
+	},
+}
 
 // RedirectPolicy controls how redirect responses are handled.
 type RedirectPolicy string
@@ -1107,6 +1135,12 @@ func Check(ctx context.Context, req Request) Result {
 			res.ErrorDetail = res.BodyReadError
 			return res
 		}
+		if rule, detail := semanticBodyFailure(resp, body, bodyRead.BytesRead); rule != "" {
+			res.KeywordRule = rule
+			res.ErrorCode = ErrorKeyword
+			res.ErrorDetail = detail
+			return res
+		}
 
 		// Keyword check uses the same bounded body read as integrity checks.
 		if needsBody {
@@ -1263,11 +1297,13 @@ func readResponseBody(resp *http.Response, needKeyword bool, req Request) bodyRe
 	stopBudget := startBodyReadBudget(resp.Body, responseBodyReadBudget(mode, needKeyword, req))
 
 	if !needKeyword {
-		n, err := io.Copy(io.Discard, io.LimitReader(resp.Body, limit+1))
+		prefix := &bodyPrefixCapture{limit: maxSemanticBodyPrefixBytes}
+		n, err := io.Copy(io.MultiWriter(io.Discard, prefix), io.LimitReader(resp.Body, limit+1))
 		if stopBodyReadBudget(stopBudget) {
 			err = bodyReadBudgetError(err)
 		}
 		result := bodyReadResult{
+			Body:          prefix.Bytes(),
 			Err:           err,
 			Mode:          mode,
 			BytesRead:     n,
@@ -1309,6 +1345,91 @@ func readResponseBody(resp *http.Response, needKeyword bool, req Request) bodyRe
 		return result
 	}
 	return result
+}
+
+type bodyPrefixCapture struct {
+	buf   []byte
+	limit int
+}
+
+func (c *bodyPrefixCapture) Write(p []byte) (int, error) {
+	if c == nil || c.limit <= 0 {
+		return len(p), nil
+	}
+	if len(c.buf) < c.limit {
+		remaining := c.limit - len(c.buf)
+		if len(p) < remaining {
+			remaining = len(p)
+		}
+		c.buf = append(c.buf, p[:remaining]...)
+	}
+	return len(p), nil
+}
+
+func (c *bodyPrefixCapture) Bytes() []byte {
+	if c == nil || len(c.buf) == 0 {
+		return nil
+	}
+	out := make([]byte, len(c.buf))
+	copy(out, c.buf)
+	return out
+}
+
+func semanticBodyFailure(resp *http.Response, body []byte, bytesRead int64) (string, string) {
+	if resp == nil || resp.StatusCode != http.StatusOK {
+		return "", ""
+	}
+
+	bodyText := string(body)
+	lowerBody := strings.ToLower(bodyText)
+	for _, pattern := range semanticFailurePatterns {
+		if strings.Contains(lowerBody, pattern.needle) {
+			return pattern.rule, pattern.detail
+		}
+	}
+
+	if looksLikeHTML(resp.Header.Get("Content-Type"), lowerBody) && bodyLooksNearEmptyHTML(bodyText, bytesRead) {
+		return "semantic_empty_html", "empty or near-empty HTML response body returned with HTTP 200"
+	}
+
+	return "", ""
+}
+
+func looksLikeHTML(contentType, lowerBody string) bool {
+	contentType = strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
+	if contentType == "text/html" || contentType == "application/xhtml+xml" {
+		return true
+	}
+	trimmed := strings.TrimSpace(lowerBody)
+	return strings.HasPrefix(trimmed, "<!doctype html") || strings.HasPrefix(trimmed, "<html")
+}
+
+func bodyLooksNearEmptyHTML(bodyText string, bytesRead int64) bool {
+	if bytesRead == 0 {
+		return true
+	}
+	if bytesRead > 256 {
+		return false
+	}
+	return stripHTMLTags(bodyText) == ""
+}
+
+func stripHTMLTags(bodyText string) string {
+	var b strings.Builder
+	inTag := false
+	for _, r := range bodyText {
+		switch r {
+		case '<':
+			inTag = true
+		case '>':
+			inTag = false
+		default:
+			if !inTag {
+				b.WriteRune(r)
+			}
+		}
+	}
+	return strings.Join(strings.Fields(b.String()), " ")
 }
 
 func responseBodyReadBudget(mode string, needKeyword bool, req Request) time.Duration {

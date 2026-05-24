@@ -641,6 +641,106 @@ func TestCheckForbiddenKeywordsPresent(t *testing.T) {
 	}
 }
 
+func TestCheckFullProfileDetectsWordPressDatabaseErrorBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("<html><body><h1>Error establishing a database connection</h1></body></html>"))
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{
+		BlogID:           1,
+		URL:              srv.URL,
+		TimeoutSeconds:   5,
+		DetectionProfile: "full",
+	})
+	if res.Success {
+		t.Fatalf("Success = true for semantic failure body, want false; result=%+v", res)
+	}
+	if res.ErrorCode != ErrorKeyword {
+		t.Fatalf("ErrorCode = %d, want ErrorKeyword", res.ErrorCode)
+	}
+	if res.KeywordRule != "semantic_wp_db_error" {
+		t.Fatalf("KeywordRule = %q, want semantic_wp_db_error", res.KeywordRule)
+	}
+	if res.ErrorDetail == "" {
+		t.Fatal("ErrorDetail is empty, want semantic diagnostic")
+	}
+}
+
+func TestCheckFullProfileDetectsNearEmptyHTMLBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("<html></html>"))
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{
+		BlogID:           1,
+		URL:              srv.URL,
+		TimeoutSeconds:   5,
+		DetectionProfile: "full",
+	})
+	if res.Success {
+		t.Fatalf("Success = true for near-empty HTML body, want false; result=%+v", res)
+	}
+	if res.ErrorCode != ErrorKeyword {
+		t.Fatalf("ErrorCode = %d, want ErrorKeyword", res.ErrorCode)
+	}
+	if res.KeywordRule != "semantic_empty_html" {
+		t.Fatalf("KeywordRule = %q, want semantic_empty_html", res.KeywordRule)
+	}
+}
+
+func TestCheckSimpleHTTPDoesNotRunSemanticBodyDetectors(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("<html><body><h1>Error establishing a database connection</h1></body></html>"))
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{
+		BlogID:           1,
+		URL:              srv.URL,
+		TimeoutSeconds:   5,
+		DetectionProfile: "simple_http",
+	})
+	if !res.Success {
+		t.Fatalf("Success = false for simple_http semantic body, want true; result=%+v", res)
+	}
+	if res.ErrorCode != ErrorNone {
+		t.Fatalf("ErrorCode = %d, want ErrorNone", res.ErrorCode)
+	}
+	if res.BodyBytesRead != 0 {
+		t.Fatalf("BodyBytesRead = %d, want 0 for simple_http", res.BodyBytesRead)
+	}
+}
+
+func TestCheckFullProfileAllowsSmallNonHTMLBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{
+		BlogID:           1,
+		URL:              srv.URL,
+		TimeoutSeconds:   5,
+		DetectionProfile: "full",
+	})
+	if !res.Success {
+		t.Fatalf("Success = false for small non-HTML body, want true; result=%+v", res)
+	}
+	if res.ErrorCode != ErrorNone {
+		t.Fatalf("ErrorCode = %d, want ErrorNone", res.ErrorCode)
+	}
+}
+
 func TestCheckTruncatedBodyFailsWithoutKeyword(t *testing.T) {
 	srv := truncatedBodyServer(t, "partial response")
 	defer srv.Close()

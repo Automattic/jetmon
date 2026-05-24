@@ -97,7 +97,8 @@ Jetmon 2 currently detects and records:
 - HTTP availability failures by status code, timeout, connection failure, and
   resolver failure.
 - Staged `HEAD` and `GET` probe behavior for rollout-safe migration.
-- Full-profile body checks for required and forbidden content.
+- Full-profile body checks for required content, forbidden content, common
+  WordPress error pages, and near-empty HTML responses.
 - Redirect policy failures or warnings.
 - TLS certificate expiry warnings.
 - Deprecated TLS protocol observations.

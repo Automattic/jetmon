@@ -89,7 +89,12 @@ NULL values inherit fleet defaults. During rollout, the intended path is:
 3. `GET` + `full` for the complete v2 detection set.
 
 A `HEAD` request automatically caps the effective profile to `simple_http`.
-Body-based keyword and forbidden-content checks require `GET`.
+Body-based keyword and forbidden-content checks require `GET`. In `GET` +
+`full`, Jetmon also applies conservative semantic body checks for successful
+HTML responses, including common WordPress error pages and near-empty HTML
+documents. Those checks are intentionally not active in `HEAD`/legacy or
+`GET`/`simple_http` so rollout cohorts can separate method migration from the
+full v2 detection surface.
 
 The API can expose a derived `cli_batch` field for local API CLI test data when
 `include_cli_metadata=true` and `custom_headers` contains
