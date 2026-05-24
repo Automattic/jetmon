@@ -1429,7 +1429,7 @@ func semanticBodyFailure(resp *http.Response, body []byte, bytesRead int64) (str
 }
 
 func compoundSemanticBodyFailure(lowerBody string) (string, string) {
-	if looksLikeWordPressPHPError(lowerBody) {
+	if looksLikeWordPressPHPError(lowerBody) || looksLikeWordPressPHPError(strings.ToLower(stripHTMLTags(lowerBody))) {
 		return "semantic_wp_php_error", "WordPress PHP error output returned with HTTP 200"
 	}
 	if strings.Contains(lowerBody, "hi jetpack!") && strings.Contains(lowerBody, "all systems go") {

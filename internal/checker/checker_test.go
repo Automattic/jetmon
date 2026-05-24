@@ -706,6 +706,11 @@ func TestCheckFullProfileDetectsCommonWordPressAndHostingSemanticFailures(t *tes
 			rule: "semantic_wp_php_error",
 		},
 		{
+			name: "html formatted php parse error with wordpress path",
+			body: "<!DOCTYPE html><html><body><br /><b>Parse error</b>: syntax error, unexpected token \"}\" in <b>/var/www/html/wp-content/plugins/broken/plugin.php</b> on line <b>17</b><br /></body></html>",
+			rule: "semantic_wp_php_error",
+		},
+		{
 			name: "technical difficulties alternate wording",
 			body: "<html><body>The site is experiencing technical difficulties.</body></html>",
 			rule: "semantic_wp_technical_difficulties",
