@@ -96,6 +96,11 @@ var semanticFailurePatterns = []struct {
 		detail: "WordPress maintenance page returned with HTTP 200",
 	},
 	{
+		needle: "xml-rpc server accepts post requests only",
+		rule:   "semantic_wp_xmlrpc_echo",
+		detail: "WordPress XML-RPC endpoint response was served as the homepage with HTTP 200",
+	},
+	{
 		needle: "your php installation appears to be missing the mysql extension which is required by wordpress",
 		rule:   "semantic_wp_missing_mysql_extension",
 		detail: "WordPress missing MySQL extension page returned with HTTP 200",
@@ -106,9 +111,19 @@ var semanticFailurePatterns = []struct {
 		detail: "WordPress setup/configuration page returned with HTTP 200",
 	},
 	{
+		needle: "there doesn't seem to be a wp-config.php file",
+		rule:   "semantic_wp_setup_config",
+		detail: "WordPress setup/configuration page returned with HTTP 200",
+	},
+	{
 		needle: "one or more database tables are unavailable. the database may need to be repaired",
 		rule:   "semantic_wp_db_repair",
 		detail: "WordPress database repair page returned with HTTP 200",
+	},
+	{
+		needle: "database update required",
+		rule:   "semantic_wp_db_update_required",
+		detail: "WordPress database update page returned with HTTP 200",
 	},
 	{
 		needle: "your server is running php version",
@@ -1444,6 +1459,9 @@ func compoundSemanticBodyFailure(lowerBody string) (string, string) {
 	if looksLikeAccountSuspendedPage(lowerBody) {
 		return "semantic_host_account_suspended", "hosting account suspension page returned with HTTP 200"
 	}
+	if looksLikeWordPressDirectoryListing(lowerBody) {
+		return "semantic_wp_directory_listing", "WordPress directory listing returned with HTTP 200"
+	}
 	return "", ""
 }
 
@@ -1489,6 +1507,15 @@ func looksLikeAccountSuspendedPage(lowerBody string) bool {
 		strings.Contains(lowerBody, "contact your web host") ||
 		strings.Contains(lowerBody, "<title>account suspended</title>") ||
 		strings.Contains(lowerBody, "<title>this account has been suspended</title>")
+}
+
+func looksLikeWordPressDirectoryListing(lowerBody string) bool {
+	if !strings.Contains(lowerBody, "index of /") {
+		return false
+	}
+	return strings.Contains(lowerBody, "wp-admin") ||
+		strings.Contains(lowerBody, "wp-content") ||
+		strings.Contains(lowerBody, "wp-includes")
 }
 
 func looksLikeHTML(contentType, lowerBody string) bool {

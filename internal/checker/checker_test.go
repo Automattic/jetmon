@@ -681,6 +681,16 @@ func TestCheckFullProfileDetectsCommonWordPressAndHostingSemanticFailures(t *tes
 			rule: "semantic_wp_missing_mysql_extension",
 		},
 		{
+			name: "wordpress maintenance mode",
+			body: "<html><body>Briefly unavailable for scheduled maintenance. Check back in a minute.</body></html>",
+			rule: "semantic_wp_maintenance",
+		},
+		{
+			name: "xmlrpc endpoint served as homepage",
+			body: "<html><body>XML-RPC server accepts POST requests only.</body></html>",
+			rule: "semantic_wp_xmlrpc_echo",
+		},
+		{
 			name: "critical error your website wording",
 			body: "<html><body>There has been a critical error on your website.</body></html>",
 			rule: "semantic_wp_critical_error",
@@ -721,6 +731,11 @@ func TestCheckFullProfileDetectsCommonWordPressAndHostingSemanticFailures(t *tes
 			rule: "semantic_wp_db_repair",
 		},
 		{
+			name: "database update required",
+			body: "<html><head><title>Database Update Required</title></head><body><h1>Database Update Required</h1><p>WordPress has been updated! Before we send you on your way, we have to update your database.</p></body></html>",
+			rule: "semantic_wp_db_update_required",
+		},
+		{
 			name: "unsupported php version",
 			body: "<html><body>Your server is running PHP version 7.0.33 but WordPress requires at least 7.2.24.</body></html>",
 			rule: "semantic_wp_unsupported_php",
@@ -754,6 +769,16 @@ func TestCheckFullProfileDetectsCommonWordPressAndHostingSemanticFailures(t *tes
 			name: "wordpress setup config",
 			body: "<html><body><h1>Welcome to WordPress. Before getting started, we need some information on the database.</h1></body></html>",
 			rule: "semantic_wp_setup_config",
+		},
+		{
+			name: "missing wp config setup",
+			body: "<html><body><p>There doesn't seem to be a wp-config.php file. I need this before we can get started.</p></body></html>",
+			rule: "semantic_wp_setup_config",
+		},
+		{
+			name: "wordpress directory listing",
+			body: "<html><head><title>Index of /</title></head><body><h1>Index of /</h1><a href=\"wp-admin/\">wp-admin/</a><a href=\"wp-content/\">wp-content/</a></body></html>",
+			rule: "semantic_wp_directory_listing",
 		},
 	}
 
