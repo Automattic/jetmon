@@ -1427,8 +1427,9 @@ func semanticBodyFailure(resp *http.Response, body []byte, bytesRead int64) (str
 
 	bodyText := string(body)
 	lowerBody := strings.ToLower(bodyText)
+	strippedLowerBody := strings.ToLower(stripHTMLTags(bodyText))
 	for _, pattern := range semanticFailurePatterns {
-		if strings.Contains(lowerBody, pattern.needle) {
+		if strings.Contains(lowerBody, pattern.needle) || strings.Contains(strippedLowerBody, pattern.needle) {
 			return pattern.rule, pattern.detail
 		}
 	}

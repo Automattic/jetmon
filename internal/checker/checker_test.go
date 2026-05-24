@@ -772,7 +772,7 @@ func TestCheckFullProfileDetectsCommonWordPressAndHostingSemanticFailures(t *tes
 		},
 		{
 			name: "missing wp config setup",
-			body: "<html><body><p>There doesn't seem to be a wp-config.php file. I need this before we can get started.</p></body></html>",
+			body: "<html><body><p>There doesn't seem to be a <code>wp-config.php</code> file. I need this before we can get started.</p></body></html>",
 			rule: "semantic_wp_setup_config",
 		},
 		{
