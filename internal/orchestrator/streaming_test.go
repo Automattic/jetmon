@@ -544,6 +544,21 @@ func TestStreamingStatsCountsCheckCohorts(t *testing.T) {
 	assertCheckCohortCount(t, stats.checkCohorts, http.MethodGet, "full", 2)
 }
 
+func TestStreamingStatsCountsKeywordRules(t *testing.T) {
+	var stats streamingStats
+	stats.addResult(checker.Result{ErrorCode: checker.ErrorKeyword, KeywordRule: "semantic_wp_db_error"}, 0, statusRunning)
+	stats.addResult(checker.Result{ErrorCode: checker.ErrorKeyword, KeywordRule: "semantic_wp_db_error"}, 0, statusRunning)
+	stats.addResult(checker.Result{ErrorCode: checker.ErrorKeyword, KeywordRule: "required"}, 0, statusRunning)
+	stats.addResult(checker.Result{ErrorCode: checker.ErrorConnect, KeywordRule: "semantic_wp_db_error"}, 0, statusRunning)
+
+	if stats.keywordRules["semantic_wp_db_error"] != 2 {
+		t.Fatalf("semantic_wp_db_error count = %d, want 2", stats.keywordRules["semantic_wp_db_error"])
+	}
+	if stats.keywordRules["required"] != 1 {
+		t.Fatalf("required count = %d, want 1", stats.keywordRules["required"])
+	}
+}
+
 func TestStreamingBacklogWorkerTargetUsesSpareHeadroom(t *testing.T) {
 	if got := streamingBacklogWorkerTarget(700, 100000, 42000); got != 875 {
 		t.Fatalf("backlog worker target = %d, want base plus backlog catch-up", got)
@@ -824,6 +839,13 @@ func TestStreamingSideEffectsNeededSuppressesNewLocalFailuresUnderPressure(t *te
 	}
 	if streamingSideEffectsSuppressedByPressure(target, checker.Result{BlogID: 42, HTTPCode: 500}, nil, nil, nil, true) {
 		t.Fatal("HTTP failures should not be counted as pressure-suppressed")
+	}
+	semantic := checker.Result{BlogID: 42, HTTPCode: 200, ErrorCode: checker.ErrorKeyword, KeywordRule: "semantic_wp_db_error"}
+	if !streamingSideEffectsNeeded(target, semantic, nil, nil, nil, true) {
+		t.Fatal("semantic body failures should still flow through side effects under pressure")
+	}
+	if streamingSideEffectsSuppressedByPressure(target, semantic, nil, nil, nil, true) {
+		t.Fatal("semantic body failures should not be counted as pressure-suppressed")
 	}
 	if !streamingSideEffectsNeeded(target, timeout, map[int64]int{42: 1}, nil, nil, true) {
 		t.Fatal("pending side effects should preserve ordering under pressure")

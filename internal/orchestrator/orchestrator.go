@@ -584,6 +584,24 @@ func emitCheckCohortCounters(m metricsClient, prefix string, cohorts map[checkCo
 	}
 }
 
+func emitKeywordRuleCounters(m metricsClient, prefix string, rules map[string]int) {
+	if m == nil || len(rules) == 0 {
+		return
+	}
+	names := make([]string, 0, len(rules))
+	for name := range rules {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		count := rules[name]
+		if count <= 0 {
+			continue
+		}
+		m.Increment(fmt.Sprintf("%s.check.keyword_rule.%s.count", prefix, metricSegment(name)), count)
+	}
+}
+
 func (o *Orchestrator) updateSSLExpiries(updates []db.SiteSSLExpiry, summary *resultProcessSummary) {
 	if len(updates) == 0 {
 		return

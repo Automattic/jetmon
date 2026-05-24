@@ -336,7 +336,7 @@ reclaim by surviving hosts.
 | `ErrorConnect` | TCP connection, DNS, or dial failure |
 | `ErrorSSL` | TLS handshake or certificate error |
 | `ErrorRedirect` | Redirect failure when policy is `fail` |
-| `ErrorKeyword` | Required keyword missing or forbidden keyword present |
+| `ErrorKeyword` | Required keyword missing, forbidden keyword present, or GET/full semantic body failure |
 | `ErrorTLSExpired` | Certificate expired |
 | `ErrorTLSDeprecated` | TLS 1.0 or 1.1 observed; advisory only |
 | `ErrorBodyRead` | GET response body closed early or could not be read |

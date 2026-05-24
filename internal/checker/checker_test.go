@@ -691,9 +691,34 @@ func TestCheckFullProfileDetectsCommonWordPressAndHostingSemanticFailures(t *tes
 			rule: "semantic_wp_php_error",
 		},
 		{
+			name: "php memory exhausted with wordpress path",
+			body: "Fatal error: Allowed memory size of 268435456 bytes exhausted (tried to allocate 4096 bytes) in /srv/www/example.com/wp-includes/class-wpdb.php on line 2425",
+			rule: "semantic_wp_php_error",
+		},
+		{
+			name: "php max execution time with wordpress path",
+			body: "Fatal error: Maximum execution time of 30 seconds exceeded in /srv/www/example.com/wp-content/plugins/slow/plugin.php on line 12",
+			rule: "semantic_wp_php_error",
+		},
+		{
 			name: "php parse error with wordpress path",
 			body: "Parse error: syntax error, unexpected token \"}\" in /srv/www/example.com/wp-includes/functions.php on line 123",
 			rule: "semantic_wp_php_error",
+		},
+		{
+			name: "technical difficulties alternate wording",
+			body: "<html><body>The site is experiencing technical difficulties.</body></html>",
+			rule: "semantic_wp_technical_difficulties",
+		},
+		{
+			name: "database repair unavailable tables",
+			body: "<html><body>One or more database tables are unavailable. The database may need to be repaired.</body></html>",
+			rule: "semantic_wp_db_repair",
+		},
+		{
+			name: "unsupported php version",
+			body: "<html><body>Your server is running PHP version 7.0.33 but WordPress requires at least 7.2.24.</body></html>",
+			rule: "semantic_wp_unsupported_php",
 		},
 		{
 			name: "apache default vhost",

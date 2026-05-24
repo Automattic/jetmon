@@ -360,6 +360,7 @@ type streamingStats struct {
 	errorTLSDeprecated int
 	errorOther         int
 	checkCohorts       map[checkCohortKey]int
+	keywordRules       map[string]int
 }
 
 func (s *streamingStats) addResult(res checker.Result, lag time.Duration, siteStatus int) {
@@ -386,6 +387,12 @@ func (s *streamingStats) addResult(res checker.Result, lag time.Duration, siteSt
 	}
 	if res.ErrorCode != checker.ErrorNone {
 		s.addErrorCode(res.ErrorCode)
+	}
+	if res.ErrorCode == checker.ErrorKeyword && res.KeywordRule != "" {
+		if s.keywordRules == nil {
+			s.keywordRules = make(map[string]int)
+		}
+		s.keywordRules[res.KeywordRule]++
 	}
 }
 
@@ -1467,6 +1474,7 @@ func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streami
 		m.Increment("scheduler.streaming.check.error.tls_deprecated.count", stats.errorTLSDeprecated)
 		m.Increment("scheduler.streaming.check.error.other.count", stats.errorOther)
 		emitCheckCohortCounters(m, "scheduler.streaming", stats.checkCohorts)
+		emitKeywordRuleCounters(m, "scheduler.streaming", stats.keywordRules)
 		m.Increment("scheduler.streaming.side_effect.processed.count", stats.sideEffectRows)
 		m.Increment("scheduler.streaming.history.row.count", stats.historyRows)
 		m.Increment("scheduler.streaming.history.error.count", stats.historyErrors)

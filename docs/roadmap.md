@@ -120,9 +120,10 @@ Open work:
 
 - [x] Add conservative semantic body detectors for common WordPress and hosting
   failure pages before full content baselining. The shipped detector set catches
-  WordPress database/fatal/configuration/maintenance pages, missing MySQL
-  extension pages, default virtual-host pages, account-suspended pages, Jetpack
-  probe echo pages, and near-empty HTML while keeping alerts explainable.
+  WordPress database, database repair, fatal PHP, unsupported PHP,
+  setup/configuration, maintenance, and critical-error pages, default
+  virtual-host pages, account-suspended pages, Jetpack probe echo pages, and
+  near-empty HTML while keeping alerts explainable.
 - [ ] Design a content-integrity baseline mode separately from explicit required
   or forbidden patterns. Production users need a controlled way to detect large
   unexpected body changes without turning normal content churn into false

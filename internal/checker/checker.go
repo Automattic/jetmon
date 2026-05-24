@@ -86,6 +86,11 @@ var semanticFailurePatterns = []struct {
 		detail: "WordPress technical difficulties page returned with HTTP 200",
 	},
 	{
+		needle: "the site is experiencing technical difficulties",
+		rule:   "semantic_wp_technical_difficulties",
+		detail: "WordPress technical difficulties page returned with HTTP 200",
+	},
+	{
 		needle: "briefly unavailable for scheduled maintenance",
 		rule:   "semantic_wp_maintenance",
 		detail: "WordPress maintenance page returned with HTTP 200",
@@ -99,6 +104,16 @@ var semanticFailurePatterns = []struct {
 		needle: "welcome to wordpress. before getting started",
 		rule:   "semantic_wp_setup_config",
 		detail: "WordPress setup/configuration page returned with HTTP 200",
+	},
+	{
+		needle: "one or more database tables are unavailable. the database may need to be repaired",
+		rule:   "semantic_wp_db_repair",
+		detail: "WordPress database repair page returned with HTTP 200",
+	},
+	{
+		needle: "your server is running php version",
+		rule:   "semantic_wp_unsupported_php",
+		detail: "WordPress unsupported PHP version page returned with HTTP 200",
 	},
 }
 
@@ -1437,6 +1452,9 @@ func looksLikeWordPressPHPError(lowerBody string) bool {
 		return false
 	}
 	if !strings.Contains(lowerBody, "fatal error") &&
+		!strings.Contains(lowerBody, "allowed memory size") &&
+		!strings.Contains(lowerBody, "maximum execution time") &&
+		!strings.Contains(lowerBody, "call to undefined function") &&
 		!(strings.Contains(lowerBody, "parse error:") && strings.Contains(lowerBody, "syntax error")) {
 		return false
 	}
