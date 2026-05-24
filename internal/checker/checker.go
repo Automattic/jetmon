@@ -76,6 +76,11 @@ var semanticFailurePatterns = []struct {
 		detail: "WordPress critical error page returned with HTTP 200",
 	},
 	{
+		needle: "there has been a critical error on your website",
+		rule:   "semantic_wp_critical_error",
+		detail: "WordPress critical error page returned with HTTP 200",
+	},
+	{
 		needle: "this site is experiencing technical difficulties",
 		rule:   "semantic_wp_technical_difficulties",
 		detail: "WordPress technical difficulties page returned with HTTP 200",
@@ -89,11 +94,6 @@ var semanticFailurePatterns = []struct {
 		needle: "your php installation appears to be missing the mysql extension which is required by wordpress",
 		rule:   "semantic_wp_missing_mysql_extension",
 		detail: "WordPress missing MySQL extension page returned with HTTP 200",
-	},
-	{
-		needle: "hi jetpack! all systems go.",
-		rule:   "semantic_jetpack_probe_echo",
-		detail: "Jetpack probe response was served as the homepage with HTTP 200",
 	},
 	{
 		needle: "welcome to wordpress. before getting started",
@@ -1416,6 +1416,9 @@ func semanticBodyFailure(resp *http.Response, body []byte, bytesRead int64) (str
 func compoundSemanticBodyFailure(lowerBody string) (string, string) {
 	if looksLikeWordPressPHPError(lowerBody) {
 		return "semantic_wp_php_error", "WordPress PHP error output returned with HTTP 200"
+	}
+	if strings.Contains(lowerBody, "hi jetpack!") && strings.Contains(lowerBody, "all systems go") {
+		return "semantic_jetpack_probe_echo", "Jetpack probe response was served as the homepage with HTTP 200"
 	}
 	if strings.Contains(lowerBody, "apache2 ubuntu default page") && strings.Contains(lowerBody, "it works") {
 		return "semantic_default_vhost_apache", "Apache default virtual-host page returned with HTTP 200"

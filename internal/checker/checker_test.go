@@ -681,6 +681,11 @@ func TestCheckFullProfileDetectsCommonWordPressAndHostingSemanticFailures(t *tes
 			rule: "semantic_wp_missing_mysql_extension",
 		},
 		{
+			name: "critical error your website wording",
+			body: "<html><body>There has been a critical error on your website.</body></html>",
+			rule: "semantic_wp_critical_error",
+		},
+		{
 			name: "php fatal with wordpress path",
 			body: "<br /><b>Fatal error</b>: Uncaught Error: Call to undefined function broken_plugin() in /srv/www/example.com/wp-content/plugins/broken/plugin.php on line 42",
 			rule: "semantic_wp_php_error",
@@ -706,8 +711,13 @@ func TestCheckFullProfileDetectsCommonWordPressAndHostingSemanticFailures(t *tes
 			rule: "semantic_host_account_suspended",
 		},
 		{
-			name: "jetpack probe echo",
+			name: "jetpack probe echo with space",
 			body: "<html><body>Hi Jetpack! All Systems go.</body></html>",
+			rule: "semantic_jetpack_probe_echo",
+		},
+		{
+			name: "jetpack probe echo without space",
+			body: "<html><body>Hi Jetpack!All Systems go</body></html>",
 			rule: "semantic_jetpack_probe_echo",
 		},
 		{
