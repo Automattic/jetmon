@@ -349,14 +349,21 @@ func (b *singleCheckBatcher) flush(batch []singleCheckCall) {
 
 	resultsByRequestID := checkResultsByRequestID(results)
 	for i, call := range calls {
-		result, ok := resultsByRequestID[call.req.RequestID]
-		if !ok {
-			if i >= len(results) {
-				call.respond(nil, fmt.Errorf("veriflier returned %d results for %d requests", len(results), len(calls)))
+		if call.req.RequestID != "" {
+			result, ok := resultsByRequestID[call.req.RequestID]
+			if !ok {
+				call.respond(nil, fmt.Errorf("veriflier omitted result for request_id %s (%d results for %d requests)", call.req.RequestID, len(results), len(calls)))
 				continue
 			}
-			result = results[i]
+			call.respond(&result, nil)
+			continue
 		}
+
+		if i >= len(results) {
+			call.respond(nil, fmt.Errorf("veriflier returned %d results for %d requests", len(results), len(calls)))
+			continue
+		}
+		result := results[i]
 		call.respond(&result, nil)
 	}
 }

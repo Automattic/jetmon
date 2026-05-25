@@ -771,6 +771,71 @@ func TestSingleCheckBatcherMapsOutOfOrderResultsByRequestID(t *testing.T) {
 	}
 }
 
+func TestSingleCheckBatcherDoesNotMisattributePartialResultByPosition(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/check" {
+			http.NotFound(w, r)
+			return
+		}
+		var req CheckV2BatchRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if len(req.Requests) != 2 {
+			t.Errorf("request len = %d, want 2", len(req.Requests))
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(CheckV2BatchResponse{Results: []CheckV2Result{{
+			RequestID: req.Requests[1].RequestID,
+			BlogID:    req.Requests[1].BlogID,
+			URL:       req.Requests[1].URL,
+			VantageID: "test-vantage",
+			AgentID:   "test-agent",
+			Outcome:   OutcomeUp,
+			Success:   true,
+			HTTPCode:  200,
+		}}})
+	}))
+	defer ts.Close()
+
+	client := NewVeriflierClient(ts.Listener.Addr().String(), "secret")
+	client.setProtocol(ProtocolV2)
+	batcher := &singleCheckBatcher{client: client}
+	calls := []singleCheckCall{
+		{
+			ctx:  context.Background(),
+			req:  CheckRequest{BlogID: 1, URL: "https://example.com/one", RequestID: "one"},
+			resp: make(chan singleCheckResponse, 1),
+		},
+		{
+			ctx:  context.Background(),
+			req:  CheckRequest{BlogID: 2, URL: "https://example.com/two", RequestID: "two"},
+			resp: make(chan singleCheckResponse, 1),
+		},
+	}
+	batcher.flush(calls)
+
+	missing := <-calls[0].resp
+	if missing.err == nil {
+		t.Fatalf("missing first result error = nil, result=%+v; want omission error instead of sibling result", missing.result)
+	}
+	if missing.result != nil {
+		t.Fatalf("missing first result = %+v, want nil result", missing.result)
+	}
+
+	got := <-calls[1].resp
+	if got.err != nil {
+		t.Fatalf("second result error = %v", got.err)
+	}
+	if got.result == nil || got.result.RequestID != "two" || got.result.BlogID != 2 || !got.result.Success {
+		t.Fatalf("second result = %+v", got.result)
+	}
+}
+
 func TestClientCheckReturnsAgentOverloadedOnDeadlinePressure(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v2/check" {
