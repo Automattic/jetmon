@@ -409,11 +409,62 @@ func TestClientBatchMapsOutOfOrderV2ResultsByRequestID(t *testing.T) {
 	if len(res) != 2 {
 		t.Fatalf("CheckBatch() len = %d, want 2", len(res))
 	}
-	if res[0].RequestID != "two" || res[0].MonitorSiteID != 0 || res[0].BlogID != 2 {
-		t.Fatalf("first result = %+v, want request two metadata", res[0])
+	if res[0].RequestID != "one" || res[0].MonitorSiteID != 101 || res[0].BlogID != 1 {
+		t.Fatalf("first result = %+v, want request one metadata", res[0])
 	}
-	if res[1].RequestID != "one" || res[1].MonitorSiteID != 101 || res[1].BlogID != 1 {
-		t.Fatalf("second result = %+v, want request one metadata", res[1])
+	if res[1].RequestID != "two" || res[1].MonitorSiteID != 0 || res[1].BlogID != 2 {
+		t.Fatalf("second result = %+v, want request two metadata", res[1])
+	}
+}
+
+func TestClientBatchReturnsUnknownForOmittedV2Result(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/check" {
+			http.NotFound(w, r)
+			return
+		}
+		var req CheckV2BatchRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if len(req.Requests) != 2 {
+			t.Errorf("request len = %d, want 2", len(req.Requests))
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(CheckV2BatchResponse{Results: []CheckV2Result{{
+			RequestID: req.Requests[1].RequestID,
+			BlogID:    req.Requests[1].BlogID,
+			URL:       req.Requests[1].URL,
+			VantageID: "test-vantage",
+			AgentID:   "test-agent",
+			Outcome:   OutcomeUp,
+			Success:   true,
+			HTTPCode:  200,
+		}}})
+	}))
+	defer ts.Close()
+
+	client := NewVeriflierClient(ts.Listener.Addr().String(), "secret")
+	client.setProtocol(ProtocolV2)
+	res, err := client.CheckBatch(context.Background(), []CheckRequest{
+		{MonitorSiteID: 101, BlogID: 1, URL: "https://example.com/one", RequestID: "one"},
+		{MonitorSiteID: 202, BlogID: 2, URL: "https://example.com/two", RequestID: "two"},
+	})
+	if err != nil {
+		t.Fatalf("CheckBatch() error = %v", err)
+	}
+	if len(res) != 2 {
+		t.Fatalf("CheckBatch() len = %d, want 2", len(res))
+	}
+	if res[0].Success || res[0].Outcome != OutcomeUnknown || res[0].ErrorCode != checkerErrorInternal || res[0].RequestID != "one" || res[0].MonitorSiteID != 101 {
+		t.Fatalf("first result = %+v, want request one unknown", res[0])
+	}
+	if !res[1].Success || res[1].Outcome != OutcomeUp || res[1].RequestID != "two" || res[1].MonitorSiteID != 202 {
+		t.Fatalf("second result = %+v, want request two success", res[1])
 	}
 }
 
@@ -820,11 +871,11 @@ func TestSingleCheckBatcherDoesNotMisattributePartialResultByPosition(t *testing
 	batcher.flush(calls)
 
 	missing := <-calls[0].resp
-	if missing.err == nil {
-		t.Fatalf("missing first result error = nil, result=%+v; want omission error instead of sibling result", missing.result)
+	if missing.err != nil {
+		t.Fatalf("missing first result error = %v, want per-request unknown result", missing.err)
 	}
-	if missing.result != nil {
-		t.Fatalf("missing first result = %+v, want nil result", missing.result)
+	if missing.result == nil || missing.result.RequestID != "one" || missing.result.BlogID != 1 || missing.result.Success || missing.result.Outcome != OutcomeUnknown || missing.result.ErrorCode != checkerErrorInternal {
+		t.Fatalf("missing first result = %+v, want request one unknown", missing.result)
 	}
 
 	got := <-calls[1].resp

@@ -521,48 +521,66 @@ func (c *VeriflierClient) checkBatchV2(ctx context.Context, reqs []CheckRequest)
 		return nil, fmt.Errorf("decode veriflier v2 response: %w", err)
 	}
 
-	results := make([]CheckResult, 0, len(br.Results))
-	var reqByRequestID map[string]CheckRequest
-	for i, res := range br.Results {
-		var orig CheckRequest
-		if i < len(reqs) && (res.RequestID == "" || res.RequestID == reqs[i].RequestID) {
-			orig = reqs[i]
-		} else {
-			if reqByRequestID == nil {
-				reqByRequestID = checkRequestsByRequestID(reqs)
-			}
-			var ok bool
-			orig, ok = reqByRequestID[res.RequestID]
-			if !ok && i < len(reqs) {
-				orig = reqs[i]
-			}
+	results := make([]CheckResult, len(reqs))
+	resultsByRequestID := v2ResultsByRequestID(br.Results)
+	for i, req := range reqs {
+		var res CheckV2Result
+		var ok bool
+		if req.RequestID != "" {
+			res, ok = resultsByRequestID[req.RequestID]
 		}
-		results = append(results, CheckResult{
-			MonitorSiteID: orig.MonitorSiteID,
-			BlogID:        res.BlogID,
-			URL:           res.URL,
-			Host:          res.VantageID,
-			VantageID:     res.VantageID,
-			AgentID:       res.AgentID,
-			Outcome:       res.Outcome,
-			Success:       res.Success,
-			HTTPCode:      res.HTTPCode,
-			ErrorCode:     res.ErrorCode,
-			RTTMs:         res.RTTMs,
-			RequestID:     res.RequestID,
-		})
+		if !ok && i < len(br.Results) && br.Results[i].RequestID == "" {
+			res = br.Results[i]
+			ok = true
+		}
+		if !ok {
+			results[i] = missingV2Result(req)
+			continue
+		}
+		results[i] = checkResultFromV2(req, res)
 	}
 	return results, nil
 }
 
-func checkRequestsByRequestID(reqs []CheckRequest) map[string]CheckRequest {
-	out := make(map[string]CheckRequest, len(reqs))
-	for _, req := range reqs {
-		if req.RequestID != "" {
-			out[req.RequestID] = req
+func v2ResultsByRequestID(results []CheckV2Result) map[string]CheckV2Result {
+	out := make(map[string]CheckV2Result, len(results))
+	for _, result := range results {
+		if result.RequestID != "" {
+			if _, exists := out[result.RequestID]; !exists {
+				out[result.RequestID] = result
+			}
 		}
 	}
 	return out
+}
+
+func checkResultFromV2(orig CheckRequest, res CheckV2Result) CheckResult {
+	return CheckResult{
+		MonitorSiteID: orig.MonitorSiteID,
+		BlogID:        res.BlogID,
+		URL:           res.URL,
+		Host:          res.VantageID,
+		VantageID:     res.VantageID,
+		AgentID:       res.AgentID,
+		Outcome:       res.Outcome,
+		Success:       res.Success,
+		HTTPCode:      res.HTTPCode,
+		ErrorCode:     res.ErrorCode,
+		RTTMs:         res.RTTMs,
+		RequestID:     res.RequestID,
+	}
+}
+
+func missingV2Result(req CheckRequest) CheckResult {
+	return CheckResult{
+		MonitorSiteID: req.MonitorSiteID,
+		BlogID:        req.BlogID,
+		URL:           req.URL,
+		Outcome:       OutcomeUnknown,
+		Success:       false,
+		ErrorCode:     checkerErrorInternal,
+		RequestID:     req.RequestID,
+	}
 }
 
 func checkBatchDeadlineReserve(_ []CheckRequest) time.Duration {
