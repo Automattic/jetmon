@@ -669,6 +669,28 @@ func TestCheckFullProfileDetectsWordPressDatabaseErrorBody(t *testing.T) {
 	}
 }
 
+func TestCheckFullProfileDetectsSemanticFailureInAttributedHeading(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<html><head><title>Example Site</title></head><body><h1 class="wp-die-message"><span>Error establishing a database connection</span></h1></body></html>`))
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{
+		BlogID:           1,
+		URL:              srv.URL,
+		TimeoutSeconds:   5,
+		DetectionProfile: "full",
+	})
+	if res.Success {
+		t.Fatalf("Success = true for semantic failure in attributed heading, want false; result=%+v", res)
+	}
+	if res.KeywordRule != "semantic_wp_db_error" {
+		t.Fatalf("KeywordRule = %q, want semantic_wp_db_error", res.KeywordRule)
+	}
+}
+
 func TestCheckFullProfileDetectsCommonWordPressAndHostingSemanticFailures(t *testing.T) {
 	tests := []struct {
 		name string

@@ -1451,8 +1451,57 @@ func semanticBodyFailure(resp *http.Response, body []byte, bytesRead int64) (str
 
 func semanticPagePhraseMatch(lowerBody, strippedLowerBody, needle string) bool {
 	return strings.HasPrefix(strings.TrimSpace(strippedLowerBody), needle) ||
-		strings.Contains(lowerBody, "<title>"+needle) ||
-		strings.Contains(lowerBody, "<h1>"+needle)
+		tagTextStartsWith(lowerBody, "title", needle) ||
+		tagTextStartsWith(lowerBody, "h1", needle)
+}
+
+func tagTextStartsWith(lowerBody, tag, needle string) bool {
+	openPrefix := "<" + tag
+	closeTag := "</" + tag + ">"
+	for offset := 0; offset < len(lowerBody); {
+		idx := strings.Index(lowerBody[offset:], openPrefix)
+		if idx < 0 {
+			return false
+		}
+		tagStart := offset + idx
+		tagNameEnd := tagStart + len(openPrefix)
+		if tagNameEnd < len(lowerBody) {
+			next := lowerBody[tagNameEnd]
+			if next != '>' && !isASCIIHTMLSpace(next) {
+				offset = tagNameEnd
+				continue
+			}
+		}
+		openEndRel := strings.IndexByte(lowerBody[tagNameEnd:], '>')
+		if openEndRel < 0 {
+			return false
+		}
+		contentStart := tagNameEnd + openEndRel + 1
+		closeRel := strings.Index(lowerBody[contentStart:], closeTag)
+		contentEnd := len(lowerBody)
+		if closeRel >= 0 {
+			contentEnd = contentStart + closeRel
+		}
+		tagText := strings.TrimSpace(stripHTMLTags(lowerBody[contentStart:contentEnd]))
+		if strings.HasPrefix(tagText, needle) {
+			return true
+		}
+		if closeRel >= 0 {
+			offset = contentEnd + len(closeTag)
+		} else {
+			offset = contentStart
+		}
+	}
+	return false
+}
+
+func isASCIIHTMLSpace(b byte) bool {
+	switch b {
+	case ' ', '\t', '\n', '\r', '\f':
+		return true
+	default:
+		return false
+	}
 }
 
 func compoundSemanticBodyFailure(lowerBody string) (string, string) {
