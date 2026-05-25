@@ -2021,6 +2021,109 @@ func TestClientFallsBackToLegacyWhenUnknownV2ConnectionCloses(t *testing.T) {
 	}
 }
 
+func TestClientLegacyBatchMapsOutOfOrderResultsByRequestID(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/check", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Sites []CheckRequest `json:"sites"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode legacy request: %v", err)
+		}
+		if len(req.Sites) != 2 {
+			t.Fatalf("sites len = %d, want 2", len(req.Sites))
+		}
+		results := []CheckResult{
+			{
+				RequestID:     req.Sites[1].RequestID,
+				MonitorSiteID: 999,
+				BlogID:        999,
+				URL:           "https://wrong.example/after",
+				Host:          "legacy-host",
+				Success:       false,
+				HTTPCode:      500,
+			},
+			{
+				RequestID:     req.Sites[0].RequestID,
+				MonitorSiteID: 999,
+				BlogID:        999,
+				URL:           "https://wrong.example/before",
+				Host:          "legacy-host",
+				Success:       true,
+				HTTPCode:      200,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(struct {
+			Results []CheckResult `json:"results"`
+		}{Results: results})
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	client := NewVeriflierClient(ts.Listener.Addr().String(), "secret")
+	client.setProtocol(ProtocolLegacy)
+	res, err := client.CheckBatch(context.Background(), []CheckRequest{
+		{MonitorSiteID: 11, BlogID: 1, URL: "https://example.com/before", RequestID: "req-before"},
+		{MonitorSiteID: 22, BlogID: 2, URL: "https://example.com/after", RequestID: "req-after"},
+	})
+	if err != nil {
+		t.Fatalf("CheckBatch() error = %v", err)
+	}
+	if len(res) != 2 {
+		t.Fatalf("results len = %d, want 2", len(res))
+	}
+	if !res[0].Success || res[0].RequestID != "req-before" || res[0].BlogID != 1 || res[0].MonitorSiteID != 11 || res[0].URL != "https://example.com/before" {
+		t.Fatalf("first result = %+v", res[0])
+	}
+	if res[1].Success || res[1].RequestID != "req-after" || res[1].BlogID != 2 || res[1].MonitorSiteID != 22 || res[1].URL != "https://example.com/after" {
+		t.Fatalf("second result = %+v", res[1])
+	}
+}
+
+func TestClientLegacyBatchReturnsUnknownForOmittedResult(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/check", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Sites []CheckRequest `json:"sites"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode legacy request: %v", err)
+		}
+		results := []CheckResult{{
+			RequestID: req.Sites[0].RequestID,
+			Host:      "legacy-host",
+			Success:   true,
+			HTTPCode:  200,
+		}}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(struct {
+			Results []CheckResult `json:"results"`
+		}{Results: results})
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	client := NewVeriflierClient(ts.Listener.Addr().String(), "secret")
+	client.setProtocol(ProtocolLegacy)
+	res, err := client.CheckBatch(context.Background(), []CheckRequest{
+		{BlogID: 1, URL: "https://example.com/one", RequestID: "req-one"},
+		{BlogID: 2, URL: "https://example.com/two", RequestID: "req-two"},
+	})
+	if err != nil {
+		t.Fatalf("CheckBatch() error = %v", err)
+	}
+	if len(res) != 2 {
+		t.Fatalf("results len = %d, want 2", len(res))
+	}
+	if !res[0].Success || res[0].RequestID != "req-one" {
+		t.Fatalf("first result = %+v", res[0])
+	}
+	if res[1].Success || res[1].RequestID != "req-two" || res[1].Outcome != OutcomeUnknown || res[1].ErrorCode != checkerErrorInternal {
+		t.Fatalf("missing result = %+v", res[1])
+	}
+}
+
 func TestClientTreatsCachedV2EOFAsAgentOverloaded(t *testing.T) {
 	var legacyHits atomic.Int64
 

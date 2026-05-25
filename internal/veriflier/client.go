@@ -462,7 +462,25 @@ func (c *VeriflierClient) checkBatchLegacy(ctx context.Context, reqs []CheckRequ
 	if err := json.NewDecoder(resp.Body).Decode(&br); err != nil {
 		return nil, fmt.Errorf("decode veriflier response: %w", err)
 	}
-	return br.Results, nil
+	results := make([]CheckResult, len(reqs))
+	resultsByRequestID := legacyResultsByRequestID(br.Results)
+	for i, req := range reqs {
+		var res CheckResult
+		var ok bool
+		if req.RequestID != "" {
+			res, ok = resultsByRequestID[req.RequestID]
+		}
+		if !ok && i < len(br.Results) && br.Results[i].RequestID == "" {
+			res = br.Results[i]
+			ok = true
+		}
+		if !ok {
+			results[i] = missingLegacyResult(req)
+			continue
+		}
+		results[i] = checkResultFromLegacy(req, res)
+	}
+	return results, nil
 }
 
 func (c *VeriflierClient) checkBatchV2(ctx context.Context, reqs []CheckRequest) ([]CheckResult, error) {
@@ -554,6 +572,35 @@ func v2ResultsByRequestID(results []CheckV2Result) map[string]CheckV2Result {
 	return out
 }
 
+func legacyResultsByRequestID(results []CheckResult) map[string]CheckResult {
+	out := make(map[string]CheckResult, len(results))
+	for _, result := range results {
+		if result.RequestID != "" {
+			if _, exists := out[result.RequestID]; !exists {
+				out[result.RequestID] = result
+			}
+		}
+	}
+	return out
+}
+
+func checkResultFromLegacy(orig CheckRequest, res CheckResult) CheckResult {
+	return CheckResult{
+		MonitorSiteID: orig.MonitorSiteID,
+		BlogID:        orig.BlogID,
+		URL:           orig.URL,
+		Host:          res.Host,
+		VantageID:     res.VantageID,
+		AgentID:       res.AgentID,
+		Outcome:       res.Outcome,
+		Success:       res.Success,
+		HTTPCode:      res.HTTPCode,
+		ErrorCode:     res.ErrorCode,
+		RTTMs:         res.RTTMs,
+		RequestID:     res.RequestID,
+	}
+}
+
 func checkResultFromV2(orig CheckRequest, res CheckV2Result) CheckResult {
 	return CheckResult{
 		MonitorSiteID: orig.MonitorSiteID,
@@ -572,6 +619,14 @@ func checkResultFromV2(orig CheckRequest, res CheckV2Result) CheckResult {
 }
 
 func missingV2Result(req CheckRequest) CheckResult {
+	return missingResult(req)
+}
+
+func missingLegacyResult(req CheckRequest) CheckResult {
+	return missingResult(req)
+}
+
+func missingResult(req CheckRequest) CheckResult {
 	return CheckResult{
 		MonitorSiteID: req.MonitorSiteID,
 		BlogID:        req.BlogID,
