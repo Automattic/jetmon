@@ -52,6 +52,8 @@ Do not use host networking for production Monitor containers.
 | `STATSD_HOST_PATH` | rendered config | v1-compatible Graphite path, for example `dfw1.jetmon-prod-1`. |
 | `CHECK_TARGET_SAFETY_MODE` | rendered config | `public_only` in production. |
 | `DEFAULT_CHECK_METHOD` / `DEFAULT_DETECTION_PROFILE` | rendered config | Start rollout with `HEAD` / `legacy`; move cohorts through API-controlled stages. |
+| `ROLLOUT_MODE` | rendered config | `api-controlled` until explicit activation grants buckets. |
+| `VERIFLIER_DISCOVERY_MODE` | rendered config | `shadow` until DB registry drift reports are clean, then move to `active`. |
 | `CHECK_HISTORY_MODE_DEFAULT` | rendered config | `status_change` unless a focused test explicitly needs full history. |
 | `AUDIT_LOG_MODE_DEFAULT` | rendered config | `operational` for rollout evidence without API/read firehose noise. |
 | `LEGACY_STATUS_PROJECTION_ENABLE` | rendered config | `true` while rollback or legacy readers still need `jetpack_monitor_sites.site_status`. |
@@ -150,6 +152,8 @@ fallback. Security and rollout posture should be visible in config review:
   "CHECK_TARGET_SAFETY_MODE": "public_only",
   "DEFAULT_CHECK_METHOD": "HEAD",
   "DEFAULT_DETECTION_PROFILE": "legacy",
+  "ROLLOUT_MODE": "api-controlled",
+  "VERIFLIER_DISCOVERY_MODE": "shadow",
   "CHECK_HISTORY_MODE_DEFAULT": "status_change",
   "AUDIT_LOG_MODE_DEFAULT": "operational",
   "LEGACY_STATUS_PROJECTION_ENABLE": true,

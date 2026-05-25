@@ -32,6 +32,8 @@ render_config() {
 	local check_target_safety_mode="${CHECK_TARGET_SAFETY_MODE:-public_only}"
 	local default_check_method="${DEFAULT_CHECK_METHOD:-}"
 	local default_detection_profile="${DEFAULT_DETECTION_PROFILE:-}"
+	local rollout_mode="${ROLLOUT_MODE:-}"
+	local veriflier_discovery_mode="${VERIFLIER_DISCOVERY_MODE:-}"
 	local debug_port="${DEBUG_PORT:-6060}"
 	local wpcom_notify_enable
 	local smtp_use_tls
@@ -46,6 +48,8 @@ render_config() {
 		statsd_addr="${statsd_addr:-host.docker.internal:8125}"
 		default_check_method="${default_check_method:-HEAD}"
 		default_detection_profile="${default_detection_profile:-legacy}"
+		rollout_mode="${rollout_mode:-api-controlled}"
+		veriflier_discovery_mode="${veriflier_discovery_mode:-shadow}"
 		debug_port="${DEBUG_PORT:-0}"
 	fi
 	wpcom_notify_enable="$(bool_json WPCOM_NOTIFY_ENABLE "${WPCOM_NOTIFY_ENABLE:-false}")"
@@ -66,6 +70,7 @@ render_config() {
 		-e "s|\"DB_SERVER_MAP_DATACENTER\" : \"\"|\"DB_SERVER_MAP_DATACENTER\" : \"$(sed_escape "${DB_SERVER_MAP_DATACENTER:-}")\"|g" \
 		-e "s|\"DB_SERVER_MAP_ADDRESS\"    : \"\"|\"DB_SERVER_MAP_ADDRESS\"    : \"$(sed_escape "${DB_SERVER_MAP_ADDRESS:-}")\"|g" \
 		-e "s|\"SCHEMA_MANAGEMENT_MODE\": \"\"|\"SCHEMA_MANAGEMENT_MODE\": \"$(sed_escape "$schema_management_mode")\"|g" \
+		-e "s|\"VERIFLIER_DISCOVERY_MODE\" : \"static\"|\"VERIFLIER_DISCOVERY_MODE\" : \"$(sed_escape "${veriflier_discovery_mode:-static}")\"|g" \
 		-e "s|<VERIFLIER_PORT>|$(sed_escape "${VERIFLIER_PORT}")|g" \
 		-e "s|<VERIFLIER_AUTH_TOKEN>|$(sed_escape "${VERIFLIER_AUTH_TOKEN:-veriflier_1_auth_token}")|g" \
 		-e 's|"API_PORT"       : 0|"API_PORT"       : 8090|g' \
@@ -73,6 +78,7 @@ render_config() {
 		-e "s|\"CHECK_TARGET_SAFETY_MODE\"     : \"public_only\"|\"CHECK_TARGET_SAFETY_MODE\"     : \"$(sed_escape "$check_target_safety_mode")\"|g" \
 		-e "s|\"DEFAULT_CHECK_METHOD\"         : \"GET\"|\"DEFAULT_CHECK_METHOD\"         : \"$(sed_escape "${default_check_method:-GET}")\"|g" \
 		-e "s|\"DEFAULT_DETECTION_PROFILE\"    : \"full\"|\"DEFAULT_DETECTION_PROFILE\"    : \"$(sed_escape "${default_detection_profile:-full}")\"|g" \
+		-e "s|\"ROLLOUT_MODE\"                : \"active\"|\"ROLLOUT_MODE\"                : \"$(sed_escape "${rollout_mode:-active}")\"|g" \
 		-e "s|\"DEBUG_PORT\"     : 6060|\"DEBUG_PORT\"     : ${debug_port}|g" \
 		-e "s|\"WPCOM_NOTIFY_MODE\"            : \"legacy\"|\"WPCOM_NOTIFY_MODE\"            : \"$(sed_escape "${WPCOM_NOTIFY_MODE:-legacy}")\"|g" \
 		-e "s|\"EMAIL_TRANSPORT\"       : \"stub\"|\"EMAIL_TRANSPORT\"       : \"$(sed_escape "${EMAIL_TRANSPORT:-smtp}")\"|g" \
@@ -88,12 +94,17 @@ render_config() {
 rendered_config_summary() {
 	local config_profile="${CONFIG_PROFILE:-default}"
 	local statsd_addr="${STATSD_ADDR:-}"
+	local rollout_mode="${ROLLOUT_MODE:-}"
+	local veriflier_discovery_mode="${VERIFLIER_DISCOVERY_MODE:-}"
 	if [ "$config_profile" = "production" ]; then
 		statsd_addr="${statsd_addr:-host.docker.internal:8125}"
+		rollout_mode="${rollout_mode:-api-controlled}"
+		veriflier_discovery_mode="${veriflier_discovery_mode:-shadow}"
 	fi
-	printf 'profile=%s hostname=%s statsd=%s db=%s' \
+	printf 'profile=%s hostname=%s statsd=%s rollout=%s veriflier_discovery=%s db=%s' \
 		"$config_profile" "${JETMON_HOSTNAME:-runtime-hostname}" \
-		"${statsd_addr:-disabled}" "$(db_source_summary)"
+		"${statsd_addr:-disabled}" "${rollout_mode:-active}" \
+		"${veriflier_discovery_mode:-static}" "$(db_source_summary)"
 }
 
 config_render_target() {

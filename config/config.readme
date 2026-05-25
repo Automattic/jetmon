@@ -70,17 +70,15 @@ starts.
 - Default: `default`
 - Values: `default`, `production`
 - Example: `"CONFIG_PROFILE": "production"`
-- Purpose: applies a small named set of safety defaults before explicit config
-  values are decoded.
-- Notes: `production` sets `SCHEMA_MANAGEMENT_MODE=validate` and
-  `CHECK_TARGET_SAFETY_MODE=public_only` unless those keys are explicitly set.
-  Keep profiles narrow; rollout-stage choices such as `ROLLOUT_MODE`,
-  `DEFAULT_CHECK_METHOD`, `DEFAULT_DETECTION_PROFILE`, `API_PORT`, and
-  `WPCOM_NOTIFY_ENABLE` should stay explicit. The Docker Monitor entrypoint
-  also uses `CONFIG_PROFILE=production` as a render-time convenience to fill
-  omitted production container defaults such as host-local StatsD, `HEAD` /
-  `legacy` rollout checks, and `DEBUG_PORT=0`; review the rendered JSON before
-  activation.
+- Purpose: applies a named set of production safety and rollout defaults before
+  explicit config values are decoded.
+- Notes: `production` sets `SCHEMA_MANAGEMENT_MODE=validate`,
+  `CHECK_TARGET_SAFETY_MODE=public_only`, `ROLLOUT_MODE=api-controlled`, and
+  `VERIFLIER_DISCOVERY_MODE=shadow` unless those keys are explicitly set. The
+  Docker Monitor entrypoint also uses `CONFIG_PROFILE=production` as a
+  render-time convenience to fill omitted production container defaults such as
+  host-local StatsD, `HEAD` / `legacy` rollout checks, and `DEBUG_PORT=0`;
+  review the rendered JSON before activation.
 
 ### SCHEMA_MANAGEMENT_MODE
 
@@ -96,7 +94,7 @@ starts.
 
 ### ROLLOUT_MODE
 
-- Default: `active`
+- Default: `active`; production profile default: `api-controlled`
 - Values: `active`, `standby`, `api-controlled`
 - Example: `"ROLLOUT_MODE": "api-controlled"`
 - Purpose: controls whether the Monitor is allowed to claim buckets and run
@@ -723,7 +721,7 @@ observed rate/latency, and avoids per-probe healthy freshness writes.
 
 ### VERIFLIER_DISCOVERY_MODE
 
-- Default: `static`
+- Default: `static`; production profile default: `shadow`
 - Values: `static`, `shadow`, `active`
 - Example: `"VERIFLIER_DISCOVERY_MODE": "shadow"`
 - Purpose: controls whether Monitors use the trusted DB-backed Veriflier

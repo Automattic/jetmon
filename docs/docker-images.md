@@ -140,6 +140,8 @@ Important Monitor render inputs:
 | `WPCOM_NOTIFY_MODE` | Defaults to `legacy`; use `modern` only for WPCOM contract testing. |
 | `WPCOM_NOTIFY_LEGACY_CERT_PATH`, `WPCOM_NOTIFY_LEGACY_KEY_PATH` | Required secret paths when legacy WPCOM notifications are enabled. |
 | `CHECK_TARGET_SAFETY_MODE` | Keep `public_only` for production and real site data. |
+| `ROLLOUT_MODE` | Use `api-controlled` for production rollout until explicit activation. |
+| `VERIFLIER_DISCOVERY_MODE` | Use `shadow` until trusted registry drift reports are clean. |
 | `EMAIL_TRANSPORT` | Use `stub` for dev; use `smtp` or `wpcom` only when configured. |
 | `STATSD_ADDR` | StatsD endpoint; leave empty to disable. |
 | `JETMON_HOSTNAME` | Docker render input for stable process identity. |
@@ -153,6 +155,8 @@ production fallbacks when the matching variables are omitted:
 - `CHECK_TARGET_SAFETY_MODE=public_only`
 - `DEFAULT_CHECK_METHOD=HEAD`
 - `DEFAULT_DETECTION_PROFILE=legacy`
+- `ROLLOUT_MODE=api-controlled`
+- `VERIFLIER_DISCOVERY_MODE=shadow`
 - `DEBUG_PORT=0`
 
 Set these explicitly in production roles anyway. Visible config review is more
