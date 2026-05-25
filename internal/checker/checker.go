@@ -1513,8 +1513,15 @@ func looksLikeWordPressUnsupportedDatabase(lowerBody string) bool {
 }
 
 func looksLikeWordPressRedisConnectionError(lowerBody string) bool {
-	if !strings.Contains(lowerBody, "error establishing a redis connection") &&
+	const phrase = "error establishing a redis connection"
+	if !strings.Contains(lowerBody, phrase) &&
 		!strings.Contains(lowerBody, "error establishing connection. to disable redis") {
+		return false
+	}
+	stripped := strings.TrimSpace(strings.ToLower(stripHTMLTags(lowerBody)))
+	if !strings.Contains(lowerBody, "<title>"+phrase) &&
+		!strings.Contains(lowerBody, "<h1>"+phrase) &&
+		!strings.HasPrefix(stripped, phrase) {
 		return false
 	}
 	return strings.Contains(lowerBody, "wordpress is unable to establish a connection to redis") ||

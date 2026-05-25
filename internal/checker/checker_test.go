@@ -834,7 +834,7 @@ func TestCheckFullProfileDoesNotTreatGenericFatalErrorArticleAsSemanticFailure(t
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("<html><body><article>How to troubleshoot a fatal error: look at your logs and fix the plugin.</article><article>How to fix Error establishing a Redis connection after a migration.</article></body></html>"))
+		_, _ = w.Write([]byte("<html><body><article>How to troubleshoot a fatal error: look at your logs and fix the plugin.</article><article>How to fix Error establishing a Redis connection after a migration: delete object-cache.php from /wp-content/ if the migrated site still points at the old Redis server.</article></body></html>"))
 	}))
 	defer srv.Close()
 
