@@ -133,11 +133,11 @@ func (c *VeriflierClient) Check(ctx context.Context, req CheckRequest) (*CheckRe
 func (c *VeriflierClient) CheckBatch(ctx context.Context, reqs []CheckRequest) ([]CheckResult, error) {
 	switch c.cachedProtocol() {
 	case ProtocolLegacy:
-		return c.checkBatchLegacy(ctx, reqs)
+		return c.checkBatchLegacyIsolated(ctx, reqs)
 	case ProtocolV2:
-		return c.checkBatchV2(ctx, reqs)
+		return c.checkBatchV2Isolated(ctx, reqs)
 	default:
-		results, err := c.checkBatchV2(ctx, reqs)
+		results, err := c.checkBatchV2Isolated(ctx, reqs)
 		if err == nil {
 			c.setProtocol(ProtocolV2)
 			return results, nil
@@ -146,7 +146,7 @@ func (c *VeriflierClient) CheckBatch(ctx context.Context, reqs []CheckRequest) (
 			return nil, err
 		}
 		c.setProtocol(ProtocolLegacy)
-		return c.checkBatchLegacy(ctx, reqs)
+		return c.checkBatchLegacyIsolated(ctx, reqs)
 	}
 }
 
@@ -475,7 +475,7 @@ func (c *VeriflierClient) checkBatchLegacy(ctx context.Context, reqs []CheckRequ
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("veriflier returned %d", resp.StatusCode)
+		return nil, statusError{endpoint: "/check", status: resp.StatusCode}
 	}
 
 	var br batchResp
@@ -501,6 +501,10 @@ func (c *VeriflierClient) checkBatchLegacy(ctx context.Context, reqs []CheckRequ
 		results[i] = checkResultFromLegacy(req, res)
 	}
 	return results, nil
+}
+
+func (c *VeriflierClient) checkBatchLegacyIsolated(ctx context.Context, reqs []CheckRequest) ([]CheckResult, error) {
+	return c.checkBatchPayloadIsolated(ctx, reqs, c.checkBatchLegacy)
 }
 
 func (c *VeriflierClient) checkBatchV2(ctx context.Context, reqs []CheckRequest) ([]CheckResult, error) {
@@ -578,6 +582,37 @@ func (c *VeriflierClient) checkBatchV2(ctx context.Context, reqs []CheckRequest)
 		results[i] = checkResultFromV2(req, res)
 	}
 	return results, nil
+}
+
+func (c *VeriflierClient) checkBatchV2Isolated(ctx context.Context, reqs []CheckRequest) ([]CheckResult, error) {
+	return c.checkBatchPayloadIsolated(ctx, reqs, c.checkBatchV2)
+}
+
+func (c *VeriflierClient) checkBatchPayloadIsolated(ctx context.Context, reqs []CheckRequest, send func(context.Context, []CheckRequest) ([]CheckResult, error)) ([]CheckResult, error) {
+	results, err := send(ctx, reqs)
+	if err == nil {
+		return results, nil
+	}
+	if !payloadTooLargeError(err) {
+		return nil, err
+	}
+	if len(reqs) == 1 {
+		return []CheckResult{*payloadTooLargeCheckResult(reqs[0])}, nil
+	}
+
+	mid := len(reqs) / 2
+	left, leftErr := c.checkBatchPayloadIsolated(ctx, reqs[:mid], send)
+	if leftErr != nil {
+		return nil, leftErr
+	}
+	right, rightErr := c.checkBatchPayloadIsolated(ctx, reqs[mid:], send)
+	if rightErr != nil {
+		return nil, rightErr
+	}
+	out := make([]CheckResult, 0, len(left)+len(right))
+	out = append(out, left...)
+	out = append(out, right...)
+	return out, nil
 }
 
 func payloadTooLargeError(err error) bool {

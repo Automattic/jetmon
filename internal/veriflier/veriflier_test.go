@@ -1309,6 +1309,136 @@ func TestSingleCheckBatcherSplitsPayloadTooLargeBatches(t *testing.T) {
 	}
 }
 
+func TestClientBatchSplitsPayloadTooLargeV2Batches(t *testing.T) {
+	const hugeURL = "https://example.com/huge"
+	var requestCount atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/check" {
+			http.NotFound(w, r)
+			return
+		}
+		requestCount.Add(1)
+		var req CheckV2BatchRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		for _, check := range req.Requests {
+			if check.URL == hugeURL {
+				http.Error(w, "request entity too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+		}
+		results := make([]CheckV2Result, 0, len(req.Requests))
+		for _, check := range req.Requests {
+			results = append(results, CheckV2Result{
+				RequestID: check.RequestID,
+				BlogID:    check.BlogID,
+				URL:       check.URL,
+				Outcome:   OutcomeUp,
+				Success:   true,
+				HTTPCode:  200,
+			})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(CheckV2BatchResponse{Results: results})
+	}))
+	defer ts.Close()
+
+	client := NewVeriflierClient(ts.Listener.Addr().String(), "secret")
+	client.setProtocol(ProtocolV2)
+	results, err := client.CheckBatch(context.Background(), []CheckRequest{
+		{BlogID: 1, URL: "https://example.com/safe-before", RequestID: "safe-before"},
+		{BlogID: 2, URL: hugeURL, RequestID: "huge"},
+		{BlogID: 3, URL: "https://example.com/safe-after", RequestID: "safe-after"},
+	})
+	if err != nil {
+		t.Fatalf("CheckBatch() error = %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("results len = %d, want 3", len(results))
+	}
+	for _, idx := range []int{0, 2} {
+		if !results[idx].Success || results[idx].RequestID == "" {
+			t.Fatalf("safe result %d = %+v, want success", idx, results[idx])
+		}
+	}
+	if results[1].Success || results[1].Outcome != OutcomeUnknown || results[1].ErrorCode != checkerErrorProbeSafety {
+		t.Fatalf("huge result = %+v, want probe-safety unknown", results[1])
+	}
+	if requestCount.Load() < 4 {
+		t.Fatalf("request count = %d, want recursive split retries", requestCount.Load())
+	}
+}
+
+func TestClientBatchSplitsPayloadTooLargeLegacyBatches(t *testing.T) {
+	const hugeURL = "https://example.com/huge"
+	var requestCount atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/check" {
+			http.NotFound(w, r)
+			return
+		}
+		requestCount.Add(1)
+		var req struct {
+			Sites []CheckRequest `json:"sites"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		for _, check := range req.Sites {
+			if check.URL == hugeURL {
+				http.Error(w, "request entity too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+		}
+		results := make([]CheckResult, 0, len(req.Sites))
+		for _, check := range req.Sites {
+			results = append(results, CheckResult{
+				RequestID: check.RequestID,
+				BlogID:    check.BlogID,
+				URL:       check.URL,
+				Outcome:   OutcomeUp,
+				Success:   true,
+				HTTPCode:  200,
+			})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(struct {
+			Results []CheckResult `json:"results"`
+		}{Results: results})
+	}))
+	defer ts.Close()
+
+	client := NewVeriflierClient(ts.Listener.Addr().String(), "secret")
+	client.setProtocol(ProtocolLegacy)
+	results, err := client.CheckBatch(context.Background(), []CheckRequest{
+		{BlogID: 1, URL: "https://example.com/safe-before", RequestID: "safe-before"},
+		{BlogID: 2, URL: hugeURL, RequestID: "huge"},
+		{BlogID: 3, URL: "https://example.com/safe-after", RequestID: "safe-after"},
+	})
+	if err != nil {
+		t.Fatalf("CheckBatch() error = %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("results len = %d, want 3", len(results))
+	}
+	for _, idx := range []int{0, 2} {
+		if !results[idx].Success || results[idx].RequestID == "" {
+			t.Fatalf("safe result %d = %+v, want success", idx, results[idx])
+		}
+	}
+	if results[1].Success || results[1].Outcome != OutcomeUnknown || results[1].ErrorCode != checkerErrorProbeSafety {
+		t.Fatalf("huge result = %+v, want probe-safety unknown", results[1])
+	}
+	if requestCount.Load() < 4 {
+		t.Fatalf("request count = %d, want recursive split retries", requestCount.Load())
+	}
+}
+
 func TestSingleCheckBatcherPrunesExpiredCallsWhileWaitingForFlight(t *testing.T) {
 	origPoll := singleCheckBatchFlightWaitPoll
 	singleCheckBatchFlightWaitPoll = time.Millisecond
