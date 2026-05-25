@@ -468,6 +468,56 @@ func TestClientBatchReturnsUnknownForOmittedV2Result(t *testing.T) {
 	}
 }
 
+func TestClientBatchKeepsLocalIdentityAuthoritative(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/check" {
+			http.NotFound(w, r)
+			return
+		}
+		var req CheckV2BatchRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if len(req.Requests) != 1 {
+			t.Errorf("request len = %d, want 1", len(req.Requests))
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(CheckV2BatchResponse{Results: []CheckV2Result{{
+			RequestID: req.Requests[0].RequestID,
+			BlogID:    9999,
+			URL:       "https://wrong.example.test/",
+			VantageID: "test-vantage",
+			AgentID:   "test-agent",
+			Outcome:   OutcomeUp,
+			Success:   true,
+			HTTPCode:  200,
+		}}})
+	}))
+	defer ts.Close()
+
+	client := NewVeriflierClient(ts.Listener.Addr().String(), "secret")
+	client.setProtocol(ProtocolV2)
+	res, err := client.CheckBatch(context.Background(), []CheckRequest{
+		{MonitorSiteID: 101, BlogID: 1, URL: "https://example.com/one", RequestID: "one"},
+	})
+	if err != nil {
+		t.Fatalf("CheckBatch() error = %v", err)
+	}
+	if len(res) != 1 {
+		t.Fatalf("CheckBatch() len = %d, want 1", len(res))
+	}
+	if res[0].BlogID != 1 || res[0].URL != "https://example.com/one" || res[0].MonitorSiteID != 101 {
+		t.Fatalf("result identity = %+v, want local request identity", res[0])
+	}
+	if !res[0].Success || res[0].Outcome != OutcomeUp || res[0].Host != "test-vantage" {
+		t.Fatalf("result outcome/vantage = %+v", res[0])
+	}
+}
+
 func TestClientBatchSendsServerDeadlineWithReserve(t *testing.T) {
 	origReserve := singleCheckBatchDeadlineReserve
 	origLargeReserve := singleCheckLargeBatchDeadlineReserve

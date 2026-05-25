@@ -557,8 +557,8 @@ func v2ResultsByRequestID(results []CheckV2Result) map[string]CheckV2Result {
 func checkResultFromV2(orig CheckRequest, res CheckV2Result) CheckResult {
 	return CheckResult{
 		MonitorSiteID: orig.MonitorSiteID,
-		BlogID:        res.BlogID,
-		URL:           res.URL,
+		BlogID:        orig.BlogID,
+		URL:           orig.URL,
 		Host:          res.VantageID,
 		VantageID:     res.VantageID,
 		AgentID:       res.AgentID,
