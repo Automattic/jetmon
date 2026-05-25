@@ -229,6 +229,7 @@ The response is valid HTTP — but is the payload actually correct? Layer 5 spli
 ### Correctness: silent application failures
 - **[v1]** CMS fatal error rendered with 200 OK (WSOD)
 - **[v1]** "Error establishing a database connection" served as HTML with 200
+- **[v1]** WordPress object-cache connection failure served as HTML with 200
 - **[v1]** PHP fatal errors or stack traces in response body
 - **[v1]** White-screen-of-death (empty or near-empty body, 200 OK)
 - **[v1]** WordPress setup/configuration page served to visitors
