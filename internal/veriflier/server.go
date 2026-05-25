@@ -211,37 +211,44 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 	if !decodeLimitedJSON(w, r, &req) {
 		return
 	}
-	for i := range req.Sites {
-		if err := validateCheckURL(req.Sites[i].URL); err != nil {
-			http.Error(w, fmt.Sprintf("site %d: %v", i, err), http.StatusBadRequest)
-			return
-		}
-	}
 
+	results := make([]CheckResult, len(req.Sites))
+	legacyReqs := make([]CheckRequest, 0, len(req.Sites))
+	legacyResultIndexes := make([]int, 0, len(req.Sites))
 	for i := range req.Sites {
 		if req.Sites[i].RequestID == "" {
 			req.Sites[i].RequestID = NewRequestID()
 		}
+		if err := validateCheckURL(req.Sites[i].URL); err != nil {
+			results[i] = legacyRequestErrorResult(req.Sites[i], s.hostname)
+			continue
+		}
+		legacyReqs = append(legacyReqs, req.Sites[i])
+		legacyResultIndexes = append(legacyResultIndexes, i)
 	}
 
-	probeResults, err := s.executor.ExecuteBatch(r.Context(), req.Sites)
-	if err != nil {
-		if errors.Is(err, ErrOverloaded) {
-			incrementMetric("verifier.checks.overloaded.count", 1)
-			http.Error(w, "veriflier overloaded", http.StatusServiceUnavailable)
+	if len(legacyReqs) > 0 {
+		probeResults, err := s.executor.ExecuteBatch(r.Context(), legacyReqs)
+		if err != nil {
+			if errors.Is(err, ErrOverloaded) {
+				incrementMetric("verifier.checks.overloaded.count", 1)
+				http.Error(w, "veriflier overloaded", http.StatusServiceUnavailable)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusGatewayTimeout)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusGatewayTimeout)
-		return
-	}
-	results := make([]CheckResult, 0, len(probeResults))
-	for _, probeResult := range probeResults {
-		res := probeResult.CheckResult
-		res.Host = s.hostname
-		if res.RequestID == "" {
-			res.RequestID = probeResult.RequestID
+		for i, probeResult := range probeResults {
+			if i >= len(legacyResultIndexes) {
+				break
+			}
+			res := probeResult.CheckResult
+			res.Host = s.hostname
+			if res.RequestID == "" {
+				res.RequestID = probeResult.RequestID
+			}
+			results[legacyResultIndexes[i]] = res
 		}
-		results = append(results, res)
 	}
 
 	incrementMetric("verifier.checks.received.count", len(req.Sites))
@@ -435,6 +442,19 @@ func (s *Server) v2RequestErrorResult(req CheckV2Request) CheckV2Result {
 	}
 }
 
+func legacyRequestErrorResult(req CheckRequest, host string) CheckResult {
+	return CheckResult{
+		MonitorSiteID: req.MonitorSiteID,
+		BlogID:        req.BlogID,
+		URL:           req.URL,
+		Host:          host,
+		Outcome:       OutcomeUnknown,
+		Success:       false,
+		ErrorCode:     checkerErrorProbeSafety,
+		RequestID:     req.RequestID,
+	}
+}
+
 type perRequestValidationError struct {
 	err error
 }
@@ -459,11 +479,11 @@ func v2RequestToLegacy(req CheckV2Request) (CheckRequest, error) {
 	}
 	method, err := checkmode.NormalizeMethod(req.Method, checkmode.MethodGET)
 	if err != nil {
-		return CheckRequest{}, fmt.Errorf("unsupported method %q", req.Method)
+		return CheckRequest{}, &perRequestValidationError{err: fmt.Errorf("unsupported method %q", req.Method)}
 	}
 	profile, err := checkmode.NormalizeProfile(req.DetectionProfile, checkmode.ProfileFull)
 	if err != nil {
-		return CheckRequest{}, fmt.Errorf("unsupported detection_profile %q", req.DetectionProfile)
+		return CheckRequest{}, &perRequestValidationError{err: fmt.Errorf("unsupported detection_profile %q", req.DetectionProfile)}
 	}
 	profile = checkmode.EffectiveProfile(method, profile)
 	requestID := req.RequestID
@@ -489,7 +509,7 @@ func v2RequestToLegacy(req CheckV2Request) (CheckRequest, error) {
 		RequestID:           requestID,
 	}
 	if len(req.BodyRules.Required) > 1 {
-		return CheckRequest{}, fmt.Errorf("only one required body rule is supported")
+		return CheckRequest{}, &perRequestValidationError{err: fmt.Errorf("only one required body rule is supported")}
 	}
 	if len(req.BodyRules.Required) > 0 {
 		legacyReq.Keyword = req.BodyRules.Required[0]

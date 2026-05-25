@@ -193,7 +193,7 @@ func TestServerHandleCheckMethodNotAllowed(t *testing.T) {
 	}
 }
 
-func TestServerHandleCheckRejectsUnsafeURL(t *testing.T) {
+func TestServerHandleCheckReturnsUnsafeURLResult(t *testing.T) {
 	var called atomic.Bool
 	_, ts := newTestServer(func(req CheckRequest) CheckResult {
 		called.Store(true)
@@ -212,11 +212,83 @@ func TestServerHandleCheckRejectsUnsafeURL(t *testing.T) {
 		t.Fatalf("request error: %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 	if called.Load() {
 		t.Fatal("check function was called for unsafe URL")
+	}
+	var result struct {
+		Results []CheckResult `json:"results"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(result.Results) != 1 {
+		t.Fatalf("results len = %d, want 1", len(result.Results))
+	}
+	got := result.Results[0]
+	if got.BlogID != 1 || got.URL != "http://127.0.0.1/admin" || got.Host != "test-host" {
+		t.Fatalf("unsafe result identity = %+v", got)
+	}
+	if got.Success || got.ErrorCode != checkerErrorProbeSafety || got.Outcome != OutcomeUnknown {
+		t.Fatalf("unsafe result = %+v, want probe-safety unknown", got)
+	}
+}
+
+func TestServerHandleCheckIsolatesUnsafeURLInMixedLegacyBatch(t *testing.T) {
+	var calledMu sync.Mutex
+	var calledURLs []string
+	_, ts := newTestServer(func(req CheckRequest) CheckResult {
+		calledMu.Lock()
+		calledURLs = append(calledURLs, req.URL)
+		calledMu.Unlock()
+		return CheckResult{BlogID: req.BlogID, URL: req.URL, Success: true, HTTPCode: 200}
+	})
+	defer ts.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/check", checkReqBody(t, []CheckRequest{
+		{RequestID: "req-safe-before", BlogID: 1, URL: "https://example.com/before"},
+		{RequestID: "req-unsafe", BlogID: 2, URL: "http://localhost/admin"},
+		{RequestID: "req-safe-after", BlogID: 3, URL: "https://example.com/after"},
+	}))
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var result struct {
+		Results []CheckResult `json:"results"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(result.Results) != 3 {
+		t.Fatalf("results len = %d, want 3", len(result.Results))
+	}
+	calledMu.Lock()
+	defer calledMu.Unlock()
+	called := make(map[string]bool, len(calledURLs))
+	for _, url := range calledURLs {
+		called[url] = true
+	}
+	if len(calledURLs) != 2 || !called["https://example.com/before"] || !called["https://example.com/after"] {
+		t.Fatalf("called URLs = %#v, want only safe siblings", calledURLs)
+	}
+	if !result.Results[0].Success || result.Results[0].RequestID != "req-safe-before" {
+		t.Fatalf("safe-before result = %+v", result.Results[0])
+	}
+	if result.Results[1].Success || result.Results[1].RequestID != "req-unsafe" || result.Results[1].ErrorCode != checkerErrorProbeSafety || result.Results[1].Outcome != OutcomeUnknown {
+		t.Fatalf("unsafe result = %+v", result.Results[1])
+	}
+	if !result.Results[2].Success || result.Results[2].RequestID != "req-safe-after" {
+		t.Fatalf("safe-after result = %+v", result.Results[2])
 	}
 }
 
@@ -1735,7 +1807,7 @@ func TestServerHandleV2CheckAppliesBatchDeadline(t *testing.T) {
 	}
 }
 
-func TestServerHandleV2CheckRejectsMultipleRequiredBodyRules(t *testing.T) {
+func TestServerHandleV2CheckReturnsRequestErrorForMultipleRequiredBodyRules(t *testing.T) {
 	srv, ts := newV2TestServer(func(_ context.Context, req CheckRequest) ProbeResult {
 		t.Fatal("checkFn should not be called for invalid body rules")
 		return ProbeResult{}
@@ -1764,8 +1836,88 @@ func TestServerHandleV2CheckRejectsMultipleRequiredBodyRules(t *testing.T) {
 		t.Fatalf("request error: %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var result CheckV2BatchResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(result.Results) != 1 {
+		t.Fatalf("results len = %d, want 1", len(result.Results))
+	}
+	got := result.Results[0]
+	if got.Success || got.ErrorCode != checkerErrorProbeSafety || got.Outcome != OutcomeUnknown {
+		t.Fatalf("result = %+v, want probe-safety unknown", got)
+	}
+}
+
+func TestServerHandleV2CheckIsolatesBadPerSiteOptionsInMixedBatch(t *testing.T) {
+	var calledMu sync.Mutex
+	var calledURLs []string
+	srv, ts := newV2TestServer(func(_ context.Context, req CheckRequest) ProbeResult {
+		calledMu.Lock()
+		calledURLs = append(calledURLs, req.URL)
+		calledMu.Unlock()
+		return ProbeResult{CheckResult: CheckResult{
+			BlogID:    req.BlogID,
+			URL:       req.URL,
+			Success:   true,
+			HTTPCode:  200,
+			RequestID: req.RequestID,
+		}, Outcome: OutcomeUp}
+	})
+	defer srv.executor.Shutdown()
+	defer ts.Close()
+
+	body := bytes.NewBuffer(nil)
+	if err := json.NewEncoder(body).Encode(CheckV2BatchRequest{
+		Requests: []CheckV2Request{
+			{RequestID: "req-safe-before", BlogID: 1, URL: "https://example.com/before"},
+			{RequestID: "req-bad-method", BlogID: 2, URL: "https://example.com/bad-method", Method: "POST"},
+			{RequestID: "req-bad-profile", BlogID: 3, URL: "https://example.com/bad-profile", DetectionProfile: "imaginary"},
+			{RequestID: "req-safe-after", BlogID: 4, URL: "https://example.com/after"},
+		},
+	}); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v2/check", body)
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var result CheckV2BatchResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(result.Results) != 4 {
+		t.Fatalf("results len = %d, want 4", len(result.Results))
+	}
+	calledMu.Lock()
+	defer calledMu.Unlock()
+	called := make(map[string]bool, len(calledURLs))
+	for _, url := range calledURLs {
+		called[url] = true
+	}
+	if len(calledURLs) != 2 || !called["https://example.com/before"] || !called["https://example.com/after"] {
+		t.Fatalf("called URLs = %#v, want only safe siblings", calledURLs)
+	}
+	for _, idx := range []int{0, 3} {
+		if !result.Results[idx].Success || result.Results[idx].Outcome != OutcomeUp {
+			t.Fatalf("safe result %d = %+v", idx, result.Results[idx])
+		}
+	}
+	for _, idx := range []int{1, 2} {
+		if result.Results[idx].Success || result.Results[idx].ErrorCode != checkerErrorProbeSafety || result.Results[idx].Outcome != OutcomeUnknown {
+			t.Fatalf("bad-options result %d = %+v", idx, result.Results[idx])
+		}
 	}
 }
 
