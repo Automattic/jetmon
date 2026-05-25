@@ -55,6 +55,7 @@ Hard gates before any v2 range activation:
 - WPCOM notifications remain in legacy mode,
 - canary sites or uptime-bench fixtures are approved for smoke checks,
 - rollback ownership path is agreed with Systems.
+- WPCOM provisioning has been validated against the planned bucket space.
 
 Recommended checks:
 
@@ -71,6 +72,17 @@ Run the read-only production data audit before the first window:
 ```bash
 ./jetmon2 rollout production-data-audit --bucket-min=0 --bucket-max=<max>
 ```
+
+If the audit reports a WPCOM-style `0-511` bucket space while v2 uses a wider
+`BUCKET_TOTAL`, do not activate empty higher buckets unless WPCOM bucket
+assignment and rebalancing have been approved. For a compatibility-first
+cutover, keep the first activation plan aligned to the WPCOM-populated bucket
+space.
+
+Also validate one WPCOM-style provisioning row before the window: insert or
+activate a row in `jetpack_monitor_sites` with no v2 sidecars, then confirm v2
+picks it up and creates runtime freshness after activation. This proves the
+direct-table WPCOM path still works.
 
 If existing active non-running v1 projections must be adopted into v2 events
 before projection drift becomes a hard gate:

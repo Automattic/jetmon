@@ -17,6 +17,7 @@ import (
 )
 
 const legacyStatusBootstrapSource = "rollout:legacy-status-bootstrap"
+const wpcomLegacyBucketTotal = 512
 
 type productionDataAuditDeps struct {
 	BuildLegacySiteTableAudit func(context.Context, int, int) (db.LegacySiteTableAudit, error)
@@ -154,7 +155,11 @@ func evaluateProductionDataAudit(cfg *config.Config, audit db.LegacySiteTableAud
 	if cfg != nil && audit.ObservedBucketMin != nil && audit.ObservedBucketMax != nil {
 		observedTotal := *audit.ObservedBucketMax - *audit.ObservedBucketMin + 1
 		if *audit.ObservedBucketMin == 0 && observedTotal != cfg.BucketTotal {
-			eval.Warnings = append(eval.Warnings, fmt.Sprintf("observed legacy bucket space is 0-%d but BUCKET_TOTAL=%d", *audit.ObservedBucketMax, cfg.BucketTotal))
+			if observedTotal == wpcomLegacyBucketTotal && cfg.BucketTotal != wpcomLegacyBucketTotal {
+				eval.Warnings = append(eval.Warnings, fmt.Sprintf("observed WPCOM-style 512-bucket legacy space is 0-%d but BUCKET_TOTAL=%d; activate only WPCOM-populated buckets or approve a WPCOM bucket rebalance before relying on the wider range", *audit.ObservedBucketMax, cfg.BucketTotal))
+			} else {
+				eval.Warnings = append(eval.Warnings, fmt.Sprintf("observed legacy bucket space is 0-%d but BUCKET_TOTAL=%d", *audit.ObservedBucketMax, cfg.BucketTotal))
+			}
 		}
 	}
 	if unexpected := unexpectedValueCounts(audit.MonitorActiveValues, map[int]bool{0: true, 1: true}); len(unexpected) > 0 {

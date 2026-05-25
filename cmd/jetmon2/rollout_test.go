@@ -2102,6 +2102,45 @@ func TestRunProductionDataAuditFlagsProductionShape(t *testing.T) {
 	}
 }
 
+func TestRunProductionDataAuditWarnsOnWPCOMBucketTotalMismatch(t *testing.T) {
+	cfg := &config.Config{BucketTotal: 1000}
+	minBucket, maxBucket, observedMax := 0, 999, 511
+	audit := db.LegacySiteTableAudit{
+		BucketMin:              minBucket,
+		BucketMax:              maxBucket,
+		TotalRows:              1000,
+		ActiveRows:             100,
+		ObservedBucketMin:      &minBucket,
+		ObservedBucketMax:      &observedMax,
+		ObservedBucketDistinct: 512,
+		ActiveBucketDistinct:   512,
+		ActiveBucketLoad:       db.BucketLoadSummary{Distinct: 512, MinRows: 1, MaxRows: 3, AvgRows: 2},
+		MonitorActiveValues:    []db.ValueCount{{Value: 0, Total: 900}, {Value: 1, Total: 100, Active: 100}},
+		SiteStatusValues:       []db.ValueCount{{Value: 1, Total: 1000, Active: 100}},
+		CheckIntervalValues:    []db.ValueCount{{Value: 5, Total: 1000, Active: 100}},
+	}
+	deps := productionDataAuditDeps{
+		BuildLegacySiteTableAudit: func(context.Context, int, int) (db.LegacySiteTableAudit, error) {
+			return audit, nil
+		},
+	}
+
+	var out bytes.Buffer
+	err := runProductionDataAudit(context.Background(), &out, cfg, -1, -1, deps)
+	if err != nil {
+		t.Fatalf("runProductionDataAudit returned error: %v\n%s", err, out.String())
+	}
+	text := out.String()
+	for _, want := range []string{
+		"WARN production_data_audit=\"observed WPCOM-style 512-bucket legacy space is 0-511 but BUCKET_TOTAL=1000",
+		"PASS production_data_audit=ready",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("audit output missing %q:\n%s", want, text)
+		}
+	}
+}
+
 func TestRunLegacyStatusBootstrapDryRunBlocksDuplicateBlogs(t *testing.T) {
 	cfg := &config.Config{BucketTotal: 10}
 	audit := db.LegacySiteTableAudit{

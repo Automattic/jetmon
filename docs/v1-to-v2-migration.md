@@ -66,6 +66,36 @@ The check method/profile is per site in
 `jetpack_monitor_site_check_config`. After migration, production defaults can
 move to `GET` + `full`; keep per-site `HEAD` overrides only where needed.
 
+## WPCOM Provisioning Compatibility
+
+The first production rollout keeps WPCOM provisioning pointed at the legacy
+table path. Current WPCOM Monitor activation creates or updates rows in
+`jetpack_monitor_sites`; Jetpack plugin activation by itself does not create a
+Monitor row. V2 must therefore be able to start checking a row that appears in
+`jetpack_monitor_sites` without any pre-created v2 side tables.
+
+That path is intentional. V2 reads active rows from `jetpack_monitor_sites` and
+creates or adopts v2 runtime/config state as needed. The internal v2 Sites API
+is not a drop-in replacement for WPCOM provisioning yet because WPCOM can manage
+multiple monitor URLs for one blog while the current API is stricter about
+duplicate `blog_id` creation.
+
+Pre-window validation must include:
+
+- a WPCOM-style direct insert or activation row with no v2 sidecars; v2 should
+  pick it up on the next target reload and create runtime freshness
+- a WPCOM URL-update flow, because current WPCOM behavior may delete and
+  reinsert monitor rows for a blog
+- a check that the rollout database includes `jetpack_monitor_sitemeta` if
+  WPCOM URL settings or status-down webhooks are in scope
+
+Bucket shape needs explicit signoff. Current WPCOM bucket assignment is a
+512-bucket space (`0-511`). If v2 is configured with a wider `BUCKET_TOTAL`,
+those extra buckets will not receive newly provisioned WPCOM rows until WPCOM's
+bucket assignment and any required rebalancing are updated. For the first
+cutover, either activate only the WPCOM-populated bucket space or have an
+approved WPCOM bucket migration plan.
+
 ## Before The Window
 
 Complete these before any production activation:
@@ -102,13 +132,22 @@ Complete these before any production activation:
    rollout state is still keyed by `blog_id`; endpoint-identity work is needed
    for the small production cohort where one blog has multiple active monitor
    URLs.
-8. Prepare controlled canary targets and a canary file:
+8. Confirm the WPCOM provisioning shape for the rollout window:
+   - WPCOM-created rows land in `jetpack_monitor_sites` with
+     `monitor_active=1`.
+   - The observed bucket space matches the range plan. Treat a 512-bucket
+     WPCOM source with a wider v2 `BUCKET_TOTAL` as a hold point until the
+     cutover range or WPCOM rebalance plan is explicit.
+   - A WPCOM-style direct row with no v2 sidecars is picked up by a standby lab
+     or test Monitor after activation.
+   - WPCOM URL updates have been tested against v2 sidecar/event state.
+9. Prepare controlled canary targets and a canary file:
 
    ```bash
    cp docs/rollout-canaries.example.json rollout-canaries.json
    ```
 
-9. Run local verification before shipping the rollout artifacts:
+10. Run local verification before shipping the rollout artifacts:
 
    ```bash
    make test-race
