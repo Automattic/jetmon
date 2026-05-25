@@ -190,22 +190,38 @@ func (p *Pool) spawnWorker() {
 func runPoolCheck(ctx context.Context, req Request) (res Result) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			err := fmt.Errorf("checker panic: %v", recovered)
-			log.Printf("checker: recovered panic blog_id=%d url=%q: %v\n%s", req.BlogID, req.URL, recovered, debug.Stack())
-			res = Result{
-				MonitorSiteID:    req.MonitorSiteID,
-				BlogID:           req.BlogID,
-				URL:              req.URL,
-				Method:           req.Method,
-				DetectionProfile: req.DetectionProfile,
-				Success:          false,
-				ErrorCode:        ErrorInternal,
-				ErrorDetail:      boundedErrorDetail(err),
-				Timestamp:        time.Now().UTC(),
-			}
+			res = recoveredCheckPanicResult(req, recovered)
 		}
 	}()
 	return poolCheckFunc(ctx, req)
+}
+
+// SafeCheck wraps Check with the same operational panic boundary used by the
+// worker pool. It is intended for low-volume direct probes from API and rollout
+// handlers that do not pass through Pool.
+func SafeCheck(ctx context.Context, req Request) (res Result) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			res = recoveredCheckPanicResult(req, recovered)
+		}
+	}()
+	return Check(ctx, req)
+}
+
+func recoveredCheckPanicResult(req Request, recovered any) Result {
+	err := fmt.Errorf("checker panic: %v", recovered)
+	log.Printf("checker: recovered panic blog_id=%d url=%q: %v\n%s", req.BlogID, req.URL, recovered, debug.Stack())
+	return Result{
+		MonitorSiteID:    req.MonitorSiteID,
+		BlogID:           req.BlogID,
+		URL:              req.URL,
+		Method:           req.Method,
+		DetectionProfile: req.DetectionProfile,
+		Success:          false,
+		ErrorCode:        ErrorInternal,
+		ErrorDetail:      boundedErrorDetail(err),
+		Timestamp:        time.Now().UTC(),
+	}
 }
 
 // autoScale adjusts the pool size every 5 seconds based on queue depth and

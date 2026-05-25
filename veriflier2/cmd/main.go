@@ -188,7 +188,7 @@ func performCheck(req veriflier.CheckRequest) veriflier.CheckResult {
 }
 
 func performCheckContext(ctx context.Context, req veriflier.CheckRequest) veriflier.ProbeResult {
-	res := checker.Check(ctx, checker.Request{
+	res := checker.SafeCheck(ctx, checker.Request{
 		MonitorSiteID:       req.MonitorSiteID,
 		BlogID:              req.BlogID,
 		URL:                 req.URL,
