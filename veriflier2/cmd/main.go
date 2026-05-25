@@ -215,6 +215,7 @@ func performCheckContext(ctx context.Context, req veriflier.CheckRequest) verifl
 		HTTPCode:      int32(res.HTTPCode),
 		ErrorCode:     int32(res.ErrorCode),
 		RTTMs:         res.RTT.Milliseconds(),
+		Diagnostics:   diagnosticsFromCheckerResult(res),
 	}
 	return veriflier.ProbeResult{
 		CheckResult: checkResult,
@@ -226,6 +227,50 @@ func performCheckContext(ctx context.Context, req veriflier.CheckRequest) verifl
 			TTFB: res.TTFB.Milliseconds(),
 		},
 	}
+}
+
+func diagnosticsFromCheckerResult(res checker.Result) *veriflier.CheckDiagnostics {
+	var diagnostics veriflier.CheckDiagnostics
+	if res.KeywordRule != "" {
+		diagnostics.KeywordRule = res.KeywordRule
+	}
+	if res.ErrorDetail != "" {
+		diagnostics.ErrorDetail = res.ErrorDetail
+	}
+	if res.DNSFailureKind != "" {
+		diagnostics.DNSFailureKind = res.DNSFailureKind
+	}
+	if res.DNSFailureName != "" {
+		diagnostics.DNSFailureName = res.DNSFailureName
+	}
+	if res.DNSFailureServer != "" {
+		diagnostics.DNSFailureServer = res.DNSFailureServer
+	}
+	if res.FinalURL != "" {
+		diagnostics.FinalURL = res.FinalURL
+	}
+	if res.RedirectCount > 0 {
+		diagnostics.RedirectCount = res.RedirectCount
+	}
+	if res.BodyReadMode != "" || res.BodyBytesRead != 0 || res.BodyExpectedBytes != 0 || res.BodyReadLimitBytes != 0 || res.BodyReadError != "" {
+		diagnostics.BodyRead = &veriflier.BodyReadDiagnostics{
+			Mode:          res.BodyReadMode,
+			BytesRead:     res.BodyBytesRead,
+			ExpectedBytes: res.BodyExpectedBytes,
+			LimitBytes:    res.BodyReadLimitBytes,
+			Error:         res.BodyReadError,
+		}
+	}
+	if res.TLSVersion != 0 {
+		diagnostics.TLSVersion = res.TLSVersion
+	}
+	if res.CipherSuite != 0 {
+		diagnostics.CipherSuite = res.CipherSuite
+	}
+	if diagnostics == (veriflier.CheckDiagnostics{}) {
+		return nil
+	}
+	return &diagnostics
 }
 
 func stringPtr(s string) *string {
@@ -358,6 +403,9 @@ func outcomeFromCheckerResult(res checker.Result) string {
 		return veriflier.OutcomeUp
 	}
 	if res.ErrorCode == checker.ErrorProbeSafety {
+		return veriflier.OutcomeUnknown
+	}
+	if res.ErrorCode == checker.ErrorInternal {
 		return veriflier.OutcomeUnknown
 	}
 	if res.ErrorCode == checker.ErrorTimeout {

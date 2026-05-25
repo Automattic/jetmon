@@ -420,6 +420,46 @@ func TestPerformCheckProbeSafetyOutcomeUnknown(t *testing.T) {
 	}
 }
 
+func TestOutcomeFromCheckerResultInternalUnknown(t *testing.T) {
+	got := outcomeFromCheckerResult(checker.Result{ErrorCode: checker.ErrorInternal})
+	if got != veriflier.OutcomeUnknown {
+		t.Fatalf("outcomeFromCheckerResult(ErrorInternal) = %q, want %q", got, veriflier.OutcomeUnknown)
+	}
+}
+
+func TestPerformCheckIncludesDiagnostics(t *testing.T) {
+	allowUnsafeOutboundTargetsForTest(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte("<html><body><h1>Error establishing a database connection</h1></body></html>"))
+	}))
+	defer srv.Close()
+
+	res := performCheckContext(context.Background(), veriflier.CheckRequest{
+		BlogID:           47,
+		URL:              srv.URL,
+		Method:           http.MethodGet,
+		DetectionProfile: "full",
+		TimeoutSeconds:   2,
+		RedirectPolicy:   string(checker.RedirectFollow),
+	})
+	if res.Success {
+		t.Fatalf("performCheck success = true for semantic failure; result=%+v", res)
+	}
+	if res.Diagnostics == nil {
+		t.Fatalf("diagnostics = nil; result=%+v", res)
+	}
+	if res.Diagnostics.KeywordRule != "semantic_wp_db_error" {
+		t.Fatalf("keyword rule = %q, want semantic_wp_db_error", res.Diagnostics.KeywordRule)
+	}
+	if res.Diagnostics.ErrorDetail == "" {
+		t.Fatal("error detail is empty, want semantic diagnostic")
+	}
+	if res.Diagnostics.BodyRead == nil || res.Diagnostics.BodyRead.BytesRead == 0 {
+		t.Fatalf("body-read diagnostics = %+v, want populated", res.Diagnostics.BodyRead)
+	}
+}
+
 func truncatedBodyServer(t *testing.T, body string) *httptest.Server {
 	t.Helper()
 

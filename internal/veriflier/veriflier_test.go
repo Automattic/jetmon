@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -1636,8 +1637,8 @@ func TestServerShutdownDrains(t *testing.T) {
 	// Listen in background; surface the listener's actual port via httptest hack.
 	// Using httptest.NewUnstartedServer with our handler avoids the port-binding race.
 	mux := http.NewServeMux()
-	mux.HandleFunc("/check", srv.handleCheck)
-	mux.HandleFunc("/status", srv.handleStatus)
+	mux.HandleFunc("/v2/check", srv.handleV2Check)
+	mux.HandleFunc("/v2/status", srv.handleV2Status)
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
 
@@ -2137,10 +2138,11 @@ func TestServerHandleV2CheckIsolatesBadPerSiteOptionsInMixedBatch(t *testing.T) 
 func TestClientPrefersV2WhenAvailable(t *testing.T) {
 	srv, ts := newV2TestServer(func(_ context.Context, req CheckRequest) ProbeResult {
 		return ProbeResult{CheckResult: CheckResult{
-			BlogID:   req.BlogID,
-			URL:      req.URL,
-			Success:  true,
-			HTTPCode: 200,
+			BlogID:      req.BlogID,
+			URL:         req.URL,
+			Success:     true,
+			HTTPCode:    200,
+			Diagnostics: &CheckDiagnostics{KeywordRule: "semantic_wp_db_error", ErrorDetail: "remote semantic diagnostic"},
 		}, Outcome: OutcomeUp}
 	}, ServerOptions{
 		Vantage:        Vantage{ID: "edge-us-east"},
@@ -2162,12 +2164,15 @@ func TestClientPrefersV2WhenAvailable(t *testing.T) {
 	if res.VantageID != "edge-us-east" || res.AgentID != "agent-1" || res.Outcome != OutcomeUp {
 		t.Fatalf("v2 identity = vantage:%q agent:%q outcome:%q", res.VantageID, res.AgentID, res.Outcome)
 	}
+	if res.Diagnostics == nil || res.Diagnostics.KeywordRule != "semantic_wp_db_error" {
+		t.Fatalf("diagnostics = %+v, want semantic rule", res.Diagnostics)
+	}
 	if client.cachedProtocol() != ProtocolV2 {
 		t.Fatalf("cached protocol = %q, want %q", client.cachedProtocol(), ProtocolV2)
 	}
 }
 
-func TestClientFallsBackToLegacyWhenUnknownV2ConnectionCloses(t *testing.T) {
+func TestClientRejectsLegacyCheckFallbackWhenUnknownV2ConnectionCloses(t *testing.T) {
 	var v2Hits atomic.Int64
 	var legacyHits atomic.Int64
 
@@ -2213,24 +2218,24 @@ func TestClientFallsBackToLegacyWhenUnknownV2ConnectionCloses(t *testing.T) {
 		BlogID:        99,
 		URL:           "https://example.com",
 	})
-	if err != nil {
-		t.Fatalf("Check() error = %v", err)
+	if !errors.Is(err, ErrV2CheckUnsupported) {
+		t.Fatalf("Check() error = %v, want ErrV2CheckUnsupported", err)
 	}
-	if !res.Success || res.BlogID != 99 || res.MonitorSiteID != 44 {
-		t.Fatalf("legacy fallback result = %+v", res)
+	if res != nil {
+		t.Fatalf("Check() result = %+v, want nil when v2 check protocol is unavailable", res)
 	}
-	if client.cachedProtocol() != ProtocolLegacy {
-		t.Fatalf("cached protocol = %q, want %q", client.cachedProtocol(), ProtocolLegacy)
+	if client.cachedProtocol() == ProtocolLegacy {
+		t.Fatalf("cached protocol = %q, want no automatic legacy check downgrade", client.cachedProtocol())
 	}
-	if v2Hits.Load() != 1 || legacyHits.Load() != 1 {
-		t.Fatalf("hits after first check v2=%d legacy=%d, want 1/1", v2Hits.Load(), legacyHits.Load())
+	if v2Hits.Load() != 1 || legacyHits.Load() != 0 {
+		t.Fatalf("hits after first check v2=%d legacy=%d, want 1/0", v2Hits.Load(), legacyHits.Load())
 	}
 
-	if _, err := client.Check(context.Background(), CheckRequest{BlogID: 100, URL: "https://example.org"}); err != nil {
-		t.Fatalf("cached legacy Check() error = %v", err)
+	if _, err := client.Check(context.Background(), CheckRequest{BlogID: 100, URL: "https://example.org"}); !errors.Is(err, ErrV2CheckUnsupported) {
+		t.Fatalf("second Check() error = %v, want ErrV2CheckUnsupported", err)
 	}
-	if v2Hits.Load() != 1 || legacyHits.Load() != 2 {
-		t.Fatalf("hits after cached legacy check v2=%d legacy=%d, want 1/2", v2Hits.Load(), legacyHits.Load())
+	if v2Hits.Load() != 2 || legacyHits.Load() != 0 {
+		t.Fatalf("hits after second check v2=%d legacy=%d, want 2/0", v2Hits.Load(), legacyHits.Load())
 	}
 }
 

@@ -224,6 +224,11 @@ Quorum counts unique `vantage.id` values, not raw agent replies. Multiple
 replicas behind one regional endpoint should share a `vantage.id` and use
 distinct `agent.id` values.
 
+Veriflier check replies include bounded diagnostics from the shared checker
+path. These diagnostics are intended for operator/audit context when a remote
+vantage confirms, disagrees, or returns a site-scoped non-vote; response bodies
+are not stored.
+
 Check Veriflier posture:
 
 ```bash

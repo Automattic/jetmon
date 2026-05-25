@@ -50,6 +50,8 @@ var (
 	requestIDCounter atomic.Uint64
 )
 
+var ErrV2CheckUnsupported = errors.New("veriflier v2 check protocol is required for site checks")
+
 // NewVeriflierClient creates a client targeting the given address (host:port).
 //
 // The HTTP transport is tuned for the orchestrator's hot-path use: many
@@ -145,8 +147,7 @@ func (c *VeriflierClient) CheckBatch(ctx context.Context, reqs []CheckRequest) (
 		if !isV2Unsupported(err) {
 			return nil, err
 		}
-		c.setProtocol(ProtocolLegacy)
-		return c.checkBatchLegacyIsolated(ctx, reqs)
+		return nil, fmt.Errorf("%w: %v", ErrV2CheckUnsupported, err)
 	}
 }
 
@@ -660,6 +661,7 @@ func checkResultFromLegacy(orig CheckRequest, res CheckResult) CheckResult {
 		ErrorCode:     res.ErrorCode,
 		RTTMs:         res.RTTMs,
 		RequestID:     res.RequestID,
+		Diagnostics:   res.Diagnostics,
 	}
 }
 
@@ -677,6 +679,7 @@ func checkResultFromV2(orig CheckRequest, res CheckV2Result) CheckResult {
 		ErrorCode:     res.ErrorCode,
 		RTTMs:         res.RTTMs,
 		RequestID:     res.RequestID,
+		Diagnostics:   res.Diagnostics,
 	}
 }
 
@@ -745,7 +748,6 @@ func (c *VeriflierClient) Status(ctx context.Context) (*StatusV2Response, error)
 		Version string `json:"version"`
 	}
 	_ = json.NewDecoder(resp.Body).Decode(&s)
-	c.setProtocol(ProtocolLegacy)
 	return &StatusV2Response{
 		Status:    s.Status,
 		Version:   s.Version,

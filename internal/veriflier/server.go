@@ -411,17 +411,18 @@ func (s *Server) v2Result(res ProbeResult) CheckV2Result {
 		outcome = outcomeFromResult(res.CheckResult)
 	}
 	return CheckV2Result{
-		RequestID: res.RequestID,
-		BlogID:    res.BlogID,
-		URL:       res.URL,
-		VantageID: s.vantage.ID,
-		AgentID:   s.agent.ID,
-		Outcome:   outcome,
-		Success:   res.Success,
-		HTTPCode:  res.HTTPCode,
-		ErrorCode: res.ErrorCode,
-		RTTMs:     res.RTTMs,
-		TimingsMS: res.TimingsMS,
+		RequestID:   res.RequestID,
+		BlogID:      res.BlogID,
+		URL:         res.URL,
+		VantageID:   s.vantage.ID,
+		AgentID:     s.agent.ID,
+		Outcome:     outcome,
+		Success:     res.Success,
+		HTTPCode:    res.HTTPCode,
+		ErrorCode:   res.ErrorCode,
+		RTTMs:       res.RTTMs,
+		TimingsMS:   res.TimingsMS,
+		Diagnostics: res.Diagnostics,
 	}
 }
 

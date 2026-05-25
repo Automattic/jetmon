@@ -1475,6 +1475,9 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 		if vr.res.Outcome != "" {
 			metaMap["outcome"] = vr.res.Outcome
 		}
+		if vr.res.Diagnostics != nil {
+			metaMap["diagnostics"] = vr.res.Diagnostics
+		}
 		meta, _ := json.Marshal(metaMap)
 		o.auditLog(audit.Entry{
 			BlogID:    site.BlogID,
@@ -2704,6 +2707,9 @@ func summarizeVerifierResults(vResults []veriflier.CheckResult) []map[string]any
 		}
 		if vr.Outcome != "" {
 			item["outcome"] = vr.Outcome
+		}
+		if vr.Diagnostics != nil {
+			item["diagnostics"] = vr.Diagnostics
 		}
 		out = append(out, item)
 	}
