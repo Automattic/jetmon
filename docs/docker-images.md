@@ -40,6 +40,11 @@ The Docker entrypoints render JSON config from environment inputs on every
 container start by default. The binaries read the rendered JSON; they do not
 read these settings directly from the environment after startup.
 
+On SIGHUP, Docker containers drain and re-exec through their entrypoint
+(`JETMON_REEXEC_PATH`) so render mode `always` re-renders config before the
+binary starts again. Changing Compose environment still requires recreating the
+container so the new environment exists inside the process.
+
 Render modes:
 
 | Variable | Default | Meaning |
@@ -220,10 +225,16 @@ Stronger smoke checks with the same rendered config:
 ./jetmon2 doctor --require-statsd
 ```
 
-## Reload And Drain
+## Restart And Drain
 
-`reload` and `drain` use `/jetmon/stats/jetmon2.pid`, so `/jetmon/stats` must be
-writable:
+`reload` sends SIGHUP. For long-running services this now means graceful
+self-reexec: stop accepting work, drain in-flight work, and restart through the
+configured re-exec target. Docker containers re-run their entrypoint before the
+binary starts again; bare binaries re-exec the executable directly. `drain`
+sends SIGINT and exits after the same drain path without re-exec.
+
+`reload` and `drain` use `/jetmon/stats/jetmon2.pid`, so `/jetmon/stats` must
+be writable:
 
 ```bash
 docker exec jetmon ./jetmon2 reload

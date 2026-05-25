@@ -319,9 +319,12 @@ belongs in audit, check history, telemetry reports, dashboards, and StatsD.
 
 ## Config And Signal Handling
 
-Config is loaded from rendered JSON. SIGHUP and `jetmon2 reload` re-read config
-under a lock; new settings apply to subsequent scheduler ticks or rebuilt
-clients where supported.
+Config is loaded from rendered JSON. SIGHUP and `jetmon2 reload` perform a
+graceful self-reexec for long-running services: the process stops accepting new
+work, drains in-flight work, then replaces itself with the configured re-exec
+target. Bare binaries re-exec the current executable; Docker entrypoints set
+`JETMON_REEXEC_PATH` to themselves so config rendering and startup validation
+run again before the Go binary starts.
 
 Shutdown is graceful:
 
@@ -333,6 +336,10 @@ SIGINT/SIGTERM
   -> wait for in-flight checks
   -> release bucket ownership
   -> exit
+
+SIGHUP
+  -> same drain path
+  -> exec configured restart target
 ```
 
 Hard process loss is handled by process supervision plus stale-heartbeat bucket

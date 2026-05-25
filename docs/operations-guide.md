@@ -104,6 +104,26 @@ Run `./jetmon2 migrate` only as an explicit schema-change action in environments
 where the operator is allowed to apply DDL. Do not rely on automatic production
 migrations.
 
+## Graceful Restart
+
+SIGHUP is the zero-disruption restart signal for long-running v2 services.
+Monitor, Deliverer, and Veriflier stop accepting new work, drain in-flight work,
+then re-exec through the configured restart target. Bare binaries re-exec the
+current executable. Docker containers set `JETMON_REEXEC_PATH` to their
+entrypoint so rendered config and startup validation run again before the binary
+starts. Use this after rendered config changes or after a deployment has
+replaced the on-disk binary.
+For Monitor, the helper command sends SIGHUP through the PID file:
+
+```bash
+./jetmon2 reload
+```
+
+For standalone Deliverer and Veriflier, send SIGHUP through the service manager
+or container runtime.
+
+SIGINT/SIGTERM keep the same drain behavior but exit instead of re-execing.
+
 When `DB_SERVER_MAP_PATH` is set, Jetmon reads the WPCOM-style `db-servers.php`
 map, builds separate read/write pools from the `misc` dataset, and hot-reloads
 validated changes on the configured refresh cadence. Check the current state
