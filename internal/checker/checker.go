@@ -1434,7 +1434,7 @@ func semanticBodyFailure(resp *http.Response, body []byte, bytesRead int64) (str
 	lowerBody := strings.ToLower(bodyText)
 	strippedLowerBody := strings.ToLower(stripHTMLTags(bodyText))
 	for _, pattern := range semanticFailurePatterns {
-		if strings.Contains(lowerBody, pattern.needle) || strings.Contains(strippedLowerBody, pattern.needle) {
+		if semanticPagePhraseMatch(lowerBody, strippedLowerBody, pattern.needle) {
 			return pattern.rule, pattern.detail
 		}
 	}
@@ -1447,6 +1447,12 @@ func semanticBodyFailure(resp *http.Response, body []byte, bytesRead int64) (str
 	}
 
 	return "", ""
+}
+
+func semanticPagePhraseMatch(lowerBody, strippedLowerBody, needle string) bool {
+	return strings.HasPrefix(strings.TrimSpace(strippedLowerBody), needle) ||
+		strings.Contains(lowerBody, "<title>"+needle) ||
+		strings.Contains(lowerBody, "<h1>"+needle)
 }
 
 func compoundSemanticBodyFailure(lowerBody string) (string, string) {

@@ -852,6 +852,37 @@ func TestCheckFullProfileDoesNotTreatGenericFatalErrorArticleAsSemanticFailure(t
 	}
 }
 
+func TestCheckFullProfileDoesNotTreatTroubleshootingArticleAsSemanticFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<html><head><title>How to fix common WordPress errors</title></head><body><article>
+			<h1>How to fix common WordPress errors</h1>
+			<p>A common message is Error establishing a database connection. Check wp-config.php and database credentials.</p>
+			<h2>Briefly unavailable for scheduled maintenance</h2>
+			<p>If visitors see Briefly unavailable for scheduled maintenance. Check back in a minute., remove the stale maintenance file.</p>
+			<h2>There has been a critical error on this website</h2>
+			<p>When WordPress shows There has been a critical error on this website, inspect the debug log.</p>
+			<h2>Database Update Required</h2>
+			<p>Database Update Required means WordPress needs an admin-driven database upgrade.</p>
+			</article></body></html>`))
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{
+		BlogID:           1,
+		URL:              srv.URL,
+		TimeoutSeconds:   5,
+		DetectionProfile: "full",
+	})
+	if !res.Success {
+		t.Fatalf("Success = false for troubleshooting article, want true; result=%+v", res)
+	}
+	if res.ErrorCode != ErrorNone {
+		t.Fatalf("ErrorCode = %d, want ErrorNone", res.ErrorCode)
+	}
+}
+
 func TestCheckFullProfileDetectsNearEmptyHTMLBody(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
