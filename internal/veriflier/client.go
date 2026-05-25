@@ -329,8 +329,16 @@ func (b *singleCheckBatcher) flush(batch []singleCheckCall) {
 	results, err := b.client.CheckBatch(ctx, reqs)
 	cancel()
 	if err != nil {
+		if payloadTooLargeError(err) && len(calls) > 1 {
+			mid := len(calls) / 2
+			b.flush(calls[:mid])
+			b.flush(calls[mid:])
+			return
+		}
 		for _, call := range calls {
-			if operationalOverloadError(err) {
+			if payloadTooLargeError(err) {
+				call.respond(payloadTooLargeCheckResult(call.req), nil)
+			} else if operationalOverloadError(err) {
 				call.respond(agentOverloadedCheckResult(call.req), nil)
 			} else {
 				call.respond(nil, err)
@@ -405,6 +413,18 @@ func agentOverloadedCheckResult(req CheckRequest) *CheckResult {
 		Outcome:       OutcomeAgentOverloaded,
 		Success:       false,
 		ErrorCode:     1,
+		RequestID:     req.RequestID,
+	}
+}
+
+func payloadTooLargeCheckResult(req CheckRequest) *CheckResult {
+	return &CheckResult{
+		MonitorSiteID: req.MonitorSiteID,
+		BlogID:        req.BlogID,
+		URL:           req.URL,
+		Outcome:       OutcomeUnknown,
+		Success:       false,
+		ErrorCode:     checkerErrorProbeSafety,
 		RequestID:     req.RequestID,
 	}
 }
@@ -558,6 +578,13 @@ func (c *VeriflierClient) checkBatchV2(ctx context.Context, reqs []CheckRequest)
 		results[i] = checkResultFromV2(req, res)
 	}
 	return results, nil
+}
+
+func payloadTooLargeError(err error) bool {
+	if se, ok := errors.AsType[statusError](err); ok {
+		return se.status == http.StatusRequestEntityTooLarge
+	}
+	return false
 }
 
 func v2ResultsByRequestID(results []CheckV2Result) map[string]CheckV2Result {

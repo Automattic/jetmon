@@ -1486,6 +1486,12 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 		if duplicateVote {
 			continue
 		}
+		if verifierSiteScopedNonVote(vr.res) {
+			emitCounter("verifier.vote.non_vote.count", 1)
+			emitCounter("verifier.host."+hostSegment+".vote.non_vote.count", 1)
+			log.Printf("orchestrator: veriflier %s returned site-scoped non-vote outcome %q error_code=%d; leaving decision pending", vr.host, vr.res.Outcome, vr.res.ErrorCode)
+			continue
+		}
 		if verifierOperationalNonVote(vr.res) {
 			emitCounter("verifier.vote.non_vote.count", 1)
 			emitCounter("verifier.host."+hostSegment+".vote.non_vote.count", 1)
@@ -1652,6 +1658,13 @@ func verifierOperationalNonVote(res *veriflier.CheckResult) bool {
 	default:
 		return false
 	}
+}
+
+func verifierSiteScopedNonVote(res *veriflier.CheckResult) bool {
+	if res == nil || res.Outcome != veriflier.OutcomeUnknown {
+		return false
+	}
+	return res.ErrorCode == checker.ErrorProbeSafety || res.ErrorCode == checker.ErrorInternal
 }
 
 func shouldDeferVerifierRetry(entry *retryEntry, checkedAt time.Time) bool {

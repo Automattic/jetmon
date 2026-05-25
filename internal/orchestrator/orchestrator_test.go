@@ -1049,6 +1049,62 @@ func TestEscalateToVerifliersKeepsRetryOnOperationalNonVote(t *testing.T) {
 	}
 }
 
+func TestEscalateToVerifliersDoesNotCooldownForSiteScopedNonVote(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+
+	cfg := setTestConfig(t)
+	cfg.PeerOfflineLimit = 1
+
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+	dbRecordFalsePositive = func(blogID int64, _ int, _ int, _ int64) error {
+		t.Fatalf("false positive recorded for site-scoped non-vote blog_id=%d", blogID)
+		return nil
+	}
+	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error {
+		t.Fatal("site-scoped non-vote should not confirm downtime")
+		return nil
+	}
+	veriflierCheckFunc = func(c *veriflier.VeriflierClient, _ context.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
+		return &veriflier.CheckResult{
+			BlogID:    req.BlogID,
+			Host:      c.Addr(),
+			Success:   false,
+			ErrorCode: checker.ErrorProbeSafety,
+			Outcome:   veriflier.OutcomeUnknown,
+			RequestID: req.RequestID,
+		}, nil
+	}
+
+	client := veriflier.NewVeriflierClient("v1", "")
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		ctx:      context.Background(),
+		hostname: "local-host",
+		veriflierClients: []*veriflier.VeriflierClient{
+			client,
+		},
+	}
+
+	fail := checkerResultFailure(668)
+	o.retries.record(fail)
+	entry := o.retries.get(668)
+	o.escalateToVerifliers(db.Site{BlogID: 668, MonitorURL: "https://example.com", SiteStatus: statusRunning}, entry)
+
+	if entry := o.retries.get(668); entry == nil {
+		t.Fatal("retry entry was cleared after site-scoped non-vote")
+	}
+	if got := rec.counter("verifier.vote.non_vote.count"); got != 1 {
+		t.Fatalf("non-vote counter = %d, want 1", got)
+	}
+	available, skipped := o.availableVeriflierClients([]*veriflier.VeriflierClient{client}, nowFunc().UTC().Add(time.Second))
+	if len(available) != 1 || skipped != 0 {
+		t.Fatalf("available verifliers after site-scoped non-vote = len %d skipped %d, want still available", len(available), skipped)
+	}
+}
+
 func TestHandleFailureBacksOffVerifierAfterOperationalNonVotes(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
