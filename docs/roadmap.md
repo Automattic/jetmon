@@ -37,6 +37,17 @@ Open work:
 - [ ] Record projection-drift and telemetry-parity evidence on production-like
   data before first canary. Lab evidence exists, but the known run had no active
   sites and notifications were intentionally disabled.
+- [ ] Validate WPCOM direct-table provisioning against the production-style
+  rollout database before first canary: WPCOM-created
+  `jetpack_monitor_sites.monitor_active=1` rows with no v2 sidecars must be
+  picked up by v2, WPCOM URL updates must not strand open endpoint state, and
+  `jetpack_monitor_sitemeta` must exist anywhere WPCOM URL settings or
+  status-down webhooks are in scope.
+- [ ] Decide the WPCOM bucket-shape plan before activating v2 ranges. Current
+  WPCOM provisioning assigns `bucket_no` in a 512-bucket space (`0-511`), so
+  either keep the first v2 cutover aligned to that populated space or approve a
+  WPCOM bucket-assignment/rebalance change before relying on a wider
+  `BUCKET_TOTAL`.
 - [ ] Get WPCOM acceptance for WPCOM-owned notification parity cases: inactive
   site behavior, URL mismatch behavior, blacklisted site behavior,
   home-URL-only handling, and legacy hook consumers.
