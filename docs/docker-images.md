@@ -241,6 +241,10 @@ docker exec jetmon ./jetmon2 reload
 docker exec jetmon ./jetmon2 drain
 ```
 
+For scenario-specific commands covering Monitor, Veriflier, and Deliverer
+updates, see the update and restart playbook in
+[operations-guide.md](operations-guide.md#update-and-restart-playbook).
+
 ## Test A PR Image
 
 ```bash
