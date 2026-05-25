@@ -38,6 +38,7 @@ const (
 	ErrorTLSDeprecated = 7
 	ErrorBodyRead      = 8
 	ErrorProbeSafety   = 9
+	ErrorInternal      = 10
 	ErrorBodyTruncated = ErrorBodyRead
 )
 
@@ -939,6 +940,8 @@ func (r *Result) StatusType() string {
 		return "success"
 	case r.ErrorCode == ErrorProbeSafety:
 		return "probe_safety"
+	case r.ErrorCode == ErrorInternal:
+		return "internal"
 	case r.ErrorCode == ErrorSSL || r.ErrorCode == ErrorTLSExpired:
 		return "https"
 	case r.ErrorCode == ErrorTimeout || r.ErrorCode == ErrorBodyRead:
@@ -958,7 +961,7 @@ func (r *Result) StatusType() string {
 
 // IsFailure reports whether the result should enter the downtime pipeline.
 func (r *Result) IsFailure() bool {
-	if r.ErrorCode == ErrorProbeSafety {
+	if r.ErrorCode == ErrorProbeSafety || r.ErrorCode == ErrorInternal {
 		return false
 	}
 	if !r.Success {
@@ -976,6 +979,12 @@ func (r *Result) IsFailure() bool {
 // probe because the target would be unsafe for an untrusted remote site check.
 func (r *Result) IsProbeSafetyBlock() bool {
 	return r != nil && r.ErrorCode == ErrorProbeSafety
+}
+
+// IsOperationalUnknown reports an internal Monitor-side problem that should be
+// recorded for operators without opening, closing, or confirming site downtime.
+func (r *Result) IsOperationalUnknown() bool {
+	return r != nil && r.ErrorCode == ErrorInternal
 }
 
 // Check performs an HTTP check and returns the result.

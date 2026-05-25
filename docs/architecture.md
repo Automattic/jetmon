@@ -341,7 +341,9 @@ reclaim by surviving hosts.
 | `ErrorTLSDeprecated` | TLS 1.0 or 1.1 observed; advisory only |
 | `ErrorBodyRead` | GET response body closed early or could not be read |
 | `ErrorProbeSafety` | Probe blocked by public-target safety guard |
+| `ErrorInternal` | Monitor-side checker panic recovered as an operational unknown |
 
-`ErrorTLSDeprecated` and `ErrorProbeSafety` do not open customer downtime.
-`ErrorProbeSafety` is an operator safety finding, not a signal that the customer
-site is down.
+`ErrorTLSDeprecated`, `ErrorProbeSafety`, and `ErrorInternal` do not open
+customer downtime. `ErrorProbeSafety` is an operator safety finding, and
+`ErrorInternal` is a Monitor-side fault to investigate; neither is a signal that
+the customer site is down.

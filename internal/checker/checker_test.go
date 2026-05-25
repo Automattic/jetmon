@@ -33,6 +33,7 @@ func TestResultStatusType(t *testing.T) {
 		{name: "body read", res: Result{ErrorCode: ErrorBodyRead}, want: "intermittent"},
 		{name: "redirect", res: Result{ErrorCode: ErrorRedirect}, want: "redirect"},
 		{name: "probe safety", res: Result{ErrorCode: ErrorProbeSafety}, want: "probe_safety"},
+		{name: "internal checker error", res: Result{ErrorCode: ErrorInternal}, want: "internal"},
 		{name: "403 blocked", res: Result{HTTPCode: 403}, want: "blocked"},
 		{name: "500 server error", res: Result{HTTPCode: 500}, want: "server"},
 		{name: "503 server error", res: Result{HTTPCode: 503}, want: "server"},
@@ -117,6 +118,11 @@ func TestResultIsFailure(t *testing.T) {
 			res:  Result{Success: false, ErrorCode: ErrorProbeSafety},
 			want: false,
 		},
+		{
+			name: "internal checker error is non-downtime",
+			res:  Result{Success: false, ErrorCode: ErrorInternal},
+			want: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -125,6 +131,50 @@ func TestResultIsFailure(t *testing.T) {
 				t.Fatalf("IsFailure() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestPoolRecoversCheckPanicAsOperationalUnknown(t *testing.T) {
+	orig := poolCheckFunc
+	poolCheckFunc = func(_ context.Context, req Request) Result {
+		if req.BlogID == 2 {
+			panic("synthetic checker failure")
+		}
+		return Result{BlogID: req.BlogID, URL: req.URL, Success: true, HTTPCode: 200}
+	}
+
+	p := NewPoolWithQueueCap(1, 1, 1, 2)
+	t.Cleanup(func() {
+		p.Drain()
+		poolCheckFunc = orig
+	})
+
+	if !p.Submit(Request{BlogID: 1, URL: "https://example.com/one"}) {
+		t.Fatal("Submit(first) returned false")
+	}
+	if !p.Submit(Request{BlogID: 2, URL: "https://example.com/two"}) {
+		t.Fatal("Submit(second) returned false")
+	}
+
+	seen := map[int64]Result{}
+	deadline := time.After(2 * time.Second)
+	for len(seen) < 2 {
+		select {
+		case res := <-p.Results():
+			seen[res.BlogID] = res
+		case <-deadline:
+			t.Fatalf("timed out waiting for results; seen=%+v", seen)
+		}
+	}
+	if !seen[1].Success || seen[1].ErrorCode != ErrorNone {
+		t.Fatalf("first result = %+v, want success", seen[1])
+	}
+	got := seen[2]
+	if got.Success || got.ErrorCode != ErrorInternal || !got.IsOperationalUnknown() || got.IsFailure() {
+		t.Fatalf("panic result = %+v, want non-downtime internal error", got)
+	}
+	if got.ErrorDetail == "" {
+		t.Fatal("panic result ErrorDetail is empty")
 	}
 }
 

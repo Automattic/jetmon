@@ -484,6 +484,8 @@ func (o *Orchestrator) processResults(results map[int64]checker.Result, sites ma
 		// it in jetpack_monitor_audit_log was retired with the operational/site-state split.
 		if record.res.IsProbeSafetyBlock() {
 			o.handleProbeSafetyBlock(record.site, record.res)
+		} else if record.res.IsOperationalUnknown() {
+			o.handleOperationalCheckError(record.site, record.res)
 		} else if !record.res.IsFailure() {
 			o.handleRecovery(record.site, record.res)
 		} else {
@@ -1190,6 +1192,21 @@ func (o *Orchestrator) handleProbeSafetyBlock(site db.Site, res checker.Result) 
 		Detail:    "probe safety blocked outbound check",
 		Metadata:  meta,
 	})
+}
+
+func (o *Orchestrator) handleOperationalCheckError(site db.Site, res checker.Result) {
+	emitCounter("detection.check_internal_error.count", 1)
+	metaMap := checkResultMetadata(site, res, resultCheckedAt(res))
+	metaMap["operational_unknown"] = true
+	meta, _ := json.Marshal(metaMap)
+	o.auditLog(audit.Entry{
+		BlogID:    site.BlogID,
+		EventType: audit.EventCheckInternal,
+		Source:    o.hostname,
+		Detail:    "checker internal error",
+		Metadata:  meta,
+	})
+	log.Printf("orchestrator: checker internal error blog_id=%d site_id=%d: %s", site.BlogID, site.ID, res.ErrorDetail)
 }
 
 func (o *Orchestrator) shouldSuppressPostRecoveryTransientFailure(site db.Site, res checker.Result) bool {

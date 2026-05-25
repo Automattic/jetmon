@@ -2,6 +2,9 @@ package checker
 
 import (
 	"context"
+	"fmt"
+	"log"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -169,7 +172,7 @@ func (p *Pool) spawnWorker() {
 					return
 				}
 				p.active.Add(1)
-				res := poolCheckFunc(context.Background(), req)
+				res := runPoolCheck(context.Background(), req)
 				p.active.Add(-1)
 				if p.closed.Load() {
 					continue
@@ -182,6 +185,27 @@ func (p *Pool) spawnWorker() {
 			}
 		}
 	}()
+}
+
+func runPoolCheck(ctx context.Context, req Request) (res Result) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err := fmt.Errorf("checker panic: %v", recovered)
+			log.Printf("checker: recovered panic blog_id=%d url=%q: %v\n%s", req.BlogID, req.URL, recovered, debug.Stack())
+			res = Result{
+				MonitorSiteID:    req.MonitorSiteID,
+				BlogID:           req.BlogID,
+				URL:              req.URL,
+				Method:           req.Method,
+				DetectionProfile: req.DetectionProfile,
+				Success:          false,
+				ErrorCode:        ErrorInternal,
+				ErrorDetail:      boundedErrorDetail(err),
+				Timestamp:        time.Now().UTC(),
+			}
+		}
+	}()
+	return poolCheckFunc(ctx, req)
 }
 
 // autoScale adjusts the pool size every 5 seconds based on queue depth and

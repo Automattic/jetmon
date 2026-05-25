@@ -1181,6 +1181,8 @@ func (o *Orchestrator) processStreamingSideEffects(site db.Site, res checker.Res
 	eventStart := time.Now()
 	if res.IsProbeSafetyBlock() {
 		o.handleProbeSafetyBlock(site, res)
+	} else if res.IsOperationalUnknown() {
+		o.handleOperationalCheckError(site, res)
 	} else if !res.IsFailure() {
 		o.handleRecovery(site, res)
 		site.SiteStatus = statusRunning
