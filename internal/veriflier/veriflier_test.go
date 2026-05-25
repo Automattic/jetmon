@@ -1702,9 +1702,12 @@ func TestServerHandleV2CheckReturnsUnsafeURLResult(t *testing.T) {
 }
 
 func TestServerHandleV2CheckIsolatesUnsafeURLInMixedBatch(t *testing.T) {
+	var calledMu sync.Mutex
 	var calledURLs []string
 	srv, ts := newV2TestServer(func(_ context.Context, req CheckRequest) ProbeResult {
+		calledMu.Lock()
 		calledURLs = append(calledURLs, req.URL)
+		calledMu.Unlock()
 		return ProbeResult{CheckResult: CheckResult{
 			BlogID:    req.BlogID,
 			URL:       req.URL,
@@ -1746,6 +1749,8 @@ func TestServerHandleV2CheckIsolatesUnsafeURLInMixedBatch(t *testing.T) {
 	if len(result.Results) != 3 {
 		t.Fatalf("results len = %d, want 3", len(result.Results))
 	}
+	calledMu.Lock()
+	defer calledMu.Unlock()
 	called := make(map[string]bool, len(calledURLs))
 	for _, url := range calledURLs {
 		called[url] = true
