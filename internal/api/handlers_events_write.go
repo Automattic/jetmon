@@ -234,7 +234,7 @@ func (s *Server) handleTriggerNow(w http.ResponseWriter, r *http.Request) {
 		req.ForbiddenKeywords = checker.ParseForbiddenKeywords(site.forbiddenKeywordsPtr())
 		req.RedirectPolicy = checker.RedirectPolicy(redirectPolicy)
 	}
-	res := checker.Check(ctx, req)
+	res := checker.SafeCheck(ctx, req)
 
 	payload := checkResultPayload{
 		Method:           res.Method,

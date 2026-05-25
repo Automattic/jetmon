@@ -176,6 +176,13 @@ Authorization: Bearer <token>
 `agent.id`, and capacity. `/v2/check` accepts batches of site probe requests and
 returns typed per-request outcomes.
 
+Batch isolation is a contract requirement. Unsafe URLs, unsupported per-site
+probe options, checker panics, and omitted identified results are scoped to the
+affected request as `unknown` / probe-safety or internal-error outcomes. They
+must not fail healthy siblings in the same batch or shift results onto the
+wrong site. Batch-level failures are reserved for malformed envelopes,
+authentication failures, or Veriflier endpoint overload.
+
 Important identity rules:
 
 - `vantage.id` is the quorum vote identity.
@@ -336,12 +343,14 @@ reclaim by surviving hosts.
 | `ErrorConnect` | TCP connection, DNS, or dial failure |
 | `ErrorSSL` | TLS handshake or certificate error |
 | `ErrorRedirect` | Redirect failure when policy is `fail` |
-| `ErrorKeyword` | Required keyword missing or forbidden keyword present |
+| `ErrorKeyword` | Required keyword missing, forbidden keyword present, or GET/full semantic body failure |
 | `ErrorTLSExpired` | Certificate expired |
 | `ErrorTLSDeprecated` | TLS 1.0 or 1.1 observed; advisory only |
 | `ErrorBodyRead` | GET response body closed early or could not be read |
 | `ErrorProbeSafety` | Probe blocked by public-target safety guard |
+| `ErrorInternal` | Monitor-side checker panic recovered as an operational unknown |
 
-`ErrorTLSDeprecated` and `ErrorProbeSafety` do not open customer downtime.
-`ErrorProbeSafety` is an operator safety finding, not a signal that the customer
-site is down.
+`ErrorTLSDeprecated`, `ErrorProbeSafety`, and `ErrorInternal` do not open
+customer downtime. `ErrorProbeSafety` is an operator safety finding, and
+`ErrorInternal` is a Monitor-side fault to investigate; neither is a signal that
+the customer site is down.

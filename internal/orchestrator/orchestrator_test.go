@@ -1049,6 +1049,62 @@ func TestEscalateToVerifliersKeepsRetryOnOperationalNonVote(t *testing.T) {
 	}
 }
 
+func TestEscalateToVerifliersDoesNotCooldownForSiteScopedNonVote(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+
+	cfg := setTestConfig(t)
+	cfg.PeerOfflineLimit = 1
+
+	rec := newRecordingMetrics()
+	metricsClientFunc = func() metricsClient { return rec }
+	dbRecordFalsePositive = func(blogID int64, _ int, _ int, _ int64) error {
+		t.Fatalf("false positive recorded for site-scoped non-vote blog_id=%d", blogID)
+		return nil
+	}
+	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error {
+		t.Fatal("site-scoped non-vote should not confirm downtime")
+		return nil
+	}
+	veriflierCheckFunc = func(c *veriflier.VeriflierClient, _ context.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
+		return &veriflier.CheckResult{
+			BlogID:    req.BlogID,
+			Host:      c.Addr(),
+			Success:   false,
+			ErrorCode: checker.ErrorProbeSafety,
+			Outcome:   veriflier.OutcomeUnknown,
+			RequestID: req.RequestID,
+		}, nil
+	}
+
+	client := veriflier.NewVeriflierClient("v1", "")
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		ctx:      context.Background(),
+		hostname: "local-host",
+		veriflierClients: []*veriflier.VeriflierClient{
+			client,
+		},
+	}
+
+	fail := checkerResultFailure(668)
+	o.retries.record(fail)
+	entry := o.retries.get(668)
+	o.escalateToVerifliers(db.Site{BlogID: 668, MonitorURL: "https://example.com", SiteStatus: statusRunning}, entry)
+
+	if entry := o.retries.get(668); entry == nil {
+		t.Fatal("retry entry was cleared after site-scoped non-vote")
+	}
+	if got := rec.counter("verifier.vote.non_vote.count"); got != 1 {
+		t.Fatalf("non-vote counter = %d, want 1", got)
+	}
+	available, skipped := o.availableVeriflierClients([]*veriflier.VeriflierClient{client}, nowFunc().UTC().Add(time.Second))
+	if len(available) != 1 || skipped != 0 {
+		t.Fatalf("available verifliers after site-scoped non-vote = len %d skipped %d, want still available", len(available), skipped)
+	}
+}
+
 func TestHandleFailureBacksOffVerifierAfterOperationalNonVotes(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
@@ -2202,6 +2258,58 @@ func TestProcessResultsProbeSafetyBlockAuditsWithoutStateChange(t *testing.T) {
 	}
 }
 
+func TestProcessResultsOperationalUnknownAuditsWithoutStateChange(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+	setTestConfig(t)
+
+	sqlDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer sqlDB.Close()
+	audit.Init(sqlDB)
+	t.Cleanup(func() { audit.Init(nil) })
+
+	dbUpdateSiteStatus = func(context.Context, int64, int, time.Time) error {
+		t.Fatal("operational unknown must not update site status")
+		return nil
+	}
+	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error {
+		t.Fatal("operational unknown must not send notifications")
+		return nil
+	}
+
+	mock.ExpectExec(`INSERT INTO jetpack_monitor_audit_log`).
+		WithArgs(int64(42), nil, audit.EventCheckInternal, "local", "checker internal error", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	o := &Orchestrator{
+		retries:  newRetryQueue(),
+		wpcom:    &wpcom.Client{},
+		hostname: "local",
+		ctx:      context.Background(),
+	}
+
+	res := checker.Result{
+		BlogID:      42,
+		URL:         "https://example.com",
+		Success:     false,
+		ErrorCode:   checker.ErrorInternal,
+		ErrorDetail: "checker panic: synthetic failure",
+		Timestamp:   time.Now().UTC(),
+	}
+	sites := map[int64]db.Site{42: {ID: 123, BlogID: 42, MonitorURL: "https://example.com", SiteStatus: statusRunning, CheckInterval: 5}}
+	o.processResults(map[int64]checker.Result{42: res}, sites)
+
+	if retry := o.retries.get(42); retry != nil {
+		t.Fatalf("retry entry = %+v, want nil for operational unknown", retry)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("audit expectations: %v", err)
+	}
+}
+
 func TestProcessResultsSchedulesFailedChecksSoonerThanNormalInterval(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
@@ -2397,6 +2505,34 @@ func TestProcessResultsFallsBackWhenBatchWritesFail(t *testing.T) {
 	}
 	if summary.markCheckedErrors != 1 || summary.historyErrors != 1 || summary.sslErrors != 1 {
 		t.Fatalf("batch errors = %d/%d/%d, want 1/1/1", summary.markCheckedErrors, summary.historyErrors, summary.sslErrors)
+	}
+}
+
+func TestRecordStreamingHistoryRowsCountsFallbackSuccesses(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+
+	dbRecordCheckHistories = func(context.Context, []db.CheckHistoryRow) error {
+		return fmt.Errorf("batch history failed")
+	}
+	dbRecordCheckHistory = func(blogID int64, _ string, _ int, _ int, _ int64, _ int64, _ int64, _ int64, _ int64) error {
+		if blogID == 2 {
+			return fmt.Errorf("poisoned history row")
+		}
+		return nil
+	}
+
+	o := &Orchestrator{ctx: context.Background()}
+	summary := o.recordStreamingHistoryRows([]db.CheckHistoryRow{
+		{BlogID: 1, RequestMethod: http.MethodGet, HTTPCode: 200},
+		{BlogID: 2, RequestMethod: http.MethodGet, HTTPCode: 200},
+	})
+
+	if summary.historyRows != 1 {
+		t.Fatalf("history rows = %d, want one successful fallback row", summary.historyRows)
+	}
+	if summary.historyErrors != 2 {
+		t.Fatalf("history errors = %d, want batch error plus poisoned-row error", summary.historyErrors)
 	}
 }
 

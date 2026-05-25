@@ -116,6 +116,7 @@ proof that all visitors saw downtime.
 | `tls_deprecated` | Site serves TLS 1.0 or 1.1. |
 | `keyword_missing` | Required keyword was absent. |
 | `keyword_forbidden` | Forbidden keyword was present. |
+| `semantic_*` | GET/full saw a high-confidence WordPress, Jetpack, hosting, or empty-body failure page behind HTTP 200. |
 | `success` | Site recovered. |
 
 For resolver failures, inspect event metadata for `dns_error_kind`,

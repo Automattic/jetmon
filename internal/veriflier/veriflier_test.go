@@ -193,7 +193,7 @@ func TestServerHandleCheckMethodNotAllowed(t *testing.T) {
 	}
 }
 
-func TestServerHandleCheckRejectsUnsafeURL(t *testing.T) {
+func TestServerHandleCheckReturnsUnsafeURLResult(t *testing.T) {
 	var called atomic.Bool
 	_, ts := newTestServer(func(req CheckRequest) CheckResult {
 		called.Store(true)
@@ -212,11 +212,83 @@ func TestServerHandleCheckRejectsUnsafeURL(t *testing.T) {
 		t.Fatalf("request error: %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 	if called.Load() {
 		t.Fatal("check function was called for unsafe URL")
+	}
+	var result struct {
+		Results []CheckResult `json:"results"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(result.Results) != 1 {
+		t.Fatalf("results len = %d, want 1", len(result.Results))
+	}
+	got := result.Results[0]
+	if got.BlogID != 1 || got.URL != "http://127.0.0.1/admin" || got.Host != "test-host" {
+		t.Fatalf("unsafe result identity = %+v", got)
+	}
+	if got.Success || got.ErrorCode != checkerErrorProbeSafety || got.Outcome != OutcomeUnknown {
+		t.Fatalf("unsafe result = %+v, want probe-safety unknown", got)
+	}
+}
+
+func TestServerHandleCheckIsolatesUnsafeURLInMixedLegacyBatch(t *testing.T) {
+	var calledMu sync.Mutex
+	var calledURLs []string
+	_, ts := newTestServer(func(req CheckRequest) CheckResult {
+		calledMu.Lock()
+		calledURLs = append(calledURLs, req.URL)
+		calledMu.Unlock()
+		return CheckResult{BlogID: req.BlogID, URL: req.URL, Success: true, HTTPCode: 200}
+	})
+	defer ts.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/check", checkReqBody(t, []CheckRequest{
+		{RequestID: "req-safe-before", BlogID: 1, URL: "https://example.com/before"},
+		{RequestID: "req-unsafe", BlogID: 2, URL: "http://localhost/admin"},
+		{RequestID: "req-safe-after", BlogID: 3, URL: "https://example.com/after"},
+	}))
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var result struct {
+		Results []CheckResult `json:"results"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(result.Results) != 3 {
+		t.Fatalf("results len = %d, want 3", len(result.Results))
+	}
+	calledMu.Lock()
+	defer calledMu.Unlock()
+	called := make(map[string]bool, len(calledURLs))
+	for _, url := range calledURLs {
+		called[url] = true
+	}
+	if len(calledURLs) != 2 || !called["https://example.com/before"] || !called["https://example.com/after"] {
+		t.Fatalf("called URLs = %#v, want only safe siblings", calledURLs)
+	}
+	if !result.Results[0].Success || result.Results[0].RequestID != "req-safe-before" {
+		t.Fatalf("safe-before result = %+v", result.Results[0])
+	}
+	if result.Results[1].Success || result.Results[1].RequestID != "req-unsafe" || result.Results[1].ErrorCode != checkerErrorProbeSafety || result.Results[1].Outcome != OutcomeUnknown {
+		t.Fatalf("unsafe result = %+v", result.Results[1])
+	}
+	if !result.Results[2].Success || result.Results[2].RequestID != "req-safe-after" {
+		t.Fatalf("safe-after result = %+v", result.Results[2])
 	}
 }
 
@@ -409,11 +481,112 @@ func TestClientBatchMapsOutOfOrderV2ResultsByRequestID(t *testing.T) {
 	if len(res) != 2 {
 		t.Fatalf("CheckBatch() len = %d, want 2", len(res))
 	}
-	if res[0].RequestID != "two" || res[0].MonitorSiteID != 0 || res[0].BlogID != 2 {
-		t.Fatalf("first result = %+v, want request two metadata", res[0])
+	if res[0].RequestID != "one" || res[0].MonitorSiteID != 101 || res[0].BlogID != 1 {
+		t.Fatalf("first result = %+v, want request one metadata", res[0])
 	}
-	if res[1].RequestID != "one" || res[1].MonitorSiteID != 101 || res[1].BlogID != 1 {
-		t.Fatalf("second result = %+v, want request one metadata", res[1])
+	if res[1].RequestID != "two" || res[1].MonitorSiteID != 0 || res[1].BlogID != 2 {
+		t.Fatalf("second result = %+v, want request two metadata", res[1])
+	}
+}
+
+func TestClientBatchReturnsUnknownForOmittedV2Result(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/check" {
+			http.NotFound(w, r)
+			return
+		}
+		var req CheckV2BatchRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if len(req.Requests) != 2 {
+			t.Errorf("request len = %d, want 2", len(req.Requests))
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(CheckV2BatchResponse{Results: []CheckV2Result{{
+			RequestID: req.Requests[1].RequestID,
+			BlogID:    req.Requests[1].BlogID,
+			URL:       req.Requests[1].URL,
+			VantageID: "test-vantage",
+			AgentID:   "test-agent",
+			Outcome:   OutcomeUp,
+			Success:   true,
+			HTTPCode:  200,
+		}}})
+	}))
+	defer ts.Close()
+
+	client := NewVeriflierClient(ts.Listener.Addr().String(), "secret")
+	client.setProtocol(ProtocolV2)
+	res, err := client.CheckBatch(context.Background(), []CheckRequest{
+		{MonitorSiteID: 101, BlogID: 1, URL: "https://example.com/one", RequestID: "one"},
+		{MonitorSiteID: 202, BlogID: 2, URL: "https://example.com/two", RequestID: "two"},
+	})
+	if err != nil {
+		t.Fatalf("CheckBatch() error = %v", err)
+	}
+	if len(res) != 2 {
+		t.Fatalf("CheckBatch() len = %d, want 2", len(res))
+	}
+	if res[0].Success || res[0].Outcome != OutcomeUnknown || res[0].ErrorCode != checkerErrorInternal || res[0].RequestID != "one" || res[0].MonitorSiteID != 101 {
+		t.Fatalf("first result = %+v, want request one unknown", res[0])
+	}
+	if !res[1].Success || res[1].Outcome != OutcomeUp || res[1].RequestID != "two" || res[1].MonitorSiteID != 202 {
+		t.Fatalf("second result = %+v, want request two success", res[1])
+	}
+}
+
+func TestClientBatchKeepsLocalIdentityAuthoritative(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/check" {
+			http.NotFound(w, r)
+			return
+		}
+		var req CheckV2BatchRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if len(req.Requests) != 1 {
+			t.Errorf("request len = %d, want 1", len(req.Requests))
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(CheckV2BatchResponse{Results: []CheckV2Result{{
+			RequestID: req.Requests[0].RequestID,
+			BlogID:    9999,
+			URL:       "https://wrong.example.test/",
+			VantageID: "test-vantage",
+			AgentID:   "test-agent",
+			Outcome:   OutcomeUp,
+			Success:   true,
+			HTTPCode:  200,
+		}}})
+	}))
+	defer ts.Close()
+
+	client := NewVeriflierClient(ts.Listener.Addr().String(), "secret")
+	client.setProtocol(ProtocolV2)
+	res, err := client.CheckBatch(context.Background(), []CheckRequest{
+		{MonitorSiteID: 101, BlogID: 1, URL: "https://example.com/one", RequestID: "one"},
+	})
+	if err != nil {
+		t.Fatalf("CheckBatch() error = %v", err)
+	}
+	if len(res) != 1 {
+		t.Fatalf("CheckBatch() len = %d, want 1", len(res))
+	}
+	if res[0].BlogID != 1 || res[0].URL != "https://example.com/one" || res[0].MonitorSiteID != 101 {
+		t.Fatalf("result identity = %+v, want local request identity", res[0])
+	}
+	if !res[0].Success || res[0].Outcome != OutcomeUp || res[0].Host != "test-vantage" {
+		t.Fatalf("result outcome/vantage = %+v", res[0])
 	}
 }
 
@@ -771,6 +944,71 @@ func TestSingleCheckBatcherMapsOutOfOrderResultsByRequestID(t *testing.T) {
 	}
 }
 
+func TestSingleCheckBatcherDoesNotMisattributePartialResultByPosition(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/check" {
+			http.NotFound(w, r)
+			return
+		}
+		var req CheckV2BatchRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if len(req.Requests) != 2 {
+			t.Errorf("request len = %d, want 2", len(req.Requests))
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(CheckV2BatchResponse{Results: []CheckV2Result{{
+			RequestID: req.Requests[1].RequestID,
+			BlogID:    req.Requests[1].BlogID,
+			URL:       req.Requests[1].URL,
+			VantageID: "test-vantage",
+			AgentID:   "test-agent",
+			Outcome:   OutcomeUp,
+			Success:   true,
+			HTTPCode:  200,
+		}}})
+	}))
+	defer ts.Close()
+
+	client := NewVeriflierClient(ts.Listener.Addr().String(), "secret")
+	client.setProtocol(ProtocolV2)
+	batcher := &singleCheckBatcher{client: client}
+	calls := []singleCheckCall{
+		{
+			ctx:  context.Background(),
+			req:  CheckRequest{BlogID: 1, URL: "https://example.com/one", RequestID: "one"},
+			resp: make(chan singleCheckResponse, 1),
+		},
+		{
+			ctx:  context.Background(),
+			req:  CheckRequest{BlogID: 2, URL: "https://example.com/two", RequestID: "two"},
+			resp: make(chan singleCheckResponse, 1),
+		},
+	}
+	batcher.flush(calls)
+
+	missing := <-calls[0].resp
+	if missing.err != nil {
+		t.Fatalf("missing first result error = %v, want per-request unknown result", missing.err)
+	}
+	if missing.result == nil || missing.result.RequestID != "one" || missing.result.BlogID != 1 || missing.result.Success || missing.result.Outcome != OutcomeUnknown || missing.result.ErrorCode != checkerErrorInternal {
+		t.Fatalf("missing first result = %+v, want request one unknown", missing.result)
+	}
+
+	got := <-calls[1].resp
+	if got.err != nil {
+		t.Fatalf("second result error = %v", got.err)
+	}
+	if got.result == nil || got.result.RequestID != "two" || got.result.BlogID != 2 || !got.result.Success {
+		t.Fatalf("second result = %+v", got.result)
+	}
+}
+
 func TestClientCheckReturnsAgentOverloadedOnDeadlinePressure(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v2/check" {
@@ -990,6 +1228,214 @@ func TestClientCheckKeepsLightLaneMovingDuringFullBatch(t *testing.T) {
 		if err != nil {
 			t.Fatalf("full check error: %v", err)
 		}
+	}
+}
+
+func TestSingleCheckBatcherSplitsPayloadTooLargeBatches(t *testing.T) {
+	const hugeURL = "https://example.com/huge"
+	var requestCount atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/check" {
+			http.NotFound(w, r)
+			return
+		}
+		requestCount.Add(1)
+		var req CheckV2BatchRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		for _, check := range req.Requests {
+			if check.URL == hugeURL {
+				http.Error(w, "request entity too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+		}
+		results := make([]CheckV2Result, 0, len(req.Requests))
+		for _, check := range req.Requests {
+			results = append(results, CheckV2Result{
+				RequestID: check.RequestID,
+				BlogID:    check.BlogID,
+				URL:       check.URL,
+				VantageID: "test-vantage",
+				AgentID:   "test-agent",
+				Outcome:   OutcomeUp,
+				Success:   true,
+				HTTPCode:  200,
+			})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(CheckV2BatchResponse{Results: results})
+	}))
+	defer ts.Close()
+
+	client := NewVeriflierClient(ts.Listener.Addr().String(), "secret")
+	batcher := &singleCheckBatcher{client: client}
+	calls := []singleCheckCall{
+		{ctx: context.Background(), req: CheckRequest{BlogID: 1, URL: "https://example.com/safe-before", RequestID: "safe-before"}, resp: make(chan singleCheckResponse, 1)},
+		{ctx: context.Background(), req: CheckRequest{BlogID: 2, URL: hugeURL, RequestID: "huge"}, resp: make(chan singleCheckResponse, 1)},
+		{ctx: context.Background(), req: CheckRequest{BlogID: 3, URL: "https://example.com/safe-after", RequestID: "safe-after"}, resp: make(chan singleCheckResponse, 1)},
+	}
+
+	batcher.flush(calls)
+
+	for _, idx := range []int{0, 2} {
+		select {
+		case got := <-calls[idx].resp:
+			if got.err != nil {
+				t.Fatalf("safe call %d error = %v, want success", idx, got.err)
+			}
+			if got.result == nil || !got.result.Success || got.result.RequestID != calls[idx].req.RequestID {
+				t.Fatalf("safe call %d result = %+v, want matching success", idx, got.result)
+			}
+		default:
+			t.Fatalf("safe call %d did not receive a response", idx)
+		}
+	}
+	select {
+	case got := <-calls[1].resp:
+		if got.err != nil {
+			t.Fatalf("huge call error = %v, want site-scoped result", got.err)
+		}
+		if got.result == nil || got.result.Success || got.result.Outcome != OutcomeUnknown || got.result.ErrorCode != checkerErrorProbeSafety {
+			t.Fatalf("huge call result = %+v, want probe-safety unknown", got.result)
+		}
+	default:
+		t.Fatal("huge call did not receive a response")
+	}
+	if requestCount.Load() < 4 {
+		t.Fatalf("request count = %d, want recursive split retries", requestCount.Load())
+	}
+}
+
+func TestClientBatchSplitsPayloadTooLargeV2Batches(t *testing.T) {
+	const hugeURL = "https://example.com/huge"
+	var requestCount atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/check" {
+			http.NotFound(w, r)
+			return
+		}
+		requestCount.Add(1)
+		var req CheckV2BatchRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		for _, check := range req.Requests {
+			if check.URL == hugeURL {
+				http.Error(w, "request entity too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+		}
+		results := make([]CheckV2Result, 0, len(req.Requests))
+		for _, check := range req.Requests {
+			results = append(results, CheckV2Result{
+				RequestID: check.RequestID,
+				BlogID:    check.BlogID,
+				URL:       check.URL,
+				Outcome:   OutcomeUp,
+				Success:   true,
+				HTTPCode:  200,
+			})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(CheckV2BatchResponse{Results: results})
+	}))
+	defer ts.Close()
+
+	client := NewVeriflierClient(ts.Listener.Addr().String(), "secret")
+	client.setProtocol(ProtocolV2)
+	results, err := client.CheckBatch(context.Background(), []CheckRequest{
+		{BlogID: 1, URL: "https://example.com/safe-before", RequestID: "safe-before"},
+		{BlogID: 2, URL: hugeURL, RequestID: "huge"},
+		{BlogID: 3, URL: "https://example.com/safe-after", RequestID: "safe-after"},
+	})
+	if err != nil {
+		t.Fatalf("CheckBatch() error = %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("results len = %d, want 3", len(results))
+	}
+	for _, idx := range []int{0, 2} {
+		if !results[idx].Success || results[idx].RequestID == "" {
+			t.Fatalf("safe result %d = %+v, want success", idx, results[idx])
+		}
+	}
+	if results[1].Success || results[1].Outcome != OutcomeUnknown || results[1].ErrorCode != checkerErrorProbeSafety {
+		t.Fatalf("huge result = %+v, want probe-safety unknown", results[1])
+	}
+	if requestCount.Load() < 4 {
+		t.Fatalf("request count = %d, want recursive split retries", requestCount.Load())
+	}
+}
+
+func TestClientBatchSplitsPayloadTooLargeLegacyBatches(t *testing.T) {
+	const hugeURL = "https://example.com/huge"
+	var requestCount atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/check" {
+			http.NotFound(w, r)
+			return
+		}
+		requestCount.Add(1)
+		var req struct {
+			Sites []CheckRequest `json:"sites"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		for _, check := range req.Sites {
+			if check.URL == hugeURL {
+				http.Error(w, "request entity too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+		}
+		results := make([]CheckResult, 0, len(req.Sites))
+		for _, check := range req.Sites {
+			results = append(results, CheckResult{
+				RequestID: check.RequestID,
+				BlogID:    check.BlogID,
+				URL:       check.URL,
+				Outcome:   OutcomeUp,
+				Success:   true,
+				HTTPCode:  200,
+			})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(struct {
+			Results []CheckResult `json:"results"`
+		}{Results: results})
+	}))
+	defer ts.Close()
+
+	client := NewVeriflierClient(ts.Listener.Addr().String(), "secret")
+	client.setProtocol(ProtocolLegacy)
+	results, err := client.CheckBatch(context.Background(), []CheckRequest{
+		{BlogID: 1, URL: "https://example.com/safe-before", RequestID: "safe-before"},
+		{BlogID: 2, URL: hugeURL, RequestID: "huge"},
+		{BlogID: 3, URL: "https://example.com/safe-after", RequestID: "safe-after"},
+	})
+	if err != nil {
+		t.Fatalf("CheckBatch() error = %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("results len = %d, want 3", len(results))
+	}
+	for _, idx := range []int{0, 2} {
+		if !results[idx].Success || results[idx].RequestID == "" {
+			t.Fatalf("safe result %d = %+v, want success", idx, results[idx])
+		}
+	}
+	if results[1].Success || results[1].Outcome != OutcomeUnknown || results[1].ErrorCode != checkerErrorProbeSafety {
+		t.Fatalf("huge result = %+v, want probe-safety unknown", results[1])
+	}
+	if requestCount.Load() < 4 {
+		t.Fatalf("request count = %d, want recursive split retries", requestCount.Load())
 	}
 }
 
@@ -1412,7 +1858,7 @@ func TestServerHandleV2Check(t *testing.T) {
 	}
 }
 
-func TestServerHandleV2CheckRejectsUnsafeURL(t *testing.T) {
+func TestServerHandleV2CheckReturnsUnsafeURLResult(t *testing.T) {
 	var called atomic.Bool
 	srv, ts := newV2TestServer(func(_ context.Context, req CheckRequest) ProbeResult {
 		called.Store(true)
@@ -1440,11 +1886,94 @@ func TestServerHandleV2CheckRejectsUnsafeURL(t *testing.T) {
 		t.Fatalf("request error: %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 	if called.Load() {
 		t.Fatal("check function was called for unsafe URL")
+	}
+
+	var result CheckV2BatchResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(result.Results) != 1 {
+		t.Fatalf("results len = %d, want 1", len(result.Results))
+	}
+	got := result.Results[0]
+	if got.RequestID != "req-unsafe" || got.BlogID != 42 || got.URL != "http://169.254.169.254/latest/meta-data/" {
+		t.Fatalf("result identity = %+v", got)
+	}
+	if got.Success || got.ErrorCode != checkerErrorProbeSafety || got.Outcome != OutcomeUnknown {
+		t.Fatalf("result = %+v, want probe-safety non-success", got)
+	}
+}
+
+func TestServerHandleV2CheckIsolatesUnsafeURLInMixedBatch(t *testing.T) {
+	var calledMu sync.Mutex
+	var calledURLs []string
+	srv, ts := newV2TestServer(func(_ context.Context, req CheckRequest) ProbeResult {
+		calledMu.Lock()
+		calledURLs = append(calledURLs, req.URL)
+		calledMu.Unlock()
+		return ProbeResult{CheckResult: CheckResult{
+			BlogID:    req.BlogID,
+			URL:       req.URL,
+			Success:   true,
+			HTTPCode:  200,
+			RequestID: req.RequestID,
+		}, Outcome: OutcomeUp}
+	})
+	defer srv.executor.Shutdown()
+	defer ts.Close()
+
+	body := bytes.NewBuffer(nil)
+	if err := json.NewEncoder(body).Encode(CheckV2BatchRequest{
+		Requests: []CheckV2Request{
+			{RequestID: "req-safe-before", BlogID: 1, URL: "https://example.com/before"},
+			{RequestID: "req-unsafe", BlogID: 2, URL: "http://localhost/admin"},
+			{RequestID: "req-safe-after", BlogID: 3, URL: "https://example.com/after"},
+		},
+	}); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v2/check", body)
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	var result CheckV2BatchResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(result.Results) != 3 {
+		t.Fatalf("results len = %d, want 3", len(result.Results))
+	}
+	calledMu.Lock()
+	defer calledMu.Unlock()
+	called := make(map[string]bool, len(calledURLs))
+	for _, url := range calledURLs {
+		called[url] = true
+	}
+	if len(calledURLs) != 2 || !called["https://example.com/before"] || !called["https://example.com/after"] {
+		t.Fatalf("called URLs = %#v, want only safe siblings", calledURLs)
+	}
+	if !result.Results[0].Success || result.Results[0].RequestID != "req-safe-before" || result.Results[0].Outcome != OutcomeUp {
+		t.Fatalf("safe-before result = %+v", result.Results[0])
+	}
+	if result.Results[1].Success || result.Results[1].RequestID != "req-unsafe" || result.Results[1].ErrorCode != checkerErrorProbeSafety || result.Results[1].Outcome != OutcomeUnknown {
+		t.Fatalf("unsafe result = %+v", result.Results[1])
+	}
+	if !result.Results[2].Success || result.Results[2].RequestID != "req-safe-after" || result.Results[2].Outcome != OutcomeUp {
+		t.Fatalf("safe-after result = %+v", result.Results[2])
 	}
 }
 
@@ -1491,7 +2020,7 @@ func TestServerHandleV2CheckAppliesBatchDeadline(t *testing.T) {
 	}
 }
 
-func TestServerHandleV2CheckRejectsMultipleRequiredBodyRules(t *testing.T) {
+func TestServerHandleV2CheckReturnsRequestErrorForMultipleRequiredBodyRules(t *testing.T) {
 	srv, ts := newV2TestServer(func(_ context.Context, req CheckRequest) ProbeResult {
 		t.Fatal("checkFn should not be called for invalid body rules")
 		return ProbeResult{}
@@ -1520,8 +2049,88 @@ func TestServerHandleV2CheckRejectsMultipleRequiredBodyRules(t *testing.T) {
 		t.Fatalf("request error: %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var result CheckV2BatchResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(result.Results) != 1 {
+		t.Fatalf("results len = %d, want 1", len(result.Results))
+	}
+	got := result.Results[0]
+	if got.Success || got.ErrorCode != checkerErrorProbeSafety || got.Outcome != OutcomeUnknown {
+		t.Fatalf("result = %+v, want probe-safety unknown", got)
+	}
+}
+
+func TestServerHandleV2CheckIsolatesBadPerSiteOptionsInMixedBatch(t *testing.T) {
+	var calledMu sync.Mutex
+	var calledURLs []string
+	srv, ts := newV2TestServer(func(_ context.Context, req CheckRequest) ProbeResult {
+		calledMu.Lock()
+		calledURLs = append(calledURLs, req.URL)
+		calledMu.Unlock()
+		return ProbeResult{CheckResult: CheckResult{
+			BlogID:    req.BlogID,
+			URL:       req.URL,
+			Success:   true,
+			HTTPCode:  200,
+			RequestID: req.RequestID,
+		}, Outcome: OutcomeUp}
+	})
+	defer srv.executor.Shutdown()
+	defer ts.Close()
+
+	body := bytes.NewBuffer(nil)
+	if err := json.NewEncoder(body).Encode(CheckV2BatchRequest{
+		Requests: []CheckV2Request{
+			{RequestID: "req-safe-before", BlogID: 1, URL: "https://example.com/before"},
+			{RequestID: "req-bad-method", BlogID: 2, URL: "https://example.com/bad-method", Method: "POST"},
+			{RequestID: "req-bad-profile", BlogID: 3, URL: "https://example.com/bad-profile", DetectionProfile: "imaginary"},
+			{RequestID: "req-safe-after", BlogID: 4, URL: "https://example.com/after"},
+		},
+	}); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v2/check", body)
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var result CheckV2BatchResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(result.Results) != 4 {
+		t.Fatalf("results len = %d, want 4", len(result.Results))
+	}
+	calledMu.Lock()
+	defer calledMu.Unlock()
+	called := make(map[string]bool, len(calledURLs))
+	for _, url := range calledURLs {
+		called[url] = true
+	}
+	if len(calledURLs) != 2 || !called["https://example.com/before"] || !called["https://example.com/after"] {
+		t.Fatalf("called URLs = %#v, want only safe siblings", calledURLs)
+	}
+	for _, idx := range []int{0, 3} {
+		if !result.Results[idx].Success || result.Results[idx].Outcome != OutcomeUp {
+			t.Fatalf("safe result %d = %+v", idx, result.Results[idx])
+		}
+	}
+	for _, idx := range []int{1, 2} {
+		if result.Results[idx].Success || result.Results[idx].ErrorCode != checkerErrorProbeSafety || result.Results[idx].Outcome != OutcomeUnknown {
+			t.Fatalf("bad-options result %d = %+v", idx, result.Results[idx])
+		}
 	}
 }
 
@@ -1622,6 +2231,109 @@ func TestClientFallsBackToLegacyWhenUnknownV2ConnectionCloses(t *testing.T) {
 	}
 	if v2Hits.Load() != 1 || legacyHits.Load() != 2 {
 		t.Fatalf("hits after cached legacy check v2=%d legacy=%d, want 1/2", v2Hits.Load(), legacyHits.Load())
+	}
+}
+
+func TestClientLegacyBatchMapsOutOfOrderResultsByRequestID(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/check", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Sites []CheckRequest `json:"sites"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode legacy request: %v", err)
+		}
+		if len(req.Sites) != 2 {
+			t.Fatalf("sites len = %d, want 2", len(req.Sites))
+		}
+		results := []CheckResult{
+			{
+				RequestID:     req.Sites[1].RequestID,
+				MonitorSiteID: 999,
+				BlogID:        999,
+				URL:           "https://wrong.example/after",
+				Host:          "legacy-host",
+				Success:       false,
+				HTTPCode:      500,
+			},
+			{
+				RequestID:     req.Sites[0].RequestID,
+				MonitorSiteID: 999,
+				BlogID:        999,
+				URL:           "https://wrong.example/before",
+				Host:          "legacy-host",
+				Success:       true,
+				HTTPCode:      200,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(struct {
+			Results []CheckResult `json:"results"`
+		}{Results: results})
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	client := NewVeriflierClient(ts.Listener.Addr().String(), "secret")
+	client.setProtocol(ProtocolLegacy)
+	res, err := client.CheckBatch(context.Background(), []CheckRequest{
+		{MonitorSiteID: 11, BlogID: 1, URL: "https://example.com/before", RequestID: "req-before"},
+		{MonitorSiteID: 22, BlogID: 2, URL: "https://example.com/after", RequestID: "req-after"},
+	})
+	if err != nil {
+		t.Fatalf("CheckBatch() error = %v", err)
+	}
+	if len(res) != 2 {
+		t.Fatalf("results len = %d, want 2", len(res))
+	}
+	if !res[0].Success || res[0].RequestID != "req-before" || res[0].BlogID != 1 || res[0].MonitorSiteID != 11 || res[0].URL != "https://example.com/before" {
+		t.Fatalf("first result = %+v", res[0])
+	}
+	if res[1].Success || res[1].RequestID != "req-after" || res[1].BlogID != 2 || res[1].MonitorSiteID != 22 || res[1].URL != "https://example.com/after" {
+		t.Fatalf("second result = %+v", res[1])
+	}
+}
+
+func TestClientLegacyBatchReturnsUnknownForOmittedResult(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/check", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Sites []CheckRequest `json:"sites"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode legacy request: %v", err)
+		}
+		results := []CheckResult{{
+			RequestID: req.Sites[0].RequestID,
+			Host:      "legacy-host",
+			Success:   true,
+			HTTPCode:  200,
+		}}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(struct {
+			Results []CheckResult `json:"results"`
+		}{Results: results})
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	client := NewVeriflierClient(ts.Listener.Addr().String(), "secret")
+	client.setProtocol(ProtocolLegacy)
+	res, err := client.CheckBatch(context.Background(), []CheckRequest{
+		{BlogID: 1, URL: "https://example.com/one", RequestID: "req-one"},
+		{BlogID: 2, URL: "https://example.com/two", RequestID: "req-two"},
+	})
+	if err != nil {
+		t.Fatalf("CheckBatch() error = %v", err)
+	}
+	if len(res) != 2 {
+		t.Fatalf("results len = %d, want 2", len(res))
+	}
+	if !res[0].Success || res[0].RequestID != "req-one" {
+		t.Fatalf("first result = %+v", res[0])
+	}
+	if res[1].Success || res[1].RequestID != "req-two" || res[1].Outcome != OutcomeUnknown || res[1].ErrorCode != checkerErrorInternal {
+		t.Fatalf("missing result = %+v", res[1])
 	}
 }
 

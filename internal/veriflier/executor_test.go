@@ -14,9 +14,16 @@ func TestCheckerProbeSafetyErrorCodeContract(t *testing.T) {
 	if checkerErrorProbeSafety != checker.ErrorProbeSafety {
 		t.Fatalf("checkerErrorProbeSafety = %d, want checker.ErrorProbeSafety %d", checkerErrorProbeSafety, checker.ErrorProbeSafety)
 	}
+	if checkerErrorInternal != checker.ErrorInternal {
+		t.Fatalf("checkerErrorInternal = %d, want checker.ErrorInternal %d", checkerErrorInternal, checker.ErrorInternal)
+	}
 	got := outcomeFromResult(CheckResult{Success: false, ErrorCode: int32(checkerErrorProbeSafety)})
 	if got != OutcomeUnknown {
 		t.Fatalf("outcomeFromResult(probe safety) = %q, want %q", got, OutcomeUnknown)
+	}
+	got = outcomeFromResult(CheckResult{Success: false, ErrorCode: int32(checkerErrorInternal)})
+	if got != OutcomeUnknown {
+		t.Fatalf("outcomeFromResult(internal) = %q, want %q", got, OutcomeUnknown)
 	}
 }
 
@@ -46,6 +53,39 @@ func TestExecutorPreservesInputOrder(t *testing.T) {
 	}
 	if results[0].BlogID != 1 || results[1].BlogID != 2 {
 		t.Fatalf("results order = [%d, %d], want [1, 2]", results[0].BlogID, results[1].BlogID)
+	}
+}
+
+func TestExecutorRecoversCheckPanicAsPerRequestUnknown(t *testing.T) {
+	exec := NewExecutor(func(_ context.Context, req CheckRequest) ProbeResult {
+		if req.BlogID == 2 {
+			panic("synthetic veriflier checker failure")
+		}
+		return ProbeResult{CheckResult: CheckResult{
+			BlogID:    req.BlogID,
+			URL:       req.URL,
+			Success:   true,
+			HTTPCode:  200,
+			RequestID: req.RequestID,
+		}, Outcome: OutcomeUp}
+	}, 1, 2)
+	defer exec.Shutdown()
+
+	results, err := exec.ExecuteBatch(context.Background(), []CheckRequest{
+		{BlogID: 1, URL: "https://example.com/one", RequestID: "one"},
+		{BlogID: 2, URL: "https://example.com/two", RequestID: "two"},
+	})
+	if err != nil {
+		t.Fatalf("ExecuteBatch() error = %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("results len = %d, want 2", len(results))
+	}
+	if !results[0].Success || results[0].Outcome != OutcomeUp || results[0].RequestID != "one" {
+		t.Fatalf("first result = %+v, want success", results[0])
+	}
+	if results[1].Success || results[1].Outcome != OutcomeUnknown || results[1].ErrorCode != checkerErrorInternal || results[1].RequestID != "two" {
+		t.Fatalf("panic result = %+v, want per-request unknown", results[1])
 	}
 }
 

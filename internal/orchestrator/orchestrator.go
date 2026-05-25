@@ -484,6 +484,8 @@ func (o *Orchestrator) processResults(results map[int64]checker.Result, sites ma
 		// it in jetpack_monitor_audit_log was retired with the operational/site-state split.
 		if record.res.IsProbeSafetyBlock() {
 			o.handleProbeSafetyBlock(record.site, record.res)
+		} else if record.res.IsOperationalUnknown() {
+			o.handleOperationalCheckError(record.site, record.res)
 		} else if !record.res.IsFailure() {
 			o.handleRecovery(record.site, record.res)
 		} else {
@@ -581,6 +583,24 @@ func emitCheckCohortCounters(m metricsClient, prefix string, cohorts map[checkCo
 			metricSegment(key.method),
 			metricSegment(key.profile),
 		), count)
+	}
+}
+
+func emitKeywordRuleCounters(m metricsClient, prefix string, rules map[string]int) {
+	if m == nil || len(rules) == 0 {
+		return
+	}
+	names := make([]string, 0, len(rules))
+	for name := range rules {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		count := rules[name]
+		if count <= 0 {
+			continue
+		}
+		m.Increment(fmt.Sprintf("%s.check.keyword_rule.%s.count", prefix, metricSegment(name)), count)
 	}
 }
 
@@ -722,11 +742,14 @@ func (o *Orchestrator) recordStreamingHistoryRows(rows []db.CheckHistoryRow) res
 			); err != nil {
 				summary.historyErrors++
 				log.Printf("orchestrator: streaming record check history blog_id=%d: %v", row.BlogID, err)
+				continue
 			}
+			summary.historyRows++
 		}
+	} else {
+		summary.historyRows += len(rows)
 	}
 	summary.historyDuration += time.Since(start)
-	summary.historyRows += len(rows)
 	return summary
 }
 
@@ -1174,6 +1197,21 @@ func (o *Orchestrator) handleProbeSafetyBlock(site db.Site, res checker.Result) 
 	})
 }
 
+func (o *Orchestrator) handleOperationalCheckError(site db.Site, res checker.Result) {
+	emitCounter("detection.check_internal_error.count", 1)
+	metaMap := checkResultMetadata(site, res, resultCheckedAt(res))
+	metaMap["operational_unknown"] = true
+	meta, _ := json.Marshal(metaMap)
+	o.auditLog(audit.Entry{
+		BlogID:    site.BlogID,
+		EventType: audit.EventCheckInternal,
+		Source:    o.hostname,
+		Detail:    "checker internal error",
+		Metadata:  meta,
+	})
+	log.Printf("orchestrator: checker internal error blog_id=%d site_id=%d: %s", site.BlogID, site.ID, res.ErrorDetail)
+}
+
 func (o *Orchestrator) shouldSuppressPostRecoveryTransientFailure(site db.Site, res checker.Result) bool {
 	suppressed, _, _ := o.postRecoveryTransientSuppression(site, res)
 	return suppressed
@@ -1448,6 +1486,12 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 		if duplicateVote {
 			continue
 		}
+		if verifierSiteScopedNonVote(vr.res) {
+			emitCounter("verifier.vote.non_vote.count", 1)
+			emitCounter("verifier.host."+hostSegment+".vote.non_vote.count", 1)
+			log.Printf("orchestrator: veriflier %s returned site-scoped non-vote outcome %q error_code=%d; leaving decision pending", vr.host, vr.res.Outcome, vr.res.ErrorCode)
+			continue
+		}
 		if verifierOperationalNonVote(vr.res) {
 			emitCounter("verifier.vote.non_vote.count", 1)
 			emitCounter("verifier.host."+hostSegment+".vote.non_vote.count", 1)
@@ -1614,6 +1658,13 @@ func verifierOperationalNonVote(res *veriflier.CheckResult) bool {
 	default:
 		return false
 	}
+}
+
+func verifierSiteScopedNonVote(res *veriflier.CheckResult) bool {
+	if res == nil || res.Outcome != veriflier.OutcomeUnknown {
+		return false
+	}
+	return res.ErrorCode == checker.ErrorProbeSafety || res.ErrorCode == checker.ErrorInternal
 }
 
 func shouldDeferVerifierRetry(entry *retryEntry, checkedAt time.Time) bool {

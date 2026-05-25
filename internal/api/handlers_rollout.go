@@ -1419,7 +1419,7 @@ func rolloutCheckSites(ctx context.Context, sites []jetdb.Site, mode rolloutMode
 						Timestamp:        time.Now().UTC(),
 					}
 				default:
-					results[job.i] = checker.Check(ctx, rolloutCheckRequest(cfg, job.site, mode))
+					results[job.i] = checker.SafeCheck(ctx, rolloutCheckRequest(cfg, job.site, mode))
 				}
 			}
 		}()
@@ -1516,7 +1516,7 @@ func (s *Server) rolloutRunCanaries(ctx context.Context, specs []rolloutCanarySp
 			defer wg.Done()
 			for idx := range work {
 				job := jobs[idx]
-				res := checker.Check(ctx, job.req)
+				res := checker.SafeCheck(ctx, job.req)
 				results[idx] = rolloutEvaluateCanary(job.spec, job.mode, res, idx+1)
 			}
 		}()

@@ -38,12 +38,14 @@ const (
 	ErrorTLSDeprecated = 7
 	ErrorBodyRead      = 8
 	ErrorProbeSafety   = 9
+	ErrorInternal      = 10
 	ErrorBodyTruncated = ErrorBodyRead
 )
 
 const (
 	maxBodyIntegrityBytes      int64 = 64 << 10
 	maxKeywordBodyBytes        int64 = 1 << 20
+	maxSemanticBodyPrefixBytes       = 4 << 10
 	maxResultURLDetailBytes          = 2048
 	maxResponseHeaderBytes     int64 = 64 << 10
 	checkDNSCacheTTL                 = 15 * time.Minute
@@ -58,6 +60,83 @@ const (
 
 var errBodyReadBudgetExceeded = errors.New("response body read budget exceeded")
 var errProbeSafetyBlock = errors.New("probe safety block")
+
+var semanticFailurePatterns = []struct {
+	needle string
+	rule   string
+	detail string
+}{
+	{
+		needle: "error establishing a database connection",
+		rule:   "semantic_wp_db_error",
+		detail: "WordPress database error page returned with HTTP 200",
+	},
+	{
+		needle: "there has been a critical error on this website",
+		rule:   "semantic_wp_critical_error",
+		detail: "WordPress critical error page returned with HTTP 200",
+	},
+	{
+		needle: "there has been a critical error on your website",
+		rule:   "semantic_wp_critical_error",
+		detail: "WordPress critical error page returned with HTTP 200",
+	},
+	{
+		needle: "this site is experiencing technical difficulties",
+		rule:   "semantic_wp_technical_difficulties",
+		detail: "WordPress technical difficulties page returned with HTTP 200",
+	},
+	{
+		needle: "the site is experiencing technical difficulties",
+		rule:   "semantic_wp_technical_difficulties",
+		detail: "WordPress technical difficulties page returned with HTTP 200",
+	},
+	{
+		needle: "briefly unavailable for scheduled maintenance",
+		rule:   "semantic_wp_maintenance",
+		detail: "WordPress maintenance page returned with HTTP 200",
+	},
+	{
+		needle: "xml-rpc server accepts post requests only",
+		rule:   "semantic_wp_xmlrpc_echo",
+		detail: "WordPress XML-RPC endpoint response was served as the homepage with HTTP 200",
+	},
+	{
+		needle: "your php installation appears to be missing the mysql extension which is required by wordpress",
+		rule:   "semantic_wp_missing_mysql_extension",
+		detail: "WordPress missing MySQL extension page returned with HTTP 200",
+	},
+	{
+		needle: "welcome to wordpress. before getting started",
+		rule:   "semantic_wp_setup_config",
+		detail: "WordPress setup/configuration page returned with HTTP 200",
+	},
+	{
+		needle: "there doesn't seem to be a wp-config.php file",
+		rule:   "semantic_wp_setup_config",
+		detail: "WordPress setup/configuration page returned with HTTP 200",
+	},
+	{
+		needle: "one or more database tables are unavailable. the database may need to be repaired",
+		rule:   "semantic_wp_db_repair",
+		detail: "WordPress database repair page returned with HTTP 200",
+	},
+	{
+		needle: "database tables are missing",
+		rule:   "semantic_wp_db_missing_tables",
+		detail: "WordPress missing database tables page returned with HTTP 200",
+	},
+	{
+		needle: "database update required",
+		rule:   "semantic_wp_db_update_required",
+		detail: "WordPress database update page returned with HTTP 200",
+	},
+	{
+		needle: "your server is running php version",
+		rule:   "semantic_wp_unsupported_php",
+		detail: "WordPress unsupported PHP version page returned with HTTP 200",
+	},
+}
 
 // RedirectPolicy controls how redirect responses are handled.
 type RedirectPolicy string
@@ -861,6 +940,8 @@ func (r *Result) StatusType() string {
 		return "success"
 	case r.ErrorCode == ErrorProbeSafety:
 		return "probe_safety"
+	case r.ErrorCode == ErrorInternal:
+		return "internal"
 	case r.ErrorCode == ErrorSSL || r.ErrorCode == ErrorTLSExpired:
 		return "https"
 	case r.ErrorCode == ErrorTimeout || r.ErrorCode == ErrorBodyRead:
@@ -880,7 +961,7 @@ func (r *Result) StatusType() string {
 
 // IsFailure reports whether the result should enter the downtime pipeline.
 func (r *Result) IsFailure() bool {
-	if r.ErrorCode == ErrorProbeSafety {
+	if r.ErrorCode == ErrorProbeSafety || r.ErrorCode == ErrorInternal {
 		return false
 	}
 	if !r.Success {
@@ -898,6 +979,12 @@ func (r *Result) IsFailure() bool {
 // probe because the target would be unsafe for an untrusted remote site check.
 func (r *Result) IsProbeSafetyBlock() bool {
 	return r != nil && r.ErrorCode == ErrorProbeSafety
+}
+
+// IsOperationalUnknown reports an internal Monitor-side problem that should be
+// recorded for operators without opening, closing, or confirming site downtime.
+func (r *Result) IsOperationalUnknown() bool {
+	return r != nil && r.ErrorCode == ErrorInternal
 }
 
 // Check performs an HTTP check and returns the result.
@@ -1107,6 +1194,12 @@ func Check(ctx context.Context, req Request) Result {
 			res.ErrorDetail = res.BodyReadError
 			return res
 		}
+		if rule, detail := semanticBodyFailure(resp, body, bodyRead.BytesRead); rule != "" {
+			res.KeywordRule = rule
+			res.ErrorCode = ErrorKeyword
+			res.ErrorDetail = detail
+			return res
+		}
 
 		// Keyword check uses the same bounded body read as integrity checks.
 		if needsBody {
@@ -1263,11 +1356,13 @@ func readResponseBody(resp *http.Response, needKeyword bool, req Request) bodyRe
 	stopBudget := startBodyReadBudget(resp.Body, responseBodyReadBudget(mode, needKeyword, req))
 
 	if !needKeyword {
-		n, err := io.Copy(io.Discard, io.LimitReader(resp.Body, limit+1))
+		prefix := &bodyPrefixCapture{limit: maxSemanticBodyPrefixBytes}
+		n, err := io.Copy(io.MultiWriter(io.Discard, prefix), io.LimitReader(resp.Body, limit+1))
 		if stopBodyReadBudget(stopBudget) {
 			err = bodyReadBudgetError(err)
 		}
 		result := bodyReadResult{
+			Body:          prefix.Bytes(),
 			Err:           err,
 			Mode:          mode,
 			BytesRead:     n,
@@ -1309,6 +1404,271 @@ func readResponseBody(resp *http.Response, needKeyword bool, req Request) bodyRe
 		return result
 	}
 	return result
+}
+
+type bodyPrefixCapture struct {
+	buf   []byte
+	limit int
+}
+
+func (c *bodyPrefixCapture) Write(p []byte) (int, error) {
+	if c == nil || c.limit <= 0 {
+		return len(p), nil
+	}
+	if len(c.buf) < c.limit {
+		remaining := c.limit - len(c.buf)
+		if len(p) < remaining {
+			remaining = len(p)
+		}
+		c.buf = append(c.buf, p[:remaining]...)
+	}
+	return len(p), nil
+}
+
+func (c *bodyPrefixCapture) Bytes() []byte {
+	if c == nil || len(c.buf) == 0 {
+		return nil
+	}
+	out := make([]byte, len(c.buf))
+	copy(out, c.buf)
+	return out
+}
+
+func semanticBodyFailure(resp *http.Response, body []byte, bytesRead int64) (string, string) {
+	if resp == nil || resp.StatusCode != http.StatusOK {
+		return "", ""
+	}
+
+	bodyText := string(body)
+	lowerBody := strings.ToLower(bodyText)
+	strippedLowerBody := strings.ToLower(stripHTMLTags(bodyText))
+	for _, pattern := range semanticFailurePatterns {
+		if semanticPagePhraseMatch(lowerBody, strippedLowerBody, pattern.needle) {
+			return pattern.rule, pattern.detail
+		}
+	}
+	if rule, detail := compoundSemanticBodyFailure(lowerBody); rule != "" {
+		return rule, detail
+	}
+
+	if looksLikeHTML(resp.Header.Get("Content-Type"), lowerBody) && bodyLooksNearEmptyHTML(bodyText, bytesRead) {
+		return "semantic_empty_html", "empty or near-empty HTML response body returned with HTTP 200"
+	}
+
+	return "", ""
+}
+
+func semanticPagePhraseMatch(lowerBody, strippedLowerBody, needle string) bool {
+	return strings.HasPrefix(strings.TrimSpace(strippedLowerBody), needle) ||
+		tagTextStartsWith(lowerBody, "title", needle) ||
+		tagTextStartsWith(lowerBody, "h1", needle)
+}
+
+func tagTextStartsWith(lowerBody, tag, needle string) bool {
+	openPrefix := "<" + tag
+	closeTag := "</" + tag + ">"
+	for offset := 0; offset < len(lowerBody); {
+		idx := strings.Index(lowerBody[offset:], openPrefix)
+		if idx < 0 {
+			return false
+		}
+		tagStart := offset + idx
+		tagNameEnd := tagStart + len(openPrefix)
+		if tagNameEnd < len(lowerBody) {
+			next := lowerBody[tagNameEnd]
+			if next != '>' && !isASCIIHTMLSpace(next) {
+				offset = tagNameEnd
+				continue
+			}
+		}
+		openEndRel := strings.IndexByte(lowerBody[tagNameEnd:], '>')
+		if openEndRel < 0 {
+			return false
+		}
+		contentStart := tagNameEnd + openEndRel + 1
+		closeRel := strings.Index(lowerBody[contentStart:], closeTag)
+		contentEnd := len(lowerBody)
+		if closeRel >= 0 {
+			contentEnd = contentStart + closeRel
+		}
+		tagText := strings.TrimSpace(stripHTMLTags(lowerBody[contentStart:contentEnd]))
+		if strings.HasPrefix(tagText, needle) {
+			return true
+		}
+		if closeRel >= 0 {
+			offset = contentEnd + len(closeTag)
+		} else {
+			offset = contentStart
+		}
+	}
+	return false
+}
+
+func isASCIIHTMLSpace(b byte) bool {
+	switch b {
+	case ' ', '\t', '\n', '\r', '\f':
+		return true
+	default:
+		return false
+	}
+}
+
+func compoundSemanticBodyFailure(lowerBody string) (string, string) {
+	if looksLikeWordPressPHPError(lowerBody) || looksLikeWordPressPHPError(strings.ToLower(stripHTMLTags(lowerBody))) {
+		return "semantic_wp_php_error", "WordPress PHP error output returned with HTTP 200"
+	}
+	if strings.Contains(lowerBody, "hi jetpack!") && strings.Contains(lowerBody, "all systems go") {
+		return "semantic_jetpack_probe_echo", "Jetpack probe response was served as the homepage with HTTP 200"
+	}
+	if looksLikeWordPressDatabaseCrash(lowerBody) {
+		return "semantic_wp_db_table_crashed", "WordPress database table crash output returned with HTTP 200"
+	}
+	if looksLikeWordPressUnsupportedDatabase(lowerBody) {
+		return "semantic_wp_unsupported_database", "WordPress unsupported database version page returned with HTTP 200"
+	}
+	if looksLikeWordPressRedisConnectionError(lowerBody) {
+		return "semantic_wp_redis_connection", "WordPress Redis object-cache connection error returned with HTTP 200"
+	}
+	if strings.Contains(lowerBody, "apache2 ubuntu default page") && strings.Contains(lowerBody, "it works") {
+		return "semantic_default_vhost_apache", "Apache default virtual-host page returned with HTTP 200"
+	}
+	if strings.Contains(lowerBody, "welcome to nginx!") && strings.Contains(lowerBody, "nginx web server is successfully installed") {
+		return "semantic_default_vhost_nginx", "nginx default virtual-host page returned with HTTP 200"
+	}
+	if looksLikeAccountSuspendedPage(lowerBody) {
+		return "semantic_host_account_suspended", "hosting account suspension page returned with HTTP 200"
+	}
+	if looksLikeWordPressDirectoryListing(lowerBody) {
+		return "semantic_wp_directory_listing", "WordPress directory listing returned with HTTP 200"
+	}
+	return "", ""
+}
+
+func looksLikeWordPressPHPError(lowerBody string) bool {
+	if !strings.Contains(lowerBody, " on line ") {
+		return false
+	}
+	if !strings.Contains(lowerBody, "fatal error") &&
+		!strings.Contains(lowerBody, "allowed memory size") &&
+		!strings.Contains(lowerBody, "maximum execution time") &&
+		!strings.Contains(lowerBody, "call to undefined function") &&
+		!(strings.Contains(lowerBody, "parse error:") && strings.Contains(lowerBody, "syntax error")) {
+		return false
+	}
+	return containsWordPressPathHint(lowerBody)
+}
+
+func looksLikeWordPressDatabaseCrash(lowerBody string) bool {
+	return strings.Contains(lowerBody, "wordpress database error") &&
+		strings.Contains(lowerBody, "marked as crashed") &&
+		(strings.Contains(lowerBody, "should be repaired") || strings.Contains(lowerBody, "repair failed"))
+}
+
+func looksLikeWordPressUnsupportedDatabase(lowerBody string) bool {
+	if !strings.Contains(lowerBody, "wordpress") || !strings.Contains(lowerBody, "requires") {
+		return false
+	}
+	if !strings.Contains(lowerBody, "mysql") && !strings.Contains(lowerBody, "mariadb") {
+		return false
+	}
+	return strings.Contains(lowerBody, "error:") ||
+		strings.Contains(lowerBody, "you are running") ||
+		strings.Contains(lowerBody, "your server is running")
+}
+
+func looksLikeWordPressRedisConnectionError(lowerBody string) bool {
+	const phrase = "error establishing a redis connection"
+	if !strings.Contains(lowerBody, phrase) &&
+		!strings.Contains(lowerBody, "error establishing connection. to disable redis") {
+		return false
+	}
+	stripped := strings.TrimSpace(strings.ToLower(stripHTMLTags(lowerBody)))
+	if !strings.Contains(lowerBody, "<title>"+phrase) &&
+		!strings.Contains(lowerBody, "<h1>"+phrase) &&
+		!strings.HasPrefix(stripped, phrase) {
+		return false
+	}
+	return strings.Contains(lowerBody, "wordpress is unable to establish a connection to redis") ||
+		strings.Contains(lowerBody, "object-cache.php") ||
+		strings.Contains(lowerBody, "/wp-content/") ||
+		strings.Contains(lowerBody, "redis object cache") ||
+		strings.Contains(lowerBody, "wp_redis")
+}
+
+func containsWordPressPathHint(lowerBody string) bool {
+	for _, hint := range []string{
+		"/wp-content/",
+		"/wp-includes/",
+		"/wp-admin/",
+		"wp-config.php",
+		"wp-settings.php",
+		"wp-load.php",
+		"wp-blog-header.php",
+	} {
+		if strings.Contains(lowerBody, hint) {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeAccountSuspendedPage(lowerBody string) bool {
+	if strings.Contains(lowerBody, "cgi-sys/suspendedpage.cgi") {
+		return true
+	}
+	if !strings.Contains(lowerBody, "account has been suspended") {
+		return false
+	}
+	return strings.Contains(lowerBody, "contact your hosting provider") ||
+		strings.Contains(lowerBody, "contact your web host") ||
+		strings.Contains(lowerBody, "<title>account suspended</title>") ||
+		strings.Contains(lowerBody, "<title>this account has been suspended</title>")
+}
+
+func looksLikeWordPressDirectoryListing(lowerBody string) bool {
+	if !strings.Contains(lowerBody, "index of /") {
+		return false
+	}
+	return strings.Contains(lowerBody, "wp-admin") ||
+		strings.Contains(lowerBody, "wp-content") ||
+		strings.Contains(lowerBody, "wp-includes")
+}
+
+func looksLikeHTML(contentType, lowerBody string) bool {
+	contentType = strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
+	if contentType == "text/html" || contentType == "application/xhtml+xml" {
+		return true
+	}
+	trimmed := strings.TrimSpace(lowerBody)
+	return strings.HasPrefix(trimmed, "<!doctype html") || strings.HasPrefix(trimmed, "<html")
+}
+
+func bodyLooksNearEmptyHTML(bodyText string, bytesRead int64) bool {
+	if bytesRead == 0 {
+		return true
+	}
+	if bytesRead > 256 {
+		return false
+	}
+	return stripHTMLTags(bodyText) == ""
+}
+
+func stripHTMLTags(bodyText string) string {
+	var b strings.Builder
+	inTag := false
+	for _, r := range bodyText {
+		switch r {
+		case '<':
+			inTag = true
+		case '>':
+			inTag = false
+		default:
+			if !inTag {
+				b.WriteRune(r)
+			}
+		}
+	}
+	return strings.Join(strings.Fields(b.String()), " ")
 }
 
 func responseBodyReadBudget(mode string, needKeyword bool, req Request) time.Duration {

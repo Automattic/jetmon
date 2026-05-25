@@ -32,6 +32,7 @@ const (
 	EventConfigChange      = "config_change"
 	EventAPIAccess         = "api_access"
 	EventProbeSafetyBlock  = "probe_safety_blocked"
+	EventCheckInternal     = "check_internal_error"
 	EventRetentionCleanup  = "retention_cleanup"
 )
 
@@ -94,7 +95,7 @@ func shouldLog(m, eventType, httpMethod string) bool {
 	if m == ModeWrites {
 		switch eventType {
 		case EventWPCOMSent, EventWPCOMRetry, EventConfigChange,
-			EventRetryDispatched, EventProbeSafetyBlock, EventRetentionCleanup:
+			EventRetryDispatched, EventProbeSafetyBlock, EventCheckInternal, EventRetentionCleanup:
 			// retention_cleanup deletes rows, so it counts as a data mutation.
 			return true
 		default:

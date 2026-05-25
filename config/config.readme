@@ -333,9 +333,14 @@ observed rate/latency, and avoids per-probe healthy freshness writes.
 - Purpose: fleet default detection profile for sites without a per-site row.
 - Notes: `legacy` matches v1-style reachability. `simple_http` checks
   status/connect/timeout using the selected method. `full` enables v2 HTTP,
-  body, redirect, TLS, keyword, and forbidden-content detections. HEAD checks
-  automatically cap the effective profile to `simple_http` because body checks
-  cannot run against HEAD responses.
+  body, redirect, TLS, keyword, forbidden-content, and conservative semantic
+  HTML detections such as WordPress database repair, fatal PHP, unsupported PHP,
+  Redis object-cache connection errors, maintenance, setup/configuration, and
+  critical-error pages, default
+  virtual-host pages, host suspension pages, Jetpack probe echo pages, and
+  near-empty HTML responses.
+  HEAD checks automatically cap the effective profile to `simple_http` because
+  body checks cannot run against HEAD responses.
 
 ### NET_COMMS_TIMEOUT
 

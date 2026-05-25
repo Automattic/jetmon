@@ -133,11 +133,11 @@ func (c *VeriflierClient) Check(ctx context.Context, req CheckRequest) (*CheckRe
 func (c *VeriflierClient) CheckBatch(ctx context.Context, reqs []CheckRequest) ([]CheckResult, error) {
 	switch c.cachedProtocol() {
 	case ProtocolLegacy:
-		return c.checkBatchLegacy(ctx, reqs)
+		return c.checkBatchLegacyIsolated(ctx, reqs)
 	case ProtocolV2:
-		return c.checkBatchV2(ctx, reqs)
+		return c.checkBatchV2Isolated(ctx, reqs)
 	default:
-		results, err := c.checkBatchV2(ctx, reqs)
+		results, err := c.checkBatchV2Isolated(ctx, reqs)
 		if err == nil {
 			c.setProtocol(ProtocolV2)
 			return results, nil
@@ -146,7 +146,7 @@ func (c *VeriflierClient) CheckBatch(ctx context.Context, reqs []CheckRequest) (
 			return nil, err
 		}
 		c.setProtocol(ProtocolLegacy)
-		return c.checkBatchLegacy(ctx, reqs)
+		return c.checkBatchLegacyIsolated(ctx, reqs)
 	}
 }
 
@@ -329,8 +329,16 @@ func (b *singleCheckBatcher) flush(batch []singleCheckCall) {
 	results, err := b.client.CheckBatch(ctx, reqs)
 	cancel()
 	if err != nil {
+		if payloadTooLargeError(err) && len(calls) > 1 {
+			mid := len(calls) / 2
+			b.flush(calls[:mid])
+			b.flush(calls[mid:])
+			return
+		}
 		for _, call := range calls {
-			if operationalOverloadError(err) {
+			if payloadTooLargeError(err) {
+				call.respond(payloadTooLargeCheckResult(call.req), nil)
+			} else if operationalOverloadError(err) {
 				call.respond(agentOverloadedCheckResult(call.req), nil)
 			} else {
 				call.respond(nil, err)
@@ -349,14 +357,21 @@ func (b *singleCheckBatcher) flush(batch []singleCheckCall) {
 
 	resultsByRequestID := checkResultsByRequestID(results)
 	for i, call := range calls {
-		result, ok := resultsByRequestID[call.req.RequestID]
-		if !ok {
-			if i >= len(results) {
-				call.respond(nil, fmt.Errorf("veriflier returned %d results for %d requests", len(results), len(calls)))
+		if call.req.RequestID != "" {
+			result, ok := resultsByRequestID[call.req.RequestID]
+			if !ok {
+				call.respond(nil, fmt.Errorf("veriflier omitted result for request_id %s (%d results for %d requests)", call.req.RequestID, len(results), len(calls)))
 				continue
 			}
-			result = results[i]
+			call.respond(&result, nil)
+			continue
 		}
+
+		if i >= len(results) {
+			call.respond(nil, fmt.Errorf("veriflier returned %d results for %d requests", len(results), len(calls)))
+			continue
+		}
+		result := results[i]
 		call.respond(&result, nil)
 	}
 }
@@ -398,6 +413,18 @@ func agentOverloadedCheckResult(req CheckRequest) *CheckResult {
 		Outcome:       OutcomeAgentOverloaded,
 		Success:       false,
 		ErrorCode:     1,
+		RequestID:     req.RequestID,
+	}
+}
+
+func payloadTooLargeCheckResult(req CheckRequest) *CheckResult {
+	return &CheckResult{
+		MonitorSiteID: req.MonitorSiteID,
+		BlogID:        req.BlogID,
+		URL:           req.URL,
+		Outcome:       OutcomeUnknown,
+		Success:       false,
+		ErrorCode:     checkerErrorProbeSafety,
 		RequestID:     req.RequestID,
 	}
 }
@@ -448,14 +475,36 @@ func (c *VeriflierClient) checkBatchLegacy(ctx context.Context, reqs []CheckRequ
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("veriflier returned %d", resp.StatusCode)
+		return nil, statusError{endpoint: "/check", status: resp.StatusCode}
 	}
 
 	var br batchResp
 	if err := json.NewDecoder(resp.Body).Decode(&br); err != nil {
 		return nil, fmt.Errorf("decode veriflier response: %w", err)
 	}
-	return br.Results, nil
+	results := make([]CheckResult, len(reqs))
+	resultsByRequestID := legacyResultsByRequestID(br.Results)
+	for i, req := range reqs {
+		var res CheckResult
+		var ok bool
+		if req.RequestID != "" {
+			res, ok = resultsByRequestID[req.RequestID]
+		}
+		if !ok && i < len(br.Results) && br.Results[i].RequestID == "" {
+			res = br.Results[i]
+			ok = true
+		}
+		if !ok {
+			results[i] = missingLegacyResult(req)
+			continue
+		}
+		results[i] = checkResultFromLegacy(req, res)
+	}
+	return results, nil
+}
+
+func (c *VeriflierClient) checkBatchLegacyIsolated(ctx context.Context, reqs []CheckRequest) ([]CheckResult, error) {
+	return c.checkBatchPayloadIsolated(ctx, reqs, c.checkBatchLegacy)
 }
 
 func (c *VeriflierClient) checkBatchV2(ctx context.Context, reqs []CheckRequest) ([]CheckResult, error) {
@@ -514,48 +563,141 @@ func (c *VeriflierClient) checkBatchV2(ctx context.Context, reqs []CheckRequest)
 		return nil, fmt.Errorf("decode veriflier v2 response: %w", err)
 	}
 
-	results := make([]CheckResult, 0, len(br.Results))
-	var reqByRequestID map[string]CheckRequest
-	for i, res := range br.Results {
-		var orig CheckRequest
-		if i < len(reqs) && (res.RequestID == "" || res.RequestID == reqs[i].RequestID) {
-			orig = reqs[i]
-		} else {
-			if reqByRequestID == nil {
-				reqByRequestID = checkRequestsByRequestID(reqs)
-			}
-			var ok bool
-			orig, ok = reqByRequestID[res.RequestID]
-			if !ok && i < len(reqs) {
-				orig = reqs[i]
-			}
+	results := make([]CheckResult, len(reqs))
+	resultsByRequestID := v2ResultsByRequestID(br.Results)
+	for i, req := range reqs {
+		var res CheckV2Result
+		var ok bool
+		if req.RequestID != "" {
+			res, ok = resultsByRequestID[req.RequestID]
 		}
-		results = append(results, CheckResult{
-			MonitorSiteID: orig.MonitorSiteID,
-			BlogID:        res.BlogID,
-			URL:           res.URL,
-			Host:          res.VantageID,
-			VantageID:     res.VantageID,
-			AgentID:       res.AgentID,
-			Outcome:       res.Outcome,
-			Success:       res.Success,
-			HTTPCode:      res.HTTPCode,
-			ErrorCode:     res.ErrorCode,
-			RTTMs:         res.RTTMs,
-			RequestID:     res.RequestID,
-		})
+		if !ok && i < len(br.Results) && br.Results[i].RequestID == "" {
+			res = br.Results[i]
+			ok = true
+		}
+		if !ok {
+			results[i] = missingV2Result(req)
+			continue
+		}
+		results[i] = checkResultFromV2(req, res)
 	}
 	return results, nil
 }
 
-func checkRequestsByRequestID(reqs []CheckRequest) map[string]CheckRequest {
-	out := make(map[string]CheckRequest, len(reqs))
-	for _, req := range reqs {
-		if req.RequestID != "" {
-			out[req.RequestID] = req
+func (c *VeriflierClient) checkBatchV2Isolated(ctx context.Context, reqs []CheckRequest) ([]CheckResult, error) {
+	return c.checkBatchPayloadIsolated(ctx, reqs, c.checkBatchV2)
+}
+
+func (c *VeriflierClient) checkBatchPayloadIsolated(ctx context.Context, reqs []CheckRequest, send func(context.Context, []CheckRequest) ([]CheckResult, error)) ([]CheckResult, error) {
+	results, err := send(ctx, reqs)
+	if err == nil {
+		return results, nil
+	}
+	if !payloadTooLargeError(err) {
+		return nil, err
+	}
+	if len(reqs) == 1 {
+		return []CheckResult{*payloadTooLargeCheckResult(reqs[0])}, nil
+	}
+
+	mid := len(reqs) / 2
+	left, leftErr := c.checkBatchPayloadIsolated(ctx, reqs[:mid], send)
+	if leftErr != nil {
+		return nil, leftErr
+	}
+	right, rightErr := c.checkBatchPayloadIsolated(ctx, reqs[mid:], send)
+	if rightErr != nil {
+		return nil, rightErr
+	}
+	out := make([]CheckResult, 0, len(left)+len(right))
+	out = append(out, left...)
+	out = append(out, right...)
+	return out, nil
+}
+
+func payloadTooLargeError(err error) bool {
+	if se, ok := errors.AsType[statusError](err); ok {
+		return se.status == http.StatusRequestEntityTooLarge
+	}
+	return false
+}
+
+func v2ResultsByRequestID(results []CheckV2Result) map[string]CheckV2Result {
+	out := make(map[string]CheckV2Result, len(results))
+	for _, result := range results {
+		if result.RequestID != "" {
+			if _, exists := out[result.RequestID]; !exists {
+				out[result.RequestID] = result
+			}
 		}
 	}
 	return out
+}
+
+func legacyResultsByRequestID(results []CheckResult) map[string]CheckResult {
+	out := make(map[string]CheckResult, len(results))
+	for _, result := range results {
+		if result.RequestID != "" {
+			if _, exists := out[result.RequestID]; !exists {
+				out[result.RequestID] = result
+			}
+		}
+	}
+	return out
+}
+
+func checkResultFromLegacy(orig CheckRequest, res CheckResult) CheckResult {
+	return CheckResult{
+		MonitorSiteID: orig.MonitorSiteID,
+		BlogID:        orig.BlogID,
+		URL:           orig.URL,
+		Host:          res.Host,
+		VantageID:     res.VantageID,
+		AgentID:       res.AgentID,
+		Outcome:       res.Outcome,
+		Success:       res.Success,
+		HTTPCode:      res.HTTPCode,
+		ErrorCode:     res.ErrorCode,
+		RTTMs:         res.RTTMs,
+		RequestID:     res.RequestID,
+	}
+}
+
+func checkResultFromV2(orig CheckRequest, res CheckV2Result) CheckResult {
+	return CheckResult{
+		MonitorSiteID: orig.MonitorSiteID,
+		BlogID:        orig.BlogID,
+		URL:           orig.URL,
+		Host:          res.VantageID,
+		VantageID:     res.VantageID,
+		AgentID:       res.AgentID,
+		Outcome:       res.Outcome,
+		Success:       res.Success,
+		HTTPCode:      res.HTTPCode,
+		ErrorCode:     res.ErrorCode,
+		RTTMs:         res.RTTMs,
+		RequestID:     res.RequestID,
+	}
+}
+
+func missingV2Result(req CheckRequest) CheckResult {
+	return missingResult(req)
+}
+
+func missingLegacyResult(req CheckRequest) CheckResult {
+	return missingResult(req)
+}
+
+func missingResult(req CheckRequest) CheckResult {
+	return CheckResult{
+		MonitorSiteID: req.MonitorSiteID,
+		BlogID:        req.BlogID,
+		URL:           req.URL,
+		Outcome:       OutcomeUnknown,
+		Success:       false,
+		ErrorCode:     checkerErrorInternal,
+		RequestID:     req.RequestID,
+	}
 }
 
 func checkBatchDeadlineReserve(_ []CheckRequest) time.Duration {

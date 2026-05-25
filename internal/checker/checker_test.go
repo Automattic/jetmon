@@ -33,6 +33,7 @@ func TestResultStatusType(t *testing.T) {
 		{name: "body read", res: Result{ErrorCode: ErrorBodyRead}, want: "intermittent"},
 		{name: "redirect", res: Result{ErrorCode: ErrorRedirect}, want: "redirect"},
 		{name: "probe safety", res: Result{ErrorCode: ErrorProbeSafety}, want: "probe_safety"},
+		{name: "internal checker error", res: Result{ErrorCode: ErrorInternal}, want: "internal"},
 		{name: "403 blocked", res: Result{HTTPCode: 403}, want: "blocked"},
 		{name: "500 server error", res: Result{HTTPCode: 500}, want: "server"},
 		{name: "503 server error", res: Result{HTTPCode: 503}, want: "server"},
@@ -117,6 +118,11 @@ func TestResultIsFailure(t *testing.T) {
 			res:  Result{Success: false, ErrorCode: ErrorProbeSafety},
 			want: false,
 		},
+		{
+			name: "internal checker error is non-downtime",
+			res:  Result{Success: false, ErrorCode: ErrorInternal},
+			want: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -125,6 +131,50 @@ func TestResultIsFailure(t *testing.T) {
 				t.Fatalf("IsFailure() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestPoolRecoversCheckPanicAsOperationalUnknown(t *testing.T) {
+	orig := poolCheckFunc
+	poolCheckFunc = func(_ context.Context, req Request) Result {
+		if req.BlogID == 2 {
+			panic("synthetic checker failure")
+		}
+		return Result{BlogID: req.BlogID, URL: req.URL, Success: true, HTTPCode: 200}
+	}
+
+	p := NewPoolWithQueueCap(1, 1, 1, 2)
+	t.Cleanup(func() {
+		p.Drain()
+		poolCheckFunc = orig
+	})
+
+	if !p.Submit(Request{BlogID: 1, URL: "https://example.com/one"}) {
+		t.Fatal("Submit(first) returned false")
+	}
+	if !p.Submit(Request{BlogID: 2, URL: "https://example.com/two"}) {
+		t.Fatal("Submit(second) returned false")
+	}
+
+	seen := map[int64]Result{}
+	deadline := time.After(2 * time.Second)
+	for len(seen) < 2 {
+		select {
+		case res := <-p.Results():
+			seen[res.BlogID] = res
+		case <-deadline:
+			t.Fatalf("timed out waiting for results; seen=%+v", seen)
+		}
+	}
+	if !seen[1].Success || seen[1].ErrorCode != ErrorNone {
+		t.Fatalf("first result = %+v, want success", seen[1])
+	}
+	got := seen[2]
+	if got.Success || got.ErrorCode != ErrorInternal || !got.IsOperationalUnknown() || got.IsFailure() {
+		t.Fatalf("panic result = %+v, want non-downtime internal error", got)
+	}
+	if got.ErrorDetail == "" {
+		t.Fatal("panic result ErrorDetail is empty")
 	}
 }
 
@@ -638,6 +688,342 @@ func TestCheckForbiddenKeywordsPresent(t *testing.T) {
 	}
 	if res.KeywordRule != "forbidden" {
 		t.Fatalf("KeywordRule = %q, want forbidden", res.KeywordRule)
+	}
+}
+
+func TestCheckFullProfileDetectsWordPressDatabaseErrorBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("<html><body><h1>Error establishing a database connection</h1></body></html>"))
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{
+		BlogID:           1,
+		URL:              srv.URL,
+		TimeoutSeconds:   5,
+		DetectionProfile: "full",
+	})
+	if res.Success {
+		t.Fatalf("Success = true for semantic failure body, want false; result=%+v", res)
+	}
+	if res.ErrorCode != ErrorKeyword {
+		t.Fatalf("ErrorCode = %d, want ErrorKeyword", res.ErrorCode)
+	}
+	if res.KeywordRule != "semantic_wp_db_error" {
+		t.Fatalf("KeywordRule = %q, want semantic_wp_db_error", res.KeywordRule)
+	}
+	if res.ErrorDetail == "" {
+		t.Fatal("ErrorDetail is empty, want semantic diagnostic")
+	}
+}
+
+func TestCheckFullProfileDetectsSemanticFailureInAttributedHeading(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<html><head><title>Example Site</title></head><body><h1 class="wp-die-message"><span>Error establishing a database connection</span></h1></body></html>`))
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{
+		BlogID:           1,
+		URL:              srv.URL,
+		TimeoutSeconds:   5,
+		DetectionProfile: "full",
+	})
+	if res.Success {
+		t.Fatalf("Success = true for semantic failure in attributed heading, want false; result=%+v", res)
+	}
+	if res.KeywordRule != "semantic_wp_db_error" {
+		t.Fatalf("KeywordRule = %q, want semantic_wp_db_error", res.KeywordRule)
+	}
+}
+
+func TestCheckFullProfileDetectsCommonWordPressAndHostingSemanticFailures(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		rule string
+	}{
+		{
+			name: "missing mysql extension",
+			body: "<html><body>Your PHP installation appears to be missing the MySQL extension which is required by WordPress.</body></html>",
+			rule: "semantic_wp_missing_mysql_extension",
+		},
+		{
+			name: "wordpress maintenance mode",
+			body: "<html><body>Briefly unavailable for scheduled maintenance. Check back in a minute.</body></html>",
+			rule: "semantic_wp_maintenance",
+		},
+		{
+			name: "xmlrpc endpoint served as homepage",
+			body: "<html><body>XML-RPC server accepts POST requests only.</body></html>",
+			rule: "semantic_wp_xmlrpc_echo",
+		},
+		{
+			name: "critical error your website wording",
+			body: "<html><body>There has been a critical error on your website.</body></html>",
+			rule: "semantic_wp_critical_error",
+		},
+		{
+			name: "php fatal with wordpress path",
+			body: "<br /><b>Fatal error</b>: Uncaught Error: Call to undefined function broken_plugin() in /srv/www/example.com/wp-content/plugins/broken/plugin.php on line 42",
+			rule: "semantic_wp_php_error",
+		},
+		{
+			name: "php memory exhausted with wordpress path",
+			body: "Fatal error: Allowed memory size of 268435456 bytes exhausted (tried to allocate 4096 bytes) in /srv/www/example.com/wp-includes/class-wpdb.php on line 2425",
+			rule: "semantic_wp_php_error",
+		},
+		{
+			name: "php max execution time with wordpress path",
+			body: "Fatal error: Maximum execution time of 30 seconds exceeded in /srv/www/example.com/wp-content/plugins/slow/plugin.php on line 12",
+			rule: "semantic_wp_php_error",
+		},
+		{
+			name: "php parse error with wordpress path",
+			body: "Parse error: syntax error, unexpected token \"}\" in /srv/www/example.com/wp-includes/functions.php on line 123",
+			rule: "semantic_wp_php_error",
+		},
+		{
+			name: "html formatted php parse error with wordpress path",
+			body: "<!DOCTYPE html><html><body><br /><b>Parse error</b>: syntax error, unexpected token \"}\" in <b>/var/www/html/wp-content/plugins/broken/plugin.php</b> on line <b>17</b><br /></body></html>",
+			rule: "semantic_wp_php_error",
+		},
+		{
+			name: "technical difficulties alternate wording",
+			body: "<html><body>The site is experiencing technical difficulties.</body></html>",
+			rule: "semantic_wp_technical_difficulties",
+		},
+		{
+			name: "database repair unavailable tables",
+			body: "<html><body>One or more database tables are unavailable. The database may need to be repaired.</body></html>",
+			rule: "semantic_wp_db_repair",
+		},
+		{
+			name: "database tables missing",
+			body: "<html><body><p><strong>Database tables are missing.</strong> This means that your host's database server is not running, WordPress was not installed properly, or someone deleted <code>wp_blogs</code>.</p></body></html>",
+			rule: "semantic_wp_db_missing_tables",
+		},
+		{
+			name: "database table marked crashed",
+			body: "WordPress database error Table './example/wp_options' is marked as crashed and should be repaired for query SELECT option_value FROM wp_options",
+			rule: "semantic_wp_db_table_crashed",
+		},
+		{
+			name: "database update required",
+			body: "<html><head><title>Database Update Required</title></head><body><h1>Database Update Required</h1><p>WordPress has been updated! Before we send you on your way, we have to update your database.</p></body></html>",
+			rule: "semantic_wp_db_update_required",
+		},
+		{
+			name: "unsupported php version",
+			body: "<html><body>Your server is running PHP version 7.0.33 but WordPress requires at least 7.2.24.</body></html>",
+			rule: "semantic_wp_unsupported_php",
+		},
+		{
+			name: "unsupported database version",
+			body: "<html><body><strong>Error:</strong> WordPress 6.7 requires MySQL 8.0 or higher. You are running 5.7.</body></html>",
+			rule: "semantic_wp_unsupported_database",
+		},
+		{
+			name: "redis object cache connection error",
+			body: "<html><body><h1>Error establishing a Redis connection</h1><p>WordPress is unable to establish a connection to Redis.</p><p>To disable Redis, delete the <code>object-cache.php</code> file in the <code>/wp-content/</code> directory.</p></body></html>",
+			rule: "semantic_wp_redis_connection",
+		},
+		{
+			name: "apache default vhost",
+			body: "<html><head><title>Apache2 Ubuntu Default Page: It works</title></head><body>It works!</body></html>",
+			rule: "semantic_default_vhost_apache",
+		},
+		{
+			name: "nginx default vhost",
+			body: "<html><head><title>Welcome to nginx!</title></head><body>If you see this page, the nginx web server is successfully installed and working.</body></html>",
+			rule: "semantic_default_vhost_nginx",
+		},
+		{
+			name: "hosting account suspended",
+			body: "<html><head><title>Account Suspended</title></head><body>This account has been suspended. Contact your hosting provider for more information.</body></html>",
+			rule: "semantic_host_account_suspended",
+		},
+		{
+			name: "jetpack probe echo with space",
+			body: "<html><body>Hi Jetpack! All Systems go.</body></html>",
+			rule: "semantic_jetpack_probe_echo",
+		},
+		{
+			name: "jetpack probe echo without space",
+			body: "<html><body>Hi Jetpack!All Systems go</body></html>",
+			rule: "semantic_jetpack_probe_echo",
+		},
+		{
+			name: "wordpress setup config",
+			body: "<html><body><h1>Welcome to WordPress. Before getting started, we need some information on the database.</h1></body></html>",
+			rule: "semantic_wp_setup_config",
+		},
+		{
+			name: "missing wp config setup",
+			body: "<html><body><p>There doesn't seem to be a <code>wp-config.php</code> file. I need this before we can get started.</p></body></html>",
+			rule: "semantic_wp_setup_config",
+		},
+		{
+			name: "wordpress directory listing",
+			body: "<html><head><title>Index of /</title></head><body><h1>Index of /</h1><a href=\"wp-admin/\">wp-admin/</a><a href=\"wp-content/\">wp-content/</a></body></html>",
+			rule: "semantic_wp_directory_listing",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+
+			res := Check(context.Background(), Request{
+				BlogID:           1,
+				URL:              srv.URL,
+				TimeoutSeconds:   5,
+				DetectionProfile: "full",
+			})
+			if res.Success {
+				t.Fatalf("Success = true for semantic failure body, want false; result=%+v", res)
+			}
+			if res.ErrorCode != ErrorKeyword {
+				t.Fatalf("ErrorCode = %d, want ErrorKeyword", res.ErrorCode)
+			}
+			if res.KeywordRule != tt.rule {
+				t.Fatalf("KeywordRule = %q, want %q", res.KeywordRule, tt.rule)
+			}
+		})
+	}
+}
+
+func TestCheckFullProfileDoesNotTreatGenericFatalErrorArticleAsSemanticFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("<html><body><article>How to troubleshoot a fatal error: look at your logs and fix the plugin.</article><article>How to fix Error establishing a Redis connection after a migration: delete object-cache.php from /wp-content/ if the migrated site still points at the old Redis server.</article></body></html>"))
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{
+		BlogID:           1,
+		URL:              srv.URL,
+		TimeoutSeconds:   5,
+		DetectionProfile: "full",
+	})
+	if !res.Success {
+		t.Fatalf("Success = false for generic fatal error article, want true; result=%+v", res)
+	}
+	if res.ErrorCode != ErrorNone {
+		t.Fatalf("ErrorCode = %d, want ErrorNone", res.ErrorCode)
+	}
+}
+
+func TestCheckFullProfileDoesNotTreatTroubleshootingArticleAsSemanticFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<html><head><title>How to fix common WordPress errors</title></head><body><article>
+			<h1>How to fix common WordPress errors</h1>
+			<p>A common message is Error establishing a database connection. Check wp-config.php and database credentials.</p>
+			<h2>Briefly unavailable for scheduled maintenance</h2>
+			<p>If visitors see Briefly unavailable for scheduled maintenance. Check back in a minute., remove the stale maintenance file.</p>
+			<h2>There has been a critical error on this website</h2>
+			<p>When WordPress shows There has been a critical error on this website, inspect the debug log.</p>
+			<h2>Database Update Required</h2>
+			<p>Database Update Required means WordPress needs an admin-driven database upgrade.</p>
+			</article></body></html>`))
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{
+		BlogID:           1,
+		URL:              srv.URL,
+		TimeoutSeconds:   5,
+		DetectionProfile: "full",
+	})
+	if !res.Success {
+		t.Fatalf("Success = false for troubleshooting article, want true; result=%+v", res)
+	}
+	if res.ErrorCode != ErrorNone {
+		t.Fatalf("ErrorCode = %d, want ErrorNone", res.ErrorCode)
+	}
+}
+
+func TestCheckFullProfileDetectsNearEmptyHTMLBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("<html></html>"))
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{
+		BlogID:           1,
+		URL:              srv.URL,
+		TimeoutSeconds:   5,
+		DetectionProfile: "full",
+	})
+	if res.Success {
+		t.Fatalf("Success = true for near-empty HTML body, want false; result=%+v", res)
+	}
+	if res.ErrorCode != ErrorKeyword {
+		t.Fatalf("ErrorCode = %d, want ErrorKeyword", res.ErrorCode)
+	}
+	if res.KeywordRule != "semantic_empty_html" {
+		t.Fatalf("KeywordRule = %q, want semantic_empty_html", res.KeywordRule)
+	}
+}
+
+func TestCheckSimpleHTTPDoesNotRunSemanticBodyDetectors(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("<html><body><h1>Error establishing a database connection</h1></body></html>"))
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{
+		BlogID:           1,
+		URL:              srv.URL,
+		TimeoutSeconds:   5,
+		DetectionProfile: "simple_http",
+	})
+	if !res.Success {
+		t.Fatalf("Success = false for simple_http semantic body, want true; result=%+v", res)
+	}
+	if res.ErrorCode != ErrorNone {
+		t.Fatalf("ErrorCode = %d, want ErrorNone", res.ErrorCode)
+	}
+	if res.BodyBytesRead != 0 {
+		t.Fatalf("BodyBytesRead = %d, want 0 for simple_http", res.BodyBytesRead)
+	}
+}
+
+func TestCheckFullProfileAllowsSmallNonHTMLBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer srv.Close()
+
+	res := Check(context.Background(), Request{
+		BlogID:           1,
+		URL:              srv.URL,
+		TimeoutSeconds:   5,
+		DetectionProfile: "full",
+	})
+	if !res.Success {
+		t.Fatalf("Success = false for small non-HTML body, want true; result=%+v", res)
+	}
+	if res.ErrorCode != ErrorNone {
+		t.Fatalf("ErrorCode = %d, want ErrorNone", res.ErrorCode)
 	}
 }
 
