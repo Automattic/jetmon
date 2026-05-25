@@ -43,11 +43,9 @@ Open work:
   picked up by v2, WPCOM URL updates must not strand open endpoint state, and
   `jetpack_monitor_sitemeta` must exist anywhere WPCOM URL settings or
   status-down webhooks are in scope.
-- [ ] Decide the WPCOM bucket-shape plan before activating v2 ranges. Current
-  WPCOM provisioning assigns `bucket_no` in a 512-bucket space (`0-511`), so
-  either keep the first v2 cutover aligned to that populated space or approve a
-  WPCOM bucket-assignment/rebalance change before relying on a wider
-  `BUCKET_TOTAL`.
+- [ ] Keep the first v2 cutover aligned to WPCOM's current 512-bucket
+  provisioning shape, or approve a WPCOM bucket-assignment/rebalance change
+  before overriding v2 to a wider `BUCKET_TOTAL`.
 - [ ] Get WPCOM acceptance for WPCOM-owned notification parity cases: inactive
   site behavior, URL mismatch behavior, blacklisted site behavior,
   home-URL-only handling, and legacy hook consumers.

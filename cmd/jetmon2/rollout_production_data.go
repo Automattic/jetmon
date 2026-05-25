@@ -183,6 +183,9 @@ func evaluateProductionDataAudit(cfg *config.Config, audit db.LegacySiteTableAud
 	if audit.ActiveNullStatusChange > 0 {
 		eval.Warnings = append(eval.Warnings, fmt.Sprintf("active rows with NULL last_status_change=%d; bootstrap will use current time for those rows", audit.ActiveNullStatusChange))
 	}
+	if !audit.SitemetaTablePresent {
+		eval.Warnings = append(eval.Warnings, "jetpack_monitor_sitemeta table is missing; WPCOM URL settings and status-down webhook metadata will not have the legacy companion table")
+	}
 	return eval
 }
 
@@ -202,6 +205,7 @@ func renderProductionDataAudit(out io.Writer, cfg *config.Config, audit db.Legac
 	fmt.Fprintf(out, "INFO active_malformed_urls=%d url_near_column_limit=%d max_url_length=%d\n", audit.ActiveMalformedURLRows, audit.ActiveURLNearColumnLimit, audit.MaxURLLength)
 	fmt.Fprintf(out, "INFO duplicate_blog_ids_all groups=%d rows=%d max_rows_per_blog=%d status_conflicts=%d\n", audit.DuplicateBlogs.Groups, audit.DuplicateBlogs.Rows, audit.DuplicateBlogs.MaxRowsPerBlog, audit.DuplicateBlogs.StatusConflicts)
 	fmt.Fprintf(out, "INFO duplicate_blog_ids_active groups=%d rows=%d max_rows_per_blog=%d status_conflicts=%d\n", audit.ActiveDuplicateBlogs.Groups, audit.ActiveDuplicateBlogs.Rows, audit.ActiveDuplicateBlogs.MaxRowsPerBlog, audit.ActiveDuplicateBlogs.StatusConflicts)
+	fmt.Fprintf(out, "INFO sitemeta_table=%s\n", presentMissing(audit.SitemetaTablePresent))
 	for _, warning := range eval.Warnings {
 		fmt.Fprintf(out, "WARN production_data_audit=%q\n", warning)
 	}
@@ -359,4 +363,11 @@ func formatValueCounts(counts []db.ValueCount) string {
 		parts = append(parts, fmt.Sprintf("%d:total=%d,active=%d", row.Value, row.Total, row.Active))
 	}
 	return strings.Join(parts, ";")
+}
+
+func presentMissing(ok bool) string {
+	if ok {
+		return "present"
+	}
+	return "missing"
 }

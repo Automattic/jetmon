@@ -2077,6 +2077,7 @@ func TestRunProductionDataAuditFlagsProductionShape(t *testing.T) {
 		ActiveMalformedURLRows: 2,
 		ActiveNullStatusChange: 4,
 		ActiveDuplicateBlogs:   db.DuplicateBlogSummary{Groups: 1, Rows: 2, MaxRowsPerBlog: 2},
+		SitemetaTablePresent:   true,
 	}
 	deps := productionDataAuditDeps{
 		BuildLegacySiteTableAudit: func(context.Context, int, int) (db.LegacySiteTableAudit, error) {
@@ -2118,6 +2119,7 @@ func TestRunProductionDataAuditWarnsOnWPCOMBucketTotalMismatch(t *testing.T) {
 		MonitorActiveValues:    []db.ValueCount{{Value: 0, Total: 900}, {Value: 1, Total: 100, Active: 100}},
 		SiteStatusValues:       []db.ValueCount{{Value: 1, Total: 1000, Active: 100}},
 		CheckIntervalValues:    []db.ValueCount{{Value: 5, Total: 1000, Active: 100}},
+		SitemetaTablePresent:   true,
 	}
 	deps := productionDataAuditDeps{
 		BuildLegacySiteTableAudit: func(context.Context, int, int) (db.LegacySiteTableAudit, error) {
@@ -2133,6 +2135,43 @@ func TestRunProductionDataAuditWarnsOnWPCOMBucketTotalMismatch(t *testing.T) {
 	text := out.String()
 	for _, want := range []string{
 		"WARN production_data_audit=\"observed WPCOM-style 512-bucket legacy space is 0-511 but BUCKET_TOTAL=1000",
+		"PASS production_data_audit=ready",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("audit output missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestRunProductionDataAuditWarnsWhenSitemetaTableMissing(t *testing.T) {
+	cfg := &config.Config{BucketTotal: 512}
+	minBucket, maxBucket := 0, 511
+	audit := db.LegacySiteTableAudit{
+		BucketMin:              minBucket,
+		BucketMax:              maxBucket,
+		ObservedBucketMin:      &minBucket,
+		ObservedBucketMax:      &maxBucket,
+		ObservedBucketDistinct: 512,
+		ActiveBucketDistinct:   512,
+		MonitorActiveValues:    []db.ValueCount{{Value: 1, Total: 10, Active: 10}},
+		SiteStatusValues:       []db.ValueCount{{Value: 1, Total: 10, Active: 10}},
+		CheckIntervalValues:    []db.ValueCount{{Value: 5, Total: 10, Active: 10}},
+	}
+	deps := productionDataAuditDeps{
+		BuildLegacySiteTableAudit: func(context.Context, int, int) (db.LegacySiteTableAudit, error) {
+			return audit, nil
+		},
+	}
+
+	var out bytes.Buffer
+	err := runProductionDataAudit(context.Background(), &out, cfg, -1, -1, deps)
+	if err != nil {
+		t.Fatalf("runProductionDataAudit returned error: %v\n%s", err, out.String())
+	}
+	text := out.String()
+	for _, want := range []string{
+		"INFO sitemeta_table=missing",
+		"WARN production_data_audit=\"jetpack_monitor_sitemeta table is missing",
 		"PASS production_data_audit=ready",
 	} {
 		if !strings.Contains(text, want) {

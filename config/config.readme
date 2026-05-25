@@ -225,17 +225,21 @@ starts.
 
 ### BUCKET_TOTAL
 
-- Default: `1000`
-- Example: `"BUCKET_TOTAL": 1000`
+- Default: `512`
+- Example: `"BUCKET_TOTAL": 512`
 - Purpose: total number of bucket IDs in `jetpack_monitor_sites.bucket_no`.
-- Notes: must match the production bucket range.
+- Notes: must match the production bucket range. WPCOM currently provisions
+  Monitor rows into a 512-bucket space, so keep this at `512` unless WPCOM
+  bucket assignment and data rebalancing have been explicitly approved.
 
 ### BUCKET_TARGET
 
-- Default: `500`
-- Example: `"BUCKET_TARGET": 500`
+- Default: `512`
+- Example: `"BUCKET_TARGET": 512`
 - Purpose: number of buckets this host tries to own in dynamic ownership mode.
-- Notes: set `0` to claim `BUCKET_TOTAL`, useful for single-host test fleets.
+- Notes: set `0` to claim `BUCKET_TOTAL`. The default lets a single host cover
+  the full WPCOM-compatible bucket space and lets multiple hosts split it
+  evenly.
 
 ### BUCKET_HEARTBEAT_GRACE_SEC
 

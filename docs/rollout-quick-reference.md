@@ -73,11 +73,10 @@ Run the read-only production data audit before the first window:
 ./jetmon2 rollout production-data-audit --bucket-min=0 --bucket-max=<max>
 ```
 
-If the audit reports a WPCOM-style `0-511` bucket space while v2 uses a wider
-`BUCKET_TOTAL`, do not activate empty higher buckets unless WPCOM bucket
-assignment and rebalancing have been approved. For a compatibility-first
-cutover, keep the first activation plan aligned to the WPCOM-populated bucket
-space.
+V2 defaults `BUCKET_TOTAL` to `512` to match WPCOM's current provisioning
+bucket space. If the audit reports a WPCOM-style `0-511` bucket space while v2
+has been explicitly configured wider, do not activate empty higher buckets
+unless WPCOM bucket assignment and rebalancing have been approved.
 
 Also validate one WPCOM-style provisioning row before the window: insert or
 activate a row in `jetpack_monitor_sites` with no v2 sidecars, then confirm v2

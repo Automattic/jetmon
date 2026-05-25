@@ -90,11 +90,10 @@ Pre-window validation must include:
   WPCOM URL settings or status-down webhooks are in scope
 
 Bucket shape needs explicit signoff. Current WPCOM bucket assignment is a
-512-bucket space (`0-511`). If v2 is configured with a wider `BUCKET_TOTAL`,
-those extra buckets will not receive newly provisioned WPCOM rows until WPCOM's
-bucket assignment and any required rebalancing are updated. For the first
-cutover, either activate only the WPCOM-populated bucket space or have an
-approved WPCOM bucket migration plan.
+512-bucket space (`0-511`), and v2 defaults `BUCKET_TOTAL` to `512` for that
+reason. Do not override v2 to a wider `BUCKET_TOTAL` until WPCOM's bucket
+assignment and any required rebalancing are updated; otherwise the extra buckets
+will not receive newly provisioned WPCOM rows.
 
 ## Before The Window
 
@@ -135,9 +134,9 @@ Complete these before any production activation:
 8. Confirm the WPCOM provisioning shape for the rollout window:
    - WPCOM-created rows land in `jetpack_monitor_sites` with
      `monitor_active=1`.
-   - The observed bucket space matches the range plan. Treat a 512-bucket
-     WPCOM source with a wider v2 `BUCKET_TOTAL` as a hold point until the
-     cutover range or WPCOM rebalance plan is explicit.
+   - The observed bucket space matches the range plan. Treat any v2
+     `BUCKET_TOTAL` wider than the 512-bucket WPCOM source as a hold point
+     until the cutover range or WPCOM rebalance plan is explicit.
    - A WPCOM-style direct row with no v2 sidecars is picked up by a standby lab
      or test Monitor after activation.
    - WPCOM URL updates have been tested against v2 sidecar/event state.

@@ -258,6 +258,26 @@ func TestCountRecentlyCheckedActiveSitesForBucketRange(t *testing.T) {
 	}
 }
 
+func TestQueryTableExists(t *testing.T) {
+	mock, cleanup := withMockDB(t)
+	defer cleanup()
+
+	mock.ExpectQuery("information_schema.TABLES").
+		WithArgs("jetpack_monitor_sitemeta").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+
+	ok, err := queryTableExists(context.Background(), "jetpack_monitor_sitemeta")
+	if err != nil {
+		t.Fatalf("queryTableExists: %v", err)
+	}
+	if !ok {
+		t.Fatal("queryTableExists = false, want true")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestCountDueSitesForBucketRangeUsesNextCheckAtForVariableIntervals(t *testing.T) {
 	mock, cleanup := withMockDB(t)
 	defer cleanup()

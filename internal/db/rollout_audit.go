@@ -58,6 +58,8 @@ type LegacySiteTableAudit struct {
 
 	DuplicateBlogs       DuplicateBlogSummary
 	ActiveDuplicateBlogs DuplicateBlogSummary
+
+	SitemetaTablePresent bool
 }
 
 // LegacyNonRunningSite is one active v1 row whose legacy projection already
@@ -150,7 +152,27 @@ func BuildLegacySiteTableAudit(ctx context.Context, bucketMin, bucketMax int) (L
 		return audit, err
 	}
 
+	audit.SitemetaTablePresent, err = queryTableExists(ctx, "jetpack_monitor_sitemeta")
+	if err != nil {
+		return audit, err
+	}
+
 	return audit, nil
+}
+
+func queryTableExists(ctx context.Context, tableName string) (bool, error) {
+	var count int
+	err := ReadDB().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		  FROM information_schema.TABLES
+		 WHERE TABLE_SCHEMA = DATABASE()
+		   AND TABLE_NAME = ?`,
+		tableName,
+	).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("query table %s existence: %w", tableName, err)
+	}
+	return count > 0, nil
 }
 
 func queryLegacyValueCounts(ctx context.Context, bucketMin, bucketMax int, column string) ([]ValueCount, error) {

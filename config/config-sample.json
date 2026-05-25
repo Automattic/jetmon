@@ -9,8 +9,8 @@
 
 	"LEGACY_STATUS_PROJECTION_ENABLE" : true,
 
-	"BUCKET_TOTAL"               : 1000,
-	"BUCKET_TARGET"              : 500,
+	"BUCKET_TOTAL"               : 512,
+	"BUCKET_TARGET"              : 512,
 	"BUCKET_HEARTBEAT_GRACE_SEC" : 600,
 
 	"AUTH_TOKEN"     : "<AUTH_TOKEN>",
