@@ -176,6 +176,13 @@ Authorization: Bearer <token>
 `agent.id`, and capacity. `/v2/check` accepts batches of site probe requests and
 returns typed per-request outcomes.
 
+Batch isolation is a contract requirement. Unsafe URLs, unsupported per-site
+probe options, checker panics, and omitted identified results are scoped to the
+affected request as `unknown` / probe-safety or internal-error outcomes. They
+must not fail healthy siblings in the same batch or shift results onto the
+wrong site. Batch-level failures are reserved for malformed envelopes,
+authentication failures, or Veriflier endpoint overload.
+
 Important identity rules:
 
 - `vantage.id` is the quorum vote identity.
