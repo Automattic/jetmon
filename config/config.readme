@@ -70,13 +70,15 @@ starts.
 - Default: `default`
 - Values: `default`, `production`
 - Example: `"CONFIG_PROFILE": "production"`
-- Purpose: applies a small named set of safety defaults before explicit config
-  values are decoded.
-- Notes: `production` sets `SCHEMA_MANAGEMENT_MODE=validate` and
-  `CHECK_TARGET_SAFETY_MODE=public_only` unless those keys are explicitly set.
-  Keep profiles narrow; rollout-stage choices such as `ROLLOUT_MODE`,
-  `DEFAULT_CHECK_METHOD`, `DEFAULT_DETECTION_PROFILE`, `API_PORT`, and
-  `WPCOM_NOTIFY_ENABLE` should stay explicit.
+- Purpose: applies a named set of production safety and rollout defaults before
+  explicit config values are decoded.
+- Notes: `production` sets `SCHEMA_MANAGEMENT_MODE=validate`,
+  `CHECK_TARGET_SAFETY_MODE=public_only`, `ROLLOUT_MODE=api-controlled`, and
+  `VERIFLIER_DISCOVERY_MODE=shadow` unless those keys are explicitly set. The
+  Docker Monitor entrypoint also uses `CONFIG_PROFILE=production` as a
+  render-time convenience to fill omitted production container defaults such as
+  host-local StatsD, `HEAD` / `legacy` rollout checks, and `DEBUG_PORT=0`;
+  review the rendered JSON before activation.
 
 ### SCHEMA_MANAGEMENT_MODE
 
@@ -92,7 +94,7 @@ starts.
 
 ### ROLLOUT_MODE
 
-- Default: `active`
+- Default: `active`; production profile default: `api-controlled`
 - Values: `active`, `standby`, `api-controlled`
 - Example: `"ROLLOUT_MODE": "api-controlled"`
 - Purpose: controls whether the Monitor is allowed to claim buckets and run
@@ -369,11 +371,15 @@ observed rate/latency, and avoids per-probe healthy freshness writes.
 - Default: `public_only`
 - Values: `public_only`, `allow_private_for_tests`
 - Example: `"CHECK_TARGET_SAFETY_MODE": "public_only"`
-- Purpose: SSRF safety policy for Monitor HTTP checks.
+- Purpose: SSRF safety policy for Monitor HTTP checks. Veriflier uses the same
+  values through its `check_target_safety_mode` JSON key, or through
+  `CHECK_TARGET_SAFETY_MODE` / `VERIFLIER_CHECK_TARGET_SAFETY_MODE` as Docker
+  render inputs.
 - Notes: `public_only` rejects localhost, private, reserved, and internal-only
   targets before dialing. `allow_private_for_tests` is only for isolated
-  uptime-bench labs with disposable synthetic rows and is rejected unless
-  `WPCOM_NOTIFY_ENABLE=false`.
+  uptime-bench labs with disposable synthetic rows. Monitor rejects it unless
+  `WPCOM_NOTIFY_ENABLE=false`; Veriflier logs a startup warning because it has
+  no WPCOM notifier path.
 
 ### BODY_READ_MAX_BYTES
 
@@ -715,7 +721,7 @@ observed rate/latency, and avoids per-probe healthy freshness writes.
 
 ### VERIFLIER_DISCOVERY_MODE
 
-- Default: `static`
+- Default: `static`; production profile default: `shadow`
 - Values: `static`, `shadow`, `active`
 - Example: `"VERIFLIER_DISCOVERY_MODE": "shadow"`
 - Purpose: controls whether Monitors use the trusted DB-backed Veriflier
@@ -742,16 +748,21 @@ The standalone Veriflier has a separate small JSON file:
 - `provider`: optional provider metadata.
 - `enable_legacy_http`: optional lab/emergency compatibility switch for
   legacy-compatible `/check` and `/status`; default false.
+- `check_target_safety_mode`: outbound SSRF safety policy for Veriflier HTTP
+  probes. Values match Monitor: `public_only` (default) or
+  `allow_private_for_tests`. Keep `public_only` for production and real site
+  data.
 
 Environment aliases are accepted only for the fallback environment-only path
 used when the JSON file is missing: `VERIFLIER_AUTH_TOKEN`, `VERIFLIER_PORT`,
 `VERIFLIER_GRPC_PORT`, `VERIFLIER_HOSTNAME`, `JETMON_HOSTNAME`, `STATSD_ADDR`,
 `STATSD_HOST_PATH`, `VERIFLIER_VANTAGE_ID`, `VERIFLIER_REGION`,
-`VERIFLIER_PROVIDER`, and `VERIFLIER_ENABLE_LEGACY_HTTP`. The Docker entrypoint
-can render those values into generated JSON on each start in the default
-`always` render mode. Once the Veriflier process starts, it reads runtime
-settings from that JSON file and does not let environment variables override
-it.
+`VERIFLIER_PROVIDER`, `VERIFLIER_ENABLE_LEGACY_HTTP`,
+`VERIFLIER_CHECK_TARGET_SAFETY_MODE`, and `CHECK_TARGET_SAFETY_MODE`. The Docker
+entrypoint can render those values into generated JSON on each start in the
+default `always` render mode. Once the Veriflier process starts, it reads
+runtime settings from that JSON file and does not let environment variables
+override it.
 
 The old `VERIFLIER_GRPC_PORT` and `grpc_port` names remain accepted as
 deprecated port aliases.

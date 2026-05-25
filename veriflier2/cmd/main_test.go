@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Automattic/jetmon/internal/checker"
+	"github.com/Automattic/jetmon/internal/config"
 	"github.com/Automattic/jetmon/internal/veriflier"
 )
 
@@ -64,7 +65,7 @@ func TestStringPtr(t *testing.T) {
 
 func TestLoadConfigFromFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "veriflier.json")
-	if err := os.WriteFile(path, []byte(`{"auth_token":"secret","port":"7804","hostname":"do-nyc3-1","statsd_addr":"statsd:8125","statsd_host_path":"nyc3.veriflier-1","vantage_id":"us-east","region":"iad","provider":"test","enable_legacy_http":true}`), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(`{"auth_token":"secret","port":"7804","hostname":"do-nyc3-1","statsd_addr":"statsd:8125","statsd_host_path":"nyc3.veriflier-1","vantage_id":"us-east","region":"iad","provider":"test","enable_legacy_http":true,"check_target_safety_mode":"allow_private_for_tests"}`), 0644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -90,6 +91,9 @@ func TestLoadConfigFromFile(t *testing.T) {
 	if !cfg.LegacyHTTP {
 		t.Fatalf("LegacyHTTP = false, want true")
 	}
+	if cfg.CheckTargetSafetyMode != config.CheckTargetSafetyModeAllowPrivateForTests {
+		t.Fatalf("CheckTargetSafetyMode = %q, want %q", cfg.CheckTargetSafetyMode, config.CheckTargetSafetyModeAllowPrivateForTests)
+	}
 }
 
 func TestLoadConfigFileIgnoresEnvironmentOverrides(t *testing.T) {
@@ -102,6 +106,8 @@ func TestLoadConfigFileIgnoresEnvironmentOverrides(t *testing.T) {
 	t.Setenv("VERIFLIER_REGION", "env-region")
 	t.Setenv("VERIFLIER_PROVIDER", "env-provider")
 	t.Setenv("VERIFLIER_ENABLE_LEGACY_HTTP", "false")
+	t.Setenv("CHECK_TARGET_SAFETY_MODE", "allow_private_for_tests")
+	t.Setenv("VERIFLIER_CHECK_TARGET_SAFETY_MODE", "allow_private_for_tests")
 
 	path := filepath.Join(t.TempDir(), "veriflier.json")
 	if err := os.WriteFile(path, []byte(`{"auth_token":"file-secret","port":"7804","hostname":"file-host","statsd_addr":"file-statsd:8125","statsd_host_path":"file.path","vantage_id":"file-vantage","region":"file-region","provider":"file-provider","enable_legacy_http":true}`), 0644); err != nil {
@@ -123,6 +129,9 @@ func TestLoadConfigFileIgnoresEnvironmentOverrides(t *testing.T) {
 	}
 	if !cfg.LegacyHTTP {
 		t.Fatalf("file legacy HTTP config was overridden by environment: %+v", cfg)
+	}
+	if cfg.CheckTargetSafetyMode != config.CheckTargetSafetyModePublicOnly {
+		t.Fatalf("file check target safety default = %q, want %q", cfg.CheckTargetSafetyMode, config.CheckTargetSafetyModePublicOnly)
 	}
 }
 
@@ -151,6 +160,7 @@ func TestLoadConfigFallsBackToEnvironment(t *testing.T) {
 	t.Setenv("VERIFLIER_REGION", "iad")
 	t.Setenv("VERIFLIER_PROVIDER", "test")
 	t.Setenv("VERIFLIER_ENABLE_LEGACY_HTTP", "true")
+	t.Setenv("CHECK_TARGET_SAFETY_MODE", "allow_private_for_tests")
 
 	cfg, err := loadConfig(filepath.Join(t.TempDir(), "missing.json"))
 	if err != nil {
@@ -171,6 +181,9 @@ func TestLoadConfigFallsBackToEnvironment(t *testing.T) {
 	if !cfg.LegacyHTTP {
 		t.Fatalf("LegacyHTTP = false, want true")
 	}
+	if cfg.CheckTargetSafetyMode != config.CheckTargetSafetyModeAllowPrivateForTests {
+		t.Fatalf("CheckTargetSafetyMode = %q, want %q", cfg.CheckTargetSafetyMode, config.CheckTargetSafetyModeAllowPrivateForTests)
+	}
 }
 
 func TestLoadConfigRejectsInvalidEnvironmentOnlyLegacyHTTP(t *testing.T) {
@@ -178,6 +191,30 @@ func TestLoadConfigRejectsInvalidEnvironmentOnlyLegacyHTTP(t *testing.T) {
 
 	if _, err := loadConfig(filepath.Join(t.TempDir(), "missing.json")); err == nil {
 		t.Fatal("loadConfig accepted invalid environment-only legacy HTTP value")
+	}
+}
+
+func TestLoadConfigRejectsInvalidTargetSafetyMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "veriflier.json")
+	if err := os.WriteFile(path, []byte(`{"auth_token":"secret","port":"7805","check_target_safety_mode":"private_everywhere"}`), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := loadConfig(path); err == nil {
+		t.Fatal("loadConfig accepted invalid check_target_safety_mode")
+	}
+}
+
+func TestLoadConfigVeriflierSpecificTargetSafetyEnvWins(t *testing.T) {
+	t.Setenv("CHECK_TARGET_SAFETY_MODE", "public_only")
+	t.Setenv("VERIFLIER_CHECK_TARGET_SAFETY_MODE", "allow_private_for_tests")
+
+	cfg, err := loadConfig(filepath.Join(t.TempDir(), "missing.json"))
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.CheckTargetSafetyMode != config.CheckTargetSafetyModeAllowPrivateForTests {
+		t.Fatalf("CheckTargetSafetyMode = %q, want %q", cfg.CheckTargetSafetyMode, config.CheckTargetSafetyModeAllowPrivateForTests)
 	}
 }
 
@@ -417,6 +454,46 @@ func TestPerformCheckProbeSafetyOutcomeUnknown(t *testing.T) {
 	}
 	if res.ErrorCode != int32(checker.ErrorProbeSafety) {
 		t.Fatalf("error code = %d, want %d", res.ErrorCode, checker.ErrorProbeSafety)
+	}
+}
+
+func TestOutcomeFromCheckerResultInternalUnknown(t *testing.T) {
+	got := outcomeFromCheckerResult(checker.Result{ErrorCode: checker.ErrorInternal})
+	if got != veriflier.OutcomeUnknown {
+		t.Fatalf("outcomeFromCheckerResult(ErrorInternal) = %q, want %q", got, veriflier.OutcomeUnknown)
+	}
+}
+
+func TestPerformCheckIncludesDiagnostics(t *testing.T) {
+	allowUnsafeOutboundTargetsForTest(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte("<html><body><h1>Error establishing a database connection</h1></body></html>"))
+	}))
+	defer srv.Close()
+
+	res := performCheckContext(context.Background(), veriflier.CheckRequest{
+		BlogID:           47,
+		URL:              srv.URL,
+		Method:           http.MethodGet,
+		DetectionProfile: "full",
+		TimeoutSeconds:   2,
+		RedirectPolicy:   string(checker.RedirectFollow),
+	})
+	if res.Success {
+		t.Fatalf("performCheck success = true for semantic failure; result=%+v", res)
+	}
+	if res.Diagnostics == nil {
+		t.Fatalf("diagnostics = nil; result=%+v", res)
+	}
+	if res.Diagnostics.KeywordRule != "semantic_wp_db_error" {
+		t.Fatalf("keyword rule = %q, want semantic_wp_db_error", res.Diagnostics.KeywordRule)
+	}
+	if res.Diagnostics.ErrorDetail == "" {
+		t.Fatal("error detail is empty, want semantic diagnostic")
+	}
+	if res.Diagnostics.BodyRead == nil || res.Diagnostics.BodyRead.BytesRead == 0 {
+		t.Fatalf("body-read diagnostics = %+v, want populated", res.Diagnostics.BodyRead)
 	}
 }
 

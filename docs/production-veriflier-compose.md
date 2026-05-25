@@ -55,6 +55,7 @@ VERIFLIER_AUTH_TOKEN=<secret shared with Monitors>
 VERIFLIER_VANTAGE_ID=do-nyc3-1
 VERIFLIER_REGION=nyc3
 VERIFLIER_PROVIDER=digitalocean
+CHECK_TARGET_SAFETY_MODE=public_only
 JETMON_HOSTNAME=nyc3.do-nyc3-1
 STATSD_HOST_PATH=nyc3.do-nyc3-1
 GRAPHITE_BIND_ADDR=<private-or-vpn-address>
@@ -95,6 +96,9 @@ Veriflier metrics path without exposing the StatsD UDP port on the host.
 
 - Keep `VERIFLIER_AUTH_TOKEN` only in the VPS-local `.env` file or an
   equivalent secret store. Do not commit it.
+- Keep `CHECK_TARGET_SAFETY_MODE=public_only` for production and real site
+  data. `allow_private_for_tests` is only for isolated synthetic labs where the
+  Veriflier must probe private/internal fixture addresses.
 - Publish Graphite only on a private/VPN/firewalled interface. Do not expose it
   broadly to the public internet.
 - Leave StatsD UDP unexposed; only the Veriflier container needs to send to it.

@@ -50,6 +50,14 @@ Do not use host networking for production Monitor containers.
 | `STATSD_ADDR` | rendered config | `host.docker.internal:8125`. |
 | `HOSTNAME` / `JETMON_HOSTNAME` | rendered config or render input | Stable process identity, not container ID. |
 | `STATSD_HOST_PATH` | rendered config | v1-compatible Graphite path, for example `dfw1.jetmon-prod-1`. |
+| `CHECK_TARGET_SAFETY_MODE` | rendered config | `public_only` in production. |
+| `DEFAULT_CHECK_METHOD` / `DEFAULT_DETECTION_PROFILE` | rendered config | Start rollout with `HEAD` / `legacy`; move cohorts through API-controlled stages. |
+| `ROLLOUT_MODE` | rendered config | `api-controlled` until explicit activation grants buckets. |
+| `VERIFLIER_DISCOVERY_MODE` | rendered config | `shadow` until DB registry drift reports are clean, then move to `active`. |
+| `CHECK_HISTORY_MODE_DEFAULT` | rendered config | `status_change` unless a focused test explicitly needs full history. |
+| `AUDIT_LOG_MODE_DEFAULT` | rendered config | `operational` for rollout evidence without API/read firehose noise. |
+| `LEGACY_STATUS_PROJECTION_ENABLE` | rendered config | `true` while rollback or legacy readers still need `jetpack_monitor_sites.site_status`. |
+| `DEBUG_PORT` | rendered config | `0` unless an approved debugging window requires localhost-only pprof. |
 | WPCOM legacy cert/key | Systems secret mount | Required for `WPCOM_NOTIFY_MODE=legacy`. |
 
 Use [../config/jetmon-config-sync-sample.env](../config/jetmon-config-sync-sample.env)
@@ -129,6 +137,35 @@ Normal startup validates schema. It does not apply DDL. Run
 `./jetmon2 migrate` only as an explicit schema-change action in an approved
 environment. If Systems applies SQL manually, the matching
 `jetpack_monitor_schema_migrations` rows must be included in the change package.
+
+## Production Defaults
+
+Set production defaults explicitly even when the Docker entrypoint has the same
+fallback. Security and rollout posture should be visible in config review:
+
+```json
+{
+  "CONFIG_PROFILE": "production",
+  "SCHEMA_MANAGEMENT_MODE": "validate",
+  "STATSD_ADDR": "host.docker.internal:8125",
+  "STATSD_HOST_PATH": "dfw1.jetmon-prod-1",
+  "CHECK_TARGET_SAFETY_MODE": "public_only",
+  "DEFAULT_CHECK_METHOD": "HEAD",
+  "DEFAULT_DETECTION_PROFILE": "legacy",
+  "ROLLOUT_MODE": "api-controlled",
+  "VERIFLIER_DISCOVERY_MODE": "shadow",
+  "CHECK_HISTORY_MODE_DEFAULT": "status_change",
+  "AUDIT_LOG_MODE_DEFAULT": "operational",
+  "LEGACY_STATUS_PROJECTION_ENABLE": true,
+  "DEBUG_PORT": 0,
+  "WPCOM_NOTIFY_ENABLE": false,
+  "WPCOM_NOTIFY_MODE": "legacy"
+}
+```
+
+`WPCOM_NOTIFY_ENABLE=false` is the standby/rehearsal posture. Enable WPCOM
+notifications only during the approved activation window after canary checks
+and WPCOM-owned parity cases are accepted.
 
 ## StatsD
 

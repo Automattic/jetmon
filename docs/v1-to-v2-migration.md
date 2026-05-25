@@ -175,6 +175,7 @@ capacity is zero, the endpoint is unreachable, or the discovery report is red.
 Deploy v2 Monitor containers with:
 
 - `ROLLOUT_MODE=api-controlled`
+- `VERIFLIER_DISCOVERY_MODE=shadow`
 - initial defaults of `HEAD` + `legacy`
 - `SCHEMA_MANAGEMENT_MODE=validate` or `CONFIG_PROFILE=production`
 - `WPCOM_NOTIFY_MODE=legacy`

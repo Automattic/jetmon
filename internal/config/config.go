@@ -69,10 +69,8 @@ func (v VerifierConfig) TransportPort() string {
 type Config struct {
 	Debug bool `json:"DEBUG"`
 
-	// ConfigProfile applies a small named set of posture defaults before
-	// explicit config values are decoded. Profiles are intentionally narrow:
-	// explicit keys always win, and profiles must not hide broad behavior
-	// changes from rollout operators.
+	// ConfigProfile applies a small named set of production posture defaults
+	// before explicit config values are decoded. Explicit keys always win.
 	ConfigProfile string `json:"CONFIG_PROFILE"`
 
 	// Hostname is the stable Jetmon identity used for host ownership, process
@@ -507,6 +505,8 @@ func applyConfigProfile(raw []byte, cfg *Config) error {
 		cfg.ConfigProfile = ConfigProfileProduction
 		cfg.SchemaManagementMode = SchemaManagementModeValidate
 		cfg.CheckTargetSafetyMode = CheckTargetSafetyModePublicOnly
+		cfg.RolloutMode = RolloutModeAPIControlled
+		cfg.VeriflierDiscoveryMode = VeriflierDiscoveryModeShadow
 	default:
 		return fmt.Errorf("invalid config: CONFIG_PROFILE must be one of: default, production")
 	}
@@ -518,23 +518,43 @@ func applyProfileEmptyValues(raw []byte, cfg *Config) {
 	if err := json.Unmarshal(raw, &keys); err != nil {
 		return
 	}
-	rawMode := keys["SCHEMA_MANAGEMENT_MODE"]
-	if len(rawMode) == 0 {
-		return
-	}
-	var mode string
-	if err := json.Unmarshal(rawMode, &mode); err != nil {
-		return
-	}
-	if strings.TrimSpace(mode) != "" {
-		return
-	}
 	switch normalizeConfigProfile(cfg.ConfigProfile) {
 	case ConfigProfileProduction:
-		cfg.SchemaManagementMode = SchemaManagementModeValidate
+		applyEmptyStringDefault(keys, "SCHEMA_MANAGEMENT_MODE", func() {
+			cfg.SchemaManagementMode = SchemaManagementModeValidate
+		})
+		applyEmptyStringDefault(keys, "ROLLOUT_MODE", func() {
+			cfg.RolloutMode = RolloutModeAPIControlled
+		})
+		applyEmptyStringDefault(keys, "VERIFLIER_DISCOVERY_MODE", func() {
+			cfg.VeriflierDiscoveryMode = VeriflierDiscoveryModeShadow
+		})
 	default:
-		cfg.SchemaManagementMode = SchemaManagementModeMigrate
+		applyEmptyStringDefault(keys, "SCHEMA_MANAGEMENT_MODE", func() {
+			cfg.SchemaManagementMode = SchemaManagementModeMigrate
+		})
+		applyEmptyStringDefault(keys, "ROLLOUT_MODE", func() {
+			cfg.RolloutMode = RolloutModeActive
+		})
+		applyEmptyStringDefault(keys, "VERIFLIER_DISCOVERY_MODE", func() {
+			cfg.VeriflierDiscoveryMode = VeriflierDiscoveryModeStatic
+		})
 	}
+}
+
+func applyEmptyStringDefault(keys map[string]json.RawMessage, key string, apply func()) {
+	raw := keys[key]
+	if len(raw) == 0 {
+		return
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return
+	}
+	if strings.TrimSpace(value) != "" {
+		return
+	}
+	apply()
 }
 
 func applyDeprecatedAliases(raw []byte, cfg *Config) {

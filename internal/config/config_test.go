@@ -426,7 +426,7 @@ func TestValidateRejectsBadSchemaManagementMode(t *testing.T) {
 	}
 }
 
-func TestLoadProductionProfileAppliesNarrowDefaults(t *testing.T) {
+func TestLoadProductionProfileAppliesProductionDefaults(t *testing.T) {
 	saveConfigState(t)
 
 	p := writeConfigFile(t, `{
@@ -451,6 +451,12 @@ func TestLoadProductionProfileAppliesNarrowDefaults(t *testing.T) {
 	}
 	if cfg.CheckTargetSafetyMode != CheckTargetSafetyModePublicOnly {
 		t.Fatalf("CheckTargetSafetyMode = %q, want public_only", cfg.CheckTargetSafetyMode)
+	}
+	if cfg.RolloutMode != RolloutModeAPIControlled {
+		t.Fatalf("RolloutMode = %q, want api-controlled", cfg.RolloutMode)
+	}
+	if cfg.VeriflierDiscoveryMode != VeriflierDiscoveryModeShadow {
+		t.Fatalf("VeriflierDiscoveryMode = %q, want shadow", cfg.VeriflierDiscoveryMode)
 	}
 }
 
@@ -495,6 +501,60 @@ func TestLoadProductionProfileUsesSchemaDefaultWhenSampleValueEmpty(t *testing.T
 	}
 	if got := Get().SchemaManagementMode; got != SchemaManagementModeValidate {
 		t.Fatalf("SchemaManagementMode = %q, want validate", got)
+	}
+}
+
+func TestLoadProductionProfileUsesRolloutDefaultsWhenValuesEmpty(t *testing.T) {
+	saveConfigState(t)
+
+	p := writeConfigFile(t, `{
+		"CONFIG_PROFILE": "production",
+		"ROLLOUT_MODE": "",
+		"VERIFLIER_DISCOVERY_MODE": "",
+		"AUTH_TOKEN": "token",
+		"NUM_WORKERS": 7,
+		"BUCKET_TOTAL": 100,
+		"BUCKET_TARGET": 50,
+		"NET_COMMS_TIMEOUT": 10,
+		"LOG_FORMAT": "text"
+	}`)
+
+	if err := Load(p); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	cfg := Get()
+	if got := cfg.RolloutMode; got != RolloutModeAPIControlled {
+		t.Fatalf("RolloutMode = %q, want api-controlled", got)
+	}
+	if got := cfg.VeriflierDiscoveryMode; got != VeriflierDiscoveryModeShadow {
+		t.Fatalf("VeriflierDiscoveryMode = %q, want shadow", got)
+	}
+}
+
+func TestLoadProductionProfileAllowsExplicitRolloutOverride(t *testing.T) {
+	saveConfigState(t)
+
+	p := writeConfigFile(t, `{
+		"CONFIG_PROFILE": "production",
+		"ROLLOUT_MODE": "standby",
+		"VERIFLIER_DISCOVERY_MODE": "static",
+		"AUTH_TOKEN": "token",
+		"NUM_WORKERS": 7,
+		"BUCKET_TOTAL": 100,
+		"BUCKET_TARGET": 50,
+		"NET_COMMS_TIMEOUT": 10,
+		"LOG_FORMAT": "text"
+	}`)
+
+	if err := Load(p); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	cfg := Get()
+	if got := cfg.RolloutMode; got != RolloutModeStandby {
+		t.Fatalf("RolloutMode = %q, want standby", got)
+	}
+	if got := cfg.VeriflierDiscoveryMode; got != VeriflierDiscoveryModeStatic {
+		t.Fatalf("VeriflierDiscoveryMode = %q, want static", got)
 	}
 }
 

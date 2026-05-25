@@ -78,9 +78,10 @@ The most important config groups are:
 | --- | --- | --- |
 | Schema | `CONFIG_PROFILE`, `SCHEMA_MANAGEMENT_MODE` | Production should validate externally applied schema. |
 | Database | `DB_SERVER_MAP_PATH`, `DB_SERVER_MAP_DATACENTER`, explicit `DB_*` keys | Use the server-map path in production when available. |
+| Rollout control | `ROLLOUT_MODE`, `CONFIG_PROFILE` | Production starts `api-controlled` so bucket activation is explicit through the rollout API. |
 | Check behavior | `DEFAULT_CHECK_METHOD`, `DEFAULT_DETECTION_PROFILE`, `NUM_OF_CHECKS`, `NET_COMMS_TIMEOUT` | Rollout starts with `HEAD` + `legacy`, then stages toward GET profiles. |
 | Safety | `CHECK_TARGET_SAFETY_MODE` | `allow_private_for_tests` is only for isolated synthetic labs with WPCOM disabled. |
-| Verifliers | `VERIFLIERS`, `VERIFLIER_DISCOVERY_MODE`, `PEER_OFFLINE_LIMIT` | Quorum counts unique v2 `vantage.id` values. |
+| Verifliers | `VERIFLIERS`, `VERIFLIER_DISCOVERY_MODE`, `PEER_OFFLINE_LIMIT` | Production starts in `shadow` discovery until registry drift reports are clean; quorum counts unique v2 `vantage.id` values. |
 | Metrics | `STATSD_ADDR`, `STATSD_HOST_PATH` | Monitor production uses the host-local StatsD proxy through Docker bridge networking. |
 | API/dashboard | `API_PORT`, `DASHBOARD_PORT`, `DASHBOARD_BIND_ADDR` | Bind dashboards locally unless protected by operator-only network access. |
 | Delivery | `DELIVERY_OWNER_HOST` | Use as a rollout guard when keeping outbound delivery single-owner. |
@@ -223,6 +224,11 @@ POST /v2/check
 Quorum counts unique `vantage.id` values, not raw agent replies. Multiple
 replicas behind one regional endpoint should share a `vantage.id` and use
 distinct `agent.id` values.
+
+Veriflier check replies include bounded diagnostics from the shared checker
+path. These diagnostics are intended for operator/audit context when a remote
+vantage confirms, disagrees, or returns a site-scoped non-vote; response bodies
+are not stored.
 
 Check Veriflier posture:
 

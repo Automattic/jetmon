@@ -52,12 +52,14 @@ and operator control into clearer v2-owned surfaces.
 - Rebuilt the Veriflier as `veriflier2`, a Go binary with JSON-over-HTTP
   production endpoints.
 - Added `POST /v2/check` and `GET /v2/status` with batch/request IDs, deadlines,
-  typed outcomes, timing breakdowns, vantage IDs, agent IDs, and capacity data.
+  typed outcomes, timing breakdowns, bounded diagnostics, vantage IDs, agent
+  IDs, and capacity data.
 - Added bounded Veriflier execution and overload behavior: saturated Verifliers
   return HTTP 503 for a batch, which the Monitor treats as no-vote/unhealthy
   rather than customer-site downtime.
 - Added v2-only rollout posture: v2 Monitors should point at v2 Verifliers; v1
-  Veriflier transport is not a v2 Monitor fallback.
+  Veriflier transport is not a v2 Monitor fallback, and v2 check calls do not
+  automatically downgrade to the legacy HTTP endpoint.
 - Added quorum by unique trusted `vantage.id`, duplicate-vote auditing, and a
   configurable healthy-vantage floor.
 - Added trusted Veriflier discovery tables, monitor-collected agent telemetry,

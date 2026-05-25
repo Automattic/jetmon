@@ -174,7 +174,9 @@ Authorization: Bearer <token>
 
 `/v2/status` exposes service health, supported protocols, `vantage.id`,
 `agent.id`, and capacity. `/v2/check` accepts batches of site probe requests and
-returns typed per-request outcomes.
+returns typed per-request outcomes plus bounded diagnostics such as semantic
+rule, error detail, DNS failure class, redirect summary, body-read summary, and
+TLS/cipher identifiers when the shared checker collected them.
 
 Batch isolation is a contract requirement. Unsafe URLs, unsupported per-site
 probe options, checker panics, and omitted identified results are scoped to the
@@ -198,8 +200,10 @@ treats that endpoint as unhealthy/no-vote, never as customer-site downtime.
 
 `veriflier2` can expose legacy-compatible `/check` and `/status` endpoints for
 lab or emergency compatibility testing, but normal v2 production traffic should
-use `/v2/check` and `/v2/status`. Original v1 Verifliers use the old TLS/custom
-transport and are not supported v2 Monitor fallback targets.
+use `/v2/check` and `/v2/status`. V2 Monitors do not automatically downgrade
+checks to the legacy HTTP endpoint when `/v2/check` is unavailable. Original v1
+Verifliers use the old TLS/custom transport and are not supported v2 Monitor
+fallback targets.
 
 `proto/veriflier.proto` remains a schema reference for a possible future
 transport. Generated gRPC stubs are not required to build or deploy v2.

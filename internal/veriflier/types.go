@@ -40,7 +40,8 @@ type CheckResult struct {
 	HTTPCode      int32
 	ErrorCode     int32
 	RTTMs         int64
-	RequestID     string // echoed from CheckRequest.RequestID
+	RequestID     string            // echoed from CheckRequest.RequestID
+	Diagnostics   *CheckDiagnostics `json:"diagnostics,omitempty"`
 }
 
 const (
@@ -130,18 +131,44 @@ type TimingsMS struct {
 	TTFB int64 `json:"ttfb,omitempty"`
 }
 
+// CheckDiagnostics carries bounded, operator-facing details from the shared
+// checker path. It is intentionally smaller than checker.Result so Veriflier
+// responses stay compact while still explaining remote confirmations and
+// disagreements.
+type CheckDiagnostics struct {
+	KeywordRule      string               `json:"keyword_rule,omitempty"`
+	ErrorDetail      string               `json:"error_detail,omitempty"`
+	DNSFailureKind   string               `json:"dns_failure_kind,omitempty"`
+	DNSFailureName   string               `json:"dns_failure_name,omitempty"`
+	DNSFailureServer string               `json:"dns_failure_server,omitempty"`
+	FinalURL         string               `json:"final_url,omitempty"`
+	RedirectCount    int                  `json:"redirect_count,omitempty"`
+	BodyRead         *BodyReadDiagnostics `json:"body_read,omitempty"`
+	TLSVersion       uint16               `json:"tls_version,omitempty"`
+	CipherSuite      uint16               `json:"cipher_suite,omitempty"`
+}
+
+type BodyReadDiagnostics struct {
+	Mode          string `json:"mode,omitempty"`
+	BytesRead     int64  `json:"bytes_read,omitempty"`
+	ExpectedBytes int64  `json:"expected_bytes,omitempty"`
+	LimitBytes    int64  `json:"limit_bytes,omitempty"`
+	Error         string `json:"error,omitempty"`
+}
+
 type CheckV2Result struct {
-	RequestID string    `json:"request_id"`
-	BlogID    int64     `json:"blog_id"`
-	URL       string    `json:"url"`
-	VantageID string    `json:"vantage_id"`
-	AgentID   string    `json:"agent_id"`
-	Outcome   string    `json:"outcome"`
-	Success   bool      `json:"success"`
-	HTTPCode  int32     `json:"http_code"`
-	ErrorCode int32     `json:"error_code"`
-	RTTMs     int64     `json:"rtt_ms"`
-	TimingsMS TimingsMS `json:"timings_ms,omitempty"`
+	RequestID   string            `json:"request_id"`
+	BlogID      int64             `json:"blog_id"`
+	URL         string            `json:"url"`
+	VantageID   string            `json:"vantage_id"`
+	AgentID     string            `json:"agent_id"`
+	Outcome     string            `json:"outcome"`
+	Success     bool              `json:"success"`
+	HTTPCode    int32             `json:"http_code"`
+	ErrorCode   int32             `json:"error_code"`
+	RTTMs       int64             `json:"rtt_ms"`
+	TimingsMS   TimingsMS         `json:"timings_ms,omitempty"`
+	Diagnostics *CheckDiagnostics `json:"diagnostics,omitempty"`
 }
 
 type CheckV2BatchResponse struct {
@@ -151,8 +178,8 @@ type CheckV2BatchResponse struct {
 	Results []CheckV2Result `json:"results"`
 }
 
-// ProbeResult is the server-internal result shape. It carries the legacy
-// CheckResult plus diagnostics that are only emitted by the v2 contract.
+// ProbeResult is the server-internal result shape. It carries the shared check
+// outcome plus v2-only timing data.
 type ProbeResult struct {
 	CheckResult
 	Outcome   string
