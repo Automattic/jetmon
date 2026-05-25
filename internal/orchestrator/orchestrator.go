@@ -742,11 +742,14 @@ func (o *Orchestrator) recordStreamingHistoryRows(rows []db.CheckHistoryRow) res
 			); err != nil {
 				summary.historyErrors++
 				log.Printf("orchestrator: streaming record check history blog_id=%d: %v", row.BlogID, err)
+				continue
 			}
+			summary.historyRows++
 		}
+	} else {
+		summary.historyRows += len(rows)
 	}
 	summary.historyDuration += time.Since(start)
-	summary.historyRows += len(rows)
 	return summary
 }
 

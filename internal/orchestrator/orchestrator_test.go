@@ -2452,6 +2452,34 @@ func TestProcessResultsFallsBackWhenBatchWritesFail(t *testing.T) {
 	}
 }
 
+func TestRecordStreamingHistoryRowsCountsFallbackSuccesses(t *testing.T) {
+	restore := stubOrchestratorDeps()
+	defer restore()
+
+	dbRecordCheckHistories = func(context.Context, []db.CheckHistoryRow) error {
+		return fmt.Errorf("batch history failed")
+	}
+	dbRecordCheckHistory = func(blogID int64, _ string, _ int, _ int, _ int64, _ int64, _ int64, _ int64, _ int64) error {
+		if blogID == 2 {
+			return fmt.Errorf("poisoned history row")
+		}
+		return nil
+	}
+
+	o := &Orchestrator{ctx: context.Background()}
+	summary := o.recordStreamingHistoryRows([]db.CheckHistoryRow{
+		{BlogID: 1, RequestMethod: http.MethodGet, HTTPCode: 200},
+		{BlogID: 2, RequestMethod: http.MethodGet, HTTPCode: 200},
+	})
+
+	if summary.historyRows != 1 {
+		t.Fatalf("history rows = %d, want one successful fallback row", summary.historyRows)
+	}
+	if summary.historyErrors != 2 {
+		t.Fatalf("history errors = %d, want batch error plus poisoned-row error", summary.historyErrors)
+	}
+}
+
 func TestEventMutationRetryRetriesDeadlocks(t *testing.T) {
 	restore := stubOrchestratorDeps()
 	defer restore()
