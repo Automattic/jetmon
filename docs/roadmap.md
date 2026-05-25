@@ -61,6 +61,12 @@ Open work:
   explicit endpoint identity, using the existing `jetpack_monitor_site_id` row
   as the durable source during migration. This is required for the real
   production cohort where one `blog_id` has multiple active monitor URLs.
+- [ ] Define and validate a zero-disruption reload/update contract for every
+  long-running v2 service. SIGHUP or the service-manager equivalent should stop
+  accepting new work, drain in-flight checks/deliveries, reload configuration
+  and deployed code as appropriate for the deployment model, then resume cleanly
+  with operator-visible status and failure handling. Cover Monitor, Veriflier,
+  deliverer, API/dashboard, StatsD reporting, and Docker Compose rollout paths.
 
 ## Config And Compatibility Cleanup
 
@@ -111,6 +117,14 @@ Open work:
   and real-site tests can compare request bytes, response header bytes, response
   body bytes read, and total application-level transfer by check method and
   detection profile. Keep this separate from host/container network accounting.
+- [ ] Produce a comprehensive v1-versus-current-v2 comparison with evidence
+  gaps called out before rollout approval. Compare v1 against v2 HEAD/legacy,
+  GET/simple, and GET/full, with and without full check-history recording,
+  across feature support, detection coverage, staged rollout behavior,
+  auto-scaling/failover, Monitor and Veriflier CPU/RSS/FDs/I/O/network,
+  database query/write/row growth, StatsD volume, bandwidth, and operational
+  supportability. Use existing uptime-bench reports where possible and create
+  targeted tests only for missing data.
 - [ ] Consider a dedicated dry-run projection-drift repair planner after
   production rehearsals show which drift classes are safe enough to automate.
 
