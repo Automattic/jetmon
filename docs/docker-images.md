@@ -76,6 +76,7 @@ Common Veriflier render inputs:
 | `VERIFLIER_AUTH_TOKEN` | Shared secret used by Monitors. |
 | `VERIFLIER_PORT` | Defaults to `7803`. |
 | `VERIFLIER_ENABLE_LEGACY_HTTP` | Defaults to `false`; enable only for lab/emergency compatibility testing. |
+| `CHECK_TARGET_SAFETY_MODE` | Veriflier outbound target safety policy; keep `public_only` for production and real site data. |
 | `STATSD_ADDR` | Optional StatsD endpoint such as `statsd:8125`; leave empty to disable metrics. |
 | `JETMON_HOSTNAME` | Stable Veriflier process identity, such as `<region>.<vantage>`. |
 | `STATSD_HOST_PATH` | Optional explicit Graphite path. |
@@ -143,6 +144,19 @@ Important Monitor render inputs:
 | `STATSD_ADDR` | StatsD endpoint; leave empty to disable. |
 | `JETMON_HOSTNAME` | Docker render input for stable process identity. |
 | `STATSD_HOST_PATH` | Explicit v1-compatible Graphite path. |
+
+With `CONFIG_PROFILE=production`, the Monitor entrypoint renders safer
+production fallbacks when the matching variables are omitted:
+
+- `SCHEMA_MANAGEMENT_MODE=validate`
+- `STATSD_ADDR=host.docker.internal:8125`
+- `CHECK_TARGET_SAFETY_MODE=public_only`
+- `DEFAULT_CHECK_METHOD=HEAD`
+- `DEFAULT_DETECTION_PROFILE=legacy`
+- `DEBUG_PORT=0`
+
+Set these explicitly in production roles anyway. Visible config review is more
+important than relying on implicit fallbacks.
 
 For production Monitor containers, use the host-local StatsD proxy through
 Docker bridge networking:

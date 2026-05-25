@@ -45,6 +45,9 @@ type veriflierConfig struct {
 	Region     string `json:"region"`
 	Provider   string `json:"provider"`
 	LegacyHTTP bool   `json:"enable_legacy_http"`
+	// CheckTargetSafetyMode uses the same values as Monitor:
+	// public_only or allow_private_for_tests.
+	CheckTargetSafetyMode string `json:"check_target_safety_mode"`
 }
 
 func main() {
@@ -74,6 +77,11 @@ func main() {
 	if cfg.AuthToken == "" {
 		log.Fatalf("VERIFLIER_AUTH_TOKEN is not set; refusing to start with no authentication")
 	}
+	enforceOutboundTargetSafety = cfg.CheckTargetSafetyMode != config.CheckTargetSafetyModeAllowPrivateForTests
+	if !enforceOutboundTargetSafety {
+		log.Printf("WARN: check_target_safety_mode=%s; private, localhost, reserved, and internal-only targets are allowed. Use only in isolated synthetic labs.", cfg.CheckTargetSafetyMode)
+	}
+
 	hostname := configuredHostname(cfg.Hostname)
 	addr := fmt.Sprintf(":%s", cfg.TransportPort())
 	agentID := veriflierAgentID(hostname, cfg.TransportPort())
@@ -122,7 +130,7 @@ func main() {
 		}
 	}()
 
-	log.Printf("veriflier2 %s starting on %s legacy_http=%s", version, addr, enabledLabel(cfg.LegacyHTTP))
+	log.Printf("veriflier2 %s starting on %s legacy_http=%s target_safety=%s", version, addr, enabledLabel(cfg.LegacyHTTP), cfg.CheckTargetSafetyMode)
 	if err := srv.Listen(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("listen: %v", err)
 	}
@@ -294,7 +302,7 @@ func loadConfig(path string) (*veriflierConfig, error) {
 	if err := json.NewDecoder(f).Decode(&cfg); err != nil {
 		return nil, err
 	}
-	return &cfg, nil
+	return normalizeLoadedConfig(&cfg)
 }
 
 func envOnlyConfig() (*veriflierConfig, error) {
@@ -307,6 +315,10 @@ func envOnlyConfig() (*veriflierConfig, error) {
 		VantageID:  os.Getenv("VERIFLIER_VANTAGE_ID"),
 		Region:     os.Getenv("VERIFLIER_REGION"),
 		Provider:   os.Getenv("VERIFLIER_PROVIDER"),
+		CheckTargetSafetyMode: firstNonEmpty(
+			os.Getenv("VERIFLIER_CHECK_TARGET_SAFETY_MODE"),
+			os.Getenv("CHECK_TARGET_SAFETY_MODE"),
+		),
 	}
 	if v := os.Getenv("VERIFLIER_ENABLE_LEGACY_HTTP"); v != "" {
 		enabled, err := parseBool(v)
@@ -315,7 +327,7 @@ func envOnlyConfig() (*veriflierConfig, error) {
 		}
 		cfg.LegacyHTTP = enabled
 	}
-	return cfg, nil
+	return normalizeLoadedConfig(cfg)
 }
 
 func (c veriflierConfig) TransportPort() string {
@@ -323,6 +335,21 @@ func (c veriflierConfig) TransportPort() string {
 		return c.Port
 	}
 	return c.GRPCPort
+}
+
+func normalizeLoadedConfig(cfg *veriflierConfig) (*veriflierConfig, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("config is nil")
+	}
+	mode := strings.ToLower(strings.TrimSpace(cfg.CheckTargetSafetyMode))
+	if mode == "" {
+		mode = config.CheckTargetSafetyModePublicOnly
+	}
+	if !config.ValidCheckTargetSafetyMode(mode) {
+		return nil, fmt.Errorf("check_target_safety_mode must be one of: public_only, allow_private_for_tests")
+	}
+	cfg.CheckTargetSafetyMode = mode
+	return cfg, nil
 }
 
 func configuredHostname(configured string) string {

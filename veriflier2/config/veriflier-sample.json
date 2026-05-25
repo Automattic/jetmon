@@ -7,5 +7,6 @@
 	"vantage_id" : "<VERIFLIER_VANTAGE_ID>",
 	"region"     : "<VERIFLIER_REGION>",
 	"provider"   : "<VERIFLIER_PROVIDER>",
-	"enable_legacy_http" : false
+	"enable_legacy_http" : false,
+	"check_target_safety_mode" : "public_only"
 }
