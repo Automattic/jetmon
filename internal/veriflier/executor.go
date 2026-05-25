@@ -3,7 +3,9 @@ package veriflier
 import (
 	"context"
 	"errors"
+	"log"
 	"runtime"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -22,8 +24,9 @@ const (
 	deadlineResultDrainGrace = 25 * time.Millisecond
 	// Wire-compatible checker error code for probe safety blocks. Keep this
 	// private to avoid a production dependency from veriflier back to checker;
-	// executor tests assert it stays in sync with checker.ErrorProbeSafety.
+	// executor tests assert these stay in sync with checker error codes.
 	checkerErrorProbeSafety = 9
+	checkerErrorInternal    = 10
 )
 
 type CheckFunc func(context.Context, CheckRequest) ProbeResult
@@ -286,7 +289,7 @@ func (e *Executor) worker(ctx context.Context) {
 			start := time.Now()
 			jobCtx, cancel := context.WithCancel(job.ctx)
 			stopShutdownCancel := context.AfterFunc(ctx, cancel)
-			res := e.checkFn(jobCtx, job.req)
+			res := e.runCheck(jobCtx, job.req)
 			stopShutdownCancel()
 			cancel()
 			operationalOverload := shouldTreatResultAsOperationalOverload(job.ctx, res)
@@ -320,6 +323,26 @@ func (e *Executor) worker(ctx context.Context) {
 			<-e.slots
 		}
 	}
+}
+
+func (e *Executor) runCheck(ctx context.Context, req CheckRequest) (res ProbeResult) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			log.Printf("veriflier: recovered checker panic blog_id=%d url=%q: %v\n%s", req.BlogID, req.URL, recovered, debug.Stack())
+			res = ProbeResult{
+				CheckResult: CheckResult{
+					MonitorSiteID: req.MonitorSiteID,
+					BlogID:        req.BlogID,
+					URL:           req.URL,
+					Success:       false,
+					ErrorCode:     checkerErrorInternal,
+					RequestID:     req.RequestID,
+				},
+				Outcome: OutcomeUnknown,
+			}
+		}
+	}()
+	return e.checkFn(ctx, req)
 }
 
 func shouldTreatResultAsOperationalOverload(ctx context.Context, res ProbeResult) bool {
@@ -414,6 +437,9 @@ func outcomeFromResult(res CheckResult) string {
 		return OutcomeUp
 	}
 	if res.ErrorCode == checkerErrorProbeSafety {
+		return OutcomeUnknown
+	}
+	if res.ErrorCode == checkerErrorInternal {
 		return OutcomeUnknown
 	}
 	if res.ErrorCode == 1 {
