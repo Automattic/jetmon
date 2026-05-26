@@ -48,10 +48,6 @@ func (s *Server) handleCloseEvent(w http.ResponseWriter, r *http.Request) {
 			"event id must be a positive integer")
 		return
 	}
-	if !s.ensureSiteVisibleForRequest(w, r, siteID) {
-		return
-	}
-
 	var body closeEventRequest
 	if !decodeOptionalJSONBody(w, r, &body) {
 		return
@@ -65,11 +61,12 @@ func (s *Server) handleCloseEvent(w http.ResponseWriter, r *http.Request) {
 	// Verify the event exists and belongs to the named site before closing.
 	var (
 		eventBlogID int64
+		endpointID  sql.NullInt64
 		endedAt     sql.NullTime
 	)
 	err = s.db.QueryRowContext(ctx,
-		`SELECT blog_id, ended_at FROM jetpack_monitor_events WHERE id = ?`, eventID,
-	).Scan(&eventBlogID, &endedAt)
+		`SELECT blog_id, endpoint_id, ended_at FROM jetpack_monitor_events WHERE id = ?`, eventID,
+	).Scan(&eventBlogID, &endpointID, &endedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, r, http.StatusNotFound, "event_not_found",
@@ -80,9 +77,12 @@ func (s *Server) handleCloseEvent(w http.ResponseWriter, r *http.Request) {
 			"event lookup failed: "+err.Error())
 		return
 	}
-	if eventBlogID != siteID {
+	if (endpointID.Valid && endpointID.Int64 != siteID) || (!endpointID.Valid && eventBlogID != siteID) {
 		writeError(w, r, http.StatusNotFound, "event_not_found",
 			fmt.Sprintf("Event %d does not belong to site %d", eventID, siteID))
+		return
+	}
+	if !s.ensureSiteVisibleForRequest(w, r, eventBlogID) {
 		return
 	}
 	if endedAt.Valid {
@@ -101,7 +101,7 @@ func (s *Server) handleCloseEvent(w http.ResponseWriter, r *http.Request) {
 		"note":   body.Note,
 		"source": "api",
 	})
-	if err := s.closeEvent(ctx, eventID, siteID, reason, meta); err != nil {
+	if err := s.closeEvent(ctx, eventID, eventBlogID, siteID, reason, meta); err != nil {
 		writeError(w, r, http.StatusInternalServerError, "db_error",
 			"close event failed: "+err.Error())
 		return
@@ -183,10 +183,6 @@ func (s *Server) handleTriggerNow(w http.ResponseWriter, r *http.Request) {
 			"site id must be a positive integer")
 		return
 	}
-	if !s.ensureSiteVisibleForRequest(w, r, siteID) {
-		return
-	}
-
 	ctx, cancel := context.WithTimeout(r.Context(), triggerNowTimeout)
 	defer cancel()
 
@@ -199,6 +195,9 @@ func (s *Server) handleTriggerNow(w http.ResponseWriter, r *http.Request) {
 		}
 		writeError(w, r, http.StatusInternalServerError, "db_error",
 			"site lookup failed: "+err.Error())
+		return
+	}
+	if !s.ensureSiteVisibleForRequest(w, r, site.blogID) {
 		return
 	}
 
@@ -219,7 +218,8 @@ func (s *Server) handleTriggerNow(w http.ResponseWriter, r *http.Request) {
 	profile := site.effectiveDetectionProfile(method)
 
 	req := checker.Request{
-		BlogID:              siteID,
+		MonitorSiteID:       siteID,
+		BlogID:              site.blogID,
 		URL:                 site.monitorURL,
 		Method:              method,
 		DetectionProfile:    profile,
@@ -260,7 +260,7 @@ func (s *Server) handleTriggerNow(w http.ResponseWriter, r *http.Request) {
 		// hasn't reconciled yet. probe_cleared matches the recovery semantics
 		// the orchestrator already uses (see docs/events.md: "verifier wasn't
 		// involved in this recovery").
-		ids, err := s.queryActiveEventIDs(ctx, siteID)
+		ids, err := s.queryActiveEventIDs(ctx, site.blogID, siteID)
 		if err != nil {
 			writeError(w, r, http.StatusInternalServerError, "db_error",
 				"active events lookup failed: "+err.Error())
@@ -272,7 +272,7 @@ func (s *Server) handleTriggerNow(w http.ResponseWriter, r *http.Request) {
 				"rtt_ms":    res.RTT.Milliseconds(),
 				"source":    "api_trigger",
 			})
-			if err := s.closeEvent(ctx, eventID, siteID, "probe_cleared", meta); err != nil {
+			if err := s.closeEvent(ctx, eventID, site.blogID, siteID, "probe_cleared", meta); err != nil {
 				writeError(w, r, http.StatusInternalServerError, "db_error",
 					fmt.Sprintf("close event %d failed: %v", eventID, err))
 				return
@@ -293,9 +293,10 @@ func (s *Server) handleTriggerNow(w http.ResponseWriter, r *http.Request) {
 
 // queryActiveEventIDs returns the ids of all open events for a site.
 // Helper for trigger-now's clear-on-success path.
-func (s *Server) queryActiveEventIDs(ctx context.Context, blogID int64) ([]int64, error) {
+func (s *Server) queryActiveEventIDs(ctx context.Context, blogID, siteID int64) ([]int64, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id FROM jetpack_monitor_events WHERE blog_id = ? AND ended_at IS NULL`, blogID)
+		`SELECT id FROM jetpack_monitor_events WHERE blog_id = ? AND ended_at IS NULL AND (endpoint_id = ? OR endpoint_id IS NULL)`,
+		blogID, siteID)
 	if err != nil {
 		return nil, err
 	}
@@ -316,6 +317,7 @@ func (s *Server) queryActiveEventIDs(ctx context.Context, blogID int64) ([]int64
 // db.Site so the api package doesn't grow a dependency on internal/db
 // beyond the *sql.DB handle it already has.
 type siteForCheck struct {
+	blogID            int64
 	monitorURL        string
 	timeoutSeconds    int
 	checkKeyword      sql.NullString
@@ -378,7 +380,7 @@ func (s siteForCheck) effectiveDetectionProfile(method string) string {
 	return checkmode.EffectiveProfile(method, profile)
 }
 
-func (s *Server) readSiteForCheck(ctx context.Context, blogID int64) (siteForCheck, error) {
+func (s *Server) readSiteForCheck(ctx context.Context, siteID int64) (siteForCheck, error) {
 	var (
 		out              siteForCheck
 		timeoutSeconds   sql.NullInt64
@@ -388,12 +390,12 @@ func (s *Server) readSiteForCheck(ctx context.Context, blogID int64) (siteForChe
 		detectionProfile sql.NullString
 	)
 	err := s.db.QueryRowContext(ctx, `
-		SELECT s.monitor_url, c.timeout_seconds, c.check_keyword, c.forbidden_keyword, c.forbidden_keywords, c.custom_headers,
+		SELECT s.blog_id, s.monitor_url, c.timeout_seconds, c.check_keyword, c.forbidden_keyword, c.forbidden_keywords, c.custom_headers,
 		       c.redirect_policy, c.request_method, c.detection_profile, s.site_status
 		  FROM jetpack_monitor_sites s
-		  LEFT JOIN jetpack_monitor_site_check_config c ON c.blog_id = s.blog_id
-		 WHERE s.blog_id = ?`, blogID,
-	).Scan(&out.monitorURL, &timeoutSeconds, &out.checkKeyword, &out.forbiddenKeyword, &out.forbiddenKeywords, &customHeaders,
+		  LEFT JOIN jetpack_monitor_site_check_config c ON c.source_site_id = s.jetpack_monitor_site_id
+		 WHERE s.jetpack_monitor_site_id = ?`, siteID,
+	).Scan(&out.blogID, &out.monitorURL, &timeoutSeconds, &out.checkKeyword, &out.forbiddenKeyword, &out.forbiddenKeywords, &customHeaders,
 		&redirectPolicy, &requestMethod, &detectionProfile, &out.siteStatus)
 	if err != nil {
 		return out, err

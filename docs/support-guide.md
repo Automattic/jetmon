@@ -134,7 +134,8 @@ SSL expiry:
 ```sql
 SELECT s.blog_id, s.monitor_url, r.ssl_expiry_date
 FROM jetpack_monitor_sites s
-LEFT JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id
+LEFT JOIN jetpack_monitor_site_runtime r
+  ON r.source_site_id = s.jetpack_monitor_site_id
 WHERE s.blog_id = 12345;
 ```
 

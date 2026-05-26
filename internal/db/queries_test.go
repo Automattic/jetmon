@@ -288,13 +288,13 @@ func TestSimpleMutationQueries(t *testing.T) {
 		WithArgs(2, now, int64(42)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO jetpack_monitor_site_runtime").
-		WithArgs(int64(42), now, next).
+		WithArgs(int64(42), int64(42), now, next).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO jetpack_monitor_site_runtime").
-		WithArgs(int64(42), now).
+		WithArgs(int64(42), int64(42), now).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO jetpack_monitor_site_runtime").
-		WithArgs(int64(42), now).
+		WithArgs(int64(42), int64(42), now).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("UPDATE jetpack_monitor_hosts SET last_heartbeat").
 		WithArgs("host-a").
@@ -309,7 +309,7 @@ func TestSimpleMutationQueries(t *testing.T) {
 		WithArgs(int64(42), 500, 1, int64(123)).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("INSERT INTO jetpack_monitor_check_history").
-		WithArgs(int64(42), "GET", 200, 0, int64(100), int64(1), int64(2), int64(3), int64(4)).
+		WithArgs(int64(42), int64(42), "GET", 200, 0, int64(100), int64(1), int64(2), int64(3), int64(4)).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	if err := UpdateSiteStatus(context.Background(), 42, 2, now); err != nil {
@@ -353,7 +353,7 @@ func TestMarkSitesCheckedBatchesUpdates(t *testing.T) {
 	firstNext := first.Add(5 * time.Minute)
 	secondNext := second.Add(5 * time.Minute)
 	mock.ExpectExec("INSERT INTO jetpack_monitor_site_runtime").
-		WithArgs(int64(7), first, firstNext, int64(42), second, secondNext).
+		WithArgs(int64(7), int64(7), first, firstNext, int64(42), int64(42), second, secondNext).
 		WillReturnResult(sqlmock.NewResult(0, 2))
 
 	err := MarkSitesChecked(context.Background(), []SiteCheck{
@@ -401,7 +401,7 @@ func TestMarkSitesCheckedRetriesDeadlock(t *testing.T) {
 
 	checkedAt := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
 	nextAt := checkedAt.Add(5 * time.Minute)
-	args := []driver.Value{int64(42), checkedAt, nextAt}
+	args := []driver.Value{int64(42), int64(42), checkedAt, nextAt}
 	mock.ExpectExec("INSERT INTO jetpack_monitor_site_runtime").
 		WithArgs(args...).
 		WillReturnError(&mysql.MySQLError{Number: 1213, Message: "Deadlock found when trying to get lock"})
@@ -425,8 +425,8 @@ func TestRecordCheckHistoriesBatchesInserts(t *testing.T) {
 	second := first.Add(time.Minute)
 	mock.ExpectExec("INSERT INTO jetpack_monitor_check_history").
 		WithArgs(
-			int64(7), "GET", 201, 1, int64(10), int64(1), int64(2), int64(3), int64(4), first,
-			int64(42), "POST", 200, 0, int64(100), int64(5), int64(6), int64(7), int64(8), second,
+			int64(7), int64(7), "GET", 201, 1, int64(10), int64(1), int64(2), int64(3), int64(4), first,
+			int64(42), int64(42), "POST", 200, 0, int64(100), int64(5), int64(6), int64(7), int64(8), second,
 		).
 		WillReturnResult(sqlmock.NewResult(1, 2))
 
@@ -449,7 +449,7 @@ func TestUpdateSSLExpiriesBatchesUpdates(t *testing.T) {
 	first := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	second := first.AddDate(0, 1, 0)
 	mock.ExpectExec("INSERT INTO jetpack_monitor_site_runtime").
-		WithArgs(int64(7), first, int64(42), second).
+		WithArgs(int64(7), int64(7), first, int64(42), int64(42), second).
 		WillReturnResult(sqlmock.NewResult(0, 2))
 
 	err := UpdateSSLExpiries(context.Background(), []SiteSSLExpiry{

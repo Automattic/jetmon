@@ -11,23 +11,23 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
-const sitesListSQL = ` SELECT s.blog_id, s.blog_id AS public_id, s.monitor_url, s.monitor_active, s.bucket_no, s.check_interval, s.site_status, r.last_checked_at, s.last_status_change, r.ssl_expiry_date, c.check_keyword, c.forbidden_keyword, c.forbidden_keywords, c.redirect_policy, c.request_method, c.detection_profile, c.maintenance_start, c.maintenance_end, c.alert_cooldown_minutes FROM jetpack_monitor_sites s LEFT JOIN jetpack_monitor_site_check_config c ON c.blog_id = s.blog_id LEFT JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id WHERE s.blog_id > ? ORDER BY s.blog_id ASC LIMIT ?`
+const sitesListSQL = ` SELECT s.jetpack_monitor_site_id, s.blog_id, s.monitor_url, s.monitor_active, s.bucket_no, s.check_interval, s.site_status, r.last_checked_at, s.last_status_change, r.ssl_expiry_date, c.check_keyword, c.forbidden_keyword, c.forbidden_keywords, c.redirect_policy, c.request_method, c.detection_profile, c.maintenance_start, c.maintenance_end, c.alert_cooldown_minutes FROM jetpack_monitor_sites s LEFT JOIN jetpack_monitor_site_check_config c ON c.source_site_id = s.jetpack_monitor_site_id LEFT JOIN jetpack_monitor_site_runtime r ON r.source_site_id = s.jetpack_monitor_site_id WHERE s.jetpack_monitor_site_id > ? ORDER BY s.jetpack_monitor_site_id ASC LIMIT ?`
 
-const sitesListForTenantSQL = ` SELECT s.blog_id, s.blog_id AS public_id, s.monitor_url, s.monitor_active, s.bucket_no, s.check_interval, s.site_status, r.last_checked_at, s.last_status_change, r.ssl_expiry_date, c.check_keyword, c.forbidden_keyword, c.forbidden_keywords, c.redirect_policy, c.request_method, c.detection_profile, c.maintenance_start, c.maintenance_end, c.alert_cooldown_minutes FROM jetpack_monitor_sites s LEFT JOIN jetpack_monitor_site_check_config c ON c.blog_id = s.blog_id LEFT JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id JOIN jetpack_monitor_site_tenants st ON st.blog_id = s.blog_id AND st.tenant_id = ? WHERE s.blog_id > ? ORDER BY s.blog_id ASC LIMIT ?`
+const sitesListForTenantSQL = ` SELECT s.jetpack_monitor_site_id, s.blog_id, s.monitor_url, s.monitor_active, s.bucket_no, s.check_interval, s.site_status, r.last_checked_at, s.last_status_change, r.ssl_expiry_date, c.check_keyword, c.forbidden_keyword, c.forbidden_keywords, c.redirect_policy, c.request_method, c.detection_profile, c.maintenance_start, c.maintenance_end, c.alert_cooldown_minutes FROM jetpack_monitor_sites s LEFT JOIN jetpack_monitor_site_check_config c ON c.source_site_id = s.jetpack_monitor_site_id LEFT JOIN jetpack_monitor_site_runtime r ON r.source_site_id = s.jetpack_monitor_site_id JOIN jetpack_monitor_site_tenants st ON st.blog_id = s.blog_id AND st.tenant_id = ? WHERE s.jetpack_monitor_site_id > ? ORDER BY s.jetpack_monitor_site_id ASC LIMIT ?`
 
-const sitesListWithCLIMetadataSQL = ` SELECT s.blog_id, s.blog_id AS public_id, s.monitor_url, s.monitor_active, s.bucket_no, s.check_interval, s.site_status, r.last_checked_at, s.last_status_change, r.ssl_expiry_date, c.check_keyword, c.forbidden_keyword, c.forbidden_keywords, c.redirect_policy, c.request_method, c.detection_profile, c.maintenance_start, c.maintenance_end, c.alert_cooldown_minutes, c.custom_headers FROM jetpack_monitor_sites s LEFT JOIN jetpack_monitor_site_check_config c ON c.blog_id = s.blog_id LEFT JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id WHERE s.blog_id > ? ORDER BY s.blog_id ASC LIMIT ?`
+const sitesListWithCLIMetadataSQL = ` SELECT s.jetpack_monitor_site_id, s.blog_id, s.monitor_url, s.monitor_active, s.bucket_no, s.check_interval, s.site_status, r.last_checked_at, s.last_status_change, r.ssl_expiry_date, c.check_keyword, c.forbidden_keyword, c.forbidden_keywords, c.redirect_policy, c.request_method, c.detection_profile, c.maintenance_start, c.maintenance_end, c.alert_cooldown_minutes, c.custom_headers FROM jetpack_monitor_sites s LEFT JOIN jetpack_monitor_site_check_config c ON c.source_site_id = s.jetpack_monitor_site_id LEFT JOIN jetpack_monitor_site_runtime r ON r.source_site_id = s.jetpack_monitor_site_id WHERE s.jetpack_monitor_site_id > ? ORDER BY s.jetpack_monitor_site_id ASC LIMIT ?`
 
-const singleSiteSQL = ` SELECT s.blog_id, s.blog_id AS public_id, s.monitor_url, s.monitor_active, s.bucket_no, s.check_interval, s.site_status, r.last_checked_at, s.last_status_change, r.ssl_expiry_date, c.check_keyword, c.forbidden_keyword, c.forbidden_keywords, c.redirect_policy, c.request_method, c.detection_profile, c.maintenance_start, c.maintenance_end, c.alert_cooldown_minutes FROM jetpack_monitor_sites s LEFT JOIN jetpack_monitor_site_check_config c ON c.blog_id = s.blog_id LEFT JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id WHERE s.blog_id = ?`
+const singleSiteSQL = ` SELECT s.jetpack_monitor_site_id, s.blog_id, s.monitor_url, s.monitor_active, s.bucket_no, s.check_interval, s.site_status, r.last_checked_at, s.last_status_change, r.ssl_expiry_date, c.check_keyword, c.forbidden_keyword, c.forbidden_keywords, c.redirect_policy, c.request_method, c.detection_profile, c.maintenance_start, c.maintenance_end, c.alert_cooldown_minutes FROM jetpack_monitor_sites s LEFT JOIN jetpack_monitor_site_check_config c ON c.source_site_id = s.jetpack_monitor_site_id LEFT JOIN jetpack_monitor_site_runtime r ON r.source_site_id = s.jetpack_monitor_site_id WHERE s.jetpack_monitor_site_id = ?`
 
-const singleSiteWithCLIMetadataSQL = ` SELECT s.blog_id, s.blog_id AS public_id, s.monitor_url, s.monitor_active, s.bucket_no, s.check_interval, s.site_status, r.last_checked_at, s.last_status_change, r.ssl_expiry_date, c.check_keyword, c.forbidden_keyword, c.forbidden_keywords, c.redirect_policy, c.request_method, c.detection_profile, c.maintenance_start, c.maintenance_end, c.alert_cooldown_minutes, c.custom_headers FROM jetpack_monitor_sites s LEFT JOIN jetpack_monitor_site_check_config c ON c.blog_id = s.blog_id LEFT JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id WHERE s.blog_id = ?`
+const singleSiteWithCLIMetadataSQL = ` SELECT s.jetpack_monitor_site_id, s.blog_id, s.monitor_url, s.monitor_active, s.bucket_no, s.check_interval, s.site_status, r.last_checked_at, s.last_status_change, r.ssl_expiry_date, c.check_keyword, c.forbidden_keyword, c.forbidden_keywords, c.redirect_policy, c.request_method, c.detection_profile, c.maintenance_start, c.maintenance_end, c.alert_cooldown_minutes, c.custom_headers FROM jetpack_monitor_sites s LEFT JOIN jetpack_monitor_site_check_config c ON c.source_site_id = s.jetpack_monitor_site_id LEFT JOIN jetpack_monitor_site_runtime r ON r.source_site_id = s.jetpack_monitor_site_id WHERE s.jetpack_monitor_site_id = ?`
 
-const activeEventsSQL = ` SELECT id, check_type, severity, state, started_at FROM jetpack_monitor_events WHERE blog_id = ? AND ended_at IS NULL ORDER BY severity DESC, started_at ASC`
+const activeEventsSQL = ` SELECT id, check_type, severity, state, started_at FROM jetpack_monitor_events WHERE blog_id = ? AND ended_at IS NULL AND (endpoint_id = ? OR endpoint_id IS NULL) ORDER BY severity DESC, started_at ASC`
 
 func activeEventRollupsSQL(placeholders string) string {
-	return ` SELECT id, blog_id, severity, state, started_at FROM jetpack_monitor_events WHERE ended_at IS NULL AND blog_id IN (` + placeholders + `)`
+	return ` SELECT id, endpoint_id, severity, state, started_at FROM jetpack_monitor_events WHERE ended_at IS NULL AND endpoint_id IN (` + placeholders + `)`
 }
 
-var activeEventRollupColumns = []string{"id", "blog_id", "severity", "state", "started_at"}
+var activeEventRollupColumns = []string{"id", "endpoint_id", "severity", "state", "started_at"}
 
 // makeSiteRow returns a row builder pre-loaded with sane defaults the tests
 // can override. blog_id is the only required field.
@@ -364,7 +364,7 @@ func TestListSitesFiltersByMonitorActive(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
 
-	expected := ` SELECT s.blog_id, s.blog_id AS public_id, s.monitor_url, s.monitor_active, s.bucket_no, s.check_interval, s.site_status, r.last_checked_at, s.last_status_change, r.ssl_expiry_date, c.check_keyword, c.forbidden_keyword, c.forbidden_keywords, c.redirect_policy, c.request_method, c.detection_profile, c.maintenance_start, c.maintenance_end, c.alert_cooldown_minutes FROM jetpack_monitor_sites s LEFT JOIN jetpack_monitor_site_check_config c ON c.blog_id = s.blog_id LEFT JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id WHERE s.blog_id > ? AND s.monitor_active = 1 ORDER BY s.blog_id ASC LIMIT ?`
+	expected := ` SELECT s.jetpack_monitor_site_id, s.blog_id, s.monitor_url, s.monitor_active, s.bucket_no, s.check_interval, s.site_status, r.last_checked_at, s.last_status_change, r.ssl_expiry_date, c.check_keyword, c.forbidden_keyword, c.forbidden_keywords, c.redirect_policy, c.request_method, c.detection_profile, c.maintenance_start, c.maintenance_end, c.alert_cooldown_minutes FROM jetpack_monitor_sites s LEFT JOIN jetpack_monitor_site_check_config c ON c.source_site_id = s.jetpack_monitor_site_id LEFT JOIN jetpack_monitor_site_runtime r ON r.source_site_id = s.jetpack_monitor_site_id WHERE s.jetpack_monitor_site_id > ? AND s.monitor_active = 1 ORDER BY s.jetpack_monitor_site_id ASC LIMIT ?`
 	mock.ExpectQuery(expected).
 		WithArgs(int64(0), 51).
 		WillReturnRows(sqlmock.NewRows(columnsSite))
@@ -412,7 +412,7 @@ func TestScanSiteRowIgnoresLegacyStatusWhenProjectionDisabled(t *testing.T) {
 
 	mock.ExpectQuery(singleSiteSQL).WithArgs(int64(501)).
 		WillReturnRows(makeSiteRow(501, "https://stale.example", 2))
-	mock.ExpectQuery(activeEventsSQL).WithArgs(int64(501)).
+	mock.ExpectQuery(activeEventsSQL).WithArgs(int64(501), int64(501)).
 		WillReturnRows(sqlmock.NewRows(columnsActiveEvent))
 
 	req := requestWithKey("GET", "/api/v1/sites/501", key)
@@ -435,6 +435,8 @@ func TestGetSiteWithGatewayTenantRejectsUnmappedSite(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
 
+	mock.ExpectQuery(singleSiteSQL).WithArgs(int64(501)).
+		WillReturnRows(makeSiteRow(501, "https://tenant.example", 1))
 	mock.ExpectQuery(siteTenantCheckSQL).
 		WithArgs("tenant-a", int64(501)).
 		WillReturnRows(sqlmock.NewRows([]string{"1"}))
@@ -491,7 +493,7 @@ func TestGetSiteFound(t *testing.T) {
 
 	// active_events query — return one active event.
 	startedAt := time.Date(2026, 4, 25, 3, 18, 38, 329_000_000, time.UTC)
-	mock.ExpectQuery(activeEventsSQL).WithArgs(int64(42)).WillReturnRows(
+	mock.ExpectQuery(activeEventsSQL).WithArgs(int64(42), int64(42)).WillReturnRows(
 		sqlmock.NewRows(columnsActiveEvent).
 			AddRow(int64(7), "http", uint8(4), "Down", startedAt),
 	)
@@ -534,7 +536,7 @@ func TestGetSiteIncludesCLIBatchOnlyWhenRequested(t *testing.T) {
 			`{"X-Jetmon-CLI-Batch":"local-smoke"}`,
 		),
 	)
-	mock.ExpectQuery(activeEventsSQL).WithArgs(int64(42)).
+	mock.ExpectQuery(activeEventsSQL).WithArgs(int64(42), int64(42)).
 		WillReturnRows(sqlmock.NewRows(columnsActiveEvent))
 
 	req := requestWithKey("GET", "/api/v1/sites/42?include_cli_metadata=true", key)

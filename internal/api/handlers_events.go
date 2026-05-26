@@ -59,8 +59,10 @@ func (s *Server) handleListSiteEvents(w http.ResponseWriter, r *http.Request) {
 			"site id must be a positive integer")
 		return
 	}
-	if !s.ensureSiteVisibleForRequest(w, r, siteID) {
-		return
+	if _, tenantScoped := ownerTenantIDFromRequest(r); tenantScoped {
+		if _, ok := s.ensureMonitorSiteVisibleForRequest(w, r, siteID); !ok {
+			return
+		}
 	}
 	s.listEvents(w, r, siteID)
 }
@@ -117,14 +119,14 @@ func (s *Server) listEvents(w http.ResponseWriter, r *http.Request, siteID int64
 	// Build the query. Events list walks backwards on id (id desc) — id is
 	// monotonically increasing because it's an auto-increment PK, so id desc
 	// matches started_at desc within the resolution we care about.
-	args := []any{siteID}
+	args := []any{siteID, siteID}
 	sb := strings.Builder{}
 	sb.WriteString(`
 		SELECT id, blog_id, endpoint_id, check_type, discriminator,
 		       severity, state, started_at, ended_at, resolution_reason,
 		       cause_event_id, metadata
 		  FROM jetpack_monitor_events
-		 WHERE blog_id = ?`)
+		 WHERE (endpoint_id = ? OR (endpoint_id IS NULL AND blog_id = ?))`)
 
 	if cursor > 0 {
 		sb.WriteString(" AND id < ?")
@@ -237,7 +239,7 @@ func (s *Server) handleGetEventBySite(w http.ResponseWriter, r *http.Request) {
 			"event id must be a positive integer")
 		return
 	}
-	s.respondEvent(w, r, eventID, &siteID)
+	s.respondEvent(w, r, eventID, &siteEventFilter{siteID: siteID})
 }
 
 // handleGetEvent implements GET /api/v1/events/{event_id}, the standalone
@@ -253,7 +255,11 @@ func (s *Server) handleGetEvent(w http.ResponseWriter, r *http.Request) {
 	s.respondEvent(w, r, eventID, nil)
 }
 
-func (s *Server) respondEvent(w http.ResponseWriter, r *http.Request, eventID int64, siteIDFilter *int64) {
+type siteEventFilter struct {
+	siteID int64
+}
+
+func (s *Server) respondEvent(w http.ResponseWriter, r *http.Request, eventID int64, siteIDFilter *siteEventFilter) {
 	ctx := r.Context()
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, blog_id, endpoint_id, check_type, discriminator,
@@ -273,10 +279,13 @@ func (s *Server) respondEvent(w http.ResponseWriter, r *http.Request, eventID in
 			"event query failed: "+err.Error())
 		return
 	}
-	if siteIDFilter != nil && ev.SiteID != *siteIDFilter {
-		writeError(w, r, http.StatusNotFound, "event_not_found",
-			fmt.Sprintf("Event %d does not belong to site %d", eventID, *siteIDFilter))
-		return
+	if siteIDFilter != nil {
+		if (ev.EndpointID != nil && *ev.EndpointID != siteIDFilter.siteID) ||
+			(ev.EndpointID == nil && ev.SiteID != siteIDFilter.siteID) {
+			writeError(w, r, http.StatusNotFound, "event_not_found",
+				fmt.Sprintf("Event %d does not belong to site %d", eventID, siteIDFilter.siteID))
+			return
+		}
 	}
 	visible, err := s.siteVisibleToRequest(ctx, r, ev.SiteID)
 	if err != nil {
@@ -321,9 +330,12 @@ func (s *Server) handleListTransitions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Verify the event exists and belongs to the site before we paginate.
-	var blogID int64
+	var (
+		eventBlogID int64
+		endpointID  sql.NullInt64
+	)
 	if err := s.db.QueryRowContext(r.Context(),
-		`SELECT blog_id FROM jetpack_monitor_events WHERE id = ?`, eventID).Scan(&blogID); err != nil {
+		`SELECT blog_id, endpoint_id FROM jetpack_monitor_events WHERE id = ?`, eventID).Scan(&eventBlogID, &endpointID); err != nil {
 		if err == sql.ErrNoRows {
 			writeError(w, r, http.StatusNotFound, "event_not_found",
 				fmt.Sprintf("Event %d does not exist", eventID))
@@ -333,12 +345,12 @@ func (s *Server) handleListTransitions(w http.ResponseWriter, r *http.Request) {
 			"event lookup failed: "+err.Error())
 		return
 	}
-	if blogID != siteID {
+	if (endpointID.Valid && endpointID.Int64 != siteID) || (!endpointID.Valid && eventBlogID != siteID) {
 		writeError(w, r, http.StatusNotFound, "event_not_found",
 			fmt.Sprintf("Event %d does not belong to site %d", eventID, siteID))
 		return
 	}
-	visible, err := s.siteVisibleToRequest(r.Context(), r, blogID)
+	visible, err := s.siteVisibleToRequest(r.Context(), r, eventBlogID)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, "db_error",
 			"site tenant lookup failed: "+err.Error())

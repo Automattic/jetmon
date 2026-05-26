@@ -1143,10 +1143,10 @@ func (s *Server) rolloutSeedCounts(ctx context.Context, min, max int) (map[strin
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*)
 		  FROM jetpack_monitor_sites s
-		  LEFT JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id
+		  LEFT JOIN jetpack_monitor_site_runtime r ON r.source_site_id = s.jetpack_monitor_site_id
 		 WHERE s.monitor_active = 1
 		   AND s.bucket_no BETWEEN ? AND ?
-		   AND r.blog_id IS NULL`,
+		   AND r.source_site_id IS NULL`,
 		min, max,
 	).Scan(&missingRuntime); err != nil {
 		return nil, err
@@ -1204,8 +1204,8 @@ func (s *Server) executeRolloutSeed(ctx context.Context, min, max int) (int, err
 		return 0, err
 	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT IGNORE INTO jetpack_monitor_site_runtime (blog_id)
-		SELECT DISTINCT blog_id
+		INSERT IGNORE INTO jetpack_monitor_site_runtime (source_site_id, blog_id)
+		SELECT jetpack_monitor_site_id, blog_id
 		  FROM jetpack_monitor_sites
 		 WHERE monitor_active = 1
 		   AND bucket_no BETWEEN ? AND ?`,
@@ -1305,8 +1305,8 @@ func (s *Server) rolloutSampleSites(ctx context.Context, min, max, limit int) ([
 			c.custom_headers, c.timeout_seconds, c.redirect_policy, c.alert_cooldown_minutes, r.last_alert_sent_at,
 			c.request_method, c.detection_profile
 		FROM jetpack_monitor_sites s
-		LEFT JOIN jetpack_monitor_site_check_config c ON c.blog_id = s.blog_id
-		LEFT JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id
+		LEFT JOIN jetpack_monitor_site_check_config c ON c.source_site_id = s.jetpack_monitor_site_id
+		LEFT JOIN jetpack_monitor_site_runtime r ON r.source_site_id = s.jetpack_monitor_site_id
 		WHERE s.monitor_active = 1
 		  AND s.bucket_no BETWEEN ? AND ?
 		ORDER BY s.jetpack_monitor_site_id ASC
@@ -1978,9 +1978,9 @@ func (s *Server) countPolicyStageEligible(ctx context.Context, min, max int, met
 	defaultMethod, defaultProfile := rolloutDefaultPolicy()
 	var count int
 	err := s.db.QueryRowContext(ctx, `
-		SELECT COUNT(DISTINCT s.blog_id)
+		SELECT COUNT(*)
 		  FROM jetpack_monitor_sites s
-		  LEFT JOIN jetpack_monitor_site_check_config c ON c.blog_id = s.blog_id
+		  LEFT JOIN jetpack_monitor_site_check_config c ON c.source_site_id = s.jetpack_monitor_site_id
 		 WHERE s.monitor_active = 1
 		   AND s.bucket_no BETWEEN ? AND ?
 		   AND (
@@ -1998,10 +1998,11 @@ func (s *Server) countPolicyStageEligible(ctx context.Context, min, max int, met
 }
 
 type rolloutPolicyStageCandidate struct {
-	BlogID      int64
-	BucketNo    int
-	PrevMethod  sql.NullString
-	PrevProfile sql.NullString
+	BlogID       int64
+	SourceSiteID int64
+	BucketNo     int
+	PrevMethod   sql.NullString
+	PrevProfile  sql.NullString
 }
 
 func (s *Server) selectPolicyStageCandidates(ctx context.Context, body rolloutRangeRequest, method, profile string, limit int) ([]rolloutPolicyStageCandidate, error) {
@@ -2010,9 +2011,9 @@ func (s *Server) selectPolicyStageCandidates(ctx context.Context, body rolloutRa
 	}
 	defaultMethod, defaultProfile := rolloutDefaultPolicy()
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT s.blog_id, MIN(s.bucket_no), c.request_method, c.detection_profile
+		SELECT s.blog_id, s.jetpack_monitor_site_id, s.bucket_no, c.request_method, c.detection_profile
 		  FROM jetpack_monitor_sites s
-		  LEFT JOIN jetpack_monitor_site_check_config c ON c.blog_id = s.blog_id
+		  LEFT JOIN jetpack_monitor_site_check_config c ON c.source_site_id = s.jetpack_monitor_site_id
 		 WHERE s.monitor_active = 1
 		   AND s.bucket_no BETWEEN ? AND ?
 		   AND (
@@ -2022,8 +2023,7 @@ func (s *Server) selectPolicyStageCandidates(ctx context.Context, body rolloutRa
 			      ELSE COALESCE(c.detection_profile, ?)
 			    END <> ?
 		   )
-		 GROUP BY s.blog_id, c.request_method, c.detection_profile
-		 ORDER BY MIN(s.jetpack_monitor_site_id) ASC
+		 ORDER BY s.jetpack_monitor_site_id ASC
 		 LIMIT ?`,
 		body.BucketMin, body.BucketMax,
 		defaultMethod, method,
@@ -2037,7 +2037,7 @@ func (s *Server) selectPolicyStageCandidates(ctx context.Context, body rolloutRa
 	var out []rolloutPolicyStageCandidate
 	for rows.Next() {
 		var candidate rolloutPolicyStageCandidate
-		if err := rows.Scan(&candidate.BlogID, &candidate.BucketNo, &candidate.PrevMethod, &candidate.PrevProfile); err != nil {
+		if err := rows.Scan(&candidate.BlogID, &candidate.SourceSiteID, &candidate.BucketNo, &candidate.PrevMethod, &candidate.PrevProfile); err != nil {
 			return nil, err
 		}
 		out = append(out, candidate)
@@ -2083,14 +2083,14 @@ func (s *Server) executeRolloutStagePolicy(ctx context.Context, body rolloutRang
 	}
 	defer func() { _ = tx.Rollback() }()
 	for _, candidate := range candidates {
-		if err := upsertRolloutPolicyTx(ctx, tx, candidate.BlogID, method, profile); err != nil {
+		if err := upsertRolloutPolicyTx(ctx, tx, candidate.SourceSiteID, candidate.BlogID, method, profile); err != nil {
 			return nil, err
 		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO jetpack_monitor_rollout_policy_stage_rows
-				(job_id, run_id, blog_id, bucket_no, previous_request_method, previous_detection_profile, new_request_method, new_detection_profile)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			jobID, body.RunID, candidate.BlogID, candidate.BucketNo, nullableString(candidate.PrevMethod), nullableString(candidate.PrevProfile), method, profile,
+				(job_id, run_id, blog_id, source_site_id, bucket_no, previous_request_method, previous_detection_profile, new_request_method, new_detection_profile)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			jobID, body.RunID, candidate.BlogID, candidate.SourceSiteID, candidate.BucketNo, nullableString(candidate.PrevMethod), nullableString(candidate.PrevProfile), method, profile,
 		); err != nil {
 			return nil, err
 		}
@@ -2108,10 +2108,11 @@ func (s *Server) executeRolloutStagePolicy(ctx context.Context, body rolloutRang
 }
 
 type rolloutPolicyRollbackRow struct {
-	ID          int64
-	BlogID      int64
-	PrevMethod  sql.NullString
-	PrevProfile sql.NullString
+	ID           int64
+	BlogID       int64
+	SourceSiteID int64
+	PrevMethod   sql.NullString
+	PrevProfile  sql.NullString
 }
 
 func (s *Server) countRolloutStageRollbackRows(ctx context.Context, body rolloutRangeRequest, mode string) (int, error) {
@@ -2157,7 +2158,7 @@ func (s *Server) rollbackRolloutStagePolicy(ctx context.Context, body rolloutRan
 	}
 	defer func() { _ = tx.Rollback() }()
 	for _, row := range rows {
-		if err := upsertRolloutPolicyTx(ctx, tx, row.BlogID, nullableString(row.PrevMethod), nullableString(row.PrevProfile)); err != nil {
+		if err := upsertRolloutPolicyTx(ctx, tx, row.SourceSiteID, row.BlogID, nullableString(row.PrevMethod), nullableString(row.PrevProfile)); err != nil {
 			return nil, err
 		}
 		if _, err := tx.ExecContext(ctx, `
@@ -2181,7 +2182,7 @@ func (s *Server) rollbackRolloutStagePolicy(ctx context.Context, body rolloutRan
 
 func (s *Server) rolloutRollbackRows(ctx context.Context, body rolloutRangeRequest, mode string) ([]rolloutPolicyRollbackRow, error) {
 	query := `
-		SELECT id, blog_id, previous_request_method, previous_detection_profile
+		SELECT id, blog_id, source_site_id, previous_request_method, previous_detection_profile
 		  FROM jetpack_monitor_rollout_policy_stage_rows
 		 WHERE rolled_back_at IS NULL
 		   AND bucket_no BETWEEN ? AND ?
@@ -2207,7 +2208,7 @@ func (s *Server) rolloutRollbackRows(ctx context.Context, body rolloutRangeReque
 	var out []rolloutPolicyRollbackRow
 	for rows.Next() {
 		var row rolloutPolicyRollbackRow
-		if err := rows.Scan(&row.ID, &row.BlogID, &row.PrevMethod, &row.PrevProfile); err != nil {
+		if err := rows.Scan(&row.ID, &row.BlogID, &row.SourceSiteID, &row.PrevMethod, &row.PrevProfile); err != nil {
 			return nil, err
 		}
 		out = append(out, row)
@@ -2231,14 +2232,15 @@ func (s *Server) latestRolloutStageJob(ctx context.Context, body rolloutRangeReq
 	return jobID, err
 }
 
-func upsertRolloutPolicyTx(ctx context.Context, tx *sql.Tx, blogID int64, method, profile any) error {
+func upsertRolloutPolicyTx(ctx context.Context, tx *sql.Tx, sourceSiteID, blogID int64, method, profile any) error {
 	_, err := tx.ExecContext(ctx, `
-		INSERT INTO jetpack_monitor_site_check_config (blog_id, request_method, detection_profile)
-		VALUES (?, ?, ?)
+		INSERT INTO jetpack_monitor_site_check_config (source_site_id, blog_id, request_method, detection_profile)
+		VALUES (?, ?, ?, ?)
 		ON DUPLICATE KEY UPDATE
+			blog_id = VALUES(blog_id),
 			request_method = VALUES(request_method),
 			detection_profile = VALUES(detection_profile)`,
-		blogID, method, profile,
+		sourceSiteID, blogID, method, profile,
 	)
 	return err
 }
@@ -2352,7 +2354,7 @@ func (s *Server) countRecentlyCheckedSites(ctx context.Context, min, max int, cu
 	err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*)
 		  FROM jetpack_monitor_sites s
-		  JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id
+		  JOIN jetpack_monitor_site_runtime r ON r.source_site_id = s.jetpack_monitor_site_id
 		 WHERE s.monitor_active = 1
 		   AND s.bucket_no BETWEEN ? AND ?
 		   AND r.last_checked_at >= ?`,

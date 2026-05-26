@@ -46,6 +46,35 @@ func (s *Server) siteVisibleToRequest(ctx context.Context, r *http.Request, blog
 	return true, nil
 }
 
+func (s *Server) blogIDForMonitorSite(ctx context.Context, monitorSiteID int64) (int64, error) {
+	var blogID int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT blog_id FROM jetpack_monitor_sites WHERE jetpack_monitor_site_id = ? LIMIT 1`,
+		monitorSiteID,
+	).Scan(&blogID)
+	if err != nil {
+		return 0, err
+	}
+	return blogID, nil
+}
+
+func (s *Server) ensureMonitorSiteVisibleForRequest(w http.ResponseWriter, r *http.Request, monitorSiteID int64) (int64, bool) {
+	blogID, err := s.blogIDForMonitorSite(r.Context(), monitorSiteID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeSiteNotFound(w, r, monitorSiteID)
+			return 0, false
+		}
+		writeError(w, r, http.StatusInternalServerError, "db_error",
+			"site lookup failed: "+err.Error())
+		return 0, false
+	}
+	if !s.ensureSiteVisibleForRequest(w, r, blogID) {
+		return 0, false
+	}
+	return blogID, true
+}
+
 func (s *Server) ensureSiteVisibleForRequest(w http.ResponseWriter, r *http.Request, blogID int64) bool {
 	ok, err := s.siteVisibleToRequest(r.Context(), r, blogID)
 	if err != nil {

@@ -528,12 +528,17 @@ see rows mapped to `X-Jetmon-Tenant-ID` in `jetpack_monitor_site_tenants`.
 }
 ```
 
-`id` and `blog_id` are the same value for now; `id` is the public field name (`blog_id` is the historical column name). Consumers should rely on `id`.
+`id` is the monitor endpoint row id (`jetpack_monitor_sites.jetpack_monitor_site_id`).
+`blog_id` is the legacy WPCOM/site identity. They are often the same in test
+data, but production can contain multiple active monitor URLs for one `blog_id`,
+so API consumers should treat `id` as the stable endpoint identifier for
+site-specific API paths.
 
 The response intentionally merges v1-shaped `jetpack_monitor_sites` fields with
 v2-owned sidecar state from `jetpack_monitor_site_check_config` and
-`jetpack_monitor_site_runtime`; callers should use the API contract instead of assuming
-all fields live in the legacy site table.
+`jetpack_monitor_site_runtime`; those sidecars are keyed by the endpoint row id,
+not by `blog_id`. Callers should use the API contract instead of assuming all
+fields live in the legacy site table.
 
 `cli_batch` is an opt-in local-tooling projection. It is present only when
 `include_cli_metadata=true` and the site's `custom_headers` include
@@ -1136,7 +1141,7 @@ jetpack_monitor_webhooks:
 jetpack_monitor_webhook_deliveries:
   id, webhook_id, transition_id, event_id, event_type,
   payload JSON,                       -- frozen at fire time, never updated
-  status ENUM('pending','delivered','failed','abandoned'),
+  status VARCHAR(16),                 -- pending, delivered, failed, abandoned
   attempt INT,
   next_attempt_at TIMESTAMP NULL,     -- when the worker should pick up
   last_status_code INT NULL,

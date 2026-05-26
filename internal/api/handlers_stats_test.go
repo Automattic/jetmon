@@ -8,15 +8,15 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
-const siteExistsSQL = `SELECT 1 FROM jetpack_monitor_sites WHERE blog_id = ? LIMIT 1`
+const siteExistsSQL = `SELECT 1 FROM jetpack_monitor_sites WHERE jetpack_monitor_site_id = ? LIMIT 1`
 
-const uptimeSQL = ` SELECT severity, state, started_at, ended_at FROM jetpack_monitor_events WHERE blog_id = ? AND started_at < ? AND (ended_at IS NULL OR ended_at > ?)`
+const uptimeSQL = ` SELECT severity, state, started_at, ended_at FROM jetpack_monitor_events WHERE blog_id = ? AND (endpoint_id = ? OR endpoint_id IS NULL) AND started_at < ? AND (ended_at IS NULL OR ended_at > ?)`
 
-const rttSamplesSQL = ` SELECT rtt_ms FROM jetpack_monitor_check_history WHERE blog_id = ? AND checked_at >= ? AND checked_at < ? AND rtt_ms IS NOT NULL ORDER BY checked_at DESC LIMIT ?`
+const rttSamplesSQL = ` SELECT rtt_ms FROM jetpack_monitor_check_history WHERE source_site_id = ? AND checked_at >= ? AND checked_at < ? AND rtt_ms IS NOT NULL ORDER BY checked_at DESC LIMIT ?`
 
-const timingSamplesSQL = ` SELECT dns_ms, tcp_ms, tls_ms, ttfb_ms FROM jetpack_monitor_check_history WHERE blog_id = ? AND checked_at >= ? AND checked_at < ? ORDER BY checked_at DESC LIMIT ?`
+const timingSamplesSQL = ` SELECT dns_ms, tcp_ms, tls_ms, ttfb_ms FROM jetpack_monitor_check_history WHERE source_site_id = ? AND checked_at >= ? AND checked_at < ? ORDER BY checked_at DESC LIMIT ?`
 
-const checkHistoryListSQL = ` SELECT id, request_method, http_code, error_code, rtt_ms, dns_ms, tcp_ms, tls_ms, ttfb_ms, checked_at FROM jetpack_monitor_check_history WHERE blog_id = ? AND checked_at >= ? AND checked_at < ? ORDER BY id DESC LIMIT ?`
+const checkHistoryListSQL = ` SELECT id, request_method, http_code, error_code, rtt_ms, dns_ms, tcp_ms, tls_ms, ttfb_ms, checked_at FROM jetpack_monitor_check_history WHERE source_site_id = ? AND checked_at >= ? AND checked_at < ? ORDER BY id DESC LIMIT ?`
 
 func TestParseWindowDuration(t *testing.T) {
 	cases := map[string]time.Duration{
@@ -129,8 +129,8 @@ func TestUptimeHappyPath(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
 
-	mock.ExpectQuery(siteExistsSQL).WithArgs(int64(42)).
-		WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
+	mock.ExpectQuery(blogIDForMonitorSiteSQL).WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"blog_id"}).AddRow(int64(42)))
 
 	// One closed Down event lasting 60s within a 24h window.
 	now := time.Now().UTC()
@@ -164,8 +164,8 @@ func TestUptimeSiteNotFound(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
 
-	mock.ExpectQuery(siteExistsSQL).WithArgs(int64(99)).
-		WillReturnRows(sqlmock.NewRows([]string{"1"}))
+	mock.ExpectQuery(blogIDForMonitorSiteSQL).WithArgs(int64(99)).
+		WillReturnRows(sqlmock.NewRows([]string{"blog_id"}))
 
 	req := requestWithKey("GET", "/api/v1/sites/99/uptime", key)
 	req.SetPathValue("id", "99")
@@ -180,8 +180,8 @@ func TestUptimeNoEvents100Percent(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
 
-	mock.ExpectQuery(siteExistsSQL).WithArgs(int64(42)).
-		WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
+	mock.ExpectQuery(blogIDForMonitorSiteSQL).WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"blog_id"}).AddRow(int64(42)))
 	mock.ExpectQuery(uptimeSQL).WillReturnRows(sqlmock.NewRows([]string{"severity", "state", "started_at", "ended_at"}))
 
 	req := requestWithKey("GET", "/api/v1/sites/42/uptime", key)
@@ -238,10 +238,10 @@ func TestResponseTimeWithGatewayTenantChecksSiteOwnership(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
 
+	mock.ExpectQuery(blogIDForMonitorSiteSQL).WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"blog_id"}).AddRow(int64(42)))
 	mock.ExpectQuery(siteTenantCheckSQL).
 		WithArgs("tenant-a", int64(42)).
-		WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
-	mock.ExpectQuery(siteExistsSQL).WithArgs(int64(42)).
 		WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
 	mock.ExpectQuery(rttSamplesSQL).
 		WillReturnRows(sqlmock.NewRows([]string{"rtt_ms"}).AddRow(int64(123)))

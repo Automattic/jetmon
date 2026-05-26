@@ -8,8 +8,11 @@ hot ALTER on the largest compatibility table.
 Local and lab environments can apply migrations with `./jetmon2 migrate`.
 Production schema changes are expected to be applied through the approved
 database-change process, then validated by Jetmon before the service starts.
-The migration source of truth is `internal/db/migrations.go`; this document
-describes ownership and operational meaning.
+The migration source of truth is `internal/db/migrations.go`; production SQL
+must also seed `jetpack_monitor_schema_migrations` with the migration ids that
+the deployed binary expects so `SCHEMA_MANAGEMENT_MODE=validate` can prove that
+the reviewed schema package is present. This document describes ownership and
+operational meaning.
 
 ## Time Zones
 
@@ -73,7 +76,10 @@ available, and projection updates target the legacy row id so duplicate
 ## Site Policy
 
 `jetpack_monitor_site_check_config` keeps v2-only policy out of the legacy site
-table. It owns:
+table. It is keyed by `source_site_id`, which is the legacy
+`jetpack_monitor_sites.jetpack_monitor_site_id` endpoint row id. `blog_id` is
+kept as indexed context for support queries, not as a uniqueness constraint. It
+owns:
 
 - staged rollout method/profile: `request_method`, `detection_profile`
 - body rules: `check_keyword`, `forbidden_keyword`, `forbidden_keywords`
@@ -114,7 +120,9 @@ The API can expose a derived `cli_batch` field for local API CLI test data when
 
 These fields support API display, rollout freshness checks, and rollback
 visibility. They are not the high-frequency source of truth for the streaming
-engine.
+engine. Like policy, runtime rows are keyed by `source_site_id` so multiple
+monitor endpoints for the same `blog_id` keep independent freshness and SSL
+state.
 
 `jetpack_monitor_check_targets` is the v2-native scheduling table. It stores
 derived target state such as source site row, bucket, interval, phase slot,
@@ -166,10 +174,12 @@ transition reasons, and metadata rules.
 ## Check History And Audit
 
 `jetpack_monitor_check_history` records compact timing samples for local
-checks. The `request_method` column records the actual method used by the
-probe, which is useful during the HEAD-to-GET rollout. Depending on fleet and
-per-site sampling policy, healthy checks may be sampled rather than written on
-every run.
+checks. Rows keep both `blog_id` and `source_site_id`: `blog_id` supports
+legacy/site-level reporting, while `source_site_id` supports endpoint-specific
+latency and rollout analysis. The `request_method` column records the actual
+method used by the probe, which is useful during the HEAD-to-GET rollout.
+Depending on fleet and per-site sampling policy, healthy checks may be sampled
+rather than written on every run.
 
 Failure events carry richer incident metadata such as URL, error reason,
 redirect details, TLS details, DNS error information, and bounded body-read

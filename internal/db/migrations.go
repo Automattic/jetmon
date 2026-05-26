@@ -58,7 +58,7 @@ var migrations = []migration{
 		bucket_min     SMALLINT UNSIGNED NOT NULL,
 		bucket_max     SMALLINT UNSIGNED NOT NULL,
 		last_heartbeat TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		status         ENUM('active','draining') NOT NULL DEFAULT 'active'
+		status         VARCHAR(16) NOT NULL DEFAULT 'active'
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
 
 	{5, `CREATE TABLE IF NOT EXISTS jetpack_monitor_audit_log (
@@ -73,21 +73,25 @@ var migrations = []migration{
 		new_status   TINYINT NULL,
 		detail       TEXT NULL,
 		created_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		INDEX idx_blog_id_created (blog_id, created_at)
+		INDEX idx_blog_id_created (blog_id, created_at),
+		INDEX idx_created_at (created_at)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
 
 	{6, `CREATE TABLE IF NOT EXISTS jetpack_monitor_check_history (
-		id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-		blog_id    BIGINT UNSIGNED NOT NULL,
-		http_code  SMALLINT NULL,
-		error_code TINYINT NULL,
-		rtt_ms     INT NULL,
-		dns_ms     INT NULL,
-		tcp_ms     INT NULL,
-		tls_ms     INT NULL,
-		ttfb_ms    INT NULL,
-		checked_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		INDEX idx_blog_id_checked (blog_id, checked_at)
+		id             BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+		blog_id        BIGINT UNSIGNED NOT NULL,
+		source_site_id BIGINT UNSIGNED NULL,
+		http_code      SMALLINT NULL,
+		error_code     TINYINT NULL,
+		rtt_ms         INT NULL,
+		dns_ms         INT NULL,
+		tcp_ms         INT NULL,
+		tls_ms         INT NULL,
+		ttfb_ms        INT NULL,
+		checked_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		INDEX idx_blog_id_checked (blog_id, checked_at),
+		INDEX idx_source_site_checked (source_site_id, checked_at),
+		INDEX idx_checked_at (checked_at)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
 
 	{7, `CREATE TABLE IF NOT EXISTS jetpack_monitor_false_positives (
@@ -179,7 +183,7 @@ var migrations = []migration{
 		id                    BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
 		key_hash              CHAR(64) NOT NULL,
 		consumer_name         VARCHAR(128) NOT NULL,
-		scope                 ENUM('read','write','admin') NOT NULL DEFAULT 'read',
+		scope                 VARCHAR(16) NOT NULL DEFAULT 'read',
 		rate_limit_per_minute INT NOT NULL DEFAULT 60,
 		expires_at            TIMESTAMP NULL,
 		revoked_at            TIMESTAMP NULL,
@@ -243,7 +247,7 @@ var migrations = []migration{
 		event_id         BIGINT UNSIGNED NOT NULL,
 		event_type       VARCHAR(64) NOT NULL,
 		payload          JSON NOT NULL,
-		status           ENUM('pending','delivered','failed','abandoned') NOT NULL DEFAULT 'pending',
+		status           VARCHAR(16) NOT NULL DEFAULT 'pending',
 		attempt          INT UNSIGNED NOT NULL DEFAULT 0,
 		next_attempt_at  TIMESTAMP NULL,
 		last_status_code INT NULL,
@@ -295,7 +299,7 @@ var migrations = []migration{
 		id                   BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
 		label                VARCHAR(128) NOT NULL,
 		active               TINYINT UNSIGNED NOT NULL DEFAULT 1,
-		transport            ENUM('email','pagerduty','slack','teams') NOT NULL,
+		transport            VARCHAR(32) NOT NULL,
 		destination          JSON NOT NULL,
 		destination_preview  VARCHAR(8) NOT NULL DEFAULT '',
 		site_filter          JSON NULL,
@@ -326,7 +330,7 @@ var migrations = []migration{
 		event_type        VARCHAR(64) NOT NULL,
 		severity          TINYINT UNSIGNED NOT NULL,
 		payload           JSON NOT NULL,
-		status            ENUM('pending','delivered','failed','abandoned') NOT NULL DEFAULT 'pending',
+		status            VARCHAR(16) NOT NULL DEFAULT 'pending',
 		attempt           INT UNSIGNED NOT NULL DEFAULT 0,
 		next_attempt_at   TIMESTAMP NULL,
 		last_status_code  INT NULL,
@@ -478,7 +482,7 @@ var migrations = []migration{
 	// durable evidence that v2 probes are exercising the GET path rather than
 	// the HEAD-only behavior that caused v1 false positives and false negatives.
 	{32, `ALTER TABLE jetpack_monitor_check_history
-		ADD COLUMN request_method VARCHAR(16) NOT NULL DEFAULT 'GET' AFTER blog_id`},
+		ADD COLUMN request_method VARCHAR(16) NOT NULL DEFAULT 'GET' AFTER source_site_id`},
 
 	// Migration 33 adds an array form for explicit forbidden body-content
 	// checks. forbidden_keyword remains for compatibility and simple one-off
@@ -507,11 +511,12 @@ var migrations = []migration{
 		last_checked_at     TIMESTAMP(3) NULL,
 		last_success_at     TIMESTAMP(3) NULL,
 		last_failure_at     TIMESTAMP(3) NULL,
-		last_outcome        ENUM('unknown','success','failure') NOT NULL DEFAULT 'unknown',
+		last_outcome        VARCHAR(16) NOT NULL DEFAULT 'unknown',
 		updated_at          TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
-		UNIQUE KEY uk_blog_id (blog_id),
-		INDEX idx_bucket_phase (bucket_no, phase_slot_sec, blog_id),
-		INDEX idx_bucket_active (bucket_no, monitor_active, blog_id),
+		UNIQUE KEY uk_source_site_id (source_site_id),
+		INDEX idx_bucket_phase (bucket_no, phase_slot_sec, source_site_id),
+		INDEX idx_bucket_active (bucket_no, monitor_active, source_site_id),
+		INDEX idx_blog_id (blog_id),
 		INDEX idx_config_sync (last_config_sync_at)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
 
@@ -529,11 +534,13 @@ var migrations = []migration{
 	// letting operators migrate in phases without another hot ALTER on the
 	// largest v1 compatibility table.
 	{36, `CREATE TABLE IF NOT EXISTS jetpack_monitor_site_check_config (
-		blog_id            BIGINT UNSIGNED NOT NULL PRIMARY KEY,
-		request_method     ENUM('HEAD','GET') NULL,
-		detection_profile  ENUM('legacy','simple_http','full') NULL,
+		source_site_id    BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+		blog_id           BIGINT UNSIGNED NOT NULL,
+		request_method    VARCHAR(16) NULL,
+		detection_profile VARCHAR(32) NULL,
 		created_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+		INDEX idx_blog_id (blog_id),
 		INDEX idx_request_method (request_method),
 		INDEX idx_detection_profile (detection_profile)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
@@ -542,14 +549,16 @@ var migrations = []migration{
 	// table. These values are useful for API display and rollback freshness
 	// checks, but they do not need to change the v1 table shape.
 	{37, `CREATE TABLE IF NOT EXISTS jetpack_monitor_site_runtime (
-		blog_id            BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+		source_site_id     BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+		blog_id            BIGINT UNSIGNED NOT NULL,
 		last_checked_at    DATETIME NULL,
 		next_check_at      DATETIME NULL,
 		last_alert_sent_at DATETIME NULL,
 		ssl_expiry_date    DATE NULL,
 		updated_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-		INDEX idx_next_check (next_check_at, blog_id),
-		INDEX idx_last_checked (last_checked_at, blog_id)
+		INDEX idx_blog_id (blog_id),
+		INDEX idx_next_check (next_check_at, source_site_id),
+		INDEX idx_last_checked (last_checked_at, source_site_id)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
 
 	// Migration 38 extends the Jetmon-owned check config table with every
@@ -564,16 +573,14 @@ var migrations = []migration{
 		ADD COLUMN maintenance_end        DATETIME NULL AFTER maintenance_start,
 		ADD COLUMN custom_headers         JSON NULL AFTER maintenance_end,
 		ADD COLUMN timeout_seconds        TINYINT UNSIGNED NULL AFTER custom_headers,
-		ADD COLUMN redirect_policy        ENUM('follow','alert','fail') NULL DEFAULT NULL AFTER timeout_seconds,
+		ADD COLUMN redirect_policy        VARCHAR(16) NULL DEFAULT NULL AFTER timeout_seconds,
 		ADD COLUMN alert_cooldown_minutes SMALLINT UNSIGNED NULL AFTER redirect_policy`},
 
-	// Migration 39 prepares the v2-native target table for production rows
-	// where one blog_id has multiple active monitor URLs. The legacy table's
-	// primary row id is the durable endpoint identity, so target sync must be
-	// unique on source_site_id rather than collapsing all endpoints for a blog.
-	{39, `ALTER TABLE jetpack_monitor_check_targets
-		DROP INDEX uk_blog_id,
-		ADD UNIQUE KEY uk_source_site_id (source_site_id)`},
+	// Migration 39 previously changed jetpack_monitor_check_targets from
+	// blog_id uniqueness to source_site_id uniqueness. Production has not
+	// received the v2 schema yet, so migration 34 now creates the correct
+	// endpoint-keyed shape directly.
+	{39, `SELECT 1`},
 
 	// Migration 40 creates the trusted Veriflier vantage registry used by
 	// monitor-side discovery. Vantages are quorum-counted identities, not
@@ -610,7 +617,7 @@ var migrations = []migration{
 		queue_depth     INT UNSIGNED NOT NULL DEFAULT 0,
 		active          INT UNSIGNED NOT NULL DEFAULT 0,
 		in_flight       INT UNSIGNED NOT NULL DEFAULT 0,
-		status          ENUM('starting','active','draining','stopped') NOT NULL DEFAULT 'active',
+		status          VARCHAR(16) NOT NULL DEFAULT 'active',
 		last_seen       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -628,7 +635,7 @@ var migrations = []migration{
 		owner_host   VARCHAR(255) NOT NULL DEFAULT '',
 		change_ref   VARCHAR(255) NOT NULL DEFAULT '',
 		operator     VARCHAR(128) NOT NULL DEFAULT '',
-		status       ENUM('open','completed','aborted') NOT NULL DEFAULT 'open',
+		status       VARCHAR(16) NOT NULL DEFAULT 'open',
 		metadata     JSON NULL,
 		created_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -646,7 +653,7 @@ var migrations = []migration{
 		bucket_max    SMALLINT UNSIGNED NOT NULL,
 		owner_host    VARCHAR(255) NOT NULL,
 		change_ref    VARCHAR(255) NOT NULL DEFAULT '',
-		status        ENUM('active','released') NOT NULL DEFAULT 'active',
+		status        VARCHAR(16) NOT NULL DEFAULT 'active',
 		activated_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		released_at   TIMESTAMP NULL,
 		metadata      JSON NULL,
@@ -663,7 +670,7 @@ var migrations = []migration{
 		run_id       VARCHAR(64) NOT NULL,
 		range_lock_id BIGINT UNSIGNED NOT NULL,
 		owner_host   VARCHAR(255) NOT NULL,
-		status       ENUM('active') NOT NULL DEFAULT 'active',
+		status       VARCHAR(16) NOT NULL DEFAULT 'active',
 		activated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		INDEX idx_owner (owner_host),
 		INDEX idx_run_id (run_id),
@@ -677,7 +684,7 @@ var migrations = []migration{
 		job_id      VARCHAR(64) NOT NULL PRIMARY KEY,
 		run_id      VARCHAR(64) NOT NULL DEFAULT '',
 		operation   VARCHAR(64) NOT NULL,
-		status      ENUM('queued','running','completed','failed','blocked') NOT NULL DEFAULT 'completed',
+		status      VARCHAR(16) NOT NULL DEFAULT 'completed',
 		progress    TINYINT UNSIGNED NOT NULL DEFAULT 100,
 		summary     VARCHAR(1024) NOT NULL DEFAULT '',
 		result      JSON NULL,
@@ -731,7 +738,7 @@ var migrations = []migration{
 		to_error_code      INT NOT NULL DEFAULT 0,
 		from_rtt_ms        INT NOT NULL DEFAULT 0,
 		to_rtt_ms          INT NOT NULL DEFAULT 0,
-		delta_class        ENUM('same','get_better','get_worse','different_failure') NOT NULL DEFAULT 'same',
+		delta_class        VARCHAR(32) NOT NULL DEFAULT 'same',
 		created_at         TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
 		INDEX idx_job (job_id),
 		INDEX idx_run_created (run_id, created_at),
@@ -748,6 +755,7 @@ var migrations = []migration{
 		job_id                     VARCHAR(64) NOT NULL,
 		run_id                     VARCHAR(64) NOT NULL DEFAULT '',
 		blog_id                    BIGINT UNSIGNED NOT NULL,
+		source_site_id             BIGINT UNSIGNED NOT NULL,
 		bucket_no                  SMALLINT UNSIGNED NOT NULL,
 		previous_request_method    VARCHAR(16) NULL,
 		previous_detection_profile VARCHAR(32) NULL,
@@ -758,7 +766,8 @@ var migrations = []migration{
 		INDEX idx_job (job_id),
 		INDEX idx_run_created (run_id, created_at),
 		INDEX idx_rollback (run_id, rolled_back_at, created_at),
-		INDEX idx_blog (blog_id)
+		INDEX idx_blog (blog_id),
+		INDEX idx_source_site (source_site_id)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`},
 
 	// Migration 49 records non-downtime probe safety findings separately from
@@ -769,10 +778,10 @@ var migrations = []migration{
 		id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
 		blog_id         BIGINT UNSIGNED NOT NULL,
 		monitor_site_id BIGINT UNSIGNED NOT NULL,
-		flag_type       ENUM('unsafe_monitor_url','probe_safety_block') NOT NULL,
+		flag_type       VARCHAR(32) NOT NULL,
 		reason          VARCHAR(1024) NOT NULL,
 		monitor_url     VARCHAR(2083) NOT NULL,
-		status          ENUM('open','deactivated','ignored','resolved') NOT NULL DEFAULT 'open',
+		status          VARCHAR(16) NOT NULL DEFAULT 'open',
 		first_seen_at   TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
 		last_seen_at    TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
 		deactivated_at  TIMESTAMP(3) NULL,

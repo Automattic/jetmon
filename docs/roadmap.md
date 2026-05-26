@@ -57,7 +57,7 @@ Open work:
   `db-servers.php`, Docker bridge access to host-local Monitor StatsD,
   Veriflier Compose StatsD/Graphite, WPCOM simulation, API rollout flow, and
   rollback.
-- [ ] Move monitor runtime/config/event identity from per-`blog_id` state to
+- [x] Move monitor runtime/config/event identity from per-`blog_id` state to
   explicit endpoint identity, using the existing `jetpack_monitor_site_id` row
   as the durable source during migration. This is required for the real
   production cohort where one `blog_id` has multiple active monitor URLs.
