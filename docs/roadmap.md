@@ -17,6 +17,8 @@ Deferred work and future direction. Completed history belongs in
 - Keep guided rollout checks aligned with real deployment.
 - Maintain approved canaries for smoke and method comparison.
 - Track legacy consumers of `site_status`, stats files, and WPCOM payloads.
+- Retire local/lab dependence on `jetpack_monitor_schema_migrations` after the
+  structural schema reconciler has enough usage evidence.
 - Retire pinned bucket mode and migration aliases after cutover.
 - Decide when `LEGACY_STATUS_PROJECTION_ENABLE` can default off.
 

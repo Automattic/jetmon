@@ -78,16 +78,16 @@ var (
 	dbMarkHostDraining      = db.MarkHostDraining
 	dbListActiveSites       = db.ListActiveSitesForBucketRange
 	dbCountActiveSites      = db.CountActiveSitesForBucketRange
-	dbMarkSiteChecked       = db.MarkSiteChecked
+	dbMarkSiteChecked       = db.MarkSiteCheckedForMonitorSite
 	dbMarkSitesChecked      = db.MarkSitesChecked
-	dbRecordCheckHistory    = db.RecordCheckHistory
+	dbRecordCheckHistory    = db.RecordCheckHistoryForMonitorSite
 	dbRecordCheckHistories  = db.RecordCheckHistories
-	dbUpdateSSLExpiry       = db.UpdateSSLExpiry
+	dbUpdateSSLExpiry       = db.UpdateSSLExpiryForMonitorSite
 	dbUpdateSSLExpiries     = db.UpdateSSLExpiries
 	dbUpdateSiteStatus      = db.UpdateSiteStatus
 	dbGetSiteStatus         = db.GetSiteStatusForMonitorSite
 	dbRecordFalsePositive   = db.RecordFalsePositive
-	dbUpdateLastAlertSent   = db.UpdateLastAlertSent
+	dbUpdateLastAlertSent   = db.UpdateLastAlertSentForMonitorSite
 	dbCountProjectionDrift  = db.CountLegacyProjectionDrift
 	dbListVeriflierVantages = db.ListEnabledVeriflierVantages
 	dbUpsertVeriflierAgent  = db.UpsertVeriflierAgent
@@ -468,8 +468,9 @@ func (o *Orchestrator) processResults(results map[int64]checker.Result, sites ma
 		if record.res.SSLExpiry != nil {
 			if shouldUpdateSSLExpiry(record.site.SSLExpiryDate, *record.res.SSLExpiry) {
 				sslUpdates = append(sslUpdates, db.SiteSSLExpiry{
-					BlogID: record.blogID,
-					Expiry: *record.res.SSLExpiry,
+					SourceSiteID: record.site.ID,
+					BlogID:       record.blogID,
+					Expiry:       *record.res.SSLExpiry,
 				})
 			}
 			o.checkSSLAlerts(record.site, *record.res.SSLExpiry)
@@ -612,7 +613,7 @@ func (o *Orchestrator) updateSSLExpiries(updates []db.SiteSSLExpiry, summary *re
 		summary.sslErrors++
 		log.Printf("orchestrator: batch update ssl expiries rows=%d: %v", len(updates), err)
 		for _, update := range updates {
-			if err := dbUpdateSSLExpiry(o.ctx, update.BlogID, update.Expiry); err != nil {
+			if err := dbUpdateSSLExpiry(o.ctx, update.SourceSiteID, update.BlogID, update.Expiry); err != nil {
 				summary.sslErrors++
 				log.Printf("orchestrator: update ssl expiry blog_id=%d: %v", update.BlogID, err)
 				continue
@@ -652,9 +653,10 @@ func (o *Orchestrator) markResultsChecked(records []siteCheckResult, summary *re
 	checks := make([]db.SiteCheck, 0, len(records))
 	for _, record := range records {
 		checks = append(checks, db.SiteCheck{
-			BlogID:      record.blogID,
-			CheckedAt:   resultCheckedAt(record.res),
-			NextCheckAt: nextCheckAt(record.site, record.res),
+			SourceSiteID: record.site.ID,
+			BlogID:       record.blogID,
+			CheckedAt:    resultCheckedAt(record.res),
+			NextCheckAt:  nextCheckAt(record.site, record.res),
 		})
 	}
 
@@ -663,7 +665,7 @@ func (o *Orchestrator) markResultsChecked(records []siteCheckResult, summary *re
 		summary.markCheckedErrors++
 		log.Printf("orchestrator: batch mark checked sites=%d: %v", len(checks), err)
 		for _, check := range checks {
-			if err := dbMarkSiteChecked(o.ctx, check.BlogID, check.CheckedAt, check.NextCheckAt); err != nil {
+			if err := dbMarkSiteChecked(o.ctx, check.SourceSiteID, check.BlogID, check.CheckedAt, check.NextCheckAt); err != nil {
 				summary.markCheckedErrors++
 				log.Printf("orchestrator: mark checked blog_id=%d: %v", check.BlogID, err)
 				continue
@@ -683,7 +685,7 @@ func (o *Orchestrator) recordResultHistories(records []siteCheckResult, summary 
 		if !shouldRecordCheckHistory(cfg, record.site, record.res, o.checkHistoryCounter.Add(1)) {
 			continue
 		}
-		histories = append(histories, checkHistoryRowForResult(record.blogID, record.res))
+		histories = append(histories, checkHistoryRowForResult(record.site, record.res))
 	}
 	if len(histories) == 0 {
 		return
@@ -695,6 +697,7 @@ func (o *Orchestrator) recordResultHistories(records []siteCheckResult, summary 
 		log.Printf("orchestrator: batch record check history rows=%d: %v", len(histories), err)
 		for _, row := range histories {
 			if err := dbRecordCheckHistory(
+				row.SourceSiteID,
 				row.BlogID,
 				row.RequestMethod,
 				row.HTTPCode,
@@ -730,6 +733,7 @@ func (o *Orchestrator) recordStreamingHistoryRows(rows []db.CheckHistoryRow) res
 		log.Printf("orchestrator: streaming batch record check history rows=%d: %v", len(rows), err)
 		for _, row := range rows {
 			if err := dbRecordCheckHistory(
+				row.SourceSiteID,
 				row.BlogID,
 				row.RequestMethod,
 				row.HTTPCode,
@@ -798,9 +802,10 @@ func resultDisagreesWithStatus(site db.Site, res checker.Result) bool {
 	return wasUp != res.Success
 }
 
-func checkHistoryRowForResult(blogID int64, res checker.Result) db.CheckHistoryRow {
+func checkHistoryRowForResult(site db.Site, res checker.Result) db.CheckHistoryRow {
 	return db.CheckHistoryRow{
-		BlogID:        blogID,
+		SourceSiteID:  site.ID,
+		BlogID:        site.BlogID,
 		RequestMethod: res.Method,
 		HTTPCode:      res.HTTPCode,
 		ErrorCode:     res.ErrorCode,
@@ -1973,7 +1978,7 @@ func (o *Orchestrator) sendNotification(site db.Site, res checker.Result, status
 	}
 	emitCounter("wpcom.notification.delivered.count", 1)
 	emitCounter("wpcom.notification.status."+wpcomStatus+".delivered.count", 1)
-	if err := dbUpdateLastAlertSent(o.ctx, site.BlogID, nowFunc().UTC()); err != nil {
+	if err := dbUpdateLastAlertSent(o.ctx, site.ID, site.BlogID, nowFunc().UTC()); err != nil {
 		log.Printf("orchestrator: update last alert sent blog_id=%d: %v", site.BlogID, err)
 	}
 }

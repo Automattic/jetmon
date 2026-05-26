@@ -9,9 +9,9 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
-const readSiteForCheckSQL = ` SELECT s.monitor_url, c.timeout_seconds, c.check_keyword, c.forbidden_keyword, c.forbidden_keywords, c.custom_headers, c.redirect_policy, c.request_method, c.detection_profile, s.site_status FROM jetpack_monitor_sites s LEFT JOIN jetpack_monitor_site_check_config c ON c.blog_id = s.blog_id WHERE s.blog_id = ?`
+const readSiteForCheckSQL = ` SELECT s.blog_id, s.monitor_url, c.timeout_seconds, c.check_keyword, c.forbidden_keyword, c.forbidden_keywords, c.custom_headers, c.redirect_policy, c.request_method, c.detection_profile, s.site_status FROM jetpack_monitor_sites s LEFT JOIN jetpack_monitor_site_check_config c ON c.source_site_id = s.jetpack_monitor_site_id WHERE s.jetpack_monitor_site_id = ?`
 
-var columnsSiteForCheck = []string{"monitor_url", "timeout_seconds", "check_keyword", "forbidden_keyword", "forbidden_keywords", "custom_headers", "redirect_policy", "request_method", "detection_profile", "site_status"}
+var columnsSiteForCheck = []string{"blog_id", "monitor_url", "timeout_seconds", "check_keyword", "forbidden_keyword", "forbidden_keywords", "custom_headers", "redirect_policy", "request_method", "detection_profile", "site_status"}
 
 func allowUnsafeTriggerTargetsForTest(t *testing.T) {
 	t.Helper()
@@ -56,9 +56,9 @@ func TestTriggerNowSuccessNoActiveEvents(t *testing.T) {
 
 	mock.ExpectQuery(readSiteForCheckSQL).WithArgs(int64(42)).
 		WillReturnRows(sqlmock.NewRows(columnsSiteForCheck).
-			AddRow(target.URL, nil, nil, nil, nil, nil, "follow", nil, nil, 1))
-	mock.ExpectQuery(`SELECT id FROM jetpack_monitor_events WHERE blog_id = ? AND ended_at IS NULL`).
-		WithArgs(int64(42)).
+			AddRow(int64(42), target.URL, nil, nil, nil, nil, nil, "follow", nil, nil, 1))
+	mock.ExpectQuery(`SELECT id FROM jetpack_monitor_events WHERE blog_id = ? AND ended_at IS NULL AND (endpoint_id = ? OR endpoint_id IS NULL)`).
+		WithArgs(int64(42), int64(42)).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 
 	req := httptest.NewRequest("POST", "/api/v1/sites/42/trigger-now", nil)
@@ -96,7 +96,7 @@ func TestTriggerNowForbiddenKeywordFailsCheck(t *testing.T) {
 
 	mock.ExpectQuery(readSiteForCheckSQL).WithArgs(int64(42)).
 		WillReturnRows(sqlmock.NewRows(columnsSiteForCheck).
-			AddRow(target.URL, nil, nil, "FORBIDDEN", nil, nil, "follow", nil, nil, 1))
+			AddRow(int64(42), target.URL, nil, nil, "FORBIDDEN", nil, nil, "follow", nil, nil, 1))
 
 	req := httptest.NewRequest("POST", "/api/v1/sites/42/trigger-now", nil)
 	req.SetPathValue("id", "42")
@@ -130,14 +130,14 @@ func TestTriggerNowWithGatewayTenantAllowsMappedSite(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
 
+	mock.ExpectQuery(readSiteForCheckSQL).WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows(columnsSiteForCheck).
+			AddRow(int64(42), target.URL, nil, nil, nil, nil, nil, "follow", nil, nil, 1))
 	mock.ExpectQuery(siteTenantCheckSQL).
 		WithArgs("tenant-a", int64(42)).
 		WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
-	mock.ExpectQuery(readSiteForCheckSQL).WithArgs(int64(42)).
-		WillReturnRows(sqlmock.NewRows(columnsSiteForCheck).
-			AddRow(target.URL, nil, nil, nil, nil, nil, "follow", nil, nil, 1))
-	mock.ExpectQuery(`SELECT id FROM jetpack_monitor_events WHERE blog_id = ? AND ended_at IS NULL`).
-		WithArgs(int64(42)).
+	mock.ExpectQuery(`SELECT id FROM jetpack_monitor_events WHERE blog_id = ? AND ended_at IS NULL AND (endpoint_id = ? OR endpoint_id IS NULL)`).
+		WithArgs(int64(42), int64(42)).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 
 	req := httptest.NewRequest("POST", "/api/v1/sites/42/trigger-now", nil)
@@ -173,9 +173,9 @@ func TestTriggerNowSuccessClosesActiveEvent(t *testing.T) {
 
 	mock.ExpectQuery(readSiteForCheckSQL).WithArgs(int64(42)).
 		WillReturnRows(sqlmock.NewRows(columnsSiteForCheck).
-			AddRow(target.URL, nil, nil, nil, nil, nil, "follow", nil, nil, 2))
-	mock.ExpectQuery(`SELECT id FROM jetpack_monitor_events WHERE blog_id = ? AND ended_at IS NULL`).
-		WithArgs(int64(42)).
+			AddRow(int64(42), target.URL, nil, nil, nil, nil, nil, "follow", nil, nil, 2))
+	mock.ExpectQuery(`SELECT id FROM jetpack_monitor_events WHERE blog_id = ? AND ended_at IS NULL AND (endpoint_id = ? OR endpoint_id IS NULL)`).
+		WithArgs(int64(42), int64(42)).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(7)))
 
 	expectCloseEventTx(mock, 7, 42, 4, "Down", "probe_cleared")
@@ -204,7 +204,7 @@ func TestTriggerNowUnsafeStoredURLIsProbeSafetyBlock(t *testing.T) {
 
 	mock.ExpectQuery(readSiteForCheckSQL).WithArgs(int64(42)).
 		WillReturnRows(sqlmock.NewRows(columnsSiteForCheck).
-			AddRow("http://127.0.0.1/admin", nil, nil, nil, nil, nil, "follow", nil, nil, 2))
+			AddRow(int64(42), "http://127.0.0.1/admin", nil, nil, nil, nil, nil, "follow", nil, nil, 2))
 
 	req := httptest.NewRequest("POST", "/api/v1/sites/42/trigger-now", nil)
 	req.SetPathValue("id", "42")

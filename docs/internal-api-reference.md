@@ -51,6 +51,10 @@ Tenant context scopes site/event/stat routes through
 Config precedence: flags, environment, `JETMON_API_CONFIG` or
 `~/.config/jetmon2.conf`, then Docker-local defaults.
 
+For production rollout, run `jetmon2` locally as an operator API client and
+point it at one approved Monitor API. The CLI does not need container shell
+access or direct database access for API-backed rollout commands.
+
 ```bash
 make api-cli-token-create
 export JETMON_API_URL=http://localhost:${API_HOST_PORT:-8090}
@@ -107,6 +111,11 @@ Mutating rollout operations are dry-run/execute. Dry-run returns a confirmation
 token bound to operation, range, request shape, run ID, and API key identity.
 
 ### Sites, Events, And Stats
+
+`{id}` is the monitored endpoint row id
+(`jetpack_monitor_sites.jetpack_monitor_site_id`), not `blog_id`. A blog can
+have multiple active monitor URLs; API paths stay endpoint-specific while
+payloads still include `blog_id` for WPCOM/site identity.
 
 | Method | Path | Scope | Purpose |
 | --- | --- | --- | --- |

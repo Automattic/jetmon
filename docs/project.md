@@ -66,16 +66,23 @@ same DB-backed delivery queues as the embedded workers.
 | `jetpack_monitor_sites` | v1 identity, bucket, cadence, compatibility projection. |
 | `jetpack_monitor_site_check_config` | V2 check policy. |
 | `jetpack_monitor_site_runtime` | Freshness, next check, SSL/runtime observations. |
+| `jetpack_monitor_check_targets` | V2-derived scheduling state keyed by legacy row id. |
 | `jetpack_monitor_hosts` | Dynamic bucket ownership and heartbeat. |
+| `jetpack_monitor_process_health` | Per-process readiness, queues, buckets, and runtime health. |
 | `jetpack_monitor_events` | Current incident projection. |
 | `jetpack_monitor_event_transitions` | Append-only event mutation history. |
 | `jetpack_monitor_check_history` | Per-check timing/status samples. |
 | `jetpack_monitor_audit_log` | Operational actions and evidence. |
 | `jetpack_monitor_site_safety_flags` | Unsafe URL and probe-safety state. |
 | `jetpack_monitor_api_keys` | Internal API service tokens. |
+| Veriflier tables | Vantage registry and agent heartbeat/discovery state. |
+| rollout tables | Sessions, jobs, locks, confirmation tokens, comparisons, and staged policy rows. |
 | delivery tables | Webhook and alert-contact registrations, progress, and deliveries. |
 
-All timestamps are UTC.
+V2 side tables that describe one monitored endpoint use
+`jetpack_monitor_sites.jetpack_monitor_site_id` / `source_site_id`.
+`blog_id` remains the WPCOM/site identity and is not assumed unique. All
+timestamps are UTC.
 
 ## Event Model
 

@@ -26,8 +26,8 @@ Manual non-Compose run:
 
 ```bash
 cp config/config-sample.json config/config.json
+./bin/jetmon2 schema ensure
 ./bin/jetmon2 validate-config
-./bin/jetmon2 migrate
 ./bin/jetmon2
 ```
 
@@ -71,8 +71,12 @@ Long raw benchmark reports belong in the sibling `uptime-bench` repo.
 | Docker rollout | `make rollout-docker-lab` | API-guided rollout and rollback in local containers. |
 | VM rollout | `make rollout-vm-lab-smoke` | Production-shaped systemd/KVM rollout rehearsal. |
 | Scale resilience | `make scale-resilience-lab` | Dynamic ownership, host loss, DB disruption behavior. |
-| Soak | `make v2-soak-lab` | Sustained operation without outbound side effects. |
+| Soak | `make v2-soak-lab` | Sustained low-write operation without outbound side effects. |
 | API fixture safety | `make api-cli-public-fixture-validate` | Probe-safety behavior against controlled fixtures. |
+
+`make v2-soak-lab` validates Monitor completion summaries plus the coarse
+legacy freshness projection. It should not require every healthy probe to write
+`jetpack_monitor_site_runtime` or `jetpack_monitor_check_history`.
 
 VM helpers include `rollout-vm-lab-doctor`, `rollout-vm-lab-prepare`,
 `rollout-vm-lab-execute-smoke`, failure/resume smoke targets, and snapshot smoke

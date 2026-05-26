@@ -166,6 +166,7 @@ func (w *Worker) dispatchTick() error {
 		id             int64
 		eventID        int64
 		blogID         int64
+		endpointID     sql.NullInt64
 		severityBefore sql.NullInt64
 		severityAfter  sql.NullInt64
 		stateAfter     sql.NullString
@@ -174,7 +175,7 @@ func (w *Worker) dispatchTick() error {
 	}
 
 	rows, err := w.cfg.DB.QueryContext(ctx, `
-		SELECT id, event_id, blog_id, severity_before, severity_after, state_after, reason, changed_at
+		SELECT id, event_id, blog_id, endpoint_id, severity_before, severity_after, state_after, reason, changed_at
 		  FROM jetpack_monitor_event_transitions
 		 WHERE id > ?
 		 ORDER BY id ASC
@@ -187,7 +188,7 @@ func (w *Worker) dispatchTick() error {
 	var transitions []transitionRow
 	for rows.Next() {
 		var t transitionRow
-		if err := rows.Scan(&t.id, &t.eventID, &t.blogID, &t.severityBefore, &t.severityAfter, &t.stateAfter, &t.reason, &t.changedAt); err != nil {
+		if err := rows.Scan(&t.id, &t.eventID, &t.blogID, &t.endpointID, &t.severityBefore, &t.severityAfter, &t.stateAfter, &t.reason, &t.changedAt); err != nil {
 			return fmt.Errorf("scan transition: %w", err)
 		}
 		transitions = append(transitions, t)
@@ -232,7 +233,7 @@ func (w *Worker) dispatchTick() error {
 			if !c.Matches(prev, next, t.blogID) {
 				continue
 			}
-			payload, err := buildPayload(eventType, t.id, t.eventID, t.blogID, t.reason, state, prev, next, t.changedAt)
+			payload, err := buildPayload(eventType, t.id, t.eventID, t.blogID, t.endpointID, t.reason, state, prev, next, t.changedAt)
 			if err != nil {
 				log.Printf("alerting: build payload event_id=%d transition_id=%d: %v", t.eventID, t.id, err)
 				continue
@@ -280,7 +281,7 @@ func eventTypeForReason(reason string) string {
 // buildPayload returns the JSON body stored on the delivery row. Frozen
 // at enqueue time. Includes both severity values so the renderer at
 // dispatch time can correctly distinguish escalation from recovery.
-func buildPayload(eventType string, transitionID, eventID, blogID int64, reason, state string, prev, next uint8, occurredAt time.Time) (json.RawMessage, error) {
+func buildPayload(eventType string, transitionID, eventID, blogID int64, endpointID sql.NullInt64, reason, state string, prev, next uint8, occurredAt time.Time) (json.RawMessage, error) {
 	body := map[string]any{
 		"type":            eventType,
 		"occurred_at":     occurredAt.UTC().Format(time.RFC3339Nano),
@@ -291,6 +292,9 @@ func buildPayload(eventType string, transitionID, eventID, blogID int64, reason,
 		"state":           state,
 		"severity_before": prev,
 		"severity_after":  next,
+	}
+	if endpointID.Valid {
+		body["endpoint_id"] = endpointID.Int64
 	}
 	return json.Marshal(body)
 }

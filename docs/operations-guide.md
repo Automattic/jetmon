@@ -102,6 +102,17 @@ Important production render inputs:
 Set production defaults explicitly even when the entrypoint has the same
 fallback. Visible config review matters more than implicit defaults.
 
+## Schema Posture
+
+Production schema is applied by Systems before activation. The service should
+run with `CONFIG_PROFILE=production` and `SCHEMA_MANAGEMENT_MODE=validate`; that
+path checks tables, columns, and indexes but never applies DDL.
+
+Use [production-schema.md](production-schema.md) for the reviewed
+baseline SQL and table inventory. `jetpack_monitor_schema_migrations` is not a
+production contract; validation checks the live schema shape through
+`information_schema`.
+
 ## Validate A Container
 
 Before activation, validate the exact image/config/secrets that docker-deploy
@@ -145,8 +156,8 @@ docker exec jetmon ./jetmon2 status
 docker exec jetmon ./jetmon2 validate-config
 ```
 
-Do not run `migrate` from a production container unless it is the approved
-schema-change action.
+Do not run `schema reconcile --execute` or deprecated `migrate` from a
+production container unless that is the approved schema-change action.
 
 ## Restart, Drain, And Recreate
 

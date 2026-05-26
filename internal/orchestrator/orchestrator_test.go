@@ -419,7 +419,7 @@ func TestSendNotificationRetriesAndUpdatesAlertTimestamp(t *testing.T) {
 	}
 
 	var updatedBlogID int64
-	dbUpdateLastAlertSent = func(_ context.Context, blogID int64, _ time.Time) error {
+	dbUpdateLastAlertSent = func(_ context.Context, _ int64, blogID int64, _ time.Time) error {
 		updatedBlogID = blogID
 		return nil
 	}
@@ -471,7 +471,7 @@ func TestSendNotificationDoesNotRetryWhenWPCOMCircuitOpen(t *testing.T) {
 	}
 
 	var updateAlertCalled bool
-	dbUpdateLastAlertSent = func(context.Context, int64, time.Time) error {
+	dbUpdateLastAlertSent = func(context.Context, int64, int64, time.Time) error {
 		updateAlertCalled = true
 		return nil
 	}
@@ -525,7 +525,7 @@ func TestSendNotificationDoesNotRetryPermanentWPCOMFailure(t *testing.T) {
 	}
 
 	var updateAlertCalled bool
-	dbUpdateLastAlertSent = func(context.Context, int64, time.Time) error {
+	dbUpdateLastAlertSent = func(context.Context, int64, int64, time.Time) error {
 		updateAlertCalled = true
 		return nil
 	}
@@ -582,7 +582,7 @@ func TestSendNotificationSkipsWhenWPCOMDisabled(t *testing.T) {
 	}
 
 	var updatedBlogID int64
-	dbUpdateLastAlertSent = func(_ context.Context, blogID int64, _ time.Time) error {
+	dbUpdateLastAlertSent = func(_ context.Context, _ int64, blogID int64, _ time.Time) error {
 		updatedBlogID = blogID
 		return nil
 	}
@@ -624,7 +624,7 @@ func TestSendNotificationBuildsLegacyWPCOMPayload(t *testing.T) {
 		return nil
 	}
 	var updatedAt time.Time
-	dbUpdateLastAlertSent = func(_ context.Context, blogID int64, ts time.Time) error {
+	dbUpdateLastAlertSent = func(_ context.Context, _ int64, blogID int64, ts time.Time) error {
 		if blogID != 123 {
 			t.Fatalf("updated alert blog_id = %d, want 123", blogID)
 		}
@@ -727,7 +727,7 @@ func TestEscalateToVerifliersConfirmsWhenQuorumReached(t *testing.T) {
 		notifyCalls++
 		return nil
 	}
-	dbUpdateLastAlertSent = func(context.Context, int64, time.Time) error { return nil }
+	dbUpdateLastAlertSent = func(context.Context, int64, int64, time.Time) error { return nil }
 
 	veriflierCheckFunc = func(c *veriflier.VeriflierClient, _ context.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
 		if req.BodyReadMaxBytes != cfg.BodyReadMaxBytes {
@@ -956,7 +956,7 @@ func TestEscalateToVerifliersAllowsSingleConfiguredVerifier(t *testing.T) {
 		notifyCalls++
 		return nil
 	}
-	dbUpdateLastAlertSent = func(context.Context, int64, time.Time) error { return nil }
+	dbUpdateLastAlertSent = func(context.Context, int64, int64, time.Time) error { return nil }
 	veriflierCheckFunc = func(c *veriflier.VeriflierClient, _ context.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
 		return &veriflier.CheckResult{
 			BlogID:   req.BlogID,
@@ -1394,7 +1394,7 @@ func TestEscalateToVerifliersConfirmsDownOnPartialResponseFromLocalAndVerifier(t
 		got = n
 		return nil
 	}
-	dbUpdateLastAlertSent = func(context.Context, int64, time.Time) error { return nil }
+	dbUpdateLastAlertSent = func(context.Context, int64, int64, time.Time) error { return nil }
 
 	veriflierCheckFunc = func(c *veriflier.VeriflierClient, _ context.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
 		if req.BodyReadMaxBytes != cfg.BodyReadMaxBytes {
@@ -1482,13 +1482,13 @@ func stubOrchestratorDeps() func() {
 	dbMarkHostDraining = func(context.Context, string) error { return nil }
 	dbUpdateSiteStatus = func(context.Context, int64, int, time.Time) error { return nil }
 	dbGetSiteStatus = func(context.Context, int64, int64) (int, error) { return statusRunning, nil }
-	dbUpdateLastAlertSent = func(context.Context, int64, time.Time) error { return nil }
+	dbUpdateLastAlertSent = func(context.Context, int64, int64, time.Time) error { return nil }
 	dbRecordFalsePositive = func(int64, int, int, int64) error { return nil }
-	dbMarkSiteChecked = func(context.Context, int64, time.Time, time.Time) error { return nil }
+	dbMarkSiteChecked = func(context.Context, int64, int64, time.Time, time.Time) error { return nil }
 	dbMarkSitesChecked = func(context.Context, []db.SiteCheck) error { return nil }
-	dbRecordCheckHistory = func(int64, string, int, int, int64, int64, int64, int64, int64) error { return nil }
+	dbRecordCheckHistory = func(int64, int64, string, int, int, int64, int64, int64, int64, int64) error { return nil }
 	dbRecordCheckHistories = func(context.Context, []db.CheckHistoryRow) error { return nil }
-	dbUpdateSSLExpiry = func(context.Context, int64, time.Time) error { return nil }
+	dbUpdateSSLExpiry = func(context.Context, int64, int64, time.Time) error { return nil }
 	dbUpdateSSLExpiries = func(context.Context, []db.SiteSSLExpiry) error { return nil }
 	dbCountProjectionDrift = func(context.Context, int, int) (int, error) { return 0, nil }
 	dbListVeriflierVantages = func(context.Context, time.Duration) ([]db.VeriflierVantage, error) { return nil, nil }
@@ -1549,6 +1549,10 @@ func setTestConfig(t *testing.T) *config.Config {
 	cfg.AlertCooldownMinutes = 30
 	cfg.NumOfChecks = 3
 	cfg.PeerOfflineLimit = 2
+	// Most orchestrator tests exercise legacy WPCOM notification behavior. Keep
+	// that opt-in explicit now that the dev profile disables notifications by
+	// default for local safety.
+	cfg.WPCOMNotifyEnable = true
 	cfg.LegacyStatusProjectionEnable = false
 	// Existing orchestrator tests assert that every processed result writes a
 	// check-history row; keep them on mode=all. The shouldRecordCheckHistory
@@ -1750,7 +1754,7 @@ func TestHandleRecoverySendsNotificationWhenSiteWasDown(t *testing.T) {
 		notifiedStatus = n.StatusID
 		return nil
 	}
-	dbUpdateLastAlertSent = func(context.Context, int64, time.Time) error { return nil }
+	dbUpdateLastAlertSent = func(context.Context, int64, int64, time.Time) error { return nil }
 
 	o := &Orchestrator{
 		retries:  newRetryQueue(),
@@ -1932,7 +1936,7 @@ func TestHandleFailureOpensConfirmedDownAfterVerifierConfirmsDeferredDNSFailure(
 		WithArgs(int64(1), nil, checkTypeHTTP, nil, eventstore.SeverityDown, eventstore.StateDown, sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(501, 1))
 	mock.ExpectExec("INSERT INTO jetpack_monitor_event_transitions").
-		WithArgs(int64(501), int64(1), nil, eventstore.SeverityDown, nil, eventstore.StateDown, eventstore.ReasonOpened, "local-host", sqlmock.AnyArg()).
+		WithArgs(int64(501), int64(1), nil, nil, eventstore.SeverityDown, nil, eventstore.StateDown, eventstore.ReasonOpened, "local-host", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
@@ -2467,17 +2471,17 @@ func TestProcessResultsFallsBackWhenBatchWritesFail(t *testing.T) {
 	}
 
 	var fallbackMarked int64
-	dbMarkSiteChecked = func(_ context.Context, blogID int64, _, _ time.Time) error {
+	dbMarkSiteChecked = func(_ context.Context, _ int64, blogID int64, _, _ time.Time) error {
 		fallbackMarked = blogID
 		return nil
 	}
 	var fallbackHistory int64
-	dbRecordCheckHistory = func(blogID int64, _ string, _ int, _ int, _ int64, _ int64, _ int64, _ int64, _ int64) error {
+	dbRecordCheckHistory = func(_ int64, blogID int64, _ string, _ int, _ int, _ int64, _ int64, _ int64, _ int64, _ int64) error {
 		fallbackHistory = blogID
 		return nil
 	}
 	var fallbackSSL int64
-	dbUpdateSSLExpiry = func(_ context.Context, blogID int64, _ time.Time) error {
+	dbUpdateSSLExpiry = func(_ context.Context, _ int64, blogID int64, _ time.Time) error {
 		fallbackSSL = blogID
 		return nil
 	}
@@ -2515,7 +2519,7 @@ func TestRecordStreamingHistoryRowsCountsFallbackSuccesses(t *testing.T) {
 	dbRecordCheckHistories = func(context.Context, []db.CheckHistoryRow) error {
 		return fmt.Errorf("batch history failed")
 	}
-	dbRecordCheckHistory = func(blogID int64, _ string, _ int, _ int, _ int64, _ int64, _ int64, _ int64, _ int64) error {
+	dbRecordCheckHistory = func(_ int64, blogID int64, _ string, _ int, _ int, _ int64, _ int64, _ int64, _ int64, _ int64) error {
 		if blogID == 2 {
 			return fmt.Errorf("poisoned history row")
 		}
@@ -2677,7 +2681,7 @@ func TestCheckTLSDeprecatedOpensWarningEvent(t *testing.T) {
 		WithArgs(int64(72), nil, checkTypeTLSDeprecated, nil, eventstore.SeverityWarning, eventstore.StateWarning, sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(101, 1))
 	mock.ExpectExec("INSERT INTO jetpack_monitor_event_transitions").
-		WithArgs(int64(101), int64(72), nil, eventstore.SeverityWarning, nil, eventstore.StateWarning, eventstore.ReasonOpened, "local-host", sqlmock.AnyArg()).
+		WithArgs(int64(101), int64(72), nil, nil, eventstore.SeverityWarning, nil, eventstore.StateWarning, eventstore.ReasonOpened, "local-host", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
@@ -2708,15 +2712,15 @@ func TestCheckTLSDeprecatedClosesWarningOnModernTLS(t *testing.T) {
 		WithArgs(int64(73), checkTypeTLSDeprecated).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "severity", "state"}).
 			AddRow(int64(202), eventstore.SeverityWarning, eventstore.StateWarning))
-	mock.ExpectQuery("SELECT blog_id, severity, state, ended_at, cause_event_id").
+	mock.ExpectQuery("SELECT blog_id, endpoint_id, severity, state, ended_at, cause_event_id").
 		WithArgs(int64(202)).
-		WillReturnRows(sqlmock.NewRows([]string{"blog_id", "severity", "state", "ended_at", "cause_event_id"}).
-			AddRow(int64(73), eventstore.SeverityWarning, eventstore.StateWarning, nil, nil))
+		WillReturnRows(sqlmock.NewRows([]string{"blog_id", "endpoint_id", "severity", "state", "ended_at", "cause_event_id"}).
+			AddRow(int64(73), nil, eventstore.SeverityWarning, eventstore.StateWarning, nil, nil))
 	mock.ExpectExec("UPDATE jetpack_monitor_events").
 		WithArgs(eventstore.ReasonProbeCleared, int64(202)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO jetpack_monitor_event_transitions").
-		WithArgs(int64(202), int64(73), eventstore.SeverityWarning, nil, eventstore.StateWarning, eventstore.StateResolved, eventstore.ReasonProbeCleared, "local-host", nil).
+		WithArgs(int64(202), int64(73), nil, eventstore.SeverityWarning, nil, eventstore.StateWarning, eventstore.StateResolved, eventstore.ReasonProbeCleared, "local-host", nil).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
@@ -2773,15 +2777,15 @@ func TestCloseSSLExpiryUsesProbeCleared(t *testing.T) {
 		WithArgs(int64(74), checkTypeTLSExpiry).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "severity", "state"}).
 			AddRow(int64(303), eventstore.SeverityWarning, eventstore.StateWarning))
-	mock.ExpectQuery("SELECT blog_id, severity, state, ended_at, cause_event_id").
+	mock.ExpectQuery("SELECT blog_id, endpoint_id, severity, state, ended_at, cause_event_id").
 		WithArgs(int64(303)).
-		WillReturnRows(sqlmock.NewRows([]string{"blog_id", "severity", "state", "ended_at", "cause_event_id"}).
-			AddRow(int64(74), eventstore.SeverityWarning, eventstore.StateWarning, nil, nil))
+		WillReturnRows(sqlmock.NewRows([]string{"blog_id", "endpoint_id", "severity", "state", "ended_at", "cause_event_id"}).
+			AddRow(int64(74), nil, eventstore.SeverityWarning, eventstore.StateWarning, nil, nil))
 	mock.ExpectExec("UPDATE jetpack_monitor_events").
 		WithArgs(eventstore.ReasonProbeCleared, int64(303)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO jetpack_monitor_event_transitions").
-		WithArgs(int64(303), int64(74), eventstore.SeverityWarning, nil, eventstore.StateWarning, eventstore.StateResolved, eventstore.ReasonProbeCleared, "local-host", nil).
+		WithArgs(int64(303), int64(74), nil, eventstore.SeverityWarning, nil, eventstore.StateWarning, eventstore.StateResolved, eventstore.ReasonProbeCleared, "local-host", nil).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
@@ -2983,7 +2987,7 @@ func TestSendNotificationBothRetriesFail(t *testing.T) {
 	}
 
 	var updateAlertCalled bool
-	dbUpdateLastAlertSent = func(context.Context, int64, time.Time) error {
+	dbUpdateLastAlertSent = func(context.Context, int64, int64, time.Time) error {
 		updateAlertCalled = true
 		return nil
 	}
@@ -3028,7 +3032,7 @@ func TestEscalateToVerifliersNoClients(t *testing.T) {
 		confirmed = true
 		return nil
 	}
-	dbUpdateLastAlertSent = func(context.Context, int64, time.Time) error { return nil }
+	dbUpdateLastAlertSent = func(context.Context, int64, int64, time.Time) error { return nil }
 
 	o := &Orchestrator{
 		retries:  newRetryQueue(),
@@ -3237,19 +3241,19 @@ func TestProcessResultsLogsErrorsFromDB(t *testing.T) {
 	dbMarkSitesChecked = func(context.Context, []db.SiteCheck) error {
 		return fmt.Errorf("batch mark checked error")
 	}
-	dbMarkSiteChecked = func(context.Context, int64, time.Time, time.Time) error {
+	dbMarkSiteChecked = func(context.Context, int64, int64, time.Time, time.Time) error {
 		return fmt.Errorf("mark checked error")
 	}
 	dbRecordCheckHistories = func(context.Context, []db.CheckHistoryRow) error {
 		return fmt.Errorf("batch history error")
 	}
-	dbRecordCheckHistory = func(int64, string, int, int, int64, int64, int64, int64, int64) error {
+	dbRecordCheckHistory = func(int64, int64, string, int, int, int64, int64, int64, int64, int64) error {
 		return fmt.Errorf("history error")
 	}
 	dbUpdateSSLExpiries = func(context.Context, []db.SiteSSLExpiry) error {
 		return fmt.Errorf("batch ssl expiry error")
 	}
-	dbUpdateSSLExpiry = func(context.Context, int64, time.Time) error {
+	dbUpdateSSLExpiry = func(context.Context, int64, int64, time.Time) error {
 		return fmt.Errorf("ssl expiry error")
 	}
 
@@ -3279,7 +3283,7 @@ func TestHandleFailureEscalatesAfterThreshold(t *testing.T) {
 
 	var escalated bool
 	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error { return nil }
-	dbUpdateLastAlertSent = func(context.Context, int64, time.Time) error { return nil }
+	dbUpdateLastAlertSent = func(context.Context, int64, int64, time.Time) error { return nil }
 	veriflierCheckFunc = func(_ *veriflier.VeriflierClient, _ context.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
 		escalated = true
 		return &veriflier.CheckResult{BlogID: req.BlogID, Success: false, HTTPCode: 500}, nil
@@ -3428,7 +3432,7 @@ func TestEscalateToVerifliersEmitsConfirmedMetrics(t *testing.T) {
 	metricsClientFunc = func() metricsClient { return rec }
 
 	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error { return nil }
-	dbUpdateLastAlertSent = func(context.Context, int64, time.Time) error { return nil }
+	dbUpdateLastAlertSent = func(context.Context, int64, int64, time.Time) error { return nil }
 	veriflierCheckFunc = func(c *veriflier.VeriflierClient, _ context.Context, req veriflier.CheckRequest) (*veriflier.CheckResult, error) {
 		return &veriflier.CheckResult{
 			BlogID:    req.BlogID,

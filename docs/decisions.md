@@ -16,6 +16,7 @@ decision, the new decision, and migration consequences.
 | 0009 | Scheduler is streaming rather than round-sized stop/start batches. | Improves freshness and reduces round-edge artifacts at scale. |
 | 0010 | Veriflier health comes from trusted discovery/telemetry where available. | Quorum decisions should use healthy usable vantages, with a configured floor. |
 | 0011 | V2 tables use the `jetpack_monitor_` prefix. | Matches production DB grouping, permissions, audits, and operator queries. |
+| 0012 | Production validates a structural schema contract instead of relying on a migration ledger. | Systems applies reviewed DDL; Jetmon confirms live schema shape and never needs `jetpack_monitor_schema_migrations` in production. |
 
 Consequences to preserve:
 
@@ -27,3 +28,4 @@ Consequences to preserve:
 - `DELIVERY_OWNER_HOST` is a rollout guard, not a correctness requirement.
 - `LEGACY_STATUS_PROJECTION_ENABLE` stays on until legacy readers move.
 - A single healthy Veriflier must not be able to confirm downtime alone.
+- `blog_id` is a site identity, not a unique monitored-endpoint key.

@@ -128,18 +128,18 @@ func (s *Server) handleListSites(w http.ResponseWriter, r *http.Request) {
 		sb.WriteString(`
 		SELECT ` + siteSelectColumns("s.", "c.", "r.", includeCLIMetadata) + `
 		  FROM jetpack_monitor_sites s
-		  LEFT JOIN jetpack_monitor_site_check_config c ON c.blog_id = s.blog_id
-		  LEFT JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id
+		  LEFT JOIN jetpack_monitor_site_check_config c ON c.source_site_id = s.jetpack_monitor_site_id
+		  LEFT JOIN jetpack_monitor_site_runtime r ON r.source_site_id = s.jetpack_monitor_site_id
 		  JOIN jetpack_monitor_site_tenants st ON st.blog_id = s.blog_id AND st.tenant_id = ?
-		 WHERE s.blog_id > ?`)
+		 WHERE s.jetpack_monitor_site_id > ?`)
 	} else {
 		args = append(args, cursor)
 		sb.WriteString(`
 		SELECT ` + siteSelectColumns("s.", "c.", "r.", includeCLIMetadata) + `
 		  FROM jetpack_monitor_sites s
-		  LEFT JOIN jetpack_monitor_site_check_config c ON c.blog_id = s.blog_id
-		  LEFT JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id
-		 WHERE s.blog_id > ?`)
+		  LEFT JOIN jetpack_monitor_site_check_config c ON c.source_site_id = s.jetpack_monitor_site_id
+		  LEFT JOIN jetpack_monitor_site_runtime r ON r.source_site_id = s.jetpack_monitor_site_id
+		 WHERE s.jetpack_monitor_site_id > ?`)
 	}
 
 	switch monitorActive {
@@ -171,9 +171,9 @@ func (s *Server) handleListSites(w http.ResponseWriter, r *http.Request) {
 		args = append(args, "%"+urlSubstr+"%")
 	}
 	if tenantScoped {
-		sb.WriteString(" ORDER BY s.blog_id ASC LIMIT ?")
+		sb.WriteString(" ORDER BY s.jetpack_monitor_site_id ASC LIMIT ?")
 	} else {
-		sb.WriteString(" ORDER BY s.blog_id ASC LIMIT ?")
+		sb.WriteString(" ORDER BY s.jetpack_monitor_site_id ASC LIMIT ?")
 	}
 	// Fetch limit+1 so we know whether there's a next page without an extra count query.
 	args = append(args, limit+1)
@@ -249,15 +249,12 @@ func (s *Server) handleGetSite(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	if !s.ensureSiteVisibleForRequest(w, r, id) {
-		return
-	}
 	row := s.db.QueryRowContext(ctx, `
 		SELECT `+siteSelectColumns("s.", "c.", "r.", includeCLIMetadata)+`
 		  FROM jetpack_monitor_sites s
-		  LEFT JOIN jetpack_monitor_site_check_config c ON c.blog_id = s.blog_id
-		  LEFT JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id
-		 WHERE s.blog_id = ?`, id)
+		  LEFT JOIN jetpack_monitor_site_check_config c ON c.source_site_id = s.jetpack_monitor_site_id
+		  LEFT JOIN jetpack_monitor_site_runtime r ON r.source_site_id = s.jetpack_monitor_site_id
+		 WHERE s.jetpack_monitor_site_id = ?`, id)
 
 	site, err := scanSiteRow(row, includeCLIMetadata)
 	if err != nil {
@@ -269,8 +266,11 @@ func (s *Server) handleGetSite(w http.ResponseWriter, r *http.Request) {
 			"site query failed: "+err.Error())
 		return
 	}
+	if !s.ensureSiteVisibleForRequest(w, r, site.BlogID) {
+		return
+	}
 
-	active, err := s.queryActiveEvents(ctx, id)
+	active, err := s.queryActiveEvents(ctx, site.BlogID, id)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, "db_error",
 			"active events query failed: "+err.Error())
@@ -302,8 +302,8 @@ func (s *Server) handleGetSite(w http.ResponseWriter, r *http.Request) {
 
 func siteSelectColumns(prefix, checkConfigPrefix, runtimePrefix string, includeCLIMetadata bool) string {
 	cols := []string{
+		prefix + "jetpack_monitor_site_id",
 		prefix + "blog_id",
-		prefix + "blog_id AS public_id",
 		prefix + "monitor_url",
 		prefix + "monitor_active",
 		prefix + "bucket_no",
@@ -352,12 +352,14 @@ func siteListResponseData(sites []siteResponse, includeCLIMetadata bool) any {
 
 // queryActiveEvents returns all open events for a site, ordered by severity
 // desc then started_at asc. Used by the single-site endpoint.
-func (s *Server) queryActiveEvents(ctx context.Context, blogID int64) ([]activeEventSummary, error) {
+func (s *Server) queryActiveEvents(ctx context.Context, blogID, monitorSiteID int64) ([]activeEventSummary, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, check_type, severity, state, started_at
 		  FROM jetpack_monitor_events
-		 WHERE blog_id = ? AND ended_at IS NULL
-		 ORDER BY severity DESC, started_at ASC`, blogID)
+		 WHERE blog_id = ?
+		   AND ended_at IS NULL
+		   AND (endpoint_id = ? OR endpoint_id IS NULL)
+		 ORDER BY severity DESC, started_at ASC`, blogID, monitorSiteID)
 	if err != nil {
 		return nil, err
 	}
@@ -398,15 +400,15 @@ func (s *Server) applyActiveEventRollups(ctx context.Context, sites []siteRespon
 	ids := make([]any, 0, len(sites))
 	placeholders := make([]string, 0, len(sites))
 	for _, site := range sites {
-		ids = append(ids, site.BlogID)
+		ids = append(ids, site.ID)
 		placeholders = append(placeholders, "?")
 	}
 
 	q := fmt.Sprintf(`
-		SELECT id, blog_id, severity, state, started_at
+		SELECT id, endpoint_id, severity, state, started_at
 		  FROM jetpack_monitor_events
 		 WHERE ended_at IS NULL
-		   AND blog_id IN (%s)`, strings.Join(placeholders, ","))
+		   AND endpoint_id IN (%s)`, strings.Join(placeholders, ","))
 
 	rows, err := s.db.QueryContext(ctx, q, ids...)
 	if err != nil {
@@ -416,16 +418,16 @@ func (s *Server) applyActiveEventRollups(ctx context.Context, sites []siteRespon
 
 	rollups := make(map[int64]activeEventRollup)
 	for rows.Next() {
-		var blogID int64
+		var endpointID int64
 		var r activeEventRollup
-		if err := rows.Scan(&r.id, &blogID, &r.severity, &r.state, &r.startedAt); err != nil {
+		if err := rows.Scan(&r.id, &endpointID, &r.severity, &r.state, &r.startedAt); err != nil {
 			return err
 		}
-		existing, ok := rollups[blogID]
+		existing, ok := rollups[endpointID]
 		if !ok ||
 			r.severity > existing.severity ||
 			(r.severity == existing.severity && r.startedAt.Before(existing.startedAt)) {
-			rollups[blogID] = r
+			rollups[endpointID] = r
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -433,7 +435,7 @@ func (s *Server) applyActiveEventRollups(ctx context.Context, sites []siteRespon
 	}
 
 	for i := range sites {
-		r, ok := rollups[sites[i].BlogID]
+		r, ok := rollups[sites[i].ID]
 		if !ok {
 			continue
 		}

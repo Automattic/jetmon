@@ -156,7 +156,7 @@ type checkHistoryRowResponse struct {
 const checkHistoryListSQLPrefix = `
 		SELECT id, request_method, http_code, error_code, rtt_ms, dns_ms, tcp_ms, tls_ms, ttfb_ms, checked_at
 		  FROM jetpack_monitor_check_history
-		 WHERE blog_id = ?`
+		 WHERE source_site_id = ?`
 
 // handleSiteCheckHistory returns raw per-check timing rows for a site,
 // newest-first, with cursor pagination. Unlike the percentile endpoints this
@@ -289,21 +289,23 @@ func (s *Server) handleSiteUptime(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "invalid_window", werr.Error())
 		return
 	}
-	if !s.ensureSiteVisibleForRequest(w, r, siteID) {
-		return
-	}
-
-	// Verify the site exists. This guards against returning a 100% uptime
-	// answer for a nonexistent site, which would be confusing.
-	if exists, err := s.siteExists(r.Context(), siteID); err != nil {
+	// Resolve endpoint id to the legacy blog id before querying events. This
+	// also guards against returning a 100% uptime answer for a nonexistent
+	// endpoint, which would be confusing.
+	blogID, err := s.blogIDForMonitorSite(r.Context(), siteID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeSiteNotFound(w, r, siteID)
+			return
+		}
 		writeError(w, r, http.StatusInternalServerError, "db_error", "site lookup failed: "+err.Error())
 		return
-	} else if !exists {
-		writeSiteNotFound(w, r, siteID)
+	}
+	if !s.ensureSiteVisibleForRequest(w, r, blogID) {
 		return
 	}
 
-	stats, err := s.computeUptime(r.Context(), siteID, from, to)
+	stats, err := s.computeUptime(r.Context(), blogID, siteID, from, to)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, "db_error",
 			"uptime query failed: "+err.Error())
@@ -348,14 +350,15 @@ type uptimeStats struct {
 // computeUptime walks events overlapping [from, to] and accumulates per-state
 // duration. Events that started before the window are clipped to from; events
 // still open at to are clipped to to.
-func (s *Server) computeUptime(ctx context.Context, siteID int64, from, to time.Time) (uptimeStats, error) {
+func (s *Server) computeUptime(ctx context.Context, blogID, siteID int64, from, to time.Time) (uptimeStats, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT severity, state, started_at, ended_at
 		  FROM jetpack_monitor_events
 		 WHERE blog_id = ?
+		   AND (endpoint_id = ? OR endpoint_id IS NULL)
 		   AND started_at < ?
 		   AND (ended_at IS NULL OR ended_at > ?)`,
-		siteID, to, from)
+		blogID, siteID, to, from)
 	if err != nil {
 		return uptimeStats{}, err
 	}
@@ -485,7 +488,7 @@ func (s *Server) resolveCheckHistoryMode(ctx context.Context, siteID int64) stri
 	return mode
 }
 
-const checkHistoryModeOverrideSQL = `SELECT check_history_mode FROM jetpack_monitor_site_check_config WHERE blog_id = ?`
+const checkHistoryModeOverrideSQL = `SELECT check_history_mode FROM jetpack_monitor_site_check_config WHERE source_site_id = ?`
 
 // checkHistoryPercentilesMeaningful reports whether percentile statistics over
 // jetpack_monitor_check_history are representative under the given mode. Only the
@@ -569,8 +572,11 @@ func (s *Server) parseStatsRequest(w http.ResponseWriter, r *http.Request) (site
 		writeError(w, r, http.StatusBadRequest, "invalid_window", werr.Error())
 		return 0, time.Time{}, time.Time{}, false
 	}
-	if !s.ensureSiteVisibleForRequest(w, r, siteID) {
-		return 0, time.Time{}, time.Time{}, false
+	if _, tenantScoped := ownerTenantIDFromRequest(r); tenantScoped {
+		if _, ok := s.ensureMonitorSiteVisibleForRequest(w, r, siteID); !ok {
+			return 0, time.Time{}, time.Time{}, false
+		}
+		return siteID, from, to, true
 	}
 	exists, err := s.siteExists(r.Context(), siteID)
 	if err != nil {
@@ -589,7 +595,7 @@ func (s *Server) parseStatsRequest(w http.ResponseWriter, r *http.Request) (site
 func (s *Server) siteExists(ctx context.Context, siteID int64) (bool, error) {
 	var dummy int64
 	err := s.db.QueryRowContext(ctx,
-		`SELECT 1 FROM jetpack_monitor_sites WHERE blog_id = ? LIMIT 1`, siteID,
+		`SELECT 1 FROM jetpack_monitor_sites WHERE jetpack_monitor_site_id = ? LIMIT 1`, siteID,
 	).Scan(&dummy)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -606,7 +612,7 @@ func (s *Server) siteExists(ctx context.Context, siteID int64) (bool, error) {
 func (s *Server) queryRTTSamples(ctx context.Context, siteID int64, from, to time.Time) ([]int64, bool, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT rtt_ms FROM jetpack_monitor_check_history
-		 WHERE blog_id = ?
+		 WHERE source_site_id = ?
 		   AND checked_at >= ?
 		   AND checked_at < ?
 		   AND rtt_ms IS NOT NULL
@@ -645,7 +651,7 @@ type timingRow struct {
 func (s *Server) queryTimingSamples(ctx context.Context, siteID int64, from, to time.Time) ([]timingRow, bool, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT dns_ms, tcp_ms, tls_ms, ttfb_ms FROM jetpack_monitor_check_history
-		 WHERE blog_id = ?
+		 WHERE source_site_id = ?
 		   AND checked_at >= ?
 		   AND checked_at < ?
 		 ORDER BY checked_at DESC

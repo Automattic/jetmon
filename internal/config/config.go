@@ -37,7 +37,7 @@ const (
 )
 
 const (
-	ConfigProfileDefault    = "default"
+	ConfigProfileDev        = "dev"
 	ConfigProfileProduction = "production"
 )
 
@@ -139,9 +139,10 @@ type Config struct {
 	PeerOfflineLimit   int `json:"PEER_OFFLINE_LIMIT"`
 
 	// SchemaManagementMode controls what startup wrappers should do before the
-	// service starts. "migrate" preserves local/dev convenience by applying
-	// pending migrations. "validate" refuses to start unless the expected
-	// schema is already present and never writes schema changes.
+	// service starts. "validate" refuses to start unless the expected schema is
+	// already present and never writes schema changes. "migrate" is a
+	// non-production convenience mode that runs the limited additive reconciler
+	// before validating.
 	SchemaManagementMode string `json:"SCHEMA_MANAGEMENT_MODE"`
 
 	// VeriflierDiscoveryMode controls whether the monitor reads Veriflier
@@ -441,7 +442,7 @@ func defaults() *Config {
 		SQLUpdateBatch:                       1,
 		DBConfigUpdatesMin:                   10,
 		PeerOfflineLimit:                     3,
-		SchemaManagementMode:                 SchemaManagementModeMigrate,
+		SchemaManagementMode:                 SchemaManagementModeValidate,
 		VeriflierDiscoveryMode:               VeriflierDiscoveryModeStatic,
 		NumOfChecks:                          3,
 		TimeBetweenChecksSec:                 30,
@@ -490,8 +491,7 @@ func applyConfigProfile(raw []byte, cfg *Config) error {
 	}
 	rawProfile := keys["CONFIG_PROFILE"]
 	if len(rawProfile) == 0 {
-		cfg.ConfigProfile = ConfigProfileDefault
-		return nil
+		return fmt.Errorf("CONFIG_PROFILE is required and must be one of: dev, production")
 	}
 	var profile string
 	if err := json.Unmarshal(rawProfile, &profile); err != nil {
@@ -499,8 +499,10 @@ func applyConfigProfile(raw []byte, cfg *Config) error {
 	}
 	profile = normalizeConfigProfile(profile)
 	switch profile {
-	case ConfigProfileDefault:
-		cfg.ConfigProfile = ConfigProfileDefault
+	case ConfigProfileDev:
+		cfg.ConfigProfile = ConfigProfileDev
+		cfg.SchemaManagementMode = SchemaManagementModeMigrate
+		cfg.WPCOMNotifyEnable = false
 	case ConfigProfileProduction:
 		cfg.ConfigProfile = ConfigProfileProduction
 		cfg.SchemaManagementMode = SchemaManagementModeValidate
@@ -508,7 +510,7 @@ func applyConfigProfile(raw []byte, cfg *Config) error {
 		cfg.RolloutMode = RolloutModeAPIControlled
 		cfg.VeriflierDiscoveryMode = VeriflierDiscoveryModeShadow
 	default:
-		return fmt.Errorf("invalid config: CONFIG_PROFILE must be one of: default, production")
+		return fmt.Errorf("invalid config: CONFIG_PROFILE must be one of: dev, production")
 	}
 	return nil
 }
@@ -519,6 +521,16 @@ func applyProfileEmptyValues(raw []byte, cfg *Config) {
 		return
 	}
 	switch normalizeConfigProfile(cfg.ConfigProfile) {
+	case ConfigProfileDev:
+		applyEmptyStringDefault(keys, "SCHEMA_MANAGEMENT_MODE", func() {
+			cfg.SchemaManagementMode = SchemaManagementModeMigrate
+		})
+		applyEmptyStringDefault(keys, "ROLLOUT_MODE", func() {
+			cfg.RolloutMode = RolloutModeActive
+		})
+		applyEmptyStringDefault(keys, "VERIFLIER_DISCOVERY_MODE", func() {
+			cfg.VeriflierDiscoveryMode = VeriflierDiscoveryModeStatic
+		})
 	case ConfigProfileProduction:
 		applyEmptyStringDefault(keys, "SCHEMA_MANAGEMENT_MODE", func() {
 			cfg.SchemaManagementMode = SchemaManagementModeValidate
@@ -528,16 +540,6 @@ func applyProfileEmptyValues(raw []byte, cfg *Config) {
 		})
 		applyEmptyStringDefault(keys, "VERIFLIER_DISCOVERY_MODE", func() {
 			cfg.VeriflierDiscoveryMode = VeriflierDiscoveryModeShadow
-		})
-	default:
-		applyEmptyStringDefault(keys, "SCHEMA_MANAGEMENT_MODE", func() {
-			cfg.SchemaManagementMode = SchemaManagementModeMigrate
-		})
-		applyEmptyStringDefault(keys, "ROLLOUT_MODE", func() {
-			cfg.RolloutMode = RolloutModeActive
-		})
-		applyEmptyStringDefault(keys, "VERIFLIER_DISCOVERY_MODE", func() {
-			cfg.VeriflierDiscoveryMode = VeriflierDiscoveryModeStatic
 		})
 	}
 }
@@ -808,9 +810,9 @@ func validate(cfg *Config) error {
 	}
 	cfg.ConfigProfile = normalizeConfigProfile(cfg.ConfigProfile)
 	switch cfg.ConfigProfile {
-	case ConfigProfileDefault, ConfigProfileProduction:
+	case ConfigProfileDev, ConfigProfileProduction:
 	default:
-		return fmt.Errorf("CONFIG_PROFILE must be one of: default, production")
+		return fmt.Errorf("CONFIG_PROFILE must be one of: dev, production")
 	}
 	cfg.Hostname = strings.TrimSpace(cfg.Hostname)
 	cfg.StatsDAddr = strings.TrimSpace(cfg.StatsDAddr)
@@ -1197,16 +1199,13 @@ func normalizeRolloutMode(mode string) string {
 
 func normalizeConfigProfile(profile string) string {
 	profile = strings.ToLower(strings.TrimSpace(profile))
-	if profile == "" {
-		return ConfigProfileDefault
-	}
 	return profile
 }
 
 func normalizeSchemaManagementMode(mode string) string {
 	mode = strings.ToLower(strings.TrimSpace(mode))
 	if mode == "" {
-		return SchemaManagementModeMigrate
+		return SchemaManagementModeValidate
 	}
 	return mode
 }

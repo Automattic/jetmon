@@ -256,6 +256,7 @@ func (t *Tx) Open(ctx context.Context, in OpenInput) (OpenResult, error) {
 		if err := writeTransition(ctx, t.tx, transitionInput{
 			eventID:        eventID,
 			blogID:         in.Identity.BlogID,
+			endpointID:     in.Identity.EndpointID,
 			severityBefore: nil,
 			severityAfter:  &sev,
 			stateBefore:    "",
@@ -372,6 +373,7 @@ func (t *Tx) LinkCause(ctx context.Context, eventID, causeEventID int64, source 
 	if err := writeTransition(ctx, t.tx, transitionInput{
 		eventID:        eventID,
 		blogID:         cur.blogID,
+		endpointID:     cur.endpointIDPtr(),
 		severityBefore: &cur.severity,
 		severityAfter:  &cur.severity,
 		stateBefore:    cur.state,
@@ -417,6 +419,7 @@ func (t *Tx) Close(ctx context.Context, eventID int64, resolutionReason, source 
 	return writeTransition(ctx, t.tx, transitionInput{
 		eventID:        eventID,
 		blogID:         cur.blogID,
+		endpointID:     cur.endpointIDPtr(),
 		severityBefore: &cur.severity,
 		severityAfter:  nil,
 		stateBefore:    cur.state,
@@ -640,6 +643,7 @@ func (t *Tx) mutate(ctx context.Context, eventID int64, m mutation) (bool, error
 	if err := writeTransition(ctx, t.tx, transitionInput{
 		eventID:        eventID,
 		blogID:         cur.blogID,
+		endpointID:     cur.endpointIDPtr(),
 		severityBefore: &severityBefore,
 		severityAfter:  &severityAfter,
 		stateBefore:    cur.state,
@@ -657,20 +661,28 @@ func (t *Tx) mutate(ctx context.Context, eventID int64, m mutation) (bool, error
 // validate the mutation and to populate the *_before fields on the transition.
 type eventSnapshot struct {
 	blogID       int64
+	endpointID   sql.NullInt64
 	severity     uint8
 	state        string
 	endedAt      sql.NullTime
 	causeEventID sql.NullInt64
 }
 
+func (s eventSnapshot) endpointIDPtr() *int64 {
+	if !s.endpointID.Valid {
+		return nil
+	}
+	return &s.endpointID.Int64
+}
+
 func readEventForUpdate(ctx context.Context, tx *sql.Tx, eventID int64) (eventSnapshot, error) {
 	var snap eventSnapshot
 	err := tx.QueryRowContext(ctx, `
-		SELECT blog_id, severity, state, ended_at, cause_event_id
+		SELECT blog_id, endpoint_id, severity, state, ended_at, cause_event_id
 		  FROM jetpack_monitor_events
 		 WHERE id = ?
 		   FOR UPDATE`, eventID,
-	).Scan(&snap.blogID, &snap.severity, &snap.state, &snap.endedAt, &snap.causeEventID)
+	).Scan(&snap.blogID, &snap.endpointID, &snap.severity, &snap.state, &snap.endedAt, &snap.causeEventID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return snap, ErrEventNotFound
 	}
@@ -683,6 +695,7 @@ func readEventForUpdate(ctx context.Context, tx *sql.Tx, eventID int64) (eventSn
 type transitionInput struct {
 	eventID        int64
 	blogID         int64
+	endpointID     *int64
 	severityBefore *uint8
 	severityAfter  *uint8
 	stateBefore    string
@@ -701,10 +714,11 @@ func writeTransition(ctx context.Context, tx *sql.Tx, t transitionInput) error {
 	if t.changedAt != nil {
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO jetpack_monitor_event_transitions
-				(event_id, blog_id, severity_before, severity_after,
+				(event_id, blog_id, endpoint_id, severity_before, severity_after,
 				 state_before, state_after, reason, source, metadata, changed_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			t.eventID, t.blogID, nullableUint8(t.severityBefore), nullableUint8(t.severityAfter),
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			t.eventID, t.blogID, nullableEndpoint(t.endpointID),
+			nullableUint8(t.severityBefore), nullableUint8(t.severityAfter),
 			nullableString(t.stateBefore), nullableString(t.stateAfter),
 			t.reason, source, nullableJSON(t.metadata), t.changedAt.UTC(),
 		)
@@ -715,10 +729,10 @@ func writeTransition(ctx context.Context, tx *sql.Tx, t transitionInput) error {
 	}
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO jetpack_monitor_event_transitions
-			(event_id, blog_id, severity_before, severity_after,
+			(event_id, blog_id, endpoint_id, severity_before, severity_after,
 			 state_before, state_after, reason, source, metadata)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.eventID, t.blogID,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.eventID, t.blogID, nullableEndpoint(t.endpointID),
 		nullableUint8(t.severityBefore), nullableUint8(t.severityAfter),
 		nullableString(t.stateBefore), nullableString(t.stateAfter),
 		t.reason, source, nullableJSON(t.metadata),

@@ -80,9 +80,9 @@ func runDoctor(requireStatsD, skipVerifliers bool) ([]doctorResult, error) {
 	add("db", "PASS", "read/write pools pinged")
 
 	if status, err := db.ValidateSchema(context.Background()); err != nil {
-		add("schema", "FAIL", fmt.Sprintf("%v current=%d expected=%d", err, status.CurrentMaxID, status.ExpectedMaxID))
+		add("schema", "FAIL", fmt.Sprintf("%v %s", err, status.Summary()))
 	} else {
-		add("schema", "PASS", fmt.Sprintf("current=%d expected=%d applied=%d", status.CurrentMaxID, status.ExpectedMaxID, status.AppliedCount))
+		add("schema", "PASS", status.Summary())
 	}
 
 	add("db_config", "PASS", doctorDBConfigDetail(db.ConfigStatusSnapshot()))

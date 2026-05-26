@@ -9,11 +9,11 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
-const eventsBaseSQL = ` SELECT id, blog_id, endpoint_id, check_type, discriminator, severity, state, started_at, ended_at, resolution_reason, cause_event_id, metadata FROM jetpack_monitor_events WHERE blog_id = ?`
+const eventsBaseSQL = ` SELECT id, blog_id, endpoint_id, check_type, discriminator, severity, state, started_at, ended_at, resolution_reason, cause_event_id, metadata FROM jetpack_monitor_events WHERE (endpoint_id = ? OR (endpoint_id IS NULL AND blog_id = ?))`
 
-const transitionsListSQL = ` SELECT id, event_id, severity_before, severity_after, state_before, state_after, reason, source, metadata, changed_at FROM jetpack_monitor_event_transitions WHERE event_id = ?`
+const transitionsListSQL = ` SELECT id, event_id, endpoint_id, severity_before, severity_after, state_before, state_after, reason, source, metadata, changed_at FROM jetpack_monitor_event_transitions WHERE event_id = ?`
 
-const transitionsAllSQL = ` SELECT id, event_id, severity_before, severity_after, state_before, state_after, reason, source, metadata, changed_at FROM jetpack_monitor_event_transitions WHERE event_id = ? ORDER BY id ASC`
+const transitionsAllSQL = ` SELECT id, event_id, endpoint_id, severity_before, severity_after, state_before, state_after, reason, source, metadata, changed_at FROM jetpack_monitor_event_transitions WHERE event_id = ? ORDER BY id ASC`
 
 func makeEventRow(id, blogID int64, severity uint8, state string, startedAt time.Time, ended *time.Time) *sqlmock.Rows {
 	rows := sqlmock.NewRows(columnsEvent)
@@ -37,7 +37,7 @@ func TestListSiteEventsHappyPath(t *testing.T) {
 	rows := makeEventRow(7, 42, 4, "Down", startedAt, nil)
 
 	mock.ExpectQuery(eventsBaseSQL+` ORDER BY id DESC LIMIT ?`).
-		WithArgs(int64(42), 51).
+		WithArgs(int64(42), int64(42), 51).
 		WillReturnRows(rows)
 
 	// transition_count batch query
@@ -74,7 +74,7 @@ func TestListSiteEventsAppliesActiveFilter(t *testing.T) {
 	defer cleanup()
 
 	mock.ExpectQuery(eventsBaseSQL+` AND ended_at IS NULL ORDER BY id DESC LIMIT ?`).
-		WithArgs(int64(42), 51).
+		WithArgs(int64(42), int64(42), 51).
 		WillReturnRows(sqlmock.NewRows(columnsEvent))
 
 	req := requestWithKey("GET", "/api/v1/sites/42/events?active=true", key)
@@ -90,6 +90,9 @@ func TestListSiteEventsWithGatewayTenantRejectsUnmappedSite(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
 
+	mock.ExpectQuery(`SELECT blog_id FROM jetpack_monitor_sites WHERE jetpack_monitor_site_id = ? LIMIT 1`).
+		WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"blog_id"}).AddRow(int64(42)))
 	mock.ExpectQuery(siteTenantCheckSQL).
 		WithArgs("tenant-a", int64(42)).
 		WillReturnRows(sqlmock.NewRows([]string{"1"}))
@@ -114,11 +117,14 @@ func TestListSiteEventsWithGatewayTenantAllowsMappedSite(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
 
+	mock.ExpectQuery(`SELECT blog_id FROM jetpack_monitor_sites WHERE jetpack_monitor_site_id = ? LIMIT 1`).
+		WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"blog_id"}).AddRow(int64(42)))
 	mock.ExpectQuery(siteTenantCheckSQL).
 		WithArgs("tenant-a", int64(42)).
 		WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
 	mock.ExpectQuery(eventsBaseSQL+` ORDER BY id DESC LIMIT ?`).
-		WithArgs(int64(42), 51).
+		WithArgs(int64(42), int64(42), 51).
 		WillReturnRows(sqlmock.NewRows(columnsEvent))
 
 	req := httptest.NewRequest("GET", "/api/v1/sites/42/events", nil)
@@ -164,7 +170,7 @@ func TestGetEventBySiteHappyPath(t *testing.T) {
 	mock.ExpectQuery(transitionsAllSQL).
 		WithArgs(int64(7)).
 		WillReturnRows(sqlmock.NewRows(columnsTransition).
-			AddRow(int64(1), int64(7), nil, uint8(3), nil, "Seems Down", "opened", "host", []byte("null"), startedAt))
+			AddRow(int64(1), int64(7), int64(42), nil, uint8(3), nil, "Seems Down", "opened", "host", []byte("null"), startedAt))
 
 	req := requestWithKey("GET", "/api/v1/sites/42/events/7", key)
 	req.SetPathValue("id", "42")
@@ -267,9 +273,9 @@ func TestListTransitionsCrossSiteProtection(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
 
-	mock.ExpectQuery(`SELECT blog_id FROM jetpack_monitor_events WHERE id = ?`).
+	mock.ExpectQuery(`SELECT blog_id, endpoint_id FROM jetpack_monitor_events WHERE id = ?`).
 		WithArgs(int64(7)).
-		WillReturnRows(sqlmock.NewRows([]string{"blog_id"}).AddRow(int64(42)))
+		WillReturnRows(sqlmock.NewRows([]string{"blog_id", "endpoint_id"}).AddRow(int64(42), int64(42)))
 
 	req := requestWithKey("GET", "/api/v1/sites/99/events/7/transitions", key)
 	req.SetPathValue("id", "99")
@@ -289,15 +295,15 @@ func TestListTransitionsHappyPath(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
 
-	mock.ExpectQuery(`SELECT blog_id FROM jetpack_monitor_events WHERE id = ?`).
+	mock.ExpectQuery(`SELECT blog_id, endpoint_id FROM jetpack_monitor_events WHERE id = ?`).
 		WithArgs(int64(7)).
-		WillReturnRows(sqlmock.NewRows([]string{"blog_id"}).AddRow(int64(42)))
+		WillReturnRows(sqlmock.NewRows([]string{"blog_id", "endpoint_id"}).AddRow(int64(42), int64(42)))
 
 	startedAt := time.Date(2026, 4, 25, 3, 0, 0, 0, time.UTC)
 	mock.ExpectQuery(transitionsListSQL+` ORDER BY id ASC LIMIT ?`).
 		WithArgs(int64(7), 101).
 		WillReturnRows(sqlmock.NewRows(columnsTransition).
-			AddRow(int64(1), int64(7), nil, uint8(3), nil, "Seems Down", "opened", "host", []byte("null"), startedAt))
+			AddRow(int64(1), int64(7), int64(42), nil, uint8(3), nil, "Seems Down", "opened", "host", []byte("null"), startedAt))
 
 	req := requestWithKey("GET", "/api/v1/sites/42/events/7/transitions", key)
 	req.SetPathValue("id", "42")
@@ -321,9 +327,9 @@ func TestListTransitionsWithGatewayTenantRejectsUnmappedEventSite(t *testing.T) 
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
 
-	mock.ExpectQuery(`SELECT blog_id FROM jetpack_monitor_events WHERE id = ?`).
+	mock.ExpectQuery(`SELECT blog_id, endpoint_id FROM jetpack_monitor_events WHERE id = ?`).
 		WithArgs(int64(7)).
-		WillReturnRows(sqlmock.NewRows([]string{"blog_id"}).AddRow(int64(42)))
+		WillReturnRows(sqlmock.NewRows([]string{"blog_id", "endpoint_id"}).AddRow(int64(42), int64(42)))
 	mock.ExpectQuery(siteTenantCheckSQL).
 		WithArgs("tenant-a", int64(42)).
 		WillReturnRows(sqlmock.NewRows([]string{"1"}))
@@ -349,9 +355,9 @@ func TestListTransitionsWithGatewayTenantAllowsMappedEventSite(t *testing.T) {
 	s, mock, key, cleanup := newTestServer(t)
 	defer cleanup()
 
-	mock.ExpectQuery(`SELECT blog_id FROM jetpack_monitor_events WHERE id = ?`).
+	mock.ExpectQuery(`SELECT blog_id, endpoint_id FROM jetpack_monitor_events WHERE id = ?`).
 		WithArgs(int64(7)).
-		WillReturnRows(sqlmock.NewRows([]string{"blog_id"}).AddRow(int64(42)))
+		WillReturnRows(sqlmock.NewRows([]string{"blog_id", "endpoint_id"}).AddRow(int64(42), int64(42)))
 	mock.ExpectQuery(siteTenantCheckSQL).
 		WithArgs("tenant-a", int64(42)).
 		WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
@@ -360,7 +366,7 @@ func TestListTransitionsWithGatewayTenantAllowsMappedEventSite(t *testing.T) {
 	mock.ExpectQuery(transitionsListSQL+` ORDER BY id ASC LIMIT ?`).
 		WithArgs(int64(7), 101).
 		WillReturnRows(sqlmock.NewRows(columnsTransition).
-			AddRow(int64(1), int64(7), nil, uint8(3), nil, "Seems Down", "opened", "host", []byte("null"), startedAt))
+			AddRow(int64(1), int64(7), int64(42), nil, uint8(3), nil, "Seems Down", "opened", "host", []byte("null"), startedAt))
 
 	req := httptest.NewRequest("GET", "/api/v1/sites/42/events/7/transitions", nil)
 	req.SetPathValue("id", "42")

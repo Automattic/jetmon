@@ -288,13 +288,13 @@ func TestSimpleMutationQueries(t *testing.T) {
 		WithArgs(2, now, int64(42)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO jetpack_monitor_site_runtime").
-		WithArgs(int64(42), now, next).
+		WithArgs(int64(42), int64(42), now, next).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO jetpack_monitor_site_runtime").
-		WithArgs(int64(42), now).
+		WithArgs(int64(42), int64(42), now).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO jetpack_monitor_site_runtime").
-		WithArgs(int64(42), now).
+		WithArgs(int64(42), int64(42), now).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("UPDATE jetpack_monitor_hosts SET last_heartbeat").
 		WithArgs("host-a").
@@ -309,7 +309,7 @@ func TestSimpleMutationQueries(t *testing.T) {
 		WithArgs(int64(42), 500, 1, int64(123)).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("INSERT INTO jetpack_monitor_check_history").
-		WithArgs(int64(42), "GET", 200, 0, int64(100), int64(1), int64(2), int64(3), int64(4)).
+		WithArgs(int64(42), int64(42), "GET", 200, 0, int64(100), int64(1), int64(2), int64(3), int64(4)).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	if err := UpdateSiteStatus(context.Background(), 42, 2, now); err != nil {
@@ -353,7 +353,7 @@ func TestMarkSitesCheckedBatchesUpdates(t *testing.T) {
 	firstNext := first.Add(5 * time.Minute)
 	secondNext := second.Add(5 * time.Minute)
 	mock.ExpectExec("INSERT INTO jetpack_monitor_site_runtime").
-		WithArgs(int64(7), first, firstNext, int64(42), second, secondNext).
+		WithArgs(int64(7), int64(7), first, firstNext, int64(42), int64(42), second, secondNext).
 		WillReturnResult(sqlmock.NewResult(0, 2))
 
 	err := MarkSitesChecked(context.Background(), []SiteCheck{
@@ -401,7 +401,7 @@ func TestMarkSitesCheckedRetriesDeadlock(t *testing.T) {
 
 	checkedAt := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
 	nextAt := checkedAt.Add(5 * time.Minute)
-	args := []driver.Value{int64(42), checkedAt, nextAt}
+	args := []driver.Value{int64(42), int64(42), checkedAt, nextAt}
 	mock.ExpectExec("INSERT INTO jetpack_monitor_site_runtime").
 		WithArgs(args...).
 		WillReturnError(&mysql.MySQLError{Number: 1213, Message: "Deadlock found when trying to get lock"})
@@ -425,8 +425,8 @@ func TestRecordCheckHistoriesBatchesInserts(t *testing.T) {
 	second := first.Add(time.Minute)
 	mock.ExpectExec("INSERT INTO jetpack_monitor_check_history").
 		WithArgs(
-			int64(7), "GET", 201, 1, int64(10), int64(1), int64(2), int64(3), int64(4), first,
-			int64(42), "POST", 200, 0, int64(100), int64(5), int64(6), int64(7), int64(8), second,
+			int64(7), int64(7), "GET", 201, 1, int64(10), int64(1), int64(2), int64(3), int64(4), first,
+			int64(42), int64(42), "POST", 200, 0, int64(100), int64(5), int64(6), int64(7), int64(8), second,
 		).
 		WillReturnResult(sqlmock.NewResult(1, 2))
 
@@ -449,7 +449,7 @@ func TestUpdateSSLExpiriesBatchesUpdates(t *testing.T) {
 	first := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	second := first.AddDate(0, 1, 0)
 	mock.ExpectExec("INSERT INTO jetpack_monitor_site_runtime").
-		WithArgs(int64(7), first, int64(42), second).
+		WithArgs(int64(7), int64(7), first, int64(42), int64(42), second).
 		WillReturnResult(sqlmock.NewResult(0, 2))
 
 	err := UpdateSSLExpiries(context.Background(), []SiteSSLExpiry{
@@ -816,7 +816,7 @@ func TestMigrateFailsWhenMigrationLockUnavailable(t *testing.T) {
 	}
 }
 
-func TestValidateSchemaPassesWhenAllMigrationsApplied(t *testing.T) {
+func TestSchemaMigrationStatusReportsAllMigrationsApplied(t *testing.T) {
 	mock, cleanup := withMockDB(t)
 	defer cleanup()
 
@@ -831,9 +831,9 @@ func TestValidateSchemaPassesWhenAllMigrationsApplied(t *testing.T) {
 	mock.ExpectQuery("SELECT id FROM jetpack_monitor_schema_migrations ORDER BY id").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1).AddRow(2).AddRow(3))
 
-	status, err := ValidateSchema(context.Background())
+	status, err := SchemaMigrationStatus(context.Background())
 	if err != nil {
-		t.Fatalf("ValidateSchema error = %v", err)
+		t.Fatalf("SchemaMigrationStatus error = %v", err)
 	}
 	if status.CurrentMaxID != 3 || status.ExpectedMaxID != 3 || status.AppliedCount != 3 {
 		t.Fatalf("status = %+v, want current=3 expected=3 applied=3", status)
@@ -843,7 +843,7 @@ func TestValidateSchemaPassesWhenAllMigrationsApplied(t *testing.T) {
 	}
 }
 
-func TestValidateSchemaReportsPendingAndUnknownMigrations(t *testing.T) {
+func TestSchemaMigrationStatusReportsPendingAndUnknownMigrations(t *testing.T) {
 	mock, cleanup := withMockDB(t)
 	defer cleanup()
 
@@ -858,9 +858,9 @@ func TestValidateSchemaReportsPendingAndUnknownMigrations(t *testing.T) {
 	mock.ExpectQuery("SELECT id FROM jetpack_monitor_schema_migrations ORDER BY id").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1).AddRow(99))
 
-	status, err := ValidateSchema(context.Background())
-	if err == nil {
-		t.Fatal("ValidateSchema unexpectedly passed")
+	status, err := SchemaMigrationStatus(context.Background())
+	if err != nil {
+		t.Fatalf("SchemaMigrationStatus error = %v", err)
 	}
 	if !reflect.DeepEqual(status.PendingIDs, []int{2, 3}) {
 		t.Fatalf("PendingIDs = %v, want [2 3]", status.PendingIDs)
@@ -870,6 +870,61 @@ func TestValidateSchemaReportsPendingAndUnknownMigrations(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestEvaluateSchemaContractPasses(t *testing.T) {
+	contracts := []schemaTableContract{{
+		table:   "jetpack_monitor_sites",
+		columns: []string{"jetpack_monitor_site_id", "blog_id"},
+		indexes: []string{"PRIMARY", "idx_bucket_active"},
+	}}
+	status := evaluateSchemaContract(
+		contracts,
+		[]schemaIndexPrefixContract{{
+			table:   "jetpack_monitor_sites",
+			name:    "index_prefix(bucket_no,monitor_active)",
+			columns: []string{"bucket_no", "monitor_active"},
+		}},
+		map[string]struct{}{"jetpack_monitor_sites": {}},
+		map[string]map[string]struct{}{"jetpack_monitor_sites": {"jetpack_monitor_site_id": {}, "blog_id": {}}},
+		map[string]map[string]struct{}{"jetpack_monitor_sites": {"PRIMARY": {}, "idx_bucket_active": {}}},
+		map[string]map[string][]string{"jetpack_monitor_sites": {"legacy_bucket_index": {"bucket_no", "monitor_active", "check_interval"}}},
+	)
+	if !status.OK() {
+		t.Fatalf("schema contract should pass: %+v", status)
+	}
+	if status.Summary() != "tables=1/1 columns=2/2 indexes=3/3" {
+		t.Fatalf("Summary() = %q", status.Summary())
+	}
+}
+
+func TestEvaluateSchemaContractReportsMissingObjects(t *testing.T) {
+	contracts := []schemaTableContract{{
+		table:   "jetpack_monitor_sites",
+		columns: []string{"jetpack_monitor_site_id", "blog_id"},
+		indexes: []string{"PRIMARY", "idx_bucket_active"},
+	}}
+	status := evaluateSchemaContract(
+		contracts,
+		[]schemaIndexPrefixContract{{
+			table:   "jetpack_monitor_sites",
+			name:    "index_prefix(bucket_no,monitor_active)",
+			columns: []string{"bucket_no", "monitor_active"},
+		}},
+		map[string]struct{}{"jetpack_monitor_sites": {}},
+		map[string]map[string]struct{}{"jetpack_monitor_sites": {"jetpack_monitor_site_id": {}}},
+		map[string]map[string]struct{}{"jetpack_monitor_sites": {"PRIMARY": {}}},
+		map[string]map[string][]string{"jetpack_monitor_sites": {"wrong_order": {"monitor_active", "bucket_no"}}},
+	)
+	if status.OK() {
+		t.Fatalf("schema contract unexpectedly passed")
+	}
+	if len(status.MissingColumns) != 1 || status.MissingColumns[0].Name != "blog_id" {
+		t.Fatalf("MissingColumns = %+v, want blog_id", status.MissingColumns)
+	}
+	if len(status.MissingIndexes) != 2 {
+		t.Fatalf("MissingIndexes = %+v, want two missing indexes", status.MissingIndexes)
 	}
 }
 

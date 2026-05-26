@@ -9,6 +9,7 @@ links only when you need deeper operational detail.
 | [development-guide.md](development-guide.md) | Local setup, API smoke tests, and non-production labs. |
 | [operations-guide.md](operations-guide.md) | Production Docker runtime care, dashboards, metrics, debugging, and support workflows. |
 | [v1-to-v2-migration.md](v1-to-v2-migration.md) | Production rollout, rollback, TeamCity/container details, Veriflier deployment, and check-policy migration. |
+| [production-schema.md](production-schema.md) | Systems-facing production DDL and schema validation checklist. |
 | [internal-api-reference.md](internal-api-reference.md) | Internal API contract, API CLI usage, endpoint map, webhook signing, and alert contacts. |
 | [decisions.md](decisions.md) | Accepted architecture decisions that used to live as separate ADR files. |
 | [roadmap.md](roadmap.md) | Deferred work and future product/platform direction. |

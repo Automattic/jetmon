@@ -229,6 +229,7 @@ $db_servers = array(
 
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	configRaw := fmt.Sprintf(`{
+		"CONFIG_PROFILE": "dev",
 		"AUTH_TOKEN": "token",
 		"DB_SERVER_MAP_PATH": %q,
 		"DB_SERVER_MAP_DATASET": "misc",

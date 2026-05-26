@@ -188,12 +188,13 @@ func (w *Worker) dispatchTick() error {
 		id         int64
 		eventID    int64
 		blogID     int64
+		endpointID sql.NullInt64
 		stateAfter sql.NullString
 		reason     string
 		changedAt  time.Time
 	}
 	rows, err := w.cfg.DB.QueryContext(ctx, `
-		SELECT id, event_id, blog_id, state_after, reason, changed_at
+		SELECT id, event_id, blog_id, endpoint_id, state_after, reason, changed_at
 		  FROM jetpack_monitor_event_transitions
 		 WHERE id > ?
 		 ORDER BY id ASC
@@ -206,7 +207,7 @@ func (w *Worker) dispatchTick() error {
 	var transitions []transitionRow
 	for rows.Next() {
 		var t transitionRow
-		if err := rows.Scan(&t.id, &t.eventID, &t.blogID, &t.stateAfter, &t.reason, &t.changedAt); err != nil {
+		if err := rows.Scan(&t.id, &t.eventID, &t.blogID, &t.endpointID, &t.stateAfter, &t.reason, &t.changedAt); err != nil {
 			return fmt.Errorf("scan transition: %w", err)
 		}
 		transitions = append(transitions, t)
@@ -237,7 +238,7 @@ func (w *Worker) dispatchTick() error {
 			if !h.Matches(eventType, t.blogID, state) {
 				continue
 			}
-			payload, err := w.buildPayload(eventType, t.id, t.eventID, t.blogID, t.reason, state, t.changedAt)
+			payload, err := w.buildPayload(eventType, t.id, t.eventID, t.blogID, t.endpointID, t.reason, state, t.changedAt)
 			if err != nil {
 				log.Printf("webhooks: build payload event_id=%d transition_id=%d: %v",
 					t.eventID, t.id, err)
@@ -268,7 +269,7 @@ func (w *Worker) dispatchTick() error {
 //
 // Shape is flat: type, occurred_at, ids, and the relevant event/transition
 // fields. Consumers who want full event detail call GET /events/{id}.
-func (w *Worker) buildPayload(eventType string, transitionID, eventID, blogID int64, reason, state string, occurredAt time.Time) (json.RawMessage, error) {
+func (w *Worker) buildPayload(eventType string, transitionID, eventID, blogID int64, endpointID sql.NullInt64, reason, state string, occurredAt time.Time) (json.RawMessage, error) {
 	body := map[string]any{
 		"type":          eventType,
 		"occurred_at":   occurredAt.UTC().Format(time.RFC3339Nano),
@@ -277,6 +278,9 @@ func (w *Worker) buildPayload(eventType string, transitionID, eventID, blogID in
 		"site_id":       blogID,
 		"reason":        reason,
 		"state":         state,
+	}
+	if endpointID.Valid {
+		body["endpoint_id"] = endpointID.Int64
 	}
 	return json.Marshal(body)
 }

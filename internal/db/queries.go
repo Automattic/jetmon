@@ -24,8 +24,8 @@ func GetSitesForBucket(ctx context.Context, bucketMin, bucketMax, batchSize int,
 			c.custom_headers, c.timeout_seconds, c.redirect_policy, c.alert_cooldown_minutes, r.last_alert_sent_at,
 			c.request_method, c.detection_profile, c.check_history_mode, c.check_history_sample_rate
 		FROM jetpack_monitor_sites s
-		LEFT JOIN jetpack_monitor_site_check_config c ON c.blog_id = s.blog_id
-		LEFT JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id
+		LEFT JOIN jetpack_monitor_site_check_config c ON c.source_site_id = s.jetpack_monitor_site_id
+		LEFT JOIN jetpack_monitor_site_runtime r ON r.source_site_id = s.jetpack_monitor_site_id
 		WHERE s.monitor_active = 1
 		  AND s.bucket_no BETWEEN ? AND ?`
 	if useVariableIntervals {
@@ -72,8 +72,8 @@ func ListActiveSitesForBucketRange(ctx context.Context, bucketMin, bucketMax int
 			c.custom_headers, c.timeout_seconds, c.redirect_policy, c.alert_cooldown_minutes, r.last_alert_sent_at,
 			c.request_method, c.detection_profile, c.check_history_mode, c.check_history_sample_rate
 		FROM jetpack_monitor_sites s
-		LEFT JOIN jetpack_monitor_site_check_config c ON c.blog_id = s.blog_id
-		LEFT JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id
+		LEFT JOIN jetpack_monitor_site_check_config c ON c.source_site_id = s.jetpack_monitor_site_id
+		LEFT JOIN jetpack_monitor_site_runtime r ON r.source_site_id = s.jetpack_monitor_site_id
 		WHERE s.monitor_active = 1
 		  AND s.bucket_no BETWEEN ? AND ?
 		  AND s.jetpack_monitor_site_id > ?
@@ -159,7 +159,7 @@ func CountRecentlyCheckedActiveSitesForBucketRange(ctx context.Context, bucketMi
 	err := ReadDB().QueryRowContext(ctx, `
 		SELECT COUNT(*)
 		  FROM jetpack_monitor_sites s
-		  JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id
+		  JOIN jetpack_monitor_site_runtime r ON r.source_site_id = s.jetpack_monitor_site_id
 		 WHERE s.monitor_active = 1
 		   AND s.bucket_no BETWEEN ? AND ?
 		   AND r.last_checked_at >= ?`,
@@ -178,7 +178,7 @@ func CountDueSitesForBucketRange(ctx context.Context, bucketMin, bucketMax int, 
 	query := `
 		SELECT COUNT(*)
 		  FROM jetpack_monitor_sites s
-		  LEFT JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id
+		  LEFT JOIN jetpack_monitor_site_runtime r ON r.source_site_id = s.jetpack_monitor_site_id
 		 WHERE s.monitor_active = 1
 		   AND s.bucket_no BETWEEN ? AND ?`
 	if useVariableIntervals {
@@ -494,24 +494,43 @@ func SummarizeLegacyProjectionDrift(ctx context.Context, bucketMin, bucketMax, l
 	return out, rows.Err()
 }
 
+func sourceSiteIDOrBlogID(sourceSiteID, blogID int64) int64 {
+	if sourceSiteID > 0 {
+		return sourceSiteID
+	}
+	return blogID
+}
+
 // MarkSiteChecked records when a site was last checked and when it is next due.
+// It is retained for legacy callers that only know blog_id; monitor paths
+// should prefer MarkSiteCheckedForMonitorSite so duplicate monitored URLs on a
+// blog keep separate runtime state.
 func MarkSiteChecked(ctx context.Context, blogID int64, checkedAt, nextCheckAt time.Time) error {
+	return MarkSiteCheckedForMonitorSite(ctx, blogID, blogID, checkedAt, nextCheckAt)
+}
+
+// MarkSiteCheckedForMonitorSite records runtime freshness for one monitored
+// endpoint row.
+func MarkSiteCheckedForMonitorSite(ctx context.Context, sourceSiteID, blogID int64, checkedAt, nextCheckAt time.Time) error {
+	sourceSiteID = sourceSiteIDOrBlogID(sourceSiteID, blogID)
 	_, err := db.ExecContext(ctx,
-		`INSERT INTO jetpack_monitor_site_runtime (blog_id, last_checked_at, next_check_at)
-		 VALUES (?, ?, ?)
+		`INSERT INTO jetpack_monitor_site_runtime (source_site_id, blog_id, last_checked_at, next_check_at)
+		 VALUES (?, ?, ?, ?)
 		 ON DUPLICATE KEY UPDATE
+			blog_id = VALUES(blog_id),
 			last_checked_at = VALUES(last_checked_at),
 			next_check_at = VALUES(next_check_at)`,
-		blogID, checkedAt.UTC(), nextCheckAt.UTC(),
+		sourceSiteID, blogID, checkedAt.UTC(), nextCheckAt.UTC(),
 	)
 	return err
 }
 
 // SiteCheck records one site freshness update.
 type SiteCheck struct {
-	BlogID      int64
-	CheckedAt   time.Time
-	NextCheckAt time.Time
+	SourceSiteID int64
+	BlogID       int64
+	CheckedAt    time.Time
+	NextCheckAt  time.Time
 }
 
 // MarkSitesChecked records last_checked_at for a batch of sites. Batching this
@@ -523,7 +542,9 @@ func MarkSitesChecked(ctx context.Context, checks []SiteCheck) error {
 	}
 	checks = append([]SiteCheck(nil), checks...)
 	sort.Slice(checks, func(i, j int) bool {
-		return checks[i].BlogID < checks[j].BlogID
+		left := sourceSiteIDOrBlogID(checks[i].SourceSiteID, checks[i].BlogID)
+		right := sourceSiteIDOrBlogID(checks[j].SourceSiteID, checks[j].BlogID)
+		return left < right
 	})
 	for start := 0; start < len(checks); start += batchWriteChunkSize {
 		end := min(start+batchWriteChunkSize, len(checks))
@@ -555,16 +576,16 @@ func markSitesCheckedChunkWithRetry(ctx context.Context, checks []SiteCheck) err
 
 func markSitesCheckedChunk(ctx context.Context, checks []SiteCheck) error {
 	var query strings.Builder
-	query.WriteString("INSERT INTO jetpack_monitor_site_runtime (blog_id, last_checked_at, next_check_at) VALUES ")
-	args := make([]any, 0, len(checks)*3)
+	query.WriteString("INSERT INTO jetpack_monitor_site_runtime (source_site_id, blog_id, last_checked_at, next_check_at) VALUES ")
+	args := make([]any, 0, len(checks)*4)
 	for i, check := range checks {
 		if i > 0 {
 			query.WriteByte(',')
 		}
-		query.WriteString("(?, ?, ?)")
-		args = append(args, check.BlogID, check.CheckedAt.UTC(), check.NextCheckAt.UTC())
+		query.WriteString("(?, ?, ?, ?)")
+		args = append(args, sourceSiteIDOrBlogID(check.SourceSiteID, check.BlogID), check.BlogID, check.CheckedAt.UTC(), check.NextCheckAt.UTC())
 	}
-	query.WriteString(" ON DUPLICATE KEY UPDATE last_checked_at = VALUES(last_checked_at), next_check_at = VALUES(next_check_at)")
+	query.WriteString(" ON DUPLICATE KEY UPDATE blog_id = VALUES(blog_id), last_checked_at = VALUES(last_checked_at), next_check_at = VALUES(next_check_at)")
 	_, err := db.ExecContext(ctx, query.String(), args...)
 	return err
 }
@@ -578,30 +599,45 @@ func isRetryableWriteConflict(err error) bool {
 
 // UpdateLastAlertSent records when an alert was last sent for a site.
 func UpdateLastAlertSent(ctx context.Context, blogID int64, sentAt time.Time) error {
+	return UpdateLastAlertSentForMonitorSite(ctx, blogID, blogID, sentAt)
+}
+
+// UpdateLastAlertSentForMonitorSite records alert cooldown state for one
+// monitored endpoint row.
+func UpdateLastAlertSentForMonitorSite(ctx context.Context, sourceSiteID, blogID int64, sentAt time.Time) error {
+	sourceSiteID = sourceSiteIDOrBlogID(sourceSiteID, blogID)
 	_, err := db.ExecContext(ctx,
-		`INSERT INTO jetpack_monitor_site_runtime (blog_id, last_alert_sent_at)
-		 VALUES (?, ?)
-		 ON DUPLICATE KEY UPDATE last_alert_sent_at = VALUES(last_alert_sent_at)`,
-		blogID, sentAt.UTC(),
+		`INSERT INTO jetpack_monitor_site_runtime (source_site_id, blog_id, last_alert_sent_at)
+		 VALUES (?, ?, ?)
+		 ON DUPLICATE KEY UPDATE blog_id = VALUES(blog_id), last_alert_sent_at = VALUES(last_alert_sent_at)`,
+		sourceSiteID, blogID, sentAt.UTC(),
 	)
 	return err
 }
 
 // UpdateSSLExpiry records the SSL certificate expiry date for a site.
 func UpdateSSLExpiry(ctx context.Context, blogID int64, expiry time.Time) error {
+	return UpdateSSLExpiryForMonitorSite(ctx, blogID, blogID, expiry)
+}
+
+// UpdateSSLExpiryForMonitorSite records SSL expiry for one monitored endpoint
+// row.
+func UpdateSSLExpiryForMonitorSite(ctx context.Context, sourceSiteID, blogID int64, expiry time.Time) error {
+	sourceSiteID = sourceSiteIDOrBlogID(sourceSiteID, blogID)
 	_, err := db.ExecContext(ctx,
-		`INSERT INTO jetpack_monitor_site_runtime (blog_id, ssl_expiry_date)
-		 VALUES (?, ?)
-		 ON DUPLICATE KEY UPDATE ssl_expiry_date = VALUES(ssl_expiry_date)`,
-		blogID, expiry,
+		`INSERT INTO jetpack_monitor_site_runtime (source_site_id, blog_id, ssl_expiry_date)
+		 VALUES (?, ?, ?)
+		 ON DUPLICATE KEY UPDATE blog_id = VALUES(blog_id), ssl_expiry_date = VALUES(ssl_expiry_date)`,
+		sourceSiteID, blogID, expiry,
 	)
 	return err
 }
 
 // SiteSSLExpiry records one observed certificate expiry update.
 type SiteSSLExpiry struct {
-	BlogID int64
-	Expiry time.Time
+	SourceSiteID int64
+	BlogID       int64
+	Expiry       time.Time
 }
 
 // UpdateSSLExpiries records observed certificate expiry dates for a batch of
@@ -614,7 +650,9 @@ func UpdateSSLExpiries(ctx context.Context, expiries []SiteSSLExpiry) error {
 	}
 	expiries = append([]SiteSSLExpiry(nil), expiries...)
 	sort.Slice(expiries, func(i, j int) bool {
-		return expiries[i].BlogID < expiries[j].BlogID
+		left := sourceSiteIDOrBlogID(expiries[i].SourceSiteID, expiries[i].BlogID)
+		right := sourceSiteIDOrBlogID(expiries[j].SourceSiteID, expiries[j].BlogID)
+		return left < right
 	})
 	for start := 0; start < len(expiries); start += batchWriteChunkSize {
 		end := min(start+batchWriteChunkSize, len(expiries))
@@ -627,16 +665,16 @@ func UpdateSSLExpiries(ctx context.Context, expiries []SiteSSLExpiry) error {
 
 func updateSSLExpiriesChunk(ctx context.Context, expiries []SiteSSLExpiry) error {
 	var query strings.Builder
-	query.WriteString("INSERT INTO jetpack_monitor_site_runtime (blog_id, ssl_expiry_date) VALUES ")
-	args := make([]any, 0, len(expiries)*2)
+	query.WriteString("INSERT INTO jetpack_monitor_site_runtime (source_site_id, blog_id, ssl_expiry_date) VALUES ")
+	args := make([]any, 0, len(expiries)*3)
 	for i, expiry := range expiries {
 		if i > 0 {
 			query.WriteByte(',')
 		}
-		query.WriteString("(?, ?)")
-		args = append(args, expiry.BlogID, expiry.Expiry)
+		query.WriteString("(?, ?, ?)")
+		args = append(args, sourceSiteIDOrBlogID(expiry.SourceSiteID, expiry.BlogID), expiry.BlogID, expiry.Expiry)
 	}
-	query.WriteString(" ON DUPLICATE KEY UPDATE ssl_expiry_date = VALUES(ssl_expiry_date)")
+	query.WriteString(" ON DUPLICATE KEY UPDATE blog_id = VALUES(blog_id), ssl_expiry_date = VALUES(ssl_expiry_date)")
 	_, err := db.ExecContext(ctx, query.String(), args...)
 	return err
 }
@@ -644,15 +682,23 @@ func updateSSLExpiriesChunk(ctx context.Context, expiries []SiteSSLExpiry) error
 // RescheduleSiteRuntime recalculates the sidecar due-time projection after a
 // site's check interval changes.
 func RescheduleSiteRuntime(ctx context.Context, tx *sql.Tx, blogID int64, checkInterval int) error {
+	return RescheduleSiteRuntimeForMonitorSite(ctx, tx, blogID, blogID, checkInterval)
+}
+
+// RescheduleSiteRuntimeForMonitorSite recalculates the sidecar due-time
+// projection after one monitored endpoint's check interval changes.
+func RescheduleSiteRuntimeForMonitorSite(ctx context.Context, tx *sql.Tx, sourceSiteID, blogID int64, checkInterval int) error {
+	sourceSiteID = sourceSiteIDOrBlogID(sourceSiteID, blogID)
 	_, err := tx.ExecContext(ctx,
-		`INSERT INTO jetpack_monitor_site_runtime (blog_id, next_check_at)
-		 VALUES (?, NULL)
+		`INSERT INTO jetpack_monitor_site_runtime (source_site_id, blog_id, next_check_at)
+		 VALUES (?, ?, NULL)
 		 ON DUPLICATE KEY UPDATE
+			blog_id = VALUES(blog_id),
 			next_check_at = CASE
 				WHEN last_checked_at IS NULL THEN NULL
 				ELSE DATE_ADD(last_checked_at, INTERVAL GREATEST(?, 1) MINUTE)
 			END`,
-		blogID, checkInterval,
+		sourceSiteID, blogID, checkInterval,
 	)
 	return err
 }
@@ -920,12 +966,18 @@ func RecordFalsePositive(blogID int64, httpCode, errorCode int, rttMs int64) err
 
 // RecordCheckHistory inserts a check timing sample.
 func RecordCheckHistory(blogID int64, requestMethod string, httpCode, errorCode int, rttMs, dnsMs, tcpMs, tlsMs, ttfbMs int64) error {
+	return RecordCheckHistoryForMonitorSite(blogID, blogID, requestMethod, httpCode, errorCode, rttMs, dnsMs, tcpMs, tlsMs, ttfbMs)
+}
+
+// RecordCheckHistoryForMonitorSite inserts a check timing sample for one
+// monitored endpoint row.
+func RecordCheckHistoryForMonitorSite(sourceSiteID, blogID int64, requestMethod string, httpCode, errorCode int, rttMs, dnsMs, tcpMs, tlsMs, ttfbMs int64) error {
 	requestMethod = normalizeHistoryMethod(requestMethod)
 	_, err := db.Exec(
 		`INSERT INTO jetpack_monitor_check_history
-		    (blog_id, request_method, http_code, error_code, rtt_ms, dns_ms, tcp_ms, tls_ms, ttfb_ms, checked_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
-		blogID, requestMethod, httpCode, errorCode, rttMs, dnsMs, tcpMs, tlsMs, ttfbMs,
+		    (blog_id, source_site_id, request_method, http_code, error_code, rtt_ms, dns_ms, tcp_ms, tls_ms, ttfb_ms, checked_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+		blogID, sourceSiteIDOrBlogID(sourceSiteID, blogID), requestMethod, httpCode, errorCode, rttMs, dnsMs, tcpMs, tlsMs, ttfbMs,
 	)
 	return err
 }
@@ -943,6 +995,7 @@ func normalizeHistoryMethod(method string) string {
 
 // CheckHistoryRow is one check timing sample for jetpack_monitor_check_history.
 type CheckHistoryRow struct {
+	SourceSiteID  int64
 	BlogID        int64
 	RequestMethod string
 	HTTPCode      int
@@ -964,7 +1017,9 @@ func RecordCheckHistories(ctx context.Context, rows []CheckHistoryRow) error {
 	}
 	rows = append([]CheckHistoryRow(nil), rows...)
 	sort.Slice(rows, func(i, j int) bool {
-		return rows[i].BlogID < rows[j].BlogID
+		left := sourceSiteIDOrBlogID(rows[i].SourceSiteID, rows[i].BlogID)
+		right := sourceSiteIDOrBlogID(rows[j].SourceSiteID, rows[j].BlogID)
+		return left < right
 	})
 	for start := 0; start < len(rows); start += batchWriteChunkSize {
 		end := min(start+batchWriteChunkSize, len(rows))
@@ -978,20 +1033,21 @@ func RecordCheckHistories(ctx context.Context, rows []CheckHistoryRow) error {
 func recordCheckHistoriesChunk(ctx context.Context, rows []CheckHistoryRow) error {
 	var query strings.Builder
 	query.WriteString(`INSERT INTO jetpack_monitor_check_history
-		(blog_id, request_method, http_code, error_code, rtt_ms, dns_ms, tcp_ms, tls_ms, ttfb_ms, checked_at)
+		(blog_id, source_site_id, request_method, http_code, error_code, rtt_ms, dns_ms, tcp_ms, tls_ms, ttfb_ms, checked_at)
 		VALUES `)
-	args := make([]any, 0, len(rows)*10)
+	args := make([]any, 0, len(rows)*11)
 	for i, row := range rows {
 		if i > 0 {
 			query.WriteByte(',')
 		}
-		query.WriteString("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+		query.WriteString("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 		checkedAt := row.CheckedAt
 		if checkedAt.IsZero() {
 			checkedAt = time.Now().UTC()
 		}
 		args = append(args,
 			row.BlogID,
+			sourceSiteIDOrBlogID(row.SourceSiteID, row.BlogID),
 			normalizeHistoryMethod(row.RequestMethod),
 			row.HTTPCode,
 			row.ErrorCode,

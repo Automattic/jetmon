@@ -19,7 +19,7 @@ deliverer rollout notes into one runbook.
 
 | Gate | Evidence |
 | --- | --- |
-| Schema/config | `validate-config` and API preflight pass. |
+| Schema/config | Systems-applied DDL from [production-schema.md](production-schema.md), `schema validate`, `validate-config`, and API preflight pass. |
 | Verifliers | `/v2/status` and quorum report are green. |
 | Images | CI-built tags promoted by Systems. |
 | WPCOM | Legacy notification path tested. |
@@ -53,6 +53,7 @@ Fresh image smoke:
 
 ```bash
 ./jetmon2 version
+./jetmon2 schema validate
 ./jetmon2 validate-config
 ./jetmon2 status
 curl -fsS http://127.0.0.1:${API_PORT}/api/v1/health
@@ -75,6 +76,13 @@ quorum, host resource limits, and stdout/stderr logging.
 
 ## Operator Setup
 
+Rollout commands are normally run from an operator workstation or trusted jump
+host, not by shelling into the Monitor container. The local `jetmon2` binary is
+an API client: it reads `~/.config/jetmon2.conf` or `JETMON_API_CONFIG`, talks to
+one approved running Monitor API, and that Monitor performs rollout actions
+against the fleet/database. If the API is not directly reachable, use an
+approved VPN, bastion, or SSH tunnel and point `--base-url` at that endpoint.
+
 ```bash
 ./bin/jetmon2 local-config init \
   --base-url=https://jetmon-api.example.internal \
@@ -87,7 +95,8 @@ quorum, host resource limits, and stdout/stderr logging.
 ./bin/jetmon2 api rollout capabilities --pretty
 ```
 
-Production writes to a non-local API require `--allow-remote`.
+Production writes to a non-local API require `--allow-remote`. Read-only health,
+ready, capability, and status checks can run without it.
 
 Canary template:
 
@@ -102,7 +111,8 @@ Every canary URL must be controlled or an uptime-bench fixture.
 1. Create/resume rollout session.
 2. Run preflight.
 3. Run read-only smoke and canaries.
-4. Seed v2 side tables: dry-run, then execute.
+4. Seed/adopt v2 side tables keyed by `jetpack_monitor_site_id`: dry-run, then
+   execute.
 5. Stop v1 for the exact range.
 6. Run final reconcile.
 7. Activate buckets: dry-run, then execute.
@@ -196,6 +206,9 @@ rollback window.
 
 Do not remove v1 until Systems approves old unit/container/host cleanup and any
 remaining fallback is tested.
+
+Leave additive v2 tables in place during rollback. Production rollback is a
+traffic/ownership change, not a destructive schema rollback.
 
 ## Verification
 

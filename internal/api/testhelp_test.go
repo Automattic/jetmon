@@ -119,7 +119,7 @@ func invokeAuthed(_ *Server, req *http.Request, h http.HandlerFunc) *httptest.Re
 
 // columnsSite is the column set returned by the site list query.
 var columnsSite = []string{
-	"blog_id", "public_id", "monitor_url", "monitor_active", "bucket_no",
+	"id", "blog_id", "monitor_url", "monitor_active", "bucket_no",
 	"check_interval", "site_status", "last_checked_at", "last_status_change",
 	"ssl_expiry_date", "check_keyword", "forbidden_keyword", "forbidden_keywords", "redirect_policy",
 	"request_method", "detection_profile", "maintenance_start", "maintenance_end", "alert_cooldown_minutes",
@@ -141,7 +141,7 @@ var columnsEvent = []string{
 
 // columnsTransition is the column set returned by transition queries.
 var columnsTransition = []string{
-	"id", "event_id", "severity_before", "severity_after",
+	"id", "event_id", "endpoint_id", "severity_before", "severity_after",
 	"state_before", "state_after", "reason", "source", "metadata", "changed_at",
 }
 

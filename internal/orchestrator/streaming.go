@@ -547,7 +547,7 @@ func (p *streamingSideEffectProcessor) runShard(o *Orchestrator, jobs <-chan str
 			// failure unconditionally; it now honors CHECK_HISTORY_MODE so persisted
 			// samples stay tied to the configured observability footprint.
 			if shouldRecordCheckHistory(config.Get(), site, job.res, o.checkHistoryCounter.Add(1)) {
-				historyRows = append(historyRows, checkHistoryRowForResult(site.BlogID, job.res))
+				historyRows = append(historyRows, checkHistoryRowForResult(site, job.res))
 				if len(historyRows) >= streamingHistoryBatchSize && !flushHistory() {
 					return
 				}
@@ -792,9 +792,13 @@ func (o *Orchestrator) runStreamingEngine() {
 		if result.err != nil {
 			log.Printf("orchestrator: streaming legacy freshness projection rows=%d: %v", len(result.checks), result.err)
 			for _, check := range result.checks {
-				existing, ok := pendingProjection[check.BlogID]
+				key := check.SourceSiteID
+				if key == 0 {
+					key = check.BlogID
+				}
+				existing, ok := pendingProjection[key]
 				if !ok || existing.CheckedAt.Before(check.CheckedAt) {
-					pendingProjection[check.BlogID] = check
+					pendingProjection[key] = check
 				}
 			}
 			return
@@ -1324,10 +1328,12 @@ func (o *Orchestrator) queueStreamingProjection(cfg *config.Config, target *stre
 	if projectedAt.Before(resultAt) {
 		projectedAt = resultAt
 	}
-	pending[target.site.BlogID] = db.SiteCheck{
-		BlogID:      target.site.BlogID,
-		CheckedAt:   projectedAt,
-		NextCheckAt: target.dueAt,
+	key := monitorTargetID(target.site)
+	pending[key] = db.SiteCheck{
+		SourceSiteID: target.site.ID,
+		BlogID:       target.site.BlogID,
+		CheckedAt:    projectedAt,
+		NextCheckAt:  target.dueAt,
 	}
 	target.lastProjectedAt = projectedAt
 }
