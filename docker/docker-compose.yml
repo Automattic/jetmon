@@ -44,6 +44,7 @@ services:
       dockerfile: docker/Dockerfile_jetmon
     init: true
     restart: unless-stopped
+    stop_grace_period: 45s
     user: "${UID:-1000}:${GID:-1000}"
     volumes:
       - ../config:/jetmon/config
@@ -101,6 +102,7 @@ services:
       dockerfile: docker/Dockerfile_veriflier
     init: true
     restart: unless-stopped
+    stop_grace_period: 45s
     volumes:
       - ../veriflier2/config:/opt/veriflier/config
     ports:

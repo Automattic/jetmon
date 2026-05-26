@@ -241,6 +241,9 @@ docker exec jetmon ./jetmon2 reload
 docker exec jetmon ./jetmon2 drain
 ```
 
+Compose services should keep `stop_grace_period` longer than Jetmon's drain
+budget. The repo Compose files use `45s` for Monitor and Veriflier services.
+
 For scenario-specific commands covering Monitor, Veriflier, and Deliverer
 updates, see the update and restart playbook in
 [operations-guide.md](operations-guide.md#update-and-restart-playbook).

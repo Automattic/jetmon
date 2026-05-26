@@ -182,8 +182,9 @@ Deliverer:
 docker compose up -d --no-deps --force-recreate jetmon-deliverer
 ```
 
-Potential downtime risk: low when rolling and `stop_grace_period` is long
-enough for Jetmon to drain.
+Potential downtime risk: low when rolling. The repo Compose files set
+`stop_grace_period: 45s`, which is longer than Jetmon's 30s drain budget; keep
+the same margin in production overrides.
 
 ### New Image Or Code Deploy
 
