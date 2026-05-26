@@ -19,6 +19,7 @@ import (
 	"github.com/Automattic/jetmon/internal/deliverer"
 	"github.com/Automattic/jetmon/internal/fleethealth"
 	"github.com/Automattic/jetmon/internal/metrics"
+	"github.com/Automattic/jetmon/internal/processcontrol"
 	"github.com/Automattic/jetmon/internal/processmetrics"
 )
 
@@ -200,7 +201,8 @@ func run() {
 	}()
 
 	if !workersEnabled {
-		waitForShutdown()
+		req := waitForShutdown()
+		stopDBReload()
 		close(stopHealth)
 		publishProcessHealth(fleethealth.StateStopping)
 		ctx, cancel := context.WithTimeout(context.Background(), processHealthWriteTimeout)
@@ -209,6 +211,12 @@ func run() {
 		}
 		cancel()
 		log.Println("jetmon-deliverer: shutdown complete")
+		if req.Restart {
+			log.Println("jetmon-deliverer: re-executing after graceful SIGHUP")
+			if err := processcontrol.ExecSelf(); err != nil {
+				log.Fatalf("jetmon-deliverer: re-exec failed: %v", err)
+			}
+		}
 		return
 	}
 
@@ -217,7 +225,8 @@ func run() {
 		InstanceID:  hostname,
 		Dispatchers: deliverer.BuildAlertDispatchers(cfg),
 	})
-	waitForShutdown()
+	req := waitForShutdown()
+	stopDBReload()
 	close(stopHealth)
 	publishProcessHealth(fleethealth.StateStopping)
 	runtime.Stop()
@@ -227,6 +236,12 @@ func run() {
 	}
 	cancel()
 	log.Println("jetmon-deliverer: shutdown complete")
+	if req.Restart {
+		log.Println("jetmon-deliverer: re-executing after graceful SIGHUP")
+		if err := processcontrol.ExecSelf(); err != nil {
+			log.Fatalf("jetmon-deliverer: re-exec failed: %v", err)
+		}
+	}
 }
 
 func deliveryWorkersShouldStart(cfg *config.Config, hostname string) bool {
@@ -383,11 +398,22 @@ func delivererStatsDHealth(ready bool, checkedAt time.Time) fleethealth.Dependen
 	return entry
 }
 
-func waitForShutdown() {
+type shutdownRequest struct {
+	Signal  os.Signal
+	Restart bool
+}
+
+func waitForShutdown() shutdownRequest {
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	sig := <-sigCh
-	log.Printf("received %s, stopping", sig)
+	req := shutdownRequest{Signal: sig, Restart: processcontrol.IsGracefulRestartSignal(sig)}
+	if req.Restart {
+		log.Printf("received %s, draining before graceful restart", sig)
+	} else {
+		log.Printf("received %s, stopping", sig)
+	}
+	return req
 }
 
 func emailTransportLabel(cfg *config.Config) string {

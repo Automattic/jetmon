@@ -19,7 +19,10 @@ and operator control into clearer v2-owned surfaces.
 - Added dynamic bucket ownership through `jetpack_monitor_hosts`, with pinned
   bucket ranges retained for migration windows.
 - Added graceful drain/reload commands, PID-file fixes, and localhost-only
-  pprof on `DEBUG_PORT`.
+  pprof on `DEBUG_PORT`. SIGHUP reload now drains and self-reexecs
+  long-running v2 services so startup-only config and replaced binaries take
+  effect cleanly; Docker containers re-exec through their entrypoint so config
+  rendering and startup validation run again before the binary restarts.
 - Added process resource metrics, true RSS reporting, and StatsD host-path
   configuration compatible with v1 metric naming.
 

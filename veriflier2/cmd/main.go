@@ -14,12 +14,14 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/Automattic/jetmon/internal/checker"
 	"github.com/Automattic/jetmon/internal/config"
 	"github.com/Automattic/jetmon/internal/metrics"
+	"github.com/Automattic/jetmon/internal/processcontrol"
 	"github.com/Automattic/jetmon/internal/veriflier"
 )
 
@@ -118,11 +120,19 @@ func main() {
 
 	// Graceful shutdown: SIGINT/SIGTERM triggers Shutdown(ctx) with a drain
 	// budget so in-flight checks can complete before the listener closes.
+	// SIGHUP uses the same drain path and then re-execs through the configured
+	// restart target so replaced binaries and rendered config are picked up.
+	var restartRequested atomic.Bool
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	go func() {
 		sig := <-sigCh
-		log.Printf("veriflier2: %s received, draining (up to %s)", sig, shutdownGracePeriod)
+		if processcontrol.IsGracefulRestartSignal(sig) {
+			restartRequested.Store(true)
+			log.Printf("veriflier2: %s received, draining before graceful restart (up to %s)", sig, shutdownGracePeriod)
+		} else {
+			log.Printf("veriflier2: %s received, draining (up to %s)", sig, shutdownGracePeriod)
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), shutdownGracePeriod)
 		defer cancel()
 		if err := srv.Shutdown(ctx); err != nil {
@@ -134,7 +144,14 @@ func main() {
 	if err := srv.Listen(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("listen: %v", err)
 	}
+	stopResourceStats()
 	log.Println("veriflier2: shutdown complete")
+	if restartRequested.Load() {
+		log.Println("veriflier2: re-executing after graceful SIGHUP")
+		if err := processcontrol.ExecSelf(); err != nil {
+			log.Fatalf("veriflier2: re-exec failed: %v", err)
+		}
+	}
 }
 
 type resourceStatsEmitter interface {

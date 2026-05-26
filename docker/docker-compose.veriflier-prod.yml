@@ -3,6 +3,7 @@ services:
     image: ${VERIFLIER_IMAGE:-ghcr.io/automattic/veriflier:latest}
     init: true
     restart: unless-stopped
+    stop_grace_period: 45s
     ports:
       - "${VERIFLIER_BIND_ADDR:-0.0.0.0}:${VERIFLIER_HOST_PORT:-7803}:7803"
     environment:

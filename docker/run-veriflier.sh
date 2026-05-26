@@ -106,6 +106,7 @@ export VERIFLIER_PORT="${VERIFLIER_PORT:-${VERIFLIER_GRPC_PORT:-7803}}"
 export VERIFLIER_VANTAGE_ID="${VERIFLIER_VANTAGE_ID:-local-veriflier}"
 export VERIFLIER_REGION="${VERIFLIER_REGION:-local}"
 export VERIFLIER_PROVIDER="${VERIFLIER_PROVIDER:-docker}"
+export JETMON_REEXEC_PATH="${JETMON_REEXEC_PATH:-/opt/veriflier/entrypoint.sh}"
 config_mode="$(render_mode)"
 
 configure_runtime_config "$config_mode"

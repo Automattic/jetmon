@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -88,6 +89,8 @@ type Server struct {
 	health      []HealthEntry
 	sseClients  map[string]chan string
 	sseMu       sync.Mutex
+	serverMu    sync.Mutex
+	httpSrv     *http.Server
 	hostname    string
 	fleetSource FleetSource
 }
@@ -150,7 +153,21 @@ func (s *Server) Listen(addr string) error {
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
+	s.serverMu.Lock()
+	s.httpSrv = srv
+	s.serverMu.Unlock()
 	return srv.ListenAndServe()
+}
+
+// Shutdown drains in-flight dashboard requests up to ctx's deadline.
+func (s *Server) Shutdown(ctx context.Context) error {
+	s.serverMu.Lock()
+	srv := s.httpSrv
+	s.serverMu.Unlock()
+	if srv == nil {
+		return nil
+	}
+	return srv.Shutdown(ctx)
 }
 
 // ListenDebug starts a localhost-only pprof/debug server on the given address.
@@ -158,7 +175,18 @@ func (s *Server) Listen(addr string) error {
 func ListenDebug(addr string) error {
 	// net/http/pprof registers itself on http.DefaultServeMux via init().
 	log.Printf("debug: pprof listening on %s (localhost only)", addr)
-	return http.ListenAndServe(addr, http.DefaultServeMux)
+	return DebugServer(addr).ListenAndServe()
+}
+
+// DebugServer returns the localhost-only pprof/debug server so callers can
+// gracefully stop it during process re-exec.
+func DebugServer(addr string) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           http.DefaultServeMux,
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 }
 
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {

@@ -174,6 +174,7 @@ configure_runtime_config() {
 # runs as ${UID:-1000}:${GID:-1000} via docker-compose — write to stats/ instead,
 # which the Dockerfile chmods 0777 specifically so reload/drain commands work.
 export JETMON_PID_FILE="${JETMON_PID_FILE:-/jetmon/stats/jetmon2.pid}"
+export JETMON_REEXEC_PATH="${JETMON_REEXEC_PATH:-/jetmon/entrypoint.sh}"
 export VERIFLIER_PORT="${VERIFLIER_PORT:-${VERIFLIER_GRPC_PORT:-7803}}"
 config_mode="$(render_mode)"
 

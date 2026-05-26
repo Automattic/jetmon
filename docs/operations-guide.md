@@ -104,6 +104,239 @@ Run `./jetmon2 migrate` only as an explicit schema-change action in environments
 where the operator is allowed to apply DDL. Do not rely on automatic production
 migrations.
 
+## Graceful Restart
+
+SIGHUP is the zero-disruption restart signal for long-running v2 services.
+Monitor, Deliverer, and Veriflier stop accepting new work, drain in-flight work,
+then re-exec through the configured restart target. Bare binaries re-exec the
+current executable. Docker containers set `JETMON_REEXEC_PATH` to their
+entrypoint so rendered config and startup validation run again before the binary
+starts. Use this after rendered config changes or after a deployment has
+replaced the on-disk binary.
+For Monitor, the helper command sends SIGHUP through the PID file:
+
+```bash
+./jetmon2 reload
+```
+
+For standalone Deliverer and Veriflier, send SIGHUP through the service manager
+or container runtime.
+
+SIGINT/SIGTERM keep the same drain behavior but exit instead of re-execing.
+
+## Update And Restart Playbook
+
+Run these actions rolling, one host or one service instance at a time. Service
+names below use the standard Compose names: `jetmon` for Monitor, `veriflier`
+for Veriflier, and `jetmon-deliverer` for standalone delivery. Skip services
+that are not present in a given stack.
+
+### Mounted JSON Config Changed
+
+Use when the running container already sees the updated JSON file.
+
+Monitor:
+
+```bash
+docker compose kill -s HUP jetmon
+# or
+docker exec jetmon ./jetmon2 reload
+```
+
+Veriflier:
+
+```bash
+docker compose kill -s HUP veriflier
+```
+
+Deliverer:
+
+```bash
+docker compose kill -s HUP jetmon-deliverer
+```
+
+Potential downtime risk: near-zero when rolling. Each process drains before
+restart. A single Veriflier may be briefly unavailable, so keep quorum capacity
+in mind.
+
+### Compose Environment Changed
+
+Use recreate, not SIGHUP. Existing containers do not receive new Compose
+environment values.
+
+Monitor:
+
+```bash
+docker compose up -d --no-deps --force-recreate jetmon
+```
+
+Veriflier:
+
+```bash
+docker compose up -d --no-deps --force-recreate veriflier
+```
+
+Deliverer:
+
+```bash
+docker compose up -d --no-deps --force-recreate jetmon-deliverer
+```
+
+Potential downtime risk: low when rolling. The repo Compose files set
+`stop_grace_period: 45s`, which is longer than Jetmon's 30s drain budget; keep
+the same margin in production overrides.
+
+### New Image Or Code Deploy
+
+Use this as the normal production deploy path.
+
+Monitor:
+
+```bash
+docker compose pull jetmon
+docker compose up -d --no-deps --force-recreate jetmon
+```
+
+Veriflier:
+
+```bash
+docker compose pull veriflier
+docker compose up -d --no-deps --force-recreate veriflier
+```
+
+Deliverer:
+
+```bash
+docker compose pull jetmon-deliverer
+docker compose up -d --no-deps --force-recreate jetmon-deliverer
+```
+
+Potential downtime risk: low when rolling. Do not restart multiple Monitors or
+multiple Verifliers at the same time unless there is confirmed spare capacity
+and quorum coverage.
+
+### Non-Container Binary Replaced
+
+Use SIGHUP so the service drains and execs the replaced binary from disk.
+
+Monitor:
+
+```bash
+./jetmon2 reload
+# or
+kill -HUP "$(cat /run/jetmon2/jetmon2.pid)"
+```
+
+Veriflier:
+
+```bash
+kill -HUP "$(pidof veriflier2)"
+```
+
+Deliverer:
+
+```bash
+kill -HUP "$(pidof jetmon-deliverer)"
+```
+
+Potential downtime risk: near-zero when peer capacity is healthy.
+
+### DB Server Map Changed
+
+Ordinary `db-servers.php` content changes do not need a restart. Monitor and
+Deliverer hot-reload validated map changes on the configured cadence.
+
+Monitor:
+
+```bash
+./jetmon2 api request --pretty GET /api/v1/monitor/db-config
+```
+
+Veriflier:
+
+```bash
+# no action; Verifliers do not use the DB server map
+```
+
+Deliverer:
+
+```bash
+# no restart; confirm deliverer process health in /fleet or
+# jetpack_monitor_process_health after the reload cadence
+```
+
+Potential downtime risk: zero for content-only map changes. Recreate or SIGHUP
+only when changing the map path, dataset, datacenter, address preference, or
+container environment.
+
+### Gracefully Remove From Service
+
+Use when intentionally taking capacity out of the fleet.
+
+Monitor:
+
+```bash
+docker exec jetmon ./jetmon2 drain
+# or
+docker compose kill -s INT jetmon
+```
+
+Veriflier:
+
+```bash
+docker compose kill -s INT veriflier
+```
+
+Deliverer:
+
+```bash
+docker compose kill -s INT jetmon-deliverer
+```
+
+Potential downtime risk: intentional capacity reduction. Safe only when enough
+peer Monitors, Verifliers, and delivery workers remain.
+
+### Simple Operational Restart
+
+Use SIGHUP when no image, Compose environment, or container definition changed.
+
+Monitor:
+
+```bash
+docker compose kill -s HUP jetmon
+```
+
+Veriflier:
+
+```bash
+docker compose kill -s HUP veriflier
+```
+
+Deliverer:
+
+```bash
+docker compose kill -s HUP jetmon-deliverer
+```
+
+Potential downtime risk: near-zero when healthy. Prefer this over
+`docker compose restart` for a Jetmon-aware restart. Treat `docker compose
+restart` as a generic operational restart, not a deploy mechanism.
+
+### Full Fleet Deploy Order
+
+Use this order for production fleet changes:
+
+```text
+1. Recreate Verifliers one at a time.
+2. Recreate Monitors one at a time.
+3. Recreate Deliverer/API owners one at a time.
+4. Verify API, dashboard, and process health after each step.
+```
+
+Potential downtime risk: low when rolling, high if restarted all at once. A
+simultaneous fleet restart can reduce bucket coverage, Veriflier quorum, and
+delivery availability at the same time.
+
 When `DB_SERVER_MAP_PATH` is set, Jetmon reads the WPCOM-style `db-servers.php`
 map, builds separate read/write pools from the `misc` dataset, and hot-reloads
 validated changes on the configured refresh cadence. Check the current state
