@@ -1,397 +1,307 @@
-# v1 to v2 Migration Runbook
+# v1 To v2 Rollout Guide
 
-This is the source-of-truth runbook for the first production migration from
-Jetmon 1 to Jetmon 2.
+This is the canonical production rollout and rollback guide. It folds the old
+quick reference, prelaunch readiness checklist, TeamCity notes, Docker image
+notes, Veriflier compose notes, and deliverer rollout notes into one file.
 
-The current production plan is a fresh v2 fleet deployed beside the v1 fleet:
-new v2 Verifliers first, then containerized v2 Monitors in standby, then
-explicit API-controlled bucket activation after the matching v1 range is
-stopped. Operators should not need shell access to the container hosts during
-the rollout window; a local `jetmon2` binary can drive the control plane through
-one API-enabled Monitor.
+Read [project.md](project.md) for architecture and
+[operations-guide.md](operations-guide.md) for steady-state operation.
 
-Related docs:
+## Rollout Invariants
 
-- [`rollout-quick-reference.md`](rollout-quick-reference.md): condensed command
-  checklist.
-- [`jetmon-v2-prelaunch-readiness.md`](jetmon-v2-prelaunch-readiness.md):
-  launch posture, approvals, canary evidence, and stop/go thresholds.
-- [`production-teamcity-rollout.md`](production-teamcity-rollout.md): TeamCity,
-  docker-deploy, config-sync sidecar, host-local StatsD, and secret handling.
-- [`docker-images.md`](docker-images.md): image runtime inputs and entrypoint
-  behavior.
-- [`production-veriflier-compose.md`](production-veriflier-compose.md):
-  production Veriflier VPS Compose stack.
-- [`jetmon-deliverer-rollout.md`](jetmon-deliverer-rollout.md): standalone
-  delivery-worker migration, if that is done separately.
+- Apply only approved additive schema changes.
+- Keep v1 and v2 from owning the same bucket range at the same time.
+- Start with `HEAD` + `legacy` check policy.
+- Keep `LEGACY_STATUS_PROJECTION_ENABLE=true` until legacy readers no longer
+  depend on `jetpack_monitor_sites.site_status`.
+- Validate v2 Veriflier quorum before activating Monitor buckets.
+- Use API-driven dry-run/execute gates for container rollout.
+- Keep WPCOM notification mode v1-compatible during drop-in.
+- Roll back by releasing v2 ownership and restarting the matching v1 owner.
+- Do not use empty canary sets as proof that a range is healthy.
 
-## Invariants
+## Launch Gates
 
-Do not violate these during migration:
+Before the first production activation, confirm:
 
-- Do not let v1 and v2 actively check the same bucket range at the same time.
-- Do not start v2 scheduled checks by merely exposing the API. Monitors must
-  remain standby until bucket ownership is explicitly activated.
-- Keep `LEGACY_STATUS_PROJECTION_ENABLE=true` until legacy readers have moved
-  to the v2 API or event tables.
-- Keep WPCOM notifications in `WPCOM_NOTIFY_MODE=legacy` for the first rollout
-  unless WPCOM explicitly approves `modern`.
-- Do not run standalone delivery workers unless the delivery-owner plan is part
-  of the approved rollout.
-- Treat schema changes as forward-only. Revert by returning traffic to v1, not
-  by rolling back additive v2 tables.
-- Do not remove v1 software, configs, services, or dependencies until rollback
-  signoff is complete.
-- V2-owned site config and runtime state must stay out of
-  `jetpack_monitor_sites`; during rollout v2 should only maintain the legacy
-  projection fields needed for compatibility.
+| Gate | Evidence |
+| --- | --- |
+| Schema | Approved DB change applied; `jetmon2 validate-config` and API preflight pass. |
+| Verifliers | `/v2/status` healthy from every required vantage; quorum report is green. |
+| Images | Production image tags built by CI and promoted through the normal path. |
+| Config | API-controlled standby mode configured; StatsD host path is v1-compatible. |
+| WPCOM | Legacy notification path tested in the target environment. |
+| Rollout CLI | Operator has a token with required scope and `--allow-remote` policy understood. |
+| Canaries | Approved controlled canaries or uptime-bench fixtures are listed in a local canary file. |
+| Rollback | v1 start command, v2 release path, and owner contact are known. |
+| Dashboards | Host dashboard, fleet dashboard, API health, and metrics are visible. |
 
-## Customer-Visible Change
+## Production Shape
 
-Jetmon 1 checked sites with `HEAD` requests. Jetmon 2 can check with `GET`,
-which better matches real visitor behavior and fixes a core v1 source of false
-positives and false negatives.
+Preferred sequence:
 
-Do not switch every variable at once. Use a staged check-policy migration:
+1. Deploy v2 Verifliers beside the existing Veriflier fleet.
+2. Deploy v2 Monitor containers in standby/API-controlled mode.
+3. Deploy `jetmon-deliverer` only if outbound delivery is being separated
+   before full Monitor cutover; otherwise leave embedded delivery disabled or
+   guarded.
+4. Activate one v1 bucket range at a time after the matching v1 owner stops.
+5. Observe, then expand.
+6. Migrate check policy from `HEAD` + `legacy` to `GET` + `simple_http`, then
+   `GET` + `full` after evidence supports it.
+7. Remove v1 only after coverage, alerts, dashboards, and rollback gates are
+   accepted.
 
-1. **Replace v1 with v2 using `HEAD` + `legacy`.** This validates the new
-   binary, Veriflier transport, schema, WPCOM payloads, bucket activation, and
-   rollback path while keeping probe behavior as close to v1 as possible.
-2. **Move controlled cohorts to `GET` + `simple_http`.** This exercises the
-   visitor request path without enabling the richer v2 detections.
-3. **Move stable cohorts to `GET` + `full`.** This enables keyword,
-   forbidden-content, redirect, TLS, and body-integrity detections.
+## TeamCity And Container Inputs
 
-The check method/profile is per site in
-`jetpack_monitor_site_check_config`. After migration, production defaults can
-move to `GET` + `full`; keep per-site `HEAD` overrides only where needed.
+Production deployment should be image-based and driven by the existing Systems
+pipeline. The Monitor container needs:
 
-## Before The Window
+- rendered `config/config.json` or equivalent environment-backed config;
+- DB credentials or DB server-map config;
+- API/dashboard/debug ports bound only as approved;
+- StatsD endpoint and host path;
+- WPCOM credential material for legacy notification mode;
+- Veriflier endpoint list or trusted discovery config;
+- mounted legacy stats directory only if old consumers still read files.
 
-Complete these before any production activation:
-
-1. Approve the launch posture, canary cohort matrix, stop/go thresholds, and
-   support/WPCOM parity expectations in
-   [`jetmon-v2-prelaunch-readiness.md`](jetmon-v2-prelaunch-readiness.md).
-2. Systems applies the additive v2 schema changes through the normal database
-   change process. Production containers should run with
-   `CONFIG_PROFILE=production` or `SCHEMA_MANAGEMENT_MODE=validate` so startup
-   validates schema state and never applies DDL.
-3. Validate the schema ledger from the same environment the Monitor will use:
-
-   ```bash
-   ./jetmon2 schema validate
-   ```
-
-4. Confirm v1 continues to run normally with the additive v2 tables present.
-5. Run the read-only production data audit:
-
-   ```bash
-   ./jetmon2 rollout production-data-audit --bucket-min=0 --bucket-max=<max>
-   ```
-
-6. If the audit finds active non-running v1 projections, bootstrap matching v2
-   event state before treating projection drift as a hard gate:
-
-   ```bash
-   ./jetmon2 rollout legacy-status-bootstrap --bucket-min=0 --bucket-max=<max>
-   ./jetmon2 rollout legacy-status-bootstrap --bucket-min=0 --bucket-max=<max> --execute
-   ```
-
-7. Resolve or explicitly defer active duplicate `blog_id` blockers. Current
-   rollout state is still keyed by `blog_id`; endpoint-identity work is needed
-   for the small production cohort where one blog has multiple active monitor
-   URLs.
-8. Prepare controlled canary targets and a canary file:
-
-   ```bash
-   cp docs/rollout-canaries.example.json rollout-canaries.json
-   ```
-
-9. Run local verification before shipping the rollout artifacts:
-
-   ```bash
-   make test-race
-   make rollout-docs-verify
-   ```
-
-## Configure The Operator CLI
-
-Create a local API CLI config on the operator workstation, bastion, or other
-trusted host that will control the rollout:
+Safe deployment smoke for a fresh image:
 
 ```bash
-./jetmon2 local-config init \
-  --base-url=https://jetmon-v2-api.example.com \
-  --token-file=jetmon2-api-token \
-  --default-output=table
-./jetmon2 local-config show
-```
-
-Example `~/.config/jetmon2.conf`:
-
-```conf
-base_url = https://jetmon-v2-api.example.com
-token_file = jetmon2-api-token
-auth_policy = same-origin
-timeout = 30s
-output = table
-```
-
-Keep the config and token file mode `0600`. Production mutations to non-local
-URLs still require `--allow-remote`, so remote write intent remains explicit.
-
-## Deploy And Validate v2 Verifliers
-
-Deploy the fresh v2 Veriflier fleet before moving any Monitor buckets.
-
-Rules:
-
-- V2 Monitors should point only at `veriflier2` endpoints serving the v2 JSON
-  contract: `POST /v2/check` and `GET /v2/status`.
-- Do not depend on v2 Monitors talking to original v1 Verifliers. The original
-  v1 transport is different.
-- `VERIFLIER_ENABLE_LEGACY_HTTP=true` exposes compatibility `/check` and
-  `/status` endpoints only for lab or emergency testing; it is not required for
-  `HEAD` + `legacy` site checks.
-- Each quorum vantage needs a stable `VERIFLIER_VANTAGE_ID`. Horizontally
-  scaled replicas behind one endpoint share the same vantage ID; `agent.id` is
-  process diagnostics, not an extra vote.
-- Veriflier hosts do not need database credentials.
-
-From a v2 Monitor runtime environment, verify each endpoint:
-
-```bash
+./jetmon2 version
 ./jetmon2 validate-config
-curl -fsS http://<veriflier-host>:7803/v2/status
-./jetmon2 verifliers discovery-report --output=text
+./jetmon2 status
+curl -fsS http://127.0.0.1:${API_PORT}/api/v1/health
+curl -fsS http://127.0.0.1:${API_PORT}/api/v1/ready || true
 ```
 
-Hold the rollout if v2 status is missing, `vantage.id` is missing or duplicated,
-capacity is zero, the endpoint is unreachable, or the discovery report is red.
+Readiness may be `starting` until the orchestrator publishes a fresh process
+health row.
 
-## Deploy v2 Monitors In Standby
+## Veriflier Deployment
 
-Deploy v2 Monitor containers with:
+V2 Monitors should use v2 Verifliers only. The production transport is
+JSON/HTTP:
 
-- `ROLLOUT_MODE=api-controlled`
-- `VERIFLIER_DISCOVERY_MODE=shadow`
-- initial defaults of `HEAD` + `legacy`
-- `SCHEMA_MANAGEMENT_MODE=validate` or `CONFIG_PROFILE=production`
-- `WPCOM_NOTIFY_MODE=legacy`
-- WPCOM notifications disabled or explicitly guarded until parity gates are
-  approved
-- delivery workers disabled unless the delivery-owner plan is approved
-- StatsD configured according to
-  [`production-teamcity-rollout.md`](production-teamcity-rollout.md)
+| Endpoint | Purpose |
+| --- | --- |
+| `/v2/status` | Health and capacity. |
+| `/v2/check` | Batch check request. |
 
-In standby, Monitors may validate config, database connectivity, schema state,
-Veriflier reachability, and sampled probes. They must not claim buckets, run
-scheduled checks, mutate incident state, write check history, update runtime
-freshness, send WPCOM notifications, or run delivery workers.
+Deploy Verifliers before Monitor activation. Confirm:
 
-## Per-Range Activation Flow
+- service is reachable only from trusted Monitor networks;
+- auth token is present where configured;
+- status reports enough usable/healthy vantages for the configured quorum;
+- local firewall and host-level resource limits are appropriate;
+- logs go to stdout/stderr.
 
-Run the guided API flow for each bucket range:
+Emergency lab/legacy endpoints are not part of normal production traffic.
+
+## Operator CLI Config
+
+Set up the API CLI on the operator workstation or bastion:
 
 ```bash
-./jetmon2 api rollout guided \
+./bin/jetmon2 local-config init \
+  --base-url=https://jetmon-api.example.internal \
+  --token-file=/secure/path/jetmon-api-token \
+  --auth-policy=same-origin
+./bin/jetmon2 local-config show
+```
+
+For production writes to a non-local API, pass `--allow-remote` explicitly.
+
+Useful checks:
+
+```bash
+./bin/jetmon2 api health --pretty
+./bin/jetmon2 api ready --pretty
+./bin/jetmon2 api me --pretty
+./bin/jetmon2 api rollout capabilities --pretty
+```
+
+## Canary File
+
+Copy and edit the fixture template:
+
+```bash
+cp docs/rollout-canaries.example.json rollout-canaries.json
+```
+
+Every URL must be an approved controlled canary or uptime-bench fixture. Do not
+point canary probes at arbitrary customer sites. Canary probes are read-only and
+non-authoritative; they do not write incident state, WPCOM notifications, or
+check history.
+
+## Range Rollout Checklist
+
+For each bucket range:
+
+1. Create or resume the rollout session.
+2. Run preflight.
+3. Run read-only smoke and canaries.
+4. Seed v2 side tables in dry-run, then execute if clean.
+5. Stop v1 for the exact range.
+6. Run final reconcile.
+7. Activate buckets in dry-run, then execute.
+8. Observe activity, coverage, projection drift, WPCOM notifications, and
+   Veriflier quorum.
+9. Keep the rollback command ready until the observation window passes.
+
+Guided flow:
+
+```bash
+./bin/jetmon2 api rollout guided \
   --bucket-min=0 \
   --bucket-max=99 \
   --canary-file=rollout-canaries.json \
-  --change-ref=SYSREQ-12345 \
   --allow-remote
 ```
 
-Use `--dry-run` before the window. Use `--resume` if the operator process is
-interrupted. Non-dry-run sessions write a transcript and resume state under
-`logs/api-rollout`.
-
-The guided flow performs these gates:
-
-1. **Preflight:** validate API mode, schema, DB access, rollout locks,
-   Veriflier contract/quorum identity, delivery/WPCOM guard state, and canary
-   definitions.
-2. **Read-only smoke:** run sampled `HEAD` + `legacy` probes and controlled
-   canaries without writing incident state, runtime freshness, check history,
-   WPCOM notifications, or legacy projection updates.
-3. **Seed/adopt:** pre-seed v2 side tables and adopt existing v1 non-running
-   projections into v2 event state without duplicate down notifications.
-4. **Stop v1 range:** Systems stops the matching v1 Monitor range.
-5. **Final reconcile:** adopt sites added or changed after the first seed.
-6. **Activate range:** explicitly activate the bucket range in v2. Do not rely
-   on automatic v1 shutdown detection; v1 has no reliable ownership heartbeat.
-7. **Post-handoff gates:** verify bucket coverage, recent activity, projection
-   drift, Veriflier health, controlled canaries, and delivery/WPCOM guard state.
-
-Useful primitive commands when the guided wrapper is not appropriate:
+Dry-run first:
 
 ```bash
-./jetmon2 api rollout preflight --bucket-min=0 --bucket-max=99 --canary-file=rollout-canaries.json --allow-remote
-./jetmon2 api rollout smoke --bucket-min=0 --bucket-max=99 --mode=head-legacy --sample-size=100 --read-only --canary-file=rollout-canaries.json --allow-remote
-./jetmon2 api rollout seed --bucket-min=0 --bucket-max=99 --dry-run --allow-remote
-./jetmon2 api rollout seed --bucket-min=0 --bucket-max=99 --execute --confirm=<token> --allow-remote
-./jetmon2 api rollout final-reconcile --bucket-min=0 --bucket-max=99 --execute --confirm=<token> --allow-remote
-./jetmon2 api rollout activate-buckets --bucket-min=0 --bucket-max=99 --execute --confirm=<token> --allow-remote
-./jetmon2 api rollout status --allow-remote
-./jetmon2 api rollout bucket-coverage --bucket-min=0 --bucket-max=99 --allow-remote
-./jetmon2 api rollout activity-check --bucket-min=0 --bucket-max=99 --since=15m --allow-remote
-./jetmon2 api rollout projection-drift --bucket-min=0 --bucket-max=99 --allow-remote
+./bin/jetmon2 api rollout guided \
+  --bucket-min=0 \
+  --bucket-max=99 \
+  --canary-file=rollout-canaries.json \
+  --dry-run
 ```
 
-Mutating commands are admin-scoped, audited, idempotent, dry-run first, and
-protected by generated confirmation tokens. Tokens are bound to the
-authenticated API key identity.
-
-## Observe Each Activated Range
-
-After activation, hold before moving to the next range until these are true for
-the agreed window:
-
-- bucket coverage is complete for the activated range
-- recent activity shows v2 checks running on schedule
-- `projection-drift` is zero while legacy projection is enabled
-- Veriflier health is green and quorum metadata is present
-- canary checks match expectations
-- WPCOM parity evidence is captured or explicitly disabled by the approved test
-  plan
-- telemetry report has no unexplained notification, verifier, or event gaps
-- dashboards show MySQL, Verifliers, WPCOM, StatsD, and stats directory writes
-  healthy enough for the rollout stage
-
-Useful commands:
+Rollback path:
 
 ```bash
-./jetmon2 api rollout bucket-coverage --bucket-min=0 --bucket-max=99 --allow-remote
-./jetmon2 api rollout activity-check --bucket-min=0 --bucket-max=99 --since=15m --allow-remote
-./jetmon2 api rollout projection-drift --bucket-min=0 --bucket-max=99 --allow-remote
-./jetmon2 telemetry report --since=15m
-./jetmon2 verifliers discovery-report --output=text
+./bin/jetmon2 api rollout guided \
+  --bucket-min=0 \
+  --bucket-max=99 \
+  --rollback \
+  --allow-remote
 ```
+
+## API Primitive Flow
+
+The guided CLI wraps these primitives. Use primitives directly only when the
+guided path is insufficient.
+
+```bash
+./bin/jetmon2 api request POST /api/v1/rollout/sessions --json @session.json
+./bin/jetmon2 api request POST /api/v1/rollout/preflight --json @range.json
+./bin/jetmon2 api request POST /api/v1/rollout/smoke --json @range.json
+./bin/jetmon2 api request POST /api/v1/rollout/seed --json @range-dry-run.json
+./bin/jetmon2 api request POST /api/v1/rollout/final-reconcile --json @range.json
+./bin/jetmon2 api request POST /api/v1/rollout/activate-buckets --json @range-execute.json
+./bin/jetmon2 api request GET '/api/v1/rollout/bucket-coverage?bucket_min=0&bucket_max=99'
+./bin/jetmon2 api request GET '/api/v1/rollout/activity-check?bucket_min=0&bucket_max=99'
+./bin/jetmon2 api request GET '/api/v1/rollout/projection-drift?bucket_min=0&bucket_max=99'
+```
+
+Dry-run responses return a confirmation token. Execute requests must include
+that token and an idempotency key.
+
+## Observe After Activation
+
+During the observation window, watch:
+
+- `/api/v1/rollout/status`;
+- bucket coverage and recent activity gates;
+- projection drift;
+- dashboard `/fleet`;
+- StatsD check throughput, queue depth, errors, WPCOM sends/failures;
+- Veriflier quorum report;
+- event transitions and audit rows for the range;
+- legacy status projection if legacy readers still depend on it.
+
+Stop expansion if any range shows missing coverage, sustained queue growth,
+unexpected WPCOM failures, projection drift, bad Veriflier quorum, or customer
+impact that cannot be explained from event/audit evidence.
 
 ## Roll Back A Range
 
-Rollback returns a bucket range to v1; it does not remove v2 schema.
+Rollback goal: stop v2 ownership before returning ownership to v1.
 
-Preferred guided path:
+1. Run guided rollback or release buckets through the API.
+2. Confirm v2 no longer owns the range.
+3. Start the matching v1 owner.
+4. Confirm v1 activity for the range.
+5. Check projection drift and recent event transitions.
+6. Record the reason and evidence packet.
 
-```bash
-./jetmon2 api rollout guided \
-  --rollback \
-  --bucket-min=0 \
-  --bucket-max=99 \
-  --change-ref=SYSREQ-12345 \
-  --allow-remote
-```
+Do not leave both owners active for the same range. If release fails, treat the
+range as blocked and get Systems help before restarting v1.
 
-Manual API path:
+## Check-Policy Migration
 
-```bash
-./jetmon2 api rollout release-buckets --bucket-min=0 --bucket-max=99 --dry-run --allow-remote
-./jetmon2 api rollout release-buckets --bucket-min=0 --bucket-max=99 --execute --confirm=<token> --allow-remote
-```
+After the fleet is stable on v2, migrate policy in cohorts:
 
-After v2 releases the range, Systems restarts the matching v1 Monitor range.
-Then verify v1 activity through the legacy operational path and keep the v2
-rollout transcript with the incident record. If the guided forward path failed
-and rollback succeeded, the command may still exit non-zero because the forward
-rollout did not complete; that is expected.
+1. Compare `HEAD` and `GET` with non-authoritative sampled probes.
+2. Stage `GET` + `simple_http` for a small cohort.
+3. Observe false positives, missed alerts, WAF behavior, and support load.
+4. Expand only after rollback criteria are understood.
+5. Stage `GET` + `full` after body-rule evidence is acceptable.
 
-## Complete Fleet Cutover
-
-After every production bucket range is active on v2:
+Policy staging API:
 
 ```bash
-./jetmon2 api rollout status --allow-remote
-./jetmon2 api rollout bucket-coverage --bucket-min=0 --bucket-max=<max> --allow-remote
-./jetmon2 api rollout activity-check --bucket-min=0 --bucket-max=<max> --since=15m --allow-remote
-./jetmon2 api rollout projection-drift --bucket-min=0 --bucket-max=<max> --allow-remote
-./jetmon2 telemetry report --since=15m
+./bin/jetmon2 api request POST /api/v1/rollout/compare-methods --json @range.json
+./bin/jetmon2 api request POST /api/v1/rollout/stage-policy --json @stage-policy.json
 ```
 
-Keep the fleet in the initial `HEAD` + `legacy` policy until the agreed
-observation window has passed and WPCOM/support signoff is recorded.
+Method comparison and smoke probes are non-authoritative. They must not write
+incident state, WPCOM notifications, runtime freshness, or check history.
 
-If the fleet later moves from API-controlled pinned ownership to dynamic v2
-ownership, use the normal rollout gates for that separate step and do not leave
-gaps or overlaps in bucket ownership.
+## Standalone Deliverer Rollout
 
-## Stage Check-Policy Migration
+Current single-binary deployments may run delivery workers inside `jetmon2`.
+Standalone `jetmon-deliverer` is for separating outbound dispatch.
 
-Run comparison before changing alerting semantics:
+Conservative migration:
 
-```bash
-./jetmon2 api rollout compare-methods \
-  --bucket-min=0 \
-  --bucket-max=<max> \
-  --from=head-legacy \
-  --to=get-simple \
-  --sample-size=100 \
-  --allow-remote
-```
+1. Start `jetmon-deliverer` with delivery disabled or `DELIVERY_OWNER_HOST`
+   pointing at the current owner.
+2. Validate config and DB access.
+3. Confirm it observes queue state without claiming rows.
+4. Move `DELIVERY_OWNER_HOST` to the standalone deliverer.
+5. Disable embedded delivery or leave it guarded.
+6. Watch pending, failed, abandoned, and per-worker health.
 
-Then stage cohorts explicitly:
+Active-active is supported by transactional row claims, but use single-owner
+guarding during migration unless the rollout owner explicitly approves
+active-active delivery.
 
-```bash
-./jetmon2 api rollout stage-policy --bucket-min=0 --bucket-max=<max> --method=GET --profile=simple_http --size=100 --dry-run --allow-remote
-./jetmon2 api rollout stage-policy --bucket-min=0 --bucket-max=<max> --method=GET --profile=simple_http --size=100 --execute --confirm=<token> --allow-remote
-./jetmon2 api rollout stage-policy --bucket-min=0 --bucket-max=<max> --method=GET --profile=simple_http --size=1000 --execute --confirm=<token> --allow-remote
-./jetmon2 api rollout stage-policy --bucket-min=0 --bucket-max=<max> --method=GET --profile=full --size=1% --execute --confirm=<token> --allow-remote
-```
+## Final Fleet Cutover
 
-Recommended cohort shape:
+Fleet completion requires:
 
-- 10 known-safe sites
-- 100 mixed sites
-- 1,000 mixed sites
-- 1% of active sites
-- 5%
-- 10%
-- 25%
-- 50%
-- 100%, excluding any intentionally retained `HEAD` sites
-
-Hold between stages long enough to observe false-positive rate, missed recovery
-rate, verifier disagreement, WPCOM parity, support reports, and resource
-pressure.
-
-Rollback policy changes if needed:
-
-```bash
-./jetmon2 api rollout stage-policy --bucket-min=0 --bucket-max=<max> --mode=rollback-last-stage --dry-run --allow-remote
-./jetmon2 api rollout stage-policy --bucket-min=0 --bucket-max=<max> --mode=rollback-last-stage --execute --confirm=<token> --allow-remote
-./jetmon2 api rollout stage-policy --bucket-min=0 --bucket-max=<max> --mode=rollback-all --execute --confirm=<token> --allow-remote
-```
+- all v1 ranges have been replaced or intentionally left out of scope;
+- dynamic bucket ownership is enabled where pinned migration ranges are no
+  longer needed;
+- `LEGACY_STATUS_PROJECTION_ENABLE` has an owner and retirement date;
+- support and Systems know the evidence surfaces;
+- WPCOM notification parity is accepted;
+- dashboards and API health are green;
+- rollback procedure has either expired or remains documented for the final
+  transition window.
 
 ## Tear Down v1
 
-Only remove v1 after rollout signoff.
+Do not remove v1 until:
 
-1. Confirm all production bucket ranges are covered by v2.
-2. Confirm no v1 Monitor process is checking production buckets.
-3. Confirm rollback signoff has expired.
-4. Archive v1 configs and rollout transcripts according to retention policy.
-5. Remove old v1 service units, Node dependencies, native addons, Qt Veriflier
-   artifacts, and v1-only logrotate files.
-6. Remove or retire old Veriflier hosts only after v2 Veriflier capacity and
-   quorum behavior are stable.
+- v2 coverage is complete;
+- no legacy reader needs v1-owned files/processes beyond the compatibility
+  outputs v2 intentionally provides;
+- WPCOM and support evidence is accepted;
+- Systems has approved removal of old units/containers/host config;
+- any retained fallback is explicit and tested.
 
-## Final Checklist
+## Rollout Verification Command
 
-- [ ] production data audit reviewed
-- [ ] duplicate active `blog_id` blockers resolved or deferred with signoff
-- [ ] additive schema changes applied by Systems
-- [ ] production configs use schema validation, not automatic migration
-- [ ] v2 Veriflier fleet deployed and validated through `/v2/status`
-- [ ] API CLI configured with a scoped admin token
-- [ ] synthetic canaries approved and loaded
-- [ ] v2 Monitors deployed in standby/API-controlled mode
-- [ ] guided API rollout dry-run completed
-- [ ] each range seeded, reconciled, activated, and observed
-- [ ] projection drift is zero for activated ranges
-- [ ] telemetry report captured for WPCOM parity and explanation evidence
-- [ ] rollback path rehearsed and documented
-- [ ] all ranges active on v2
-- [ ] staged `HEAD` -> `GET/simple_http` -> `GET/full` migration completed or
-      explicitly paused
-- [ ] v1 teardown approved and completed
+`make rollout-docs-verify` checks rollout CLI help, stale docs references,
+guided dry-run output, JSON smoke, rehearsal flow, and staged systemd service
+verification where available.
+
+Run it before merging rollout-affecting docs or commands:
+
+```bash
+make rollout-docs-verify
+```

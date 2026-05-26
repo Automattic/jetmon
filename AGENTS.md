@@ -91,10 +91,12 @@ architecture, data model, operations, API, and rollout docs.
 | `internal/alerting/` | Alert contact registry + delivery worker — managed channels (email/PagerDuty/Slack/Teams) with site_filter + severity gate + per-hour rate cap |
 | `internal/dashboard/` | Operator dashboard, SSE handler |
 | `veriflier2/` | Go Veriflier binary |
-| `docs/internal-api-reference.md` | Internal REST API reference (auth, all endpoints, payload shapes) |
-| `docs/roadmap.md` | Deferred features and architectural roadmap (multi-binary split, public-API path) |
-| `docs/adr/` | Architecture Decision Records — load-bearing decisions ("why is X like this") with context, decision, and consequences |
-| `docs/project.md` | Project overview and links to focused reference docs |
+| `docs/project.md` | Project overview, architecture, data model, event model, and detection vocabulary |
+| `docs/operations-guide.md` | Local development, production operations, support, metrics, and debugging |
+| `docs/v1-to-v2-migration.md` | Production rollout, rollback, Veriflier deployment, deliverer rollout, and check-policy migration |
+| `docs/internal-api-reference.md` | Internal REST API, API CLI, endpoint map, webhooks, and alert contacts |
+| `docs/decisions.md` | Consolidated architecture decisions |
+| `docs/roadmap.md` | Deferred features and architectural roadmap |
 
 ## Build and Run
 
@@ -283,7 +285,7 @@ Rolling updates require no simultaneous restart of all hosts and leave no sites 
 
 ## Architectural Decisions — Event and State Model
 
-These decisions govern how Jetmon models site state. They must be maintained consistently across all changes. Full design rationale is in [`docs/events.md`](docs/events.md), [`docs/data-model.md`](docs/data-model.md), and [`docs/adr/0001-event-sourced-state-model.md`](docs/adr/0001-event-sourced-state-model.md). The detection vocabulary and scope model live in [`docs/taxonomy.md`](docs/taxonomy.md).
+These decisions govern how Jetmon models site state. They must be maintained consistently across all changes. Full design rationale, the data model, and the detection vocabulary live in [`docs/project.md`](docs/project.md). Accepted architecture decisions are summarized in [`docs/decisions.md`](docs/decisions.md).
 
 **Events are the source of truth.** Site status is event-sourced across two tables: `jetpack_monitor_events` (one row per incident, holding the current severity/state/metadata) and `jetpack_monitor_event_transitions` (append-only history of every mutation). The site row stores a denormalized projection for read performance. Update events, transitions, and the projection in the same transaction — they must not drift. If the projection is ever suspect, rebuild it from the events tables.
 

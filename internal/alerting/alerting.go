@@ -55,8 +55,8 @@ const (
 )
 
 // AllTransports returns the canonical set of transport identifiers.
-// Used by validators (a contact's transport must be one of these) and
-// by docs/listings.
+// Used by validators (a contact's transport must be one of these) and API
+// listings.
 func AllTransports() []Transport {
 	return []Transport{TransportEmail, TransportPagerDuty, TransportSlack, TransportTeams}
 }
