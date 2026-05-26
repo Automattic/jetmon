@@ -351,8 +351,8 @@ func TestPauseSiteClosesActiveEvents(t *testing.T) {
 	mock.ExpectExec(` UPDATE jetpack_monitor_events SET ended_at = CURRENT_TIMESTAMP(3), resolution_reason = ? WHERE id = ?`).
 		WithArgs("manual_override", int64(7)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec(` INSERT INTO jetpack_monitor_event_transitions (event_id, blog_id, severity_before, severity_after, state_before, state_after, reason, source, metadata) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)`).
-		WithArgs(int64(7), int64(42), uint8(4), "Down", "Resolved", "manual_override", "api", sqlmock.AnyArg()).
+	mock.ExpectExec(` INSERT INTO jetpack_monitor_event_transitions (event_id, blog_id, endpoint_id, severity_before, severity_after, state_before, state_after, reason, source, metadata) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)`).
+		WithArgs(int64(7), int64(42), int64(42), uint8(4), "Down", "Resolved", "manual_override", "api", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(countActiveEventsSQL).WithArgs(int64(42), int64(42)).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))

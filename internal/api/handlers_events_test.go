@@ -11,9 +11,9 @@ import (
 
 const eventsBaseSQL = ` SELECT id, blog_id, endpoint_id, check_type, discriminator, severity, state, started_at, ended_at, resolution_reason, cause_event_id, metadata FROM jetpack_monitor_events WHERE (endpoint_id = ? OR (endpoint_id IS NULL AND blog_id = ?))`
 
-const transitionsListSQL = ` SELECT id, event_id, severity_before, severity_after, state_before, state_after, reason, source, metadata, changed_at FROM jetpack_monitor_event_transitions WHERE event_id = ?`
+const transitionsListSQL = ` SELECT id, event_id, endpoint_id, severity_before, severity_after, state_before, state_after, reason, source, metadata, changed_at FROM jetpack_monitor_event_transitions WHERE event_id = ?`
 
-const transitionsAllSQL = ` SELECT id, event_id, severity_before, severity_after, state_before, state_after, reason, source, metadata, changed_at FROM jetpack_monitor_event_transitions WHERE event_id = ? ORDER BY id ASC`
+const transitionsAllSQL = ` SELECT id, event_id, endpoint_id, severity_before, severity_after, state_before, state_after, reason, source, metadata, changed_at FROM jetpack_monitor_event_transitions WHERE event_id = ? ORDER BY id ASC`
 
 func makeEventRow(id, blogID int64, severity uint8, state string, startedAt time.Time, ended *time.Time) *sqlmock.Rows {
 	rows := sqlmock.NewRows(columnsEvent)
@@ -170,7 +170,7 @@ func TestGetEventBySiteHappyPath(t *testing.T) {
 	mock.ExpectQuery(transitionsAllSQL).
 		WithArgs(int64(7)).
 		WillReturnRows(sqlmock.NewRows(columnsTransition).
-			AddRow(int64(1), int64(7), nil, uint8(3), nil, "Seems Down", "opened", "host", []byte("null"), startedAt))
+			AddRow(int64(1), int64(7), int64(42), nil, uint8(3), nil, "Seems Down", "opened", "host", []byte("null"), startedAt))
 
 	req := requestWithKey("GET", "/api/v1/sites/42/events/7", key)
 	req.SetPathValue("id", "42")
@@ -303,7 +303,7 @@ func TestListTransitionsHappyPath(t *testing.T) {
 	mock.ExpectQuery(transitionsListSQL+` ORDER BY id ASC LIMIT ?`).
 		WithArgs(int64(7), 101).
 		WillReturnRows(sqlmock.NewRows(columnsTransition).
-			AddRow(int64(1), int64(7), nil, uint8(3), nil, "Seems Down", "opened", "host", []byte("null"), startedAt))
+			AddRow(int64(1), int64(7), int64(42), nil, uint8(3), nil, "Seems Down", "opened", "host", []byte("null"), startedAt))
 
 	req := requestWithKey("GET", "/api/v1/sites/42/events/7/transitions", key)
 	req.SetPathValue("id", "42")
@@ -366,7 +366,7 @@ func TestListTransitionsWithGatewayTenantAllowsMappedEventSite(t *testing.T) {
 	mock.ExpectQuery(transitionsListSQL+` ORDER BY id ASC LIMIT ?`).
 		WithArgs(int64(7), 101).
 		WillReturnRows(sqlmock.NewRows(columnsTransition).
-			AddRow(int64(1), int64(7), nil, uint8(3), nil, "Seems Down", "opened", "host", []byte("null"), startedAt))
+			AddRow(int64(1), int64(7), int64(42), nil, uint8(3), nil, "Seems Down", "opened", "host", []byte("null"), startedAt))
 
 	req := httptest.NewRequest("GET", "/api/v1/sites/42/events/7/transitions", nil)
 	req.SetPathValue("id", "42")

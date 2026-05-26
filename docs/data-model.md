@@ -8,11 +8,12 @@ hot ALTER on the largest compatibility table.
 Local and lab environments can apply migrations with `./jetmon2 migrate`.
 Production schema changes are expected to be applied through the approved
 database-change process, then validated by Jetmon before the service starts.
-The migration source of truth is `internal/db/migrations.go`; production SQL
-must also seed `jetpack_monitor_schema_migrations` with the migration ids that
-the deployed binary expects so `SCHEMA_MANAGEMENT_MODE=validate` can prove that
-the reviewed schema package is present. This document describes ownership and
-operational meaning.
+`SCHEMA_MANAGEMENT_MODE=validate` checks the physical schema contract directly:
+the required tables, columns, and indexes must exist, but production does not
+need to maintain Jetmon's local migration ledger. This document describes
+ownership and operational meaning. See
+[production-schema-package.md](production-schema-package.md) for the
+Systems-facing DDL package and validation checklist.
 
 ## Time Zones
 
@@ -33,7 +34,7 @@ All v2-owned tables use the `jetpack_monitor_` prefix. Do not introduce
 | Area | Tables |
 | --- | --- |
 | Legacy compatibility | `jetpack_monitor_sites` |
-| Migration tracking | `jetpack_monitor_schema_migrations` |
+| Local/lab migration tracking | `jetpack_monitor_schema_migrations` |
 | Bucket ownership | `jetpack_monitor_hosts` |
 | Incidents | `jetpack_monitor_events`, `jetpack_monitor_event_transitions` |
 | Operational audit | `jetpack_monitor_audit_log` |
@@ -146,6 +147,13 @@ Incident state is authoritative in:
 Every open, severity change, state change, cause-link change, and close goes
 through `internal/eventstore` and writes the event row, transition row, and
 legacy projection in one transaction when projection is enabled.
+
+Both tables carry `blog_id` and endpoint identity. `blog_id` remains the legacy
+WPCOM/site identity used for tenant ownership and legacy notification payloads;
+`endpoint_id` is the monitor endpoint row id used by v2 API paths, rollout
+cohorts, and endpoint-specific diagnostics. Transition rows denormalize
+`endpoint_id` so webhook, alert, and API consumers can stay endpoint-aware
+without joining back to the event row for every dispatch.
 
 The public lifecycle is:
 

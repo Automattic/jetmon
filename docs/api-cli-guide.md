@@ -221,7 +221,10 @@ files or unbounded streaming endpoints.
 
 ## Site Management
 
-Sites are keyed by `blog_id`.
+Site API paths use the monitor endpoint row id
+(`jetpack_monitor_sites.jetpack_monitor_site_id`). The legacy `blog_id` remains
+visible in responses and create/update bodies because WPCOM still uses it as
+the site identity.
 
 ```bash
 ./bin/jetmon2 api sites list --limit 20 --output table

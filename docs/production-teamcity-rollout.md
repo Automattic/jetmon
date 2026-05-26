@@ -119,7 +119,10 @@ Inspect reload state through the API:
 ## Schema Management
 
 Production schema changes must go through the approved database-change process
-before Monitor containers are activated.
+before Monitor containers are activated. Use
+[`production-schema-package.md`](production-schema-package.md) and
+[`migrations/production-v2-baseline.sql`](../migrations/production-v2-baseline.sql)
+as the review package.
 
 Production config should use:
 
@@ -135,8 +138,10 @@ or:
 
 Normal startup validates schema. It does not apply DDL. Run
 `./jetmon2 migrate` only as an explicit schema-change action in an approved
-environment. If Systems applies SQL manually, the matching
-`jetpack_monitor_schema_migrations` rows must be included in the change package.
+local or lab environment. If Systems applies SQL manually, the production
+package must include the required tables, columns, and indexes; the local/lab
+`jetpack_monitor_schema_migrations` ledger is not required for production
+startup validation.
 
 ## Production Defaults
 

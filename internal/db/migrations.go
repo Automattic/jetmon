@@ -825,6 +825,14 @@ var migrations = []migration{
 	{52, `ALTER TABLE jetpack_monitor_site_check_config
 		ADD COLUMN check_history_mode VARCHAR(32) NULL AFTER alert_cooldown_minutes,
 		ADD COLUMN check_history_sample_rate INT UNSIGNED NULL AFTER check_history_mode`},
+
+	// Migration 53 denormalizes endpoint identity onto event transitions.
+	// Existing dev/lab databases may already have migration 11 applied, so this
+	// stays as a separate additive migration while the production baseline DDL
+	// creates the final shape directly.
+	{53, `ALTER TABLE jetpack_monitor_event_transitions
+		ADD COLUMN endpoint_id BIGINT UNSIGNED NULL AFTER blog_id,
+		ADD INDEX idx_endpoint_id_changed (endpoint_id, changed_at)`},
 }
 
 // Migrate applies all pending migrations idempotently.
@@ -927,23 +935,6 @@ func SchemaMigrationStatus(ctx context.Context) (MigrationStatus, error) {
 		if _, ok := applied[migration.id]; !ok {
 			status.PendingIDs = append(status.PendingIDs, migration.id)
 		}
-	}
-	return status, nil
-}
-
-// ValidateSchema fails unless the connected database has exactly the migration
-// ledger expected by this binary. It never creates the migration table or runs
-// pending DDL.
-func ValidateSchema(ctx context.Context) (MigrationStatus, error) {
-	status, err := SchemaMigrationStatus(ctx)
-	if err != nil {
-		return status, err
-	}
-	if len(status.PendingIDs) > 0 {
-		return status, fmt.Errorf("schema validation failed: current migration %d, expected %d, pending migrations %v", status.CurrentMaxID, status.ExpectedMaxID, status.PendingIDs)
-	}
-	if len(status.UnknownIDs) > 0 {
-		return status, fmt.Errorf("schema validation failed: database has migration ids not known to this binary: %v", status.UnknownIDs)
 	}
 	return status, nil
 }

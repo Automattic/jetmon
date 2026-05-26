@@ -554,10 +554,10 @@ func (s *Server) closeEvent(ctx context.Context, eventID, blogID, siteID int64, 
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO jetpack_monitor_event_transitions
-			(event_id, blog_id, severity_before, severity_after,
+			(event_id, blog_id, endpoint_id, severity_before, severity_after,
 			 state_before, state_after, reason, source, metadata)
-		VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)`,
-		eventID, blogID, severity, state, "Resolved", reason, "api", metadata,
+		VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)`,
+		eventID, blogID, siteID, severity, state, "Resolved", reason, "api", metadata,
 	); err != nil {
 		return fmt.Errorf("insert transition: %w", err)
 	}

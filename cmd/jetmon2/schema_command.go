@@ -43,8 +43,8 @@ func printSchemaUsage(w *os.File) {
 	fmt.Fprintln(w, "Manage or validate the Jetmon v2 database schema.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "  ensure    apply or validate schema based on SCHEMA_MANAGEMENT_MODE")
-	fmt.Fprintln(w, "  validate  fail unless all embedded migrations are already applied")
-	fmt.Fprintln(w, "  status    print current and expected migration status")
+	fmt.Fprintln(w, "  validate  fail unless required tables, columns, and indexes exist")
+	fmt.Fprintln(w, "  status    print schema contract status and best-effort migration ledger status")
 }
 
 func cmdSchemaEnsure() error {
@@ -73,7 +73,7 @@ func cmdSchemaEnsure() error {
 		return fmt.Errorf("SCHEMA_MANAGEMENT_MODE must be one of: migrate, validate")
 	}
 	status, err := db.ValidateSchema(context.Background())
-	printSchemaStatus(status)
+	printSchemaContractStatus(status)
 	if err != nil {
 		return err
 	}
@@ -90,7 +90,7 @@ func cmdSchemaValidate() error {
 		return fmt.Errorf("db connect: %w", err)
 	}
 	status, err := db.ValidateSchema(context.Background())
-	printSchemaStatus(status)
+	printSchemaContractStatus(status)
 	if err != nil {
 		return err
 	}
@@ -106,12 +106,31 @@ func cmdSchemaStatus() error {
 	if err := db.ConnectWithRetry(3); err != nil {
 		return fmt.Errorf("db connect: %w", err)
 	}
-	status, err := db.SchemaMigrationStatus(context.Background())
-	printSchemaStatus(status)
-	return err
+	contractStatus, contractErr := db.SchemaContract(context.Background())
+	printSchemaContractStatus(contractStatus)
+	migrationStatus, migrationErr := db.SchemaMigrationStatus(context.Background())
+	if migrationErr != nil {
+		fmt.Printf("WARN schema_migrations unavailable=%q\n", migrationErr.Error())
+	} else {
+		printSchemaMigrationStatus(migrationStatus)
+	}
+	return contractErr
 }
 
-func printSchemaStatus(status db.MigrationStatus) {
+func printSchemaContractStatus(status db.SchemaContractStatus) {
+	fmt.Printf("INFO schema_contract %s\n", status.Summary())
+	if len(status.MissingTables) > 0 {
+		fmt.Printf("FAIL schema_missing_tables names=%v\n", status.MissingTables)
+	}
+	if len(status.MissingColumns) > 0 {
+		fmt.Printf("FAIL schema_missing_columns count=%d examples=%v\n", len(status.MissingColumns), schemaIssueExamples(status.MissingColumns))
+	}
+	if len(status.MissingIndexes) > 0 {
+		fmt.Printf("FAIL schema_missing_indexes count=%d examples=%v\n", len(status.MissingIndexes), schemaIssueExamples(status.MissingIndexes))
+	}
+}
+
+func printSchemaMigrationStatus(status db.MigrationStatus) {
 	fmt.Printf("INFO schema_migrations current=%d expected=%d applied=%d expected_count=%d\n",
 		status.CurrentMaxID, status.ExpectedMaxID, status.AppliedCount, status.ExpectedCount)
 	if len(status.PendingIDs) > 0 {
@@ -120,4 +139,16 @@ func printSchemaStatus(status db.MigrationStatus) {
 	if len(status.UnknownIDs) > 0 {
 		fmt.Printf("FAIL schema_unknown ids=%v\n", status.UnknownIDs)
 	}
+}
+
+func schemaIssueExamples(issues []db.SchemaObjectIssue) []string {
+	limit := 8
+	if len(issues) < limit {
+		limit = len(issues)
+	}
+	out := make([]string, 0, limit)
+	for _, issue := range issues[:limit] {
+		out = append(out, issue.Table+"."+issue.Name)
+	}
+	return out
 }

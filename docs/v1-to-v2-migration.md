@@ -73,16 +73,19 @@ Complete these before any production activation:
 1. Approve the launch posture, canary cohort matrix, stop/go thresholds, and
    support/WPCOM parity expectations in
    [`jetmon-v2-prelaunch-readiness.md`](jetmon-v2-prelaunch-readiness.md).
-2. Systems applies the additive v2 schema changes through the normal database
-   change process. Production containers should run with
+2. Systems applies the additive v2 schema changes from
+   [`production-schema-package.md`](production-schema-package.md) through the
+   normal database change process. Production containers should run with
    `CONFIG_PROFILE=production` or `SCHEMA_MANAGEMENT_MODE=validate` so startup
    validates schema state and never applies DDL.
-3. Validate the schema ledger from the same environment the Monitor will use:
+3. Validate the schema contract from the same environment the Monitor will use:
 
    ```bash
    ./jetmon2 schema validate
    ```
 
+   This check is read-only. It verifies the required tables, columns, and
+   indexes exist and does not require the local/lab migration ledger table.
 4. Confirm v1 continues to run normally with the additive v2 tables present.
 5. Run the read-only production data audit:
 
@@ -98,10 +101,11 @@ Complete these before any production activation:
    ./jetmon2 rollout legacy-status-bootstrap --bucket-min=0 --bucket-max=<max> --execute
    ```
 
-7. Resolve or explicitly defer active duplicate `blog_id` blockers. Current
-   rollout state is still keyed by `blog_id`; endpoint-identity work is needed
-   for the small production cohort where one blog has multiple active monitor
-   URLs.
+7. Review active duplicate `blog_id` rows. V2 check execution, policy,
+   runtime, rollout, and API paths are keyed by the endpoint row id
+   (`jetpack_monitor_site_id`) when present, so duplicate `blog_id` rows do
+   not block the rollout by themselves. Treat status conflicts or unexpected
+   URL changes as data-quality issues that need operator review.
 8. Prepare controlled canary targets and a canary file:
 
    ```bash
@@ -379,7 +383,8 @@ Only remove v1 after rollout signoff.
 ## Final Checklist
 
 - [ ] production data audit reviewed
-- [ ] duplicate active `blog_id` blockers resolved or deferred with signoff
+- [ ] active duplicate `blog_id` groups reviewed for status conflicts or
+      unexpected URL changes
 - [ ] additive schema changes applied by Systems
 - [ ] production configs use schema validation, not automatic migration
 - [ ] v2 Veriflier fleet deployed and validated through `/v2/status`

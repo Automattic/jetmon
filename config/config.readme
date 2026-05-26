@@ -88,9 +88,10 @@ starts.
 - Example: `"SCHEMA_MANAGEMENT_MODE": "validate"`
 - Purpose: controls what startup wrappers do before starting the Monitor.
 - Notes: `migrate` applies embedded migrations and then validates. `validate`
-  never applies DDL and refuses startup unless every expected migration exists
-  in `jetpack_monitor_schema_migrations`. Production should use `validate`
-  after Systems applies the approved SQL package.
+  never applies DDL and refuses startup unless the connected database has the
+  tables, columns, and indexes this binary requires. Production should use
+  `validate` after Systems applies the approved SQL package. The local/lab
+  migration ledger table is not required for production validation.
 
 ### ROLLOUT_MODE
 

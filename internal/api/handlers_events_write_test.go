@@ -15,7 +15,7 @@ const closeEventTxSelectSQL = `SELECT severity, state, ended_at FROM jetpack_mon
 
 const closeEventUpdateSQL = ` UPDATE jetpack_monitor_events SET ended_at = CURRENT_TIMESTAMP(3), resolution_reason = ? WHERE id = ?`
 
-const closeEventInsertTransitionSQL = ` INSERT INTO jetpack_monitor_event_transitions (event_id, blog_id, severity_before, severity_after, state_before, state_after, reason, source, metadata) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)`
+const closeEventInsertTransitionSQL = ` INSERT INTO jetpack_monitor_event_transitions (event_id, blog_id, endpoint_id, severity_before, severity_after, state_before, state_after, reason, source, metadata) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)`
 
 const countActiveEventsSQL = `SELECT COUNT(*) FROM jetpack_monitor_events WHERE blog_id = ? AND ended_at IS NULL AND (endpoint_id = ? OR endpoint_id IS NULL)`
 
@@ -31,7 +31,7 @@ func expectCloseEventTx(mock sqlmock.Sqlmock, eventID, blogID int64, severity ui
 		WithArgs(reason, eventID).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(closeEventInsertTransitionSQL).
-		WithArgs(eventID, blogID, severity, state, "Resolved", reason, "api", sqlmock.AnyArg()).
+		WithArgs(eventID, blogID, blogID, severity, state, "Resolved", reason, "api", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(countActiveEventsSQL).WithArgs(blogID, blogID).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))

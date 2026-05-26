@@ -334,7 +334,12 @@ Reasoning: keeping list and single-resource shapes distinct means consumers don'
 
 ### Resource IDs
 
-All resource `id` fields are raw `BIGINT UNSIGNED` integers serialized as JSON numbers (not strings). Sites use the existing `blog_id`; events, transitions, webhooks, deliveries, and contacts use their respective table's auto-increment primary key. There is no type prefix or ULID encoding.
+All resource `id` fields are raw `BIGINT UNSIGNED` integers serialized as JSON
+numbers, not strings. Site `id` values are the monitor endpoint row id from
+`jetpack_monitor_sites.jetpack_monitor_site_id`. `blog_id` remains the legacy
+WPCOM/site identity and can appear on more than one active monitor endpoint.
+Events, transitions, webhooks, deliveries, and contacts use their respective
+table's primary key. There is no type prefix or ULID encoding.
 
 Type context comes from the **endpoint path** (`/api/v1/sites/12345` vs `/api/v1/events/12345`) and from explicit `type` fields where ambiguity would otherwise hurt — for example, error messages always name the resource type:
 
@@ -644,7 +649,7 @@ the `/v2/check` contract.
 | `invalid_check_policy` | `request_method` or `detection_profile` is not supported |
 | `invalid_custom_headers` | `custom_headers` is not a valid string map |
 | `invalid_forbidden_keywords` | `forbidden_keywords` is too large or contains invalid entries |
-| `site_exists` | A site with this `blog_id` already exists |
+| `site_exists` | A site with this endpoint identity already exists |
 
 #### `PATCH /api/v1/sites/{id}`
 
@@ -776,6 +781,7 @@ Single event, same shape, plus a `transitions` array (full history, no paginatio
   "transitions": [
     {
       "id": 1,
+      "endpoint_id": 12345,
       "severity_before": null,
       "severity_after": 3,
       "state_before": null,
@@ -797,6 +803,7 @@ Single event, same shape, plus a `transitions` array (full history, no paginatio
     },
     {
       "id": 2,
+      "endpoint_id": 12345,
       "severity_before": 3,
       "severity_after": 4,
       "state_before": "Seems Down",
@@ -992,15 +999,21 @@ Empty fields mean "no restriction on this dimension," matching the everyday Engl
 
 #### Webhook delivery format
 
-When an event fires, Jetmon POSTs to the webhook URL:
+When an event fires, Jetmon POSTs a compact transition payload to the webhook
+URL. `site_id` is the legacy `blog_id` for filter compatibility;
+`endpoint_id`, when present, is the monitor endpoint row id callers should use
+for endpoint-specific follow-up API calls.
 
 ```json
 {
   "type": "event.opened",
-  "delivered_at": "2026-04-25T03:18:38.500Z",
-  "delivery_id": 9182734,
-  "event": { ... full event object ... },
-  "site": { ... full site object ... }
+  "occurred_at": "2026-04-25T03:18:38.500Z",
+  "transition_id": 9182734,
+  "event_id": 487291,
+  "site_id": 12345,
+  "endpoint_id": 887766,
+  "reason": "opened",
+  "state": "Seems Down"
 }
 ```
 

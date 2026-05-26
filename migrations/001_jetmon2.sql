@@ -1,10 +1,10 @@
--- Jetmon 2 schema reference.
--- The migration source of truth is internal/db/migrations.go. Production
--- applies reviewed SQL through the approved database-change process; keep this
--- reference aligned with the current production baseline when preparing that
--- SQL package. The production package must also populate
--- jetpack_monitor_schema_migrations with the ids expected by the deployed
--- binary so schema validation can run without applying DDL.
+-- Jetmon 2 historical schema reference.
+--
+-- The migration source of truth is internal/db/migrations.go. For production,
+-- use migrations/production-v2-baseline.sql instead of this historical file.
+-- Production validation checks required tables, columns, and indexes directly
+-- and does not require jetpack_monitor_schema_migrations. The migration ledger
+-- below is kept only for local/lab environments that use ./jetmon2 migrate.
 
 CREATE TABLE IF NOT EXISTS jetpack_monitor_schema_migrations (
     id           INT UNSIGNED NOT NULL PRIMARY KEY,
@@ -59,6 +59,52 @@ CREATE TABLE IF NOT EXISTS jetpack_monitor_check_history (
     INDEX idx_blog_id_checked (blog_id, checked_at),
     INDEX idx_source_site_checked (source_site_id, checked_at),
     INDEX idx_checked_at (checked_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS jetpack_monitor_events (
+    id                BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    blog_id           BIGINT UNSIGNED NOT NULL,
+    endpoint_id       BIGINT UNSIGNED NULL,
+    check_type        VARCHAR(64) NOT NULL,
+    discriminator     VARCHAR(128) NULL,
+    severity          TINYINT UNSIGNED NOT NULL,
+    state             VARCHAR(32) NOT NULL,
+    started_at        TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    ended_at          TIMESTAMP(3) NULL,
+    resolution_reason VARCHAR(64) NULL,
+    cause_event_id    BIGINT UNSIGNED NULL,
+    metadata          JSON NULL,
+    updated_at        TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    dedup_key         VARCHAR(255) GENERATED ALWAYS AS (
+        IF(ended_at IS NULL,
+           CONCAT_WS(':', blog_id, COALESCE(endpoint_id, 0), check_type, COALESCE(discriminator, '')),
+           NULL)
+    ) STORED,
+    UNIQUE KEY uk_open_dedup (dedup_key),
+    INDEX idx_blog_id_started (blog_id, started_at),
+    INDEX idx_blog_id_active (blog_id, ended_at),
+    INDEX idx_check_type_started (check_type, started_at),
+    INDEX idx_cause_event_id (cause_event_id),
+    INDEX idx_blog_id_check_type_active (blog_id, check_type, ended_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS jetpack_monitor_event_transitions (
+    id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    event_id        BIGINT UNSIGNED NOT NULL,
+    blog_id         BIGINT UNSIGNED NOT NULL,
+    endpoint_id     BIGINT UNSIGNED NULL,
+    severity_before TINYINT UNSIGNED NULL,
+    severity_after  TINYINT UNSIGNED NULL,
+    state_before    VARCHAR(32) NULL,
+    state_after     VARCHAR(32) NULL,
+    reason          VARCHAR(64) NOT NULL,
+    source          VARCHAR(255) NOT NULL DEFAULT 'local',
+    metadata        JSON NULL,
+    changed_at      TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    INDEX idx_event_id_changed (event_id, changed_at),
+    INDEX idx_blog_id_changed (blog_id, changed_at),
+    INDEX idx_endpoint_id_changed (endpoint_id, changed_at),
+    INDEX idx_changed_at (changed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Veriflier non-confirmation events (false positives).

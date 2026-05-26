@@ -35,6 +35,7 @@ type eventResponse struct {
 type transitionResponse struct {
 	ID             int64           `json:"id"`
 	EventID        int64           `json:"event_id"`
+	EndpointID     *int64          `json:"endpoint_id"`
 	SeverityBefore *uint8          `json:"severity_before"`
 	SeverityAfter  *uint8          `json:"severity_after"`
 	StateBefore    *string         `json:"state_before"`
@@ -375,7 +376,7 @@ func (s *Server) handleListTransitions(w http.ResponseWriter, r *http.Request) {
 
 	args := []any{eventID}
 	query := `
-		SELECT id, event_id, severity_before, severity_after,
+		SELECT id, event_id, endpoint_id, severity_before, severity_after,
 		       state_before, state_after, reason, source, metadata, changed_at
 		  FROM jetpack_monitor_event_transitions
 		 WHERE event_id = ?`
@@ -421,7 +422,7 @@ func (s *Server) handleListTransitions(w http.ResponseWriter, r *http.Request) {
 // Used by the single-event endpoint where the count is bounded.
 func (s *Server) queryTransitions(ctx context.Context, eventID int64) ([]transitionResponse, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, event_id, severity_before, severity_after,
+		SELECT id, event_id, endpoint_id, severity_before, severity_after,
 		       state_before, state_after, reason, source, metadata, changed_at
 		  FROM jetpack_monitor_event_transitions
 		 WHERE event_id = ?
@@ -519,6 +520,7 @@ func scanEventRow(s rowScanner) (eventResponse, error) {
 func scanTransitionRow(s rowScanner) (transitionResponse, error) {
 	var (
 		out            transitionResponse
+		endpointID     sql.NullInt64
 		severityBefore sql.NullInt64
 		severityAfter  sql.NullInt64
 		stateBefore    sql.NullString
@@ -527,10 +529,13 @@ func scanTransitionRow(s rowScanner) (transitionResponse, error) {
 		changedAt      time.Time
 	)
 	if err := s.Scan(
-		&out.ID, &out.EventID, &severityBefore, &severityAfter,
+		&out.ID, &out.EventID, &endpointID, &severityBefore, &severityAfter,
 		&stateBefore, &stateAfter, &out.Reason, &out.Source, &metadata, &changedAt,
 	); err != nil {
 		return out, err
+	}
+	if endpointID.Valid {
+		out.EndpointID = &endpointID.Int64
 	}
 	if severityBefore.Valid {
 		v := uint8(severityBefore.Int64)

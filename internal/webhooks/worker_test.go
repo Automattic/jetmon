@@ -245,7 +245,7 @@ func TestHandleResultSchedulesRetryAndForcedAbandon(t *testing.T) {
 func TestBuildPayload(t *testing.T) {
 	occurredAt := time.Date(2026, 4, 27, 12, 0, 0, 123, time.UTC)
 	w := &Worker{}
-	payload, err := w.buildPayload(EventOpened, 10, 20, 30, "opened", "Seems Down", occurredAt)
+	payload, err := w.buildPayload(EventOpened, 10, 20, 30, sql.NullInt64{Int64: 40, Valid: true}, "opened", "Seems Down", occurredAt)
 	if err != nil {
 		t.Fatalf("buildPayload: %v", err)
 	}
@@ -259,6 +259,9 @@ func TestBuildPayload(t *testing.T) {
 	}
 	if body["transition_id"].(float64) != 10 || body["event_id"].(float64) != 20 || body["site_id"].(float64) != 30 {
 		t.Fatalf("payload ids = %s", payload)
+	}
+	if body["endpoint_id"].(float64) != 40 {
+		t.Fatalf("payload endpoint_id = %s", payload)
 	}
 	if body["occurred_at"] != occurredAt.Format(time.RFC3339Nano) {
 		t.Fatalf("occurred_at = %v", body["occurred_at"])

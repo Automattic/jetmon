@@ -816,7 +816,7 @@ func TestMigrateFailsWhenMigrationLockUnavailable(t *testing.T) {
 	}
 }
 
-func TestValidateSchemaPassesWhenAllMigrationsApplied(t *testing.T) {
+func TestSchemaMigrationStatusReportsAllMigrationsApplied(t *testing.T) {
 	mock, cleanup := withMockDB(t)
 	defer cleanup()
 
@@ -831,9 +831,9 @@ func TestValidateSchemaPassesWhenAllMigrationsApplied(t *testing.T) {
 	mock.ExpectQuery("SELECT id FROM jetpack_monitor_schema_migrations ORDER BY id").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1).AddRow(2).AddRow(3))
 
-	status, err := ValidateSchema(context.Background())
+	status, err := SchemaMigrationStatus(context.Background())
 	if err != nil {
-		t.Fatalf("ValidateSchema error = %v", err)
+		t.Fatalf("SchemaMigrationStatus error = %v", err)
 	}
 	if status.CurrentMaxID != 3 || status.ExpectedMaxID != 3 || status.AppliedCount != 3 {
 		t.Fatalf("status = %+v, want current=3 expected=3 applied=3", status)
@@ -843,7 +843,7 @@ func TestValidateSchemaPassesWhenAllMigrationsApplied(t *testing.T) {
 	}
 }
 
-func TestValidateSchemaReportsPendingAndUnknownMigrations(t *testing.T) {
+func TestSchemaMigrationStatusReportsPendingAndUnknownMigrations(t *testing.T) {
 	mock, cleanup := withMockDB(t)
 	defer cleanup()
 
@@ -858,9 +858,9 @@ func TestValidateSchemaReportsPendingAndUnknownMigrations(t *testing.T) {
 	mock.ExpectQuery("SELECT id FROM jetpack_monitor_schema_migrations ORDER BY id").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1).AddRow(99))
 
-	status, err := ValidateSchema(context.Background())
-	if err == nil {
-		t.Fatal("ValidateSchema unexpectedly passed")
+	status, err := SchemaMigrationStatus(context.Background())
+	if err != nil {
+		t.Fatalf("SchemaMigrationStatus error = %v", err)
 	}
 	if !reflect.DeepEqual(status.PendingIDs, []int{2, 3}) {
 		t.Fatalf("PendingIDs = %v, want [2 3]", status.PendingIDs)
@@ -870,6 +870,61 @@ func TestValidateSchemaReportsPendingAndUnknownMigrations(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestEvaluateSchemaContractPasses(t *testing.T) {
+	contracts := []schemaTableContract{{
+		table:   "jetpack_monitor_sites",
+		columns: []string{"jetpack_monitor_site_id", "blog_id"},
+		indexes: []string{"PRIMARY", "idx_bucket_active"},
+	}}
+	status := evaluateSchemaContract(
+		contracts,
+		[]schemaIndexPrefixContract{{
+			table:   "jetpack_monitor_sites",
+			name:    "index_prefix(bucket_no,monitor_active)",
+			columns: []string{"bucket_no", "monitor_active"},
+		}},
+		map[string]struct{}{"jetpack_monitor_sites": {}},
+		map[string]map[string]struct{}{"jetpack_monitor_sites": {"jetpack_monitor_site_id": {}, "blog_id": {}}},
+		map[string]map[string]struct{}{"jetpack_monitor_sites": {"PRIMARY": {}, "idx_bucket_active": {}}},
+		map[string]map[string][]string{"jetpack_monitor_sites": {"legacy_bucket_index": {"bucket_no", "monitor_active", "check_interval"}}},
+	)
+	if !status.OK() {
+		t.Fatalf("schema contract should pass: %+v", status)
+	}
+	if status.Summary() != "tables=1/1 columns=2/2 indexes=3/3" {
+		t.Fatalf("Summary() = %q", status.Summary())
+	}
+}
+
+func TestEvaluateSchemaContractReportsMissingObjects(t *testing.T) {
+	contracts := []schemaTableContract{{
+		table:   "jetpack_monitor_sites",
+		columns: []string{"jetpack_monitor_site_id", "blog_id"},
+		indexes: []string{"PRIMARY", "idx_bucket_active"},
+	}}
+	status := evaluateSchemaContract(
+		contracts,
+		[]schemaIndexPrefixContract{{
+			table:   "jetpack_monitor_sites",
+			name:    "index_prefix(bucket_no,monitor_active)",
+			columns: []string{"bucket_no", "monitor_active"},
+		}},
+		map[string]struct{}{"jetpack_monitor_sites": {}},
+		map[string]map[string]struct{}{"jetpack_monitor_sites": {"jetpack_monitor_site_id": {}}},
+		map[string]map[string]struct{}{"jetpack_monitor_sites": {"PRIMARY": {}}},
+		map[string]map[string][]string{"jetpack_monitor_sites": {"wrong_order": {"monitor_active", "bucket_no"}}},
+	)
+	if status.OK() {
+		t.Fatalf("schema contract unexpectedly passed")
+	}
+	if len(status.MissingColumns) != 1 || status.MissingColumns[0].Name != "blog_id" {
+		t.Fatalf("MissingColumns = %+v, want blog_id", status.MissingColumns)
+	}
+	if len(status.MissingIndexes) != 2 {
+		t.Fatalf("MissingIndexes = %+v, want two missing indexes", status.MissingIndexes)
 	}
 }
 

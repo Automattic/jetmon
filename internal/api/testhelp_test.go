@@ -141,7 +141,7 @@ var columnsEvent = []string{
 
 // columnsTransition is the column set returned by transition queries.
 var columnsTransition = []string{
-	"id", "event_id", "severity_before", "severity_after",
+	"id", "event_id", "endpoint_id", "severity_before", "severity_after",
 	"state_before", "state_after", "reason", "source", "metadata", "changed_at",
 }
 

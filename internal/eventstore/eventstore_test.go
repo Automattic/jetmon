@@ -155,11 +155,11 @@ func TestSQLTxBeginCommitAndRollback(t *testing.T) {
 	}
 }
 
-var eventSnapshotColumns = []string{"blog_id", "severity", "state", "ended_at", "cause_event_id"}
+var eventSnapshotColumns = []string{"blog_id", "endpoint_id", "severity", "state", "ended_at", "cause_event_id"}
 
 func eventSnapshotRow(blogID int64, severity uint8, state string, cause any) *sqlmock.Rows {
 	return sqlmock.NewRows(eventSnapshotColumns).
-		AddRow(blogID, severity, state, nil, cause)
+		AddRow(blogID, nil, severity, state, nil, cause)
 }
 
 func TestStoreOpenInsertedEventWritesTransition(t *testing.T) {
@@ -174,7 +174,7 @@ func TestStoreOpenInsertedEventWritesTransition(t *testing.T) {
 		WithArgs(int64(42), nil, "http", nil, SeveritySeemsDown, StateSeemsDown, nil).
 		WillReturnResult(sqlmock.NewResult(99, 1))
 	mock.ExpectExec("INSERT INTO jetpack_monitor_event_transitions").
-		WithArgs(int64(99), int64(42), nil, SeveritySeemsDown, nil, StateSeemsDown, ReasonOpened, "local", nil).
+		WithArgs(int64(99), int64(42), nil, nil, SeveritySeemsDown, nil, StateSeemsDown, ReasonOpened, "local", nil).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
@@ -234,7 +234,7 @@ func TestStoreUpdateSeverityNoopSkipsTransition(t *testing.T) {
 	defer db.Close()
 
 	mock.ExpectBegin()
-	mock.ExpectQuery("SELECT blog_id, severity, state, ended_at, cause_event_id").
+	mock.ExpectQuery("SELECT blog_id, endpoint_id, severity, state, ended_at, cause_event_id").
 		WithArgs(int64(99)).
 		WillReturnRows(eventSnapshotRow(42, SeverityDown, StateDown, nil))
 	mock.ExpectCommit()
@@ -259,14 +259,14 @@ func TestStorePromoteWritesEventAndTransition(t *testing.T) {
 	defer db.Close()
 
 	mock.ExpectBegin()
-	mock.ExpectQuery("SELECT blog_id, severity, state, ended_at, cause_event_id").
+	mock.ExpectQuery("SELECT blog_id, endpoint_id, severity, state, ended_at, cause_event_id").
 		WithArgs(int64(99)).
 		WillReturnRows(eventSnapshotRow(42, SeveritySeemsDown, StateSeemsDown, nil))
 	mock.ExpectExec("UPDATE jetpack_monitor_events SET severity").
 		WithArgs(SeverityDown, StateDown, int64(99)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO jetpack_monitor_event_transitions").
-		WithArgs(int64(99), int64(42), SeveritySeemsDown, SeverityDown, StateSeemsDown, StateDown, ReasonVerifierConfirmed, "tester", nil).
+		WithArgs(int64(99), int64(42), nil, SeveritySeemsDown, SeverityDown, StateSeemsDown, StateDown, ReasonVerifierConfirmed, "tester", nil).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
@@ -290,14 +290,14 @@ func TestStoreLinkCauseWritesMetadataTransition(t *testing.T) {
 	defer db.Close()
 
 	mock.ExpectBegin()
-	mock.ExpectQuery("SELECT blog_id, severity, state, ended_at, cause_event_id").
+	mock.ExpectQuery("SELECT blog_id, endpoint_id, severity, state, ended_at, cause_event_id").
 		WithArgs(int64(99)).
 		WillReturnRows(eventSnapshotRow(42, SeverityDown, StateDown, nil))
 	mock.ExpectExec("UPDATE jetpack_monitor_events SET cause_event_id").
 		WithArgs(int64(123), int64(99)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO jetpack_monitor_event_transitions").
-		WithArgs(int64(99), int64(42), SeverityDown, SeverityDown, StateDown, StateDown, ReasonCauseLinked, "tester", sqlmock.AnyArg()).
+		WithArgs(int64(99), int64(42), nil, SeverityDown, SeverityDown, StateDown, StateDown, ReasonCauseLinked, "tester", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
@@ -321,14 +321,14 @@ func TestStoreCloseWritesResolvedTransition(t *testing.T) {
 	defer db.Close()
 
 	mock.ExpectBegin()
-	mock.ExpectQuery("SELECT blog_id, severity, state, ended_at, cause_event_id").
+	mock.ExpectQuery("SELECT blog_id, endpoint_id, severity, state, ended_at, cause_event_id").
 		WithArgs(int64(99)).
 		WillReturnRows(eventSnapshotRow(42, SeverityDown, StateDown, nil))
 	mock.ExpectExec("UPDATE jetpack_monitor_events").
 		WithArgs(ReasonVerifierCleared, int64(99)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO jetpack_monitor_event_transitions").
-		WithArgs(int64(99), int64(42), SeverityDown, nil, StateDown, StateResolved, ReasonVerifierCleared, "tester", nil).
+		WithArgs(int64(99), int64(42), nil, SeverityDown, nil, StateDown, StateResolved, ReasonVerifierCleared, "tester", nil).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 

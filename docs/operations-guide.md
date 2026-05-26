@@ -10,6 +10,8 @@ Use these companion docs for full reference material:
 - [docker-images.md](docker-images.md) - image usage and rendered config inputs
 - [production-teamcity-rollout.md](production-teamcity-rollout.md) - production
   Monitor deployment shape
+- [production-schema-package.md](production-schema-package.md) - DDL package
+  and schema validation checklist
 - [production-veriflier-compose.md](production-veriflier-compose.md) -
   Veriflier VPS Compose stack
 - [v1-to-v2-migration.md](v1-to-v2-migration.md) - v1 to v2 production
@@ -93,7 +95,9 @@ only; there is no supported legacy scheduler runtime path.
 ## Database And Schema
 
 Production schema changes must be applied before production containers start in
-validate mode. The expected startup posture is:
+validate mode. `schema validate` is read-only and checks the required tables,
+columns, and indexes; it does not require the local/lab migration ledger. The
+expected startup posture is:
 
 ```bash
 ./jetmon2 schema validate

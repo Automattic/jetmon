@@ -1932,7 +1932,7 @@ func TestHandleFailureOpensConfirmedDownAfterVerifierConfirmsDeferredDNSFailure(
 		WithArgs(int64(1), nil, checkTypeHTTP, nil, eventstore.SeverityDown, eventstore.StateDown, sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(501, 1))
 	mock.ExpectExec("INSERT INTO jetpack_monitor_event_transitions").
-		WithArgs(int64(501), int64(1), nil, eventstore.SeverityDown, nil, eventstore.StateDown, eventstore.ReasonOpened, "local-host", sqlmock.AnyArg()).
+		WithArgs(int64(501), int64(1), nil, nil, eventstore.SeverityDown, nil, eventstore.StateDown, eventstore.ReasonOpened, "local-host", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
@@ -2677,7 +2677,7 @@ func TestCheckTLSDeprecatedOpensWarningEvent(t *testing.T) {
 		WithArgs(int64(72), nil, checkTypeTLSDeprecated, nil, eventstore.SeverityWarning, eventstore.StateWarning, sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(101, 1))
 	mock.ExpectExec("INSERT INTO jetpack_monitor_event_transitions").
-		WithArgs(int64(101), int64(72), nil, eventstore.SeverityWarning, nil, eventstore.StateWarning, eventstore.ReasonOpened, "local-host", sqlmock.AnyArg()).
+		WithArgs(int64(101), int64(72), nil, nil, eventstore.SeverityWarning, nil, eventstore.StateWarning, eventstore.ReasonOpened, "local-host", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
@@ -2708,15 +2708,15 @@ func TestCheckTLSDeprecatedClosesWarningOnModernTLS(t *testing.T) {
 		WithArgs(int64(73), checkTypeTLSDeprecated).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "severity", "state"}).
 			AddRow(int64(202), eventstore.SeverityWarning, eventstore.StateWarning))
-	mock.ExpectQuery("SELECT blog_id, severity, state, ended_at, cause_event_id").
+	mock.ExpectQuery("SELECT blog_id, endpoint_id, severity, state, ended_at, cause_event_id").
 		WithArgs(int64(202)).
-		WillReturnRows(sqlmock.NewRows([]string{"blog_id", "severity", "state", "ended_at", "cause_event_id"}).
-			AddRow(int64(73), eventstore.SeverityWarning, eventstore.StateWarning, nil, nil))
+		WillReturnRows(sqlmock.NewRows([]string{"blog_id", "endpoint_id", "severity", "state", "ended_at", "cause_event_id"}).
+			AddRow(int64(73), nil, eventstore.SeverityWarning, eventstore.StateWarning, nil, nil))
 	mock.ExpectExec("UPDATE jetpack_monitor_events").
 		WithArgs(eventstore.ReasonProbeCleared, int64(202)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO jetpack_monitor_event_transitions").
-		WithArgs(int64(202), int64(73), eventstore.SeverityWarning, nil, eventstore.StateWarning, eventstore.StateResolved, eventstore.ReasonProbeCleared, "local-host", nil).
+		WithArgs(int64(202), int64(73), nil, eventstore.SeverityWarning, nil, eventstore.StateWarning, eventstore.StateResolved, eventstore.ReasonProbeCleared, "local-host", nil).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
@@ -2773,15 +2773,15 @@ func TestCloseSSLExpiryUsesProbeCleared(t *testing.T) {
 		WithArgs(int64(74), checkTypeTLSExpiry).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "severity", "state"}).
 			AddRow(int64(303), eventstore.SeverityWarning, eventstore.StateWarning))
-	mock.ExpectQuery("SELECT blog_id, severity, state, ended_at, cause_event_id").
+	mock.ExpectQuery("SELECT blog_id, endpoint_id, severity, state, ended_at, cause_event_id").
 		WithArgs(int64(303)).
-		WillReturnRows(sqlmock.NewRows([]string{"blog_id", "severity", "state", "ended_at", "cause_event_id"}).
-			AddRow(int64(74), eventstore.SeverityWarning, eventstore.StateWarning, nil, nil))
+		WillReturnRows(sqlmock.NewRows([]string{"blog_id", "endpoint_id", "severity", "state", "ended_at", "cause_event_id"}).
+			AddRow(int64(74), nil, eventstore.SeverityWarning, eventstore.StateWarning, nil, nil))
 	mock.ExpectExec("UPDATE jetpack_monitor_events").
 		WithArgs(eventstore.ReasonProbeCleared, int64(303)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO jetpack_monitor_event_transitions").
-		WithArgs(int64(303), int64(74), eventstore.SeverityWarning, nil, eventstore.StateWarning, eventstore.StateResolved, eventstore.ReasonProbeCleared, "local-host", nil).
+		WithArgs(int64(303), int64(74), nil, eventstore.SeverityWarning, nil, eventstore.StateWarning, eventstore.StateResolved, eventstore.ReasonProbeCleared, "local-host", nil).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 

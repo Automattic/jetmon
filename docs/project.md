@@ -15,6 +15,8 @@ Detailed design lives in the focused docs:
 
 - [architecture.md](architecture.md) - current runtime architecture
 - [data-model.md](data-model.md) - tables and rollout-safe schema ownership
+- [production-schema-package.md](production-schema-package.md) - Systems-facing
+  DDL package and schema validation checklist
 - [events.md](events.md) - incident state model and transition rules
 - [operations-guide.md](operations-guide.md) - operator commands and runtime care
 - [v1-to-v2-migration.md](v1-to-v2-migration.md) - production migration runbook
