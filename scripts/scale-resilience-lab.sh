@@ -149,7 +149,7 @@ prepare_config() {
 		| .BODY_READ_MAX_MS = 250
 		| .BUCKET_TOTAL = $bucket_total
 		| .BUCKET_TARGET = $bucket_total
-		| .BUCKET_HEARTBEAT_GRACE_SEC = 8
+		| .BUCKET_HEARTBEAT_GRACE_SEC = 75
 		| .STATS_UPDATE_INTERVAL_MS = 1000
 		| .VERIFLIERS = [
 			{"name":"Scale Veriflier 1","host":"veriflier","port":"7803","auth_token":$token},
