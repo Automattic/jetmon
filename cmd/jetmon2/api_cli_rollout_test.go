@@ -145,6 +145,9 @@ func TestRunAPIRolloutGuidedHappyPath(t *testing.T) {
 			if r.URL.Query().Get("since") != "15m" {
 				t.Fatalf("activity since = %q, want 15m", r.URL.Query().Get("since"))
 			}
+			if r.URL.Query().Get("require_all") != "true" {
+				t.Fatalf("activity require_all = %q, want true", r.URL.Query().Get("require_all"))
+			}
 			writeTestJSON(t, w, map[string]string{"status": "ok"})
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/rollout/projection-drift":
 			writeTestJSON(t, w, map[string]string{"status": "ok"})

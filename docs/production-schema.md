@@ -54,6 +54,11 @@ preflight, activation, observation, and rollback against that replica.
 database satisfy the same structural contract. Treat it as diagnostic help, not
 as a substitute for the reviewed Systems SQL.
 
+If a legacy-shaped side table already exists with a different primary key,
+`schema diff` reports the primary-key shape as unresolved instead of printing a
+drop/rebuild. Apply reviewed SQL for those cases; the expected v2 shape is
+documented in `migrations/production-v2-baseline.sql`.
+
 `schema status` prints the same structural contract and, if the legacy
 local/lab migration ledger exists, prints that as extra context. Missing ledger
 rows are not a production failure.

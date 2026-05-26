@@ -17,6 +17,12 @@ Deferred work and future direction. Completed history belongs in
 - Keep guided rollout checks aligned with real deployment.
 - Maintain approved canaries for smoke and method comparison.
 - Track legacy consumers of `site_status`, stats files, and WPCOM payloads.
+- Tighten production schema reconciliation output so generated DDL is safe for
+  existing v1-shaped side tables. In particular, `source_site_id` primary-key
+  migrations must account for tables that already have `PRIMARY KEY(blog_id)`.
+- Make rehearsal lab notification posture match the intended rollout posture:
+  no real WPCOM calls, no live alerts, and clear fixture-only evidence when
+  legacy notification checks are intentionally exercised.
 - Retire local/lab dependence on `jetpack_monitor_schema_migrations` after the
   structural schema reconciler has enough usage evidence.
 - Retire pinned bucket mode and migration aliases after cutover.
@@ -61,6 +67,10 @@ resource.
 
 Useful operator improvements:
 
+- Ensure Docker-built Monitor and Veriflier images embed the same version,
+  commit, build date, and Go version metadata as `make all` binaries.
+- Make Veriflier StatsD/Graphite evidence reliable in rollout rehearsals so
+  load and quorum checks do not have to rely on `/v2/status` alone.
 - clearer dashboard reasons for not-ready hosts;
 - one-command evidence packet export;
 - alerts for projection drift, stale process health, and delivery backlog;

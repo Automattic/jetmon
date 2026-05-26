@@ -34,6 +34,10 @@ x-jetmon-scale-service: &jetmon_scale_service
   build:
     context: ../
     dockerfile: docker/Dockerfile_jetmon
+    args:
+      JETMON_BUILD_VERSION: ${JETMON_BUILD_VERSION:-dev}
+      JETMON_BUILD_COMMIT: ${JETMON_BUILD_COMMIT:-unknown}
+      JETMON_BUILD_DATE: ${JETMON_BUILD_DATE:-unknown}
   init: true
   restart: unless-stopped
   stop_grace_period: 45s
@@ -60,6 +64,10 @@ x-veriflier-scale-service: &veriflier_scale_service
   build:
     context: ../
     dockerfile: docker/Dockerfile_veriflier
+    args:
+      JETMON_BUILD_VERSION: ${JETMON_BUILD_VERSION:-dev}
+      JETMON_BUILD_COMMIT: ${JETMON_BUILD_COMMIT:-unknown}
+      JETMON_BUILD_DATE: ${JETMON_BUILD_DATE:-unknown}
   init: true
   restart: unless-stopped
   stop_grace_period: 45s
@@ -74,6 +82,7 @@ x-veriflier-scale-service: &veriflier_scale_service
     CHECK_TARGET_SAFETY_MODE: ${CHECK_TARGET_SAFETY_MODE:-public_only}
     STATSD_ADDR: statsd:8125
     JETMON_HOSTNAME: ${JETMON_HOSTNAME:-}
+    VERIFLIER_STATSD_HOST_PATH: ${VERIFLIER_STATSD_HOST_PATH:-}
     STATSD_HOST_PATH: ${STATSD_HOST_PATH:-}
   healthcheck:
     test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7803/v2/status"]
@@ -140,6 +149,7 @@ services:
       CHECK_TARGET_SAFETY_MODE: ${CHECK_TARGET_SAFETY_MODE:-public_only}
       STATSD_ADDR: statsd:8125
       JETMON_HOSTNAME: ${JETMON_HOSTNAME:-}
+      VERIFLIER_STATSD_HOST_PATH: ${VERIFLIER_STATSD_HOST_PATH:-}
       STATSD_HOST_PATH: ${STATSD_HOST_PATH:-}
 
   veriflier3:
@@ -157,6 +167,7 @@ services:
       CHECK_TARGET_SAFETY_MODE: ${CHECK_TARGET_SAFETY_MODE:-public_only}
       STATSD_ADDR: statsd:8125
       JETMON_HOSTNAME: ${JETMON_HOSTNAME:-}
+      VERIFLIER_STATSD_HOST_PATH: ${VERIFLIER_STATSD_HOST_PATH:-}
       STATSD_HOST_PATH: ${STATSD_HOST_PATH:-}
 
   api-fixture:

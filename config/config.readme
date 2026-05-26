@@ -759,6 +759,8 @@ The standalone Veriflier has a separate small JSON file:
   disables StatsD.
 - `statsd_host_path`: explicit host segment in StatsD metric names. Default:
   empty, which falls back to `hostname` / runtime hostname.
+  Docker entrypoints can render this from `VERIFLIER_STATSD_HOST_PATH` when
+  set, otherwise from `STATSD_HOST_PATH`.
 - `vantage_id`: quorum identity reported by `/v2/status` and `/v2/check`;
   defaults to hostname when omitted.
 - `region`: optional region metadata.
@@ -773,13 +775,15 @@ The standalone Veriflier has a separate small JSON file:
 Environment aliases are accepted only for the fallback environment-only path
 used when the JSON file is missing: `VERIFLIER_AUTH_TOKEN`, `VERIFLIER_PORT`,
 `VERIFLIER_GRPC_PORT`, `VERIFLIER_HOSTNAME`, `JETMON_HOSTNAME`, `STATSD_ADDR`,
-`STATSD_HOST_PATH`, `VERIFLIER_VANTAGE_ID`, `VERIFLIER_REGION`,
-`VERIFLIER_PROVIDER`, `VERIFLIER_ENABLE_LEGACY_HTTP`,
-`VERIFLIER_CHECK_TARGET_SAFETY_MODE`, and `CHECK_TARGET_SAFETY_MODE`. The Docker
-entrypoint can render those values into generated JSON on each start in the
-default `always` render mode. Once the Veriflier process starts, it reads
-runtime settings from that JSON file and does not let environment variables
-override it.
+`VERIFLIER_STATSD_HOST_PATH`, `STATSD_HOST_PATH`, `VERIFLIER_VANTAGE_ID`,
+`VERIFLIER_REGION`, `VERIFLIER_PROVIDER`, `VERIFLIER_ENABLE_LEGACY_HTTP`,
+`VERIFLIER_CHECK_TARGET_SAFETY_MODE`, and `CHECK_TARGET_SAFETY_MODE`.
+`VERIFLIER_STATSD_HOST_PATH` lets Compose stacks give Verifliers a different
+StatsD identity than Monitors while still using the same shared entrypoint
+pattern. The Docker entrypoint can render those values into generated JSON on
+each start in the default `always` render mode. Once the Veriflier process
+starts, it reads runtime settings from that JSON file and does not let
+environment variables override it.
 
 The old `VERIFLIER_GRPC_PORT` and `grpc_port` names remain accepted as
 deprecated port aliases.

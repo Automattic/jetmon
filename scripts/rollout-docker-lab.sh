@@ -4,6 +4,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 
+export JETMON_BUILD_VERSION="${JETMON_BUILD_VERSION:-$(git -C "$REPO_ROOT" describe --tags --always --dirty 2>/dev/null || printf dev)}"
+export JETMON_BUILD_COMMIT="${JETMON_BUILD_COMMIT:-$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || printf unknown)}"
+export JETMON_BUILD_DATE="${JETMON_BUILD_DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+
 PROJECT="${JETMON_ROLLOUT_DOCKER_PROJECT:-jetmon-rollout-lab}"
 PUBLIC_NETWORK="${JETMON_ROLLOUT_DOCKER_NETWORK:-jetmon-rollout-lab-public}"
 PUBLIC_SUBNET="${JETMON_ROLLOUT_DOCKER_SUBNET:-93.184.216.0/24}"
@@ -34,6 +38,9 @@ export MAILPIT_HOST_PORT="${MAILPIT_HOST_PORT:-18025}"
 export GRAPHITE_HOST_PORT="${GRAPHITE_HOST_PORT:-18088}"
 export STATSD_HOST_PORT="${STATSD_HOST_PORT:-18125}"
 export EMAIL_TRANSPORT=stub
+export WPCOM_NOTIFY_ENABLE=false
+export STATSD_HOST_PATH="${STATSD_HOST_PATH:-rollout.lab.monitor}"
+export VERIFLIER_STATSD_HOST_PATH="${VERIFLIER_STATSD_HOST_PATH:-rollout.lab.veriflier}"
 export JETMON_CONFIG_RENDER_MODE=never
 export VERIFLIER_CONFIG_RENDER_MODE=always
 export ROLLOUT_LAB_PUBLIC_NETWORK="$PUBLIC_NETWORK"
@@ -121,6 +128,7 @@ prepare_config() {
 		--arg db_password "${MYSQL_PASSWORD:-jetmon_dev_password}" \
 		--arg db_name "${MYSQL_DATABASE:-jetmon_db}" \
 		--arg auth "rollout-lab-wpcom-disabled" \
+		--arg statsd_host_path "$STATSD_HOST_PATH" \
 		--arg fixture_host "veriflier" \
 		--arg verifier_token "${VERIFLIER_AUTH_TOKEN:-veriflier_1_auth_token}" \
 		'.AUTH_TOKEN = $auth
@@ -130,6 +138,7 @@ prepare_config() {
 		| .DB_PASSWORD = $db_password
 		| .DB_NAME = $db_name
 		| .STATSD_ADDR = "statsd:8125"
+		| .STATSD_HOST_PATH = $statsd_host_path
 		| .WPCOM_NOTIFY_ENABLE = false
 		| .EMAIL_TRANSPORT = "stub"
 		| .WPCOM_EMAIL_ENDPOINT = ""
@@ -248,6 +257,51 @@ wait_for_api() {
 	pass "api_healthy"
 }
 
+assert_notification_posture() {
+	local out
+	out="$(compose exec -T jetmon ./jetmon2 validate-config)"
+	printf '%s\n' "$out" >"$WORK_DIR/validate-config.txt"
+	if ! printf '%s\n' "$out" | grep -q '^INFO wpcom_notify=disabled mode='; then
+		printf '%s\n' "$out" >&2
+		fail "rollout lab must keep WPCOM notifications disabled"
+	fi
+	pass "notification_posture_safe wpcom_notify=disabled"
+}
+
+graphite_has_datapoint() {
+	local target="$1"
+	local query
+	query="target=$target&from=-10min&format=json"
+	curl -fsS "http://127.0.0.1:$GRAPHITE_HOST_PORT/render?$query" \
+		| jq -e 'any(.[].datapoints[]?; .[0] != null)' >/dev/null
+}
+
+wait_for_graphite_metric() {
+	local target="$1"
+	local label="$2"
+	local deadline=$((SECONDS + 90))
+	while (( SECONDS < deadline )); do
+		if graphite_has_datapoint "$target"; then
+			pass "${label}_graphite_metric_ingested target=$target"
+			return
+		fi
+		sleep 5
+	done
+	fail "$label Graphite metric did not ingest target=$target"
+}
+
+smoke_veriflier_v2_check() {
+	local response
+	response="$(curl -fsS \
+		-H "Authorization: Bearer ${VERIFLIER_AUTH_TOKEN:-veriflier_1_auth_token}" \
+		-H "Content-Type: application/json" \
+		-d "{\"batch_id\":\"rollout-veriflier-metrics-smoke\",\"requests\":[{\"request_id\":\"rollout-veriflier-metrics-smoke-1\",\"blog_id\":1,\"url\":\"http://$FIXTURE_IP:8091/health\",\"method\":\"HEAD\",\"detection_profile\":\"legacy\",\"timeout_ms\":3000,\"redirect_policy\":\"follow\"}]}" \
+		"http://127.0.0.1:$VERIFLIER_HOST_PORT/v2/check")"
+	printf '%s\n' "$response" >"$WORK_DIR/veriflier-v2-check.json"
+	printf '%s\n' "$response" | jq -e '.results[0].success == true and .results[0].http_code == 200' >/dev/null
+	pass "veriflier_v2_check_smoke_success"
+}
+
 create_api_token() {
 	local out
 	out="$(compose exec -T jetmon ./jetmon2 keys create --consumer rollout-docker-lab --scope admin --created-by rollout-docker-lab)"
@@ -297,7 +351,7 @@ plan_execute() {
 }
 
 wait_for_checked_sites() {
-	local deadline=$((SECONDS + 120))
+	local deadline=$((SECONDS + 420))
 	local checked=0
 	while (( SECONDS < deadline )); do
 		checked="$(sql --batch --skip-column-names -e "
@@ -306,7 +360,7 @@ wait_for_checked_sites() {
 			  JOIN jetpack_monitor_site_runtime r ON r.source_site_id = s.jetpack_monitor_site_id
 			 WHERE s.monitor_active = 1
 			   AND s.bucket_no BETWEEN $BUCKET_MIN AND $BUCKET_MAX
-			   AND r.last_checked_at >= UTC_TIMESTAMP() - INTERVAL 2 MINUTE")"
+			   AND r.last_checked_at IS NOT NULL")"
 		checked="${checked//[[:space:]]/}"
 		if [[ "$checked" == "$SITE_COUNT" ]]; then
 			pass "monitor_activity_checked_sites=$checked"
@@ -349,6 +403,7 @@ run_policy_stage() {
 run_lab() {
 	need_cmd docker
 	need_cmd jq
+	need_cmd curl
 	cd "$REPO_ROOT"
 	cleanup >/dev/null 2>&1 || true
 	prepare_config
@@ -359,6 +414,7 @@ run_lab() {
 	log "starting compose project=$PROJECT"
 	compose up -d --build
 	wait_for_api
+	assert_notification_posture
 	create_api_token
 
 	compose exec -T jetmon curl -fsS "http://$FIXTURE_IP:8091/health" >/dev/null
@@ -372,8 +428,11 @@ run_lab() {
 	plan_execute final-reconcile rollout final-reconcile --bucket-min "$BUCKET_MIN" --bucket-max "$BUCKET_MAX" --run-id "$RUN_ID" --change-ref "$CHANGE_REF"
 	plan_execute activate-buckets rollout activate-buckets --bucket-min "$BUCKET_MIN" --bucket-max "$BUCKET_MAX" --run-id "$RUN_ID" --change-ref "$CHANGE_REF"
 	wait_for_checked_sites
+	compose --profile smoke run --rm metrics-smoke >"$WORK_DIR/metrics-smoke.txt"
+	smoke_veriflier_v2_check
+	wait_for_graphite_metric "stats_counts.com.jetpack.jetmon.rollout.lab.veriflier.verifier.checks.received.count" "veriflier"
 	api rollout bucket-coverage --bucket-min "$BUCKET_MIN" --bucket-max "$BUCKET_MAX" --output json | tee "$WORK_DIR/bucket-coverage.json" >/dev/null
-	api rollout activity-check --bucket-min "$BUCKET_MIN" --bucket-max "$BUCKET_MAX" --since 2m --output json | tee "$WORK_DIR/activity-check.json" >/dev/null
+	api rollout activity-check --bucket-min "$BUCKET_MIN" --bucket-max "$BUCKET_MAX" --since 7m --require-all --output json | tee "$WORK_DIR/activity-check.json" >/dev/null
 	api rollout projection-drift --bucket-min "$BUCKET_MIN" --bucket-max "$BUCKET_MAX" --output json | tee "$WORK_DIR/projection-drift.json" >/dev/null
 	api rollout compare-methods --bucket-min "$BUCKET_MIN" --bucket-max "$BUCKET_MAX" --run-id "$RUN_ID" --from head-legacy --to get-simple --sample-size "$SITE_COUNT" --output json | tee "$WORK_DIR/compare-head-to-simple.json" >/dev/null
 	run_policy_stage GET simple_http stage-get-simple

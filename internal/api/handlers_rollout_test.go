@@ -6,6 +6,7 @@ import (
 
 	"github.com/Automattic/jetmon/internal/checker"
 	"github.com/Automattic/jetmon/internal/checkmode"
+	"github.com/DATA-DOG/go-sqlmock"
 )
 
 func TestRolloutCapabilities(t *testing.T) {
@@ -112,6 +113,51 @@ func TestRolloutOperatorBindsToAPIKeyID(t *testing.T) {
 	req := requestWithKey(http.MethodPost, "/api/v1/rollout/seed", key)
 	if got := rolloutOperator(req); got != "test-consumer#1" {
 		t.Fatalf("rolloutOperator = %q, want test-consumer#1", got)
+	}
+}
+
+func TestRolloutActivityCheckRequireAllBlocksPartialFreshness(t *testing.T) {
+	s, mock, key, cleanup := newTestServer(t)
+	defer cleanup()
+
+	mock.ExpectQuery(`
+		SELECT COUNT(*)
+		  FROM jetpack_monitor_sites
+		 WHERE monitor_active = 1
+		   AND bucket_no BETWEEN ? AND ?`).
+		WithArgs(0, 9).
+		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(10))
+	mock.ExpectQuery(`
+		SELECT COUNT(*)
+		  FROM jetpack_monitor_sites s
+		  JOIN jetpack_monitor_site_runtime r ON r.source_site_id = s.jetpack_monitor_site_id
+		 WHERE s.monitor_active = 1
+		   AND s.bucket_no BETWEEN ? AND ?
+		   AND r.last_checked_at >= ?`).
+		WithArgs(0, 9, sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(8))
+
+	req := requestWithKey(http.MethodGet, "/api/v1/rollout/activity-check?bucket_min=0&bucket_max=9&since=15m&require_all=true", key)
+	rec := invokeAuthed(s, req, s.handleRolloutActivityCheck)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Status          string   `json:"status"`
+		ActiveSites     int      `json:"active_sites"`
+		RecentlyChecked int      `json:"recently_checked"`
+		RequireAll      bool     `json:"require_all"`
+		Blockers        []string `json:"blockers"`
+	}
+	readJSON(t, rec.Body, &resp)
+	if resp.Status != "blocked" || resp.ActiveSites != 10 || resp.RecentlyChecked != 8 || !resp.RequireAll {
+		t.Fatalf("activity response = %+v, want blocked 8/10 require_all", resp)
+	}
+	if len(resp.Blockers) != 1 {
+		t.Fatalf("blockers = %#v, want one blocker", resp.Blockers)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
 	}
 }
 

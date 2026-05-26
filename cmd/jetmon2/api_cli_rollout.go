@@ -259,6 +259,10 @@ func cmdAPIRolloutGate(command string, args []string) error {
 	bucketMin := fs.Int("bucket-min", -1, "inclusive bucket range minimum")
 	bucketMax := fs.Int("bucket-max", -1, "inclusive bucket range maximum")
 	since := fs.String("since", "15m", "recent activity window")
+	var requireAll *bool
+	if command == "activity-check" {
+		requireAll = fs.Bool("require-all", false, "fail unless every active site in range was checked since the cutoff")
+	}
 	if err := parseAPIFlags(fs, args); err != nil {
 		return err
 	}
@@ -273,6 +277,9 @@ func cmdAPIRolloutGate(command string, args []string) error {
 	values.Set("bucket_max", strconv.Itoa(*bucketMax))
 	if command == "activity-check" {
 		values.Set("since", *since)
+		if requireAll != nil && *requireAll {
+			values.Set("require_all", "true")
+		}
 	}
 	return executeAPIRequest(context.Background(), nil, opts, http.MethodGet, "/api/v1/rollout/"+command+"?"+values.Encode(), nil)
 }
@@ -677,7 +684,7 @@ func buildAPIRolloutGuidedSteps(g apiRolloutGuidedOptions) []apiRolloutStep {
 		},
 		apiRolloutRequestStep("status", "Check rollout status", "Confirm v2 reports the expected active rollout state.", http.MethodGet, "/api/v1/rollout/status", nil),
 		apiRolloutRequestStep("bucket_coverage", "Check bucket coverage", "Confirm the activated range is covered by v2 with no gaps or overlaps.", http.MethodGet, apiRolloutRangeQuery("/api/v1/rollout/bucket-coverage", g), nil),
-		apiRolloutRequestStep("activity", "Check recent activity", "Confirm recent checks are visible for the activated range.", http.MethodGet, apiRolloutRangeQuery("/api/v1/rollout/activity-check", g)+"&since="+url.QueryEscape(g.since), nil),
+		apiRolloutRequestStep("activity", "Check recent activity", "Confirm every active site in the activated range has recent checks.", http.MethodGet, apiRolloutRangeQuery("/api/v1/rollout/activity-check", g)+"&since="+url.QueryEscape(g.since)+"&require_all=true", nil),
 		apiRolloutRequestStep("projection_drift", "Check projection drift", "Confirm legacy projection drift is acceptable while LEGACY_STATUS_PROJECTION_ENABLE is active.", http.MethodGet, apiRolloutRangeQuery("/api/v1/rollout/projection-drift", g), nil),
 	)
 	if g.includeComparison {

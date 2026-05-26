@@ -31,6 +31,11 @@ STATSD_ADDR=host.docker.internal:8125
 Do not set `STATSD_ADDR=127.0.0.1:8125` inside a bridge-networked container; it
 points at the container itself.
 
+Veriflier Compose stacks run their own StatsD/Graphite container. Keep
+`STATSD_ADDR=statsd:8125` there, and set `VERIFLIER_STATSD_HOST_PATH` when a
+Veriflier needs a metric identity that differs from the Monitor
+`STATSD_HOST_PATH`.
+
 ## Images And Tags
 
 Runtime images:
@@ -46,6 +51,10 @@ Tags:
 - `<YYYYMMDD>-<short-sha>`: immutable build for pushes to `v2`; prefer this for
   production pinning.
 - `pr-<short-sha>`: PR image when the PR has the Docker Build label.
+
+Project Dockerfiles embed version, commit, build date, and Go version metadata
+in the binaries. Verify the image before collecting rollout evidence with
+`./jetmon2 version` for Monitors and `/v2/status` for Verifliers.
 
 If GHCR packages are private:
 

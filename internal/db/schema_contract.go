@@ -54,6 +54,13 @@ type schemaIndexPrefixContract struct {
 	columns []string
 }
 
+type schemaIndexExactContract struct {
+	table   string
+	name    string
+	index   string
+	columns []string
+}
+
 var schemaContracts = []schemaTableContract{
 	{"jetpack_monitor_sites",
 		[]string{"jetpack_monitor_site_id", "blog_id", "bucket_no", "monitor_url", "monitor_active", "site_status", "last_status_change", "check_interval"},
@@ -152,6 +159,21 @@ var schemaIndexPrefixContracts = []schemaIndexPrefixContract{
 	},
 }
 
+var schemaIndexExactContracts = []schemaIndexExactContract{
+	{
+		table:   "jetpack_monitor_site_check_config",
+		name:    "index_columns(PRIMARY:source_site_id)",
+		index:   "PRIMARY",
+		columns: []string{"source_site_id"},
+	},
+	{
+		table:   "jetpack_monitor_site_runtime",
+		name:    "index_columns(PRIMARY:source_site_id)",
+		index:   "PRIMARY",
+		columns: []string{"source_site_id"},
+	},
+}
+
 // SchemaContract inspects the connected database's physical schema. It does
 // not read or require jetpack_monitor_schema_migrations.
 func SchemaContract(ctx context.Context) (SchemaContractStatus, error) {
@@ -231,6 +253,7 @@ func expectedSchemaContractStatus() SchemaContractStatus {
 		status.ExpectedIndexes += len(contract.indexes)
 	}
 	status.ExpectedIndexes += len(schemaIndexPrefixContracts)
+	status.ExpectedIndexes += len(schemaIndexExactContracts)
 	return status
 }
 
@@ -240,11 +263,16 @@ func evaluateSchemaContract(contracts []schemaTableContract, indexPrefixContract
 	for _, contract := range indexPrefixContracts {
 		indexPrefixesByTable[contract.table] = append(indexPrefixesByTable[contract.table], contract)
 	}
+	exactIndexesByTable := map[string][]schemaIndexExactContract{}
+	for _, contract := range schemaIndexExactContracts {
+		exactIndexesByTable[contract.table] = append(exactIndexesByTable[contract.table], contract)
+	}
 
 	for _, contract := range contracts {
 		status.ExpectedColumns += len(contract.columns)
 		status.ExpectedIndexes += len(contract.indexes)
 		status.ExpectedIndexes += len(indexPrefixesByTable[contract.table])
+		status.ExpectedIndexes += len(exactIndexesByTable[contract.table])
 
 		if _, ok := tables[contract.table]; !ok {
 			status.MissingTables = append(status.MissingTables, contract.table)
@@ -256,6 +284,9 @@ func evaluateSchemaContract(contracts []schemaTableContract, indexPrefixContract
 			}
 			for _, index := range indexPrefixesByTable[contract.table] {
 				status.MissingIndexes = append(status.MissingIndexes, SchemaObjectIssue{Table: contract.table, Name: index.name})
+			}
+			for _, index := range exactIndexesByTable[contract.table] {
+				status.MissingIndexes = append(status.MissingIndexes, SchemaObjectIssue{Table: index.table, Name: index.name})
 			}
 			continue
 		}
@@ -277,6 +308,13 @@ func evaluateSchemaContract(contracts []schemaTableContract, indexPrefixContract
 		}
 		for _, index := range indexPrefixesByTable[contract.table] {
 			if hasIndexColumnPrefix(indexColumns, index.table, index.columns) {
+				status.PresentIndexes++
+			} else {
+				status.MissingIndexes = append(status.MissingIndexes, SchemaObjectIssue{Table: index.table, Name: index.name})
+			}
+		}
+		for _, index := range exactIndexesByTable[contract.table] {
+			if hasExactIndexColumns(indexColumns, index.table, index.index, index.columns) {
 				status.PresentIndexes++
 			} else {
 				status.MissingIndexes = append(status.MissingIndexes, SchemaObjectIssue{Table: index.table, Name: index.name})
@@ -319,6 +357,23 @@ func hasIndexColumnPrefix(indexColumns map[string]map[string][]string, table str
 		}
 	}
 	return false
+}
+
+func hasExactIndexColumns(indexColumns map[string]map[string][]string, table, index string, columns []string) bool {
+	indexes, ok := indexColumns[table]
+	if !ok {
+		return false
+	}
+	got, ok := indexes[index]
+	if !ok || len(got) != len(columns) {
+		return false
+	}
+	for i, column := range columns {
+		if got[i] != column {
+			return false
+		}
+	}
+	return true
 }
 
 func readInformationSchemaSet(ctx context.Context, conn *sql.Conn, query, schema string) (map[string]struct{}, error) {

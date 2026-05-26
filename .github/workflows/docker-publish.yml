@@ -42,8 +42,16 @@ jobs:
 
       - name: Compute build date
         id: date
-        if: github.event_name == 'push' && github.ref == 'refs/heads/v2'
         run: echo "ymd=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Compute binary metadata
+        id: binary-meta
+        run: |
+          {
+            echo "version=$(git describe --tags --always --dirty)"
+            echo "commit=$(git rev-parse HEAD)"
+            echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Compute image metadata
         id: meta
@@ -64,6 +72,10 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            JETMON_BUILD_VERSION=${{ steps.binary-meta.outputs.version }}
+            JETMON_BUILD_COMMIT=${{ steps.binary-meta.outputs.commit }}
+            JETMON_BUILD_DATE=${{ steps.binary-meta.outputs.build_date }}
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
 

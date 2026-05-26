@@ -676,6 +676,15 @@ func (s *Server) handleRolloutActivityCheck(w http.ResponseWriter, r *http.Reque
 		writeError(w, r, http.StatusBadRequest, "invalid_since", err.Error())
 		return
 	}
+	requireAll := false
+	if raw := strings.TrimSpace(r.URL.Query().Get("require_all")); raw != "" {
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			writeError(w, r, http.StatusBadRequest, "invalid_require_all", "require_all must be a boolean")
+			return
+		}
+		requireAll = parsed
+	}
 	active, err := s.countActiveSites(r.Context(), min, max)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, "db_error", "count active sites failed: "+err.Error())
@@ -687,8 +696,13 @@ func (s *Server) handleRolloutActivityCheck(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	status := "ok"
+	var blockers []string
 	if active > 0 && recent == 0 {
 		status = "blocked"
+		blockers = append(blockers, "no active sites were checked since cutoff")
+	} else if requireAll && recent < active {
+		status = "blocked"
+		blockers = append(blockers, fmt.Sprintf("only %d/%d active sites were checked since cutoff", recent, active))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":               status,
@@ -696,6 +710,8 @@ func (s *Server) handleRolloutActivityCheck(w http.ResponseWriter, r *http.Reque
 		"bucket_max":           max,
 		"active_sites":         active,
 		"recently_checked":     recent,
+		"require_all":          requireAll,
+		"blockers":             blockers,
 		"cutoff":               cutoff.UTC().Format(time.RFC3339),
 		"freshness_percentage": percentage(recent, active),
 	})
