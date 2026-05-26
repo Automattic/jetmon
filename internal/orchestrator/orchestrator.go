@@ -2753,7 +2753,7 @@ func (o *Orchestrator) refreshVeriflierClients(cfg *config.Config) {
 	verifiers := o.veriflierConfigs(cfg)
 	newAddrs := make([]string, 0, len(verifiers))
 	for _, v := range verifiers {
-		newAddrs = append(newAddrs, fmt.Sprintf("%s:%s|%s", v.Host, v.TransportPort(), v.AuthToken))
+		newAddrs = append(newAddrs, fmt.Sprintf("%s|%s", cfg.VeriflierEndpoint(v), v.AuthToken))
 	}
 
 	o.veriflierMu.RLock()
@@ -2765,8 +2765,7 @@ func (o *Orchestrator) refreshVeriflierClients(cfg *config.Config) {
 
 	clients := make([]*veriflier.VeriflierClient, 0, len(verifiers))
 	for _, v := range verifiers {
-		addr := fmt.Sprintf("%s:%s", v.Host, v.TransportPort())
-		clients = append(clients, veriflier.NewVeriflierClient(addr, v.AuthToken))
+		clients = append(clients, veriflier.NewVeriflierClient(cfg.VeriflierEndpoint(v), v.AuthToken))
 	}
 	o.veriflierMu.Lock()
 	o.veriflierClients = clients
@@ -2830,6 +2829,7 @@ func (o *Orchestrator) syncVeriflierAgentTelemetry(cfg *config.Config) {
 		if v.Host == "" || v.TransportPort() == "" {
 			continue
 		}
+		addr := cfg.VeriflierEndpoint(v)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -2840,7 +2840,6 @@ func (o *Orchestrator) syncVeriflierAgentTelemetry(cfg *config.Config) {
 			statusCtx, cancel := stdctx.WithTimeout(ctx, verifierTelemetryStatusTimeout)
 			defer cancel()
 
-			addr := fmt.Sprintf("%s:%s", v.Host, v.TransportPort())
 			status, err := veriflierStatusFunc(veriflier.NewVeriflierClient(addr, v.AuthToken), statusCtx)
 			if err != nil || status == nil || !verifierStatusSupportsProtocol(status, veriflier.ProtocolV2) {
 				return

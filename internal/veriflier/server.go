@@ -169,6 +169,23 @@ func (s *Server) Listen() error {
 	return s.httpSrv.ListenAndServe()
 }
 
+// ListenTLS starts the Veriflier HTTP server with native TLS. This is intended
+// for public-web Veriflier deployments that are not fronted by a separate TLS
+// terminating proxy or load balancer.
+func (s *Server) ListenTLS(certPath, keyPath string) error {
+	s.httpSrv = &http.Server{
+		Addr:              s.addr,
+		Handler:           s.handler(),
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
+	}
+
+	log.Printf("veriflier: listening on %s with TLS", s.addr)
+	return s.httpSrv.ListenAndServeTLS(certPath, keyPath)
+}
+
 // Shutdown gracefully stops the server, allowing in-flight requests to
 // complete up to the context's deadline. Safe to call before Listen — the
 // underlying http.Server is nil-checked.

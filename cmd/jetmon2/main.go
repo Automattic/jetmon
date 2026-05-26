@@ -229,6 +229,7 @@ func runServe() {
 	var apiSrv *api.Server
 	if cfg.APIPort > 0 {
 		apiSrv = api.New(fmt.Sprintf(":%d", cfg.APIPort), db.DB(), hostname)
+		apiSrv.SetTLS(cfg.APITLSCertPath, cfg.APITLSKeyPath)
 		go func() {
 			if err := apiSrv.Listen(); err != nil && !api.IsServerClosed(err) {
 				log.Printf("api: %v", err)
@@ -551,7 +552,7 @@ func probeConfiguredVerifliers(ctx context.Context, cfg *config.Config, timeout 
 	out := make([]veriflierReadinessResult, 0, len(cfg.Verifiers))
 	for i, v := range cfg.Verifiers {
 		name := configuredVeriflierName(v, i)
-		addr := fmt.Sprintf("%s:%s", v.Host, v.TransportPort())
+		addr := cfg.VeriflierEndpoint(v)
 		result := veriflierReadinessResult{Name: name, Addr: addr}
 		if v.Host == "" || v.TransportPort() == "" {
 			result.Err = fmt.Errorf("host or port is not configured")
@@ -962,7 +963,7 @@ func dashboardHealthEntries(ctx context.Context, cfg *config.Config, sqlDB *sql.
 	entries := []dashboard.HealthEntry{
 		mysqlHealthEntry(ctx, sqlDB, checkedAt),
 		dbConfigHealthEntry(checkedAt),
-		wpcomHealthEntry(wp, checkedAt),
+		wpcomHealthEntry(cfg, wp, checkedAt),
 		statsdHealthEntry(statsdReady, checkedAt),
 		diskHealthEntry("stats", checkedAt),
 	}
@@ -1196,11 +1197,21 @@ func veriflierDiscoveryHealthEntry(ctx context.Context, cfg *config.Config, chec
 	return entry, true
 }
 
-func wpcomHealthEntry(wp *wpcom.Client, checkedAt time.Time) dashboard.HealthEntry {
+func wpcomHealthEntry(cfg *config.Config, wp *wpcom.Client, checkedAt time.Time) dashboard.HealthEntry {
 	entry := dashboard.HealthEntry{Name: "wpcom", CheckedAt: checkedAt}
 	if wp == nil {
 		entry.Status = "red"
 		entry.LastError = "wpcom client is not initialized"
+		return entry
+	}
+	if cfg != nil && !cfg.WPCOMNotifyEnable {
+		if cfg.ConfigProfile == config.ConfigProfileProduction {
+			entry.Status = "red"
+			entry.LastError = "WPCOM notifications disabled in production"
+			return entry
+		}
+		entry.Status = "amber"
+		entry.LastError = "WPCOM notifications disabled"
 		return entry
 	}
 	queueDepth := wp.QueueDepth()

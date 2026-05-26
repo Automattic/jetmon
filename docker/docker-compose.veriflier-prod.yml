@@ -13,6 +13,8 @@ services:
       VERIFLIER_REGION: ${VERIFLIER_REGION:?set VERIFLIER_REGION}
       VERIFLIER_PROVIDER: ${VERIFLIER_PROVIDER:-vps}
       VERIFLIER_ENABLE_LEGACY_HTTP: ${VERIFLIER_ENABLE_LEGACY_HTTP:-false}
+      VERIFLIER_TLS_CERT_PATH: ${VERIFLIER_TLS_CERT_PATH:-}
+      VERIFLIER_TLS_KEY_PATH: ${VERIFLIER_TLS_KEY_PATH:-}
       CHECK_TARGET_SAFETY_MODE: ${CHECK_TARGET_SAFETY_MODE:-public_only}
       STATSD_ADDR: statsd:8125
       JETMON_HOSTNAME: ${JETMON_HOSTNAME:-}
@@ -22,7 +24,7 @@ services:
       statsd:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7803/v2/status"]
+      test: ["CMD-SHELL", "if [ -n \"$$VERIFLIER_TLS_CERT_PATH\" ]; then curl -k -fsS https://127.0.0.1:7803/v2/status; else curl -fsS http://127.0.0.1:7803/v2/status; fi"]
       interval: 10s
       timeout: 5s
       retries: 12

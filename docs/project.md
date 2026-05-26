@@ -39,7 +39,7 @@ optional in the same process:
   REST API, dashboard, webhook worker, alert-contact worker
 
 remote:
-  veriflier2 over JSON/HTTP /v2/check and /v2/status
+  veriflier2 over JSON/HTTPS /v2/check and /v2/status in production
 ```
 
 `jetmon-deliverer` is the extraction path for outbound dispatch. It uses the
@@ -150,9 +150,11 @@ Dynamic bucket ownership uses `jetpack_monitor_hosts` with row-locking
 transactions and heartbeats. Pinned migration mode bypasses dynamic ownership so
 one v2 host can replace one v1 range.
 
-V2 Monitors call v2 Verifliers over JSON/HTTP. Quorum may exclude unhealthy
-vantages but must respect a configured floor so one Veriflier cannot confirm
-downtime alone.
+V2 Monitors call v2 Verifliers over JSON/HTTP(S). Production Verifliers are
+public-web services, so Monitor-to-Veriflier traffic must use HTTPS. Bearer
+tokens are an auth mechanism, not transport security. Quorum may exclude
+unhealthy vantages but must respect a configured floor so one Veriflier cannot
+confirm downtime alone.
 
 Webhooks and alert contacts consume event transitions through high-water marks,
 create delivery rows, claim rows transactionally, and retry:

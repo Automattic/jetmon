@@ -65,14 +65,21 @@ Readiness may report `starting` until process health is fresh.
 
 ## Verifliers
 
-V2 Monitors use v2 Verifliers over JSON/HTTP only:
+V2 Monitors use v2 Verifliers over JSON/HTTP(S) only:
 
 | Endpoint | Purpose |
 | --- | --- |
 | `/v2/status` | Health and capacity. |
 | `/v2/check` | Batch check request. |
 
-Confirm trusted network access, auth token presence, enough healthy vantages for
+Production Verifliers are public-web services. Do not run production
+Monitor-to-Veriflier traffic over plain HTTP: bearer tokens and check payloads
+must be protected by HTTPS. Use `VERIFLIER_TRANSPORT_SCHEME=https` or
+per-Veriflier `scheme: "https"` in Monitor config. Terminate TLS either in
+`veriflier2` with `VERIFLIER_TLS_CERT_PATH` / `VERIFLIER_TLS_KEY_PATH`, or at a
+trusted proxy/load balancer in front of the Veriflier container.
+
+Confirm HTTPS reachability, auth token presence, enough healthy vantages for
 quorum, host resource limits, and stdout/stderr logging.
 
 ## Operator Setup
@@ -83,6 +90,9 @@ an API client: it reads `~/.config/jetmon2.conf` or `JETMON_API_CONFIG`, talks t
 one approved running Monitor API, and that Monitor performs rollout actions
 against the fleet/database. If the API is not directly reachable, use an
 approved VPN, bastion, or SSH tunnel and point `--base-url` at that endpoint.
+Any non-local Monitor API path must be HTTPS, either through native
+`API_TLS_CERT_PATH` / `API_TLS_KEY_PATH` or through an approved TLS-terminating
+proxy/load balancer.
 
 ```bash
 ./bin/jetmon2 local-config init \

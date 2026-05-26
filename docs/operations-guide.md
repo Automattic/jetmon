@@ -36,6 +36,23 @@ Veriflier Compose stacks run their own StatsD/Graphite container. Keep
 Veriflier needs a metric identity that differs from the Monitor
 `STATSD_HOST_PATH`.
 
+## Transport Security
+
+Production Verifliers are public-web services, not intranet-only endpoints.
+Bearer auth prevents unauthenticated use, but it does not protect tokens or
+payloads on a plain HTTP connection. Monitors must reach production Verifliers
+over HTTPS by setting `VERIFLIER_TRANSPORT_SCHEME=https` or per-entry
+`scheme: "https"` in `VERIFLIERS`. Terminate TLS either inside `veriflier2` with
+`VERIFLIER_TLS_CERT_PATH` / `VERIFLIER_TLS_KEY_PATH`, or at a trusted proxy/load
+balancer in front of the container.
+
+The Monitor API is also sensitive because rollout commands and API tokens may
+originate outside the container host. Keep the container listener local/private
+unless it is protected by HTTPS. Use native `API_TLS_CERT_PATH` /
+`API_TLS_KEY_PATH`, or set `API_PUBLIC_BASE_URL=https://...` when TLS is
+terminated before traffic reaches the container. Do not expose plain
+`http://<host>:8090` on the public web.
+
 ## Images And Tags
 
 Runtime images:
@@ -103,6 +120,9 @@ Important production render inputs:
 | `DEFAULT_CHECK_METHOD` / `DEFAULT_DETECTION_PROFILE` | Start rollout with `HEAD` / `legacy`. |
 | `ROLLOUT_MODE` | `api-controlled` until activation. |
 | `VERIFLIER_DISCOVERY_MODE` | `shadow` until registry drift is accepted. |
+| `VERIFLIER_TRANSPORT_SCHEME` | `https` for public Veriflier endpoints. |
+| `WPCOM_NOTIFY_ENABLE` | `true` for production drop-in rollout; false only in isolated labs. |
+| `API_PUBLIC_BASE_URL` or `API_TLS_CERT_PATH` / `API_TLS_KEY_PATH` | Required when operators reach the Monitor API over a network path that leaves localhost/private host scope. |
 | `CHECK_HISTORY_MODE_DEFAULT` | `status_change` unless a focused test needs more. |
 | `AUDIT_LOG_MODE_DEFAULT` | `operational` for rollout evidence without read firehose noise. |
 | `LEGACY_STATUS_PROJECTION_ENABLE` | `true` while rollback or legacy readers need it. |

@@ -316,7 +316,7 @@ func buildVeriflierDiscoveryStaticRows(cfg *config.Config, probes []veriflierRea
 		for i, v := range cfg.Verifiers {
 			row := veriflierDiscoveryStaticRow{
 				Name:             configuredVeriflierName(v, i),
-				Addr:             fmt.Sprintf("%s:%s", v.Host, v.TransportPort()),
+				Addr:             cfg.VeriflierEndpoint(v),
 				Host:             strings.TrimSpace(v.Host),
 				Port:             strings.TrimSpace(v.TransportPort()),
 				AuthTokenPresent: strings.TrimSpace(v.AuthToken) != "",
@@ -332,7 +332,7 @@ func buildVeriflierDiscoveryStaticRows(cfg *config.Config, probes []veriflierRea
 	for i, v := range cfg.Verifiers {
 		rows = append(rows, veriflierDiscoveryStaticRow{
 			Name:             configuredVeriflierName(v, i),
-			Addr:             fmt.Sprintf("%s:%s", v.Host, v.TransportPort()),
+			Addr:             cfg.VeriflierEndpoint(v),
 			Host:             strings.TrimSpace(v.Host),
 			Port:             strings.TrimSpace(v.TransportPort()),
 			AuthTokenPresent: strings.TrimSpace(v.AuthToken) != "",
@@ -539,8 +539,9 @@ func veriflierDiscoveryIssues(report veriflierDiscoveryReport) []veriflierDiscov
 			continue
 		}
 		for _, staticRow := range staticRows {
-			if registry.Endpoint != "" && staticRow.Addr != "" && registry.Endpoint != staticRow.Addr {
-				issues = append(issues, veriflierDiscoveryIssue{"warn", "static_registry_endpoint_mismatch", fmt.Sprintf("vantage_id=%q static_addr=%q registry_endpoint=%q", id, staticRow.Addr, registry.Endpoint)})
+			staticEndpoint := endpointString(staticRow.Host, staticRow.Port)
+			if registry.Endpoint != "" && staticEndpoint != "" && registry.Endpoint != staticEndpoint {
+				issues = append(issues, veriflierDiscoveryIssue{"warn", "static_registry_endpoint_mismatch", fmt.Sprintf("vantage_id=%q static_endpoint=%q registry_endpoint=%q", id, staticEndpoint, registry.Endpoint)})
 			}
 			if staticRow.AuthTokenPresent != registry.AuthTokenPresent {
 				issues = append(issues, veriflierDiscoveryIssue{"warn", "static_registry_auth_presence_mismatch", fmt.Sprintf("vantage_id=%q static_auth_token_present=%t registry_auth_token_present=%t", id, staticRow.AuthTokenPresent, registry.AuthTokenPresent)})

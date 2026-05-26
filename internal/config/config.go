@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/url"
 	"os"
 	"reflect"
 	"sort"
@@ -18,6 +19,7 @@ import (
 // VerifierConfig holds connection details for a single Veriflier instance.
 type VerifierConfig struct {
 	Name      string `json:"name"`
+	Scheme    string `json:"scheme"`
 	Host      string `json:"host"`
 	Port      string `json:"port"`
 	GRPCPort  string `json:"grpc_port"` // Deprecated alias for Port.
@@ -28,6 +30,11 @@ const (
 	VeriflierDiscoveryModeStatic = "static"
 	VeriflierDiscoveryModeShadow = "shadow"
 	VeriflierDiscoveryModeActive = "active"
+)
+
+const (
+	VeriflierTransportHTTP  = "http"
+	VeriflierTransportHTTPS = "https"
 )
 
 const (
@@ -63,6 +70,11 @@ func (v VerifierConfig) TransportPort() string {
 		return v.Port
 	}
 	return v.GRPCPort
+}
+
+// TransportScheme returns the per-Veriflier scheme override, if configured.
+func (v VerifierConfig) TransportScheme() string {
+	return normalizeVeriflierTransportScheme(v.Scheme)
 }
 
 // Config holds all runtime configuration for Jetmon 2.
@@ -151,6 +163,10 @@ type Config struct {
 	// and "active" uses the registry with static fallback if discovery fails.
 	VeriflierDiscoveryMode string `json:"VERIFLIER_DISCOVERY_MODE"`
 
+	// VeriflierTransportScheme is the default Monitor-to-Veriflier transport
+	// scheme. Individual VERIFLIERS entries may override this with "scheme".
+	VeriflierTransportScheme string `json:"VERIFLIER_TRANSPORT_SCHEME"`
+
 	NumOfChecks          int `json:"NUM_OF_CHECKS"`
 	TimeBetweenChecksSec int `json:"TIME_BETWEEN_CHECKS_SEC"`
 
@@ -194,6 +210,9 @@ type Config struct {
 	DashboardBindAddr string `json:"DASHBOARD_BIND_ADDR"`
 	DebugPort         int    `json:"DEBUG_PORT"`
 	APIPort           int    `json:"API_PORT"` // 0 = API server disabled
+	APITLSCertPath    string `json:"API_TLS_CERT_PATH"`
+	APITLSKeyPath     string `json:"API_TLS_KEY_PATH"`
+	APIPublicBaseURL  string `json:"API_PUBLIC_BASE_URL"`
 
 	// DeliveryOwnerHost constrains webhook and alert-contact delivery workers
 	// to a single named host while the v2 single-binary deployment still uses
@@ -444,6 +463,7 @@ func defaults() *Config {
 		PeerOfflineLimit:                     3,
 		SchemaManagementMode:                 SchemaManagementModeValidate,
 		VeriflierDiscoveryMode:               VeriflierDiscoveryModeStatic,
+		VeriflierTransportScheme:             VeriflierTransportHTTP,
 		NumOfChecks:                          3,
 		TimeBetweenChecksSec:                 30,
 		AlertCooldownMinutes:                 30,
@@ -503,12 +523,14 @@ func applyConfigProfile(raw []byte, cfg *Config) error {
 		cfg.ConfigProfile = ConfigProfileDev
 		cfg.SchemaManagementMode = SchemaManagementModeMigrate
 		cfg.WPCOMNotifyEnable = false
+		cfg.VeriflierTransportScheme = VeriflierTransportHTTP
 	case ConfigProfileProduction:
 		cfg.ConfigProfile = ConfigProfileProduction
 		cfg.SchemaManagementMode = SchemaManagementModeValidate
 		cfg.CheckTargetSafetyMode = CheckTargetSafetyModePublicOnly
 		cfg.RolloutMode = RolloutModeAPIControlled
 		cfg.VeriflierDiscoveryMode = VeriflierDiscoveryModeShadow
+		cfg.VeriflierTransportScheme = VeriflierTransportHTTPS
 	default:
 		return fmt.Errorf("invalid config: CONFIG_PROFILE must be one of: dev, production")
 	}
@@ -531,6 +553,9 @@ func applyProfileEmptyValues(raw []byte, cfg *Config) {
 		applyEmptyStringDefault(keys, "VERIFLIER_DISCOVERY_MODE", func() {
 			cfg.VeriflierDiscoveryMode = VeriflierDiscoveryModeStatic
 		})
+		applyEmptyStringDefault(keys, "VERIFLIER_TRANSPORT_SCHEME", func() {
+			cfg.VeriflierTransportScheme = VeriflierTransportHTTP
+		})
 	case ConfigProfileProduction:
 		applyEmptyStringDefault(keys, "SCHEMA_MANAGEMENT_MODE", func() {
 			cfg.SchemaManagementMode = SchemaManagementModeValidate
@@ -540,6 +565,9 @@ func applyProfileEmptyValues(raw []byte, cfg *Config) {
 		})
 		applyEmptyStringDefault(keys, "VERIFLIER_DISCOVERY_MODE", func() {
 			cfg.VeriflierDiscoveryMode = VeriflierDiscoveryModeShadow
+		})
+		applyEmptyStringDefault(keys, "VERIFLIER_TRANSPORT_SCHEME", func() {
+			cfg.VeriflierTransportScheme = VeriflierTransportHTTPS
 		})
 	}
 }
@@ -961,6 +989,31 @@ func validate(cfg *Config) error {
 	default:
 		return fmt.Errorf("VERIFLIER_DISCOVERY_MODE must be one of: static, shadow, active")
 	}
+	cfg.VeriflierTransportScheme = normalizeVeriflierTransportScheme(cfg.VeriflierTransportScheme)
+	if cfg.VeriflierTransportScheme == "" {
+		cfg.VeriflierTransportScheme = VeriflierTransportHTTP
+	}
+	switch cfg.VeriflierTransportScheme {
+	case VeriflierTransportHTTP, VeriflierTransportHTTPS:
+	default:
+		return fmt.Errorf("VERIFLIER_TRANSPORT_SCHEME must be one of: http, https")
+	}
+	cfg.APITLSCertPath = strings.TrimSpace(cfg.APITLSCertPath)
+	cfg.APITLSKeyPath = strings.TrimSpace(cfg.APITLSKeyPath)
+	cfg.APIPublicBaseURL = strings.TrimSpace(cfg.APIPublicBaseURL)
+	if cfg.APITLSCertPath == "" && cfg.APITLSKeyPath != "" ||
+		cfg.APITLSCertPath != "" && cfg.APITLSKeyPath == "" {
+		return fmt.Errorf("API_TLS_CERT_PATH and API_TLS_KEY_PATH must be set together")
+	}
+	if cfg.APIPublicBaseURL != "" {
+		u, err := url.Parse(cfg.APIPublicBaseURL)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return fmt.Errorf("API_PUBLIC_BASE_URL must be an absolute URL")
+		}
+		if strings.ToLower(u.Scheme) != "https" {
+			return fmt.Errorf("API_PUBLIC_BASE_URL must use https")
+		}
+	}
 	if cfg.LogFormat != "text" && cfg.LogFormat != "json" {
 		return fmt.Errorf("LOG_FORMAT must be 'text' or 'json'")
 	}
@@ -1024,6 +1077,9 @@ func validate(cfg *Config) error {
 		if v.TransportPort() == "" {
 			return fmt.Errorf("VERIFLIERS[%d] (%s): port is required", i, displayName(v, i))
 		}
+		if scheme := v.TransportScheme(); scheme != "" && scheme != VeriflierTransportHTTP && scheme != VeriflierTransportHTTPS {
+			return fmt.Errorf("VERIFLIERS[%d] (%s): scheme must be one of: http, https", i, displayName(v, i))
+		}
 	}
 	return nil
 }
@@ -1039,6 +1095,46 @@ func (cfg *Config) StatsDMetricHost(resolvedHostname string) string {
 		}
 	}
 	return strings.TrimSpace(resolvedHostname)
+}
+
+// VeriflierTransportSchemeOrDefault returns the default Monitor-to-Veriflier
+// transport scheme for entries without a per-Veriflier scheme override.
+func (cfg *Config) VeriflierTransportSchemeOrDefault() string {
+	if cfg == nil {
+		return VeriflierTransportHTTP
+	}
+	scheme := normalizeVeriflierTransportScheme(cfg.VeriflierTransportScheme)
+	if scheme == "" {
+		return VeriflierTransportHTTP
+	}
+	return scheme
+}
+
+// VeriflierEndpoint returns the full base URL for a configured Veriflier.
+func (cfg *Config) VeriflierEndpoint(v VerifierConfig) string {
+	scheme := v.TransportScheme()
+	if scheme == "" {
+		scheme = cfg.VeriflierTransportSchemeOrDefault()
+	}
+	return scheme + "://" + net.JoinHostPort(strings.TrimSpace(v.Host), strings.TrimSpace(v.TransportPort()))
+}
+
+func (cfg *Config) MonitorAPITransportEncrypted() bool {
+	if cfg == nil || cfg.APIPort <= 0 {
+		return true
+	}
+	if strings.TrimSpace(cfg.APITLSCertPath) != "" && strings.TrimSpace(cfg.APITLSKeyPath) != "" {
+		return true
+	}
+	if strings.TrimSpace(cfg.APIPublicBaseURL) == "" {
+		return false
+	}
+	u, err := url.Parse(cfg.APIPublicBaseURL)
+	return err == nil && strings.EqualFold(u.Scheme, "https") && u.Host != ""
+}
+
+func normalizeVeriflierTransportScheme(scheme string) string {
+	return strings.ToLower(strings.TrimSpace(scheme))
 }
 
 func validateStatsDHostPath(path string) error {

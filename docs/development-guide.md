@@ -32,7 +32,7 @@ cp config/config-sample.json config/config.json
 ```
 
 `make generate` is intentionally separate. It requires `protoc` and Go protobuf
-plugins; production Veriflier traffic uses JSON/HTTP.
+plugins; production Veriflier traffic uses JSON/HTTPS.
 
 ## API Smoke
 

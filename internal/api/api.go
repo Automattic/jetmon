@@ -38,6 +38,8 @@ type Server struct {
 	db          *sql.DB
 	addr        string
 	hostname    string
+	tlsCertPath string
+	tlsKeyPath  string
 	httpSrv     *http.Server
 	limiter     *rateLimiter
 	idempotency *idempotencyStore
@@ -62,6 +64,13 @@ func New(addr string, db *sql.DB, hostname string) *Server {
 	}
 }
 
+// SetTLS enables native HTTPS serving for deployments that do not terminate
+// TLS before traffic reaches the Jetmon API process.
+func (s *Server) SetTLS(certPath, keyPath string) {
+	s.tlsCertPath = certPath
+	s.tlsKeyPath = keyPath
+}
+
 // Listen starts the API HTTP server. Returns http.ErrServerClosed on a clean
 // Shutdown. Callers wrap with errors.Is(err, http.ErrServerClosed) to
 // distinguish graceful shutdown from a real failure.
@@ -77,6 +86,10 @@ func (s *Server) Listen() error {
 		IdleTimeout:       idleTimeout,
 	}
 
+	if s.tlsCertPath != "" || s.tlsKeyPath != "" {
+		log.Printf("api: listening on %s with TLS", s.addr)
+		return s.httpSrv.ListenAndServeTLS(s.tlsCertPath, s.tlsKeyPath)
+	}
 	log.Printf("api: listening on %s", s.addr)
 	return s.httpSrv.ListenAndServe()
 }

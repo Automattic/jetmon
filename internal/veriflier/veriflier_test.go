@@ -351,6 +351,25 @@ func TestClientAddr(t *testing.T) {
 	}
 }
 
+func TestClientEndpointSupportsHTTPS(t *testing.T) {
+	tests := []struct {
+		addr string
+		want string
+	}{
+		{addr: "host1:7803", want: "http://host1:7803/v2/status"},
+		{addr: "https://veriflier.example.com:7803", want: "https://veriflier.example.com:7803/v2/status"},
+		{addr: "https://veriflier.example.com:7803/", want: "https://veriflier.example.com:7803/v2/status"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.addr, func(t *testing.T) {
+			client := NewVeriflierClient(tt.addr, "token")
+			if got := client.endpoint("/v2/status"); got != tt.want {
+				t.Fatalf("endpoint = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestClientHTTP2TransportTuning(t *testing.T) {
 	client := NewVeriflierClient("host1:7803", "token")
 	transport, ok := client.httpClient.Transport.(*http.Transport)
