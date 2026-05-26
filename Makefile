@@ -100,7 +100,7 @@ v2-soak-lab-clean:
 rollout-vm-lab-sync:
 	$(ROLLOUT_VM_LAB_SSH) $(ROLLOUT_VM_LAB_HOST) 'mkdir -p ~/jetmon-rollout-tools/scripts ~/jetmon-rollout-tools/docs'
 	rsync -e "$(ROLLOUT_VM_LAB_SSH)" -a scripts/rollout-vm-lab.sh $(ROLLOUT_VM_LAB_HOST):~/jetmon-rollout-tools/scripts/
-	rsync -e "$(ROLLOUT_VM_LAB_SSH)" -a docs/operations-guide.md $(ROLLOUT_VM_LAB_HOST):~/jetmon-rollout-tools/docs/
+	rsync -e "$(ROLLOUT_VM_LAB_SSH)" -a docs/development-guide.md $(ROLLOUT_VM_LAB_HOST):~/jetmon-rollout-tools/docs/
 
 rollout-vm-lab-sync-artifacts: build rollout-vm-lab-sync
 	$(ROLLOUT_VM_LAB_SSH) $(ROLLOUT_VM_LAB_HOST) 'mkdir -p ~/jetmon-rollout-tools/bin ~/jetmon-rollout-tools/systemd ~/jetmon-rollout-tools/config'

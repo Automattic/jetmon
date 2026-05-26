@@ -6,7 +6,8 @@ links only when you need deeper operational detail.
 | File | Use it for |
 | --- | --- |
 | [project.md](project.md) | System overview, architecture, data model, event model, and detection vocabulary. |
-| [operations-guide.md](operations-guide.md) | Local development, production runtime care, dashboards, metrics, debugging, and support workflows. |
+| [development-guide.md](development-guide.md) | Local setup, API smoke tests, and non-production labs. |
+| [operations-guide.md](operations-guide.md) | Production runtime care, dashboards, metrics, debugging, and support workflows. |
 | [v1-to-v2-migration.md](v1-to-v2-migration.md) | Production rollout, rollback, TeamCity/container details, Veriflier deployment, and check-policy migration. |
 | [internal-api-reference.md](internal-api-reference.md) | Internal API contract, API CLI usage, endpoint map, webhook signing, and alert contacts. |
 | [decisions.md](decisions.md) | Accepted architecture decisions that used to live as separate ADR files. |

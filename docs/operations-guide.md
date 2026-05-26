@@ -1,47 +1,9 @@
-# Operations Guide
+# Production Operations Guide
 
-Use this for local development, steady-state runtime care, support
-investigations, and lab rehearsals. Use
-[v1-to-v2-migration.md](v1-to-v2-migration.md) for production rollout sequence.
-
-## Local Loop
-
-```bash
-cd docker
-cp .env-sample .env
-docker compose up --build -d
-```
-
-```bash
-make all
-make test
-make test-race
-make lint
-```
-
-API smoke:
-
-```bash
-make build
-make api-cli-token-create
-
-export JETMON_API_URL=http://localhost:${API_HOST_PORT:-8090}
-export JETMON_API_TOKEN=jm_replace_with_the_printed_token
-
-./bin/jetmon2 api health --pretty
-./bin/jetmon2 api me --pretty
-./bin/jetmon2 api commands --output table
-make api-cli-smoke
-```
-
-Manual non-Compose run:
-
-```bash
-cp config/config-sample.json config/config.json
-./bin/jetmon2 validate-config
-./bin/jetmon2 migrate
-./bin/jetmon2
-```
+Use this for steady-state production runtime care, incident investigation, and
+safe restarts. Use [development-guide.md](development-guide.md) for local setup
+and lab rehearsals, and [v1-to-v2-migration.md](v1-to-v2-migration.md) for
+rollout sequence.
 
 ## Binaries And Commands
 
@@ -56,7 +18,6 @@ Common commands:
 ```bash
 ./bin/jetmon2 version
 ./bin/jetmon2 validate-config
-./bin/jetmon2 migrate
 ./bin/jetmon2 status
 ./bin/jetmon2 drain
 ./bin/jetmon2 reload
@@ -171,31 +132,6 @@ Interpretation shortcuts:
 | `Unknown` | Monitor/probe infrastructure issue, not customer downtime. |
 
 Frame findings as observations, not unsupported root cause claims.
-
-## Labs And Rehearsals
-
-Run labs only against local fixtures, uptime-bench fixtures, or approved
-canaries. Do not change deployed services, support hosts, databases, provider
-state, fleet config, or runtime config while capacity tests are active unless
-Chris explicitly approves it.
-
-| Target | Command | Proves |
-| --- | --- | --- |
-| Docker rollout | `make rollout-docker-lab` | API-guided rollout and rollback in local containers. |
-| VM rollout | `make rollout-vm-lab-smoke` | Production-shaped systemd/KVM rollout rehearsal. |
-| Scale resilience | `make scale-resilience-lab` | Dynamic ownership, host loss, DB disruption behavior. |
-| Soak | `make v2-soak-lab` | Sustained operation without outbound side effects. |
-| API fixture safety | `make api-cli-public-fixture-validate` | Probe-safety behavior against controlled fixtures. |
-
-VM helpers include `rollout-vm-lab-doctor`, `rollout-vm-lab-prepare`,
-`rollout-vm-lab-execute-smoke`, failure/resume smoke targets, and snapshot smoke
-targets. Set `ROLLOUT_VM_LAB_HOST`, `ROLLOUT_VM_LAB_SSH`, and
-`ROLLOUT_VM_LAB_SNAPSHOT` as needed.
-
-Rehearsal reports should record commit SHA, image tags, config fingerprint,
-schema version, quorum report, rollout session/job IDs, command transcript,
-canary file, rollback result, and known gaps. Put long raw benchmark reports in
-the sibling `uptime-bench` repo.
 
 ## Debugging
 

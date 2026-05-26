@@ -92,7 +92,8 @@ architecture, data model, operations, API, and rollout docs.
 | `internal/dashboard/` | Operator dashboard, SSE handler |
 | `veriflier2/` | Go Veriflier binary |
 | `docs/project.md` | Project overview, architecture, data model, event model, and detection vocabulary |
-| `docs/operations-guide.md` | Local development, production operations, support, metrics, and debugging |
+| `docs/development-guide.md` | Local development, API smoke tests, and non-production labs |
+| `docs/operations-guide.md` | Production operations, support, metrics, and debugging |
 | `docs/v1-to-v2-migration.md` | Production rollout, rollback, Veriflier deployment, deliverer rollout, and check-policy migration |
 | `docs/internal-api-reference.md` | Internal REST API, API CLI, endpoint map, webhooks, and alert contacts |
 | `docs/decisions.md` | Consolidated architecture decisions |

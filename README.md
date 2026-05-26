@@ -95,15 +95,16 @@ export JETMON_API_TOKEN=jm_replace_with_the_printed_token
 make api-cli-smoke
 ```
 
-See [docs/operations-guide.md](docs/operations-guide.md#local-development) for
-the full local loop.
+See [docs/development-guide.md](docs/development-guide.md) for the full local
+loop.
 
 ## Documentation
 
 | Document | Start Here For |
 |---|---|
 | [docs/project.md](docs/project.md) | Architecture, data model, event model, and detection vocabulary |
-| [docs/operations-guide.md](docs/operations-guide.md) | Local development, production operations, support, metrics, debugging |
+| [docs/development-guide.md](docs/development-guide.md) | Local setup, API smoke tests, and non-production labs |
+| [docs/operations-guide.md](docs/operations-guide.md) | Production operations, support, metrics, debugging |
 | [docs/v1-to-v2-migration.md](docs/v1-to-v2-migration.md) | Production rollout, rollback, TeamCity/container details, Verifliers, deliverer |
 | [docs/internal-api-reference.md](docs/internal-api-reference.md) | Internal API, API CLI, endpoint map, webhooks, alert contacts |
 | [docs/decisions.md](docs/decisions.md) | Accepted architecture decisions |
