@@ -67,14 +67,13 @@ starts.
 
 ### CONFIG_PROFILE
 
-- Default: `default`
-- Values: `default`, `dev`, `production`
+- Default: none; required.
+- Values: `dev`, `production`
 - Example: `"CONFIG_PROFILE": "dev"`
 - Purpose: applies a named set of production safety and rollout defaults before
   explicit config values are decoded.
-- Notes: `default` is conservative and validates schema. `dev` sets
-  `SCHEMA_MANAGEMENT_MODE=migrate` and disables WPCOM notifications unless
-  those keys are explicitly set. `production` sets
+- Notes: `dev` sets `SCHEMA_MANAGEMENT_MODE=migrate` and disables WPCOM
+  notifications unless those keys are explicitly set. `production` sets
   `SCHEMA_MANAGEMENT_MODE=validate`, `CHECK_TARGET_SAFETY_MODE=public_only`,
   `ROLLOUT_MODE=api-controlled`, and `VERIFLIER_DISCOVERY_MODE=shadow` unless
   those keys are explicitly set. The Docker Monitor entrypoint also uses
@@ -465,7 +464,7 @@ observed rate/latency, and avoids per-probe healthy freshness writes.
 
 ### WPCOM_NOTIFY_ENABLE
 
-- Default: `true`
+- Default: `true`; dev profile default: `false`
 - Values: `true`, `false`
 - Example: `"WPCOM_NOTIFY_ENABLE": false`
 - Purpose: allows the legacy WPCOM status-change path to make outbound calls.

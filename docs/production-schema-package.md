@@ -85,7 +85,8 @@ Future production changes should follow the same pattern:
 
 1. Additive SQL reviewed by Systems.
 2. Code updated to validate the structural contract.
-3. Production role uses `SCHEMA_MANAGEMENT_MODE=validate`.
+3. Production role uses `CONFIG_PROFILE=production` and
+   `SCHEMA_MANAGEMENT_MODE=validate`.
 4. `jetmon2 schema validate` confirms the applied schema before activation.
 
 Do not require production operators to update `jetpack_monitor_schema_migrations`.

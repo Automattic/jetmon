@@ -1,6 +1,6 @@
 {
 	"DEBUG"             : false,
-	"CONFIG_PROFILE"    : "default",
+	"CONFIG_PROFILE"    : "dev",
 	"HOSTNAME"          : "",
 	"STATSD_ADDR"       : "",
 	"STATSD_HOST_PATH"  : "",
@@ -34,7 +34,7 @@
 	"ALERT_COOLDOWN_MINUTES" : 30,
 
 	"STATS_UPDATE_INTERVAL_MS"     : 10000,
-	"WPCOM_NOTIFY_ENABLE"          : true,
+	"WPCOM_NOTIFY_ENABLE"          : false,
 	"WPCOM_NOTIFY_MODE"            : "legacy",
 	"WPCOM_NOTIFY_MODERN_ENDPOINT" : "https://public-api.wordpress.com/wpcom/v2/jetpack-monitor/status-change",
 	"WPCOM_NOTIFY_LEGACY_ENDPOINT" : "https://jetpack.wordpress.com/jetmon/",

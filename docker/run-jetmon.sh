@@ -24,9 +24,28 @@ bool_json() {
 	esac
 }
 
+config_profile_render_value() {
+	local value="${CONFIG_PROFILE:-}"
+	case "$value" in
+		dev|production)
+			printf '%s\n' "$value"
+			;;
+		"")
+			echo "CONFIG_PROFILE is required for rendered config; set dev or production" >&2
+			exit 1
+			;;
+		*)
+			echo "invalid CONFIG_PROFILE: ${value}" >&2
+			echo "expected one of: dev, production" >&2
+			exit 1
+			;;
+	esac
+}
+
 render_config() {
 	local target=$1
-	local config_profile="${CONFIG_PROFILE:-default}"
+	local config_profile
+	config_profile="$(config_profile_render_value)"
 	local schema_management_mode="${SCHEMA_MANAGEMENT_MODE:-}"
 	local statsd_addr="${STATSD_ADDR:-}"
 	local check_target_safety_mode="${CHECK_TARGET_SAFETY_MODE:-public_only}"
@@ -56,7 +75,7 @@ render_config() {
 	smtp_use_tls="$(bool_json SMTP_USE_TLS "${SMTP_USE_TLS:-false}")"
 	sed \
 		-e "s|<AUTH_TOKEN>|$(sed_escape "${WPCOM_AUTH_TOKEN:-change_me}")|g" \
-		-e "s|\"CONFIG_PROFILE\"    : \"default\"|\"CONFIG_PROFILE\"    : \"$(sed_escape "$config_profile")\"|g" \
+		-e "s|\"CONFIG_PROFILE\"    : \"dev\"|\"CONFIG_PROFILE\"    : \"$(sed_escape "$config_profile")\"|g" \
 		-e "s|\"HOSTNAME\"          : \"\"|\"HOSTNAME\"          : \"$(sed_escape "${JETMON_HOSTNAME:-}")\"|g" \
 		-e "s|\"STATSD_ADDR\"       : \"\"|\"STATSD_ADDR\"       : \"$(sed_escape "$statsd_addr")\"|g" \
 		-e "s|\"STATSD_HOST_PATH\"  : \"\"|\"STATSD_HOST_PATH\"  : \"$(sed_escape "${STATSD_HOST_PATH:-}")\"|g" \
@@ -92,7 +111,7 @@ render_config() {
 }
 
 rendered_config_summary() {
-	local config_profile="${CONFIG_PROFILE:-default}"
+	local config_profile="${CONFIG_PROFILE:-unset}"
 	local statsd_addr="${STATSD_ADDR:-}"
 	local rollout_mode="${ROLLOUT_MODE:-}"
 	local veriflier_discovery_mode="${VERIFLIER_DISCOVERY_MODE:-}"

@@ -26,8 +26,8 @@ Before activating or changing a production Monitor:
 
 1. Confirm the database schema was applied through the approved production
    database-change process.
-2. Start the Monitor with `CONFIG_PROFILE=production` or
-   `SCHEMA_MANAGEMENT_MODE=validate`.
+2. Start the Monitor with `CONFIG_PROFILE=production`; leave
+   `SCHEMA_MANAGEMENT_MODE` unset or set it to `validate`.
 3. Run `./jetmon2 schema validate`.
 4. Run `./jetmon2 validate-config`.
 5. Run `./jetmon2 doctor --require-statsd`.

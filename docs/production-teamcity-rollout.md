@@ -44,7 +44,7 @@ Do not use host networking for production Monitor containers.
 | `config-sync.env` | Systems secret injection | SVN credentials and sync paths. Never commit it. |
 | `db-servers.php` | Runtime sidecar output | Synced from SVN and mounted read-only into the Monitor. |
 | `config.json` | docker-deploy role config / secure parameters | Operational config lives in JSON; env vars are render inputs only. |
-| `CONFIG_PROFILE` or `SCHEMA_MANAGEMENT_MODE` | rendered config | Production should validate schema, not apply DDL. |
+| `CONFIG_PROFILE` and `SCHEMA_MANAGEMENT_MODE` | rendered config | Production uses `CONFIG_PROFILE=production`; leave schema mode unset or set it to `validate` so startup validates schema and never applies DDL. |
 | `DB_SERVER_MAP_PATH` | rendered config | Points at mounted `db-servers.php`. |
 | `DB_SERVER_MAP_DATACENTER` | rendered config | Explicit value; do not parse container hostname. |
 | `STATSD_ADDR` | rendered config | `host.docker.internal:8125`. |
@@ -124,16 +124,14 @@ before Monitor containers are activated. Use
 [`migrations/production-v2-baseline.sql`](../migrations/production-v2-baseline.sql)
 as the review package.
 
-Production config should use:
+Production config should use both an explicit production profile and read-only
+schema mode:
 
 ```json
-{ "CONFIG_PROFILE": "production" }
-```
-
-or:
-
-```json
-{ "SCHEMA_MANAGEMENT_MODE": "validate" }
+{
+  "CONFIG_PROFILE": "production",
+  "SCHEMA_MANAGEMENT_MODE": "validate"
+}
 ```
 
 Normal startup validates schema. It does not apply DDL. In approved local or

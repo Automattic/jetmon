@@ -1549,6 +1549,10 @@ func setTestConfig(t *testing.T) *config.Config {
 	cfg.AlertCooldownMinutes = 30
 	cfg.NumOfChecks = 3
 	cfg.PeerOfflineLimit = 2
+	// Most orchestrator tests exercise legacy WPCOM notification behavior. Keep
+	// that opt-in explicit now that the dev profile disables notifications by
+	// default for local safety.
+	cfg.WPCOMNotifyEnable = true
 	cfg.LegacyStatusProjectionEnable = false
 	// Existing orchestrator tests assert that every processed result writes a
 	// check-history row; keep them on mode=all. The shouldRecordCheckHistory

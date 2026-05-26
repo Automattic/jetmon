@@ -76,8 +76,8 @@ Complete these before any production activation:
 2. Systems applies the additive v2 schema changes from
    [`production-schema-package.md`](production-schema-package.md) through the
    normal database change process. Production containers should run with
-   `CONFIG_PROFILE=production` or `SCHEMA_MANAGEMENT_MODE=validate` so startup
-   validates schema state and never applies DDL.
+   `CONFIG_PROFILE=production`; leave `SCHEMA_MANAGEMENT_MODE` unset or set it
+   to `validate` so startup validates schema state and never applies DDL.
 3. Validate the schema contract from the same environment the Monitor will use:
 
    ```bash
@@ -181,7 +181,8 @@ Deploy v2 Monitor containers with:
 - `ROLLOUT_MODE=api-controlled`
 - `VERIFLIER_DISCOVERY_MODE=shadow`
 - initial defaults of `HEAD` + `legacy`
-- `SCHEMA_MANAGEMENT_MODE=validate` or `CONFIG_PROFILE=production`
+- `CONFIG_PROFILE=production`
+- `SCHEMA_MANAGEMENT_MODE=validate` or unset
 - `WPCOM_NOTIFY_MODE=legacy`
 - WPCOM notifications disabled or explicitly guarded until parity gates are
   approved

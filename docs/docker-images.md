@@ -132,7 +132,7 @@ Important Monitor render inputs:
 
 | Variable | Notes |
 | --- | --- |
-| `CONFIG_PROFILE` | The bundled dev Compose file uses `dev`; use `production` for production Monitor containers. |
+| `CONFIG_PROFILE` | Required when rendering config from environment. The bundled dev Compose file uses `dev`; use `production` for production Monitor containers. |
 | `SCHEMA_MANAGEMENT_MODE` | Defaults to `validate` in the entrypoint. The `dev` profile uses `migrate` so fresh local databases are reconciled before startup. Use `migrate` only in non-production. |
 | `VERIFLIER_AUTH_TOKEN`, `VERIFLIER_PORT` | Shared with configured Verifliers. |
 | `WPCOM_AUTH_TOKEN` | Use a placeholder outside WPCOM-connected environments. |
@@ -162,8 +162,7 @@ production fallbacks when the matching variables are omitted:
 With `CONFIG_PROFILE=dev`, the binary defaults `SCHEMA_MANAGEMENT_MODE=migrate`
 and disables WPCOM notifications unless those keys are explicitly set. The
 bundled Compose stack uses this profile so local databases can bootstrap from
-the reviewed baseline without making the conservative `default` profile apply
-DDL.
+the reviewed baseline without allowing an ambiguous profile to apply DDL.
 
 Set these explicitly in production roles anyway. Visible config review is more
 important than relying on implicit fallbacks.

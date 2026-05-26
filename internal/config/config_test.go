@@ -13,6 +13,7 @@ func TestValidate(t *testing.T) {
 	base := func() *Config {
 		return &Config{
 			AuthToken:           "token",
+			ConfigProfile:       ConfigProfileDev,
 			NumWorkers:          10,
 			DatasetSize:         100,
 			BucketTotal:         100,
@@ -350,6 +351,7 @@ func TestPinnedBucketRange(t *testing.T) {
 func TestValidateDefaultsDashboardBindAddr(t *testing.T) {
 	cfg := &Config{
 		AuthToken:           "token",
+		ConfigProfile:       ConfigProfileDev,
 		NumWorkers:          10,
 		DatasetSize:         100,
 		BucketTotal:         100,
@@ -372,6 +374,7 @@ func TestValidateDefaultsDashboardBindAddr(t *testing.T) {
 func baseValidConfig() *Config {
 	return &Config{
 		AuthToken:           "token",
+		ConfigProfile:       ConfigProfileDev,
 		NumWorkers:          10,
 		DatasetSize:         100,
 		BucketTotal:         100,
@@ -390,11 +393,11 @@ func TestValidateAppliesCheckHistoryAndAuditDefaults(t *testing.T) {
 	if err := validate(cfg); err != nil {
 		t.Fatalf("validate() error = %v", err)
 	}
-	if cfg.ConfigProfile != ConfigProfileDefault {
-		t.Errorf("ConfigProfile = %q, want default", cfg.ConfigProfile)
+	if cfg.ConfigProfile != ConfigProfileDev {
+		t.Errorf("ConfigProfile = %q, want dev", cfg.ConfigProfile)
 	}
 	if cfg.SchemaManagementMode != SchemaManagementModeValidate {
-		t.Errorf("SchemaManagementMode = %q, want validate", cfg.SchemaManagementMode)
+		t.Errorf("SchemaManagementMode = %q, want validate when validate() is called without profile preprocessing", cfg.SchemaManagementMode)
 	}
 	if cfg.CheckTargetSafetyMode != CheckTargetSafetyModePublicOnly {
 		t.Errorf("CheckTargetSafetyMode = %q, want public_only", cfg.CheckTargetSafetyMode)
@@ -423,6 +426,67 @@ func TestValidateRejectsBadSchemaManagementMode(t *testing.T) {
 	cfg.SchemaManagementMode = "auto"
 	if err := validate(cfg); err == nil {
 		t.Fatal("validate() accepted invalid SCHEMA_MANAGEMENT_MODE")
+	}
+}
+
+func TestValidateRejectsMissingConfigProfile(t *testing.T) {
+	cfg := baseValidConfig()
+	cfg.ConfigProfile = ""
+	if err := validate(cfg); err == nil {
+		t.Fatal("validate() accepted missing CONFIG_PROFILE")
+	}
+}
+
+func TestLoadRejectsMissingConfigProfile(t *testing.T) {
+	saveConfigState(t)
+
+	p := writeRawConfigFile(t, `{
+		"AUTH_TOKEN": "token",
+		"NUM_WORKERS": 7,
+		"BUCKET_TOTAL": 100,
+		"BUCKET_TARGET": 50,
+		"NET_COMMS_TIMEOUT": 10,
+		"LOG_FORMAT": "text"
+	}`)
+
+	if err := Load(p); err == nil {
+		t.Fatal("Load() accepted missing CONFIG_PROFILE")
+	}
+}
+
+func TestLoadRejectsEmptyConfigProfile(t *testing.T) {
+	saveConfigState(t)
+
+	p := writeConfigFile(t, `{
+		"CONFIG_PROFILE": "",
+		"AUTH_TOKEN": "token",
+		"NUM_WORKERS": 7,
+		"BUCKET_TOTAL": 100,
+		"BUCKET_TARGET": 50,
+		"NET_COMMS_TIMEOUT": 10,
+		"LOG_FORMAT": "text"
+	}`)
+
+	if err := Load(p); err == nil {
+		t.Fatal("Load() accepted empty CONFIG_PROFILE")
+	}
+}
+
+func TestLoadRejectsDefaultConfigProfile(t *testing.T) {
+	saveConfigState(t)
+
+	p := writeConfigFile(t, `{
+		"CONFIG_PROFILE": "default",
+		"AUTH_TOKEN": "token",
+		"NUM_WORKERS": 7,
+		"BUCKET_TOTAL": 100,
+		"BUCKET_TARGET": 50,
+		"NET_COMMS_TIMEOUT": 10,
+		"LOG_FORMAT": "text"
+	}`)
+
+	if err := Load(p); err == nil {
+		t.Fatal("Load() accepted default CONFIG_PROFILE")
 	}
 }
 
@@ -703,6 +767,14 @@ func saveConfigState(t *testing.T) {
 
 func writeConfigFile(t *testing.T, content string) string {
 	t.Helper()
+	if !strings.Contains(content, `"CONFIG_PROFILE"`) {
+		content = strings.Replace(content, "{", `{"CONFIG_PROFILE": "dev",`, 1)
+	}
+	return writeRawConfigFile(t, content)
+}
+
+func writeRawConfigFile(t *testing.T, content string) string {
+	t.Helper()
 	f, err := os.CreateTemp("", "config-*.json")
 	if err != nil {
 		t.Fatalf("create temp config: %v", err)
@@ -801,8 +873,8 @@ func TestLoadAndGet(t *testing.T) {
 	if !cfg.LegacyStatusProjectionEnable {
 		t.Fatal("LegacyStatusProjectionEnable default should be true")
 	}
-	if !cfg.WPCOMNotifyEnable {
-		t.Fatal("WPCOMNotifyEnable default should be true")
+	if cfg.WPCOMNotifyEnable {
+		t.Fatal("WPCOMNotifyEnable = true, want dev profile default false")
 	}
 	if cfg.WPCOMNotifyMode != WPCOMNotifyModeLegacy {
 		t.Fatalf("WPCOMNotifyMode = %q, want legacy", cfg.WPCOMNotifyMode)
@@ -1218,6 +1290,7 @@ func TestReload(t *testing.T) {
 	}
 
 	if err := os.WriteFile(p, []byte(`{
+		"CONFIG_PROFILE": "dev",
 		"AUTH_TOKEN": "second",
 		"NUM_WORKERS": 10,
 		"BUCKET_TOTAL": 100,

@@ -393,6 +393,7 @@ func TestScanSiteRowIgnoresLegacyStatusWhenProjectionDisabled(t *testing.T) {
 		_ = config.Load("../../config/config-sample.json")
 	})
 	if _, err := f.WriteString(`{
+		"CONFIG_PROFILE": "dev",
 		"AUTH_TOKEN": "token",
 		"NUM_WORKERS": 7,
 		"BUCKET_TOTAL": 100,

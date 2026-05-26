@@ -20,6 +20,10 @@ cd docker
 docker compose down -v
 ```
 
+The bundled Compose stack sets `CONFIG_PROFILE=dev`. That profile reconciles a
+fresh local schema and keeps WPCOM notifications disabled unless explicitly
+overridden. Production containers should set `CONFIG_PROFILE=production`.
+
 ## Start Docker
 
 ```bash

@@ -37,7 +37,6 @@ const (
 )
 
 const (
-	ConfigProfileDefault    = "default"
 	ConfigProfileDev        = "dev"
 	ConfigProfileProduction = "production"
 )
@@ -492,8 +491,7 @@ func applyConfigProfile(raw []byte, cfg *Config) error {
 	}
 	rawProfile := keys["CONFIG_PROFILE"]
 	if len(rawProfile) == 0 {
-		cfg.ConfigProfile = ConfigProfileDefault
-		return nil
+		return fmt.Errorf("CONFIG_PROFILE is required and must be one of: dev, production")
 	}
 	var profile string
 	if err := json.Unmarshal(rawProfile, &profile); err != nil {
@@ -501,8 +499,6 @@ func applyConfigProfile(raw []byte, cfg *Config) error {
 	}
 	profile = normalizeConfigProfile(profile)
 	switch profile {
-	case ConfigProfileDefault:
-		cfg.ConfigProfile = ConfigProfileDefault
 	case ConfigProfileDev:
 		cfg.ConfigProfile = ConfigProfileDev
 		cfg.SchemaManagementMode = SchemaManagementModeMigrate
@@ -514,7 +510,7 @@ func applyConfigProfile(raw []byte, cfg *Config) error {
 		cfg.RolloutMode = RolloutModeAPIControlled
 		cfg.VeriflierDiscoveryMode = VeriflierDiscoveryModeShadow
 	default:
-		return fmt.Errorf("invalid config: CONFIG_PROFILE must be one of: default, dev, production")
+		return fmt.Errorf("invalid config: CONFIG_PROFILE must be one of: dev, production")
 	}
 	return nil
 }
@@ -544,16 +540,6 @@ func applyProfileEmptyValues(raw []byte, cfg *Config) {
 		})
 		applyEmptyStringDefault(keys, "VERIFLIER_DISCOVERY_MODE", func() {
 			cfg.VeriflierDiscoveryMode = VeriflierDiscoveryModeShadow
-		})
-	default:
-		applyEmptyStringDefault(keys, "SCHEMA_MANAGEMENT_MODE", func() {
-			cfg.SchemaManagementMode = SchemaManagementModeValidate
-		})
-		applyEmptyStringDefault(keys, "ROLLOUT_MODE", func() {
-			cfg.RolloutMode = RolloutModeActive
-		})
-		applyEmptyStringDefault(keys, "VERIFLIER_DISCOVERY_MODE", func() {
-			cfg.VeriflierDiscoveryMode = VeriflierDiscoveryModeStatic
 		})
 	}
 }
@@ -824,9 +810,9 @@ func validate(cfg *Config) error {
 	}
 	cfg.ConfigProfile = normalizeConfigProfile(cfg.ConfigProfile)
 	switch cfg.ConfigProfile {
-	case ConfigProfileDefault, ConfigProfileDev, ConfigProfileProduction:
+	case ConfigProfileDev, ConfigProfileProduction:
 	default:
-		return fmt.Errorf("CONFIG_PROFILE must be one of: default, dev, production")
+		return fmt.Errorf("CONFIG_PROFILE must be one of: dev, production")
 	}
 	cfg.Hostname = strings.TrimSpace(cfg.Hostname)
 	cfg.StatsDAddr = strings.TrimSpace(cfg.StatsDAddr)
@@ -1213,9 +1199,6 @@ func normalizeRolloutMode(mode string) string {
 
 func normalizeConfigProfile(profile string) string {
 	profile = strings.ToLower(strings.TrimSpace(profile))
-	if profile == "" {
-		return ConfigProfileDefault
-	}
 	return profile
 }
 
