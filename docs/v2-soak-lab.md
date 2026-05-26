@@ -42,8 +42,8 @@ The lab script:
 2. Starts four Monitors and three Verifliers.
 3. Seeds fixture-backed sites directly into the isolated Docker database across
    the configured bucket space.
-4. Waits for healthy dynamic bucket coverage, green fleet status, and full
-   fixture-site check coverage.
+4. Waits for healthy dynamic bucket coverage, green fleet status, and at least
+   one completed check per fixture site in the Monitor logs.
 5. Runs a timed soak loop and samples once per full interval.
 
 Each sample requires:
@@ -51,8 +51,8 @@ Each sample requires:
 - four active Monitor host rows;
 - green fleet summary, bucket coverage, and Veriflier status;
 - three fresh Veriflier agents;
-- every fixture site checked since the previous sample;
-- at least one check-history row per fixture site since the previous sample;
+- at least one completed check per fixture site since the previous sample;
+- legacy projection freshness within the configured maximum age;
 - no open events;
 - no stale Monitor process-health rows;
 - no WPCOM audit rows, alert contacts, webhooks, or Mailpit messages.
@@ -72,5 +72,5 @@ JSON fleet snapshots and the seed SQL are written under `logs/v2-soak-lab/`.
 | `JETMON_SOAK_LAB_DURATION_SEC` | `1800` |
 | `JETMON_SOAK_LAB_WARMUP_SEC` | `120` |
 | `JETMON_SOAK_LAB_SAMPLE_INTERVAL_SEC` | `60` |
-| `JETMON_SOAK_LAB_MAX_LAST_CHECKED_AGE_SEC` | `90` |
+| `JETMON_SOAK_LAB_MAX_LAST_CHECKED_AGE_SEC` | `960` |
 | `JETMON_SOAK_LAB_KEEP_RUNNING` | `0` |

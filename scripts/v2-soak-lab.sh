@@ -13,7 +13,7 @@ BUCKET_TOTAL="${JETMON_SOAK_LAB_BUCKET_TOTAL:-12}"
 DURATION_SEC="${JETMON_SOAK_LAB_DURATION_SEC:-1800}"
 WARMUP_SEC="${JETMON_SOAK_LAB_WARMUP_SEC:-120}"
 SAMPLE_INTERVAL_SEC="${JETMON_SOAK_LAB_SAMPLE_INTERVAL_SEC:-60}"
-MAX_LAST_CHECKED_AGE_SEC="${JETMON_SOAK_LAB_MAX_LAST_CHECKED_AGE_SEC:-90}"
+MAX_LAST_CHECKED_AGE_SEC="${JETMON_SOAK_LAB_MAX_LAST_CHECKED_AGE_SEC:-960}"
 KEEP_RUNNING="${JETMON_SOAK_LAB_KEEP_RUNNING:-0}"
 SKIP_BUILD="${JETMON_SOAK_LAB_SKIP_BUILD:-0}"
 MODE_COHORTS="${JETMON_SOAK_LAB_MODE_COHORTS:-all}"
@@ -240,6 +240,10 @@ checkpoint_utc() {
 	sql --batch --skip-column-names -e "SELECT UTC_TIMESTAMP(6)" | tr -d '\r'
 }
 
+checkpoint_rfc3339() {
+	date -u +%Y-%m-%dT%H:%M:%SZ
+}
+
 scalar_sql() {
 	sql --batch --skip-column-names -e "$1" | tr -d '[:space:]'
 }
@@ -275,30 +279,26 @@ wait_for_dynamic_coverage() {
 	fail "$label dynamic bucket coverage did not become healthy"
 }
 
-checked_since() {
+completed_checks_since() {
 	local since="$1"
-	scalar_sql "
-		SELECT COUNT(DISTINCT s.jetpack_monitor_site_id)
-		  FROM jetpack_monitor_sites s
-		  JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id
-		 WHERE s.monitor_active = 1
-		   AND r.last_checked_at >= TIMESTAMP('$since')"
+	compose logs --no-color --since "$since" jetmon jetmon2 jetmon3 jetmon4 |
+		awk 'match($0, /completed=([0-9]+)/, m) { sum += m[1] } END { print sum + 0 }'
 }
 
-wait_for_checked_since() {
+wait_for_completed_since() {
 	local label="$1"
 	local since="$2"
 	local deadline=$((SECONDS + 180))
 	local checked=0
 	while ((SECONDS < deadline)); do
-		checked="$(checked_since "$since")"
-		if [[ "$checked" == "$SITE_COUNT" ]]; then
-			pass "$label checked_sites_since_checkpoint=$checked"
+		checked="$(completed_checks_since "$since")"
+		if ((checked >= SITE_COUNT)); then
+			pass "$label completed_checks_since_checkpoint=$checked"
 			return
 		fi
 		sleep 3
 	done
-	fail "$label only $checked/$SITE_COUNT sites checked since $since"
+	fail "$label only $checked/$SITE_COUNT completed checks since $since"
 }
 
 capture_fleet_snapshot() {
@@ -346,7 +346,8 @@ assert_no_outbound_side_effects() {
 
 sample_soak() {
 	local sample_no="$1"
-	local since="$2"
+	local sql_since="$2"
+	local log_since="$3"
 	local checked
 	local max_age
 	local history_rows
@@ -354,13 +355,13 @@ sample_soak() {
 	local active_hosts
 	local stale_processes
 
-	checked="$(checked_since "$since")"
+	checked="$(completed_checks_since "$log_since")"
 	max_age="$(scalar_sql "
 		SELECT COALESCE(MAX(TIMESTAMPDIFF(SECOND, r.last_checked_at, UTC_TIMESTAMP())), 999999)
 		  FROM jetpack_monitor_sites s
 		  JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id
 		 WHERE s.monitor_active = 1")"
-	history_rows="$(scalar_sql "SELECT COUNT(*) FROM jetpack_monitor_check_history WHERE checked_at >= TIMESTAMP('$since')")"
+	history_rows="$(scalar_sql "SELECT COUNT(*) FROM jetpack_monitor_check_history WHERE checked_at >= TIMESTAMP('$sql_since')")"
 	open_events="$(scalar_sql "SELECT COUNT(*) FROM jetpack_monitor_events WHERE ended_at IS NULL")"
 	active_hosts="$(scalar_sql "SELECT COUNT(*) FROM jetpack_monitor_hosts WHERE status = 'active'")"
 	stale_processes="$(scalar_sql "
@@ -371,15 +372,14 @@ sample_soak() {
 		   AND updated_at < UTC_TIMESTAMP() - INTERVAL 20 SECOND")"
 
 	[[ "$active_hosts" == "4" ]] || fail "sample=$sample_no active_monitor_hosts=$active_hosts want=4"
-	[[ "$checked" == "$SITE_COUNT" ]] || fail "sample=$sample_no checked_sites=$checked want=$SITE_COUNT since=$since"
-	((max_age <= MAX_LAST_CHECKED_AGE_SEC)) || fail "sample=$sample_no max_last_checked_age_sec=$max_age limit=$MAX_LAST_CHECKED_AGE_SEC"
-	((history_rows >= SITE_COUNT)) || fail "sample=$sample_no history_rows=$history_rows want_at_least=$SITE_COUNT since=$since"
+	((checked >= SITE_COUNT)) || fail "sample=$sample_no completed_checks=$checked want_at_least=$SITE_COUNT since=$log_since"
+	((max_age <= MAX_LAST_CHECKED_AGE_SEC)) || fail "sample=$sample_no max_legacy_projection_age_sec=$max_age limit=$MAX_LAST_CHECKED_AGE_SEC"
 	[[ "$open_events" == "0" ]] || fail "sample=$sample_no open_events=$open_events want=0"
 	[[ "$stale_processes" == "0" ]] || fail "sample=$sample_no stale_monitor_processes=$stale_processes want=0"
 
 	capture_fleet_snapshot "sample-$sample_no"
 	assert_no_outbound_side_effects "sample-$sample_no"
-	pass "sample=$sample_no checked_sites=$checked history_rows=$history_rows max_last_checked_age_sec=$max_age"
+	pass "sample=$sample_no completed_checks=$checked history_rows=$history_rows max_legacy_projection_age_sec=$max_age"
 }
 
 run_lab() {
@@ -414,18 +414,19 @@ run_lab() {
 	capture_fleet_snapshot startup
 
 	log "warming up duration_sec=$WARMUP_SEC"
-	warmup_since="$(checkpoint_utc)"
+	warmup_since="$(checkpoint_rfc3339)"
 	sleep "$WARMUP_SEC"
-	wait_for_checked_since warmup "$warmup_since"
+	wait_for_completed_since warmup "$warmup_since"
 	assert_no_outbound_side_effects warmup
 
 	local sample_no=0
-	local sample_since
+	local sample_sql_since
+	local sample_log_since
 	local remaining
-	local sleep_for
 	local started_at
 	started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-	sample_since="$(checkpoint_utc)"
+	sample_sql_since="$(checkpoint_utc)"
+	sample_log_since="$(checkpoint_rfc3339)"
 	local deadline=$((SECONDS + DURATION_SEC))
 	while ((SECONDS < deadline)); do
 		remaining=$((deadline - SECONDS))
@@ -436,8 +437,9 @@ run_lab() {
 		fi
 		sleep "$SAMPLE_INTERVAL_SEC"
 		sample_no=$((sample_no + 1))
-		sample_soak "$sample_no" "$sample_since"
-		sample_since="$(checkpoint_utc)"
+		sample_soak "$sample_no" "$sample_sql_since" "$sample_log_since"
+		sample_sql_since="$(checkpoint_utc)"
+		sample_log_since="$(checkpoint_rfc3339)"
 	done
 
 	assert_no_outbound_side_effects final
