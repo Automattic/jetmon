@@ -180,8 +180,8 @@ seed_sites() {
 
 	{
 		printf 'START TRANSACTION;\n'
-		printf 'DELETE FROM jetpack_monitor_site_runtime WHERE blog_id >= 920000000 AND blog_id < %d;\n' "$((920000000 + SITE_COUNT))"
-		printf 'DELETE FROM jetpack_monitor_site_check_config WHERE blog_id >= 920000000 AND blog_id < %d;\n' "$((920000000 + SITE_COUNT))"
+		printf 'DELETE FROM jetpack_monitor_site_runtime WHERE source_site_id IN (SELECT jetpack_monitor_site_id FROM jetpack_monitor_sites WHERE blog_id >= 920000000 AND blog_id < %d);\n' "$((920000000 + SITE_COUNT))"
+		printf 'DELETE FROM jetpack_monitor_site_check_config WHERE source_site_id IN (SELECT jetpack_monitor_site_id FROM jetpack_monitor_sites WHERE blog_id >= 920000000 AND blog_id < %d);\n' "$((920000000 + SITE_COUNT))"
 		printf 'DELETE FROM jetpack_monitor_sites WHERE blog_id >= 920000000 AND blog_id < %d;\n' "$((920000000 + SITE_COUNT))"
 		while ((created < SITE_COUNT)); do
 			blog_id=$((920000000 + created))
@@ -359,7 +359,7 @@ sample_soak() {
 	max_age="$(scalar_sql "
 		SELECT COALESCE(MAX(TIMESTAMPDIFF(SECOND, r.last_checked_at, UTC_TIMESTAMP())), 999999)
 		  FROM jetpack_monitor_sites s
-		  JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id
+		  JOIN jetpack_monitor_site_runtime r ON r.source_site_id = s.jetpack_monitor_site_id
 		 WHERE s.monitor_active = 1")"
 	history_rows="$(scalar_sql "SELECT COUNT(*) FROM jetpack_monitor_check_history WHERE checked_at >= TIMESTAMP('$sql_since')")"
 	open_events="$(scalar_sql "SELECT COUNT(*) FROM jetpack_monitor_events WHERE ended_at IS NULL")"

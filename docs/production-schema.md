@@ -46,6 +46,10 @@ Run these from the same network and credentials the Monitor will use:
 `schema validate` is the deployment gate. It fails if any required table,
 column, or index is missing and never applies DDL.
 
+Validation is intentionally structural. It does not replace applying the
+baseline SQL to a production-like replica and rehearsing container startup,
+preflight, activation, observation, and rollback against that replica.
+
 `schema diff` is read-only. It prints additive SQL that would make the connected
 database satisfy the same structural contract. Treat it as diagnostic help, not
 as a substitute for the reviewed Systems SQL.
