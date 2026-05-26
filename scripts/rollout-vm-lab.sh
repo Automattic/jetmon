@@ -705,7 +705,7 @@ mark_lab_activity() {
 	local db_vm db_ip
 	db_vm="$(vm_name db)"
 	db_ip="$(vm_ip_required "$db_vm")"
-	mysql_lab "$db_ip" jetmon_db -e "INSERT INTO jetpack_monitor_site_runtime (blog_id, last_checked_at) SELECT blog_id, UTC_TIMESTAMP() FROM jetpack_monitor_sites WHERE bucket_no BETWEEN $LAB_BUCKET_MIN AND $LAB_BUCKET_MAX ON DUPLICATE KEY UPDATE last_checked_at = VALUES(last_checked_at)"
+	mysql_lab "$db_ip" jetmon_db -e "INSERT INTO jetpack_monitor_site_runtime (source_site_id, blog_id, last_checked_at) SELECT jetpack_monitor_site_id, blog_id, UTC_TIMESTAMP() FROM jetpack_monitor_sites WHERE bucket_no BETWEEN $LAB_BUCKET_MIN AND $LAB_BUCKET_MAX ON DUPLICATE KEY UPDATE blog_id = VALUES(blog_id), last_checked_at = VALUES(last_checked_at)"
 	pass "lab_activity_marked bucket_range=$LAB_BUCKET_MIN-$LAB_BUCKET_MAX"
 }
 
@@ -713,7 +713,7 @@ clear_lab_activity() {
 	local db_vm db_ip
 	db_vm="$(vm_name db)"
 	db_ip="$(vm_ip_required "$db_vm")"
-	mysql_lab "$db_ip" jetmon_db -e "INSERT INTO jetpack_monitor_site_runtime (blog_id, last_checked_at) SELECT blog_id, NULL FROM jetpack_monitor_sites WHERE bucket_no BETWEEN $LAB_BUCKET_MIN AND $LAB_BUCKET_MAX ON DUPLICATE KEY UPDATE last_checked_at = NULL"
+	mysql_lab "$db_ip" jetmon_db -e "INSERT INTO jetpack_monitor_site_runtime (source_site_id, blog_id, last_checked_at) SELECT jetpack_monitor_site_id, blog_id, NULL FROM jetpack_monitor_sites WHERE bucket_no BETWEEN $LAB_BUCKET_MIN AND $LAB_BUCKET_MAX ON DUPLICATE KEY UPDATE blog_id = VALUES(blog_id), last_checked_at = NULL"
 	pass "lab_activity_cleared bucket_range=$LAB_BUCKET_MIN-$LAB_BUCKET_MAX"
 }
 
@@ -724,7 +724,7 @@ lab_active_site_count() {
 
 lab_checked_site_count() {
 	local db_ip="$1"
-	mysql_lab "$db_ip" --batch --skip-column-names jetmon_db -e "SELECT COUNT(*) FROM jetpack_monitor_sites s JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id WHERE s.monitor_active = 1 AND s.bucket_no BETWEEN $LAB_BUCKET_MIN AND $LAB_BUCKET_MAX AND r.last_checked_at IS NOT NULL" | tr -d '[:space:]'
+	mysql_lab "$db_ip" --batch --skip-column-names jetmon_db -e "SELECT COUNT(*) FROM jetpack_monitor_sites s JOIN jetpack_monitor_site_runtime r ON r.source_site_id = s.jetpack_monitor_site_id WHERE s.monitor_active = 1 AND s.bucket_no BETWEEN $LAB_BUCKET_MIN AND $LAB_BUCKET_MAX AND r.last_checked_at IS NOT NULL" | tr -d '[:space:]'
 }
 
 wait_for_real_lab_activity() {

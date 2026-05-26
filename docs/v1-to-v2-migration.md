@@ -25,6 +25,7 @@ deliverer rollout notes into one runbook.
 | WPCOM | Legacy notification path tested. |
 | Operator CLI | Token, base URL, and `--allow-remote` policy are ready. |
 | Canaries | Approved controlled canary file exists. |
+| Rehearsal | Production-like Docker rehearsal covers schema validate, StatsD doctor, API preflight, guided dry-run, small-range execute, observation, and rollback. |
 | Rollback | v1 start command, v2 release path, owner contact known. |
 | Observability | API, dashboard, StatsD, logs visible. |
 

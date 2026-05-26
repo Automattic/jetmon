@@ -94,7 +94,7 @@ jobs:
               '```',
               '',
               'Images are `linux/amd64` only. On Apple Silicon, add `--platform linux/amd64`. ' +
-              'See [docs/docker-images.md](https://github.com/Automattic/jetmon/blob/v2/docs/docker-images.md) for run examples.',
+              'See [docs/operations-guide.md](https://github.com/Automattic/jetmon/blob/v2/docs/operations-guide.md) for run examples.',
             ].join('\n');
 
             const comments = await github.paginate(github.rest.issues.listComments, {

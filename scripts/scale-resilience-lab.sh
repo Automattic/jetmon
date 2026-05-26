@@ -242,8 +242,8 @@ seed_sites() {
 
 	{
 		printf 'START TRANSACTION;\n'
-		printf 'DELETE FROM jetpack_monitor_site_runtime WHERE blog_id >= 910000000 AND blog_id < %d;\n' "$(( 910000000 + SITE_COUNT ))"
-		printf 'DELETE FROM jetpack_monitor_site_check_config WHERE blog_id >= 910000000 AND blog_id < %d;\n' "$(( 910000000 + SITE_COUNT ))"
+		printf 'DELETE FROM jetpack_monitor_site_runtime WHERE source_site_id IN (SELECT jetpack_monitor_site_id FROM jetpack_monitor_sites WHERE blog_id >= 910000000 AND blog_id < %d);\n' "$(( 910000000 + SITE_COUNT ))"
+		printf 'DELETE FROM jetpack_monitor_site_check_config WHERE source_site_id IN (SELECT jetpack_monitor_site_id FROM jetpack_monitor_sites WHERE blog_id >= 910000000 AND blog_id < %d);\n' "$(( 910000000 + SITE_COUNT ))"
 		printf 'DELETE FROM jetpack_monitor_sites WHERE blog_id >= 910000000 AND blog_id < %d;\n' "$(( 910000000 + SITE_COUNT ))"
 		while (( created < SITE_COUNT )); do
 			blog_id=$(( 910000000 + created ))
@@ -349,7 +349,7 @@ wait_for_checked_since() {
 		checked="$(scalar_sql "
 			SELECT COUNT(DISTINCT s.jetpack_monitor_site_id)
 			  FROM jetpack_monitor_sites s
-			  JOIN jetpack_monitor_site_runtime r ON r.blog_id = s.blog_id
+			  JOIN jetpack_monitor_site_runtime r ON r.source_site_id = s.jetpack_monitor_site_id
 			 WHERE s.monitor_active = 1
 			   AND r.last_checked_at >= TIMESTAMP('$since')")"
 		if [[ "$checked" == "$SITE_COUNT" ]]; then
