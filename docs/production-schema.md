@@ -1,7 +1,7 @@
-# Production Schema Package
+# Production Schema
 
 Jetmon 2 production schema changes are applied by Systems, not by the service
-at startup. The package should be boring to review: one additive SQL file, a
+at startup. The review should be boring: one additive SQL file, a
 clear table inventory, and read-only validation commands.
 
 ## What To Apply
@@ -48,7 +48,7 @@ column, or index is missing and never applies DDL.
 
 `schema diff` is read-only. It prints additive SQL that would make the connected
 database satisfy the same structural contract. Treat it as diagnostic help, not
-as a substitute for the reviewed Systems SQL package.
+as a substitute for the reviewed Systems SQL.
 
 `schema status` prints the same structural contract and, if the legacy
 local/lab migration ledger exists, prints that as extra context. Missing ledger

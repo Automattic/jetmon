@@ -108,7 +108,7 @@ Production schema is applied by Systems before activation. The service should
 run with `CONFIG_PROFILE=production` and `SCHEMA_MANAGEMENT_MODE=validate`; that
 path checks tables, columns, and indexes but never applies DDL.
 
-Use [production-schema-package.md](production-schema-package.md) for the reviewed
+Use [production-schema.md](production-schema.md) for the reviewed
 baseline SQL and table inventory. `jetpack_monitor_schema_migrations` is not a
 production contract; validation checks the live schema shape through
 `information_schema`.

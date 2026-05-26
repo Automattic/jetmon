@@ -19,7 +19,7 @@ deliverer rollout notes into one runbook.
 
 | Gate | Evidence |
 | --- | --- |
-| Schema/config | Systems-applied DDL from [production-schema-package.md](production-schema-package.md), `schema validate`, `validate-config`, and API preflight pass. |
+| Schema/config | Systems-applied DDL from [production-schema.md](production-schema.md), `schema validate`, `validate-config`, and API preflight pass. |
 | Verifliers | `/v2/status` and quorum report are green. |
 | Images | CI-built tags promoted by Systems. |
 | WPCOM | Legacy notification path tested. |
