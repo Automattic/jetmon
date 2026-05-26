@@ -76,6 +76,13 @@ quorum, host resource limits, and stdout/stderr logging.
 
 ## Operator Setup
 
+Rollout commands are normally run from an operator workstation or trusted jump
+host, not by shelling into the Monitor container. The local `jetmon2` binary is
+an API client: it reads `~/.config/jetmon2.conf` or `JETMON_API_CONFIG`, talks to
+one approved running Monitor API, and that Monitor performs rollout actions
+against the fleet/database. If the API is not directly reachable, use an
+approved VPN, bastion, or SSH tunnel and point `--base-url` at that endpoint.
+
 ```bash
 ./bin/jetmon2 local-config init \
   --base-url=https://jetmon-api.example.internal \
@@ -88,7 +95,8 @@ quorum, host resource limits, and stdout/stderr logging.
 ./bin/jetmon2 api rollout capabilities --pretty
 ```
 
-Production writes to a non-local API require `--allow-remote`.
+Production writes to a non-local API require `--allow-remote`. Read-only health,
+ready, capability, and status checks can run without it.
 
 Canary template:
 

@@ -51,6 +51,10 @@ Tenant context scopes site/event/stat routes through
 Config precedence: flags, environment, `JETMON_API_CONFIG` or
 `~/.config/jetmon2.conf`, then Docker-local defaults.
 
+For production rollout, run `jetmon2` locally as an operator API client and
+point it at one approved Monitor API. The CLI does not need container shell
+access or direct database access for API-backed rollout commands.
+
 ```bash
 make api-cli-token-create
 export JETMON_API_URL=http://localhost:${API_HOST_PORT:-8090}
