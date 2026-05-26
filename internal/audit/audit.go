@@ -6,7 +6,7 @@
 // Site-state changes (incidents opening, severity escalating, state changing,
 // events closing) flow through the eventstore package and the
 // jetpack_monitor_events / jetpack_monitor_event_transitions tables. They do not go through this
-// package. See docs/events.md for the split.
+// package. See docs/project.md for the split.
 package audit
 
 import (

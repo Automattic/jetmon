@@ -24,7 +24,7 @@
 //     same transaction (e.g. updating jetpack_monitor_sites.site_status as a
 //     v1 projection alongside the event write).
 //
-// See docs/events.md for the full design rationale and docs/taxonomy.md for the data model.
+// See docs/project.md for the full event model, detection vocabulary, and data model.
 package eventstore
 
 import (
