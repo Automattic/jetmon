@@ -47,7 +47,7 @@ Jetmon 2 keeps the compatibility surfaces that matter during rollout:
   production rollout setting the path to the v1-compatible host segment.
 - Legacy log and stats file paths remain available.
 - `jetpack_monitor_sites.site_status` can be projected from v2 events during
-  the [v1-to-v2 migration](docs/v1-to-v2-migration.md).
+  the [v1-to-v2 rollout](docs/v1-to-v2-migration.md).
 
 ## How Incidents Flow
 
@@ -95,61 +95,62 @@ export JETMON_API_TOKEN=jm_replace_with_the_printed_token
 make api-cli-smoke
 ```
 
-See [docs/getting-started.md](docs/getting-started.md) for the full local loop.
+See [docs/development-guide.md](docs/development-guide.md) for the full local
+loop.
 
 ## Documentation
 
 | Document | Start Here For |
 |---|---|
-| [docs/project.md](docs/project.md) | Project overview and links to focused reference docs |
-| [docs/internal-api-reference.md](docs/internal-api-reference.md) | Internal REST API reference |
-| [docs/events.md](docs/events.md) | Event lifecycle and transition semantics |
-| [docs/taxonomy.md](docs/taxonomy.md) | Severity, state, cause, and rollup taxonomy |
-| [docs/getting-started.md](docs/getting-started.md) | Docker setup, builds, tests, API CLI smoke runs |
-| [docs/docker-images.md](docs/docker-images.md) | Pulling and running the published GHCR images |
-| [docs/operations-guide.md](docs/operations-guide.md) | Production config, rollout, delivery workers, metrics, debugging |
-| [docs/data-model.md](docs/data-model.md) | Tables, migrations, event projection, tenant mapping |
-| [docs/support-guide.md](docs/support-guide.md) | HE workflows for explaining alerts and missed alerts |
-| [docs/api-cli-guide.md](docs/api-cli-guide.md) | API CLI examples and automation patterns |
-| [docs/v1-to-v2-migration.md](docs/v1-to-v2-migration.md) | Full v1-to-v2 production migration and rollback runbook |
-| [docs/jetmon-deliverer-rollout.md](docs/jetmon-deliverer-rollout.md) | Moving outbound delivery to `jetmon-deliverer` |
-| [docs/roadmap.md](docs/roadmap.md) | Broader v2 and v3 planning |
+| [docs/project.md](docs/project.md) | Architecture, data model, event model, and detection vocabulary |
+| [docs/development-guide.md](docs/development-guide.md) | Local setup, API smoke tests, and non-production labs |
+| [docs/operations-guide.md](docs/operations-guide.md) | Production Docker operations, support, metrics, debugging |
+| [docs/v1-to-v2-migration.md](docs/v1-to-v2-migration.md) | Production rollout, rollback, TeamCity/container details, Verifliers, deliverer |
+| [docs/internal-api-reference.md](docs/internal-api-reference.md) | Internal API, API CLI, endpoint map, webhooks, alert contacts |
+| [docs/decisions.md](docs/decisions.md) | Accepted architecture decisions |
+| [docs/roadmap.md](docs/roadmap.md) | Deferred work and future product/platform direction |
+| [docs/changelog.md](docs/changelog.md) | Implementation history |
 
-Longer design decisions live in [docs/adr/](docs/adr/).
+The short docs index is [docs/README.md](docs/README.md).
 
 ## Production Posture
 
 Jetmon 2 is designed for a cautious rollout from v1. The preferred production
 shape deploys fresh v2 Veriflier and Monitor containers beside the existing v1
 fleet, keeps v2 Monitors in standby, and activates bucket ranges through the
-Monitor API after Systems stops the matching v1 range. The complete process is
-in [docs/v1-to-v2-migration.md](docs/v1-to-v2-migration.md). Use
-[docs/rollout-quick-reference.md](docs/rollout-quick-reference.md) as the
-one-page checklist during rehearsals and rollout windows:
+Monitor API after Systems stops the matching v1 range. The complete process and
+per-range checklist are in
+[docs/v1-to-v2-migration.md](docs/v1-to-v2-migration.md):
 
-- Run `./jetmon2 migrate` before first start. Migrations are embedded and
-  additive.
-- Run `./jetmon2 validate-config` or the API preflight before deploy to check
-  config shape, database connectivity, email transport mode, verifier config,
-  and rollout safety commands.
+- Apply schema changes through the approved database-change or migration action
+  before activating production containers. Normal production startup should
+  validate schema, not apply DDL.
+- Validate the exact container image, rendered config, mounts, and secrets
+  before deploy with a docker-deploy command override or equivalent
+  `docker run ... ./jetmon2 validate-config`; use the API preflight for rollout
+  safety gates.
+- Use TeamCity/docker-deploy for rolling container recreates. Pin immutable
+  image tags and keep environment, secrets, mounts, health checks, and rollback
+  behavior in the production role.
 - Use API-driven standby/activate/release controls for the container rollout.
   The operator `jetmon2` binary can run from a workstation or bastion using
   `jetmon2 local-config` / `~/.config/jetmon2.conf`; production API writes
   still require `--allow-remote`. Prefer `jetmon2 api rollout guided` during
   rollout windows so the API gates, typed confirmations, and rollback path are
   executed in one operator flow.
-- Keep the existing pinned host-by-host commands as the fallback path for
-  same-server or fresh-server replacements where the operator has shell access.
 - Keep `LEGACY_STATUS_PROJECTION_ENABLE` on until legacy readers have moved to
   the v2 API or event tables.
-- Use `SIGINT` or `./jetmon2 drain` for graceful shutdown.
-- Use `SIGHUP` or `./jetmon2 reload` for graceful drain and restart.
+- Use `docker exec jetmon ./jetmon2 drain` or `docker stop --time 45 jetmon`
+  for graceful shutdown.
+- Use `docker exec jetmon ./jetmon2 reload` for mounted config/server-map
+  refreshes when the image and environment are unchanged. Recreate the container
+  for image or environment changes.
 - Use the host dashboard at `/` and the fleet dashboard at `/fleet` during
   rollout windows. Keep `DASHBOARD_BIND_ADDR` on loopback unless the listener is
   protected by trusted operator-network controls.
 
 After the fleet is fully on v2, dynamic bucket ownership lets surviving hosts
-absorb work during rolling updates.
+absorb work during rolling container updates.
 
 ## Main Binaries
 

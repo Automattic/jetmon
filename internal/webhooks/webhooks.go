@@ -57,7 +57,7 @@ const (
 
 // AllEventTypes returns the canonical set of webhook event types. Used by
 // validators (a webhook's events filter must use values from this set) and
-// by docs/listings.
+// by API listings.
 func AllEventTypes() []string {
 	return []string{
 		EventOpened,

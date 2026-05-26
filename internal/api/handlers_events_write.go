@@ -258,8 +258,8 @@ func (s *Server) handleTriggerNow(w http.ResponseWriter, r *http.Request) {
 	if res.Success {
 		// Probe came back clean — close any open events the orchestrator
 		// hasn't reconciled yet. probe_cleared matches the recovery semantics
-		// the orchestrator already uses (see docs/events.md: "verifier wasn't
-		// involved in this recovery").
+		// the orchestrator already uses (see docs/project.md for event close
+		// reasons).
 		ids, err := s.queryActiveEventIDs(ctx, siteID)
 		if err != nil {
 			writeError(w, r, http.StatusInternalServerError, "db_error",
