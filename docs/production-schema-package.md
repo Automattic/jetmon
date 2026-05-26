@@ -27,8 +27,10 @@ monitor_active)`. The current v1 index
 legacy-table index rename is needed.
 
 `jetpack_monitor_schema_migrations` is not part of the production contract. It
-is local/lab bookkeeping for `./jetmon2 migrate`. Production validation checks
-the actual schema shape through `information_schema`.
+is legacy local/lab bookkeeping from the old embedded migration path. Current
+production validation checks the actual schema shape through
+`information_schema`, and the non-production reconciler uses the reviewed
+baseline SQL directly.
 
 ## Validation Commands
 
@@ -37,15 +39,20 @@ Run these from the same network and credentials the Monitor will use:
 ```bash
 ./jetmon2 schema validate
 ./jetmon2 schema status
+./jetmon2 schema diff
 ./jetmon2 doctor --skip-verifliers
 ```
 
 `schema validate` is the deployment gate. It fails if any required table,
 column, or index is missing and never applies DDL.
 
-`schema status` prints the same structural contract and, if the local/lab
-migration ledger exists, prints that as extra context. Missing ledger rows are
-not a production failure.
+`schema diff` is read-only. It prints additive SQL that would make the connected
+database satisfy the same structural contract. Treat it as diagnostic help, not
+as a substitute for the reviewed Systems SQL package.
+
+`schema status` prints the same structural contract and, if the legacy
+local/lab migration ledger exists, prints that as extra context. Missing ledger
+rows are not a production failure.
 
 ## Table Activity
 
@@ -83,4 +90,4 @@ Future production changes should follow the same pattern:
 
 Do not require production operators to update `jetpack_monitor_schema_migrations`.
 If a migration ledger exists in a lab database, it is useful diagnostic context
-only.
+only and can be retired after local/dev tooling no longer depends on it.

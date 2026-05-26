@@ -139,9 +139,10 @@ type Config struct {
 	PeerOfflineLimit   int `json:"PEER_OFFLINE_LIMIT"`
 
 	// SchemaManagementMode controls what startup wrappers should do before the
-	// service starts. "migrate" preserves local/dev convenience by applying
-	// pending migrations. "validate" refuses to start unless the expected
-	// schema is already present and never writes schema changes.
+	// service starts. "validate" refuses to start unless the expected schema is
+	// already present and never writes schema changes. "migrate" is a
+	// non-production convenience mode that runs the limited additive reconciler
+	// before validating.
 	SchemaManagementMode string `json:"SCHEMA_MANAGEMENT_MODE"`
 
 	// VeriflierDiscoveryMode controls whether the monitor reads Veriflier
@@ -441,7 +442,7 @@ func defaults() *Config {
 		SQLUpdateBatch:                       1,
 		DBConfigUpdatesMin:                   10,
 		PeerOfflineLimit:                     3,
-		SchemaManagementMode:                 SchemaManagementModeMigrate,
+		SchemaManagementMode:                 SchemaManagementModeValidate,
 		VeriflierDiscoveryMode:               VeriflierDiscoveryModeStatic,
 		NumOfChecks:                          3,
 		TimeBetweenChecksSec:                 30,
@@ -531,7 +532,7 @@ func applyProfileEmptyValues(raw []byte, cfg *Config) {
 		})
 	default:
 		applyEmptyStringDefault(keys, "SCHEMA_MANAGEMENT_MODE", func() {
-			cfg.SchemaManagementMode = SchemaManagementModeMigrate
+			cfg.SchemaManagementMode = SchemaManagementModeValidate
 		})
 		applyEmptyStringDefault(keys, "ROLLOUT_MODE", func() {
 			cfg.RolloutMode = RolloutModeActive
@@ -1206,7 +1207,7 @@ func normalizeConfigProfile(profile string) string {
 func normalizeSchemaManagementMode(mode string) string {
 	mode = strings.ToLower(strings.TrimSpace(mode))
 	if mode == "" {
-		return SchemaManagementModeMigrate
+		return SchemaManagementModeValidate
 	}
 	return mode
 }

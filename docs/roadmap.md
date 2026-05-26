@@ -80,6 +80,14 @@ Open work:
   the misspelled `VERIFIERS` / `grpc_port` Veriflier aliases. Keep parser
   support only as long as copied v1 configs are expected during rollback
   windows.
+- [ ] Retire `jetpack_monitor_schema_migrations` entirely after the schema
+  reconciler has replaced the old embedded migration path. Planned steps:
+  keep production on read-only `schema validate`; use
+  `schema diff`/`schema reconcile --execute` for local/lab convergence; keep
+  the deprecated `jetmon2 migrate` compatibility alias pointed at the
+  reconciler until callers move; remove legacy ledger reporting from
+  `schema status`; delete the old migration runner and table from local/dev
+  bootstrap SQL after one release cycle where no tooling depends on it.
 - [ ] After downstream consumers migrate, retire the legacy status projection:
   disable `LEGACY_STATUS_PROJECTION_ENABLE` and stop treating
   `jetpack_monitor_sites.site_status` as meaningful v2 state.

@@ -82,16 +82,17 @@ starts.
 
 ### SCHEMA_MANAGEMENT_MODE
 
-- Default: `migrate`; `production` profile changes the default to `validate`
-  when the key is omitted or set to an empty string.
+- Default: `validate`
 - Values: `migrate`, `validate`
 - Example: `"SCHEMA_MANAGEMENT_MODE": "validate"`
 - Purpose: controls what startup wrappers do before starting the Monitor.
-- Notes: `migrate` applies embedded migrations and then validates. `validate`
-  never applies DDL and refuses startup unless the connected database has the
-  tables, columns, and indexes this binary requires. Production should use
-  `validate` after Systems applies the approved SQL package. The local/lab
-  migration ledger table is not required for production validation.
+- Notes: `validate` never applies DDL and refuses startup unless the connected
+  database has the tables, columns, and indexes this binary requires. `migrate`
+  is a non-production convenience mode: startup runs the limited additive
+  schema reconciler and then validates. Production should use `validate` after
+  Systems applies the approved SQL package. The bundled dev Compose stack sets
+  `migrate` explicitly for fresh local databases. `migrate` is refused when
+  `CONFIG_PROFILE=production`.
 
 ### ROLLOUT_MODE
 

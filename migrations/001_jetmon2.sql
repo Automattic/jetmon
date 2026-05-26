@@ -4,7 +4,8 @@
 -- use migrations/production-v2-baseline.sql instead of this historical file.
 -- Production validation checks required tables, columns, and indexes directly
 -- and does not require jetpack_monitor_schema_migrations. The migration ledger
--- below is kept only for local/lab environments that use ./jetmon2 migrate.
+-- below is legacy local/lab bookkeeping and is scheduled for removal after the
+-- schema reconciler fully replaces the old migrate path.
 
 CREATE TABLE IF NOT EXISTS jetpack_monitor_schema_migrations (
     id           INT UNSIGNED NOT NULL PRIMARY KEY,

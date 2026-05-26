@@ -41,8 +41,6 @@ const (
 	rolloutMaxSynchronousSample   = 1000
 	rolloutDefaultProbeConcurrent = 16
 	rolloutMaxSyntheticCanaries   = 50
-
-	requiredRolloutSchemaMigration = 50
 )
 
 type rolloutCapabilitiesResponse struct {
@@ -392,11 +390,12 @@ func (s *Server) handleRolloutPreflight(w http.ResponseWriter, r *http.Request) 
 	if err := s.db.PingContext(r.Context()); err != nil {
 		blockers = append(blockers, "database ping failed: "+err.Error())
 	}
-	maxMigration, err := s.maxSchemaMigration(r.Context())
+	schemaStatus, err := jetdb.SchemaContractForDB(r.Context(), s.db)
 	if err != nil {
-		blockers = append(blockers, "schema migration lookup failed: "+err.Error())
-	} else if maxMigration < requiredRolloutSchemaMigration {
-		blockers = append(blockers, fmt.Sprintf("schema migration %d is older than required rollout migration %d", maxMigration, requiredRolloutSchemaMigration))
+		blockers = append(blockers, "schema contract lookup failed: "+err.Error())
+	} else if !schemaStatus.OK() {
+		blockers = append(blockers, fmt.Sprintf("schema contract incomplete: %s missing_tables=%d missing_columns=%d missing_indexes=%d",
+			schemaStatus.Summary(), len(schemaStatus.MissingTables), len(schemaStatus.MissingColumns), len(schemaStatus.MissingIndexes)))
 	}
 	summary := "preflight passed"
 	status := "ok"
@@ -405,9 +404,9 @@ func (s *Server) handleRolloutPreflight(w http.ResponseWriter, r *http.Request) 
 		status = "blocked"
 	}
 	result := map[string]any{
-		"schema_migration": maxMigration,
-		"rollout_mode":     rolloutModeString(cfg),
-		"verifliers":       veriflierResults,
+		"schema_contract": schemaStatus.Summary(),
+		"rollout_mode":    rolloutModeString(cfg),
+		"verifliers":      veriflierResults,
 	}
 	if len(body.Canaries) > 0 {
 		result["canaries"] = canaries
@@ -2390,18 +2389,6 @@ func (s *Server) countProjectionDrift(ctx context.Context, min, max int) (int, e
 		min, max,
 	).Scan(&count)
 	return count, err
-}
-
-func (s *Server) maxSchemaMigration(ctx context.Context) (int, error) {
-	var id sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `SELECT MAX(id) FROM jetpack_monitor_schema_migrations`).Scan(&id)
-	if err != nil {
-		return 0, err
-	}
-	if !id.Valid {
-		return 0, nil
-	}
-	return int(id.Int64), nil
 }
 
 func (s *Server) countOpenRolloutSessions(ctx context.Context) (int, error) {

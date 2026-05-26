@@ -22,6 +22,7 @@ WORKDIR /jetmon
 
 COPY --from=builder /src/jetmon2 .
 COPY config/ config/
+COPY migrations/ migrations/
 COPY docker/run-jetmon.sh entrypoint.sh
 RUN chmod +x entrypoint.sh \
     && mkdir -p stats certs \

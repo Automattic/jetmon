@@ -155,8 +155,18 @@ var schemaIndexPrefixContracts = []schemaIndexPrefixContract{
 // SchemaContract inspects the connected database's physical schema. It does
 // not read or require jetpack_monitor_schema_migrations.
 func SchemaContract(ctx context.Context) (SchemaContractStatus, error) {
+	return SchemaContractForDB(ctx, db)
+}
+
+// SchemaContractForDB inspects a specific database handle's physical schema.
+// Use this from packages that already hold their own *sql.DB, such as the API
+// server during rollout preflight tests.
+func SchemaContractForDB(ctx context.Context, database *sql.DB) (SchemaContractStatus, error) {
 	status := expectedSchemaContractStatus()
-	conn, err := db.Conn(ctx)
+	if database == nil {
+		return status, fmt.Errorf("schema contract database handle is nil")
+	}
+	conn, err := database.Conn(ctx)
 	if err != nil {
 		return status, fmt.Errorf("schema contract connection: %w", err)
 	}

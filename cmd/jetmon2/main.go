@@ -428,17 +428,10 @@ func runServe() {
 }
 
 func cmdMigrate() {
-	if _, err := loadConfigForCommand(); err != nil {
-		log.Fatal(err)
-	}
-	config.LoadDB()
-	if err := db.ConnectWithRetry(5); err != nil {
-		log.Fatalf("db connect: %v", err)
-	}
-	if err := db.Migrate(); err != nil {
+	fmt.Fprintln(os.Stderr, "WARN jetmon2 migrate is deprecated; use jetmon2 schema reconcile --execute")
+	if err := cmdSchemaReconcile([]string{"--execute"}, true); err != nil {
 		log.Fatalf("migrate: %v", err)
 	}
-	fmt.Println("migrations applied successfully")
 }
 
 func cmdValidateConfig() {

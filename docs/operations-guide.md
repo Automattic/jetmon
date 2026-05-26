@@ -104,9 +104,9 @@ expected startup posture is:
 ./jetmon2 validate-config
 ```
 
-Run `./jetmon2 migrate` only as an explicit schema-change action in environments
-where the operator is allowed to apply DDL. Do not rely on automatic production
-migrations.
+In local or lab environments where the operator is allowed to apply DDL, use
+`./jetmon2 schema reconcile --execute` to apply missing additive objects from
+the reviewed baseline. Do not rely on automatic production migrations.
 
 When `DB_SERVER_MAP_PATH` is set, Jetmon reads the WPCOM-style `db-servers.php`
 map, builds separate read/write pools from the `misc` dataset, and hot-reloads

@@ -393,8 +393,8 @@ func TestValidateAppliesCheckHistoryAndAuditDefaults(t *testing.T) {
 	if cfg.ConfigProfile != ConfigProfileDefault {
 		t.Errorf("ConfigProfile = %q, want default", cfg.ConfigProfile)
 	}
-	if cfg.SchemaManagementMode != SchemaManagementModeMigrate {
-		t.Errorf("SchemaManagementMode = %q, want migrate", cfg.SchemaManagementMode)
+	if cfg.SchemaManagementMode != SchemaManagementModeValidate {
+		t.Errorf("SchemaManagementMode = %q, want validate", cfg.SchemaManagementMode)
 	}
 	if cfg.CheckTargetSafetyMode != CheckTargetSafetyModePublicOnly {
 		t.Errorf("CheckTargetSafetyMode = %q, want public_only", cfg.CheckTargetSafetyMode)

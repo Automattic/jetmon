@@ -136,12 +136,12 @@ or:
 { "SCHEMA_MANAGEMENT_MODE": "validate" }
 ```
 
-Normal startup validates schema. It does not apply DDL. Run
-`./jetmon2 migrate` only as an explicit schema-change action in an approved
-local or lab environment. If Systems applies SQL manually, the production
-package must include the required tables, columns, and indexes; the local/lab
-`jetpack_monitor_schema_migrations` ledger is not required for production
-startup validation.
+Normal startup validates schema. It does not apply DDL. In approved local or
+lab environments, `./jetmon2 schema reconcile --execute` can apply missing
+additive objects from the reviewed baseline. If Systems applies SQL manually,
+the production package must include the required tables, columns, and indexes;
+the legacy local/lab `jetpack_monitor_schema_migrations` ledger is not required
+for production startup validation.
 
 ## Production Defaults
 

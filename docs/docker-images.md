@@ -133,7 +133,7 @@ Important Monitor render inputs:
 | Variable | Notes |
 | --- | --- |
 | `CONFIG_PROFILE` | Use `production` for production Monitor containers. |
-| `SCHEMA_MANAGEMENT_MODE` | Use `validate` in production after Systems applies schema changes. |
+| `SCHEMA_MANAGEMENT_MODE` | Defaults to `validate` in the entrypoint. The bundled dev Compose file sets `migrate` explicitly so fresh local databases are reconciled before startup. Use `migrate` only in non-production. |
 | `VERIFLIER_AUTH_TOKEN`, `VERIFLIER_PORT` | Shared with configured Verifliers. |
 | `WPCOM_AUTH_TOKEN` | Use a placeholder outside WPCOM-connected environments. |
 | `WPCOM_NOTIFY_ENABLE` | Set `false` for local, ad-hoc, and internal-only tests. |

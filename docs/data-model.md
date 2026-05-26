@@ -5,9 +5,10 @@ new behavior in Jetmon-owned side tables. That split is the rollout contract:
 v2 can run beside v1, can roll back cleanly, and can add richer state without a
 hot ALTER on the largest compatibility table.
 
-Local and lab environments can apply migrations with `./jetmon2 migrate`.
-Production schema changes are expected to be applied through the approved
-database-change process, then validated by Jetmon before the service starts.
+Local and lab environments can converge to the baseline with
+`./jetmon2 schema reconcile --execute`. Production schema changes are expected
+to be applied through the approved database-change process, then validated by
+Jetmon before the service starts.
 `SCHEMA_MANAGEMENT_MODE=validate` checks the physical schema contract directly:
 the required tables, columns, and indexes must exist, but production does not
 need to maintain Jetmon's local migration ledger. This document describes
@@ -34,7 +35,6 @@ All v2-owned tables use the `jetpack_monitor_` prefix. Do not introduce
 | Area | Tables |
 | --- | --- |
 | Legacy compatibility | `jetpack_monitor_sites` |
-| Local/lab migration tracking | `jetpack_monitor_schema_migrations` |
 | Bucket ownership | `jetpack_monitor_hosts` |
 | Incidents | `jetpack_monitor_events`, `jetpack_monitor_event_transitions` |
 | Operational audit | `jetpack_monitor_audit_log` |

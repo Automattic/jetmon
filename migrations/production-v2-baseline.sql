@@ -5,8 +5,9 @@
 -- legacy jetpack_monitor_sites table untouched.
 --
 -- Production validation uses information_schema to verify required tables,
--- columns, and indexes. It does not require jetpack_monitor_schema_migrations;
--- that table is only for local/lab environments that run ./jetmon2 migrate.
+-- columns, and indexes. It does not require jetpack_monitor_schema_migrations.
+-- Local/lab reconciliation also reads this file directly instead of treating a
+-- migration ledger as the schema source of truth.
 --
 -- Existing legacy table expected by v2, but not created or altered here:
 --   jetpack_monitor_sites
