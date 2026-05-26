@@ -24,6 +24,9 @@ export MAILPIT_HOST_PORT="${MAILPIT_HOST_PORT:-50025}"
 export GRAPHITE_HOST_PORT="${GRAPHITE_HOST_PORT:-50088}"
 export STATSD_HOST_PORT="${STATSD_HOST_PORT:-50225}"
 export EMAIL_TRANSPORT=smtp
+export DELIVERY_OWNER_HOST="${DELIVERY_OWNER_HOST:-jetmon-scale-1}"
+export JETMON_CONFIG_RENDER_MODE=never
+export VERIFLIER_CONFIG_RENDER_MODE=always
 export SCALE_LAB_PUBLIC_NETWORK="$PUBLIC_NETWORK"
 export SCALE_LAB_FIXTURE_IP="$FIXTURE_IP"
 
@@ -76,9 +79,18 @@ cleanup() {
 prepare_config() {
 	mkdir -p "$WORK_DIR" "$REPO_ROOT/logs" "$REPO_ROOT/stats"
 	jq \
+		--arg db_user "${MYSQL_USER:-jetmon}" \
+		--arg db_password "${MYSQL_PASSWORD:-jetmon_dev_password}" \
+		--arg db_name "${MYSQL_DATABASE:-jetmon_db}" \
 		--arg auth "api-cli-validate-wpcom-disabled" \
 		--arg verifier_token "${VERIFLIER_AUTH_TOKEN:-veriflier_1_auth_token}" \
 		'.AUTH_TOKEN = $auth
+		| .DB_HOST = "mysqldb"
+		| .DB_PORT = "3306"
+		| .DB_USER = $db_user
+		| .DB_PASSWORD = $db_password
+		| .DB_NAME = $db_name
+		| .STATSD_ADDR = "statsd:8125"
 		| .WPCOM_NOTIFY_ENABLE = false
 		| .EMAIL_TRANSPORT = "smtp"
 		| .EMAIL_FROM = "jetmon@noreply.invalid"

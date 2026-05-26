@@ -15,6 +15,8 @@ WARMUP_SEC="${JETMON_SOAK_LAB_WARMUP_SEC:-120}"
 SAMPLE_INTERVAL_SEC="${JETMON_SOAK_LAB_SAMPLE_INTERVAL_SEC:-60}"
 MAX_LAST_CHECKED_AGE_SEC="${JETMON_SOAK_LAB_MAX_LAST_CHECKED_AGE_SEC:-90}"
 KEEP_RUNNING="${JETMON_SOAK_LAB_KEEP_RUNNING:-0}"
+SKIP_BUILD="${JETMON_SOAK_LAB_SKIP_BUILD:-0}"
+MODE_COHORTS="${JETMON_SOAK_LAB_MODE_COHORTS:-all}"
 WORK_DIR="$REPO_ROOT/logs/v2-soak-lab"
 CONFIG_FILE="$REPO_ROOT/config/config.json"
 COMPOSE=(docker compose -p "$PROJECT" -f "$REPO_ROOT/docker/docker-compose.yml" -f "$REPO_ROOT/docker/docker-compose.scale-lab.yml")
@@ -31,6 +33,9 @@ export MAILPIT_HOST_PORT="${MAILPIT_HOST_PORT:-28125}"
 export GRAPHITE_HOST_PORT="${GRAPHITE_HOST_PORT:-28188}"
 export STATSD_HOST_PORT="${STATSD_HOST_PORT:-28225}"
 export EMAIL_TRANSPORT=stub
+export DELIVERY_OWNER_HOST="${DELIVERY_OWNER_HOST:-jetmon-scale-1}"
+export JETMON_CONFIG_RENDER_MODE=never
+export VERIFLIER_CONFIG_RENDER_MODE=always
 export SCALE_LAB_PUBLIC_NETWORK="$PUBLIC_NETWORK"
 export SCALE_LAB_FIXTURE_IP="$FIXTURE_IP"
 
@@ -47,6 +52,8 @@ Useful overrides:
   JETMON_SOAK_LAB_DURATION_SEC=1800
   JETMON_SOAK_LAB_SITE_COUNT=360
   JETMON_SOAK_LAB_KEEP_RUNNING=1
+  JETMON_SOAK_LAB_SKIP_BUILD=1
+  JETMON_SOAK_LAB_MODE_COHORTS=all
 USAGE
 }
 
@@ -93,8 +100,17 @@ prepare_config() {
 	rm -f "$REPO_ROOT/veriflier2/config/veriflier.json"
 	jq \
 		--argjson bucket_total "$BUCKET_TOTAL" \
+		--arg db_user "${MYSQL_USER:-jetmon}" \
+		--arg db_password "${MYSQL_PASSWORD:-jetmon_dev_password}" \
+		--arg db_name "${MYSQL_DATABASE:-jetmon_db}" \
 		--arg token "${VERIFLIER_AUTH_TOKEN:-veriflier_1_auth_token}" \
 		'.AUTH_TOKEN = "v2-soak-lab-wpcom-disabled"
+		| .DB_HOST = "mysqldb"
+		| .DB_PORT = "3306"
+		| .DB_USER = $db_user
+		| .DB_PASSWORD = $db_password
+		| .DB_NAME = $db_name
+		| .STATSD_ADDR = "statsd:8125"
 		| .WPCOM_NOTIFY_ENABLE = false
 		| .EMAIL_TRANSPORT = "stub"
 		| .WPCOM_EMAIL_ENDPOINT = ""
@@ -151,7 +167,16 @@ seed_sites() {
 	local bucket
 	local url
 	local profile
+	local method
 	local keyword
+
+	case "$MODE_COHORTS" in
+		all|get)
+			;;
+		*)
+			fail "invalid JETMON_SOAK_LAB_MODE_COHORTS=$MODE_COHORTS (want all or get)"
+			;;
+	esac
 
 	{
 		printf 'START TRANSACTION;\n'
@@ -183,15 +208,32 @@ seed_sites() {
 					keyword="NULL"
 					;;
 			esac
+			method="GET"
+			if [[ "$MODE_COHORTS" == "all" ]]; then
+				case $((created % 3)) in
+					0)
+						method="HEAD"
+						profile="legacy"
+						keyword="NULL"
+						;;
+					1)
+						profile="simple_http"
+						;;
+					*)
+						profile="full"
+						;;
+				esac
+			fi
 			printf "INSERT INTO jetpack_monitor_sites (blog_id, bucket_no, monitor_url, monitor_active, site_status, check_interval) VALUES (%d, %d, '%s', 1, 1, 1);\n" "$blog_id" "$bucket" "$url"
-			printf "INSERT INTO jetpack_monitor_site_check_config (blog_id, request_method, detection_profile, check_keyword, timeout_seconds, redirect_policy, alert_cooldown_minutes) VALUES (%d, 'GET', '%s', %s, 3, 'follow', 60);\n" "$blog_id" "$profile" "$keyword"
+			printf "SET @source_site_id = LAST_INSERT_ID();\n"
+			printf "INSERT INTO jetpack_monitor_site_check_config (source_site_id, blog_id, request_method, detection_profile, check_keyword, timeout_seconds, redirect_policy, alert_cooldown_minutes) VALUES (@source_site_id, %d, '%s', '%s', %s, 3, 'follow', 60);\n" "$blog_id" "$method" "$profile" "$keyword"
 			created=$((created + 1))
 		done
 		printf 'COMMIT;\n'
 	} >"$sql_file"
 
 	sql <"$sql_file"
-	pass "sites_seeded count=$SITE_COUNT bucket_total=$BUCKET_TOTAL"
+	pass "sites_seeded count=$SITE_COUNT bucket_total=$BUCKET_TOTAL mode_cohorts=$MODE_COHORTS"
 }
 
 checkpoint_utc() {
@@ -349,11 +391,19 @@ run_lab() {
 	prepare_config
 	ensure_public_network
 
-	log "building lab images"
-	compose build api-fixture jetmon jetmon2 jetmon3 jetmon4 veriflier veriflier2 veriflier3
+	if [[ "$SKIP_BUILD" == "1" ]]; then
+		log "using prebuilt lab images"
+	else
+		log "building lab images"
+		compose build api-fixture jetmon jetmon2 jetmon3 jetmon4 veriflier veriflier2 veriflier3
+	fi
 
 	log "starting soak services project=$PROJECT duration_sec=$DURATION_SEC sites=$SITE_COUNT"
-	compose up -d mysqldb mysql-user mailpit statsd api-fixture veriflier veriflier2 veriflier3 jetmon jetmon2 jetmon3 jetmon4
+	if [[ "$SKIP_BUILD" == "1" ]]; then
+		compose up -d --no-build mysqldb mysql-user mailpit statsd api-fixture veriflier veriflier2 veriflier3 jetmon jetmon2 jetmon3 jetmon4
+	else
+		compose up -d mysqldb mysql-user mailpit statsd api-fixture veriflier veriflier2 veriflier3 jetmon jetmon2 jetmon3 jetmon4
+	fi
 	wait_for_api
 	compose exec -T jetmon curl -fsS "http://$FIXTURE_IP:8091/health" >/dev/null
 	pass "fixture_reachable_from_monitor=$FIXTURE_IP"

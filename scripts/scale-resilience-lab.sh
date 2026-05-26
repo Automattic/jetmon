@@ -29,6 +29,9 @@ export MAILPIT_HOST_PORT="${MAILPIT_HOST_PORT:-17125}"
 export GRAPHITE_HOST_PORT="${GRAPHITE_HOST_PORT:-18188}"
 export STATSD_HOST_PORT="${STATSD_HOST_PORT:-18225}"
 export EMAIL_TRANSPORT=stub
+export DELIVERY_OWNER_HOST="${DELIVERY_OWNER_HOST:-jetmon-scale-1}"
+export JETMON_CONFIG_RENDER_MODE=never
+export VERIFLIER_CONFIG_RENDER_MODE=always
 export SCALE_LAB_PUBLIC_NETWORK="$PUBLIC_NETWORK"
 export SCALE_LAB_FIXTURE_IP="$FIXTURE_IP"
 
@@ -116,8 +119,17 @@ prepare_config() {
 	rm -f "$REPO_ROOT/veriflier2/config/veriflier.json"
 	jq \
 		--argjson bucket_total "$BUCKET_TOTAL" \
+		--arg db_user "${MYSQL_USER:-jetmon}" \
+		--arg db_password "${MYSQL_PASSWORD:-jetmon_dev_password}" \
+		--arg db_name "${MYSQL_DATABASE:-jetmon_db}" \
 		--arg token "${VERIFLIER_AUTH_TOKEN:-veriflier_1_auth_token}" \
 		'.AUTH_TOKEN = "scale-lab-wpcom-disabled"
+		| .DB_HOST = "mysqldb"
+		| .DB_PORT = "3306"
+		| .DB_USER = $db_user
+		| .DB_PASSWORD = $db_password
+		| .DB_NAME = $db_name
+		| .STATSD_ADDR = "statsd:8125"
 		| .WPCOM_NOTIFY_ENABLE = false
 		| .EMAIL_TRANSPORT = "stub"
 		| .WPCOM_EMAIL_ENDPOINT = ""
@@ -259,7 +271,8 @@ seed_sites() {
 					;;
 			esac
 			printf "INSERT INTO jetpack_monitor_sites (blog_id, bucket_no, monitor_url, monitor_active, site_status, check_interval) VALUES (%d, %d, '%s', 1, 1, 1);\n" "$blog_id" "$bucket" "$url"
-			printf "INSERT INTO jetpack_monitor_site_check_config (blog_id, request_method, detection_profile, check_keyword, timeout_seconds, redirect_policy, alert_cooldown_minutes) VALUES (%d, 'GET', '%s', %s, 3, 'follow', 0);\n" "$blog_id" "$profile" "$keyword"
+			printf "SET @source_site_id = LAST_INSERT_ID();\n"
+			printf "INSERT INTO jetpack_monitor_site_check_config (source_site_id, blog_id, request_method, detection_profile, check_keyword, timeout_seconds, redirect_policy, alert_cooldown_minutes) VALUES (@source_site_id, %d, 'GET', '%s', %s, 3, 'follow', 0);\n" "$blog_id" "$profile" "$keyword"
 			created=$(( created + 1 ))
 		done
 		printf 'COMMIT;\n'

@@ -53,6 +53,7 @@ render_config() {
 	local default_detection_profile="${DEFAULT_DETECTION_PROFILE:-}"
 	local rollout_mode="${ROLLOUT_MODE:-}"
 	local veriflier_discovery_mode="${VERIFLIER_DISCOVERY_MODE:-}"
+	local delivery_owner_host="${DELIVERY_OWNER_HOST:-}"
 	local debug_port="${DEBUG_PORT:-6060}"
 	local wpcom_notify_enable
 	local smtp_use_tls
@@ -98,6 +99,7 @@ render_config() {
 		-e "s|\"DEFAULT_CHECK_METHOD\"         : \"GET\"|\"DEFAULT_CHECK_METHOD\"         : \"$(sed_escape "${default_check_method:-GET}")\"|g" \
 		-e "s|\"DEFAULT_DETECTION_PROFILE\"    : \"full\"|\"DEFAULT_DETECTION_PROFILE\"    : \"$(sed_escape "${default_detection_profile:-full}")\"|g" \
 		-e "s|\"ROLLOUT_MODE\"                : \"active\"|\"ROLLOUT_MODE\"                : \"$(sed_escape "${rollout_mode:-active}")\"|g" \
+		-e "s|\"DELIVERY_OWNER_HOST\": \"\"|\"DELIVERY_OWNER_HOST\": \"$(sed_escape "$delivery_owner_host")\"|g" \
 		-e "s|\"DEBUG_PORT\"     : 6060|\"DEBUG_PORT\"     : ${debug_port}|g" \
 		-e "s|\"WPCOM_NOTIFY_MODE\"            : \"legacy\"|\"WPCOM_NOTIFY_MODE\"            : \"$(sed_escape "${WPCOM_NOTIFY_MODE:-legacy}")\"|g" \
 		-e "s|\"EMAIL_TRANSPORT\"       : \"stub\"|\"EMAIL_TRANSPORT\"       : \"$(sed_escape "${EMAIL_TRANSPORT:-smtp}")\"|g" \
