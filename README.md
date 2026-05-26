@@ -106,7 +106,6 @@ the full local loop.
 | [docs/operations-guide.md](docs/operations-guide.md) | Local development, production operations, support, metrics, debugging |
 | [docs/v1-to-v2-migration.md](docs/v1-to-v2-migration.md) | Production rollout, rollback, TeamCity/container details, Verifliers, deliverer |
 | [docs/internal-api-reference.md](docs/internal-api-reference.md) | Internal API, API CLI, endpoint map, webhooks, alert contacts |
-| [docs/labs.md](docs/labs.md) | Docker, VM, scale, soak, scalability, and probe-safety rehearsals |
 | [docs/decisions.md](docs/decisions.md) | Accepted architecture decisions |
 | [docs/roadmap.md](docs/roadmap.md) | Deferred work and future product/platform direction |
 | [docs/changelog.md](docs/changelog.md) | Implementation history |
