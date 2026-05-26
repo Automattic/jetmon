@@ -38,7 +38,11 @@ render_config() {
 	local wpcom_notify_enable
 	local smtp_use_tls
 	if [ -z "$schema_management_mode" ]; then
-		schema_management_mode="validate"
+		if [ "$config_profile" = "dev" ]; then
+			schema_management_mode="migrate"
+		else
+			schema_management_mode="validate"
+		fi
 	fi
 	if [ "$config_profile" = "production" ]; then
 		statsd_addr="${statsd_addr:-host.docker.internal:8125}"

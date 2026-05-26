@@ -460,6 +460,84 @@ func TestLoadProductionProfileAppliesProductionDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadDevProfileAppliesDevDefaults(t *testing.T) {
+	saveConfigState(t)
+
+	p := writeConfigFile(t, `{
+		"CONFIG_PROFILE": "dev",
+		"AUTH_TOKEN": "token",
+		"NUM_WORKERS": 7,
+		"BUCKET_TOTAL": 100,
+		"BUCKET_TARGET": 50,
+		"NET_COMMS_TIMEOUT": 10,
+		"LOG_FORMAT": "text"
+	}`)
+
+	if err := Load(p); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	cfg := Get()
+	if cfg.ConfigProfile != ConfigProfileDev {
+		t.Fatalf("ConfigProfile = %q, want dev", cfg.ConfigProfile)
+	}
+	if cfg.SchemaManagementMode != SchemaManagementModeMigrate {
+		t.Fatalf("SchemaManagementMode = %q, want migrate", cfg.SchemaManagementMode)
+	}
+	if cfg.WPCOMNotifyEnable {
+		t.Fatal("WPCOMNotifyEnable = true, want false for dev profile")
+	}
+	if cfg.RolloutMode != RolloutModeActive {
+		t.Fatalf("RolloutMode = %q, want active", cfg.RolloutMode)
+	}
+	if cfg.VeriflierDiscoveryMode != VeriflierDiscoveryModeStatic {
+		t.Fatalf("VeriflierDiscoveryMode = %q, want static", cfg.VeriflierDiscoveryMode)
+	}
+}
+
+func TestLoadDevProfileUsesSchemaDefaultWhenSampleValueEmpty(t *testing.T) {
+	saveConfigState(t)
+
+	p := writeConfigFile(t, `{
+		"CONFIG_PROFILE": "dev",
+		"SCHEMA_MANAGEMENT_MODE": "",
+		"AUTH_TOKEN": "token",
+		"NUM_WORKERS": 7,
+		"BUCKET_TOTAL": 100,
+		"BUCKET_TARGET": 50,
+		"NET_COMMS_TIMEOUT": 10,
+		"LOG_FORMAT": "text"
+	}`)
+
+	if err := Load(p); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := Get().SchemaManagementMode; got != SchemaManagementModeMigrate {
+		t.Fatalf("SchemaManagementMode = %q, want migrate", got)
+	}
+}
+
+func TestLoadDevProfileAllowsExplicitSchemaOverride(t *testing.T) {
+	saveConfigState(t)
+
+	p := writeConfigFile(t, `{
+		"CONFIG_PROFILE": "dev",
+		"SCHEMA_MANAGEMENT_MODE": "validate",
+		"AUTH_TOKEN": "token",
+		"NUM_WORKERS": 7,
+		"BUCKET_TOTAL": 100,
+		"BUCKET_TARGET": 50,
+		"NET_COMMS_TIMEOUT": 10,
+		"LOG_FORMAT": "text"
+	}`)
+
+	if err := Load(p); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := Get().SchemaManagementMode; got != SchemaManagementModeValidate {
+		t.Fatalf("SchemaManagementMode = %q, want validate", got)
+	}
+}
+
 func TestLoadProductionProfileAllowsExplicitSchemaOverride(t *testing.T) {
 	saveConfigState(t)
 

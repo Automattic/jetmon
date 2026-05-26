@@ -38,6 +38,7 @@ const (
 
 const (
 	ConfigProfileDefault    = "default"
+	ConfigProfileDev        = "dev"
 	ConfigProfileProduction = "production"
 )
 
@@ -502,6 +503,10 @@ func applyConfigProfile(raw []byte, cfg *Config) error {
 	switch profile {
 	case ConfigProfileDefault:
 		cfg.ConfigProfile = ConfigProfileDefault
+	case ConfigProfileDev:
+		cfg.ConfigProfile = ConfigProfileDev
+		cfg.SchemaManagementMode = SchemaManagementModeMigrate
+		cfg.WPCOMNotifyEnable = false
 	case ConfigProfileProduction:
 		cfg.ConfigProfile = ConfigProfileProduction
 		cfg.SchemaManagementMode = SchemaManagementModeValidate
@@ -509,7 +514,7 @@ func applyConfigProfile(raw []byte, cfg *Config) error {
 		cfg.RolloutMode = RolloutModeAPIControlled
 		cfg.VeriflierDiscoveryMode = VeriflierDiscoveryModeShadow
 	default:
-		return fmt.Errorf("invalid config: CONFIG_PROFILE must be one of: default, production")
+		return fmt.Errorf("invalid config: CONFIG_PROFILE must be one of: default, dev, production")
 	}
 	return nil
 }
@@ -520,6 +525,16 @@ func applyProfileEmptyValues(raw []byte, cfg *Config) {
 		return
 	}
 	switch normalizeConfigProfile(cfg.ConfigProfile) {
+	case ConfigProfileDev:
+		applyEmptyStringDefault(keys, "SCHEMA_MANAGEMENT_MODE", func() {
+			cfg.SchemaManagementMode = SchemaManagementModeMigrate
+		})
+		applyEmptyStringDefault(keys, "ROLLOUT_MODE", func() {
+			cfg.RolloutMode = RolloutModeActive
+		})
+		applyEmptyStringDefault(keys, "VERIFLIER_DISCOVERY_MODE", func() {
+			cfg.VeriflierDiscoveryMode = VeriflierDiscoveryModeStatic
+		})
 	case ConfigProfileProduction:
 		applyEmptyStringDefault(keys, "SCHEMA_MANAGEMENT_MODE", func() {
 			cfg.SchemaManagementMode = SchemaManagementModeValidate
@@ -809,9 +824,9 @@ func validate(cfg *Config) error {
 	}
 	cfg.ConfigProfile = normalizeConfigProfile(cfg.ConfigProfile)
 	switch cfg.ConfigProfile {
-	case ConfigProfileDefault, ConfigProfileProduction:
+	case ConfigProfileDefault, ConfigProfileDev, ConfigProfileProduction:
 	default:
-		return fmt.Errorf("CONFIG_PROFILE must be one of: default, production")
+		return fmt.Errorf("CONFIG_PROFILE must be one of: default, dev, production")
 	}
 	cfg.Hostname = strings.TrimSpace(cfg.Hostname)
 	cfg.StatsDAddr = strings.TrimSpace(cfg.StatsDAddr)
