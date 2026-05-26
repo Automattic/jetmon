@@ -5,7 +5,7 @@ Node.js/C++ Monitor and Qt/C++ Veriflier with Go binaries while keeping the
 contracts needed for a reversible v1-to-v2 rollout.
 
 Use this file for system shape and invariants. Use
-[operations-guide.md](operations-guide.md) for runtime care,
+[operations-guide.md](operations-guide.md) for production Docker runtime care,
 [v1-to-v2-migration.md](v1-to-v2-migration.md) for rollout, and
 [internal-api-reference.md](internal-api-reference.md) for API details.
 
@@ -19,7 +19,7 @@ Do not change these without explicit review:
 | WPCOM | Keep legacy status-change payload and auth path during drop-in rollout. |
 | StatsD | Preserve `com.jetpack.jetmon.<hostname>` naming; add metrics, do not rename. |
 | Config | Existing v1-style keys parse where retained; new keys are additive. |
-| Signals | SIGINT drains; SIGHUP drains and re-execs. |
+| Signals | SIGINT drains; SIGHUP drains and re-execs through the container entrypoint. |
 | Legacy stats | `sitespersec`, `sitesqueue`, `totals` remain available through the compatibility surface. |
 
 Runtime logs go to stdout/stderr. V2 does not write v1-owned log files unless a

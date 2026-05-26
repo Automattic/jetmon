@@ -187,6 +187,10 @@ done
 
 configure_runtime_config "$config_mode"
 
+if [ "$#" -gt 0 ]; then
+	exec "$@"
+fi
+
 ./jetmon2 schema ensure
 
 exec ./jetmon2

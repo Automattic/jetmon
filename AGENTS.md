@@ -93,7 +93,7 @@ architecture, data model, operations, API, and rollout docs.
 | `veriflier2/` | Go Veriflier binary |
 | `docs/project.md` | Project overview, architecture, data model, event model, and detection vocabulary |
 | `docs/development-guide.md` | Local development, API smoke tests, and non-production labs |
-| `docs/operations-guide.md` | Production operations, support, metrics, and debugging |
+| `docs/operations-guide.md` | Production Docker operations, support, metrics, and debugging |
 | `docs/v1-to-v2-migration.md` | Production rollout, rollback, Veriflier deployment, deliverer rollout, and check-policy migration |
 | `docs/internal-api-reference.md` | Internal REST API, API CLI, endpoint map, webhooks, and alert contacts |
 | `docs/decisions.md` | Consolidated architecture decisions |
@@ -279,7 +279,7 @@ Jetmon notifies WPCOM of status changes via the same JSON payload format as Jetm
 Jetmon runs on production hosts managed by the Systems team. To deploy changes:
 1. Test locally using the Docker environment (`go test ./...`, manual Docker verification)
 2. Create a PR and request a Systems Request with PR links
-3. Systems team performs a rolling update: one host at a time, SIGINT → drain → deploy binary → restart
+3. Systems team performs a rolling container update: one host at a time, drain/stop → recreate with pinned image/config → verify readiness
 4. Surviving hosts absorb the draining host's buckets during each update window
 
 Rolling updates require no simultaneous restart of all hosts and leave no sites unchecked during the update.

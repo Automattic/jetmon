@@ -1,72 +1,184 @@
 # Production Operations Guide
 
-Use this for steady-state production runtime care, incident investigation, and
+Use this for Docker-based production runtime care, incident investigation, and
 safe restarts. Use [development-guide.md](development-guide.md) for local setup
-and lab rehearsals, and [v1-to-v2-migration.md](v1-to-v2-migration.md) for
-rollout sequence.
+and labs, and [v1-to-v2-migration.md](v1-to-v2-migration.md) for rollout
+sequence.
 
-## Binaries And Commands
+Examples use plain `docker` commands. In production, run the equivalent through
+the docker-deploy/TeamCity role that owns the host, image tag, secrets, mounts,
+health checks, and rollback behavior.
 
-| Binary | Purpose |
+## Deployment Shape
+
+Production Monitor hosts run containerized services:
+
+| Container | Purpose |
 | --- | --- |
-| `jetmon2` | Monitor, API, dashboard, embedded delivery workers, CLI. |
-| `veriflier2` | Remote confirmation worker. |
-| `jetmon-deliverer` | Standalone webhook and alert-contact delivery worker. |
+| `jetmon` / Monitor | Runs `jetmon2`, API, dashboard, optional embedded delivery workers. |
+| `config-sync` sidecar | Syncs private generated config such as `db-servers.php` into a shared runtime path. |
+| `jetmon-deliverer` | Optional standalone webhook and alert-contact delivery worker. |
+| `veriflier` | Remote confirmation worker, deployed separately from Monitor hosts. |
 
-Common commands:
+Production Monitor containers should use bridge networking, not host
+networking. Reach host-local StatsD through Docker's host-gateway mapping:
+
+```text
+--add-host=host.docker.internal:host-gateway
+STATSD_ADDR=host.docker.internal:8125
+```
+
+Do not set `STATSD_ADDR=127.0.0.1:8125` inside a bridge-networked container; it
+points at the container itself.
+
+## Images And Tags
+
+Runtime images:
+
+| Image | Dockerfile |
+| --- | --- |
+| `ghcr.io/automattic/jetmon` | `docker/Dockerfile_jetmon` |
+| `ghcr.io/automattic/veriflier` | `docker/Dockerfile_veriflier` |
+
+Tags:
+
+- `latest`: current `v2` branch.
+- `<YYYYMMDD>-<short-sha>`: immutable build for pushes to `v2`; prefer this for
+  production pinning.
+- `pr-<short-sha>`: PR image when the PR has the Docker Build label.
+
+If GHCR packages are private:
 
 ```bash
-./bin/jetmon2 version
-./bin/jetmon2 validate-config
-./bin/jetmon2 status
-./bin/jetmon2 drain
-./bin/jetmon2 reload
-./bin/jetmon2 audit --blog-id 12345 --since 2h
+echo "$GHCR_PAT" | docker login ghcr.io -u <github-user> --password-stdin
+docker pull ghcr.io/automattic/jetmon:<tag>
+docker pull ghcr.io/automattic/veriflier:<tag>
 ```
 
 ## Runtime Config
 
-The full config reference is `config/config.readme`; the sample is
-`config/config-sample.json`.
+Production images render JSON config from environment inputs at container start.
+The binary reads the rendered JSON; it does not keep reading environment values
+after startup.
 
-| Key | Purpose |
+| Render variable | Default | Meaning |
+| --- | --- | --- |
+| `JETMON_CONFIG_RENDER_MODE` | `always` | `always`, `missing`, or `never` for Monitor config rendering. |
+| `VERIFLIER_CONFIG_RENDER_MODE` | `always` | Same for Veriflier config rendering. |
+
+Use `never` only when mounting a complete JSON config and setting
+`JETMON_CONFIG` or `VERIFLIER_CONFIG` to that path.
+
+Production Monitor containers need:
+
+- rendered config or a mounted complete JSON config;
+- DB server-map path from the config-sync sidecar, or explicit DB config in
+  non-production roles;
+- WPCOM credential material when legacy notifications are enabled;
+- v2 Veriflier endpoints or trusted discovery config;
+- API/dashboard/debug bindings approved for the host;
+- writable `/jetmon/stats` for PID, reload/drain, and any legacy stats files.
+
+Important production render inputs:
+
+| Variable | Production posture |
 | --- | --- |
-| `NUM_WORKERS` | Checker pool size. |
-| `DATASET_SIZE` | Active-target reload page size. |
-| `NET_COMMS_TIMEOUT` | Default per-check timeout. |
-| `PEER_OFFLINE_LIMIT` | Veriflier agreements needed to confirm downtime. |
-| `BUCKET_TOTAL`, `BUCKET_TARGET` | Dynamic ownership range and per-host target. |
-| `BUCKET_HEARTBEAT_GRACE_SEC` | Stale-host grace before bucket absorption. |
-| `PINNED_BUCKET_MIN/MAX` | Migration-only static range. |
-| `LEGACY_STATUS_PROJECTION_ENABLE` | Keep v1 `site_status` projection updated. |
-| `API_PORT`, `DASHBOARD_PORT`, `DEBUG_PORT` | API, dashboard, and localhost pprof listeners. |
-| `DELIVERY_OWNER_HOST` | Optional single-owner delivery rollout guard. |
-| `EMAIL_TRANSPORT` | `wpcom`, `smtp`, or `stub`. |
+| `CONFIG_PROFILE` | `production` |
+| `SCHEMA_MANAGEMENT_MODE` | `validate` |
+| `DB_SERVER_MAP_PATH` | Mounted sidecar output; do not combine with explicit `DB_*`. |
+| `DB_SERVER_MAP_DATACENTER` | Explicit datacenter value. |
+| `DB_SERVER_MAP_ADDRESS` | Usually `internet` unless Systems approves internal DB hosts. |
+| `STATSD_ADDR` | `host.docker.internal:8125` |
+| `STATSD_HOST_PATH` | Stable v1-compatible metric identity. |
+| `CHECK_TARGET_SAFETY_MODE` | `public_only` |
+| `DEFAULT_CHECK_METHOD` / `DEFAULT_DETECTION_PROFILE` | Start rollout with `HEAD` / `legacy`. |
+| `ROLLOUT_MODE` | `api-controlled` until activation. |
+| `VERIFLIER_DISCOVERY_MODE` | `shadow` until registry drift is accepted. |
+| `CHECK_HISTORY_MODE_DEFAULT` | `status_change` unless a focused test needs more. |
+| `AUDIT_LOG_MODE_DEFAULT` | `operational` for rollout evidence without read firehose noise. |
+| `LEGACY_STATUS_PROJECTION_ENABLE` | `true` while rollback or legacy readers need it. |
+| `DEBUG_PORT` | `0` unless an approved localhost-only pprof window is active. |
 
-Always run `validate-config` before starting a new production config. Production
-containers should validate schema state at startup, not apply automatic DDL.
+Set production defaults explicitly even when the entrypoint has the same
+fallback. Visible config review matters more than implicit defaults.
 
-## Restart And Drain
+## Validate A Container
 
-| Change | Action |
-| --- | --- |
-| Mounted JSON config changed | `validate-config`, then `reload` or SIGHUP. |
-| New image or binary | SIGINT drain, replace, start, watch readiness. |
-| DB server map changed | Wait for hot reload, or SIGHUP for immediate pool rebuild. |
-| Remove host from service | SIGINT drain; confirm `/api/v1/monitor/drain-status` is done. |
-
-Useful commands:
+Before activation, validate the exact image/config/secrets that docker-deploy
+will run. Use a command override or test role that does not start the Monitor
+loop.
 
 ```bash
-./bin/jetmon2 drain
-./bin/jetmon2 reload
-curl -fsS "$JETMON_API_URL/api/v1/monitor/drain-status"
+docker run --rm \
+  --add-host=host.docker.internal:host-gateway \
+  --env-file jetmon-production.env \
+  -v /srv/jetmon/config-source:/jetmon/config-source:ro \
+  -v /srv/jetmon/stats:/jetmon/stats \
+  ghcr.io/automattic/jetmon:<tag> \
+  ./jetmon2 validate-config
 ```
+
+Additional safe checks when the role is meant to prove dependencies:
+
+```bash
+docker run --rm \
+  --add-host=host.docker.internal:host-gateway \
+  --env-file jetmon-production.env \
+  -v /srv/jetmon/config-source:/jetmon/config-source:ro \
+  -v /srv/jetmon/stats:/jetmon/stats \
+  ghcr.io/automattic/jetmon:<tag> \
+  ./jetmon2 schema validate
+
+docker run --rm \
+  --add-host=host.docker.internal:host-gateway \
+  --env-file jetmon-production.env \
+  -v /srv/jetmon/config-source:/jetmon/config-source:ro \
+  -v /srv/jetmon/stats:/jetmon/stats \
+  ghcr.io/automattic/jetmon:<tag> \
+  ./jetmon2 doctor --require-statsd
+```
+
+For a running container:
+
+```bash
+docker exec jetmon ./jetmon2 status
+docker exec jetmon ./jetmon2 validate-config
+```
+
+Do not run `migrate` from a production container unless it is the approved
+schema-change action.
+
+## Restart, Drain, And Recreate
+
+`jetmon2 reload` sends SIGHUP. In Docker this drains in-flight work and re-execs
+through the entrypoint, so `JETMON_CONFIG_RENDER_MODE=always` re-renders config
+before the binary starts again. Environment changes still require recreating the
+container so the new environment exists inside it.
+
+`jetmon2 drain` sends SIGINT and exits after the same drain path without
+re-exec.
+
+```bash
+docker exec jetmon ./jetmon2 reload
+docker exec jetmon ./jetmon2 drain
+docker stop --time 45 jetmon
+```
+
+| Change | Production action |
+| --- | --- |
+| New image tag | docker-deploy rolling recreate with the pinned tag. |
+| Rendered env changed | docker-deploy recreate so the container gets new env. |
+| Mounted config file changed | `docker exec jetmon ./jetmon2 reload` if env is unchanged. |
+| DB server map changed | Wait for hot reload, or reload for immediate pool rebuild. |
+| Remove host from service | Drain/stop container; confirm `/api/v1/monitor/drain-status`. |
+
+Set container `stop_grace_period` / stop timeout longer than Jetmon's drain
+budget. The repo Compose files use `45s`.
 
 Deploy order for a full fleet change: Verifliers, standalone deliverer if used,
 then Monitor hosts one at a time.
 
-## Health Surfaces
+## Health And Logs
 
 | Surface | Use |
 | --- | --- |
@@ -78,25 +190,24 @@ then Monitor hosts one at a time.
 | Dashboard `/` and `/fleet` | Host and fleet operations. |
 | `/debug/pprof/` | Localhost-only profiling when `DEBUG_PORT > 0`. |
 
-Keep dashboard and pprof listeners on loopback unless protected by trusted
-operator-network controls.
-
-## Metrics, Logs, And Evidence
-
-StatsD keeps the v1 prefix:
-
-```text
-com.jetpack.jetmon.<hostname>.
+```bash
+curl -fsS "$JETMON_API_URL/api/v1/health"
+curl -fsS "$JETMON_API_URL/api/v1/ready"
+curl -fsS "$JETMON_API_URL/api/v1/monitor/drain-status"
+docker logs --tail 200 jetmon
 ```
 
 Runtime logs go to stdout/stderr. Site-state changes live in
 `jetpack_monitor_events` and `jetpack_monitor_event_transitions`; operational
 actions live in `jetpack_monitor_audit_log`.
 
+Keep dashboard and pprof listeners on loopback unless protected by trusted
+operator-network controls.
+
 ## Delivery Workers
 
 Embedded workers are eligible when `API_PORT > 0`; `jetmon-deliverer` runs the
-same queues outside the Monitor process. Row claims are transactional, so
+same queues outside the Monitor container. Row claims are transactional, so
 multiple workers do not double-claim. Use `DELIVERY_OWNER_HOST` only as a
 rollout guard.
 
