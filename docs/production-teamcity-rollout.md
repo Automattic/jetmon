@@ -110,6 +110,11 @@ The Monitor and deliverer re-parse the map on the refresh cadence. Changed maps
 are validated before publication. If parsing or validation fails, the process
 keeps the previous working pools and logs the failure without secrets.
 
+SIGHUP is the graceful restart path for production containers. It stops intake,
+drains in-flight work, then re-execs through the Docker entrypoint so rendered
+config, startup validation, and replaced on-disk binaries are picked up without
+an ungraceful kill. SIGINT and SIGTERM drain and exit without re-exec.
+
 Inspect reload state through the API:
 
 ```bash

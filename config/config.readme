@@ -21,8 +21,11 @@ Each JSON key entry uses the same shape:
 - Example: a typical value or small JSON fragment.
 - Notes: operational details, reload behavior, or migration caveats.
 
-`SIGHUP` or `./jetmon2 reload` reloads JSON config. Startup-only settings are
-called out in their notes.
+`SIGHUP` performs a graceful self-reexec for long-running services: stop
+accepting new work, drain in-flight work, and restart through the configured
+re-exec target so startup-only settings, freshly rendered config, and replaced
+on-disk binaries are picked up. Startup-only settings are called out in their
+notes.
 
 ## Docker Render Inputs
 
@@ -62,6 +65,16 @@ starts.
 - Notes: in Docker render modes `always` and `missing`, the entrypoint exports
   this path to the generated file. In render mode `never`, the value points at
   a hand-managed mounted file.
+
+### JETMON_REEXEC_PATH
+
+- Default: unset for bare binaries; Docker entrypoints set this to their own
+  absolute path.
+- Example: `JETMON_REEXEC_PATH=/jetmon/entrypoint.sh`
+- Purpose: optional SIGHUP restart target.
+- Notes: bare binaries re-exec the current executable. Docker containers set
+  this wrapper variable so SIGHUP re-runs the entrypoint, which re-renders JSON
+  config and reruns startup validation before the Go binary starts again.
 
 ## Profiles And Startup Safety
 

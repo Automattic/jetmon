@@ -61,12 +61,18 @@ Open work:
   explicit endpoint identity, using the existing `jetpack_monitor_site_id` row
   as the durable source during migration. This is required for the real
   production cohort where one `blog_id` has multiple active monitor URLs.
-- [ ] Define and validate a zero-disruption reload/update contract for every
+- [x] Define and validate a zero-disruption reload/update contract for every
   long-running v2 service. SIGHUP or the service-manager equivalent should stop
   accepting new work, drain in-flight checks/deliveries, reload configuration
   and deployed code as appropriate for the deployment model, then resume cleanly
-  with operator-visible status and failure handling. Cover Monitor, Veriflier,
-  deliverer, API/dashboard, StatsD reporting, and Docker Compose rollout paths.
+  with operator-visible status and failure handling. Implemented as graceful
+  SIGHUP self-reexec for Monitor, standalone Deliverer, and Veriflier. Monitor
+  drains scheduler/API/dashboard/delivery work before re-exec; Veriflier drains
+  in-flight RPCs; Deliverer drains claimed deliveries. Docker entrypoints set
+  `JETMON_REEXEC_PATH` so config rendering and startup validation run before
+  the binary restarts. `jetmon2 reload` sends the Monitor PID-file SIGHUP;
+  standalone service managers should send SIGHUP to Deliverer and Veriflier
+  processes.
 
 ## Config And Compatibility Cleanup
 

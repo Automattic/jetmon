@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -32,6 +33,7 @@ import (
 	"github.com/Automattic/jetmon/internal/fleethealth"
 	"github.com/Automattic/jetmon/internal/metrics"
 	"github.com/Automattic/jetmon/internal/orchestrator"
+	"github.com/Automattic/jetmon/internal/processcontrol"
 	"github.com/Automattic/jetmon/internal/processmetrics"
 	"github.com/Automattic/jetmon/internal/veriflier"
 	"github.com/Automattic/jetmon/internal/wpcom"
@@ -203,17 +205,20 @@ func runServe() {
 		dash.SetFleetSource(newFleetDashboardStore(cfg))
 		go func() {
 			addr := dashboardListenAddr(cfg)
-			if err := dash.Listen(addr); err != nil {
+			if err := dash.Listen(addr); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				log.Printf("dashboard: %v", err)
 			}
 		}()
 	}
 
 	// pprof on localhost only — never expose this on a public interface.
+	var debugSrv *http.Server
 	if cfg.DebugPort > 0 {
+		addr := fmt.Sprintf("127.0.0.1:%d", cfg.DebugPort)
+		debugSrv = dashboard.DebugServer(addr)
 		go func() {
-			addr := fmt.Sprintf("127.0.0.1:%d", cfg.DebugPort)
-			if err := dashboard.ListenDebug(addr); err != nil {
+			log.Printf("debug: pprof listening on %s (localhost only)", addr)
+			if err := debugSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				log.Printf("debug server: %v", err)
 			}
 		}()
@@ -263,6 +268,8 @@ func runServe() {
 	var healthMu sync.RWMutex
 	var publishMu sync.Mutex
 	var shuttingDown atomic.Bool
+	var restartRequested atomic.Bool
+	var shutdownOnce sync.Once
 	var lastHealth []dashboard.HealthEntry
 	publishHostSnapshot := func(state string, refreshDependencies bool) {
 		publishMu.Lock()
@@ -362,6 +369,52 @@ func runServe() {
 	defer stopRetention()
 	startRetentionBackground(retentionCtx, cfg)
 
+	requestShutdown := func(sig os.Signal, restart bool) {
+		shutdownOnce.Do(func() {
+			if restart {
+				restartRequested.Store(true)
+				log.Printf("received %s, draining before graceful restart", sig)
+			} else {
+				log.Printf("received %s, draining", sig)
+			}
+			shuttingDown.Store(true)
+			stopDBReload()
+			stopRetention()
+			stopHostPublisherOnce.Do(func() { close(stopHostPublisher) })
+			publishHostSnapshot(fleethealth.StateStopping, false)
+			if apiSrv != nil {
+				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				if err := apiSrv.Shutdown(ctx); err != nil {
+					log.Printf("api: shutdown error: %v", err)
+				}
+				cancel()
+			}
+			if dash != nil {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				if err := dash.Shutdown(ctx); err != nil {
+					log.Printf("dashboard: shutdown error: %v", err)
+				}
+				cancel()
+			}
+			if debugSrv != nil {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				if err := debugSrv.Shutdown(ctx); err != nil {
+					log.Printf("debug server: shutdown error: %v", err)
+				}
+				cancel()
+			}
+			if deliveryRuntime != nil {
+				deliveryRuntime.Stop()
+			}
+			orch.Stop()
+			// Hard kill if drain takes too long (e.g. a stalled HTTP check).
+			time.AfterFunc(30*time.Second, func() {
+				log.Println("jetmon2: shutdown timeout exceeded, forcing exit")
+				os.Exit(1)
+			})
+		})
+	}
+
 	// Signal handling.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
@@ -370,47 +423,9 @@ func runServe() {
 		for sig := range sigCh {
 			switch sig {
 			case syscall.SIGHUP:
-				log.Println("received SIGHUP, reloading config")
-				if err := config.Reload(); err != nil {
-					log.Printf("config reload failed: %v", err)
-				} else {
-					reloadCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-					if changed, err := db.ReloadConfig(reloadCtx); err != nil {
-						log.Printf("db config reload failed: %v", err)
-					} else if changed {
-						log.Printf("db config reloaded: %s", db.Summary())
-					}
-					cancel()
-					wp.Configure(wpcomClientConfig(config.Get(), hostname))
-					audit.SetMode(config.Get().AuditLogModeDefault)
-					if dash != nil {
-						dash.SetFleetSource(newFleetDashboardStore(config.Get()))
-					}
-					logConfigWarnings(config.Get())
-					log.Println("config reloaded; CHECK_DNS_RESOLVERS changes require restart")
-				}
+				requestShutdown(sig, processcontrol.IsGracefulRestartSignal(sig))
 			case syscall.SIGINT, syscall.SIGTERM:
-				log.Println("received shutdown signal, draining")
-				shuttingDown.Store(true)
-				stopDBReload()
-				stopHostPublisherOnce.Do(func() { close(stopHostPublisher) })
-				publishHostSnapshot(fleethealth.StateStopping, false)
-				if apiSrv != nil {
-					ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-					if err := apiSrv.Shutdown(ctx); err != nil {
-						log.Printf("api: shutdown error: %v", err)
-					}
-					cancel()
-				}
-				if deliveryRuntime != nil {
-					deliveryRuntime.Stop()
-				}
-				orch.Stop()
-				// Hard kill if drain takes too long (e.g. a stalled HTTP check).
-				time.AfterFunc(30*time.Second, func() {
-					log.Println("jetmon2: shutdown timeout exceeded, forcing exit")
-					os.Exit(1)
-				})
+				requestShutdown(sig, false)
 			}
 		}
 	}()
@@ -425,6 +440,12 @@ func runServe() {
 	}
 	cancel()
 	log.Println("jetmon2: shutdown complete")
+	if restartRequested.Load() {
+		log.Println("jetmon2: re-executing after graceful SIGHUP")
+		if err := processcontrol.ExecSelf(); err != nil {
+			log.Fatalf("jetmon2: re-exec failed: %v", err)
+		}
+	}
 }
 
 func cmdMigrate() {
@@ -1399,7 +1420,7 @@ func cmdReload() {
 	if err := proc.Signal(syscall.SIGHUP); err != nil {
 		log.Fatalf("signal: %v", err)
 	}
-	fmt.Printf("SIGHUP sent to pid %d\n", pid)
+	fmt.Printf("SIGHUP sent to pid %d - jetmon2 will drain and re-exec\n", pid)
 }
 
 // cmdKeys is the entrypoint for `./jetmon2 keys ...` ops commands. Key

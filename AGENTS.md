@@ -80,7 +80,7 @@ architecture, data model, operations, API, and rollout docs.
 | `internal/checker/` | Goroutine pool, HTTP checks, httptrace timing |
 | `internal/veriflier/` | JSON-over-HTTP client/server for Veriflier communication |
 | `internal/db/` | MySQL access, `jetpack_monitor_hosts` heartbeat, connection pooling |
-| `internal/config/` | Config loading, SIGHUP hot-reload |
+| `internal/config/` | Config loading and validation |
 | `internal/metrics/` | StatsD client, stats file writer |
 | `internal/wpcom/` | WPCOM API client, circuit breaker |
 | `internal/audit/` | Operational log writes to `jetpack_monitor_audit_log` (WPCOM, retries, verifier RPCs, config reloads) |
@@ -141,7 +141,7 @@ go run -race ./cmd/jetmon2/
 
 ## Configuration
 
-Copy `config/config-sample.json` to `config/config.json`. All keys from the original Jetmon are honoured; new keys are additive. Send SIGHUP to hot-reload config without restarting.
+Copy `config/config-sample.json` to `config/config.json`. All keys from the original Jetmon are honoured; new keys are additive. Send SIGHUP to drain and gracefully re-exec long-running services so rendered config and replaced binaries are picked up.
 
 **Existing keys (unchanged behaviour):**
 - `NUM_WORKERS`: Goroutine pool size (replaces worker process count)
@@ -177,7 +177,7 @@ These interfaces must remain identical to the original Jetmon. Do not change the
 | Runtime logs | stdout/stderr via the service manager or container runtime; v1 `logs/jetmon.log` and `logs/status-change.log` are intentionally not written by v2 unless a future consumer need is confirmed |
 | `stats/` file outputs | `sitespersec`, `sitesqueue`, `totals` — same format |
 | `config/config.json` keys | All existing keys honoured |
-| SIGHUP config reload | Same behaviour |
+| SIGHUP graceful restart | Drain, then re-exec through the configured restart target |
 | SIGINT graceful shutdown | Same behaviour |
 
 ## Site Status Values

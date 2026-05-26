@@ -36,6 +36,7 @@ x-jetmon-scale-service: &jetmon_scale_service
     dockerfile: docker/Dockerfile_jetmon
   init: true
   restart: unless-stopped
+  stop_grace_period: 45s
   user: "${UID:-1000}:${GID:-1000}"
   volumes:
     - ../config:/jetmon/config
@@ -61,6 +62,7 @@ x-veriflier-scale-service: &veriflier_scale_service
     dockerfile: docker/Dockerfile_veriflier
   init: true
   restart: unless-stopped
+  stop_grace_period: 45s
   environment:
     VERIFLIER_AUTH_TOKEN: ${VERIFLIER_AUTH_TOKEN:-veriflier_1_auth_token}
     VERIFLIER_PORT: "7803"
