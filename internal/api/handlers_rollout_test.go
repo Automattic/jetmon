@@ -6,6 +6,7 @@ import (
 
 	"github.com/Automattic/jetmon/internal/checker"
 	"github.com/Automattic/jetmon/internal/checkmode"
+	"github.com/Automattic/jetmon/internal/veriflier"
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
@@ -113,6 +114,32 @@ func TestRolloutOperatorBindsToAPIKeyID(t *testing.T) {
 	req := requestWithKey(http.MethodPost, "/api/v1/rollout/seed", key)
 	if got := rolloutOperator(req); got != "test-consumer#1" {
 		t.Fatalf("rolloutOperator = %q, want test-consumer#1", got)
+	}
+}
+
+func TestMissingRequiredVeriflierCapabilities(t *testing.T) {
+	ok := veriflier.Capabilities{
+		BatchErrorIsolation: true,
+		AuthRequired:        true,
+		ProbeSafetyNonVote:  true,
+		StatusDetailAuth:    true,
+		MaxRequestBodyBytes: 10,
+	}
+	if missing := missingRequiredVeriflierCapabilities(ok); len(missing) != 0 {
+		t.Fatalf("missingRequiredVeriflierCapabilities(ok) = %#v, want none", missing)
+	}
+
+	missing := missingRequiredVeriflierCapabilities(veriflier.Capabilities{})
+	for _, want := range []string{
+		"batch_error_isolation",
+		"auth_required",
+		"probe_safety_non_vote",
+		"status_detail_auth",
+		"max_request_body_bytes",
+	} {
+		if !containsString(missing, want) {
+			t.Fatalf("missing capabilities = %#v, want %s", missing, want)
+		}
 	}
 }
 

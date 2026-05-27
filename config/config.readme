@@ -88,12 +88,32 @@ starts.
 - Notes: `dev` sets `SCHEMA_MANAGEMENT_MODE=migrate` and disables WPCOM
   notifications unless those keys are explicitly set. `production` sets
   `SCHEMA_MANAGEMENT_MODE=validate`, `CHECK_TARGET_SAFETY_MODE=public_only`,
-  `ROLLOUT_MODE=api-controlled`, and `VERIFLIER_DISCOVERY_MODE=shadow` unless
-  those keys are explicitly set. The Docker Monitor entrypoint also uses
+  `ROLLOUT_MODE=api-controlled`, `VERIFLIER_DISCOVERY_MODE=shadow`, HTTPS
+  Veriflier transport, and normal legacy WPCOM TLS verification unless those
+  keys are explicitly set. The Docker Monitor entrypoint also uses
   `CONFIG_PROFILE=production` as a
   render-time convenience to fill omitted production container defaults such as
   host-local StatsD, `HEAD` / `legacy` rollout checks, and `DEBUG_PORT=0`;
   review the rendered JSON before activation.
+
+### PRODUCTION_SECURITY_EXCEPTIONS
+
+- Default: `[]`
+- Values: `plain_veriflier_transport`, `plain_monitor_api`,
+  `allow_private_targets`, `legacy_wpcom_insecure_tls`
+- Example:
+
+  ```json
+  "PRODUCTION_SECURITY_EXCEPTIONS": ["legacy_wpcom_insecure_tls"],
+  "PRODUCTION_SECURITY_EXCEPTION_REASON": "temporary WPCOM legacy rollout parity",
+  "PRODUCTION_SECURITY_EXCEPTION_EXPIRES_AT": "2026-06-30T00:00:00Z"
+  ```
+
+- Purpose: temporary escape hatch for production fail-closed security checks.
+- Notes: exceptions are accepted only with `CONFIG_PROFILE=production`, a
+  non-empty reason, and a future RFC3339 expiry. Do not use them for normal
+  rollout posture. The Docker entrypoint accepts a comma-separated
+  `PRODUCTION_SECURITY_EXCEPTIONS` render input.
 
 ### SCHEMA_MANAGEMENT_MODE
 
@@ -516,14 +536,14 @@ observed rate/latency, and avoids per-probe healthy freshness writes.
 
 ### WPCOM_NOTIFY_LEGACY_INSECURE_SKIP_VERIFY
 
-- Default: `true`
+- Default: `true`; production profile default: `false`
 - Values: `true`, `false`
 - Example: `"WPCOM_NOTIFY_LEGACY_INSECURE_SKIP_VERIFY": false`
 - Purpose: controls TLS server verification for legacy WPCOM mode.
-- Notes: `true` preserves v1's `rejectUnauthorized=false` behavior for initial
-  compatibility, but it is exposed to man-in-the-middle risk. Set false after
-  the legacy endpoint is confirmed to work with normal TLS verification from
-  the production container network.
+- Notes: `true` preserves v1's `rejectUnauthorized=false` behavior but is
+  exposed to man-in-the-middle risk. Production refuses it unless
+  `PRODUCTION_SECURITY_EXCEPTIONS` includes `legacy_wpcom_insecure_tls` with a
+  reason and future expiry.
 
 ### WPCOM_NOTIFY_MODERN_ENDPOINT
 
@@ -823,6 +843,9 @@ The standalone Veriflier has a separate small JSON file:
   balancer and have Monitors use an HTTPS endpoint.
 - `enable_legacy_http`: optional lab/emergency compatibility switch for
   legacy-compatible `/check` and `/status`; default false.
+- `/v2/status`: unauthenticated requests return only minimal health/protocol
+  readiness. Requests with the correct Bearer token return full version,
+  vantage, capacity, and capability details used by rollout preflight.
 - `check_target_safety_mode`: outbound SSRF safety policy for Veriflier HTTP
   probes. Values match Monitor: `public_only` (default) or
   `allow_private_for_tests`. Keep `public_only` for production and real site

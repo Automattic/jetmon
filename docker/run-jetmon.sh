@@ -24,6 +24,31 @@ bool_json() {
 	esac
 }
 
+json_string_array() {
+	local raw="${1:-}"
+	if [ -z "$raw" ]; then
+		printf '[]'
+		return
+	fi
+	local first=1
+	local item
+	printf '['
+	IFS=',' read -ra items <<< "$raw"
+	for item in "${items[@]}"; do
+		item="${item#"${item%%[![:space:]]*}"}"
+		item="${item%"${item##*[![:space:]]}"}"
+		if [ -z "$item" ]; then
+			continue
+		fi
+		if [ "$first" -eq 0 ]; then
+			printf ','
+		fi
+		first=0
+		printf '"%s"' "$(sed_escape "$item")"
+	done
+	printf ']'
+}
+
 config_profile_render_value() {
 	local value="${CONFIG_PROFILE:-}"
 	case "$value" in
@@ -46,6 +71,8 @@ render_config() {
 	local target=$1
 	local config_profile
 	config_profile="$(config_profile_render_value)"
+	local production_security_exceptions
+	production_security_exceptions="$(json_string_array "${PRODUCTION_SECURITY_EXCEPTIONS:-}")"
 	local schema_management_mode="${SCHEMA_MANAGEMENT_MODE:-}"
 	local statsd_addr="${STATSD_ADDR:-}"
 	local check_target_safety_mode="${CHECK_TARGET_SAFETY_MODE:-public_only}"
@@ -59,6 +86,8 @@ render_config() {
 	local debug_port="${DEBUG_PORT:-6060}"
 	local wpcom_notify_default=false
 	local wpcom_notify_enable
+	local wpcom_legacy_insecure_default=true
+	local wpcom_legacy_insecure
 	local smtp_use_tls
 	if [ -z "$schema_management_mode" ]; then
 		if [ "$config_profile" = "dev" ]; then
@@ -76,12 +105,17 @@ render_config() {
 		veriflier_transport_scheme="${veriflier_transport_scheme:-https}"
 		debug_port="${DEBUG_PORT:-0}"
 		wpcom_notify_default=true
+		wpcom_legacy_insecure_default=false
 	fi
 	wpcom_notify_enable="$(bool_json WPCOM_NOTIFY_ENABLE "${WPCOM_NOTIFY_ENABLE:-$wpcom_notify_default}")"
+	wpcom_legacy_insecure="$(bool_json WPCOM_NOTIFY_LEGACY_INSECURE_SKIP_VERIFY "${WPCOM_NOTIFY_LEGACY_INSECURE_SKIP_VERIFY:-$wpcom_legacy_insecure_default}")"
 	smtp_use_tls="$(bool_json SMTP_USE_TLS "${SMTP_USE_TLS:-false}")"
 	sed \
 		-e "s|<AUTH_TOKEN>|$(sed_escape "${WPCOM_AUTH_TOKEN:-change_me}")|g" \
 		-e "s|\"CONFIG_PROFILE\"    : \"dev\"|\"CONFIG_PROFILE\"    : \"$(sed_escape "$config_profile")\"|g" \
+		-e "s|\"PRODUCTION_SECURITY_EXCEPTIONS\"         : \\[\\]|\"PRODUCTION_SECURITY_EXCEPTIONS\"         : ${production_security_exceptions}|g" \
+		-e "s|\"PRODUCTION_SECURITY_EXCEPTION_REASON\"  : \"\"|\"PRODUCTION_SECURITY_EXCEPTION_REASON\"  : \"$(sed_escape "${PRODUCTION_SECURITY_EXCEPTION_REASON:-}")\"|g" \
+		-e "s|\"PRODUCTION_SECURITY_EXCEPTION_EXPIRES_AT\": \"\"|\"PRODUCTION_SECURITY_EXCEPTION_EXPIRES_AT\": \"$(sed_escape "${PRODUCTION_SECURITY_EXCEPTION_EXPIRES_AT:-}")\"|g" \
 		-e "s|\"HOSTNAME\"          : \"\"|\"HOSTNAME\"          : \"$(sed_escape "${JETMON_HOSTNAME:-}")\"|g" \
 		-e "s|\"STATSD_ADDR\"       : \"\"|\"STATSD_ADDR\"       : \"$(sed_escape "$statsd_addr")\"|g" \
 		-e "s|\"STATSD_HOST_PATH\"  : \"\"|\"STATSD_HOST_PATH\"  : \"$(sed_escape "${STATSD_HOST_PATH:-}")\"|g" \
@@ -102,6 +136,7 @@ render_config() {
 		-e "s|<VERIFLIER_AUTH_TOKEN>|$(sed_escape "${VERIFLIER_AUTH_TOKEN:-veriflier_1_auth_token}")|g" \
 		-e 's|"API_PORT"       : 0|"API_PORT"       : 8090|g' \
 		-e "s|\"WPCOM_NOTIFY_ENABLE\"          : false|\"WPCOM_NOTIFY_ENABLE\"          : ${wpcom_notify_enable}|g" \
+		-e "s|\"WPCOM_NOTIFY_LEGACY_INSECURE_SKIP_VERIFY\": true|\"WPCOM_NOTIFY_LEGACY_INSECURE_SKIP_VERIFY\": ${wpcom_legacy_insecure}|g" \
 		-e "s|\"CHECK_TARGET_SAFETY_MODE\"     : \"public_only\"|\"CHECK_TARGET_SAFETY_MODE\"     : \"$(sed_escape "$check_target_safety_mode")\"|g" \
 		-e "s|\"DEFAULT_CHECK_METHOD\"         : \"GET\"|\"DEFAULT_CHECK_METHOD\"         : \"$(sed_escape "${default_check_method:-GET}")\"|g" \
 		-e "s|\"DEFAULT_DETECTION_PROFILE\"    : \"full\"|\"DEFAULT_DETECTION_PROFILE\"    : \"$(sed_escape "${default_detection_profile:-full}")\"|g" \

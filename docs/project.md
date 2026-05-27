@@ -152,9 +152,11 @@ one v2 host can replace one v1 range.
 
 V2 Monitors call v2 Verifliers over JSON/HTTP(S). Production Verifliers are
 public-web services, so Monitor-to-Veriflier traffic must use HTTPS. Bearer
-tokens are an auth mechanism, not transport security. Quorum may exclude
-unhealthy vantages but must respect a configured floor so one Veriflier cannot
-confirm downtime alone.
+tokens are an auth mechanism, not transport security. Unauthenticated
+`/v2/status` returns minimal health only; authenticated status returns the
+version, capacity, vantage, and capability flags used by rollout gates. Quorum
+may exclude unhealthy vantages but must respect a configured floor so one
+Veriflier cannot confirm downtime alone.
 
 Webhooks and alert contacts consume event transitions through high-water marks,
 create delivery rows, claim rows transactionally, and retry:

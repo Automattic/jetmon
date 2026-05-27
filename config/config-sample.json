@@ -1,6 +1,9 @@
 {
 	"DEBUG"             : false,
 	"CONFIG_PROFILE"    : "dev",
+	"PRODUCTION_SECURITY_EXCEPTIONS"         : [],
+	"PRODUCTION_SECURITY_EXCEPTION_REASON"  : "",
+	"PRODUCTION_SECURITY_EXCEPTION_EXPIRES_AT": "",
 	"HOSTNAME"          : "",
 	"STATSD_ADDR"       : "",
 	"STATSD_HOST_PATH"  : "",

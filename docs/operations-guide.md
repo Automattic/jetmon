@@ -158,6 +158,8 @@ Important production render inputs:
 | `VERIFLIER_DISCOVERY_MODE` | `shadow` until registry drift is accepted. |
 | `VERIFLIER_TRANSPORT_SCHEME` | `https` for public Veriflier endpoints. |
 | `WPCOM_NOTIFY_ENABLE` | `true` for production drop-in rollout; false only in isolated labs. |
+| `WPCOM_NOTIFY_LEGACY_INSECURE_SKIP_VERIFY` | `false`; temporary `true` requires a production security exception. |
+| `PRODUCTION_SECURITY_EXCEPTIONS` | Empty unless a documented temporary exception is approved. |
 | `API_PUBLIC_BASE_URL` or `API_TLS_CERT_PATH` / `API_TLS_KEY_PATH` | Required when operators reach the Monitor API over a network path that leaves localhost/private host scope. |
 | `CHECK_HISTORY_MODE_DEFAULT` | `status_change` unless a focused test needs more. |
 | `AUDIT_LOG_MODE_DEFAULT` | `operational` for rollout evidence without read firehose noise. |
@@ -166,6 +168,11 @@ Important production render inputs:
 
 Set production defaults explicitly even when the entrypoint has the same
 fallback. Visible config review matters more than implicit defaults.
+
+Production config validation fails closed for plain Monitor API exposure, plain
+Monitor-to-Veriflier transport, test-only private-target checks, and insecure
+legacy WPCOM TLS. A temporary exception must be explicit, reasoned, and have a
+future expiry in the rendered config.
 
 ## Schema Posture
 

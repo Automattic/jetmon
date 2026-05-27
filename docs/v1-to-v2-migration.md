@@ -20,7 +20,7 @@ deliverer rollout notes into one runbook.
 | Gate | Evidence |
 | --- | --- |
 | Schema/config | Systems-applied DDL from [production-schema.md](production-schema.md), `schema validate`, `validate-config`, and API preflight pass. |
-| Verifliers | `/v2/status` and quorum report are green. |
+| Verifliers | Authenticated `/v2/status`, required capability flags, and quorum report are green. |
 | Images | CI-built tags promoted by Systems. |
 | WPCOM | Legacy notification path tested. |
 | Operator CLI | Token, base URL, and `--allow-remote` policy are ready. |
@@ -69,7 +69,7 @@ V2 Monitors use v2 Verifliers over JSON/HTTP(S) only:
 
 | Endpoint | Purpose |
 | --- | --- |
-| `/v2/status` | Health and capacity. |
+| `/v2/status` | Public minimal health; authenticated detailed health, capacity, and capability flags. |
 | `/v2/check` | Batch check request. |
 
 Production Verifliers are public-web services. Do not run production
@@ -81,8 +81,10 @@ trusted proxy/load balancer in front of the Veriflier container. The repo
 includes a Caddy production Compose path that binds public `80/443`, terminates
 TLS with ACME, and leaves the Veriflier app port loopback/private.
 
-Confirm HTTPS reachability, auth token presence, enough healthy vantages for
-quorum, host resource limits, and stdout/stderr logging.
+Confirm HTTPS reachability, auth token presence, required capability flags,
+enough healthy vantages for quorum, host resource limits, and stdout/stderr
+logging. Production Verifliers must not advertise legacy HTTP endpoints unless
+an approved temporary exception exists.
 
 ## Operator Setup
 

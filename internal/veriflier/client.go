@@ -749,6 +749,9 @@ func (c *VeriflierClient) Status(ctx context.Context) (*StatusV2Response, error)
 	if err != nil {
 		return nil, err
 	}
+	if c.authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.authToken)
+	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, v2TransportError{endpoint: "/v2/status", err: err}
@@ -775,6 +778,9 @@ func (c *VeriflierClient) statusV2(ctx context.Context) (*StatusV2Response, erro
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
+	}
+	if c.authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.authToken)
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
