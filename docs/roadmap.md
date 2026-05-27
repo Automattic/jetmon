@@ -26,6 +26,11 @@ Deferred work and future direction. Completed history belongs in
 - Make rehearsal lab notification posture match the intended rollout posture:
   no real WPCOM calls, no live alerts, and clear fixture-only evidence when
   legacy notification checks are intentionally exercised.
+- Run a safe WPCOM legacy-notification smoke once a staging endpoint,
+  certificate paths, and canary sites are approved.
+- Define explicit DB SLOs, dashboard panels, and operator rollback thresholds
+  for canary expansion. Operational alerts should warn and pause expansion;
+  they should not automatically restart v1 or roll back ownership.
 - Retire local/lab dependence on `jetpack_monitor_schema_migrations` after the
   structural schema reconciler has enough usage evidence.
 - Retire pinned bucket mode and migration aliases after cutover.
@@ -78,6 +83,8 @@ Useful operator improvements:
 - Make Veriflier StatsD/Graphite evidence reliable in rollout rehearsals so
   load and quorum checks do not have to rely on `/v2/status` alone.
 - clearer dashboard reasons for not-ready hosts;
+- decide whether the HTML dashboard should remain a legacy private surface or
+  move behind the authenticated API with the same data exposed as JSON;
 - one-command evidence packet export;
 - alerts for projection drift, stale process health, and delivery backlog;
 - event links to check-history and audit rows;

@@ -188,6 +188,59 @@ starts.
 - Notes: keep this low enough for dashboards to feel current, but avoid making
   stats files a hot write path.
 
+### OPS_ALERTS_ENABLED
+
+- Default: `false`
+- Values: `true`, `false`
+- Example: `"OPS_ALERTS_ENABLED": true`
+- Purpose: enables low-volume operational notifications about Jetmon service
+  posture and dependency failures. These are separate from customer site
+  alerts.
+- Notes: requires `OPS_ALERTS_SLACK_WEBHOOK_URL`.
+
+### OPS_ALERTS_SLACK_WEBHOOK_URL
+
+- Default: empty.
+- Example: `"OPS_ALERTS_SLACK_WEBHOOK_URL": "https://hooks.slack.com/services/..."`
+- Purpose: Slack incoming webhook used for Monitor, Veriflier, and deliverer
+  operational notifications.
+- Notes: must be an absolute `https://` URL. Store it as deployment secret
+  material, not in source control.
+
+### OPS_ALERTS_MIN_SEVERITY
+
+- Default: `warning`
+- Values: `info`, `warning`, `error`, `critical`
+- Example: `"OPS_ALERTS_MIN_SEVERITY": "warning"`
+- Purpose: minimum operational-alert severity to send.
+- Notes: service-online notifications are `info`, so set this to `info` only
+  when startup/restart notifications are desired.
+
+### OPS_ALERTS_REPEAT_INTERVAL_SEC
+
+- Default: `300`
+- Example: `"OPS_ALERTS_REPEAT_INTERVAL_SEC": 300`
+- Purpose: local dedupe window per alert code and severity.
+- Notes: set to `0` only for focused testing where every repeated alert should
+  be sent.
+
+### OPS_ALERTS_SERVICE_ONLINE
+
+- Default: `true`
+- Values: `true`, `false`
+- Example: `"OPS_ALERTS_SERVICE_ONLINE": true`
+- Purpose: controls whether each service emits a startup posture notification.
+- Notes: this still respects `OPS_ALERTS_MIN_SEVERITY`; the default `warning`
+  threshold suppresses service-online notifications unless changed to `info`.
+
+### OPS_ALERTS_DB_PING_WARN_MS
+
+- Default: `250`
+- Example: `"OPS_ALERTS_DB_PING_WARN_MS": 250`
+- Purpose: Monitor DB ping latency threshold for an operational warning.
+- Notes: this is an early signal for DB pressure; it does not change check
+  scheduling behavior.
+
 ## Database Connectivity
 
 ### DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME
@@ -850,6 +903,16 @@ The standalone Veriflier has a separate small JSON file:
   probes. Values match Monitor: `public_only` (default) or
   `allow_private_for_tests`. Keep `public_only` for production and real site
   data.
+- `ops_alerts_enabled`: enables Veriflier operational Slack notifications.
+  Default: false.
+- `ops_alerts_slack_webhook_url`: Slack incoming webhook for operational
+  alerts. Required when `ops_alerts_enabled` is true and must be `https://`.
+- `ops_alerts_min_severity`: `info`, `warning`, `error`, or `critical`.
+  Default: `warning`; service-online notifications require `info`.
+- `ops_alerts_repeat_interval_sec`: local dedupe window per alert code and
+  severity. Default: `300`.
+- `ops_alerts_service_online`: sends Veriflier startup posture notifications
+  when enabled and allowed by min severity. Default: true in rendered configs.
 
 Environment aliases are accepted only for the fallback environment-only path
 used when the JSON file is missing: `VERIFLIER_AUTH_TOKEN`, `VERIFLIER_PORT`,
@@ -857,7 +920,8 @@ used when the JSON file is missing: `VERIFLIER_AUTH_TOKEN`, `VERIFLIER_PORT`,
 `VERIFLIER_STATSD_HOST_PATH`, `STATSD_HOST_PATH`, `VERIFLIER_VANTAGE_ID`,
 `VERIFLIER_REGION`, `VERIFLIER_PROVIDER`, `VERIFLIER_ENABLE_LEGACY_HTTP`,
 `VERIFLIER_TLS_CERT_PATH`, `VERIFLIER_TLS_KEY_PATH`,
-`VERIFLIER_CHECK_TARGET_SAFETY_MODE`, and `CHECK_TARGET_SAFETY_MODE`.
+`VERIFLIER_CHECK_TARGET_SAFETY_MODE`, `CHECK_TARGET_SAFETY_MODE`, and
+`OPS_ALERTS_*`.
 `VERIFLIER_STATSD_HOST_PATH` lets Compose stacks give Verifliers a different
 StatsD identity than Monitors while still using the same shared entrypoint
 pattern. The Docker entrypoint can render those values into generated JSON on

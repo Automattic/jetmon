@@ -1028,6 +1028,86 @@ func TestLoadRejectsInvalidStatsDAddr(t *testing.T) {
 	}
 }
 
+func TestOpsAlertsConfigValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		wantErr string
+		wantMin string
+	}{
+		{
+			name: "enabled https webhook",
+			body: `{
+				"AUTH_TOKEN": "token",
+				"OPS_ALERTS_ENABLED": true,
+				"OPS_ALERTS_SLACK_WEBHOOK_URL": "https://hooks.slack.com/services/test",
+				"OPS_ALERTS_MIN_SEVERITY": "warn",
+				"BUCKET_TOTAL": 100,
+				"BUCKET_TARGET": 50,
+				"NET_COMMS_TIMEOUT": 10,
+				"LOG_FORMAT": "text"
+			}`,
+			wantMin: "warning",
+		},
+		{
+			name: "enabled missing webhook",
+			body: `{
+				"AUTH_TOKEN": "token",
+				"OPS_ALERTS_ENABLED": true,
+				"BUCKET_TOTAL": 100,
+				"BUCKET_TARGET": 50,
+				"NET_COMMS_TIMEOUT": 10,
+				"LOG_FORMAT": "text"
+			}`,
+			wantErr: "OPS_ALERTS_SLACK_WEBHOOK_URL",
+		},
+		{
+			name: "http webhook rejected",
+			body: `{
+				"AUTH_TOKEN": "token",
+				"OPS_ALERTS_SLACK_WEBHOOK_URL": "http://hooks.slack.com/services/test",
+				"BUCKET_TOTAL": 100,
+				"BUCKET_TARGET": 50,
+				"NET_COMMS_TIMEOUT": 10,
+				"LOG_FORMAT": "text"
+			}`,
+			wantErr: "OPS_ALERTS_SLACK_WEBHOOK_URL",
+		},
+		{
+			name: "invalid severity rejected",
+			body: `{
+				"AUTH_TOKEN": "token",
+				"OPS_ALERTS_MIN_SEVERITY": "urgent",
+				"BUCKET_TOTAL": 100,
+				"BUCKET_TARGET": 50,
+				"NET_COMMS_TIMEOUT": 10,
+				"LOG_FORMAT": "text"
+			}`,
+			wantErr: "OPS_ALERTS_MIN_SEVERITY",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			saveConfigState(t)
+			p := writeConfigFile(t, tt.body)
+			err := Load(p)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("Load() error = %v, want %s", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if tt.wantMin != "" && Get().OpsAlertsMinSeverity != tt.wantMin {
+				t.Fatalf("OpsAlertsMinSeverity = %q, want %q", Get().OpsAlertsMinSeverity, tt.wantMin)
+			}
+		})
+	}
+}
+
 func TestLoadRejectsMixedDBConfigModes(t *testing.T) {
 	saveConfigState(t)
 

@@ -165,6 +165,8 @@ Important production render inputs:
 | `AUDIT_LOG_MODE_DEFAULT` | `operational` for rollout evidence without read firehose noise. |
 | `LEGACY_STATUS_PROJECTION_ENABLE` | `true` while rollback or legacy readers need it. |
 | `DEBUG_PORT` | `0` unless an approved localhost-only pprof window is active. |
+| `OPS_ALERTS_ENABLED` | `true` when an operator Slack webhook is approved. |
+| `OPS_ALERTS_MIN_SEVERITY` | `warning`; use `info` only if service-online notices are useful. |
 
 Set production defaults explicitly even when the entrypoint has the same
 fallback. Visible config review matters more than implicit defaults.
@@ -309,6 +311,27 @@ actions live in `jetpack_monitor_audit_log`.
 
 Keep dashboard and pprof listeners on loopback unless protected by trusted
 operator-network controls.
+
+## Operational Alerts
+
+Operational alerts are optional Slack notifications for Jetmon itself, not for
+customer site status. Enable them with `OPS_ALERTS_ENABLED=true` and an
+`OPS_ALERTS_SLACK_WEBHOOK_URL`.
+
+Sent alerts include:
+
+- service-online posture when `OPS_ALERTS_MIN_SEVERITY=info`;
+- Monitor DB unreachable or high DB ping latency;
+- DB config reload failures;
+- configured StatsD missing;
+- WPCOM circuit open or production notifications disabled;
+- Veriflier quorum unavailable, unhealthy Verifliers, or discovery failures;
+- standalone deliverer DB/config/StatsD failures.
+
+The sender dedupes repeated `(severity, code)` pairs for
+`OPS_ALERTS_REPEAT_INTERVAL_SEC`. Alerts should point operators at the failing
+dependency and the expected impact; they do not automatically roll back rollout
+activity or restart v1.
 
 ## Delivery Workers
 

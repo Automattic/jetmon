@@ -29,12 +29,16 @@ render_config() {
 	local legacy_http
 	local target_safety
 	local statsd_host_path
+	local ops_alerts_enabled
+	local ops_alerts_service_online
 	legacy_http="$(bool_json VERIFLIER_ENABLE_LEGACY_HTTP "${VERIFLIER_ENABLE_LEGACY_HTTP:-false}")"
 	target_safety="${VERIFLIER_CHECK_TARGET_SAFETY_MODE:-${CHECK_TARGET_SAFETY_MODE:-public_only}}"
 	statsd_host_path="${VERIFLIER_STATSD_HOST_PATH:-${STATSD_HOST_PATH:-}}"
+	ops_alerts_enabled="$(bool_json OPS_ALERTS_ENABLED "${OPS_ALERTS_ENABLED:-false}")"
+	ops_alerts_service_online="$(bool_json OPS_ALERTS_SERVICE_ONLINE "${OPS_ALERTS_SERVICE_ONLINE:-true}")"
 	sed \
 		-e "s|<VERIFLIER_PORT>|$(sed_escape "${VERIFLIER_PORT}")|g" \
-		-e "s|<VERIFLIER_AUTH_TOKEN>|$(sed_escape "${VERIFLIER_AUTH_TOKEN:-veriflier_1_auth_token}")|g" \
+		-e "s|<VERIFLIER_AUTH_TOKEN>|$(sed_escape "${VERIFLIER_AUTH_TOKEN:?set VERIFLIER_AUTH_TOKEN}")|g" \
 		-e "s|\"hostname\"   : \"\"|\"hostname\"   : \"$(sed_escape "${VERIFLIER_HOSTNAME:-${JETMON_HOSTNAME:-}}")\"|g" \
 		-e "s|\"statsd_addr\" : \"\"|\"statsd_addr\" : \"$(sed_escape "${STATSD_ADDR:-}")\"|g" \
 		-e "s|\"statsd_host_path\" : \"\"|\"statsd_host_path\" : \"$(sed_escape "$statsd_host_path")\"|g" \
@@ -45,6 +49,11 @@ render_config() {
 		-e "s|\"tls_key_path\"  : \"\"|\"tls_key_path\"  : \"$(sed_escape "${VERIFLIER_TLS_KEY_PATH:-}")\"|g" \
 		-e "s|\"enable_legacy_http\" : false|\"enable_legacy_http\" : ${legacy_http}|g" \
 		-e "s|\"check_target_safety_mode\" : \"public_only\"|\"check_target_safety_mode\" : \"$(sed_escape "${target_safety}")\"|g" \
+		-e "s|\"ops_alerts_enabled\" : false|\"ops_alerts_enabled\" : ${ops_alerts_enabled}|g" \
+		-e "s|\"ops_alerts_slack_webhook_url\" : \"\"|\"ops_alerts_slack_webhook_url\" : \"$(sed_escape "${OPS_ALERTS_SLACK_WEBHOOK_URL:-}")\"|g" \
+		-e "s|\"ops_alerts_min_severity\" : \"warning\"|\"ops_alerts_min_severity\" : \"$(sed_escape "${OPS_ALERTS_MIN_SEVERITY:-warning}")\"|g" \
+		-e "s|\"ops_alerts_repeat_interval_sec\" : 300|\"ops_alerts_repeat_interval_sec\" : ${OPS_ALERTS_REPEAT_INTERVAL_SEC:-300}|g" \
+		-e "s|\"ops_alerts_service_online\" : true|\"ops_alerts_service_online\" : ${ops_alerts_service_online}|g" \
 		config/veriflier-sample.json > "${target}"
 }
 

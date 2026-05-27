@@ -188,6 +188,17 @@ type Config struct {
 	AlertCooldownMinutes int `json:"ALERT_COOLDOWN_MINUTES"`
 
 	StatsUpdateIntervalMS int `json:"STATS_UPDATE_INTERVAL_MS"`
+
+	// Operational alerts are low-volume alerts about Jetmon service health,
+	// rollout safety, dependency failures, and production posture. They are
+	// separate from customer site alerts.
+	OpsAlertsEnabled           bool   `json:"OPS_ALERTS_ENABLED"`
+	OpsAlertsSlackWebhookURL   string `json:"OPS_ALERTS_SLACK_WEBHOOK_URL"`
+	OpsAlertsMinSeverity       string `json:"OPS_ALERTS_MIN_SEVERITY"`
+	OpsAlertsRepeatIntervalSec int    `json:"OPS_ALERTS_REPEAT_INTERVAL_SEC"`
+	OpsAlertsServiceOnline     bool   `json:"OPS_ALERTS_SERVICE_ONLINE"`
+	OpsAlertsDBPingWarnMS      int    `json:"OPS_ALERTS_DB_PING_WARN_MS"`
+
 	// StatsdSendMemUsage is a deprecated v1 compatibility key. Jetmon v2 emits
 	// process resource gauges whenever StatsD is configured.
 	StatsdSendMemUsage        bool     `json:"STATSD_SEND_MEM_USAGE"`
@@ -483,6 +494,10 @@ func defaults() *Config {
 		TimeBetweenChecksSec:                 30,
 		AlertCooldownMinutes:                 30,
 		StatsUpdateIntervalMS:                10000,
+		OpsAlertsMinSeverity:                 "warning",
+		OpsAlertsRepeatIntervalSec:           300,
+		OpsAlertsServiceOnline:               true,
+		OpsAlertsDBPingWarnMS:                250,
 		TimeBetweenNoticesMin:                59,
 		WPCOMNotifyEnable:                    true,
 		WPCOMNotifyMode:                      WPCOMNotifyModeLegacy,
@@ -928,6 +943,26 @@ func validate(cfg *Config) error {
 	}
 	if cfg.KeywordReadMaxMS < 0 {
 		return fmt.Errorf("KEYWORD_READ_MAX_MS must be >= 0")
+	}
+	cfg.OpsAlertsSlackWebhookURL = strings.TrimSpace(cfg.OpsAlertsSlackWebhookURL)
+	cfg.OpsAlertsMinSeverity = normalizeOpsAlertSeverity(cfg.OpsAlertsMinSeverity)
+	if cfg.OpsAlertsMinSeverity == "" {
+		return fmt.Errorf("OPS_ALERTS_MIN_SEVERITY must be one of: info, warning, error, critical")
+	}
+	if cfg.OpsAlertsRepeatIntervalSec < 0 {
+		return fmt.Errorf("OPS_ALERTS_REPEAT_INTERVAL_SEC must be >= 0")
+	}
+	if cfg.OpsAlertsDBPingWarnMS < 0 {
+		return fmt.Errorf("OPS_ALERTS_DB_PING_WARN_MS must be >= 0")
+	}
+	if cfg.OpsAlertsEnabled && cfg.OpsAlertsSlackWebhookURL == "" {
+		return fmt.Errorf("OPS_ALERTS_SLACK_WEBHOOK_URL is required when OPS_ALERTS_ENABLED=true")
+	}
+	if cfg.OpsAlertsSlackWebhookURL != "" {
+		u, err := url.Parse(cfg.OpsAlertsSlackWebhookURL)
+		if err != nil || u.Scheme != "https" || u.Host == "" {
+			return fmt.Errorf("OPS_ALERTS_SLACK_WEBHOOK_URL must be an absolute https URL")
+		}
 	}
 	method, err := checkmode.NormalizeMethod(cfg.DefaultCheckMethod, checkmode.MethodGET)
 	if err != nil {
@@ -1400,6 +1435,23 @@ func normalizeWPCOMNotifyMode(mode string) string {
 		return WPCOMNotifyModeLegacy
 	}
 	return mode
+}
+
+func normalizeOpsAlertSeverity(severity string) string {
+	switch strings.ToLower(strings.TrimSpace(severity)) {
+	case "":
+		return "warning"
+	case "info":
+		return "info"
+	case "warn", "warning":
+		return "warning"
+	case "err", "error":
+		return "error"
+	case "crit", "critical":
+		return "critical"
+	default:
+		return ""
+	}
 }
 
 func applyWPCOMNotifyDefaults(cfg *Config) {

@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"reflect"
@@ -21,6 +22,7 @@ import (
 	"github.com/Automattic/jetmon/internal/checker"
 	"github.com/Automattic/jetmon/internal/config"
 	"github.com/Automattic/jetmon/internal/metrics"
+	"github.com/Automattic/jetmon/internal/opsalerts"
 	"github.com/Automattic/jetmon/internal/processcontrol"
 	"github.com/Automattic/jetmon/internal/veriflier"
 )
@@ -51,7 +53,12 @@ type veriflierConfig struct {
 	LegacyHTTP  bool   `json:"enable_legacy_http"`
 	// CheckTargetSafetyMode uses the same values as Monitor:
 	// public_only or allow_private_for_tests.
-	CheckTargetSafetyMode string `json:"check_target_safety_mode"`
+	CheckTargetSafetyMode      string `json:"check_target_safety_mode"`
+	OpsAlertsEnabled           bool   `json:"ops_alerts_enabled"`
+	OpsAlertsSlackWebhookURL   string `json:"ops_alerts_slack_webhook_url"`
+	OpsAlertsMinSeverity       string `json:"ops_alerts_min_severity"`
+	OpsAlertsRepeatIntervalSec int    `json:"ops_alerts_repeat_interval_sec"`
+	OpsAlertsServiceOnline     bool   `json:"ops_alerts_service_online"`
 }
 
 func main() {
@@ -89,6 +96,7 @@ func main() {
 	hostname := configuredHostname(cfg.Hostname)
 	addr := fmt.Sprintf(":%s", cfg.TransportPort())
 	agentID := veriflierAgentID(hostname, cfg.TransportPort())
+	ops := newVeriflierOpsAlertClientFromConfig(cfg, hostname)
 
 	// Optional StatsD metrics. statsd_addr is empty in standalone deploys,
 	// "statsd:8125" in the docker compose stack. metrics.Init failure logs and
@@ -143,6 +151,19 @@ func main() {
 	}()
 
 	log.Printf("veriflier2 %s starting on %s legacy_http=%s target_safety=%s tls=%s", version, addr, enabledLabel(cfg.LegacyHTTP), cfg.CheckTargetSafetyMode, enabledLabel(cfg.TLSCertPath != ""))
+	ops.ServiceOnline(map[string]any{
+		"port":               cfg.TransportPort(),
+		"legacy_http":        cfg.LegacyHTTP,
+		"tls_enabled":        cfg.TLSCertPath != "",
+		"target_safety":      cfg.CheckTargetSafetyMode,
+		"vantage_id":         cfg.VantageID,
+		"region":             cfg.Region,
+		"provider":           cfg.Provider,
+		"statsd_enabled":     cfg.StatsDAddr != "",
+		"statsd_host_path":   cfg.StatsDPath,
+		"agent_id":           agentID,
+		"process_started_at": time.Now().UTC().Format(time.RFC3339),
+	})
 	var listenErr error
 	if cfg.TLSCertPath != "" {
 		listenErr = srv.ListenTLS(cfg.TLSCertPath, cfg.TLSKeyPath)
@@ -201,6 +222,31 @@ func isNilResourceStatsEmitter(m resourceStatsEmitter) bool {
 	default:
 		return false
 	}
+}
+
+func newVeriflierOpsAlertClientFromConfig(cfg *veriflierConfig, hostname string) *opsalerts.Client {
+	if cfg == nil {
+		return opsalerts.New(opsalerts.Config{})
+	}
+	return opsalerts.New(opsalerts.Config{
+		Enabled:         cfg.OpsAlertsEnabled,
+		SlackWebhookURL: cfg.OpsAlertsSlackWebhookURL,
+		MinSeverity:     cfg.OpsAlertsMinSeverity,
+		RepeatInterval:  time.Duration(cfg.OpsAlertsRepeatIntervalSec) * time.Second,
+		ServiceOnline:   cfg.OpsAlertsServiceOnline,
+		Service:         "veriflier",
+		Host:            hostname,
+		Version:         version,
+		Commit:          commit,
+		BuildDate:       buildDate,
+		RunbookBaseURL:  "docs/operations-guide.md",
+		LogSendFailures: true,
+		AdditionalContext: map[string]string{
+			"vantage_id": cfg.VantageID,
+			"region":     cfg.Region,
+			"provider":   cfg.Provider,
+		},
+	})
 }
 
 func veriflierAgentID(hostname, port string) string {
@@ -331,6 +377,10 @@ func loadConfig(path string) (*veriflierConfig, error) {
 }
 
 func envOnlyConfig() (*veriflierConfig, error) {
+	opsRepeatInterval, err := intEnvOrDefault("OPS_ALERTS_REPEAT_INTERVAL_SEC", 300)
+	if err != nil {
+		return nil, fmt.Errorf("OPS_ALERTS_REPEAT_INTERVAL_SEC: %w", err)
+	}
 	cfg := &veriflierConfig{
 		AuthToken:   os.Getenv("VERIFLIER_AUTH_TOKEN"),
 		Port:        envOrDefault("VERIFLIER_PORT", envOrDefault("VERIFLIER_GRPC_PORT", "7803")),
@@ -346,6 +396,9 @@ func envOnlyConfig() (*veriflierConfig, error) {
 			os.Getenv("VERIFLIER_CHECK_TARGET_SAFETY_MODE"),
 			os.Getenv("CHECK_TARGET_SAFETY_MODE"),
 		),
+		OpsAlertsSlackWebhookURL:   os.Getenv("OPS_ALERTS_SLACK_WEBHOOK_URL"),
+		OpsAlertsMinSeverity:       os.Getenv("OPS_ALERTS_MIN_SEVERITY"),
+		OpsAlertsRepeatIntervalSec: opsRepeatInterval,
 	}
 	if v := os.Getenv("VERIFLIER_ENABLE_LEGACY_HTTP"); v != "" {
 		enabled, err := parseBool(v)
@@ -353,6 +406,20 @@ func envOnlyConfig() (*veriflierConfig, error) {
 			return nil, fmt.Errorf("VERIFLIER_ENABLE_LEGACY_HTTP: %w", err)
 		}
 		cfg.LegacyHTTP = enabled
+	}
+	if v := os.Getenv("OPS_ALERTS_ENABLED"); v != "" {
+		enabled, err := parseBool(v)
+		if err != nil {
+			return nil, fmt.Errorf("OPS_ALERTS_ENABLED: %w", err)
+		}
+		cfg.OpsAlertsEnabled = enabled
+	}
+	if v := os.Getenv("OPS_ALERTS_SERVICE_ONLINE"); v != "" {
+		enabled, err := parseBool(v)
+		if err != nil {
+			return nil, fmt.Errorf("OPS_ALERTS_SERVICE_ONLINE: %w", err)
+		}
+		cfg.OpsAlertsServiceOnline = enabled
 	}
 	return normalizeLoadedConfig(cfg)
 }
@@ -380,6 +447,26 @@ func normalizeLoadedConfig(cfg *veriflierConfig) (*veriflierConfig, error) {
 	cfg.TLSKeyPath = strings.TrimSpace(cfg.TLSKeyPath)
 	if cfg.TLSCertPath == "" && cfg.TLSKeyPath != "" || cfg.TLSCertPath != "" && cfg.TLSKeyPath == "" {
 		return nil, fmt.Errorf("tls_cert_path and tls_key_path must be set together")
+	}
+	cfg.OpsAlertsSlackWebhookURL = strings.TrimSpace(cfg.OpsAlertsSlackWebhookURL)
+	cfg.OpsAlertsMinSeverity = opsalerts.NormalizeSeverity(cfg.OpsAlertsMinSeverity)
+	if cfg.OpsAlertsMinSeverity == "" {
+		cfg.OpsAlertsMinSeverity = opsalerts.SeverityWarning
+	}
+	if cfg.OpsAlertsRepeatIntervalSec == 0 {
+		cfg.OpsAlertsRepeatIntervalSec = 300
+	}
+	if cfg.OpsAlertsRepeatIntervalSec < 0 {
+		return nil, fmt.Errorf("ops_alerts_repeat_interval_sec must be >= 0")
+	}
+	if cfg.OpsAlertsEnabled && cfg.OpsAlertsSlackWebhookURL == "" {
+		return nil, fmt.Errorf("ops_alerts_slack_webhook_url is required when ops_alerts_enabled=true")
+	}
+	if cfg.OpsAlertsSlackWebhookURL != "" {
+		u, err := url.Parse(cfg.OpsAlertsSlackWebhookURL)
+		if err != nil || u.Scheme != "https" || u.Host == "" {
+			return nil, fmt.Errorf("ops_alerts_slack_webhook_url must be an absolute https URL")
+		}
 	}
 	return cfg, nil
 }
@@ -484,6 +571,18 @@ func envOrDefault(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func intEnvOrDefault(key string, def int) (int, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return def, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("expected integer value, got %q", raw)
+	}
+	return value, nil
 }
 
 func parseBool(raw string) (bool, error) {

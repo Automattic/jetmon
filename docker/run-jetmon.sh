@@ -88,6 +88,8 @@ render_config() {
 	local wpcom_notify_enable
 	local wpcom_legacy_insecure_default=true
 	local wpcom_legacy_insecure
+	local ops_alerts_enabled
+	local ops_alerts_service_online
 	local smtp_use_tls
 	if [ -z "$schema_management_mode" ]; then
 		if [ "$config_profile" = "dev" ]; then
@@ -109,6 +111,8 @@ render_config() {
 	fi
 	wpcom_notify_enable="$(bool_json WPCOM_NOTIFY_ENABLE "${WPCOM_NOTIFY_ENABLE:-$wpcom_notify_default}")"
 	wpcom_legacy_insecure="$(bool_json WPCOM_NOTIFY_LEGACY_INSECURE_SKIP_VERIFY "${WPCOM_NOTIFY_LEGACY_INSECURE_SKIP_VERIFY:-$wpcom_legacy_insecure_default}")"
+	ops_alerts_enabled="$(bool_json OPS_ALERTS_ENABLED "${OPS_ALERTS_ENABLED:-false}")"
+	ops_alerts_service_online="$(bool_json OPS_ALERTS_SERVICE_ONLINE "${OPS_ALERTS_SERVICE_ONLINE:-true}")"
 	smtp_use_tls="$(bool_json SMTP_USE_TLS "${SMTP_USE_TLS:-false}")"
 	sed \
 		-e "s|<AUTH_TOKEN>|$(sed_escape "${WPCOM_AUTH_TOKEN:-change_me}")|g" \
@@ -141,6 +145,12 @@ render_config() {
 		-e "s|\"DEFAULT_CHECK_METHOD\"         : \"GET\"|\"DEFAULT_CHECK_METHOD\"         : \"$(sed_escape "${default_check_method:-GET}")\"|g" \
 		-e "s|\"DEFAULT_DETECTION_PROFILE\"    : \"full\"|\"DEFAULT_DETECTION_PROFILE\"    : \"$(sed_escape "${default_detection_profile:-full}")\"|g" \
 		-e "s|\"ROLLOUT_MODE\"                : \"active\"|\"ROLLOUT_MODE\"                : \"$(sed_escape "${rollout_mode:-active}")\"|g" \
+		-e "s|\"OPS_ALERTS_ENABLED\"             : false|\"OPS_ALERTS_ENABLED\"             : ${ops_alerts_enabled}|g" \
+		-e "s|\"OPS_ALERTS_SLACK_WEBHOOK_URL\"   : \"\"|\"OPS_ALERTS_SLACK_WEBHOOK_URL\"   : \"$(sed_escape "${OPS_ALERTS_SLACK_WEBHOOK_URL:-}")\"|g" \
+		-e "s|\"OPS_ALERTS_MIN_SEVERITY\"        : \"warning\"|\"OPS_ALERTS_MIN_SEVERITY\"        : \"$(sed_escape "${OPS_ALERTS_MIN_SEVERITY:-warning}")\"|g" \
+		-e "s|\"OPS_ALERTS_REPEAT_INTERVAL_SEC\" : 300|\"OPS_ALERTS_REPEAT_INTERVAL_SEC\" : ${OPS_ALERTS_REPEAT_INTERVAL_SEC:-300}|g" \
+		-e "s|\"OPS_ALERTS_SERVICE_ONLINE\"      : true|\"OPS_ALERTS_SERVICE_ONLINE\"      : ${ops_alerts_service_online}|g" \
+		-e "s|\"OPS_ALERTS_DB_PING_WARN_MS\"     : 250|\"OPS_ALERTS_DB_PING_WARN_MS\"     : ${OPS_ALERTS_DB_PING_WARN_MS:-250}|g" \
 		-e "s|\"DELIVERY_OWNER_HOST\": \"\"|\"DELIVERY_OWNER_HOST\": \"$(sed_escape "$delivery_owner_host")\"|g" \
 		-e "s|\"DEBUG_PORT\"     : 6060|\"DEBUG_PORT\"     : ${debug_port}|g" \
 		-e "s|\"API_TLS_CERT_PATH\" : \"\"|\"API_TLS_CERT_PATH\" : \"$(sed_escape "${API_TLS_CERT_PATH:-}")\"|g" \

@@ -3027,9 +3027,8 @@ func TestEscalateToVerifliersNoClients(t *testing.T) {
 	defer restore()
 	setTestConfig(t)
 
-	var confirmed bool
 	wpcomNotifyFunc = func(_ *wpcom.Client, _ wpcom.Notification) error {
-		confirmed = true
+		t.Fatal("notification should not be sent when no verifliers are configured")
 		return nil
 	}
 	dbUpdateLastAlertSent = func(context.Context, int64, int64, time.Time) error { return nil }
@@ -3046,8 +3045,15 @@ func TestEscalateToVerifliersNoClients(t *testing.T) {
 	entry := o.retries.get(55)
 	o.escalateToVerifliers(db.Site{BlogID: 55, MonitorURL: "https://example.com", SiteStatus: statusRunning}, entry)
 
-	if !confirmed {
-		t.Fatal("expected confirmDown (and notification) when no verifliers are configured")
+	got := o.retries.get(55)
+	if got == nil {
+		t.Fatal("retry entry was removed when no verifliers are configured")
+	}
+	if got.verifierDeferrals != 1 {
+		t.Fatalf("verifierDeferrals = %d, want 1", got.verifierDeferrals)
+	}
+	if got.verifierDeferredUntil.IsZero() {
+		t.Fatal("verifierDeferredUntil was not set")
 	}
 }
 

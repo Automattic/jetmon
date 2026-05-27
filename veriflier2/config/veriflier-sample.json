@@ -10,5 +10,10 @@
 	"tls_cert_path" : "",
 	"tls_key_path"  : "",
 	"enable_legacy_http" : false,
-	"check_target_safety_mode" : "public_only"
+	"check_target_safety_mode" : "public_only",
+	"ops_alerts_enabled" : false,
+	"ops_alerts_slack_webhook_url" : "",
+	"ops_alerts_min_severity" : "warning",
+	"ops_alerts_repeat_interval_sec" : 300,
+	"ops_alerts_service_online" : true
 }
