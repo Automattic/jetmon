@@ -1,5 +1,7 @@
 services:
   jetmon:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       API_PUBLIC_BASE_URL: "https://${MONITOR_API_PUBLIC_HOST:?set MONITOR_API_PUBLIC_HOST}"
 
