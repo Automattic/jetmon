@@ -158,6 +158,11 @@ version, capacity, vantage, and capability flags used by rollout gates. Quorum
 may exclude unhealthy vantages but must respect a configured floor so one
 Veriflier cannot confirm downtime alone.
 
+When Veriflier behavior that production rollout depends on is added, removed,
+or materially changed, update the advertised capability flags, the server
+capability values, rollout preflight requirements, `/v2/status` tests, rollout
+preflight tests, and the relevant docs in the same change.
+
 Webhooks and alert contacts consume event transitions through high-water marks,
 create delivery rows, claim rows transactionally, and retry:
 

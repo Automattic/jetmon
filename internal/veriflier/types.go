@@ -88,6 +88,9 @@ type Capacity struct {
 // Capabilities are behavior-level guarantees advertised by a Veriflier. Rollout
 // gates should key off these flags instead of a Git commit whenever possible so
 // cherry-picks and backports can still prove the behavior that production needs.
+// If a rollout-critical Veriflier feature is added, removed, or materially
+// changed, update this struct, Server.Capabilities, rollout preflight
+// requirements, tests, and docs in the same change.
 type Capabilities struct {
 	BatchErrorIsolation bool  `json:"batch_error_isolation"`
 	AuthRequired        bool  `json:"auth_required"`
