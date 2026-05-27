@@ -363,7 +363,26 @@ func (s *Server) handleV2Check(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleV2Status(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
+	if r.Header.Get("Authorization") == "" {
+		_ = json.NewEncoder(w).Encode(struct {
+			Status    string   `json:"status"`
+			Protocols []string `json:"protocols"`
+		}{
+			Status:    "OK",
+			Protocols: s.Protocols(),
+		})
+		return
+	}
+	if !s.authorized(r) {
+		incrementMetric("verifier.auth.rejected.count", 1)
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
 	_ = json.NewEncoder(w).Encode(s.Status())
 }
 
@@ -396,20 +415,35 @@ func decodeSingleJSONValue(dec *json.Decoder, dst any) error {
 }
 
 func (s *Server) Status() StatusV2Response {
+	return StatusV2Response{
+		Status:       "OK",
+		Version:      s.version,
+		Commit:       s.commit,
+		BuildDate:    s.buildDate,
+		GoVersion:    s.goVersion,
+		Protocols:    s.Protocols(),
+		Vantage:      s.vantage,
+		Agent:        s.agent,
+		Capacity:     s.executor.Capacity(),
+		Capabilities: s.Capabilities(),
+	}
+}
+
+func (s *Server) Protocols() []string {
 	protocols := []string{ProtocolV2}
 	if s.legacy {
 		protocols = append(protocols, ProtocolLegacy)
 	}
-	return StatusV2Response{
-		Status:    "OK",
-		Version:   s.version,
-		Commit:    s.commit,
-		BuildDate: s.buildDate,
-		GoVersion: s.goVersion,
-		Protocols: protocols,
-		Vantage:   s.vantage,
-		Agent:     s.agent,
-		Capacity:  s.executor.Capacity(),
+	return protocols
+}
+
+func (s *Server) Capabilities() Capabilities {
+	return Capabilities{
+		BatchErrorIsolation: true,
+		AuthRequired:        s.authToken != "",
+		ProbeSafetyNonVote:  true,
+		StatusDetailAuth:    true,
+		MaxRequestBodyBytes: maxRequestBodyBytes,
 	}
 }
 

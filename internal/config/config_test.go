@@ -525,6 +525,9 @@ func TestLoadProductionProfileAppliesProductionDefaults(t *testing.T) {
 	if cfg.VeriflierTransportScheme != VeriflierTransportHTTPS {
 		t.Fatalf("VeriflierTransportScheme = %q, want https", cfg.VeriflierTransportScheme)
 	}
+	if cfg.WPCOMNotifyLegacyInsecure {
+		t.Fatal("WPCOMNotifyLegacyInsecure = true, want false for production default")
+	}
 }
 
 func TestLoadDevProfileAppliesDevDefaults(t *testing.T) {
@@ -754,6 +757,98 @@ func TestValidateAllowPrivateTargetsRequiresNotificationsDisabled(t *testing.T) 
 	cfg.WPCOMNotifyEnable = false
 	if err := validate(cfg); err != nil {
 		t.Fatalf("validate() rejected test-only private target bypass with notifications disabled: %v", err)
+	}
+}
+
+func TestValidateProductionRejectsUnsafePostureWithoutException(t *testing.T) {
+	tests := []struct {
+		name   string
+		update func(*Config)
+		want   string
+	}{
+		{
+			name: "plain default veriflier transport",
+			update: func(cfg *Config) {
+				cfg.VeriflierTransportScheme = VeriflierTransportHTTP
+			},
+			want: ProductionSecurityExceptionPlainVeriflierTransport,
+		},
+		{
+			name: "plain per-veriflier transport",
+			update: func(cfg *Config) {
+				cfg.VeriflierTransportScheme = VeriflierTransportHTTPS
+				cfg.Verifiers = []VerifierConfig{{Name: "edge", Host: "edge.example", Port: "7803", Scheme: VeriflierTransportHTTP}}
+			},
+			want: ProductionSecurityExceptionPlainVeriflierTransport,
+		},
+		{
+			name: "plain monitor API",
+			update: func(cfg *Config) {
+				cfg.APIPort = 8090
+			},
+			want: ProductionSecurityExceptionPlainMonitorAPI,
+		},
+		{
+			name: "private target bypass",
+			update: func(cfg *Config) {
+				cfg.WPCOMNotifyEnable = false
+				cfg.CheckTargetSafetyMode = CheckTargetSafetyModeAllowPrivateForTests
+			},
+			want: ProductionSecurityExceptionAllowPrivateTargets,
+		},
+		{
+			name: "legacy WPCOM insecure TLS",
+			update: func(cfg *Config) {
+				cfg.WPCOMNotifyEnable = true
+				cfg.WPCOMNotifyMode = WPCOMNotifyModeLegacy
+				cfg.WPCOMNotifyLegacyInsecure = true
+			},
+			want: ProductionSecurityExceptionLegacyWPCOMInsecureTLS,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := baseValidConfig()
+			cfg.ConfigProfile = ConfigProfileProduction
+			cfg.VeriflierTransportScheme = VeriflierTransportHTTPS
+			cfg.WPCOMNotifyLegacyInsecure = false
+			tt.update(cfg)
+			err := validate(cfg)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("validate() error = %v, want %s", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateProductionAllowsTemporarySecurityException(t *testing.T) {
+	cfg := baseValidConfig()
+	cfg.ConfigProfile = ConfigProfileProduction
+	cfg.VeriflierTransportScheme = VeriflierTransportHTTP
+	cfg.ProductionSecurityExceptions = []string{ProductionSecurityExceptionPlainVeriflierTransport}
+	cfg.ProductionSecurityExceptionReason = "temporary rehearsal exception"
+	cfg.ProductionSecurityExceptionExpires = "2099-01-01T00:00:00Z"
+	cfg.WPCOMNotifyLegacyInsecure = false
+
+	if err := validate(cfg); err != nil {
+		t.Fatalf("validate() rejected temporary exception: %v", err)
+	}
+}
+
+func TestValidateProductionSecurityExceptionRequiresReasonAndFutureExpiry(t *testing.T) {
+	cfg := baseValidConfig()
+	cfg.ConfigProfile = ConfigProfileProduction
+	cfg.ProductionSecurityExceptions = []string{ProductionSecurityExceptionPlainMonitorAPI}
+	cfg.ProductionSecurityExceptionExpires = "2099-01-01T00:00:00Z"
+	if err := validate(cfg); err == nil || !strings.Contains(err.Error(), "PRODUCTION_SECURITY_EXCEPTION_REASON") {
+		t.Fatalf("validate() error = %v, want reason failure", err)
+	}
+
+	cfg.ProductionSecurityExceptionReason = "temporary rehearsal exception"
+	cfg.ProductionSecurityExceptionExpires = "2000-01-01T00:00:00Z"
+	if err := validate(cfg); err == nil || !strings.Contains(err.Error(), "must be in the future") {
+		t.Fatalf("validate() error = %v, want expiry failure", err)
 	}
 }
 

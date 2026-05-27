@@ -238,16 +238,17 @@ type rolloutComparisonResult struct {
 }
 
 type rolloutVeriflierPreflightResult struct {
-	Name         string   `json:"name,omitempty"`
-	Address      string   `json:"address"`
-	Status       string   `json:"status"`
-	Version      string   `json:"version,omitempty"`
-	Protocols    []string `json:"protocols,omitempty"`
-	VantageID    string   `json:"vantage_id,omitempty"`
-	AgentID      string   `json:"agent_id,omitempty"`
-	Healthy      bool     `json:"healthy"`
-	V2Compatible bool     `json:"v2_compatible"`
-	Error        string   `json:"error,omitempty"`
+	Name         string                 `json:"name,omitempty"`
+	Address      string                 `json:"address"`
+	Status       string                 `json:"status"`
+	Version      string                 `json:"version,omitempty"`
+	Protocols    []string               `json:"protocols,omitempty"`
+	VantageID    string                 `json:"vantage_id,omitempty"`
+	AgentID      string                 `json:"agent_id,omitempty"`
+	Capabilities veriflier.Capabilities `json:"capabilities,omitempty"`
+	Healthy      bool                   `json:"healthy"`
+	V2Compatible bool                   `json:"v2_compatible"`
+	Error        string                 `json:"error,omitempty"`
 }
 
 func (s *Server) handleRolloutCapabilities(w http.ResponseWriter, r *http.Request) {
@@ -1872,10 +1873,17 @@ func (s *Server) rolloutVeriflierPreflight(ctx context.Context, cfg *config.Conf
 		result.Protocols = status.Protocols
 		result.VantageID = status.Vantage.ID
 		result.AgentID = status.Agent.ID
+		result.Capabilities = status.Capabilities
 		result.V2Compatible = stringSliceContains(status.Protocols, veriflier.ProtocolV2)
 		result.Healthy = strings.EqualFold(status.Status, "ok") && result.V2Compatible && result.VantageID != ""
 		if !result.V2Compatible {
 			blockers = append(blockers, fmt.Sprintf("%s does not advertise %s", name, veriflier.ProtocolV2))
+		}
+		if cfg.ConfigProfile == config.ConfigProfileProduction && stringSliceContains(status.Protocols, veriflier.ProtocolLegacy) {
+			blockers = append(blockers, fmt.Sprintf("%s advertises legacy Veriflier HTTP endpoints; disable VERIFLIER_ENABLE_LEGACY_HTTP for production", name))
+		}
+		for _, missing := range missingRequiredVeriflierCapabilities(status.Capabilities) {
+			blockers = append(blockers, fmt.Sprintf("%s missing required Veriflier capability: %s", name, missing))
 		}
 		if result.VantageID == "" {
 			blockers = append(blockers, fmt.Sprintf("%s did not report a quorum-counted vantage id", name))
@@ -2001,6 +2009,26 @@ func stringSliceContains(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func missingRequiredVeriflierCapabilities(caps veriflier.Capabilities) []string {
+	var missing []string
+	if !caps.BatchErrorIsolation {
+		missing = append(missing, "batch_error_isolation")
+	}
+	if !caps.AuthRequired {
+		missing = append(missing, "auth_required")
+	}
+	if !caps.ProbeSafetyNonVote {
+		missing = append(missing, "probe_safety_non_vote")
+	}
+	if !caps.StatusDetailAuth {
+		missing = append(missing, "status_detail_auth")
+	}
+	if caps.MaxRequestBodyBytes <= 0 {
+		missing = append(missing, "max_request_body_bytes")
+	}
+	return missing
 }
 
 func (s *Server) countPolicyStageEligible(ctx context.Context, min, max int, method, profile string) (int, error) {

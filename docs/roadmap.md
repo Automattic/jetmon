@@ -38,6 +38,9 @@ Near-term:
 - validate `/v2/check` and `/v2/status` under production-like load;
 - improve quorum diagnostics for disagreement, overload, and stale vantages;
 - keep a quorum floor that prevents one Veriflier from confirming downtime.
+- add replay-resistant Monitor-to-Veriflier request signing after canary
+  evidence. Prefer HMAC over method, path, body digest, timestamp, and request
+  ID unless Systems wants to own mTLS client-cert lifecycle.
 
 Future options should wait for production evidence: stronger v2 probe metadata,
 peer mesh, central scheduler plus regional agents, always-on multi-region

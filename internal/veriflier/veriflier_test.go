@@ -1694,6 +1694,54 @@ func TestServerHandleV2Status(t *testing.T) {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 
+	var publicStatus struct {
+		Status    string   `json:"status"`
+		Version   string   `json:"version"`
+		Protocols []string `json:"protocols"`
+		Vantage   Vantage  `json:"vantage"`
+		Capacity  Capacity `json:"capacity"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&publicStatus); err != nil {
+		t.Fatalf("decode public status: %v", err)
+	}
+	if publicStatus.Status != "OK" {
+		t.Fatalf("public status = %q, want OK", publicStatus.Status)
+	}
+	if publicStatus.Version != "" || publicStatus.Vantage.ID != "" || publicStatus.Capacity.MaxConcurrency != 0 {
+		t.Fatalf("unauthenticated status leaked details: %+v", publicStatus)
+	}
+	if len(publicStatus.Protocols) != 1 || publicStatus.Protocols[0] != ProtocolV2 {
+		t.Fatalf("public protocols = %#v, want v2-only", publicStatus.Protocols)
+	}
+
+	badReq, err := http.NewRequest(http.MethodGet, ts.URL+"/v2/status", nil)
+	if err != nil {
+		t.Fatalf("new bad request: %v", err)
+	}
+	badReq.Header.Set("Authorization", "Bearer wrong")
+	badResp, err := http.DefaultClient.Do(badReq)
+	if err != nil {
+		t.Fatalf("bad auth request error: %v", err)
+	}
+	defer badResp.Body.Close()
+	if badResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("bad auth status = %d, want 401", badResp.StatusCode)
+	}
+
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/v2/status", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer secret")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("authenticated request error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("authenticated status = %d, want 200", resp.StatusCode)
+	}
+
 	var status StatusV2Response
 	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -1718,6 +1766,10 @@ func TestServerHandleV2Status(t *testing.T) {
 	}
 	if status.Capacity.MaxConcurrency != 4 {
 		t.Fatalf("max concurrency = %d, want 4", status.Capacity.MaxConcurrency)
+	}
+	if !status.Capabilities.BatchErrorIsolation || !status.Capabilities.AuthRequired ||
+		!status.Capabilities.ProbeSafetyNonVote || !status.Capabilities.StatusDetailAuth {
+		t.Fatalf("capabilities = %+v, want required security capabilities", status.Capabilities)
 	}
 	if len(status.Protocols) != 1 || status.Protocols[0] != ProtocolV2 {
 		t.Fatalf("protocols = %#v, want v2-only by default", status.Protocols)

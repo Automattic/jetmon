@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Automattic/jetmon/internal/checkmode"
 )
@@ -46,6 +47,13 @@ const (
 const (
 	ConfigProfileDev        = "dev"
 	ConfigProfileProduction = "production"
+)
+
+const (
+	ProductionSecurityExceptionPlainVeriflierTransport = "plain_veriflier_transport"
+	ProductionSecurityExceptionPlainMonitorAPI         = "plain_monitor_api"
+	ProductionSecurityExceptionAllowPrivateTargets     = "allow_private_targets"
+	ProductionSecurityExceptionLegacyWPCOMInsecureTLS  = "legacy_wpcom_insecure_tls"
 )
 
 const (
@@ -84,6 +92,13 @@ type Config struct {
 	// ConfigProfile applies a small named set of production posture defaults
 	// before explicit config values are decoded. Explicit keys always win.
 	ConfigProfile string `json:"CONFIG_PROFILE"`
+
+	// ProductionSecurityExceptions are temporary, explicit launch exceptions for
+	// production fail-closed checks. Each exception must have a reason and future
+	// expiry so migration-only weak posture cannot silently linger.
+	ProductionSecurityExceptions       []string `json:"PRODUCTION_SECURITY_EXCEPTIONS"`
+	ProductionSecurityExceptionReason  string   `json:"PRODUCTION_SECURITY_EXCEPTION_REASON"`
+	ProductionSecurityExceptionExpires string   `json:"PRODUCTION_SECURITY_EXCEPTION_EXPIRES_AT"`
 
 	// Hostname is the stable Jetmon identity used for host ownership, process
 	// health, and outbound notification identity.
@@ -531,6 +546,7 @@ func applyConfigProfile(raw []byte, cfg *Config) error {
 		cfg.RolloutMode = RolloutModeAPIControlled
 		cfg.VeriflierDiscoveryMode = VeriflierDiscoveryModeShadow
 		cfg.VeriflierTransportScheme = VeriflierTransportHTTPS
+		cfg.WPCOMNotifyLegacyInsecure = false
 	default:
 		return fmt.Errorf("invalid config: CONFIG_PROFILE must be one of: dev, production")
 	}
@@ -842,6 +858,10 @@ func validate(cfg *Config) error {
 	default:
 		return fmt.Errorf("CONFIG_PROFILE must be one of: dev, production")
 	}
+	exceptions, err := validateProductionSecurityExceptions(cfg)
+	if err != nil {
+		return err
+	}
 	cfg.Hostname = strings.TrimSpace(cfg.Hostname)
 	cfg.StatsDAddr = strings.TrimSpace(cfg.StatsDAddr)
 	if err := validateStatsDAddr(cfg.StatsDAddr); err != nil {
@@ -944,6 +964,11 @@ func validate(cfg *Config) error {
 	default:
 		return fmt.Errorf("WPCOM_NOTIFY_MODE must be one of: legacy, modern")
 	}
+	if cfg.ConfigProfile == ConfigProfileProduction && cfg.WPCOMNotifyEnable &&
+		cfg.WPCOMNotifyMode == WPCOMNotifyModeLegacy && cfg.WPCOMNotifyLegacyInsecure &&
+		!exceptions[ProductionSecurityExceptionLegacyWPCOMInsecureTLS] {
+		return fmt.Errorf("WPCOM_NOTIFY_LEGACY_INSECURE_SKIP_VERIFY=true is refused in production without %s", ProductionSecurityExceptionLegacyWPCOMInsecureTLS)
+	}
 	switch cfg.SchedulerEngine {
 	case "", "streaming":
 		cfg.SchedulerEngine = "streaming"
@@ -983,6 +1008,10 @@ func validate(cfg *Config) error {
 	if cfg.CheckTargetSafetyMode == CheckTargetSafetyModeAllowPrivateForTests && cfg.WPCOMNotifyEnable {
 		return fmt.Errorf("CHECK_TARGET_SAFETY_MODE=allow_private_for_tests requires WPCOM_NOTIFY_ENABLE=false")
 	}
+	if cfg.ConfigProfile == ConfigProfileProduction && cfg.CheckTargetSafetyMode == CheckTargetSafetyModeAllowPrivateForTests &&
+		!exceptions[ProductionSecurityExceptionAllowPrivateTargets] {
+		return fmt.Errorf("CHECK_TARGET_SAFETY_MODE=allow_private_for_tests is refused in production without %s", ProductionSecurityExceptionAllowPrivateTargets)
+	}
 	cfg.VeriflierDiscoveryMode = normalizeVeriflierDiscoveryMode(cfg.VeriflierDiscoveryMode)
 	switch cfg.VeriflierDiscoveryMode {
 	case VeriflierDiscoveryModeStatic, VeriflierDiscoveryModeShadow, VeriflierDiscoveryModeActive:
@@ -997,6 +1026,10 @@ func validate(cfg *Config) error {
 	case VeriflierTransportHTTP, VeriflierTransportHTTPS:
 	default:
 		return fmt.Errorf("VERIFLIER_TRANSPORT_SCHEME must be one of: http, https")
+	}
+	if cfg.ConfigProfile == ConfigProfileProduction && cfg.VeriflierTransportScheme == VeriflierTransportHTTP &&
+		!exceptions[ProductionSecurityExceptionPlainVeriflierTransport] {
+		return fmt.Errorf("VERIFLIER_TRANSPORT_SCHEME=http is refused in production without %s", ProductionSecurityExceptionPlainVeriflierTransport)
 	}
 	cfg.APITLSCertPath = strings.TrimSpace(cfg.APITLSCertPath)
 	cfg.APITLSKeyPath = strings.TrimSpace(cfg.APITLSKeyPath)
@@ -1013,6 +1046,10 @@ func validate(cfg *Config) error {
 		if strings.ToLower(u.Scheme) != "https" {
 			return fmt.Errorf("API_PUBLIC_BASE_URL must use https")
 		}
+	}
+	if cfg.ConfigProfile == ConfigProfileProduction && cfg.APIPort > 0 && !cfg.MonitorAPITransportEncrypted() &&
+		!exceptions[ProductionSecurityExceptionPlainMonitorAPI] {
+		return fmt.Errorf("production API_PORT requires API_TLS_CERT_PATH/API_TLS_KEY_PATH or API_PUBLIC_BASE_URL=https://... without %s", ProductionSecurityExceptionPlainMonitorAPI)
 	}
 	if cfg.LogFormat != "text" && cfg.LogFormat != "json" {
 		return fmt.Errorf("LOG_FORMAT must be 'text' or 'json'")
@@ -1080,8 +1117,59 @@ func validate(cfg *Config) error {
 		if scheme := v.TransportScheme(); scheme != "" && scheme != VeriflierTransportHTTP && scheme != VeriflierTransportHTTPS {
 			return fmt.Errorf("VERIFLIERS[%d] (%s): scheme must be one of: http, https", i, displayName(v, i))
 		}
+		if cfg.ConfigProfile == ConfigProfileProduction && v.TransportScheme() == VeriflierTransportHTTP &&
+			!exceptions[ProductionSecurityExceptionPlainVeriflierTransport] {
+			return fmt.Errorf("VERIFLIERS[%d] (%s): scheme=http is refused in production without %s", i, displayName(v, i), ProductionSecurityExceptionPlainVeriflierTransport)
+		}
 	}
 	return nil
+}
+
+func validateProductionSecurityExceptions(cfg *Config) (map[string]bool, error) {
+	allowed := map[string]struct{}{
+		ProductionSecurityExceptionPlainVeriflierTransport: {},
+		ProductionSecurityExceptionPlainMonitorAPI:         {},
+		ProductionSecurityExceptionAllowPrivateTargets:     {},
+		ProductionSecurityExceptionLegacyWPCOMInsecureTLS:  {},
+	}
+	out := make(map[string]bool, len(cfg.ProductionSecurityExceptions))
+	normalized := make([]string, 0, len(cfg.ProductionSecurityExceptions))
+	for _, raw := range cfg.ProductionSecurityExceptions {
+		exception := strings.TrimSpace(strings.ToLower(raw))
+		if exception == "" {
+			continue
+		}
+		if _, ok := allowed[exception]; !ok {
+			return nil, fmt.Errorf("PRODUCTION_SECURITY_EXCEPTIONS contains unknown exception %q", raw)
+		}
+		out[exception] = true
+		normalized = append(normalized, exception)
+	}
+	cfg.ProductionSecurityExceptions = normalized
+	if len(out) == 0 {
+		cfg.ProductionSecurityExceptionReason = strings.TrimSpace(cfg.ProductionSecurityExceptionReason)
+		cfg.ProductionSecurityExceptionExpires = strings.TrimSpace(cfg.ProductionSecurityExceptionExpires)
+		return out, nil
+	}
+	if cfg.ConfigProfile != ConfigProfileProduction {
+		return nil, fmt.Errorf("PRODUCTION_SECURITY_EXCEPTIONS may only be set when CONFIG_PROFILE=production")
+	}
+	cfg.ProductionSecurityExceptionReason = strings.TrimSpace(cfg.ProductionSecurityExceptionReason)
+	if cfg.ProductionSecurityExceptionReason == "" {
+		return nil, fmt.Errorf("PRODUCTION_SECURITY_EXCEPTION_REASON is required when PRODUCTION_SECURITY_EXCEPTIONS is set")
+	}
+	cfg.ProductionSecurityExceptionExpires = strings.TrimSpace(cfg.ProductionSecurityExceptionExpires)
+	if cfg.ProductionSecurityExceptionExpires == "" {
+		return nil, fmt.Errorf("PRODUCTION_SECURITY_EXCEPTION_EXPIRES_AT is required when PRODUCTION_SECURITY_EXCEPTIONS is set")
+	}
+	expires, err := time.Parse(time.RFC3339, cfg.ProductionSecurityExceptionExpires)
+	if err != nil {
+		return nil, fmt.Errorf("PRODUCTION_SECURITY_EXCEPTION_EXPIRES_AT must be RFC3339: %w", err)
+	}
+	if !expires.After(time.Now().UTC()) {
+		return nil, fmt.Errorf("PRODUCTION_SECURITY_EXCEPTION_EXPIRES_AT must be in the future")
+	}
+	return out, nil
 }
 
 // StatsDMetricHost returns the host path segment used in StatsD metric names.

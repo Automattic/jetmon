@@ -85,16 +85,31 @@ type Capacity struct {
 	AvgCheckMS     int `json:"avg_check_ms,omitempty"`
 }
 
+// Capabilities are behavior-level guarantees advertised by a Veriflier. Rollout
+// gates should key off these flags instead of a Git commit whenever possible so
+// cherry-picks and backports can still prove the behavior that production needs.
+// If a rollout-critical Veriflier feature is added, removed, or materially
+// changed, update this struct, Server.Capabilities, rollout preflight
+// requirements, tests, and docs in the same change.
+type Capabilities struct {
+	BatchErrorIsolation bool  `json:"batch_error_isolation"`
+	AuthRequired        bool  `json:"auth_required"`
+	ProbeSafetyNonVote  bool  `json:"probe_safety_non_vote"`
+	StatusDetailAuth    bool  `json:"status_detail_auth"`
+	MaxRequestBodyBytes int64 `json:"max_request_body_bytes,omitempty"`
+}
+
 type StatusV2Response struct {
-	Status    string   `json:"status"`
-	Version   string   `json:"version"`
-	Commit    string   `json:"commit"`
-	BuildDate string   `json:"build_date"`
-	GoVersion string   `json:"go_version"`
-	Protocols []string `json:"protocols"`
-	Vantage   Vantage  `json:"vantage"`
-	Agent     Agent    `json:"agent"`
-	Capacity  Capacity `json:"capacity"`
+	Status       string       `json:"status"`
+	Version      string       `json:"version"`
+	Commit       string       `json:"commit"`
+	BuildDate    string       `json:"build_date"`
+	GoVersion    string       `json:"go_version"`
+	Protocols    []string     `json:"protocols"`
+	Vantage      Vantage      `json:"vantage"`
+	Agent        Agent        `json:"agent"`
+	Capacity     Capacity     `json:"capacity"`
+	Capabilities Capabilities `json:"capabilities"`
 }
 
 type BodyRules struct {
