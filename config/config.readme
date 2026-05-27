@@ -776,6 +776,18 @@ observed rate/latency, and avoids per-probe healthy freshness writes.
   are encrypted in transit. Rollout preflight blocks production activation if
   the effective scheme is not HTTPS.
 
+### JETMON_EXTRA_CA_CERT_PATH
+
+- Default: empty.
+- Example: `JETMON_EXTRA_CA_CERT_PATH=/caddy-ca/root.crt`
+- Purpose: Docker entrypoint-only helper for local TLS labs that need Jetmon to
+  trust an additional root CA, such as Caddy's `tls internal` CA.
+- Notes: when set, the entrypoint appends the extra CA to the system bundle,
+  writes the result to `JETMON_EXTRA_CA_BUNDLE_PATH` or
+  `/jetmon/stats/jetmon-ca-bundle.pem`, and sets `SSL_CERT_FILE` if it was not
+  already set. This is for dev/rehearsal. Production should use public CA
+  certificates or an explicitly managed trust path.
+
 ### VERIFLIER_DISCOVERY_MODE
 
 - Default: `static`; production profile default: `shadow`

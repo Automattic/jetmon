@@ -54,6 +54,7 @@ render_config() {
 	local rollout_mode="${ROLLOUT_MODE:-}"
 	local veriflier_discovery_mode="${VERIFLIER_DISCOVERY_MODE:-}"
 	local veriflier_transport_scheme="${VERIFLIER_TRANSPORT_SCHEME:-}"
+	local veriflier_host="${VERIFLIER_HOST:-veriflier}"
 	local delivery_owner_host="${DELIVERY_OWNER_HOST:-}"
 	local debug_port="${DEBUG_PORT:-6060}"
 	local wpcom_notify_default=false
@@ -96,6 +97,7 @@ render_config() {
 		-e "s|\"SCHEMA_MANAGEMENT_MODE\": \"\"|\"SCHEMA_MANAGEMENT_MODE\": \"$(sed_escape "$schema_management_mode")\"|g" \
 		-e "s|\"VERIFLIER_DISCOVERY_MODE\" : \"static\"|\"VERIFLIER_DISCOVERY_MODE\" : \"$(sed_escape "${veriflier_discovery_mode:-static}")\"|g" \
 		-e "s|\"VERIFLIER_TRANSPORT_SCHEME\" : \"http\"|\"VERIFLIER_TRANSPORT_SCHEME\" : \"$(sed_escape "${veriflier_transport_scheme:-http}")\"|g" \
+		-e "s|\"host\"       : \"veriflier\"|\"host\"       : \"$(sed_escape "$veriflier_host")\"|g" \
 		-e "s|<VERIFLIER_PORT>|$(sed_escape "${VERIFLIER_PORT}")|g" \
 		-e "s|<VERIFLIER_AUTH_TOKEN>|$(sed_escape "${VERIFLIER_AUTH_TOKEN:-veriflier_1_auth_token}")|g" \
 		-e 's|"API_PORT"       : 0|"API_PORT"       : 8090|g' \
@@ -138,6 +140,21 @@ rendered_config_summary() {
 
 config_render_target() {
 	printf '%s\n' "${JETMON_CONFIG:-/tmp/jetmon-rendered-config/config.json}"
+}
+
+configure_extra_ca() {
+	local extra_ca="${JETMON_EXTRA_CA_CERT_PATH:-}"
+	if [ -z "$extra_ca" ]; then
+		return
+	fi
+	if [ ! -r "$extra_ca" ]; then
+		echo "config: extra CA cert is not readable: $extra_ca" >&2
+		exit 1
+	fi
+	local bundle="${JETMON_EXTRA_CA_BUNDLE_PATH:-/jetmon/stats/jetmon-ca-bundle.pem}"
+	cat /etc/ssl/certs/ca-certificates.crt "$extra_ca" > "$bundle"
+	export SSL_CERT_FILE="${SSL_CERT_FILE:-$bundle}"
+	echo "config: appended extra CA cert ${extra_ca} to ${bundle}"
 }
 
 render_mode() {
@@ -214,6 +231,7 @@ for path in stats/sitespersec stats/sitesqueue stats/totals; do
 	fi
 done
 
+configure_extra_ca
 configure_runtime_config "$config_mode"
 
 if [ "$#" -gt 0 ]; then

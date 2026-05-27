@@ -53,6 +53,12 @@ unless it is protected by HTTPS. Use native `API_TLS_CERT_PATH` /
 terminated before traffic reaches the container. Do not expose plain
 `http://<host>:8090` on the public web.
 
+For local validation of the proxy path, `make caddy-tls-lab` runs Caddy with
+`tls internal`, exports Caddy's generated local CA to the Monitor container, and
+checks HTTPS Veriflier and Monitor API requests without disabling certificate
+verification. This proves the app/proxy/trust wiring before moving to public
+DNS and ACME issuance on a VPS.
+
 ## Images And Tags
 
 Runtime images:
