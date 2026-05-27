@@ -49,33 +49,33 @@ func TestParseLocalDevSitesDefinition(t *testing.T) {
 
 func TestInlinePrimaryKeyHelpers(t *testing.T) {
 	cases := []struct {
-		name     string
-		def      string
-		wantHas  bool
+		name      string
+		def       string
+		wantHas   bool
 		wantStrip string
 	}{
 		{
-			name:     "trailing primary key",
-			def:      "source_site_id BIGINT UNSIGNED NOT NULL PRIMARY KEY",
-			wantHas:  true,
+			name:      "trailing primary key",
+			def:       "source_site_id BIGINT UNSIGNED NOT NULL PRIMARY KEY",
+			wantHas:   true,
 			wantStrip: "source_site_id BIGINT UNSIGNED NOT NULL",
 		},
 		{
-			name:     "primary key with extra whitespace",
-			def:      "id  BIGINT  NOT  NULL  PRIMARY  KEY",
-			wantHas:  true,
+			name:      "primary key with extra whitespace",
+			def:       "id  BIGINT  NOT  NULL  PRIMARY  KEY",
+			wantHas:   true,
 			wantStrip: "id BIGINT NOT NULL",
 		},
 		{
-			name:     "primary key with auto increment",
-			def:      "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY",
-			wantHas:  true,
+			name:      "primary key with auto increment",
+			def:       "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY",
+			wantHas:   true,
 			wantStrip: "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT",
 		},
 		{
-			name:     "no primary key",
-			def:      "blog_id BIGINT UNSIGNED NOT NULL",
-			wantHas:  false,
+			name:      "no primary key",
+			def:       "blog_id BIGINT UNSIGNED NOT NULL",
+			wantHas:   false,
 			wantStrip: "blog_id BIGINT UNSIGNED NOT NULL",
 		},
 		{
@@ -84,8 +84,8 @@ func TestInlinePrimaryKeyHelpers(t *testing.T) {
 			// be a problem if a column genuinely needs `PRIMARY KEY` as a
 			// literal default. None of our baseline columns do; the regex's
 			// word boundary keeps the helper conservative.
-			def:      "label VARCHAR(64) NOT NULL DEFAULT 'primary'",
-			wantHas:  false,
+			def:       "label VARCHAR(64) NOT NULL DEFAULT 'primary'",
+			wantHas:   false,
 			wantStrip: "label VARCHAR(64) NOT NULL DEFAULT 'primary'",
 		},
 	}
@@ -122,7 +122,7 @@ func TestReconcileAddColumnStripsInlinePKWhenTableHasExistingPrimary(t *testing.
 	// The reconciler should keep the inline PRIMARY KEY so the new column
 	// becomes the table's PK in one step.
 	t.Run("table_missing_primary_keeps_inline_pk", func(t *testing.T) {
-		sql := buildAddColumnSQL(t, "t", rawDef, /*primaryAlreadyExists=*/ false)
+		sql := buildAddColumnSQL(t, "t", rawDef /*primaryAlreadyExists=*/, false)
 		if !strings.Contains(strings.ToUpper(sql), "PRIMARY KEY") {
 			t.Errorf("expected ADD COLUMN to retain PRIMARY KEY when table has no PK; got %q", sql)
 		}
@@ -132,7 +132,7 @@ func TestReconcileAddColumnStripsInlinePKWhenTableHasExistingPrimary(t *testing.
 	// PRIMARY index. The reconciler must strip the inline PRIMARY KEY to
 	// avoid "Multiple primary key defined" (MySQL error 1068).
 	t.Run("table_has_existing_primary_strips_inline_pk", func(t *testing.T) {
-		sql := buildAddColumnSQL(t, "t", rawDef, /*primaryAlreadyExists=*/ true)
+		sql := buildAddColumnSQL(t, "t", rawDef /*primaryAlreadyExists=*/, true)
 		if strings.Contains(strings.ToUpper(sql), "PRIMARY KEY") {
 			t.Errorf("expected ADD COLUMN to strip PRIMARY KEY when table already has PK; got %q", sql)
 		}
