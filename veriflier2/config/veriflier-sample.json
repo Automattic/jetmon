@@ -7,6 +7,8 @@
 	"vantage_id" : "<VERIFLIER_VANTAGE_ID>",
 	"region"     : "<VERIFLIER_REGION>",
 	"provider"   : "<VERIFLIER_PROVIDER>",
+	"tls_cert_path" : "",
+	"tls_key_path"  : "",
 	"enable_legacy_http" : false,
 	"check_target_safety_mode" : "public_only"
 }

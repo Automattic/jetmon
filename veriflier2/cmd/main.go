@@ -37,16 +37,18 @@ var enforceOutboundTargetSafety = true
 const shutdownGracePeriod = 30 * time.Second
 
 type veriflierConfig struct {
-	AuthToken  string `json:"auth_token"`
-	Port       string `json:"port"`
-	GRPCPort   string `json:"grpc_port"` // Deprecated alias for Port.
-	Hostname   string `json:"hostname"`
-	StatsDAddr string `json:"statsd_addr"`
-	StatsDPath string `json:"statsd_host_path"`
-	VantageID  string `json:"vantage_id"`
-	Region     string `json:"region"`
-	Provider   string `json:"provider"`
-	LegacyHTTP bool   `json:"enable_legacy_http"`
+	AuthToken   string `json:"auth_token"`
+	Port        string `json:"port"`
+	GRPCPort    string `json:"grpc_port"` // Deprecated alias for Port.
+	Hostname    string `json:"hostname"`
+	StatsDAddr  string `json:"statsd_addr"`
+	StatsDPath  string `json:"statsd_host_path"`
+	VantageID   string `json:"vantage_id"`
+	Region      string `json:"region"`
+	Provider    string `json:"provider"`
+	TLSCertPath string `json:"tls_cert_path"`
+	TLSKeyPath  string `json:"tls_key_path"`
+	LegacyHTTP  bool   `json:"enable_legacy_http"`
 	// CheckTargetSafetyMode uses the same values as Monitor:
 	// public_only or allow_private_for_tests.
 	CheckTargetSafetyMode string `json:"check_target_safety_mode"`
@@ -140,9 +142,15 @@ func main() {
 		}
 	}()
 
-	log.Printf("veriflier2 %s starting on %s legacy_http=%s target_safety=%s", version, addr, enabledLabel(cfg.LegacyHTTP), cfg.CheckTargetSafetyMode)
-	if err := srv.Listen(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatalf("listen: %v", err)
+	log.Printf("veriflier2 %s starting on %s legacy_http=%s target_safety=%s tls=%s", version, addr, enabledLabel(cfg.LegacyHTTP), cfg.CheckTargetSafetyMode, enabledLabel(cfg.TLSCertPath != ""))
+	var listenErr error
+	if cfg.TLSCertPath != "" {
+		listenErr = srv.ListenTLS(cfg.TLSCertPath, cfg.TLSKeyPath)
+	} else {
+		listenErr = srv.Listen()
+	}
+	if listenErr != nil && !errors.Is(listenErr, http.ErrServerClosed) {
+		log.Fatalf("listen: %v", listenErr)
 	}
 	stopResourceStats()
 	log.Println("veriflier2: shutdown complete")
@@ -324,14 +332,16 @@ func loadConfig(path string) (*veriflierConfig, error) {
 
 func envOnlyConfig() (*veriflierConfig, error) {
 	cfg := &veriflierConfig{
-		AuthToken:  os.Getenv("VERIFLIER_AUTH_TOKEN"),
-		Port:       envOrDefault("VERIFLIER_PORT", envOrDefault("VERIFLIER_GRPC_PORT", "7803")),
-		Hostname:   firstNonEmpty(os.Getenv("VERIFLIER_HOSTNAME"), os.Getenv("JETMON_HOSTNAME")),
-		StatsDAddr: os.Getenv("STATSD_ADDR"),
-		StatsDPath: os.Getenv("STATSD_HOST_PATH"),
-		VantageID:  os.Getenv("VERIFLIER_VANTAGE_ID"),
-		Region:     os.Getenv("VERIFLIER_REGION"),
-		Provider:   os.Getenv("VERIFLIER_PROVIDER"),
+		AuthToken:   os.Getenv("VERIFLIER_AUTH_TOKEN"),
+		Port:        envOrDefault("VERIFLIER_PORT", envOrDefault("VERIFLIER_GRPC_PORT", "7803")),
+		Hostname:    firstNonEmpty(os.Getenv("VERIFLIER_HOSTNAME"), os.Getenv("JETMON_HOSTNAME")),
+		StatsDAddr:  os.Getenv("STATSD_ADDR"),
+		StatsDPath:  os.Getenv("STATSD_HOST_PATH"),
+		VantageID:   os.Getenv("VERIFLIER_VANTAGE_ID"),
+		Region:      os.Getenv("VERIFLIER_REGION"),
+		Provider:    os.Getenv("VERIFLIER_PROVIDER"),
+		TLSCertPath: os.Getenv("VERIFLIER_TLS_CERT_PATH"),
+		TLSKeyPath:  os.Getenv("VERIFLIER_TLS_KEY_PATH"),
 		CheckTargetSafetyMode: firstNonEmpty(
 			os.Getenv("VERIFLIER_CHECK_TARGET_SAFETY_MODE"),
 			os.Getenv("CHECK_TARGET_SAFETY_MODE"),
@@ -366,6 +376,11 @@ func normalizeLoadedConfig(cfg *veriflierConfig) (*veriflierConfig, error) {
 		return nil, fmt.Errorf("check_target_safety_mode must be one of: public_only, allow_private_for_tests")
 	}
 	cfg.CheckTargetSafetyMode = mode
+	cfg.TLSCertPath = strings.TrimSpace(cfg.TLSCertPath)
+	cfg.TLSKeyPath = strings.TrimSpace(cfg.TLSKeyPath)
+	if cfg.TLSCertPath == "" && cfg.TLSKeyPath != "" || cfg.TLSCertPath != "" && cfg.TLSKeyPath == "" {
+		return nil, fmt.Errorf("tls_cert_path and tls_key_path must be set together")
+	}
 	return cfg, nil
 }
 

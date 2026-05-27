@@ -1,0 +1,62 @@
+services:
+  caddy:
+    image: ${CADDY_IMAGE:-caddy:2}
+    restart: unless-stopped
+    ports:
+      - "${CADDY_HTTP_HOST_PORT:-19080}:80"
+      - "${CADDY_HTTPS_HOST_PORT:-19443}:443"
+    volumes:
+      - ./caddy/Caddyfile.local:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      default:
+        aliases:
+          - veriflier.local.test
+          - monitor-api.local.test
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /data/caddy/pki/authorities/local/root.crt"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 5s
+
+  caddy-ca-export:
+    image: ${CADDY_IMAGE:-caddy:2}
+    restart: "no"
+    command:
+      - sh
+      - -ec
+      - |
+        mkdir -p /export
+        cp /data/caddy/pki/authorities/local/root.crt /export/root.crt
+        chmod 0444 /export/root.crt
+    volumes:
+      - caddy-data:/data:ro
+      - caddy-ca:/export
+    depends_on:
+      caddy:
+        condition: service_healthy
+
+  jetmon:
+    environment:
+      JETMON_CONFIG: /tmp/jetmon-rendered-config/config.json
+      VERIFLIER_HOST: veriflier.local.test
+      VERIFLIER_PORT: "443"
+      VERIFLIER_TRANSPORT_SCHEME: https
+      API_PUBLIC_BASE_URL: https://monitor-api.local.test
+      JETMON_EXTRA_CA_CERT_PATH: /caddy-ca/root.crt
+      JETMON_EXTRA_CA_BUNDLE_PATH: /jetmon/stats/jetmon-ca-bundle.pem
+      SSL_CERT_FILE: /jetmon/stats/jetmon-ca-bundle.pem
+    volumes:
+      - caddy-ca:/caddy-ca:ro
+    depends_on:
+      caddy:
+        condition: service_healthy
+      caddy-ca-export:
+        condition: service_completed_successfully
+
+volumes:
+  caddy-data:
+  caddy-config:
+  caddy-ca:

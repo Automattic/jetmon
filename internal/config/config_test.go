@@ -522,6 +522,9 @@ func TestLoadProductionProfileAppliesProductionDefaults(t *testing.T) {
 	if cfg.VeriflierDiscoveryMode != VeriflierDiscoveryModeShadow {
 		t.Fatalf("VeriflierDiscoveryMode = %q, want shadow", cfg.VeriflierDiscoveryMode)
 	}
+	if cfg.VeriflierTransportScheme != VeriflierTransportHTTPS {
+		t.Fatalf("VeriflierTransportScheme = %q, want https", cfg.VeriflierTransportScheme)
+	}
 }
 
 func TestLoadDevProfileAppliesDevDefaults(t *testing.T) {
@@ -555,6 +558,9 @@ func TestLoadDevProfileAppliesDevDefaults(t *testing.T) {
 	}
 	if cfg.VeriflierDiscoveryMode != VeriflierDiscoveryModeStatic {
 		t.Fatalf("VeriflierDiscoveryMode = %q, want static", cfg.VeriflierDiscoveryMode)
+	}
+	if cfg.VeriflierTransportScheme != VeriflierTransportHTTP {
+		t.Fatalf("VeriflierTransportScheme = %q, want http", cfg.VeriflierTransportScheme)
 	}
 }
 
@@ -671,6 +677,9 @@ func TestLoadProductionProfileUsesRolloutDefaultsWhenValuesEmpty(t *testing.T) {
 	if got := cfg.VeriflierDiscoveryMode; got != VeriflierDiscoveryModeShadow {
 		t.Fatalf("VeriflierDiscoveryMode = %q, want shadow", got)
 	}
+	if got := cfg.VeriflierTransportScheme; got != VeriflierTransportHTTPS {
+		t.Fatalf("VeriflierTransportScheme = %q, want https", got)
+	}
 }
 
 func TestLoadProductionProfileAllowsExplicitRolloutOverride(t *testing.T) {
@@ -705,6 +714,32 @@ func TestValidateRejectsBadCheckTargetSafetyMode(t *testing.T) {
 	cfg.CheckTargetSafetyMode = "unsafe"
 	if err := validate(cfg); err == nil {
 		t.Fatal("validate() accepted invalid CHECK_TARGET_SAFETY_MODE")
+	}
+}
+
+func TestValidateRejectsBadVeriflierTransportScheme(t *testing.T) {
+	cfg := baseValidConfig()
+	cfg.VeriflierTransportScheme = "ftp"
+	if err := validate(cfg); err == nil {
+		t.Fatal("validate() accepted invalid VERIFLIER_TRANSPORT_SCHEME")
+	}
+}
+
+func TestValidateRejectsIncompleteAPITLSConfig(t *testing.T) {
+	cfg := baseValidConfig()
+	cfg.APIPort = 8090
+	cfg.APITLSCertPath = "/run/secrets/jetmon-api.crt"
+	if err := validate(cfg); err == nil {
+		t.Fatal("validate() accepted API_TLS_CERT_PATH without API_TLS_KEY_PATH")
+	}
+}
+
+func TestValidateRejectsPlainAPIPublicBaseURL(t *testing.T) {
+	cfg := baseValidConfig()
+	cfg.APIPort = 8090
+	cfg.APIPublicBaseURL = "http://jetmon-api.example.test"
+	if err := validate(cfg); err == nil {
+		t.Fatal("validate() accepted plain HTTP API_PUBLIC_BASE_URL")
 	}
 }
 
@@ -1250,6 +1285,39 @@ func TestVerifierTransportPort(t *testing.T) {
 	}
 	if got := (VerifierConfig{Port: "7803", GRPCPort: "7804"}).TransportPort(); got != "7803" {
 		t.Fatalf("TransportPort(prefer port) = %q, want 7803", got)
+	}
+}
+
+func TestVeriflierEndpointUsesGlobalAndPerVerifierSchemes(t *testing.T) {
+	cfg := &Config{VeriflierTransportScheme: VeriflierTransportHTTPS}
+	v := VerifierConfig{Host: "veriflier.example.com", Port: "7803"}
+	if got := cfg.VeriflierEndpoint(v); got != "https://veriflier.example.com:7803" {
+		t.Fatalf("VeriflierEndpoint(global) = %q", got)
+	}
+	v.Scheme = "http"
+	if got := cfg.VeriflierEndpoint(v); got != "http://veriflier.example.com:7803" {
+		t.Fatalf("VeriflierEndpoint(override) = %q", got)
+	}
+}
+
+func TestMonitorAPITransportEncrypted(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  Config
+		want bool
+	}{
+		{name: "api disabled", cfg: Config{}, want: true},
+		{name: "plain api", cfg: Config{APIPort: 8090}, want: false},
+		{name: "native tls", cfg: Config{APIPort: 8090, APITLSCertPath: "/cert.pem", APITLSKeyPath: "/key.pem"}, want: true},
+		{name: "public https", cfg: Config{APIPort: 8090, APIPublicBaseURL: "https://jetmon-api.example.test"}, want: true},
+		{name: "public http", cfg: Config{APIPort: 8090, APIPublicBaseURL: "http://jetmon-api.example.test"}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.cfg.MonitorAPITransportEncrypted(); got != tt.want {
+				t.Fatalf("MonitorAPITransportEncrypted() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 

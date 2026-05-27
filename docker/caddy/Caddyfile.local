@@ -1,0 +1,13 @@
+{
+	auto_https disable_redirects
+}
+
+veriflier.local.test {
+	tls internal
+	reverse_proxy veriflier:7803
+}
+
+monitor-api.local.test {
+	tls internal
+	reverse_proxy jetmon:8090
+}

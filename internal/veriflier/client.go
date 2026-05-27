@@ -12,6 +12,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -24,6 +25,7 @@ import (
 // production JSON-over-HTTP transport.
 type VeriflierClient struct {
 	addr          string
+	baseURL       string
 	authToken     string
 	httpClient    *http.Client
 	mu            sync.RWMutex
@@ -68,11 +70,10 @@ var ErrV2CheckUnsupported = errors.New("veriflier v2 check protocol is required 
 // it unset means ctx is the only deadline and is honored exactly.
 func NewVeriflierClient(addr, authToken string) *VeriflierClient {
 	transport := &http.Transport{
-		// Verifliers are internal-network services. http.ProxyFromEnvironment
-		// would silently route Monitor→Veriflier traffic through HTTPS_PROXY
-		// if a developer's shell exports one for unrelated purposes; that
-		// breaks the internal-only assumption and would expose bearer tokens
-		// to an unintended hop. Explicit nil keeps the dial direct.
+		// Monitor→Veriflier bearer tokens must never be routed through an
+		// unintended proxy. Verifliers may be public HTTPS endpoints, but the
+		// Monitor still dials them directly and relies on the configured scheme
+		// plus normal TLS verification for encryption.
 		Proxy: nil,
 		DialContext: (&net.Dialer{
 			Timeout:   5 * time.Second,
@@ -93,6 +94,7 @@ func NewVeriflierClient(addr, authToken string) *VeriflierClient {
 	}
 	return &VeriflierClient{
 		addr:       addr,
+		baseURL:    veriflierClientBaseURL(addr),
 		authToken:  authToken,
 		httpClient: &http.Client{Transport: transport},
 	}
@@ -101,6 +103,19 @@ func NewVeriflierClient(addr, authToken string) *VeriflierClient {
 // Addr returns the target address of this client.
 func (c *VeriflierClient) Addr() string {
 	return c.addr
+}
+
+func (c *VeriflierClient) endpoint(path string) string {
+	return c.baseURL + path
+}
+
+func veriflierClientBaseURL(addr string) string {
+	addr = strings.TrimRight(strings.TrimSpace(addr), "/")
+	lower := strings.ToLower(addr)
+	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
+		return addr
+	}
+	return "http://" + addr
 }
 
 // Check sends a single site check request to the Veriflier and returns the result.
@@ -461,7 +476,7 @@ func (c *VeriflierClient) checkBatchLegacy(ctx context.Context, reqs []CheckRequ
 		return nil, err
 	}
 
-	url := fmt.Sprintf("http://%s/check", c.addr)
+	url := c.endpoint("/check")
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -541,7 +556,7 @@ func (c *VeriflierClient) checkBatchV2(ctx context.Context, reqs []CheckRequest)
 		return nil, err
 	}
 
-	url := fmt.Sprintf("http://%s/v2/check", c.addr)
+	url := c.endpoint("/v2/check")
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -729,7 +744,7 @@ func (c *VeriflierClient) Status(ctx context.Context) (*StatusV2Response, error)
 	if !isV2Unsupported(err) {
 		return nil, err
 	}
-	url := fmt.Sprintf("http://%s/status", c.addr)
+	url := c.endpoint("/status")
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -756,7 +771,7 @@ func (c *VeriflierClient) Status(ctx context.Context) (*StatusV2Response, error)
 }
 
 func (c *VeriflierClient) statusV2(ctx context.Context) (*StatusV2Response, error) {
-	url := fmt.Sprintf("http://%s/v2/status", c.addr)
+	url := c.endpoint("/v2/status")
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err

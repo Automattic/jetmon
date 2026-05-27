@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -365,8 +364,13 @@ func (s *Server) handleRolloutPreflight(w http.ResponseWriter, r *http.Request) 
 		if cfg.APIPort <= 0 {
 			blockers = append(blockers, "API_PORT is disabled")
 		}
-		if cfg.WPCOMNotifyEnable {
-			warnings = append(warnings, fmt.Sprintf("WPCOM_NOTIFY_ENABLE is true with WPCOM_NOTIFY_MODE=%s; confirm this is intended for the rollout stage", cfg.WPCOMNotifyMode))
+		if cfg.ConfigProfile == config.ConfigProfileProduction && !cfg.WPCOMNotifyEnable {
+			blockers = append(blockers, "WPCOM_NOTIFY_ENABLE must be true for production drop-in rollout")
+		} else if cfg.WPCOMNotifyEnable {
+			warnings = append(warnings, fmt.Sprintf("WPCOM_NOTIFY_ENABLE is true with WPCOM_NOTIFY_MODE=%s; confirm legacy WPCOM notification smoke has passed", cfg.WPCOMNotifyMode))
+		}
+		if cfg.ConfigProfile == config.ConfigProfileProduction && cfg.APIPort > 0 && !cfg.MonitorAPITransportEncrypted() {
+			blockers = append(blockers, "production Monitor API must be protected by HTTPS: set API_TLS_CERT_PATH/API_TLS_KEY_PATH or API_PUBLIC_BASE_URL=https://...")
 		}
 		if cfg.RolloutMode == config.RolloutModeActive && cfg.DeliveryOwnerHost == "" && cfg.APIPort > 0 {
 			warnings = append(warnings, "DELIVERY_OWNER_HOST is unset; embedded delivery workers may be eligible")
@@ -676,6 +680,15 @@ func (s *Server) handleRolloutActivityCheck(w http.ResponseWriter, r *http.Reque
 		writeError(w, r, http.StatusBadRequest, "invalid_since", err.Error())
 		return
 	}
+	requireAll := false
+	if raw := strings.TrimSpace(r.URL.Query().Get("require_all")); raw != "" {
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			writeError(w, r, http.StatusBadRequest, "invalid_require_all", "require_all must be a boolean")
+			return
+		}
+		requireAll = parsed
+	}
 	active, err := s.countActiveSites(r.Context(), min, max)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, "db_error", "count active sites failed: "+err.Error())
@@ -687,8 +700,13 @@ func (s *Server) handleRolloutActivityCheck(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	status := "ok"
+	var blockers []string
 	if active > 0 && recent == 0 {
 		status = "blocked"
+		blockers = append(blockers, "no active sites were checked since cutoff")
+	} else if requireAll && recent < active {
+		status = "blocked"
+		blockers = append(blockers, fmt.Sprintf("only %d/%d active sites were checked since cutoff", recent, active))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":               status,
@@ -696,6 +714,8 @@ func (s *Server) handleRolloutActivityCheck(w http.ResponseWriter, r *http.Reque
 		"bucket_max":           max,
 		"active_sites":         active,
 		"recently_checked":     recent,
+		"require_all":          requireAll,
+		"blockers":             blockers,
 		"cutoff":               cutoff.UTC().Format(time.RFC3339),
 		"freshness_percentage": percentage(recent, active),
 	})
@@ -1820,12 +1840,22 @@ func (s *Server) rolloutVeriflierPreflight(ctx context.Context, cfg *config.Conf
 		}
 		port := strings.TrimSpace(verifierCfg.TransportPort())
 		host := strings.TrimSpace(verifierCfg.Host)
-		addr := net.JoinHostPort(host, port)
+		addr := cfg.VeriflierEndpoint(verifierCfg)
 		result := rolloutVeriflierPreflightResult{Name: name, Address: addr}
 		if host == "" || port == "" {
 			result.Error = "host and port are required"
 			results = append(results, result)
 			blockers = append(blockers, fmt.Sprintf("%s has incomplete host/port config", name))
+			continue
+		}
+		scheme := verifierCfg.TransportScheme()
+		if scheme == "" {
+			scheme = cfg.VeriflierTransportSchemeOrDefault()
+		}
+		if cfg.ConfigProfile == config.ConfigProfileProduction && scheme != config.VeriflierTransportHTTPS {
+			result.Error = "production Veriflier transport must use https"
+			results = append(results, result)
+			blockers = append(blockers, fmt.Sprintf("%s uses unencrypted Veriflier transport; set VERIFLIER_TRANSPORT_SCHEME=https or scheme=https", name))
 			continue
 		}
 		checkCtx, cancel := context.WithTimeout(ctx, 3*time.Second)

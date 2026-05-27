@@ -53,8 +53,11 @@ render_config() {
 	local default_detection_profile="${DEFAULT_DETECTION_PROFILE:-}"
 	local rollout_mode="${ROLLOUT_MODE:-}"
 	local veriflier_discovery_mode="${VERIFLIER_DISCOVERY_MODE:-}"
+	local veriflier_transport_scheme="${VERIFLIER_TRANSPORT_SCHEME:-}"
+	local veriflier_host="${VERIFLIER_HOST:-veriflier}"
 	local delivery_owner_host="${DELIVERY_OWNER_HOST:-}"
 	local debug_port="${DEBUG_PORT:-6060}"
+	local wpcom_notify_default=false
 	local wpcom_notify_enable
 	local smtp_use_tls
 	if [ -z "$schema_management_mode" ]; then
@@ -70,9 +73,11 @@ render_config() {
 		default_detection_profile="${default_detection_profile:-legacy}"
 		rollout_mode="${rollout_mode:-api-controlled}"
 		veriflier_discovery_mode="${veriflier_discovery_mode:-shadow}"
+		veriflier_transport_scheme="${veriflier_transport_scheme:-https}"
 		debug_port="${DEBUG_PORT:-0}"
+		wpcom_notify_default=true
 	fi
-	wpcom_notify_enable="$(bool_json WPCOM_NOTIFY_ENABLE "${WPCOM_NOTIFY_ENABLE:-false}")"
+	wpcom_notify_enable="$(bool_json WPCOM_NOTIFY_ENABLE "${WPCOM_NOTIFY_ENABLE:-$wpcom_notify_default}")"
 	smtp_use_tls="$(bool_json SMTP_USE_TLS "${SMTP_USE_TLS:-false}")"
 	sed \
 		-e "s|<AUTH_TOKEN>|$(sed_escape "${WPCOM_AUTH_TOKEN:-change_me}")|g" \
@@ -91,16 +96,21 @@ render_config() {
 		-e "s|\"DB_SERVER_MAP_ADDRESS\"    : \"\"|\"DB_SERVER_MAP_ADDRESS\"    : \"$(sed_escape "${DB_SERVER_MAP_ADDRESS:-}")\"|g" \
 		-e "s|\"SCHEMA_MANAGEMENT_MODE\": \"\"|\"SCHEMA_MANAGEMENT_MODE\": \"$(sed_escape "$schema_management_mode")\"|g" \
 		-e "s|\"VERIFLIER_DISCOVERY_MODE\" : \"static\"|\"VERIFLIER_DISCOVERY_MODE\" : \"$(sed_escape "${veriflier_discovery_mode:-static}")\"|g" \
+		-e "s|\"VERIFLIER_TRANSPORT_SCHEME\" : \"http\"|\"VERIFLIER_TRANSPORT_SCHEME\" : \"$(sed_escape "${veriflier_transport_scheme:-http}")\"|g" \
+		-e "s|\"host\"       : \"veriflier\"|\"host\"       : \"$(sed_escape "$veriflier_host")\"|g" \
 		-e "s|<VERIFLIER_PORT>|$(sed_escape "${VERIFLIER_PORT}")|g" \
 		-e "s|<VERIFLIER_AUTH_TOKEN>|$(sed_escape "${VERIFLIER_AUTH_TOKEN:-veriflier_1_auth_token}")|g" \
 		-e 's|"API_PORT"       : 0|"API_PORT"       : 8090|g' \
-		-e "s|\"WPCOM_NOTIFY_ENABLE\"          : true|\"WPCOM_NOTIFY_ENABLE\"          : ${wpcom_notify_enable}|g" \
+		-e "s|\"WPCOM_NOTIFY_ENABLE\"          : false|\"WPCOM_NOTIFY_ENABLE\"          : ${wpcom_notify_enable}|g" \
 		-e "s|\"CHECK_TARGET_SAFETY_MODE\"     : \"public_only\"|\"CHECK_TARGET_SAFETY_MODE\"     : \"$(sed_escape "$check_target_safety_mode")\"|g" \
 		-e "s|\"DEFAULT_CHECK_METHOD\"         : \"GET\"|\"DEFAULT_CHECK_METHOD\"         : \"$(sed_escape "${default_check_method:-GET}")\"|g" \
 		-e "s|\"DEFAULT_DETECTION_PROFILE\"    : \"full\"|\"DEFAULT_DETECTION_PROFILE\"    : \"$(sed_escape "${default_detection_profile:-full}")\"|g" \
 		-e "s|\"ROLLOUT_MODE\"                : \"active\"|\"ROLLOUT_MODE\"                : \"$(sed_escape "${rollout_mode:-active}")\"|g" \
 		-e "s|\"DELIVERY_OWNER_HOST\": \"\"|\"DELIVERY_OWNER_HOST\": \"$(sed_escape "$delivery_owner_host")\"|g" \
 		-e "s|\"DEBUG_PORT\"     : 6060|\"DEBUG_PORT\"     : ${debug_port}|g" \
+		-e "s|\"API_TLS_CERT_PATH\" : \"\"|\"API_TLS_CERT_PATH\" : \"$(sed_escape "${API_TLS_CERT_PATH:-}")\"|g" \
+		-e "s|\"API_TLS_KEY_PATH\"  : \"\"|\"API_TLS_KEY_PATH\"  : \"$(sed_escape "${API_TLS_KEY_PATH:-}")\"|g" \
+		-e "s|\"API_PUBLIC_BASE_URL\": \"\"|\"API_PUBLIC_BASE_URL\": \"$(sed_escape "${API_PUBLIC_BASE_URL:-}")\"|g" \
 		-e "s|\"WPCOM_NOTIFY_MODE\"            : \"legacy\"|\"WPCOM_NOTIFY_MODE\"            : \"$(sed_escape "${WPCOM_NOTIFY_MODE:-legacy}")\"|g" \
 		-e "s|\"EMAIL_TRANSPORT\"       : \"stub\"|\"EMAIL_TRANSPORT\"       : \"$(sed_escape "${EMAIL_TRANSPORT:-smtp}")\"|g" \
 		-e "s|\"EMAIL_FROM\"            : \"jetmon@noreply.invalid\"|\"EMAIL_FROM\"            : \"$(sed_escape "${EMAIL_FROM:-jetmon@noreply.invalid}")\"|g" \
@@ -130,6 +140,21 @@ rendered_config_summary() {
 
 config_render_target() {
 	printf '%s\n' "${JETMON_CONFIG:-/tmp/jetmon-rendered-config/config.json}"
+}
+
+configure_extra_ca() {
+	local extra_ca="${JETMON_EXTRA_CA_CERT_PATH:-}"
+	if [ -z "$extra_ca" ]; then
+		return
+	fi
+	if [ ! -r "$extra_ca" ]; then
+		echo "config: extra CA cert is not readable: $extra_ca" >&2
+		exit 1
+	fi
+	local bundle="${JETMON_EXTRA_CA_BUNDLE_PATH:-/jetmon/stats/jetmon-ca-bundle.pem}"
+	cat /etc/ssl/certs/ca-certificates.crt "$extra_ca" > "$bundle"
+	export SSL_CERT_FILE="${SSL_CERT_FILE:-$bundle}"
+	echo "config: appended extra CA cert ${extra_ca} to ${bundle}"
 }
 
 render_mode() {
@@ -206,6 +231,7 @@ for path in stats/sitespersec stats/sitesqueue stats/totals; do
 	fi
 done
 
+configure_extra_ca
 configure_runtime_config "$config_mode"
 
 if [ "$#" -gt 0 ]; then

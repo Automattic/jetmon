@@ -699,6 +699,22 @@ func TestDashboardHealthEntriesReportsCoreDependencies(t *testing.T) {
 	}
 }
 
+func TestWPCOMHealthEntryBlocksProductionWhenNotificationsDisabled(t *testing.T) {
+	checkedAt := time.Date(2026, 5, 26, 12, 0, 0, 0, time.UTC)
+	cfg := &config.Config{
+		ConfigProfile:     config.ConfigProfileProduction,
+		WPCOMNotifyEnable: false,
+		WPCOMNotifyMode:   config.WPCOMNotifyModeLegacy,
+	}
+	entry := wpcomHealthEntry(cfg, wpcomClientForConfig(cfg, "test-host"), checkedAt)
+	if entry.Status != "red" {
+		t.Fatalf("Status = %q, want red", entry.Status)
+	}
+	if !strings.Contains(entry.LastError, "WPCOM notifications disabled") {
+		t.Fatalf("LastError = %q, want disabled notification message", entry.LastError)
+	}
+}
+
 func TestMonitorProcessHealthSnapshot(t *testing.T) {
 	started := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
 	cfg := &config.Config{APIPort: 8090, DashboardPort: 8080, DeliveryOwnerHost: "host-a"}

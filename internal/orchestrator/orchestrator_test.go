@@ -282,7 +282,7 @@ func TestRefreshVeriflierClientsActiveDiscoveryUsesEnabledVantages(t *testing.T)
 	}
 	o := New(cfg, nil)
 
-	want := []string{"east.example:7803|east-token", "west.example:7804|west-token"}
+	want := []string{"http://east.example:7803|east-token", "http://west.example:7804|west-token"}
 	if !slicesEqual(o.veriflierAddrs, want) {
 		t.Fatalf("veriflierAddrs = %#v, want %#v", o.veriflierAddrs, want)
 	}
@@ -303,7 +303,7 @@ func TestRefreshVeriflierClientsActiveDiscoveryFallsBackToStatic(t *testing.T) {
 	}
 	o := New(cfg, nil)
 
-	want := []string{"static.example:7803|static-token"}
+	want := []string{"http://static.example:7803|static-token"}
 	if !slicesEqual(o.veriflierAddrs, want) {
 		t.Fatalf("veriflierAddrs = %#v, want %#v", o.veriflierAddrs, want)
 	}

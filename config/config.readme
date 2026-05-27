@@ -481,8 +481,9 @@ observed rate/latency, and avoids per-probe healthy freshness writes.
 - Values: `true`, `false`
 - Example: `"WPCOM_NOTIFY_ENABLE": false`
 - Purpose: allows the legacy WPCOM status-change path to make outbound calls.
-- Notes: keep enabled in production after WPCOM parity gates pass. Set false
-  for isolated tests so simulations cannot notify WPCOM.
+- Notes: production rollout preflight blocks when this is false because v2 must
+  preserve v1 WPCOM status-change behavior during drop-in. Set false only for
+  isolated tests so simulations cannot notify WPCOM.
 
 ### WPCOM_NOTIFY_MODE
 
@@ -542,6 +543,31 @@ observed rate/latency, and avoids per-probe healthy freshness writes.
 - Notes: in the embedded single-binary deployment, `API_PORT > 0` also makes
   webhook and alert-contact delivery workers eligible to run unless blocked by
   `DELIVERY_OWNER_HOST` or rollout mode.
+
+### API_TLS_CERT_PATH, API_TLS_KEY_PATH
+
+- Default: empty.
+- Example:
+
+  ```json
+  "API_TLS_CERT_PATH": "/run/secrets/jetmon-api.crt",
+  "API_TLS_KEY_PATH": "/run/secrets/jetmon-api.key"
+  ```
+
+- Purpose: optional native HTTPS listener for the Monitor API.
+- Notes: set both or neither. Production API traffic that leaves localhost must
+  be encrypted either by these settings or by an HTTPS-terminating proxy/load
+  balancer in front of the container.
+
+### API_PUBLIC_BASE_URL
+
+- Default: empty.
+- Example: `"API_PUBLIC_BASE_URL": "https://jetmon-api.example.com"`
+- Purpose: documents the HTTPS URL operators and remote `jetmon2 api` clients
+  use when TLS is terminated before traffic reaches the container.
+- Notes: must be absolute HTTPS when set. Production rollout preflight accepts
+  this as evidence that the API is externally encrypted when native
+  `API_TLS_*` is not used.
 
 ### DELIVERY_OWNER_HOST
 
@@ -723,6 +749,7 @@ observed rate/latency, and avoids per-probe healthy freshness writes.
   "VERIFLIERS": [
     {
       "name": "us-east",
+      "scheme": "https",
       "host": "veriflier-us-east.example.com",
       "port": "7803",
       "auth_token": "secret"
@@ -733,8 +760,33 @@ observed rate/latency, and avoids per-probe healthy freshness writes.
 - Purpose: static Monitor-to-Veriflier endpoint list.
 - Notes: each entry is one quorum vote. If an endpoint is horizontally scaled,
   put replicas behind one stable endpoint unless each replica is intended to be
-  an independent vantage. The old misspelled `VERIFIERS` key is accepted as a
-  deprecated alias.
+  an independent vantage. `scheme` is optional and overrides
+  `VERIFLIER_TRANSPORT_SCHEME` for that endpoint. The old misspelled
+  `VERIFIERS` key is accepted as a deprecated alias.
+
+### VERIFLIER_TRANSPORT_SCHEME
+
+- Default: `http`; production profile default: `https`
+- Values: `http`, `https`
+- Example: `"VERIFLIER_TRANSPORT_SCHEME": "https"`
+- Purpose: default Monitor-to-Veriflier transport scheme for entries without a
+  per-Veriflier `scheme`.
+- Notes: production Verifliers are public-web endpoints. Bearer auth is not
+  sufficient by itself; use HTTPS so Monitor-to-Veriflier requests and tokens
+  are encrypted in transit. Rollout preflight blocks production activation if
+  the effective scheme is not HTTPS.
+
+### JETMON_EXTRA_CA_CERT_PATH
+
+- Default: empty.
+- Example: `JETMON_EXTRA_CA_CERT_PATH=/caddy-ca/root.crt`
+- Purpose: Docker entrypoint-only helper for local TLS labs that need Jetmon to
+  trust an additional root CA, such as Caddy's `tls internal` CA.
+- Notes: when set, the entrypoint appends the extra CA to the system bundle,
+  writes the result to `JETMON_EXTRA_CA_BUNDLE_PATH` or
+  `/jetmon/stats/jetmon-ca-bundle.pem`, and sets `SSL_CERT_FILE` if it was not
+  already set. This is for dev/rehearsal. Production should use public CA
+  certificates or an explicitly managed trust path.
 
 ### VERIFLIER_DISCOVERY_MODE
 
@@ -759,10 +811,16 @@ The standalone Veriflier has a separate small JSON file:
   disables StatsD.
 - `statsd_host_path`: explicit host segment in StatsD metric names. Default:
   empty, which falls back to `hostname` / runtime hostname.
+  Docker entrypoints can render this from `VERIFLIER_STATSD_HOST_PATH` when
+  set, otherwise from `STATSD_HOST_PATH`.
 - `vantage_id`: quorum identity reported by `/v2/status` and `/v2/check`;
   defaults to hostname when omitted.
 - `region`: optional region metadata.
 - `provider`: optional provider metadata.
+- `tls_cert_path`, `tls_key_path`: optional native HTTPS listener certificate
+  and key. Set both or neither. Use these when the Veriflier is directly exposed
+  to the public web; otherwise terminate TLS at a trusted reverse proxy/load
+  balancer and have Monitors use an HTTPS endpoint.
 - `enable_legacy_http`: optional lab/emergency compatibility switch for
   legacy-compatible `/check` and `/status`; default false.
 - `check_target_safety_mode`: outbound SSRF safety policy for Veriflier HTTP
@@ -773,13 +831,16 @@ The standalone Veriflier has a separate small JSON file:
 Environment aliases are accepted only for the fallback environment-only path
 used when the JSON file is missing: `VERIFLIER_AUTH_TOKEN`, `VERIFLIER_PORT`,
 `VERIFLIER_GRPC_PORT`, `VERIFLIER_HOSTNAME`, `JETMON_HOSTNAME`, `STATSD_ADDR`,
-`STATSD_HOST_PATH`, `VERIFLIER_VANTAGE_ID`, `VERIFLIER_REGION`,
-`VERIFLIER_PROVIDER`, `VERIFLIER_ENABLE_LEGACY_HTTP`,
-`VERIFLIER_CHECK_TARGET_SAFETY_MODE`, and `CHECK_TARGET_SAFETY_MODE`. The Docker
-entrypoint can render those values into generated JSON on each start in the
-default `always` render mode. Once the Veriflier process starts, it reads
-runtime settings from that JSON file and does not let environment variables
-override it.
+`VERIFLIER_STATSD_HOST_PATH`, `STATSD_HOST_PATH`, `VERIFLIER_VANTAGE_ID`,
+`VERIFLIER_REGION`, `VERIFLIER_PROVIDER`, `VERIFLIER_ENABLE_LEGACY_HTTP`,
+`VERIFLIER_TLS_CERT_PATH`, `VERIFLIER_TLS_KEY_PATH`,
+`VERIFLIER_CHECK_TARGET_SAFETY_MODE`, and `CHECK_TARGET_SAFETY_MODE`.
+`VERIFLIER_STATSD_HOST_PATH` lets Compose stacks give Verifliers a different
+StatsD identity than Monitors while still using the same shared entrypoint
+pattern. The Docker entrypoint can render those values into generated JSON on
+each start in the default `always` render mode. Once the Veriflier process
+starts, it reads runtime settings from that JSON file and does not let
+environment variables override it.
 
 The old `VERIFLIER_GRPC_PORT` and `grpc_port` names remain accepted as
 deprecated port aliases.

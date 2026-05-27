@@ -928,6 +928,37 @@ func TestEvaluateSchemaContractReportsMissingObjects(t *testing.T) {
 	}
 }
 
+func TestEvaluateSchemaContractReportsSideTablePrimaryKeyShape(t *testing.T) {
+	contracts := []schemaTableContract{{
+		table:   "jetpack_monitor_site_runtime",
+		columns: []string{"source_site_id", "blog_id"},
+		indexes: []string{"PRIMARY"},
+	}}
+	status := evaluateSchemaContract(
+		contracts,
+		nil,
+		map[string]struct{}{"jetpack_monitor_site_runtime": {}},
+		map[string]map[string]struct{}{"jetpack_monitor_site_runtime": {"source_site_id": {}, "blog_id": {}}},
+		map[string]map[string]struct{}{"jetpack_monitor_site_runtime": {"PRIMARY": {}}},
+		map[string]map[string][]string{"jetpack_monitor_site_runtime": {"PRIMARY": {"blog_id"}}},
+	)
+	if status.OK() {
+		t.Fatalf("schema contract unexpectedly passed")
+	}
+	if len(status.MissingIndexes) != 1 || status.MissingIndexes[0].Name != "index_columns(PRIMARY:source_site_id)" {
+		t.Fatalf("MissingIndexes = %+v, want exact source_site_id primary-key shape", status.MissingIndexes)
+	}
+}
+
+func TestColumnDefinitionHasInlinePrimaryKey(t *testing.T) {
+	if !columnDefinitionHasInlinePrimaryKey("source_site_id BIGINT UNSIGNED NOT NULL PRIMARY KEY") {
+		t.Fatal("columnDefinitionHasInlinePrimaryKey returned false for inline primary key")
+	}
+	if columnDefinitionHasInlinePrimaryKey("blog_id BIGINT UNSIGNED NOT NULL") {
+		t.Fatal("columnDefinitionHasInlinePrimaryKey returned true without inline primary key")
+	}
+}
+
 func TestMigrateReleasesMigrationLockAfterError(t *testing.T) {
 	mock, cleanup := withMockDB(t)
 	defer cleanup()

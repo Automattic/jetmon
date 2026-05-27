@@ -5,7 +5,7 @@ services:
     restart: unless-stopped
     stop_grace_period: 45s
     ports:
-      - "${VERIFLIER_BIND_ADDR:-0.0.0.0}:${VERIFLIER_HOST_PORT:-7803}:7803"
+      - "${VERIFLIER_BIND_ADDR:-127.0.0.1}:${VERIFLIER_HOST_PORT:-7803}:7803"
     environment:
       VERIFLIER_AUTH_TOKEN: ${VERIFLIER_AUTH_TOKEN:?set VERIFLIER_AUTH_TOKEN}
       VERIFLIER_PORT: "7803"
@@ -13,21 +13,49 @@ services:
       VERIFLIER_REGION: ${VERIFLIER_REGION:?set VERIFLIER_REGION}
       VERIFLIER_PROVIDER: ${VERIFLIER_PROVIDER:-vps}
       VERIFLIER_ENABLE_LEGACY_HTTP: ${VERIFLIER_ENABLE_LEGACY_HTTP:-false}
+      VERIFLIER_TLS_CERT_PATH: ${VERIFLIER_TLS_CERT_PATH:-}
+      VERIFLIER_TLS_KEY_PATH: ${VERIFLIER_TLS_KEY_PATH:-}
       CHECK_TARGET_SAFETY_MODE: ${CHECK_TARGET_SAFETY_MODE:-public_only}
       STATSD_ADDR: statsd:8125
       JETMON_HOSTNAME: ${JETMON_HOSTNAME:-}
+      VERIFLIER_STATSD_HOST_PATH: ${VERIFLIER_STATSD_HOST_PATH:-}
       STATSD_HOST_PATH: ${STATSD_HOST_PATH:-}
     depends_on:
       statsd:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7803/v2/status"]
+      test: ["CMD-SHELL", "if [ -n \"$$VERIFLIER_TLS_CERT_PATH\" ]; then curl -k -fsS https://127.0.0.1:7803/v2/status; else curl -fsS http://127.0.0.1:7803/v2/status; fi"]
       interval: 10s
       timeout: 5s
       retries: 12
       start_period: 10s
     volumes:
       - veriflier-config:/opt/veriflier/config
+
+  caddy:
+    image: ${CADDY_IMAGE:-caddy:2}
+    init: true
+    restart: unless-stopped
+    ports:
+      - "${CADDY_HTTP_BIND_ADDR:-0.0.0.0}:${CADDY_HTTP_HOST_PORT:-80}:80"
+      - "${CADDY_HTTPS_BIND_ADDR:-0.0.0.0}:${CADDY_HTTPS_HOST_PORT:-443}:443"
+    environment:
+      VERIFLIER_PUBLIC_HOST: ${VERIFLIER_PUBLIC_HOST:?set VERIFLIER_PUBLIC_HOST}
+      CADDY_ACME_EMAIL: ${CADDY_ACME_EMAIL:?set CADDY_ACME_EMAIL}
+      CADDY_ACME_CA: ${CADDY_ACME_CA:-https://acme-v02.api.letsencrypt.org/directory}
+    volumes:
+      - ./caddy/Caddyfile.veriflier-prod:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      veriflier:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "caddy", "validate", "--config", "/etc/caddy/Caddyfile"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
 
   statsd:
     image: ${STATSD_GRAPHITE_IMAGE:-graphiteapp/graphite-statsd}
@@ -66,3 +94,5 @@ volumes:
   veriflier-config:
   statsd-graphite-storage:
   statsd-logs:
+  caddy-data:
+  caddy-config:

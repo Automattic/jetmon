@@ -96,6 +96,13 @@ func BuildSchemaReconcilePlan(ctx context.Context, baselineSQL string) (SchemaRe
 			plan.Unresolved = append(plan.Unresolved, issue)
 			continue
 		}
+		if columnDefinitionHasInlinePrimaryKey(columnDef) {
+			plan.Unresolved = append(plan.Unresolved, SchemaObjectIssue{
+				Table: issue.Table,
+				Name:  issue.Name + " (inline primary key requires reviewed table rebuild)",
+			})
+			continue
+		}
 		plan.Statements = append(plan.Statements, SchemaReconcileStatement{
 			Kind:  "add_column",
 			Table: issue.Table,
@@ -253,6 +260,10 @@ func parseSchemaDefinition(name, createSQL, body string) (schemaDefinition, erro
 		}
 	}
 	return def, nil
+}
+
+func columnDefinitionHasInlinePrimaryKey(def string) bool {
+	return strings.Contains(strings.ToUpper(def), " PRIMARY KEY")
 }
 
 func splitTopLevelComma(s string) []string {

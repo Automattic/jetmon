@@ -31,6 +31,64 @@ STATSD_ADDR=host.docker.internal:8125
 Do not set `STATSD_ADDR=127.0.0.1:8125` inside a bridge-networked container; it
 points at the container itself.
 
+Veriflier Compose stacks run their own StatsD/Graphite container. Keep
+`STATSD_ADDR=statsd:8125` there, and set `VERIFLIER_STATSD_HOST_PATH` when a
+Veriflier needs a metric identity that differs from the Monitor
+`STATSD_HOST_PATH`.
+
+## Transport Security
+
+Production Verifliers are public-web services, not intranet-only endpoints.
+Bearer auth prevents unauthenticated use, but it does not protect tokens or
+payloads on a plain HTTP connection. Monitors must reach production Verifliers
+over HTTPS by setting `VERIFLIER_TRANSPORT_SCHEME=https` or per-entry
+`scheme: "https"` in `VERIFLIERS`. Terminate TLS either inside `veriflier2` with
+`VERIFLIER_TLS_CERT_PATH` / `VERIFLIER_TLS_KEY_PATH`, or at a trusted proxy/load
+balancer in front of the container.
+
+The Monitor API is also sensitive because rollout commands and API tokens may
+originate outside the container host. Keep the container listener local/private
+unless it is protected by HTTPS. Use native `API_TLS_CERT_PATH` /
+`API_TLS_KEY_PATH`, or set `API_PUBLIC_BASE_URL=https://...` when TLS is
+terminated before traffic reaches the container. Do not expose plain
+`http://<host>:8090` on the public web.
+
+For local validation of the proxy path, `make caddy-tls-lab` runs Caddy with
+`tls internal`, exports Caddy's generated local CA to the Monitor container, and
+checks HTTPS Veriflier and Monitor API requests without disabling certificate
+verification. This proves the app/proxy/trust wiring before moving to public
+DNS and ACME issuance on a VPS.
+
+Production-style Caddy files live in `docker/caddy/`:
+
+| File | Purpose |
+| --- | --- |
+| `Caddyfile.veriflier-prod` | Public `https://<veriflier-host>/v2/...` to private `veriflier:7803`. |
+| `Caddyfile.monitor-prod` | Public `https://<monitor-api-host>/api/v1/...` to private `jetmon:8090`. |
+
+Use Let's Encrypt staging for rehearsals:
+
+```text
+CADDY_ACME_CA=https://acme-staging-v02.api.letsencrypt.org/directory
+```
+
+Staging certificates prove ACME wiring and avoid rate limits, but ordinary
+clients will not trust them. Run the external smoke script against production
+ACME certificates before treating the deployment as ready. Both paths require:
+
+- the public hostname resolves to the host running Caddy;
+- inbound `80/tcp` and `443/tcp` reach Caddy;
+- the app container port is private or loopback-only;
+- Monitor config uses `VERIFLIER_TRANSPORT_SCHEME=https` or per-Veriflier
+  `scheme: "https"`.
+
+External smoke:
+
+```bash
+scripts/production-tls-smoke.sh veriflier nyc-do-jetmon-veriflier-1.example.test
+scripts/production-tls-smoke.sh monitor jetmon-api.example.test
+```
+
 ## Images And Tags
 
 Runtime images:
@@ -46,6 +104,10 @@ Tags:
 - `<YYYYMMDD>-<short-sha>`: immutable build for pushes to `v2`; prefer this for
   production pinning.
 - `pr-<short-sha>`: PR image when the PR has the Docker Build label.
+
+Project Dockerfiles embed version, commit, build date, and Go version metadata
+in the binaries. Verify the image before collecting rollout evidence with
+`./jetmon2 version` for Monitors and `/v2/status` for Verifliers.
 
 If GHCR packages are private:
 
@@ -94,6 +156,9 @@ Important production render inputs:
 | `DEFAULT_CHECK_METHOD` / `DEFAULT_DETECTION_PROFILE` | Start rollout with `HEAD` / `legacy`. |
 | `ROLLOUT_MODE` | `api-controlled` until activation. |
 | `VERIFLIER_DISCOVERY_MODE` | `shadow` until registry drift is accepted. |
+| `VERIFLIER_TRANSPORT_SCHEME` | `https` for public Veriflier endpoints. |
+| `WPCOM_NOTIFY_ENABLE` | `true` for production drop-in rollout; false only in isolated labs. |
+| `API_PUBLIC_BASE_URL` or `API_TLS_CERT_PATH` / `API_TLS_KEY_PATH` | Required when operators reach the Monitor API over a network path that leaves localhost/private host scope. |
 | `CHECK_HISTORY_MODE_DEFAULT` | `status_change` unless a focused test needs more. |
 | `AUDIT_LOG_MODE_DEFAULT` | `operational` for rollout evidence without read firehose noise. |
 | `LEGACY_STATUS_PROJECTION_ENABLE` | `true` while rollback or legacy readers need it. |
@@ -188,6 +253,29 @@ budget. The repo Compose files use `45s`.
 
 Deploy order for a full fleet change: Verifliers, standalone deliverer if used,
 then Monitor hosts one at a time.
+
+For a Veriflier VPS using the repo Compose file:
+
+```bash
+cd docker
+docker compose --env-file veriflier-prod.env \
+  -f docker-compose.veriflier-prod.yml up -d
+```
+
+For a Monitor Compose project with a `jetmon` service, add the Caddy overlay:
+
+```bash
+cd docker
+docker compose --env-file jetmon-production.env \
+  -f docker-compose.yml \
+  -f docker-compose.monitor-caddy-prod.yml up -d jetmon caddy
+```
+
+Production docker-deploy may render an equivalent Compose/service definition
+instead of using these files directly, but the invariants are the same: Caddy is
+public on `80/443`, app listeners remain private, and public clients use HTTPS.
+If the base Compose file publishes the API port, set `API_BIND_ADDR=127.0.0.1`
+so the plain app listener is host-local while Caddy handles external traffic.
 
 ## Health And Logs
 

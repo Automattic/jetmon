@@ -32,7 +32,7 @@ cp config/config-sample.json config/config.json
 ```
 
 `make generate` is intentionally separate. It requires `protoc` and Go protobuf
-plugins; production Veriflier traffic uses JSON/HTTP.
+plugins; production Veriflier traffic uses JSON/HTTPS.
 
 ## API Smoke
 
@@ -69,6 +69,7 @@ Long raw benchmark reports belong in the sibling `uptime-bench` repo.
 | Target | Command | Proves |
 | --- | --- | --- |
 | Docker rollout | `make rollout-docker-lab` | API-guided rollout and rollback in local containers. |
+| Caddy TLS | `make caddy-tls-lab` | Caddy `tls internal`, Monitor trust of the generated CA, and HTTPS Veriflier/API paths. |
 | VM rollout | `make rollout-vm-lab-smoke` | Production-shaped systemd/KVM rollout rehearsal. |
 | Scale resilience | `make scale-resilience-lab` | Dynamic ownership, host loss, DB disruption behavior. |
 | Soak | `make v2-soak-lab` | Sustained low-write operation without outbound side effects. |

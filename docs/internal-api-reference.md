@@ -109,6 +109,8 @@ Use `/api/v1/openapi.json` for schemas and operation IDs.
 
 Mutating rollout operations are dry-run/execute. Dry-run returns a confirmation
 token bound to operation, range, request shape, run ID, and API key identity.
+Use `require_all=true` on `activity-check` when a post-activation gate must
+prove every active site in the range has been checked since the cutoff.
 
 ### Sites, Events, And Stats
 

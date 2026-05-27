@@ -9,8 +9,9 @@ x-jetmon-scale-env: &jetmon_scale_env
   SCHEMA_MANAGEMENT_MODE: ${SCHEMA_MANAGEMENT_MODE:-}
   VERIFLIER_AUTH_TOKEN: ${VERIFLIER_AUTH_TOKEN:-veriflier_1_auth_token}
   VERIFLIER_PORT: "7803"
+  VERIFLIER_TRANSPORT_SCHEME: ${VERIFLIER_TRANSPORT_SCHEME:-}
   WPCOM_AUTH_TOKEN: ${WPCOM_AUTH_TOKEN:-change_me}
-  WPCOM_NOTIFY_ENABLE: ${WPCOM_NOTIFY_ENABLE:-false}
+  WPCOM_NOTIFY_ENABLE: ${WPCOM_NOTIFY_ENABLE:-}
   WPCOM_NOTIFY_MODE: ${WPCOM_NOTIFY_MODE:-legacy}
   EMAIL_TRANSPORT: ${EMAIL_TRANSPORT:-stub}
   EMAIL_FROM: ${EMAIL_FROM:-jetmon@noreply.invalid}
@@ -28,12 +29,19 @@ x-jetmon-scale-env: &jetmon_scale_env
   ROLLOUT_MODE: ${ROLLOUT_MODE:-}
   VERIFLIER_DISCOVERY_MODE: ${VERIFLIER_DISCOVERY_MODE:-}
   DELIVERY_OWNER_HOST: ${DELIVERY_OWNER_HOST:-}
+  API_TLS_CERT_PATH: ${API_TLS_CERT_PATH:-}
+  API_TLS_KEY_PATH: ${API_TLS_KEY_PATH:-}
+  API_PUBLIC_BASE_URL: ${API_PUBLIC_BASE_URL:-}
   DEBUG_PORT: ${DEBUG_PORT:-6060}
 
 x-jetmon-scale-service: &jetmon_scale_service
   build:
     context: ../
     dockerfile: docker/Dockerfile_jetmon
+    args:
+      JETMON_BUILD_VERSION: ${JETMON_BUILD_VERSION:-dev}
+      JETMON_BUILD_COMMIT: ${JETMON_BUILD_COMMIT:-unknown}
+      JETMON_BUILD_DATE: ${JETMON_BUILD_DATE:-unknown}
   init: true
   restart: unless-stopped
   stop_grace_period: 45s
@@ -47,7 +55,7 @@ x-jetmon-scale-service: &jetmon_scale_service
     mailpit:
       condition: service_healthy
   healthcheck:
-    test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8090/api/v1/health"]
+    test: ["CMD-SHELL", "if [ -n \"$$API_TLS_CERT_PATH\" ]; then curl -k -fsS https://127.0.0.1:8090/api/v1/health; else curl -fsS http://127.0.0.1:8090/api/v1/health; fi"]
     interval: 10s
     timeout: 5s
     retries: 12
@@ -60,6 +68,10 @@ x-veriflier-scale-service: &veriflier_scale_service
   build:
     context: ../
     dockerfile: docker/Dockerfile_veriflier
+    args:
+      JETMON_BUILD_VERSION: ${JETMON_BUILD_VERSION:-dev}
+      JETMON_BUILD_COMMIT: ${JETMON_BUILD_COMMIT:-unknown}
+      JETMON_BUILD_DATE: ${JETMON_BUILD_DATE:-unknown}
   init: true
   restart: unless-stopped
   stop_grace_period: 45s
@@ -71,12 +83,15 @@ x-veriflier-scale-service: &veriflier_scale_service
     VERIFLIER_PROVIDER: ${VERIFLIER_PROVIDER:-docker}
     VERIFLIER_ENABLE_LEGACY_HTTP: ${VERIFLIER_ENABLE_LEGACY_HTTP:-false}
     VERIFLIER_CONFIG_RENDER_MODE: ${VERIFLIER_CONFIG_RENDER_MODE:-always}
+    VERIFLIER_TLS_CERT_PATH: ${VERIFLIER_TLS_CERT_PATH:-}
+    VERIFLIER_TLS_KEY_PATH: ${VERIFLIER_TLS_KEY_PATH:-}
     CHECK_TARGET_SAFETY_MODE: ${CHECK_TARGET_SAFETY_MODE:-public_only}
     STATSD_ADDR: statsd:8125
     JETMON_HOSTNAME: ${JETMON_HOSTNAME:-}
+    VERIFLIER_STATSD_HOST_PATH: ${VERIFLIER_STATSD_HOST_PATH:-}
     STATSD_HOST_PATH: ${STATSD_HOST_PATH:-}
   healthcheck:
-    test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7803/v2/status"]
+    test: ["CMD-SHELL", "if [ -n \"$$VERIFLIER_TLS_CERT_PATH\" ]; then curl -k -fsS https://127.0.0.1:7803/v2/status; else curl -fsS http://127.0.0.1:7803/v2/status; fi"]
     interval: 10s
     timeout: 5s
     retries: 12
@@ -137,9 +152,12 @@ services:
       VERIFLIER_PROVIDER: docker
       VERIFLIER_ENABLE_LEGACY_HTTP: ${VERIFLIER_ENABLE_LEGACY_HTTP:-false}
       VERIFLIER_CONFIG_RENDER_MODE: ${VERIFLIER_CONFIG_RENDER_MODE:-always}
+      VERIFLIER_TLS_CERT_PATH: ${VERIFLIER_TLS_CERT_PATH:-}
+      VERIFLIER_TLS_KEY_PATH: ${VERIFLIER_TLS_KEY_PATH:-}
       CHECK_TARGET_SAFETY_MODE: ${CHECK_TARGET_SAFETY_MODE:-public_only}
       STATSD_ADDR: statsd:8125
       JETMON_HOSTNAME: ${JETMON_HOSTNAME:-}
+      VERIFLIER_STATSD_HOST_PATH: ${VERIFLIER_STATSD_HOST_PATH:-}
       STATSD_HOST_PATH: ${STATSD_HOST_PATH:-}
 
   veriflier3:
@@ -154,9 +172,12 @@ services:
       VERIFLIER_PROVIDER: docker
       VERIFLIER_ENABLE_LEGACY_HTTP: ${VERIFLIER_ENABLE_LEGACY_HTTP:-false}
       VERIFLIER_CONFIG_RENDER_MODE: ${VERIFLIER_CONFIG_RENDER_MODE:-always}
+      VERIFLIER_TLS_CERT_PATH: ${VERIFLIER_TLS_CERT_PATH:-}
+      VERIFLIER_TLS_KEY_PATH: ${VERIFLIER_TLS_KEY_PATH:-}
       CHECK_TARGET_SAFETY_MODE: ${CHECK_TARGET_SAFETY_MODE:-public_only}
       STATSD_ADDR: statsd:8125
       JETMON_HOSTNAME: ${JETMON_HOSTNAME:-}
+      VERIFLIER_STATSD_HOST_PATH: ${VERIFLIER_STATSD_HOST_PATH:-}
       STATSD_HOST_PATH: ${STATSD_HOST_PATH:-}
 
   api-fixture:

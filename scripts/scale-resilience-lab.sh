@@ -4,6 +4,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 
+export JETMON_BUILD_VERSION="${JETMON_BUILD_VERSION:-$(git -C "$REPO_ROOT" describe --tags --always --dirty 2>/dev/null || printf dev)}"
+export JETMON_BUILD_COMMIT="${JETMON_BUILD_COMMIT:-$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || printf unknown)}"
+export JETMON_BUILD_DATE="${JETMON_BUILD_DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+
 PROJECT="${JETMON_SCALE_LAB_PROJECT:-jetmon-scale-lab}"
 PUBLIC_NETWORK="${JETMON_SCALE_LAB_NETWORK:-jetmon-scale-lab-public}"
 PUBLIC_SUBNET="${JETMON_SCALE_LAB_SUBNET:-93.184.217.0/24}"
@@ -29,6 +33,7 @@ export MAILPIT_HOST_PORT="${MAILPIT_HOST_PORT:-17125}"
 export GRAPHITE_HOST_PORT="${GRAPHITE_HOST_PORT:-18188}"
 export STATSD_HOST_PORT="${STATSD_HOST_PORT:-18225}"
 export EMAIL_TRANSPORT=stub
+export WPCOM_NOTIFY_ENABLE=false
 export DELIVERY_OWNER_HOST="${DELIVERY_OWNER_HOST:-jetmon-scale-1}"
 export JETMON_CONFIG_RENDER_MODE=never
 export VERIFLIER_CONFIG_RENDER_MODE=always

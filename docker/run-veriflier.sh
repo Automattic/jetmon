@@ -28,17 +28,21 @@ render_config() {
 	local target=$1
 	local legacy_http
 	local target_safety
+	local statsd_host_path
 	legacy_http="$(bool_json VERIFLIER_ENABLE_LEGACY_HTTP "${VERIFLIER_ENABLE_LEGACY_HTTP:-false}")"
 	target_safety="${VERIFLIER_CHECK_TARGET_SAFETY_MODE:-${CHECK_TARGET_SAFETY_MODE:-public_only}}"
+	statsd_host_path="${VERIFLIER_STATSD_HOST_PATH:-${STATSD_HOST_PATH:-}}"
 	sed \
 		-e "s|<VERIFLIER_PORT>|$(sed_escape "${VERIFLIER_PORT}")|g" \
 		-e "s|<VERIFLIER_AUTH_TOKEN>|$(sed_escape "${VERIFLIER_AUTH_TOKEN:-veriflier_1_auth_token}")|g" \
 		-e "s|\"hostname\"   : \"\"|\"hostname\"   : \"$(sed_escape "${VERIFLIER_HOSTNAME:-${JETMON_HOSTNAME:-}}")\"|g" \
 		-e "s|\"statsd_addr\" : \"\"|\"statsd_addr\" : \"$(sed_escape "${STATSD_ADDR:-}")\"|g" \
-		-e "s|\"statsd_host_path\" : \"\"|\"statsd_host_path\" : \"$(sed_escape "${STATSD_HOST_PATH:-}")\"|g" \
+		-e "s|\"statsd_host_path\" : \"\"|\"statsd_host_path\" : \"$(sed_escape "$statsd_host_path")\"|g" \
 		-e "s|<VERIFLIER_VANTAGE_ID>|$(sed_escape "${VERIFLIER_VANTAGE_ID:-local-veriflier}")|g" \
 		-e "s|<VERIFLIER_REGION>|$(sed_escape "${VERIFLIER_REGION:-local}")|g" \
 		-e "s|<VERIFLIER_PROVIDER>|$(sed_escape "${VERIFLIER_PROVIDER:-docker}")|g" \
+		-e "s|\"tls_cert_path\" : \"\"|\"tls_cert_path\" : \"$(sed_escape "${VERIFLIER_TLS_CERT_PATH:-}")\"|g" \
+		-e "s|\"tls_key_path\"  : \"\"|\"tls_key_path\"  : \"$(sed_escape "${VERIFLIER_TLS_KEY_PATH:-}")\"|g" \
 		-e "s|\"enable_legacy_http\" : false|\"enable_legacy_http\" : ${legacy_http}|g" \
 		-e "s|\"check_target_safety_mode\" : \"public_only\"|\"check_target_safety_mode\" : \"$(sed_escape "${target_safety}")\"|g" \
 		config/veriflier-sample.json > "${target}"
@@ -79,7 +83,7 @@ configure_runtime_config() {
 			render_config "$target"
 			export VERIFLIER_CONFIG="$target"
 			echo "config: rendered ${target} from Docker environment (render_mode=always)"
-			echo "config: hostname=${VERIFLIER_HOSTNAME:-${JETMON_HOSTNAME:-runtime-hostname}} statsd=${STATSD_ADDR:-disabled} vantage=${VERIFLIER_VANTAGE_ID:-local-veriflier} legacy_http=${VERIFLIER_ENABLE_LEGACY_HTTP:-false} target_safety=${VERIFLIER_CHECK_TARGET_SAFETY_MODE:-${CHECK_TARGET_SAFETY_MODE:-public_only}}"
+			echo "config: hostname=${VERIFLIER_HOSTNAME:-${JETMON_HOSTNAME:-runtime-hostname}} statsd=${STATSD_ADDR:-disabled} statsd_host_path=${VERIFLIER_STATSD_HOST_PATH:-${STATSD_HOST_PATH:-runtime-hostname}} vantage=${VERIFLIER_VANTAGE_ID:-local-veriflier} legacy_http=${VERIFLIER_ENABLE_LEGACY_HTTP:-false} tls_cert=${VERIFLIER_TLS_CERT_PATH:-disabled} target_safety=${VERIFLIER_CHECK_TARGET_SAFETY_MODE:-${CHECK_TARGET_SAFETY_MODE:-public_only}}"
 			;;
 		missing)
 			target="$(config_render_target)"
