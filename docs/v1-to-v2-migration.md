@@ -77,7 +77,9 @@ Monitor-to-Veriflier traffic over plain HTTP: bearer tokens and check payloads
 must be protected by HTTPS. Use `VERIFLIER_TRANSPORT_SCHEME=https` or
 per-Veriflier `scheme: "https"` in Monitor config. Terminate TLS either in
 `veriflier2` with `VERIFLIER_TLS_CERT_PATH` / `VERIFLIER_TLS_KEY_PATH`, or at a
-trusted proxy/load balancer in front of the Veriflier container.
+trusted proxy/load balancer in front of the Veriflier container. The repo
+includes a Caddy production Compose path that binds public `80/443`, terminates
+TLS with ACME, and leaves the Veriflier app port loopback/private.
 
 Confirm HTTPS reachability, auth token presence, enough healthy vantages for
 quorum, host resource limits, and stdout/stderr logging.
@@ -92,7 +94,8 @@ against the fleet/database. If the API is not directly reachable, use an
 approved VPN, bastion, or SSH tunnel and point `--base-url` at that endpoint.
 Any non-local Monitor API path must be HTTPS, either through native
 `API_TLS_CERT_PATH` / `API_TLS_KEY_PATH` or through an approved TLS-terminating
-proxy/load balancer.
+proxy/load balancer. The same Caddy approach can front the Monitor API; keep the
+plain `:8090` listener private and run rollout commands against the HTTPS URL.
 
 ```bash
 ./bin/jetmon2 local-config init \

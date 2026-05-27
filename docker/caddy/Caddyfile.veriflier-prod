@@ -1,0 +1,9 @@
+{
+	email {$CADDY_ACME_EMAIL}
+	acme_ca {$CADDY_ACME_CA}
+}
+
+{$VERIFLIER_PUBLIC_HOST} {
+	encode zstd gzip
+	reverse_proxy veriflier:7803
+}

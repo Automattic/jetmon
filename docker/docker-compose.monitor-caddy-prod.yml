@@ -1,0 +1,33 @@
+services:
+  jetmon:
+    environment:
+      API_PUBLIC_BASE_URL: "https://${MONITOR_API_PUBLIC_HOST:?set MONITOR_API_PUBLIC_HOST}"
+
+  caddy:
+    image: ${CADDY_IMAGE:-caddy:2}
+    init: true
+    restart: unless-stopped
+    ports:
+      - "${CADDY_HTTP_BIND_ADDR:-0.0.0.0}:${CADDY_HTTP_HOST_PORT:-80}:80"
+      - "${CADDY_HTTPS_BIND_ADDR:-0.0.0.0}:${CADDY_HTTPS_HOST_PORT:-443}:443"
+    environment:
+      MONITOR_API_PUBLIC_HOST: ${MONITOR_API_PUBLIC_HOST:?set MONITOR_API_PUBLIC_HOST}
+      CADDY_ACME_EMAIL: ${CADDY_ACME_EMAIL:?set CADDY_ACME_EMAIL}
+      CADDY_ACME_CA: ${CADDY_ACME_CA:-https://acme-v02.api.letsencrypt.org/directory}
+    volumes:
+      - ./caddy/Caddyfile.monitor-prod:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      jetmon:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "caddy", "validate", "--config", "/etc/caddy/Caddyfile"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+volumes:
+  caddy-data:
+  caddy-config:

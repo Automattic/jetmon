@@ -59,6 +59,36 @@ checks HTTPS Veriflier and Monitor API requests without disabling certificate
 verification. This proves the app/proxy/trust wiring before moving to public
 DNS and ACME issuance on a VPS.
 
+Production-style Caddy files live in `docker/caddy/`:
+
+| File | Purpose |
+| --- | --- |
+| `Caddyfile.veriflier-prod` | Public `https://<veriflier-host>/v2/...` to private `veriflier:7803`. |
+| `Caddyfile.monitor-prod` | Public `https://<monitor-api-host>/api/v1/...` to private `jetmon:8090`. |
+
+Use Let's Encrypt staging for rehearsals:
+
+```text
+CADDY_ACME_CA=https://acme-staging-v02.api.letsencrypt.org/directory
+```
+
+Staging certificates prove ACME wiring and avoid rate limits, but ordinary
+clients will not trust them. Run the external smoke script against production
+ACME certificates before treating the deployment as ready. Both paths require:
+
+- the public hostname resolves to the host running Caddy;
+- inbound `80/tcp` and `443/tcp` reach Caddy;
+- the app container port is private or loopback-only;
+- Monitor config uses `VERIFLIER_TRANSPORT_SCHEME=https` or per-Veriflier
+  `scheme: "https"`.
+
+External smoke:
+
+```bash
+scripts/production-tls-smoke.sh veriflier nyc-do-jetmon-veriflier-1.example.test
+scripts/production-tls-smoke.sh monitor jetmon-api.example.test
+```
+
 ## Images And Tags
 
 Runtime images:
@@ -223,6 +253,29 @@ budget. The repo Compose files use `45s`.
 
 Deploy order for a full fleet change: Verifliers, standalone deliverer if used,
 then Monitor hosts one at a time.
+
+For a Veriflier VPS using the repo Compose file:
+
+```bash
+cd docker
+docker compose --env-file veriflier-prod.env \
+  -f docker-compose.veriflier-prod.yml up -d
+```
+
+For a Monitor Compose project with a `jetmon` service, add the Caddy overlay:
+
+```bash
+cd docker
+docker compose --env-file jetmon-production.env \
+  -f docker-compose.yml \
+  -f docker-compose.monitor-caddy-prod.yml up -d jetmon caddy
+```
+
+Production docker-deploy may render an equivalent Compose/service definition
+instead of using these files directly, but the invariants are the same: Caddy is
+public on `80/443`, app listeners remain private, and public clients use HTTPS.
+If the base Compose file publishes the API port, set `API_BIND_ADDR=127.0.0.1`
+so the plain app listener is host-local while Caddy handles external traffic.
 
 ## Health And Logs
 
