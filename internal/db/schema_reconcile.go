@@ -82,6 +82,17 @@ func BuildSchemaReconcilePlan(ctx context.Context, baselineSQL string) (SchemaRe
 		})
 	}
 
+	// Tables whose live schema is missing a PRIMARY index. A new column
+	// declared in the baseline as inline PRIMARY KEY can safely retain that
+	// clause in `ADD COLUMN` only when the live table has no existing PK;
+	// otherwise the DDL hits "Multiple primary key defined" (MySQL 1068).
+	tablesMissingPrimary := make(map[string]bool)
+	for _, issue := range status.MissingIndexes {
+		if issue.Name == "PRIMARY" {
+			tablesMissingPrimary[issue.Table] = true
+		}
+	}
+
 	for _, issue := range status.MissingColumns {
 		if _, tableWillBeCreated := missingTables[issue.Table]; tableWillBeCreated {
 			continue
@@ -95,6 +106,16 @@ func BuildSchemaReconcilePlan(ctx context.Context, baselineSQL string) (SchemaRe
 		if columnDef == "" {
 			plan.Unresolved = append(plan.Unresolved, issue)
 			continue
+		}
+		// If the baseline declares this column inline as PRIMARY KEY but the
+		// live table already has a PRIMARY index (different column), the
+		// reconciler cannot promote this column to the PK without dropping
+		// the existing one — destructive, and out of scope here. Strip the
+		// inline PRIMARY KEY so the additive ADD COLUMN at least succeeds;
+		// the PK discrepancy stays visible against the baseline for an
+		// operator to address with a deliberate migration.
+		if hasInlinePrimaryKey(columnDef) && !tablesMissingPrimary[issue.Table] {
+			columnDef = stripInlinePrimaryKey(columnDef)
 		}
 		plan.Statements = append(plan.Statements, SchemaReconcileStatement{
 			Kind:  "add_column",
@@ -340,4 +361,23 @@ func ensureSemicolon(s string) string {
 		return s
 	}
 	return s + ";"
+}
+
+// inlinePrimaryKeyRE matches an inline ` PRIMARY KEY` column-level constraint
+// (a leading space avoids matching the keyword at the start of a clause like
+// `PRIMARY KEY (col, …)`, which is a table-level index declaration handled
+// separately by the parser).
+var inlinePrimaryKeyRE = regexp.MustCompile(`(?i)\s+PRIMARY\s+KEY\b`)
+
+// hasInlinePrimaryKey reports whether a column definition contains an inline
+// PRIMARY KEY clause (e.g., `id BIGINT NOT NULL PRIMARY KEY`).
+func hasInlinePrimaryKey(columnDef string) bool {
+	return inlinePrimaryKeyRE.MatchString(columnDef)
+}
+
+// stripInlinePrimaryKey removes the inline PRIMARY KEY tokens from a column
+// definition, preserving the rest of the column attributes (type,
+// nullability, default, etc.). Whitespace is normalized.
+func stripInlinePrimaryKey(columnDef string) string {
+	return normalizeWhitespace(inlinePrimaryKeyRE.ReplaceAllString(columnDef, ""))
 }
