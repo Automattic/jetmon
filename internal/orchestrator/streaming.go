@@ -334,6 +334,7 @@ type streamingStats struct {
 	checkSuccesses     int
 	historyRows        int
 	historyErrors      int
+	historyWaits       int
 	sslRows            int
 	sslErrors          int
 	eventDuration      time.Duration
@@ -465,6 +466,13 @@ type streamingSideEffectProcessor struct {
 	wg      sync.WaitGroup
 }
 
+type streamingHistoryProcessor struct {
+	ctx     <-chan struct{}
+	jobs    chan db.CheckHistoryRow
+	reports chan resultProcessSummary
+	wg      sync.WaitGroup
+}
+
 func (o *Orchestrator) newStreamingSideEffectProcessor(shards, queueCap int) *streamingSideEffectProcessor {
 	if shards < 1 {
 		shards = 1
@@ -494,35 +502,12 @@ func (p *streamingSideEffectProcessor) runShard(o *Orchestrator, jobs <-chan str
 	defer p.wg.Done()
 	statusByTarget := make(map[int64]int)
 	sslExpiryByTarget := make(map[int64]*time.Time)
-	historyRows := make([]db.CheckHistoryRow, 0, streamingHistoryBatchSize)
-	historyTicker := time.NewTicker(streamingHistoryFlushInterval)
-	defer historyTicker.Stop()
-	flushHistory := func() bool {
-		if len(historyRows) == 0 {
-			return true
-		}
-		summary := o.recordStreamingHistoryRows(historyRows)
-		historyRows = historyRows[:0]
-		select {
-		case p.reports <- streamingSideEffectReport{summary: summary}:
-			return true
-		case <-p.ctx:
-			return false
-		}
-	}
-	defer flushHistory()
 	for {
 		select {
 		case <-p.ctx:
-			flushHistory()
 			return
-		case <-historyTicker.C:
-			if !flushHistory() {
-				return
-			}
 		case job, ok := <-jobs:
 			if !ok {
-				flushHistory()
 				return
 			}
 			site := job.site
@@ -541,17 +526,6 @@ func (p *streamingSideEffectProcessor) runShard(o *Orchestrator, jobs <-chan str
 			} else {
 				delete(sslExpiryByTarget, targetID)
 			}
-			// site.SiteStatus here is the pre-check status (processStreamingSideEffects
-			// takes site by value), so resultDisagreesWithStatus inside the filter
-			// correctly sees transition edges. Previously this path recorded every
-			// failure unconditionally; it now honors CHECK_HISTORY_MODE so persisted
-			// samples stay tied to the configured observability footprint.
-			if shouldRecordCheckHistory(config.Get(), site, job.res, o.checkHistoryCounter.Add(1)) {
-				historyRows = append(historyRows, checkHistoryRowForResult(site, job.res))
-				if len(historyRows) >= streamingHistoryBatchSize && !flushHistory() {
-					return
-				}
-			}
 			select {
 			case p.reports <- streamingSideEffectReport{
 				targetID:      targetID,
@@ -566,6 +540,93 @@ func (p *streamingSideEffectProcessor) runShard(o *Orchestrator, jobs <-chan str
 			}
 		}
 	}
+}
+
+func (o *Orchestrator) newStreamingHistoryProcessor(queueCap int) *streamingHistoryProcessor {
+	if queueCap < streamingHistoryBatchSize {
+		queueCap = streamingHistoryBatchSize
+	}
+	p := &streamingHistoryProcessor{
+		ctx:     o.ctx.Done(),
+		jobs:    make(chan db.CheckHistoryRow, queueCap),
+		reports: make(chan resultProcessSummary, queueCap),
+	}
+	p.wg.Add(1)
+	go p.run(o)
+	return p
+}
+
+func (p *streamingHistoryProcessor) run(o *Orchestrator) {
+	defer p.wg.Done()
+	rows := make([]db.CheckHistoryRow, 0, streamingHistoryBatchSize)
+	ticker := time.NewTicker(streamingHistoryFlushInterval)
+	defer ticker.Stop()
+	flush := func() bool {
+		if len(rows) == 0 {
+			return true
+		}
+		summary := o.recordStreamingHistoryRows(rows)
+		rows = rows[:0]
+		select {
+		case p.reports <- summary:
+			return true
+		case <-p.ctx:
+			return false
+		}
+	}
+	defer flush()
+	for {
+		select {
+		case <-p.ctx:
+			flush()
+			return
+		case <-ticker.C:
+			if !flush() {
+				return
+			}
+		case row, ok := <-p.jobs:
+			if !ok {
+				flush()
+				return
+			}
+			rows = append(rows, row)
+			if len(rows) >= streamingHistoryBatchSize && !flush() {
+				return
+			}
+		}
+	}
+}
+
+func (p *streamingHistoryProcessor) enqueue(row db.CheckHistoryRow) bool {
+	select {
+	case p.jobs <- row:
+		return true
+	case <-p.ctx:
+		return false
+	}
+}
+
+func (p *streamingHistoryProcessor) tryEnqueue(row db.CheckHistoryRow) bool {
+	select {
+	case p.jobs <- row:
+		return true
+	default:
+		return false
+	}
+}
+
+func (p *streamingHistoryProcessor) reportsChannel() <-chan resultProcessSummary {
+	return p.reports
+}
+
+func (p *streamingHistoryProcessor) queueDepth() int {
+	return len(p.jobs)
+}
+
+func (p *streamingHistoryProcessor) stop() {
+	close(p.jobs)
+	p.wg.Wait()
+	close(p.reports)
 }
 
 func (p *streamingSideEffectProcessor) enqueue(job streamingSideEffectJob) bool {
@@ -656,12 +717,14 @@ func (o *Orchestrator) runStreamingEngine() {
 	planner := newStreamingPlanner(sites, nowFunc().UTC())
 	o.configureStreamingPool(cfg, planner, streamingBootstrapLatency)
 	sideEffectShards := streamingSideEffectShardCount(planner.activeCount())
-	sideEffects := o.newStreamingSideEffectProcessor(sideEffectShards, streamingQueueCap(streamingWorkerTarget(cfg, planner, streamingBootstrapLatency), planner.activeCount()))
+	queueCap := streamingQueueCap(streamingWorkerTarget(cfg, planner, streamingBootstrapLatency), planner.activeCount())
+	sideEffects := o.newStreamingSideEffectProcessor(sideEffectShards, queueCap)
+	historyWriter := o.newStreamingHistoryProcessor(queueCap)
 	config.Debugf("orchestrator: streaming scheduler loaded targets=%d required_rate=%.2f/s workers=%d queue_cap=%d side_effect_shards=%d",
 		planner.activeCount(),
 		planner.requiredChecksPerSecond(),
 		o.pool.WorkerCount(),
-		streamingQueueCap(streamingWorkerTarget(cfg, planner, streamingBootstrapLatency), planner.activeCount()),
+		queueCap,
 		sideEffectShards,
 	)
 
@@ -727,14 +790,20 @@ func (o *Orchestrator) runStreamingEngine() {
 			o.configureStreamingPool(cfg, planner, streamingBootstrapLatency)
 			sideEffects.stop()
 			sideEffectShards = streamingSideEffectShardCount(planner.activeCount())
-			sideEffects = o.newStreamingSideEffectProcessor(sideEffectShards, streamingQueueCap(streamingWorkerTarget(cfg, planner, streamingBootstrapLatency), planner.activeCount()))
+			queueCap = streamingQueueCap(streamingWorkerTarget(cfg, planner, streamingBootstrapLatency), planner.activeCount())
+			sideEffects = o.newStreamingSideEffectProcessor(sideEffectShards, queueCap)
+			historyWriter.stop()
+			historyWriter = o.newStreamingHistoryProcessor(queueCap)
 			pendingSideEffects = make(map[int64]int)
 			sideEffectStatus = make(map[int64]int)
 		} else if wasActive && planner.activeCount() == 0 {
 			o.configureStreamingPool(cfg, planner, streamingBootstrapLatency)
 			sideEffects.stop()
 			sideEffectShards = streamingSideEffectShardCount(planner.activeCount())
-			sideEffects = o.newStreamingSideEffectProcessor(sideEffectShards, streamingQueueCap(streamingWorkerTarget(cfg, planner, streamingBootstrapLatency), planner.activeCount()))
+			queueCap = streamingQueueCap(streamingWorkerTarget(cfg, planner, streamingBootstrapLatency), planner.activeCount())
+			sideEffects = o.newStreamingSideEffectProcessor(sideEffectShards, queueCap)
+			historyWriter.stop()
+			historyWriter = o.newStreamingHistoryProcessor(queueCap)
 			pending = nil
 			pendingSideEffects = make(map[int64]int)
 			sideEffectStatus = make(map[int64]int)
@@ -823,6 +892,15 @@ func (o *Orchestrator) runStreamingEngine() {
 			lag = 0
 		}
 		stats.addResult(res, lag, target.site.SiteStatus)
+		if shouldRecordCheckHistory(cfg, target.site, res, o.checkHistoryCounter.Add(1)) {
+			row := checkHistoryRowForResult(target.site, res)
+			if !historyWriter.tryEnqueue(row) {
+				stats.historyWaits++
+				if !historyWriter.enqueue(row) {
+					return
+				}
+			}
+		}
 		failurePressureActive := now.Before(pressureUntil)
 		if streamingFailurePressure(stats) {
 			pressureUntil = now.Add(streamingFailurePressureHold)
@@ -897,6 +975,7 @@ func (o *Orchestrator) runStreamingEngine() {
 
 	stopStreaming := func() {
 		o.flushStreamingProjection(pendingProjection)
+		historyWriter.stop()
 		sideEffects.stop()
 		if o.pool != nil {
 			o.pool.Drain()
@@ -997,7 +1076,7 @@ func (o *Orchestrator) runStreamingEngine() {
 
 		if now.Sub(lastReport) >= streamingReportInterval {
 			reportElapsed := now.Sub(lastReport)
-			o.reportStreamingStats(cfg, planner, stats, len(pending), sideEffects.queueDepth(), reportElapsed, pressureActive)
+			o.reportStreamingStats(cfg, planner, stats, len(pending), sideEffects.queueDepth(), historyWriter.queueDepth(), reportElapsed, pressureActive)
 			stats = streamingStats{}
 			lastReport = now
 		}
@@ -1017,6 +1096,7 @@ func (o *Orchestrator) runStreamingEngine() {
 		select {
 		case <-o.ctx.Done():
 			o.flushStreamingProjection(pendingProjection)
+			historyWriter.stop()
 			sideEffects.stop()
 			o.shutdown()
 			return
@@ -1036,6 +1116,8 @@ func (o *Orchestrator) runStreamingEngine() {
 					rescheduleStreamingAfterSideEffect(planner, target, report)
 				}
 			}
+		case summary := <-historyWriter.reportsChannel():
+			stats.addSideEffects(summary)
 		case reload := <-reloadResults:
 			applyReload(reload)
 		case <-telemetryResults:
@@ -1422,7 +1504,7 @@ func streamingProjectionFlushRowLimit(requiredRate float64) int {
 	return limit
 }
 
-func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streamingPlanner, stats streamingStats, pending, sideEffectDepth int, elapsed time.Duration, pressureActive bool) {
+func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streamingPlanner, stats streamingStats, pending, sideEffectDepth, historyDepth int, elapsed time.Duration, pressureActive bool) {
 	avgLatency := stats.averageLatency()
 	if avgLatency == 0 {
 		avgLatency = streamingDefaultLatency
@@ -1458,6 +1540,7 @@ func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streami
 		m.Gauge("scheduler.streaming.queue_depth.count", queueDepth)
 		m.Gauge("scheduler.streaming.result_depth.count", resultDepth)
 		m.Gauge("scheduler.streaming.side_effect_queue_depth.count", sideEffectDepth)
+		m.Gauge("scheduler.streaming.history_queue_depth.count", historyDepth)
 		m.Gauge("scheduler.streaming.worker.count", workers)
 		m.Gauge("scheduler.streaming.sps.count", sps)
 		m.Increment("scheduler.streaming.selected.count", stats.selected)
@@ -1465,6 +1548,7 @@ func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streami
 		m.Increment("scheduler.streaming.completed.count", stats.completed)
 		m.Increment("scheduler.streaming.backpressure_wait.count", stats.backpressureWaits)
 		m.Increment("scheduler.streaming.side_effect_backpressure_wait.count", stats.sideEffectWaits)
+		m.Increment("scheduler.streaming.history_backpressure_wait.count", stats.historyWaits)
 		m.Increment("scheduler.streaming.result_backpressure_pause.count", stats.resultPaused)
 		m.Increment("scheduler.streaming.side_effect_backpressure_pause.count", stats.sideEffectPaused)
 		m.Increment("scheduler.streaming.dispatch_budget_limited.count", stats.dispatchLimited)
@@ -1509,7 +1593,7 @@ func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streami
 		Total:       stats.completed,
 	})
 
-	log.Printf("orchestrator: streaming summary active=%d required_rate=%.2f/s selected=%d dispatched=%d completed=%d side_effects=%d pending=%d active_checks=%d queue_depth=%d result_depth=%d side_effect_depth=%d workers=%d worker_target=%d sps=%d elapsed=%s max_lag=%s avg_latency=%s scale_latency=%s successes=%d failures=%d failure_pressure=%t pressure_suppressed=%d error_timeout=%d error_connect=%d error_ssl=%d error_redirect=%d error_keyword=%d error_body_read=%d error_tls_expired=%d error_tls_deprecated=%d error_other=%d history_rows=%d ssl_rows=%d stale_results=%d backpressure_waits=%d side_effect_waits=%d result_pauses=%d side_effect_pauses=%d dispatch_limited=%d",
+	log.Printf("orchestrator: streaming summary active=%d required_rate=%.2f/s selected=%d dispatched=%d completed=%d side_effects=%d pending=%d active_checks=%d queue_depth=%d result_depth=%d side_effect_depth=%d history_depth=%d workers=%d worker_target=%d sps=%d elapsed=%s max_lag=%s avg_latency=%s scale_latency=%s successes=%d failures=%d failure_pressure=%t pressure_suppressed=%d error_timeout=%d error_connect=%d error_ssl=%d error_redirect=%d error_keyword=%d error_body_read=%d error_tls_expired=%d error_tls_deprecated=%d error_other=%d history_rows=%d ssl_rows=%d stale_results=%d backpressure_waits=%d side_effect_waits=%d history_waits=%d result_pauses=%d side_effect_pauses=%d dispatch_limited=%d",
 		planner.activeCount(),
 		planner.requiredChecksPerSecond(),
 		stats.selected,
@@ -1521,6 +1605,7 @@ func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streami
 		queueDepth,
 		resultDepth,
 		sideEffectDepth,
+		historyDepth,
 		workers,
 		workerTarget,
 		sps,
@@ -1546,6 +1631,7 @@ func (o *Orchestrator) reportStreamingStats(cfg *config.Config, planner *streami
 		stats.staleResults,
 		stats.backpressureWaits,
 		stats.sideEffectWaits,
+		stats.historyWaits,
 		stats.resultPaused,
 		stats.sideEffectPaused,
 		stats.dispatchLimited,
