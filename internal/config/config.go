@@ -279,10 +279,11 @@ type Config struct {
 	// count of 0 disables pruning for that table (rows accumulate). Defaults
 	// are 0 so retention is a conscious opt-in, not a surprise that starts
 	// deleting rows after an upgrade.
-	RetentionCheckHistoryDays int  `json:"RETENTION_CHECK_HISTORY_DAYS"`
-	RetentionAuditLogDays     int  `json:"RETENTION_AUDIT_LOG_DAYS"`
-	RetentionBackgroundEnable bool `json:"RETENTION_BACKGROUND_ENABLED"`
-	RetentionRunHourUTC       int  `json:"RETENTION_RUN_HOUR_UTC"`
+	RetentionCheckHistoryDays   int    `json:"RETENTION_CHECK_HISTORY_DAYS"`
+	RetentionAuditLogDays       int    `json:"RETENTION_AUDIT_LOG_DAYS"`
+	RetentionProductionDecision string `json:"RETENTION_PRODUCTION_DECISION"`
+	RetentionBackgroundEnable   bool   `json:"RETENTION_BACKGROUND_ENABLED"`
+	RetentionRunHourUTC         int    `json:"RETENTION_RUN_HOUR_UTC"`
 
 	Verifiers       []VerifierConfig `json:"VERIFLIERS"`
 	VerifiersLegacy []VerifierConfig `json:"VERIFIERS"`
@@ -303,6 +304,12 @@ const (
 const (
 	CheckTargetSafetyModePublicOnly           = "public_only"
 	CheckTargetSafetyModeAllowPrivateForTests = "allow_private_for_tests"
+)
+
+const (
+	RetentionProductionDecisionConfigured = "configured"
+	RetentionProductionDecisionDeferred   = "deferred"
+	RetentionProductionDecisionExternal   = "external"
 )
 
 // Audit-log recording modes.
@@ -558,6 +565,8 @@ func applyConfigProfile(raw []byte, cfg *Config) error {
 		cfg.ConfigProfile = ConfigProfileProduction
 		cfg.SchemaManagementMode = SchemaManagementModeValidate
 		cfg.CheckTargetSafetyMode = CheckTargetSafetyModePublicOnly
+		cfg.DefaultCheckMethod = checkmode.MethodHEAD
+		cfg.DefaultDetectionProfile = checkmode.ProfileLegacy
 		cfg.RolloutMode = RolloutModeAPIControlled
 		cfg.VeriflierDiscoveryMode = VeriflierDiscoveryModeShadow
 		cfg.VeriflierTransportScheme = VeriflierTransportHTTPS
@@ -599,6 +608,12 @@ func applyProfileEmptyValues(raw []byte, cfg *Config) {
 		})
 		applyEmptyStringDefault(keys, "VERIFLIER_TRANSPORT_SCHEME", func() {
 			cfg.VeriflierTransportScheme = VeriflierTransportHTTPS
+		})
+		applyEmptyStringDefault(keys, "DEFAULT_CHECK_METHOD", func() {
+			cfg.DefaultCheckMethod = checkmode.MethodHEAD
+		})
+		applyEmptyStringDefault(keys, "DEFAULT_DETECTION_PROFILE", func() {
+			cfg.DefaultDetectionProfile = checkmode.ProfileLegacy
 		})
 	}
 }
@@ -1018,6 +1033,9 @@ func validate(cfg *Config) error {
 	default:
 		return fmt.Errorf("ROLLOUT_MODE must be one of: active, standby, api-controlled")
 	}
+	if err := validateProductionLaunchPolicy(cfg); err != nil {
+		return err
+	}
 	if cfg.StreamingLegacyProjectionIntervalMin == 0 {
 		cfg.StreamingLegacyProjectionIntervalMin = 15
 	}
@@ -1137,6 +1155,9 @@ func validate(cfg *Config) error {
 	}
 	if cfg.RetentionRunHourUTC < 0 || cfg.RetentionRunHourUTC > 23 {
 		return fmt.Errorf("RETENTION_RUN_HOUR_UTC must be between 0 and 23")
+	}
+	if err := validateProductionRetentionDecision(cfg); err != nil {
+		return err
 	}
 	for i, v := range cfg.Verifiers {
 		// host and port are required. Empty values silently parse to ""
@@ -1452,6 +1473,42 @@ func normalizeOpsAlertSeverity(severity string) string {
 	default:
 		return ""
 	}
+}
+
+func validateProductionLaunchPolicy(cfg *Config) error {
+	if cfg == nil || cfg.ConfigProfile != ConfigProfileProduction {
+		return nil
+	}
+	if cfg.RolloutMode == RolloutModeActive {
+		return nil
+	}
+	if cfg.DefaultCheckMethod != checkmode.MethodHEAD || cfg.DefaultDetectionProfile != checkmode.ProfileLegacy {
+		return fmt.Errorf("production launch posture requires DEFAULT_CHECK_METHOD=HEAD and DEFAULT_DETECTION_PROFILE=legacy while ROLLOUT_MODE=%s; use API staged policy after activation to move cohorts to GET/simple_http/full", cfg.RolloutMode)
+	}
+	return nil
+}
+
+func validateProductionRetentionDecision(cfg *Config) error {
+	if cfg == nil {
+		return nil
+	}
+	cfg.RetentionProductionDecision = strings.TrimSpace(strings.ToLower(cfg.RetentionProductionDecision))
+	switch cfg.RetentionProductionDecision {
+	case "":
+		if cfg.ConfigProfile == ConfigProfileProduction {
+			return fmt.Errorf("RETENTION_PRODUCTION_DECISION must be one of: configured, deferred, external")
+		}
+		return nil
+	case RetentionProductionDecisionConfigured:
+		if cfg.RetentionCheckHistoryDays <= 0 || cfg.RetentionAuditLogDays <= 0 {
+			return fmt.Errorf("RETENTION_PRODUCTION_DECISION=configured requires RETENTION_CHECK_HISTORY_DAYS and RETENTION_AUDIT_LOG_DAYS to be > 0")
+		}
+	case RetentionProductionDecisionDeferred, RetentionProductionDecisionExternal:
+		return nil
+	default:
+		return fmt.Errorf("RETENTION_PRODUCTION_DECISION must be one of: configured, deferred, external")
+	}
+	return nil
 }
 
 func applyWPCOMNotifyDefaults(cfg *Config) {

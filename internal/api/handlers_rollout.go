@@ -362,6 +362,10 @@ func (s *Server) handleRolloutPreflight(w http.ResponseWriter, r *http.Request) 
 		if cfg.RolloutMode != config.RolloutModeAPIControlled {
 			blockers = append(blockers, "ROLLOUT_MODE must be api-controlled before API-driven container rollout")
 		}
+		if cfg.ConfigProfile == config.ConfigProfileProduction &&
+			(cfg.DefaultCheckMethod != checkmode.MethodHEAD || cfg.DefaultDetectionProfile != checkmode.ProfileLegacy) {
+			blockers = append(blockers, "production launch posture requires DEFAULT_CHECK_METHOD=HEAD and DEFAULT_DETECTION_PROFILE=legacy; use staged policy changes after v2 activation")
+		}
 		if cfg.APIPort <= 0 {
 			blockers = append(blockers, "API_PORT is disabled")
 		}

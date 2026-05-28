@@ -81,6 +81,7 @@ render_config() {
 	local rollout_mode="${ROLLOUT_MODE:-}"
 	local veriflier_discovery_mode="${VERIFLIER_DISCOVERY_MODE:-}"
 	local veriflier_transport_scheme="${VERIFLIER_TRANSPORT_SCHEME:-}"
+	local retention_production_decision="${RETENTION_PRODUCTION_DECISION:-}"
 	local veriflier_host="${VERIFLIER_HOST:-veriflier}"
 	local delivery_owner_host="${DELIVERY_OWNER_HOST:-}"
 	local debug_port="${DEBUG_PORT:-6060}"
@@ -145,6 +146,7 @@ render_config() {
 		-e "s|\"DEFAULT_CHECK_METHOD\"         : \"GET\"|\"DEFAULT_CHECK_METHOD\"         : \"$(sed_escape "${default_check_method:-GET}")\"|g" \
 		-e "s|\"DEFAULT_DETECTION_PROFILE\"    : \"full\"|\"DEFAULT_DETECTION_PROFILE\"    : \"$(sed_escape "${default_detection_profile:-full}")\"|g" \
 		-e "s|\"ROLLOUT_MODE\"                : \"active\"|\"ROLLOUT_MODE\"                : \"$(sed_escape "${rollout_mode:-active}")\"|g" \
+		-e "s|\"RETENTION_PRODUCTION_DECISION\": \"\"|\"RETENTION_PRODUCTION_DECISION\": \"$(sed_escape "$retention_production_decision")\"|g" \
 		-e "s|\"OPS_ALERTS_ENABLED\"             : false|\"OPS_ALERTS_ENABLED\"             : ${ops_alerts_enabled}|g" \
 		-e "s|\"OPS_ALERTS_SLACK_WEBHOOK_URL\"   : \"\"|\"OPS_ALERTS_SLACK_WEBHOOK_URL\"   : \"$(sed_escape "${OPS_ALERTS_SLACK_WEBHOOK_URL:-}")\"|g" \
 		-e "s|\"OPS_ALERTS_MIN_SEVERITY\"        : \"warning\"|\"OPS_ALERTS_MIN_SEVERITY\"        : \"$(sed_escape "${OPS_ALERTS_MIN_SEVERITY:-warning}")\"|g" \

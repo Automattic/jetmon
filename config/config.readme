@@ -88,12 +88,15 @@ starts.
 - Notes: `dev` sets `SCHEMA_MANAGEMENT_MODE=migrate` and disables WPCOM
   notifications unless those keys are explicitly set. `production` sets
   `SCHEMA_MANAGEMENT_MODE=validate`, `CHECK_TARGET_SAFETY_MODE=public_only`,
+  `DEFAULT_CHECK_METHOD=HEAD`, `DEFAULT_DETECTION_PROFILE=legacy`,
   `ROLLOUT_MODE=api-controlled`, `VERIFLIER_DISCOVERY_MODE=shadow`, HTTPS
   Veriflier transport, and normal legacy WPCOM TLS verification unless those
-  keys are explicitly set. The Docker Monitor entrypoint also uses
-  `CONFIG_PROFILE=production` as a
-  render-time convenience to fill omitted production container defaults such as
-  host-local StatsD, `HEAD` / `legacy` rollout checks, and `DEBUG_PORT=0`;
+  keys are explicitly set. Production startup refuses non-`HEAD` / non-`legacy`
+  defaults while the fleet is still in `standby` or `api-controlled`; use the
+  staged API policy tools after activation to move cohorts to `GET` and richer
+  detection profiles. The Docker Monitor entrypoint also uses
+  `CONFIG_PROFILE=production` as a render-time convenience to fill omitted
+  production container defaults such as host-local StatsD and `DEBUG_PORT=0`;
   review the rendered JSON before activation.
 
 ### PRODUCTION_SECURITY_EXCEPTIONS
@@ -409,17 +412,20 @@ observed rate/latency, and avoids per-probe healthy freshness writes.
 
 ### DEFAULT_CHECK_METHOD
 
-- Default: `GET`
+- Default: `GET`; production launch default: `HEAD`
 - Values: `HEAD`, `GET`
 - Example: `"DEFAULT_CHECK_METHOD": "HEAD"`
 - Purpose: fleet default HTTP method for sites without a
   `jetpack_monitor_site_check_config` row.
-- Notes: use `HEAD` during the first v1-to-v2 replacement phase. Use `GET`
-  after the fleet is ready to exercise visitor-path checks by default.
+- Notes: use `HEAD` during the first v1-to-v2 replacement phase. Production
+  refuses `GET` while `ROLLOUT_MODE` is `standby` or `api-controlled` so a
+  mounted JSON file or alternate launcher cannot skip the safe launch posture.
+  Use API-driven staged policy changes after v2 activation to move cohorts to
+  `GET`.
 
 ### DEFAULT_DETECTION_PROFILE
 
-- Default: `full`
+- Default: `full`; production launch default: `legacy`
 - Values: `legacy`, `simple_http`, `full`
 - Example: `"DEFAULT_DETECTION_PROFILE": "simple_http"`
 - Purpose: fleet default detection profile for sites without a per-site row.
@@ -432,7 +438,10 @@ observed rate/latency, and avoids per-probe healthy freshness writes.
   virtual-host pages, host suspension pages, Jetpack probe echo pages, and
   near-empty HTML responses.
   HEAD checks automatically cap the effective profile to `simple_http` because
-  body checks cannot run against HEAD responses.
+  body checks cannot run against HEAD responses. Production refuses
+  non-`legacy` defaults while `ROLLOUT_MODE` is `standby` or `api-controlled`;
+  use API-driven staged policy changes after v2 activation to move cohorts to
+  `simple_http` and `full`.
 
 ### NET_COMMS_TIMEOUT
 
@@ -775,6 +784,19 @@ observed rate/latency, and avoids per-probe healthy freshness writes.
 - Example: `"RETENTION_AUDIT_LOG_DAYS": 365`
 - Purpose: prune `jetpack_monitor_audit_log` rows older than this many days.
 - Notes: `0` disables pruning.
+
+### RETENTION_PRODUCTION_DECISION
+
+- Default: empty; required for `CONFIG_PROFILE=production`.
+- Values: `configured`, `deferred`, `external`
+- Example: `"RETENTION_PRODUCTION_DECISION": "deferred"`
+- Purpose: records the explicit production decision for growing operational
+  tables before sustained traffic begins.
+- Notes: `configured` requires both `RETENTION_CHECK_HISTORY_DAYS` and
+  `RETENTION_AUDIT_LOG_DAYS` to be greater than zero. `deferred` means launch
+  owners consciously accepted no in-process pruning for the first phase.
+  `external` means pruning or partition lifecycle is handled outside Jetmon.
+  Dev and test configs may omit this key.
 
 ### RETENTION_BACKGROUND_ENABLED
 
