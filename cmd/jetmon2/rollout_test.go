@@ -1794,6 +1794,7 @@ func TestRunCutoverCheckSuccess(t *testing.T) {
 	now := time.Date(2026, 4, 29, 12, 0, 0, 0, time.UTC)
 	cfg := pinnedRolloutTestConfig(12, 34)
 	cfg.DashboardPort = 8080
+	cfg.DashboardLegacyEnabled = true
 
 	deps := successfulCutoverCheckDeps(now)
 	var gotStatusPort int
@@ -1872,6 +1873,7 @@ func TestRunCutoverCheckSkipsDisabledDashboard(t *testing.T) {
 	now := time.Date(2026, 4, 29, 12, 0, 0, 0, time.UTC)
 	cfg := pinnedRolloutTestConfig(12, 34)
 	cfg.DashboardPort = 0
+	cfg.DashboardLegacyEnabled = true
 	deps := successfulCutoverCheckDeps(now)
 	deps.Status = func(int) (string, error) {
 		t.Fatal("status should not be called")
@@ -1882,8 +1884,27 @@ func TestRunCutoverCheckSkipsDisabledDashboard(t *testing.T) {
 	if err := runCutoverCheck(context.Background(), &out, cfg, cutoverCheckOptions{BucketMin: -1, BucketMax: -1, Since: "15m", Limit: 100, StatusPort: -1}, deps); err != nil {
 		t.Fatalf("runCutoverCheck: %v", err)
 	}
-	if !strings.Contains(out.String(), "INFO dashboard_status=skipped dashboard_port=disabled") {
+	if !strings.Contains(out.String(), "INFO dashboard_status=skipped legacy_dashboard=disabled") {
 		t.Fatalf("output missing disabled dashboard skip:\n%s", out.String())
+	}
+}
+
+func TestRunCutoverCheckSkipsLegacyDashboardWhenNotEnabled(t *testing.T) {
+	now := time.Date(2026, 4, 29, 12, 0, 0, 0, time.UTC)
+	cfg := pinnedRolloutTestConfig(12, 34)
+	cfg.DashboardPort = 8080
+	deps := successfulCutoverCheckDeps(now)
+	deps.Status = func(int) (string, error) {
+		t.Fatal("status should not be called")
+		return "", nil
+	}
+
+	var out bytes.Buffer
+	if err := runCutoverCheck(context.Background(), &out, cfg, cutoverCheckOptions{BucketMin: -1, BucketMax: -1, Since: "15m", Limit: 100, StatusPort: -1}, deps); err != nil {
+		t.Fatalf("runCutoverCheck: %v", err)
+	}
+	if !strings.Contains(out.String(), "INFO dashboard_status=skipped legacy_dashboard=disabled") {
+		t.Fatalf("output missing disabled legacy dashboard skip:\n%s", out.String())
 	}
 }
 
@@ -1891,6 +1912,7 @@ func TestRunCutoverCheckFailures(t *testing.T) {
 	now := time.Date(2026, 4, 29, 12, 0, 0, 0, time.UTC)
 	cfg := pinnedRolloutTestConfig(12, 34)
 	cfg.DashboardPort = 8080
+	cfg.DashboardLegacyEnabled = true
 
 	tests := []struct {
 		name string

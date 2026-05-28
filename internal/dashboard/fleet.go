@@ -1399,23 +1399,40 @@ func (s *Server) handleFleet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	setDashboardNoStoreHeaders(w)
-	s.mu.RLock()
-	source := s.fleetSource
-	s.mu.RUnlock()
-	if source == nil {
-		http.Error(w, "fleet dashboard source is not configured", http.StatusServiceUnavailable)
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), defaultFleetRequestTimeout)
-	defer cancel()
-	snapshot, err := source.Snapshot(ctx)
+	snapshot, err := s.FleetSnapshot(r.Context())
 	if err != nil {
+		if errors.Is(err, ErrFleetSourceNotConfigured) {
+			http.Error(w, "fleet dashboard source is not configured", http.StatusServiceUnavailable)
+			return
+		}
 		log.Printf("fleet dashboard: %v", err)
 		http.Error(w, "fleet dashboard query failed", http.StatusInternalServerError)
 		return
 	}
 	setDashboardJSONHeaders(w)
 	_ = json.NewEncoder(w).Encode(snapshot)
+}
+
+// ErrFleetSourceNotConfigured is returned when callers request a fleet
+// snapshot before wiring a backing store.
+var ErrFleetSourceNotConfigured = errors.New("fleet dashboard source is not configured")
+
+// FleetSnapshot returns the current fleet dashboard model used by both the
+// authenticated API and legacy dashboard JSON endpoint.
+func (s *Server) FleetSnapshot(ctx context.Context) (FleetSnapshot, error) {
+	s.mu.RLock()
+	source := s.fleetSource
+	s.mu.RUnlock()
+	if source == nil {
+		return FleetSnapshot{}, ErrFleetSourceNotConfigured
+	}
+	ctx, cancel := context.WithTimeout(ctx, defaultFleetRequestTimeout)
+	defer cancel()
+	snapshot, err := source.Snapshot(ctx)
+	if err != nil {
+		return FleetSnapshot{}, err
+	}
+	return snapshot, nil
 }
 
 func (s *Server) handleFleetIndex(w http.ResponseWriter, r *http.Request) {

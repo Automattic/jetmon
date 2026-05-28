@@ -86,9 +86,6 @@ Useful operator improvements:
 - Make Veriflier StatsD/Graphite evidence reliable in rollout rehearsals so
   load and quorum checks do not have to rely on `/v2/status` alone.
 - clearer dashboard reasons for not-ready hosts;
-- move dashboard data behind the authenticated API with the same data exposed
-  as JSON; keep any legacy HTML endpoint disabled by default, token-protected
-  when enabled, and loopback-only unless an explicit exception is approved;
 - one-command evidence packet export;
 - alerts for projection drift, stale process health, and delivery backlog;
 - event links to check-history and audit rows;

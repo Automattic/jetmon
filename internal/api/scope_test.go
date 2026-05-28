@@ -61,6 +61,10 @@ var phase2ReadEndpoints = []struct {
 	{"GET", "/api/v1/sites/42/uptime"},
 	{"GET", "/api/v1/sites/42/response-time"},
 	{"GET", "/api/v1/sites/42/timing-breakdown"},
+	{"GET", "/api/v1/dashboard/state"},
+	{"GET", "/api/v1/dashboard/health"},
+	{"GET", "/api/v1/dashboard/host"},
+	{"GET", "/api/v1/dashboard/fleet"},
 }
 
 var rolloutReadEndpoints = []struct {

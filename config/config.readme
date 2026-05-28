@@ -103,7 +103,8 @@ starts.
 
 - Default: `[]`
 - Values: `plain_veriflier_transport`, `plain_monitor_api`,
-  `allow_private_targets`, `legacy_wpcom_insecure_tls`
+  `allow_private_targets`, `legacy_wpcom_insecure_tls`,
+  `legacy_dashboard_unauthenticated_remote`
 - Example:
 
   ```json
@@ -664,15 +665,36 @@ observed rate/latency, and avoids per-probe healthy freshness writes.
 
 - Default: `8080`
 - Example: `"DASHBOARD_PORT": 8080`
-- Purpose: operator dashboard port. `0` disables the dashboard.
+- Purpose: legacy HTML/JSON operator dashboard port.
+- Notes: only starts a listener when `DASHBOARD_LEGACY_ENABLED=true`; use the
+  authenticated API dashboard endpoints for normal remote access.
 
 ### DASHBOARD_BIND_ADDR
 
 - Default: `127.0.0.1`
 - Example: `"DASHBOARD_BIND_ADDR": "127.0.0.1"`
-- Purpose: dashboard listener address.
-- Notes: keep localhost unless a trusted management network requires remote
-  access. `validate-config` warns on non-loopback addresses.
+- Purpose: legacy dashboard listener address.
+- Notes: remote binds require `DASHBOARD_LEGACY_AUTH_TOKEN`, or the temporary
+  `legacy_dashboard_unauthenticated_remote` production security exception.
+
+### DASHBOARD_LEGACY_ENABLED
+
+- Default: `false`
+- Values: `true`, `false`
+- Example: `"DASHBOARD_LEGACY_ENABLED": false`
+- Purpose: opt in to the old dashboard listener (`/`, `/fleet`, `/api/state`,
+  `/api/health`, `/api/host`, `/api/fleet`).
+- Notes: keep disabled for production unless a legacy monitoring consumer still
+  needs these paths.
+
+### DASHBOARD_LEGACY_AUTH_TOKEN
+
+- Default: empty
+- Example: `"DASHBOARD_LEGACY_AUTH_TOKEN": "change_me"`
+- Purpose: simple token for the legacy dashboard listener.
+- Notes: accepted as `Authorization: Bearer`, HTTP Basic password, or
+  `X-Jetmon-Dashboard-Token`. Empty is allowed only for loopback legacy
+  listeners unless an explicit temporary production exception is set.
 
 ### DEBUG_PORT
 

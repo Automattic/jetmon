@@ -116,6 +116,75 @@ func TestHandleState(t *testing.T) {
 	}
 }
 
+func TestLegacyDashboardAuth(t *testing.T) {
+	srv := New("test-host")
+	srv.SetLegacyAuthToken("secret-token")
+	handler := srv.legacyHandler()
+
+	tests := []struct {
+		name     string
+		prepare  func(*http.Request)
+		wantCode int
+	}{
+		{
+			name:     "missing auth rejected",
+			wantCode: http.StatusUnauthorized,
+		},
+		{
+			name: "bearer accepted",
+			prepare: func(r *http.Request) {
+				r.Header.Set("Authorization", "Bearer secret-token")
+			},
+			wantCode: http.StatusOK,
+		},
+		{
+			name: "basic password accepted",
+			prepare: func(r *http.Request) {
+				r.SetBasicAuth("operator", "secret-token")
+			},
+			wantCode: http.StatusOK,
+		},
+		{
+			name: "dashboard token header accepted",
+			prepare: func(r *http.Request) {
+				r.Header.Set("X-Jetmon-Dashboard-Token", "secret-token")
+			},
+			wantCode: http.StatusOK,
+		},
+		{
+			name: "wrong bearer rejected",
+			prepare: func(r *http.Request) {
+				r.Header.Set("Authorization", "Bearer wrong-token")
+			},
+			wantCode: http.StatusUnauthorized,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/state", nil)
+			if tt.prepare != nil {
+				tt.prepare(req)
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != tt.wantCode {
+				t.Fatalf("status = %d, want %d; body=%s", rec.Code, tt.wantCode, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestLegacyDashboardWithoutAuth(t *testing.T) {
+	srv := New("test-host")
+	req := httptest.NewRequest(http.MethodGet, "/api/state", nil)
+	rec := httptest.NewRecorder()
+	srv.legacyHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestHandleHealth(t *testing.T) {
 	srv := New("test-host")
 	srv.UpdateHealth([]HealthEntry{

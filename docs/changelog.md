@@ -95,8 +95,8 @@ and operator control into clearer v2-owned surfaces.
 
 - Added host and fleet dashboards backed by process health, bucket ownership,
   delivery queues, projection drift, Veriflier telemetry, and dependency rollup.
-- Defaulted dashboard listeners to local-only exposure unless explicitly
-  configured otherwise.
+- Moved dashboard snapshots behind authenticated API endpoints and made the
+  legacy HTML/JSON dashboard listener opt-in.
 - Added rollout and lab docs for API-driven production rollout, Docker image
   behavior, VM/container labs, TeamCity deployment assumptions, and support
   explanation workflows.

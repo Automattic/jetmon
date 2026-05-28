@@ -2,11 +2,13 @@ package dashboard
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	_ "net/http/pprof"
+	"strings"
 	"sync"
 	"time"
 
@@ -93,6 +95,7 @@ type Server struct {
 	httpSrv     *http.Server
 	hostname    string
 	fleetSource FleetSource
+	legacyToken string
 }
 
 // New creates a new dashboard Server.
@@ -135,8 +138,32 @@ func (s *Server) UpdateHealth(entries []HealthEntry) {
 	s.mu.Unlock()
 }
 
+// SetLegacyAuthToken configures the simple token required by the legacy
+// dashboard HTTP listener. Empty preserves unauthenticated legacy behavior for
+// loopback-only compatibility deployments.
+func (s *Server) SetLegacyAuthToken(token string) {
+	s.mu.Lock()
+	s.legacyToken = strings.TrimSpace(token)
+	s.mu.Unlock()
+}
+
 // Listen starts the dashboard HTTP server. Blocks until the server exits.
 func (s *Server) Listen(addr string) error {
+	handler := s.legacyHandler()
+	log.Printf("dashboard: listening on %s", addr)
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+	s.serverMu.Lock()
+	s.httpSrv = srv
+	s.serverMu.Unlock()
+	return srv.ListenAndServe()
+}
+
+func (s *Server) legacyHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/events", s.handleSSE)
@@ -145,18 +172,49 @@ func (s *Server) Listen(addr string) error {
 	mux.HandleFunc("/api/host", s.handleHost)
 	mux.HandleFunc("/fleet", s.handleFleetIndex)
 	mux.HandleFunc("/api/fleet", s.handleFleet)
+	return s.withLegacyAuth(mux)
+}
 
-	log.Printf("dashboard: listening on %s", addr)
-	srv := &http.Server{
-		Addr:              addr,
-		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second,
-		IdleTimeout:       120 * time.Second,
+func (s *Server) withLegacyAuth(next http.Handler) http.Handler {
+	s.mu.RLock()
+	token := s.legacyToken
+	s.mu.RUnlock()
+	if token == "" {
+		return next
 	}
-	s.serverMu.Lock()
-	s.httpSrv = srv
-	s.serverMu.Unlock()
-	return srv.ListenAndServe()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !legacyAuthMatches(r, token) {
+			setDashboardNoStoreHeaders(w)
+			w.Header().Set("WWW-Authenticate", `Basic realm="Jetmon dashboard"`)
+			http.Error(w, "dashboard authentication required", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func legacyAuthMatches(r *http.Request, expected string) bool {
+	if expected == "" {
+		return true
+	}
+	if got := strings.TrimSpace(r.Header.Get("X-Jetmon-Dashboard-Token")); secureEqual(got, expected) {
+		return true
+	}
+	const bearer = "Bearer "
+	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, bearer) {
+		return secureEqual(strings.TrimSpace(strings.TrimPrefix(auth, bearer)), expected)
+	}
+	if _, pass, ok := r.BasicAuth(); ok {
+		return secureEqual(pass, expected)
+	}
+	return false
+}
+
+func secureEqual(got, expected string) bool {
+	if got == "" || expected == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(got), []byte(expected)) == 1
 }
 
 // Shutdown drains in-flight dashboard requests up to ctx's deadline.
@@ -193,38 +251,52 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	if rejectNonGet(w, r) {
 		return
 	}
-	s.mu.RLock()
-	st := s.state
-	s.mu.RUnlock()
 	setDashboardJSONHeaders(w)
-	_ = json.NewEncoder(w).Encode(st)
+	_ = json.NewEncoder(w).Encode(s.StateSnapshot())
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if rejectNonGet(w, r) {
 		return
 	}
-	s.mu.RLock()
-	h := cloneHealthEntries(s.health)
-	s.mu.RUnlock()
 	setDashboardJSONHeaders(w)
-	_ = json.NewEncoder(w).Encode(h)
+	_ = json.NewEncoder(w).Encode(s.HealthSnapshot())
 }
 
 func (s *Server) handleHost(w http.ResponseWriter, r *http.Request) {
 	if rejectNonGet(w, r) {
 		return
 	}
+	setDashboardJSONHeaders(w)
+	_ = json.NewEncoder(w).Encode(s.HostSnapshot())
+}
+
+// StateSnapshot returns a copy of the latest host dashboard state.
+func (s *Server) StateSnapshot() State {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.state
+}
+
+// HealthSnapshot returns a copy of the latest dependency-health list.
+func (s *Server) HealthSnapshot() []HealthEntry {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return cloneHealthEntries(s.health)
+}
+
+// HostSnapshot returns the combined host dashboard model used by both the
+// authenticated API and legacy dashboard JSON endpoint.
+func (s *Server) HostSnapshot() HostSnapshot {
 	s.mu.RLock()
 	st := s.state
 	h := cloneHealthEntries(s.health)
 	s.mu.RUnlock()
-	setDashboardJSONHeaders(w)
-	_ = json.NewEncoder(w).Encode(HostSnapshot{
+	return HostSnapshot{
 		State:   st,
 		Health:  h,
 		Summary: SummarizeHost(st, h),
-	})
+	}
 }
 
 func cloneHealthEntries(entries []HealthEntry) []HealthEntry {

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/Automattic/jetmon/internal/alerting"
+	"github.com/Automattic/jetmon/internal/dashboard"
 )
 
 // Timeout defaults for the API HTTP server. These are generous compared to
@@ -50,6 +51,10 @@ type Server struct {
 	// the path real alerts will take. Wired by main.go via
 	// SetAlertDispatchers; nil if alerting is disabled.
 	alertDispatchers map[alerting.Transport]alerting.Dispatcher
+
+	// dashboard supplies authenticated API access to the same host/fleet models
+	// used by the legacy HTML dashboard listener.
+	dashboard *dashboard.Server
 }
 
 // New constructs a Server. Caller is responsible for ensuring db is connected
@@ -108,6 +113,12 @@ func (s *Server) Shutdown(ctx context.Context) error {
 // successful send-test exercises the real production code path.
 func (s *Server) SetAlertDispatchers(d map[alerting.Transport]alerting.Dispatcher) {
 	s.alertDispatchers = d
+}
+
+// SetDashboard wires the dashboard snapshot source exposed by the authenticated
+// API dashboard endpoints.
+func (s *Server) SetDashboard(d *dashboard.Server) {
+	s.dashboard = d
 }
 
 // routes builds the request multiplexer. Uses Go 1.22's pattern-based routing

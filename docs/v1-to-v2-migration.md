@@ -47,7 +47,8 @@ deliverer rollout notes into one runbook.
 
 Monitor containers need rendered config, DB credentials or server-map config,
 StatsD, WPCOM credential material, v2 Veriflier endpoints or discovery config,
-and approved API/dashboard/debug bindings. Mount legacy stats only for consumers
+and approved API bindings. Keep legacy dashboard and debug bindings disabled or
+loopback-only unless explicitly approved. Mount legacy stats only for consumers
 that still read files.
 
 Fresh image smoke:
@@ -163,7 +164,7 @@ Watch:
 
 - `/api/v1/rollout/status`;
 - bucket coverage, activity, and projection-drift gates;
-- dashboard `/fleet`;
+- `/api/v1/dashboard/fleet`;
 - check throughput, queue depth, errors, WPCOM sends/failures;
 - Veriflier quorum report;
 - event transitions and audit rows for the range.

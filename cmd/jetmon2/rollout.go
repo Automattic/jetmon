@@ -228,8 +228,8 @@ func cmdRolloutGuided(args []string) {
 	dryRun := fs.Bool("dry-run", false, "validate inputs, log directory, and print the guided plan without running checks or commands")
 	rollback := fs.Bool("rollback", false, "run the guided rollback path instead of the forward cutover path")
 	skipSystemd := fs.Bool("skip-systemd", false, "skip systemd-analyze verify in host-preflight")
-	skipStatus := fs.Bool("skip-status", false, "skip dashboard status check in cutover gates")
-	statusPort := fs.Int("status-port", -1, "dashboard port for cutover status check (default DASHBOARD_PORT from config)")
+	skipStatus := fs.Bool("skip-status", false, "skip legacy dashboard status check in cutover gates")
+	statusPort := fs.Int("status-port", -1, "legacy dashboard port for cutover status check (default active legacy dashboard port from config)")
 	_ = fs.Parse(args)
 	if fs.NArg() != 0 || strings.TrimSpace(*file) == "" {
 		fmt.Fprintln(os.Stderr, "usage: jetmon2 rollout guided --file=<ranges.csv> --host=<v1-host> --bucket-min=N --bucket-max=N [--runtime-host=<v2-host>] [--bucket-total=N] [--mode=same-server|fresh-server] [--v1-stop-command=<cmd>] [--v1-start-command=<cmd>] [--log-dir=<dir>] [--execute-operator-commands] [--dry-run] [--rollback]")
@@ -512,8 +512,8 @@ func cmdRolloutCutoverCheck(args []string) {
 	since := fs.String("since", "15m", "activity cutoff as duration like 15m or RFC3339 timestamp")
 	requireAll := fs.Bool("require-all", false, "fail unless every active site in range was checked since the cutoff")
 	limit := fs.Int("limit", 100, "maximum projection drift rows to print")
-	statusPort := fs.Int("status-port", -1, "dashboard port for status check (default DASHBOARD_PORT from config)")
-	skipStatus := fs.Bool("skip-status", false, "skip dashboard status check")
+	statusPort := fs.Int("status-port", -1, "legacy dashboard port for status check (default active legacy dashboard port from config)")
+	skipStatus := fs.Bool("skip-status", false, "skip legacy dashboard status check")
 	output := rolloutOutputFlag(fs)
 	_ = fs.Parse(args)
 	if fs.NArg() != 0 {
@@ -2221,13 +2221,13 @@ func runCutoverStatusCheck(out io.Writer, cfg *config.Config, opts cutoverCheckO
 	}
 	port := opts.StatusPort
 	if port == -1 {
-		port = cfg.DashboardPort
+		port = dashboardLegacyPort(cfg)
 	}
 	if port < 0 {
 		return errors.New("status-port must be >= 0")
 	}
 	if port == 0 {
-		fmt.Fprintln(out, "INFO dashboard_status=skipped dashboard_port=disabled")
+		fmt.Fprintln(out, "INFO dashboard_status=skipped legacy_dashboard=disabled")
 		return nil
 	}
 	if deps.Status == nil {
