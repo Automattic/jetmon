@@ -62,6 +62,8 @@ export JETMON_API_TOKEN=jm_replace_with_the_printed_token
 
 ./bin/jetmon2 api health --pretty
 ./bin/jetmon2 api me --pretty
+./bin/jetmon2 api dashboard host --pretty
+./bin/jetmon2 api dashboard fleet --pretty
 ./bin/jetmon2 api sites list --output table
 ./bin/jetmon2 api request GET '/api/v1/sites?limit=5'
 ```
