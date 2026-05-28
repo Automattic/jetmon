@@ -19,6 +19,7 @@ import (
 	"github.com/Automattic/jetmon/internal/deliverer"
 	"github.com/Automattic/jetmon/internal/fleethealth"
 	"github.com/Automattic/jetmon/internal/metrics"
+	"github.com/Automattic/jetmon/internal/opsalerts"
 	"github.com/Automattic/jetmon/internal/processcontrol"
 	"github.com/Automattic/jetmon/internal/processmetrics"
 )
@@ -165,8 +166,12 @@ func run() {
 	processStartedAt := time.Now().UTC()
 	processID := fleethealth.ProcessID(hostname, fleethealth.ProcessDeliverer)
 	workersEnabled := deliveryWorkersShouldStart(cfg, hostname)
+	ops := newDelivererOpsAlertClientFromConfig(cfg, hostname)
+	var statsdAlerted bool
 	publishProcessHealth := func(state string) {
-		snapshot := delivererProcessHealthSnapshot(hostname, processStartedAt, state, cfg, workersEnabled, delivererDependencyHealth(context.Background(), db.DB(), metrics.Global() != nil, time.Now().UTC()))
+		health := delivererDependencyHealth(context.Background(), db.DB(), metrics.Global() != nil, time.Now().UTC())
+		maybeSendDelivererDependencyOpsAlerts(ops, cfg, health, &statsdAlerted)
+		snapshot := delivererProcessHealthSnapshot(hostname, processStartedAt, state, cfg, workersEnabled, health)
 		emitDelivererResourceStats()
 		ctx, cancel := context.WithTimeout(context.Background(), processHealthWriteTimeout)
 		if err := fleethealth.Upsert(ctx, db.DB(), snapshot); err != nil {
@@ -186,6 +191,15 @@ func run() {
 		initialState = fleethealth.StateIdle
 	}
 	publishProcessHealth(initialState)
+	ops.ServiceOnline(map[string]any{
+		"state":                    initialState,
+		"delivery_workers_enabled": workersEnabled,
+		"delivery_owner_host":      cfg.DeliveryOwnerHost,
+		"email_transport":          emailTransportLabel(cfg),
+		"api_port":                 cfg.APIPort,
+		"config_profile":           cfg.ConfigProfile,
+		"process_started_at":       processStartedAt.Format(time.RFC3339),
+	})
 	stopHealth := make(chan struct{})
 	go func() {
 		ticker := time.NewTicker(10 * time.Second)
@@ -274,6 +288,93 @@ func emitDelivererResourceStats() {
 	if readDB != nil && readDB != writeDB {
 		m.EmitDBStats("db.read_pool", readDB.Stats())
 	}
+}
+
+func newDelivererOpsAlertClientFromConfig(cfg *config.Config, hostname string) *opsalerts.Client {
+	if cfg == nil {
+		return opsalerts.New(opsalerts.Config{})
+	}
+	return opsalerts.New(opsalerts.Config{
+		Enabled:         cfg.OpsAlertsEnabled,
+		SlackWebhookURL: cfg.OpsAlertsSlackWebhookURL,
+		MinSeverity:     cfg.OpsAlertsMinSeverity,
+		RepeatInterval:  time.Duration(cfg.OpsAlertsRepeatIntervalSec) * time.Second,
+		ServiceOnline:   cfg.OpsAlertsServiceOnline,
+		Service:         fleethealth.ProcessDeliverer,
+		Host:            hostname,
+		Version:         version,
+		Commit:          commit,
+		BuildDate:       buildDate,
+		RunbookBaseURL:  "docs/operations-guide.md",
+		LogSendFailures: true,
+		AdditionalContext: map[string]string{
+			"profile": cfg.ConfigProfile,
+		},
+	})
+}
+
+func maybeSendDelivererDependencyOpsAlerts(client *opsalerts.Client, cfg *config.Config, health []fleethealth.DependencyHealth, statsdAlerted *bool) {
+	if client == nil || !client.Enabled() {
+		return
+	}
+	for _, entry := range health {
+		status := strings.ToLower(strings.TrimSpace(entry.Status))
+		if status == "" || status == fleethealth.HealthGreen {
+			continue
+		}
+		switch entry.Name {
+		case "mysql":
+			client.NotifyAsync(opsalerts.Alert{
+				Severity: opsalerts.SeverityCritical,
+				Code:     "deliverer_db_unreachable",
+				Summary:  "Standalone deliverer cannot reach MySQL.",
+				Impact:   "Webhook and alert-contact delivery cannot claim or update pending delivery rows.",
+				Details:  delivererDependencyAlertDetails(entry),
+			})
+		case "db-config":
+			client.NotifyAsync(opsalerts.Alert{
+				Severity: opsalerts.SeverityError,
+				Code:     "deliverer_db_config_unhealthy",
+				Summary:  "Standalone deliverer database configuration reload is unhealthy.",
+				Impact:   "Credential rotation or read/write split updates may not be reflected by the running deliverer.",
+				Details:  delivererDependencyAlertDetails(entry),
+			})
+		case "statsd":
+			if cfg != nil && strings.TrimSpace(cfg.StatsDAddr) == "" {
+				continue
+			}
+			if statsdAlerted != nil && *statsdAlerted {
+				continue
+			}
+			if statsdAlerted != nil {
+				*statsdAlerted = true
+			}
+			client.NotifyAsync(opsalerts.Alert{
+				Severity: opsalerts.SeverityWarning,
+				Code:     "deliverer_statsd_unavailable",
+				Summary:  "Standalone deliverer StatsD client is not initialized.",
+				Impact:   "Delivery worker resource and throughput metrics may be missing.",
+				Details:  delivererDependencyAlertDetails(entry),
+			})
+		}
+	}
+}
+
+func delivererDependencyAlertDetails(entry fleethealth.DependencyHealth) map[string]any {
+	details := map[string]any{
+		"dependency": entry.Name,
+		"status":     entry.Status,
+	}
+	if entry.LastError != "" {
+		details["last_error"] = entry.LastError
+	}
+	if entry.LatencyMS > 0 {
+		details["latency_ms"] = entry.LatencyMS
+	}
+	if !entry.CheckedAt.IsZero() {
+		details["checked_at"] = entry.CheckedAt.UTC().Format(time.RFC3339)
+	}
+	return details
 }
 
 func validateDelivererConfigRequirements(cfg *config.Config, hostname string, opts delivererValidationOptions) []string {

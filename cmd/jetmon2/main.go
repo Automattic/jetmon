@@ -32,6 +32,7 @@ import (
 	"github.com/Automattic/jetmon/internal/deliverer"
 	"github.com/Automattic/jetmon/internal/fleethealth"
 	"github.com/Automattic/jetmon/internal/metrics"
+	"github.com/Automattic/jetmon/internal/opsalerts"
 	"github.com/Automattic/jetmon/internal/orchestrator"
 	"github.com/Automattic/jetmon/internal/processcontrol"
 	"github.com/Automattic/jetmon/internal/processmetrics"
@@ -117,6 +118,186 @@ func printVersion(w io.Writer) {
 	fmt.Fprintf(w, "jetmon2 %s (built %s with %s)\n", version, buildDate, goVersion)
 }
 
+func newOpsAlertClientFromConfig(cfg *config.Config, service, hostname string) *opsalerts.Client {
+	if cfg == nil {
+		return opsalerts.New(opsalerts.Config{})
+	}
+	return opsalerts.New(opsalerts.Config{
+		Enabled:         cfg.OpsAlertsEnabled,
+		SlackWebhookURL: cfg.OpsAlertsSlackWebhookURL,
+		MinSeverity:     cfg.OpsAlertsMinSeverity,
+		RepeatInterval:  time.Duration(cfg.OpsAlertsRepeatIntervalSec) * time.Second,
+		ServiceOnline:   cfg.OpsAlertsServiceOnline,
+		Service:         service,
+		Host:            hostname,
+		Version:         version,
+		Commit:          commit,
+		BuildDate:       buildDate,
+		RunbookBaseURL:  "docs/operations-guide.md",
+		LogSendFailures: true,
+		AdditionalContext: map[string]string{
+			"profile": cfg.ConfigProfile,
+		},
+	})
+}
+
+func maybeSendDependencyOpsAlerts(client *opsalerts.Client, cfg *config.Config, health []dashboard.HealthEntry, wp *wpcom.Client, wpcomWasOpen *atomic.Bool) {
+	if client == nil || !client.Enabled() {
+		return
+	}
+	for _, entry := range health {
+		name := strings.TrimSpace(entry.Name)
+		status := strings.ToLower(strings.TrimSpace(entry.Status))
+		if status == "" || status == "green" {
+			if strings.HasPrefix(name, "mysql") && cfg != nil && cfg.OpsAlertsDBPingWarnMS > 0 && entry.Latency > int64(cfg.OpsAlertsDBPingWarnMS) {
+				client.NotifyAsync(opsalerts.Alert{
+					Severity: opsalerts.SeverityWarning,
+					Code:     "db_ping_latency_high",
+					Summary:  "Monitor database ping latency is above the configured warning threshold.",
+					Impact:   "Sustained DB latency can reduce check freshness and delay status transitions.",
+					Details:  dependencyAlertDetails(entry, map[string]any{"threshold_ms": cfg.OpsAlertsDBPingWarnMS}),
+				})
+			}
+			continue
+		}
+
+		switch {
+		case strings.HasPrefix(name, "mysql"):
+			client.NotifyAsync(opsalerts.Alert{
+				Severity: opsalerts.SeverityCritical,
+				Code:     "db_unreachable",
+				Summary:  "Monitor cannot reach MySQL.",
+				Impact:   "The Monitor cannot load active targets or write state until database access recovers.",
+				Details:  dependencyAlertDetails(entry, nil),
+			})
+		case name == "db-config":
+			client.NotifyAsync(opsalerts.Alert{
+				Severity: severityForHealthStatus(status, opsalerts.SeverityError),
+				Code:     "db_config_unhealthy",
+				Summary:  "Database configuration reload is unhealthy.",
+				Impact:   "Credential rotation or read/write split updates may not be reflected by the running Monitor.",
+				Details:  dependencyAlertDetails(entry, nil),
+			})
+		case name == "statsd" && cfg != nil && strings.TrimSpace(cfg.StatsDAddr) != "":
+			client.NotifyAsync(opsalerts.Alert{
+				Severity: opsalerts.SeverityWarning,
+				Code:     "statsd_unavailable",
+				Summary:  "StatsD is configured but the client is not initialized.",
+				Impact:   "Runtime metrics may be missing until StatsD configuration or connectivity is restored.",
+				Details:  dependencyAlertDetails(entry, nil),
+			})
+		case name == "wpcom":
+			if cfg != nil && !cfg.WPCOMNotifyEnable && cfg.ConfigProfile != config.ConfigProfileProduction {
+				continue
+			}
+			client.NotifyAsync(opsalerts.Alert{
+				Severity: severityForWPCOMHealth(cfg, entry),
+				Code:     wpcomHealthAlertCode(cfg, entry),
+				Summary:  "WPCOM notification dependency is unhealthy.",
+				Impact:   "Customer-visible legacy notifications may be delayed or skipped until this is resolved.",
+				Details:  dependencyAlertDetails(entry, nil),
+			})
+		case strings.HasPrefix(name, "veriflier:") || name == "verifliers":
+			if cfg != nil && cfg.RolloutMode != config.RolloutModeActive {
+				continue
+			}
+			client.NotifyAsync(opsalerts.Alert{
+				Severity: severityForHealthStatus(status, opsalerts.SeverityError),
+				Code:     "veriflier_dependency_unhealthy",
+				Summary:  "One or more configured Verifliers are unhealthy.",
+				Impact:   "Downtime confirmations can be delayed; Jetmon fails closed rather than confirming Down without quorum.",
+				Details:  dependencyAlertDetails(entry, nil),
+			})
+		case strings.HasPrefix(name, "veriflier-discovery"):
+			client.NotifyAsync(opsalerts.Alert{
+				Severity: severityForHealthStatus(status, opsalerts.SeverityError),
+				Code:     "veriflier_discovery_unhealthy",
+				Summary:  "Veriflier discovery is unhealthy.",
+				Impact:   "The Monitor may fall back to static Verifliers or defer downtime confirmation depending on discovery mode.",
+				Details:  dependencyAlertDetails(entry, nil),
+			})
+		}
+	}
+
+	if wp == nil || wpcomWasOpen == nil || cfg != nil && !cfg.WPCOMNotifyEnable {
+		return
+	}
+	open := wp.IsCircuitOpen()
+	wasOpen := wpcomWasOpen.Swap(open)
+	if open && !wasOpen {
+		client.NotifyAsync(opsalerts.Alert{
+			Severity: opsalerts.SeverityCritical,
+			Code:     "wpcom_circuit_open",
+			Summary:  "WPCOM notification circuit opened.",
+			Impact:   "Status-change notifications are queued in memory and may be dropped if the queue fills or the process restarts.",
+			Details: map[string]any{
+				"queue_depth": wp.QueueDepth(),
+			},
+		})
+	} else if !open && wasOpen {
+		client.NotifyAsync(opsalerts.Alert{
+			Severity: opsalerts.SeverityInfo,
+			Code:     "wpcom_circuit_closed",
+			Summary:  "WPCOM notification circuit recovered.",
+			Impact:   "Legacy WPCOM status-change delivery has resumed.",
+			Details: map[string]any{
+				"queue_depth": wp.QueueDepth(),
+			},
+		})
+	}
+}
+
+func dependencyAlertDetails(entry dashboard.HealthEntry, extra map[string]any) map[string]any {
+	details := map[string]any{
+		"dependency": entry.Name,
+		"status":     entry.Status,
+	}
+	if entry.LastError != "" {
+		details["last_error"] = entry.LastError
+	}
+	if entry.Latency > 0 {
+		details["latency_ms"] = entry.Latency
+	}
+	if !entry.CheckedAt.IsZero() {
+		details["checked_at"] = entry.CheckedAt.UTC().Format(time.RFC3339)
+	}
+	for key, value := range extra {
+		details[key] = value
+	}
+	return details
+}
+
+func severityForHealthStatus(status, fallback string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "red":
+		return opsalerts.SeverityError
+	case "amber", "yellow", "warning":
+		return opsalerts.SeverityWarning
+	default:
+		return fallback
+	}
+}
+
+func severityForWPCOMHealth(cfg *config.Config, entry dashboard.HealthEntry) string {
+	if cfg != nil && cfg.ConfigProfile == config.ConfigProfileProduction && strings.Contains(strings.ToLower(entry.LastError), "disabled") {
+		return opsalerts.SeverityCritical
+	}
+	if strings.EqualFold(entry.Status, "red") {
+		return opsalerts.SeverityCritical
+	}
+	return severityForHealthStatus(entry.Status, opsalerts.SeverityWarning)
+}
+
+func wpcomHealthAlertCode(cfg *config.Config, entry dashboard.HealthEntry) string {
+	if cfg != nil && cfg.ConfigProfile == config.ConfigProfileProduction && strings.Contains(strings.ToLower(entry.LastError), "disabled") {
+		return "wpcom_notifications_disabled"
+	}
+	if strings.Contains(strings.ToLower(entry.LastError), "circuit open") {
+		return "wpcom_circuit_open"
+	}
+	return "wpcom_dependency_unhealthy"
+}
+
 func loadConfigForCommand() (*config.Config, error) {
 	configPath := envOrDefault("JETMON_CONFIG", "config/config.json")
 	if err := config.Load(configPath); err != nil {
@@ -191,10 +372,12 @@ func runServe() {
 
 	processStartedAt := time.Now().UTC()
 	processID := fleethealth.ProcessID(hostname, fleethealth.ProcessMonitor)
+	ops := newOpsAlertClientFromConfig(cfg, fleethealth.ProcessMonitor, hostname)
 
 	wp := wpcomClientForConfig(cfg, hostname)
 
 	orch := orchestrator.New(cfg, wp)
+	orch.SetOpsAlerts(ops)
 	if err := orch.ClaimBuckets(); err != nil {
 		log.Fatalf("claim buckets: %v", err)
 	}
@@ -271,6 +454,7 @@ func runServe() {
 	var shuttingDown atomic.Bool
 	var restartRequested atomic.Bool
 	var shutdownOnce sync.Once
+	var wpcomCircuitWasOpen atomic.Bool
 	var lastHealth []dashboard.HealthEntry
 	publishHostSnapshot := func(state string, refreshDependencies bool) {
 		publishMu.Lock()
@@ -289,6 +473,7 @@ func runServe() {
 			healthMu.Lock()
 			lastHealth = append([]dashboard.HealthEntry(nil), health...)
 			healthMu.Unlock()
+			maybeSendDependencyOpsAlerts(ops, currentCfg, health, wp, &wpcomCircuitWasOpen)
 		} else {
 			healthMu.RLock()
 			health = append([]dashboard.HealthEntry(nil), lastHealth...)
@@ -347,6 +532,22 @@ func runServe() {
 
 	// Publish both host-dashboard state and the durable fleet-health heartbeat.
 	publishHostSnapshot(fleethealth.StateRunning, false)
+	ops.ServiceOnline(map[string]any{
+		"rollout_mode":       cfg.RolloutMode,
+		"bucket_ownership":   bucketOwnershipLabel(cfg),
+		"schema_management":  cfg.SchemaManagementMode,
+		"api_port":           cfg.APIPort,
+		"dashboard_port":     cfg.DashboardPort,
+		"wpcom_notify":       enabledLabel(cfg.WPCOMNotifyEnable),
+		"wpcom_mode":         cfg.WPCOMNotifyMode,
+		"veriflier_count":    len(cfg.Verifiers),
+		"delivery_eligible":  deliveryWorkersShouldStart(cfg, hostname),
+		"default_method":     cfg.DefaultCheckMethod,
+		"default_profile":    cfg.DefaultDetectionProfile,
+		"config_profile":     cfg.ConfigProfile,
+		"check_safety_mode":  cfg.CheckTargetSafetyMode,
+		"process_started_at": processStartedAt.Format(time.RFC3339),
+	})
 	stopHostPublisher := make(chan struct{})
 	var stopHostPublisherOnce sync.Once
 	go func() {

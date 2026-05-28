@@ -88,12 +88,15 @@ starts.
 - Notes: `dev` sets `SCHEMA_MANAGEMENT_MODE=migrate` and disables WPCOM
   notifications unless those keys are explicitly set. `production` sets
   `SCHEMA_MANAGEMENT_MODE=validate`, `CHECK_TARGET_SAFETY_MODE=public_only`,
+  `DEFAULT_CHECK_METHOD=HEAD`, `DEFAULT_DETECTION_PROFILE=legacy`,
   `ROLLOUT_MODE=api-controlled`, `VERIFLIER_DISCOVERY_MODE=shadow`, HTTPS
   Veriflier transport, and normal legacy WPCOM TLS verification unless those
-  keys are explicitly set. The Docker Monitor entrypoint also uses
-  `CONFIG_PROFILE=production` as a
-  render-time convenience to fill omitted production container defaults such as
-  host-local StatsD, `HEAD` / `legacy` rollout checks, and `DEBUG_PORT=0`;
+  keys are explicitly set. Production startup refuses non-`HEAD` / non-`legacy`
+  defaults while the fleet is still in `standby` or `api-controlled`; use the
+  staged API policy tools after activation to move cohorts to `GET` and richer
+  detection profiles. The Docker Monitor entrypoint also uses
+  `CONFIG_PROFILE=production` as a render-time convenience to fill omitted
+  production container defaults such as host-local StatsD and `DEBUG_PORT=0`;
   review the rendered JSON before activation.
 
 ### PRODUCTION_SECURITY_EXCEPTIONS
@@ -187,6 +190,59 @@ starts.
 - Purpose: cadence for StatsD metric flushes and legacy stats file updates.
 - Notes: keep this low enough for dashboards to feel current, but avoid making
   stats files a hot write path.
+
+### OPS_ALERTS_ENABLED
+
+- Default: `false`
+- Values: `true`, `false`
+- Example: `"OPS_ALERTS_ENABLED": true`
+- Purpose: enables low-volume operational notifications about Jetmon service
+  posture and dependency failures. These are separate from customer site
+  alerts.
+- Notes: requires `OPS_ALERTS_SLACK_WEBHOOK_URL`.
+
+### OPS_ALERTS_SLACK_WEBHOOK_URL
+
+- Default: empty.
+- Example: `"OPS_ALERTS_SLACK_WEBHOOK_URL": "https://hooks.slack.com/services/..."`
+- Purpose: Slack incoming webhook used for Monitor, Veriflier, and deliverer
+  operational notifications.
+- Notes: must be an absolute `https://` URL. Store it as deployment secret
+  material, not in source control.
+
+### OPS_ALERTS_MIN_SEVERITY
+
+- Default: `warning`
+- Values: `info`, `warning`, `error`, `critical`
+- Example: `"OPS_ALERTS_MIN_SEVERITY": "warning"`
+- Purpose: minimum operational-alert severity to send.
+- Notes: service-online notifications are `info`, so set this to `info` only
+  when startup/restart notifications are desired.
+
+### OPS_ALERTS_REPEAT_INTERVAL_SEC
+
+- Default: `300`
+- Example: `"OPS_ALERTS_REPEAT_INTERVAL_SEC": 300`
+- Purpose: local dedupe window per alert code and severity.
+- Notes: set to `0` only for focused testing where every repeated alert should
+  be sent.
+
+### OPS_ALERTS_SERVICE_ONLINE
+
+- Default: `true`
+- Values: `true`, `false`
+- Example: `"OPS_ALERTS_SERVICE_ONLINE": true`
+- Purpose: controls whether each service emits a startup posture notification.
+- Notes: this still respects `OPS_ALERTS_MIN_SEVERITY`; the default `warning`
+  threshold suppresses service-online notifications unless changed to `info`.
+
+### OPS_ALERTS_DB_PING_WARN_MS
+
+- Default: `250`
+- Example: `"OPS_ALERTS_DB_PING_WARN_MS": 250`
+- Purpose: Monitor DB ping latency threshold for an operational warning.
+- Notes: this is an early signal for DB pressure; it does not change check
+  scheduling behavior.
 
 ## Database Connectivity
 
@@ -356,17 +412,20 @@ observed rate/latency, and avoids per-probe healthy freshness writes.
 
 ### DEFAULT_CHECK_METHOD
 
-- Default: `GET`
+- Default: `GET`; production launch default: `HEAD`
 - Values: `HEAD`, `GET`
 - Example: `"DEFAULT_CHECK_METHOD": "HEAD"`
 - Purpose: fleet default HTTP method for sites without a
   `jetpack_monitor_site_check_config` row.
-- Notes: use `HEAD` during the first v1-to-v2 replacement phase. Use `GET`
-  after the fleet is ready to exercise visitor-path checks by default.
+- Notes: use `HEAD` during the first v1-to-v2 replacement phase. Production
+  refuses `GET` while `ROLLOUT_MODE` is `standby` or `api-controlled` so a
+  mounted JSON file or alternate launcher cannot skip the safe launch posture.
+  Use API-driven staged policy changes after v2 activation to move cohorts to
+  `GET`.
 
 ### DEFAULT_DETECTION_PROFILE
 
-- Default: `full`
+- Default: `full`; production launch default: `legacy`
 - Values: `legacy`, `simple_http`, `full`
 - Example: `"DEFAULT_DETECTION_PROFILE": "simple_http"`
 - Purpose: fleet default detection profile for sites without a per-site row.
@@ -379,7 +438,10 @@ observed rate/latency, and avoids per-probe healthy freshness writes.
   virtual-host pages, host suspension pages, Jetpack probe echo pages, and
   near-empty HTML responses.
   HEAD checks automatically cap the effective profile to `simple_http` because
-  body checks cannot run against HEAD responses.
+  body checks cannot run against HEAD responses. Production refuses
+  non-`legacy` defaults while `ROLLOUT_MODE` is `standby` or `api-controlled`;
+  use API-driven staged policy changes after v2 activation to move cohorts to
+  `simple_http` and `full`.
 
 ### NET_COMMS_TIMEOUT
 
@@ -723,6 +785,19 @@ observed rate/latency, and avoids per-probe healthy freshness writes.
 - Purpose: prune `jetpack_monitor_audit_log` rows older than this many days.
 - Notes: `0` disables pruning.
 
+### RETENTION_PRODUCTION_DECISION
+
+- Default: empty; required for `CONFIG_PROFILE=production`.
+- Values: `configured`, `deferred`, `external`
+- Example: `"RETENTION_PRODUCTION_DECISION": "deferred"`
+- Purpose: records the explicit production decision for growing operational
+  tables before sustained traffic begins.
+- Notes: `configured` requires both `RETENTION_CHECK_HISTORY_DAYS` and
+  `RETENTION_AUDIT_LOG_DAYS` to be greater than zero. `deferred` means launch
+  owners consciously accepted no in-process pruning for the first phase.
+  `external` means pruning or partition lifecycle is handled outside Jetmon.
+  Dev and test configs may omit this key.
+
 ### RETENTION_BACKGROUND_ENABLED
 
 - Default: `true`
@@ -850,6 +925,16 @@ The standalone Veriflier has a separate small JSON file:
   probes. Values match Monitor: `public_only` (default) or
   `allow_private_for_tests`. Keep `public_only` for production and real site
   data.
+- `ops_alerts_enabled`: enables Veriflier operational Slack notifications.
+  Default: false.
+- `ops_alerts_slack_webhook_url`: Slack incoming webhook for operational
+  alerts. Required when `ops_alerts_enabled` is true and must be `https://`.
+- `ops_alerts_min_severity`: `info`, `warning`, `error`, or `critical`.
+  Default: `warning`; service-online notifications require `info`.
+- `ops_alerts_repeat_interval_sec`: local dedupe window per alert code and
+  severity. Default: `300`.
+- `ops_alerts_service_online`: sends Veriflier startup posture notifications
+  when enabled and allowed by min severity. Default: true in rendered configs.
 
 Environment aliases are accepted only for the fallback environment-only path
 used when the JSON file is missing: `VERIFLIER_AUTH_TOKEN`, `VERIFLIER_PORT`,
@@ -857,7 +942,8 @@ used when the JSON file is missing: `VERIFLIER_AUTH_TOKEN`, `VERIFLIER_PORT`,
 `VERIFLIER_STATSD_HOST_PATH`, `STATSD_HOST_PATH`, `VERIFLIER_VANTAGE_ID`,
 `VERIFLIER_REGION`, `VERIFLIER_PROVIDER`, `VERIFLIER_ENABLE_LEGACY_HTTP`,
 `VERIFLIER_TLS_CERT_PATH`, `VERIFLIER_TLS_KEY_PATH`,
-`VERIFLIER_CHECK_TARGET_SAFETY_MODE`, and `CHECK_TARGET_SAFETY_MODE`.
+`VERIFLIER_CHECK_TARGET_SAFETY_MODE`, `CHECK_TARGET_SAFETY_MODE`, and
+`OPS_ALERTS_*`.
 `VERIFLIER_STATSD_HOST_PATH` lets Compose stacks give Verifliers a different
 StatsD identity than Monitors while still using the same shared entrypoint
 pattern. The Docker entrypoint can render those values into generated JSON on

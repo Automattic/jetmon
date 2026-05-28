@@ -24,6 +24,7 @@ import (
 	"github.com/Automattic/jetmon/internal/db"
 	"github.com/Automattic/jetmon/internal/eventstore"
 	"github.com/Automattic/jetmon/internal/metrics"
+	"github.com/Automattic/jetmon/internal/opsalerts"
 	"github.com/Automattic/jetmon/internal/veriflier"
 	"github.com/Automattic/jetmon/internal/wpcom"
 )
@@ -160,6 +161,7 @@ type Orchestrator struct {
 	retries             *retryQueue
 	wpcom               *wpcom.Client
 	events              *eventstore.Store
+	opsAlerts           *opsalerts.Client
 	veriflierClients    []*veriflier.VeriflierClient
 	veriflierAddrs      []string // parallel slice of "addr|token" for change detection
 	veriflierMu         sync.RWMutex
@@ -228,6 +230,19 @@ func (o *Orchestrator) ev() *eventstore.Store {
 		return nopEventStore
 	}
 	return o.events
+}
+
+// SetOpsAlerts wires a low-volume operational alert client into runtime paths
+// that can affect customer-visible correctness.
+func (o *Orchestrator) SetOpsAlerts(client *opsalerts.Client) {
+	o.opsAlerts = client
+}
+
+func (o *Orchestrator) sendOpsAlert(alert opsalerts.Alert) {
+	if o == nil || o.opsAlerts == nil {
+		return
+	}
+	o.opsAlerts.NotifyAsync(alert)
 }
 
 // ClaimBuckets registers this host in jetpack_monitor_hosts and sets the bucket range.
@@ -1291,8 +1306,57 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 	emitCounter("detection.verifier.escalation.count", 1)
 	emitTimingSince("detection.first_failure_to_verification.time", entry.firstFailAt, nowFunc().UTC())
 	if len(allClients) == 0 {
+		cfg := config.Get()
+		minHealthy := 1
+		if cfg != nil && cfg.PeerOfflineLimit > minHealthy {
+			minHealthy = cfg.PeerOfflineLimit
+		}
+		now := nowFunc().UTC()
+		delay := verifierOperationalBackoff(site, entry.verifierDeferrals)
+		entry.verifierDeferrals++
+		entry.verifierDeferredUntil = now.Add(delay)
 		emitCounter("detection.verifier.no_clients.count", 1)
-		o.confirmDown(site, entry, nil)
+		emitCounter("detection.verifier.deferred.count", 1)
+		emitCounter("detection.verifier.insufficient_healthy.count", 1)
+		emitGauge("detection.verifier.healthy.count", 0)
+		emitGauge("detection.verifier.confirmations.count", 0)
+		emitGauge("detection.verifier.quorum.count", minHealthy)
+		emitGauge("detection.verifier.min_healthy.count", minHealthy)
+		meta, _ := json.Marshal(map[string]any{
+			"event_id":                    entry.eventID,
+			"verifier_configured":         0,
+			"verifier_available":          0,
+			"verifier_min_healthy":        minHealthy,
+			"deferrals":                   entry.verifierDeferrals,
+			"retry_after_seconds":         int(delay / time.Second),
+			"deferred_until":              entry.verifierDeferredUntil.UTC().Format(time.RFC3339),
+			"site_check_interval_seconds": int(siteCheckInterval(site) / time.Second),
+		})
+		o.auditLog(audit.Entry{
+			BlogID:    site.BlogID,
+			EventID:   entry.eventID,
+			EventType: audit.EventRetryDispatched,
+			Source:    o.hostname,
+			Detail:    "verifier decision deferred",
+			Metadata:  meta,
+		})
+		o.sendOpsAlert(opsalerts.Alert{
+			Severity: opsalerts.SeverityCritical,
+			Code:     "veriflier_clients_missing",
+			Summary:  "Monitor cannot confirm downtime because no Verifliers are configured.",
+			Impact:   "Local failures stay in Seems Down and are retried; Jetmon will not send customer-visible Down notifications without Veriflier quorum.",
+			Details: map[string]any{
+				"blog_id":             site.BlogID,
+				"monitor_site_id":     site.ID,
+				"retry_after_seconds": int(delay / time.Second),
+				"deferred_until":      entry.verifierDeferredUntil.UTC().Format(time.RFC3339),
+			},
+		})
+		log.Printf(
+			"orchestrator: blog_id=%d verifier decision pending; no verifliers configured retry_after=%s",
+			site.BlogID,
+			delay,
+		)
 		return
 	}
 	clients, cooldownSkipped := o.availableVeriflierClients(allClients, nowFunc().UTC())
@@ -1331,6 +1395,22 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 			Source:    o.hostname,
 			Detail:    "verifier decision deferred",
 			Metadata:  meta,
+		})
+		o.sendOpsAlert(opsalerts.Alert{
+			Severity: opsalerts.SeverityCritical,
+			Code:     "veriflier_quorum_unavailable",
+			Summary:  "Monitor cannot confirm downtime because all configured Verifliers are in cooldown.",
+			Impact:   "Local failures stay in Seems Down and are retried; Jetmon will not send customer-visible Down notifications until quorum is available.",
+			Details: map[string]any{
+				"blog_id":                   site.BlogID,
+				"monitor_site_id":           site.ID,
+				"verifier_configured":       len(allClients),
+				"verifier_cooldown_skipped": cooldownSkipped,
+				"verifier_min_healthy":      minHealthy,
+				"retry_after_seconds":       int(delay / time.Second),
+				"deferred_until":            entry.verifierDeferredUntil.UTC().Format(time.RFC3339),
+				"all_verifiers_in_cooldown": true,
+			},
 		})
 		log.Printf(
 			"orchestrator: blog_id=%d verifier decision pending; all configured verifliers are in operational cooldown retry_after=%s",
@@ -1583,6 +1663,24 @@ func (o *Orchestrator) escalateToVerifliers(site db.Site, entry *retryEntry) {
 			Metadata:  meta,
 		})
 		emitCounter("detection.verifier.insufficient_healthy.count", 1)
+		o.sendOpsAlert(opsalerts.Alert{
+			Severity: opsalerts.SeverityCritical,
+			Code:     "veriflier_quorum_below_floor",
+			Summary:  "Monitor cannot confirm downtime because too few Verifliers returned usable votes.",
+			Impact:   "Local failures stay in Seems Down and are retried; Jetmon will not send customer-visible Down notifications until Veriflier quorum recovers.",
+			Details: map[string]any{
+				"blog_id":                  site.BlogID,
+				"monitor_site_id":          site.ID,
+				"verifier_configured":      len(allClients),
+				"verifier_healthy":         healthyVerifliers,
+				"verifier_min_healthy":     minHealthy,
+				"verifier_confirmed":       confirmations,
+				"verifier_disagreed":       healthyVerifliers - confirmations,
+				"verifier_duplicate_votes": duplicateVotes,
+				"retry_after_seconds":      int(delay / time.Second),
+				"deferred_until":           entry.verifierDeferredUntil.UTC().Format(time.RFC3339),
+			},
+		})
 		log.Printf(
 			"orchestrator: blog_id=%d verifier decision pending; healthy=%d min_healthy=%d confirmations=%d retry_after=%s",
 			site.BlogID,

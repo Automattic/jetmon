@@ -153,7 +153,7 @@ Important production render inputs:
 | `STATSD_ADDR` | `host.docker.internal:8125` |
 | `STATSD_HOST_PATH` | Stable v1-compatible metric identity. |
 | `CHECK_TARGET_SAFETY_MODE` | `public_only` |
-| `DEFAULT_CHECK_METHOD` / `DEFAULT_DETECTION_PROFILE` | Start rollout with `HEAD` / `legacy`. |
+| `DEFAULT_CHECK_METHOD` / `DEFAULT_DETECTION_PROFILE` | Start rollout with `HEAD` / `legacy`; production validation refuses broader defaults before activation. |
 | `ROLLOUT_MODE` | `api-controlled` until activation. |
 | `VERIFLIER_DISCOVERY_MODE` | `shadow` until registry drift is accepted. |
 | `VERIFLIER_TRANSPORT_SCHEME` | `https` for public Veriflier endpoints. |
@@ -163,8 +163,11 @@ Important production render inputs:
 | `API_PUBLIC_BASE_URL` or `API_TLS_CERT_PATH` / `API_TLS_KEY_PATH` | Required when operators reach the Monitor API over a network path that leaves localhost/private host scope. |
 | `CHECK_HISTORY_MODE_DEFAULT` | `status_change` unless a focused test needs more. |
 | `AUDIT_LOG_MODE_DEFAULT` | `operational` for rollout evidence without read firehose noise. |
+| `RETENTION_PRODUCTION_DECISION` | `configured`, `deferred`, or `external`; production startup requires an explicit decision. |
 | `LEGACY_STATUS_PROJECTION_ENABLE` | `true` while rollback or legacy readers need it. |
 | `DEBUG_PORT` | `0` unless an approved localhost-only pprof window is active. |
+| `OPS_ALERTS_ENABLED` | `true` when an operator Slack webhook is approved. |
+| `OPS_ALERTS_MIN_SEVERITY` | `warning`; use `info` only if service-online notices are useful. |
 
 Set production defaults explicitly even when the entrypoint has the same
 fallback. Visible config review matters more than implicit defaults.
@@ -309,6 +312,27 @@ actions live in `jetpack_monitor_audit_log`.
 
 Keep dashboard and pprof listeners on loopback unless protected by trusted
 operator-network controls.
+
+## Operational Alerts
+
+Operational alerts are optional Slack notifications for Jetmon itself, not for
+customer site status. Enable them with `OPS_ALERTS_ENABLED=true` and an
+`OPS_ALERTS_SLACK_WEBHOOK_URL`.
+
+Sent alerts include:
+
+- service-online posture when `OPS_ALERTS_MIN_SEVERITY=info`;
+- Monitor DB unreachable or high DB ping latency;
+- DB config reload failures;
+- configured StatsD missing;
+- WPCOM circuit open or production notifications disabled;
+- Veriflier quorum unavailable, unhealthy Verifliers, or discovery failures;
+- standalone deliverer DB/config/StatsD failures.
+
+The sender dedupes repeated `(severity, code)` pairs for
+`OPS_ALERTS_REPEAT_INTERVAL_SEC`. Alerts should point operators at the failing
+dependency and the expected impact; they do not automatically roll back rollout
+activity or restart v1.
 
 ## Delivery Workers
 

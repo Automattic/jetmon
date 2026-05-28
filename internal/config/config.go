@@ -188,6 +188,17 @@ type Config struct {
 	AlertCooldownMinutes int `json:"ALERT_COOLDOWN_MINUTES"`
 
 	StatsUpdateIntervalMS int `json:"STATS_UPDATE_INTERVAL_MS"`
+
+	// Operational alerts are low-volume alerts about Jetmon service health,
+	// rollout safety, dependency failures, and production posture. They are
+	// separate from customer site alerts.
+	OpsAlertsEnabled           bool   `json:"OPS_ALERTS_ENABLED"`
+	OpsAlertsSlackWebhookURL   string `json:"OPS_ALERTS_SLACK_WEBHOOK_URL"`
+	OpsAlertsMinSeverity       string `json:"OPS_ALERTS_MIN_SEVERITY"`
+	OpsAlertsRepeatIntervalSec int    `json:"OPS_ALERTS_REPEAT_INTERVAL_SEC"`
+	OpsAlertsServiceOnline     bool   `json:"OPS_ALERTS_SERVICE_ONLINE"`
+	OpsAlertsDBPingWarnMS      int    `json:"OPS_ALERTS_DB_PING_WARN_MS"`
+
 	// StatsdSendMemUsage is a deprecated v1 compatibility key. Jetmon v2 emits
 	// process resource gauges whenever StatsD is configured.
 	StatsdSendMemUsage        bool     `json:"STATSD_SEND_MEM_USAGE"`
@@ -268,10 +279,11 @@ type Config struct {
 	// count of 0 disables pruning for that table (rows accumulate). Defaults
 	// are 0 so retention is a conscious opt-in, not a surprise that starts
 	// deleting rows after an upgrade.
-	RetentionCheckHistoryDays int  `json:"RETENTION_CHECK_HISTORY_DAYS"`
-	RetentionAuditLogDays     int  `json:"RETENTION_AUDIT_LOG_DAYS"`
-	RetentionBackgroundEnable bool `json:"RETENTION_BACKGROUND_ENABLED"`
-	RetentionRunHourUTC       int  `json:"RETENTION_RUN_HOUR_UTC"`
+	RetentionCheckHistoryDays   int    `json:"RETENTION_CHECK_HISTORY_DAYS"`
+	RetentionAuditLogDays       int    `json:"RETENTION_AUDIT_LOG_DAYS"`
+	RetentionProductionDecision string `json:"RETENTION_PRODUCTION_DECISION"`
+	RetentionBackgroundEnable   bool   `json:"RETENTION_BACKGROUND_ENABLED"`
+	RetentionRunHourUTC         int    `json:"RETENTION_RUN_HOUR_UTC"`
 
 	Verifiers       []VerifierConfig `json:"VERIFLIERS"`
 	VerifiersLegacy []VerifierConfig `json:"VERIFIERS"`
@@ -292,6 +304,12 @@ const (
 const (
 	CheckTargetSafetyModePublicOnly           = "public_only"
 	CheckTargetSafetyModeAllowPrivateForTests = "allow_private_for_tests"
+)
+
+const (
+	RetentionProductionDecisionConfigured = "configured"
+	RetentionProductionDecisionDeferred   = "deferred"
+	RetentionProductionDecisionExternal   = "external"
 )
 
 // Audit-log recording modes.
@@ -483,6 +501,10 @@ func defaults() *Config {
 		TimeBetweenChecksSec:                 30,
 		AlertCooldownMinutes:                 30,
 		StatsUpdateIntervalMS:                10000,
+		OpsAlertsMinSeverity:                 "warning",
+		OpsAlertsRepeatIntervalSec:           300,
+		OpsAlertsServiceOnline:               true,
+		OpsAlertsDBPingWarnMS:                250,
 		TimeBetweenNoticesMin:                59,
 		WPCOMNotifyEnable:                    true,
 		WPCOMNotifyMode:                      WPCOMNotifyModeLegacy,
@@ -543,6 +565,8 @@ func applyConfigProfile(raw []byte, cfg *Config) error {
 		cfg.ConfigProfile = ConfigProfileProduction
 		cfg.SchemaManagementMode = SchemaManagementModeValidate
 		cfg.CheckTargetSafetyMode = CheckTargetSafetyModePublicOnly
+		cfg.DefaultCheckMethod = checkmode.MethodHEAD
+		cfg.DefaultDetectionProfile = checkmode.ProfileLegacy
 		cfg.RolloutMode = RolloutModeAPIControlled
 		cfg.VeriflierDiscoveryMode = VeriflierDiscoveryModeShadow
 		cfg.VeriflierTransportScheme = VeriflierTransportHTTPS
@@ -584,6 +608,12 @@ func applyProfileEmptyValues(raw []byte, cfg *Config) {
 		})
 		applyEmptyStringDefault(keys, "VERIFLIER_TRANSPORT_SCHEME", func() {
 			cfg.VeriflierTransportScheme = VeriflierTransportHTTPS
+		})
+		applyEmptyStringDefault(keys, "DEFAULT_CHECK_METHOD", func() {
+			cfg.DefaultCheckMethod = checkmode.MethodHEAD
+		})
+		applyEmptyStringDefault(keys, "DEFAULT_DETECTION_PROFILE", func() {
+			cfg.DefaultDetectionProfile = checkmode.ProfileLegacy
 		})
 	}
 }
@@ -929,6 +959,26 @@ func validate(cfg *Config) error {
 	if cfg.KeywordReadMaxMS < 0 {
 		return fmt.Errorf("KEYWORD_READ_MAX_MS must be >= 0")
 	}
+	cfg.OpsAlertsSlackWebhookURL = strings.TrimSpace(cfg.OpsAlertsSlackWebhookURL)
+	cfg.OpsAlertsMinSeverity = normalizeOpsAlertSeverity(cfg.OpsAlertsMinSeverity)
+	if cfg.OpsAlertsMinSeverity == "" {
+		return fmt.Errorf("OPS_ALERTS_MIN_SEVERITY must be one of: info, warning, error, critical")
+	}
+	if cfg.OpsAlertsRepeatIntervalSec < 0 {
+		return fmt.Errorf("OPS_ALERTS_REPEAT_INTERVAL_SEC must be >= 0")
+	}
+	if cfg.OpsAlertsDBPingWarnMS < 0 {
+		return fmt.Errorf("OPS_ALERTS_DB_PING_WARN_MS must be >= 0")
+	}
+	if cfg.OpsAlertsEnabled && cfg.OpsAlertsSlackWebhookURL == "" {
+		return fmt.Errorf("OPS_ALERTS_SLACK_WEBHOOK_URL is required when OPS_ALERTS_ENABLED=true")
+	}
+	if cfg.OpsAlertsSlackWebhookURL != "" {
+		u, err := url.Parse(cfg.OpsAlertsSlackWebhookURL)
+		if err != nil || u.Scheme != "https" || u.Host == "" {
+			return fmt.Errorf("OPS_ALERTS_SLACK_WEBHOOK_URL must be an absolute https URL")
+		}
+	}
 	method, err := checkmode.NormalizeMethod(cfg.DefaultCheckMethod, checkmode.MethodGET)
 	if err != nil {
 		return fmt.Errorf("DEFAULT_CHECK_METHOD: %w", err)
@@ -982,6 +1032,9 @@ func validate(cfg *Config) error {
 	case RolloutModeActive, RolloutModeStandby, RolloutModeAPIControlled:
 	default:
 		return fmt.Errorf("ROLLOUT_MODE must be one of: active, standby, api-controlled")
+	}
+	if err := validateProductionLaunchPolicy(cfg); err != nil {
+		return err
 	}
 	if cfg.StreamingLegacyProjectionIntervalMin == 0 {
 		cfg.StreamingLegacyProjectionIntervalMin = 15
@@ -1102,6 +1155,9 @@ func validate(cfg *Config) error {
 	}
 	if cfg.RetentionRunHourUTC < 0 || cfg.RetentionRunHourUTC > 23 {
 		return fmt.Errorf("RETENTION_RUN_HOUR_UTC must be between 0 and 23")
+	}
+	if err := validateProductionRetentionDecision(cfg); err != nil {
+		return err
 	}
 	for i, v := range cfg.Verifiers {
 		// host and port are required. Empty values silently parse to ""
@@ -1400,6 +1456,59 @@ func normalizeWPCOMNotifyMode(mode string) string {
 		return WPCOMNotifyModeLegacy
 	}
 	return mode
+}
+
+func normalizeOpsAlertSeverity(severity string) string {
+	switch strings.ToLower(strings.TrimSpace(severity)) {
+	case "":
+		return "warning"
+	case "info":
+		return "info"
+	case "warn", "warning":
+		return "warning"
+	case "err", "error":
+		return "error"
+	case "crit", "critical":
+		return "critical"
+	default:
+		return ""
+	}
+}
+
+func validateProductionLaunchPolicy(cfg *Config) error {
+	if cfg == nil || cfg.ConfigProfile != ConfigProfileProduction {
+		return nil
+	}
+	if cfg.RolloutMode == RolloutModeActive {
+		return nil
+	}
+	if cfg.DefaultCheckMethod != checkmode.MethodHEAD || cfg.DefaultDetectionProfile != checkmode.ProfileLegacy {
+		return fmt.Errorf("production launch posture requires DEFAULT_CHECK_METHOD=HEAD and DEFAULT_DETECTION_PROFILE=legacy while ROLLOUT_MODE=%s; use API staged policy after activation to move cohorts to GET/simple_http/full", cfg.RolloutMode)
+	}
+	return nil
+}
+
+func validateProductionRetentionDecision(cfg *Config) error {
+	if cfg == nil {
+		return nil
+	}
+	cfg.RetentionProductionDecision = strings.TrimSpace(strings.ToLower(cfg.RetentionProductionDecision))
+	switch cfg.RetentionProductionDecision {
+	case "":
+		if cfg.ConfigProfile == ConfigProfileProduction {
+			return fmt.Errorf("RETENTION_PRODUCTION_DECISION must be one of: configured, deferred, external")
+		}
+		return nil
+	case RetentionProductionDecisionConfigured:
+		if cfg.RetentionCheckHistoryDays <= 0 || cfg.RetentionAuditLogDays <= 0 {
+			return fmt.Errorf("RETENTION_PRODUCTION_DECISION=configured requires RETENTION_CHECK_HISTORY_DAYS and RETENTION_AUDIT_LOG_DAYS to be > 0")
+		}
+	case RetentionProductionDecisionDeferred, RetentionProductionDecisionExternal:
+		return nil
+	default:
+		return fmt.Errorf("RETENTION_PRODUCTION_DECISION must be one of: configured, deferred, external")
+	}
+	return nil
 }
 
 func applyWPCOMNotifyDefaults(cfg *Config) {

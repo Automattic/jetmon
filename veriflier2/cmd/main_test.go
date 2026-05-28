@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -202,6 +203,28 @@ func TestLoadConfigRejectsInvalidTargetSafetyMode(t *testing.T) {
 
 	if _, err := loadConfig(path); err == nil {
 		t.Fatal("loadConfig accepted invalid check_target_safety_mode")
+	}
+}
+
+func TestLoadConfigValidatesOpsAlerts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "veriflier.json")
+	if err := os.WriteFile(path, []byte(`{"auth_token":"secret","port":"7805","ops_alerts_enabled":true,"ops_alerts_slack_webhook_url":"https://hooks.slack.com/services/test","ops_alerts_min_severity":"crit"}`), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	cfg, err := loadConfig(path)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.OpsAlertsMinSeverity != "critical" {
+		t.Fatalf("OpsAlertsMinSeverity = %q, want critical", cfg.OpsAlertsMinSeverity)
+	}
+
+	path = filepath.Join(t.TempDir(), "veriflier.json")
+	if err := os.WriteFile(path, []byte(`{"auth_token":"secret","port":"7805","ops_alerts_enabled":true}`), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if _, err := loadConfig(path); err == nil || !strings.Contains(err.Error(), "ops_alerts_slack_webhook_url") {
+		t.Fatalf("loadConfig error = %v, want ops_alerts_slack_webhook_url", err)
 	}
 }
 

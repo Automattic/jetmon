@@ -495,6 +495,7 @@ func TestLoadProductionProfileAppliesProductionDefaults(t *testing.T) {
 
 	p := writeConfigFile(t, `{
 		"CONFIG_PROFILE": "production",
+		"RETENTION_PRODUCTION_DECISION": "deferred",
 		"AUTH_TOKEN": "token",
 		"NUM_WORKERS": 7,
 		"BUCKET_TOTAL": 100,
@@ -524,6 +525,12 @@ func TestLoadProductionProfileAppliesProductionDefaults(t *testing.T) {
 	}
 	if cfg.VeriflierTransportScheme != VeriflierTransportHTTPS {
 		t.Fatalf("VeriflierTransportScheme = %q, want https", cfg.VeriflierTransportScheme)
+	}
+	if cfg.DefaultCheckMethod != "HEAD" {
+		t.Fatalf("DefaultCheckMethod = %q, want HEAD", cfg.DefaultCheckMethod)
+	}
+	if cfg.DefaultDetectionProfile != "legacy" {
+		t.Fatalf("DefaultDetectionProfile = %q, want legacy", cfg.DefaultDetectionProfile)
 	}
 	if cfg.WPCOMNotifyLegacyInsecure {
 		t.Fatal("WPCOMNotifyLegacyInsecure = true, want false for production default")
@@ -616,6 +623,7 @@ func TestLoadProductionProfileAllowsExplicitSchemaOverride(t *testing.T) {
 
 	p := writeConfigFile(t, `{
 		"CONFIG_PROFILE": "production",
+		"RETENTION_PRODUCTION_DECISION": "deferred",
 		"SCHEMA_MANAGEMENT_MODE": "migrate",
 		"AUTH_TOKEN": "token",
 		"NUM_WORKERS": 7,
@@ -638,6 +646,7 @@ func TestLoadProductionProfileUsesSchemaDefaultWhenSampleValueEmpty(t *testing.T
 
 	p := writeConfigFile(t, `{
 		"CONFIG_PROFILE": "production",
+		"RETENTION_PRODUCTION_DECISION": "deferred",
 		"SCHEMA_MANAGEMENT_MODE": "",
 		"AUTH_TOKEN": "token",
 		"NUM_WORKERS": 7,
@@ -660,8 +669,11 @@ func TestLoadProductionProfileUsesRolloutDefaultsWhenValuesEmpty(t *testing.T) {
 
 	p := writeConfigFile(t, `{
 		"CONFIG_PROFILE": "production",
+		"RETENTION_PRODUCTION_DECISION": "deferred",
 		"ROLLOUT_MODE": "",
 		"VERIFLIER_DISCOVERY_MODE": "",
+		"DEFAULT_CHECK_METHOD": "",
+		"DEFAULT_DETECTION_PROFILE": "",
 		"AUTH_TOKEN": "token",
 		"NUM_WORKERS": 7,
 		"BUCKET_TOTAL": 100,
@@ -683,6 +695,12 @@ func TestLoadProductionProfileUsesRolloutDefaultsWhenValuesEmpty(t *testing.T) {
 	if got := cfg.VeriflierTransportScheme; got != VeriflierTransportHTTPS {
 		t.Fatalf("VeriflierTransportScheme = %q, want https", got)
 	}
+	if got := cfg.DefaultCheckMethod; got != "HEAD" {
+		t.Fatalf("DefaultCheckMethod = %q, want HEAD", got)
+	}
+	if got := cfg.DefaultDetectionProfile; got != "legacy" {
+		t.Fatalf("DefaultDetectionProfile = %q, want legacy", got)
+	}
 }
 
 func TestLoadProductionProfileAllowsExplicitRolloutOverride(t *testing.T) {
@@ -690,6 +708,7 @@ func TestLoadProductionProfileAllowsExplicitRolloutOverride(t *testing.T) {
 
 	p := writeConfigFile(t, `{
 		"CONFIG_PROFILE": "production",
+		"RETENTION_PRODUCTION_DECISION": "deferred",
 		"ROLLOUT_MODE": "standby",
 		"VERIFLIER_DISCOVERY_MODE": "static",
 		"AUTH_TOKEN": "token",
@@ -709,6 +728,148 @@ func TestLoadProductionProfileAllowsExplicitRolloutOverride(t *testing.T) {
 	}
 	if got := cfg.VeriflierDiscoveryMode; got != VeriflierDiscoveryModeStatic {
 		t.Fatalf("VeriflierDiscoveryMode = %q, want static", got)
+	}
+}
+
+func TestValidateProductionLaunchPolicyRequiresHeadLegacyBeforeActive(t *testing.T) {
+	tests := []struct {
+		name    string
+		mode    string
+		method  string
+		profile string
+		wantErr bool
+	}{
+		{
+			name:    "api controlled head legacy accepted",
+			mode:    RolloutModeAPIControlled,
+			method:  "HEAD",
+			profile: "legacy",
+		},
+		{
+			name:    "standby head legacy accepted",
+			mode:    RolloutModeStandby,
+			method:  "HEAD",
+			profile: "legacy",
+		},
+		{
+			name:    "api controlled get full rejected",
+			mode:    RolloutModeAPIControlled,
+			method:  "GET",
+			profile: "full",
+			wantErr: true,
+		},
+		{
+			name:    "standby get simple rejected",
+			mode:    RolloutModeStandby,
+			method:  "GET",
+			profile: "simple_http",
+			wantErr: true,
+		},
+		{
+			name:    "active get full accepted for staged post-launch policy",
+			mode:    RolloutModeActive,
+			method:  "GET",
+			profile: "full",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := baseValidConfig()
+			cfg.ConfigProfile = ConfigProfileProduction
+			cfg.RetentionProductionDecision = RetentionProductionDecisionDeferred
+			cfg.VeriflierTransportScheme = VeriflierTransportHTTPS
+			cfg.WPCOMNotifyLegacyInsecure = false
+			cfg.RolloutMode = tt.mode
+			cfg.DefaultCheckMethod = tt.method
+			cfg.DefaultDetectionProfile = tt.profile
+
+			err := validate(cfg)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateProductionRetentionDecision(t *testing.T) {
+	tests := []struct {
+		name       string
+		decision   string
+		checkDays  int
+		auditDays  int
+		profile    string
+		wantErr    bool
+		wantStored string
+	}{
+		{
+			name:    "production requires explicit decision",
+			profile: ConfigProfileProduction,
+			wantErr: true,
+		},
+		{
+			name:       "deferred accepts zero retention",
+			profile:    ConfigProfileProduction,
+			decision:   "deferred",
+			wantStored: RetentionProductionDecisionDeferred,
+		},
+		{
+			name:       "external accepts zero retention",
+			profile:    ConfigProfileProduction,
+			decision:   "external",
+			wantStored: RetentionProductionDecisionExternal,
+		},
+		{
+			name:      "configured requires both retention windows",
+			profile:   ConfigProfileProduction,
+			decision:  "configured",
+			checkDays: 365,
+			wantErr:   true,
+		},
+		{
+			name:       "configured accepts both retention windows",
+			profile:    ConfigProfileProduction,
+			decision:   "configured",
+			checkDays:  365,
+			auditDays:  365,
+			wantStored: RetentionProductionDecisionConfigured,
+		},
+		{
+			name:       "dev may omit production decision",
+			profile:    ConfigProfileDev,
+			wantStored: "",
+		},
+		{
+			name:     "bad decision rejected",
+			profile:  ConfigProfileProduction,
+			decision: "later",
+			wantErr:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := baseValidConfig()
+			cfg.ConfigProfile = tt.profile
+			cfg.RetentionProductionDecision = tt.decision
+			cfg.RetentionCheckHistoryDays = tt.checkDays
+			cfg.RetentionAuditLogDays = tt.auditDays
+			if tt.profile == ConfigProfileProduction {
+				cfg.VeriflierTransportScheme = VeriflierTransportHTTPS
+				cfg.WPCOMNotifyLegacyInsecure = false
+				cfg.RolloutMode = RolloutModeAPIControlled
+				cfg.DefaultCheckMethod = "HEAD"
+				cfg.DefaultDetectionProfile = "legacy"
+			}
+
+			err := validate(cfg)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if err == nil && cfg.RetentionProductionDecision != tt.wantStored {
+				t.Fatalf("RetentionProductionDecision = %q, want %q", cfg.RetentionProductionDecision, tt.wantStored)
+			}
+		})
 	}
 }
 
@@ -811,6 +972,7 @@ func TestValidateProductionRejectsUnsafePostureWithoutException(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := baseValidConfig()
 			cfg.ConfigProfile = ConfigProfileProduction
+			cfg.RetentionProductionDecision = RetentionProductionDecisionDeferred
 			cfg.VeriflierTransportScheme = VeriflierTransportHTTPS
 			cfg.WPCOMNotifyLegacyInsecure = false
 			tt.update(cfg)
@@ -825,6 +987,7 @@ func TestValidateProductionRejectsUnsafePostureWithoutException(t *testing.T) {
 func TestValidateProductionAllowsTemporarySecurityException(t *testing.T) {
 	cfg := baseValidConfig()
 	cfg.ConfigProfile = ConfigProfileProduction
+	cfg.RetentionProductionDecision = RetentionProductionDecisionDeferred
 	cfg.VeriflierTransportScheme = VeriflierTransportHTTP
 	cfg.ProductionSecurityExceptions = []string{ProductionSecurityExceptionPlainVeriflierTransport}
 	cfg.ProductionSecurityExceptionReason = "temporary rehearsal exception"
@@ -1025,6 +1188,86 @@ func TestLoadRejectsInvalidStatsDAddr(t *testing.T) {
 
 	if err := Load(p); err == nil || !strings.Contains(err.Error(), "STATSD_ADDR") {
 		t.Fatalf("Load() error = %v, want STATSD_ADDR validation failure", err)
+	}
+}
+
+func TestOpsAlertsConfigValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		wantErr string
+		wantMin string
+	}{
+		{
+			name: "enabled https webhook",
+			body: `{
+				"AUTH_TOKEN": "token",
+				"OPS_ALERTS_ENABLED": true,
+				"OPS_ALERTS_SLACK_WEBHOOK_URL": "https://hooks.slack.com/services/test",
+				"OPS_ALERTS_MIN_SEVERITY": "warn",
+				"BUCKET_TOTAL": 100,
+				"BUCKET_TARGET": 50,
+				"NET_COMMS_TIMEOUT": 10,
+				"LOG_FORMAT": "text"
+			}`,
+			wantMin: "warning",
+		},
+		{
+			name: "enabled missing webhook",
+			body: `{
+				"AUTH_TOKEN": "token",
+				"OPS_ALERTS_ENABLED": true,
+				"BUCKET_TOTAL": 100,
+				"BUCKET_TARGET": 50,
+				"NET_COMMS_TIMEOUT": 10,
+				"LOG_FORMAT": "text"
+			}`,
+			wantErr: "OPS_ALERTS_SLACK_WEBHOOK_URL",
+		},
+		{
+			name: "http webhook rejected",
+			body: `{
+				"AUTH_TOKEN": "token",
+				"OPS_ALERTS_SLACK_WEBHOOK_URL": "http://hooks.slack.com/services/test",
+				"BUCKET_TOTAL": 100,
+				"BUCKET_TARGET": 50,
+				"NET_COMMS_TIMEOUT": 10,
+				"LOG_FORMAT": "text"
+			}`,
+			wantErr: "OPS_ALERTS_SLACK_WEBHOOK_URL",
+		},
+		{
+			name: "invalid severity rejected",
+			body: `{
+				"AUTH_TOKEN": "token",
+				"OPS_ALERTS_MIN_SEVERITY": "urgent",
+				"BUCKET_TOTAL": 100,
+				"BUCKET_TARGET": 50,
+				"NET_COMMS_TIMEOUT": 10,
+				"LOG_FORMAT": "text"
+			}`,
+			wantErr: "OPS_ALERTS_MIN_SEVERITY",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			saveConfigState(t)
+			p := writeConfigFile(t, tt.body)
+			err := Load(p)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("Load() error = %v, want %s", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if tt.wantMin != "" && Get().OpsAlertsMinSeverity != tt.wantMin {
+				t.Fatalf("OpsAlertsMinSeverity = %q, want %q", Get().OpsAlertsMinSeverity, tt.wantMin)
+			}
+		})
 	}
 }
 
