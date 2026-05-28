@@ -62,6 +62,8 @@ export JETMON_API_TOKEN=jm_replace_with_the_printed_token
 
 ./bin/jetmon2 api health --pretty
 ./bin/jetmon2 api me --pretty
+./bin/jetmon2 api dashboard host --pretty
+./bin/jetmon2 api dashboard fleet --pretty
 ./bin/jetmon2 api sites list --output table
 ./bin/jetmon2 api request GET '/api/v1/sites?limit=5'
 ```
@@ -84,6 +86,10 @@ Use `/api/v1/openapi.json` for schemas and operation IDs.
 | `GET` | `/api/v1/monitor/stats` | read | Monitor stats and legacy file bodies. |
 | `GET` | `/api/v1/monitor/drain-status` | read | In-flight work and drain state. |
 | `GET` | `/api/v1/monitor/db-config` | read | Sanitized DB config reload status. |
+| `GET` | `/api/v1/dashboard/state` | read | Raw Monitor dashboard state. |
+| `GET` | `/api/v1/dashboard/health` | read | Dependency health entries. |
+| `GET` | `/api/v1/dashboard/host` | read | Combined host dashboard snapshot. |
+| `GET` | `/api/v1/dashboard/fleet` | read | Fleet dashboard snapshot. |
 | `GET` | `/api/v1/verifliers/quorum-report` | read | Vantage health and quorum. |
 | `GET` | `/api/v1/audit-log` | read | Audit log query. |
 

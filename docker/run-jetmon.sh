@@ -89,6 +89,7 @@ render_config() {
 	local wpcom_notify_enable
 	local wpcom_legacy_insecure_default=true
 	local wpcom_legacy_insecure
+	local dashboard_legacy_enabled
 	local ops_alerts_enabled
 	local ops_alerts_service_online
 	local smtp_use_tls
@@ -112,6 +113,7 @@ render_config() {
 	fi
 	wpcom_notify_enable="$(bool_json WPCOM_NOTIFY_ENABLE "${WPCOM_NOTIFY_ENABLE:-$wpcom_notify_default}")"
 	wpcom_legacy_insecure="$(bool_json WPCOM_NOTIFY_LEGACY_INSECURE_SKIP_VERIFY "${WPCOM_NOTIFY_LEGACY_INSECURE_SKIP_VERIFY:-$wpcom_legacy_insecure_default}")"
+	dashboard_legacy_enabled="$(bool_json DASHBOARD_LEGACY_ENABLED "${DASHBOARD_LEGACY_ENABLED:-false}")"
 	ops_alerts_enabled="$(bool_json OPS_ALERTS_ENABLED "${OPS_ALERTS_ENABLED:-false}")"
 	ops_alerts_service_online="$(bool_json OPS_ALERTS_SERVICE_ONLINE "${OPS_ALERTS_SERVICE_ONLINE:-true}")"
 	smtp_use_tls="$(bool_json SMTP_USE_TLS "${SMTP_USE_TLS:-false}")"
@@ -147,6 +149,8 @@ render_config() {
 		-e "s|\"DEFAULT_DETECTION_PROFILE\"    : \"full\"|\"DEFAULT_DETECTION_PROFILE\"    : \"$(sed_escape "${default_detection_profile:-full}")\"|g" \
 		-e "s|\"ROLLOUT_MODE\"                : \"active\"|\"ROLLOUT_MODE\"                : \"$(sed_escape "${rollout_mode:-active}")\"|g" \
 		-e "s|\"RETENTION_PRODUCTION_DECISION\": \"\"|\"RETENTION_PRODUCTION_DECISION\": \"$(sed_escape "$retention_production_decision")\"|g" \
+		-e "s|\"DASHBOARD_LEGACY_ENABLED\" : false|\"DASHBOARD_LEGACY_ENABLED\" : ${dashboard_legacy_enabled}|g" \
+		-e "s|\"DASHBOARD_LEGACY_AUTH_TOKEN\" : \"\"|\"DASHBOARD_LEGACY_AUTH_TOKEN\" : \"$(sed_escape "${DASHBOARD_LEGACY_AUTH_TOKEN:-}")\"|g" \
 		-e "s|\"OPS_ALERTS_ENABLED\"             : false|\"OPS_ALERTS_ENABLED\"             : ${ops_alerts_enabled}|g" \
 		-e "s|\"OPS_ALERTS_SLACK_WEBHOOK_URL\"   : \"\"|\"OPS_ALERTS_SLACK_WEBHOOK_URL\"   : \"$(sed_escape "${OPS_ALERTS_SLACK_WEBHOOK_URL:-}")\"|g" \
 		-e "s|\"OPS_ALERTS_MIN_SEVERITY\"        : \"warning\"|\"OPS_ALERTS_MIN_SEVERITY\"        : \"$(sed_escape "${OPS_ALERTS_MIN_SEVERITY:-warning}")\"|g" \

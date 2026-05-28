@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+
+	"github.com/Automattic/jetmon/internal/dashboard"
 )
 
 func (s *Server) handleOpenAPIJSON(w http.ResponseWriter, _ *http.Request) {
@@ -245,6 +247,10 @@ func openAPIComponentTypes() map[string]reflect.Type {
 		"RolloutGateResponse":         reflect.TypeOf(rolloutGateResponse{}),
 		"MonitorStatsResponse":        reflect.TypeOf(monitorStatsResponse{}),
 		"DrainStatusResponse":         reflect.TypeOf(drainStatusResponse{}),
+		"DashboardState":              reflect.TypeOf(dashboard.State{}),
+		"DashboardHealth":             reflect.TypeOf([]dashboard.HealthEntry{}),
+		"DashboardHostSnapshot":       reflect.TypeOf(dashboard.HostSnapshot{}),
+		"DashboardFleetSnapshot":      reflect.TypeOf(dashboard.FleetSnapshot{}),
 		"QuorumReportResponse":        reflect.TypeOf(quorumReportResponse{}),
 		"AuditLogRow":                 reflect.TypeOf(auditLogRow{}),
 		"DBConfigStatusResponse":      reflect.TypeOf(dbConfigStatusResponse{}),

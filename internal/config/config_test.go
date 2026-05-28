@@ -262,6 +262,40 @@ func TestValidate(t *testing.T) {
 			mutate: func(c *Config) { c.DashboardBindAddr = "0.0.0.0" },
 		},
 		{
+			name: "legacy dashboard can be enabled on loopback without auth",
+			mutate: func(c *Config) {
+				c.DashboardLegacyEnabled = true
+				c.DashboardPort = 8080
+				c.DashboardBindAddr = "127.0.0.1"
+			},
+		},
+		{
+			name: "legacy dashboard remote bind requires auth token",
+			mutate: func(c *Config) {
+				c.DashboardLegacyEnabled = true
+				c.DashboardPort = 8080
+				c.DashboardBindAddr = "0.0.0.0"
+			},
+			wantErr: true,
+		},
+		{
+			name: "legacy dashboard remote bind accepts auth token",
+			mutate: func(c *Config) {
+				c.DashboardLegacyEnabled = true
+				c.DashboardLegacyAuthToken = "secret"
+				c.DashboardPort = 8080
+				c.DashboardBindAddr = "0.0.0.0"
+			},
+		},
+		{
+			name: "legacy dashboard enabled requires port",
+			mutate: func(c *Config) {
+				c.DashboardLegacyEnabled = true
+				c.DashboardPort = 0
+			},
+			wantErr: true,
+		},
+		{
 			name:   "stub email transport is valid",
 			mutate: func(c *Config) { c.EmailTransport = "stub" },
 		},
@@ -965,6 +999,15 @@ func TestValidateProductionRejectsUnsafePostureWithoutException(t *testing.T) {
 				cfg.WPCOMNotifyLegacyInsecure = true
 			},
 			want: ProductionSecurityExceptionLegacyWPCOMInsecureTLS,
+		},
+		{
+			name: "legacy dashboard unauthenticated remote",
+			update: func(cfg *Config) {
+				cfg.DashboardLegacyEnabled = true
+				cfg.DashboardPort = 8080
+				cfg.DashboardBindAddr = "0.0.0.0"
+			},
+			want: ProductionSecurityExceptionLegacyDashboardRemote,
 		},
 	}
 

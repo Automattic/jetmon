@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"context"
 	"testing"
 
 	"github.com/Automattic/jetmon/internal/checker"
@@ -56,6 +57,39 @@ func TestShouldRecordCheckHistory(t *testing.T) {
 				t.Errorf("shouldRecordCheckHistory = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestStreamingHistoryProcessorFlushesRowsWithoutSideEffects(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	origRecord := dbRecordCheckHistories
+	var recorded int
+	dbRecordCheckHistories = func(_ context.Context, rows []db.CheckHistoryRow) error {
+		recorded += len(rows)
+		return nil
+	}
+	t.Cleanup(func() { dbRecordCheckHistories = origRecord })
+
+	o := &Orchestrator{ctx: ctx, cancel: cancel}
+	p := o.newStreamingHistoryProcessor(1)
+	for i := 0; i < 3; i++ {
+		if !p.enqueue(db.CheckHistoryRow{SourceSiteID: int64(i + 1), BlogID: int64(i + 1), RequestMethod: "GET"}) {
+			t.Fatalf("enqueue %d failed", i)
+		}
+	}
+	p.stop()
+
+	var reported int
+	for summary := range p.reportsChannel() {
+		reported += summary.historyRows
+	}
+	if recorded != 3 {
+		t.Fatalf("recorded rows = %d, want 3", recorded)
+	}
+	if reported != 3 {
+		t.Fatalf("reported history rows = %d, want 3", reported)
 	}
 }
 

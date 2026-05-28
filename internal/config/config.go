@@ -54,6 +54,7 @@ const (
 	ProductionSecurityExceptionPlainMonitorAPI         = "plain_monitor_api"
 	ProductionSecurityExceptionAllowPrivateTargets     = "allow_private_targets"
 	ProductionSecurityExceptionLegacyWPCOMInsecureTLS  = "legacy_wpcom_insecure_tls"
+	ProductionSecurityExceptionLegacyDashboardRemote   = "legacy_dashboard_unauthenticated_remote"
 )
 
 const (
@@ -234,11 +235,16 @@ type Config struct {
 	LogFormat         string `json:"LOG_FORMAT"`
 	DashboardPort     int    `json:"DASHBOARD_PORT"`
 	DashboardBindAddr string `json:"DASHBOARD_BIND_ADDR"`
-	DebugPort         int    `json:"DEBUG_PORT"`
-	APIPort           int    `json:"API_PORT"` // 0 = API server disabled
-	APITLSCertPath    string `json:"API_TLS_CERT_PATH"`
-	APITLSKeyPath     string `json:"API_TLS_KEY_PATH"`
-	APIPublicBaseURL  string `json:"API_PUBLIC_BASE_URL"`
+	// DashboardLegacyEnabled controls the old unauthenticated HTML/JSON
+	// dashboard listener. The authenticated API dashboard endpoints are
+	// available through API_PORT and do not depend on this switch.
+	DashboardLegacyEnabled   bool   `json:"DASHBOARD_LEGACY_ENABLED"`
+	DashboardLegacyAuthToken string `json:"DASHBOARD_LEGACY_AUTH_TOKEN"`
+	DebugPort                int    `json:"DEBUG_PORT"`
+	APIPort                  int    `json:"API_PORT"` // 0 = API server disabled
+	APITLSCertPath           string `json:"API_TLS_CERT_PATH"`
+	APITLSKeyPath            string `json:"API_TLS_KEY_PATH"`
+	APIPublicBaseURL         string `json:"API_PUBLIC_BASE_URL"`
 
 	// DeliveryOwnerHost constrains webhook and alert-contact delivery workers
 	// to a single named host while the v2 single-binary deployment still uses
@@ -1110,6 +1116,14 @@ func validate(cfg *Config) error {
 	if strings.TrimSpace(cfg.DashboardBindAddr) == "" {
 		cfg.DashboardBindAddr = "127.0.0.1"
 	}
+	cfg.DashboardLegacyAuthToken = strings.TrimSpace(cfg.DashboardLegacyAuthToken)
+	if cfg.DashboardLegacyEnabled && cfg.DashboardPort <= 0 {
+		return fmt.Errorf("DASHBOARD_LEGACY_ENABLED=true requires DASHBOARD_PORT > 0")
+	}
+	if cfg.DashboardLegacyEnabled && cfg.DashboardLegacyAuthToken == "" && !IsLoopbackBindAddr(cfg.DashboardBindAddr) &&
+		!exceptions[ProductionSecurityExceptionLegacyDashboardRemote] {
+		return fmt.Errorf("DASHBOARD_LEGACY_ENABLED=true with remote DASHBOARD_BIND_ADDR requires DASHBOARD_LEGACY_AUTH_TOKEN or %s", ProductionSecurityExceptionLegacyDashboardRemote)
+	}
 	switch cfg.EmailTransport {
 	case "", "stub":
 		// Empty remains a compatibility alias for the safe default.
@@ -1187,6 +1201,7 @@ func validateProductionSecurityExceptions(cfg *Config) (map[string]bool, error) 
 		ProductionSecurityExceptionPlainMonitorAPI:         {},
 		ProductionSecurityExceptionAllowPrivateTargets:     {},
 		ProductionSecurityExceptionLegacyWPCOMInsecureTLS:  {},
+		ProductionSecurityExceptionLegacyDashboardRemote:   {},
 	}
 	out := make(map[string]bool, len(cfg.ProductionSecurityExceptions))
 	normalized := make([]string, 0, len(cfg.ProductionSecurityExceptions))
@@ -1226,6 +1241,24 @@ func validateProductionSecurityExceptions(cfg *Config) (map[string]bool, error) 
 		return nil, fmt.Errorf("PRODUCTION_SECURITY_EXCEPTION_EXPIRES_AT must be in the future")
 	}
 	return out, nil
+}
+
+// IsLoopbackBindAddr reports whether a listener bind address is local-only.
+// Empty follows Jetmon's dashboard default of 127.0.0.1.
+func IsLoopbackBindAddr(bindAddr string) bool {
+	bindAddr = strings.TrimSpace(bindAddr)
+	if bindAddr == "" {
+		bindAddr = "127.0.0.1"
+	}
+	host := strings.Trim(bindAddr, "[]")
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 // StatsDMetricHost returns the host path segment used in StatsD metric names.

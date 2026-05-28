@@ -138,7 +138,8 @@ Production Monitor containers need:
   non-production roles;
 - WPCOM credential material when legacy notifications are enabled;
 - v2 Veriflier endpoints or trusted discovery config;
-- API/dashboard/debug bindings approved for the host;
+- API bindings approved for the host; legacy dashboard/debug bindings kept
+  disabled or loopback-only unless explicitly approved;
 - writable `/jetmon/stats` for PID, reload/drain, and any legacy stats files.
 
 Important production render inputs:
@@ -161,6 +162,8 @@ Important production render inputs:
 | `WPCOM_NOTIFY_LEGACY_INSECURE_SKIP_VERIFY` | `false`; temporary `true` requires a production security exception. |
 | `PRODUCTION_SECURITY_EXCEPTIONS` | Empty unless a documented temporary exception is approved. |
 | `API_PUBLIC_BASE_URL` or `API_TLS_CERT_PATH` / `API_TLS_KEY_PATH` | Required when operators reach the Monitor API over a network path that leaves localhost/private host scope. |
+| `DASHBOARD_LEGACY_ENABLED` | `false` unless a legacy monitoring consumer still needs `/`, `/fleet`, or old `/api/*` dashboard paths. |
+| `DASHBOARD_LEGACY_AUTH_TOKEN` | Required when the legacy dashboard is enabled on a non-loopback bind. |
 | `CHECK_HISTORY_MODE_DEFAULT` | `status_change` unless a focused test needs more. |
 | `AUDIT_LOG_MODE_DEFAULT` | `operational` for rollout evidence without read firehose noise. |
 | `RETENTION_PRODUCTION_DECISION` | `configured`, `deferred`, or `external`; production startup requires an explicit decision. |
@@ -296,7 +299,9 @@ so the plain app listener is host-local while Caddy handles external traffic.
 | `/api/v1/monitor/stats` | Current stats snapshot and legacy file bodies. |
 | `/api/v1/monitor/db-config` | Sanitized DB config reload status. |
 | `/api/v1/verifliers/quorum-report` | Vantage health and quorum diagnostics. |
-| Dashboard `/` and `/fleet` | Host and fleet operations. |
+| `/api/v1/dashboard/host` | Authenticated host dashboard snapshot. |
+| `/api/v1/dashboard/fleet` | Authenticated fleet dashboard snapshot. |
+| Legacy dashboard `/` and `/fleet` | Optional compatibility listener; disabled by default. |
 | `/debug/pprof/` | Localhost-only profiling when `DEBUG_PORT > 0`. |
 
 ```bash
@@ -310,8 +315,10 @@ Runtime logs go to stdout/stderr. Site-state changes live in
 `jetpack_monitor_events` and `jetpack_monitor_event_transitions`; operational
 actions live in `jetpack_monitor_audit_log`.
 
-Keep dashboard and pprof listeners on loopback unless protected by trusted
-operator-network controls.
+Use the authenticated API dashboard endpoints for normal operator access. Keep
+the legacy dashboard disabled unless a compatibility consumer still needs it;
+if enabled remotely, set `DASHBOARD_LEGACY_AUTH_TOKEN` and restrict the network
+path. Keep pprof on loopback only.
 
 ## Operational Alerts
 

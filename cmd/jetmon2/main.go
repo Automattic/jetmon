@@ -329,7 +329,7 @@ func runServe() {
 	if msg := wpcomLegacyInsecureTLSWarning(cfg); msg != "" {
 		log.Print(msg)
 	}
-	if cfg.DashboardPort > 0 {
+	if cfg.DashboardLegacyEnabled && cfg.DashboardPort > 0 {
 		if msg := dashboardBindWarning(cfg.DashboardBindAddr); msg != "" {
 			log.Printf("WARN: %s", msg)
 		}
@@ -382,10 +382,10 @@ func runServe() {
 		log.Fatalf("claim buckets: %v", err)
 	}
 
-	var dash *dashboard.Server
-	if cfg.DashboardPort > 0 {
-		dash = dashboard.New(hostname)
-		dash.SetFleetSource(newFleetDashboardStore(cfg))
+	dash := dashboard.New(hostname)
+	dash.SetFleetSource(newFleetDashboardStore(cfg))
+	if cfg.DashboardLegacyEnabled && cfg.DashboardPort > 0 {
+		dash.SetLegacyAuthToken(cfg.DashboardLegacyAuthToken)
 		go func() {
 			addr := dashboardListenAddr(cfg)
 			if err := dash.Listen(addr); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -413,6 +413,7 @@ func runServe() {
 	if cfg.APIPort > 0 {
 		apiSrv = api.New(fmt.Sprintf(":%d", cfg.APIPort), db.DB(), hostname)
 		apiSrv.SetTLS(cfg.APITLSCertPath, cfg.APITLSKeyPath)
+		apiSrv.SetDashboard(dash)
 		go func() {
 			if err := apiSrv.Listen(); err != nil && !api.IsServerClosed(err) {
 				log.Printf("api: %v", err)
@@ -537,7 +538,8 @@ func runServe() {
 		"bucket_ownership":   bucketOwnershipLabel(cfg),
 		"schema_management":  cfg.SchemaManagementMode,
 		"api_port":           cfg.APIPort,
-		"dashboard_port":     cfg.DashboardPort,
+		"dashboard_legacy":   enabledLabel(cfg.DashboardLegacyEnabled),
+		"dashboard_port":     dashboardLegacyPort(cfg),
 		"wpcom_notify":       enabledLabel(cfg.WPCOMNotifyEnable),
 		"wpcom_mode":         cfg.WPCOMNotifyMode,
 		"veriflier_count":    len(cfg.Verifiers),
@@ -710,7 +712,7 @@ func cmdValidateConfig() {
 	if !emailTransportDelivers(cfg) {
 		fmt.Printf("WARN email_transport=%s — alert-contact emails will be logged but not delivered\n", emailTransportLabel(cfg))
 	}
-	if cfg.DashboardPort > 0 {
+	if cfg.DashboardLegacyEnabled && cfg.DashboardPort > 0 {
 		if msg := dashboardBindWarning(cfg.DashboardBindAddr); msg != "" {
 			fmt.Printf("WARN %s\n", msg)
 		}
@@ -1126,20 +1128,18 @@ func dashboardListenAddr(cfg *config.Config) string {
 	return net.JoinHostPort(bindAddr, strconv.Itoa(port))
 }
 
+func dashboardLegacyPort(cfg *config.Config) int {
+	if cfg == nil || !cfg.DashboardLegacyEnabled {
+		return 0
+	}
+	return cfg.DashboardPort
+}
+
 func dashboardBindWarning(bindAddr string) string {
-	bindAddr = strings.TrimSpace(bindAddr)
-	if bindAddr == "" {
-		bindAddr = "127.0.0.1"
-	}
-	host := strings.Trim(bindAddr, "[]")
-	host = strings.TrimSuffix(strings.ToLower(host), ".")
-	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+	if config.IsLoopbackBindAddr(bindAddr) {
 		return ""
 	}
-	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
-		return ""
-	}
-	return fmt.Sprintf("DASHBOARD_BIND_ADDR=%q exposes unauthenticated operator dashboards; restrict access to trusted operator networks", bindAddr)
+	return fmt.Sprintf("DASHBOARD_BIND_ADDR=%q exposes the legacy operator dashboard; set DASHBOARD_LEGACY_AUTH_TOKEN and restrict access to trusted operator networks", strings.TrimSpace(bindAddr))
 }
 
 func newFleetDashboardStore(cfg *config.Config) *dashboard.FleetStore {
@@ -1185,7 +1185,8 @@ func monitorProcessHealthSnapshot(hostname string, startedAt time.Time, state st
 		bucketMinPtr = &bucketMin
 		bucketMaxPtr = &bucketMax
 	}
-	apiPort, dashboardPort := cfg.APIPort, cfg.DashboardPort
+	apiPort := cfg.APIPort
+	dashboardPort := dashboardLegacyPort(cfg)
 	healthStatus := dashboard.SummarizeHost(st, health).Status
 	if state == fleethealth.StateStopping || state == fleethealth.StateStopped {
 		healthStatus = fleethealth.HealthAmber
