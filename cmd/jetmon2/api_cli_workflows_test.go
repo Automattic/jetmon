@@ -39,18 +39,22 @@ func TestRunAPISmokeHappyPath(t *testing.T) {
 			if headers[apiCLIBatchHeader] != "smoke-test" {
 				t.Fatalf("batch header = %#v, want smoke-test", headers[apiCLIBatchHeader])
 			}
-			writeTestStatusJSON(t, w, http.StatusCreated, map[string]any{"id": 910, "blog_id": 910})
-		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sites/910/trigger-now":
+			writeTestStatusJSON(t, w, http.StatusCreated, map[string]any{"id": 1234, "blog_id": 910})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sites/1234/trigger-now":
 			writeTestJSON(t, w, map[string]any{"result": map[string]any{"success": true}})
-		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sites/910/events":
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sites/1234/events":
 			writeTestJSON(t, w, map[string]any{"data": []any{}, "page": map[string]any{"limit": 5}})
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/alert-contacts":
+			var body map[string]any
+			decodeTestJSON(t, r, &body)
+			siteFilter := body["site_filter"].(map[string]any)
+			assertNumberArray(t, siteFilter["site_ids"], []int64{1234})
 			writeTestStatusJSON(t, w, http.StatusCreated, map[string]any{"id": 77, "label": "api-cli-smoke-smoke-test"})
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/alert-contacts/77/test":
 			writeTestJSON(t, w, map[string]any{"contact_id": 77, "delivered": true})
 		case r.Method == http.MethodDelete && r.URL.Path == "/api/v1/alert-contacts/77":
 			w.WriteHeader(http.StatusNoContent)
-		case r.Method == http.MethodDelete && r.URL.Path == "/api/v1/sites/910":
+		case r.Method == http.MethodDelete && r.URL.Path == "/api/v1/sites/1234":
 			w.WriteHeader(http.StatusNoContent)
 		default:
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
@@ -98,12 +102,12 @@ func TestRunAPISmokeHappyPath(t *testing.T) {
 		"GET /api/v1/health",
 		"GET /api/v1/me",
 		"POST /api/v1/sites",
-		"POST /api/v1/sites/910/trigger-now",
-		"GET /api/v1/sites/910/events",
+		"POST /api/v1/sites/1234/trigger-now",
+		"GET /api/v1/sites/1234/events",
 		"POST /api/v1/alert-contacts",
 		"POST /api/v1/alert-contacts/77/test",
 		"DELETE /api/v1/alert-contacts/77",
-		"DELETE /api/v1/sites/910",
+		"DELETE /api/v1/sites/1234",
 	}
 	if strings.Join(calls, "\n") != strings.Join(wantCalls, "\n") {
 		t.Fatalf("calls:\n%s\nwant:\n%s", strings.Join(calls, "\n"), strings.Join(wantCalls, "\n"))
@@ -132,19 +136,19 @@ func TestRunAPISmokeWebhookExercise(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/me":
 			writeTestJSON(t, w, map[string]any{"consumer_name": "api-cli-test", "scope": "admin"})
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sites":
-			writeTestStatusJSON(t, w, http.StatusCreated, map[string]any{"id": 910, "blog_id": 910})
-		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sites/910/trigger-now":
+			writeTestStatusJSON(t, w, http.StatusCreated, map[string]any{"id": 1234, "blog_id": 910})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sites/1234/trigger-now":
 			triggerCalls++
 			if triggerCalls == 2 {
-				postSignedSmokeWebhook(t, registeredURL, webhookSecret, []byte(`{"type":"event.opened","site_id":910}`))
+				postSignedSmokeWebhook(t, registeredURL, webhookSecret, []byte(`{"type":"event.opened","site_id":1234}`))
 				writeTestJSON(t, w, map[string]any{"result": map[string]any{"success": false, "http_code": 500}})
 				return
 			}
 			writeTestJSON(t, w, map[string]any{"result": map[string]any{"success": true}})
-		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sites/910/events" && r.URL.RawQuery == "limit=5":
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sites/1234/events" && r.URL.RawQuery == "limit=5":
 			writeTestJSON(t, w, map[string]any{"data": []any{}, "page": map[string]any{"limit": 5}})
-		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sites/910" && r.URL.Query().Get("include_cli_metadata") == "true":
-			writeTestJSON(t, w, map[string]any{"id": 910, "blog_id": 910, "cli_batch": "smoke-webhook"})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sites/1234" && r.URL.Query().Get("include_cli_metadata") == "true":
+			writeTestJSON(t, w, map[string]any{"id": 1234, "blog_id": 910, "cli_batch": "smoke-webhook"})
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/webhooks":
 			var body map[string]any
 			decodeTestJSON(t, r, &body)
@@ -154,6 +158,8 @@ func TestRunAPISmokeWebhookExercise(t *testing.T) {
 			if body["active"] != false {
 				t.Fatalf("webhook active = %#v, want false until secret is registered", body["active"])
 			}
+			siteFilter := body["site_filter"].(map[string]any)
+			assertNumberArray(t, siteFilter["site_ids"], []int64{1234})
 			writeTestStatusJSON(t, w, http.StatusCreated, map[string]any{
 				"id":             88,
 				"url":            fixture.URL + "/webhook",
@@ -179,21 +185,21 @@ func TestRunAPISmokeWebhookExercise(t *testing.T) {
 				"events":         []string{apiSmokeWebhookEvent},
 				"secret_preview": "whsec_TEST...",
 			})
-		case r.Method == http.MethodPatch && r.URL.Path == "/api/v1/sites/910":
+		case r.Method == http.MethodPatch && r.URL.Path == "/api/v1/sites/1234":
 			var body map[string]any
 			decodeTestJSON(t, r, &body)
 			if !strings.Contains(fmt.Sprint(body["monitor_url"]), "/status/500") {
 				t.Fatalf("monitor_url = %#v, want fixture failure URL", body["monitor_url"])
 			}
-			writeTestJSON(t, w, map[string]any{"id": 910, "blog_id": 910})
-		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sites/910/events" && r.URL.RawQuery == "active=true&limit=10":
+			writeTestJSON(t, w, map[string]any{"id": 1234, "blog_id": 910})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sites/1234/events" && r.URL.RawQuery == "active=true&limit=10":
 			writeTestJSON(t, w, map[string]any{
 				"data": []any{
 					map[string]any{"id": 321, "state": apiSmokeWebhookState, "severity": 3},
 				},
 				"page": map[string]any{"limit": 10},
 			})
-		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sites/910/events/321/transitions":
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sites/1234/events/321/transitions":
 			writeTestJSON(t, w, map[string]any{
 				"data": []any{
 					map[string]any{"id": 654, "event_id": 321, "reason": "opened", "state_after": apiSmokeWebhookState, "severity_after": 3},
@@ -208,21 +214,21 @@ func TestRunAPISmokeWebhookExercise(t *testing.T) {
 						"status":     "delivered",
 						"event_id":   321,
 						"event_type": apiSmokeWebhookEvent,
-						"payload":    map[string]any{"type": apiSmokeWebhookEvent, "site_id": 910},
+						"payload":    map[string]any{"type": apiSmokeWebhookEvent, "site_id": 1234},
 					},
 					map[string]any{
 						"id":         777,
 						"status":     "delivered",
 						"event_id":   321,
 						"event_type": apiSmokeWebhookEvent,
-						"payload":    map[string]any{"type": apiSmokeWebhookEvent, "site_id": 910},
+						"payload":    map[string]any{"type": apiSmokeWebhookEvent, "site_id": 1234},
 					},
 				},
 				"page": map[string]any{"limit": 10},
 			})
 		case r.Method == http.MethodDelete && r.URL.Path == "/api/v1/webhooks/88":
 			w.WriteHeader(http.StatusNoContent)
-		case r.Method == http.MethodDelete && r.URL.Path == "/api/v1/sites/910":
+		case r.Method == http.MethodDelete && r.URL.Path == "/api/v1/sites/1234":
 			w.WriteHeader(http.StatusNoContent)
 		default:
 			t.Fatalf("unexpected request: %s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
@@ -278,18 +284,18 @@ func TestRunAPISmokeWebhookExercise(t *testing.T) {
 		"GET /api/v1/health",
 		"GET /api/v1/me",
 		"POST /api/v1/sites",
-		"POST /api/v1/sites/910/trigger-now",
-		"GET /api/v1/sites/910/events",
+		"POST /api/v1/sites/1234/trigger-now",
+		"GET /api/v1/sites/1234/events",
 		"POST /api/v1/webhooks",
 		"PATCH /api/v1/webhooks/88",
-		"GET /api/v1/sites/910",
-		"PATCH /api/v1/sites/910",
-		"POST /api/v1/sites/910/trigger-now",
-		"GET /api/v1/sites/910/events",
-		"GET /api/v1/sites/910/events/321/transitions",
+		"GET /api/v1/sites/1234",
+		"PATCH /api/v1/sites/1234",
+		"POST /api/v1/sites/1234/trigger-now",
+		"GET /api/v1/sites/1234/events",
+		"GET /api/v1/sites/1234/events/321/transitions",
 		"GET /api/v1/webhooks/88/deliveries",
 		"DELETE /api/v1/webhooks/88",
-		"DELETE /api/v1/sites/910",
+		"DELETE /api/v1/sites/1234",
 	}
 	if strings.Join(calls, "\n") != strings.Join(wantCalls, "\n") {
 		t.Fatalf("calls:\n%s\nwant:\n%s", strings.Join(calls, "\n"), strings.Join(wantCalls, "\n"))

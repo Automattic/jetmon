@@ -237,6 +237,7 @@ func runAPISmoke(ctx context.Context, client *http.Client, opts apiCLIOptions, s
 	}
 	var createdContactID int64
 	var createdWebhookID int64
+	var createdSiteID int64
 	siteCreated := false
 
 	cleanup := func() {
@@ -264,9 +265,9 @@ func runAPISmoke(ctx context.Context, client *http.Client, opts apiCLIOptions, s
 			summary.CleanupResults = append(summary.CleanupResults, result)
 		}
 		if siteCreated {
-			target := "/api/v1/sites/" + strconv.FormatInt(smoke.blogID, 10)
+			target := "/api/v1/sites/" + strconv.FormatInt(createdSiteID, 10)
 			err := apiWorkflowDelete(ctx, client, opts, target)
-			result := apiSmokeCleanupResult{Resource: "site", ID: smoke.blogID, Status: "deleted"}
+			result := apiSmokeCleanupResult{Resource: "site", ID: createdSiteID, Status: "deleted"}
 			if err != nil {
 				result.Status = "failed"
 				result.Error = err.Error()
@@ -314,6 +315,11 @@ func runAPISmoke(ctx context.Context, client *http.Client, opts apiCLIOptions, s
 		if err != nil {
 			return err
 		}
+		id, err := apiJSONInt64(site, "id")
+		if err != nil {
+			return err
+		}
+		createdSiteID = id
 		siteCreated = true
 		summary.Site = site
 		return nil
@@ -321,7 +327,7 @@ func runAPISmoke(ctx context.Context, client *http.Client, opts apiCLIOptions, s
 		return err
 	}
 	if err := step("trigger_now", func() error {
-		body, err := apiWorkflowRequestJSON(ctx, client, opts, http.MethodPost, fmt.Sprintf("/api/v1/sites/%d/trigger-now", smoke.blogID), nil, apiSmokeIDKey(smoke, "trigger-now"))
+		body, err := apiWorkflowRequestJSON(ctx, client, opts, http.MethodPost, fmt.Sprintf("/api/v1/sites/%d/trigger-now", createdSiteID), nil, apiSmokeIDKey(smoke, "trigger-now"))
 		if err != nil {
 			return err
 		}
@@ -331,7 +337,7 @@ func runAPISmoke(ctx context.Context, client *http.Client, opts apiCLIOptions, s
 		return err
 	}
 	if err := step("events", func() error {
-		body, err := apiWorkflowRequestJSON(ctx, client, opts, http.MethodGet, fmt.Sprintf("/api/v1/sites/%d/events?limit=5", smoke.blogID), nil, "")
+		body, err := apiWorkflowRequestJSON(ctx, client, opts, http.MethodGet, fmt.Sprintf("/api/v1/sites/%d/events?limit=5", createdSiteID), nil, "")
 		if err != nil {
 			return err
 		}
@@ -346,7 +352,7 @@ func runAPISmoke(ctx context.Context, client *http.Client, opts apiCLIOptions, s
 				Label:       "api-cli-smoke-" + smoke.batch,
 				Transport:   "email",
 				Destination: json.RawMessage(`{"address":"` + apiSmokeAlertTestEmail + `"}`),
-				SiteFilter:  apiAlertContactSiteFilter{SiteIDs: []int64{smoke.blogID}},
+				SiteFilter:  apiAlertContactSiteFilter{SiteIDs: []int64{createdSiteID}},
 			}, apiSmokeIDKey(smoke, "create-alert-contact"))
 			if err != nil {
 				return err
@@ -386,7 +392,7 @@ func runAPISmoke(ctx context.Context, client *http.Client, opts apiCLIOptions, s
 				Active: &active,
 				Events: []string{apiSmokeWebhookEvent},
 				SiteFilter: apiWebhookSiteFilter{
-					SiteIDs: []int64{smoke.blogID},
+					SiteIDs: []int64{createdSiteID},
 				},
 				StateFilter: apiWebhookStateFilter{
 					States: []string{apiSmokeWebhookState},
@@ -429,7 +435,7 @@ func runAPISmoke(ctx context.Context, client *http.Client, opts apiCLIOptions, s
 			return err
 		}
 		if err := step("simulate_failure_for_webhook", func() error {
-			result, err := runAPISmokeWebhookFailureSimulation(ctx, client, opts, smoke)
+			result, err := runAPISmokeWebhookFailureSimulation(ctx, client, opts, smoke, createdSiteID)
 			if err != nil {
 				return err
 			}
@@ -439,7 +445,7 @@ func runAPISmoke(ctx context.Context, client *http.Client, opts apiCLIOptions, s
 			return err
 		}
 		if err := step("webhook_fixture_delivery", func() error {
-			fixture, err := waitForAPIWebhookFixtureDelivery(ctx, client, opts, smoke)
+			fixture, err := waitForAPIWebhookFixtureDelivery(ctx, client, opts, smoke, createdSiteID)
 			if err != nil {
 				return err
 			}
@@ -449,7 +455,7 @@ func runAPISmoke(ctx context.Context, client *http.Client, opts apiCLIOptions, s
 			return err
 		}
 		if err := step("webhook_delivery_row", func() error {
-			body, err := waitForAPIWebhookDeliveredRow(ctx, client, opts, createdWebhookID, smoke, summary.WebhookFixture.MatchedDeliveryID)
+			body, err := waitForAPIWebhookDeliveredRow(ctx, client, opts, createdWebhookID, smoke, createdSiteID, summary.WebhookFixture.MatchedDeliveryID)
 			if err != nil {
 				return err
 			}
@@ -500,12 +506,12 @@ func apiWorkflowDelete(ctx context.Context, client *http.Client, opts apiCLIOpti
 	return nil
 }
 
-func runAPISmokeWebhookFailureSimulation(ctx context.Context, client *http.Client, opts apiCLIOptions, smoke apiSmokeOptions) (apiSimulatedSiteResult, error) {
+func runAPISmokeWebhookFailureSimulation(ctx context.Context, client *http.Client, opts apiCLIOptions, smoke apiSmokeOptions, siteID int64) (apiSimulatedSiteResult, error) {
 	sim := apiSitesSimulateFailureOptions{
 		mode:                   apiSmokeWebhookMode,
 		batch:                  smoke.batch,
 		count:                  1,
-		blogIDStart:            smoke.blogID,
+		siteIDs:                apiInt64SliceFlags{values: []int64{siteID}, set: true},
 		createMissing:          false,
 		trigger:                true,
 		wait:                   smoke.webhookWait,
@@ -527,7 +533,7 @@ func runAPISmokeWebhookFailureSimulation(ctx context.Context, client *http.Clien
 	if err != nil {
 		return apiSimulatedSiteResult{}, err
 	}
-	return runAPISiteSimulation(ctx, client, opts, sim, def, smoke.blogID, 0)
+	return runAPISiteSimulation(ctx, client, opts, sim, def, siteID, 0)
 }
 
 func clearAPIWebhookFixtureRequests(ctx context.Context, client *http.Client, opts apiCLIOptions, requestsURL string) error {
@@ -547,18 +553,18 @@ func clearAPIWebhookFixtureRequests(ctx context.Context, client *http.Client, op
 	return nil
 }
 
-func waitForAPIWebhookFixtureDelivery(ctx context.Context, client *http.Client, opts apiCLIOptions, smoke apiSmokeOptions) (*apiSmokeWebhookFixtureSummary, error) {
+func waitForAPIWebhookFixtureDelivery(ctx context.Context, client *http.Client, opts apiCLIOptions, smoke apiSmokeOptions, siteID int64) (*apiSmokeWebhookFixtureSummary, error) {
 	deadline := time.Now().Add(smoke.webhookWait)
 	for {
 		fixture, err := getAPIWebhookFixtureRequests(ctx, client, opts, smoke.webhookRequestsURL)
 		if err != nil {
 			return nil, err
 		}
-		if summary := matchingAPIWebhookFixtureDelivery(fixture, smoke.blogID); summary != nil {
+		if summary := matchingAPIWebhookFixtureDelivery(fixture, siteID); summary != nil {
 			return summary, nil
 		}
 		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("timed out waiting for verified webhook fixture delivery for site %d", smoke.blogID)
+			return nil, fmt.Errorf("timed out waiting for verified webhook fixture delivery for site %d", siteID)
 		}
 		select {
 		case <-ctx.Done():
@@ -620,7 +626,7 @@ func matchingAPIWebhookFixtureDelivery(fixture apiSmokeFixtureResponse, siteID i
 	return nil
 }
 
-func waitForAPIWebhookDeliveredRow(ctx context.Context, client *http.Client, opts apiCLIOptions, webhookID int64, smoke apiSmokeOptions, expectedDeliveryID string) (json.RawMessage, error) {
+func waitForAPIWebhookDeliveredRow(ctx context.Context, client *http.Client, opts apiCLIOptions, webhookID int64, smoke apiSmokeOptions, siteID int64, expectedDeliveryID string) (json.RawMessage, error) {
 	deadline := time.Now().Add(smoke.webhookWait)
 	target := fmt.Sprintf("/api/v1/webhooks/%d/deliveries?status=delivered&limit=10", webhookID)
 	for {
@@ -628,14 +634,14 @@ func waitForAPIWebhookDeliveredRow(ctx context.Context, client *http.Client, opt
 		if err != nil {
 			return nil, err
 		}
-		if apiDeliveredWebhookRowsIncludeSite(body, smoke.blogID, expectedDeliveryID) {
+		if apiDeliveredWebhookRowsIncludeSite(body, siteID, expectedDeliveryID) {
 			return body, nil
 		}
 		if time.Now().After(deadline) {
 			if strings.TrimSpace(expectedDeliveryID) != "" {
-				return nil, fmt.Errorf("timed out waiting for delivered webhook row %s for webhook %d and site %d", expectedDeliveryID, webhookID, smoke.blogID)
+				return nil, fmt.Errorf("timed out waiting for delivered webhook row %s for webhook %d and site %d", expectedDeliveryID, webhookID, siteID)
 			}
-			return nil, fmt.Errorf("timed out waiting for delivered webhook row for webhook %d and site %d", webhookID, smoke.blogID)
+			return nil, fmt.Errorf("timed out waiting for delivered webhook row for webhook %d and site %d", webhookID, siteID)
 		}
 		select {
 		case <-ctx.Done():
