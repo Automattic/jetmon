@@ -35,9 +35,6 @@ bool BotAuth::set_signing_key( const std::string &p_key_pem, const std::string &
 		return false;
 	}
 
-	if ( NULL != g_key )
-		EVP_PKEY_free( g_key );
-
 	g_key       = key;
 	g_key_id    = p_key_id;
 	g_agent_url = p_agent_url;
