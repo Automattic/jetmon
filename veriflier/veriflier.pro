@@ -16,6 +16,7 @@ SOURCES += \
     source/logger.cpp \
     source/check_thread.cpp \
     source/check_controller.cpp \
+    source/bot_auth.cpp \
     source/jetmon_server.cpp
 
 HEADERS += \
@@ -26,4 +27,8 @@ HEADERS += \
     headers/logger.h \
     headers/check_thread.h \
     headers/check_controller.h \
+    headers/bot_auth.h \
     headers/jetmon_server.h
+
+# OpenSSL, for the Ed25519 request signing in bot_auth.cpp
+LIBS += -lssl -lcrypto

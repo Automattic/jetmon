@@ -83,7 +83,8 @@ See `config/config.readme` for detailed documentation of all options.
 - Max redirects: 3 (beyond this triggers "redirect" error)
 - HTTP response code < 400 is considered success
 - User Agent: `jetmon/1.0 (Jetpack Site Uptime Monitor by WordPress.com)`
-- When `BOT_AUTH_ENABLED` is true, checks to monitored sites are signed with Ed25519 HTTP Message Signatures (RFC 9421, Web Bot Auth): `Signature`, `Signature-Input`, and `Signature-Agent` headers are added. Internal API calls (WordPress.com, verifliers) are never signed. See `config/config.readme` for the `BOT_AUTH_*` settings.
+- When `BOT_AUTH_ENABLED` is true, checks to monitored sites are signed with Ed25519 HTTP Message Signatures (RFC 9421, Web Bot Auth): `Signature`, `Signature-Input`, and `Signature-Agent` headers are added. Internal API calls (WordPress.com, jetmon-to-veriflier) are never signed. See `config/config.readme` for the `BOT_AUTH_*` settings.
+- Veriflier confirmation checks support the same signing via the `bot_auth_*` keys in `veriflier/config/veriflier.json`; the implementation lives in the Qt-free `veriflier/source/bot_auth.cpp` so it can be unit-tested without a Qt toolchain.
 
 **Downtime Verification:**
 When a site appears down, Jetmon retries from the same location twice, then verifies from 2 other locations on different continents via Verifliers before confirming downtime.
@@ -151,6 +152,6 @@ The master process tracks worker states and gracefully handles recycling.
 
 **Custom Ports in monitor_url:** Previously the `getaddrinfo` connect path silently ignored custom ports (checks went to 80/443). This is now fixed, so existing monitor URLs that contain a custom port will start being checked on their actual port - watch for status flips on such sites after deploy.
 
-**Signing Test:** `node test/bot-auth.js` verifies RFC 9421 signature generation against a local server (requires `node-gyp rebuild && cp build/Release/jetmon.node lib/` first).
+**Signing Test:** `node test/bot-auth.js` verifies RFC 9421 signature generation against a local server (requires `node-gyp rebuild && cp build/Release/jetmon.node lib/` first). The veriflier signing module has its own Qt-free test: `g++ -std=c++11 -Iveriflier test/bot-auth-veriflier.cpp veriflier/source/bot_auth.cpp -lssl -lcrypto -o /tmp/bot-auth-veriflier && /tmp/bot-auth-veriflier`.
 
 **Memory Pressure:** When checking more sites (due to shorter intervals or configuration fixes), memory usage increases. Monitor memory metrics and consider scaling hosts horizontally if workers frequently hit memory limits.
