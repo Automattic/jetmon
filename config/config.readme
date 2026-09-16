@@ -40,6 +40,18 @@ The number of buckets returned in each batch when running checks.
 AUTH_TOKEN
 A string used to validate communications between different systems over HTTPS.
 
+BOT_AUTH_ENABLED
+Set to true to sign outgoing site checks with HTTP Message Signatures (RFC 9421, Web Bot Auth), so site operators can verify the checks genuinely come from Jetmon. Only the HEAD checks sent to monitored sites are signed; internal API calls (WordPress.com, verifliers) are not.
+
+BOT_AUTH_KEY_FILE
+Path to the Ed25519 private key in PEM format used to sign monitoring requests. Required when BOT_AUTH_ENABLED is true. If the key is missing or invalid, checks are sent unsigned.
+
+BOT_AUTH_KEY_ID
+The keyid value advertised in the Signature-Input header. Must match the entry for this key in the public key directory.
+
+BOT_AUTH_DIRECTORY_URL
+The URL sent in the Signature-Agent header, where verifiers can fetch the public key directory (the .well-known/http-message-signatures-directory document).
+
 VERIFLIER_BATCH_SIZE
 The maximum number of sites to send to verifliers in a single batch.
 

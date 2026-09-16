@@ -10,6 +10,35 @@ const int ERROR_REDIRECT_LOCATION = 997;
 const int ERROR_CONNECT_REDIRECT_HOST = 996;
 const int ERROR_CONNECT_HOST = 995;
 
+// How long a request signature stays valid after creation.
+const int SIGNATURE_EXPIRES_SEC = 300;
+
+std::atomic<HTTP_Checker::Signing_Config *> HTTP_Checker::s_signing_config( NULL );
+
+bool HTTP_Checker::set_signing_key( const std::string &p_key_pem, const std::string &p_key_id, const std::string &p_agent_url ) {
+	BIO *bio = BIO_new_mem_buf( p_key_pem.data(), (int)p_key_pem.size() );
+	if ( NULL == bio )
+		return false;
+
+	EVP_PKEY *key = PEM_read_bio_PrivateKey( bio, NULL, NULL, NULL );
+	BIO_free( bio );
+
+	if ( NULL == key )
+		return false;
+
+	if ( EVP_PKEY_ED25519 != EVP_PKEY_id( key ) ) {
+		EVP_PKEY_free( key );
+		return false;
+	}
+
+	// ponytail: the old config is deliberately leaked (one per actual
+	// rotation) - a pool thread may still be mid-signature with it. JS only
+	// calls this when the material changes, and workers recycle often.
+	Signing_Config *config = new Signing_Config{ key, p_key_id, p_agent_url };
+	s_signing_config.store( config );
+	return true;
+}
+
 HTTP_Checker::HTTP_Checker() : m_sock( -1 ), m_host_name( "" ), m_host_dir( "" ), m_port( HTTP_DEFAULT_PORT ),
 		m_is_ssl( false ), m_triptime( 0 ), m_response_code( 0 ), m_ctx( NULL ), m_ssl( NULL ), m_sbio( NULL ), m_error_code( 0 ) {
 	gettimeofday( &m_tstart, &m_tzone );
@@ -198,11 +227,17 @@ string HTTP_Checker::send_http_get() {
 	string s_tmp = "HEAD " + m_host_dir + " HTTP/1.1\r\n";
 			s_tmp += "Host: " + m_host_name + "\r\n";
 			s_tmp += "User-Agent: jetmon/1.0 (Jetpack Site Uptime Monitor by WordPress.com)\r\n";
-			s_tmp += "Connection: close\r\n\r\n";
+			s_tmp += "Connection: close\r\n";
 
-	strcpy( m_buf, s_tmp.c_str() );
+	if ( NULL != s_signing_config.load() ) {
+		this->add_signature_headers( s_tmp, m_host_name );
+	}
 
-	if ( send_bytes( m_buf, s_tmp.length() ) ) {
+	s_tmp += "\r\n";
+
+	// Send from the string directly: with signature headers appended the
+	// request can outgrow m_buf, and get_response() reuses m_buf anyway.
+	if ( send_bytes( s_tmp.c_str(), s_tmp.length() ) ) {
 		s_tmp = get_response();
 	} else {
 		s_tmp = "";
@@ -211,6 +246,74 @@ string HTTP_Checker::send_http_get() {
 #endif
 	}
 	return s_tmp;
+}
+
+// Appends RFC 9421 (Web Bot Auth) signature headers to the request.
+// On any failure the request is left unsigned so monitoring keeps working.
+void HTTP_Checker::add_signature_headers( string &p_request, const string &p_host ) {
+	try {
+		// Single load: sign consistently with one config even if a rotation
+		// lands while we build the base string.
+		Signing_Config *config = s_signing_config.load();
+		if ( NULL == config )
+			return;
+
+		size_t q_pos = m_host_dir.find_first_of( '?' );
+		bool has_query = ( string::npos != q_pos );
+
+		string s_components = "\"@method\" \"@authority\" \"@path\"";
+		if ( has_query )
+			s_components += " \"@query\"";
+		s_components += " \"signature-agent\"";
+
+		time_t created = time( NULL );
+		string s_params = "(" + s_components + ")"
+			+ ";created=" + to_string( created )
+			+ ";keyid=\"" + config->key_id + "\""
+			+ ";alg=\"ed25519\""
+			+ ";expires=" + to_string( created + SIGNATURE_EXPIRES_SEC )
+			+ ";tag=\"web-bot-auth\"";
+
+		// ponytail: @authority follows the Host header value, so non-default
+		// ports are not included (matches the existing Host header behavior).
+		string s_base = "\"@method\": head\n";
+		s_base += "\"@authority\": " + p_host + "\n";
+		s_base += "\"@path\": " + m_host_dir.substr( 0, q_pos ) + "\n";
+		if ( has_query )
+			s_base += "\"@query\": " + m_host_dir.substr( q_pos ) + "\n";
+		s_base += "\"signature-agent\": " + config->agent_url + "\n";
+		s_base += "\"@signature-params\": " + s_params;
+
+		EVP_MD_CTX *md_ctx = EVP_MD_CTX_new();
+		if ( NULL == md_ctx )
+			return;
+
+		size_t sig_len = 0;
+		bool ok = ( 1 == EVP_DigestSignInit( md_ctx, NULL, NULL, NULL, config->key ) )
+			&& ( 1 == EVP_DigestSign( md_ctx, NULL, &sig_len, (const unsigned char*)s_base.data(), s_base.size() ) );
+
+		string s_sig;
+		if ( ok ) {
+			s_sig.resize( sig_len );
+			ok = ( 1 == EVP_DigestSign( md_ctx, (unsigned char*)&s_sig[0], &sig_len, (const unsigned char*)s_base.data(), s_base.size() ) );
+		}
+		EVP_MD_CTX_free( md_ctx );
+
+		if ( ! ok )
+			return;
+
+		string s_b64;
+		s_b64.resize( 4 * ( ( sig_len + 2 ) / 3 ) + 1 );
+		int b64_len = EVP_EncodeBlock( (unsigned char*)&s_b64[0], (const unsigned char*)s_sig.data(), (int)sig_len );
+		s_b64.resize( b64_len > 0 ? b64_len : 0 );
+
+		p_request += "Signature-Agent: " + config->agent_url + "\r\n";
+		p_request += "Signature-Input: sig1=" + s_params + "\r\n";
+		p_request += "Signature: sig1=:" + s_b64 + ":\r\n";
+	}
+	catch( exception &ex ) {
+		cerr << "exception in HTTP_Checker::add_signature_headers(): for host '" << m_host_name.c_str() << "'" << endl;
+	}
 }
 
 string HTTP_Checker::get_response() {
@@ -424,6 +527,12 @@ bool HTTP_Checker::connect_getaddrinfo() {
 				node = node->ai_next;
 				continue;
 			}
+			// getaddrinfo fills the port from the service name ("http"/"https");
+			// override it with the actual port from the URL.
+			if ( AF_INET == node->ai_family )
+				( (struct sockaddr_in *)node->ai_addr )->sin_port = htons( m_port );
+			else
+				( (struct sockaddr_in6 *)node->ai_addr )->sin6_port = htons( m_port );
 			tried_recs++;
 			if ( ! init_socket( node ) ) {
 #if DEBUG_MODE
@@ -952,7 +1061,7 @@ bool HTTP_Checker::disconnect() {
 	}
 }
 
-bool HTTP_Checker::send_bytes( char* p_packet, size_t p_packet_length ) {
+bool HTTP_Checker::send_bytes( const char* p_packet, size_t p_packet_length ) {
 	try {
 		ssize_t bytes_left = p_packet_length;
 		ssize_t bytes_sent = 0;

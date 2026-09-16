@@ -99,6 +99,27 @@ void http_check( const FunctionCallbackInfo<Value>& args ) {
 	uv_queue_work( uv_default_loop(), req, http_check_async, (uv_after_work_cb)http_check_async_fin );
 }
 
+void configure_signing( const FunctionCallbackInfo<Value>& args ) {
+	Isolate* isolate = args.GetIsolate();
+	HandleScope scope( isolate );
+
+	if ( args.Length() < 3 || ! args[0]->IsString() || ! args[1]->IsString() || ! args[2]->IsString() ) {
+		isolate->ThrowException( Exception::TypeError(
+			String::NewFromUtf8( isolate, "Expected ( key_pem, key_id, directory_url ) strings" ).ToLocalChecked() ) );
+		return;
+	}
+
+	String::Utf8Value key_pem( isolate, args[0] );
+	String::Utf8Value key_id( isolate, args[1] );
+	String::Utf8Value agent_url( isolate, args[2] );
+
+	bool ok = HTTP_Checker::set_signing_key( std::string( *key_pem, key_pem.length() ),
+											std::string( *key_id, key_id.length() ),
+											std::string( *agent_url, agent_url.length() ) );
+
+	args.GetReturnValue().Set( Boolean::New( isolate, ok ) );
+}
+
 void Initialise( Local<Object> exports) {
 	SSL_load_error_strings();
 	SSL_library_init();
@@ -108,6 +129,7 @@ void Initialise( Local<Object> exports) {
 #endif
 
 	NODE_SET_METHOD( exports, "http_check", http_check );
+	NODE_SET_METHOD( exports, "configure_signing", configure_signing );
 }
 
 NODE_MODULE( jetmon, Initialise )
