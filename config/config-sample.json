@@ -13,6 +13,11 @@
 	"BATCH_SIZE"     : 32,
 	"AUTH_TOKEN"     : "<AUTH_TOKEN>",
 
+	"BOT_AUTH_ENABLED"       : false,
+	"BOT_AUTH_KEY_FILE"      : "certs/jetmon-signing.pem",
+	"BOT_AUTH_KEY_ID"        : "",
+	"BOT_AUTH_DIRECTORY_URL" : "",
+
 	"VERIFLIER_BATCH_SIZE"  : 200,
 	"SQL_UPDATE_BATCH"      : 1,
 	"DB_CONFIG_UPDATES_MIN" : 10,

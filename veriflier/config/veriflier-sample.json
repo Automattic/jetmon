@@ -17,6 +17,11 @@
 	"privatekey_file"    : "./certs/veriflier.key",
 	"privatecert_file"   : "./certs/veriflier.crt",
 
+	"bot_auth_enabled"       : false,
+	"bot_auth_key_file"      : "./certs/jetmon-signing.pem",
+	"bot_auth_key_id"        : "",
+	"bot_auth_directory_url" : "",
+
 	"monitors" : [
 		{
 			"name"       : "<Friendly Name>",

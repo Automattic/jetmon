@@ -83,6 +83,9 @@ See `config/config.readme` for detailed documentation of all options.
 - Max redirects: 3 (beyond this triggers "redirect" error)
 - HTTP response code < 400 is considered success
 - User Agent: `jetmon/1.0 (Jetpack Site Uptime Monitor by WordPress.com)`
+- When `BOT_AUTH_ENABLED` is true, checks to monitored sites are signed with Ed25519 HTTP Message Signatures (RFC 9421, Web Bot Auth): `Signature`, `Signature-Input`, and `Signature-Agent` headers are added. Internal API calls (WordPress.com, jetmon-to-veriflier) are never signed. See `config/config.readme` for the `BOT_AUTH_*` settings.
+- The wire format is pinned to Cloudflare's deployed profile (quoted-string `Signature-Agent` from draft-meunier-http-message-signatures-directory-03; later drafts' dictionary form is rejected by Cloudflare). Signing `keyid` values are RFC 8037 JWK thumbprints (see `config/config.readme`).
+- Veriflier confirmation checks support the same signing via the `bot_auth_*` keys in `veriflier/config/veriflier.json`; the implementation lives in the Qt-free `veriflier/source/bot_auth.cpp` so it can be unit-tested without a Qt toolchain.
 
 **Downtime Verification:**
 When a site appears down, Jetmon retries from the same location twice, then verifies from 2 other locations on different continents via Verifliers before confirming downtime.
@@ -147,5 +150,9 @@ The master process tracks worker states and gracefully handles recycling.
 **Bucket Configuration:** The `BUCKET_NO_MIN/MAX` configuration must not overlap between hosts. A past misconfiguration caused hosts to process only half their intended sites, masking performance issues.
 
 **Node Version Sensitivity:** RTT (round-trip time) calculations can vary between Node.js versions. Version changes should be tested thoroughly as they can affect timeout behaviors.
+
+**Custom Ports in monitor_url:** The `getaddrinfo` connect path ignores custom ports in monitor URLs - checks go to 80/443 regardless of the URL's port. (The verifliers' Qt socket path does honor them.)
+
+**Signing Test:** `node test/bot-auth.js` verifies RFC 9421 signature generation against a local server (requires `node-gyp rebuild && cp build/Release/jetmon.node lib/` first). `node test/bot-auth-crawltest.js` additionally checks the wire format against Cloudflare's live verification endpoint (requires network access; a fresh throwaway key expects a 401 = well-formed but unknown key). The veriflier signing module has its own Qt-free test: `g++ -std=c++11 -Iveriflier test/bot-auth-veriflier.cpp veriflier/source/bot_auth.cpp -lssl -lcrypto -o /tmp/bot-auth-veriflier && /tmp/bot-auth-veriflier`.
 
 **Memory Pressure:** When checking more sites (due to shorter intervals or configuration fixes), memory usage increases. Monitor memory metrics and consider scaling hosts horizontally if workers frequently hit memory limits.

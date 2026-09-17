@@ -4,6 +4,7 @@
 
 #include <cstdlib>
 #include <string>
+#include <atomic>
 #include <cerrno>
 #include <exception>
 #include <iostream>
@@ -27,6 +28,8 @@
 #include <openssl/crypto.h>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
+#include <openssl/evp.h>
+#include <openssl/pem.h>
 #if (SSLEAY_VERSION_NUMBER >= 0x0907000L)
 # include <openssl/conf.h>
 #endif
@@ -60,6 +63,15 @@ public:
 	int get_response_code() { return m_response_code; }
 	int get_error_code() { return m_error_code; }
 
+	// Loads the Ed25519 private key used to sign outgoing checks (RFC 9421
+	// HTTP Message Signatures, Web Bot Auth). Worker-global; a NULL key
+	// (the default) leaves requests unsigned. Returns false on a bad key.
+	static bool set_signing_key( const std::string &p_key_pem, const std::string &p_key_id, const std::string &p_agent_url );
+
+	// Disables signing, e.g. when a config reload turns it off or the
+	// replacement key cannot be loaded.
+	static void clear_signing_key();
+
 private:
 	char m_buf[MAX_TCP_BUFFER];
 	int m_sock;
@@ -78,6 +90,13 @@ private:
 	SSL *m_ssl;
 	BIO *m_sbio;
 
+	struct Signing_Config {
+		EVP_PKEY *key;
+		std::string key_id;
+		std::string agent_url;
+	};
+	static std::atomic<Signing_Config *> s_signing_config;
+
 	bool init_socket( addrinfo *addr );
 	bool init_ssl();
 	bool connect();
@@ -91,7 +110,8 @@ private:
 	void disconnect_ssl();
 #endif
 	std::string send_http_get();
-	bool send_bytes( char* p_packet, size_t p_packet_length );
+	void add_signature_headers( std::string &p_request, const std::string &p_host );
+	bool send_bytes( const char* p_packet, size_t p_packet_length );
 	std::string get_response();
 	void set_host_response( int redirects );
 	bool set_redirect_host_values( std::string p_content );
