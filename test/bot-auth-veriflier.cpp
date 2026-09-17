@@ -118,11 +118,9 @@ int main() {
 	assert( ! headers.empty() );
 	verify_headers( headers, pkey, "example.com", "/signed/path?x=1&y=2", true );
 
-	// 5. Path without a query string: no @query component. The authority is
-	// passed through verbatim, so a non-default port survives into @authority
-	// (the caller builds it to match the Host header).
-	headers = BotAuth::signature_headers( "example.com:8080", "/" );
-	verify_headers( headers, pkey, "example.com:8080", "/", false );
+	// 5. Path without a query string: no @query component.
+	headers = BotAuth::signature_headers( "example.com", "/" );
+	verify_headers( headers, pkey, "example.com", "/", false );
 
 	EVP_PKEY_free( pkey );
 

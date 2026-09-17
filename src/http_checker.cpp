@@ -230,20 +230,13 @@ void HTTP_Checker::parse_host_values() {
 }
 
 string HTTP_Checker::send_http_get() {
-	// One authority value for the Host header and the @authority signature
-	// component. HTTP/1.1 requires Host to carry the port when it is not
-	// the default for the scheme, and RFC 9421 derives @authority from it.
-	string s_authority = m_host_name;
-	if ( m_port != ( m_is_ssl ? HTTPS_DEFAULT_PORT : HTTP_DEFAULT_PORT ) )
-		s_authority += ":" + to_string( m_port );
-
 	string s_tmp = "HEAD " + m_host_dir + " HTTP/1.1\r\n";
-			s_tmp += "Host: " + s_authority + "\r\n";
+			s_tmp += "Host: " + m_host_name + "\r\n";
 			s_tmp += "User-Agent: jetmon/1.0 (Jetpack Site Uptime Monitor by WordPress.com)\r\n";
 			s_tmp += "Connection: close\r\n";
 
 	if ( NULL != s_signing_config.load() ) {
-		this->add_signature_headers( s_tmp, s_authority );
+		this->add_signature_headers( s_tmp, m_host_name );
 	}
 
 	s_tmp += "\r\n";
@@ -263,7 +256,7 @@ string HTTP_Checker::send_http_get() {
 
 // Appends RFC 9421 (Web Bot Auth) signature headers to the request.
 // On any failure the request is left unsigned so monitoring keeps working.
-void HTTP_Checker::add_signature_headers( string &p_request, const string &p_authority ) {
+void HTTP_Checker::add_signature_headers( string &p_request, const string &p_host ) {
 	try {
 		// Single load: sign consistently with one config even if a rotation
 		// lands while we build the base string.
@@ -293,7 +286,7 @@ void HTTP_Checker::add_signature_headers( string &p_request, const string &p_aut
 		// Cloudflare's deployed verification requires.
 		string s_agent_quoted = "\"" + config->agent_url + "\"";
 		string s_base = "\"@method\": HEAD\n";
-		s_base += "\"@authority\": " + p_authority + "\n";
+		s_base += "\"@authority\": " + p_host + "\n";
 		s_base += "\"@path\": " + m_host_dir.substr( 0, q_pos ) + "\n";
 		if ( has_query )
 			s_base += "\"@query\": " + m_host_dir.substr( q_pos ) + "\n";
@@ -543,12 +536,7 @@ bool HTTP_Checker::connect_getaddrinfo() {
 				node = node->ai_next;
 				continue;
 			}
-			// getaddrinfo fills the port from the service name ("http"/"https");
-			// override it with the actual port from the URL.
-			if ( AF_INET == node->ai_family )
-				( (struct sockaddr_in *)node->ai_addr )->sin_port = htons( m_port );
-			else
-				( (struct sockaddr_in6 *)node->ai_addr )->sin6_port = htons( m_port );
+			// getaddrinfo fills the port from the service name ("http"/"https").
 			tried_recs++;
 			if ( ! init_socket( node ) ) {
 #if DEBUG_MODE

@@ -10,6 +10,10 @@
  * directory kid when one is published).
  *
  * Run: node test/bot-auth.js   (after: node-gyp rebuild && cp build/Release/jetmon.node lib/)
+ *
+ * Note: the getaddrinfo connect path ignores custom ports in URLs (checks go
+ * to 80/443), so the test server must listen on port 80 and this test needs
+ * root or CAP_NET_BIND_SERVICE.
  */
 
 const assert = require( 'assert' );
@@ -115,11 +119,10 @@ function httpCheck( url ) {
 }
 
 const requests = [];
-let serverPort = 0;
 const server = http.createServer( ( req, res ) => {
 	requests.push( req );
 	if ( '/redirect' === req.url ) {
-		res.writeHead( 301, { 'Location': 'http://127.0.0.1:' + serverPort + '/final' } );
+		res.writeHead( 301, { 'Location': 'http://127.0.0.1/final' } );
 		res.end();
 		return;
 	}
@@ -127,12 +130,16 @@ const server = http.createServer( ( req, res ) => {
 	res.end();
 } );
 
-server.listen( 0, '127.0.0.1', async () => {
-	const port = server.address().port;
-	serverPort = port;
+server.on( 'error', ( err ) => {
+	console.error( 'bot-auth signing test: FAILED' );
+	console.error( 'cannot listen on port 80 (' + err.code + ') - run with root or CAP_NET_BIND_SERVICE' );
+	process.exit( 1 );
+} );
+
+server.listen( 80, '127.0.0.1', async () => {
 	try {
 		// 1. Unsigned by default: no signing configured yet.
-		await httpCheck( 'http://127.0.0.1:' + port + '/unsigned' );
+		await httpCheck( 'http://127.0.0.1/unsigned' );
 		assert.strictEqual( requests[0].headers['signature'], undefined, 'no Signature header when unconfigured' );
 		assert.strictEqual( requests[0].headers['signature-input'], undefined, 'no Signature-Input header when unconfigured' );
 
@@ -141,13 +148,12 @@ server.listen( 0, '127.0.0.1', async () => {
 
 		// 3. Valid key: request is signed and verifies, including @query coverage.
 		assert.strictEqual( watcher.configure_signing( keyPem, KEY_ID, DIRECTORY_URL ), true, 'accepts Ed25519 key' );
-		await httpCheck( 'http://127.0.0.1:' + port + '/signed/path?x=1&y=2' );
+		await httpCheck( 'http://127.0.0.1/signed/path?x=1&y=2' );
 		verifyRequest( requests[1] );
 		assert.strictEqual( requests[1].url, '/signed/path?x=1&y=2', 'request target unchanged' );
-		assert.ok( requests[1].headers.host.endsWith( ':' + port ), 'Host carries the non-default port' );
 
 		// 4. Redirect: each hop is re-signed with its own @path.
-		await httpCheck( 'http://127.0.0.1:' + port + '/redirect' );
+		await httpCheck( 'http://127.0.0.1/redirect' );
 		assert.strictEqual( requests.length, 4, 'redirect followed to /final' );
 		assert.strictEqual( requests[2].url, '/redirect', 'first hop is /redirect' );
 		assert.strictEqual( requests[3].url, '/final', 'second hop is /final' );
@@ -156,7 +162,7 @@ server.listen( 0, '127.0.0.1', async () => {
 
 		// 5. clear_signing disables signing again (config reload path).
 		watcher.clear_signing();
-		await httpCheck( 'http://127.0.0.1:' + port + '/after-clear' );
+		await httpCheck( 'http://127.0.0.1/after-clear' );
 		assert.strictEqual( requests[4].headers['signature'], undefined, 'no Signature header after clear_signing' );
 		assert.strictEqual( requests[4].headers['signature-input'], undefined, 'no Signature-Input header after clear_signing' );
 

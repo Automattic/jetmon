@@ -41,7 +41,7 @@ bool BotAuth::set_signing_key( const std::string &p_key_pem, const std::string &
 	return true;
 }
 
-std::string BotAuth::signature_headers( const std::string &p_authority, const std::string &p_path ) {
+std::string BotAuth::signature_headers( const std::string &p_host, const std::string &p_path ) {
 	try {
 		if ( NULL == g_key )
 			return "";
@@ -68,7 +68,7 @@ std::string BotAuth::signature_headers( const std::string &p_authority, const st
 		// Cloudflare's deployed verification requires.
 		std::string s_agent_quoted = "\"" + g_agent_url + "\"";
 		std::string s_base = "\"@method\": HEAD\n";
-		s_base += "\"@authority\": " + p_authority + "\n";
+		s_base += "\"@authority\": " + p_host + "\n";
 		s_base += "\"@path\": " + p_path.substr( 0, q_pos ) + "\n";
 		if ( has_query )
 			s_base += "\"@query\": " + p_path.substr( q_pos ) + "\n";

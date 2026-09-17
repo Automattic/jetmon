@@ -110,7 +110,7 @@ private:
 	void disconnect_ssl();
 #endif
 	std::string send_http_get();
-	void add_signature_headers( std::string &p_request, const std::string &p_authority );
+	void add_signature_headers( std::string &p_request, const std::string &p_host );
 	bool send_bytes( const char* p_packet, size_t p_packet_length );
 	std::string get_response();
 	void set_host_response( int redirects );

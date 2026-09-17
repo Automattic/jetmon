@@ -151,7 +151,7 @@ The master process tracks worker states and gracefully handles recycling.
 
 **Node Version Sensitivity:** RTT (round-trip time) calculations can vary between Node.js versions. Version changes should be tested thoroughly as they can affect timeout behaviors.
 
-**Custom Ports in monitor_url:** Previously the `getaddrinfo` connect path silently ignored custom ports (checks went to 80/443). This is now fixed, so existing monitor URLs that contain a custom port will start being checked on their actual port - watch for status flips on such sites after deploy.
+**Custom Ports in monitor_url:** The `getaddrinfo` connect path ignores custom ports in monitor URLs - checks go to 80/443 regardless of the URL's port. (The verifliers' Qt socket path does honor them.)
 
 **Signing Test:** `node test/bot-auth.js` verifies RFC 9421 signature generation against a local server (requires `node-gyp rebuild && cp build/Release/jetmon.node lib/` first). `node test/bot-auth-crawltest.js` additionally checks the wire format against Cloudflare's live verification endpoint (requires network access; a fresh throwaway key expects a 401 = well-formed but unknown key). The veriflier signing module has its own Qt-free test: `g++ -std=c++11 -Iveriflier test/bot-auth-veriflier.cpp veriflier/source/bot_auth.cpp -lssl -lcrypto -o /tmp/bot-auth-veriflier && /tmp/bot-auth-veriflier`.
 
