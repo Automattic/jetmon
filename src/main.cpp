@@ -120,6 +120,10 @@ void configure_signing( const FunctionCallbackInfo<Value>& args ) {
 	args.GetReturnValue().Set( Boolean::New( isolate, ok ) );
 }
 
+void clear_signing( const FunctionCallbackInfo<Value>& args ) {
+	HTTP_Checker::clear_signing_key();
+}
+
 void Initialise( Local<Object> exports) {
 	SSL_load_error_strings();
 	SSL_library_init();
@@ -130,6 +134,7 @@ void Initialise( Local<Object> exports) {
 
 	NODE_SET_METHOD( exports, "http_check", http_check );
 	NODE_SET_METHOD( exports, "configure_signing", configure_signing );
+	NODE_SET_METHOD( exports, "clear_signing", clear_signing );
 }
 
 NODE_MODULE( jetmon, Initialise )

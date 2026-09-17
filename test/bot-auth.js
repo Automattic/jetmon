@@ -2,6 +2,13 @@
 /**
  * Standalone check for Web Bot Auth (RFC 9421) request signing in the jetmon addon.
  *
+ * Verification is deliberately independent of the signer: the signature base is
+ * rebuilt from the request as received (method from the parsed request line,
+ * authority from the Host header), and the signing key is resolved by keyid
+ * lookup in a key table indexed by RFC 8037 JWK thumbprint - the contract the
+ * WAF-side verifier's generated key table uses (indexed by thumbprint, plus by
+ * directory kid when one is published).
+ *
  * Run: node test/bot-auth.js   (after: node-gyp rebuild && cp build/Release/jetmon.node lib/)
  */
 
@@ -10,11 +17,35 @@ const crypto = require( 'crypto' );
 const http   = require( 'http' );
 const watcher = require( '../lib/jetmon.node' );
 
-const KEY_ID        = 'test-key-1';
 const DIRECTORY_URL = 'https://example.com/.well-known/http-message-signatures-directory';
+
+// RFC 7638/8037 JWK thumbprint: sha256 over the lexicographically ordered
+// required members, base64url. This is the keyid scheme the verifier's key
+// table is indexed by.
+function jwkThumbprint( jwk ) {
+	return crypto.createHash( 'sha256' )
+		.update( JSON.stringify( { crv: jwk.crv, kty: jwk.kty, x: jwk.x } ) )
+		.digest( 'base64url' );
+}
+
+// RFC 8037 Appendix A.3 test vector.
+assert.strictEqual(
+	jwkThumbprint( { kty: 'OKP', crv: 'Ed25519', x: 'JrQLj5P_89iXES9-vFgrIy29clF9CC_oPPsw3c5D0bs' } ),
+	'poqkLGiymh_W0uP6PZFw-dvez3QJT5SolqXBCW38r0U',
+	'RFC 8037 A.3 thumbprint vector'
+);
+
+// kid -> x (base64url Ed25519 public key), standing in for the verifier's
+// generated key table.
+const keysTable = {};
 
 const { privateKey, publicKey } = crypto.generateKeyPairSync( 'ed25519' );
 const keyPem = privateKey.export( { type: 'pkcs8', format: 'pem' } );
+
+// Sign with the key's thumbprint as keyid, and register it in the key table
+// by that thumbprint, exactly like a production key.
+const KEY_ID = jwkThumbprint( publicKey.export( { format: 'jwk' } ) );
+keysTable[ KEY_ID ] = publicKey.export( { format: 'jwk' } ).x;
 
 // Rebuilds the RFC 9421 signature base from the received request and verifies it.
 function verifyRequest( req ) {
@@ -29,7 +60,11 @@ function verifyRequest( req ) {
 	assert.ok( m, 'Signature-Input has sig1 label' );
 	const params = m[1];
 
-	assert.ok( params.includes( 'keyid="' + KEY_ID + '"' ), 'keyid matches' );
+	const keyid = params.match( /;keyid="([^"]+)"/ )[1];
+	const x = keysTable[ keyid ];
+	assert.ok( x, 'keyid resolves in the verifier key table' );
+	const verifierKey = crypto.createPublicKey( { format: 'jwk', key: { kty: 'OKP', crv: 'Ed25519', x: x } } );
+
 	assert.ok( params.includes( 'alg="ed25519"' ), 'alg is ed25519' );
 	assert.ok( params.includes( 'tag="web-bot-auth"' ), 'tag is web-bot-auth' );
 
@@ -44,7 +79,7 @@ function verifyRequest( req ) {
 
 	const qPos  = req.url.indexOf( '?' );
 	const values = {
-		'@method':         'head',
+		'@method':         req.method,
 		'@authority':      req.headers.host,
 		'@path':           qPos === -1 ? req.url : req.url.slice( 0, qPos ),
 		'@query':          qPos === -1 ? undefined : req.url.slice( qPos ),
@@ -62,10 +97,11 @@ function verifyRequest( req ) {
 	assert.strictEqual( sig.length, 64, 'Ed25519 signature is 64 bytes' );
 
 	assert.ok(
-		crypto.verify( null, Buffer.from( base ), publicKey, sig ),
-		'signature verifies against public key'
+		crypto.verify( null, Buffer.from( base ), verifierKey, sig ),
+		'signature verifies against the key resolved by keyid lookup'
 	);
-	assert.strictEqual( req.headers['signature-agent'], DIRECTORY_URL, 'Signature-Agent matches' );
+	assert.strictEqual( req.method, 'HEAD', 'request method is HEAD' );
+	assert.strictEqual( req.headers['signature-agent'], '"' + DIRECTORY_URL + '"', 'Signature-Agent is the quoted directory URL' );
 }
 
 function httpCheck( url ) {
@@ -108,6 +144,7 @@ server.listen( 0, '127.0.0.1', async () => {
 		await httpCheck( 'http://127.0.0.1:' + port + '/signed/path?x=1&y=2' );
 		verifyRequest( requests[1] );
 		assert.strictEqual( requests[1].url, '/signed/path?x=1&y=2', 'request target unchanged' );
+		assert.ok( requests[1].headers.host.endsWith( ':' + port ), 'Host carries the non-default port' );
 
 		// 4. Redirect: each hop is re-signed with its own @path.
 		await httpCheck( 'http://127.0.0.1:' + port + '/redirect' );
@@ -116,6 +153,12 @@ server.listen( 0, '127.0.0.1', async () => {
 		assert.strictEqual( requests[3].url, '/final', 'second hop is /final' );
 		verifyRequest( requests[2] );
 		verifyRequest( requests[3] );
+
+		// 5. clear_signing disables signing again (config reload path).
+		watcher.clear_signing();
+		await httpCheck( 'http://127.0.0.1:' + port + '/after-clear' );
+		assert.strictEqual( requests[4].headers['signature'], undefined, 'no Signature header after clear_signing' );
+		assert.strictEqual( requests[4].headers['signature-input'], undefined, 'no Signature-Input header after clear_signing' );
 
 		console.log( 'bot-auth signing test: OK' );
 		server.close();

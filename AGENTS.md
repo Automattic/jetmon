@@ -84,6 +84,7 @@ See `config/config.readme` for detailed documentation of all options.
 - HTTP response code < 400 is considered success
 - User Agent: `jetmon/1.0 (Jetpack Site Uptime Monitor by WordPress.com)`
 - When `BOT_AUTH_ENABLED` is true, checks to monitored sites are signed with Ed25519 HTTP Message Signatures (RFC 9421, Web Bot Auth): `Signature`, `Signature-Input`, and `Signature-Agent` headers are added. Internal API calls (WordPress.com, jetmon-to-veriflier) are never signed. See `config/config.readme` for the `BOT_AUTH_*` settings.
+- The wire format is pinned to Cloudflare's deployed profile (quoted-string `Signature-Agent` from draft-meunier-http-message-signatures-directory-03; later drafts' dictionary form is rejected by Cloudflare). Signing `keyid` values are RFC 8037 JWK thumbprints (see `config/config.readme`).
 - Veriflier confirmation checks support the same signing via the `bot_auth_*` keys in `veriflier/config/veriflier.json`; the implementation lives in the Qt-free `veriflier/source/bot_auth.cpp` so it can be unit-tested without a Qt toolchain.
 
 **Downtime Verification:**

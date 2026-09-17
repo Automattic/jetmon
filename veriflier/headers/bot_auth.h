@@ -15,9 +15,10 @@ namespace BotAuth {
 	bool set_signing_key( const std::string &p_key_pem, const std::string &p_key_id, const std::string &p_agent_url );
 
 	// Returns the Signature-Agent / Signature-Input / Signature headers for a
-	// HEAD request to the given host and path (each ending in CRLF), or an
-	// empty string when signing is disabled or signing fails.
-	std::string signature_headers( const std::string &p_host, const std::string &p_path );
+	// HEAD request to the given authority (host, plus ":port" when the port
+	// is not the scheme default - must match the Host header) and path (each
+	// ending in CRLF), or an empty string when signing is disabled or fails.
+	std::string signature_headers( const std::string &p_authority, const std::string &p_path );
 
 }
 

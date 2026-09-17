@@ -41,7 +41,7 @@ bool BotAuth::set_signing_key( const std::string &p_key_pem, const std::string &
 	return true;
 }
 
-std::string BotAuth::signature_headers( const std::string &p_host, const std::string &p_path ) {
+std::string BotAuth::signature_headers( const std::string &p_authority, const std::string &p_path ) {
 	try {
 		if ( NULL == g_key )
 			return "";
@@ -62,14 +62,17 @@ std::string BotAuth::signature_headers( const std::string &p_host, const std::st
 			+ ";expires=" + std::to_string( created + SIGNATURE_EXPIRES_SEC )
 			+ ";tag=\"web-bot-auth\"";
 
-		// ponytail: @authority follows the Host header value, so non-default
-		// ports are not included (matches the existing Host header behavior).
-		std::string s_base = "\"@method\": head\n";
-		s_base += "\"@authority\": " + p_host + "\n";
+		// RFC 9421 @method is case-sensitive: sign the method as sent (HEAD).
+		// Signature-Agent is a quoted structured string, matching the
+		// draft-meunier-http-message-signatures-directory-03 format that
+		// Cloudflare's deployed verification requires.
+		std::string s_agent_quoted = "\"" + g_agent_url + "\"";
+		std::string s_base = "\"@method\": HEAD\n";
+		s_base += "\"@authority\": " + p_authority + "\n";
 		s_base += "\"@path\": " + p_path.substr( 0, q_pos ) + "\n";
 		if ( has_query )
 			s_base += "\"@query\": " + p_path.substr( q_pos ) + "\n";
-		s_base += "\"signature-agent\": " + g_agent_url + "\n";
+		s_base += "\"signature-agent\": " + s_agent_quoted + "\n";
 		s_base += "\"@signature-params\": " + s_params;
 
 		EVP_MD_CTX *md_ctx = EVP_MD_CTX_new();
@@ -95,7 +98,7 @@ std::string BotAuth::signature_headers( const std::string &p_host, const std::st
 		int b64_len = EVP_EncodeBlock( (unsigned char*)&s_b64[0], (const unsigned char*)s_sig.data(), (int)sig_len );
 		s_b64.resize( b64_len > 0 ? b64_len : 0 );
 
-		std::string s_headers = "Signature-Agent: " + g_agent_url + "\r\n";
+		std::string s_headers = "Signature-Agent: " + s_agent_quoted + "\r\n";
 		s_headers += "Signature-Input: sig1=" + s_params + "\r\n";
 		s_headers += "Signature: sig1=:" + s_b64 + ":\r\n";
 		return s_headers;

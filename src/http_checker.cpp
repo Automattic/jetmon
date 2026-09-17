@@ -39,6 +39,12 @@ bool HTTP_Checker::set_signing_key( const std::string &p_key_pem, const std::str
 	return true;
 }
 
+void HTTP_Checker::clear_signing_key() {
+	// ponytail: same deliberate leak as set_signing_key - a pool thread may
+	// still be mid-signature with the outgoing config.
+	s_signing_config.store( NULL );
+}
+
 HTTP_Checker::HTTP_Checker() : m_sock( -1 ), m_host_name( "" ), m_host_dir( "" ), m_port( HTTP_DEFAULT_PORT ),
 		m_is_ssl( false ), m_triptime( 0 ), m_response_code( 0 ), m_ctx( NULL ), m_ssl( NULL ), m_sbio( NULL ), m_error_code( 0 ) {
 	gettimeofday( &m_tstart, &m_tzone );
@@ -224,13 +230,20 @@ void HTTP_Checker::parse_host_values() {
 }
 
 string HTTP_Checker::send_http_get() {
+	// One authority value for the Host header and the @authority signature
+	// component. HTTP/1.1 requires Host to carry the port when it is not
+	// the default for the scheme, and RFC 9421 derives @authority from it.
+	string s_authority = m_host_name;
+	if ( m_port != ( m_is_ssl ? HTTPS_DEFAULT_PORT : HTTP_DEFAULT_PORT ) )
+		s_authority += ":" + to_string( m_port );
+
 	string s_tmp = "HEAD " + m_host_dir + " HTTP/1.1\r\n";
-			s_tmp += "Host: " + m_host_name + "\r\n";
+			s_tmp += "Host: " + s_authority + "\r\n";
 			s_tmp += "User-Agent: jetmon/1.0 (Jetpack Site Uptime Monitor by WordPress.com)\r\n";
 			s_tmp += "Connection: close\r\n";
 
 	if ( NULL != s_signing_config.load() ) {
-		this->add_signature_headers( s_tmp, m_host_name );
+		this->add_signature_headers( s_tmp, s_authority );
 	}
 
 	s_tmp += "\r\n";
@@ -250,7 +263,7 @@ string HTTP_Checker::send_http_get() {
 
 // Appends RFC 9421 (Web Bot Auth) signature headers to the request.
 // On any failure the request is left unsigned so monitoring keeps working.
-void HTTP_Checker::add_signature_headers( string &p_request, const string &p_host ) {
+void HTTP_Checker::add_signature_headers( string &p_request, const string &p_authority ) {
 	try {
 		// Single load: sign consistently with one config even if a rotation
 		// lands while we build the base string.
@@ -274,14 +287,17 @@ void HTTP_Checker::add_signature_headers( string &p_request, const string &p_hos
 			+ ";expires=" + to_string( created + SIGNATURE_EXPIRES_SEC )
 			+ ";tag=\"web-bot-auth\"";
 
-		// ponytail: @authority follows the Host header value, so non-default
-		// ports are not included (matches the existing Host header behavior).
-		string s_base = "\"@method\": head\n";
-		s_base += "\"@authority\": " + p_host + "\n";
+		// RFC 9421 @method is case-sensitive: sign the method as sent (HEAD).
+		// Signature-Agent is a quoted structured string, matching the
+		// draft-meunier-http-message-signatures-directory-03 format that
+		// Cloudflare's deployed verification requires.
+		string s_agent_quoted = "\"" + config->agent_url + "\"";
+		string s_base = "\"@method\": HEAD\n";
+		s_base += "\"@authority\": " + p_authority + "\n";
 		s_base += "\"@path\": " + m_host_dir.substr( 0, q_pos ) + "\n";
 		if ( has_query )
 			s_base += "\"@query\": " + m_host_dir.substr( q_pos ) + "\n";
-		s_base += "\"signature-agent\": " + config->agent_url + "\n";
+		s_base += "\"signature-agent\": " + s_agent_quoted + "\n";
 		s_base += "\"@signature-params\": " + s_params;
 
 		EVP_MD_CTX *md_ctx = EVP_MD_CTX_new();
@@ -307,7 +323,7 @@ void HTTP_Checker::add_signature_headers( string &p_request, const string &p_hos
 		int b64_len = EVP_EncodeBlock( (unsigned char*)&s_b64[0], (const unsigned char*)s_sig.data(), (int)sig_len );
 		s_b64.resize( b64_len > 0 ? b64_len : 0 );
 
-		p_request += "Signature-Agent: " + config->agent_url + "\r\n";
+		p_request += "Signature-Agent: " + s_agent_quoted + "\r\n";
 		p_request += "Signature-Input: sig1=" + s_params + "\r\n";
 		p_request += "Signature: sig1=:" + s_b64 + ":\r\n";
 	}

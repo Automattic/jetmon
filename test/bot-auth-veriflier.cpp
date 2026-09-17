@@ -47,7 +47,9 @@ static void verify_headers( const std::string &headers, EVP_PKEY *pubkey,
 	std::string sig_line  = get_header( headers, "Signature" );
 	std::string sig_agent = get_header( headers, "Signature-Agent" );
 
-	assert( sig_agent == DIRECTORY_URL );
+	// Signature-Agent is a quoted structured string (Cloudflare's required
+	// draft-meunier-http-message-signatures-directory-03 form).
+	assert( sig_agent == "\"" + DIRECTORY_URL + "\"" );
 	assert( 0 == sig_input.compare( 0, 5, "sig1=" ) );
 
 	std::string params = sig_input.substr( 5 );
@@ -64,12 +66,12 @@ static void verify_headers( const std::string &headers, EVP_PKEY *pubkey,
 	assert( 300 == expires - created );
 
 	size_t q_pos = path.find_first_of( '?' );
-	std::string base = "\"@method\": head\n";
+	std::string base = "\"@method\": HEAD\n";
 	base += "\"@authority\": " + host + "\n";
 	base += "\"@path\": " + path.substr( 0, q_pos ) + "\n";
 	if ( std::string::npos != q_pos )
 		base += "\"@query\": " + path.substr( q_pos ) + "\n";
-	base += "\"signature-agent\": " + DIRECTORY_URL + "\n";
+	base += "\"signature-agent\": \"" + DIRECTORY_URL + "\"\n";
 	base += "\"@signature-params\": " + params;
 
 	assert( 0 == sig_line.compare( 0, 6, "sig1=:" ) );
@@ -116,9 +118,11 @@ int main() {
 	assert( ! headers.empty() );
 	verify_headers( headers, pkey, "example.com", "/signed/path?x=1&y=2", true );
 
-	// 5. Path without a query string: no @query component.
-	headers = BotAuth::signature_headers( "example.com", "/" );
-	verify_headers( headers, pkey, "example.com", "/", false );
+	// 5. Path without a query string: no @query component. The authority is
+	// passed through verbatim, so a non-default port survives into @authority
+	// (the caller builds it to match the Host header).
+	headers = BotAuth::signature_headers( "example.com:8080", "/" );
+	verify_headers( headers, pkey, "example.com:8080", "/", false );
 
 	EVP_PKEY_free( pkey );
 

@@ -145,11 +145,18 @@ void HTTP_Checker::parse_response_code( QByteArray a_data ) {
 }
 
 bool HTTP_Checker::send_http_get() {
+	// One authority value for the Host header and the @authority signature
+	// component. HTTP/1.1 requires Host to carry the port when it is not
+	// the default for the scheme, and RFC 9421 derives @authority from it.
+	QString s_authority = m_host_name;
+	if ( m_port != ( m_is_ssl ? DEFAULT_HTTPS_PORT : DEFAULT_HTTP_PORT ) )
+		s_authority += ":" + QString::number( m_port );
+
 	QString m_buf = "HEAD " + m_host_dir + " HTTP/1.1\r\n";
-			m_buf += "Host: " + m_host_name + "\r\n";
+			m_buf += "Host: " + s_authority + "\r\n";
 			m_buf += "User-Agent: jetmon/1.0 (Jetpack Site Uptime Monitor by WordPress.com)\r\n";
 			m_buf += "Connection: close\r\n";
-			m_buf += QString::fromStdString( BotAuth::signature_headers( m_host_name.toStdString(), m_host_dir.toStdString() ) );
+			m_buf += QString::fromStdString( BotAuth::signature_headers( s_authority.toStdString(), m_host_dir.toStdString() ) );
 			m_buf += "\r\n";
 
 	qint64 bytes_sent = m_sock->write( m_buf.toStdString().c_str(), m_buf.length() );

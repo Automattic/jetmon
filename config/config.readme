@@ -43,14 +43,21 @@ A string used to validate communications between different systems over HTTPS.
 BOT_AUTH_ENABLED
 Set to true to sign outgoing site checks with HTTP Message Signatures (RFC 9421, Web Bot Auth), so site operators can verify the checks genuinely come from Jetmon. Only the HEAD checks sent to monitored sites are signed; internal API calls (WordPress.com, verifliers) are not.
 
+Compatibility profile: the implementation targets Cloudflare's deployed Web Bot Auth verification, i.e. the quoted-string Signature-Agent form from draft-meunier-http-message-signatures-directory-03. Later IETF drafts switch Signature-Agent to a dictionary value, which Cloudflare currently rejects - do not change the header format until the ecosystem settles. Before enabling in production, validate a signed request against Cloudflare's test endpoint (200 = verified, 401 = well-formed but unknown key, 400 = malformed):
+  https://crawltest.com/cdn-cgi/web-bot-auth
+
 BOT_AUTH_KEY_FILE
 Path to the Ed25519 private key in PEM format used to sign monitoring requests. Required when BOT_AUTH_ENABLED is true. If the key is missing or invalid, checks are sent unsigned.
+Generate with: openssl genpkey -algorithm ed25519 -out certs/jetmon-signing.pem
 
 BOT_AUTH_KEY_ID
-The keyid value advertised in the Signature-Input header. Must match the entry for this key in the public key directory.
+The keyid value advertised in the Signature-Input header. Verifiers resolve it against our key directory (indexed by RFC 8037 JWK thumbprint, plus the directory kid if the JWKS publishes one). Cloudflare requires the keyid to be the base64url RFC 7638/8037 JWK thumbprint of the public key; use the thumbprint unless the directory deliberately publishes a different kid. Compute it with:
+  node -e "const c=require('crypto'),f=require('fs');const j=c.createPublicKey(f.readFileSync('certs/jetmon-signing.pem')).export({format:'jwk'});console.log(c.createHash('sha256').update(JSON.stringify({crv:j.crv,kty:j.kty,x:j.x})).digest('base64url'))"
 
 BOT_AUTH_DIRECTORY_URL
-The URL sent in the Signature-Agent header, where verifiers can fetch the public key directory (the .well-known/http-message-signatures-directory document).
+The URL sent (as a quoted structured string) in the Signature-Agent header, where verifiers fetch the public key directory. Cloudflare requires the directory to be served over HTTPS at /.well-known/http-message-signatures-directory as a JWKS with Content-Type application/http-message-signatures-directory+json, with the response itself signed once per key (tag "http-message-signatures-directory", keyid set to that key's JWK thumbprint). Register the directory via Cloudflare's Bot Submission Form (Verification Method: Request Signature). Cloudflare's http-signature-directory CLI can validate the document before rollout.
+
+Key rotation and multi-fleet rollout: publish the new key in the directory alongside the old one, roll the new key file and BOT_AUTH_KEY_ID to every Jetmon host and every veriflier (bot_auth_* keys in veriflier/config/veriflier.json), then remove the old key from the directory once all fleets sign with the new one. Monitoring results are unaffected by mixed signed/unsigned checks during rollout, but WAF bypass only applies to signed requests.
 
 VERIFLIER_BATCH_SIZE
 The maximum number of sites to send to verifliers in a single batch.

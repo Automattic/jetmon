@@ -68,6 +68,10 @@ public:
 	// (the default) leaves requests unsigned. Returns false on a bad key.
 	static bool set_signing_key( const std::string &p_key_pem, const std::string &p_key_id, const std::string &p_agent_url );
 
+	// Disables signing, e.g. when a config reload turns it off or the
+	// replacement key cannot be loaded.
+	static void clear_signing_key();
+
 private:
 	char m_buf[MAX_TCP_BUFFER];
 	int m_sock;
@@ -106,7 +110,7 @@ private:
 	void disconnect_ssl();
 #endif
 	std::string send_http_get();
-	void add_signature_headers( std::string &p_request, const std::string &p_host );
+	void add_signature_headers( std::string &p_request, const std::string &p_authority );
 	bool send_bytes( const char* p_packet, size_t p_packet_length );
 	std::string get_response();
 	void set_host_response( int redirects );
